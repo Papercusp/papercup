@@ -36,6 +36,7 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
     continuation: 'settle',
     mode: 'work',
     fireCount: 10,
+    firesSinceArm: 10,
     parked: false,
     nextFireAt: null,
     lastFiredAt: '2026-08-01T00:00:00.000Z',

@@ -143,7 +143,7 @@ export default defineTool({
     notWhen:
       'You do not know what to search for — call docs:outline first. For PG-stored prose (chats, escalations) use search:fulltext. To search another harness from outside, use cross_harness:docs_search.',
     chaining:
-      'docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading).',
+      'docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading). A hit carrying `trust` is telling you something about its RELIABILITY (OKF v0.2): `stale:true` = past its author-set stale_after, so re-check its claims against the code before acting; `tier` = unverified/machine-verified/human-verified. NO `trust` field means unverified and not stale — the state of nearly every doc today, not an error.',
     seeAlso: [
       'docs:outline (browse the full section tree when the term is unknown)',
       'docs:get (read a matched page)',

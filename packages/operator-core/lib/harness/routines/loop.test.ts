@@ -40,6 +40,7 @@ import {
   computeLifecycleBackoff,
   TURNS_STALLED_MIN_FIRE_COUNT,
   autoArmFleetMemberLoop,
+  getLoopStatuses,
   LOOP_WAKE_ACTION,
   LOOP_INTERVAL_FLOOR_SEC,
 } from './loop';
@@ -816,6 +817,73 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
     expect(res).toEqual({ armed: false, reason: 'already-armed', loopName: 'loop-su-member-1' });
     expect(upsertRoutineSpy).not.toHaveBeenCalled();
     expect(armInboxWakeSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is actually compared against)', () => {
+  // One fake row shaped like the SELECT's output. Only the fire counters and the bound matter
+  // here; everything else is filler the mapper reads but this suite does not assert on.
+  function rowSql(over: Record<string, unknown> = {}) {
+    const row = {
+      install_slug: 'papercusp',
+      name: 'loop-su-x',
+      active: true,
+      reschedule_interval_sec: 60,
+      target_owner_id: 'su-x',
+      payload_template: { carry: 'warm', continuation: 'settle', mode: 'work', maxFires: 40 },
+      fire_count: 113,
+      fire_count_at_arm: 98,
+      last_fired_at: null,
+      armed_at: '2026-08-08T17:30:29.385Z',
+      parked: false,
+      next_fire_at: null,
+      parked_ms: null,
+      last_delivery_outcome: 'queued',
+      consecutive_errors: 0,
+      lifecycle_completed_at: null,
+      last_turn_at: null,
+      last_real_turn_at: null,
+      last_wake_channel: null,
+      last_wake_status: null,
+      last_wake_at: null,
+      last_wake_error: null,
+      presence_last_active_at: null,
+      ...over,
+    };
+    return (_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([row]);
+  }
+
+  // THE DEFECT. These are the real numbers measured on su-7854d874's own loop, which is what
+  // made this filable: 113 lifetime fires against a bound of 40 reads as a breached dead-man on
+  // an `active: true` loop, and the reading is wrong — the guard had 25 fires of headroom left.
+  it('reports fires SINCE ARM, not the lifetime fireCount, so an arm-relative bound is readable', async () => {
+    const out = await getLoopStatuses(['su-x'], { sql: rowSql() as any });
+    const s = out.get('su-x')!;
+    expect(s.fireCount).toBe(113); // lifetime — unchanged, still reported
+    expect(s.firesSinceArm).toBe(15); // 113 - 98: what checkLoopDeadMan decides on
+    expect(s.maxFires).toBe(40);
+    // The whole point: against the RIGHT counter this loop is nowhere near its bound.
+    expect(s.firesSinceArm).toBeLessThan(s.maxFires!);
+    // ...while the comparison the payload used to permit says the opposite. This assertion is
+    // the guard: it fails if anyone ever "simplifies" firesSinceArm back to the lifetime count.
+    expect(s.fireCount).toBeGreaterThan(s.maxFires!);
+  });
+
+  it('CALIBRATION: with no baseline stamped (a loop armed before fire_count_at_arm existed) it degrades to the lifetime count, never to a negative', async () => {
+    const out = await getLoopStatuses(['su-x'], { sql: rowSql({ fire_count: 7, fire_count_at_arm: 0 }) as any });
+    expect(out.get('su-x')!.firesSinceArm).toBe(7);
+  });
+
+  it('CLAMPS at 0 — a baseline ahead of the lifetime count never reports negative headroom consumed', async () => {
+    const out = await getLoopStatuses(['su-x'], { sql: rowSql({ fire_count: 3, fire_count_at_arm: 10 }) as any });
+    expect(out.get('su-x')!.firesSinceArm).toBe(0);
+  });
+
+  it('a FRESHLY re-armed loop reports 0 fires since arm even with a long lifetime history', async () => {
+    const out = await getLoopStatuses(['su-x'], { sql: rowSql({ fire_count: 500, fire_count_at_arm: 500 }) as any });
+    const s = out.get('su-x')!;
+    expect(s.firesSinceArm).toBe(0);
+    expect(s.fireCount).toBe(500);
   });
 });
 

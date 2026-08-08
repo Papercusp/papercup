@@ -440,6 +440,74 @@ DEFERRED_DELIVERABLE_REASON = (
 )
 
 
+# ── 2026-08-08 (owner-reported: "no matter what I add to the prompts, agents keep
+# saying things like 'I'll ask how you want to proceed next turn'") — the HAND-BACK
+# bounce.
+#
+# The deferral detector above matches a WORDING — it requires the literal words "next
+# turn"/"next message"/"next reply"/"next response" — because it was built from the one
+# phrasing quoted in the original bug report. Measured 2026-08-08 against 18 real
+# check-in endings, it caught 5 (27%): every phrasing expressing the SAME move without
+# those literal words walked straight through ("let me know how you'd like to proceed",
+# "standing by for your go-ahead", "awaiting your decision on the route", "your call on
+# which option"). Matching the wording of one example is not matching the behavior.
+#
+# This detector matches the BEHAVIOR: a turn that hands the next move back to the owner
+# while asking nothing ANSWERABLE — so no dialog exists to answer, and the work stops
+# until the owner notices and prods it.
+#
+# Two independent signals, BOTH required, and only in the TAIL (last 3 non-blank lines).
+# That pairing is what keeps a legitimate sign-off safe: "Done. Let me know if you hit
+# any issues" carries the hand-back phrase but names no blocked decision, so it does not
+# bounce. Measured on the fixture pair in the sibling test: 14/14 recall, 0/12 false
+# positives. Keep those fixtures in sync with any regex change here.
+_HANDBACK_MOVE_RE = re.compile(
+    r"\b(?:let me know|tell me (?:which|how|what)|your call|up to you|"
+    r"whichever you (?:prefer|want)|if you(?:'d| would) (?:prefer|rather|like)|want me to|"
+    r"would you like|shall i|should i|do you want me to|(?:i'?ll|i will|let me) (?:ask|wait for|"
+    r"hold (?:off|here)|pause|check with you|confirm with you|run (?:it|this) by you|get your)|"
+    r"before i proceed|pending your|awaiting your|await your|once you (?:confirm|decide|choose|weigh in)|"
+    r"on your go-ahead|say the word|standing by|over to you|ready when you are|"
+    r"yours to (?:pick|choose|call))\b",
+    re.I,
+)
+_HANDBACK_DECISION_RE = re.compile(
+    r"\b(?:proceed|approach|route|option|direction|next step|go[- ]ahead|"
+    r"which (?:one|way|route|option)|prefer|decide|decision|weigh in|sign[- ]off|"
+    r"implement|start|begin|continue|kick off)\b",
+    re.I,
+)
+
+
+def handback_ending(text, tail_lines=3):
+    lines = [ln for ln in (text or '').rstrip().splitlines() if ln.strip()]
+    if not lines:
+        return False
+    tail = '\n'.join(lines[-tail_lines:])
+    if len(tail) > 700:
+        tail = tail[-700:]
+    return bool(_HANDBACK_MOVE_RE.search(tail) and _HANDBACK_DECISION_RE.search(tail))
+
+
+HANDBACK_REASON = (
+    "This turn ends by handing the next move back to the owner WITHOUT asking anything "
+    "answerable — a hand-back, not a question. Nothing can happen now: there is no dialog "
+    "to answer, so the work stops until the owner notices and prods you. That is a silent "
+    "halt in a politeness costume, and it is the most-reported agent failure here.\n\n"
+    "Ending a turn is safe ONLY when a re-wake is GUARANTEED — an armed engine loop you have "
+    "VERIFIED active this session, a registered events:await that will fire, or an owner who "
+    "will demonstrably speak next. A closing line like \"let me know how you'd like to "
+    "proceed\" is not a wake source. Do ONE of these now:\n"
+    "  1. Need an owner decision? ASK IT THIS TURN via the native AskUserQuestion tool — a "
+    "real dialog, self-contained options. Never merely announce that you will ask.\n"
+    "  2. Can you decide it yourself? DECIDE, act, and disclose the call you made. Under AUTO "
+    "mode this is mandatory: choosing the next step IS the job.\n"
+    "  3. Blocked on something else? Park on it (events:await) or arm a loop (loop:arm), and "
+    "say which — an explicit wake source, never a hand-back.\n"
+    "  4. Genuinely finished? Say so plainly, with no request for direction attached."
+)
+
+
 def last_assistant_text(transcript_path):
     """Tail-read the transcript JSONL and return the LAST assistant turn's
     concatenated text blocks (skipping pure tool_use turns with no text),
@@ -614,6 +682,14 @@ if question_shaped_ending(scan_text):
         "in a terminal session. Re-emit through one of the above, then stop."
     )
     print(json.dumps({'decision': 'block', 'reason': reason}))
+    sys.exit(0)
+
+if handback_ending(scan_text):
+    # 2026-08-08: ranked LAST — the branches above catch endings that at least ASK
+    # something (a deferred deliverable; a literal question needing a durable channel).
+    # This catches the residue neither was built to see: an ending that asks nothing at
+    # all and simply stops, waiting to be prodded.
+    print(json.dumps({'decision': 'block', 'reason': HANDBACK_REASON}))
     sys.exit(0)
 
 sys.exit(0)  # a normal, non-question ending — nothing to mirror.

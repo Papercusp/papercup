@@ -149,6 +149,37 @@ const DEP_EDGES = [
     blockedKind: 'bug',
     blockerKind: 'task',
     blockerStatus: 'in_progress',
+    blockedTitle: 'Blocked item',
+    blockedStatus: 'open',
+    blockedPlanSlug: null,
+    blockerTitle: 'Blocking item',
+    blockerPlanSlug: null,
+  },
+  /**
+   * WI-36045 — an edge whose BLOCKER is deliberately ABSENT from WORK_ITEMS.
+   *
+   * This is the shipped defect in miniature. `workItems.byHarness` is a 500-row recency
+   * window over ~48k rows while `depEdges` is harness-wide, so most real endpoints are NOT
+   * in the list payload — measured live, 79 edges resolved and only ONE had both endpoints
+   * inside the window, so the pane drew 2 nodes out of a real 122.
+   *
+   * It must be HYDRATED from the fields this row carries and laid out like any other node.
+   * Before the fix this edge was silently discarded, so the assertions below (3 nodes, not 2)
+   * are the browser-level guard: no unit test can reach elkjs + the real DOM, which is where
+   * the owner actually saw the bug.
+   */
+  {
+    blockedId: 'WI-1',
+    blockerId: 'WI-OUTSIDE',
+    blockerRef: 'WI-OUTSIDE',
+    blockedKind: 'bug',
+    blockerKind: 'change',
+    blockerStatus: 'open',
+    blockedTitle: 'Blocked item',
+    blockedStatus: 'open',
+    blockedPlanSlug: null,
+    blockerTitle: 'Outside the list window',
+    blockerPlanSlug: null,
   },
 ];
 
@@ -271,14 +302,38 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
     //       the lazy elkjs import resolved and its async layout returned — the
     //       SVG does not render at all until `positioned` is set. This is also
     //       the settle point for any Vite dep-optimize reload elkjs triggers.
+    // THREE nodes: WI-1, WI-2 (both in the list payload) and WI-OUTSIDE, which is NOT — it is
+    // hydrated from its edge row (WI-36045). Before the fix this was 2, because the edge
+    // pointing at the out-of-window endpoint was discarded.
     const nodes = graph.locator('g.pc-depgraph__node');
-    await expect(nodes).toHaveCount(2, { timeout: 45_000 });
+    await expect(nodes).toHaveCount(3, { timeout: 45_000 });
 
-    // Only the two edge PARTICIPANTS are nodes — WI-3 has no dependency story,
-    // so the default scoping excludes it. Pins that the graph is showing the
-    // subgraph, not the raw corpus.
+    // Only edge PARTICIPANTS are nodes — WI-3 has no dependency story, so the default scoping
+    // excludes it. Pins that the graph is showing the subgraph, not the raw corpus. Note this
+    // is a DIFFERENT reason from WI-OUTSIDE's absence from the payload: one participates in no
+    // edge (correctly excluded), the other is merely outside the window (must be included).
     await expect(graph.locator('g.pc-depgraph__node', { hasText: 'WI-3' })).toHaveCount(0);
-    await expect(graph.getByText('2 nodes · 1 edge')).toBeVisible();
+    await expect(graph.getByText('3 nodes · 2 edges')).toBeVisible();
+
+    // ── 0b. THE HYDRATED NODE IS REAL, LAID OUT, AND LABELLED FROM ITS EDGE ROW.
+    //        This is the assertion that would have caught the shipped bug: it can only pass if
+    //        the endpoint fields survived the sync boundary AND elkjs positioned the node.
+    const hydratedNode = graph.locator('g.pc-depgraph__node', { hasText: 'WI-OUTSIDE' });
+    await expect(hydratedNode).toHaveCount(1);
+    // Its title came off the edge, not from any byHarness row.
+    await expect(graph.getByText('Outside the list window').first()).toBeVisible();
+    // And it is reported, not silently mixed in — the detector chip states the count.
+    await expect(graph.getByText("1 outside the list’s current page")).toBeVisible();
+    // It must NOT be drawn as a dangling break: it is a healthy row, just out of window.
+    // Conflating the two would turn every out-of-window item into a false integrity finding.
+    await expect(hydratedNode).not.toHaveClass(/pc-depgraph__node--dangling/);
+
+    // ── 0c. A hydrated node drives the SAME selection interlock as a payload-backed one —
+    //        it is a first-class node, not a decorative placeholder.
+    await hydratedNode.click();
+    await expect.poll(() => selParam(page), { timeout: 10_000 }).toBe('WI-OUTSIDE');
+    await graph.getByRole('button', { name: 'Clear selection' }).click();
+    await expect.poll(() => selParam(page), { timeout: 10_000 }).toBeNull();
 
     // Detail starts on its pick-an-item empty state — nothing is selected yet.
     await expect(detail.getByText('Pick a work item from the list to inspect.')).toBeVisible({

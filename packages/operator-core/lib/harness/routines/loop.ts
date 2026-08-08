@@ -518,8 +518,29 @@ export interface LoopStatus {
    *  ⚠ EI-16202: this is FIRE history, not ARM history — calling loop:arm to (re-)arm an
    *  EXISTING loop does NOT touch it (only an actual delivered fire does). A re-arm that
    *  legitimately took (see `armedAt`) can leave `fireCount`/`lastFiredAt` byte-identical
-   *  to before the arm — that is expected, not a sign the arm silently no-op'd. */
+   *  to before the arm — that is expected, not a sign the arm silently no-op'd.
+   *  ⚠⚠ WI-36070: this is a LIFETIME counter and is NOT the number `maxFires` is compared
+   *  against — read `firesSinceArm` for that. `fireCount > maxFires` on an `active` loop is
+   *  the EXPECTED reading for any long-lived session, not a breached dead-man. */
   fireCount: number;
+  /** WI-36070 — fires since the CURRENT arm: `max(0, fire_count - fire_count_at_arm)`, the exact
+   *  expression `checkLoopDeadMan` decides on (loop-dead-man.ts). This is the ONLY count that may
+   *  be compared against `maxFires`, and the reason it exists as its own field: `fireCount`
+   *  (lifetime) used to be the only fire number reported, so a reader with an arm-relative bound
+   *  beside a lifetime count could form exactly one comparison and it was the wrong one.
+   *
+   *  EI-19339729634604096 moved `maxFires` off the lifetime total and onto this since-arm delta,
+   *  but left the reported payload unchanged — which turned a merely ambiguous pairing into a
+   *  misleading one, since the two numbers still sit together looking like a comparison. Both
+   *  misreadings cost: an active loop reads as already-breached (false alarm), and — the
+   *  expensive direction — a loop ONE fire from its bound is indistinguishable from one with
+   *  30 fires of headroom, while EI-19899671638499010 documents that hitting the bound puts an
+   *  AUTO-mode session silently inert with no way to restart itself.
+   *
+   *  0 when never fired, when no `fire_count_at_arm` baseline exists (a loop armed before that
+   *  stamp), or when the delta would go negative — clamped at 0 exactly as the guard clamps it,
+   *  so this field can never report MORE headroom consumed than the guard itself counted. */
+  firesSinceArm: number;
   /** True while the loop's turn is in flight (parked at next_fire_at='infinity'). */
   parked: boolean;
   /** Next scheduled fire (ISO), or null when parked / unset. */
@@ -536,7 +557,9 @@ export interface LoopStatus {
    *  this stamp (EI-7613) and has never been re-armed since. */
   armedAt: string | null;
   costCapCents: number | null;
-  /** P2a dead-man bounds (if configured). */
+  /** P2a dead-man bound on fires (if configured). ⚠ ARM-RELATIVE: compare it against
+   *  `firesSinceArm`, NEVER against `fireCount` (a lifetime counter). A re-arm resets the
+   *  budget, so `maxFires: 40` always means "40 more fires from this arm". */
   maxFires: number | null;
   maxDurationSec: number | null;
   /** P2b (loop-wake-rate-limit-robustness): distinguish "parked, healthy in-flight" from
@@ -846,6 +869,10 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   const presenceMs = r.presence_last_active_at ? new Date(r.presence_last_active_at).getTime() : null;
   const lastTurnMs = r.last_turn_at ? new Date(r.last_turn_at).getTime() : null;
   const fireCount = r.fire_count == null ? 0 : Number(r.fire_count);
+  // WI-36070 — mirror checkLoopDeadMan's own derivation exactly (loop-dead-man.ts), including the
+  // clamp at 0: a loop armed before the fire_count_at_arm stamp reads baseline 0, and a negative
+  // delta must never be reported as headroom the guard did not grant.
+  const firesSinceArm = Math.max(0, fireCount - (r.fire_count_at_arm == null ? 0 : Number(r.fire_count_at_arm)));
   const stall = computeLoopStall({
     parked,
     parkedMs,
@@ -878,6 +905,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     continuation: pt?.continuation === 'gated' ? 'gated' : 'settle',
     mode: pt?.mode === 'monitor' ? 'monitor' : 'work',
     fireCount,
+    firesSinceArm,
     parked,
     nextFireAt: nextFireAtIso,
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,
@@ -923,6 +951,11 @@ export async function getLoopStatuses(
            r.target_owner_id,
            r.payload_template,
            COALESCE((r.metadata->>'fire_count')::int, 0)                  AS fire_count,
+           -- WI-36070: the dead-man's baseline, stamped by stampLoopArmedAt on every arm/re-arm.
+           -- Selected so loop:status can report firesSinceArm — the number maxFires is actually
+           -- compared against. Without it the payload offers only the lifetime fire_count, and
+           -- the one comparison a reader can form against an arm-relative bound is the wrong one.
+           COALESCE((r.metadata->>'fire_count_at_arm')::int, 0)           AS fire_count_at_arm,
            r.last_fired_at,
            r.metadata->>'armed_at'                                       AS armed_at,
            (r.next_fire_at = 'infinity'::timestamptz)                    AS parked,

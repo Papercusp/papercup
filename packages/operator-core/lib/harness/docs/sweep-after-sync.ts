@@ -23,6 +23,12 @@ import { listDocRecords, setDocStatus, markRegenEnqueued, markReverifyFlagged } 
 import { resolveHarnessDocPaths } from './harness-repo';
 import { anchorManualDoc } from './manual-anchor';
 import { dispatchDocStewardForDrift, type DriftedDoc } from './doc-steward-dispatch';
+import {
+  buildOkfExpiryDigest,
+  claimDailyExpiryScan,
+  scanExpiredDocs,
+  type OkfExpiryScan,
+} from './okf-expiry';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 
 const DOCS_IDENTITY: AgentIdentity = {
@@ -63,6 +69,29 @@ export async function captureHeadSha(harnessSlug: string): Promise<string | null
   const repoRoot = await projectDirForSlug(harnessSlug);
   if (!repoRoot) return null;
   return repoHeadSha(repoRoot);
+}
+
+/**
+ * P-005 — the OKF `stale_after` leg of freshness, run alongside (never inside) the
+ * git-anchor sweep. Returns the scan when one actually ran, or null when the daily
+ * gate skipped it / the harness has no resolvable docs tree.
+ *
+ * Exported for the test that proves an EXPIRED doc produces a digest, using a
+ * synthetic past date in a temp tree — never a corpus value (plan D-002).
+ */
+export async function runOkfExpirySweep(
+  harnessSlug: string,
+  now: Date = new Date(),
+): Promise<OkfExpiryScan | null> {
+  if (!claimDailyExpiryScan(harnessSlug, now)) return null;
+  const paths = await resolveHarnessDocPaths(harnessSlug);
+  if (!paths) return null;
+  const scan = await scanExpiredDocs(paths.docsRoot, now);
+  const digest = buildOkfExpiryDigest(harnessSlug, scan);
+  if (digest) {
+    await sendMessage(DOCS_IDENTITY, { to: ['*'], summary: digest, category: 'doc-drift' }).catch(() => {});
+  }
+  return scan;
 }
 
 export interface SweepAfterSyncInput {

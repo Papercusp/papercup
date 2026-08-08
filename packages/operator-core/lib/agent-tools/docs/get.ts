@@ -132,7 +132,7 @@ export default defineTool({
     notWhen:
       'You do not yet know the slug — call docs:outline first. To fetch another harness\'s docs from outside, use cross_harness:docs_get.',
     chaining:
-      'docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads.',
+      'docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads. A result carrying `trust` (OKF v0.2) reports the page\'s reliability: `stale:true` means it is past its author-set stale_after and its content is prefixed with a ⚠ STALE banner — re-check those claims against the code before acting on them. No `trust` field = unverified and not stale, which is nearly every doc today.',
     seeAlso: [
       'docs:outline (find slugs to read)',
       'docs:search (locate the right page by term first)',

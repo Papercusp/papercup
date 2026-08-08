@@ -331,7 +331,14 @@ export function runBootstrap(): void {
   // a bespoke-seeded routine, since the failure class it detects ("the seed script nobody ever
   // ran") applies to it too, and it is the only thing that would catch that. Read-only and
   // fail-soft like its siblings — a boot must never die over a health check.
-  void (async () => {
+  //
+  // PRIMARY-ONLY (cluster.isPrimary), UNLIKE the two guards above. They only console.log, so
+  // running in all 17 :3070 cluster workers is merely redundant; this one ends in a
+  // notifyAttention, and 17 workers reaching the same verdict would page the owner 17 times per
+  // boot — the EI-19305266463631270 duplication bug with a human on the receiving end. The
+  // routines table is shared, so one read per HOST is also the only non-wasteful shape.
+  // `backgroundWorkersEnabled()` is NOT the gate: it is env-only and a fork inherits env.
+  if (cluster.isPrimary) void (async () => {
     try {
       const [{ checkBespokeActiveSeeds, operatorHomeScope }, { getOrgPg }] = await Promise.all([
         import('@papercusp/operator-core/lib/harness/routines/bespoke-active-seeds-check'),

@@ -47,6 +47,21 @@ const STARTUP_GUARDS: Array<{ fn: string; module: string; catches: string }> = [
     module: 'startup/validate-declared-singletons',
     catches: 'a DECLARED learning loop has no routine row — it never runs, and never will',
   },
+  {
+    // D-007 (silent-halt-detection-and-owner-rails-2026-08-08). This entry is the same bug as
+    // the file header's, caught a second time in a second module: checkBespokeActiveSeeds had
+    // five passing unit tests and ZERO callers outside its own manual CLI, for its entire life.
+    // Its registry names `unguarded-halt-rescue` — the sweep that re-wakes silently-stopped
+    // agents — which sat active=false for 11.9 days (measured 2026-08-08) while the other six
+    // routines in that same registry fired normally. The check would have printed exactly one
+    // name. Nothing ran it.
+    fn: 'checkBespokeActiveSeeds',
+    module: 'harness/routines/bespoke-active-seeds-check',
+    catches:
+      'an always-on routine (unguarded-halt-rescue, supervision-reconcile, …) is seeded but PAUSED — ' +
+      'the two guards above both answer "fine" for a paused row, so nothing else asks whether the ' +
+      'routines that must be RUNNING are running',
+  },
 ];
 
 describe('host-bootstrap wires every startup guard', () => {

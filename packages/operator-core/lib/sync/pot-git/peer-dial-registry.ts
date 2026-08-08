@@ -343,11 +343,20 @@ function ensureHealSweep(): void {
  *  topic whose channel state is missing (evicted after a never-opened close
  *  once `maybeScheduleRedial`'s capped fast retries exhausted — this sweep is
  *  the uncapped steady-state tail, so a churn-window rejection heals in ≤60s
- *  instead of never); (b) for any live open channel that has not sent its
- *  hello (pair-materialized before this box's identity was known), seed from
- *  `wiredTopicConfig` and send now. Without (b) a one-sided hello gap leaves
- *  one fetch direction dead until a simultaneous pair restart (the live
- *  fence-25 incident this WI documents). */
+ *  instead of never); (b) for any live open channel whose handshake is still
+ *  one-sided — ours never sent, OR theirs never received — seed identity from
+ *  `wiredTopicConfig` if needed and (re-)send now. Without (b) a one-sided
+ *  hello gap leaves one fetch direction dead until a simultaneous pair restart
+ *  (the live fence-25 incident this WI documents).
+ *
+ *  ⚠ (b) originally gated on `!helloSent` alone, which cannot heal the incident
+ *  it was written for. A hello has no ack, so `helloSent` means "we called
+ *  send()", NOT "the peer has it" — and fence-25 was a hello SENT and lost in
+ *  the churn window. Both sides then sat at helloSent=true with the tower
+ *  missing the VM's device, and every re-send path skipped them for the life of
+ *  the connection. `!remoteDevicePubkey` is the missing half of the condition:
+ *  it is the only positive evidence available that our own hello may not have
+ *  landed, so it is what re-arms the send. */
 function healSweep(): void {
   for (const mux of [...trackedMuxers]) {
     const muxKey = mux as unknown as object;
@@ -372,13 +381,28 @@ function healSweep(): void {
       }
     }
     for (const [topicHex, state] of states) {
-      if (!state.opened || state.helloSent) continue;
+      if (!state.opened) continue;
+      // Sweep while EITHER half of the handshake is outstanding:
+      //   !helloSent            — ours never went out (pair-materialized before
+      //                           this box's identity was known);
+      //   !remoteDevicePubkey   — theirs never arrived, which is ALSO the only
+      //                           signal available that OURS may not have landed
+      //                           (there is no ack). WI-5210: the fence-25
+      //                           incident had helloSent=true on both sides and
+      //                           a hello lost in flight, so the old
+      //                           `helloSent`-only gate skipped it forever.
+      if (state.helloSent && state.remoteDevicePubkey) continue;
       if (!state.selfDevicePubkeyBase64 || !state.sign) {
         if (!cfg || !wiredTopics.has(topicHex)) continue;
         state.selfDevicePubkeyBase64 = cfg.selfDevicePubkeyBase64;
         state.sign = cfg.sign;
       }
-      maybeSendHello(state, wiredTopics.get(topicHex) ?? Buffer.from(topicHex, 'hex'));
+      // `resend` so a hello already marked sent — but demonstrably not
+      // reciprocated — actually goes out again. Bounded: this stops the moment
+      // the peer's hello arrives, and runs at the 60s sweep, never hotter.
+      maybeSendHello(state, wiredTopics.get(topicHex) ?? Buffer.from(topicHex, 'hex'), {
+        resend: true,
+      });
     }
   }
   if (trackedMuxers.size === 0 && healSweepTimer) {
@@ -401,25 +425,50 @@ function newState(): ChannelState {
     selfDevicePubkeyBase64: null,
     sign: null,
     helloSent: false,
+    helloInFlight: false,
     remoteDevicePubkey: null,
     localSocket: null,
   };
 }
 
-function maybeSendHello(state: ChannelState, topic: Buffer): void {
+/**
+ * Send our hello on this channel.
+ *
+ * `resend: true` sends past the first-send latch — WI-5210. A hello is
+ * fire-and-forget with NO ack, so `helloSent` records only that we INITIATED a
+ * send; it is not evidence the peer received one. The live fence-25 incident is
+ * exactly that gap: the VM's hello was sent and lost in the churn window, so
+ * `helloSent` latched true on the VM and every re-send path skipped it forever,
+ * leaving the tower unable to resolve the VM's device for the life of the
+ * connection (hours). Anything that has POSITIVE evidence our hello did not
+ * land must be able to send again.
+ *
+ * The signature is async, so a re-send can race the first send. `helloInFlight`
+ * (not `helloSent`, which must stay latched) is the guard that keeps one
+ * channel to one in-flight hello.
+ */
+function maybeSendHello(state: ChannelState, topic: Buffer, opts?: { resend?: boolean }): void {
   dbg('maybeSendHello', {
     opened: state.opened,
     helloSent: state.helloSent,
+    helloInFlight: state.helloInFlight,
+    resend: !!opts?.resend,
     hasSelf: !!state.selfDevicePubkeyBase64,
     hasSign: !!state.sign,
     hasHello: !!state.hello,
     self: state.selfDevicePubkeyBase64?.slice(0, 8),
   });
-  if (!state.opened || state.helloSent || !state.selfDevicePubkeyBase64 || !state.sign || !state.hello) return;
+  if (!state.opened || !state.selfDevicePubkeyBase64 || !state.sign || !state.hello) return;
+  // One in-flight hello per channel, always — a re-send must never overlap the
+  // send it is retrying.
+  if (state.helloInFlight) return;
+  // The first-send latch. `resend` deliberately bypasses it; nothing else does.
+  if (state.helloSent && !opts?.resend) return;
   // Mark sent BEFORE the async sign resolves — a second `maybeSendHello` call
   // racing in (onopen firing while register() is still mid-flight, or vice
   // versa) must not send two hellos on the same channel.
   state.helloSent = true;
+  state.helloInFlight = true;
   const self = state.selfDevicePubkeyBase64;
   const sign = state.sign;
   void (async () => {
@@ -428,7 +477,13 @@ function maybeSendHello(state: ChannelState, topic: Buffer): void {
       state.hello?.send({ device_pubkey: self, signature });
       dbg('hello sent OK', { self: self.slice(0, 8) });
     } catch (e) {
+      // Deliberately swallowed, as before — but note `helloSent` stays true on a
+      // throw, so this channel is now latched having sent NOTHING. That used to
+      // be permanent; `healSweep` re-sends while the peer's hello is missing, so
+      // it now self-heals in <=60s instead.
       dbg('hello send THREW', { err: String(e) });
+    } finally {
+      state.helloInFlight = false;
     }
   })();
 }
@@ -530,6 +585,12 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
         dbg('[HGDEBUG-dial] hello signature INVALID — dropping', { topicHex, from: v.device_pubkey.slice(0, 8) });
         return;
       }
+      // WI-5210: was this device's hello ALREADY recorded on this channel? If
+      // so the peer is RE-sending, and the only reason it does that is
+      // `healSweep` finding OUR hello missing on its side. That is the one
+      // positive signal we ever get that our own hello did not land — so a
+      // repeat, and ONLY a repeat, earns a re-send below.
+      const peerIsResending = state!.remoteDevicePubkey === v.device_pubkey;
       state!.remoteDevicePubkey = v.device_pubkey;
       // `localSocket` is normally set by `wireHiveGitDial`'s register() (or
       // seeded from the muxer dial config above). If BOTH are missing — a
@@ -561,7 +622,15 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
       // ours hasn't gone out yet (materialized before identity was known,
       // any ordering gap), complete the handshake now instead of leaving the
       // peer's registry one-sided. Idempotent via `helloSent`.
-      maybeSendHello(state!, topic);
+      //
+      // A REPEAT hello additionally means the peer is still missing ours, so it
+      // gets an answer past the latch. This terminates: the peer only repeats
+      // while its `remoteDevicePubkey` is null, and our answer is what fills it.
+      // Gating on `peerIsResending` is what stops two peers that each answer
+      // every hello from ping-ponging at receive speed — a first-time hello is
+      // answered under the latch (at most once), and repeats arrive no faster
+      // than the 60s sweep.
+      maybeSendHello(state!, topic, { resend: peerIsResending });
     },
   });
   channel.open();
@@ -795,6 +864,12 @@ export const _testing = {
   noteRegistered,
   RECENT_SIGHTING_MS,
   DEFAULT_REGISTRATION_WAIT_MS,
+  // WI-5210 one-sided-hello healing — exposed so a unit test can drive the
+  // lost-hello / re-send sequence without standing up protomux or a second box.
+  statesFor,
+  dialConfigByMuxer,
+  maybeSendHello,
+  newState,
   reset(): void {
     registryByTopic.clear();
     wiredTopics.clear();

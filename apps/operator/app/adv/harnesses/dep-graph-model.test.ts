@@ -383,6 +383,39 @@ describe('buildDepSubgraph — window vs filter: WHY an endpoint is missing deci
     });
   });
 
+  /**
+   * PERMANENT FALSIFIABILITY CONTROL (CLAUDE.md § "Proving a guard is falsifiable", tier 1).
+   *
+   * The tests above are the ones that were MISSING when the pane shipped broken, so "they pass
+   * now" is not by itself evidence they would have caught it. This control pins that claim in
+   * the suite instead of in a one-off probe: it states the OLD predicate explicitly and asserts
+   * the two implementations DISAGREE on the live-measured shape.
+   *
+   * Measured out-of-tree first (scripts/mutation-probe.sh, copy-out, 2026-08-08): reverting the
+   * real model to the old predicate yields `0 edges, 0 nodes` for this fixture. This control
+   * reproduces that verdict permanently, so a future refactor that quietly reinstates
+   * endpoint-must-be-in-`items` fails here rather than in the owner's window.
+   *
+   * ⚠ It is a REIMPLEMENTATION, so it can only ever prove the two rules differ — the CALIBRATION
+   * assertion below (that the real subject draws the edge) is what makes that meaningful. Both
+   * halves are required; a control alone would also "pass" if the property itself were broken.
+   */
+  it('DISAGREES with the old endpoint-must-be-in-items rule (the shipped bug), by construction', () => {
+    const items = [item('A')];
+    const edges = [hydratableEdge('A', 'OUT-OF-WINDOW')];
+
+    // The old rule, verbatim in effect: an edge survived only if BOTH endpoints were in `items`.
+    const byId = new Set(items.map((i) => i.id));
+    const oldRuleEdges = edges.filter(
+      (e) => byId.has(e.blockedId) && e.blockerId !== null && byId.has(e.blockerId),
+    );
+
+    // CONTROL: the old rule drops it — this is the 2-node defect, in one line.
+    expect(oldRuleEdges).toHaveLength(0);
+    // CALIBRATION: the real subject keeps it. If this ever matches the control, the fix is gone.
+    expect(buildDepSubgraph({ items, edges }).edges).toHaveLength(1);
+  });
+
   it('keeps a DANGLING blocker, and does not confuse it with either other case', () => {
     // Three reasons an id is absent from `items`, three different outcomes. A dangling ref is
     // a DEFECT (INV-13) and survives regardless of filter state; the resolver distinguishes it

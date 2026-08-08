@@ -306,6 +306,18 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     let fsPath: string | null = null;
     let uri: string | null = null;
     let spillError: string | null = null;
+    // The FOOTER is model-facing prose and gets the terse errno only. A raw fs
+    // error message embeds the full failing path (`ENOTDIR: not a directory,
+    // mkdir '/…/scratch/ws-1/plans:get/…'`), which would put a filesystem path
+    // back into a footer whose entire job here is to name NO path — and a reader
+    // that sees one will try to page it. The full message stays on `_meta`.
+    let spillErrorCode: string | null = null;
+    const noteSpillFailure = (err: unknown): void => {
+      spillError = err instanceof Error ? err.message : String(err);
+      spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+      fsPath = null;
+      uri = null;
+    };
     try {
       const parts = scratchParts(opts);
       const basename = `result-door-${Date.now()}.md`;
@@ -313,9 +325,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       fsPath = safeScratchFilesystemPath(uri);
     } catch (err) {
       // A path we cannot even NAME is the store-absent case: cap, disclose, move on.
-      spillError = err instanceof Error ? err.message : String(err);
-      fsPath = null;
-      uri = null;
+      noteSpillFailure(err);
     }
     // EI-18745696571494110: no upstream `_meta` marker fired, but the tool may
     // have still truncated individual FIELDS inside its own body (coord:inbox's
@@ -374,9 +384,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         // WI-36047: the write failed — fall through to the CAP anyway, and null
         // the path so no footer, no `_meta`, and no telemetry backfill advertises
         // a spill file that is not there. Truncate-without-recovery, never no-cap.
-        spillError = err instanceof Error ? err.message : String(err);
-        fsPath = null;
-        uri = null;
+        noteSpillFailure(err);
       }
     }
 
@@ -408,7 +416,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
           `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
           `⚠ THE OVERFLOW WAS DISCARDED, NOT SPILLED — writing the spill file FAILED ` +
-          `(${spillError ?? 'unknown error'}), so there is no file to page and the cut content is ` +
+          `(${spillErrorCode ?? 'unknown error'}), so there is no file to page and the cut content is ` +
           `NOT recoverable from anywhere. Re-call ${opts.toolName} with narrower args or a ` +
           `projection to get what you need within the budget` +
           (upstreamProjection
@@ -467,7 +475,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
        *  content is gone. Distinct from `upstreamProjected` (content that was
        *  never serialized) — this is content the door itself discarded. */
       spillFailed: fsPath == null,
+      /** Full fs error message (carries the failing path — kept OUT of the
+       *  model-facing footer, which gets `spillErrorCode` instead). */
       spillError,
+      spillErrorCode,
       originalChars: totalChars,
       doorTokens,
       /** True when `data` was ALREADY a lossy upstream projection before this

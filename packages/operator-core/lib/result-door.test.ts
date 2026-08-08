@@ -176,11 +176,97 @@ describe('applyResultDoor', () => {
     expect(doorConstantsMock).toHaveBeenCalledWith('su-x'); // keyed on the caller's identity
   });
 
-  it('fail-soft: an unwritable scratch root returns the ORIGINAL result untouched', () => {
-    // A regular FILE where the scratch root dir should be → mkdirSync throws.
-    writeFileSync(join(sandbox, 'scratch'), 'not a directory');
-    const result = { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] };
-    expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+  // WI-36047 (borrow item 9 from the opencode/OMP research). This block REPLACES
+  // a test that asserted the OPPOSITE — "an unwritable scratch root returns the
+  // ORIGINAL result untouched". That contract was deliberate and wrong, and the
+  // test pinned it, which is why it survived: the door's cap is a side-effect of
+  // "park the full copy first", so ONE `try` covered both the spill AND the cap,
+  // and a failed WRITE silently inherited the cap's correct answer.
+  //
+  // The two failures need opposite answers. A failed CAP returning the original is
+  // right. A failed SPILL returning the original re-exposes the entire payload the
+  // door exists to bound — at exactly the moment the box is unhealthy (disk full,
+  // unwritable scratch), and unbounded outright when the caller passed
+  // payloadTier:'full' (which bypasses payload-tier's 30k ceiling upstream).
+  //
+  // OMP has the identical bug with the sign flipped: correct on save-FAILED
+  // (output-meta.ts:684-692, truncates anyway, under a comment saying a save
+  // failure must never re-expose the full output), wrong on store-ABSENT (:656,
+  // returns uncapped). Same function, opposite answers — which is what makes this
+  // shape worth a named guard rather than a one-line fix.
+  describe('spill write fails → truncate WITHOUT recovery, never no-cap (WI-36047)', () => {
+    /** A regular FILE where the scratch root dir should be → mkdirSync throws. */
+    function breakScratchRoot(): void {
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+    }
+
+    it('still CAPS the result instead of passing the full payload through', () => {
+      breakScratchRoot();
+      const original = longText(BUDGET_CHARS * 2);
+      const result = { content: [{ type: 'text' as const, text: original }] };
+      const doored = applyResultDoor(result, {
+        toolName: 'plans:get',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+
+      // The whole point: NOT the identity fast-path any more.
+      expect(doored).not.toBe(result);
+      const text = doored.content.map((c) => (c as { text?: string }).text ?? '').join('');
+      // Capped: the kept body is a fraction of the original, not all of it.
+      expect(text).not.toContain(original);
+      expect(text.length).toBeLessThan(original.length);
+    });
+
+    it('names NO spill path in the footer — a pointer to a file that was never written is worse than none', () => {
+      breakScratchRoot();
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
+        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const footer = (doored.content[doored.content.length - 1] as { text: string }).text;
+
+      expect(footer).toContain('THE OVERFLOW WAS DISCARDED, NOT SPILLED');
+      expect(footer).toContain('NOT recoverable');
+      // No scratch URI, no filesystem path — the reader must not spend a call
+      // discovering the file is absent.
+      expect(footer).not.toContain('papercusp://scratch');
+      expect(footer).not.toContain(sandbox);
+    });
+
+    it('stamps the failure structurally so a machine reader is not left parsing prose', () => {
+      breakScratchRoot();
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
+        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const meta = (doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor;
+
+      expect(meta?.truncated).toBe(true);
+      expect(meta?.spillFailed).toBe(true);
+      // null, not a string: _mcp-handler's outputRef backfill guards on spillUri
+      // truthiness, so this is what stops it advertising a nonexistent artifact.
+      expect(meta?.spillPath).toBeNull();
+      expect(meta?.spillUri).toBeNull();
+      expect(typeof meta?.spillError).toBe('string');
+    });
+
+    it('CONTROL: with a writable scratch root the same input DOES spill and DOES name a path', () => {
+      // Calibration for the three tests above — without this, they would all pass
+      // against a door that had simply stopped spilling entirely, which is a
+      // different bug wearing this fix's clothes.
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
+        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const footer = (doored.content[doored.content.length - 1] as { text: string }).text;
+      const meta = (doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor;
+
+      expect(footer).toContain('papercusp://scratch');
+      expect(footer).not.toContain('THE OVERFLOW WAS DISCARDED');
+      expect(meta?.spillFailed).toBe(false);
+      expect(typeof meta?.spillPath).toBe('string');
+    });
   });
 
   // EI-13918: `result.data` may have ALREADY been replaced upstream by a lossy

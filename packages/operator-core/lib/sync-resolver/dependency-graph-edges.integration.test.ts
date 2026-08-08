@@ -50,13 +50,15 @@ beforeEach(async () => {
 async function item(
   id: string,
   kind: 'feature' | 'bug' | 'change' | 'task',
-  opts: { status?: string; harness?: string; workspace?: string } = {},
+  opts: { status?: string; harness?: string; workspace?: string; planSlug?: string } = {},
 ): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by, created_ts, updated_ts, payload)
+      (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by, created_ts, updated_ts, payload,
+       source_plan_slug)
     VALUES (${opts.harness ?? H}, ${id}, ${`item ${id}`}, ${opts.status ?? 'open'}, ${kind},
-            ${opts.workspace ?? WS}, NULL, 0, 0, '{}'::jsonb)`;
+            ${opts.workspace ?? WS}, NULL, 0, 0, '{}'::jsonb,
+            ${opts.planSlug ?? null})`;
 }
 
 /** Refs are written LITERALLY — see the header's note on not restating the convention. */
@@ -132,6 +134,62 @@ describe('resolveDependencyGraphEdges — what it deliberately KEEPS', () => {
     expect(await edges()).toEqual([
       expect.objectContaining({ blockedId: 'F-1', blockerId: null, blockerRef: 'EI-does-not-exist' }),
     ]);
+  });
+
+  /**
+   * WI-36045 — the endpoint fields that make an edge drawable without the list's window.
+   *
+   * These are not cosmetic: `workItems.byHarness` is a 500-row recency window over ~48k rows,
+   * so before these columns existed the pane discarded 78 of 79 real papercusp edges and drew
+   * 2 nodes. The graph builds a NODE from these values, so a null here is a blank node.
+   */
+  it('carries the BLOCKED endpoint fields so a node can be built without the list page', async () => {
+    await item('F-1', 'feature', { status: 'open', planSlug: 'my-plan' });
+    await item('F-2', 'feature');
+    await edge('feature', `${H}#F-1`, 'feature', `${H}#F-2`);
+
+    expect((await edges())[0]).toMatchObject({
+      blockedId: 'F-1',
+      blockedTitle: 'item F-1',
+      blockedStatus: 'open',
+      blockedPlanSlug: 'my-plan',
+    });
+  });
+
+  it('carries the BLOCKER endpoint fields too — the failure was symmetric', async () => {
+    await item('F-1', 'feature');
+    await item('F-2', 'feature', { status: 'done', planSlug: 'blocker-plan' });
+    await edge('feature', `${H}#F-1`, 'feature', `${H}#F-2`);
+
+    expect((await edges())[0]).toMatchObject({
+      blockerId: 'F-2',
+      blockerTitle: 'item F-2',
+      blockerPlanSlug: 'blocker-plan',
+    });
+  });
+
+  it('leaves the blocker endpoint fields NULL for a dangling edge, without dropping it', async () => {
+    // A dangling edge has no blocker row to project from, and that must stay distinguishable
+    // from a hydrated one: the UI draws the first as a BREAK and the second as a real item.
+    await item('F-1', 'feature');
+    await edge('feature', `${H}#F-1`, 'feature', `${H}#GONE`);
+
+    const [row] = await edges();
+    expect(row).toMatchObject({ blockerId: null, blockerTitle: null, blockerPlanSlug: null });
+    // The BLOCKED side still hydrates — the edge is renderable as a break off a real node.
+    expect(row?.blockedTitle).toBe('item F-1');
+  });
+
+  it('reports a NULL plan slug as null, not the string "null"', async () => {
+    // The graph branches on truthiness to draw the plan marker, so a stringified null would
+    // mark every non-plan item as plan-derived.
+    await item('F-1', 'feature');
+    await item('F-2', 'feature');
+    await edge('feature', `${H}#F-1`, 'feature', `${H}#F-2`);
+
+    const [row] = await edges();
+    expect(row?.blockedPlanSlug).toBeNull();
+    expect(row?.blockerPlanSlug).toBeNull();
   });
 
   it('carries the blocker STATUS so the UI can grey out an already-satisfied edge', async () => {
