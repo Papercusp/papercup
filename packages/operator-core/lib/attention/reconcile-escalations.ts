@@ -16,6 +16,11 @@
  * So an operational escalation idle past the TTL is, by construction, stale: the
  * live state is still shown by the metric; the escalation is just un-GC'd noise.
  *
+ * WI-36154 bounds that premise: it holds only where the row is a DUPLICATE of
+ * the live signal. Where the open row is itself the SUPPRESSOR that stops an
+ * alarm re-firing, resolving it re-arms the alarm instead of tidying a duplicate
+ * — so rows carrying a `livenessSignature` are exempt (see isLivenessSuppressor).
+ *
  * GENUINE human decisions (non-system sender, or carrying options) are NEVER
  * selected — a human must clear those (that is what `coord:resolve` is for).
  */
@@ -54,6 +59,29 @@ export interface StaleEscalationInput {
   options?: readonly unknown[];
   /** ISO timestamp the escalation was opened. */
   ts: string;
+  /**
+   * WI-36154: the infra-liveness alarm's stable signal key, stamped into `meta`
+   * by liveness-alarm.ts and FLATTENED onto the record (escalations.ts:190
+   * `Object.assign(env, input.meta)`), so it arrives as a top-level field on
+   * every read path — the projection returns the stored `body` whole, and the
+   * event-fold spreads it (`{ ...open, resolved }`). Typed `unknown` because it
+   * reaches us from jsonb: only a non-empty string counts (see isLivenessSuppressor).
+   */
+  livenessSignature?: unknown;
+}
+
+/**
+ * WI-36154: does this row SUPPRESS a live infra-liveness alarm?
+ *
+ * Keyed on the EXPLICIT stamp only — deliberately NOT `livenessSignatureOf()`,
+ * whose summary-derivation fallback ends in a catch-all `"<panel label>: <...>"`
+ * match. That heuristic would silently extend this exemption across unrelated
+ * operational rows, and the exclusion must be anchored to the property that
+ * defines membership (this row is a liveness alarm's own suppressor), never to
+ * how a summary happens to read.
+ */
+function isLivenessSuppressor(e: StaleEscalationInput): boolean {
+  return typeof e.livenessSignature === 'string' && e.livenessSignature.length > 0;
 }
 
 export interface StaleEscalation {
@@ -74,6 +102,18 @@ export function selectStaleEscalations(
   const out: StaleEscalation[] = [];
   for (const e of opens) {
     if (!isOperationalEscalation(e.from, (e.options?.length ?? 0) > 0)) continue;
+    // WI-36154: the TTL premise (a row is a redundant duplicate of a derived
+    // metric) is FALSE where the ROW IS THE SUPPRESSOR. liveness-alarm.ts:1552
+    // buckets open escalations by signature and SKIPS firing a signal that
+    // already has one open, so resolving that row does not clean up a duplicate
+    // — it RE-ARMS the alarm while its condition is still true.
+    //
+    // MEASURED 14d: 5 of 5 idle-2d auto-resolves carrying a livenessSignature
+    // re-fired within 120s (stale-paused-routines 3/3, rubric-emission-dark
+    // 2/2) — the sweep was running the alarm as a ~2-day notification
+    // scheduler. Only 5 of 371 idle-2d resolves carried one, so this exemption
+    // is narrow BY MEASUREMENT: the sweep stays correct about the other 366.
+    if (isLivenessSuppressor(e)) continue;
     const openedMs = Date.parse(e.ts);
     if (!Number.isFinite(openedMs)) continue;
     const ageMs = ctx.nowMs - openedMs;

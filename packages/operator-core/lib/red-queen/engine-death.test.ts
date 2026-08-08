@@ -8,6 +8,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  PARKED_NEXT_FIRE_MS,
   detectRoutineEngineDeath,
   engineDeathDrillCollector,
   engineDeathSignal,
@@ -78,6 +79,86 @@ describe('detectRoutineEngineDeath (the 06-12 incident signature)', () => {
     const rows = [row('a', minsAgo(5)), row('b', minsAgo(6)), row('c', minsAgo(7))];
     expect(detectRoutineEngineDeath(rows, NOW, { graceMinutes: 10 }).dead).toBe(false);
     expect(detectRoutineEngineDeath(rows, NOW, { graceMinutes: 2 }).dead).toBe(true);
+  });
+
+  /**
+   * A PARKED LOOP (next_fire_at = 'infinity') must never vouch for the engine.
+   *
+   * The detector used to be correct only by accident of the transport:
+   * readRoutineLivenessRows issues a RAW query, so postgres-js hands 'infinity' back as
+   * an INVALID Date and the isFinite skip excluded it. Route the same rows through
+   * rowToRoutine — the obvious cleanup, since that mapper exists to make 'infinity' safe
+   * for JS readers — and a parked loop becomes a VALID max-Date that reads as "inside its
+   * fire window", short-circuiting the scan on the FIRST one. papercusp-workspace carries
+   * 11 parked loops live, so that cleanup would have blinded the sentinel on precisely the
+   * outage it exists to catch. These pin the property against BOTH wire forms.
+   */
+  describe('a parked loop cannot vouch for a dead engine (either wire form)', () => {
+    const deadPeers = [row('git-sync', minsAgo(80)), row('green-checkpoint', minsAgo(45)), row('deploy', minsAgo(30))];
+
+    it('PARKED_NEXT_FIRE_MS has not drifted from the real NEXT_FIRE_PARKED sentinel', async () => {
+      const { NEXT_FIRE_PARKED } = await import('@papercusp/db-org');
+      expect(PARKED_NEXT_FIRE_MS).toBe(NEXT_FIRE_PARKED.getTime());
+      // The trap only exists because the mapped form is a VALID Date — if this ever
+      // became NaN the mapper would be excluding it already and this guard is moot.
+      expect(Number.isNaN(NEXT_FIRE_PARKED.getTime())).toBe(false);
+    });
+
+    it('RAW form (postgres-js Invalid Date) ⇒ still dead', () => {
+      const v = detectRoutineEngineDeath([...deadPeers, { name: 'loop-su-a', active: true, nextFireAt: new Date('infinity') }], NOW);
+      expect(v.dead).toBe(true);
+      expect(v.overdueCount).toBe(3);
+    });
+
+    it('MAPPED form (NEXT_FIRE_PARKED, a valid max-Date) ⇒ still dead — the blinding case', () => {
+      const parked = new Date(PARKED_NEXT_FIRE_MS);
+      const v = detectRoutineEngineDeath([...deadPeers, { name: 'loop-su-a', active: true, nextFireAt: parked }], NOW);
+      expect(v.dead).toBe(true);
+      expect(v.reason).not.toContain('engine alive');
+      expect(v.overdueCount).toBe(3);
+    });
+
+    it('verdict is ORDER-INDEPENDENT — a parked row FIRST does not collapse the overdue count', () => {
+      const parked = { name: 'loop-su-a', active: true, nextFireAt: new Date(PARKED_NEXT_FIRE_MS) };
+      const v = detectRoutineEngineDeath([parked, ...deadPeers], NOW);
+      expect(v.dead).toBe(true);
+      expect(v.overdueCount).toBe(3);
+    });
+
+    /**
+     * FALSIFIABILITY CONTROL (repo rule: a guard test that has never failed is a guard
+     * you have not tested — and proving it by mutating the shared tree is forbidden here,
+     * so the wrong implementation lives permanently in the test instead).
+     *
+     * This replicates the PRE-FIX scan — identical but for the missing parked skip — and
+     * asserts it DOES exhibit the blinding. If a future refactor makes the guard vacuous,
+     * the three cases above would keep passing for the wrong reason; this one would not.
+     */
+    it('CONTROL: the same fixtures DO blind a scan without the parked skip', () => {
+      const withoutParkedGuard = (rows: RoutineLivenessRow[], nowMs: number) => {
+        for (const r of rows.filter((x) => x.active)) {
+          const at = r.nextFireAt instanceof Date ? r.nextFireAt.getTime() : Date.parse(String(r.nextFireAt));
+          if (!Number.isFinite(at)) continue;
+          if (nowMs - at <= 10 * 60_000) return `engine alive (vouched by ${r.name})`;
+        }
+        return 'dead';
+      };
+      const parked = { name: 'loop-su-a', active: true, nextFireAt: new Date(PARKED_NEXT_FIRE_MS) };
+      // Same input the real detector calls dead above — the old rule calls it alive.
+      expect(withoutParkedGuard([parked, ...deadPeers], NOW)).toContain('engine alive');
+      expect(detectRoutineEngineDeath([parked, ...deadPeers], NOW).dead).toBe(true);
+    });
+
+    it('CONTROL: parked loops alone never CAUSE a dead verdict (they prove nothing either way)', () => {
+      const parkedOnly = ['loop-a', 'loop-b', 'loop-c', 'loop-d'].map((name) => ({
+        name,
+        active: true,
+        nextFireAt: new Date(PARKED_NEXT_FIRE_MS),
+      }));
+      const v = detectRoutineEngineDeath(parkedOnly, NOW);
+      expect(v.dead).toBe(false);
+      expect(v.overdueCount).toBe(0);
+    });
   });
 });
 

@@ -15,6 +15,13 @@
  * and `fallback: 'lexical'` when the hits came from the embed-free
  * token-match fallback) so an empty/thin result is never mistaken for an
  * informative "nothing relevant exists".
+ *
+ * WI-36046 adds one more additive stamp: a hit whose extracted anchors no longer
+ * resolve (per the nightly sweep — never computed inline) carries `staleness` AND a
+ * one-line banner prepended to `memory`, so the same caveat CLAUDE.md pushes onto
+ * per-agent discipline arrives with the hit instead. The field is emitted ONLY when
+ * something is broken, so its absence MEANS "no dead anchors". Flagged
+ * (MEMORY_STALENESS_IN_RECALL, default on); OFF restores the prior shape byte-for-byte.
  */
 
 import { z } from 'zod';
@@ -105,7 +112,7 @@ export default defineTool({
     notWhen:
       'For lookups by exact metadata (kind), use memory:list — it\'s faster than vector search for filter-only queries.',
     chaining:
-      'Pair with memory:update / memory:forget when the user corrects something you recall.',
+      'Pair with memory:update / memory:forget when the user corrects something you recall. A hit carrying `staleness` has referents that no longer resolve (last nightly anchor sweep) — treat it as evidence to reconcile, never as binding guidance; absence of the field means no dead anchors.',
     seeAlso: [
       'memory:remember (write a new durable fact)',
       'memory:list (filter-only lookup by exact metadata — faster than vector search)',
@@ -312,10 +319,35 @@ export default defineTool({
     // Session-tier hit shaping (P-024) — see MEMORY_SEARCH_TIER_CAPS above.
     // No-tier callers (the TUI Memory tab, hooks) take the full branch.
     const sessionTier = (ctx as { contextTier?: 'trimmed' | 'standard' | 'full' }).contextTier;
-    const results =
+    let results: Array<Record<string, unknown>> =
       sessionTier === 'trimmed' || sessionTier === 'standard'
         ? wireRows.map((r) => shapeMemoryHit(r, sessionTier))
         : wireRows;
+
+    // WI-36046 (workstream A): fold in the nightly anchor sweep's STORED verdict, so
+    // a memory whose referents provably no longer resolve renders as evidence to
+    // reconcile rather than as binding guidance. The verdict has existed per-memory
+    // since migration 085 and reached only the human settings UI; this is the
+    // hand-off. Notable-only (a healthy memory is untouched and costs nothing), and
+    // applied AFTER tier shaping so the banner is never itself clipped away — see
+    // lib/memory/recall-staleness.ts for why the banner rides the BODY.
+    //
+    // Best-effort in exactly the sense the feedback rerank above is: a dynamic
+    // import, a bounded read over the ids we are already returning, and any failure
+    // (flag read, sweep never ran, table absent, PG down) skips the pass and returns
+    // today's byte-identical shape. Recall is never blocked by it.
+    try {
+      if (await getFlag(FLAGS.MEMORY_STALENESS_IN_RECALL, systemDistinctId())) {
+        const ids = results
+          .map((r) => (typeof r.id === 'string' ? r.id : null))
+          .filter((v): v is string => v !== null);
+        if (ids.length > 0) {
+          const { getOrgPg } = await import('@papercusp/db-org');
+          const { loadMemoryStaleness, applyMemoryStaleness } = await import('../../memory/recall-staleness');
+          results = applyMemoryStaleness(results, await loadMemoryStaleness(getOrgPg().sql, ids));
+        }
+      }
+    } catch { /* best-effort */ }
 
     // Result count into tool_invocations.metadata_json (mirrors plans:search):
     // the negative-space miner (self-learning-frontier P-010) detects zero-hit

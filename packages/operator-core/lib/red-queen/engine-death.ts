@@ -58,6 +58,30 @@ export interface EngineDeathOptions {
 
 export const ENGINE_DEATH_DEFAULTS = { graceMinutes: 10, minActiveRoutines: 3 } as const;
 
+/**
+ * The parked-loop sentinel, in ms — `NEXT_FIRE_PARKED` (db-org routines-runtime).
+ * A LOOP routine parks at `next_fire_at = 'infinity'::timestamptz` while its turn is
+ * in flight; it is armed, but deliberately not scheduled, so it can prove the engine
+ * neither alive nor dead — the same bucket as a null/unparseable next_fire_at.
+ *
+ * ⚠ This guard exists because the detector's correctness USED TO depend, invisibly, on
+ * `readRoutineLivenessRows` issuing a RAW query: postgres-js parses 'infinity' to an
+ * INVALID Date, which the `Number.isFinite` skip below already excludes. Route the same
+ * rows through `rowToRoutine` instead — the obvious cleanup, since that mapper exists
+ * precisely to make 'infinity' safe for JS readers — and every parked loop becomes a
+ * VALID max-Date that reads as "inside its fire window", so the FIRST one short-circuits
+ * the scan and reports a genuinely dead engine as alive. Measured 2026-08-08 against a
+ * dead-engine snapshot: `dead:false, reason:'routine "loop-su-a" is inside its fire
+ * window — engine alive'`, and with the parked row ordered first `overdueCount` collapsed
+ * from 3 to 0. papercusp-workspace carries 11 parked loops, so that cleanup would have
+ * blinded the sentinel on exactly the outage it exists to catch.
+ *
+ * Duplicated as a literal rather than imported so the pure detector keeps a dependency-free
+ * import graph; `engine-death.test.ts` pins it against the exported NEXT_FIRE_PARKED so the
+ * two cannot drift.
+ */
+export const PARKED_NEXT_FIRE_MS = 8_640_000_000_000_000;
+
 export interface EngineDeathVerdict {
   dead: boolean;
   activeCount: number;
@@ -88,6 +112,10 @@ export function detectRoutineEngineDeath(
     // An active routine with no/unparseable next_fire_at can't prove liveness
     // either way — count it neither overdue nor healthy.
     if (!Number.isFinite(at)) continue;
+    // Same bucket, and it must be checked BEFORE the in-window test below: a parked
+    // loop is armed but deliberately unscheduled, so treating it as "inside its fire
+    // window" would let one parked row vouch for a dead engine (see PARKED_NEXT_FIRE_MS).
+    if (at >= PARKED_NEXT_FIRE_MS) continue;
     const lateBy = nowMs - at;
     if (lateBy > grace) {
       overdue += 1;
@@ -182,6 +210,12 @@ export function engineDeathDrillCollector(snapshot: RoutineLivenessRow[], nowMs?
  * healthy ticks for the entire window EI-14375 was open). Scoping to the
  * sentinel's own workspace makes the signal mean what its message claims:
  * THIS host's engine, not some unrelated tenant's.
+ *
+ * The raw row shape here (rather than db-org's `rowToRoutine`) is now a free choice,
+ * NOT a load-bearing one: `detectRoutineEngineDeath` skips the parked-loop sentinel in
+ * BOTH wire forms (raw 'infinity' → Invalid Date, and the mapped max-Date), so routing
+ * these rows through the mapper can no longer blind the detector. It could before —
+ * see PARKED_NEXT_FIRE_MS.
  */
 export async function readRoutineLivenessRows(sql: Sql, workspaceId: string): Promise<RoutineLivenessRow[]> {
   const rows = await sql<{ name: string; active: boolean; next_fire_at: string | Date | null }[]>`

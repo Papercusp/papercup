@@ -210,7 +210,13 @@ export interface OrientResult {
    *  queen-loop-steering hits stripped for a responsive caller (P-002). EI-9031:
    *  `degraded` (+ `degradedReason`) is propagated from memory:search when the
    *  embedder is on a reduced-breadth fallback — so an empty `hits` is NOT read as
-   *  "nothing relevant exists" during an embedding-backend outage. */
+   *  "nothing relevant exists" during an embedding-backend outage.
+   *  WI-36046: a hit whose `memory` OPENS with a `⚠ STALE — dead anchors:` banner has
+   *  referents the nightly sweep found no longer resolve — evidence to reconcile, not
+   *  binding guidance. The fold reduces each hit to { id, memory, score }, so the
+   *  warning rides the BODY by design (a sibling field would be dropped right here);
+   *  it is prepended, so it survives the MEMORY_TEXT_CAP slice below and costs no
+   *  extra recall budget — it displaces body chars inside the same per-hit cap. */
   memory?: {
     query: string;
     hits: OrientMemoryHit[];

@@ -55,6 +55,14 @@ import {
 // Likewise the REAL scanned dir of the forward-compat lint, so the guard's routing
 // prefix cannot drift from the directory the lint actually reads.
 import { SQL_DIR_REL as MIGRATION_SQL_DIR } from '../../../../scripts/check-migration-forward-compat.mjs';
+// And the REAL scan roots + routing predicate of the OKF conformance lint. The router
+// MIRRORS these as literals on purpose (a static import there would let a load error in
+// this lint hard-fail every agent's test:affected), so importing the originals HERE is
+// what keeps the mirror honest.
+import {
+  OKF_SCAN_ROOTS,
+  isOkfScannedFile,
+} from '../../../../scripts/check-okf-conformance.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
@@ -344,5 +352,134 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
         'nothing while every probe still looked healthy.',
     ).toBeTruthy();
     expect(pkg.scripts?.[FC_SCRIPT]).toContain('check-migration-forward-compat.mjs');
+  });
+});
+
+/**
+ * WI-35930 (okf-frontmatter-adoption-2026-08-08 P-006) — the FOURTH instance, and the
+ * first whose corpus is written by CODE as well as by hand.
+ *
+ * `lint:okf-conformance` judges two corpora — the agent-insights docs and the
+ * knowledge-packs (docs + `manifest.yaml`). Neither routes to a suite that covers it:
+ * an insight doc selects `@papercupai/operator-docs`, which runs nothing over the
+ * corpus, and a pack doc selects the pack workspace, likewise. So a doc that drops
+ * `type:`, or writes a `stale_after:` no date parser accepts, produced ZERO local
+ * signal before this wiring.
+ *
+ * Why the in-suite ratchet (`lib/okf-conformance-guard.test.ts`) is NOT sufficient on
+ * its own, and why this narrow task exists: a standalone SCRIPT registered in
+ * REPO_WIDE_INVARIANT_GUARDS is deliberately skipped when its host workspace is
+ * independently affected, on the assumption the workspace suite already contains the
+ * check. That assumption holds for `lint:chunk-safe` (a vitest file) and is FALSE for a
+ * script — hence the ratchet. The two cover different halves and both are load-bearing.
+ *
+ * The pack half is the one that can regress with no author involved at all (plan D-003:
+ * three code write paths mint that frontmatter), so the first notice of a regression
+ * would otherwise be a red on files nobody edited.
+ */
+const OKF_SCRIPT = 'lint:okf-conformance';
+const OKF_TASK = `${HOST_WORKSPACE} :: ${OKF_SCRIPT}`;
+
+/**
+ * A REAL tracked file under `root` that the lint would actually OPEN.
+ *
+ * Filtered through the lint's own `isOkfScannedFile`, not a hand-written extension
+ * test, so the probe cannot select a file the lint declines to judge (which would
+ * assert the guard fires for something it should not).
+ *
+ * `--recurse-submodules` because the packs root lives in `libs/papercusp`. Gate-shaped
+ * checkouts carry 0/39 submodules (WI-6776), so this returns null there and the case
+ * SKIPS — a guard test must not red the fleet gate over a checkout shape.
+ */
+function realOkfFileUnder(root: string): string | null {
+  const res = spawnSync('git', ['ls-files', '--recurse-submodules', root], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 60_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (res.status !== 0) return null;
+  return (res.stdout ?? '').split('\n').find((f) => f && isOkfScannedFile(f)) ?? null;
+}
+
+describe('affected-tests: OKF frontmatter conformance guard (WI-35930)', () => {
+  it.each((OKF_SCAN_ROOTS as string[]).map((root) => [root]))(
+    'enforces the lint for a change under scanned root %s',
+    (root: string) => {
+      const probe = realOkfFileUnder(root);
+      if (!probe) {
+        // Nothing tracked under this root in THIS checkout (submodule-less gate tree).
+        expect(true).toBe(true);
+        return;
+      }
+      const out = dryTasks(probe);
+      const reached = out.includes(OKF_TASK) || out.includes(`${HOST_WORKSPACE} :: test`);
+      expect(
+        reached,
+        `the lint SCANS ${root} (probe: ${probe}), so a change there must reach it — via ` +
+          `"${OKF_TASK}" or via "${HOST_WORKSPACE} :: test". This case is GENERATED from the ` +
+          "lint's own exported OKF_SCAN_ROOTS: if you widened the scan there and did not " +
+          'mirror it into OKF_SCAN_ROOTS in scripts/affected-tests.mjs, the guard silently ' +
+          `stopped enforcing that root. Task list was:\n${out}`,
+      ).toBe(true);
+    },
+  );
+
+  it('does NOT attach for a DOT-PATH inside a scanned root', () => {
+    // The discrimination that shaped the whole lint (plan D-001): this file IS
+    // git-tracked and `isInsightDoc()` accepts it, but Astro's content loader never
+    // sees it, so the lint deliberately excludes it. Routing on it would spend every
+    // agent's edit budget on a file the lint refuses to judge.
+    const dotPath = `${OKF_SCAN_ROOTS[0]}.papercusp/memory/raw.md`;
+    expect(
+      isOkfScannedFile(dotPath),
+      'precondition: the lint itself must decline this path, or this case is testing ' +
+        'the wrong thing',
+    ).toBe(false);
+    expect(
+      dryTasks(dotPath),
+      `${dotPath} is excluded from the SCAN, so attaching the guard for it could never ` +
+        'produce a finding',
+    ).not.toContain(OKF_TASK);
+  });
+
+  it('does NOT attach for a file outside every scanned root', () => {
+    // Same extension family, different tree — a prefix-free `endsWith('.mjs'/'.md')`
+    // rule would over-fire here.
+    const out = dryTasks('astro.config.mjs');
+    expect(
+      out,
+      'only the two corpus roots are scanned, so a file elsewhere cannot violate the ' +
+        'invariant',
+    ).not.toContain(OKF_TASK);
+  });
+
+  it('keeps the guard script defined on the HOST workspace, so it cannot silently no-op', () => {
+    // The exact trap WI-9573 fell into: the router `continue`s when the host workspace
+    // does not define the script, producing a registry entry that attaches NOTHING and
+    // looks, from every output, like success. Defining it only in the ROOT
+    // package.json is not enough.
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.[OKF_SCRIPT],
+      `${HOST_WORKSPACE} must define "${OKF_SCRIPT}" — the router only builds a task ` +
+        'when the script exists on the HOST workspace.',
+    ).toBeTruthy();
+    expect(pkg.scripts?.[OKF_SCRIPT]).toContain('check-okf-conformance.mjs');
+  });
+
+  it('keeps the in-suite ratchet, which covers the half this attachment deliberately skips', () => {
+    // When operator-core is itself affected the router skips the narrow task, on the
+    // assumption the workspace suite contains the check. For a standalone SCRIPT that
+    // assumption is false, so the coverage of an operator-core-affecting change rests
+    // entirely on this file. Deleting it would remove that half silently — nothing
+    // would fail, the guard would just stop covering the code-written pack corpus.
+    expect(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/lib/okf-conformance-guard.test.ts'), 'utf8'),
+      'the in-suite OKF ratchet must exist; the narrow task above does not run when ' +
+        'operator-core is independently affected',
+    ).toContain('check-okf-conformance.mjs');
   });
 });

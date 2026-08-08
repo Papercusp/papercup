@@ -584,9 +584,20 @@ Two specifics worth knowing:
 - **Waiting for one to CHANGE** (a verdict, a deploy sha) → `state:subscribe`, not a
   poll loop and not a hand-built await.
 
-⚠ This does **not** supersede the `inFlightRetriage` marker below for *"which sha is
-the run judging right now"* — that stays the authority for a LIVE run (the cell answers
-containment, which is the question you usually actually have).
+✅ **It DOES answer *"which sha is the run judging right now"* — a caveat here used to say
+otherwise, and it was stale.** WI-7035 routed the resolver through the run's OWN published
+`inFlightRetriage` marker and made it PREFER that marker over a run-probe
+(`git-pipeline-position.ts`: `candidate: marker ? marker.refiringCandidate : candidate`), so
+the cell's sha already IS the marker-backed answer whenever a marker exists. The stale caveat
+mattered because it sat immediately after the routing above and told the reader the cell would
+not answer their real question — sending them to hand-write the SQL the resolver had already
+read for them.
+
+What the cell does **not** yet surface is the marker-vs-probe PROVENANCE. For that read
+`dev:pipeline_position` → `changeInCandidate.candidateSource` (`'retriage-marker'` =
+an authoritative observation of what the run is judging; `'run-probe'` = a hint, and on a CRON
+run that probe degrades to the checkpoint checkout's live HEAD). Its mid-rescue note carries
+the refire budget. Raw `harness_shared.routines` SQL is the LAST resort, not the first.
 
 ⚠ **`judgingContainsPath: false` with `missingReason: 'newer-commit'` does NOT mean your
 change missed the candidate — and on a shared file it usually means the opposite.** That
@@ -598,8 +609,25 @@ outage (EI-18797292094433710): two wakes re-fired the gate while *every* candida
 carried the fix.
 
 ⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged. Skipping this is the
-expensive mistake, and no amount of care in the steps below can recover from it.** The
-`candidate` field DRIFTS: a single continuous run reports different candidates over its
+expensive mistake, and no amount of care in the steps below can recover from it.**
+
+✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
+
+```
+state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
+```
+
+It returns the judged sha (`changeInCandidate.judgingSha` — already marker-preferred per
+WI-7035, see above), the containment falsifier `judgingContainsPath` (*is the gate judging MY
+change*) with its own prose attached, a `verdictUnknown` hoist naming anything it could NOT
+determine, and the `resolver` that produced them. Verified live 2026-08-08. The cells and the
+doors read the SAME resolver (`gitPipelinePosition()`), so this is a re-read of the authority,
+never a second source of truth. **Everything below — the marker SQL, the log greps, the
+ancestry and blob archaeology — is the FALLBACK**: reach for it when the cell answers
+`unknown`, or when you need a field the cell does not carry (candidate provenance, the refire
+budget, a run's failing-file set).
+
+The `candidate` field DRIFTS: a single continuous run reports different candidates over its
 lifetime. Observed 2026-08-02: one run with an unchanged `started_at` of 07:15:17Z (elapsed
 climbing 1138 → 2887s, so provably not a new run) reported `1ee32228` and later `4a9b218ba0`.
 
@@ -651,8 +679,12 @@ containment question cannot be settled from primary evidence, say so and wait �
 it from these fields. Four agents produced four contradictory conclusions here in ninety minutes,
 each reasoning correctly from the same untrustworthy inputs.
 
-✅ **THE PRIMARY SOURCE THAT WORKS FOR EVERY RUN — the routines marker in Postgres.** It is the
-ONLY read that answers step 0 for a SCHEDULER-fired run, and it is the authority for a LIVE one:
+**FALLBACK — the routines marker in Postgres (the CELL above comes first).** This is the RAW
+source the resolver itself reads through (WI-7035), so hand-querying it repeats work
+`state:read { cell: 'gate.greenCheckpoint.candidate' }` has already done. Come here when the
+cell answers `unknown`, or for a field it does not carry: `consecutiveReds`, the refire budget,
+or a marker you need to age-check yourself. It is the only RAW read that answers step 0 for a
+SCHEDULER-fired run, and the raw authority for a LIVE one:
 
 ```sql
 SELECT metadata->'gate_health'->'inFlightRetriage'   AS live_refire,     -- the LIVE run's candidate

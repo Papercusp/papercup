@@ -667,6 +667,20 @@ export const FLAGS = {
   // (2s), and fail-open. OFF = the clean kill-switch — the block returns to
   // its mem0-only form byte-identically.
   MEMORY_CORPUS_RECALL: "papercusp-memory-corpus-recall",
+  // WI-36046 (workstream A): hand the nightly anchor sweep's verdict to the AGENT.
+  // `memory/audit-memory-anchors.ts` has been re-checking every memory's extracted
+  // anchors nightly (DBOS `0 0 5 * * *`) and writing last_check_ok per anchor — but
+  // the only consumer was the human settings UI, so recall rendered a memory whose
+  // referents provably no longer exist as ordinary binding guidance (measured
+  // 2026-08-08: 354 memories with a dead anchor, invisible to memory:search). ON =
+  // a stale hit carries a `staleness` field AND a prepended one-line banner, so it
+  // reads as evidence to reconcile rather than an instruction. Reads the STORED
+  // verdict only — never computes the check inline, because coord:orient folds this
+  // path and the audit does fs.stat + PG per anchor. Default ON (derived
+  // FLAG_DEFAULTS — not in DARK_FLAGS): additive, bounded (one indexed read over
+  // the recall's own ids), and fail-open at every step. OFF = the clean kill-switch
+  // — recall returns to its byte-identical pre-WI-36046 shape.
+  MEMORY_STALENESS_IN_RECALL: "papercusp-memory-staleness-in-recall",
   // context-injection-audit-2026-07-28 P-039 / D-012: the presence-transition
   // emitter — the missing FEEDER for the mid-turn coord rail. Automatic
   // injection carried zero liveness, and every coord_event_log writer was an
