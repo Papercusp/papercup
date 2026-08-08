@@ -42,10 +42,12 @@
  * able to tell "nothing to show" from "too much to show".
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { Button } from '../../harness/Button';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { WORK_ITEMS_PAGE, type WorkItemRow } from './WorkItemsPanel';
 import { workItemFilterColumns, WORK_ITEM_FILTER_NS } from './work-item-columns';
@@ -74,8 +76,36 @@ interface DepEdgeRow {
   blockerPlanSlug?: string | null;
 }
 
-const NODE_W = 190;
-const NODE_H = 44;
+const NODE_W = 210;
+const NODE_H = 46;
+
+/**
+ * How many title characters fit on one node line, at the node's width and the 11px
+ * title size. Deliberately DERIVED from NODE_W rather than a second hardcoded number
+ * (the pair went out of sync at 190px/28ch, which is why titles truncated so hard —
+ * P-006): ~5.6px per character at 11px in the UI face, less the 10px gutters.
+ */
+const TITLE_CHARS = Math.floor((NODE_W - 20) / 5.6);
+
+/**
+ * State → a coarse bucket the node's status dot is coloured by (P-006).
+ *
+ * ⚠ Terminality here is intentionally NOT `isBlockerSatisfied`: that oracle answers a
+ * different question (does this blocker still GATE, per family) and depends on the row's
+ * kind. This is a display bucket for a node's own state across both vocabularies, so it
+ * folds every terminal token from either family into one 'done' bucket and never claims
+ * to be the gating oracle. Anything unrecognised falls to 'open' rather than being
+ * silently coloured as something it is not.
+ */
+const STATE_DONE = new Set(['done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped']);
+const STATE_BAD = new Set(['blocked', 'failing', 'needs_human', 'needs-human']);
+const STATE_ACTIVE = new Set(['in_progress', 'in-progress', 'wip', 'validating']);
+function stateBucket(state: string): 'done' | 'bad' | 'active' | 'open' {
+  if (STATE_DONE.has(state)) return 'done';
+  if (STATE_BAD.has(state)) return 'bad';
+  if (STATE_ACTIVE.has(state)) return 'active';
+  return 'open';
+}
 
 interface Positioned {
   nodes: Array<DepGraphNode & { x: number; y: number }>;
@@ -208,11 +238,28 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
 
         if (cancelled || seq !== layoutSeq.current) return;
         const pos = new Map((laid.children ?? []).map((c) => [c.id, c]));
+        const nodes = graph.nodes.map((n) => ({
+          ...n,
+          x: pos.get(n.id)?.x ?? 0,
+          y: pos.get(n.id)?.y ?? 0,
+        }));
+        // P-005 — SIZE THE CANVAS FROM THE NODES, not from ELK's reported extent alone.
+        // The rightmost column was rendering sliced mid-card. `laid.width` is whatever the
+        // layouter chose to report, and taking it as the SVG width means any disagreement
+        // between it and where the nodes actually ended up gets resolved by clipping — the
+        // one resolution a reader cannot detect, because a half-drawn card looks like a
+        // scroll boundary. Measuring max(x + NODE_W) is the definition of "no node is cut",
+        // is independent of ELK's bookkeeping, and can only ever grow the canvas. EDGE_PAD
+        // leaves room for the arrowhead + the selected node's 2px stroke, which sit OUTSIDE
+        // the node box and would otherwise clip at the exact extent.
+        const EDGE_PAD = 8;
+        const extentW = nodes.reduce((m, n) => Math.max(m, n.x + NODE_W), 0) + EDGE_PAD;
+        const extentH = nodes.reduce((m, n) => Math.max(m, n.y + NODE_H), 0) + EDGE_PAD;
         setPositioned({
-          nodes: graph.nodes.map((n) => ({ ...n, x: pos.get(n.id)?.x ?? 0, y: pos.get(n.id)?.y ?? 0 })),
+          nodes,
           edges: graph.edges,
-          width: laid.width ?? 0,
-          height: laid.height ?? 0,
+          width: Math.max(laid.width ?? 0, extentW),
+          height: Math.max(laid.height ?? 0, extentH),
         });
         setLayoutError(null);
       } catch (err) {

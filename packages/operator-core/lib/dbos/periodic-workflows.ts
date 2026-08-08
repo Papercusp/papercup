@@ -912,6 +912,38 @@ const memoryAnchorAuditWorkflow = idempotentRegisterWorkflow('memoryAnchorAudit'
 );
 DBOS.registerScheduled(memoryAnchorAuditWorkflow, { name: 'memoryAnchorAudit', crontab: '0 0 5 * * *' });
 
+// Daily 05:20 UTC (just after the memory anchor audit, inside the same quiet
+// window): the SPEC TRIAD auto-file sweep (okf-frontmatter-adoption H(b)).
+// `plans:items` holds an in-scope plan's items back from `actionable` when the
+// plan owes `## Requirements` / `## Design`; this is the EXIT from that gate —
+// it files one claimable work item per owing plan so the gate resolves through
+// the ordinary queue instead of waiting for a person. Without this tick the
+// gate is a wall, which is exactly the failure the design was corrected to
+// avoid. Bounded (≤25 filings/run), idempotent (payload.specTriadPlan), and
+// fail-closed on an unreadable flag since it WRITES. Default ON via the
+// SPEC_TRIAD_REQUIRED flag; kill-switch PAPERCUSP_SPEC_TRIAD_SWEEP=0. Never
+// throws (a thrown step → DBOS marks the workflow permanently dead → silent
+// stop forever). Shed under loop pressure (a scan + N inserts).
+async function specTriadSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_SPEC_TRIAD_SWEEP === '0') return;
+    if (shouldShedHeavyTick('spec-triad-sweep')) return;
+    try {
+      const { runSpecTriadSweepOnce } = await import('../agent-tools/plans/spec-triad-sweep');
+      const r = await runSpecTriadSweepOnce();
+      console.log(`[spec-triad-sweep] ${r.summary}`);
+    } catch (err) {
+      console.warn(`[spec-triad-sweep] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'spec-triad-sweep' });
+}
+const specTriadSweepWorkflow = idempotentRegisterWorkflow('specTriadSweep', () =>
+  DBOS.registerWorkflow(specTriadSweepTick, {
+    name: 'specTriadSweep', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(specTriadSweepWorkflow, { name: 'specTriadSweep', crontab: '0 20 5 * * *' });
+
 // Weekly (Sun 05:30 UTC, off the daily 03:00–05:00 GC/prune cluster): code-recipes
 // hygiene (recipes-reuse-activation-2026-06-22 P-003). There was NO scheduled automation
 // for the recipe corpus — recipes:sweep / recipes:candidates were manual su-only tools —

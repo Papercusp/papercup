@@ -89,7 +89,8 @@
     "libs/generic/tauri-verify",
     "libs/generic/gui-readiness",
     "libs/generic/release-profile",
-    "libs/generic/image-blankness"
+    "libs/generic/image-blankness",
+    "libs/generic/overlap-clusters"
   ],
   "scripts": {
     "preinstall": "npx --yes only-allow npm",

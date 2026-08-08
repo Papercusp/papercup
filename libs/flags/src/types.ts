@@ -2211,6 +2211,26 @@ export const FLAGS = {
   // (seed-orphaned-mcp-reaper-routine.ts --active, recommended --dry-run
   // first). OFF ⇒ the routine tick logs what it would kill and kills nothing.
   ORPHANED_MCP_REAPER: "papercusp-orphaned-mcp-reaper",
+  // okf-frontmatter-adoption workstream H(b): the Kiro SPEC TRIAD, expressed as
+  // structure INSIDE a plan (`## Requirements` + `## Design` + the plan's own
+  // P-NNN items) rather than a second directory convention competing with plans.
+  //
+  // Default ON (derived FLAG_DEFAULTS — deliberately NOT in DARK_FLAGS) because
+  // the policy is non-freezing BY CONSTRUCTION, not by promise: the requirement
+  // applies only to plans CREATED AFTER the epoch (or opting in via a
+  // `specTriad: required` frontmatter key), and a plan that owes the triad
+  // AUTO-FILES a work item another agent claims. No existing plan item ever
+  // becomes non-actionable, and no decision routes to a human.
+  //
+  // The design as originally written ("must be non-empty before items can be
+  // marked actionable", full stop) was MEASURED against the live corpus and
+  // would have frozen plan-driven dispatch fleet-wide: of 1000 plans, 0 carried
+  // `## Requirements` and 51 carried `## Design`, 330 of them live. Same shape as
+  // the claim-spec starvation the same day — a correct-looking positive predicate
+  // over a field nothing populates yet. The epoch is what makes the same rule
+  // safe. OFF = the clean kill-switch: nothing is gated and the sweep files
+  // nothing.
+  SPEC_TRIAD_REQUIRED: "papercusp-spec-triad-required",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

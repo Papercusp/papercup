@@ -12,6 +12,57 @@ import { z } from 'zod';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { gitPipelinePosition } from '../../git-pipeline-position';
 import { buildKey } from '../../events/await/catalog';
+import { listCells } from '../../cell-registry';
+import { stampStatePlane, type StatePlaneBlock } from '../../state-plane-stamp';
+import { resolveAgentIdentity } from '../coordination/identity';
+
+const TOOL_NAME = 'dev:pipeline_position';
+
+/**
+ * state-plane-adoption-2026-08-02 P-010 — EMIT the plane instead of competing with it.
+ *
+ * P-002 (the `seeAlso` below) POINTS at the plane and names one cell. That is promotion,
+ * and promotion asymptotes: measured ACT/QUOTE adoption is 1.7% (D-030). This stamps every
+ * volatile value in the answer with the cell that re-answers it, so a caller about to quote
+ * one is already holding the reference and never has to know to switch tools.
+ *
+ * The door→cell map is not maintained here — it is each cell's own `changeSignal`
+ * declaration, filtered by this tool's name (see state-plane-stamp.ts).
+ *
+ * TOTAL BY CONSTRUCTION. This decorates a read-only probe that agents depend on, so it
+ * degrades to "no block" rather than failing the call: `resolveAgentIdentity` throws on a
+ * malformed principal (this tool is `requirePrincipal: false`, so that is reachable), and
+ * an enrichment that can fail the operation it enriches is the defect cell-read.ts already
+ * documents. A reader we could not resolve keeps its roles empty, which under `canReadCell`
+ * admits workspace-visible cells only — under-advertising, never over-advertising.
+ */
+function planeFor(payload: unknown, args: { path?: string; sha?: string }, ctx: unknown): StatePlaneBlock | null {
+  try {
+    let reader = { ownerId: '', roles: [] as string[], harnessSlug: undefined as string | undefined };
+    try {
+      const c = (ctx ?? {}) as { role?: string; harnessSlug?: string | null };
+      const identity = resolveAgentIdentity(c as never);
+      reader = {
+        ownerId: identity.ownerId,
+        roles: c.role ? [c.role] : [],
+        harnessSlug: c.harnessSlug ?? undefined,
+      };
+    } catch {
+      // Unresolvable principal — fall through with the empty reader (workspace cells only).
+    }
+    return stampStatePlane({
+      payload,
+      tool: TOOL_NAME,
+      // The subject for a caller-relative cell. Keyed by the PARAM NAME the spec declares,
+      // never positionally — `path` here, `ownerId` for coord:goal's cell.
+      args: { path: args.path, sha: args.sha },
+      cells: listCells(reader),
+      reader,
+    });
+  } catch {
+    return null;
+  }
+}
 
 export default defineTool({
   name: 'dev:pipeline_position',
@@ -135,7 +186,7 @@ export default defineTool({
           'Use it whenever you see missingReason:"newer-commit" or a leg named in `positionsNewerCommit`.',
       ),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     /**
      * unified-agent-state-plane-2026-07-27 P-007: a NO-ARG call is now legal and returns
      * the PIPELINE-WIDE legs (`gate`, `deployedSha`, `verdictProvenance`) with the
@@ -159,6 +210,12 @@ export default defineTool({
      */
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker });
 
+    // P-010. Computed ONCE and spread into every return below — this handler has three
+    // exits (multi-consumer, non-release runtime, default), and stamping only the default
+    // would drop the plane for exactly the paths with unusual activation routes, which are
+    // the ones whose readers are most likely to be reasoning about staleness.
+    const plane = planeFor(result, args, ctx);
+
     // WI-5440: a path can have MORE THAN ONE consumer on DIFFERENT activation
     // routes (e.g. a file read by both a bg-host-only routine and an
     // operator-served MCP tool) — collapsing to a single `activation` block
@@ -171,6 +228,7 @@ export default defineTool({
       return {
         data: {
           ...result,
+          ...(plane ? { plane } : {}),
           activations: runtimes.map((r) => ({
             hint: r.activation,
             host: r.host,
@@ -201,6 +259,7 @@ export default defineTool({
       return {
         data: {
           ...result,
+          ...(plane ? { plane } : {}),
           activation: {
             hint: runtime.activation,
             host: runtime.host,
@@ -265,6 +324,6 @@ export default defineTool({
             // silences the monitor loop (WI-6604).
             sugarArgs: { timeout_sec: 600 },
           };
-    return { data: { ...result, ...(awaitable ? { awaitable } : {}) } };
+    return { data: { ...result, ...(plane ? { plane } : {}), ...(awaitable ? { awaitable } : {}) } };
   },
 });

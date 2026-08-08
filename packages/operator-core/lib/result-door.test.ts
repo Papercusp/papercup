@@ -177,6 +177,66 @@ describe('applyResultDoor', () => {
     expect(doorConstantsMock).toHaveBeenCalledWith('su-x'); // keyed on the caller's identity
   });
 
+  // WI-36613 — borrow item 10. The door measures TEXT ONLY, so a result whose
+  // bulk is a base64 image has a tiny `totalChars`, takes the identity fast-path,
+  // and reaches the model uncapped AND unmentioned. Measured exposure is
+  // currently zero (computer:* is the only image-emitting path and has never been
+  // invoked), so this deliberately does not CAP — it only removes the silence,
+  // which is the part that made the exemption invisible.
+  describe('non-text payloads are not capped, but no longer silent (WI-36613)', () => {
+    const bigImage = (chars: number) => ({
+      type: 'image',
+      data: 'A'.repeat(chars),
+      mimeType: 'image/png',
+    });
+
+    it('discloses an over-budget image even though the TEXT fit and nothing was truncated', () => {
+      const result: DoorableResult = {
+        content: [{ type: 'text' as const, text: 'tiny caption' }, bigImage(BUDGET_CHARS * 3)],
+      };
+      const doored = applyResultDoor(result, {
+        toolName: 'computer:screenshot',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+
+      const notice = (doored.content.at(-1) as { text: string }).text;
+      expect(notice).toContain('UNCAPPED NON-TEXT PAYLOAD');
+      // The image itself is untouched — this is a disclosure, not a cap.
+      expect(doored.content).toContainEqual(bigImage(BUDGET_CHARS * 3));
+      expect((doored.content[0] as { text: string }).text).toBe('tiny caption');
+      expect(
+        (doored._meta as { resultDoor?: { nonTextChars?: number } } | undefined)?.resultDoor,
+      ).toBeUndefined(); // fast path stamps no door meta: nothing was truncated
+    });
+
+    it('CONTROL: a SMALL non-text item keeps the identity fast-path byte-identical', () => {
+      // Without this, the assertion above would also pass against a door that had
+      // started appending a notice to every result carrying any non-text block —
+      // which would be a regression dressed as this fix.
+      const result = {
+        content: [{ type: 'text' as const, text: 'small' }, bigImage(64)],
+      };
+      expect(
+        applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID }),
+      ).toBe(result);
+    });
+
+    it('counts non-text chars in _meta when the result IS doored', () => {
+      const input: DoorableResult = {
+        content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }, bigImage(5_000)],
+      };
+      const doored = applyResultDoor(input, {
+        toolName: 'computer:screenshot',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const meta = (doored._meta as { resultDoor?: { nonTextChars?: number } } | undefined)
+        ?.resultDoor;
+      expect(meta?.nonTextChars).toBe(5_000);
+    });
+  });
+
   // WI-36047 (borrow item 9 from the opencode/OMP research). This block REPLACES
   // a test that asserted the OPPOSITE — "an unwritable scratch root returns the
   // ORIGINAL result untouched". That contract was deliberate and wrong, and the

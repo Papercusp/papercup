@@ -85,7 +85,13 @@ ends, or the goal you were set on is finished. **REGISTER the flip the moment it
 \`enabled:false\`).** A mode honored from directive text alone is INVISIBLE session state —
 peers and the leader can't see it (presence/orient read the mode REGISTRY, not your
 transcript) and a compaction or cold successor silently DROPS it (audited failure); the
-registered contract re-injects on every orient wake. It IS the "durably authorized / told to
+registered contract re-injects on every orient wake. **On a Claude/Codex psu session this
+is now done FOR you** (2026-08-08): the UserPromptSubmit provenance hook registers the flip
+when the owner's directive arrives — gated on that turn classifying OWNER (interactive), so
+no wake, loop-fire or coord-inject can ever grant itself autonomy — and stamps a \`⟦mode⟧\`
+line into your context saying so. Registering is therefore only YOUR job when that line is
+absent or reports a failure, and a duplicate \`mode:set\` is a harmless upsert. Do not read
+the automatic registration as a weaker grant: it is the same durable row, ownerDirected. It IS the "durably authorized / told to
 proceed without asking" grant the cautious rules carve out for; while it is active, those
 rules are **SUSPENDED**:
 

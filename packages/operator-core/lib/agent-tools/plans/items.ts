@@ -45,6 +45,10 @@ import { ITEM_STATUSES, IMPORTANCE_LEVELS, type Importance } from "./parser";
 import { TERMINAL_PLAN_STATUSES } from "./plan-start-state";
 import { shapePlansItems } from "./items-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
+import { specTriadGate, specTriadEpoch } from "./spec-triad-policy";
+import type { SpecTriadLegName } from "@papercusp/plan-parser";
+import { getFlag } from "@papercusp/flags/server";
+import { FLAGS } from "@papercusp/flags";
 
 /**
  * SWR backstop for plans:items (cache-expensive-tool-reads-round2-2026-06-23 P-002).
@@ -119,6 +123,13 @@ interface ItemRow {
    *  its work-item following). Present only when true, so a leader burn-down
    *  read / monitor loop can flag it instead of silently under-counting. */
   coverageDivergence?: true;
+  /** okf-frontmatter-adoption H(b): this item's PLAN owes the spec triad
+   *  (`## Requirements` / `## Design` / items), so the item is held back from
+   *  `actionable`. Present only when the plan is IN SCOPE for the requirement —
+   *  i.e. created after the epoch, or opted in — and missing a leg. Never set
+   *  for a plan that predates the requirement, which is what keeps the rule
+   *  from freezing the existing corpus. See spec-triad-policy.ts. */
+  specTriadMissing?: SpecTriadLegName[];
 }
 
 export default defineTool({
@@ -154,6 +165,20 @@ export default defineTool({
     const opts = await ctxToPlanSourceOpts(sctx);
     const includeArchived = args.includeArchived === true;
 
+    // okf-frontmatter-adoption H(b). Read OUTSIDE the cached closure so the flag
+    // is part of the cache KEY — flipping the kill-switch must change the answer
+    // on the next call, not 45s later. Fail-open on a flag-store error: a flags
+    // outage must never gate items, because the failure it would produce
+    // (everything non-actionable) is the exact fleet freeze this feature is
+    // designed around.
+    let specTriadFlag = false;
+    try {
+      specTriadFlag = await getFlag(FLAGS.SPEC_TRIAD_REQUIRED, "system:plans-items");
+    } catch {
+      specTriadFlag = false;
+    }
+    const specTriadOpts = { flagEnabled: specTriadFlag, epoch: specTriadEpoch() };
+
     // Cache the cross-plan aggregation (cache-expensive-tool-reads-round2-2026-06-23
     // P-002). plans:items is the LARGEST read payload measured (37KB / p95 2s); its read
     // is PURE + non-principal (depends only on workspace+harness+args — `needsHuman` keys
@@ -170,6 +195,7 @@ export default defineTool({
           needsHuman: args.needsHuman === true,
           includeArchived,
           harness: opts.harnessSlug,
+          specTriad: specTriadFlag,
         },
         tags: ["harness_plans", "plan_revisions", "plan_runs"],
         softTtlMs: PLANS_ITEMS_SOFT_TTL_MS,
@@ -217,12 +243,36 @@ export default defineTool({
         for (const row of planRows) {
           if (row.isLegacy) continue;
           if (isTerminalPlanHiddenFromCrossPlan(row.status, args)) continue;
+          const planItems = planItemsForRow(row);
           const { items: resolvedItems, blockingIssues } = applyPlanItemBlocks(
-            resolveEffectiveStatusForItems(planItemsForRow(row)).items,
+            resolveEffectiveStatusForItems(planItems).items,
             (id) => allBlocked.get(planItemRef(row.planSlug, id)),
           );
+
+          // okf-frontmatter-adoption H(b): a plan IN SCOPE for the spec triad and
+          // missing a leg holds its items back from `actionable`.
+          //
+          // Deliberately NOT expressed by rewriting effectiveStatus to 'blocked'.
+          // effectiveStatus is read by `system:plan-item-lane-sync`, which HOLDS a
+          // linked work-item open on a non-terminal item — so a plan-level
+          // authoring gap would have stranded real work-items in a state
+          // `work_items:complete` refuses (the EI-19412899868617052 shape, one
+          // level up). The gate belongs to the `actionable` QUESTION, which is
+          // exactly what the design asked for; the item's own status is untouched
+          // and every other consumer sees it unchanged.
+          const triad = specTriadGate(
+            {
+              planSlug: row.planSlug,
+              content: row.content,
+              created: row.created,
+              itemCount: planItems.length,
+            },
+            specTriadOpts,
+          );
+
           for (const item of resolvedItems) {
             if (args.actionable && item.effectiveStatus !== "todo") continue;
+            if (args.actionable && triad.gated) continue;
             // needsHuman keys on the DERIVED top band (B-12 / P-072), not the raw
             // stored token — so an authority=owner item gates the orchestrator DONE-gate
             // and, once the owner arms autonomy (P-092), a high-risk item above its
@@ -242,6 +292,7 @@ export default defineTool({
               ...(cov && isCoverageDivergent(item.effectiveStatus, cov.level)
                 ? { coverageDivergence: true as const }
                 : {}),
+              ...(triad.gated ? { specTriadMissing: triad.missing } : {}),
             });
           }
         }

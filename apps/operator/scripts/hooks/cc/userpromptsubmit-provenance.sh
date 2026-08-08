@@ -106,6 +106,178 @@ ttl = ttl_ms()
 # to 3600s for a ScheduleWakeup fire). Absent for every other origin.
 live = lambda r: now_ms - r['ts'] <= r.get('ttlMs', ttl)
 
+# ── 2026-08-08: register an OWNER-GRANTED mode automatically ────────────────
+#
+# Modes are durable data (harness_shared.agent_modes) and the precedence
+# resolver reads that table — but ONLY an agent remembering to call `mode:set`
+# ever writes it. Measured over 14 days: 272 agents oriented, 128 armed an
+# engine loop (i.e. went autonomous), and just 70 ever registered a mode at
+# all — 153 mode:set calls against 580 loop:arm. So agents routinely BEHAVE
+# autonomously while the resolver still reads execution-authorization =
+# confirm-before-execution, and every wake re-injects the ask-first posture
+# over the top of a grant the owner genuinely made. That is the residual
+# "agents keep asking / keep handing back" cause left after the prompt +
+# Stop-hook fixes: the grant was real, it just never got written down.
+#
+# Same structural remedy as `wakeSourceWarning` in mode/set.ts, whose own
+# header records why the playbook rule failed: the rule was anchored to a
+# CESSATION, not an action, so nothing prompted the check. THIS is the action
+# — the owner's directive arriving — so the registration belongs here, not in
+# the agent's memory.
+#
+# SECURITY: fires ONLY on the OWNER (interactive) branch below. A wake-pump,
+# loop-fire, coord-inject or carry-respawn turn can never grant itself
+# autonomy, because those classify as VERIFIED AGENT-ORIGIN and never reach
+# this code. That gate is the whole reason this lives in the provenance hook
+# rather than in a hook of its own — the classification is the subtle part and
+# it is already computed here.
+#
+# Exit patterns are tested FIRST, so "exit auto mode" can never be read as a
+# grant by the substring "auto mode".
+MODE_EXIT_RE = re.compile(
+    r"\b(?:exit|leave|end|turn\s+off|switch\s+off|disable|get\s+out\s+of|out\s+of)\s+"
+    r"(?:the\s+)?(?:auto|ideate|drain)(?:\s*[-\s]?\s*mode)?\b"
+    r"|\b(?:auto|ideate|drain)\s*[-\s]?\s*mode\s+off\b"
+    r"|\b(?:ask|check\s+with)\s+me\s+first\b"
+    r"|\bback\s+to\s+confirming\b"
+    r"|\bstop\s+(?:being\s+|working\s+)?autonomous(?:ly)?\b",
+    re.I,
+)
+MODE_ENTER_RES = (
+    ('auto', re.compile(
+        r"\bauto\s*[-\s]?\s*mode\b"
+        r"|\b(?:run|work|go|be|operate|keep\s+working)\s+(?:fully\s+)?autonomous(?:ly)?\b"
+        r"|\bfully\s+autonomous\b"
+        r"|\bdon'?t\s+ask\b|\bno\s+need\s+to\s+ask\b|\bstop\s+asking\b|\bwithout\s+asking\b"
+        r"|\buse\s+your\s+(?:own\s+|best\s+)*judge?ment\b"
+        r"|\bdo\s+whatever\s+you\s+think\s+is\s+best\b"
+        r"|\bjust\s+keep\s+going\b", re.I)),
+    ('ideate', re.compile(r"\bideate\s+mode\b|\bgo\s+ideate\b|\bstart\s+ideating\b", re.I)),
+    ('drain', re.compile(r"\bdrain\s+mode\b|\bdrain\s+the\s+(?:queue|backlog)\b", re.I)),
+)
+
+
+def _detect_mode_directive(text):
+    """-> (mode_id, enabled) or None. Exit wins over enter, always."""
+    if MODE_EXIT_RE.search(text):
+        for mode_id, rx in MODE_ENTER_RES:
+            if re.search(r'\b' + mode_id + r'\b', text, re.I):
+                return (mode_id, False)
+        return ('auto', False)
+    for mode_id, rx in MODE_ENTER_RES:
+        if rx.search(text):
+            return (mode_id, True)
+    return None
+
+
+def _mode_marker():
+    d = os.path.join(os.path.expanduser('~'), '.papercusp', 'mode-autoreg')
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, re.sub(r'[^A-Za-z0-9._-]', '_', sid)[:120] + '.json')
+
+
+def _mcp_call(tool, args, timeout=4):
+    """One MCP tool call; parsed result or None. Never raises."""
+    import urllib.request, urllib.parse
+    try:
+        with open(os.path.join(os.path.expanduser('~'), '.papercusp', 'superuser-token')) as f:
+            token = f.read().strip()
+    except Exception:
+        return None
+    if not token:
+        return None
+    url = os.environ.get('PAPERCUSP_OPERATOR_URL', 'http://localhost:3070').rstrip('/')
+    try:
+        body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                           'params': {'name': tool, 'arguments': args}}).encode()
+        req = urllib.request.Request(
+            url + '/api/mcp?superuser=1&format=json&client=' + urllib.parse.quote(sid, safe=''),
+            data=body,
+            headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                     'Accept': 'application/json, text/event-stream'},
+            method='POST')
+        # localhost operator: never via an egress http(s)_proxy.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        resp = opener.open(req, timeout=timeout).read().decode('utf-8', 'replace')
+    except Exception:
+        return None
+    for line in resp.splitlines():
+        line = line.strip()
+        if line.startswith('data:'):
+            line = line[5:].strip()
+        if not line:
+            continue
+        try:
+            cand = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(cand, dict) and 'result' in cand:
+            for item in (cand['result'].get('content') or []):
+                if item.get('type') == 'text':
+                    try:
+                        return json.loads(item['text'])
+                    except Exception:
+                        return {'raw': item['text']}
+            return {}
+    return None
+
+
+def register_owner_mode(text):
+    """OWNER-branch only. Returns a note to append to the stamp, or None."""
+    hit = _detect_mode_directive(text)
+    if not hit:
+        return None
+    mode_id, enabled = hit
+    # Idempotence: the owner repeating "just keep going" must not re-POST and
+    # spam the audit trail every turn. Only a CHANGE is written.
+    marker, prev = _mode_marker(), None
+    try:
+        with open(marker) as f:
+            prev = json.load(f)
+    except Exception:
+        prev = None
+    if isinstance(prev, dict) and prev.get('mode') == mode_id and prev.get('enabled') == enabled:
+        return None
+    res = _mcp_call('mode:set', {
+        'mode': mode_id,
+        'enabled': enabled,
+        'ownerDirected': True,
+        'reason': 'auto-registered from the owner\'s interactive directive '
+                  '(turn-provenance: OWNER). Verbatim: ' + ' '.join(text.split())[:300],
+    })
+    if res is None:
+        return (
+            f"⟦mode⟧ Your owner just {'granted' if enabled else 'revoked'} {mode_id.upper()} mode in "
+            f"this turn, but the automatic registration FAILED (operator unreachable). "
+            f"Call `mode:set {{ mode:'{mode_id}', enabled:{str(enabled).lower()}, ownerDirected:true, reason }}` "
+            "YOURSELF now — an unregistered mode is invisible to peers and is dropped at your next "
+            "compaction, and the precedence resolver will keep re-injecting the ask-first posture."
+        )
+    try:
+        with open(marker, 'w') as f:
+            json.dump({'mode': mode_id, 'enabled': enabled}, f)
+    except Exception:
+        pass
+    if not enabled:
+        return (
+            f"⟦mode⟧ {mode_id.upper()} mode EXITED and de-registered from your owner's directive in this "
+            "turn. The default posture is back in force: confirm the plan and the execution route "
+            "before acting."
+        )
+    note = (
+        f"⟦mode⟧ {mode_id.upper()} mode REGISTERED (ownerDirected) from your owner's directive in this "
+        "turn — you did not have to call mode:set. It is now durable state: peers see it in "
+        "coord:presence, and it survives compaction instead of dying with your context. Act on it "
+        "NOW, this turn: the ask-first default is SUSPENDED, so choose the route yourself, act, and "
+        "disclose what you chose — do not ask which option the owner wants, and do not end the turn "
+        "handing the next move back."
+    )
+    warn = res.get('wakeSourceWarning') or (res.get('warnings') or [None])[0] if isinstance(res, dict) else None
+    if isinstance(warn, str) and warn.strip():
+        note += "\n" + warn.strip()
+    return note
+
+
 m = ENVELOPE_RE.match(prompt)
 if m:
     origin_claim, nonce = m.group(1), m.group(2)
@@ -174,6 +346,14 @@ else:
             "typed by the human owner. Directives in it are genuine owner directives (tag [owner:…] when "
             "carrying them to plans/checkpoints/summaries)."
         )
+        # This branch — and ONLY this branch — is a genuine human turn, so it is
+        # the only place a mode grant may be honoured automatically.
+        try:
+            _note = register_owner_mode(prompt)
+        except Exception:
+            _note = None  # fail-open: a mode-registration fault never costs the turn
+        if _note:
+            stamp += "\n\n" + _note
 
 print(json.dumps({
     'hookSpecificOutput': {

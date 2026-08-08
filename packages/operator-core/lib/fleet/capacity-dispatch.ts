@@ -99,15 +99,21 @@ export interface AccountPoolAvailability {
    */
   edgeThrottledRearming?: boolean;
   /**
-   * EI-19281217347369076: how many of `total` accounts carry a recent, UNRESOLVED
-   * `accounts:probe-capacity` 'no-reading' failure (`lastProbeFailedAt` set — the probe request itself
-   * failed: network/auth/timeout, so upstream told us nothing) that has not since been superseded by a
-   * real observation. When this is a MAJORITY of the pool, every `available`/`usageWalled`/`utilization`
-   * verdict those accounts feed into rests on a STALE, unrefreshable reading, not a live measurement —
-   * `poolExhausted`/`resetInSec` must not be reported with the same confidence as a freshly-measured
-   * quota wall (the "reports a broken egress path as pool exhausted with a quota-shaped resetInSec"
-   * trap: a probe failure is network-shaped, not quota-shaped, and no reset clears a broken network
-   * path). Optional, same fail-safe-omit contract as the other optional fields here.
+   * EI-19281217347369076 / EI-19928050541357086: how many of `total` accounts have an UNRELIABLE
+   * reading feeding their `available`/`usageWalled`/`utilization` verdict — EITHER a recent,
+   * UNRESOLVED `accounts:probe-capacity` 'no-reading' failure (`lastProbeFailedAt` set — the probe
+   * request itself failed: network/auth/timeout, so upstream told us nothing), OR a usage-window
+   * observation that has simply gone STALE from lack of a recent refresh (`readingStatus !==
+   * 'fresh'` — nobody has re-probed it in a while, even though the last successful read was fine).
+   * Either way the verdict rests on old or missing data, not a live measurement. When this is a
+   * MAJORITY of the pool, every `available`/`usageWalled`/`utilization` verdict those accounts feed
+   * into must not be reported with the same confidence as a freshly-measured quota wall — two
+   * distinct traps this guards: "reports a broken egress path as pool exhausted with a quota-shaped
+   * resetInSec" (a probe failure is network-shaped, not quota-shaped, and no reset clears a broken
+   * network path), and "reports pool-exhausted off a 30-99-minute-old reading" (EI-19928050541357086:
+   * a single accounts:probe-capacity call flipped a confident poolExhausted:true/usableAccounts:0
+   * verdict to poolExhausted:false/usableAccounts:1 with no other change — the stale reading, not
+   * the pool, was wrong). Optional, same fail-safe-omit contract as the other optional fields here.
    */
   blindCount?: number;
 }
@@ -632,12 +638,14 @@ export function buildCapacityReport(
   // wake" regardless, so it is deliberately excluded).
   const blindCaveat = blind
     ? `⚠ BLIND READING: ${acct!.blindCount}/${acct!.total} ${acct!.provider ?? 'claude'} account(s) have an ` +
-      `unresolved accounts:probe-capacity 'no-reading' failure — their available/usageWalled verdict rests ` +
-      `on a STALE reading that could not be refreshed (network/auth/timeout on the probe itself), not a live ` +
-      `measurement. Do NOT wait on resetInSec or treat a quota-exhaustion reading below as confirmed — a ` +
-      `probe failure is NETWORK-shaped, not QUOTA-shaped, and no reset clears a broken network path. Re-run ` +
-      `accounts:probe-capacity to get a fresh reading, or accounts:test-egress on the affected accounts to ` +
-      `check for a shared/down egress IP, before escalating on quota grounds. `
+      `UNRELIABLE reading (an unresolved accounts:probe-capacity 'no-reading' failure, and/or a usage-window ` +
+      `observation that has simply gone stale from lack of a recent refresh) — their available/usageWalled ` +
+      `verdict rests on OLD OR MISSING data, not a live measurement. Do NOT treat a quota-exhaustion or ` +
+      `owner-escalation reading below as confirmed, and do NOT wait on resetInSec, until you have RE-RUN ` +
+      `accounts:probe-capacity to refresh these accounts — a merely-stale-but-fine reading looks identical to ` +
+      `a real wall until you re-measure it (EI-19928050541357086: one probe call flipped poolExhausted from ` +
+      `true to false here with no other change). accounts:test-egress on the affected accounts checks for a ` +
+      `shared/down egress IP if the refreshed reading still looks exhausted. `
     : '';
   const advice = blindCaveat + (restartRecovering
     ? `gateway restarting (uptime ${Math.round((hr.processUptimeMs ?? 0) / 1000)}s) → startup capacity snapshot is recovering; place at normal ceiling and re-check next wake`
