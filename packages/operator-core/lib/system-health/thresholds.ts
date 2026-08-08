@@ -473,7 +473,15 @@ export function reconcilePausedQueen(
   const q = queen.data;
   if (!q || q.started || queen.status !== 'crit') return null;
   const wf = workFeed.data;
-  if (!wf) return null; // frontier unreadable — keep the conservative crit
+  // Frontier unreadable ⇒ keep the conservative crit, exactly as this function's doc
+  // contract promises. `!wf` alone did NOT deliver that: it catches only a MISSING
+  // panel, while a survey that THREW leaves `wf` present with a fabricated
+  // `frontier: 0` — which reads as "nothing placeable" and falls through to the warn
+  // downgrade below, silencing a genuine silent-outage crit on a number nobody
+  // measured. The two cases were indistinguishable until `frontierUnreadable` existed
+  // (see WorkFeedHealth.frontierUnreadable); this is the same conflation the bees gate
+  // carried, with the fail direction pointing at a DOWNGRADE instead of a suppression.
+  if (!wf || wf.frontierUnreadable) return null;
   const placeable = Math.max(0, wf.frontier - (wf.frontierStuck ?? 0));
   if (placeable > 0 || wf.startedPlans > 0) {
     return {

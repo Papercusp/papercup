@@ -654,6 +654,21 @@ describe('reconcilePausedQueen — the paused-Mug cry-wolf fix (P-001)', () => {
   it('unreadable work-feed keeps the conservative crit (returns null — no adjustment)', () => {
     expect(reconcilePausedQueen(pausedQueen(2), { data: null })).toBeNull();
   });
+  // The case the `!wf` guard above did NOT cover, and the reason it went unnoticed: a
+  // survey that THROWS leaves the panel present with a FABRICATED `frontier: 0`, so it
+  // is byte-identical to a genuinely empty frontier — and falls through to the warn
+  // downgrade, silencing a real silent-outage crit on a number nobody measured. Only
+  // `frontierUnreadable` distinguishes them, which is what makes the documented
+  // "fail-soft keeps the conservative crit" contract actually deliverable.
+  it('a THROWN survey (frontierUnreadable, panel present) also keeps the conservative crit', () => {
+    expect(reconcilePausedQueen(pausedQueen(2), { data: wf({ frontierUnreadable: true }) })).toBeNull();
+  });
+  it('CONTROL: the identical shape WITHOUT the flag still downgrades — so the flag is what did it', () => {
+    // Pins that the test above is not passing for some incidental reason: same zeros,
+    // flag absent ⇒ the old (wrong-for-an-unreadable-survey) downgrade still happens.
+    const r = reconcilePausedQueen(pausedQueen(2), { data: wf() });
+    expect(r?.status).toBe('warn');
+  });
   it('no adjustment when not paused or not crit', () => {
     expect(reconcilePausedQueen({ status: 'crit', data: queen({ started: true, stalled: true }) }, { data: wf() })).toBeNull();
     expect(reconcilePausedQueen({ status: 'warn', data: queen({ started: false }) }, { data: wf() })).toBeNull();

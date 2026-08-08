@@ -78,8 +78,39 @@ export interface CorpusNoveltyOptions {
    * re-worded re-encounter the lexical matcher misses is still caught by its semantic
    * neighbour. Keeps this core PURE (the impure vector IO lives in the caller); absent
    * the map, scoring is byte-identical to the lexical-only original.
+   *
+   * ⚠ The cosine is CALIBRATED before blending — see `semanticBaselineQuantile`. Raw
+   * cosine and lexical similarity are NOT the same scale, and blending them directly
+   * severed Scout for six days (EI-19899846879024832).
    */
   semanticSimByRef?: ReadonlyMap<string, number>;
+  /**
+   * Quantile of THIS text's OWN cosine distribution treated as the "same-domain
+   * baseline" and subtracted before the cosine is blended with lexical (default 0.9).
+   *
+   * WHY THIS EXISTS. Lexical similarity scores ~0.00 for unrelated text, so a
+   * `matchFloor` of 0.5 / a reject line at 0.66 mean what they look like. Embedding
+   * cosine does NOT share that origin: measured on the live papercusp corpus
+   * (2210 entries, gemma/768), cosine between two UNRELATED same-domain entries has
+   * p50 ~0.62 and reaches 0.77, while genuine Scout ideas score 0.73-0.82. Feeding
+   * that raw into `max(lexical, cosine)` put every in-domain idea above the reject
+   * line, so the critic rejected 100% of Scout's output — 520 ideas generated, 0
+   * routed, for six days (EI-19899846879024832).
+   *
+   * Rescaling against the corpus's own distribution restores the lexical scale's
+   * meaning (typical unrelated entry -> 0) and is SCALE-FREE, which matters because
+   * the query text (title+body) is much longer than the corpus entries (titles), so
+   * no absolute cosine threshold transfers between them. Verified across
+   * quantile 0.5/0.9/0.99: 13/13 real ideas keep, 2/2 topically-alien texts keep.
+   *
+   * ⚠ This fixes the FALSE-REJECT outage. It does NOT make semantic dedup work:
+   * duplicates (0.77-0.82) and merely-same-domain ideas (up to 0.77) OVERLAP on this
+   * signal, so no threshold separates them (independently reproduced by EI-10562).
+   * Re-worded conceptual dupes are the LLM novelty-skeptic's job (critic #2 in
+   * critics.ts), not this leg's. Restoring real semantic dedup needs a different
+   * mechanism (full-body embedding, or a cross-encoder / LLM pairwise judge).
+   */
+  semanticBaselineQuantile?: number;
 }
 
 const DEFAULT_DECIDED_STATES = ['dropped', 'shipped', 'resolved', 'closed', 'done'] as const;
@@ -92,12 +123,29 @@ const DEFAULT_DECIDED_STATES = ['dropped', 'shipped', 'resolved', 'closed', 'don
  * tuning flows in via the resolved ScoutConfig; absent a blueprint override, behavior is
  * byte-identical to the previous inline constants.
  */
-export const DEFAULT_CORPUS_NOVELTY_OPTIONS: Required<CorpusNoveltyOptions> = {
+export const DEFAULT_CORPUS_NOVELTY_OPTIONS: Omit<Required<CorpusNoveltyOptions>, 'semanticSimByRef'> = {
   matchFloor: 0.5,
   maxMatches: 5,
   decidedStates: DEFAULT_DECIDED_STATES,
   decidedPenalty: 0.15,
+  semanticBaselineQuantile: 0.9,
 };
+
+/**
+ * Below this many resolved cosines the distribution is too small to estimate a
+ * baseline from, so the semantic leg is left UNCALIBRATED (baseline 0 — the raw
+ * `max(lexical, cosine)` blend). Refusing to calibrate off a handful of samples is
+ * the honest choice: a "baseline" taken from 3 points is noise, not a population.
+ * Live corpora are ~2200 entries, so production always calibrates.
+ */
+const MIN_SEMANTIC_SAMPLES_TO_CALIBRATE = 20;
+
+/** Ascending-sorted quantile. */
+function quantile(sortedAsc: readonly number[], q: number): number {
+  if (sortedAsc.length === 0) return 0;
+  const i = Math.min(sortedAsc.length - 1, Math.max(0, Math.floor(q * sortedAsc.length)));
+  return sortedAsc[i];
+}
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
