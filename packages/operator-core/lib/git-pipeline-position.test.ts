@@ -4660,6 +4660,11 @@ describe('WI-36259: judgingSha prefers the re-triage marker over the probe', () 
       refiringCandidate: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       refireAttempt: 1,
       maxRefires: 2,
+      // The STORED shape (`StoredInFlightRetriage`) is wider than the inline one
+      // `mapCheckpointRunInFlight` accepts — `snap()` carries the persisted record, so the
+      // freshness stamp and the rescued set are required here.
+      observedAtMs: Date.now(),
+      failingFiles: [],
     };
     const res = await gitPipelinePosition(
       { path: 'packages/operator-core/lib/cell-registrations.ts' },
