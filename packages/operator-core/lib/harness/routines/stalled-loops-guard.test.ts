@@ -58,13 +58,29 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
   };
 }
 
+/**
+ * The wake-reachability oracle, stubbed. `reachable` is the only field the guard reads.
+ *
+ * Module-scoped rather than per-describe (EI-19899301656065801): since the owner page landed,
+ * the DISARM path probes reachability too, so a disarm test that does not inject this falls
+ * through to the real `probeWakeReachability` and opens a live Postgres connection from a unit
+ * test. Every describe that can disarm therefore needs it, not just the fire-starved one.
+ */
+const reach = (reachable: boolean) =>
+  vi.fn(async () => ({
+    reachable,
+    channel: (reachable ? 'psu-socket' : 'none') as never,
+    durableWhileAlive: reachable,
+    summary: reachable ? 'live injectable session' : 'no wake path',
+  }));
+
 describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving it inert)', () => {
   it('no active loop-% rows → zero reads beyond discovery, no auto-pause, no broadcast', async () => {
     const sql = fakeSql([]);
     const getStatuses = vi.fn();
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
     expect(res).toEqual({
       checked: 0,
       paused: 0,
@@ -72,6 +88,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       vetoedByRecentTurn: [],
       reArmedFireStarved: [],
       vetoedByProviderWall: [],
+      disarmedWhileReachable: [],
       dryRun: false,
     });
     expect(getStatuses).not.toHaveBeenCalled();
@@ -95,7 +112,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     expect(res.checked).toBe(3);
     expect(res.paused).toBe(2);
@@ -123,7 +140,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     expect(res.paused).toBe(0);
     expect(autoPause).not.toHaveBeenCalled();
@@ -136,7 +153,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     expect(res.paused).toBe(0);
     expect(autoPause).not.toHaveBeenCalled();
@@ -148,7 +165,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws', dryRun: true }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws', dryRun: true }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     expect(res.dryRun).toBe(true);
     expect(res.paused).toBe(1);
@@ -169,7 +186,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     // Map insertion order means the LAST row for a duplicate owner wins.
     expect(autoPause).toHaveBeenCalledWith(sql, 'rt_new', expect.anything());
@@ -214,7 +231,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       const autoPause = vi.fn(async () => {});
       const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
       expect(res.paused).toBe(0);
       expect(res.vetoedByRecentTurn).toEqual(['su-live']);
@@ -243,7 +260,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       const autoPause = vi.fn(async () => {});
       const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
       expect(res.paused).toBe(1);
       expect(res.vetoedByRecentTurn).toEqual([]);
@@ -259,7 +276,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       const autoPause = vi.fn(async () => {});
       const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+      const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
       expect(res.paused).toBe(1);
       expect(res.vetoedByRecentTurn).toEqual([]);
@@ -281,7 +298,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
         );
         const autoPause = vi.fn(async () => {});
         const broadcast = vi.fn<BroadcastFn>(async () => true);
-        return sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+        return sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
       };
 
       expect(turnsStalledFloorMs(60)).toBe(30 * 60_000);
@@ -383,7 +400,7 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     expect(res.vetoedByProviderWall).toEqual([]);
     expect(res.paused).toBe(1);
@@ -399,7 +416,7 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     expect(res.vetoedByProviderWall).toEqual([]);
     expect(res.paused).toBe(1);
@@ -413,7 +430,7 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     expect(res.paused).toBe(1);
     expect(res.vetoedByProviderWall).toEqual([]);
@@ -433,7 +450,7 @@ describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () =>
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
-    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast, probeReachability: reach(false) });
 
     // The whole point: one sweep, two populations, opposite dispositions.
     expect(res.vetoedByProviderWall).toEqual(['su-walled']);
@@ -473,15 +490,6 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
   afterEach(() => {
     warnSpy.mockRestore();
   });
-
-  /** The wake-reachability oracle, stubbed. `reachable` is the only field the guard reads. */
-  const reach = (reachable: boolean) =>
-    vi.fn(async () => ({
-      reachable,
-      channel: (reachable ? 'psu-socket' : 'none') as never,
-      durableWhileAlive: reachable,
-      summary: reachable ? 'live injectable session' : 'no wake path',
-    }));
 
   it('re-arms a fire-starved loop and NEVER disarms it', async () => {
     const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
@@ -652,5 +660,155 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     expect(rearm).not.toHaveBeenCalled();
     expect(autoPause).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  // ── EI-19899301656065801: the OWNER page beside the FLEET broadcast ──────────────
+  // The guard already escalated a disarm to the fleet via broadcastSevereEvent. The gap was
+  // AUDIENCE, not silence: no peer has a mandate to revive someone else's session, and a
+  // disarmed loop cannot re-arm itself (reconcileLoopRoutines gates its rescue on active=TRUE),
+  // so a still-REACHABLE session that gets disarmed is permanently dark until a human acts.
+  // Measured instance: su-4a6e2255 disarmed 2026-08-04T09:07:15Z, dark 4d6h, recovered only
+  // because the owner resumed it by hand.
+  //
+  // The gate is REACHABILITY, and these tests are built so that gate cannot be quietly widened:
+  // the reachable and unreachable cases are byte-identical but for `reach(true|false)`, so a
+  // change that pages unconditionally fails the second, and one that never pages fails the first.
+
+  it('EI-19899301656065801: pages the OWNER when a still-REACHABLE session is disarmed', async () => {
+    const sql = fakeSql([{ id: 'rt_comatose', target_owner_id: 'su-comatose' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const probeReachability = reach(true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast, notify },
+    );
+
+    // It really was DISARMED (not re-armed) — otherwise the page would be about the wrong event.
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(rearm).not.toHaveBeenCalled();
+    expect(res.paused).toBe(1);
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    const page = notify.mock.calls[0][0];
+    expect(page.kind).toBe('intervention');
+    expect(page.importance).toBe('urgent');
+    expect(page.title).toContain('su-comatose');
+    expect(page.body).toContain('su-comatose');
+
+    // BESIDE the broadcast, never replacing it — the fleet signal is a different job.
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-19899301656065801: does NOT page when the disarmed owner is already gone (the WI-6639 corpse)', async () => {
+    // Byte-identical to the case above except the reachability probe. Disarming a session that
+    // ended long ago is pure hygiene and must stay as silent as it was before this landed —
+    // WI-6639's original population was 15 loops whose sessions had ALREADY ended.
+    const sql = fakeSql([{ id: 'rt_corpse', target_owner_id: 'su-corpse' }]);
+    const getStatuses = vi.fn(
+      async () => new Map([['su-corpse', status({ ownerId: 'su-corpse', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const probeReachability = reach(false);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast, notify },
+    );
+
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(res.paused).toBe(1);
+    expect(notify).not.toHaveBeenCalled();
+    // The FLEET is still told — only the owner page is withheld.
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-19899301656065801: does NOT page a FIRE-STARVED loop — it was re-armed, not disarmed', async () => {
+    // Self-healing: the loop is re-armed, so there is nothing for a human to do.
+    const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([['su-starved', status({ ownerId: 'su-starved', turnsStalled: true, ...FIRE_STARVED })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const probeReachability = reach(true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast, notify },
+    );
+
+    expect(rearm).toHaveBeenCalledTimes(1);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(res.reArmedFireStarved).toEqual(['su-starved']);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('EI-19899301656065801: a FAILING owner page never costs the disarm or the broadcast', async () => {
+    // Paging is strictly an addition to this sweep's job. A dead push transport must not roll
+    // back bookkeeping that already succeeded.
+    const sql = fakeSql([{ id: 'rt_comatose', target_owner_id: 'su-comatose' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const probeReachability = reach(true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {
+      throw new Error('push transport down');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast, notify },
+    );
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(res.paused).toBe(1);
+    expect(res.dryRun).toBe(false);
+    // and it says so rather than swallowing the failure silently
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('owner page failed'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('EI-19899301656065801: dryRun pages nobody', async () => {
+    const sql = fakeSql([{ id: 'rt_comatose', target_owner_id: 'su-comatose' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([['su-comatose', status({ ownerId: 'su-comatose', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const probeReachability = reach(true);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws', dryRun: true },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast, notify },
+    );
+
+    expect(res.dryRun).toBe(true);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
   });
 });

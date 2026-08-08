@@ -25,10 +25,32 @@
  *
  * ─── WHAT THIS CANNOT SEE (state it, do not paper over it) ─────────────────
  * Discovery matches tools NAMED `*:search` / `search:*`. A search-shaped
- * surface under another name is invisible to it and must be added here by
- * hand — `coord:feed`'s `q=` filter and the second `/adv/sessions/search`
- * route are two known examples, both queued under P-030. So this registry is
- * complete for the NAMING CLASS and a floor everywhere else, never a census.
+ * surface under another name is invisible to it and must be added here BY
+ * HAND. P-030 ran that hand-audit once (2026-08-08) and folded in six such
+ * surfaces — the `coord:feed` `q=` filter, both `/adv/sessions/*` routes,
+ * `/user/search`, the P-008 corpus-recall leg, and the boot warmup. So the
+ * registry is AUTOMATICALLY complete for the naming class, and MANUALLY
+ * complete as of that audit. A non-tool surface added later is still
+ * invisible until someone adds it: this is a floor, never a self-maintaining
+ * census.
+ *
+ * Two derivation limits, both of which bit during that audit and both of
+ * which the entries below are written around:
+ *
+ *  1. **The derivation is per-MODULE, and a module can host more than one
+ *     surface.** `endpoint-route/routes/adv/sessions.ts` serves BOTH
+ *     `/adv/sessions/search` (a synchronous JSONL file scan) and
+ *     `/adv/sessions/search-transcripts` (the hybrid engine). The file
+ *     derives `hybrid` because of the second, which says nothing about the
+ *     first. An entry must therefore point at the module that IMPLEMENTS its
+ *     mechanism — `omp-sessions.ts` for the grep route — not at the HTTP
+ *     wrapper both routes happen to share.
+ *  2. **The walker follows STATIC relative imports only.** A surface reaching
+ *     the engine through `await import()` (or a bare package specifier)
+ *     resolves to a 0-module graph, where `hasFloor: false` is TRIVIALLY true
+ *     rather than measured. `transcript-search-warmup` is exactly that shape,
+ *     which is why its exemption is declared and reasoned rather than
+ *     inferred from a derivation that cannot see its imports.
  */
 
 export interface SearchSurface {
@@ -61,6 +83,24 @@ export interface SearchSurface {
    * verifies each entry is still real, so it can only shrink.
    */
   floorGap?: { reason: string; trackedBy: string };
+  /**
+   * An engine-backed surface that runs UNFLOORED and is CORRECT to — because
+   * it has no result set for a floor to protect. It discards what the engine
+   * returns; the call exists for its side effects (warming a pool, an
+   * embedder, a prepared statement).
+   *
+   * This is deliberately NOT a second `floorGap`. A gap is a tracked defect
+   * that must shrink; this is a permanent, correct state. Filing one as the
+   * other corrupts both — the ceiling stops measuring outstanding defects,
+   * and a genuine gap can hide behind a category that never has to shrink.
+   * That is the `KNOWN_DARK_FLAGS` failure D-027 names, one level over.
+   *
+   * The claim is DERIVED, not trusted: the conformance test checks that every
+   * `runHybridSearch` call in the entry module is a bare statement whose value
+   * is discarded, so an entry that starts consuming results fails here instead
+   * of keeping an exemption it no longer earns.
+   */
+  resultsDiscarded?: string;
 }
 
 export const SEARCH_SURFACES: readonly SearchSurface[] = [
@@ -111,9 +151,23 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
     entry: 'agent-tools/memory/search.ts',
     engine: 'none',
     whyNotEngine:
-      'mem0 owns its own store, embedding lifecycle and recall ranking; the engine would have to ' +
-      'duplicate or bypass it. Explicitly NOT yet audited to this matrix — P-030 covers it, so treat ' +
-      'this entry as "known unexamined", not "known healthy".',
+      'AUDITED 2026-08-08 (P-030). The previous note here — "mem0 owns its own store and ranking" — ' +
+      'was right in its conclusion and wrong about the mechanism, which matters because it implied an ' +
+      'opaque third-party store nobody could reason about. What actually serves this tool is a SECOND ' +
+      'FIRST-PARTY HYBRID ENGINE: backend `hybrid-pg` (configure.ts:679) = `HybridBackend(' +
+      'LexicalLegBackend(mem0), mem0)` from `@papercusp/memory`, with its own RRF fusion ' +
+      '(hybrid-fusion.ts), its own diversity re-rank, and its own score-floor primitive ' +
+      '(`applyScoreFloor`). So it is NOT keyword-only and NOT unfloorable — it is a parallel ' +
+      'implementation of the same design as `@papercusp/search`, which is why migrating it would be a ' +
+      'consolidation project, not a floor fix.\n\n' +
+      'The one asymmetry worth knowing, since it looks like a floor gap and is not: this PULL path ' +
+      'passes no `minScore`/`minLexScore`/`fusionMode` (search.ts:233), so it runs `floored-union` ' +
+      'with an unfloored cosine leg, while the PUSH path (memory/injection.ts) passes a cosine floor, ' +
+      'minLexScore 0.40 and `cosine-gated`. That split is DELIBERATE and recorded at ' +
+      'injection.ts:298-303 (context-injection-audit-2026-07-28 D-010): "A human running memory:search ' +
+      'wants recall and can discard a bad hit; auto-injection has no LLM filter downstream, so it ' +
+      'wants precision." Do not "fix" the pull path to match the push path — that is a recall ' +
+      'regression against an explicit decision.',
   },
   {
     id: 'rubrics:search',
