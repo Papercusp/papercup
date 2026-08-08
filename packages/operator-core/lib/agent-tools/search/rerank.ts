@@ -266,3 +266,39 @@ export async function rerankProseHits(
     return hits.slice(0, limit);
   }
 }
+
+/**
+ * Stage B for a surface whose PAGE IS BIGGER THAN {@link RERANK_MAX_CANDIDATES}:
+ * rerank the head of the retrieved pool and keep the remainder in retrieval
+ * order, returning `limit` hits.
+ *
+ * WHY THIS EXISTS (P-010). `rerankCandidateCount` deliberately never
+ * under-fetches — `Math.max(limit, …)` — so for any `limit` at or above the cap
+ * it returns `limit` itself and the "over-fetch" degenerates to the page. Both
+ * prose agent tools cap at `limit` 20 so they never reach that point; the
+ * transcript-search route asks for 30 (the desktop pill) to 50 (the HUD), which
+ * does. Handing that whole page to {@link rerankProseHits} would score 30–50
+ * pairs against a cap MEASURED at 24 (≈45ms/pair, no parallelism escape hatch —
+ * see RERANK_MAX_CANDIDATES) — i.e. 1.35–2.25s on this box and ~2–4.5s on a
+ * laptop, straight through the {@link PROSE_RERANK_TIMEOUT_MS} budget into a
+ * full degrade. Silently blowing the calibration is the one thing a "just call
+ * the reranker" wiring must not do.
+ *
+ * So the cap is honoured as a CANDIDATE budget rather than as a page size: the
+ * cross-encoder orders the head — the part a human actually reads — and the
+ * tail rides through in RRF order beneath it. Worst-case cost is exactly the
+ * calibrated 24 pairs regardless of page size.
+ *
+ * Below the cap this is plain {@link rerankProseHits}, so a small page still
+ * gets genuine over-fetch (the reranker can pull a buried hit INTO the page).
+ * Same fail-safe contract throughout: any failure degrades to retrieval order.
+ */
+export async function rerankPageHead(
+  query: string,
+  hits: SearchHit[],
+  limit: number,
+): Promise<SearchHit[]> {
+  if (hits.length <= RERANK_MAX_CANDIDATES) return rerankProseHits(query, hits, limit);
+  const head = await rerankProseHits(query, hits.slice(0, RERANK_MAX_CANDIDATES), RERANK_MAX_CANDIDATES);
+  return [...head, ...hits.slice(RERANK_MAX_CANDIDATES)].slice(0, limit);
+}

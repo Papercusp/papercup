@@ -18,8 +18,22 @@ import type { SyncDeltaCodec, SyncDeltaSlot, SyncDeltaMeta } from '@papercusp/sy
  * resource-delta-config.ts (operator-core/lib/sync-resolver) — a resource the server doesn't
  * delta-negotiate simply never returns a delta envelope, so an extra name here is harmless
  * (the codec passes the full rows through), but keep them in sync for the win to land.
+ *
+ * ⚠ This is a LITERAL, not an import, on purpose: pulling operator-core in here would drag
+ * server code into the client bundle (see the header note). That makes drift possible, and it
+ * HAPPENED — the server gained `plans.byHive` (WI-7083) and `codeRecipes` (2026-08-02) while
+ * this set sat unchanged from 2026-06-23, so neither delta could ever be negotiated: the client
+ * gates first (`query-fetcher.ts:468` — no `enabled(name)` ⇒ no cursor ⇒ the server serves full).
+ * Both had live subscribers the whole time (`HiveContentPanel.tsx:88`, `RecipesClient.tsx:100`).
+ * `sync-delta-codec.test.ts` asserts this set against the server's exported
+ * `RESOURCE_DELTA_NAMES`, so adding one there without adding it here now fails a test.
  */
-const DELTA_RESOURCES: ReadonlySet<string> = new Set(['plans.attention', 'plans.list']);
+const DELTA_RESOURCES: ReadonlySet<string> = new Set([
+  'plans.attention',
+  'plans.list',
+  'plans.byHive',
+  'codeRecipes',
+]);
 
 /** Build a fresh codec — one DeltaToolClient + itemKeyField cache per provider lifetime. */
 export function createSyncDeltaCodec(): SyncDeltaCodec {

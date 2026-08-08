@@ -149,10 +149,24 @@ export interface ClassifiedSessionHits {
 }
 
 /**
- * Roll turn-level hits up to sessions: one group per (sourceKind, sessionId),
- * groups ordered by their best hit's score, hits within a group score-desc and
- * capped at `maxHitsPerSession` (the popover shows a few excerpts per session,
- * not every matching turn). Pure.
+ * Roll turn-level hits up to sessions, PRESERVING THE CALLER'S ORDER: one group
+ * per (sourceKind, sessionId), groups in the order their best hit arrives, hits
+ * within a group in that same order and capped at `maxHitsPerSession` (the
+ * popover shows a few excerpts per session, not every matching turn). Pure.
+ *
+ * ⚠ THE ORDER IS THE CALLER'S, NOT `score`'s — and that is the point (P-010).
+ * This used to re-derive the order by sorting on `score`, which was a no-op:
+ * `runHybridSearch` already returns its page score-desc, so the sort could only
+ * ever reproduce the order it was handed. It stops being a no-op the moment a
+ * Stage-B reranker runs, and then it is actively WRONG — `rerankProseHits`
+ * returns hits in cross-encoder relevance order while carrying each hit's
+ * RETRIEVAL score through untouched (the score stays on the wire as
+ * provenance), so a score sort silently un-does the entire rerank. That is a
+ * failure with no symptom: the reranker runs, costs its latency, and the
+ * response is byte-identical to not having reranked at all.
+ *
+ * `topScore` therefore stays the group's best RETRIEVAL score — a display /
+ * provenance value that no longer implies a position.
  */
 export function groupHitsBySession(
   hits: readonly TranscriptTurnHit[],
@@ -166,14 +180,13 @@ export function groupHitsBySession(
       g = { sourceKind: h.sourceKind, sessionId: h.sessionId, topScore: h.score, hits: [] };
       byKey.set(key, g);
     }
-    g.hits.push(h);
+    // Cap on the way in: the kept hits are the FIRST ones the caller ranked,
+    // not the highest-scoring ones (identical for score-desc input).
+    if (g.hits.length < maxHitsPerSession) g.hits.push(h);
+    // Measured over EVERY hit, including ones the cap dropped — unchanged.
     if (h.score > g.topScore) g.topScore = h.score;
   }
-  for (const g of byKey.values()) {
-    g.hits.sort((a, b) => b.score - a.score);
-    if (g.hits.length > maxHitsPerSession) g.hits = g.hits.slice(0, maxHitsPerSession);
-  }
-  return [...byKey.values()].sort((a, b) => b.topScore - a.topScore);
+  return [...byKey.values()];
 }
 
 /** The live roster entry a hit-session belongs to, if any: matched by the

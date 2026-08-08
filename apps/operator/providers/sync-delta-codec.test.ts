@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { computeViewChecksum, type DeltaChange } from '@papercusp/tooldef';
+import { RESOURCE_DELTA_NAMES } from '@papercusp/operator-core/lib/sync-resolver/resource-delta-config';
 import { createSyncDeltaCodec } from './sync-delta-codec';
 
 const id = (r: unknown) => String((r as { id: string }).id);
@@ -16,6 +17,22 @@ describe('createSyncDeltaCodec', () => {
     expect(codec.enabled('plans.attention')).toBe(true);
     expect(codec.enabled('plans.list')).toBe(true);
     expect(codec.enabled('workItems.byHarness')).toBe(false);
+  });
+
+  /**
+   * The client gates FIRST: query-fetcher.ts:468 sends no cursor when `enabled(name)` is false,
+   * so the server serves a full view and its delta config is dead weight. A server entry with no
+   * client entry is therefore not a partial win — it is ZERO win, silently.
+   *
+   * This regressed twice unnoticed (`plans.byHive` via WI-7083, `codeRecipes` 2026-08-02), which
+   * is why parity is asserted rather than documented. Direction matters: every SERVER name must be
+   * enabled on the client. The reverse is deliberately allowed — the codec passes rows through for
+   * a name the server does not negotiate, so a client-side extra is harmless.
+   */
+  it('enables every resource the SERVER delta-negotiates (no silent client/server drift)', () => {
+    const codec = createSyncDeltaCodec();
+    const missing = RESOURCE_DELTA_NAMES.filter((name) => !codec.enabled(name));
+    expect(missing, `server delta-negotiates these but the client never sends a cursor: ${missing.join(', ')}`).toEqual([]);
   });
 
   it('decodes a full, then merges a delta back to the exact view (learns itemKeyField)', () => {
