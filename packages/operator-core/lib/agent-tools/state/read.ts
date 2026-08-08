@@ -28,7 +28,26 @@ import { formatCellUnknown } from '../../cell-contract';
  *  something to say (see `formatCellHoist` — a measured-empty channel stays quiet). */
 function valueResult(out: Extract<CellRead, { status: 'value' }>) {
   const hoistProse = out.unknownHoist ? formatCellHoist(out.unknownHoist) : null;
-  return hoistProse === null ? { ok: true, ...out } : { ok: true, ...out, summary: hoistProse };
+  /**
+   * WI-36259 — HOIST A NON-AUTHORITATIVE READING INTO THE SUMMARY, for the same reason
+   * `unknownHoist` exists: this registry's own axis-2 rule is that in-band is necessary but
+   * NOT sufficient, because "a per-row qualifier a caller can skip past is how the defect
+   * survives contact with a hurried consumer". A caller who acts on an INFERRED gate
+   * candidate as though it were observed is precisely that hurried consumer — it is the
+   * misread this cell exists to prevent — so the caveat has to be where they cannot miss it,
+   * not nested under `source`.
+   *
+   * Deliberately quiet when the reading IS authoritative: a line that prints on every read
+   * is a line agents learn to skip, which would spend the hoist channel to say "normal".
+   */
+  const sourceProse =
+    out.source && !out.source.authoritative
+      ? `⚠ INFERRED, not observed: ${out.headline} came from ${
+          out.source.value === null ? 'an unattributed source' : `\`${out.source.value}\``
+        } — ${out.source.why}`
+      : null;
+  const summary = [hoistProse, sourceProse].filter((s): s is string => s !== null).join(' · ');
+  return summary === '' ? { ok: true, ...out } : { ok: true, ...out, summary };
 }
 
 export default defineTool({

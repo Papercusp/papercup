@@ -418,9 +418,21 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           // back toward the slow keepalive instead of being re-dialled
           // forever. A close that follows a genuinely-useful channel resets
           // the ladder, so a healthy link never pays for an earlier bad patch.
-          if (st.channels.size === 0) {
+          //
+          // `pairedAtMs` is REQUIRED, not just used for the measurement: a
+          // channel that never paired never gave this topic a peer, so its
+          // close is not a last-peer loss and must not touch the window in
+          // EITHER direction. openTopicChannel runs for EVERY socket, so in a
+          // swarm where most peers have not joined this topic their channels
+          // are closed/rejected without ever pairing — counting those would
+          // decay a FRESH JOIN's window to nothing (the one window discovery
+          // most needs), and re-arming on them (the pre-fix behavior) is the
+          // same unbounded amplifier wearing the never-paired face. A topic
+          // stuck never-paired is the WI-5211 escalation's job, not this
+          // ladder's.
+          if (st.channels.size === 0 && pairedAtMs) {
             const now = Date.now();
-            const aliveMs = pairedAtMs ? now - pairedAtMs : 0;
+            const aliveMs = now - pairedAtMs;
             if (minUsefulChannelMs <= 0 || aliveMs >= minUsefulChannelMs) {
               st.consecutiveFlapCloses = 0;
               st.fastWindowGrantedMs = fastWindowMs;

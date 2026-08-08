@@ -1588,7 +1588,21 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       });
       // Normal completion won the durable status race; the recovery artifact is
       // no longer needed. If finishSpawn throws, keep it for the reclaim sweep.
-      removeSpawnResultArtifact(resultPath);
+      //
+      // WI-36237: …but ONLY on a SUCCESSFUL terminal. This unlink used to run on
+      // every normal completion, which destroyed the child's full teed
+      // stdout/stderr at the exact moment it became the only way to diagnose a
+      // failure — the row keeps just a 2000-char tail, and for these deaths that
+      // tail was a bare activity marker. It presents as "the log is never
+      // written": measured 2026-08-08, the spawn-results dir held 8 files whose
+      // newest was 2026-07-16, and a SUCCESSFUL 5-minute cup run that same day
+      // left none either. That last case is the falsifier — absence of the file
+      // is uncorrelated with failure, so it was never a write-path bug. (The 8
+      // survivors are leaked orphans from non-harvest terminal paths,
+      // EI-19425373640931996.) Retaining it on failed/cancelled costs one file
+      // per failed spawn and is what makes the next occurrence diagnosable
+      // instead of blind.
+      if (args.status === 'done') removeSpawnResultArtifact(resultPath);
       if (args.releaseClaim) {
         await releaseSpawnWorkItemClaim(sql, { harness: slug, workItemId, spawnId }).catch(() => {});
       }
@@ -1699,9 +1713,25 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       // surface it explicitly with the actual budget that was exceeded, so the nursery
       // row self-explains instead of requiring a "was it exactly N seconds" forensic.
       const effectiveTimeoutMs = input.timeoutMs ?? invokeTimeoutMs();
+      // WI-36237: STRIP the outer activity-heartbeat marker before persisting.
+      // invoke.ts echoes `[papercusp:activity]` to the outer process's stderr
+      // purely to keep last_output_at fresh (WI-3302); it carries no diagnostic
+      // content. Persisting it raw did two kinds of damage, both measured
+      // 2026-08-08 on live cup rows:
+      //   - a SUCCESSFUL spawn (s-1786223325613, exit 0, 303s) carried 14 marker
+      //     lines in error_message — an error field populated on a clean run;
+      //   - a FAILED spawn carried error_message = "[papercusp:activity]\n"
+      //     EXACTLY, i.e. a row that looks like it has a diagnostic and has none.
+      // The latter is the expensive one: the capacity_shed fingerprint keys on
+      // `stderr === ''` (invoke-outcome.ts:227), so marker-only noise makes a
+      // genuinely-silent death read as non-silent. The CLASSIFY path already
+      // strips (invoke-outcome.ts:226); this PERSIST path did not — same input,
+      // two answers. After the strip a truly-silent death persists as NULL,
+      // which is what "no diagnostic" is supposed to look like.
+      const childStderr = stripActivityHeartbeat(r.stderr || '');
       const errorMessage = r.timedOut
         ? `invoke timeout after ${effectiveTimeoutMs}ms (${Math.round(effectiveTimeoutMs / 1000)}s) — SIGTERM'd (EI-361)`
-        : (r.stderr || '').slice(-2000) || null;
+        : childStderr.slice(-2000) || null;
       return completeSpawn({
         status: finalStatus,
         exitCode: r.exitCode,

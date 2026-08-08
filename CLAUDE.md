@@ -584,20 +584,34 @@ Two specifics worth knowing:
 - **Waiting for one to CHANGE** (a verdict, a deploy sha) → `state:subscribe`, not a
   poll loop and not a hand-built await.
 
-✅ **It DOES answer *"which sha is the run judging right now"* — a caveat here used to say
-otherwise, and it was stale.** WI-7035 routed the resolver through the run's OWN published
-`inFlightRetriage` marker and made it PREFER that marker over a run-probe
-(`git-pipeline-position.ts`: `candidate: marker ? marker.refiringCandidate : candidate`), so
-the cell's sha already IS the marker-backed answer whenever a marker exists. The stale caveat
-mattered because it sat immediately after the routing above and told the reader the cell would
-not answer their real question — sending them to hand-write the SQL the resolver had already
-read for them.
+✅ **It DOES answer *"which sha is the run judging right now"*, AND it now names its own
+provenance — read `source.authoritative` before you act on the sha.** The cell returns
+`source: { value, authoritative, why }`: `'retriage-marker'` is authoritative (the run's OWN
+published `inFlightRetriage` marker — an observation of what it is judging), `'run-probe'` is
+NOT (on a MANUAL run its `/tmp` unit log, but on a CRON run it degrades to the checkpoint
+checkout's live HEAD, an inference that changes between two reads). A non-authoritative
+reading is also hoisted into the reply's `summary`, so you cannot miss it. Do not fire a
+manual re-run off an inferred candidate. Raw `harness_shared.routines` SQL is the LAST resort.
 
-What the cell does **not** yet surface is the marker-vs-probe PROVENANCE. For that read
-`dev:pipeline_position` → `changeInCandidate.candidateSource` (`'retriage-marker'` =
-an authoritative observation of what the run is judging; `'run-probe'` = a hint, and on a CRON
-run that probe degrades to the checkpoint checkout's live HEAD). Its mid-rescue note carries
-the refire budget. Raw `harness_shared.routines` SQL is the LAST resort, not the first.
+⚠⚠ **This passage asserted the OPPOSITE of the truth for six days, in three different ways —
+distrust any older note repeating it** (WI-36259, fixed 2026-08-08). It said the cell's sha
+was "already marker-preferred per WI-7035". **It was not.** WI-7035 fixed
+`checkpointRunInFlight.candidate` ONLY — its own title says so — while the cell's headline,
+`changeInCandidate.judgingSha`, came from `checkActiveCheckpointRun`, which never reads the
+marker at all. So one resolver produced TWO shas for the same subject and they DISAGREED
+during a re-triage window: `checkpointRunInFlight` named the live candidate, and the cell this
+file points triagers at named the **ABANDONED** one. The doc also sent readers to
+`changeInCandidate.candidateSource`, a field that **never existed** (it was on
+`checkpointRunInFlight`). `reconcileGateCandidates` now makes the headline marker-preferred
+and labels it, so the two agree by construction.
+
+**The transferable lesson, because this shape recurs here:** a fix landed on one field, and
+the doc generalised it to a SIBLING field that never got it. Both fields were real, both
+names plausible, and the claim was written with a ✅ and a citation — the citation
+(`candidate: marker ? marker.refiringCandidate : candidate`) was even accurate, just about a
+different object than the sentence around it. Nothing in the passage looked wrong. **When a
+doc credits a fix to a field, verify the fix landed on THAT field** — read the writer, not
+the citation — and be most suspicious when the surrounding prose is confident and recent.
 
 ⚠ **`judgingContainsPath: false` with `missingReason: 'newer-commit'` does NOT mean your
 change missed the candidate — and on a shared file it usually means the opposite.** That
@@ -617,15 +631,16 @@ expensive mistake, and no amount of care in the steps below can recover from it.
 state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
 ```
 
-It returns the judged sha (`changeInCandidate.judgingSha` — already marker-preferred per
-WI-7035, see above), the containment falsifier `judgingContainsPath` (*is the gate judging MY
-change*) with its own prose attached, a `verdictUnknown` hoist naming anything it could NOT
-determine, and the `resolver` that produced them. Verified live 2026-08-08. The cells and the
-doors read the SAME resolver (`gitPipelinePosition()`), so this is a re-read of the authority,
-never a second source of truth. **Everything below — the marker SQL, the log greps, the
-ancestry and blob archaeology — is the FALLBACK**: reach for it when the cell answers
-`unknown`, or when you need a field the cell does not carry (candidate provenance, the refire
-budget, a run's failing-file set).
+It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259,
+see above), **its provenance (`source.authoritative` — check this before acting)**, the
+containment falsifier `judgingContainsPath` (*is the gate judging MY change*) with its own
+prose attached, a `verdictUnknown` hoist naming anything it could NOT determine, and the
+`resolver` that produced them. Verified live 2026-08-08. The cells and the doors read the SAME
+resolver (`gitPipelinePosition()`), so this is a re-read of the authority, never a second
+source of truth. **Everything below — the marker SQL, the log greps, the ancestry and blob
+archaeology — is the FALLBACK**: reach for it when the cell answers `unknown`, when
+`source.authoritative` is false and the distinction matters, or when you need a field the cell
+does not carry (the refire budget, a run's failing-file set).
 
 The `candidate` field DRIFTS: a single continuous run reports different candidates over its
 lifetime. Observed 2026-08-02: one run with an unchanged `started_at` of 07:15:17Z (elapsed

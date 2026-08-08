@@ -231,6 +231,34 @@ describe('createTopicGossip fast-window flap backoff (EI-18808621019872598)', ()
     await g.close();
   });
 
+  it('a channel that NEVER paired does not touch the window in either direction', async () => {
+    // openTopicChannel runs for every socket, so peers that did not join this
+    // topic contribute closed/rejected channels that never pair. Counting them
+    // as flaps would decay a fresh join's window — the one window discovery
+    // most needs — and re-arming on them (the pre-fix behavior) is the same
+    // amplifier wearing the never-paired face.
+    const f = fakeSwarm();
+    const g = makeGossip(f, MIN_USEFUL_MS);
+    g.joinTopic(TOPIC);
+    await vi.advanceTimersByTimeAsync(FAST_WINDOW_MS + REFRESH_MS); // burn the join window
+
+    const n = f.refreshed.length;
+    for (let i = 0; i < 4; i++) {
+      const socket = f.connect();
+      socket.userData!.channels[0]!.fireClose(); // closed without ever pairing
+    }
+    await vi.advanceTimersByTimeAsync(FAST_WINDOW_MS);
+    // No fast window was granted (pre-fix each of these re-armed a full one)…
+    expect(f.refreshed.length - n).toBe(0);
+
+    // …and none was spent either: a real peer's loss still gets the full window.
+    await flapOnce(f, 0);
+    const m = f.refreshed.length;
+    await vi.advanceTimersByTimeAsync(FAST_WINDOW_MS - REFRESH_MS);
+    expect(f.refreshed.length).toBeGreaterThanOrEqual(m + 3);
+    await g.close();
+  });
+
   it('a genuinely-useful channel RESETS the ladder — a healthy link never pays for an earlier bad patch', async () => {
     const f = fakeSwarm();
     const g = makeGossip(f, MIN_USEFUL_MS);

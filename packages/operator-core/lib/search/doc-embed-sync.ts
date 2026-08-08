@@ -236,6 +236,33 @@ export async function runDocSectionsSyncOnce(): Promise<DocSyncStats[] | { skipp
 
     const all: DocSyncStats[] = [];
     for (const s of sources) all.push(await syncDocSourceSections(sql, s));
+
+    // The guidance corpus (CLAUDE.md, prompt sources, blueprint role prompts,
+    // per-tool guidance blocks) — workstream C, P-001. Kept out of `sources`
+    // above because its prune decision is CONDITIONAL: its tool-guidance leg is
+    // read from the runtime tool registry, which is empty in a process that
+    // never imported the tool modules. Pruning on that census would delete every
+    // tool-guidance row a warm process wrote. `listPages` reports the shortfall
+    // as a census warning; we honour it by syncing prune-off.
+    try {
+      const { guidanceAdapter } = await import('../agent-tools/docs/_guidance-adapter');
+      const guidance = guidanceAdapter();
+      const pages = await guidance.listPages();
+      const census = guidance.lastCensus();
+      const incomplete = (census?.warnings.length ?? 0) > 0;
+      if (pages.length > 0) {
+        all.push(await syncDocSourceSections(sql, guidance, { prune: !incomplete }));
+        if (incomplete) {
+          console.warn(
+            `[doc-embed-sync] guidance corpus INCOMPLETE (prune skipped): ${census?.warnings.join(' · ')}`,
+          );
+        }
+      }
+    } catch (err) {
+      // Fail-open, exactly like a per-page render error: a broken guidance leg
+      // must never cost the engineering corpus its sync.
+      console.warn('[doc-embed-sync] guidance corpus sync failed:', (err as Error).message);
+    }
     __docSyncState.done = true;
     const changed = all.reduce((a, s) => a + s.changed, 0);
     if (changed > 0) {

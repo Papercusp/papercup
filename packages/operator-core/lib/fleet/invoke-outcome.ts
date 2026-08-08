@@ -83,7 +83,7 @@ const RAW_STDOUT_DETAIL_LIMIT = 1000;
  * both: a real diagnostic elsewhere in the text is no longer crowded out, and
  * a truly-silent death reads as truly empty again.
  */
-function stripActivityHeartbeat(text: string): string {
+export function stripActivityHeartbeat(text: string): string {
   if (!text || !text.includes(OUTER_ACTIVITY_ECHO_MARKER)) return text;
   return text.split(OUTER_ACTIVITY_ECHO_MARKER).join('').trim();
 }
