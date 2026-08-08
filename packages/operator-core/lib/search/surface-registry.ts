@@ -243,17 +243,7 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
   {
     id: 'GET /harness/search',
     entry: 'endpoint-route/routes/harness/search.ts',
-    engine: 'none',
-    whyNotEngine:
-      'NOT a considered choice — the one surface here that is simply UNMIGRATED, and it is ' +
-      'owner-facing. A raw cross-harness `ILIKE` substring scan over messages + the consolidated ' +
-      'features view, `ORDER BY created_at DESC LIMIT n`: no ranking of any kind, so results are ' +
-      'ordered by recency and truncated, and a query matching more rows than the limit silently ' +
-      'drops the best ones. Migrating it to the shared engine is tracked as P-018 of ' +
-      'semantic-search-fingerprint-coverage-2026-08-03.\n\n' +
-      'It is registered as `engine: none` rather than as a `floorGap` because a floor gap means ' +
-      '"reaches the engine but skips the policy seam"; this reaches no engine at all. Recording it ' +
-      'as a gap would understate it AND consume a ceiling that measures a different defect.',
+    engine: 'hybrid',
   },
   {
     id: 'transcript-search-warmup',

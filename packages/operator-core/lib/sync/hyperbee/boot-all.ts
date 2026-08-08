@@ -61,9 +61,73 @@ import {
 } from './substrate-wake-wiring';
 import { RemoteBootedHarnessHandle } from './remote-booted-harness';
 import { backgroundWorkersEnabled } from '../../background-workers';
+import { pinModuleState } from '@papercusp/module-singleton';
 
-const handles: Map<string, BootedHarnessHandle> = new Map();
-const inflight: Map<string, Promise<BootedHarnessHandle>> = new Map();
+/**
+ * THE SUBSTRATE BOOT REGISTRY — pinned to the realm, not to this module record.
+ *
+ * Every collection below answers some form of "is this hive resident in THIS
+ * process, and what is its lifecycle state". If the module record splits, so do
+ * they, and the process starts giving two different answers to that one question.
+ *
+ * MEASURED 2026-08-08 (P-014 / EI-19899917753028359), the failure this prevents:
+ * bg-host pid 1923950 HELD the papercusp corestore write lock (hyperbee/db/LOCK,
+ * fd 164uW) while answering `booted: false` for that exact hive on its own
+ * /api/internal/substrate/head-snapshot route — same pid, same instant,
+ * contradictory answers. One module instance had booted the hive and owned the
+ * lock; the route resolved a SECOND instance whose `handles` map was empty.
+ *
+ * It is a self-sustaining deadlock, not a transient miss: `getBootedHarness`
+ * answers null, fires reboot-on-access, and that re-boot can never acquire the
+ * corestore lock — because the lock is held by its own twin inside the same
+ * process. Five probes over four minutes never recovered. Downstream, the P-019
+ * no-outage sparse release cut refuses ("no operator process here reports having
+ * booted ..."), so releases silently keep shipping full history.
+ *
+ * The seam is real and measured, not theoretical: bg-host's own managed-timers
+ * route reports `evaluations: 2` for many ALREADY-PINNED modules
+ * (`@papercusp/flags.server`, `memory:host`, `lexicon:host`,
+ * `deployment-driver:registry`, ...). Those are correct DESPITE the double
+ * evaluation precisely because they are pinned. This registry was not, so it was
+ * the one that split — the same class as `@papercusp/scheduled-registry`, which
+ * reaped every 2 minutes while absent from the timer inventory of its own pid.
+ *
+ * Pinned as ONE object because these are interdependent: a shared `handles` beside
+ * a per-instance `evicted`/`wiringInflight` would just relocate the split-brain.
+ *
+ * ⚠ RESIDUAL, deliberately not addressed here: the module-scoped `let` scalars in
+ * this file (`evictionTrackingEnabled`, `defaultBootHarness`, `rebootOnAccess`,
+ * `routingDecisionPending`, `defaultSkipSendSideWiring`,
+ * `defaultMergeCursorStoreFactory`) still live per-record — pinning them means
+ * rewriting every assignment site, and they are configure-time seams rather than
+ * the residency answer. The worst remaining symptom is a missed LRU bump, NOT a
+ * hive that reports itself absent while holding its own lock.
+ */
+const bootRegistry = pinModuleState('@papercusp/operator-core.hyperbeeBootAll', () => ({
+  handles: new Map<string, BootedHarnessHandle>(),
+  inflight: new Map<string, Promise<BootedHarnessHandle>>(),
+  lastAccess: new Map<string, number>(),
+  evicted: new Set<string>(),
+  deferredActivation: new Set<string>(),
+  outboxWired: new Set<string>(),
+  presenceWired: new Set<string>(),
+  wiringInflight: new Map<string, Promise<void>>(),
+}));
+
+// Destructured so every existing access site reads unchanged: these are const
+// bindings to MUTABLE containers, so the alias and the pinned object are the same
+// object. Do NOT convert any of these to a reassignable `let` — that would silently
+// re-privatise it to this module record and reintroduce the split.
+const {
+  handles,
+  inflight,
+  lastAccess,
+  evicted,
+  deferredActivation,
+  outboxWired,
+  presenceWired,
+  wiringInflight,
+} = bootRegistry;
 
 function key(workspaceId: string, harnessSlug: string): string {
   return `${workspaceId}::${harnessSlug}`;
@@ -215,8 +279,7 @@ function defaultInProcessBootAllowed(env: NodeJS.ProcessEnv = process.env): bool
 // tore down so a later `getBootedHarness` for one can fire a background re-boot
 // (the lazy-boot "reboot-on-access" dual of eviction).
 let evictionTrackingEnabled = false;
-const lastAccess = new Map<string, number>();
-const evicted = new Set<string>();
+// `lastAccess` + `evicted` are pinned in `bootRegistry` at the top of this file.
 
 /**
  * P-010: harnesses the ACTIVATE-ON-DEMAND boot policy deliberately did NOT boot
@@ -233,7 +296,7 @@ const evicted = new Set<string>();
  * outbox rows would accumulate undrained forever (the EI-126 divergence class).
  * Every membership test on `evicted` in a wake path must also test this set.
  */
-const deferredActivation = new Set<string>();
+// `deferredActivation` is pinned in `bootRegistry` at the top of this file.
 
 /** True when this harness is not resident but IS wake-eligible — either the
  *  reaper evicted it, or the activation policy deferred it at boot. Consuming
@@ -313,9 +376,8 @@ export function _resetEvictionTrackingForTests(): void {
  * Concurrent calls coalesce on `wiringInflight` so a step never double-starts
  * (a second drain loop would double-append + double-GC the same outbox).
  */
-const outboxWired = new Set<string>();
-const presenceWired = new Set<string>();
-const wiringInflight = new Map<string, Promise<void>>();
+// `outboxWired`, `presenceWired` + `wiringInflight` are pinned in `bootRegistry`
+// at the top of this file.
 
 export interface SendSideWiringDeps {
   /** Default: getOrgPg() + wireOutboxForHarness. Tests inject a fake.

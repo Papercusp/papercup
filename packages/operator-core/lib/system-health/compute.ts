@@ -86,6 +86,7 @@ import {
   autonomyStatus,
   improvementsStatus,
   infraStatus,
+  infraSummary,
   overwatchStatus,
   worstStatus,
   deriveQueenAlive,
@@ -97,6 +98,8 @@ import {
   QUEEN_STALL_MS,
   WATCHDOG_FIRES_WARN,
   MCP_PROXY_HARD_FAIL_CRIT,
+  DISK_USED_CRIT_PCT,
+  DISK_USED_WARN_PCT,
   ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN,
 } from './thresholds';
 
@@ -1761,25 +1764,13 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
     const status = infraStatus(data);
     const perfCrit = perf?.status === 'crit';
     const toolsCrit = toolFailures?.rating === 'broken';
-    const poolNote = pool?.band === 'critical' ? ', POOL STARVATION' : pool?.band === 'elevated' ? ', pool elevated' : '';
     const mcpHard = mcpProxy?.hardFailures ?? 0;
     const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
     const mcpWarn = mcpHard > 0 && !mcpCrit;
     const worstDisk = disk && disk.length > 0 ? Math.max(...disk.map((v) => v.usedPct)) : null;
     return {
       status,
-      summary: toolsCrit
-        // Leads the summary: this string is what the liveness-alarm catch-all copies
-        // into the escalation, so it must name the tool, the rate and the error code —
-        // enough to act on without running a query first.
-        ? `TOOL FAILING FLEET-WIDE: ${toolFailures!.evidence}`
-        : mcpCrit
-        ? `MCP PROXY FAILING: ${mcpHard} hard tool-call failure(s)/1h (transient-is-normal regression — pages)`
-        : perfCrit
-        ? `PER-THREAD WEDGE: ${perf!.reasons[0] ?? 'operator degraded'}`
-        : pg
-        ? `PG ${pg.active} active / ${pg.total} conns${poolNote}${ctx.gatewayEnabled ? `, gateway ${ctx.gatewayReachable ? 'up' : 'down'}` : ''}${mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : ''}${perf?.status === 'warn' ? `, perf warn (${perf.reasons[0] ?? ''})` : ''}`
-        : 'PG unreadable',
+      summary: infraSummary(data, ctx.gatewayEnabled),
       data,
       link: { label: 'Tests', href: '/adv?tab=testing' },
       metrics: [
@@ -1789,7 +1780,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('mcp-proxy', mcpProxy ? (mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
-        m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= 95 ? 'crit' : worstDisk >= 90 ? 'warn' : undefined),
+        m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= DISK_USED_CRIT_PCT ? 'crit' : worstDisk >= DISK_USED_WARN_PCT ? 'warn' : undefined),
         m('backup', backup?.ageMs == null ? 'n/a' : agoMin(backup.lastOkAtMs, ctx.now), backup && backup.ageMs !== null && backup.ageMs > 48 * 60 * 60_000 ? 'warn' : undefined),
         m('drift', migrationDrift ? migrationDrift.unapplied : 'n/a', (migrationDrift?.unapplied ?? 0) > 0 ? 'warn' : undefined),
         m(

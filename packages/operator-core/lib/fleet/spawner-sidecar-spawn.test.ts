@@ -10,6 +10,34 @@ import { EventEmitter } from 'node:events';
 const spawnMock = vi.fn();
 vi.mock('node:child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
 
+// ── EI-19479764372783341 fallout: this file's subject now sits behind an ASYNC
+// chokepoint ──────────────────────────────────────────────────────────────────
+//
+// `spawnSpawnerSidecar` routes through `managedSpawn` so the sidecar lands in a
+// transient systemd scope that is a SIBLING of papercup-bg-host.service (before,
+// a raw spawn put it INSIDE bg-host's cgroup, so restarting bg-host killed the
+// agent spawner and every desktop sidecar it parented). Two consequences here:
+//
+//  1. `isTaskManagerEnabled()` awaits `getFlag(...)`, which never settles with no
+//     flag backend. Combined with this file's fake timers that is a HANG, not a
+//     failure — the whole file produced zero output for 10min. `setTaskManagerEnabledForTest`
+//     does NOT help: it only sets the cache the SYNC reader consults.
+//  2. `registerTask`/`markSpawned` want Postgres.
+//
+// Both are mocked, so this file stays a unit test of the SPAWN PLAN + ENV, which
+// is its actual subject.
+vi.mock('../task-manager/enabled', () => ({
+  isTaskManagerEnabled: async () => true,
+  taskManagerEnabledSync: () => true,
+  warmTaskManagerFlag: () => {},
+  setTaskManagerEnabledForTest: () => {},
+}));
+vi.mock('../task-manager/store', () => ({
+  registerTask: async (_s: unknown, o: { taskId?: string }) => ({ taskId: o?.taskId ?? 't', state: 'pending' }),
+  markSpawned: async () => {},
+  closeTask: async () => {},
+}));
+
 import {
   _resetSpawnerSidecarSpawnStateForTests,
   _setSpawnerSidecarProcessForTests,
@@ -22,6 +50,7 @@ import {
   MAX_RESPAWN_ATTEMPTS,
 } from './spawner-sidecar-spawn';
 import { _resetSidecarShutdownHookRegistryForTests, respawnBackoffMs } from '../process-supervision/sidecar-spawn-shared';
+import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
 
 type FakeChild = EventEmitter & {
   pid: number;
@@ -31,11 +60,47 @@ type FakeChild = EventEmitter & {
   kill: ReturnType<typeof vi.fn>;
 };
 
+/**
+ * A stdout that REPLAYS data emitted before anyone was listening.
+ *
+ * Every test here does `const ready = spawnSpawnerSidecar(...)` and then emits
+ * the handshake on the very next line. That was sound while the spawn was
+ * synchronous — the listener was attached by the time the call returned. Now
+ * `managedSpawn` is async, so the child (and its listener) do not exist on that
+ * tick and the handshake would be emitted into the void, leaving every test to
+ * hang on `await ready` until the 10s startup timeout.
+ *
+ * Buffering and replaying is the fixture absorbing that timing change, so the 13
+ * call sites keep reading the way they did. It weakens nothing: the data still
+ * has to arrive, be parsed, and match the handshake for `ready` to resolve.
+ */
+function makeReplayableStdout(): EventEmitter {
+  const stdout = new EventEmitter();
+  const emit = stdout.emit.bind(stdout);
+  const pending: unknown[][] = [];
+  stdout.emit = ((event: string, ...a: unknown[]) => {
+    if (event === 'data' && stdout.listenerCount('data') === 0) {
+      pending.push(a); // nobody home yet — hold it
+      return false;
+    }
+    return emit(event, ...a);
+  }) as typeof stdout.emit;
+  stdout.on('newListener', (event) => {
+    if (event !== 'data' || pending.length === 0) return;
+    const replay = pending.splice(0);
+    // nextTick, not sync: 'newListener' fires BEFORE the listener is added.
+    process.nextTick(() => {
+      for (const a of replay) emit('data', ...a);
+    });
+  });
+  return stdout;
+}
+
 function makeChild(): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.pid = 4242;
   child.killed = false;
-  child.stdout = new EventEmitter();
+  child.stdout = makeReplayableStdout();
   child.stderr = new EventEmitter();
   child.kill = vi.fn((signal?: string) => {
     child.killed = true;
@@ -45,14 +110,38 @@ function makeChild(): FakeChild {
 }
 
 describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     spawnMock.mockReset();
     vi.useFakeTimers();
     _resetSpawnerSidecarSpawnStateForTests();
+    // PIN the scope probe UNSUPPORTED, for two independent reasons.
+    //
+    // (a) Determinism of the call indices: an unseeded probe fires its OWN
+    //     `systemd-run` spawn through the SAME mock, eating a `mockReturnValueOnce`
+    //     and shifting every `spawnMock.mock.calls[N]` this file reads (WI-7377).
+    // (b) Subject: pinned unsupported, `managedSpawn` still runs its full path but
+    //     launches the payload directly — so `cmd`/`args` stay the bare `npx tsx …`
+    //     spawn PLAN these tests are about, unchanged by the confinement work.
+    //
+    // The CONFINED branch is pinned by the sibling file
+    // `spawner-sidecar-cgroup-confinement.test.ts`. Both branches are covered on
+    // purpose: a refactor that silently drops confinement fails THERE, loudly,
+    // instead of looking like a stale expectation here.
+    resetScopeProbe();
+    await probeScopeSupport((() => {
+      throw new Error('no systemd in test');
+    }) as never);
+    // Pinning the probe unsupported means the spawn legitimately reports itself
+    // UNCONFINED once per process, and `vitest-fail-on-console` fails any test
+    // that lets a console.warn escape. Silenced here and asserted EXPLICITLY in
+    // the dedicated case below — which is what that failure message asks for,
+    // rather than blanket-muting a signal nobody then checks.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     _resetSpawnerSidecarSpawnStateForTests();
+    resetScopeProbe();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -97,6 +186,38 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
 
   it('a no-op stop when nothing is running never throws', async () => {
     await expect(stopSpawnerSidecar()).resolves.toBeUndefined();
+  });
+
+  // EI-19479764372783341. Landing unconfined is a legitimate degrade (a box with
+  // no systemd user scopes still gets a sidecar), but it silently restores the
+  // original hazard — the child shares bg-host's cgroup and dies with it — so it
+  // must never be silent. Asserted here rather than merely muted, and asserted
+  // ONCE-per-process because the probe result is cached: a per-spawn warning
+  // would repeat on every crash-respawn.
+  it('says so, exactly once, when the sidecar lands UNCONFINED (the cgroup hazard is back)', async () => {
+    const warn = console.warn as unknown as ReturnType<typeof vi.fn>;
+    const first = makeChild();
+    spawnMock.mockReturnValueOnce(first);
+    const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+    first.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    await ready;
+
+    const unconfined = warn.mock.calls.filter((c) => String(c[0]).includes('UNCONFINED'));
+    expect(unconfined).toHaveLength(1);
+    expect(String(unconfined[0][0])).toContain('EI-19479764372783341');
+
+    // A LATER spawn in the same process must not repeat it — the probe result is
+    // cached, so the condition never changes and re-stating it is pure noise.
+    // Driven by a deliberate stop + respawn rather than a crash, to keep this
+    // case about the warning instead of the respawn machinery.
+    await stopSpawnerSidecar();
+    const second = makeChild();
+    spawnMock.mockReturnValueOnce(second);
+    const again = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+    second.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    await again;
+
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('UNCONFINED'))).toHaveLength(1);
   });
 
   it('EI-8810: never hands the child the parent HTTP port or the background-worker role', async () => {

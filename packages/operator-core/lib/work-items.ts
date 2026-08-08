@@ -1390,6 +1390,23 @@ export async function searchWorkItems(
   opts: {
     harness?: string;
     kind?: WorkItemKind;
+    /**
+     * Restrict to ONE family without also pinning an exact `kind`.
+     *
+     * `kind` could already narrow the family, but only by fixing the kind too —
+     * so "every feature-family row" (feature + chunk + any workspace-registered
+     * generic kind) was previously inexpressible: you got one exact kind, or
+     * both families. `family: 'feature'` is exactly the predicate the
+     * `harness_features_consolidated` compat view applies
+     * (`item_kind <> ALL('bug','change','task')`, i.e. {@link familyOf}), which
+     * is what lets a caller searching that view delegate here without changing
+     * which rows it can see.
+     *
+     * Composes with `kind` by INTERSECTION; a contradictory pair
+     * (`family:'feature', kind:'bug'`) selects no sources and returns no
+     * matches rather than silently widening to one of them.
+     */
+    family?: WorkItemFamily;
     limit?: number;
     /** Default on (off under VITEST); `false` = lexical-only. */
     semantic?: boolean;
@@ -1404,8 +1421,14 @@ export async function searchWorkItems(
   } = {},
 ): Promise<WorkItemSearchResult> {
   const limit = Math.min(opts.limit ?? 50, 200);
-  const wantFeature = !opts.kind || familyOf(opts.kind) === 'feature';
-  const wantIssue = !opts.kind || familyOf(opts.kind) === 'issue';
+  // `family` and `kind` intersect: each may independently rule a family out,
+  // and neither may add one back. Written as one predicate so the two filters
+  // cannot drift apart the way two hand-maintained booleans would.
+  const kindFamily = opts.kind ? familyOf(opts.kind) : null;
+  const wants = (f: WorkItemFamily): boolean =>
+    (!opts.family || opts.family === f) && (!kindFamily || kindFamily === f);
+  const wantFeature = wants('feature');
+  const wantIssue = wants('issue');
   const filters: WorkItemSearchFilters = {
     ...(opts.harness ? { harness: opts.harness } : {}),
     // The caller picks the sources by family, so a `kind` reaching a source is

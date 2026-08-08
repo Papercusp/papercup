@@ -47,6 +47,9 @@ const readyWaiters: (() => void)[] = [];
 // the pid-keyed socket. This holds the in-flight attempt so they share one.
 let spawnInFlight: Promise<void> | null = null;
 
+/** One UNCONFINED warning per process — see the spawn site for why. */
+let warnedUnconfined = false;
+
 // ── P-006 (critical-process-supervisor-2026-07-04): auto-respawn-on-crash ───
 //
 // Before this, an unexpected sidecar exit just cleared module state and waited
@@ -269,10 +272,15 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     },
   );
   sidecarProcess = managed.child;
-  if (!managed.confined) {
+  // Warn ONCE per process, not per spawn. Scope support is probed once and cached,
+  // so this condition is constant for the process lifetime — repeating it on every
+  // lazy spawn and every crash-respawn (up to 5 in 5 minutes) would bury the one
+  // line that matters under its own repetition.
+  if (!managed.confined && !warnedUnconfined) {
+    warnedUnconfined = true;
     console.warn(
       `[spawner-sidecar] UNCONFINED (${managed.confinementSkippedReason ?? 'unknown reason'}) — ` +
-        'it shares bg-host\'s cgroup, so a bg-host restart will kill it and the desktop sidecars it parents (EI-19479764372783341).',
+        "it shares bg-host's cgroup, so a bg-host restart will kill it and the desktop sidecars it parents (EI-19479764372783341).",
     );
   }
 
@@ -408,6 +416,7 @@ export function _resetSpawnerSidecarSpawnStateForTests(): void {
   // would be RETURNED to the next caller instead of spawning, so every later
   // assertion reads "spawn called 0 times" for a reason that is not the subject.
   spawnInFlight = null;
+  warnedUnconfined = false;
 }
 
 /**

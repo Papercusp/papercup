@@ -20,6 +20,7 @@ import {
   worstStatus,
   deriveQueenAlive,
   infraStatus,
+  infraSummary,
   statusSeverity,
   ackCovers,
   reconcilePausedQueen,
@@ -552,6 +553,108 @@ describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () =>
   });
   it('a perf crit still dominates a PG-pool warn', () => {
     expect(infraStatus(infra({ perf: { status: 'crit' } as InfraHealth['perf'], pool: { probeMs: 5000, band: 'critical' } }))).toBe('crit');
+  });
+});
+
+describe('infraSummary — every crit must NAME its cause (the escalation body)', () => {
+  const critDisk = [{ path: '/home/agent/.papercusp', usedPct: 96 }];
+  /** "Named nothing" = the healthy-looking PG connection line, verbatim. */
+  const BARE_PG_LINE = /^PG \d+ active \/ \d+ conns, gateway up$/;
+
+  // ── the defect this pair of functions was split apart to prevent ────────────
+  it('names DISK on a disk-pressure crit — it used to render as a healthy PG line', () => {
+    const d = infra({ disk: critDisk });
+    expect(infraStatus(d)).toBe('crit');
+    const s = infraSummary(d, true);
+    expect(s).toContain('DISK 96%');
+    expect(s).toContain('/home/agent/.papercusp');
+    // The regression: the crit fell through to the PG branch, so the page a human
+    // got named PG + gateway (both healthy) and never mentioned disk at all.
+    expect(s).not.toContain('PG 2 active');
+    expect(s).not.toContain('gateway up');
+  });
+
+  it('CONTROL: the SAME shape one point below the threshold keeps the PG line — the disk branch is gated, not always-on', () => {
+    const d = infra({ disk: [{ path: '/home/agent/.papercusp', usedPct: 94 }] });
+    expect(infraStatus(d)).toBe('warn'); // >= DISK_USED_WARN_PCT, < DISK_USED_CRIT_PCT
+    const s = infraSummary(d, true);
+    expect(s).not.toContain('DISK 94%');
+    expect(s).toContain('PG 2 active');
+    // ...but the leading indicator still reaches the reader, inline.
+    expect(s).toContain(', disk 94%');
+  });
+
+  it('reports the WORST volume, not the first one collected', () => {
+    const d = infra({ disk: [{ path: '/small', usedPct: 12 }, { path: '/full', usedPct: 97 }] });
+    expect(infraSummary(d, true)).toContain('DISK 97% used on /full');
+  });
+
+  it('keeps infraStatus precedence: a perf wedge outranks a disk crit', () => {
+    const d = infra({ perf: { status: 'crit', reasons: ['PSI memory full avg60 13.29 >= 5'] } as InfraHealth['perf'], disk: critDisk });
+    expect(infraSummary(d, true)).toContain('PER-THREAD WEDGE: PSI memory full');
+  });
+
+  it('a healthy box still renders the PG line, with no disk note at all', () => {
+    const s = infraSummary(infra({ disk: [{ path: '/', usedPct: 40 }] }), true);
+    expect(s).toBe('PG 2 active / 10 conns, gateway up');
+  });
+
+  /**
+   * The CLASS guard. `infraStatus` gained a crit branch (disk) that this summary
+   * chain never got, and the mismatch was invisible for as long as nobody read an
+   * escalation body next to the predicate. This walks every crit-producing shape
+   * and asserts the summary names something actionable — so the next crit branch
+   * added to `infraStatus` without a summary branch fails HERE, not in a page.
+   */
+  it('infra-summary-names-every-crit: no crit renders the generic PG line', () => {
+    const critShapes: Array<[string, InfraHealth]> = [
+      ['toolFailures broken', infra({ toolFailures: { rating: 'broken', evidence: 'facts:assert 100% fail' } as InfraHealth['toolFailures'] })],
+      ['mcp proxy breach', infra({ mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) })],
+      ['perf wedge', infra({ perf: { status: 'crit', reasons: ['operator degraded'] } as InfraHealth['perf'] })],
+      ['disk pressure', infra({ disk: critDisk })],
+      ['gateway down', infra({ gatewayReachable: false })],
+    ];
+    for (const [label, d] of critShapes) {
+      expect(infraStatus(d), `${label} should be crit`).toBe('crit');
+      const s = infraSummary(d, true);
+      // "Names its cause" = it is not merely the healthy-looking PG connection line.
+      // `gateway down` satisfies this by appending to that line, which is why the
+      // assertion is on the RENDERED cause and not on the branch taken.
+      const isBarePgLine = BARE_PG_LINE.test(s);
+      expect(isBarePgLine, `${label} rendered an unnamed summary: ${s}`).toBe(false);
+    }
+  });
+
+  /**
+   * CONTROL — proves the guard above can FAIL, without mutating the shared tree
+   * (the repo's tier-1 falsifiability pattern: keep the deliberately-wrong
+   * implementation here, permanently, instead of racing git-sync with a probe).
+   * `legacySummary` is the chain exactly as it shipped before the disk branch
+   * existed. A guard that has never failed is a guard nobody has tested.
+   */
+  it('CONTROL: the guard FAILS against the pre-fix chain (disk branch removed)', () => {
+    const legacySummary = (d: InfraHealth): string => {
+      if (d.toolFailures?.rating === 'broken') return `TOOL FAILING FLEET-WIDE: ${d.toolFailures.evidence}`;
+      const mcpHard = d.mcpProxy?.hardFailures ?? 0;
+      if (mcpHard >= MCP_PROXY_HARD_FAIL_CRIT) return `MCP PROXY FAILING: ${mcpHard} hard tool-call failure(s)/1h`;
+      if (d.perf?.status === 'crit') return `PER-THREAD WEDGE: ${d.perf.reasons[0] ?? 'operator degraded'}`;
+      if (!d.pg) return 'PG unreadable';
+      return `PG ${d.pg.active} active / ${d.pg.total} conns, gateway ${d.gatewayReachable ? 'up' : 'down'}`;
+    };
+    const diskCritShape = infra({ disk: critDisk });
+    expect(infraStatus(diskCritShape)).toBe('crit');
+    // The exact production symptom, reproduced: a disk crit rendering as a line
+    // that names PG and the gateway — both healthy — and never mentions disk.
+    expect(legacySummary(diskCritShape)).toBe('PG 2 active / 10 conns, gateway up');
+    expect(BARE_PG_LINE.test(legacySummary(diskCritShape))).toBe(true); // guard would fire
+    // ...and it is specifically the disk leg that regressed — the other crits
+    // were always named, so a blunter guard would have passed the buggy chain.
+    for (const d of [
+      infra({ perf: { status: 'crit', reasons: ['x'] } as InfraHealth['perf'] }),
+      infra({ mcpProxy: mcpProxy({ hardFailures: MCP_PROXY_HARD_FAIL_CRIT }) }),
+    ]) {
+      expect(BARE_PG_LINE.test(legacySummary(d))).toBe(false);
+    }
   });
 });
 

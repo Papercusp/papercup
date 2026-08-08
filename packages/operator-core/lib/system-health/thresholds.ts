@@ -404,6 +404,55 @@ export function infraStatus(d: InfraHealth): PanelStatus {
 }
 
 /**
+ * The Infra panel's one-line summary — deliberately co-located with `infraStatus`
+ * above, because the two are a PAIR: this string is what the liveness-alarm
+ * catch-all copies into the escalation it pages a human with, so every crit
+ * branch of `infraStatus` must have a branch here that NAMES its cause.
+ *
+ * It did not, and that is why this function exists. `infraStatus` crits on disk
+ * (`worstDiskPct >= DISK_USED_CRIT_PCT`) but the chain had no disk branch, so a
+ * "writes are about to fail" page fell through to the PG line and rendered as
+ * `PG 57 active / 273 conns, gateway up` — two HEALTHY subsystems named, the
+ * actual condition named nowhere, and nothing in the escalation to act on.
+ * Measured 2026-08-08 on `papercusp`: ~15 of the last 6 days' `panel:infra`
+ * escalations carried that unnamed shape (the named ones lead `PER-THREAD
+ * WEDGE:` / `MCP PROXY FAILING:`). Disk was the only crit whose cause never
+ * reached the reader — every other one either leads this chain or appends to
+ * the PG line (`, gateway down`).
+ *
+ * Keep the crit branches here in the same precedence order as `infraStatus`, and
+ * when you add a crit branch there, add one here — `infra-summary-names-every-crit`
+ * in the sibling test fails if a crit renders a summary that names nothing.
+ */
+export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
+  const toolsCrit = d.toolFailures?.rating === 'broken';
+  const mcpHard = d.mcpProxy?.hardFailures ?? 0;
+  const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
+  const mcpWarn = mcpHard > 0 && !mcpCrit;
+  const perfCrit = d.perf?.status === 'crit';
+  const worstDiskVol = d.disk && d.disk.length > 0 ? d.disk.reduce((a, b) => (b.usedPct > a.usedPct ? b : a)) : null;
+  const worstDisk = worstDiskVol?.usedPct ?? null;
+  const diskCrit = worstDisk !== null && worstDisk >= DISK_USED_CRIT_PCT;
+  const poolNote = d.pool?.band === 'critical' ? ', POOL STARVATION' : d.pool?.band === 'elevated' ? ', pool elevated' : '';
+  // A disk WARN has no branch of its own (the panel is only `warn` overall), but it
+  // still belongs in the line — it is the leading indicator of the crit above.
+  const diskNote = worstDisk !== null && worstDisk >= DISK_USED_WARN_PCT && !diskCrit ? `, disk ${worstDisk}%` : '';
+  if (toolsCrit) {
+    // Leads the summary: names the tool, the rate and the error code — enough to
+    // act on without running a query first.
+    return `TOOL FAILING FLEET-WIDE: ${d.toolFailures!.evidence}`;
+  }
+  if (mcpCrit) return `MCP PROXY FAILING: ${mcpHard} hard tool-call failure(s)/1h (transient-is-normal regression — pages)`;
+  if (perfCrit) return `PER-THREAD WEDGE: ${d.perf!.reasons[0] ?? 'operator degraded'}`;
+  if (diskCrit) return `DISK ${worstDisk}% used on ${worstDiskVol!.path} — writes are about to fail`;
+  if (!d.pg) return 'PG unreadable';
+  const gatewayNote = gatewayEnabled ? `, gateway ${d.gatewayReachable ? 'up' : 'down'}` : '';
+  const mcpNote = mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : '';
+  const perfNote = d.perf?.status === 'warn' ? `, perf warn (${d.perf.reasons[0] ?? ''})` : '';
+  return `PG ${d.pg.active} active / ${d.pg.total} conns${poolNote}${diskNote}${gatewayNote}${mcpNote}${perfNote}`;
+}
+
+/**
  * Overwatch (#15) — the autonomous supervisor's OWN loop health (the
  * who-watches-the-watcher panel, D-004). The role ships default-OFF until proven
  * (D-009), so flag-off — and an owner-paused proven loop — are the INTENDED-dark

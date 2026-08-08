@@ -1,38 +1,54 @@
 /**
- * GET /api/harness/search?q=...&kind=messages|features|all&limit=20
+ * GET /api/harness/search?q=...&kind=features|all&limit=20
  *
- * Cross-harness substring search. Per-harness scan of messages tables;
- * features go through the workspace-scoped consolidated view.
+ * Cross-harness search over work-items (the feature family). Runs the shared
+ * hybrid engine — lexical + embedding legs fused by RRF, under the P-017
+ * ranking defaults — rather than the raw substring scan this route used to be.
  *
- * Ported from app/api/harness/search/route.ts. `auth: 'public'`.
+ * P-018 of semantic-search-fingerprint-coverage-2026-08-03. `auth: 'public'`.
+ *
+ * ─── WHAT THIS ROUTE USED TO DO, AND WHY BOTH HALVES WERE WRONG ────────────
+ * It ran `ILIKE '%q%'` over two corpora and ordered the union by `created_at
+ * DESC LIMIT n`. That is not a ranking: a query matching more rows than the
+ * limit kept the NEWEST ones and silently dropped the best ones, on an
+ * owner-facing surface. Both halves are now resolved, differently:
+ *
+ *  1. **`kind=messages` is GONE, not migrated.** It scanned per-harness
+ *     `harness_<slug>.messages`, which are 243 thin views over ONE table,
+ *     `harness_shared.messages_consolidated` — the WORK-ITEM MAIL surface
+ *     retired 2026-07-26 (WI-6097). Measured 2026-08-08: 222 rows, last write
+ *     2026-06-24, zero in the preceding 30 days. Every SIBLING read path over
+ *     that table was retired with it (the sync-resolver entry and its
+ *     `table-to-query-names` guard, `handoff-context`, and the `'messages'`
+ *     kind of the unified search tool); this route was the one the sweep
+ *     missed, and `messages` was its DEFAULT kind. Migrating a retired corpus
+ *     onto the engine would have wired new code to a dead surface — so the
+ *     right move was to finish the retirement, not to rank it.
+ *  2. **`kind=features` is DELEGATED.** `harness_features_consolidated` is a
+ *     compat view over `harness_shared.work_items` whose predicate is exactly
+ *     `familyOf(kind) === 'feature'`, so `searchWorkItems` covers this corpus
+ *     precisely — cross-harness (its `harness` filter is optional), already
+ *     floored, already reporting its legs. The per-schema loop is gone with
+ *     it: the old code issued 2 serial round-trips per harness schema (200+
+ *     per request across 243 of them) to reconstruct what one query answers.
+ *
+ * ─── READ `legs` BEFORE CONCLUDING "NO MATCH" ──────────────────────────────
+ * `legs.degraded: true` means a ranking leg did not contribute (embedder down,
+ * embeddings not backfilled). A short list is then a DEGRADED search, not an
+ * absence — the exact confusion this plan exists to remove, so the field is
+ * returned rather than discarded.
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { routeWithWorkspace } from '../../../route-workspace';
 import { defineTool } from '@papercusp/agent-mcp';
-
-interface MessageHit {
-  kind: 'message';
-  harness_slug: string;
-  id: string;
-  from_slug: string;
-  to_slug: string;
-  to_role: string | null;
-  message_kind: string;
-  subject: string;
-  body: string | null;
-  status: string;
-  created_at: string;
-}
+import { searchWorkItems } from '../../../work-items';
 
 interface FeatureHit {
   kind: 'feature';
-  harness_slug: string;
+  harness_slug: string | null;
   feature_id: string;
+  item_kind: string;
   title: string;
-  summary: string | null;
+  summary: string;
   status: string;
-  notes: string | null;
-  updated_ts: number;
 }
 
 export default defineTool({
@@ -48,84 +64,43 @@ export default defineTool({
     if (q.length > 200) {
       return Response.json({ error: 'q too long (max 200 chars)' }, { status: 400 });
     }
-    const kind = url.searchParams.get('kind') ?? 'messages';
+    const kind = url.searchParams.get('kind') ?? 'features';
     const limitN = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 20)));
-    if (!['messages', 'features', 'all'].includes(kind)) {
-      return Response.json({ error: 'kind must be messages|features|all' }, { status: 400 });
+
+    // Answered explicitly rather than by falling through to "unknown kind", so
+    // a caller still asking for the retired corpus is told what happened and
+    // where the traffic went — instead of reading an empty result as "no
+    // matching messages", which is the one wrong conclusion available here.
+    if (kind === 'messages') {
+      return Response.json(
+        {
+          error:
+            'kind=messages is retired. The work-item mail surface was removed 2026-07-26 (WI-6097) ' +
+            'after losing to coord:send; its 222 rows are preserved but frozen (last write ' +
+            '2026-06-24). Durable work-item-scoped direction is work_items:comment / ' +
+            'work_items:checkpoint; live agent messaging is coord:send.',
+        },
+        { status: 410 },
+      );
+    }
+    if (kind !== 'features' && kind !== 'all') {
+      return Response.json({ error: 'kind must be features|all' }, { status: 400 });
     }
 
-    const messageHits: MessageHit[] = [];
-    const featureHits: FeatureHit[] = [];
-    const errors: string[] = [];
-    const pattern = `%${q.replace(/[%_\\]/g, '\\$&')}%`;
+    // No `harness` filter — cross-harness is this route's whole reason to exist,
+    // and is what an omitted filter means to the engine.
+    const { items, legs, applied } = await searchWorkItems(q, { family: 'feature', limit: limitN });
 
-    const schemas = await routeWithWorkspace(async (tx) => {
-      return await tx<{ nspname: string }[]>`
-        SELECT 'harness_' || REPLACE(slug, '-', '_') AS nspname
-          FROM harness_shared.projects
-         WHERE slug IS NOT NULL
-      `;
-    }).catch(() => [] as { nspname: string }[]);
+    const featureHits: FeatureHit[] = items.map((w) => ({
+      kind: 'feature',
+      harness_slug: w.harness,
+      feature_id: w.id,
+      item_kind: w.kind,
+      title: w.title,
+      summary: w.summary,
+      status: w.state,
+    }));
 
-    const { sql } = getOrgPg();
-
-    if (kind === 'messages' || kind === 'all') {
-      for (const { nspname } of schemas) {
-        try {
-          const exists = await sql<{ exists: boolean }[]>`
-            SELECT EXISTS(SELECT 1 FROM information_schema.tables
-                          WHERE table_schema = ${nspname} AND table_name = 'messages') AS exists
-          `;
-          if (!exists[0]?.exists) continue;
-          const rows = await sql.unsafe(
-            `SELECT id, from_slug, to_slug, to_role, kind AS message_kind, subject, body, status,
-                    to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSZ') AS created_at
-             FROM ${nspname}.messages
-             WHERE subject ILIKE $1 ESCAPE '\\' OR body ILIKE $1 ESCAPE '\\'
-             ORDER BY created_at DESC
-             LIMIT ${limitN}`,
-            [pattern],
-          );
-          const harnessSlug = nspname.replace(/^harness_/, '').replace(/_/g, '-');
-          for (const r of rows as any[]) {
-            messageHits.push({ kind: 'message', harness_slug: harnessSlug, ...r });
-          }
-        } catch (e: any) {
-          errors.push(`${nspname}: ${String(e?.message ?? e).slice(0, 100)}`);
-        }
-      }
-      messageHits.sort((a, b) => b.created_at.localeCompare(a.created_at));
-      messageHits.splice(limitN);
-    }
-
-    if (kind === 'features' || kind === 'all') {
-      try {
-        const rows = await routeWithWorkspace(async (tx) => {
-          return await tx<any[]>`
-            SELECT harness_slug, feature_id, title, summary, status, notes, updated_ts
-              FROM harness_shared.harness_features_consolidated
-             WHERE title ILIKE ${pattern} ESCAPE '\\'
-                OR summary ILIKE ${pattern} ESCAPE '\\'
-                OR notes ILIKE ${pattern} ESCAPE '\\'
-             ORDER BY updated_ts DESC
-             LIMIT ${limitN}
-          `;
-        });
-        for (const r of rows) {
-          featureHits.push({ kind: 'feature', ...r });
-        }
-      } catch (e: any) {
-        errors.push(`features view: ${String(e?.message ?? e).slice(0, 100)}`);
-      }
-    }
-
-    return Response.json({
-      q,
-      kind,
-      limit: limitN,
-      messageHits: kind === 'features' ? undefined : messageHits,
-      featureHits: kind === 'messages' ? undefined : featureHits,
-      errors: errors.length > 0 ? errors : undefined,
-    });
+    return Response.json({ q, kind, limit: limitN, featureHits, legs, applied });
   },
 });
