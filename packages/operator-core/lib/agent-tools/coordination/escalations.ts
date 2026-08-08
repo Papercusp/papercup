@@ -820,9 +820,17 @@ export async function resolveEscalationsBatch(
       result.requiresSpawnApprove += 1;
       continue;
     }
+    // WI-10769: derived, exactly as in the single-resolve path above. This loop has
+    // the SAME read-then-write shape (load at the top, check at `alreadyResolved`,
+    // write at the batched `putEvents` below), so two sweeps racing the same backlog
+    // previously wrote two rows per escalation. `putEvents` upserts on
+    // (workspace_id, surface, msg_id), so a derived key makes the concurrent write
+    // collapse onto ONE row instead of duplicating — no new primitive needed here,
+    // because a drain sweep reports COUNTS and pages nobody, so it needs the row to
+    // be unique but does not need to elect a single announcer.
     const ev: EscalationResolvedEvent = {
       ts: new Date().toISOString(),
-      msg_id: newMsgId(),
+      msg_id: resolvedEventId(input.msg_id),
       from: input.resolver ?? open.from,
       to: [open.from],
       kind: 'escalation_resolved',

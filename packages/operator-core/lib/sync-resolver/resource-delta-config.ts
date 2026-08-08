@@ -60,3 +60,17 @@ const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
 export function resourceDeltaConfig(name: string): ResourceDeltaConfig | undefined {
   return CONFIG[name];
 }
+
+/**
+ * Every resource that delta-negotiates SERVER-side — the authoritative set the client codec
+ * must mirror (apps/operator/providers/sync-delta-codec.ts `DELTA_RESOURCES`).
+ *
+ * Exported because the two halves DRIFTED and silently cost the win twice: the client gates on
+ * its own literal (`query-fetcher.ts:468` — `!codec.enabled(name)` ⇒ no cursor is sent ⇒ the
+ * server serves full), so a resource configured here but missing there can NEVER take a delta.
+ * Measured 2026-08-08: this file gained `plans.byHive` (WI-7083, which deduped the harness_slugs
+ * fan-out specifically to make `slug` unique so it COULD have an entry) and `codeRecipes`
+ * (2026-08-02), while the client set had not changed since 2026-06-23 — so both fixes were inert.
+ * `sync-delta-codec.test.ts` now asserts parity against this export so it cannot recur silently.
+ */
+export const RESOURCE_DELTA_NAMES: readonly string[] = Object.freeze(Object.keys(CONFIG));

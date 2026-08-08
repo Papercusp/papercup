@@ -11,8 +11,10 @@ import {
   listEscalations,
   listEscalationsPaginated,
   openEscalation,
+  resolveEscalation,
   resolveEscalationsBatch,
 } from './escalations';
+import { resolvedEventId } from '@papercusp/coordination/core';
 import type { AgentIdentity } from './identity';
 
 afterEach(() => resetCoordLog());
@@ -526,5 +528,92 @@ describe('openEscalation — harness_slug federation (WI-1375)', () => {
     });
     expect(rec.harness_slug).toBe('shared-hive'); // federation column (snake_case)
     expect((rec as { harnessSlug?: string }).harnessSlug).toBe('shared-hive'); // human-inbox chat scope (camelCase, via meta)
+  });
+});
+
+/**
+ * WI-10769 — the recurrence guard, driving the REAL `resolveEscalation` (not a
+ * restatement of its gate, which is how writer and gate drifted apart before).
+ *
+ * The defect: the presence check and the write were not atomic and the write was
+ * keyed on a FRESH msg_id, so N concurrent workers each wrote a DISTINCT resolve
+ * row and each got a record back — while `liveness-alarm.ts` gates its recovery
+ * announcement on exactly that return value, under a comment promising "only the
+ * worker whose resolve actually landed announces it". Measured 3.10x
+ * amplification on papercusp (65 events / 21 real recoveries).
+ */
+describe('resolveEscalation — concurrent resolves elect ONE announcer (WI-10769)', () => {
+  const identity = { ownerId: 'su-test' } as AgentIdentity;
+
+  async function openOne(log: InMemoryCoordLog) {
+    configureCoordLog(log);
+    return openEscalation(identity, { severity: 'question', summary: 'flapping condition' });
+  }
+
+  it('N concurrent resolves: exactly ONE returns a record, the rest report already_resolved', async () => {
+    const log = new InMemoryCoordLog();
+    const opened = await openOne(log);
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        resolveEscalation({ msg_id: opened.msg_id, choice: 'auto-resolved', note: `worker ${i}`, resolver: `w${i}` }),
+      ),
+    );
+
+    const winners = outcomes.filter((o) => typeof o !== 'string');
+    const losers = outcomes.filter((o) => o === 'already_resolved');
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(7);
+    // No outcome may be a DIFFERENT sentinel — 'not_found' here would mean the open
+    // row went missing, a different bug wearing the same "did not announce" costume.
+    expect(outcomes.filter((o) => o === 'not_found' || o === 'requires_spawn_approve')).toHaveLength(0);
+  });
+
+  it('N concurrent resolves write exactly ONE escalation_resolved row', async () => {
+    const log = new InMemoryCoordLog();
+    const opened = await openOne(log);
+
+    await Promise.all(
+      Array.from({ length: 8 }, () =>
+        resolveEscalation({ msg_id: opened.msg_id, choice: 'auto-resolved', resolver: 'w' }),
+      ),
+    );
+
+    const rows = (await log.readEvents('escalations')).filter((r) => r.kind === 'escalation_resolved');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.related_msg_id).toBe(opened.msg_id);
+    // The row's identity is DERIVED from its target — that is what makes a second
+    // row impossible at the key level, not merely unlikely.
+    expect(rows[0]?.msg_id).toBe(resolvedEventId(opened.msg_id));
+  });
+
+  it('CONTROL: the pre-fix keying (a fresh id per writer) would have written 8 rows', async () => {
+    // Proves the guard above is measuring the fix and not something incidental —
+    // with the OLD key derivation, the same 8 concurrent writers collide on nothing.
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        log.putEventIfAbsent('escalations', `fresh-id-${i}`, {
+          ts: '2026-01-01T00:00:00.000Z', msg_id: `fresh-id-${i}`, from: 'w', to: ['human'],
+          kind: 'escalation_resolved', related_msg_id: 'target-1', summary: 'resolved: auto-resolved',
+        } as never),
+      ),
+    );
+    const rows = (await log.readEvents('escalations')).filter((r) => r.related_msg_id === 'target-1');
+    expect(rows).toHaveLength(8); // ← the measured production symptom
+  });
+
+  it('a resolve of an ALREADY-resolved row still reports already_resolved (sequential path unchanged)', async () => {
+    const log = new InMemoryCoordLog();
+    const opened = await openOne(log);
+    const first = await resolveEscalation({ msg_id: opened.msg_id, choice: 'auto-resolved', resolver: 'w1' });
+    expect(typeof first).not.toBe('string');
+    expect(await resolveEscalation({ msg_id: opened.msg_id, choice: 'auto-resolved', resolver: 'w2' })).toBe('already_resolved');
+  });
+
+  it('an unknown msg_id still reports not_found (the gate did not swallow it)', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    expect(await resolveEscalation({ msg_id: 'nope', choice: 'auto-resolved', resolver: 'w' })).toBe('not_found');
   });
 });

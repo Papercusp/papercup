@@ -454,7 +454,15 @@ interface ForwardOutcome {
 /** One forward attempt. Resolves with the upstream response OR an error + whether the
  *  socket had connected (so the caller can decide retry-safety). Never rejects.
  *  `timeoutMs` (WI-6740) bounds how long we wait for RESPONSE HEADERS; 0/undefined =
- *  unbounded, which is what every real tools/call still uses. */
+ *  unbounded, which is what every real tools/call still uses.
+ *
+ *  `signal` (WI-35737) lets the caller abandon an attempt whose CLIENT has gone away, so the
+ *  proxy stops spending upstream capacity producing a response nobody can read. The caller
+ *  passes one ONLY for the write-free 'idempotent' class — aborting a keyed/opaque tools/call
+ *  mid-flight could leave a write half-applied, which is the same retry-safety rule
+ *  `handshakeTimeoutRetryable` already enforces. Abort surfaces through the existing
+ *  `upstream.on('error')` path as an ordinary failed attempt; the caller then sees
+ *  `clientGone` and breaks instead of replaying. */
 function forwardOnce(
   opts: McpProxyOptions,
   method: string,
@@ -462,6 +470,7 @@ function forwardOnce(
   headers: http.IncomingHttpHeaders,
   body: Buffer,
   timeoutMs?: number,
+  signal?: AbortSignal,
 ): Promise<ForwardOutcome> {
   return new Promise((resolve) => {
     let target: McpProxyTarget;
@@ -490,6 +499,10 @@ function forwardOnce(
         // W1.3: fresh socket per forward — never reuse a pooled keep-alive socket the :3070
         // cluster may be closing (the ~13% spurious-400 root cause). See UPSTREAM_AGENT above.
         agent: UPSTREAM_AGENT,
+        // WI-35737: abandon this attempt if the client disconnects (idempotent class only —
+        // see the doc comment above). Node destroys the request and emits 'error' with
+        // code ABORT_ERR, which the existing handler below turns into a normal outcome.
+        signal,
       },
       (ures) => done({ ures, connected: true }),
     );
@@ -720,6 +733,31 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       res.end(JSON.stringify({ ok: true, target }));
       return;
     }
+    // WI-35737 — CLIENT-DISCONNECT TRACKING. Before this, the proxy had no client-side
+    // liveness signal at all (the only `req` listeners were the three below, all about
+    // accumulating the request BODY), so a client that gave up — its own timeout fired, its
+    // agent session died, the watchdog restarted it — bought nothing: the retry loop kept
+    // replaying against upstream for a response with nowhere to go.
+    //
+    // ⚠ This is NOT a slot leak, and an earlier diagnosis on WI-35737 that said so was wrong
+    // (withdrawn in comment 56302). The in-flight slot is released at RESPONSE-HEADER time —
+    // the `return` after `ures.pipe(res)` below sits INSIDE the `try`, so the `finally` runs
+    // while the SSE body is still streaming. Measured: across 2,305 heartbeat records the
+    // max hold was 120,004ms against a 600,000ms `maxHoldMs`, i.e. the cap was never
+    // approached. What this DOES cut is AMPLIFICATION: work spent on a dead client during
+    // exactly the upstream-stall windows when capacity is scarcest.
+    let clientGone = false;
+    let abortAttempt: (() => void) | null = null;
+    const noteClientGone = (): void => {
+      // 'close' also fires on NORMAL completion — `writableFinished` is what separates "the
+      // response was fully sent" from "the peer vanished mid-flight". Without this guard
+      // every successful request would mark itself aborted.
+      if (clientGone || res.writableFinished) return;
+      clientGone = true;
+      abortAttempt?.();
+    };
+    res.on('close', noteClientGone);
+    req.on('aborted', noteClientGone);
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('error', () => {
@@ -781,6 +819,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // upstream 429 (admission-control backpressure) → absorb + retry (P-010).
           // eslint-disable-next-line no-constant-condition
           while (true) {
+            // WI-35737: the client is gone — every further attempt is upstream capacity spent
+            // on a response nobody can read, during the exact windows when it is scarcest.
+            // Checked at the TOP so it also covers a client that left between two attempts.
+            if (clientGone) break;
             attempts++;
             // WI-6740: bound the write-free control-plane batch tightly (see
             // HANDSHAKE_UPSTREAM_TIMEOUT_MS). EI-19305299022434394: a real tools/call is no
@@ -788,18 +830,44 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // absolute ceiling that stops a stalled-but-connected upstream from silently
             // parking a socket for 32-89 minutes, while staying well above any legitimate tool's
             // real runtime (`build:typecheck` ~160s).
-            const outcome = await forwardOnce(
-              opts,
-              req.method ?? 'GET',
-              req.url ?? '/',
-              fwd.headers,
-              fwd.body,
-              fwd.klass === 'idempotent'
-                ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS)
-                : maxHoldMs > 0
-                  ? maxHoldMs
-                  : 0,
-            );
+            // WI-35737: arm client-disconnect abort for THIS attempt — write-free class only.
+            // A 'keyed'/'opaque' batch carries a tools/call whose side effect may already be
+            // landing upstream, so we let it finish and simply discard the result; that is the
+            // same retry-safety rule `handshakeTimeoutRetryable` applies, for the same reason.
+            // (This costs nothing in practice: every failure in the measured 2026-08-08 window
+            // — 540 handshake timeouts, 520 upstream errors, 245 post-connect retries — was
+            // klass 'idempotent'.)
+            const attemptAbort = fwd.klass === 'idempotent' ? new AbortController() : null;
+            abortAttempt = attemptAbort ? (): void => attemptAbort.abort() : null;
+            let outcome: ForwardOutcome;
+            try {
+              outcome = await forwardOnce(
+                opts,
+                req.method ?? 'GET',
+                req.url ?? '/',
+                fwd.headers,
+                fwd.body,
+                fwd.klass === 'idempotent'
+                  ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS)
+                  : maxHoldMs > 0
+                    ? maxHoldMs
+                    : 0,
+                attemptAbort?.signal,
+              );
+            } finally {
+              abortAttempt = null;
+            }
+            // The abort above surfaces as an ordinary failed attempt; `clientGone` is what
+            // decides, so a race between the abort landing and the response arriving cannot
+            // write to a dead socket.
+            if (clientGone) {
+              record({
+                kind: 'client_gone',
+                method: req.method, path: req.url, klass: fwd.klass, attempts,
+                elapsedMs: Date.now() - started,
+              });
+              break;
+            }
             const elapsed = Date.now() - started;
             if (outcome.ures) {
               const ures = outcome.ures;
@@ -829,6 +897,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 continue;
               }
               res.writeHead(status, ures.headers);
+              // WI-35737: an MCP response is an SSE stream that stays open long after headers
+              // arrive (and long after this function returns and releases its in-flight slot).
+              // `pipe` does NOT tear down the SOURCE when the destination dies, so without
+              // this a client that vanishes mid-stream leaves :3070 writing into a dead socket
+              // for the life of the stream. Safe for every class, unlike aborting a request
+              // in flight: headers are already back, so the tools/call has run — destroying
+              // the RESPONSE cannot half-apply anything.
+              res.on('close', () => {
+                if (!ures.destroyed) ures.destroy();
+              });
               ures.pipe(res);
               if (attempts > 1) {
                 log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
@@ -875,6 +953,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             }
             break;
           }
+          // WI-35737: the loop broke because the CLIENT left, not because upstream failed.
+          // There is no socket to answer on, and writing the 502/503 below would both throw
+          // and record a phantom `upstream_error` — inflating the very failure counts this
+          // incident is being triaged from. The `finally` still releases the in-flight slot.
+          if (clientGone) return;
           // Exhausted the window (or a post-connect error we must not / no longer replay).
           const refused = last && !last.connected;
           res.writeHead(refused ? 503 : 502, { 'content-type': 'application/json', 'retry-after': '5' });
