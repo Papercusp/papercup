@@ -11,6 +11,11 @@ type BroadcastFn = NonNullable<StalledLoopsSweepDeps['broadcast']>;
 // is a type error against a bare `vi.fn(async () => {})`'s zero-arg call tuple — invisible to a
 // green vitest run, red at lint:tsc i.e. at the fleet gate (EI-19406534159939583 hit exactly it).
 type RearmFn = NonNullable<StalledLoopsSweepDeps['rearm']>;
+// Same reason as the two above, and it bites harder here: the owner-page assertions read
+// `notify.mock.calls[0][0].kind` / `.importance`, so a bare `vi.fn(async () => {})` is a zero-arg
+// call tuple and every one of those reads is a lint:tsc error a green vitest run cannot see
+// (EI-19899301656065801).
+type NotifyFn = NonNullable<StalledLoopsSweepDeps['notify']>;
 
 /** Minimal fake `harness_shared.routines` SELECT — the sweep's only direct SQL read. */
 function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
