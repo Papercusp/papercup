@@ -530,6 +530,13 @@ function runChild(
   onChildPid?: (pid: number) => void,
   onOutputActivity?: () => void,
   useScope: boolean = agentSpawnScopeEnabled(),
+  // WI-5601: one bounded retry for an "exec-shaped" transient failure — a fast
+  // (<5s) non-zero exit with BOTH stdout and stderr completely empty (the
+  // exit-127-in-~21ms signature, ~11.6% of spawns in the measured window,
+  // consistent with a brief host-resource-pressure blip around fork/exec
+  // rather than a real agent-code failure). Defaults false; the retry call
+  // below passes true so it can only fire once per runChild chain.
+  execFailureRetried: boolean = false,
 ): Promise<SpawnInvokeOnceResult> {
   return new Promise((resolve) => {
     // Already-aborted before we spawn → don't launch at all.

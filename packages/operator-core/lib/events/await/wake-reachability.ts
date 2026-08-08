@@ -144,11 +144,14 @@ export function deriveWakeReachability(i: WakeReachabilityInput): WakeReachabili
         ? `no standing coord:inbox-wake await — a wake emit matches nothing (woken:0 → no-session-now), ` +
           `but the session is otherwise live and would be reachable via ${asIfArmed.channel} once re-armed`
         : 'no standing coord:inbox-wake await — a wake emit matches nothing (woken:0 → no-session-now)',
+      // Both variants keep the original WI-655 phrasing ("no inbox-wake watch is armed" +
+      // "no-session-now") — that is the diagnosis, and it is true in both cases. Repairability
+      // ADDS the remedy; it does not replace the finding.
       warning: repairable
-        ? `NOT wake-reachable right now, but REPAIRABLE: this session is alive and injectable ` +
-          `(would take the ${asIfArmed.channel} channel) — only its inbox-wake watch is missing, so ` +
-          `every fire black-holes as no-session-now. armInboxWake/loop:arm restores delivery. Do NOT ` +
-          `read this as a dead session (WI-36685).`
+        ? `NOT wake-reachable: no inbox-wake watch is armed for this session, so loop fires black-hole ` +
+          `as no-session-now — but this is REPAIRABLE, not a dead session: the process is alive and ` +
+          `injectable and would take the ${asIfArmed.channel} channel the moment the watch is re-armed ` +
+          `(armInboxWake / loop:arm). Do NOT read it as gone (WI-36685).`
         : 'NOT wake-reachable: no inbox-wake watch is armed for this session, so loop fires black-hole as no-session-now. (loop:arm now arms it directly; if you see this from loop:status, re-arm the loop.)',
     };
   }

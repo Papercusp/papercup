@@ -133,6 +133,10 @@ describe('checkUnreachableTerminalGuard — WI-2339 gap: the WI-1399 dead-owner 
       channel: 'psu-socket' as const,
       durableWhileAlive: true,
       summary: 'live psu-host control socket — wakes inject in place as a fresh turn',
+      // WI-36685: the await gate PASSED here (this fixture is the pid-reuse false positive,
+      // not a missing watch), so there is nothing to repair.
+      awaitRepairable: false,
+      wouldBeChannel: null,
     }));
     const res = await checkUnreachableTerminalGuard(
       {

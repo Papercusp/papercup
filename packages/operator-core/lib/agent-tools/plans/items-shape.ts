@@ -87,6 +87,13 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
        *  isn't — a silent burn-down divergence a leader must not miss even in
        *  a trimmed/standard read. */
       diverged: r.coverageDivergence === true,
+      /** okf-frontmatter-adoption H(b): the spec-triad legs this item's PLAN
+       *  still owes, comma-joined — the reason it is absent from an
+       *  `actionable` query. Carried in EVERY tier on purpose: without it a
+       *  trimmed reader sees an item vanish from `actionable` with no visible
+       *  cause, which is exactly the shape of a silent freeze. Null for every
+       *  plan predating the requirement, i.e. almost always. */
+      specTriadMissing: joined(r.specTriadMissing),
     };
     if (tier === "trimmed") return base;
     const holder = coverage?.holder ?? null;

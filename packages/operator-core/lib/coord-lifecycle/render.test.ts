@@ -41,6 +41,12 @@ describe('renderCompletion', () => {
     ],
     migrations: ['146 spawned_agents supervision', '147 fleet_governor', '148 fleet_sagas'],
     tests: '67 green tests',
+    // WI-36726: verifiedHow + filesChanged are on CompletionRecordSchema but
+    // were absent from this fixture, so the D-006 "PRESERVES …" test below
+    // passed VACUOUSLY for them while renderCompletion dropped both. A guard is
+    // only as wide as its fixture — keep every field of the record set here.
+    verifiedHow: 'integration',
+    filesChanged: ['packages/operator-core/lib/fleet/nursery.ts'],
     deploy: 'additive, loads next :3070 restart',
     deferred: [
       ':3070 restart pending',
@@ -69,22 +75,87 @@ describe('renderCompletion', () => {
     }
   });
 
-  it('PRESERVES whatLanded, migrations, tests, deploy, coordNotes (D-006)', () => {
+  it('PRESERVES whatLanded, migrations, tests, verifiedHow, filesChanged, deploy, coordNotes (D-006)', () => {
     const { body } = renderCompletion(full);
     expect(body).toBeDefined();
     for (const w of full.whatLanded ?? []) expect(body).toContain(w);
     for (const m of full.migrations ?? []) expect(body).toContain(m);
+    for (const f of full.filesChanged ?? []) expect(body).toContain(f);
     expect(body).toContain('67 green tests');
+    expect(body).toContain('integration'); // verifiedHow
     expect(body).toContain('additive, loads next :3070 restart');
     expect(body).toContain('@su-584a8');
   });
 
-  it('a minimal completion (summary only) renders summary, no empty body', () => {
+  /**
+   * P-008 / borrow item 13 — the anti-trust clause, delivered where the PARENT
+   * reads the result. A completion asserting no verification must not render
+   * identically to one that was integration-tested.
+   */
+  describe('anti-trust: "done" is not "verified"', () => {
+    const unverified = CompletionRecordSchema.parse({
+      workItem: 'WI-1',
+      summary: 'shipped the thing',
+    });
+
+    it('marks a completion carrying NO verification evidence UNVERIFIED in the headline', () => {
+      const out = renderCompletion(unverified);
+      expect(out.summary).toContain('UNVERIFIED');
+      expect(out.body).toContain('means the author yielded, not that the artifacts were checked');
+    });
+
+    it('CONTROL: a completion WITH verification evidence gets no such marker', () => {
+      // Without this control the assertion above would still pass if the
+      // renderer stamped UNVERIFIED unconditionally — i.e. if it stopped
+      // discriminating, which is the whole point of the signal.
+      expect(renderCompletion(full).summary).not.toContain('UNVERIFIED');
+      expect(renderCompletion(full).body).not.toContain('UNVERIFIED');
+    });
+
+    it('CONTROL: verifiedHow ALONE (no tests string) also counts as verified', () => {
+      const viaVerifiedHow = CompletionRecordSchema.parse({
+        workItem: 'WI-2',
+        summary: 'drove the UI',
+        verifiedHow: 'live-drove-ui',
+      });
+      expect(renderCompletion(viaVerifiedHow).summary).not.toContain('UNVERIFIED');
+      expect(renderCompletion(viaVerifiedHow).summary).toContain('verified:live-drove-ui');
+    });
+
+    it('keeps the UNVERIFIED marker even when a long summary forces a clip', () => {
+      // The marker must not be a length artefact: clipping the headline from the
+      // right would drop the trailer off exactly the most verbose completions,
+      // making "no warning" mean "long summary" instead of "verified".
+      const verbose = CompletionRecordSchema.parse({
+        workItem: 'WI-3',
+        summary: 'q'.repeat(400),
+      });
+      const out = renderCompletion(verbose);
+      expect(out.summary.length).toBeLessThanOrEqual(180);
+      expect(out.summary).toContain('UNVERIFIED');
+    });
+  });
+
+  /**
+   * ⚠ REPLACES a test that PINNED THE OLD CONTRACT. It read:
+   *   'a minimal completion (summary only) renders summary, no empty body'
+   *   … expect(out.body).toBeUndefined()
+   * That assertion is incompatible with P-008 BY DESIGN, not by accident: a
+   * summary-only completion is precisely the completion with no verification
+   * evidence, so it is exactly the one that must now carry the anti-trust body.
+   * The old test's real intent — never emit a body of blank seams — is kept
+   * below as a non-emptiness assertion. Flagged loudly because silently editing
+   * a contract-pinning test is how a deliberate behaviour change gets mistaken
+   * for a regression later (same shape as WI-36047).
+   */
+  it('a minimal completion (summary only) is UNVERIFIED, and its body is meaningful (never blank seams)', () => {
     const min = CompletionRecordSchema.parse({ workItem: 'F-001', summary: 'shipped the thing' });
     const out = renderCompletion(min);
     expect(out.summary).toContain('F-001');
     expect(out.summary).toContain('DONE'); // default status
-    expect(out.body).toBeUndefined();
+    expect(out.body).toBeDefined();
+    expect(out.body?.trim()).toBe(out.body); // no leading/trailing blank seams
+    expect(out.body).toContain('UNVERIFIED');
   });
 
   it('clips an overlong headline to keep inbox scannable', () => {

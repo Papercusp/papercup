@@ -45,8 +45,16 @@ function bullets(items: readonly string[] | undefined): string | null {
   return items.map((i) => `• ${i}`).join('\n');
 }
 
+/** The coord:inbox headline budget — headers stay scannable. */
+const SUMMARY_MAX = 180;
+
+/** Below this much room for the summary text, clipping the summary instead of
+ *  the whole headline stops being an improvement (it would leave a stub), so
+ *  renderCompletion falls back to the plain whole-string clip. */
+const MIN_SUMMARY_ROOM = 24;
+
 /** Truncate a summary so coord:inbox headers stay scannable. */
-function clip(s: string, max = 180): string {
+function clip(s: string, max = SUMMARY_MAX): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
@@ -57,22 +65,58 @@ function clip(s: string, max = 180): string {
  */
 export function renderCompletion(rec: CompletionRecord): RenderedNotification {
   const status = (rec.status || 'done').toUpperCase();
+  // P-008 (borrow item 13) — the ANTI-TRUST signal, computed once. A completion
+  // that records NEITHER `tests` NOR `verifiedHow` asserts only that its author
+  // yielded; nothing about it was checked. The author is already nudged about
+  // this at complete.ts (the "neither tests nor deferred" warning) — but that
+  // nudge reaches the AUTHOR, and the party who needs it is the PARENT reading
+  // the result, who is the one still positioned to act cheaply. Rendered here
+  // rather than written into a tool description on purpose: it costs zero
+  // prompt weight, and it can be CONDITIONAL — said only when it is true, so it
+  // never becomes boilerplate the reader learns to skip.
+  const unverified = !rec.tests && !rec.verifiedHow;
+
   // Compact trailers on the headline, the way agents write them.
   const trailers: string[] = [];
   if (rec.tests) trailers.push(rec.tests);
+  if (rec.verifiedHow) trailers.push(`verified:${rec.verifiedHow}`);
+  if (unverified) trailers.push('UNVERIFIED');
   if (rec.migrations && rec.migrations.length > 0) {
     trailers.push(`migs ${rec.migrations.map((m) => m.split(/\s/)[0]).join('/')}`);
   }
   const trailer = trailers.length > 0 ? ` — ${trailers.join(', ')}` : '';
   // No `(agent)` re-embed: the injection renderer shows the sender handle once
   // (token-efficient-coord-injection D-005); the bullet/handle names it.
-  const summary = clip(`${rec.workItem} ${status}: ${rec.summary}${trailer}`);
+  //
+  // Clip the SUMMARY to fit rather than clipping the whole headline: the
+  // trailer is where the verification verdict now lives, and a trailing clip
+  // would silently drop `UNVERIFIED` off exactly the longest-winded completions
+  // — turning the absence of a warning into a length artefact. Falls back to
+  // the original whole-string clip when the trailer alone leaves no useful room.
+  const head = `${rec.workItem} ${status}: `;
+  const room = SUMMARY_MAX - head.length - trailer.length;
+  const summary =
+    room >= MIN_SUMMARY_ROOM
+      ? clip(`${head}${clip(rec.summary, room)}${trailer}`)
+      : clip(`${head}${rec.summary}${trailer}`);
 
   const body = block(
     rec.title ? `**${rec.title}**` : null,
     rec.whatLanded && rec.whatLanded.length > 0 ? `What landed:\n${bullets(rec.whatLanded)}` : null,
     rec.migrations && rec.migrations.length > 0 ? `Migrations:\n${bullets(rec.migrations)}` : null,
+    rec.filesChanged && rec.filesChanged.length > 0
+      ? `Files changed (${rec.filesChanged.length}):\n${bullets(rec.filesChanged)}`
+      : null,
     rec.tests ? `Tests: ${rec.tests}` : null,
+    rec.verifiedHow ? `Verified how: ${rec.verifiedHow}` : null,
+    // Stated plainly, and only when true — see `unverified` above.
+    // Terse on purpose: the headline already carries the UNVERIFIED marker, so
+    // this line only has to supply the CLAUSE a first-time reader needs. Every
+    // extra char here is paid on every unverified completion in every inbox.
+    unverified
+      ? `⚠ UNVERIFIED — no tests, no \`verifiedHow\`: "${status}" means the author yielded, ` +
+        'not that the artifacts were checked.'
+      : null,
     rec.deploy ? `Deploy: ${rec.deploy}` : null,
     // The deferred-set is intentionally last + visually flagged so it can't be
     // skimmed past — this is the "surface every deferred item" guarantee.

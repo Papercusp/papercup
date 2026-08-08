@@ -16,6 +16,10 @@ type RearmFn = NonNullable<StalledLoopsSweepDeps['rearm']>;
 // call tuple and every one of those reads is a lint:tsc error a green vitest run cannot see
 // (EI-19899301656065801).
 type NotifyFn = NonNullable<StalledLoopsSweepDeps['notify']>;
+// Same reason again (WI-36685): the wake-starved assertions read `armWake.mock.calls[0][0].ownerId`,
+// which against a bare `vi.fn(async () => ...)` is a zero-arg call tuple — TS2493/TS2339 at
+// lint:tsc, and completely invisible to a green vitest run.
+type ArmWakeFn = NonNullable<StalledLoopsSweepDeps['armWake']>;
 
 /** Minimal fake `harness_shared.routines` SELECT — the sweep's only direct SQL read. */
 function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
@@ -73,6 +77,30 @@ const reach = (reachable: boolean) =>
     channel: (reachable ? 'psu-socket' : 'none') as never,
     durableWhileAlive: reachable,
     summary: reachable ? 'live injectable session' : 'no wake path',
+    // WI-36685: an unreachable owner here is a genuine corpse — nothing live to repair TO.
+    // The wake-starved shape (unreachable ONLY because the standing await is missing) is
+    // `wakeStarvedProbe()` below, deliberately a separate fixture so no existing test
+    // silently acquires the new branch's behaviour.
+    awaitRepairable: false,
+    wouldBeChannel: null,
+  }));
+
+/**
+ * WI-36685 — the WAKE-STARVED probe shape: `reachable:false` (a wake right now really would
+ * not land, because Gate 1 fails) yet `awaitRepairable:true`, because every other liveness
+ * signal is healthy and arming the watch alone restores delivery.
+ *
+ * The pair (`reach(false)` vs this) IS the distinction the guard turns on, which is why they
+ * differ in exactly one field: both are unreachable, and only one is repairable.
+ */
+const wakeStarvedProbe = () =>
+  vi.fn(async () => ({
+    reachable: false,
+    channel: 'none' as never,
+    durableWhileAlive: false,
+    summary: 'no standing await, but the session is live and would take psu-socket once re-armed',
+    awaitRepairable: true,
+    wouldBeChannel: 'psu-socket' as never,
   }));
 
 describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving it inert)', () => {
@@ -90,6 +118,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       reArmedFireStarved: [],
       vetoedByProviderWall: [],
       disarmedWhileReachable: [],
+      repairedWakeStarved: [],
       dryRun: false,
     });
     expect(getStatuses).not.toHaveBeenCalled();
@@ -811,5 +840,313 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     expect(autoPause).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-36685 — the FOURTH population. Fires kept arriving and every one reached NOBODY, because
+ * no standing inbox-wake await was registered, so no `event_wake_deliveries` row was created and
+ * the agent was never asked for a turn.
+ *
+ * `lastWakeAt` is the whole discriminator and it is DERIVED as COALESCE(delivered_at, created_at)
+ * (loop.ts:1069) — a row created but never delivered would still advance it, so frozen-under-an-
+ * advancing-lastFiredAt can only mean no row was created at all.
+ */
+describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-36685)', () => {
+  // This suite is fail-on-console and every branch here logs its reasoning by design.
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  const FIRED = '2026-08-01T02:00:00.000Z';
+  /** Well beyond turnsStalledFloorMs(60) = 30min: the last delivery is ~2h before the last fire. */
+  const WAKE_FROZEN = '2026-08-01T00:00:00.000Z';
+
+  it('repairs (arms the watch, then re-arms the loop) instead of disarming, when the await is the only thing missing', async () => {
+    const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-starved',
+            status({
+              ownerId: 'su-starved',
+              turnsStalled: true,
+              lastFiredAt: FIRED,
+              lastWakeAt: WAKE_FROZEN,
+              // The signature that fools every earlier exemption: the last TURN precedes the last
+              // fire, so `answeredItsLastFire` is false and the FIRE-STARVED branch declines.
+              lastTurnAt: WAKE_FROZEN,
+              lastRealTurnAt: WAKE_FROZEN,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, armWake, probeReachability: wakeStarvedProbe(), broadcast, notify },
+    );
+
+    expect(res.repairedWakeStarved).toEqual(['su-starved']);
+    expect(res.paused).toBe(0);
+    expect(autoPause).not.toHaveBeenCalled();
+    // The owner page is for PERMANENTLY disarmed sessions. Nothing was disarmed, so nobody is paged.
+    expect(notify).not.toHaveBeenCalled();
+
+    // BOTH writes, and the arm must come first — a nudge without a restored watch just
+    // black-holes another fire, which is the specific half-fix this branch exists to avoid.
+    expect(armWake).toHaveBeenCalledTimes(1);
+    expect(armWake.mock.calls[0]?.[0]?.ownerId).toBe('su-starved');
+    expect(rearm).toHaveBeenCalledTimes(1);
+    expect(rearm.mock.calls[0]?.[1]).toBe('rt_starved');
+    expect(rearm.mock.calls[0]?.[2]).toContain('WI-36685');
+    expect(armWake.mock.invocationCallOrder[0]).toBeLessThan(rearm.mock.invocationCallOrder[0]!);
+  });
+
+  it('CONTROL — a corpse with the SAME frozen lastWakeAt is still disarmed, because nothing is repairable', async () => {
+    // This is the falsifiability control for the branch above, and it is the case that makes the
+    // repairability gate load-bearing rather than decorative: a dead session's standing await was
+    // cancelled by its SessionEnd hook, so its later fires ALSO create no delivery rows and its
+    // `lastWakeAt` is frozen in exactly the same way. The history test alone cannot separate them.
+    const sql = fakeSql([{ id: 'rt_corpse', target_owner_id: 'su-corpse' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-corpse',
+            status({
+              ownerId: 'su-corpse',
+              turnsStalled: true,
+              lastFiredAt: FIRED,
+              lastWakeAt: WAKE_FROZEN,
+              lastTurnAt: WAKE_FROZEN,
+              lastRealTurnAt: WAKE_FROZEN,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      // reach(false): unreachable AND not repairable — the corpse shape.
+      { getStatuses, autoPause, rearm, armWake, probeReachability: reach(false), broadcast, notify },
+    );
+
+    expect(res.repairedWakeStarved).toEqual([]);
+    expect(res.paused).toBe(1);
+    expect(autoPause).toHaveBeenCalledWith(sql, 'rt_corpse', expect.stringContaining('WI-6639'));
+    // Never arm a watch for a dead session: that manufactures the zombie await that reads as a
+    // false `parked`/`wakeable` session and pins it against the idle-session-reaper.
+    expect(armWake).not.toHaveBeenCalled();
+    expect(rearm).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL — a DELIVERED-but-wedged loop is NOT wake-starved and is disarmed (EI-19478552459475620)', async () => {
+    // The other direction, and the reason the discriminator is `lastWakeAt` rather than "did a
+    // turn happen": there, wakes ARE delivered (lastWakeStatus 'delivered', channel
+    // 'psu-socket-reset', no error) into a CLI child wedged on memory reclaim. `lastWakeAt`
+    // tracks the fires, so this branch must not claim it — the agent really was asked and really
+    // did not answer.
+    const sql = fakeSql([{ id: 'rt_wedged', target_owner_id: 'su-wedged' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-wedged',
+            status({
+              ownerId: 'su-wedged',
+              turnsStalled: true,
+              lastFiredAt: FIRED,
+              // The wake landed one second after the fire — delivery is healthy.
+              lastWakeAt: '2026-08-01T02:00:01.000Z',
+              lastWakeStatus: 'delivered',
+              lastWakeChannel: 'psu-socket-reset',
+              lastTurnAt: WAKE_FROZEN,
+              lastRealTurnAt: WAKE_FROZEN,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      // Deliberately the REPAIRABLE probe: if the branch were keyed on reachability alone rather
+      // than on the delivery history, this test would wrongly repair. It must disarm anyway.
+      { getStatuses, autoPause, rearm, armWake, probeReachability: wakeStarvedProbe(), broadcast, notify },
+    );
+
+    expect(res.repairedWakeStarved).toEqual([]);
+    expect(res.paused).toBe(1);
+    expect(armWake).not.toHaveBeenCalled();
+    expect(autoPause).toHaveBeenCalledWith(sql, 'rt_wedged', expect.stringContaining('WI-6639'));
+  });
+
+  it('a FAILED arm does not re-arm the loop and does not report a repair — it falls through to the disarm', async () => {
+    // Half-repairing is worse than not repairing: a nudged loop with no standing watch fires
+    // straight back into the same hole, while `repairedWakeStarved` would claim it was fixed.
+    const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-starved',
+            status({
+              ownerId: 'su-starved',
+              turnsStalled: true,
+              lastFiredAt: FIRED,
+              lastWakeAt: WAKE_FROZEN,
+              lastTurnAt: WAKE_FROZEN,
+              lastRealTurnAt: WAKE_FROZEN,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const armWake = vi.fn<ArmWakeFn>(async () => {
+      throw new Error('await store unavailable');
+    });
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, armWake, probeReachability: wakeStarvedProbe(), broadcast, notify },
+    );
+
+    expect(res.repairedWakeStarved).toEqual([]);
+    expect(rearm).not.toHaveBeenCalled();
+    expect(res.paused).toBe(1);
+    expect(autoPause).toHaveBeenCalledWith(sql, 'rt_starved', expect.anything());
+  });
+
+  it('dryRun reports the repair without performing either write', async () => {
+    const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-starved',
+            status({
+              ownerId: 'su-starved',
+              turnsStalled: true,
+              lastFiredAt: FIRED,
+              lastWakeAt: WAKE_FROZEN,
+              lastTurnAt: WAKE_FROZEN,
+              lastRealTurnAt: WAKE_FROZEN,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws', dryRun: true },
+      { getStatuses, autoPause, rearm, armWake, probeReachability: wakeStarvedProbe(), broadcast },
+    );
+
+    expect(res.repairedWakeStarved).toEqual(['su-starved']);
+    expect(armWake).not.toHaveBeenCalled();
+    expect(rearm).not.toHaveBeenCalled();
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('broadcasts the starved population when nothing was disarmed, naming the wake-starved cause', async () => {
+    const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-starved',
+            status({
+              ownerId: 'su-starved',
+              turnsStalled: true,
+              lastFiredAt: FIRED,
+              lastWakeAt: WAKE_FROZEN,
+              lastTurnAt: WAKE_FROZEN,
+              lastRealTurnAt: WAKE_FROZEN,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, armWake, probeReachability: wakeStarvedProbe(), broadcast },
+    );
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const call = broadcast.mock.calls[0]?.[0];
+    // A wake-starved-only sweep names ITS OWN fault in the summary rather than the generic
+    // "starved" wording: fires-stopped and fires-reached-nobody point at different code, and a
+    // reader paged by this line should not have to open the body to tell them apart.
+    expect(call?.summary).toContain('reach NOBODY');
+    expect(call?.summary).toContain('WI-36685');
+    expect(call?.summary).not.toContain('stopped RECEIVING fires');
+    expect(call?.body).toContain('WAKE-STARVED');
+    expect(call?.body).toContain('su-starved');
+    // The fire-starved half must not be fabricated when that population is empty.
+    expect(call?.body).not.toContain('FIRE-STARVED');
+  });
+
+  it('an owner whose lastWakeAt tracks its fires is left to the existing branches entirely', async () => {
+    // Calibration: the branch must not claim a HEALTHY-delivery loop. Without this, a bug that
+    // made `wakeStarved` always-true would still pass every test above.
+    const sql = fakeSql([{ id: 'rt_ok', target_owner_id: 'su-ok' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-ok',
+            status({
+              ownerId: 'su-ok',
+              turnsStalled: false,
+              lastFiredAt: FIRED,
+              lastWakeAt: FIRED,
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, armWake, probeReachability: wakeStarvedProbe(), broadcast },
+    );
+
+    expect(res.repairedWakeStarved).toEqual([]);
+    expect(res.paused).toBe(0);
+    expect(armWake).not.toHaveBeenCalled();
+    expect(autoPause).not.toHaveBeenCalled();
   });
 });

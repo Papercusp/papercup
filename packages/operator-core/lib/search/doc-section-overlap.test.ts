@@ -5,10 +5,12 @@ import {
   createDocSectionNeighbourProvider,
   decodeSectionId,
   describeAgainstNull,
+  describeDocOverlapScan,
   encodeSectionId,
   loadDocSectionUnits,
   measureNullBaseline,
   pageGroupOf,
+  runDocSectionOverlapScan,
   type DocOverlapDeps,
   type DocSectionRef,
   type NullPairSample,
@@ -48,9 +50,57 @@ describe('section id encoding', () => {
     }
   });
 
-  it('rejects an id with a blank source or slug, which would silently group wrongly', () => {
+  it('rejects a blank SOURCE — an unattributable unit has no threshold to be judged by', () => {
     expect(decodeSectionId(encodeSectionId({ sourceKey: '', slug: 's', anchor: 'a' }))).toBeNull();
-    expect(decodeSectionId(encodeSectionId({ sourceKey: 'k', slug: '', anchor: 'a' }))).toBeNull();
+  });
+
+  it('ACCEPTS a blank slug — it is the corpus root page, not a malformed id', () => {
+    // This assertion was inverted until 2026-08-08, and the inversion is what
+    // killed the scan's first live run. The original rationale was that a blank
+    // slug "would silently group wrongly"; measured, it does not — the five real
+    // root-page sections all map to the single group `papercusp-engineering::`,
+    // which is exactly right, because they ARE one page.
+    const root = { sourceKey: 'papercusp-engineering', slug: '', anchor: 'status' };
+    expect(decodeSectionId(encodeSectionId(root))).toEqual(root);
+    expect(pageGroupOf(root)).toBe('papercusp-engineering::');
+  });
+});
+
+describe('encode/decode round-trip against shapes the LIVE corpus actually contains', () => {
+  // These are not invented edge cases. Each is a measured property of
+  // harness_shared.doc_sections (2026-08-08, 10,056 embedded gemma sections),
+  // and the first one KILLED the scan's first live run: decodeSectionId
+  // rejected an empty slug, so the encoder emitted ids from real rows that the
+  // decoder refused, and the neighbour provider's fail-closed guard threw. All
+  // 17 unit tests were green at the time because every fixture supplied a
+  // hand-written slug.
+  const measured: Array<[string, DocSectionRef]> = [
+    // 5 real sections: the engineering corpus ROOT page, slug ''.
+    ['root page — empty slug', { sourceKey: 'papercusp-engineering', slug: '', anchor: 'what-this-is' }],
+    ['root page preamble — empty slug AND empty anchor', { sourceKey: 'papercusp-engineering', slug: '', anchor: '' }],
+    // 417 real sections: a page preamble, empty anchor. Already accepted — it
+    // is the CONTROL that shows the two empty-field cases were treated
+    // asymmetrically for no reason.
+    ['page preamble — empty anchor', { sourceKey: 'papercusp-guidance', slug: 'guide/a', anchor: '' }],
+    ['ordinary section', { sourceKey: 'papercusp-guidance', slug: 'guide/a', anchor: 's1' }],
+  ];
+
+  for (const [label, ref] of measured) {
+    it(`round-trips: ${label}`, () => {
+      expect(decodeSectionId(encodeSectionId(ref))).toEqual(ref);
+    });
+  }
+
+  it('still rejects an empty sourceKey — an unattributable unit has no threshold', () => {
+    // Not merely "invalid input": every threshold in this scan is chosen per
+    // source PAIR, so a unit with no source cannot be judged at all.
+    expect(decodeSectionId(encodeSectionId({ sourceKey: '', slug: 'guide/a', anchor: 's1' }))).toBeNull();
+  });
+
+  it('still rejects a string it did not produce', () => {
+    for (const notAnId of ['', 'plain', 'a::b::c', 'one\\u001ftwo']) {
+      expect(decodeSectionId(notAnId)).toBeNull();
+    }
   });
 });
 
@@ -222,5 +272,151 @@ describe('describeAgainstNull', () => {
 
   it('marks the median-to-p95 band WEAK', () => {
     expect(describeAgainstNull(0.65, sample)).toMatch(/WEAK/);
+  });
+});
+
+/* --------------------------------------------------------------------- *
+ * runDocSectionOverlapScan — the per-source-pair threshold rule
+ * --------------------------------------------------------------------- */
+
+const G = 'papercusp-guidance';
+const E = 'papercusp-engineering';
+
+/**
+ * A miniature corpus whose pairs sit in the band where the two thresholds
+ * DISAGREE (0.88 <= s < 0.92). That band is the whole reason D-003 split them,
+ * so it is the only band where a test can tell a correct implementation from
+ * one that applied a single global threshold and passed anyway.
+ */
+function miniCorpus(): DocOverlapDeps {
+  const refs = {
+    gA: { sourceKey: G, slug: 'guide/a', anchor: 's1' },
+    gB: { sourceKey: G, slug: 'guide/b', anchor: 's1' },
+    eX: { sourceKey: E, slug: 'eng/x', anchor: 's1' },
+  } satisfies Record<string, DocSectionRef>;
+  type Key = keyof typeof refs;
+  // Both pairs score 0.90 — identical similarity, different source pairing.
+  const sims: Array<[Key, Key, number]> = [
+    ['gA', 'gB', 0.9], // same-source: must be REJECTED at 0.92
+    ['gA', 'eX', 0.9], // cross-source: must be KEPT at 0.88
+  ];
+  return {
+    loadUnits: async () =>
+      Object.values(refs).map((r) => ({ id: encodeSectionId(r), group: pageGroupOf(r) })),
+    neighboursOf: async (ref) => {
+      const selfKey = (Object.keys(refs) as Key[]).find(
+        (k) => encodeSectionId(refs[k]) === encodeSectionId(ref),
+      );
+      if (!selfKey) return [];
+      return sims
+        .filter(([a, b]) => a === selfKey || b === selfKey)
+        .map(([a, b, s]) => ({ id: encodeSectionId(refs[a === selfKey ? b : a]), similarity: s }));
+    },
+    sampleNullPairs: async () => [],
+  };
+}
+
+describe('runDocSectionOverlapScan', () => {
+  const THRESHOLDS = { sameSource: 0.92, crossSource: 0.88 };
+
+  it('applies a DIFFERENT threshold per source pair, so an identical similarity lands differently', async () => {
+    const report = await runDocSectionOverlapScan({ mode: MODE, deps: miniCorpus(), thresholds: THRESHOLDS });
+
+    expect(report.inconclusive).toBeNull();
+    expect(report.findings).toHaveLength(1);
+    const only = report.findings[0]!;
+    expect(only.sameSource).toBe(false);
+    expect(only.appliedThreshold).toBe(0.88);
+    expect([only.refA.sourceKey, only.refB.sourceKey].sort()).toEqual([E, G]);
+
+    // CONTROL: the rejected pair scored EXACTLY the same 0.90. If a future
+    // change collapses to one global threshold, this expectation is what fails —
+    // the kept-pair assertion above would still pass at any threshold <= 0.90.
+    const sameLeg = report.bySourcePair.find((y) => y.sameSource);
+    expect(sameLeg).toMatchObject({ threshold: 0.92, kept: 0, rejected: 1 });
+  });
+
+  it('runs the base scan at the LOWER threshold — the union of both legs, not either one', async () => {
+    const report = await runDocSectionOverlapScan({ mode: MODE, deps: miniCorpus(), thresholds: THRESHOLDS });
+    expect(report.scanThreshold).toBe(0.88);
+    // Both pairs reached the filter; only the per-source-pair rule removed one.
+    expect(report.base.census.pairsAboveThreshold).toBe(2);
+  });
+
+  it('reports every source-pair leg it saw, including one that yielded nothing', async () => {
+    const report = await runDocSectionOverlapScan({ mode: MODE, deps: miniCorpus(), thresholds: THRESHOLDS });
+    expect(report.bySourcePair).toHaveLength(2);
+    const rendered = describeDocOverlapScan(report);
+    // A zero-yield leg must be VISIBLE in the prose, not absent from it: an
+    // omitted leg reads as "no such comparison was attempted".
+    expect(rendered).toContain('same-source');
+    expect(rendered).toContain('CROSS-source');
+    expect(rendered).toContain('0 kept');
+  });
+
+  it('marks the cross-source leg\'s zero-rejected as STRUCTURAL, not as a measurement', async () => {
+    // The base scan runs at the LOWER threshold, which IS the cross-source one,
+    // so that leg can never reject anything — its `rejected: 0` is guaranteed by
+    // construction. Reported bare it reads as "this leg was clean", which is a
+    // claim the run did not make. The first live run rendered exactly that.
+    const report = await runDocSectionOverlapScan({ mode: MODE, deps: miniCorpus(), thresholds: THRESHOLDS });
+
+    const cross = report.bySourcePair.find((y) => !y.sameSource)!;
+    expect(cross.threshold).toBe(report.scanThreshold);
+    expect(cross.rejected).toBe(0);
+    expect(cross.rejectedIsStructuralZero).toBe(true);
+
+    // The same-source leg's threshold sits ABOVE the base, so ITS count is real.
+    const same = report.bySourcePair.find((y) => y.sameSource)!;
+    expect(same.rejectedIsStructuralZero).toBe(false);
+
+    const rendered = describeDocOverlapScan(report);
+    expect(rendered).toContain('rejected n/a');
+    expect(rendered).toContain('1 below its threshold');
+  });
+
+  it('is INCONCLUSIVE when the base scan was truncated, because truncation drops the cross-source band', async () => {
+    const report = await runDocSectionOverlapScan({
+      mode: MODE,
+      deps: miniCorpus(),
+      thresholds: THRESHOLDS,
+      maxPairs: 1, // keeps only the highest-scoring pair
+    });
+    expect(report.base.census.pairsDropped).toBeGreaterThan(0);
+    expect(report.inconclusive).toMatch(/maxPairs cap/);
+    expect(describeDocOverlapScan(report)).toContain('INCONCLUSIVE');
+  });
+
+  it('refuses to guess a threshold for an id it did not produce', async () => {
+    const encoded = encodeSectionId({ sourceKey: G, slug: 'guide/a', anchor: 's1' });
+    await expect(
+      runDocSectionOverlapScan({
+        mode: MODE,
+        thresholds: THRESHOLDS,
+        deps: {
+          ...miniCorpus(),
+          loadUnits: async () => [
+            { id: encoded, group: pageGroupOf({ sourceKey: G, slug: 'guide/a', anchor: 's1' }) },
+            { id: 'not-an-encoded-id', group: 'some-other-page' },
+          ],
+          // The neighbour PROVIDER decodes the probe, so the undecodable id has
+          // to arrive as a HIT — which is exactly how a real corrupted row would
+          // reach the pair path, past the provider's own guard.
+          neighboursOf: async () => [{ id: 'not-an-encoded-id', similarity: 0.99 }],
+        },
+      }),
+    ).rejects.toThrow(/not produced by encodeSectionId/);
+  });
+
+  it('throws on a missing threshold rather than defaulting one', async () => {
+    for (const thresholds of [{ sameSource: 0.92 }, { crossSource: 0.88 }, {}]) {
+      await expect(
+        runDocSectionOverlapScan({
+          mode: MODE,
+          deps: miniCorpus(),
+          thresholds: thresholds as never,
+        }),
+      ).rejects.toThrow(/must be a finite number/);
+    }
   });
 });

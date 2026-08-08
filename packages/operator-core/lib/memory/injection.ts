@@ -1002,10 +1002,34 @@ async function buildBlockInner(
           sessionId: input.session?.sessionId ?? null,
           // The PRE-FILTER snapshots — see the warning above. These columns mean
           // "what the index returned" and must keep meaning that.
+          //
+          // ⚠ EI-19920080383279759 (gate-2, following the same-shaped WI-6933/
+          // WI-7154 class): a pool whose scope list is EMPTY was never queried at
+          // all — `doSearch` only fires for a scope actually in the union above,
+          // and userScopes/harnessScopes/hiveScopes are each `[]` exactly when
+          // their caller structurally has nothing to key on (no userId — several
+          // surfaces are deliberately non-user, e.g. the Mug's 'brief' brief:
+          // "the Mug is not a user" — or `harnessSlugs`/`hiveSlugs` explicitly
+          // omitted to "skip the pool entirely", per their own doc comments
+          // above). Recording that non-call as a pool row is indistinguishable,
+          // downstream, from a pool that WAS asked and genuinely found nothing —
+          // which is exactly the "100% empty-scope, 100% zero-hit" shape gate-2/
+          // gate-3 keep re-flagging as a caller bug to fix. Omit the key instead
+          // of writing an empty stub, so a recall with nothing to ask a given
+          // pool contributes NO row for it (jsonb_each has nothing to iterate),
+          // rather than a phantom always-empty pool. The flat hit_count/top_score
+          // derived from `pools` are unaffected either way — an omitted pool's
+          // `entries` was already always `[]`.
           pools: {
-            user: { entries: preFilterUser, limit: totalLimit, scopes: userScopes },
-            harness: { entries: preFilterHarness, limit: totalLimit, scopes: harnessScopes },
-            hive: { entries: preFilterHive, limit: totalLimit, scopes: hiveScopes },
+            ...(userScopes.length > 0
+              ? { user: { entries: preFilterUser, limit: totalLimit, scopes: userScopes } }
+              : {}),
+            ...(harnessScopes.length > 0
+              ? { harness: { entries: preFilterHarness, limit: totalLimit, scopes: harnessScopes } }
+              : {}),
+            ...(hiveScopes.length > 0
+              ? { hive: { entries: preFilterHive, limit: totalLimit, scopes: hiveScopes } }
+              : {}),
           },
           // P-002 / migration 758: what each LEG did, and what actually landed.
           legs: legStats,

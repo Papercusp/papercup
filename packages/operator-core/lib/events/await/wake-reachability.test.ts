@@ -26,6 +26,70 @@ describe('deriveWakeReachability — channel ladder mirrors executeWake', () => 
     expect(v.warning).toMatch(/no-session-now/i);
   });
 
+  // WI-36685 — gate 1 used to discard every liveness signal before returning, so "this session is
+  // gone" and "this session is alive but nobody wired its doorbell" were byte-identical verdicts
+  // with opposite remedies. `reachable`/`channel` are unchanged (asserted above and below);
+  // `awaitRepairable` is the distinction that was missing.
+  describe('gate 1 repairability (WI-36685)', () => {
+    it('no await + a live psu-host socket ⇒ awaitRepairable, naming the channel a re-arm would restore', () => {
+      const v = deriveWakeReachability({ ...BASE, wakeable: false, ended: false, pid: 1, pidAlive: true, hasPsuHost: true });
+      expect(v.reachable).toBe(false); // unchanged — a wake right now still would not land
+      expect(v.channel).toBe('none'); // unchanged
+      expect(v.awaitRepairable).toBe(true);
+      expect(v.wouldBeChannel).toBe('psu-socket');
+      expect(v.warning).toMatch(/REPAIRABLE/);
+    });
+
+    it('no await + resumable ⇒ repairable via resume', () => {
+      const v = deriveWakeReachability({ ...BASE, wakeable: false });
+      expect(v.awaitRepairable).toBe(true);
+      expect(v.wouldBeChannel).toBe('resume');
+    });
+
+    it('CONTROL — no await AND nothing live/resumable (a corpse) ⇒ NOT repairable', () => {
+      // The load-bearing case: without this, `awaitRepairable` would just be "!wakeable" renamed,
+      // and every caller keying a repair on it would happily arm a watch for a dead session.
+      const v = deriveWakeReachability({
+        ...BASE,
+        wakeable: false,
+        ended: true,
+        resumable: false,
+        presenceFresh: false,
+      });
+      expect(v.awaitRepairable).toBe(false);
+      expect(v.wouldBeChannel).toBeNull();
+      expect(v.warning).not.toMatch(/REPAIRABLE/);
+    });
+
+    it('CONTROL — no await + alive but only inbox-only ⇒ NOT repairable (arming would not produce a turn)', () => {
+      const v = deriveWakeReachability({
+        ...BASE,
+        wakeable: false,
+        ended: false,
+        pid: 5,
+        pidAlive: true,
+        resumable: false,
+        presenceFresh: true,
+      });
+      // As-if-armed this owner reaches `inbox-only`, which is reachable:false — wakes would park
+      // rather than become a fresh turn, so a re-arm changes how it LOOKS and not what it does.
+      expect(v.awaitRepairable).toBe(false);
+      expect(v.wouldBeChannel).toBeNull();
+    });
+
+    it('a satisfied gate never reports repairability (nothing was blocking)', () => {
+      for (const i of [
+        { ...BASE },
+        { ...BASE, ended: false, pid: 1, pidAlive: true, hasPsuHost: true },
+        { ...BASE, ended: true, resumable: false, presenceFresh: false },
+      ]) {
+        const v = deriveWakeReachability(i);
+        expect(v.awaitRepairable).toBe(false);
+        expect(v.wouldBeChannel).toBeNull();
+      }
+    });
+  });
+
   it('psu-host socket ⇒ reachable via psu-socket, durable while alive (best path, beats pid logic)', () => {
     const v = deriveWakeReachability({ ...BASE, ended: false, pid: 123, pidAlive: true, hasPsuHost: true, resumable: false });
     expect(v).toMatchObject({ reachable: true, channel: 'psu-socket', durableWhileAlive: true });

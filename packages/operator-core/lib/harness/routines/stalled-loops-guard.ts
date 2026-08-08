@@ -75,6 +75,34 @@
  * The remaining guess is deliberately biased. A wrong RE-ARM costs one extra fire and
  * self-corrects on the very next sweep — the fire lands, no turn follows, the disarm happens
  * then. A wrong DISARM is permanent. When the evidence is ambiguous, take the reversible mistake.
+ *
+ * A FOURTH POPULATION: WAKE-STARVED (WI-36685). The split above asks whether the FIRES stopped.
+ * It does not ask the next question down: whether a fire that DID happen reached anyone. A wake
+ * emits on `coord:inbox-wake:<owner>`; with no standing await registered there it matches nothing
+ * and no `event_wake_deliveries` row is created at all — so the agent sleeps on, never having been
+ * spoken to, and its `last_turn_at` goes stale for the one reason this module never considered:
+ * nobody asked it for a turn. Every exemption above correctly declines (no recent turn, no
+ * provider wall, and the fires did NOT stop, so `answeredItsLastFire` is false), and it takes the
+ * permanent disarm. Measured on su-4a6e2255, twice in one day, the second time for 2h44m with
+ * ZERO delivery rows while fires advanced — disarmed at 22:07:36Z and dark until a human typed
+ * into it. Note this module's own OWNER page (EI-19899301656065801) is what should have covered
+ * the gap and could not: it fires AFTER the disarm, and its rail writes no durable record
+ * (WI-36644).
+ *
+ * The discriminator costs no new I/O — `lastWakeAt` is DERIVED as
+ * COALESCE(delivered_at, created_at) over this routine's own delivery rows (loop.ts:1069), so a
+ * created-but-undelivered row would still advance it and a frozen value under an advancing
+ * `lastFiredAt` can only mean no row was created. What it CANNOT be keyed on is `reachable`:
+ * `deriveWakeReachability`'s Gate 1 returns before consulting any liveness signal, so a
+ * wake-starved owner is unreachable by construction and reads identically to a corpse. That
+ * conflation is fixed at the source — the verdict now also reports `awaitRepairable` — and it is
+ * the gate that keeps a genuine corpse (whose await was cancelled at SessionEnd, giving it the
+ * same frozen `lastWakeAt`) on the disarm path.
+ *
+ * ⚠ The remedy here is TWO writes, not one: `rearmFireStarvedLoop` moves `next_fire_at` and
+ * nothing else, so on this population it fires straight back into the same hole. The standing
+ * watch must be re-armed FIRST (`armInboxWake` — what `loop:arm` itself does); the nudge only
+ * decides when the now-deliverable fire happens.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -87,7 +115,7 @@ import {
   type LoopStatus,
 } from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
-import { probeWakeReachability } from '../../events/await/wake-reachability';
+import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
@@ -175,6 +203,22 @@ export interface StalledLoopsSweepResult {
    * a signal about session liveness upstream, not about this sweep.
    */
   disarmedWhileReachable: string[];
+  /**
+   * WI-36685: owners whose loop was WAKE-starved — the routine kept firing, but each fire found
+   * no standing `coord:inbox-wake` await, so `wake()` matched nothing, NO `event_wake_deliveries`
+   * row was ever created, and the agent was never actually spoken to. It has no recent turn
+   * because it was never asked for one.
+   *
+   * These are REPAIRED (the watch is re-armed, then the loop is made due) and never disarmed —
+   * but only when the session is otherwise live (`awaitRepairable`), which is what keeps a
+   * genuine corpse, whose await was cancelled at SessionEnd and which shows the SAME frozen
+   * `lastWakeAt`, on the disarm path where it belongs.
+   *
+   * A non-zero count is an INFRASTRUCTURE signal about the wake-delivery path, not about the
+   * agent — a sibling of `reArmedFireStarved`, one layer further down: there the fires stopped,
+   * here they continued and landed nowhere.
+   */
+  repairedWakeStarved: string[];
   dryRun: boolean;
 }
 
@@ -200,6 +244,12 @@ export async function sweepStalledLoops(
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
   const rearm = deps.rearm ?? rearmFireStarvedLoop;
   const probeReachability = deps.probeReachability ?? probeWakeReachability;
+  const armWake =
+    deps.armWake ??
+    (async (input: { ownerId: string; note?: string | null }) => {
+      const { armInboxWake } = await import('../../events/await/inbox-wake-arm');
+      return armInboxWake(input);
+    });
   const notify =
     deps.notify ??
     (async (input: AttentionNotifyInput) => {
@@ -225,6 +275,7 @@ export async function sweepStalledLoops(
       reArmedFireStarved: [],
       vetoedByProviderWall: [],
       disarmedWhileReachable: [],
+      repairedWakeStarved: [],
       dryRun,
     };
 
@@ -242,6 +293,8 @@ export async function sweepStalledLoops(
   const vetoedByProviderWall: string[] = [];
   /** EI-19899301656065801: disarmed owners the reachability probe still finds PRESENT. */
   const disarmedWhileReachable: string[] = [];
+  /** WI-36685: owners whose fires were black-holing for want of a standing await. */
+  const repairedWakeStarved: string[] = [];
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
@@ -383,6 +436,108 @@ export async function sweepStalledLoops(
       }
     }
 
+    // WI-36685 — WAKE-STARVED, NOT TURN-STALLED. The fourth population, and the one that took
+    // this very session dark twice in one day.
+    //
+    // The branch above catches an agent whose fires STOPPED. This one catches the opposite
+    // signature: fires kept arriving on schedule and every one of them landed on NOBODY. A wake
+    // emits on `coord:inbox-wake:<owner>`; with no standing await registered there,
+    // emitAwaitedEvent matches nothing (woken:0, staged:0), loop-fire records `no-session-now`,
+    // and — the part that makes this detectable — NO `event_wake_deliveries` row is ever
+    // created. The agent is asleep, was never spoken to, and therefore has no recent turn. To
+    // `last_turn_at` that is byte-identical to an agent that stopped answering, so it sails past
+    // every exemption above and takes the permanent disarm.
+    //
+    // THE DISCRIMINATOR NEEDS NO NEW I/O, because it is a fact about history the status already
+    // carries. `lastWakeAt` is NOT a stored column: loop.ts:1069 derives it as
+    // COALESCE(delivered_at, created_at) over this routine's own wake-delivery rows. A row that
+    // was created but never delivered would STILL advance it via created_at — so a frozen
+    // `lastWakeAt` under an advancing `lastFiredAt` has exactly ONE explanation: no delivery row
+    // was created at all. That is what separates this from a delivered-but-wedged child
+    // (EI-19478552459475620), where the wake IS delivered (lastWakeStatus 'delivered', channel
+    // 'psu-socket-reset') and `lastWakeAt` tracks the fires — correctly NOT this population.
+    //
+    // Measured on su-4a6e2255 (2026-08-08): ZERO delivery rows for 2h44m while fires advanced to
+    // 21:54:31Z, every row that did exist status=delivered with an empty error. Never a delivery
+    // FAILURE — no wake was ever attempted. Disarmed at 22:07:36Z, dark until the owner typed
+    // into it by hand ~55 minutes later.
+    //
+    // WHY THE REPAIRABILITY GATE IS LOAD-BEARING, not a formality. The history test alone also
+    // matches a genuine CORPSE: a session's standing await is cancelled by its SessionEnd hook,
+    // so a dead owner's later fires create no delivery rows either and its `lastWakeAt` is just
+    // as frozen. `awaitRepairable` is what separates them — it is true only when the await gate
+    // is the ONLY thing blocking delivery and the session is otherwise live and injectable, so a
+    // corpse (nothing live, nothing resumable) reads false and falls through to the disarm
+    // exactly as before. Note this could NOT have been keyed on `reachable`: Gate 1 of
+    // deriveWakeReachability returns before consulting any liveness signal, so a wake-starved
+    // owner is unreachable BY CONSTRUCTION and a `reachable` gate would veto nothing, ever.
+    //
+    // AND THE REPAIR MUST ACTUALLY REPAIR. `rearmFireStarvedLoop` only moves `next_fire_at` — on
+    // this population that fires straight back into the same black hole. Arming the standing
+    // watch is the write that restores delivery; the nudge then makes it due immediately. Both,
+    // in that order, or neither is worth doing. (The arm is deliberately NOT applied to owners
+    // that fail the repairability gate: arming a watch for a dead session manufactures precisely
+    // the zombie await that reads as a false `parked`/`wakeable` session and pins it against the
+    // idle-session-reaper, which counts a standing await as alive.)
+    //
+    // Same asymmetry as the branch above, and it binds harder here: a wrong repair costs one
+    // extra fire and self-corrects on the next sweep — the wake now genuinely lands, no turn
+    // follows, `lastWakeAt` has advanced so this branch no longer matches, and the ordinary
+    // disarm happens. A wrong disarm is permanent.
+    const lastFiredMs = status.lastFiredAt ? Date.parse(status.lastFiredAt) : NaN;
+    const lastWakeMs = status.lastWakeAt ? Date.parse(status.lastWakeAt) : NaN;
+    const wakeStarved =
+      Number.isFinite(lastFiredMs) &&
+      (!Number.isFinite(lastWakeMs) || lastFiredMs - lastWakeMs >= turnsStalledFloorMs(status.intervalSec));
+
+    // Held so the disarm path below can reuse this probe instead of paying a second one.
+    let probed: WakeReachabilityVerdict | null = null;
+    if (wakeStarved) {
+      probed = await probeReachability(ownerId).catch(() => null);
+      if (probed?.awaitRepairable) {
+        repairedWakeStarved.push(ownerId);
+        console.warn(
+          `[stalled-loops-guard] WAKE-STARVED ${ownerId}: fires advanced to ${status.lastFiredAt} while ` +
+            `lastWakeAt stayed at ${status.lastWakeAt ?? 'never'} — no wake-delivery row was created, so the ` +
+            `fires reached nobody. The session is alive and would take the ${probed.wouldBeChannel} channel ` +
+            `once its inbox-wake watch is armed. Repairing + re-arming, NOT disarming — it was never asked ` +
+            `for a turn (WI-36685).`,
+        );
+        if (!dryRun) {
+          // Fail-soft: if the arm write fails, do NOT nudge the loop — a re-arm without a
+          // restored watch just black-holes another fire and, worse, would leave this branch
+          // reporting a repair that did not happen. Fall through to the disarm instead.
+          const armed = await armWake({
+            ownerId,
+            note: `stalled-loops-guard wake-starved repair (WI-36685)`,
+          })
+            .then(() => true)
+            .catch((e) => {
+              console.warn(
+                `[stalled-loops-guard] WAKE-STARVED ${ownerId}: armInboxWake FAILED ` +
+                  `(${e instanceof Error ? e.message : e}) — not re-arming the loop, since a nudge without a ` +
+                  `standing watch black-holes again.`,
+              );
+              return false;
+            });
+          if (!armed) {
+            repairedWakeStarved.pop();
+          } else {
+            await rearm(
+              sql,
+              routineId,
+              `stalled-loops-guard (WI-36685): wake-starved — fires advanced to ${status.lastFiredAt} with no ` +
+                `wake delivery since ${status.lastWakeAt ?? 'never'}; inbox-wake watch re-armed ` +
+                `(would-be channel ${probed.wouldBeChannel})`,
+            );
+            continue;
+          }
+        } else {
+          continue;
+        }
+      }
+    }
+
     stalledOwners.push(ownerId);
     if (dryRun) continue;
     const reason =
@@ -419,9 +574,17 @@ export async function sweepStalledLoops(
     // Fail-soft to `true` (page on an uncertain probe), matching the sibling branch's direction:
     // this only gates a NOTIFICATION, and one spurious page is far cheaper than the miss it
     // guards against. Reaching this line at all is rare, so it cannot become a flood.
-    const stillReachable = await probeReachability(ownerId)
-      .then((v) => v.reachable)
-      .catch(() => true);
+    //
+    // WI-36685: reuse the wake-starved branch's probe when it already ran for this owner rather
+    // than paying a second one. Note the semantics survive the reuse: an owner that reached this
+    // line WITH a `probed` verdict is one whose repairability gate said no, and `reachable` on
+    // that same verdict is the honest answer to the different question asked here.
+    const stillReachable =
+      probed != null
+        ? probed.reachable
+        : await probeReachability(ownerId)
+            .then((v) => v.reachable)
+            .catch(() => true);
     if (stillReachable) disarmedWhileReachable.push(ownerId);
   }
 
@@ -443,6 +606,13 @@ export async function sweepStalledLoops(
             `further fire arrived. That is a fault in the loop-FIRING path, not in those agents, so they ` +
             `were re-armed instead. Both symptoms appearing in the same sweep points at the scheduler ` +
             `itself (EI-19406534159939583).`
+          : '') +
+        (repairedWakeStarved.length > 0
+          ? `\n\nALSO NOT disarmed: ${repairedWakeStarved.length} loop(s) were WAKE-STARVED ` +
+            `(${repairedWakeStarved.join(', ')}) — their fires kept arriving but reached nobody, because no ` +
+            `standing inbox-wake await was registered, so no wake-delivery row was ever created. Those ` +
+            `agents were never asked for a turn. Their watch has been re-armed and the loops made due ` +
+            `(WI-36685).`
           : ''),
       category: 'severe-event',
     });
@@ -497,19 +667,47 @@ export async function sweepStalledLoops(
   // needs to be loud. It is arguably the MORE serious of the two — agents that are alive and
   // working are receiving no wakes — and before this split it was invisible, because the only
   // broadcast in this module was gated on `stalledOwners.length > 0`.
-  if (reArmedFireStarved.length > 0 && stalledOwners.length === 0 && !dryRun) {
+  //
+  // WI-36685 folds the WAKE-starved population into this same broadcast rather than adding a
+  // second one. Both are "live agents the delivery path stopped serving", they differ only in
+  // WHERE it broke (no fire emitted vs. a fire that reached nobody), and a sweep that turns up
+  // both at once is emphatically ONE event — emitting two notices for it would be the exact
+  // "don't spam N inboxes for one root cause" failure this module's own broadcast avoids.
+  //
+  // The SUMMARY still names the specific fault when only one population is present — a reader
+  // paged by this line should not have to open the body to learn whether fires stopped or fires
+  // landed nowhere, since those point at different code. Only a genuinely mixed sweep gets the
+  // generic wording.
+  const starved = [...reArmedFireStarved, ...repairedWakeStarved];
+  if (starved.length > 0 && stalledOwners.length === 0 && !dryRun) {
     await broadcast({
       summary:
-        `${reArmedFireStarved.length} armed engine loop(s) on ${ws} stopped RECEIVING fires while still ` +
-        `answering them — re-armed, not disarmed (EI-19406534159939583).`,
+        repairedWakeStarved.length === 0
+          ? `${reArmedFireStarved.length} armed engine loop(s) on ${ws} stopped RECEIVING fires while still ` +
+            `answering them — re-armed, not disarmed (EI-19406534159939583).`
+          : reArmedFireStarved.length === 0
+            ? `${repairedWakeStarved.length} armed engine loop(s) on ${ws} had every fire reach NOBODY — no ` +
+              `standing inbox-wake await, so nothing was ever delivered; repaired, not disarmed (WI-36685).`
+            : `${starved.length} armed engine loop(s) on ${ws} were being STARVED of turns while still alive — ` +
+              `repaired, not disarmed (EI-19406534159939583 / WI-36685).`,
       body:
-        `Owners: ${reArmedFireStarved.join(', ')}. Each one's most recent turn is at or after its most ` +
-        `recent fire — it answered every fire it was given — and then a stall floor's worth of time ` +
-        `passed with no new fire. The agents are not at fault; the loop-firing path stopped serving ` +
-        `them. They have been made due immediately (next_fire_at = now). If they resume, the fires ` +
-        `were the problem; if a fire lands and no turn follows, the next sweep will reclassify and ` +
-        `disarm them normally. A cluster here means the scheduler tick, the loop completion-rebase, ` +
-        `or a shed that skips it — start at routines-workflow.ts's routinesTick.`,
+        (reArmedFireStarved.length > 0
+          ? `FIRE-STARVED (no fire emitted): ${reArmedFireStarved.join(', ')}. Each one's most recent turn ` +
+            `is at or after its most recent fire — it answered every fire it was given — and then a stall ` +
+            `floor's worth of time passed with no new fire. They have been made due immediately ` +
+            `(next_fire_at = now). A cluster here means the scheduler tick, the loop completion-rebase, or ` +
+            `a shed that skips it — start at routines-workflow.ts's routinesTick.\n\n`
+          : '') +
+        (repairedWakeStarved.length > 0
+          ? `WAKE-STARVED (fires emitted, reached nobody): ${repairedWakeStarved.join(', ')}. Fires kept ` +
+            `arriving on schedule, but no standing coord:inbox-wake await was registered for these owners, ` +
+            `so each emit matched nothing and NO event_wake_deliveries row was created — the agents were ` +
+            `never actually spoken to. Their watch has been re-armed and the loops made due. A cluster ` +
+            `here means awaits are being cancelled or never armed — start at the SessionEnd hook's ` +
+            `cancel path and loop-fire's ensureInboxWakeArmedForActiveSession self-heal.\n\n`
+          : '') +
+        `The agents are not at fault in either case. If they resume, the delivery path was the problem; ` +
+        `if a fire now lands and no turn follows, the next sweep reclassifies and disarms them normally.`,
       category: 'severe-event',
     });
   }
@@ -522,6 +720,7 @@ export async function sweepStalledLoops(
     reArmedFireStarved,
     vetoedByProviderWall,
     disarmedWhileReachable,
+    repairedWakeStarved,
     dryRun,
   };
 }

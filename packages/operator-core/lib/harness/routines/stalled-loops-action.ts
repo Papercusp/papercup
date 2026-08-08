@@ -43,6 +43,20 @@ registerSystemAction('sweep-stalled-loops', async (ctx: SystemActionCtx) => {
         `(EI-19406534159939583): ${result.reArmedFireStarved.join(', ')}`,
     );
   }
+  // WI-36685: wake-starved loops are the DELIVERY half — one layer below fire-starved. There the
+  // fires stopped; here they kept arriving and reached nobody, because no standing inbox-wake
+  // await existed, so no delivery row was ever created and the agent was never asked for a turn.
+  // Warn level and its own line for the same reason as its sibling: it blames the transport, not
+  // the agent, and it names a DIFFERENT thing to go fix (the await arm path, not the scheduler).
+  if (result.repairedWakeStarved.length > 0) {
+    console.warn(
+      `[sweep-stalled-loops] WAKE-STARVED ${result.repairedWakeStarved.length}/${result.checked} loop(s) ` +
+        `${result.dryRun ? 'would be repaired' : 'repaired'} (NOT disarmed) — each kept being fired at while ` +
+        `no wake was ever delivered (no standing coord:inbox-wake await, so every emit matched nothing). ` +
+        `Their watch ${result.dryRun ? 'would be' : 'was'} re-armed and the loops made due ` +
+        `(WI-36685): ${result.repairedWakeStarved.join(', ')}`,
+    );
+  }
   // EI-19441932615368003: walled loops are the PROVIDER half. Logged at info, not warn — unlike
   // the two above, a non-zero count here is EXPECTED under load and blames nobody: it is the
   // lifecycle-death backoff working, and this line is the evidence the guard is no longer

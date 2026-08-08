@@ -129,9 +129,12 @@ const DOORS: DoorEntry[] = [
         'feeds the novelty set, so anything it actually CUT would be marked delivered, never ' +
         'shown, and suppressed as not-novel thereafter — a silent permanent drop. It is exempt ' +
         'only because a real block cannot reach the door: the teaser block is bounded by the push ' +
-        'budgets x TEASER_MAX_CHARS, far under the injections door. The only cuttable tail is the ' +
-        'appended peer-brief region, which is PAPERCUSP_AMBIENT_CURSOR-gated (default off) and ' +
-        're-pullable from the teaser handle that always survives. The bound is pinned by ' +
+        'budgets x TEASER_MAX_CHARS, under the injections door. ⚠ MEASURED 2026-08-08: that is a ' +
+        'margin of 68 chars in 4000 (1.7%) at the worst case, and it is NOT structural — teaser ' +
+        'is clamped but handle.ref/handle.query are unbounded in the type, so a fat handle can ' +
+        'breach it (WI-36688 carries the fit-whole-teasers fix). The only cuttable tail today is ' +
+        'the appended peer-brief region, which is PAPERCUSP_AMBIENT_CURSOR-gated (default off) ' +
+        'and re-pullable from the teaser handle. The bound is pinned by ' +
         "ambient-push-delivery.test.ts 'the `lossless` registration is EARNED by a bound' — if " +
         'that reds, this entry is no longer true and the door needs a marker.',
     },

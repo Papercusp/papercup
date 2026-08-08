@@ -23,6 +23,8 @@ import route, {
   pickAssetUrl,
   normalizeTagVersion,
   resolveChannel,
+  classifyChannel,
+  visibleChannels,
   DEFAULT_CHANNEL,
 } from './updates-manifest';
 import { resolveGithubToken, fetchAssetText, releaseHostBase } from './updates-github';
@@ -184,8 +186,80 @@ describe('resolveChannel — default channel while the app is in alpha (WI-4389)
   });
 
   it('ignores a garbage channel and falls back to the default', () => {
-    expect(resolveChannel(new URLSearchParams('channel=nightly'), undefined)).toBe('alpha');
     expect(resolveChannel(new URLSearchParams(''), 'bogus')).toBe('alpha');
+    expect(resolveChannel(new URLSearchParams('channel='), undefined)).toBe('alpha');
+  });
+
+  it('refuses `nightly` as a LANE even though it is a known channel', () => {
+    // `nightly` is recognised by the classifier (so it can be excluded) but is
+    // not an update lane of this app — it is a side-by-side install with its own
+    // bundle id and data home. Honouring it here would update someone's working
+    // desktop into a different application.
+    expect(resolveChannel(new URLSearchParams('channel=nightly'), undefined)).toBe('alpha');
+    expect(resolveChannel(new URLSearchParams(''), 'nightly')).toBe('alpha');
+  });
+});
+
+describe('channel classification — a nightly build must never reach a release install', () => {
+  const rel = (tag: string, prerelease = false) => ({
+    tag_name: tag,
+    prerelease,
+    assets: [],
+  });
+
+  it('classifies each channel off its tag suffix', () => {
+    expect(classifyChannel(rel('desktop-v0.0.14-nightly'))).toBe('nightly');
+    expect(classifyChannel(rel('desktop-v0.0.14-alpha'))).toBe('alpha');
+    expect(classifyChannel(rel('desktop-v0.0.14-beta'))).toBe('beta');
+    expect(classifyChannel(rel('desktop-v0.0.14-rc1'))).toBe('beta');
+    expect(classifyChannel(rel('desktop-v0.0.14'))).toBe('stable');
+  });
+
+  it('classifies a nightly tag as nightly even when it is not marked prerelease', () => {
+    // The regression this guards: with no `-nightly` arm, the tag fell through
+    // BOTH remaining arms to `stable` — the most dangerous bucket — and every
+    // stable install would have been offered a nightly build.
+    expect(classifyChannel(rel('desktop-v0.0.14-nightly', false))).toBe('nightly');
+    expect(classifyChannel(rel('desktop-v0.0.14-nightly', true))).toBe('nightly');
+  });
+
+  it('is case-insensitive about the suffix', () => {
+    expect(classifyChannel(rel('Desktop-V0.0.14-NIGHTLY'))).toBe('nightly');
+  });
+
+  it('no update lane can see nightly releases', () => {
+    for (const lane of ['alpha', 'beta', 'stable'] as const) {
+      expect(visibleChannels(lane).has('nightly')).toBe(false);
+    }
+  });
+
+  it('a nightly client sees ONLY nightly — the two apps never cross', () => {
+    const visible = visibleChannels('nightly');
+    expect([...visible]).toEqual(['nightly']);
+    for (const other of ['alpha', 'beta', 'stable'] as const) {
+      expect(visible.has(other)).toBe(false);
+    }
+  });
+
+  it('the existing lane nesting is unchanged', () => {
+    expect([...visibleChannels('alpha')].sort()).toEqual(['alpha', 'beta', 'stable']);
+    expect([...visibleChannels('beta')].sort()).toEqual(['beta', 'stable']);
+    expect([...visibleChannels('stable')]).toEqual(['stable']);
+  });
+
+  it('CONTROL: the pre-fix classifier would have mis-filed a nightly tag as stable', () => {
+    // The exact code this replaced, kept as a falsifiability control: it passes
+    // every assertion above except the one that matters.
+    const preFix = (tag: string, prerelease: boolean) => {
+      const t = tag.toLowerCase();
+      if (t.includes('-alpha')) return 'alpha';
+      if (t.includes('-beta') || t.includes('-rc')) return 'beta';
+      if (prerelease) return 'beta';
+      return 'stable';
+    };
+    expect(preFix('desktop-v0.0.14-nightly', false)).toBe('stable');
+    expect(visibleChannels('stable').has('stable')).toBe(true); // …and stable users would get it
+    expect(classifyChannel(rel('desktop-v0.0.14-nightly'))).not.toBe('stable');
   });
 });
 

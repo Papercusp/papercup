@@ -18,10 +18,18 @@
  * Callers own the importance gate: needs-human emits only at ≥high; the
  * escalation / smoke-fail producers are inherently high so they
  * always notify. The helper does not re-gate.
+ *
+ * WI-36644: every call is recorded durably (harness_shared.attention_notifications, migration
+ * 761) BEFORE either channel is attempted, then stamped with each channel's outcome. Both
+ * channels are silently no-op-safe by design (no paired device / no open webview) — before this,
+ * "the call happened" was the only available evidence, and after a silent halt "was the human
+ * ever told?" was unanswerable even to the agent that raised it. The audit write is itself
+ * best-effort (logged + swallowed) so it can never become a new way for this helper to throw.
  */
 import { notifyWorkspace, type PushKind } from './device-push-dispatcher';
 import { notifySyncInvalidate } from './sync-sse';
 import { activeWorkspaceId } from './workspace-registry';
+import { recordAttentionNotifyIntent, recordAttentionNotifyOutcome } from './attention-notify-store';
 
 export type AttentionNotifyKind = 'needs-human' | 'intervention' | 'smoke-fail';
 
@@ -52,6 +60,18 @@ export interface AttentionNotifyInput {
 export async function notifyAttention(input: AttentionNotifyInput): Promise<void> {
   const ws = input.workspaceId ?? activeWorkspaceId();
 
+  // WI-36644: record intent BEFORE attempting either channel — this row is the only surviving
+  // evidence if the process dies mid-delivery, and it exists regardless of what happens below.
+  const recordId = await recordAttentionNotifyIntent({
+    workspaceId: ws,
+    harnessSlug: input.harnessSlug,
+    kind: input.kind,
+    title: input.title,
+    body: input.body,
+    importance: input.importance,
+    data: input.data,
+  });
+
   // 1. Mobile (APNs/FCM) — no-op when no device is paired. `data` must be
   // string-valued (APNs/FCM constraint); coerce extras and drop nullish.
   const mobileData: Record<string, string> & { kind?: PushKind } = { kind: MOBILE_KIND[input.kind] };
@@ -61,14 +81,28 @@ export async function notifyAttention(input: AttentionNotifyInput): Promise<void
     if (val != null) mobileData[k] = String(val);
   }
   try {
-    await notifyWorkspace(ws, {
+    const results = await notifyWorkspace(ws, {
       title: input.title,
       body: input.body,
       data: mobileData,
       category: MOBILE_KIND[input.kind],
     });
+    // A resolved call is NOT itself evidence of delivery: notifyWorkspace resolves to `[]`
+    // when no device is paired (the documented no-op case), and dispatchPush never throws
+    // per-target — it settles each send into a PushSendResult, ok:false included. Derive the
+    // outcome from those results, not from "didn't throw", or this audit trail would just
+    // relocate the original "reads as covered" bug one file down.
+    const succeeded = results.some((r) => r.ok);
+    const error = succeeded
+      ? undefined
+      : results.length === 0
+        ? 'no push targets registered for this workspace'
+        : results.map((r) => `${r.platform}:${r.status}${r.detail ? ` (${r.detail})` : ''}`).join('; ');
+    await recordAttentionNotifyOutcome(recordId, ws, 'mobile', { attempted: true, succeeded, error });
   } catch (e) {
-    console.warn('[attention-notify] mobile push failed:', (e as Error)?.message ?? e);
+    const message = (e as Error)?.message ?? String(e);
+    console.warn('[attention-notify] mobile push failed:', message);
+    await recordAttentionNotifyOutcome(recordId, ws, 'mobile', { attempted: true, succeeded: false, error: message });
   }
 
   // 2. Desktop-native (D-007) — SSE event the webview renders via Tauri.
@@ -81,7 +115,10 @@ export async function notifyAttention(input: AttentionNotifyInput): Promise<void
       importance: input.importance ?? null,
       ...input.data,
     });
+    await recordAttentionNotifyOutcome(recordId, ws, 'desktop', { attempted: true, succeeded: true });
   } catch (e) {
-    console.warn('[attention-notify] desktop notify failed:', (e as Error)?.message ?? e);
+    const message = (e as Error)?.message ?? String(e);
+    console.warn('[attention-notify] desktop notify failed:', message);
+    await recordAttentionNotifyOutcome(recordId, ws, 'desktop', { attempted: true, succeeded: false, error: message });
   }
 }

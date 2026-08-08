@@ -27,6 +27,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 const HOOK = join(__dirname, '..', 'userpromptsubmit-provenance.sh');
 
@@ -43,11 +44,13 @@ beforeEach(async () => {
   fs.writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token');
   bodies = [];
   server = createServer((req, res) => {
-    let raw = '';
-    req.on('data', (c) => (raw += String(c)));
+    // Boundary-safe: a multi-byte UTF-8 char split across two 'data' events
+    // would decode to replacement chars under a `raw += String(c)` accumulator
+    // (guarded by child-output-guard.test.ts).
+    const rawBody = createTextCollector(req);
     req.on('end', () => {
       try {
-        bodies.push(JSON.parse(raw).params);
+        bodies.push(JSON.parse(rawBody.text()).params);
       } catch {
         /* ignore */
       }

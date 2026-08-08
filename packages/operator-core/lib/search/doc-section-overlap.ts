@@ -37,7 +37,16 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import type { NeighbourHit, NeighbourProvider, OverlapUnit } from '@papercusp/overlap-clusters';
+import {
+  configureOverlapScan,
+  scanOverlap,
+  type NeighbourHit,
+  type NeighbourProvider,
+  type OverlapCensus,
+  type OverlapPair,
+  type OverlapScanReport,
+  type OverlapUnit,
+} from '@papercusp/overlap-clusters';
 
 /** The two synced corpora workstream C scans. */
 export const DOC_OVERLAP_SOURCES = ['papercusp-guidance', 'papercusp-engineering'] as const;
@@ -62,7 +71,8 @@ export interface DocSectionRef {
  * literal control byte in a .ts source file trips lint:no-control-bytes (a
  * green-checkpoint leg) and makes the file read as binary to grep, so the
  * escape-shaped LITERAL is deliberately what gets stored. It is exactly as
- * safe: no doc slug or heading anchor contains a backslash.
+ * safe: no doc slug or heading anchor contains a backslash — measured against
+ * the live corpus 2026-08-08, 0 of 10,056 embedded sections carry one.
  */
 const SEP = '\\u001f';
 
@@ -71,13 +81,38 @@ export function encodeSectionId(ref: DocSectionRef): string {
   return `${ref.sourceKey}${SEP}${ref.slug}${SEP}${ref.anchor}`;
 }
 
-/** Decode a unit id back to its section ref. Returns null for anything not produced by encodeSectionId. */
+/**
+ * Decode a unit id back to its section ref. Returns null for anything not
+ * produced by encodeSectionId.
+ *
+ * ## What is invalid, and what merely LOOKS invalid
+ *
+ * The part COUNT is the real discriminator: SEP is a six-character sequence no
+ * field in this corpus contains (measured above), so a string the encoder did
+ * not produce does not split into exactly three parts.
+ *
+ * An empty **sourceKey** is genuinely invalid — a unit with no source cannot be
+ * attributed to a corpus, and every threshold in this scan is chosen per source
+ * PAIR, so an unattributable unit has no threshold.
+ *
+ * An empty **slug** is NOT invalid: it is the corpus ROOT page. This guard used
+ * to reject it, and the first live run of the scan died on the id for
+ * `papercusp-engineering` with empty slug and anchor — five real embedded
+ * sections of the engineering root doc, each with a title and 292-1069 chars of
+ * content. The encoder emitted those ids happily from live rows while the
+ * decoder refused them, so the pair was never round-trip-safe on its own
+ * corpus. All 17 unit tests passed throughout, because every one supplied a
+ * hand-written slug: fixtures agree with you, the corpus does not. An empty
+ * ANCHOR was already accepted for exactly the same reason (a page preamble —
+ * 417 real sections have one), and that asymmetry is what made this easy to
+ * miss.
+ */
 export function decodeSectionId(id: string): DocSectionRef | null {
   const parts = id.split(SEP);
   if (parts.length !== 3) return null;
   const [sourceKey, slug, anchor] = parts;
-  if (!sourceKey || !slug) return null;
-  return { sourceKey, slug, anchor: anchor ?? '' };
+  if (!sourceKey) return null;
+  return { sourceKey, slug: slug ?? '', anchor: anchor ?? '' };
 }
 
 /**
@@ -286,4 +321,232 @@ export function describeAgainstNull(similarity: number, sample: NullPairSample):
   if (similarity >= sample.p95) return `p95-p99 of the null (n=${sample.n})`;
   if (similarity >= sample.p50) return `median-p95 of the null — WEAK (n=${sample.n})`;
   return `BELOW the null median (${sample.p50.toFixed(4)}) — less alike than two random sections (n=${sample.n})`;
+}
+
+/* ------------------------------------------------------------------------- *
+ * The runnable scan (P-003's closing piece)
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The two thresholds D-003 settled. They are NOT interchangeable and there is
+ * no single value that stands in for both: at one global 0.95 the corpus yields
+ * 361 same-source findings and exactly ONE cross-source, so a single threshold
+ * silently kills the more valuable leg while appearing to have scanned both.
+ */
+export interface SourcePairThresholds {
+  /** Both sections from the same source_key. D-003: 0.92. */
+  sameSource: number;
+  /** Sections from different source_keys — the leg worth having. D-003: 0.88. */
+  crossSource: number;
+}
+
+/** A reported pair, with both ends decoded and the threshold it was judged against. */
+export interface DocOverlapFinding extends OverlapPair {
+  refA: DocSectionRef;
+  refB: DocSectionRef;
+  sameSource: boolean;
+  appliedThreshold: number;
+}
+
+/** Per source-pair accounting, so no leg can be empty without saying so. */
+export interface SourcePairYield {
+  sourceA: string;
+  sourceB: string;
+  sameSource: boolean;
+  threshold: number;
+  /** Pairs kept for this source pair. */
+  kept: number;
+  /**
+   * Pairs this source pair contributed to the base scan but that its OWN
+   * threshold rejected.
+   *
+   * ⚠ For the leg whose threshold EQUALS the base threshold (the cross-source
+   * leg, since the base runs at the lower of the two), this is 0 BY
+   * CONSTRUCTION — the base scan already dropped everything below it, so
+   * nothing survives to be rejected. It is not a measurement of that leg's
+   * cleanliness, and `rejectedIsStructuralZero` marks it so a reader cannot
+   * mistake the two.
+   */
+  rejected: number;
+  /** True when `rejected` is 0 because the base scan pre-filtered at this leg's threshold, not because nothing was rejected. */
+  rejectedIsStructuralZero: boolean;
+}
+
+export interface DocOverlapScanReport {
+  thresholds: SourcePairThresholds;
+  /** The single threshold the underlying generic scan actually ran at (see below). */
+  scanThreshold: number;
+  findings: DocOverlapFinding[];
+  bySourcePair: SourcePairYield[];
+  census: OverlapCensus;
+  /**
+   * Non-null means this run could not have produced a trustworthy finding set —
+   * D-001's rule, extended with the one failure the generic module cannot see
+   * (a truncated base scan, which makes the per-source-pair filter unsound).
+   */
+  inconclusive: string | null;
+  /** The unfiltered generic report, kept so the filtering can be audited. */
+  base: OverlapScanReport;
+}
+
+/** Group key for one unordered source pair. Structural, so no delimiter can collide with a source name. */
+function sourcePairKey(a: string, b: string): string {
+  return JSON.stringify(a <= b ? [a, b] : [b, a]);
+}
+
+/**
+ * ONE base scan at the LOWER threshold, then a per-source-pair filter.
+ *
+ * ## Why one pass and not two
+ *
+ * The plan proposed running `scanOverlap` twice — once at 0.92 keeping
+ * same-source pairs, once at 0.88 keeping cross-source ones — and merging.
+ * A single pass at `min(sameSource, crossSource)` followed by a per-pair filter
+ * returns the IDENTICAL set, because `scanOverlap` at threshold T emits every
+ * cross-group pair scoring >= T: the 0.92 run's output is a strict subset of the
+ * 0.88 run's, so filtering the latter reconstructs both legs exactly. It costs
+ * half the ANN queries (one lookup per unit instead of two) and, more usefully,
+ * yields a single shared census — two runs would produce two denominators that
+ * a reader would have to reconcile by hand.
+ *
+ * ## The one condition that makes the equivalence hold, asserted rather than assumed
+ *
+ * `maxPairs` truncation breaks it. The generic scan sorts by DESCENDING
+ * similarity before capping, so a truncated run discards its LOWEST-scoring
+ * pairs — which is precisely the 0.88-0.92 band where every cross-source finding
+ * lives. A capped base scan would therefore drop cross-source findings while
+ * retaining same-source ones, i.e. it would reproduce the exact bias D-003 chose
+ * split thresholds to avoid, and it would do so silently. So `pairsDropped > 0`
+ * is treated as INCONCLUSIVE here rather than as a merely partial report.
+ * (`judgeInconclusive` does not flag it, correctly: for the generic module a cap
+ * is a partial answer, not a zero-that-measured-nothing. It is only unsound for
+ * THIS caller, so this caller is where it is caught.)
+ */
+export async function runDocSectionOverlapScan(
+  opts: DocOverlapOptions & {
+    thresholds: SourcePairThresholds;
+    neighbourLimit?: number;
+    maxPairs?: number;
+  },
+): Promise<DocOverlapScanReport> {
+  const { sameSource, crossSource } = opts.thresholds ?? ({} as SourcePairThresholds);
+  for (const [name, value] of [
+    ['sameSource', sameSource],
+    ['crossSource', crossSource],
+  ] as const) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new TypeError(
+        `runDocSectionOverlapScan: thresholds.${name} must be a finite number — ` +
+          "there is no default; D-003 derived these from this corpus's null distribution and they are void if the embedder changes",
+      );
+    }
+  }
+
+  const units = await loadDocSectionUnits(opts);
+  const config = configureOverlapScan({
+    threshold: Math.min(sameSource, crossSource),
+    neighbours: createDocSectionNeighbourProvider(opts),
+    neighbourLimit: opts.neighbourLimit ?? 10,
+    // Deliberately far above any plausible finding count: the cap must never be
+    // what ends this scan, because a cap here silently biases the result set
+    // (see the doc-comment above). It is a memory backstop, not a budget.
+    maxPairs: opts.maxPairs ?? 100_000,
+    crossGroupOnly: true,
+  });
+
+  const base = await scanOverlap(units, config);
+
+  const findings: DocOverlapFinding[] = [];
+  const yields = new Map<string, SourcePairYield>();
+  for (const pair of base.pairs) {
+    const refA = decodeSectionId(pair.a);
+    const refB = decodeSectionId(pair.b);
+    if (!refA || !refB) {
+      // Same fail-closed stance as the neighbour provider: an id that does not
+      // decode cannot be assigned a threshold, and guessing one would classify a
+      // finding into the wrong leg rather than surfacing a corpus/id bug.
+      throw new Error(
+        `runDocSectionOverlapScan: reported pair ${JSON.stringify([pair.a, pair.b])} contains an id not produced by ` +
+          'encodeSectionId — refusing to guess which threshold applies to it',
+      );
+    }
+    const isSame = refA.sourceKey === refB.sourceKey;
+    const threshold = isSame ? sameSource : crossSource;
+    const [sa, sb] =
+      refA.sourceKey <= refB.sourceKey
+        ? [refA.sourceKey, refB.sourceKey]
+        : [refB.sourceKey, refA.sourceKey];
+    const key = sourcePairKey(sa, sb);
+    let bucket = yields.get(key);
+    if (!bucket) {
+      bucket = {
+        sourceA: sa,
+        sourceB: sb,
+        sameSource: isSame,
+        threshold,
+        kept: 0,
+        rejected: 0,
+        rejectedIsStructuralZero: threshold <= config.threshold,
+      };
+      yields.set(key, bucket);
+    }
+    if (pair.similarity >= threshold) {
+      bucket.kept++;
+      findings.push({ ...pair, refA, refB, sameSource: isSame, appliedThreshold: threshold });
+    } else {
+      bucket.rejected++;
+    }
+  }
+
+  const truncated =
+    base.census.pairsDropped > 0
+      ? `the base scan hit its maxPairs cap and discarded ${base.census.pairsDropped} of ${base.census.pairsAboveThreshold} pair(s). ` +
+        'Pairs are capped after a descending-similarity sort, so the discarded ones are the lowest-scoring — exactly the band ' +
+        `where cross-source findings live (threshold ${crossSource} vs same-source ${sameSource}). The per-source-pair filter ` +
+        'below is therefore applied to a biased set and this result is NOT evidence about the corpus; re-run with a higher maxPairs.'
+      : null;
+
+  return {
+    thresholds: { sameSource, crossSource },
+    scanThreshold: config.threshold,
+    findings,
+    bySourcePair: [...yields.values()].sort(
+      (x, y) => x.sourceA.localeCompare(y.sourceA) || x.sourceB.localeCompare(y.sourceB),
+    ),
+    census: base.census,
+    inconclusive: base.inconclusive ?? truncated,
+    base,
+  };
+}
+
+/**
+ * One paragraph stating what the scan measured — the denominator travels with
+ * the number, per D-001, and each source-pair leg reports its own yield so a
+ * silently-empty leg cannot hide inside a healthy total.
+ */
+export function describeDocOverlapScan(report: DocOverlapScanReport): string {
+  const c = report.census;
+  const legs = report.bySourcePair.length
+    ? report.bySourcePair
+        .map(
+          (y) =>
+            `  ${y.sourceA} x ${y.sourceB} (${y.sameSource ? 'same-source' : 'CROSS-source'}, >=${y.threshold}): ` +
+            `${y.kept} kept, ` +
+            (y.rejectedIsStructuralZero
+              ? 'rejected n/a — this leg\'s threshold IS the base threshold, so nothing could survive to be rejected'
+              : `${y.rejected} below its threshold`),
+        )
+        .join('\n')
+    : '  (no source pair produced a candidate above the base threshold)';
+  const head =
+    `${c.unitsComparable} comparable section(s) of ${c.unitsIn} across ${c.groupsSeen} page(s); ` +
+    `${c.neighbourLookups} ANN lookup(s) -> ${c.candidateHitsSeen} candidate hit(s) -> ${c.candidatePairs} distinct pair(s), ` +
+    `${c.pairsCrossGroup} cross-page, ${c.pairsAboveThreshold} at or above the base threshold ${report.scanThreshold}. ` +
+    `Per-source-pair thresholds kept ${report.findings.length}.`;
+  const verdict = report.inconclusive
+    ? `\nINCONCLUSIVE — this run is not evidence about the corpus: ${report.inconclusive}`
+    : report.findings.length === 0
+      ? '\nZero findings, and the run was capable of producing one — this is a real "no overlap above threshold" result.'
+      : '';
+  return `${head}\n${legs}${verdict}`;
 }

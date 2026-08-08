@@ -450,7 +450,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       workspaceId: 'ws',
       queryContext: 'why is the recall empty',
       harnessSlugs: ['papercusp'],
-      hiveSlugs: [],
+      hiveSlugs: ['hivey'],
     });
     await flush();
 
@@ -463,6 +463,50 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
     expect(input.entries).toBeUndefined();
     expect(input.pools).toBeDefined();
     expect(Object.keys(input.pools!).sort()).toEqual(['harness', 'hive', 'user']);
+  });
+
+  // EI-19920080383279759 (gate-2, same class as WI-6933/WI-7154): a pool with
+  // NOTHING to key on (no userId, or an explicitly-suppressed harness/hive
+  // fan-out) was never queried at all — recording it as a pool row with
+  // scopes:[] is indistinguishable, downstream, from a pool that WAS asked
+  // and genuinely found nothing, which is exactly the "100% empty-scope,
+  // 100% zero-hit" shape the watchdog keeps re-flagging as a caller bug. The
+  // key must be OMITTED, not recorded empty — this is what the Mug's
+  // userId-less 'brief' surface (mug-brief-launch.ts: "the Mug is not a
+  // user") hits on every single wake.
+  it('omits the user pool entirely — never records it empty-scoped — when there is no userId to key on', async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: null,
+      workspaceId: 'ws',
+      queryContext: 'mug brief',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: ['hivey'],
+    });
+    await flush();
+
+    const { pools } = recordRecallStatsMock.mock.calls[0]![1] as {
+      pools: Record<string, { entries: unknown[]; limit: number; scopes: string[] }>;
+    };
+    expect(pools.user).toBeUndefined();
+    expect(Object.keys(pools).sort()).toEqual(['harness', 'hive']);
+  });
+
+  it('omits the harness/hive pools when their fan-out was explicitly suppressed ([])', async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: [],
+      hiveSlugs: [],
+    });
+    await flush();
+
+    const { pools } = recordRecallStatsMock.mock.calls[0]![1] as {
+      pools: Record<string, { entries: unknown[]; limit: number; scopes: string[] }>;
+    };
+    expect(Object.keys(pools).sort()).toEqual(['user']);
   });
 
   it('stamps each pool with the budget and the SCOPE KEYS it actually queried', async () => {
@@ -685,10 +729,11 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         pools: Record<string, { entries: unknown[] }>;
         admission: { admitted: number; returned: number };
       };
-      const pooled =
-        input.pools.user!.entries.length +
-        input.pools.harness!.entries.length +
-        input.pools.hive!.entries.length;
+      // Sum over whatever pools were actually recorded — EI-19920080383279759
+      // omits a pool key entirely when it was never queried (e.g. `hive` here,
+      // since hiveSlugs: [] suppresses it), so this must not assume all three
+      // keys are present.
+      const pooled = Object.values(input.pools).reduce((sum, p) => sum + p.entries.length, 0);
       // `pools` is the PRE-filter view and must agree with the funnel's
       // `returned`, never with `admitted`.
       expect(pooled).toBe(input.admission.returned);

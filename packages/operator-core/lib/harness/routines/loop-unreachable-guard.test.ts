@@ -365,12 +365,23 @@ function verdict(reachable: boolean): WakeReachabilityVerdict {
     channel: reachable ? 'psu-socket' : 'none',
     durableWhileAlive: reachable,
     summary: reachable ? 'live' : 'dead',
+    // WI-36685: `false` is the right unreachable shape for THIS guard's fixtures — they model a
+    // genuinely dead owner, not one whose only fault is a missing standing await.
+    awaitRepairable: false,
+    wouldBeChannel: null,
   };
 }
 
 /** WI-2339: an ended+resumable session — reachable via `claude --resume` but NOT durable-while-alive. */
 function resumeVerdict(): WakeReachabilityVerdict {
-  return { reachable: true, channel: 'resume', durableWhileAlive: false, summary: 'resumable' };
+  return {
+    reachable: true,
+    channel: 'resume',
+    durableWhileAlive: false,
+    summary: 'resumable',
+    awaitRepairable: false,
+    wouldBeChannel: null,
+  };
 }
 
 describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {

@@ -54,7 +54,10 @@ export function describeToolGuidanceBudget(): void {
 
   describe('tool guidance budget (P-011 ratchet)', () => {
     it('the registry loaded a real catalog', () => {
-      // 655 tools today; a floor well above any partial-registration failure mode
+      // 724 tools as measured 2026-08-08 (the comment said 655 and had drifted —
+      // the HEADROOM report below now prints the live count every run, so this
+      // number stops being a thing anyone has to trust); a floor well above any
+      // partial-registration failure mode
       // (a barrel that failed to register the package-side tools yields ~40) so a
       // vacuous "0 over budget because the catalog is empty" can never pass green.
       expect(named.length).toBeGreaterThan(500);
@@ -80,6 +83,30 @@ export function describeToolGuidanceBudget(): void {
           ? ''
           : `Over the ${HARD_CAP}-char hard cap:\n${formatViolations(violations.filter((v) => v.hardCap))}`,
       ).toEqual([]);
+    });
+
+    /**
+     * P-009 (borrow item 2 remainder). NOT a pass/fail assertion about any
+     * tool — a MEASUREMENT. "Should we interpolate more per-tool prose (e.g.
+     * each tool's own result cap) into descriptions?" is unanswerable without
+     * knowing how much room the catalog actually has, and this gate is the only
+     * place the real catalog is loaded, so the number was being guessed. The
+     * gate reported BREACHES but never PRESSURE, which is why weight drifts
+     * over silently and is discovered at the fleet gate.
+     */
+    it('reports catalog prompt-weight HEADROOM (P-009 — what one added sentence would cost)', () => {
+      const SENTENCE = 120; // chars — a short added sentence, e.g. a per-tool cap note
+      const sorted = [...named].sort((a, b) => a.weight - b.weight);
+      const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))]!.weight;
+      const wouldBreachBudget = named.filter((t) => t.weight <= BUDGET && t.weight + SENTENCE > BUDGET).length;
+      const wouldBreachHardCap = named.filter((t) => t.weight <= HARD_CAP && t.weight + SENTENCE > HARD_CAP).length;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[prompt-weight] tools=${named.length} budget=${BUDGET} hardCap=${HARD_CAP} ` +
+          `p50=${at(0.5)} p90=${at(0.9)} p99=${at(0.99)} max=${sorted[sorted.length - 1]!.weight} ` +
+          `| adding ${SENTENCE} chars to EVERY tool would newly breach: budget=${wouldBreachBudget} hardCap=${wouldBreachHardCap}`,
+      );
+      expect(named.length).toBeGreaterThan(500);
     });
 
     it('grandfather list stays shrink-only (no stale entries for now-fitting tools)', () => {

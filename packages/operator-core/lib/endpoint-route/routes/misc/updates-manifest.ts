@@ -46,8 +46,25 @@ import {
   resolveGithubToken,
 } from './updates-github';
 
-export type Channel = 'alpha' | 'beta' | 'stable';
-const CHANNELS = new Set<Channel>(['alpha', 'beta', 'stable']);
+export type Channel = 'alpha' | 'beta' | 'stable' | 'nightly';
+
+/**
+ * Every channel this route can RECOGNISE. Wider than the set a client may
+ * select (see `UPDATE_LANES`) — recognising a channel is what lets it be
+ * correctly EXCLUDED, and a channel we cannot name is a channel we mis-file.
+ */
+const CHANNELS = new Set<Channel>(['alpha', 'beta', 'stable', 'nightly']);
+
+/**
+ * The channels a client may ASK FOR — the update lanes of this application.
+ *
+ * Deliberately narrower than `CHANNELS`. `nightly` is a side-by-side build with
+ * its own bundle id, name and data home (see @papercusp/tauri-release-kit's
+ * channel model): it installs ALONGSIDE this app rather than updating it, so
+ * "switch my install to nightly" is not a coherent request and must not be
+ * honoured from a query param or a persisted preference.
+ */
+const UPDATE_LANES = new Set<Channel>(['alpha', 'beta', 'stable']);
 
 type Product = 'gui' | 'server';
 
@@ -123,15 +140,35 @@ export function normalizeTagVersion(tag: string): string {
   return tag.replace(/^desktop-v/i, '').replace(/^v/i, '');
 }
 
+/**
+ * Recover a release's channel from its tag.
+ *
+ * ⚠ THE FALL-THROUGH IS `stable`, WHICH IS THE MOST DANGEROUS BUCKET. Every
+ * channel that can be CUT must be recognised here explicitly: an unrecognised
+ * suffix is not rejected, it is silently classified `stable` and offered to
+ * every stable install. `-nightly` is matched for exactly that reason — a
+ * nightly build is a different application, and reaching a stable user's
+ * updater is the one outcome it must never have.
+ */
 export function classifyChannel(release: GhRelease): Channel {
   const tag = release.tag_name.toLowerCase();
+  if (tag.includes('-nightly')) return 'nightly';
   if (tag.includes('-alpha')) return 'alpha';
   if (tag.includes('-beta') || tag.includes('-rc')) return 'beta';
   if (release.prerelease) return 'beta';
   return 'stable';
 }
 
+/**
+ * Which channels' releases a client on `target` may be offered.
+ *
+ * The update lanes nest (alpha sees everything shipping, stable sees only
+ * stable). `nightly` is NOT in any lane's visible set and no lane is in
+ * nightly's: it is a separate installed application, so its releases and the
+ * main app's must never cross.
+ */
 export function visibleChannels(target: Channel): ReadonlySet<Channel> {
+  if (target === 'nightly') return new Set(['nightly']);
   if (target === 'alpha') return new Set(['alpha', 'beta', 'stable']);
   if (target === 'beta') return new Set(['beta', 'stable']);
   return new Set(['stable']);
@@ -266,9 +303,12 @@ export async function fetchReleases(token: string | null): Promise<GhRelease[] |
 export const DEFAULT_CHANNEL: Channel = 'alpha';
 
 export function resolveChannel(params: URLSearchParams, override?: string): Channel {
+  // UPDATE_LANES, not CHANNELS: a client may only ask for a lane of THIS app.
+  // A `?channel=nightly` is a request to be updated into a different
+  // application; it is ignored rather than honoured.
   const fromQuery = params.get('channel');
-  if (fromQuery && CHANNELS.has(fromQuery as Channel)) return fromQuery as Channel;
-  if (override && CHANNELS.has(override as Channel)) return override as Channel;
+  if (fromQuery && UPDATE_LANES.has(fromQuery as Channel)) return fromQuery as Channel;
+  if (override && UPDATE_LANES.has(override as Channel)) return override as Channel;
   return DEFAULT_CHANNEL;
 }
 
@@ -326,6 +366,14 @@ function staticManifestResponse(
   const { host, channel, target, arch, product, currentVersion } = ctx;
 
   // Honour the channel gate exactly as the GitHub path does.
+  //
+  // CHANNELS (every known channel), not UPDATE_LANES: a manifest's declared
+  // channel must be PRESERVED so the gate below can exclude it. Narrowing here
+  // would coerce `nightly` into the `stable` fall-through and hand a nightly
+  // build to every stable install — the same mis-bucketing `classifyChannel`
+  // guards against on the GitHub path. The fall-through itself stays for a
+  // manifest that declares no channel at all (older manifests predate the
+  // field); that case is genuinely unknown, not a channel we can name.
   const latestChannel = CHANNELS.has(latest.channel as Channel)
     ? (latest.channel as Channel)
     : 'stable';

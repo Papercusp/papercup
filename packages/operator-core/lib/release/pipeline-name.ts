@@ -74,10 +74,44 @@ export function currentPipelineName(): string | null {
  * EI-19344528739076339's filer) — both times on `release:green`, which is maximally dangerous
  * precisely because it arrives as `satisfied:true` on a family literally named "green", right
  * when the reader is primed for good news, and the documented next step after green is to SHIP.
+ *
+ * `green-checkpoint:inconclusive` (EI-19928976726540168) is the third member of this family —
+ * the same emitter (green-checkpoint.ts), the same `<key>` / `<key>:<pipeline>` dual-emit shape,
+ * the same cross-tenant hazard. It was missing here even though the third terminal-outcome
+ * family was added to the events:catalog (EI-19320479870270699) — the catalog entry and this
+ * scoping list drifted independently.
  */
-export const MULTI_PIPELINE_GATE_KEYS: readonly string[] = ['release:green', 'green-checkpoint:red'];
+export const MULTI_PIPELINE_GATE_KEYS: readonly string[] = [
+  'release:green',
+  'green-checkpoint:red',
+  'green-checkpoint:inconclusive',
+];
 
 /** Is `key` one of the globally-emitted gate keys that needs pipeline scoping? */
 export function isMultiPipelineGateKey(key: string): boolean {
   return MULTI_PIPELINE_GATE_KEYS.includes(key);
+}
+
+/**
+ * EI-19928976726540168: is `key` a GLOB over the pipeline segment of one of the
+ * {@link MULTI_PIPELINE_GATE_KEYS} families — i.e. exactly `<family>:*`?
+ *
+ * The exact-key check above (`isMultiPipelineGateKey`) only catches the bare global key with NO
+ * trailing segment at all. It does nothing for the shape an agent reaches for when they actually
+ * DO want "any verdict for my pipeline": `release:green:*` / `green-checkpoint:red:*` /
+ * `green-checkpoint:inconclusive:*`. That glob is EXACTLY as cross-tenant as the bare key — the
+ * pipeline is the LAST key segment, so `*` matches every co-hosted pipeline's, not just the
+ * caller's — but because it is a glob (`events:await`'s `patternAwait` branch), the exact-key
+ * auto-narrow below never ran for it at all. Live incident: a caller intending "any verdict for
+ * MY gate" parked on `green-checkpoint:red:*` and was woken by `{"pipeline":"hello-world-hive"}`
+ * — a foreign pipeline's verdict, payload-shape-identical to the caller's own.
+ *
+ * Deliberately narrow: only the EXACT `<family>:*` shape matches (not `release:green*` with no
+ * colon, not a multi-segment glob) — the same "resolve or warn, never guess" discipline
+ * `currentPipelineName` documents applies here too; a broader match risks silently mis-scoping a
+ * pattern that meant something else.
+ */
+export function isMultiPipelineGateKeyPattern(key: string): boolean {
+  if (!key.endsWith(':*')) return false;
+  return isMultiPipelineGateKey(key.slice(0, -2));
 }

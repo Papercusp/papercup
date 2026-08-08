@@ -233,13 +233,7 @@ describe('P-008 — Escape deselects', () => {
     dialog.setAttribute('role', 'dialog');
     document.body.appendChild(dialog);
     try {
-      render(<DepGraphPanel params={{ harnessSlug: 'alpha' }} api={{ setTitle } as never} instanceId="dg" />, {
-        wrapper: ({ children }: { children: ReactNode }) => (
-          <NuqsTestingAdapter searchParams="?sel=WI-1" onUrlUpdate={onUrlUpdate}>
-            {children}
-          </NuqsTestingAdapter>
-        ),
-      });
+      render(<DepGraphPanel {...panelProps()} />, { wrapper: adapter('?sel=WI-1', onUrlUpdate) });
       fireEvent.keyDown(document, { key: 'Escape' });
       expect(onUrlUpdate).not.toHaveBeenCalled();
     } finally {
