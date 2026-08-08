@@ -6,18 +6,18 @@
  * Strip the not-yet-armed suffix so a `.DRAFT` is judged as the migration it
  * will become. Returns the effective filename.
  */
-export function effectiveMigrationName(filePath: any): any;
+export function effectiveMigrationName(filePath: any): string;
 /**
  * True for a migration SQL file under a db/sql dir — including a `.DRAFT` /
  * `.PENDING-CODE-DEPLOY` one — and not an archived path.
  * The ENFORCE_FROM cutoff is applied separately, via the detector's own export.
  */
-export function isCandidateFile(filePath: any): any;
+export function isCandidateFile(filePath: any): boolean;
 /**
  * Walk up from the edited file until a directory contains the detector.
  * Returns the repo root, or null. Finding it also PROVES the detector exists.
  */
-export function findRepoRoot(filePath: any, exists?: any): any;
+export function findRepoRoot(filePath: any, exists?: typeof existsSync): string | null;
 /** The advisory text. Exported so the test asserts the real string. */
 export function formatNudge(relPath: any, hits: any): string;
 /**
@@ -25,3 +25,4 @@ export function formatNudge(relPath: any, hits: any): string;
  * `deps` is injected by the self-test; production passes nothing.
  */
 export function nudgeFor(filePath: any, deps?: {}): Promise<string | null>;
+import { existsSync } from 'node:fs';

@@ -1774,6 +1774,16 @@ export const FLAGS = {
   // [nudge] line pointing it back at orient's payload. Never blocks; additive (only adds a line),
   // one-shot per session+subsumed-tool, time-windowed; DEFAULT ON; OFF ⇒ no nudge.
   ORIENT_DEDUP_NUDGE: "papercusp-orient-dedup-nudge",
+  // state-plane-adoption-2026-08-02 P-008: two SOFT result-time advisories on the same
+  // tool-call nudge plane. (a) ACT/QUOTE — an agent committing a durable write (coord:send,
+  // plans:add-decision, work_items:*, facts:assert) while holding a pipeline-door value it
+  // has not re-read gets pointed at state:read. (b) WAIT — a door polled across >=3 separate
+  // turns gets pointed at state:subscribe. Measured 2026-08-08 (D-030): ACT/QUOTE adoption is
+  // 1.7% and WAIT 5.3%, i.e. promotion by prose has asymptoted — CLAUDE.md has carried the
+  // "RE-READ it, don't copy it" instruction for weeks. Never blocks; additive (adds one line),
+  // one-shot per session per rule, time-windowed, and silent when the agent already did the
+  // right thing; DEFAULT ON; OFF ⇒ no nudge.
+  STATE_PLANE_NUDGE: "papercusp-state-plane-nudge",
   // work-item-deps-and-readiness-2026-06-22 P-007: make ISSUE-family work-items
   // (bug|change|task) self-pickable by the scheduler claim path. Today the
   // decentralized claim (claimNextWorkItem / getNextWorkItem) is feature-family-only —

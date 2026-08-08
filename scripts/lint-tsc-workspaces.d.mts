@@ -40,7 +40,7 @@ export function selectGatedPackages({ repoRoot, roots, exempt, untypecheckable, 
     unreadable: any[];
 };
 export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listInvisible, spawn, log, warn, error, }?: {
-    repoRoot?: any;
+    repoRoot?: string | undefined;
     roots?: string[] | undefined;
     exempt?: Record<string, Exemption> | undefined;
     untypecheckable?: Record<string, {
@@ -48,13 +48,22 @@ export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listI
         errors: number;
         filedAs: string;
     }> | undefined;
-    listOnly?: any;
-    listInvisible?: any;
+    listOnly?: boolean | undefined;
+    listInvisible?: boolean | undefined;
     spawn?: typeof realSpawn | undefined;
-    log?: ((...data: any[]) => void) | undefined;
-    warn?: ((...data: any[]) => void) | undefined;
-    error?: ((...data: any[]) => void) | undefined;
-}): 0 | 1;
+    log?: {
+        (...data: any[]): void;
+        (message?: any, ...optionalParams: any[]): void;
+    } | undefined;
+    warn?: {
+        (...data: any[]): void;
+        (message?: any, ...optionalParams: any[]): void;
+    } | undefined;
+    error?: {
+        (...data: any[]): void;
+        (message?: any, ...optionalParams: any[]): void;
+    } | undefined;
+}): 1 | 0;
 /**
  * The superproject roots. `libs/papercusp` is deliberately ABSENT: it is a git submodule with its
  * own leg (`lint:tsc:papercusp-libs`) and its own stale-pin semantics. Covering it twice would

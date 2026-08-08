@@ -56,11 +56,66 @@ function specModelId(spec?: string): string {
   return EFFORT_LEVELS.has(suffix) ? trimmed.slice(0, lastColon) : trimmed;
 }
 
+/**
+ * Claude Code's BARE model aliases, optionally carrying the `[1m]` auto-compact
+ * window marker (`sonnet`, `opus[1m]`, …). These resolve ONLY inside the
+ * `claude` CLI: `omp models` publishes no bare alias at all — its Claude entries
+ * are fully qualified (`claude-sonnet-4-6`, `claude-opus-4-8`,
+ * `claude-haiku-4-5`) — so handing one to `omp -p` kills the spawn before its
+ * first turn with `Model "sonnet[1m]:high" not found`.
+ *
+ * ⚠ Deliberately ANCHORED on both ends. It must NOT match `claude-sonnet-4-6` /
+ * `claude-opus-4-8`, which ARE valid omp ids: a loose /sonnet|opus/ test would
+ * yank legitimate omp spawns onto the claude binary — the same bug with the
+ * sign flipped.
+ */
+const CLAUDE_ONLY_ALIAS_RE = /^(?:sonnet|opus|haiku|fable)(?:\[1m\])?$/;
+
+/** True when `spec`'s model id is one of Claude Code's bare aliases — a spec
+    ONLY the `claude` binary can resolve. */
+export function isClaudeOnlyModelSpec(spec?: string): boolean {
+  return CLAUDE_ONLY_ALIAS_RE.test(specModelId(spec).toLowerCase());
+}
+
+/**
+ * The base agent command to fall back on when the host has configured NOTHING —
+ * no `AGENT_CMD`, no `CLAUDE`, no per-spawn or per-role backend. This is the
+ * bare code-level literal, NOT an operator preference, so it is the one place
+ * the model spec is allowed to pick the binary: a committed spec the fallback
+ * binary cannot run is never what anyone intended.
+ *
+ * WI-36197 (2026-08-08): the literal used to be an unconditional `'omp -p'`.
+ * `papercup-bg-host.service` exports `AGENT_CMD='claude -p'`, so mug/kettle
+ * spawns were fine and the gap stayed invisible — but the OPERATOR process
+ * exports none, and it is the process that serves `cup:spawn`. Cups therefore
+ * launched `omp -p --model sonnet[1m]:high` (their committed
+ * `cup: 'sonnet[1m]:high'` default) while `omp models` publishes no bare alias
+ * at all, so six consecutive spawns returned `ok` and died in ~1.5s with
+ * `Model "sonnet[1m]:high" not found`, blocking goal-mode-2026-08-07 P-002.
+ *
+ * This is the MIRROR of the 2026-07-16 kettle@papercusp outage recorded in
+ * role-models.ts, where a claude-binary role was handed a codex-only
+ * `gpt-5.6-luna`. A spec/binary mismatch is fatal at launch and near-silent in
+ * the logs, so pair them from the spec whenever nothing else has an opinion.
+ *
+ * ⚠ Deliberately does NOT override an explicit choice. An operator who sets
+ * `AGENT_CMD='omp -p'` or `AGENT_ROLE_BACKENDS` still gets exactly that (both
+ * are pinned by tests) — those callers have expressed intent, and quietly
+ * overruling them is how the codex branch of `inferBackendFromModelSpec` earns
+ * its much narrower scope.
+ */
+export function fallbackBaseCmd(spec?: string): string {
+  return isClaudeOnlyModelSpec(spec) ? DEFAULT_BACKEND_CMDS['claude-code'] : DEFAULT_BACKEND_CMDS.omp;
+}
+
 /** Infer a subprocess backend from an explicit per-spawn model spec when the
     spec is unambiguously provider-specific. Keep this intentionally narrow:
-    only Codex-shaped specs force a backend swap; Claude/OMP aliases continue to
+    only Codex-shaped specs FORCE a backend swap (they outrank even an explicit
+    per-role backend — honoring a claude/omp preference against a Codex-only
+    model is a guaranteed launch failure). Claude/OMP aliases continue to
     inherit the configured command unless the caller supplied
-    PAPERCUSP_SPAWN_BACKEND. */
+    PAPERCUSP_SPAWN_BACKEND; when nothing is configured at all they steer the
+    literal default instead, via `fallbackBaseCmd` above. */
 export function inferBackendFromModelSpec(spec?: string): AgentBackend | undefined {
   const id = specModelId(spec).toLowerCase();
   if (!id) return undefined;
@@ -94,11 +149,13 @@ export function resolveSpawnBackendModel(
   // Backend inference keys off the EFFECTIVE spec (override > env map > committed
   // default), not just the per-spawn channel — a Codex-only committed default
   // (kettle post-P-020) must bucket against OpenAI, not Anthropic (WI-4640).
+  const effectiveSpec = resolveEffectiveRoleModelSpec(role, overrideSpec);
   const effectiveBackend =
-    overrideBackend ||
-    inferBackendFromModelSpec(resolveEffectiveRoleModelSpec(role, overrideSpec)) ||
-    roleBackendOverride(role);
-  const base = applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', effectiveBackend);
+    overrideBackend || inferBackendFromModelSpec(effectiveSpec) || roleBackendOverride(role);
+  const base = applyBackendSwap(
+    process.env.AGENT_CMD ?? process.env.CLAUDE ?? fallbackBaseCmd(effectiveSpec),
+    effectiveBackend,
+  );
   const cmd = applyRoleModel(base, role, overrideSpec);
   const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const backend: TurnBackend = /codex/.test(bin) ? 'codex' : /claude/.test(bin) ? 'claude-code' : 'omp';
@@ -321,14 +378,19 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // deliberately outranks roleBackendOverride: honoring an explicit claude/omp
   // per-role backend against a Codex-only model is a guaranteed launch failure,
   // not a preference to preserve.
+  const effectiveSpawnSpec = resolveEffectiveRoleModelSpec(
+    spec.role,
+    spec.extraEnv?.PAPERCUSP_SPAWN_MODEL,
+  );
   const spawnBackend =
     spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND ||
-    inferBackendFromModelSpec(
-      resolveEffectiveRoleModelSpec(spec.role, spec.extraEnv?.PAPERCUSP_SPAWN_MODEL),
-    ) ||
+    inferBackendFromModelSpec(effectiveSpawnSpec) ||
     roleBackendOverride(spec.role);
   const roleAgentCmd = applyRoleModel(
-    applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spawnBackend),
+    applyBackendSwap(
+      process.env.AGENT_CMD ?? process.env.CLAUDE ?? fallbackBaseCmd(effectiveSpawnSpec),
+      spawnBackend,
+    ),
     spec.role,
     spec.extraEnv?.PAPERCUSP_SPAWN_MODEL,
   );

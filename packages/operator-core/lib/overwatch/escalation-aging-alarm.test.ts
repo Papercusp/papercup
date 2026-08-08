@@ -5,6 +5,11 @@ import {
   ESCALATION_AGING_ALARM_IDENTITY,
 } from './escalation-aging-alarm';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
+import {
+  selectStaleEscalations,
+  SELF_RECONCILING_META_KEY,
+  type StaleEscalationInput,
+} from '../attention/reconcile-escalations';
 
 /** A minimal in-memory escalation store mirroring the append-only open/resolve log
  *  (same shape condition-staleness-alarm.test.ts uses). */
@@ -148,5 +153,51 @@ describe('runEscalationAgingAlarmTick (EI-16151)', () => {
     });
     expect(result.fired).toBe(false);
     expect(result.aging).toBe(7);
+  });
+
+  // ── WI-36214: the row this alarm opens must SURVIVE the attention TTL sweep ──
+  //
+  // COUPLING test, not a unit test: it takes the record this alarm actually
+  // emits and feeds it to the real selector. The two halves of the fix live in
+  // different modules, so a unit test on either side alone would stay green if
+  // the marker were renamed, dropped from the meta bag, or no longer honoured.
+  //
+  // WHY IT MATTERS: this alarm skips re-firing while one of its rows is open
+  // (the `openRows.length > 0` branch) and resolves that row itself when the
+  // count clears — so a sweep that GC's the row does not tidy a duplicate, it
+  // re-arms the alarm on a still-true condition. Measured 6 resolve→re-fire
+  // pairs in 14 days, ~2 days apart, each announced as a resolution.
+  it('emits a row the idle-TTL sweep will NOT garbage-collect (WI-36214)', async () => {
+    const store = makeStore();
+    await runEscalationAgingAlarmTick({
+      readAging: async () => 357,
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+    });
+    const [emitted] = await store.listOpen();
+    expect(emitted).toBeDefined();
+
+    // Age the emitted row well past the sweep's TTL and run the REAL selector.
+    const nowMs = Date.parse(emitted!.ts) + 30 * 24 * 60 * 60 * 1000;
+    const stale = selectStaleEscalations(
+      [emitted as unknown as StaleEscalationInput],
+      { nowMs, ttlMs: 2 * 24 * 60 * 60 * 1000 },
+    );
+    expect(stale).toEqual([]);
+
+    // CALIBRATION: the same row WITHOUT the marker is swept — proving the
+    // assertion above turns on the marker, not on some other property of the
+    // row (its sender, its lack of options, its age).
+    const { [SELF_RECONCILING_META_KEY]: _marker, ...unmarked } = emitted as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(
+      selectStaleEscalations([unmarked as unknown as StaleEscalationInput], {
+        nowMs,
+        ttlMs: 2 * 24 * 60 * 60 * 1000,
+      }),
+    ).toHaveLength(1);
   });
 });

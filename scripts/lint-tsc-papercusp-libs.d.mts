@@ -27,14 +27,23 @@ export function selectGatedPackages({ libsRoot, relativeTo }?: {
     unreadable: any[];
 };
 export function main({ libsRoot, relativeTo, listOnly, spawn, log, warn, error, }?: {
-    libsRoot?: any;
-    relativeTo?: any;
-    listOnly?: any;
+    libsRoot?: string | undefined;
+    relativeTo?: string | undefined;
+    listOnly?: boolean | undefined;
     spawn?: typeof realSpawn | undefined;
-    log?: ((...data: any[]) => void) | undefined;
-    warn?: ((...data: any[]) => void) | undefined;
-    error?: ((...data: any[]) => void) | undefined;
-}): 0 | 1;
+    log?: {
+        (...data: any[]): void;
+        (message?: any, ...optionalParams: any[]): void;
+    } | undefined;
+    warn?: {
+        (...data: any[]): void;
+        (message?: any, ...optionalParams: any[]): void;
+    } | undefined;
+    error?: {
+        (...data: any[]): void;
+        (message?: any, ...optionalParams: any[]): void;
+    } | undefined;
+}): 1 | 0;
 export function GATE_COVERAGE(): string[];
 import { realSpawn } from './lib/typecheck-fanout.mjs';
 import { discover } from './lib/typecheck-fanout.mjs';

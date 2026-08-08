@@ -37,6 +37,21 @@
     "emitDeclarationOnly": true,
     // Emitting this repo's own surface, not typechecking its dependencies.
     "skipLibCheck": true,
+    // Node's ambient types must be EXPLICIT here. `skipLibCheck` skips .d.ts files,
+    // but an input's own .ts SOURCES are still checked — so once an input's import
+    // graph reaches a cross-package TS module that uses `node:fs` / `node:path`
+    // (check-okf-conformance.mjs -> @papercusp/docs-engine), the whole run dies with
+    // TS2591 "Cannot find name 'node:fs'" and emits nothing usable. Measured
+    // 2026-08-08: identical tsc invocation, exit 1 without `--types node`, exit 0 with.
+    // ⚠ It DOES change existing output — 6 of the 24 pre-existing declarations
+    // regenerated differently, and that is an IMPROVEMENT, not drift: node's ambient
+    // types were not resolving before, so inference had fallen back to `any` in
+    // places. Measured diffs, e.g. `resolveSpec(...): any` -> `string | null`,
+    // `repoRoot?: any` -> `string | undefined`, `listOnly?: any` -> `boolean |
+    // undefined`. Those 6 must be committed alongside this change.
+    // If a future input needs another @types package, ADD it to this array —
+    // `types` restricts automatic @types inclusion, so an omission fails at emit time.
+    "types": ["node"],
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2022",
@@ -76,6 +91,13 @@
     "scripts/next-migration.mjs",
     "scripts/check-typeless-reexport-trap.mjs",
     "scripts/check-full-replacement-mocks.mjs",
+    "scripts/check-okf-conformance.mjs",
+    // Not imported by any .ts itself — registered because check-okf-conformance.mjs
+    // imports it, so tsc emits its declaration REGARDLESS. Left unregistered it lands
+    // as an untracked byproduct that --check does not police and that reappears on
+    // every run; registering it is what makes the emitted set and the tracked set
+    // the same set.
+    "scripts/okf-frontmatter-sweep.mjs",
     "packages/operator-core/lib/inference-gateway/watchdog.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs"
   ]

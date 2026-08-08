@@ -56,6 +56,7 @@ import {
   type EscalationRecord,
 } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { SELF_RECONCILING_META_KEY } from '../attention/reconcile-escalations';
 import { anomalyConditionKey } from './compute-brief';
 
 export const ESCALATION_AGING_ALARM_IDENTITY: AgentIdentity = {
@@ -181,7 +182,16 @@ export async function runEscalationAgingAlarmTick(
         `Kettle also opens instead of forking a duplicate. Review the Planning Needs queue to ` +
         `resolve, answer, or dismiss the aging items; the Mug cannot clear owner-decision ` +
         `backlog by being nudged.`,
-      meta: { subjectSignature: ESCALATION_AGING_CONDITION_KEY },
+      // WI-36214: this alarm gates its own re-fire on an open row (the
+      // `openRows.length > 0` branch above) AND resolves that row itself when
+      // `aging === 0` — so the attention TTL sweep must not GC it. Without this
+      // marker the sweep resolved the row every 2 days and the very next tick
+      // re-opened it: measured 6 such resolve→re-fire pairs in 14 days, each
+      // announced as a resolution.
+      meta: {
+        subjectSignature: ESCALATION_AGING_CONDITION_KEY,
+        [SELF_RECONCILING_META_KEY]: true,
+      },
     });
     fired = true;
   } catch {

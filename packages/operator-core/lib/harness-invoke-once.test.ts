@@ -22,6 +22,7 @@ import {
   applyBackendSwap,
   applyRoleModel,
   buildInvokeOnce,
+  fallbackBaseCmd,
   inferBackendFromModelSpec,
   isOmpBackendExplicitlyConfigured,
   resolveSpawnBackendModel,
@@ -480,6 +481,63 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     expect(inferBackendFromModelSpec('chatgpt:5.5')).toBe('codex');
     expect(resolveSpawnBackendModel('kettle', 'gpt-5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
     expect(resolveSpawnBackendModel('kettle', 'chatgpt:5.5:xhigh')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
+  });
+
+  it('fallbackBaseCmd picks claude for CC bare aliases, but NOT for omp-runnable claude-* ids', () => {
+    // `omp models` publishes no BARE alias, so a bare spec is unambiguously
+    // Claude Code's and the no-config fallback must launch `claude`…
+    expect(fallbackBaseCmd('sonnet[1m]:high')).toBe('claude -p');
+    expect(fallbackBaseCmd('opus:high')).toBe('claude -p');
+    expect(fallbackBaseCmd('sonnet')).toBe('claude -p');
+    expect(fallbackBaseCmd('haiku')).toBe('claude -p');
+    // …while a FULLY-QUALIFIED claude-* id is a real omp model (claude-bridge /
+    // papercusp-gateway both publish these). Steering those to the claude binary
+    // would be this same bug with the sign flipped, so the regex is anchored on
+    // BOTH ends. These are the CONTROLS — they must keep the omp default.
+    expect(fallbackBaseCmd('claude-sonnet-4-6')).toBe('omp -p');
+    expect(fallbackBaseCmd('claude-opus-4-8:high')).toBe('omp -p');
+    expect(fallbackBaseCmd('claude-haiku-4-5')).toBe('omp -p');
+    // …and an absent/codex spec is untouched.
+    expect(fallbackBaseCmd(undefined)).toBe('omp -p');
+    expect(fallbackBaseCmd('gpt-5.5:xhigh')).toBe('omp -p');
+    // The FORCING inference stays codex-only: a claude alias must not outrank an
+    // explicit operator backend (AGENT_CMD / AGENT_ROLE_BACKENDS), which is what
+    // separates this fix from the narrower codex one.
+    expect(inferBackendFromModelSpec('sonnet[1m]:high')).toBeUndefined();
+    expect(inferBackendFromModelSpec('opus:high')).toBeUndefined();
+  });
+
+  it('pairs a cup with the claude binary even when the spawning process exports no AGENT_CMD', () => {
+    // REGRESSION GUARD, WI-36197 (goal-mode-2026-08-07 P-002). Every other test
+    // in this file stubs AGENT_CMD='claude -p', which is precisely why the suite
+    // could not see the outage: papercup-bg-host.service exports it (mug/kettle
+    // booted fine) but the OPERATOR process does not, and `cup:spawn` is served
+    // there. With it unset the base command fell through to the `'omp -p'`
+    // literal while the committed spec stayed `cup: 'sonnet[1m]:high'`, so six
+    // consecutive cup:spawns returned `ok` and died in ~1.5s with
+    // `Model "sonnet[1m]:high" not found. Run "omp models"`.
+    //
+    // The invariant is NOT "cups run on claude" — it is that the resolved MODEL
+    // and the resolved BINARY always come from the same provider, at every
+    // spawner, whether or not that process happens to export AGENT_CMD.
+    vi.stubEnv('AGENT_CMD', undefined as unknown as string);
+    vi.stubEnv('CLAUDE', undefined as unknown as string);
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
+    // …and the sibling autonomous-loop roles that share the committed spec.
+    expect(resolveSpawnBackendModel('mug').backend).toBe('claude-code');
+    expect(resolveSpawnBackendModel('kettle').backend).toBe('claude-code');
+
+    // CONTROL — this is what makes the three assertions above falsifiable rather
+    // than merely true. Setting AGENT_CMD explicitly to omp must still yield omp
+    // (an operator's stated intent is preserved; see fallbackBaseCmd's doc). So
+    // the SAME role resolves differently in the two configurations, and that can
+    // only happen if the no-config fallback really is spec-derived. Were
+    // fallbackBaseCmd to regress to the old unconditional `'omp -p'` literal,
+    // both branches would collapse onto omp and this pair would fail — which is
+    // exactly the live 2026-08-08 outage.
+    vi.stubEnv('AGENT_CMD', 'omp -p');
+    expect(resolveSpawnBackendModel('cup').backend).toBe('omp');
   });
 });
 

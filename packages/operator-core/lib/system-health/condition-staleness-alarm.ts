@@ -41,6 +41,7 @@ import {
   type EscalationRecord,
 } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { SELF_RECONCILING_META_KEY } from '../attention/reconcile-escalations';
 import { broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import {
   actionableConditionFor,
@@ -624,7 +625,18 @@ export async function runConditionStalenessTick(
         // BOTH keys are passed on purpose: `conditionStalenessSignature` is this
         // module's own self-identification, read back by staleConditionSignatureOf()
         // for the auto-resolve sweep, and dropping it would strand every open row.
-        meta: { conditionStalenessSignature: s.key, subjectSignature: s.key },
+        //
+        // WI-36214: THREE keys now. This alarm gates its own re-fire on an open
+        // row (`openBySig.has(s.key)` above) AND resolves its rows itself, so the
+        // attention TTL sweep must not GC them — doing so re-arms the alarm on a
+        // still-true condition. Not yet observed for THIS emitter (its rows did
+        // not appear in the 14d idle-2d resolve set), but the gate is identical
+        // to escalation-aging-alarm.ts:167, where it was measured 6 times.
+        meta: {
+          conditionStalenessSignature: s.key,
+          subjectSignature: s.key,
+          [SELF_RECONCILING_META_KEY]: true,
+        },
       });
     } catch {
       /* an alarm-send failure must never crash the request worker */

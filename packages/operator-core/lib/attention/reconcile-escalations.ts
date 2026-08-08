@@ -19,7 +19,7 @@
  * WI-36154 bounds that premise: it holds only where the row is a DUPLICATE of
  * the live signal. Where the open row is itself the SUPPRESSOR that stops an
  * alarm re-firing, resolving it re-arms the alarm instead of tidying a duplicate
- * — so rows carrying a `livenessSignature` are exempt (see isLivenessSuppressor).
+ * — so a row whose EMITTER owns its lifecycle is exempt (see isEmitterOwnedRow).
  *
  * GENUINE human decisions (non-system sender, or carrying options) are NEVER
  * selected — a human must clear those (that is what `coord:resolve` is for).
@@ -68,19 +68,52 @@ export interface StaleEscalationInput {
    * reaches us from jsonb: only a non-empty string counts (see isLivenessSuppressor).
    */
   livenessSignature?: unknown;
+  /**
+   * WI-36214: the emitter's explicit declaration that it OWNS this row's
+   * lifecycle — it skips re-firing while the row is open, and resolves the row
+   * itself when the condition clears. See SELF_RECONCILING_META_KEY.
+   */
+  selfReconciling?: unknown;
 }
 
 /**
- * WI-36154: does this row SUPPRESS a live infra-liveness alarm?
+ * WI-36214: the meta key an emitter stamps to opt a row OUT of the TTL sweep.
  *
- * Keyed on the EXPLICIT stamp only — deliberately NOT `livenessSignatureOf()`,
- * whose summary-derivation fallback ends in a catch-all `"<panel label>: <...>"`
- * match. That heuristic would silently extend this exemption across unrelated
- * operational rows, and the exclusion must be anchored to the property that
- * defines membership (this row is a liveness alarm's own suppressor), never to
- * how a summary happens to read.
+ * Stamp it ONLY when BOTH legs hold, because each defeats a different half of
+ * the sweep's premise:
+ *   1. the emitter SKIPS firing while one of its rows is open (so GC'ing the
+ *      row does not tidy a duplicate — it RE-ARMS the alarm), and
+ *   2. the emitter RESOLVES the row itself once the condition clears (so the
+ *      TTL is not needed as a backstop against an immortal row).
+ *
+ * Deliberately OPT-IN rather than inferred. The tempting inference — "this
+ * emitter also calls resolveEscalation, so it reconciles its own rows" — is
+ * WRONG and expensive: `pot/placement-watchdog.ts` both opens and resolves, but
+ * opens one row PER CURSED PLACEMENT with no such gate. It is the mass-emitter
+ * this whole sweep was built for (~7000 opened / ~135 resolved; a 3d window once
+ * let ~12k pile into the alert tier), so inferring the exemption would resurrect
+ * exactly the flood the sweep exists to kill.
  */
-function isLivenessSuppressor(e: StaleEscalationInput): boolean {
+export const SELF_RECONCILING_META_KEY = 'selfReconciling';
+
+/**
+ * WI-36154/WI-36214: is this row its own emitter's SUPPRESSOR — i.e. would
+ * resolving it re-arm an alarm whose condition is still true?
+ *
+ * Two legs, both anchored to an EXPLICIT stamp:
+ *   - `selfReconciling === true` — the general marker (WI-36214);
+ *   - a non-empty `livenessSignature` — the infra-liveness alarm's pre-existing
+ *     stamp, retained so rows ALREADY OPEN (and any written by a not-yet-updated
+ *     worker) stay protected without waiting to be re-emitted.
+ *
+ * Deliberately NOT `livenessSignatureOf()`, whose summary-derivation fallback
+ * ends in a catch-all `"<panel label>: <...>"` match: that heuristic would
+ * silently extend the exemption across unrelated operational rows. The exclusion
+ * is anchored to the property that DEFINES membership (this row is an alarm's
+ * own suppressor), never to how a summary happens to read.
+ */
+function isEmitterOwnedRow(e: StaleEscalationInput): boolean {
+  if (e.selfReconciling === true) return true;
   return typeof e.livenessSignature === 'string' && e.livenessSignature.length > 0;
 }
 
@@ -91,8 +124,9 @@ export interface StaleEscalation {
 
 /**
  * PURE: which OPEN escalations are stale (auto-resolvable) — operational
- * (system sender, no options), NOT an infra-liveness suppressor (WI-36154),
- * AND opened older than `ttlMs`. Sorted oldest first so a batch-limited sweep
+ * (system sender, no options), NOT an emitter-owned suppressor row
+ * (WI-36154/WI-36214), AND opened older than `ttlMs`. Sorted oldest first so a
+ * batch-limited sweep
  * drains the longest-stale first.
  */
 export function selectStaleEscalations(
@@ -112,9 +146,12 @@ export function selectStaleEscalations(
     // MEASURED 14d: 5 of 5 idle-2d auto-resolves carrying a livenessSignature
     // re-fired within 120s (stale-paused-routines 3/3, rubric-emission-dark
     // 2/2) — the sweep was running the alarm as a ~2-day notification
-    // scheduler. Only 5 of 371 idle-2d resolves carried one, so this exemption
-    // is narrow BY MEASUREMENT: the sweep stays correct about the other 366.
-    if (isLivenessSuppressor(e)) continue;
+    // scheduler. WI-36214: re-running that probe against the 366 rows the
+    // exemption LEFT BEHIND found 6 more, all `system:escalation-aging-alarm`
+    // (escalation-aging-alarm.ts:167 — same gate, no livenessSignature), so the
+    // exclusion is now keyed on an explicit opt-in marker any such emitter can
+    // stamp. Still narrow BY MEASUREMENT: 11 of 371 idle-2d resolves in 14d.
+    if (isEmitterOwnedRow(e)) continue;
     const openedMs = Date.parse(e.ts);
     if (!Number.isFinite(openedMs)) continue;
     const ageMs = ctx.nowMs - openedMs;

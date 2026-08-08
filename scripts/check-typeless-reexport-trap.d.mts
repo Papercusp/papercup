@@ -39,14 +39,14 @@ export function analyzeTypelessReexportTrap(packages: Array<{
     }>;
 }>;
 /** I/O shell: build the package model the pure analyzer consumes. */
-export function scanWorkspace(root?: any): {
+export function scanWorkspace(root?: string): {
     name: any;
     dir: any;
     isEsm: boolean;
     reexportChains: number;
     namedImports: {
         pkg: any;
-        file: any;
+        file: string;
         linked: boolean;
     }[];
 }[];

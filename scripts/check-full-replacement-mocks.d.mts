@@ -15,7 +15,7 @@ export function analyzeMockCalls(text: any): {
     line: any;
 }[];
 /** Resolve a relative mock specifier against the mocking file, extensionless + repo-relative. */
-export function resolveSpec(filePath: any, spec: any): any;
+export function resolveSpec(filePath: any, spec: any): string | null;
 /** Pure check of ONE file against the protected set. Returns violations. */
 export function checkFile({ path, text, protectedModules }: {
     path: any;

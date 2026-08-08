@@ -87,6 +87,7 @@ import {
   maybeBatchNudge,
   maybeOrientDedupNudge,
   maybeListFanoutPreempt,
+  maybeStatePlaneNudge,
   canRoleActOnCodeRun,
 } from '../../../code-run-batch-nudge';
 // EI-10892: detect the ok:true-but-every-field-blank code:run result — a mis-mapped
@@ -2486,6 +2487,27 @@ const handler = createMcpHandler(
                     result.content = [
                       ...result.content,
                       { type: 'text' as const, text: `\n[nudge] ${orientHint}` },
+                    ];
+                  }
+                } catch {
+                  // advisory only; a failure must never change the tool outcome.
+                }
+                // state-plane nudges (state-plane-adoption-2026-08-02 P-008): steer the agent
+                // to state:read before it QUOTES a pipeline value into a durable write, and to
+                // state:subscribe instead of polling a door. Same per-session map, same
+                // injection point, same never-throw contract as the nudges above. Recording the
+                // door/plane call is the only common-path side effect; getFlag is consulted ONLY
+                // when a nudge actually fires (rare), so flipping the flag takes effect
+                // immediately. Role-agnostic. Best-effort — never affect the tool result.
+                try {
+                  const planeHint = maybeStatePlaneNudge({
+                    sessionKey: replayOwnerKey,
+                    toolName,
+                  });
+                  if (planeHint && canAttachAdvisory && (await getFlag(FLAGS.STATE_PLANE_NUDGE, 'system'))) {
+                    result.content = [
+                      ...result.content,
+                      { type: 'text' as const, text: `\n[nudge] ${planeHint}` },
                     ];
                   }
                 } catch {

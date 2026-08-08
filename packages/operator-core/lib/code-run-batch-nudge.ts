@@ -265,6 +265,21 @@ interface SessionState {
   preemptNudged: Set<string>;
   /** how many predictive hints have fired this session (hard per-session cap, EI-10894). */
   preemptCount: number;
+  /** ms timestamp of the last pipeline DOOR read this session (state-plane nudge, P-008). */
+  lastDoorAt?: number;
+  /** the door tool that produced `lastDoorAt` — named back to the agent in the advisory. */
+  lastDoorTool?: string;
+  /** ms timestamp of the last state:read this session (P-008). A re-read AFTER `lastDoorAt`
+   *  is what the act/quote rule is looking for; ordering is the whole point. */
+  lastPlaneReadAt?: number;
+  /** turn-START timestamps of door reads, for poll-loop detection (P-008). Kept separate from
+   *  `recent`, which is trimmed to NUDGE_WINDOW_MS (90s) — far shorter than a poll loop. */
+  doorTurnStarts: number[];
+  /** ms timestamp of the last state:subscribe this session (P-008) — an agent that already
+   *  subscribed inside the poll window made the RIGHT call and must not be nudged for it. */
+  lastPlaneSubscribeAt?: number;
+  /** state-plane rules already fired this session (one-shot per rule, P-008). */
+  statePlaneNudged: Set<string>;
 }
 
 const sessions = new Map<string, SessionState>();
@@ -286,6 +301,8 @@ function getOrCreateSession(sessionKey: string): SessionState {
       orientDedupNudged: new Set(),
       preemptNudged: new Set(),
       preemptCount: 0,
+      doorTurnStarts: [],
+      statePlaneNudged: new Set(),
     };
     sessions.set(sessionKey, st);
   }
@@ -947,6 +964,151 @@ export function maybeListFanoutPreempt(input: ListFanoutPreemptInput): BatchNudg
 }
 
 /** Test-only: clear the in-process session tracking between cases. */
+/* ────────────────────────────────────────────────────────────────────────────────────────────
+ * STATE-PLANE nudges (plan state-plane-adoption-2026-08-02, P-008).
+ *
+ * ⚠ P-008's TEXT SAID to extend the bash-substitution registry
+ * (`lib/bash-substitution/pairs/`) to tool-to-tool rows. Scoping that against the tree
+ * REFUTED it, and building it there would have been a parallel mechanism on the wrong
+ * substrate. That registry matches a `bashPattern: RegExp` against ONE normalised bash
+ * atom: it is stateless and single-atom by construction. Neither state-plane rule is
+ * expressible that way — the act/quote rule fires on tool call N conditioned on tool call
+ * N-k (a door read with no re-read since), and the poll rule needs a turn history. THIS
+ * file is already the stateful tool-to-tool advisory plane (batch, orient-dedup,
+ * list-fanout-preempt), already wired at the MCP result seam in `_mcp-handler.ts`, and
+ * already keyed per session. So the ITEM'S INTENT — "reuse the audited mechanism rather
+ * than inventing a new adoption lever" — is honoured by landing here; only its named
+ * location was stale.
+ *
+ * WHY BOTHER: measured 2026-08-08 on the re-scoped metric (D-030), ACT/QUOTE adoption is
+ * 15/888 = 1.7% and WAIT is 2/38 = 5.3%. Promotion by prose has asymptoted — CLAUDE.md has
+ * carried the "RE-READ it, don't copy it" instruction for weeks. A result-time advisory is
+ * the next tier up the D-001 ladder (see-also, measured 3.4x lift), and unlike prose it
+ * fires at the MOMENT of the mistake.
+ *
+ * Both rules are SOFT and one-shot per session. They never block: an agent that genuinely
+ * wants the door value is not wrong, and a false positive here costs a line of text.
+ * ──────────────────────────────────────────────────────────────────────────────────────── */
+
+/** The pipeline DOORS whose values go stale under you. */
+const DOOR_NORMALIZED: ReadonlySet<string> = new Set([
+  'devpipelineposition',
+  'releasecheckpointrun',
+]);
+
+/** The plane's re-read surface. */
+const PLANE_READ_NORMALIZED = 'stateread';
+/** The plane's push surface. */
+const PLANE_SUBSCRIBE_NORMALIZED = 'statesubscribe';
+
+/**
+ * Durable writes where a stale pipeline value becomes a confidently wrong report an hour
+ * later. This is the enumeration of CLAUDE.md's "quote it into a message, a plan, or a
+ * work-item", and it MATCHES `QUOTE_SINK_TOOLS` in scout/state-plane-adoption.ts — the
+ * metric and the nudge must target the same moments or one will report on behaviour the
+ * other never prompted.
+ */
+const QUOTE_SINK_NORMALIZED: ReadonlySet<string> = new Set([
+  'coordsend',
+  'coordescalate',
+  'planssetnow',
+  'plansadddecision',
+  'workitemscomment',
+  'workitemscheckpoint',
+  'workitemscomplete',
+  'factsassert',
+]);
+
+/** A door value this old is no longer plausibly what the agent is about to quote. */
+export const DOOR_VALUE_FRESH_MS = 10 * 60_000;
+/** Door reads across this many separate TURNS inside the window read as a poll loop. */
+export const DOOR_POLL_TURN_THRESHOLD = 3;
+/** Window over which repeated door reads are read as ONE poll loop. */
+export const DOOR_POLL_WINDOW_MS = 30 * 60_000;
+
+export interface StatePlaneNudgeInput {
+  /** Stable per-session key — the handler's replayOwnerKey (uiClientId ?? spawnId). */
+  sessionKey: string;
+  /** The tool just SUCCESSFULLY called (MCP or verb form). */
+  toolName: string;
+  /** Injectable clock for tests; defaults to Date.now(). */
+  now?: number;
+}
+
+/**
+ * Returns advisory text, or null when there is nothing to say.
+ *
+ * Recording a door read / plane read is the only side effect on the common path — the same
+ * shape as `maybeOrientDedupNudge`, which records the orient and nudges nothing.
+ */
+export function maybeStatePlaneNudge(input: StatePlaneNudgeInput): string | null {
+  const { sessionKey, toolName } = input;
+  if (!sessionKey || !toolName) return null;
+  const now = input.now ?? Date.now();
+  const norm = normalize(toolName);
+
+  if (norm === PLANE_READ_NORMALIZED) {
+    getOrCreateSession(sessionKey).lastPlaneReadAt = now;
+    return null;
+  }
+
+  if (DOOR_NORMALIZED.has(norm)) {
+    const st = getOrCreateSession(sessionKey);
+    st.lastDoorAt = now;
+    st.lastDoorTool = toolName;
+
+    // A door read starting a NEW turn is a poll tick; several of them is a poll loop.
+    const last = st.doorTurnStarts[st.doorTurnStarts.length - 1];
+    if (last === undefined || now - last > TURN_GAP_MS) st.doorTurnStarts.push(now);
+    st.doorTurnStarts = st.doorTurnStarts.filter((t) => now - t <= DOOR_POLL_WINDOW_MS);
+
+    if (
+      st.doorTurnStarts.length >= DOOR_POLL_TURN_THRESHOLD &&
+      !st.statePlaneNudged.has('wait')
+    ) {
+      // Already subscribed inside this window ⇒ the agent made the right call; stay quiet.
+      if (st.lastPlaneSubscribeAt !== undefined && now - st.lastPlaneSubscribeAt <= DOOR_POLL_WINDOW_MS) {
+        return null;
+      }
+      st.statePlaneNudged.add('wait');
+      return (
+        `you've read ${toolName} across ${st.doorTurnStarts.length} separate turns in the last ` +
+        `${Math.round(DOOR_POLL_WINDOW_MS / 60_000)}min — that's a poll loop. ` +
+        `state:subscribe { cell } PUSHES the change instead: you get woken when the value moves, ` +
+        `rather than paying a round-trip per check to find it unchanged. ` +
+        `Cells: gate.greenCheckpoint.verdict · gate.greenCheckpoint.candidate · deploy.3070.sha · ` +
+        `git.mainBehindStaging · git.pipelinePosition (state:read {} lists them).`
+      );
+    }
+    return null;
+  }
+
+  if (norm === PLANE_SUBSCRIBE_NORMALIZED) {
+    getOrCreateSession(sessionKey).lastPlaneSubscribeAt = now;
+    return null;
+  }
+
+  if (!QUOTE_SINK_NORMALIZED.has(norm)) return null;
+
+  const st = sessions.get(sessionKey);
+  if (!st || st.lastDoorAt === undefined) return null; // no pipeline value in hand
+  if (now - st.lastDoorAt > DOOR_VALUE_FRESH_MS) return null; // gone stale ⇒ writing about something else
+  // The ordering IS the rule: a re-read BEFORE the door call re-read nothing.
+  if (st.lastPlaneReadAt !== undefined && st.lastPlaneReadAt > st.lastDoorAt) return null;
+  if (st.statePlaneNudged.has('act-quote')) return null; // one-shot per session
+  st.statePlaneNudged.add('act-quote');
+
+  return (
+    `you're about to commit a durable write ("${toolName}") holding a value from ` +
+    `${st.lastDoorTool ?? 'a pipeline door'} read ${Math.round((now - st.lastDoorAt) / 1000)}s ago, ` +
+    `and you have not re-read it since. Those values (candidate sha, gate verdict, deploy sha, ` +
+    `main-behind-staging) change under you mid-turn — a transcribed copy is how a correct ` +
+    `observation becomes a confidently wrong report an hour later. ` +
+    `RE-READ before you quote: state:read { cell, as } — same resolver, so it is a re-read, ` +
+    `never a second source of truth.`
+  );
+}
+
 export function _resetBatchNudgeState(): void {
   sessions.clear();
 }

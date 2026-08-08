@@ -80,7 +80,7 @@ export const TRANSIENT_PATTERNS: RegExp[];
  * an entry when you fix it. Keyed by SELECTOR TEXT rather than line number, so
  * unrelated edits elsewhere in globals.css do not churn it.
  */
-export const BASELINE_PATH: any;
+export const BASELINE_PATH: string;
 /**
  * One always-on animation declaration, located within a single stylesheet.
  */

@@ -119,6 +119,43 @@ describe('selectStaleEscalations (P-003/P-005)', () => {
     );
     expect(r.map((x) => x.msg_id).sort()).toEqual(['empty', 'nonstring', 'nullish']);
   });
+
+  // ── WI-36214: the general marker ───────────────────────────────────────────
+  // The livenessSignature leg above covers ONE emitter. Re-running the
+  // resolve→re-fire probe against the rows that exemption LEFT BEHIND found 6
+  // more oscillators from system:escalation-aging-alarm, whose gate
+  // (escalation-aging-alarm.ts:167) is identical but carries no signature.
+  it('NEVER selects a row an emitter marked selfReconciling (WI-36214)', () => {
+    const r = selectStaleEscalations(
+      [
+        row({
+          msg_id: 'aging-alarm',
+          from: 'system:escalation-aging-alarm',
+          ts: iso(3 * DAY),
+          selfReconciling: true,
+        }),
+        // CALIBRATION CONTROL: an operational row from the mass-emitter this
+        // sweep was BUILT for (one row per cursed placement, no re-fire gate,
+        // ~7000 opened / ~135 resolved). If this ever stops being selected the
+        // exemption has leaked into the population the GC exists to drain.
+        row({ msg_id: 'cursed-placement', from: 'system:pot-placement-watchdog', ts: iso(3 * DAY) }),
+      ],
+      { nowMs: NOW, ttlMs: ttl },
+    );
+    expect(r.map((x) => x.msg_id)).toEqual(['cursed-placement']);
+  });
+
+  it('exempts ONLY selfReconciling === true, never a merely truthy value', () => {
+    const r = selectStaleEscalations(
+      [
+        row({ msg_id: 'truthy-string', selfReconciling: 'yes' }),
+        row({ msg_id: 'truthy-number', selfReconciling: 1 }),
+        row({ msg_id: 'false', selfReconciling: false }),
+      ],
+      { nowMs: NOW, ttlMs: ttl },
+    );
+    expect(r.map((x) => x.msg_id).sort()).toEqual(['false', 'truthy-number', 'truthy-string']);
+  });
 });
 
 describe('reconcileStaleEscalationsOnce (P-003)', () => {
