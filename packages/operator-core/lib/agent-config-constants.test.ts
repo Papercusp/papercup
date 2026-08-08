@@ -7,6 +7,7 @@ import {
   modelWindowForSpec,
   isDefault1mModelSpec,
   defaultCompactionLimitForSpec,
+  selfSetCeilingForSpec,
   clampCompactionLimit,
   MIN_COMPACTION_LIMIT_TOKENS,
   validateCloudModelSpec,
@@ -69,6 +70,50 @@ describe('modelWindowForSpec (keys on the [1m] MARKER only)', () => {
     expect(modelWindowForSpec('claude-sonnet-4-6:high')).toBe(MODEL_WINDOW_DEFAULT);
     expect(modelWindowForSpec(null)).toBe(MODEL_WINDOW_DEFAULT);
     expect(modelWindowForSpec(undefined)).toBe(MODEL_WINDOW_DEFAULT);
+  });
+});
+
+describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED default', () => {
+  // Until 2026-08-08 COMPACTION_LIMIT_DEFAULT_1M_CAP was both the seeded default AND the
+  // hard ceiling, so config:set-compaction-limit could never do the one thing its own
+  // description promises ("raise it for wide-context work") on this fleet's default spec.
+  it('[1m] self-set reaches the real window-derived max (825k), not the 400k default', () => {
+    const windowDerived1m =
+      Math.floor((MODEL_WINDOW_1M - 10_000) / 1.2 / 1000) * 1000;
+    expect(windowDerived1m).toBe(825_000);
+    expect(selfSetCeilingForSpec('opus[1m]')).toBe(825_000);
+    expect(selfSetCeilingForSpec('opus[1m]:xhigh')).toBe(825_000);
+    // an UNRESOLVABLE spec is a 1M session on this fleet (WI-3383), so it gets the same
+    expect(selfSetCeilingForSpec(null)).toBe(825_000);
+    expect(selfSetCeilingForSpec('')).toBe(825_000);
+    expect(clampCompactionLimit(900_000, 'opus[1m]', { selfSet: true })).toBe(825_000);
+    expect(clampCompactionLimit(700_000, 'opus[1m]', { selfSet: true })).toBe(700_000);
+  });
+
+  // CONTROL: the whole point is that SEEDING is unchanged, so the fleet-wide cost
+  // profile behind the 2026-07-03 400k directive is untouched. If this ever goes red,
+  // the change leaked from the self-set path into the default and every session got
+  // more expensive.
+  it('the SEEDED default is untouched — still 400k, and a non-selfSet clamp still caps there', () => {
+    expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(400_000);
+    expect(clampCompactionLimit(900_000, 'opus[1m]')).toBe(400_000);
+    expect(clampCompactionLimit(900_000, 'opus[1m]', { selfSet: false })).toBe(400_000);
+  });
+
+  it('fleet MEMBERS cannot self-raise past their 200k role cap — selfSet does not beat role', () => {
+    expect(selfSetCeilingForSpec('opus[1m]', { fleetMember: true })).toBe(200_000);
+    expect(clampCompactionLimit(900_000, 'opus[1m]', { fleetMember: true, selfSet: true })).toBe(
+      200_000,
+    );
+  });
+
+  it('a real small-window spec is unaffected — self-set still derives from ITS window', () => {
+    expect(selfSetCeilingForSpec('haiku')).toBe(158_000);
+    expect(clampCompactionLimit(900_000, 'haiku', { selfSet: true })).toBe(158_000);
+  });
+
+  it('the MIN floor still applies on the self-set path', () => {
+    expect(clampCompactionLimit(1, 'opus[1m]', { selfSet: true })).toBe(MIN_COMPACTION_LIMIT_TOKENS);
   });
 });
 

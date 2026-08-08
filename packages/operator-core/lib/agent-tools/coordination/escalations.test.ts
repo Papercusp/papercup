@@ -617,3 +617,91 @@ describe('resolveEscalation — concurrent resolves elect ONE announcer (WI-1076
     expect(await resolveEscalation({ msg_id: 'nope', choice: 'auto-resolved', resolver: 'w' })).toBe('not_found');
   });
 });
+
+/**
+ * WI-10769 (BATCH path) — the same read-then-write shape as `resolveEscalation`
+ * above, and the site that actually drains the backlog: one load at the top, the
+ * `alreadyResolved` check against that snapshot, one batched `putEvents` at the
+ * bottom. Two sweeps racing the same backlog each load a snapshot in which the
+ * escalation is still open, so both write.
+ *
+ * The asymmetry with the single path is DELIBERATE: a drain sweep reports COUNTS
+ * and pages nobody, so it needs the ROW to be unique but does not need to elect a
+ * single announcer. Both sweeps may therefore report `resolved: 1`. What must
+ * never happen is two rows — that is the amplification WI-10769 measured.
+ */
+describe('resolveEscalationsBatch — concurrent sweeps collapse onto ONE row (WI-10769)', () => {
+  const identity = { ownerId: 'su-test' } as AgentIdentity;
+
+  it('two sweeps racing the same escalation write exactly ONE escalation_resolved row', async () => {
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    const opened = await openEscalation(identity, { severity: 'question', summary: 'drained twice' });
+
+    await Promise.all([
+      resolveEscalationsBatch([{ msg_id: opened.msg_id, choice: 'auto-reconciled', resolver: 'sweepA' }]),
+      resolveEscalationsBatch([{ msg_id: opened.msg_id, choice: 'auto-reconciled', resolver: 'sweepB' }]),
+    ]);
+
+    const rows = (await log.readEvents('escalations')).filter((r) => r.kind === 'escalation_resolved');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.related_msg_id).toBe(opened.msg_id);
+    // Identity DERIVED from the target — what makes the second write a no-op at the
+    // key level rather than merely unlikely to interleave.
+    expect(rows[0]?.msg_id).toBe(resolvedEventId(opened.msg_id));
+  });
+
+  it('8 sweeps over a 3-escalation backlog write exactly 3 rows, one per escalation', async () => {
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    const opens = await Promise.all(
+      ['a', 'b', 'c'].map((s) => openEscalation(identity, { severity: 'question', summary: `backlog ${s}` })),
+    );
+    const batch = opens.map((o) => ({ msg_id: o.msg_id, choice: 'auto-reconciled', resolver: 'sweep' }));
+
+    await Promise.all(Array.from({ length: 8 }, () => resolveEscalationsBatch(batch)));
+
+    const rows = (await log.readEvents('escalations')).filter((r) => r.kind === 'escalation_resolved');
+    expect(rows).toHaveLength(3);
+    expect(new Set(rows.map((r) => r.msg_id))).toEqual(
+      new Set(opens.map((o) => resolvedEventId(o.msg_id))),
+    );
+  });
+
+  it('CONTROL: the pre-fix keying (a fresh id per sweep) would have written 2 rows', async () => {
+    // Proves the guard above measures the DERIVED KEY and not some incidental
+    // serialization of the two sweeps — with the old keying they collide on nothing.
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    await Promise.all(
+      ['sweepA', 'sweepB'].map((w) =>
+        log.putEvents('escalations', [
+          {
+            msgId: `fresh-${w}`,
+            record: {
+              ts: '2026-01-01T00:00:00.000Z', msg_id: `fresh-${w}`, from: w, to: ['human'],
+              kind: 'escalation_resolved', related_msg_id: 'target-batch', summary: 'resolved: auto-reconciled',
+            } as never,
+          },
+        ]),
+      ),
+    );
+    const rows = (await log.readEvents('escalations')).filter((r) => r.related_msg_id === 'target-batch');
+    expect(rows).toHaveLength(2); // ← the measured production symptom
+  });
+
+  it('a sweep over an ALREADY-resolved row reports alreadyResolved and writes nothing new', async () => {
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    const opened = await openEscalation(identity, { severity: 'question', summary: 'already done' });
+
+    const first = await resolveEscalationsBatch([{ msg_id: opened.msg_id, choice: 'auto-reconciled' }]);
+    expect(first.resolved).toBe(1);
+    const second = await resolveEscalationsBatch([{ msg_id: opened.msg_id, choice: 'auto-reconciled' }]);
+    expect(second.resolved).toBe(0);
+    expect(second.alreadyResolved).toBe(1);
+
+    const rows = (await log.readEvents('escalations')).filter((r) => r.kind === 'escalation_resolved');
+    expect(rows).toHaveLength(1);
+  });
+});

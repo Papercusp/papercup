@@ -254,7 +254,15 @@ export function matchSessionRow(
 /**
  * Classify session groups for the popover: attach the live roster entry
  * (active) and/or the adv_sessions row (metadata; `endedAt` set ⇒ inactive).
- * Active sessions sort before inactive, both score-desc within. Pure.
+ * Active sessions come before inactive; RELEVANCE ORDER is preserved within
+ * each half. Pure.
+ *
+ * ⚠ Partition, not a sort — same P-010 reason as {@link groupHitsBySession}.
+ * The `|| b.topScore - a.topScore` tiebreak this replaced re-derived the order
+ * from the RETRIEVAL score, so it would have discarded a Stage-B rerank at the
+ * last step even after the grouping above started preserving it. An explicit
+ * two-pass filter is stable by construction rather than by relying on the
+ * spec's stable-sort guarantee to carry the order through.
  */
 export function classifySessionGroups(
   groups: readonly SessionHitGroup[],
@@ -266,9 +274,5 @@ export function classifySessionGroups(
     active: matchActiveEntry(g, active),
     session: matchSessionRow(g, sessionRows),
   }));
-  return out.sort((a, b) => {
-    const aActive = a.active ? 0 : 1;
-    const bActive = b.active ? 0 : 1;
-    return aActive - bActive || b.topScore - a.topScore;
-  });
+  return [...out.filter((g) => g.active), ...out.filter((g) => !g.active)];
 }

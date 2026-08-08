@@ -20,7 +20,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setCompactionLimit, getPresence } from '../coordination/presence';
 import { resolveModelSpecForOwner } from '../../compaction-usage';
-import { clampCompactionLimit, defaultCompactionLimitForSpec } from '../../agent-config-constants';
+import { clampCompactionLimit, selfSetCeilingForSpec } from '../../agent-config-constants';
 import { setCompactionLimitForOwner } from './set-compaction-limit-core';
 
 /** Soft limit applied when a session has set none. Read-time default (P-007).
@@ -74,8 +74,13 @@ export default defineTool({
     // on this opus[1m]-default fleet a genuine small-window model is always
     // explicitly specced, so an unknown is a 1M session, not a haiku.
     const spec = await resolveModelSpecForOwner(identity.ownerId).catch(() => null);
-    const cap = defaultCompactionLimitForSpec(spec);
-    const applied = clampCompactionLimit(args.limit, spec);
+    // SELF-SET path ⇒ the self-set ceiling (825k on a [1m] window), not the SEEDED
+    // default (400k). Until 2026-08-08 these were one constant, so this verb's own
+    // stated purpose — "raise it for wide-context work" — was unreachable on the
+    // fleet's default spec: every request above 400k silently clamped back to it.
+    // Seeding still uses defaultCompactionLimitForSpec, so fleet-wide cost is unchanged.
+    const cap = selfSetCeilingForSpec(spec);
+    const applied = clampCompactionLimit(args.limit, spec, { selfSet: true });
     await setCompactionLimit(identity.ownerId, applied);
     const presence = await getPresence(identity.ownerId);
     const persisted = presence?.compactionLimit ?? null;

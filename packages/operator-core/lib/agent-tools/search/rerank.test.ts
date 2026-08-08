@@ -14,6 +14,7 @@ import {
   RERANK_OVERFETCH,
   _resetLocalRerankScorerForTests,
   rerankCandidateCount,
+  rerankPageHead,
   rerankProseHits,
   rerankText,
 } from './rerank';
@@ -291,5 +292,75 @@ describe('rerankCandidateCount — over-fetch sizing', () => {
       expect(n).toBeGreaterThanOrEqual(prev);
       prev = n;
     }
+  });
+});
+
+/**
+ * P-010 — Stage B for a page BIGGER than the candidate cap.
+ *
+ * `rerankCandidateCount` never under-fetches (`Math.max(limit, …)`), so for any
+ * `limit` at or above RERANK_MAX_CANDIDATES it returns `limit` and the
+ * over-fetch degenerates to the page itself. Both prose tools cap at 20 so they
+ * never reach that; the transcript-search route asks for 30–50 and does. These
+ * pin the property that makes the wiring safe: cost is bounded by the MEASURED
+ * cap regardless of how big a page a caller asks for.
+ */
+describe('rerankPageHead — candidate budget, not page size', () => {
+  const page = (n: number) => Array.from({ length: n }, (_, i) => hit(`h${i}`, 1 - i / 100));
+  // Reverses to make a reorder observable, and — unlike the simpler stand-ins
+  // above — HONORS opts.limit, because that is what the real
+  // `rankWithReranker` does and it is precisely the behaviour under test here:
+  // whether the pool the reranker chose from was bigger than the page.
+  const reverseRerank = () =>
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, opts) =>
+      docs.map((d) => d.row as SearchHit).reverse().slice(0, opts.limit),
+    );
+
+  it('pool at or below the cap → plain rerankProseHits (real over-fetch)', async () => {
+    reverseRerank();
+    const out = await rerankPageHead('q', page(RERANK_MAX_CANDIDATES), 5);
+    // The reranker saw the WHOLE pool and chose the page from it — so it can
+    // pull a buried hit IN, not merely shuffle a page retrieval already picked.
+    expect(vi.mocked(rankWithReranker).mock.calls[0][1]).toHaveLength(RERANK_MAX_CANDIDATES);
+    expect(out).toHaveLength(5);
+    expect(out[0].source_id).toBe(`h${RERANK_MAX_CANDIDATES - 1}`);
+  });
+
+  it('page BEYOND the cap → scores exactly the cap, never the whole page', async () => {
+    // The desktop pill's real page size, and the HUD's.
+    for (const hitLimit of [30, 50]) {
+      vi.mocked(rankWithReranker).mockClear();
+      reverseRerank();
+      const out = await rerankPageHead('q', page(hitLimit), hitLimit);
+      // THE BUDGET: ~45ms/pair × 24 ≈ 1.1s worst case, whatever the page size.
+      expect(vi.mocked(rankWithReranker).mock.calls[0][1]).toHaveLength(RERANK_MAX_CANDIDATES);
+      // The page is still whole — a candidate budget must not truncate results.
+      expect(out).toHaveLength(hitLimit);
+    }
+  });
+
+  it('reranks the head and rides the tail through in retrieval order', async () => {
+    reverseRerank();
+    const ids = (await rerankPageHead('q', page(30), 30)).map((h) => h.source_id);
+    // Head: the first 24, reversed by the reranker.
+    expect(ids.slice(0, RERANK_MAX_CANDIDATES)).toEqual(
+      Array.from({ length: RERANK_MAX_CANDIDATES }, (_, i) => `h${RERANK_MAX_CANDIDATES - 1 - i}`),
+    );
+    // Tail: untouched, still in retrieval order beneath it.
+    expect(ids.slice(RERANK_MAX_CANDIDATES)).toEqual(['h24', 'h25', 'h26', 'h27', 'h28', 'h29']);
+  });
+
+  it('a page beyond the cap still slices to a SMALLER requested limit', async () => {
+    reverseRerank();
+    const out = await rerankPageHead('q', page(40), 10);
+    expect(out).toHaveLength(10);
+    expect(out[0].source_id).toBe(`h${RERANK_MAX_CANDIDATES - 1}`);
+  });
+
+  it('FAIL-SAFE: a rerank outage degrades a big page to retrieval order, whole', async () => {
+    vi.mocked(rankWithReranker).mockRejectedValue(new Error('sidecar down'));
+    const pool = page(30);
+    const out = await rerankPageHead('q', pool, 30);
+    expect(out.map((h) => h.source_id)).toEqual(pool.map((h) => h.source_id));
   });
 });

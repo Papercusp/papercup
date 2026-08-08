@@ -34,25 +34,71 @@ const roster = (over: Record<string, unknown>) => over as unknown as RosterEntry
 const advRow = (over: Record<string, unknown>) => over as unknown as AdvSessionRow;
 
 describe('groupHitsBySession', () => {
-  it('groups per (sourceKind, sessionId), orders groups by best score', () => {
+  it('groups per (sourceKind, sessionId), preserving the caller order', () => {
     const groups = groupHitsBySession([
       hit({ sessionId: 'a', score: 1 }),
       hit({ sessionId: 'b', score: 9 }),
       hit({ sessionId: 'a', score: 5 }),
       hit({ sourceKind: 'omp', sessionId: 'a', score: 3 }), // distinct kind ⇒ own group
     ]);
-    expect(groups.map((g) => `${g.sourceKind}:${g.sessionId}`)).toEqual(['claude:b', 'claude:a', 'omp:a']);
-    expect(groups[1].topScore).toBe(5);
+    // Order of FIRST APPEARANCE, not of score — claude:a leads despite scoring
+    // below claude:b, because the caller ranked it first.
+    expect(groups.map((g) => `${g.sourceKind}:${g.sessionId}`)).toEqual(['claude:a', 'claude:b', 'omp:a']);
+    // topScore still measures the group's best RETRIEVAL score (all hits, incl.
+    // any the per-session cap dropped) — it just no longer implies a position.
+    expect(groups[0].topScore).toBe(5);
   });
 
-  it('sorts hits within a group score-desc and caps at maxHitsPerSession', () => {
+  it('keeps the caller order within a group and caps at maxHitsPerSession', () => {
     const groups = groupHitsBySession(
       [1, 4, 2, 5, 3].map((score, i) => hit({ score, turnIdx: i })),
       3,
     );
     expect(groups).toHaveLength(1);
-    expect(groups[0].hits.map((h) => h.score)).toEqual([5, 4, 3]);
+    expect(groups[0].hits.map((h) => h.score)).toEqual([1, 4, 2]);
+    // The dropped hits still count toward topScore.
     expect(groups[0].topScore).toBe(5);
+  });
+
+  /**
+   * P-010 CALIBRATION — the order-preservation above is a REFACTOR, not a
+   * behaviour change, for every input the engine actually produces.
+   *
+   * `runHybridSearch` returns its page score-desc, so the score sort this
+   * replaced could only ever reproduce the order it was handed. This asserts
+   * that equivalence directly: for score-desc input, preserving order and
+   * sorting by score agree. Without it the two tests above look like a silent
+   * ranking regression rather than the no-op they are.
+   */
+  it('is IDENTICAL to a score sort for score-desc input (the engine contract)', () => {
+    const scoreDesc = [
+      hit({ sessionId: 'b', score: 9 }),
+      hit({ sessionId: 'a', score: 5 }),
+      hit({ sourceKind: 'omp', sessionId: 'a', score: 3 }),
+      hit({ sessionId: 'a', score: 1 }),
+    ];
+    const groups = groupHitsBySession(scoreDesc);
+    expect(groups.map((g) => `${g.sourceKind}:${g.sessionId}`)).toEqual(['claude:b', 'claude:a', 'omp:a']);
+    expect(groups.map((g) => g.topScore)).toEqual([9, 5, 3]);
+    // Groups come out topScore-desc for free — derived, not sorted for.
+    expect(groups.map((g) => g.topScore)).toEqual([...groups.map((g) => g.topScore)].sort((x, y) => y - x));
+    expect(groups[1].hits.map((h) => h.score)).toEqual([5, 1]);
+  });
+
+  /**
+   * The defect this whole change exists to prevent: a Stage-B rerank returns
+   * hits in cross-encoder order while carrying the RETRIEVAL score through
+   * untouched. Re-sorting on that score would un-do the rerank completely and
+   * leave no symptom — the reranker runs, costs its latency, and the response
+   * is byte-identical to not having reranked.
+   */
+  it('does NOT re-sort a reranked page back into retrieval order', () => {
+    // Reranker promoted the score-0.1 turn to the top of the page.
+    const reranked = [
+      hit({ sessionId: 'promoted', score: 0.1 }),
+      hit({ sessionId: 'demoted', score: 0.9 }),
+    ];
+    expect(groupHitsBySession(reranked).map((g) => g.sessionId)).toEqual(['promoted', 'demoted']);
   });
 });
 
@@ -163,6 +209,28 @@ describe('classifySessionGroups', () => {
     expect(out[1].session).not.toBeNull();
     expect(out[2].active).toBeNull();
     expect(out[2].session).toBeNull();
+  });
+
+  /**
+   * P-010: the active-first partition must not re-derive within-band order from
+   * `topScore` — that was the LAST place a Stage-B rerank could be discarded,
+   * after groupHitsBySession started preserving it.
+   */
+  it('preserves the caller order within each band (does not re-sort on topScore)', () => {
+    const active = [
+      roster({ ownerId: 'su-1', sessionId: 'live-lo', ompThreadId: null }),
+      roster({ ownerId: 'su-2', sessionId: 'live-hi', ompThreadId: null }),
+    ];
+    const groups = [
+      { sourceKind: 'claude', sessionId: 'dead-lo', topScore: 0.1, hits: [hit()] },
+      { sourceKind: 'claude', sessionId: 'live-lo', topScore: 0.2, hits: [hit()] },
+      { sourceKind: 'claude', sessionId: 'dead-hi', topScore: 9, hits: [hit()] },
+      { sourceKind: 'claude', sessionId: 'live-hi', topScore: 8, hits: [hit()] },
+    ];
+    const out = classifySessionGroups(groups, active, []);
+    // Actives first in ARRIVAL order (live-lo before live-hi despite 0.2 < 8),
+    // then inactives in arrival order (dead-lo before dead-hi).
+    expect(out.map((c) => c.sessionId)).toEqual(['live-lo', 'live-hi', 'dead-lo', 'dead-hi']);
   });
 });
 

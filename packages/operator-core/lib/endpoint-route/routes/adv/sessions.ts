@@ -743,11 +743,14 @@ const searchTranscripts = defineTool({
     const stageTimingsMs: Record<string, number> = {};
     const mark = (label: string) => { stageTimingsMs[label] = Date.now() - t0; };
 
-    const [{ runHybridSearch, hitProvenance }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
+    const [{ runHybridSearch, hitProvenance }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { rerankCandidateCount, rerankPageHead }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
       await Promise.all([
         import('@papercusp/search'),
         import('../../../agent-tools/search/sources'),
         import('../../../agent-tools/search/embedder'),
+        // Dynamic like its siblings — this route's whole search stack is loaded
+        // per request, not at module scope.
+        import('../../../agent-tools/search/rerank'),
         import('../../../agent-tools/sessions/_shared'),
         import('../../../workspace-registry'),
         import('@papercusp/db-org'),
@@ -806,7 +809,13 @@ const searchTranscripts = defineTool({
       query: q,
       workspaceId: activeWorkspaceId(),
       scopeFilter: null,
-      limit: hitLimit,
+      // P-010 Stage-B over-fetch: retrieve a pool for the reranker to choose
+      // from rather than the page itself. NOTE this is a no-op at THIS route's
+      // page sizes — rerankCandidateCount never under-fetches, so at 30 (pill)
+      // or 50 (HUD) it returns `limit` unchanged; it bites only if a caller
+      // ever asks for a small page. rerankPageHead handles the large-page case
+      // by budgeting CANDIDATES instead (see its header).
+      limit: rerankCandidateCount(hitLimit),
       mode: 'hybrid',
       embedder,
       embedTimeoutMs,
@@ -816,9 +825,30 @@ const searchTranscripts = defineTool({
       // WI-4734: highlights only for the final top-N (one batched ts_headline
       // hydration) instead of inline for the whole limit*3 × 2-ranker
       // candidate pool — ~6× fewer headline computations per search.
+      //
+      // ⚠ LOAD-BEARING FOR THE RERANK BELOW, not just a perf knob: the deferred
+      // hydration runs over exactly the hits this call returns, so every
+      // candidate handed to the cross-encoder has its `highlight` populated.
+      // `rerankText` scores the MATCH-CENTRED highlight in preference to the
+      // head-of-document excerpt; narrowing deferHighlight to a slice smaller
+      // than the returned page would silently drop Stage B back to scoring
+      // "is this turn's OPENING about the query?" with no test failing.
       deferHighlight: true,
     });
     mark('hybridSearch');
+
+    // ── Stage B: cross-encoder rerank (P-010) ─────────────────────────────────
+    // The engine stops at RRF; this is the same seam /api/user/search and the
+    // search:fulltext / search:semantic agent tools already run, which this
+    // owner-facing route simply never called.
+    //
+    // Fail-safe throughout — no engine, a sick sidecar, or a blown 4s stage
+    // budget all degrade to the retrieval order rather than failing the search.
+    // Checked for abort first so a request the watchdog has already given up on
+    // does not pay for a rerank nobody will read.
+    signal.throwIfAborted();
+    const ordered = await rerankPageHead(q, results, hitLimit);
+    mark('rerank');
 
     // Engine hits → turn refs (source_id = `<sourceKind>:<sessionId>:<turnIdx>`).
     const turnHits: Array<{
@@ -827,7 +857,10 @@ const searchTranscripts = defineTool({
       matchedBy?: MatchProvenance; lexicalScore?: number; semanticScore?: number;
       ts?: string | null; speaker?: string | null; owner?: string | null;
     }> = [];
-    for (const r of results) {
+    // ⚠ `ordered`, NOT `results` — post-Stage-B the ARRAY ORDER is the relevance
+    // order and `score` is only the retrieval score it was reranked out of.
+    // groupHitsBySession preserves this order for exactly that reason.
+    for (const r of ordered) {
       const ref = parseTurnRef(r.source_id);
       if (!ref) continue;
       // P-004: classify WHY this turn matched, here — the engine's ranker

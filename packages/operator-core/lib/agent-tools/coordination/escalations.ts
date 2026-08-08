@@ -673,9 +673,25 @@ export async function archiveResolvedEscalations(
     }
   }
   
-  // Archive by creating a special "archived" resolution event
-  // (idempotent: if already archived, this is a no-op from the fold perspective).
+  // Archive by creating a special "archived" resolution event.
   // WI-346: collect + write in one batched putEvents (was one putEvent per row).
+  //
+  // ⚠ UNCALLED as of 2026-08-08 — nothing in the tree invokes this function; the
+  // physical reclaim that superseded it is `gcResolvedEscalationFamilies`
+  // (escalation-log-gc.ts), which DELETES families instead of adding rows.
+  //
+  // ⚠ DO NOT WIRE THIS UP AS-IS. The comment here used to claim it was
+  // "idempotent: a no-op from the fold perspective". That is true of the FOLD and
+  // false of STORAGE, which is the reading that matters for a GC: `indexResolves`
+  // keeps the EARLIEST resolve per target, so the resolve this loop ages against
+  // never advances — once a family crosses the TTL it is re-selected on EVERY
+  // subsequent pass, and each pass appends another row under a fresh `newMsgId()`.
+  // That is unbounded growth in the surface a GC exists to shrink.
+  //
+  // Fixing it needs a DERIVED key, as WI-10769 did for the two live resolve paths
+  // above — but NOT `resolvedEventId`, which would collide with the genuine
+  // resolve and overwrite its from/summary/choice with 'auto-archived'. It needs
+  // its own namespace (e.g. `arc-<msgId>`) so repeat passes collapse onto one row.
   const archiveWrites = toArchive.map((msgId) => {
     const archiveEv: EscalationResolvedEvent = {
       ts: new Date().toISOString(),

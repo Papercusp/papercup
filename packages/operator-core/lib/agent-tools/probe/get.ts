@@ -36,7 +36,7 @@ export default defineTool({
       .min(1)
       .max(PROBE_HOPS.length)
       .optional()
-      .describe('Same narrowing as probe:emit — pass the SAME list you emitted with, or the verdict may read a never-expected hop as stalled.'),
+      .describe('Same narrowing as probe:emit — pass the SAME list you emitted with, or the verdict may read a never-expected hop as stalled. Required, not optional-if-you-remember: emit does NOT persist its expectedHops (WI-35901), so this arg is the only place the narrowing exists.'),
     staleAfterMs: z
       .number()
       .int()

@@ -46,7 +46,7 @@ export default defineTool({
       .max(PROBE_HOPS.length)
       .optional()
       .describe(
-        'Narrow which hops this probe is expected to traverse (default: all six). Pass a shorter list for a local-only probe with no live peer expected (e.g. [\'captured\',\'drained\']) so probe:get never reads it as perpetually stalled on a hop that was never going to fire.',
+        'Declare which hops this probe is expected to traverse (default: all six) — e.g. [\'captured\',\'drained\'] for a local-only probe with no live peer expected. ⚠ NOT PERSISTED (WI-35901): there is no expected_hops column, so this narrowing scopes THIS RESPONSE\'s hopsExpected echo only. You MUST pass the same list again to probe:get { expectedHops } or its verdict will read a never-expected hop as stalled.',
       ),
   }),
   async handler(args, ctx) {
@@ -117,8 +117,15 @@ export default defineTool({
             workspaceId: receipt.workspaceId,
             emittedAt: new Date(receipt.emittedAtMs).toISOString(),
             hopsExpected: args.expectedHops ?? PROBE_HOPS,
+            // WI-35901: `expectedHops` has no column to live in, so this echo is
+            // the ONLY place it survives. Say so here rather than let a caller
+            // infer from the echo that the probe now remembers its own scope.
+            hopsExpectedPersisted: false,
             hopsCaptured: ['captured'],
-            next: 'poll probe:get { probeKey } for the verdict; pipeline stages record later hops via probe:record-hop',
+            next:
+              args.expectedHops
+                ? `poll probe:get { probeKey, expectedHops: ${JSON.stringify(args.expectedHops)} } — RE-PASS that list, it was NOT persisted (WI-35901); pipeline stages record later hops via probe:record-hop`
+                : 'poll probe:get { probeKey } for the verdict; pipeline stages record later hops via probe:record-hop',
           }),
         },
       ],
