@@ -352,6 +352,170 @@ describe('the three DELIBERATE, documented divergences are pinned (a future "ali
 });
 
 /**
+ * EI-13738 — floor #13 (`plan-item-blocked`): the PLAN dependency graph gates the claim.
+ *
+ * ⚠ WHY THIS IS A SYNTHETIC FIXTURE AND NOT A BEFORE/AFTER COUNT. Measured on live papercusp
+ * 2026-08-04, in BOTH families, this floor would newly exclude ZERO rows today (issue family via
+ * `payload.plan_item`: 41 plan-bound open+unassigned rows, 0 excluded; feature family via
+ * `source_plan_slug`: 1,253 plan-bound rows, 8 todo+unclaimed, 0 excluded). The defect is REAL but
+ * LATENT — floor #11 currently masks it, because it reserves any item whose plan is under
+ * execution, and the exposed population is items on plans that were never started. So a
+ * production "0 before, 0 after" run would prove exactly nothing, and these seeds are the ONLY
+ * way to observe the floor at all.
+ *
+ * Every plan here is 'draft' with op_status NULL, which SATISFIES floor #11 — so each verdict
+ * below is attributable to floor #13 alone rather than to the pre-existing lane reservation.
+ * Both representations are asserted on every case: the SSOT view (migration 759) and the real
+ * inline claim path (the TS fragment). They are hand-maintained copies, and a case that checked
+ * only one would let the pair drift in exactly the direction this file exists to prevent.
+ */
+describe('floor #13 plan-item-blocked — the PLAN blockedBy graph gates the claim (EI-13738)', () => {
+  let probeSeq = 0;
+  /**
+   * Both doors' verdicts for the named ids: `[view admits?, inline claim serves?]` per id,
+   * asserted as a pair so a divergence between the SQL SSOT and the TS fragment reds instead
+   * of hiding.
+   *
+   * ⚠ The probe is deliberately made NON-DESTRUCTIVE, and that is load-bearing.
+   * `drainInlineClaimIds` CLAIMS every admissible row and LEAVES it taken — that is how it
+   * enumerates the admissible set exactly once. So a naive per-id probe poisons itself: the
+   * first call takes every row it admits, and a second call then reports those rows excluded by
+   * floor #2 (`taken`) for a reason that has nothing to do with the floor under test. That is
+   * not hypothetical — it is precisely how the first draft of the transitivity and malformed-row
+   * cases below failed, with the floor itself behaving correctly the whole time. Both doors are
+   * therefore read ONCE per call, and the drain is undone before returning; each call also uses
+   * a FRESH assignee so no per-claim cooldown can leak between probes.
+   */
+  async function doorVerdicts(...ids: string[]): Promise<Record<string, [boolean, boolean]>> {
+    const view = await viewClaimableIds();
+    const drain = await drainInlineClaimIds(`probe-${++probeSeq}`);
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE workspace_id = ${WS}`;
+    return Object.fromEntries(
+      ids.map((id) => [id, [view.includes(id), drain.includes(id)] as [boolean, boolean]]),
+    );
+  }
+  /** Single-id shorthand over {@link doorVerdicts} — same non-destructive guarantee. */
+  const bothDoors = async (id: string): Promise<[boolean, boolean]> => (await doorVerdicts(id))[id];
+
+  it('EXCLUDES an item whose plan-item is blockedBy an UNFINISHED sibling — and ADMITS it the moment the blocker is done', async () => {
+    await seedPlanWithItems('toggle-plan', [{ id: 'P-01', status: 'todo' }, { id: 'P-02', blockedBy: ['P-01'] }]);
+    await seedPlanLinkedIssue('WI-TOGGLE', 'toggle-plan', 'P-02');
+
+    // BEFORE: the blocker is 'todo' ⇒ neither door offers it. This is the bug the floor fixes —
+    // before floor #13 both doors served this row, because NOTHING read the plan graph.
+    expect(await bothDoors('WI-TOGGLE')).toEqual([false, false]);
+
+    // Flip the blocker to done — the ONLY thing that changes — and the item becomes claimable.
+    // The pair proves the floor GATES rather than merely suppresses: a floor that excluded
+    // unconditionally would pass the assertion above and fail this one.
+    await db.sql`UPDATE harness_shared.harness_plans
+                    SET items = jsonb_set(items, '{0,status}', '"done"')
+                  WHERE plan_slug = 'toggle-plan'`;
+    expect(await bothDoors('WI-TOGGLE')).toEqual([true, true]);
+  });
+
+  it("treats 'dropped' as SATISFIED, not as a blocker — a `<> 'done'` spelling would permanently starve 209 live lanes", async () => {
+    // The obvious spelling of this floor is `status <> 'done'`. It is WRONG: measured 2026-08-04
+    // there are 209 plan-items sitting at status='dropped', and every item behind one of them
+    // would have become permanently unclaimable with no diagnosis path. The canonical TS
+    // predicate (plan-parser effective-status.ts L178) counts BOTH terminal tokens as satisfied,
+    // and floor #12's own terminal sets already include 'dropped'. This case pins that.
+    await seedPlanWithItems('dropped-blocker', [{ id: 'P-01', status: 'dropped' }, { id: 'P-02', blockedBy: ['P-01'] }]);
+    await seedPlanLinkedIssue('WI-DROPPED-OK', 'dropped-blocker', 'P-02');
+
+    expect(await bothDoors('WI-DROPPED-OK')).toEqual([true, true]);
+  });
+
+  it("keeps blocking on 'blocked' and 'needs-human' blockers — only the two TERMINAL tokens satisfy", async () => {
+    // The control for the case above: widening "satisfied" past done|dropped would silently
+    // un-gate real work, so the non-terminal end of the live status vocabulary is pinned too.
+    await seedPlanWithItems('nonterminal-blockers', [
+      { id: 'P-01', status: 'blocked' },
+      { id: 'P-02', status: 'needs-human' },
+      { id: 'P-03', blockedBy: ['P-01'] },
+      { id: 'P-04', blockedBy: ['P-02'] },
+    ]);
+    await seedPlanLinkedIssue('WI-BLOCKED-BLOCKER', 'nonterminal-blockers', 'P-03');
+    await seedPlanLinkedIssue('WI-NEEDSHUMAN-BLOCKER', 'nonterminal-blockers', 'P-04');
+
+    const v = await doorVerdicts('WI-BLOCKED-BLOCKER', 'WI-NEEDSHUMAN-BLOCKER');
+    expect(v['WI-BLOCKED-BLOCKER']).toEqual([false, false]);
+    expect(v['WI-NEEDSHUMAN-BLOCKER']).toEqual([false, false]);
+  });
+
+  it('is TRANSITIVE without a recursive CTE — a blocker that is itself blocked is, by definition, not done', async () => {
+    // P-03 blockedBy P-02 blockedBy P-01. The floor only ever looks ONE level, deliberately: the
+    // work-item bound to P-03 is excluded because P-02 is not done, and P-02 cannot BE done while
+    // it is itself blocked. A recursive CTE would buy nothing here and would put cycle risk on
+    // the fleet-wide claim path. The P-01 row is the control — the head of the chain is free.
+    await seedPlanWithItems('chain-plan', [
+      { id: 'P-01', status: 'todo' },
+      { id: 'P-02', blockedBy: ['P-01'] },
+      { id: 'P-03', blockedBy: ['P-02'] },
+    ]);
+    await seedPlanLinkedIssue('WI-CHAIN-HEAD', 'chain-plan', 'P-01');
+    await seedPlanLinkedIssue('WI-CHAIN-TAIL', 'chain-plan', 'P-03');
+
+    const v = await doorVerdicts('WI-CHAIN-TAIL', 'WI-CHAIN-HEAD');
+    expect(v['WI-CHAIN-TAIL']).toEqual([false, false]);
+    expect(v['WI-CHAIN-HEAD']).toEqual([true, true]); // control: the head of the chain is free
+  });
+
+  it('a TERMINAL self-item is never blocked — the graph gates work that has not happened, it must not re-open work that has', async () => {
+    // EI-19412899868617052: a stored terminal token wins over the blocked-by graph. Without the
+    // self-status leg, an item whose own plan-item is already done, but whose blocker is still
+    // running, would be excluded from its own claim.
+    await seedPlanWithItems('self-terminal', [{ id: 'P-01', status: 'todo' }, { id: 'P-02', status: 'done', blockedBy: ['P-01'] }]);
+    await seedPlanLinkedIssue('WI-SELF-DONE', 'self-terminal', 'P-02');
+
+    expect(await bothDoors('WI-SELF-DONE')).toEqual([true, true]);
+  });
+
+  it('a DANGLING blockedBy ref fails OPEN — no undiagnosable deadlock (a deliberate divergence from plan-parser)', async () => {
+    // plan-parser pushes an unmatched ref into `unresolvedBlockers` ⇒ effectiveStatus 'blocked'.
+    // This floor does NOT: the sibling join simply finds nothing. That matches the established
+    // claim-floor convention ("an ABSENT / dangling blocker ref does NOT block (no deadlock)" —
+    // claim-respects-blocking.integration.test.ts case 4), because the alternative failure mode
+    // is an item nobody can claim and nobody can explain. Measured: exactly 1 dangling ref exists
+    // across all live plans, so the fail-open surface is negligible.
+    await seedPlanWithItems('dangling-plan', [{ id: 'P-01', blockedBy: ['P-NOPE'] }]);
+    await seedPlanLinkedIssue('WI-DANGLING', 'dangling-plan', 'P-01');
+
+    expect(await bothDoors('WI-DANGLING')).toEqual([true, true]);
+  });
+
+  it('a MALFORMED plan row cannot take down claiming for the whole fleet', async () => {
+    // jsonb_array_elements RAISES on a non-array input, and this predicate runs on EVERY claim
+    // for every agent — so one malformed plan row would break claiming entirely, not just its own
+    // lane. Both element scans are jsonb_typeof-guarded. The unrelated control row proves the
+    // claim path still SERVES work rather than merely not throwing.
+    await db.sql`INSERT INTO harness_shared.harness_plans (plan_slug, status, op_status, items)
+                  VALUES ('malformed-plan', 'draft', NULL, '{"not":"an array"}'::jsonb)`;
+    await seedPlanLinkedIssue('WI-MALFORMED', 'malformed-plan', 'P-01');
+    await seed('WI-UNRELATED');
+
+    const v = await doorVerdicts('WI-UNRELATED', 'WI-MALFORMED');
+    expect(v['WI-UNRELATED']).toEqual([true, true]);
+    // the malformed row itself: no plan-item graph is readable, so it is not excluded by #13.
+    expect(v['WI-MALFORMED']).toEqual([true, true]);
+  });
+
+  it('is TENANT-SCOPED on workspace_id — a same-slug plan in another workspace never blocks this one', async () => {
+    // Floor #11 scopes the same way and for the same measured reason (7 plan slugs each exist in
+    // 3 workspaces; (workspace_id, plan_slug) is unique). harness_slug is deliberately NOT part
+    // of the key — the plan_item back-pointer's own copy drifted from the plan row's in migration
+    // 656, so keying on it would silently un-block real lanes.
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, plan_slug, status, op_status, items)
+                  VALUES ('other-workspace', 'cross-tenant', 'draft', NULL,
+                          '[{"id":"P-01","status":"todo"},{"id":"P-02","blockedBy":["P-01"]}]'::jsonb)`;
+    await seedPlanLinkedIssue('WI-CROSS-TENANT', 'cross-tenant', 'P-02');
+
+    // The blocking graph lives in a DIFFERENT workspace ⇒ it must not reach this row.
+    expect(await bothDoors('WI-CROSS-TENANT')).toEqual([true, true]);
+  });
+});
+
+/**
  * P-001 (claimable-read-tool-and-sql-encapsulation-audit-2026-07-21): the read tool's two
  * primitives — `aggregateIssueClaimExclusions().claimable` (the survivors COUNT) and
  * `listIssueClaimableRows()` (the survivors ROW LIST) — are built on ONE shared inner

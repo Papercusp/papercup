@@ -228,11 +228,11 @@ bug blinded** — absence from an inventory is evidence only when there is exact
 inventory. Duplications now ride on that route beside the timer list.
 
 ⚠⚠ **`listModuleDuplications()` is still STRUCTURALLY PARTIAL — an empty `[]` is not a
-clean bill of health yet.** Thirteen modules pin through the primitive and are reported
+clean bill of health yet.** Nineteen modules pin through the primitive and are reported
 (`scheduled-registry`, `lexicon`, `kokoro-tts`, `memory` ×2, `deployment-driver`,
-`flags`, three `tooldef` registries, and three `operator-core` caches) — measure that
+`flags`, three `tooldef` registries, and the `operator-core` caches) — measure that
 set with `grep -rl pinModuleState`, not `pinModuleState(`, which misses the
-generic-parameter call form `pinModuleState<T>(`. **36 pins across 32 files still
+generic-parameter call form `pinModuleState<T>(`. **27 pins across 26 files still
 hand-roll theirs** and are invisible to it, spread over
 `packages/operator-core`, `apps/operator`, `apps/operator-vite`, `libs/generic/sse` and
 `libs/generic/tooldef`. Run the lint's `--list` for the current set — the count moves as
@@ -263,6 +263,22 @@ fails against the narrower rule, or the next narrowing is silent.
 ⚠ Note the ALLOW list legitimately GREW 14 → 32 at step 3. That is a **baseline
 correction**, not a breach of its shrink-only rule: no pin was added, 18 were finally
 seen. Shrink-only governs new debt; it is never a reason to keep a measurement wrong.
+
+⚠⚠ **Fixing the detector does NOT fix the artifacts DERIVED from the old one — and a
+`✓ VERIFIED` badge on a derived claim outranks the grep behind it.** Step 3 corrected the
+detector; the *migration's* companion table ("which tests break when you migrate the
+remaining sites") had been derived with the same narrow probe and was still wrong a wake
+later. It was carried as **VERIFIED with evidence attached** — "NO test pokes a
+STRING-key realm pin" — from a probe (`globalThis[^)]{0,40}\['__[A-Za-z]+`) that requires
+bracket-string access on ONE line, so it could not see dot access
+(`.__papercuspInvalidationListenHooks__`), an aliased read (`g.__sse_channel_registry__`),
+or indirection through a named const (`[ACTIVE_KEY]`). Three real readers were invisible,
+two of which `delete` the key in a `beforeEach` — after migration those clear NOTHING, so
+the test keeps passing while testing nothing. Corroboration that this already happened
+here: `sync-sse.test.ts:35` deletes `__syncNotifyDedupe`, a key **no source file writes**.
+So: when you widen a guard, **re-derive every table you built from its narrower output**,
+and treat your own verified-with-evidence claims as suspect when the evidence was a
+pattern match — the badge records that a probe ran, not that it was wide enough.
 
 ## Deployment model: desktop is the product; the standalone webapp is RETIRED
 

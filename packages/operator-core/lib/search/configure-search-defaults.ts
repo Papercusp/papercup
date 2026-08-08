@@ -20,7 +20,17 @@
  */
 
 import { configureSearchDefaults, type SearchDefaultsContext } from '@papercusp/search';
-import { embedderModeOf } from '../agent-tools/search/embedder';
+// ⚠ The LEAF registry, never `agent-tools/search/embedder` — which re-exports
+// `embedderModeOf` from here and is therefore a drop-in-looking import that
+// silently re-arms the exact coupling the registry was extracted to break.
+// `embedder.ts` statically reaches `memory/configure.ts`, which opens a PG
+// connection AT IMPORT; because this module self-installs on import, every
+// `runHybridSearch` caller inherited that connection just by installing the
+// ranking policy. Measured 2026-08-04: importing `agent-tools/plans/search.ts`
+// alone pinned the store identity to the dev cluster within ~3s, which then
+// made every plans PG-fixture integration test observe a WRONG STORE. Guard:
+// `configure-search-defaults-import-purity.test.ts`.
+import { embedderModeOf } from './embedder-mode-registry';
 import { proseMinScoreFloors } from './prose-min-score';
 
 /**
