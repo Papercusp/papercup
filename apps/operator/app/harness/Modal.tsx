@@ -1,14 +1,18 @@
 'use client';
 
 import * as Dialog from '@radix-ui/react-dialog';
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { MODAL_FLOOR_Z, clampModalZ, nextModalZ, registerOpenModalZ } from './popper-z';
 import './Modal.css';
 
+/* No z-index here on purpose: the layer is ALLOCATED per open (see the docblock
+   in the component body) and always overwrites this object, so a literal here
+   would be inert and misleading — the exact reading trap EI-19478883404425412
+   filed against the Popover call sites. */
 const OVERLAY_STYLE: CSSProperties = {
   position: 'fixed',
   inset: 0,
   background: 'rgba(0,0,0,0.75)',
-  zIndex: 60,
 };
 
 const CONTENT_WRAP_STYLE: CSSProperties = {
@@ -17,7 +21,7 @@ const CONTENT_WRAP_STYLE: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  zIndex: 61,
+  /* z-index deliberately absent — allocated per open, see OVERLAY_STYLE above. */
   pointerEvents: 'none', // overlay handles backdrop clicks; content gets its own
   padding: '2rem',
 };
@@ -129,8 +133,37 @@ export function Modal({
    */
   onOpenAutoFocus?: (event: Event) => void;
 }) {
-  // Default to 100 so modals render above the persistent OracleDock (z:80).
-  const z = zIndex ?? 100;
+  /*
+   * Layer allocation (WI-35969). This used to be a flat `zIndex ?? 100`, chosen
+   * when the only thing a modal had to clear was the OracleDock at 80. The
+   * body-portaled popper floor was later raised to 1500, which silently made
+   * that 100 mean "under every dropdown" — so a modal opened FROM a dropdown
+   * (the agents-running pill → a conversation) was painted behind the dropdown
+   * that launched it and read as "it never opened". See harness/popper-z.ts.
+   *
+   * Allocated ONCE per open, and adjusted DURING the opening render rather than
+   * in an effect: an effect would paint one frame at the wrong layer, and for a
+   * modal-over-popper-over-modal stack that frame is exactly the wrong one.
+   * (React's supported "adjust state during render" pattern — the extra render
+   * is thrown away before the browser sees it.)
+   */
+  const [prevOpen, setPrevOpen] = useState(open);
+  const [allocatedZ, setAllocatedZ] = useState<number | null>(() => (open ? nextModalZ() : null));
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    setAllocatedZ(open ? nextModalZ() : null);
+  }
+  // An explicit `zIndex` still wins — callers that deliberately order two of
+  // their own surfaces keep doing so — but the floor is now MODAL_FLOOR_Z, not
+  // an arbitrary literal, so a stale low value cannot bury the modal again.
+  const z = clampModalZ(zIndex ?? allocatedZ ?? MODAL_FLOOR_Z);
+  // Publish while open so a Select/Tooltip opened INSIDE this modal can clear
+  // it. Registration in an effect is soon enough: effects flush before the user
+  // can interact with the modal that just appeared.
+  useEffect(() => {
+    if (!open) return;
+    return registerOpenModalZ(z);
+  }, [open, z]);
   const overlay = { ...OVERLAY_STYLE, zIndex: z, ...overlayStyle };
   const wrap = { ...CONTENT_WRAP_STYLE, zIndex: z + 1, ...wrapStyle };
   const content = { ...CONTENT_STYLE, ...contentStyle };

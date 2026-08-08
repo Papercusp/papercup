@@ -8,6 +8,10 @@ documents:
   - apps/operator/app/admin/plans/PlanEditor.tsx
 plans:
   - plans-admin-ui-2026-05-20
+type: Insight
+generated:
+  by: agent
+  at: 2026-05-21
 ---
 
 When you need to drive an imperative library instance (vditor, monaco, codemirror, chart libs) from a webview eval — a spike, a debugging session, a `tauri-agent-tools` bridge call — the instance is usually held in `useRef<...>` inside the React wrapper component. It is **not on `window`**, has no global handle, and walking the DOM only gives you the host element.

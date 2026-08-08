@@ -16,7 +16,14 @@ describe('createSyncDeltaCodec', () => {
     const codec = createSyncDeltaCodec();
     expect(codec.enabled('plans.attention')).toBe(true);
     expect(codec.enabled('plans.list')).toBe(true);
-    expect(codec.enabled('workItems.byHarness')).toBe(false);
+    // A resource with NO server delta config must not send a cursor. This negative is ANCHORED
+    // to the server set rather than hardcoded: it previously named `workItems.byHarness`, which
+    // then legitimately gained a config (D-091) and turned a correct change into a red test.
+    // Asserting absence from RESOURCE_DELTA_NAMES first means that if this name ever opts in,
+    // the failure says "your example opted in", not "the codec is broken".
+    const notNegotiated = 'hive.steering';
+    expect(RESOURCE_DELTA_NAMES).not.toContain(notNegotiated);
+    expect(codec.enabled(notNegotiated)).toBe(false);
   });
 
   /**
@@ -44,7 +51,13 @@ describe('createSyncDeltaCodec', () => {
   it('CONTROL: the parity check reports a client set that has drifted behind the server', () => {
     const drifted = new Set(['plans.attention', 'plans.list']);
     const missing = RESOURCE_DELTA_NAMES.filter((name) => !drifted.has(name));
-    expect(missing.sort()).toEqual(['codeRecipes', 'plans.byHive']);
+    // SUBSET, not equality: the server set legitimately GROWS as resources opt in, and an
+    // equality assertion here would red on every such addition — turning the control into a
+    // chore that invites deleting it. What must hold is that the computation REPORTS the
+    // names a drifted client is missing; it stays pinned to the two that were actually
+    // stranded on 2026-08-08 (D-089) so this keeps testing a real historical miss.
+    expect(missing).toEqual(expect.arrayContaining(['codeRecipes', 'plans.byHive']));
+    expect(missing).not.toContain('plans.list');
   });
 
   it('decodes a full, then merges a delta back to the exact view (learns itemKeyField)', () => {

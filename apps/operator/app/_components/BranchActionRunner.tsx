@@ -85,7 +85,6 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
       onOpenChange={(o) => { if (!o) onClose(); }}
       title={`${branch} / ${name}`}
       srOnlyTitle
-      zIndex={200}
       closeOnEscape={status === 'done' || status === 'failed' || status === 'error'}
       closeOnOutsideClick={status === 'done' || status === 'failed' || status === 'error'}
       contentStyle={{

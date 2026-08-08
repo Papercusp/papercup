@@ -4,7 +4,7 @@
  * configured high-cost resources + that an unconfigured one serves full (undefined).
  */
 import { describe, it, expect } from 'vitest';
-import { resourceDeltaConfig } from './resource-delta-config';
+import { resourceDeltaConfig, RESOURCE_DELTA_NAMES } from './resource-delta-config';
 
 describe('resourceDeltaConfig', () => {
   // The schemaVersion literal is pinned ON PURPOSE: changing the projected row
@@ -46,6 +46,13 @@ describe('resourceDeltaConfig', () => {
   });
 
   it('an unconfigured resource serves full (undefined → no delta)', () => {
-    expect(resourceDeltaConfig('workItems.byHarness')).toBeUndefined();
+    // ANCHORED to the exported set, not hardcoded. This test named `workItems.byHarness`
+    // until D-091 gave that resource a config — at which point a correct change reds a test
+    // whose subject is "some resource with no config", not that resource specifically. Three
+    // separate tests carried that same rot into D-091; asserting non-membership first means a
+    // future opt-in fails with "your example opted in" rather than "the lookup is broken".
+    const unconfigured = 'hive.steering';
+    expect(RESOURCE_DELTA_NAMES).not.toContain(unconfigured);
+    expect(resourceDeltaConfig(unconfigured)).toBeUndefined();
   });
 });

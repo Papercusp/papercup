@@ -1,6 +1,10 @@
 ---
 title: "The harness testing:run ad-hoc runner can stamp a test_runs row with a commit sha it never actually ran at"
 description: "POST /harness/:slug/testing/run executes vitest against the shared, concurrently-edited working tree and sampled commit sha AFTER the run — a torn read that can misattribute a red to an innocent commit. Fixed with a worktree_dirty flag (EI-18795303393201472, migration 709)."
+type: Insight
+generated:
+  by: agent
+  at: 2026-08-01
 ---
 
 **If you're diagnosing a `harness_shared.test_runs` row whose named failing

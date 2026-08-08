@@ -9,6 +9,10 @@ documents:
   - papercusp-desktop/src-tauri/src/endpoint_ipc.rs
   - libs/generic/desktop-ipc/src/config.ts
   - libs/generic/desktop-ipc/src/ipc-event-source.ts
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-28
 ---
 
 ## The shape of the bug (WI-6512)

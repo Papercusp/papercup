@@ -1,6 +1,10 @@
 ---
 title: "PreToolUse updatedInput is evaluated by deny patterns AFTER the rewrite — a rewriting hook can evade Bash(...) denies"
 description: "Claude Code matches --disallowedTools / permission deny patterns against the post-hook updatedInput, so a command-rewriting PreToolUse hook (e.g. rtk) silently un-matches prefix denies like Bash(git push:*). E2e-proven 2026-07-06 (claude 2.1.201), fixed for the fleet in WI-3159."
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-05
 ---
 
 ## The semantic (verified empirically, claude 2.1.201, 2026-07-06)

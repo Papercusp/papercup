@@ -56,6 +56,14 @@ export type LearningKind = (typeof LEARNING_KINDS)[number];
 /** Provenance metadata value marking a memory row as pack-seeded (D-001). */
 export const PACK_MEMORY_SOURCE = 'pack';
 
+/**
+ * The Open Knowledge Format version this pack format targets
+ * (okf-frontmatter-adoption-2026-08-08 P-004). Declared here rather than in the
+ * codemod so the manifest field, the parser and the writer can never disagree
+ * about which version a pack claims.
+ */
+export const OKF_VERSION = '0.2';
+
 export interface KnowledgePackManifest {
   /** Kebab-case pack id — globally unique (Comb listing_ref for published packs). */
   id: string;
@@ -64,6 +72,21 @@ export interface KnowledgePackManifest {
   /** Three-part semver. Stamped on every seeded row for upgrade-diff (P-013). */
   version: string;
   author?: string;
+  /**
+   * OKF spec version the pack declares (`okf_version` on disk), e.g. '0.2'.
+   * OPTIONAL and deliberately unvalidated beyond "a non-empty scalar": a pack
+   * authored against a newer OKF revision must still load, per the spec's
+   * tolerate-unknown rule.
+   *
+   * ⚠ This field exists because `parseManifest` is a WHITELIST constructor — it
+   * builds a fresh object from named keys rather than spreading the parsed YAML,
+   * so an on-disk key that is not read HERE is silently dropped and invisible to
+   * every consumer. Writing `okf_version:` into a manifest.yaml without this
+   * thread is decorative. The same applies on the way out: `renderManifest`
+   * (knowledge-packs/candidates.ts) rewrites the fleet-lessons manifest on every
+   * adoption, so a field it does not emit is ERASED from disk on the next write.
+   */
+  okfVersion?: string;
 }
 
 export interface LearningItem {

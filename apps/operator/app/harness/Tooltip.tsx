@@ -2,7 +2,7 @@
 
 import * as RT from '@radix-ui/react-tooltip';
 import type { ReactNode } from 'react';
-import { POPPER_WRAPPER_FLOOR_Z } from './popper-z';
+import { TOOLTIP_FLOOR_Z } from './popper-z';
 
 const CONTENT_STYLE: React.CSSProperties = {
   maxWidth: 320,
@@ -14,11 +14,15 @@ const CONTENT_STYLE: React.CSSProperties = {
   border: '1px solid rgba(255,255,255,0.1)',
   borderRadius: 6,
   boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
-  /* Must clear the whole shell (`.oracle-dock--maximal-hud` is 1450): Radix
-     copies this onto the popper wrapper as an inline style, so it — not the
-     harness.css floor — decides whether this is visible. See P-006 / the
-     popper-stacking lint. */
-  zIndex: POPPER_WRAPPER_FLOOR_Z,
+  /* Must clear the whole shell (`.oracle-dock--maximal-hud` is 1450) AND the
+     modal band — a tooltip on a control inside a modal is the common case, and
+     at the old popper floor of 1500 it was painted under that modal (WI-35969).
+     Radix copies this onto the popper wrapper as an inline style, so it — not
+     the harness.css floor — decides whether this is visible. Static rather than
+     `usePopperZ()` because tooltips never need to be UNDER anything, which
+     spares every Tooltip in the app a modal-registry subscription. See P-006 /
+     the popper-stacking lint. */
+  zIndex: TOOLTIP_FLOOR_Z,
 };
 
 export function Tooltip({ label, children, side = 'top', align = 'center' }: {

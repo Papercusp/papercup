@@ -1,6 +1,10 @@
 ---
 title: "Memory write journal — no write is lost to an embedder outage"
 description: "The write-ahead journal under memory:remember/update: journaled failure envelopes, the auto-drain, provenance, and the transcript miner."
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-10
 ---
 
 Memory writes are embed-synchronous: `memory:remember` / `memory:update` only

@@ -1,6 +1,10 @@
 ---
 title: Fake timers freeze real-I/O bounds — and the hang surfaces far from its cause
 description: vi.useFakeTimers() disarms every bound built on the global timers, including the ones inside postgres.js and other libraries you do not own. How to tell this class apart from a slow test, how to find which await is actually hanging, and the one-line convention that fixes it.
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-25
 ---
 
 ## The one-line version

@@ -1,6 +1,10 @@
 ---
 title: "Cache-ECA rides the SSE LISTEN — a host process with no SSE subscriber served unboundedly-stale cachedRead snapshots (WI-1547)"
 description: "plans:get returned ~45-min-stale item statuses intermittently on :3070. Root cause: the cache.bumpTags invalidation rides the sync_invalidate PG LISTEN, which started lazily on the FIRST SSE SUBSCRIBE — 15 of 16 reuseport cluster workers never subscribed, so their L1 never invalidated and SWR served arbitrarily old entries. Fix: ensureInvalidationListener() at boot in every worker + a default hard TTL on cachedRead."
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-02
 ---
 
 ## Symptom

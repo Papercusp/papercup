@@ -1,6 +1,10 @@
 ---
 title: "Windows operator goes down and never respawns — the wsl.exe wrapper-child liveness blind spot"
 description: "Why the Papercusp Server app left a durably-dead operator un-respawned on Windows (child_exited stayed false because the wsl.exe wrapper outlived the inner node operator), the decide_serve_respawn fix that makes operator reachability the ground-truth signal, and why Linux CI never caught it. WI-3170, 2026-07-06."
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-06
 ---
 
 **Symptom (owner-reported, live):** *"the windows app is still very unreliable

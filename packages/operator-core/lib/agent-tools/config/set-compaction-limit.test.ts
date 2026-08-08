@@ -1,8 +1,14 @@
 /**
  * set-compaction-limit.test.ts — the model-aware clamp (context-trimming-tiers
  * D-001: `limit × 1.2 ≤ window − margin`, spec resolved best-effort; an
- * unresolvable spec now clamps to the fleet-default [1m] ceiling (400k), NOT the
- * conservative 200k → 158k (WI-3383, owner directive 2026-07-08).
+ * unresolvable spec clamps to the [1m] ceiling, NOT the conservative 200k → 158k
+ * (WI-3383, owner directive 2026-07-08).
+ *
+ * Since 2026-08-08 this verb is the DELIBERATE SELF-SET path, so its ceiling is
+ * `selfSetCeilingForSpec` (825k on [1m]) rather than the SEEDED default
+ * (`COMPACTION_LIMIT_DEFAULT_1M_CAP`, 400k) — the two were one constant until then,
+ * so "raise it for wide-context work" (this verb's stated purpose) silently clamped
+ * back to 400k on the fleet's default spec. Seeding is unchanged at 400k.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/config/set-compaction-limit.test.ts
  */
@@ -28,6 +34,13 @@ vi.mock('../../compaction-usage', () => ({
 const tool = (await import('./set-compaction-limit')).default;
 type ToolOut = { data: Record<string, unknown> };
 
+/**
+ * The self-set ceiling on a `[1m]` window: `floor((1M − 10k) / 1.2)`. Pinned as a
+ * LITERAL rather than derived from `selfSetCeilingForSpec`, so these assertions can
+ * actually fail if the helper regresses (mirrors `agent-config-constants.test.ts`).
+ */
+const SELF_SET_1M_CEILING = 825_000;
+
 beforeEach(() => {
   vi.clearAllMocks();
   getPresenceMock.mockImplementation(async () => ({
@@ -36,21 +49,27 @@ beforeEach(() => {
 });
 
 describe('config:set-compaction-limit clamp', () => {
-  it('an unresolvable spec now clamps to the 400k [1m] ceiling, not 158k: 900k → 400k, flagged (WI-3383)', async () => {
+  it('an unresolvable spec clamps to the 825k [1m] self-set ceiling, not 158k: 900k → 825k, flagged (WI-3383)', async () => {
     specMock.mockResolvedValue(null);
     const out = (await tool.handler({ limit: 900_000 }, {} as never)) as ToolOut;
-    expect(setLimitMock).toHaveBeenCalledWith('su-test', 400_000);
+    // Still the WI-3383 property: an unknown spec is an opus[1m] session, so it must
+    // NOT fall back to the haiku-sized 158k. Only the ceiling moved (400k → 825k),
+    // because a self-set is now bounded by the window, not by the SEEDED default.
+    expect(setLimitMock).toHaveBeenCalledWith('su-test', SELF_SET_1M_CEILING);
     expect(out.data.clamped).toBe(true);
     expect(out.data.requested).toBe(900_000);
-    expect(out.data.cap).toBe(400_000);
-    expect(out.data.compactionLimit).toBe(400_000);
+    expect(out.data.cap).toBe(SELF_SET_1M_CEILING);
+    expect(out.data.compactionLimit).toBe(SELF_SET_1M_CEILING);
   });
 
-  it('a [1m] spec allows up to 825k; an in-range ask persists verbatim', async () => {
+  it('a [1m] spec allows an ask ABOVE the 400k seeded default: 700k persists verbatim', async () => {
     specMock.mockResolvedValue('opus[1m]:high');
-    const out = (await tool.handler({ limit: 300_000 }, {} as never)) as ToolOut;
-    expect(setLimitMock).toHaveBeenCalledWith('su-test', 300_000);
+    // 700k is the regression this verb's 2026-08-08 fix targets: above the seeded
+    // 400k default, inside the 825k window ceiling. Asking below 400k would pass
+    // under the OLD clamp too, so it could not detect the defect at all.
+    const out = (await tool.handler({ limit: 700_000 }, {} as never)) as ToolOut;
+    expect(setLimitMock).toHaveBeenCalledWith('su-test', 700_000);
     expect(out.data.clamped).toBeUndefined();
-    expect(out.data.compactionLimit).toBe(300_000);
+    expect(out.data.compactionLimit).toBe(700_000);
   });
 });

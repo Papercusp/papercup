@@ -54,6 +54,30 @@ const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
   // capture changes exactly ONE row — so this is the same re-send shape plans.attention
   // has, at 1,000 rows a poll.
   'codeRecipes': { itemKeyField: 'id', schemaVersion: 'code-recipes-v1' },
+  // ── no-http-anywhere-2026-07-28 D-091: the three fattest CONFIG-LESS resources on the
+  // /adv/harnesses route family. Each was re-sending its whole view on every 180s SSE
+  // drift-repair tick (measured on :3170 2026-08-08 via rest-query, args as the call sites
+  // send them). Key uniqueness was MEASURED on the live rows, not assumed — a wrong key
+  // costs a refetch, never a wrong view (see the header note), but a COLLIDING key costs
+  // the whole win, so it is checked rather than hoped for.
+  //
+  // workItems.byHarness — 500 rows / 225,536 B; `id` distinct 500/500.
+  // Several arg shapes exist (AdvChatPanel states+perState, DepGraphPanel limit, HudView's
+  // fair per-status slice). Each is its own viewKey (the route keys on `name:argsJson`), and
+  // `id` is unique within any of them because a work-item holds exactly one state.
+  'workItems.byHarness': { itemKeyField: 'id', schemaVersion: 'work-items-byharness-v1' },
+  // agentRunsConsolidated.bySlug — 2,000 rows / 554,871 B; `runId` distinct 2000/2000.
+  // (`sessionId` collides 123/2000 and `featureId` 87/2000 — neither is usable as the key.)
+  // Mostly-historical corpus: only genuinely running rows churn per tick, so the steady-state
+  // delta is small even though the view is the largest of the three.
+  'agentRunsConsolidated.bySlug': { itemKeyField: 'runId', schemaVersion: 'agent-runs-consolidated-v1' },
+  // featuresConsolidated.bySlug — 1,645 rows / 516,096 B; `featureId` distinct 1645/1645.
+  // ⚠ This resource is EXPLICITLY BARRED from slimming/windowing (the resolver states the full
+  // row count must stay complete for client-side search/count). That bar does NOT apply here and
+  // this is not a route around it: a delta changes nothing about the view's completeness or its
+  // row shape — the client still holds every row — it only stops re-sending rows that did not
+  // change. Delta is the RIGHT lever precisely for a view that must stay complete.
+  'featuresConsolidated.bySlug': { itemKeyField: 'featureId', schemaVersion: 'features-consolidated-v1' },
 };
 
 /** The delta config for a sync resource name, or undefined → serve full (today's behavior). */

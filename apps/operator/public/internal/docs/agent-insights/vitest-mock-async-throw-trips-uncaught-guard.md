@@ -17,8 +17,8 @@ around the call and the test's actual assertion (on the fallback value) would
 otherwise pass. Switching to a **synchronous** throwing `mockImplementation`
 does not fix it either; the guard still fires.
 
-Concretely, this bit `FLAGS.HIVE_SEED_BUNDLE`'s fail-open gate
-(`bootstrap-papercusp-pot.ts`): the requirement is "a flags-read hiccup must
+Concretely, this bit `FLAGS.POT_SEED_BUNDLE`'s fail-open gate
+(`bootstrap-papercusp-hive.ts`): the requirement is "a flags-read hiccup must
 never silently force the cold join path" — i.e. a thrown flag-read error
 should make the gate behave as if the flag were ON. Mocking
 `@papercusp/flags/server`'s `getFlag` to reject cost \~3 failed iterations
@@ -32,9 +32,9 @@ parameter for the call it needs to make (defaulted to the real
 implementation), and pass a throwing closure directly in the test:
 
 ```ts
-// bootstrap-papercusp-pot.ts
+// bootstrap-papercusp-hive.ts
 export async function seedBundleEnabled(
-  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.HIVE_SEED_BUNDLE, 'system'),
+  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.POT_SEED_BUNDLE, 'system'),
 ): Promise<boolean> {
   try {
     return await readFlag();
@@ -45,7 +45,7 @@ export async function seedBundleEnabled(
 ```
 
 ```ts
-// bootstrap-papercusp-pot-seed-flag.test.ts — no vi.mock at all
+// bootstrap-papercusp-hive-seed-flag.test.ts — no vi.mock at all
 it('a flag-read THROW ⇒ fails OPEN (true)', async () => {
   expect(
     await seedBundleEnabled(async () => {
@@ -59,6 +59,27 @@ This is strictly better than the module-mock version even ignoring the guard
 issue: no `vi.mock` hoisting, no module-path coupling, and the injected
 closure makes the exact failure mode being tested (a rejected/throwing read)
 completely explicit at the call site.
+
+:::note\[Naming: the file is `hive`, the flag is `POT_` — both are correct]
+Do not "fix" either to match the other. The hive→pot rename covers **tool verbs
+and flag keys**, not **filenames / identifier vocabulary**, so the live tree
+genuinely has `FLAGS.POT_SEED_BUNDLE` read inside
+`packages/operator-core/lib/harness/bootstrap-papercusp-hive.ts`. This page
+previously had it backwards in *both* directions at once — renaming the
+filenames (which never moved) to `bootstrap-papercusp-pot.ts` while leaving the
+flag as `HIVE_SEED_BUNDLE` (which did move). There is no `bootstrap-papercusp-pot.ts`
+in the tree; verify a name before renaming it in prose.
+:::
+
+**Still current (verified 2026-08-04).** The rule is not just advice here — the
+code obeys it: `seedBundleEnabled` (`bootstrap-papercusp-hive.ts:64`) carries the
+optional `readFlag` seam exactly as shown, its test file contains **zero**
+`vi.mock` / `mockRejectedValue`, and the pattern has since propagated to a sibling
+gate (`seedSelfAdmitEnabled`, same file, same shape). Related and probably the
+same family, though not confirmed to be the identical mechanism: a persistent
+`mockRejectedValue(...)` combined with a `beforeEach(() => fn.mockReset())` leaks
+a stray unhandled rejection that fails a test whose caller *does* handle the
+rejection — another reason to reach for the injected seam rather than a module mock.
 
 ## When this applies
 

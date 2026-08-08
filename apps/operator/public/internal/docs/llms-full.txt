@@ -2522,6 +2522,19 @@ This actually happened: P-048 Contributors and P-073 Insights were registered in
 2. **Allowlist** the type in `app/adv/harnesses/HarnessTopBar.tsx` — the `allowedTypes={[...]}` prop passed to `<AddPanelCatalog>`. The catalog shows ONLY these types; this is the curated user-facing list.
 3. **Label + icon** in `app/harness/dock/AddPanelCatalog.tsx` — add entries to the `HUMAN_LABELS` and `ICON_MAP` records (both fall back gracefully, but an unlabelled type reads as its raw `adv:foo` id and gets the `SquareDashed` placeholder glyph).
 
+## This is now MECHANICALLY GUARDED — you no longer have to remember it
+
+[Section titled “This is now MECHANICALLY GUARDED — you no longer have to remember it”](#this-is-now-mechanically-guarded--you-no-longer-have-to-remember-it)
+
+`apps/operator/app/adv/harnesses/panel-reachability.test.ts` asserts that every type registered in `HarnessesDock` is either present in `HarnessTopBar`’s `allowedTypes` or named in an explicit not-in-catalog exclusion. So step 2 is enforced, not merely advised — a panel that ships unopenable now reds the gate instead of shipping quietly.
+
+Two consequences for the workflow above:
+
+* **Deliberately keeping a panel out of the catalog is now an explicit act.** Silently omitting it fails the guard; you must name it in the exclusion set so the intent is recorded. `adv:pinned` is the standing example — it is registered but not in `allowedTypes`, because it is a restored-by-id variant of `DetailPanel` rather than something a user opens fresh.
+* **A conditional entry still counts as allowlisted.** `adv:hive-content` appears as `...(crossMemberBrowse ? ['adv:hive-content'] : [])` — gated by a flag, not absent.
+
+The guard exists because the trap kept recurring AFTER this page documented it — the in-file comments record it catching `adv:sync-health`, then `adv:member-work` (which had been unopenable since it landed, carrying a comment claiming it was “openable from the panel menu”), then `adv:dep-graph`. Three for three. Treat that as the lesson: a trap that has bitten three times despite being written down needs an executable check, not a louder doc.
+
 If you add an `/adv` panel and “it doesn’t show up in Add panel,” you skipped step 2. Verify with the e2e spec above (it asserts both Contributors and Insights appear in the catalog) or by opening the catalog in the prebuilt bundle — **not** the HMR dev server on `:3055`, which currently has a `'/@vite/client' … createHotContext` mismatch that renders `/adv` blank in a fresh browser (the desktop is unaffected — it loads the prebuilt bundle).
 
 # Agent-activity truth: a claim is not progress — who's-doing-what is a LIVE derived signal
@@ -16351,7 +16364,19 @@ If a channel has **no pending-decision store** (e.g. `gym:judge` is a pure scori
 * The dedup guard: `dropConvertedPlanItems` in `lib/attention/sources.ts` + `listConvertedPlanItemRefs` in `lib/plan-items/convert.ts`.
 * Tests: `lib/attention/{adapters,sources,triage}.test.ts`.
 
-**Source fetches run concurrently, not sequentially** (infra-perf-robustness-audit-2026-06-18 P-005, `attention.ts`): source 1 (plan items) still runs first to populate the `planHarness` map, then sources 2–10 — including every folded disposition channel above — fire together via `Promise.all`, each still in its own best-effort `try/catch`. This is a latency fix only (the handler was p50 \~2s sequential); output order is irrelevant because `buildAttentionGroups` re-groups and deterministically re-sorts by importance, so it changes nothing about *what* to surface — a new channel’s adapter/predicate still slots into that `Promise.all` array the same way, just wrapped in its own `(async () => { try { … } catch { /* best-effort */ } })()`.
+**Source fetches run concurrently, not sequentially** (infra-perf-robustness-audit-2026-06-18 P-005, `attention.ts`): source 1 (plan items) still runs first to populate the `planHarness` map, then sources **2–16** — including every folded disposition channel above — fire together via `Promise.all`, each still in its own best-effort `try/catch`. This is a latency fix only (the handler was p50 \~2s sequential); output order is irrelevant because `buildAttentionGroups` re-groups and deterministically re-sorts by importance, so it changes nothing about *what* to surface — a new channel’s adapter/predicate still slots into that `Promise.all` array the same way, just wrapped in its own `(async () => { try { … } catch { /* best-effort */ } })()`.
+
+Numbering note: the sequence skips **5** on purpose — the plan-review source was retired by B-14/P-101 (needs-human plan items, a plan-governance Decision, are the review gate now; `harness_plan_review` had no live writer once the bash orchestrator was archived). The numbers are stable labels, not a dense index; don’t renumber to close the gap.
+
+## Still current (verified 2026-08-04)
+
+[Section titled “Still current (verified 2026-08-04)”](#still-current-verified-2026-08-04)
+
+This page is `normative`, so the useful check is whether the code still *obeys* it — it does, and the growth is the evidence. The fan-out went from 10 sources to 16 by exactly the slot-in this page prescribes, and every added channel surfaces an awaiting-human slice rather than a backlog dump: needs-human work-items (11), registered owner-walls (12), pending dark-flag ratifications (13), watcher blocked-session/mirrored-ask (14), blocked work-items (15), and possibly-unrecorded owner decisions (16).
+
+One addition worth folding back into “pick the right per-channel predicate” above: alongside a `needsHuman` flag, a bounded candidate set, and a rollup, the code now also uses **a bounded lifecycle STATE** — `blocked` (source 15, curated-signal-cards P-001) — as the awaiting-human predicate. That is consistent with the rule, not an exception to it: `blocked` is bounded and genuinely awaits a human unblock, whereas plain `open` would be the backlog flood D-013 forbids.
+
+The `lib/autonomy/categories.ts` count cited above is also still exact: **14** ids (`CATEGORIES` → `AUTONOMY_CATEGORY_IDS`).
 
 # Forward-defined registry entries — advance-mapping without losing the drift signal
 
@@ -41460,7 +41485,16 @@ Starlight default is `format: 'directory'` which emits `dist/<slug>/index.html`.
 
 [Section titled “3. Postbuild copy is in apps/operator-docs/package.json”](#3-postbuild-copy-is-in-appsoperator-docspackagejson)
 
-The build script is `"build": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh"`. If you run `astro build` directly (or just `npx astro build`), the preview-dir cleanup, the `.md`-twin emit, and the static copy steps are all skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). Always run `npm run build` from `apps/operator-docs/`.
+The four-step chain is now `build:inner`, and `build` wraps it in a **singleflight lock**:
+
+```jsonc
+"build":       "bash scripts/docs-build-singleflight",
+"build:inner": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh",
+```
+
+If you run `astro build` directly (or just `npx astro build`), the preview-dir cleanup, the `.md`-twin emit, and the static copy steps are all skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). **Always run `npm run build` from `apps/operator-docs/`** — never `build:inner` directly.
+
+The wrapper exists because `astro build` writes `dist/` + `dist/.prerender` **in the shared checkout**, so two concurrent builds clobber each other (WI-1998). It coalesces: a build requested while another is running does not start a second one, because `postbuild-copy.sh` publishes atomically and the queued caller’s content is already published by the in-flight run. This makes the “always run `npm run build`” rule *more* load-bearing than when this page was written — the lock only protects the path that goes through it.
 
 ### 4. Both fumadocs setups were removed
 
@@ -41490,7 +41524,9 @@ Import path: `import { Aside } from '@astrojs/starlight/components';`
 
 [Section titled “Performance”](#performance)
 
-A full `astro build` of the 129-page site completes in \~21s, with Pagefind search indexing adding \~0.5s. The output is plain static HTML: the operator serves it straight from `public/internal/docs/`, so there is **no runtime docs cost** — no second Node process, and no per-request MDX compilation (fumadocs compiled MDX inside the Next request path).
+⚠ **The build-time figures below are from 2026-05-20 and are stale — do not quote them as current.** The site was 129 pages then; as of 2026-08-04 the source tree holds **842** (829 `.mdx` + 13 `.md`), a \~6.5× growth, so the wall-clock numbers have certainly moved. They are kept only as the migration-era baseline. (No re-measurement was taken with this update — measure it yourself before citing one.)
+
+A full `astro build` of the 129-page site completed in \~21s, with Pagefind search indexing adding \~0.5s. The output is plain static HTML: the operator serves it straight from `public/internal/docs/`, so there is **no runtime docs cost** — no second Node process, and no per-request MDX compilation (fumadocs compiled MDX inside the Next request path).
 
 A head-to-head build-time / bundle-size comparison against the old fumadocs setup isn’t possible — the F10 cutover removed it before a baseline was captured. The concrete, measurable win is the runtime one above: docs rendering moved entirely out of the request path.
 
@@ -48075,7 +48111,7 @@ The authoritative per-user definitions live in `packages/operator-core/lib/user-
 
 Testing an error-path in `operator-core` — “the caller must fail open (or closed) when a dependency throws” — by `vi.mock`-ing the dependency’s module and driving it with `mockRejectedValue(err)` or `mockImplementation(async () => { throw new Error(...) })` looks like the obvious approach (it’s the standard vitest idiom for “make this call reject”). It doesn’t work reliably here: the repo’s vitest setup treats the throw as an **uncaught error at the mock call site**, and fails the test with that error — even when the calling code has a real `try { … } catch { return fallback }` around the call and the test’s actual assertion (on the fallback value) would otherwise pass. Switching to a **synchronous** throwing `mockImplementation` does not fix it either; the guard still fires.
 
-Concretely, this bit `FLAGS.HIVE_SEED_BUNDLE`’s fail-open gate (`bootstrap-papercusp-pot.ts`): the requirement is “a flags-read hiccup must never silently force the cold join path” — i.e. a thrown flag-read error should make the gate behave as if the flag were ON. Mocking `@papercusp/flags/server`’s `getFlag` to reject cost \~3 failed iterations chasing the uncaught-error report before switching approach.
+Concretely, this bit `FLAGS.POT_SEED_BUNDLE`’s fail-open gate (`bootstrap-papercusp-hive.ts`): the requirement is “a flags-read hiccup must never silently force the cold join path” — i.e. a thrown flag-read error should make the gate behave as if the flag were ON. Mocking `@papercusp/flags/server`’s `getFlag` to reject cost \~3 failed iterations chasing the uncaught-error report before switching approach.
 
 ## The rule
 
@@ -48083,11 +48119,11 @@ Concretely, this bit `FLAGS.HIVE_SEED_BUNDLE`’s fail-open gate (`bootstrap-pap
 
 **Don’t module-mock a throwing async dependency to test a caller’s catch block — inject the reader instead.** Give the function under test an optional parameter for the call it needs to make (defaulted to the real implementation), and pass a throwing closure directly in the test:
 
-bootstrap-papercusp-pot.ts
+bootstrap-papercusp-hive.ts
 
 ```ts
 export async function seedBundleEnabled(
-  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.HIVE_SEED_BUNDLE, 'system'),
+  readFlag: () => Promise<boolean> = () => getFlag(FLAGS.POT_SEED_BUNDLE, 'system'),
 ): Promise<boolean> {
   try {
     return await readFlag();
@@ -48098,7 +48134,7 @@ export async function seedBundleEnabled(
 ```
 
 ```ts
-// bootstrap-papercusp-pot-seed-flag.test.ts — no vi.mock at all
+// bootstrap-papercusp-hive-seed-flag.test.ts — no vi.mock at all
 it('a flag-read THROW ⇒ fails OPEN (true)', async () => {
   expect(
     await seedBundleEnabled(async () => {
@@ -48109,6 +48145,12 @@ it('a flag-read THROW ⇒ fails OPEN (true)', async () => {
 ```
 
 This is strictly better than the module-mock version even ignoring the guard issue: no `vi.mock` hoisting, no module-path coupling, and the injected closure makes the exact failure mode being tested (a rejected/throwing read) completely explicit at the call site.
+
+Naming: the file is `hive`, the flag is `POT_` — both are correct
+
+Do not “fix” either to match the other. The hive→pot rename covers **tool verbs and flag keys**, not **filenames / identifier vocabulary**, so the live tree genuinely has `FLAGS.POT_SEED_BUNDLE` read inside `packages/operator-core/lib/harness/bootstrap-papercusp-hive.ts`. This page previously had it backwards in *both* directions at once — renaming the filenames (which never moved) to `bootstrap-papercusp-pot.ts` while leaving the flag as `HIVE_SEED_BUNDLE` (which did move). There is no `bootstrap-papercusp-pot.ts` in the tree; verify a name before renaming it in prose.
+
+**Still current (verified 2026-08-04).** The rule is not just advice here — the code obeys it: `seedBundleEnabled` (`bootstrap-papercusp-hive.ts:64`) carries the optional `readFlag` seam exactly as shown, its test file contains **zero** `vi.mock` / `mockRejectedValue`, and the pattern has since propagated to a sibling gate (`seedSelfAdmitEnabled`, same file, same shape). Related and probably the same family, though not confirmed to be the identical mechanism: a persistent `mockRejectedValue(...)` combined with a `beforeEach(() => fn.mockReset())` leaks a stray unhandled rejection that fails a test whose caller *does* handle the rejection — another reason to reach for the injected seam rather than a module mock.
 
 ## When this applies
 
@@ -67345,6 +67387,12 @@ The curator is the harness’s memory-compaction role: the one place where noisy
 
 The design predates the current engine (it was one of the original bash-harness roles) and survived into the blueprint era nearly unchanged.
 
+Status: the curator pipeline is DORMANT — this page is design rationale, not live mechanics
+
+Every mechanism described below is still **accurately** declared in the tree, but **nothing currently runs a curator pass.** `coding-factory` is the only blueprint that declares a `curator` role, and it was **retired 2026-06-24** (owner aviynw4) — its `director` autoloop last fired 2026-05-01 and nothing instantiates it (`libs/papercusp/packages/harness/blueprints/coding-factory/blueprint.yaml`, the structured `retired:` block). Do not wire new work to it, and read the present-tense sections below as *“how it is declared to work”*, not *“what is running today”*.
+
+The retirement is machine-checked, not just prose: before the structured `retired:` field existed it was human-readable only, so nothing checked it before spending — an autoloop burned $14.51+ against this blueprint via `external-bench`, which `extends: coding-factory` (WI-5645, EI-18177667809538623). The block **deep-merges through `extends`**, so every descendant that does not declare its own `retired` inherits it. To revive: delete the block (or set `retired: null` on one child to un-retire just that child) and restore the director dispatch.
+
 ## When the curator fires
 
 [Section titled “When the curator fires”](#when-the-curator-fires)
@@ -67382,7 +67430,9 @@ Any role appends to `raw.md` without coordination; the curator decides where an 
 
 [Section titled “Where this stands today”](#where-this-stands-today)
 
-Memory compaction is the curator’s pipeline job within the `coding-factory` spine. (After the 2026-06-18 rename the live default `coding` blueprint is the Pot, which has no curator pass; the curator pipeline ships only where the spine does.) Curation has also grown an operator-level read surface: the `curation:*` tools (`packages/operator-core/lib/agent-tools/curation/` — `curation:feed`, `curation:change-feed`, `curation:state-of-pot`) project completed work and fleet-wide meta-patterns for supervising agents. The same instinct — distill the noisy stream into a bounded, grounded digest — applied one level up.
+**The role is dormant; the idea moved up a level.** Memory compaction is the curator’s pipeline job within the `coding-factory` spine — and that spine is retired (see the status note above), so no live blueprint runs a curator pass. `coding-factory` is the only blueprint in the tree declaring `id: curator`. The live default `coding` blueprint is the Pot (the 2026-06-18 rename), which has **no** curator role and no `gates.finalize`, so the file-based `raw.md` → `MEMORY.md` → `summary.md` cycle is not executing anywhere today.
+
+What survived is the *instinct*, re-implemented one level up and very much alive: the `curation:*` tools (`packages/operator-core/lib/agent-tools/curation/` — `curation:feed`, `curation:change-feed`, `curation:state-of-pot`) project completed work and fleet-wide meta-patterns for supervising agents. Distilling a noisy stream into a bounded, grounded digest is now an operator-level read surface rather than a per-mission file-writing pass — which is why this page is still worth reading as rationale even though the pipeline it describes is idle.
 
 Personal/cross-client semantic memory is a separate system (the `memory:*` tools over the canonical PG store); the curator owns the *harness’s* working memory. See [Memory](/internal/docs/harness/memory) for the full layering.
 

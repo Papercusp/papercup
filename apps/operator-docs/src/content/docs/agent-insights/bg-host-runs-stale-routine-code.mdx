@@ -1,6 +1,10 @@
 ---
 title: "bg-host runs stale routine code — a landed routine-behavior change does NOT take effect until papercup-bg-host restarts"
 description: "Loop fires, scheduled routines, and wake emits execute on papercup-bg-host, which tsx-loads the staging tree once at boot. Code you land later silently does not apply — however green the tests, however ON the flag."
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-03
 ---
 
 ## The trap (burned ~2h on 2026-07-03)

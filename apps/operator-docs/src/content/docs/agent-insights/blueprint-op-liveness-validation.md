@@ -23,6 +23,10 @@ plans:
   - harness-blueprint-distribution-2026-06-03
 sidebar:
   order: 61
+type: Insight
+generated:
+  by: agent
+  at: 2026-06-18
 ---
 
 ## What

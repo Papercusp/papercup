@@ -3,7 +3,7 @@
 import * as RS from '@radix-ui/react-select';
 import { Check, ChevronDown } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
-import { POPPER_WRAPPER_FLOOR_Z } from './popper-z';
+import { usePopperZ } from './popper-z';
 
 
 export interface SelectOption {
@@ -74,8 +74,11 @@ const CONTENT_STYLE: CSSProperties = {
      every menu painted behind the app: mounted, positioned, opacity 1, and
      completely unclickable. The harness.css wrapper rule is the FLOOR for
      poppers that set no content z-index at all; this is the one that governs
-     Select. Guarded by `_lints/popper-stacking.test.ts`. */
-  zIndex: POPPER_WRAPPER_FLOOR_Z,
+     Select. Guarded by `_lints/popper-stacking.test.ts`.
+     NOT set here: the floor also RISES above any open modal (WI-35969), so it
+     is not a constant — `usePopperZ()` supplies it per render in the component
+     below, and a literal here would be an inert value that reads as if it were
+     the one in force. */
   boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)',
   fontSize: 12,
   minWidth: 'var(--radix-select-trigger-width)',
@@ -180,6 +183,13 @@ export function Select({
    */
   onOpenChange?: (open: boolean) => void;
 }) {
+  /* The popper floor, live. `RS.Root` is UNCONTROLLED (see onOpenChange above),
+     so opening the menu does NOT re-render this component — the style object
+     Radix mounts is whatever the LAST render produced. `usePopperZ` subscribes
+     to the open-modal registry so that render happens when a modal opens, not
+     when the menu does; Radix reads the z once at Content mount and can never
+     be corrected afterwards (WI-35969). */
+  const popperZ = usePopperZ(undefined);
   const triggerDataAttrs = Object.fromEntries(
     Object.entries(triggerData ?? {}).filter(([, v]) => v !== undefined),
   );
@@ -208,7 +218,7 @@ export function Select({
           side={side}
           align={align}
           sideOffset={4}
-          style={{ ...CONTENT_STYLE, ...contentStyle }}
+          style={{ ...CONTENT_STYLE, zIndex: popperZ, ...contentStyle }}
         >
           <RS.Viewport>
             {/* Radix throws ("must have a value prop that is not an empty

@@ -2,6 +2,10 @@
 title: "An empty log reads as a clean run: the three ways a verification silently reports GREEN without running"
 description: "grep -c on a file that was never written returns 0, and 0 errors looks exactly like success. Three false-greens hit in a single session while verifying a change — an empty tsc log counted as clean; a vitest that never started (a reporter that failed to LOAD) reporting exit 0 because $? captured the wrong command; and a raw `npx vitest run <dir>` sweeping in DB-dependent integration tests whose 241 timeouts said nothing about the change. Before believing any '0 errors / all passed', prove the run HAPPENED: non-empty output, the runner's OWN exit code, a plausible test count. A verification that cannot fail is not a verification."
 discovered: 2026-07-13
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-13
 ---
 
 ## The shape of the bug

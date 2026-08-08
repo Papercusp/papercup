@@ -3,7 +3,14 @@
  * setter (per-member-declarative-launch-specs). Presence / fleet-store / model-spec seams are
  * mocked; the REAL `classifyFleetControlInvoker` (pure) and REAL `agent-config-constants`
  * (clamp / role-cap) run, so leader/queen/owner authorization AND the target-role-derived
- * ceiling (the fleet-member cap vs the 400k leader cap on [1m]) are exercised for real.
+ * ceiling (the 200k fleet-member cap vs the 825k self-set ceiling a leader/solo target
+ * gets on [1m]) are exercised for real.
+ *
+ * NOTE (2026-08-08): this verb is the DELIBERATE self-set path, so it clamps to
+ * `selfSetCeilingForSpec` (825k on [1m]) rather than the SEEDED default
+ * (`COMPACTION_LIMIT_DEFAULT_1M_CAP`, 400k) — those were one constant until 2026-08-08,
+ * which made "raise it for wide-context work" unreachable. Fleet MEMBERS are deliberately
+ * unchanged at 200k, so a member cannot self-raise past the cap its leader governs.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP } from '../../agent-config-constants';
@@ -17,6 +24,14 @@ const classifyAgentPane = vi.fn();
 
 const CALLER = 'su-caller';
 const WS = 'ws';
+
+/**
+ * The self-set ceiling for a `[1m]` leader/solo target: `floor((1M − 10k) / 1.2)`.
+ * Pinned as a LITERAL on purpose — deriving it from `selfSetCeilingForSpec` here would
+ * make these assertions tautological (they would pass even if the helper were wrong).
+ * Mirrors how `agent-config-constants.test.ts` pins the same number.
+ */
+const SELF_SET_1M_CEILING = 825_000;
 
 vi.mock('@papercusp/agent-mcp', () => ({
   classifyAgentPane: (...a: unknown[]) => classifyAgentPane(...a),
@@ -99,15 +114,40 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
     expect(setCompactionLimit).not.toHaveBeenCalled();
   });
 
-  it('clamps to the 400k LEADER ceiling when the target is itself a leader', async () => {
+  it('a LEADER target may exceed the 400k seeded default — 500k applies verbatim', async () => {
     fetchPresenceFleet.mockResolvedValue(fleetMap('su-lead2', 'other', 'leader'));
     getFleet.mockResolvedValue({ leaderOwnerId: 'su-lead2' }); // target leads; caller is owner (su)
     getPresence.mockImplementation(async (id: string) =>
-      id === 'su-lead2' ? { compactionLimit: 400_000 } : { agentRole: 'su' },
+      id === 'su-lead2' ? { compactionLimit: 500_000 } : { agentRole: 'su' },
     );
+    // 500k is above the SEEDED 400k default but inside the 825k self-set ceiling. This
+    // silently clamped back to 400k until 2026-08-08 — the exact defect the split fixed.
     const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-lead2', 500_000);
-    expect(setCompactionLimit).toHaveBeenCalledWith('su-lead2', 400_000); // leader cap, not the member cap
-    expect(out).toMatchObject({ ok: true, invokedAs: 'owner', cap: 400_000, targetRole: 'leader' });
+    expect(setCompactionLimit).toHaveBeenCalledWith('su-lead2', 500_000);
+    expect(out).toMatchObject({
+      ok: true,
+      invokedAs: 'owner',
+      cap: SELF_SET_1M_CEILING, // the leader/solo ceiling, not the 200k member cap
+      targetRole: 'leader',
+    });
+    expect(out.clamped).toBeUndefined();
+  });
+
+  it('the 825k self-set ceiling is still a REAL bound for a leader target: 900k → 825k', async () => {
+    fetchPresenceFleet.mockResolvedValue(fleetMap('su-lead2', 'other', 'leader'));
+    getFleet.mockResolvedValue({ leaderOwnerId: 'su-lead2' });
+    getPresence.mockImplementation(async (id: string) =>
+      id === 'su-lead2' ? { compactionLimit: SELF_SET_1M_CEILING } : { agentRole: 'su' },
+    );
+    const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-lead2', 900_000);
+    expect(setCompactionLimit).toHaveBeenCalledWith('su-lead2', SELF_SET_1M_CEILING);
+    expect(out).toMatchObject({
+      ok: true,
+      cap: SELF_SET_1M_CEILING,
+      targetRole: 'leader',
+      clamped: true,
+      requested: 900_000,
+    });
   });
 
   it('reports ok:false + a note when the target has no live presence row to persist onto', async () => {

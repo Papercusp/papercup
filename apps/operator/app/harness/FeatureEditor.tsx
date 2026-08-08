@@ -441,7 +441,6 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved, embedde
       onOpenChange={(o) => { if (!o) onClose(); }}
       title={`Edit feature`}
       srOnlyTitle
-      zIndex={120}
       contentStyle={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
     >
       {content}

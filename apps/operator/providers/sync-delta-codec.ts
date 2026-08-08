@@ -33,6 +33,12 @@ const DELTA_RESOURCES: ReadonlySet<string> = new Set([
   'plans.list',
   'plans.byHive',
   'codeRecipes',
+  // D-091: the /adv/harnesses route family's three fattest views, each of which was re-sending
+  // in full on every 180s drift-repair tick. Keys measured unique on live rows, see the server
+  // config's comments (`id`, `runId`, `featureId`).
+  'workItems.byHarness',
+  'agentRunsConsolidated.bySlug',
+  'featuresConsolidated.bySlug',
 ]);
 
 /** Build a fresh codec — one DeltaToolClient + itemKeyField cache per provider lifetime. */

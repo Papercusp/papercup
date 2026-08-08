@@ -177,6 +177,7 @@
     "lint:insight-citations": "tsx scripts/check-insight-citations.mjs",
     "lint:insight-normative": "tsx scripts/check-insight-normative.mjs",
     "okf:sweep": "tsx scripts/okf-frontmatter-sweep.mjs",
+    "okf:backfill": "tsx scripts/okf-backfill-insights.mjs",
     "lint:no-retired": "node scripts/check-no-retired-imports.mjs",
     "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",
     "lint:no-ungated-infinite-animation": "node scripts/check-no-ungated-infinite-animation.mjs",

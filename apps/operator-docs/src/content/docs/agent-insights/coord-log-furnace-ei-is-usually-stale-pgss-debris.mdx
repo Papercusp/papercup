@@ -6,6 +6,10 @@ tags: ["coordination", "furnace", "pg_stat_statements", "triage", "auto-implemen
 status: active
 documents:
   - "packages/operator-core/lib/harness/routines/coord-invariant-actions.ts :: evaluateInvariants"
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-11
 ---
 
 The `system:coord-invariant-monitor` routine re-mints a **"coord invariant: unbounded coord_event_log read pattern (furnace class)"** EI (major) periodically. It has fired as EI-9525 → EI-9539 → EI-9543 (and counting) — each an **exact duplicate** flagging the **same 4 queryids**. Each firing auto-dispatches an implement worker who re-derives, from scratch, that it is already fixed. Read this first and resolve in one pass.

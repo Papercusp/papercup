@@ -4,6 +4,10 @@ documents:
   - "packages/operator-core/lib/behaviour-suite/"
 description: >
   Why omp agents calling MCP tools via `tools.invoke()` in Python eval get NameError.
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-03
 ---
 
 # OMP eval tool has no `tools` proxy

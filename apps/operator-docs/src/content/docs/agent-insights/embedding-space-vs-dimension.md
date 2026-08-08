@@ -5,6 +5,10 @@ discovered: 2026-07-09
 tags: [embeddings, semantic-search, memory, mem0, pgvector, embed-backfill, migrations, silent-failure, harrier, gemma, embed-sidecar, bake-off]
 plans: [shared-embedding-sidecar-and-enrichment-2026-07-10]
 status: active
+type: Insight
+generated:
+  by: agent
+  at: 2026-07-09
 ---
 
 ## The trap

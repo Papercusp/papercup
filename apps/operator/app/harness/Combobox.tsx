@@ -60,7 +60,6 @@ import { Command as CmdK } from 'cmdk';
 import { Check, ChevronDown, Search } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Popover } from './Popover';
-import { POPPER_WRAPPER_FLOOR_Z } from './popper-z';
 
 export interface ComboboxOption {
   value: string;
@@ -340,10 +339,11 @@ export interface ComboboxMenuProps {
   align?: 'start' | 'center' | 'end';
   /**
    * Popper z-index. Raising it orders this menu above other poppers; LOWERING
-   * it below the floor has no effect — `harness/Popover` clamps up to
-   * `POPPER_WRAPPER_FLOOR_Z`, because Radix copies the Content's z-index onto
-   * the position:fixed wrapper inline and anything under the floor is painted
-   * behind the app shell rather than merely "lower" (see harness/popper-z.ts).
+   * it below the floor has no effect — `harness/Popover` clamps up to the LIVE
+   * floor (`popperFloorZ()`: the shell floor, or above the topmost open modal),
+   * because Radix copies the Content's z-index onto the position:fixed wrapper
+   * inline and anything under the floor is painted behind the app shell — or
+   * behind the modal — rather than merely "lower" (see harness/popper-z.ts).
    */
   zIndex?: number;
   /** Fired on open (`true`) and close (`false`) — the moment to lazily fetch
@@ -396,7 +396,10 @@ export function ComboboxMenu({
   maxListHeight = 320,
   side,
   align = 'start',
-  zIndex = POPPER_WRAPPER_FLOOR_Z,
+  /* No default: `undefined` lets harness/Popover apply the LIVE floor, which
+     rises above an open modal. Defaulting to the static floor here pinned it to
+     1500 and would have buried this menu inside a modal (WI-35969). */
+  zIndex,
   onOpenChange,
 }: ComboboxMenuProps) {
   const [open, setOpen] = useState(false);
