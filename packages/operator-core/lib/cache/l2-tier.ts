@@ -140,6 +140,31 @@ export async function _refreshL2FlagForTests(): Promise<void> {
   await refreshL2Flag();
 }
 
+/**
+ * Rate-limited error reporting for the tier. The FIRST error of each operation is
+ * always logged (that is the one that tells you the tier never worked at all), then at
+ * most one per minute per operation. Exported for the test that pins this behaviour.
+ */
+const L2_ERROR_LOG_INTERVAL_MS = 60_000;
+const lastLoggedAt = new Map<string, number>();
+
+export function noteL2Error(op: string, err: unknown): void {
+  const now = Date.now();
+  const prev = lastLoggedAt.get(op);
+  if (prev !== undefined && now - prev < L2_ERROR_LOG_INTERVAL_MS) return;
+  lastLoggedAt.set(op, now);
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(
+    `[cache-l2] ${op} FAILED — the durable tier is degrading to a real build. ` +
+      `Persistent failures here mean L2 is inert (cold builds are NOT being shared): ${msg}`,
+  );
+}
+
+/** Test-only: forget the rate-limit windows so each test sees a first-error log. */
+export function resetL2ErrorLogForTests(): void {
+  lastLoggedAt.clear();
+}
+
 export interface L2WrapOptions {
   /** Data dependencies — a `cache.bumpTags` on any of these DELETEs the row. */
   tags: readonly string[];
@@ -199,9 +224,16 @@ export function withL2<V>(
         return hit.value;
       }
       opts.onL2Outcome?.('miss');
-    } catch {
-      // Read failure ⇒ fall through and build. Never surface a cache-tier error.
+    } catch (err) {
+      // Read failure ⇒ fall through and build. Never surface a cache-tier error to
+      // the caller — but do NOT swallow it silently either. A tier that fails 100% of
+      // the time is indistinguishable from one that is merely cold if the only signal
+      // is a counter, and that is exactly the blindness this work item exists to fix
+      // (the cachedRead counters shipped unread for weeks; D-074 ruled observability
+      // BEFORE fix). Logged rate-limited so a persistent failure is diagnosable
+      // without a storm — a cold worker under a herd can hit this on every request.
       opts.onL2Outcome?.('error');
+      noteL2Error('get', err);
     }
 
     const value = await factory();
@@ -213,7 +245,7 @@ export function withL2<V>(
     if (value !== undefined && value !== null) {
       void store
         .set(workspaceId, fullKey, value, { tags: opts.tags, hardTtlMs: ttlMs })
-        .catch(() => undefined);
+        .catch((err: unknown) => noteL2Error('set', err));
     }
     return value;
   };
@@ -233,5 +265,5 @@ export function invalidateL2ByTags(workspaceId: string, tags: readonly string[])
   if (!l2TierEnabled() || tags.length === 0) return;
   void getL2Store()
     .invalidateByTags(workspaceId, tags)
-    .catch(() => undefined);
+    .catch((err: unknown) => noteL2Error('invalidateByTags', err));
 }

@@ -289,7 +289,7 @@ export type ReconcileAction =
       kind: 'report-only';
       unit: string;
       reason: 'down-report-only' | 'unit-not-found' | 'paused';
-      /** WI-9871: only set on `unit-not-found` — true when `LoadState=not-found` positively
+      /** WI-35537: only set on `unit-not-found` — true when `LoadState=not-found` positively
        *  confirmed the unit is absent, false/undefined when we simply could not tell. */
       confirmedAbsent?: boolean;
       notify: boolean;
@@ -340,7 +340,7 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
   state.consecutiveDownTicks += 1;
 
   if (!status) {
-    // WI-9871: absence from `list-units` does NOT mean the unit is gone. systemd only lists units
+    // WI-35537: absence from `list-units` does NOT mean the unit is gone. systemd only lists units
     // it has LOADED into runtime, and `disable --now` on a unit that is then never started drops it
     // out of `list-units --all` entirely — which is precisely the state the documented pause
     // procedure leaves behind (`systemctl --user disable --now papercup-live-federation-gate.timer`,
@@ -547,7 +547,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     let show:
       | { result?: string; restart?: string; nRestarts?: number; unitFileState?: string; loadState?: string }
       | undefined;
-    // WI-9871: ALSO probe when the unit is absent from `list-units` (`!status`), regardless of
+    // WI-35537: ALSO probe when the unit is absent from `list-units` (`!status`), regardless of
     // `autoRestart`. A disabled-and-unloaded unit never appears in the list, so without this the
     // down-path can only ever report "removed/never installed?" for it — `systemctl show` is the
     // only surface that can tell an administrative pause from a genuinely missing unit file.

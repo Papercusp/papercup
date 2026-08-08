@@ -208,6 +208,21 @@ describe('repoKeyLadder', () => {
     }
   });
 
+  it('CONTROL: the PRE-FIX rung logic is caught by this suite (falsifiability, tier 1)', () => {
+    // A guard that has never failed is a guard nobody has tested — and mutating
+    // the shared tree to prove it is unsafe here (git-sync sweeps every few
+    // minutes and would commit the mutant). So the deliberately-wrong
+    // implementation lives here permanently instead.
+    const preFixRung = (slug: string) => slug; // what line 114 used to push, verbatim
+    expect(isValidRepoKey(preFixRung('papercusp/libs/generic/cache'))).toBe(false);
+
+    // Calibration: the predicate must ACCEPT the real implementation's output on
+    // that same input. Without this, the assertion above would still pass if
+    // isValidRepoKey were broken to reject everything, and both "tests" would be
+    // measuring nothing.
+    expect(isValidRepoKey(repoKeyLadder({ slug: 'papercusp/libs/generic/cache' })[0]!)).toBe(true);
+  });
+
   it('CONTROL: a slug that is ALREADY a legal key is passed through byte-identical', () => {
     // The regression this fix must not cause. A repoKey names a cross-device
     // rendezvous AND an on-disk store path, so re-spelling a working key strands

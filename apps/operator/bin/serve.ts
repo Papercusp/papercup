@@ -272,11 +272,14 @@ export function isOrphanedFromParent(
  * reparent-only semantics exactly.
  */
 export function resolveExpectedParentPid(
-  // Deliberately the NARROWEST shape this reads, not NodeJS.ProcessEnv: the repo's
-  // ProcessEnv declares required members (NODE_ENV, …), so demanding it here would
-  // force every caller — tests especially — into an `as` cast that typechecks
-  // nothing. `process.env` satisfies this structurally.
-  env: { PAPERCUSP_DESKTOP_PARENT_PID?: string | undefined } = process.env,
+  // Record<…>, not NodeJS.ProcessEnv and not an all-optional literal shape.
+  // NodeJS.ProcessEnv here is Next.js's augmentation (NODE_ENV is REQUIRED), so
+  // demanding it forces every test caller into an `as` cast that typechecks
+  // nothing; but an all-optional literal type is a WEAK type, and assigning
+  // process.env to it fails TS2559 ("no properties in common") because an index
+  // signature does not count as an overlapping declared property. Record<> matches
+  // ProcessEnv's index signature and accepts a bare `{}` from tests.
+  env: Record<string, string | undefined> = process.env,
   fallbackPpid: number = PROCESS_START_PPID,
 ): { pid: number; declaredByLauncher: boolean } {
   const raw = env.PAPERCUSP_DESKTOP_PARENT_PID;

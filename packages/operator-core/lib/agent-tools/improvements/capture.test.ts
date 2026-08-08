@@ -707,8 +707,97 @@ describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
   it('a pre-check failure NEVER fails the capture — the field is simply absent (report-only, D-005)', async () => {
     mockPriorArt.mockRejectedValue(new Error('corpus read exploded'));
     const body = await bodyOf({ title: 'a fresh su idea', kind: 'feature' });
-    expect(body).toEqual({ ok: true, id: 'EI-1', created: true });
+    // P-007/D-010 added `experimentGap` to this same response (this filing declares no
+    // cheapExperiment, so it is reported). Kept as a STRICT whole-body equality so a
+    // future field addition still has to come through this assertion deliberately.
+    expect(body).toEqual({
+      ok: true,
+      id: 'EI-1',
+      created: true,
+      experimentGap: { missing: ['hypothesis', 'method', 'falsifiableSignal'], note: expect.any(String) },
+    });
     expect('priorArt' in body).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gym-real-fitness-signal P-007 / D-010 — the cheapExperiment gap is REPORTED, never enforced.
+//
+// The load-bearing guards here are the NEGATIVE ones: that a kind:'feature' capture with no
+// experiment still SUCCEEDS, and that the tool has no path to reject on this ground. P-007's
+// R-2 originally proposed making the block required; that would have contradicted
+// su-ideate-learning-substrate D-005 ("Enrich, never gate … no idea is too speculative to
+// file"), and — measured 2026-08-08 — would have rejected ~2 of every 3 feature filings
+// (21 of 66 post-schema su feature captures carry a complete block, not the 0.07% R-2 claimed
+// from a whole-corpus denominator). Asserting only that the field APPEARS would pin the
+// nudge while leaving the thing that actually matters — that nothing is ever lost — untested.
+// ---------------------------------------------------------------------------
+describe('improvements:capture — cheapExperiment gap is report-only (P-007/D-010)', () => {
+  const complete = { hypothesis: 'h', method: 'm', falsifiableSignal: 's' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    mockPriorArt.mockResolvedValue([]);
+  });
+
+  async function bodyOf(args: Record<string, unknown>) {
+    const res = await callTool(args);
+    return JSON.parse(res.content[0].text) as Record<string, unknown>;
+  }
+
+  it('NEVER gates: a feature filing with no experiment is still captured, and reports the gap', async () => {
+    const body = await bodyOf({ title: 'an unbettable idea', kind: 'feature' });
+    // the idea LANDED — this is the D-005 guarantee, and the whole point of report-over-reject
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ title: 'an unbettable idea' }));
+    expect(body.ok).toBe(true);
+    expect(body.experimentGap).toEqual({
+      missing: ['hypothesis', 'method', 'falsifiableSignal'],
+      note: expect.stringContaining('not a rejection'),
+    });
+  });
+
+  it('a COMPLETE experiment reports no gap at all (absent, not empty)', async () => {
+    const body = await bodyOf({ title: 'a bettable idea', kind: 'feature', ideation: { cheapExperiment: complete } });
+    expect('experimentGap' in body).toBe(false);
+  });
+
+  it('a PARTIAL experiment names only the fields actually missing', async () => {
+    const body = await bodyOf({
+      title: 'half a bet',
+      kind: 'feature',
+      ideation: { cheapExperiment: { hypothesis: 'h', method: 'm' } },
+    });
+    expect(body.experimentGap).toMatchObject({ missing: ['falsifiableSignal'] });
+  });
+
+  it('is scoped to where a supplied block would be PERSISTED — never other kinds or the observation lane', async () => {
+    // capture.ts only stores ideation for kind:'feature' outside the observation lane, so
+    // nudging anywhere else would demand a field the handler would discard anyway.
+    expect('experimentGap' in (await bodyOf({ title: 'x', kind: 'change' }))).toBe(false);
+    expect('experimentGap' in (await bodyOf({ title: 'x', kind: 'bug' }))).toBe(false);
+    expect('experimentGap' in (await bodyOf({ title: 'x', kind: 'feature', lane: 'observation' }))).toBe(false);
+  });
+
+  it('reports on a dedup-decline too — the filer is told BEFORE they re-file', async () => {
+    mockCapture.mockResolvedValue({ ok: false, created: false, duplicateOf: 'EI-5' } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    const body = await bodyOf({ title: 'a dup', kind: 'feature' });
+    expect(body.experimentGap).toMatchObject({ missing: ['hypothesis', 'method', 'falsifiableSignal'] });
+  });
+
+  it('CONTROL — a missing experiment is never itself a failure reason (falsifies "gate crept back in")', async () => {
+    // A gate would surface as ok:false / an error / an uncalled core. This is the assertion
+    // that fails if anyone later "tightens" the nudge into a rejection.
+    const res = await callTool({ title: 'no experiment here', kind: 'feature' });
+    const body = JSON.parse(res.content[0].text) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.error).toBeUndefined();
+    expect(mockCapture).toHaveBeenCalledTimes(1);
   });
 });
 

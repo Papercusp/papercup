@@ -218,7 +218,21 @@ const ORDERS_RAIL_OVERLAY_STYLE: React.CSSProperties = {
 };
 
 function useIsNarrowViewport(query: string): boolean {
-  const [isNarrow, setIsNarrow] = useState(false);
+  /* Seeded from matchMedia SYNCHRONOUSLY rather than starting false and
+     correcting in the effect below. It used to start false, which was harmless
+     while this hook only chose a STYLE (column vs overlay) — one frame of the
+     wrong style is invisible. It stopped being harmless when the Orders default
+     became room-aware (WI-35470): a hook that reports "wide" on the first render
+     of a narrow window would MOUNT the panel, fire the agentOrders.byOwner
+     carry-brief gather, and then unmount it a frame later — a flash plus exactly
+     the fetch the closed state exists to avoid. The `typeof` guards keep it
+     SSR-safe and survive a test env whose jsdom lacks matchMedia. */
+  const [isNarrow, setIsNarrow] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia(query).matches,
+  );
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
     const media = window.matchMedia(query);
@@ -1175,9 +1189,29 @@ export default function SessionChatModal({
      `ordersVisible` below is still what gates the fetch — a reader who CLOSES
      the panel must stop paying for it, which is the half of the original
      rationale that survives. Keep the query separate from agentDetail.byOwner
-     for that reason. */
-  const [ordersOpen, setOrdersOpen] = useQueryState('chatOrders', parseAsBoolean.withDefault(true));
+     for that reason.
+
+     ── Why the default is DERIVED rather than a plain withDefault(true) ──────
+     (WI-35470, D-009.) There is no width at which "expanded" and "not covering
+     the transcript" are both achievable: below ORDERS_NARROW_MEDIA_QUERY the
+     rail has no column to take and renders as an OVERLAY, so a blanket
+     default-open put a panel on top of the very conversation the reader just
+     opened — measured at 1100px, the rail sat x=28→328 over a conversation
+     spanning x=28→772.
+
+     So the three cases are separated, and only the third moves:
+       - an EXPLICIT choice (?chatOrders=…) always wins, at every width. That
+         keeps P-015's overlay rationale exactly intact: a toggle that silently
+         did nothing on a narrow window would read as a broken button.
+       - no choice + room for a column  ⇒ OPEN  (the owner's ask).
+       - no choice + no room            ⇒ CLOSED, because "expanded" there means
+         "covering what you opened", which is not what was asked for.
+     `null` is nuqs's absent-param value; the mocked stores used by this file's
+     suite yield `undefined`, so `??` (not `||`) is load-bearing — `false` is a
+     real explicit choice and must not fall through to the derived default. */
+  const [ordersParam, setOrdersOpen] = useQueryState('chatOrders', parseAsBoolean);
   const isOrdersNarrow = useIsNarrowViewport(ORDERS_NARROW_MEDIA_QUERY);
+  const ordersOpen = ordersParam ?? !isOrdersNarrow;
 
   /* ── P-001 maximize ──────────────────────────────────────────────────────
      Which maximize mode is on, in the URL like every other bit of this

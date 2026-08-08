@@ -17,13 +17,14 @@ investors. They reward different bullets:
 **If you only pick eight,** these carry the most weight per line and don't overlap:
 `1.1` · `1.2` · `2.1` · `3.1` · `4.1` · `5.2` · `6.1` · `9.1`
 
-**Numbers updated 8 August 2026.** §9 has been re-measured and now differs from the
-deck. The two earlier figures (2.37M vs 2.14M) turned out to be measuring different sets
-rather than disagreeing — see `papercusp-stat-block-refresh-2026-08-08.md` for the
-reconciliation, the corrected basis, and one deck figure that is mislabelled and will
-reproduce *lower* than published (the "113,527 coordination events all time" tile —
-the table is retention-pruned). Fix that before anyone checks it. Everything else grew,
-and the test-to-source ratio improved from 0.72:1 to 0.90:1.
+**Numbers updated 8 August 2026 — regenerate with `npm run stats:proof` rather than
+trusting this file.** §9 now differs from the deck for two reasons, both worth knowing
+before you publish: (1) every earlier measurement in this thread — including my own
+reconciliation — *undercounted*, because `git ls-files` silently omits the contents of
+all 39 submodules; the true total is 2.66M lines, not 2.37M or 2.41M. (2) The deck's
+"113,527 coordination events / all time" tile is over a retention-swept table, so it
+re-measures **lower** than published — fix it before anyone checks. Full reconciliation:
+`papercusp-stat-block-refresh-2026-08-08.md`.
 
 ---
 
@@ -401,31 +402,31 @@ behind a flag nobody flips.
 
 ## §9 — Scale and proof
 
-*Re-measured 8 August 2026. Lines are git-tracked, excluding retired code — the strictest
-defensible basis, reproducible with `git ls-files`.*
+*Re-measured 8 August 2026 by `npm run stats:proof`. Lines are git-tracked TypeScript
+across the superproject and all 39 submodules, excluding retired and vendored code.*
 
-**9.1 · 2.4M lines in eighteen weeks, solo**
-First commit 6 April 2026. 2.41M lines of TypeScript across 11,495 files, plus a Rust
-desktop shell, built by one person directing an agent fleet — not a line hand-written, but
-all of it designed. Every figure measured directly from the repository and the live
-database, and reproducible on request.
+**9.1 · 2.66M lines since April, solo**
+First commit 6 April 2026 — 17 weeks. 2.66M lines of TypeScript across 12,731 files, plus
+a 71K-line Rust desktop shell, built by one person directing an agent fleet: not a line
+hand-written, but all of it designed. Every figure is measured from the repository and the
+live database by a single command, and reproducible on demand.
 
-**9.2 · 228 agents, 594,000 tool calls, one codebase, one week**
-593,991 agent tool calls from 228 distinct agent identities in a single seven-day window —
-roughly 85,000 operations a day, sustained. Volume alone could be one agent in a loop;
-228 concurrent identities on one codebase is the thing that's actually hard, and it is the
+**9.2 · 233 agents, 580,000 tool calls, one codebase, one week**
+579,886 agent tool calls from 233 distinct agent identities in a single seven-day window —
+roughly 83,000 operations a day, sustained. Volume alone could be one agent in a loop; 233
+concurrent identities on one codebase is the thing that's actually hard, and it is the
 regime where coordination either holds or falls apart.
 
-**9.3 · A test-to-source ratio that is rising, not falling**
-1.14M lines of tests across 5,692 test files against 1.27M lines of product code — a
-0.90:1 ratio, up from 0.72:1 twelve days earlier. Test code is growing faster than product
-code under autonomous development, which is the opposite of the default assumption about
-AI-generated software.
+**9.3 · 1.23M lines of tests — a 0.86:1 test-to-source ratio**
+1.23M lines of tests across 6,170 test files against 1.43M lines of product code. On the
+narrower basis I've tracked longest, the ratio has climbed from 0.72:1 to 0.90:1 — test
+code growing faster than product code under autonomous development, which is the opposite
+of the default assumption about AI-generated software.
 
-**9.4 · 33,769 work items, 16,172 driven to done**
-The work ledger at production volume, with roughly half of everything ever filed carried
-to a terminal state — throughput, not just accumulation. Alongside it: 25,711 coordination
-events in the last seven days across 200 distinct work contexts.
+**9.4 · 33,803 work items, 15,554 driven to done**
+The work ledger at production volume, with nearly half of everything ever filed carried to
+a terminal state — throughput, not just accumulation. Alongside it: 25,000+ coordination
+events a week across 55 distinct work contexts.
 
 **9.5 · 691 tools across 139 functional groups**
 The agent-facing surface area, all of it auth-gated, quota-governed and telemetered
@@ -444,7 +445,7 @@ change is the risky kind, and it's the kind this has been doing continuously.
 **Engineering-forward**
 Built a coordination substrate for AI agent fleets — durable work-item DAG, push-based
 messaging and events, enforced file locking, four-layer memory with dynamic context
-injection, peer-to-peer git, and mechanically-gated delivery. 2.4M lines in eighteen
+injection, peer-to-peer git, and mechanically-gated delivery. 2.66M lines in seventeen
 weeks, written by the agent fleet it was built to coordinate.
 
 **Product-forward**

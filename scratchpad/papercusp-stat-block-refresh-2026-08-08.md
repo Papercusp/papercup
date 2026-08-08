@@ -1,152 +1,173 @@
-# Papercusp stat block — reconciled and refreshed
+# Papercusp stat block — reconciled, refreshed, and now reproducible
 
 *Measured 8 August 2026. Supersedes the late-July figures in the deck.*
+*Everything below is now emitted by **`npm run stats:proof`** — run it rather than
+trusting this file, which is a snapshot and will go stale.*
 
 ---
 
-## 1. The headline: one number in the deck is mislabelled and will reproduce *lower*
+## 1. The one figure to fix before anyone checks it
 
-**Slide 11 says `113,527 — COORDINATION EVENTS / ALL TIME`. Re-measured today it is
-108,086.**
+**Slide 11 says `113,527 — COORDINATION EVENTS / ALL TIME`. Re-measured today: 108,086.**
 
-The table is retention-pruned. Its oldest surviving row is 30 May 2026, but the first
-commit was 6 April — so roughly the first eight weeks have already aged out. "All time"
-was never the right label; it was a point-in-time count of a rolling window.
+`harness_shared.coord_event_log` is retention-swept, so a cumulative count over it
+goes **down** over time. Confirmed at the source, not inferred: three separate GCs
+sweep that table on **four different horizons** — notify 3 days, federated messages
+7, escalations 14, operator messages 30 (`agent-tools/coordination/{notify,
+message-log,escalation-log}-gc.ts`).
 
-Why this is the one to fix: the deck promises every figure is *"reproducible on request."*
-An investor's engineer who checks this one gets **108,086** against a slide claiming
-**113,527 all time** — a number that went *down*. The two available readings are "he
-inflated it" or "he doesn't know how his own instrumentation works." Both are worse than
-the truth, which is mundane: it's a rolling window and the label was wrong.
+So the tile is worse than mislabelled. A single total across four sweep horizons
+isn't a badly-named quantity — it isn't a coherent quantity at all.
 
-**Fix it as a rate, which is both defensible and stronger:**
+Why this one matters more than its size: the deck promises every figure is
+*"reproducible on request."* An engineer who takes you up on it gets a **smaller**
+number than the slide, under a label ("all time") implying it can only grow. The two
+readings available to them are "he inflated it" or "he doesn't understand his own
+instrumentation." The truth is neither.
 
-> `25,711 — COORDINATION EVENTS / LAST 7 DAYS`
+**Replace it with a floor:**
 
-A rate can't be contradicted by retention, it reproduces on demand forever, and ~3,700
-coordination events a day says more about sustained load than a cumulative total does.
-If you want a cumulative number too, label it honestly: *108,086 retained (70-day
-window)*.
+> `≥ 25,752 — COORDINATION EVENTS / LAST 7 DAYS`
 
----
-
-## 2. Everything else grew. Several figures are now conservative.
-
-| Metric | Deck (late July) | Now (8 Aug) | Change |
-| --- | --- | --- | --- |
-| Lines TS/TSX | 2.37M | **2.41M** | ↑ 1.7% |
-| Test lines | 993K | **1.139M** | ↑ 14.7% |
-| Test files | 5,349 | **5,692** | ↑ 6.4% |
-| Test-to-source ratio | 0.72:1 | **0.90:1** | ↑ 25% |
-| Agent tool calls / 7d | 482,645 | **593,991** | ↑ 23% |
-| Work items in ledger | 29,005 | **33,769** | ↑ 16% |
-| Coordination events | 113,527 "all time" | **25,711 / 7d** | *relabel* |
-| Migrations | 572 | **630** | ↑ 58 in 12 days |
-| Tools / groups | 691 / 139 | **691 / 139** | flat |
-| Blueprints | 48 | **48** | flat |
-
-**The ratio move is the most valuable one.** 0.72:1 → **0.90:1** means test code grew
-almost 9× faster than product code over twelve days. For anyone assessing whether an
-agent-built codebase is actually verified rather than merely large, that trend line is
-worth more than the absolute number — it says verification intensity is *increasing*
-under autonomous development, which is the opposite of the default assumption about
-AI-generated code.
+A floor cannot be contradicted downward by any later re-measurement, which is exactly
+the failure being designed out. The `≥` is load-bearing and honest: a 7-day window
+over a table whose shortest sweep is 3 days genuinely omits already-swept rows, so
+the true figure is higher than stated.
 
 ---
 
-## 3. Why your 2.37M and my earlier 2.14M both measured correctly
+## 2. Correction to what I told you last turn: my own basis was wrong
 
-They counted different sets, so "pick one" was the wrong advice — the right answer is to
-state the basis.
+I reported 2.41M lines / 11,495 files. **That undercounts, and so did every earlier
+measurement in this thread — including the reconciliation I gave you.**
+
+`git ls-files` lists a submodule as a *single gitlink entry* and silently omits every
+file inside it. This repo has **39 submodules**, holding all of `libs/generic/*` and
+all of `libs/papercusp/*` — a large share of the codebase. Measuring without
+`--recurse-submodules` also reported **0 migrations** and **0 blueprints**, because
+both live in submodules. That is the failure mode worth internalising: not a wrong
+number, but a *confident* wrong number, with no symptom.
 
 | Basis | Files | Lines |
 | --- | --- | --- |
-| On-disk, excluding `node_modules` (what the deck used) | 13,768 | — |
-| Git-tracked, all | 11,668 | 2,434,697 |
-| **Git-tracked, excluding retired code** ← recommended | **11,495** | **2,405,004** |
-| Retired code only | 173 | 29,693 |
+| Superproject only (plain `git ls-files` — what the earlier 2.37M measured) | 11,502 | 2,407,965 |
+| **Superproject + all 39 submodules, excl. retired + vendored** ← publish this | **12,731** | **2,663,000** |
 
-The deck's file count (12,099) is an on-disk count, so it included generated and untracked
-files. My 2.14M was tracked-and-excluding-retired at a point twelve days earlier.
+Both are honestly measured; the second is the true total of authored code. The
+difference is a **corrected denominator, not growth** — and the script now prints
+that sentence in its own basis footnote, so the correction travels with the number
+and can't be misread as a sudden jump.
 
-**Publish the tracked-excluding-retired basis.** It is the strictest defensible reading,
-it reproduces with one command anybody can run, and — the useful part — it now *exceeds*
-the deck's headline anyway. You get a higher number and a tighter methodology at the same
-time. Say the basis out loud in a footnote: *"git-tracked TypeScript, excluding retired
-code; `git ls-files` reproducible."*
+---
+
+## 3. The refreshed block
+
+| Metric | Deck (late July) | Now (8 Aug) |
+| --- | --- | --- |
+| Lines TS/TSX | 2.37M / 12,099 files | **2.66M / 12,731 files** |
+| Lines of tests | 993K / 5,349 files | **1.23M / 6,170 files** |
+| Test-to-source ratio | 0.72:1 | **0.86:1** |
+| Lines Rust | — | **70,968** |
+| Agent tool calls / 7d | 482,645 | **579,886** |
+| Distinct agents / 7d | *(not published)* | **233** |
+| Work items | 29,005 | **33,803** |
+| Work items driven to done | *(not published)* | **15,554** |
+| Coordination events | 113,527 "all time" | **≥ 25,752 / 7d** |
+| Schema migrations | 572 | **630** |
+| Tools / groups | 691 / 139 | 691 / 139 |
+| Blueprints | 48 | 48 |
+| Elapsed | "sixteen weeks" | **17 weeks (123 days)** |
+
+**On the ratio:** 0.86:1 is the full-tree figure. On the deck's original
+superproject-only basis it is **0.90:1**, up from 0.72:1 — so the *trend* is real and
+strong, but state which basis you're trending on. Mixing them is how a genuine
+improvement ends up looking like a moved goalpost.
+
+**On elapsed time:** it is **17** whole weeks, not sixteen (deck) and not eighteen
+(what I told you last turn — I was also wrong). 6 April → 8 August is 123 days. The
+script derives this from the root commit so it can never be stale again; prefer
+"since 6 April 2026" in copy.
+
+**On the date itself:** the root commit is `2026-04-06T21:58:03-04:00` — late evening
+local, already 7 April in UTC. **Your deck's "6 April" is correct**; a naive UTC
+render says 7 April. The script pins the author-local date, and there's a regression
+test for it.
 
 ---
 
 ## 4. Three figures you have and aren't using
 
-These came out of the same measurement and are not on any slide. The first is the best
-unused stat you own.
+**233 distinct agents in the last 7 days** — the best unused stat you own. Slide 11
+currently proves *volume*, and 580K calls could in principle be one agent in a loop.
+233 distinct identities on one codebase cannot be anything except the coordination
+claim being true. Swap it in for the coordination-event tile: same real estate,
+upgrades the slide from a volume claim to a concurrency claim, which is what the whole
+deck argues.
 
-**228 distinct agents in the last 7 days.**
-Not sessions — distinct agent identities that made tool calls. Paired with 593,991 calls,
-this is the number that makes "coordination substrate" concrete: 228 agents, ~594K
-operations, one codebase, no interference. Slide 11 currently proves *volume*; this proves
-*concurrency*, which is the actual claim. Nearly half a million calls could in principle
-be one agent in a loop. 228 agents cannot.
+**15,554 work items driven to a terminal state** — throughput, not accumulation.
+Answers the obvious skeptical question about whether a 33.8K-item ledger means work
+shipped or backlog piled up.
 
-**2,551 distinct coordination participants all-time · 200 distinct harnesses.**
-The breadth behind the volume — the substrate has carried thousands of agent identities
-across 200 separate work contexts, not one long-running pot.
-
-**16,172 work items driven to a terminal state.**
-Completion, not just accumulation. 33,769 items in the ledger reads better when you can
-say ~16K of them were carried to done — it answers the obvious skeptical question about
-whether a big queue means throughput or just backlog.
-
-**~84,900 tool calls per day, sustained.** Same figure as 593,991/7d, but a daily rate
-lands harder in conversation and survives the reader forgetting your window.
+**~82,800 tool calls per day, sustained** — the same figure as 579,886/7d, but a daily
+rate lands harder in conversation and survives the reader forgetting your window.
 
 ---
 
 ## 5. Recommended slide 11
 
 ```
-2.41 M          1.14 M          0.90:1
+2.66 M          1.23 M          0.86:1
 LINES TS/TSX    LINES OF TESTS  TEST-TO-SOURCE RATIO
-11,495 FILES    5,692 TEST FILES  ↑ from 0.72:1 in July
+12,731 FILES    6,170 TEST FILES
 
-593,991         228             33,769
+579,886         233             33,803
 AGENT TOOL      DISTINCT AGENTS WORK ITEMS
-CALLS / 7 DAYS  / 7 DAYS        IN THE LEDGER
+CALLS / 7 DAYS  / 7 DAYS        15,554 DONE
 ```
 
-Swapping the cumulative coordination-event total for **228 distinct agents** costs you
-nothing and upgrades the slide from a volume claim to a concurrency claim — which is the
-thing the whole deck is arguing.
-
-Footnote: *Measured from the repository and live database 8 August 2026. Lines are
-git-tracked, excluding retired code. Rates are trailing seven-day. Reproducible on
-request.*
+Footnote: *Measured 8 August 2026 by `npm run stats:proof`. Lines are git-tracked
+TypeScript across the superproject and all 39 submodules, excluding retired and
+vendored code. Rates are trailing seven-day. Reproducible on request.*
 
 ---
 
-## 6. Also worth updating
+## 6. `npm run stats:proof` — the promise now has an artifact
 
-- **"Sixteen weeks"** (slide 11) → **eighteen weeks**. First commit 6 April, so it's 124
-  days as of 8 August. Cheap to get wrong and cheap to fix; it'll go stale again, so
-  consider "since 6 April 2026" and let the reader do the arithmetic.
-- **630 migrations, up 58 in twelve days** — a decent throughput proxy if you ever need
-  one, and it's schema change under autonomy, which is the risky kind.
+**WI-35490, landed.** One command prints the block above with its basis footnote,
+measured live from `git ls-files --recurse-submodules` and read-only SQL.
+`--json` emits the same data for a slide generator.
+
+The point is not convenience — it's that **the class of error that produced the bad
+tile is now unrepresentable**:
+
+1. **There is no `all-time` variant in the type.** A cumulative ledger total cannot
+   be constructed, so it cannot be rendered. Type-level, not a lint.
+2. **A total over a swept table is refused at runtime**, and the refusal names the
+   remedy. That is the exact shape of the published error, and it fails the *command*
+   rather than reaching a slide.
+3. **A window wider than the shortest sweep horizon renders as a floor** (`≥ N`) —
+   automatically, from horizons *imported from the GC modules that enforce them*. If
+   anyone retunes retention, the output follows instead of quietly going stale.
+
+20 unit tests, the load-bearing one being `refuses the exact shape of the published
+error`. Delete the guard and that test fails.
+
+Also fixed at the source: `NOTIFY_GC_RETENTION_DAYS` was a bare default parameter with
+no exported constant, so any external reader had to hardcode `3` and drift. It's now
+exported, with a comment explaining why callers outside the GC need it.
+
+**Deferred, deliberately:** a persisted baseline that flags any figure decreasing
+between runs. It would have *detected* the original error, but the guard above
+*prevents* it, and prevention makes the detector redundant for this class. Not worth
+the state file.
 
 ---
 
-## 7. Making "reproducible on request" true
+## 7. What I'd still change in the deck
 
-Every figure above came from either `git ls-files` piped to `wc`, or a read-only SQL query
-against the operator database. Nothing needed judgement, which means it can be one
-command.
-
-The gap worth closing: the promise is on the slide, but there's no artifact that delivers
-it. If someone asks, the answer should be a script you run in front of them that prints
-the block — not you reconstructing twelve ad-hoc measurements from memory, which is what
-just produced the mislabelled coordination number in the first place.
-
-Say the word and I'll add `npm run stats:proof` — one command, prints the slide-11 block
-with its basis footnote, and fails loudly rather than silently mislabelling a
-retention-pruned table as all-time. Roughly an hour, and it makes the deck's strongest
-promise mechanically true.
+- Slide 11: swap the coordination-event tile for **233 distinct agents**; refresh the
+  rest from §5.
+- Slide 11: "sixteen weeks" → "since 6 April 2026".
+- Slide 12 footnote: keep "reproducible on request" — it's now true, so name the
+  command. *"Reproducible on request: `npm run stats:proof`."* Being able to run it in
+  front of someone is worth more than any single number on the slide.

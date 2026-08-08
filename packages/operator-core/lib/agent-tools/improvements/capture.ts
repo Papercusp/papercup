@@ -91,6 +91,56 @@ export function defaultScorecardConditionKey(
   return `scorecard:${rubricRef}:${sourceHive}`;
 }
 
+/**
+ * gym-real-fitness-signal P-007 / D-010: report the MISSING cheapExperiment on a
+ * kind:'feature' capture — as a response field, NEVER as a gate.
+ *
+ * The idea-fitness loop's input is the `cheapExperiment` block: an idea without one
+ * cannot be compiled into a probe, so it can never be judged on an observed outcome
+ * (D-002) and is invisible to the fitness loop entirely. P-007's R-2 originally
+ * proposed making the block REQUIRED at capture for kind:'feature'. Two measurements
+ * killed that (both recorded on D-010, both re-runnable):
+ *
+ *  1. It contradicts `su-ideate-learning-substrate` D-005 — "Enrich, never gate …
+ *     no idea is too speculative to file — no quality gate, no quota" — itself carried
+ *     VERBATIM from an earlier parity decision, i.e. ratified twice. This very
+ *     directory is the reason: capture-coerce.ts exists because a hard `kind` enum was
+ *     rejecting ~17% of calls and "every rejected call is a captured insight LOST".
+ *  2. R-2's premise was a DENOMINATOR ERROR. "21 of 33,770 = 0.07%" divided by every
+ *     work item ever. Against the population the field actually applies to — su
+ *     kind:'feature' captures since the schema shipped 2026-07-11 — it is 21 of 66,
+ *     i.e. ~32%, and the rate is FLAT (24-25%) across the last 7d and the prior 23d
+ *     rather than decayed to zero. A gate would therefore have rejected ~2 of every 3
+ *     feature filings.
+ *
+ * So the gap is reported, not enforced. Measured 2026-08-08: of the 66 post-schema
+ * captures, ZERO supplied a partial block — every filer sent all three fields or none.
+ * There is nothing to "repair", which is why this names the gap instead of coercing it.
+ *
+ * Same eligibility as the ideation PERSISTENCE below (kind:'feature', improvement lane):
+ * it fires exactly where a supplied block would have been stored, so it can never nag a
+ * filer about a field the handler would have discarded anyway.
+ */
+export function describeExperimentGap(args: {
+  kind?: string;
+  lane?: string;
+  ideation?: { cheapExperiment?: { hypothesis?: string; method?: string; falsifiableSignal?: string } };
+}): { missing: string[]; note: string } | undefined {
+  if (args.kind !== 'feature' || args.lane === 'observation') return undefined;
+  const exp = args.ideation?.cheapExperiment;
+  const missing = (['hypothesis', 'method', 'falsifiableSignal'] as const).filter((f) => !exp?.[f]);
+  if (missing.length === 0) return undefined;
+  return {
+    missing: [...missing],
+    note:
+      'Filed — this is a report, not a rejection. This idea carries no complete `ideation.cheapExperiment`, ' +
+      'so it cannot be compiled into a probe and stays invisible to the idea-fitness loop (it is also ranked ' +
+      'below bettable ideas in triage). To make it bettable, re-file or amend with ideation.cheapExperiment: ' +
+      '{ hypothesis: what is true if this has merit, method: the cheap first test, falsifiableSignal: the ' +
+      'observable that would prove it WRONG }.',
+  };
+}
+
 export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
@@ -585,6 +635,10 @@ export default defineTool({
               harnessSlug: args.scope?.startsWith('harness:') ? args.scope.slice('harness:'.length) : undefined,
             }).catch(() => null)
           : null;
+      // P-007/D-010: report-only cheapExperiment gap (see describeExperimentGap above).
+      // Computed from the CALLER's args, so a dedup-decline / checkDuplicatesOnly response
+      // carries it too — the filer is told before they re-file, not after.
+      const experimentGap = describeExperimentGap(args);
       return {
         content: [
           {
@@ -592,6 +646,7 @@ export default defineTool({
             text: JSON.stringify({
               ...result,
               ...(priorArt ? { priorArt } : {}),
+              ...(experimentGap ? { experimentGap } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
               ...(foundDuringTruncated

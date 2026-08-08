@@ -72,11 +72,43 @@ function git(...args: string[]): string {
   });
 }
 
-/** Tracked files matching the given pathspecs, excluding retired code. */
+/**
+ * Tracked files matching the given pathspecs, excluding retired code.
+ *
+ * `--recurse-submodules` IS LOAD-BEARING, not a nicety. This repo has 39
+ * submodules holding a large share of the code (all of `libs/generic/*`, all of
+ * `libs/papercusp/*`), and a plain `git ls-files` lists a submodule as a single
+ * gitlink entry — it silently omits every file inside. Measuring without it
+ * undercounts the tree by well over a thousand files and reports 0 migrations and
+ * 0 blueprints (both live in submodules), which is exactly the wrong answer with a
+ * confident face on it. Verified 2026-08-08: 11,500 files without, 12,729 with.
+ */
 function trackedFiles(patterns: string[]): string[] {
+  return git('ls-files', '--recurse-submodules', '-z', ...patterns)
+    .split('\0')
+    .filter(
+      (f) =>
+        f.length > 0 &&
+        !f.startsWith('_retired/') &&
+        // Vendored third-party forks (tao / wry / tauri-runtime-wry) are carried in
+        // tree but are not our work — counting them would overstate authored volume,
+        // which is the one direction a proof artifact must never err in.
+        !f.includes('/vendor/'),
+    );
+}
+
+/**
+ * Superproject-only file listing — what a plain `git ls-files` sees.
+ *
+ * Kept solely to report basis CONTINUITY: the previously published 2.37M was
+ * measured this way (submodule contents invisible). Without stating that, the
+ * corrected full-tree figure looks like sudden growth, and "the number jumped after
+ * he re-measured it" is exactly the reading this whole command exists to prevent.
+ */
+function superprojectOnlyFiles(patterns: string[]): string[] {
   return git('ls-files', '-z', ...patterns)
     .split('\0')
-    .filter((f) => f.length > 0 && !f.startsWith('_retired/'));
+    .filter((f) => f.length > 0 && !f.startsWith('_retired/') && !f.includes('/vendor/'));
 }
 
 /**
@@ -98,11 +130,19 @@ function countLines(files: string[]): number {
   return total;
 }
 
-function firstCommitDate(): Date {
+/**
+ * The repository's root commit, as both an instant (for arithmetic) and the date as
+ * it reads in the AUTHOR'S timezone (for display).
+ *
+ * The two differ here and it matters: the root commit is 2026-04-06T21:58:03-04:00,
+ * so a UTC render prints 2026-04-07 and contradicts every deck and bio that says
+ * 6 April — over four minutes of timezone offset.
+ */
+function firstCommit(): { at: Date; label: string } {
   const out = git('log', '--reverse', '--format=%aI', '--max-parents=0').trim();
   const first = out.split('\n')[0]?.trim();
   if (!first) throw new Error('could not resolve the repository first-commit date');
-  return new Date(first);
+  return { at: new Date(first), label: first.slice(0, 10) };
 }
 
 async function main(): Promise<void> {
@@ -117,7 +157,19 @@ async function main(): Promise<void> {
   const totalLines = countLines(tsFiles);
   const testLines = countLines(testFiles);
   const rustLines = countLines(rustFiles);
-  const migrations = trackedFiles(['libs/papercusp/libs/db/sql/*.sql']).length;
+
+  // Basis-continuity comparison only — see superprojectOnlyFiles().
+  const superprojectTs = superprojectOnlyFiles(['*.ts', '*.tsx']);
+  const superprojectFiles = superprojectTs.length;
+  const superprojectLines = countLines(superprojectTs);
+  // LIVE numbered migrations only. Two traps here, both of which inflate the figure:
+  // the directory holds non-migration helper SQL, and `sql/archive/` holds 117
+  // RETIRED migrations under the same `NNN-slug.sql` naming. Anchoring on `/sql/`
+  // immediately followed by digits admits the direct children and excludes the
+  // archive — 630, matching the working tree, against 747 for a looser match.
+  const migrations = trackedFiles(['libs/papercusp/libs/db/sql/*.sql']).filter((f) =>
+    /\/sql\/\d{3,}-[^/]*\.sql$/.test(f),
+  ).length;
   const blueprints = new Set(
     trackedFiles(['libs/papercusp/packages/harness/blueprints/*'])
       .map((f) => f.split('/')[5])
@@ -167,8 +219,8 @@ async function main(): Promise<void> {
           WHERE workspace_id = ${WORKSPACE}) AS harnesses
     `;
 
-    const firstCommit = firstCommitDate();
-    const wiOldest = row.work_items_oldest ?? firstCommit;
+    const fc = firstCommit();
+    const wiOldest = row.work_items_oldest ?? fc.at;
 
     ledger = [
       {
@@ -196,7 +248,7 @@ async function main(): Promise<void> {
           oldestRow: wiOldest,
           // Tolerance: the ledger cannot predate the repo, so "reaches first
           // commit" means its oldest row is at/near the first commit.
-          reachesProjectStart: wiOldest.getTime() - firstCommit.getTime() < 14 * 86_400_000,
+          reachesProjectStart: wiOldest.getTime() - fc.at.getTime() < 14 * 86_400_000,
         },
         sourceTable: `harness_shared.work_items (harness=${HARNESS})`,
         retentionHorizonsDays: [],
@@ -208,7 +260,7 @@ async function main(): Promise<void> {
         window: {
           kind: 'since-observed',
           oldestRow: wiOldest,
-          reachesProjectStart: wiOldest.getTime() - firstCommit.getTime() < 14 * 86_400_000,
+          reachesProjectStart: wiOldest.getTime() - fc.at.getTime() < 14 * 86_400_000,
         },
         sourceTable: `harness_shared.work_items (harness=${HARNESS})`,
         retentionHorizonsDays: [],
@@ -235,7 +287,8 @@ async function main(): Promise<void> {
 
     const out = renderStatBlock({
       measuredAt,
-      firstCommit,
+      firstCommit: fc.at,
+      firstCommitLabel: fc.label,
       repo: {
         totalLines,
         totalFiles: tsFiles.length,
@@ -246,7 +299,15 @@ async function main(): Promise<void> {
         tools,
         toolGroups,
         blueprints,
-        basis: 'git-tracked TypeScript, excluding _retired/ (git ls-files; newlines counted in-process)',
+        basis:
+          `git-tracked TypeScript across the superproject AND all 39 submodules, ` +
+          `excluding _retired/ and vendored forks (git ls-files --recurse-submodules; ` +
+          `newlines counted in-process). ` +
+          `For continuity with previously published figures: the superproject alone ` +
+          `(what a plain git ls-files sees, submodule contents invisible) is ` +
+          `${superprojectLines.toLocaleString('en-US')} lines across ` +
+          `${superprojectFiles.toLocaleString('en-US')} files — the earlier 2.37M was ` +
+          `measured on THAT basis, so the difference is a corrected denominator, not growth`,
       },
       ledger,
     });
@@ -256,7 +317,8 @@ async function main(): Promise<void> {
         JSON.stringify(
           {
             measuredAt: measuredAt.toISOString(),
-            firstCommit: firstCommit.toISOString(),
+            firstCommit: fc.at.toISOString(),
+            firstCommitLabel: fc.label,
             repo: {
               totalLines,
               totalFiles: tsFiles.length,

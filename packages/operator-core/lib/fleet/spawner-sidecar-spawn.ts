@@ -404,6 +404,10 @@ export function _resetSpawnerSidecarSpawnStateForTests(): void {
   sidecarProcess = null;
   sidecarReady = false;
   readyWaiters.length = 0;
+  // Must be cleared with the rest: an attempt left in flight by a prior test
+  // would be RETURNED to the next caller instead of spawning, so every later
+  // assertion reads "spawn called 0 times" for a reason that is not the subject.
+  spawnInFlight = null;
 }
 
 /**

@@ -1356,6 +1356,59 @@ describe('SessionChatModal', () => {
       expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
     });
 
+    /* ── the room-aware half of that default (WI-35470 / D-009) ───────────────
+       Below ORDERS_NARROW_MEDIA_QUERY the rail has no column to take and renders
+       as an OVERLAY, so a blanket default-open covers the transcript the reader
+       just opened (measured live at 1100px: rail x=28→328 over a conversation
+       x=28→772). Only the NO-CHOICE case is room-sensitive; an explicit param
+       still wins at every width, which is what keeps P-015's overlay rationale
+       intact rather than making the toggle a no-op on a narrow window.
+
+       jsdom's own matchMedia answers `matches:false` to everything, which is why
+       the wide cases above need no stub — and why the narrow ones need this one.
+       It must be installed BEFORE render(): the hook seeds its state from
+       matchMedia synchronously on first render precisely so a narrow window
+       never mounts the panel (and fires the gather) for one frame. */
+    const NARROW_ORDERS_MQ = '(max-width: 1180px)';
+    function stubViewportMatching(query: string) {
+      vi.stubGlobal('matchMedia', (q: string) => ({
+        matches: q === query,
+        media: q,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }));
+    }
+
+    it('narrow viewport: CLOSED by default — there, "expanded" would mean covering the transcript', async () => {
+      stubViewportMatching(NARROW_ORDERS_MQ);
+      await renderResolved();
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+      // …and the gather must not fire either — the whole point of not mounting it.
+      expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
+      expect(lastAgentOrdersProps).toBeNull();
+      // The way back is still offered; this is a default, not a removal.
+      expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
+    });
+
+    it('narrow viewport: an EXPLICIT chatOrders wins anyway — the toggle is never a no-op', async () => {
+      stubViewportMatching(NARROW_ORDERS_MQ);
+      nuqs.chatOrders = true;
+      await renderResolved();
+      const rail = screen.getByTestId('session-chat-orders-rail');
+      expect(within(rail).getByTestId('agent-orders-stub')).toBeTruthy();
+      expect(lastAgentOrdersProps?.enabled).toBe(true);
+    });
+
+    it('an explicit chatOrders=false is honored, not overwritten by the derived default', async () => {
+      // `??` not `||`: false is a real choice a reader made. Guarding this
+      // because the bug it prevents is invisible — the panel would simply
+      // reappear on every open for a reader who keeps closing it.
+      nuqs.chatOrders = false;
+      await renderResolved();
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+      expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
+    });
+
     it('closing it stops the gather — the panel is still what gates the fetch', async () => {
       // The half of the pre-2026-08-03 opt-in rationale that outlived the
       // default flip, and the reason agentOrders.byOwner stays a SEPARATE named

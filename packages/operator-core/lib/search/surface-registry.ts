@@ -37,12 +37,20 @@ export interface SearchSurface {
   /** Entry module, relative to `packages/operator-core/lib`. */
   entry: string;
   /**
-   * Does this surface run `runHybridSearch`? DERIVED and cross-checked — a
+   * Which engine entrypoint this surface runs. DERIVED and cross-checked — a
    * wrong value here fails the conformance test rather than being believed.
+   *
+   * The three-way split exists because the first run of the conformance test
+   * refuted a boolean: `search:fulltext` was declared engine-backed and is not
+   * a `runHybridSearch` caller — it runs `runFullTextSearch`, the engine's
+   * lexical entrypoint, deliberately. A boolean forces that surface into the
+   * same bucket as one that never reached the engine at all, which erases the
+   * only distinction this registry exists to make: **keyword-only by CONTRACT
+   * versus keyword-only by ACCIDENT.**
    */
-  engine: boolean;
+  engine: 'hybrid' | 'fulltext' | 'none';
   /**
-   * Required when `engine: false`. Not a formality: every one of these was a
+   * Required when `engine: 'none'`. Not a formality: every one of these was a
    * candidate for "why isn't this on the engine?", and writing the answer down
    * once is what stops it being re-litigated every audit.
    */
@@ -57,23 +65,35 @@ export interface SearchSurface {
 
 export const SEARCH_SURFACES: readonly SearchSurface[] = [
   // ─── Engine-backed, floor inherited ──────────────────────────────────────
-  { id: 'work_items:search', entry: 'agent-tools/work_items/search.ts', engine: true },
-  { id: 'docs:search', entry: 'agent-tools/docs/search.ts', engine: true },
-  { id: 'plans:search', entry: 'agent-tools/plans/search.ts', engine: true },
-  { id: 'sessions:search', entry: 'agent-tools/sessions/search.ts', engine: true },
-  { id: 'search:semantic', entry: 'agent-tools/search/semantic.ts', engine: true },
-  { id: 'search:fulltext', entry: 'agent-tools/search/fulltext.ts', engine: true },
+  { id: 'work_items:search', entry: 'agent-tools/work_items/search.ts', engine: 'hybrid' },
+  { id: 'docs:search', entry: 'agent-tools/docs/search.ts', engine: 'hybrid' },
+  { id: 'plans:search', entry: 'agent-tools/plans/search.ts', engine: 'hybrid' },
+  { id: 'sessions:search', entry: 'agent-tools/sessions/search.ts', engine: 'hybrid' },
+  { id: 'search:semantic', entry: 'agent-tools/search/semantic.ts', engine: 'hybrid' },
   {
     id: 'coordination:ask-knowledge-tier',
     entry: 'agent-tools/coordination/ask-knowledge-tier.ts',
-    engine: true,
+    engine: 'hybrid',
+  },
+
+  // ─── On the engine's LEXICAL entrypoint, by contract ─────────────────────
+  {
+    id: 'search:fulltext',
+    entry: 'agent-tools/search/fulltext.ts',
+    engine: 'fulltext',
+    whyNotEngine:
+      'Runs `runFullTextSearch`, not `runHybridSearch` — lexical BY CONTRACT: the tool exists so a ' +
+      'caller can ask for exact-term matching with no embedder in the path (and so a search still ' +
+      'works when the embedder is down). It shares the engine and reaches the policy seam, whose ' +
+      'minScore early-outs on `mode: "fulltext"` because there is no vector leg to floor. This is ' +
+      'the case a boolean `engine` field got wrong on the first conformance run.',
   },
 
   // ─── Engine-backed, floor MISSING (tracked defect, shrink-only) ──────────
   {
     id: 'recipes:search',
     entry: 'agent-tools/recipes/search.ts',
-    engine: true,
+    engine: 'hybrid',
     floorGap: {
       reason:
         'code-recipes-search.ts calls runHybridSearch with a live embedder and no minScore, and never ' +
@@ -89,7 +109,7 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
   {
     id: 'memory:search',
     entry: 'agent-tools/memory/search.ts',
-    engine: false,
+    engine: 'none',
     whyNotEngine:
       'mem0 owns its own store, embedding lifecycle and recall ranking; the engine would have to ' +
       'duplicate or bypass it. Explicitly NOT yet audited to this matrix — P-030 covers it, so treat ' +
@@ -98,7 +118,7 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
   {
     id: 'rubrics:search',
     entry: 'agent-tools/rubrics/search.ts',
-    engine: false,
+    engine: 'none',
     whyNotEngine:
       'Delegates to searchRubrics() over a small, bounded rubric set where lexical matching is ' +
       'adequate and a vector leg would add an embedder dependency to a read that must work when the ' +
@@ -107,7 +127,7 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
   {
     id: 'cupboard:search',
     entry: 'agent-tools/cupboard/search.ts',
-    engine: false,
+    engine: 'none',
     whyNotEngine:
       'Searches a catalog of installable listings by kind/name, not prose. The useful ranking signal ' +
       'is structural (kind, install state), not semantic similarity over a body.',

@@ -228,7 +228,7 @@ describe('decideReconcile', () => {
       autoRestartFlagOn: true,
       now: 1000,
     });
-    // WI-9871: no show-probe ⇒ we cannot claim the unit is really gone.
+    // WI-35537: no show-probe ⇒ we cannot claim the unit is really gone.
     expect(action).toEqual({
       kind: 'report-only',
       unit: 'mcp-proxy',
@@ -238,7 +238,7 @@ describe('decideReconcile', () => {
     });
   });
 
-  it('WI-9871: LoadState=not-found CONFIRMS absence -> unit-not-found with confirmedAbsent:true', () => {
+  it('WI-35537: LoadState=not-found CONFIRMS absence -> unit-not-found with confirmedAbsent:true', () => {
     const { action } = decideReconcile({
       entry: AUTORESTART_ENTRY,
       status: undefined,
@@ -256,13 +256,13 @@ describe('decideReconcile', () => {
     });
   });
 
-  // ── WI-9871: the pause check must be reachable for a unit ABSENT from `list-units` ──
+  // ── WI-35537: the pause check must be reachable for a unit ABSENT from `list-units` ──
   //
   // `systemctl --user disable --now <unit>` — the DOCUMENTED way to pause the federation gate —
   // leaves the unit unloaded, so it vanishes from `list-units --all` and `status` is undefined.
   // Before this fix the `!status` branch returned `unit-not-found` and the WI-5378 pause check
   // was structurally unreachable, so a deliberate pause was reported as a missing unit file.
-  it('WI-9871: a DISABLED unit absent from list-units is reported as paused, not "unit-not-found"', () => {
+  it('WI-35537: a DISABLED unit absent from list-units is reported as paused, not "unit-not-found"', () => {
     const { action, nextState } = decideReconcile({
       entry: TIMER_ENTRY,
       status: undefined, // disabled + never started ⇒ absent from `list-units --all`
@@ -282,7 +282,7 @@ describe('decideReconcile', () => {
     expect(nextState.restarts).toEqual([]);
   });
 
-  it('WI-9871: a MASKED unit absent from list-units is likewise paused, not "unit-not-found"', () => {
+  it('WI-35537: a MASKED unit absent from list-units is likewise paused, not "unit-not-found"', () => {
     const { action } = decideReconcile({
       entry: TIMER_ENTRY,
       status: undefined,
@@ -299,7 +299,7 @@ describe('decideReconcile', () => {
     });
   });
 
-  it('WI-9871: an ENABLED unit absent from list-units is still unit-not-found (the pause branch must not over-claim)', () => {
+  it('WI-35537: an ENABLED unit absent from list-units is still unit-not-found (the pause branch must not over-claim)', () => {
     const { action } = decideReconcile({
       entry: TIMER_ENTRY,
       status: undefined,
@@ -716,13 +716,13 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     expect(page).toContain('Cause unavailable');
   });
 
-  // ── WI-9871 WIRING ────────────────────────────────────────────────────────
+  // ── WI-35537 WIRING ────────────────────────────────────────────────────────
   //
   // The pure decideReconcile cases above all still pass if the tick never asks systemctl for
   // LoadState/UnitFileState, or never probes a unit missing from `list-units` — the fix would be
   // inert. These two assert the SEAM.
 
-  it('WI-9871 WIRING: the show-probe requests LoadState, without which absence can never be confirmed', async () => {
+  it('WI-35537 WIRING: the show-probe requests LoadState, without which absence can never be confirmed', async () => {
     const deps = makeDeps();
     await reconcileTick(deps);
     const showCalls = deps.execUser.mock.calls.map((c) => c[0] as string[]).filter((a) => a[0] === 'show');
@@ -734,7 +734,7 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     }
   });
 
-  it('WI-9871 WIRING: a registry unit ABSENT from list-units is show-probed and reported as PAUSED, not "removed/never installed"', async () => {
+  it('WI-35537 WIRING: a registry unit ABSENT from list-units is show-probed and reported as PAUSED, not "removed/never installed"', async () => {
     // The live case: `disable --now` on the gate timer leaves it out of `list-units --all`
     // entirely, while `systemctl show` still resolves it as loaded-but-disabled.
     const deps = makeDeps({
@@ -755,6 +755,35 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     const summaries = deps.notify.mock.calls.map((c) => c[0].summary as string);
     expect(summaries.some((s) => s.includes('administratively disabled/masked'))).toBe(true);
     // The regression this closes: a deliberate pause reported as a missing unit file.
+    expect(summaries.some((s) => s.includes('removed/never installed'))).toBe(false);
+  });
+
+  it('WI-35537 WIRING: an autoRestart:FALSE unit absent from list-units is ALSO probed — the widening, not just the autoRestart path', async () => {
+    // Guards the `|| !status` half of the probe condition specifically: a report-only entry never
+    // got a show-probe before, so a paused one could only ever be reported as "removed".
+    const ABSENT_REPORT_ONLY: SupervisionEntry = {
+      name: 'absent-report-only',
+      layer: 'systemd-user',
+      unit: 'papercup-absent-report-only',
+      criticality: 'important',
+      autoRestart: false,
+    };
+    const deps = makeDeps({
+      registry: () => [ABSENT_REPORT_ONLY],
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return LIST_UNITS_FIXTURE; // does not contain it
+        if (args[0] === 'show') return 'UnitFileState=disabled\nLoadState=loaded\n';
+        return '';
+      }),
+    });
+    await reconcileTick(deps);
+
+    expect(
+      deps.execUser.mock.calls.some((c) => (c[0] as string[])[0] === 'show'),
+      'an autoRestart:false entry missing from list-units must still be show-probed',
+    ).toBe(true);
+    const summaries = deps.notify.mock.calls.map((c) => c[0].summary as string);
+    expect(summaries.some((s) => s.includes('administratively disabled/masked'))).toBe(true);
     expect(summaries.some((s) => s.includes('removed/never installed'))).toBe(false);
   });
 

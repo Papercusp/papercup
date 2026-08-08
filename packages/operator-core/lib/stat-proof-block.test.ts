@@ -187,6 +187,21 @@ describe('derived figures cannot go stale', () => {
     const b = weeksSince(first, new Date('2026-09-08'));
     expect(b).toBeGreaterThan(a);
   });
+
+  it('does not shift the first-commit date across a timezone boundary', () => {
+    // The real root commit is 2026-04-06T21:58:03-04:00 — late evening local, which
+    // is already 2026-04-07 in UTC. Every deck and bio says "6 April"; a UTC render
+    // would silently contradict them over four minutes of offset.
+    const utcShifting = new Date('2026-04-06T21:58:03-04:00');
+    expect(utcShifting.toISOString().slice(0, 10)).toBe('2026-04-07'); // the trap
+    const out = renderStatBlock({
+      ...baseInput([]),
+      firstCommit: utcShifting,
+      firstCommitLabel: '2026-04-06',
+    });
+    expect(out.text).toContain('Built since 2026-04-06');
+    expect(out.text).not.toContain('Built since 2026-04-07');
+  });
 });
 
 describe('ratio and number formatting', () => {
