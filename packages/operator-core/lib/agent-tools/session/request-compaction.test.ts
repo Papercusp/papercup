@@ -45,6 +45,20 @@ vi.mock('../../carry-respawn-marker', () => ({
   },
 }));
 
+// WI-36074: the memory epoch bump is a PG write on the surfaced-ledger. Mocked so
+// this stays a pure tool unit test — it asserts THAT the boundary fires and with
+// WHICH key, not the SQL (that is proven in session-epoch-ledger.test.ts).
+const bumpSessionEpoch = vi.hoisted(() => vi.fn(async () => 1 as number | null));
+vi.mock('../../memory/session-epoch-ledger', () => ({
+  bumpSessionEpoch: (...a: unknown[]) => bumpSessionEpoch(...(a as [])),
+}));
+// Only getOrgPg is stubbed (spread keeps the rest of db-org real) — the tool now
+// resolves a sql tag to hand the bump, and this test has no live PG.
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<Record<string, unknown>>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: {} }) };
+});
+
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
 vi.mock('../../events/await/psu-pty-discovery', () => ({
@@ -365,6 +379,75 @@ describe('session:request-compaction — carry-respawn marker (EI-18676518990229
     const b = body(await call({ focus: 'x' }));
     expect(b.error).toBe('flush-required');
     expect(await consumeRespawnExpected('su-caller')).toBe(false);
+  });
+});
+
+/**
+ * WI-36074 (context-injection P-023) — THE MEMORY EPOCH BOUNDARY, and the
+ * recurrence guard for the class of bug that produced it.
+ *
+ * `bumpSessionEpoch` clears the per-session surfaced ledger so the memory pool
+ * becomes injectable again after context is wiped. Its ONLY production reach
+ * used to be compact-reprime, called from the session-recovery-brief route,
+ * fetched ONLY by the SessionStart hook gated on `source === 'compact'` — a path
+ * psu sessions can NEVER take, because they launch with DISABLE_COMPACT=1 +
+ * DISABLE_AUTO_COMPACT=1 (the P-022 cutover). So the P-022 cutover moved the
+ * compaction boundary to carry-respawn and orphaned the bump behind a retired
+ * hook. Measured cost before the fix: last bump 6 days stale with ~29 agents
+ * live, 99.3% of 57,154 ledger rows frozen at epoch 0, and injection dropping
+ * 42.6% of everything it retrieved (D-071) — worst precisely ACROSS a respawn,
+ * i.e. when context was gone and re-priming mattered most.
+ *
+ * THE CLASS, stated so this guard keeps earning its place: a boundary event was
+ * re-implemented somewhere new and the bookkeeping that hung off the OLD boundary
+ * was left pointing at a path that can no longer execute. Nothing failed loudly —
+ * the bump simply never ran. These assertions pin the bump to the boundary that
+ * actually fires today, so retiring/moving it again breaks a test instead of
+ * silently starving every agent's recall for another six days.
+ */
+describe('session:request-compaction — memory epoch boundary (WI-36074)', () => {
+  it('a successful respawn BUMPS the session epoch, keyed by ownerId', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(true);
+    const b = body(await call({ focus: 'x' }));
+    expect(b.ok).toBe(true);
+    // The key MUST be the ownerId: injection's warm-session dedup reads the
+    // ledger under that same id (compact-reprime bumps and stamps under it too),
+    // so a bump keyed on anything else clears a ledger nobody reads.
+    expect(bumpSessionEpoch).toHaveBeenCalledWith(expect.anything(), 'su-caller');
+  });
+
+  it('a failed socket write does NOT bump (nothing was queued, context survives)', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(false);
+    await call({ focus: 'x' });
+    expect(bumpSessionEpoch).not.toHaveBeenCalled();
+  });
+
+  it('a refused cut (host predates carry-respawn) never bumps', async () => {
+    findLiveHost.mockReturnValue(staleHost);
+    await call({ focus: 'x' });
+    expect(bumpSessionEpoch).not.toHaveBeenCalled();
+  });
+
+  it('a P-016 flush-gate refusal never bumps (the session is left intact)', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id: 'WI-500', title: 'unflushed', body: null, harness: 'papercup', checkpoint: null }],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.error).toBe('flush-required');
+    expect(bumpSessionEpoch).not.toHaveBeenCalled();
+  });
+
+  it('a bump failure NEVER fails the cut — memory hygiene is best-effort', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(true);
+    bumpSessionEpoch.mockRejectedValueOnce(new Error('pg down'));
+    const b = body(await call({ focus: 'x' }));
+    expect(b.ok).toBe(true);
+    expect(b.respawn).not.toBe(false);
   });
 });
 

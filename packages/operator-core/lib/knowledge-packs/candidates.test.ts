@@ -32,6 +32,9 @@ import {
   type LearningKind,
 } from './pack-format';
 import { loadKnowledgePack } from './load-packs';
+// P-006: the LINT'S oracle, so the write paths and the corpus lint can never
+// disagree about what conformant means (plan D-003).
+import { findOkfDocViolations, findOkfManifestViolations, formatOkfViolations } from '@papercusp/docs-engine';
 
 describe('bumpPatchVersion', () => {
   it('bumps the patch component; degrades garbage to 0.0.1', () => {
@@ -248,6 +251,72 @@ describe('materializeCandidateIntoPack', () => {
 
       const { manifest } = parseManifest(await fs.readFile(join(dir, 'manifest.yaml'), 'utf8'));
       expect(manifest?.okfVersion).toBe('9.9');
+    });
+  });
+
+  /**
+   * okf-frontmatter-adoption-2026-08-08 P-006, per plan D-003.
+   *
+   * P-006 adds `lint:okf-conformance`, which walks the pack corpus ON DISK. That
+   * lint alone is not enough for a corpus written by CODE: it measures the tree
+   * AFTER the writers have already walked it back, so a regression here shows up
+   * as a red lint on files nobody edited, at whatever later hour the next
+   * adoption happens to run.
+   *
+   * These tests close that gap by pointing the LINT'S OWN ORACLE at what the
+   * write paths MINT — not at hand-written field assertions. The tests above
+   * assert specific fields (`type: <kind>`, `okf_version:`); these assert
+   * CONFORMANCE, so if a rule is added, tightened, or corrected in
+   * `okf-conformance.ts`, the minting paths are judged by the new rule
+   * immediately rather than continuing to satisfy an assertion that has quietly
+   * stopped meaning what the lint means.
+   */
+  describe('minted output satisfies the lint\'s own conformance oracle (P-006 / D-003)', () => {
+    it('the learning file renderCandidateLearningFile MINTS is conformant', async () => {
+      const { packItemId } = await materializeCandidateIntoPack(lesson('Mint a conformant learning file'), {
+        packsRoot: root,
+      });
+      const onDisk = await fs.readFile(join(root, FLEET_LESSONS_PACK_ID, `${packItemId}.md`), 'utf8');
+
+      expect(formatOkfViolations(findOkfDocViolations(onDisk))).toBeNull();
+    });
+
+    it('the manifest renderManifest REWRITES is conformant', async () => {
+      await materializeCandidateIntoPack(lesson('Mint a conformant manifest'), { packsRoot: root });
+      const onDisk = await fs.readFile(join(root, FLEET_LESSONS_PACK_ID, 'manifest.yaml'), 'utf8');
+
+      expect(formatOkfViolations(findOkfManifestViolations(onDisk))).toBeNull();
+    });
+
+    // CONTROL. Without this, both assertions above pass just as happily if the
+    // oracle stops detecting anything at all — a green detector says nothing
+    // about whether it can still fail (CLAUDE.md, "proving a guard is
+    // falsifiable"). Deliberately-wrong copies live HERE, in the test file;
+    // nothing in the shared tree is ever mutated to prove this.
+    it('…and the oracle still FAILS on output that drops the fields', () => {
+      const conformantDoc = renderCandidateLearningFile({
+        itemId: 'control',
+        title: 'Control',
+        text: 'Body.',
+        kind: 'feedback',
+        appliesTo: ['any'],
+        signature: 'sig',
+        scopes: [],
+        recurrenceCount: 1,
+        sourceItemIds: [],
+      });
+      expect(formatOkfViolations(findOkfDocViolations(conformantDoc))).toBeNull();
+
+      // The exact regression D-003 warns about: a write path that stops emitting
+      // `type`, which no assertion on `kind` would ever notice.
+      const withoutType = conformantDoc.replace(/^type: .*\n/m, '');
+      expect(formatOkfViolations(findOkfDocViolations(withoutType))).toContain('missing-type');
+
+      // …and its manifest counterpart: a rewrite that drops `okf_version`.
+      const manifestWithoutOkf = ['id: fleet-lessons', 'title: T', 'description: D', 'version: 0.0.1', ''].join('\n');
+      expect(formatOkfViolations(findOkfManifestViolations(manifestWithoutOkf))).toContain(
+        'manifest-missing-okf-version',
+      );
     });
   });
 });

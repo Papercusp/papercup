@@ -19,6 +19,7 @@
     "lint:partial-index-alignment": "node ../../scripts/check-partial-index-alignment.mjs",
     "lint:migration-forward-compat": "node ../../scripts/check-migration-forward-compat.mjs",
     "lint:no-unthreaded-apply": "node ../../scripts/check-no-unthreaded-apply.mjs",
+    "lint:okf-conformance": "tsx ../../scripts/check-okf-conformance.mjs",
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {

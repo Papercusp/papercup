@@ -140,16 +140,51 @@ function asVerifiedEvent(v: unknown): OkfVerifiedEvent | null {
  * this stays cheap enough to run once per page at adapter-build time.
  */
 export function parseOkfFrontmatter(source: string): OkfFrontmatter | undefined {
+  const block = parseFrontmatterBlock(source);
+  if (!block.ok || !block.data) return undefined;
+  return okfFromObject(block.data);
+}
+
+/** What a raw frontmatter read found — three OUTCOMES, not a boolean. */
+export interface FrontmatterBlock {
+  /** A `---`-delimited block exists at position 0. */
+  present: boolean;
+  /** That block parsed as a YAML MAPPING. */
+  ok: boolean;
+  data?: Record<string, unknown>;
+  /** Why it did not parse (only when `present && !ok`). */
+  error?: string;
+}
+
+/**
+ * The RAW frontmatter mapping, before any OKF normalisation.
+ *
+ * `parseOkfFrontmatter` above is deliberately LOSSY — it drops what it cannot
+ * normalise (a `verified` entry with no `by`, a `stale_after` that is not
+ * date-shaped) because a read surface must never invent a verdict from a field
+ * it could not read. That is exactly wrong for a CONFORMANCE check, which needs
+ * to see the malformed value in order to report it: a lint built on the
+ * normalised view would silently pass every defect the normaliser discards.
+ *
+ * So this exists for `okf-conformance.ts`, and it is exported rather than
+ * re-implemented there because the frontmatter-block regex must have exactly one
+ * definition — the moment the lint carries its own copy, a doc can be readable
+ * to one and invisible to the other, and the lint's green stops meaning the read
+ * surface can see the doc at all.
+ */
+export function parseFrontmatterBlock(source: string): FrontmatterBlock {
   const m = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!m) return undefined;
+  if (!m) return { present: false, ok: false };
   let doc: unknown;
   try {
     doc = yaml.load(m[1]);
-  } catch {
-    return undefined;
+  } catch (err) {
+    return { present: true, ok: false, error: String((err as Error)?.message ?? err).split('\n')[0] };
   }
-  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return undefined;
-  return okfFromObject(doc as Record<string, unknown>);
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+    return { present: true, ok: false, error: 'frontmatter is not a mapping' };
+  }
+  return { present: true, ok: true, data: doc as Record<string, unknown> };
 }
 
 /** The same normalisation, for a caller that already has parsed frontmatter. */

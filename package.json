@@ -176,6 +176,7 @@
     "lint:vacuous-negatives:report": "node scripts/check-vacuous-negative-assertions.mjs --report",
     "lint:insight-citations": "tsx scripts/check-insight-citations.mjs",
     "lint:insight-normative": "tsx scripts/check-insight-normative.mjs",
+    "lint:okf-conformance": "tsx scripts/check-okf-conformance.mjs",
     "okf:sweep": "tsx scripts/okf-frontmatter-sweep.mjs",
     "okf:backfill": "tsx scripts/okf-backfill-insights.mjs",
     "okf:backfill:packs": "tsx scripts/okf-backfill-packs.mjs",

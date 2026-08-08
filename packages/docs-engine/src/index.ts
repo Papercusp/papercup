@@ -37,7 +37,19 @@ export {
   type OkfTrust,
   type OkfTrustTier,
   type OkfVerifiedEvent,
+  parseFrontmatterBlock,
+  type FrontmatterBlock,
 } from './okf.js';
+
+export {
+  findOkfDocViolations,
+  findOkfManifestViolations,
+  formatOkfViolations,
+  OKF_CONFORMANCE_RULES,
+  OKF_MANIFEST_KEY,
+  type OkfConformanceRule,
+  type OkfViolation,
+} from './okf-conformance.js';
 
 export { buildOutline } from './outline.js';
 export { getDocs, MAX_PAYLOAD_BYTES } from './get.js';

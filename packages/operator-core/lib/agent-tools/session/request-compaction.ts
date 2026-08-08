@@ -41,6 +41,8 @@ import {
 import { runFlushGate } from '../../enforcement-gate-io';
 import { markRespawnExpected } from '../../carry-respawn-marker';
 import { readPriorRespawnOutcome, priorRespawnNote } from '../../carry-respawn-outcome';
+import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
+import { getOrgPg } from '@papercusp/db-org';
 
 // Re-exported for back-compat: the flush-integrity detector + its shape now live
 // in enforcement-gate.ts (the single source shared with the P-016 enforcement
@@ -368,6 +370,41 @@ export default defineTool({
     // SessionEnd is usually NOT this one. It must be durably written before the
     // respawn's SessionEnd can race it; markRespawnExpected never throws.
     if (ok) await markRespawnExpected(identity.ownerId);
+    // WI-36074 (context-injection P-023): THE MEMORY EPOCH BOUNDARY.
+    //
+    // The per-session surfaced ledger (memory_session_surfaced) suppresses
+    // re-injecting a memory this session has already been shown, on the premise
+    // that a WARM session still HAS it in context. `bumpSessionEpoch` is the only
+    // thing that clears that suppression, and its whole design is "bump at the
+    // moment context is wiped, so the pool becomes injectable again".
+    //
+    // Until now its ONLY production reach was compact-reprime.ts, called from the
+    // session-recovery-brief route, fetched ONLY by the SessionStart hook gated on
+    // `source === 'compact'`. psu sessions launch with DISABLE_COMPACT=1 +
+    // DISABLE_AUTO_COMPACT=1 (psu-pty-host.mjs, the P-022 cutover), so native
+    // compaction NEVER fires and that hook NEVER runs — the P-022 cutover moved the
+    // compaction boundary HERE (carry-respawn) and silently orphaned the bump.
+    //
+    // Measured 2026-08-08 before this fix: last bump ever 2026-08-02 (6 days, 0 in
+    // 24h) while ~29 agents ran continuously; 56,734 of 57,154 ledger rows (99.3%)
+    // frozen at epoch 0; every one of the 12 most-active sessions of the prior 48h
+    // absent from memory_session_epochs entirely. Net effect: every memory ever
+    // injected stayed suppressed for the 14-day GC horizon — ACROSS the respawn that
+    // wiped the context, i.e. precisely when re-priming matters most. That is the
+    // mechanism behind D-071's dedup=42.6% and its zeroed recalls (returned 12 →
+    // admitted 0).
+    //
+    // Fail-soft exactly like markRespawnExpected above: bumpSessionEpoch swallows its
+    // own errors and returns null, and a missed bump degrades to the (broken) prior
+    // behavior rather than failing the compaction the caller asked for.
+    if (ok) {
+      try {
+        const { sql } = getOrgPg();
+        await bumpSessionEpoch(sql, identity.ownerId);
+      } catch {
+        /* never block the cut on memory hygiene */
+      }
+    }
     // EI-8987: the cut is already QUEUED at this point (idle-gated — it fires
     // after THIS turn ends), so a warning here is still actionable: the turn
     // hasn't ended yet, so the agent reading this result can fire one more

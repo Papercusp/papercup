@@ -415,6 +415,17 @@ const MIGRATION_SQL_DIR = 'libs/papercusp/libs/db/sql';
 // stops firing on the new root.
 const UNTHREADED_APPLY_SOURCE_ROOTS = ['packages', 'libs', 'apps'];
 
+// okf-frontmatter-adoption-2026-08-08 P-006. MIRRORS OKF_SCAN_ROOTS in
+// scripts/check-okf-conformance.mjs — mirrored, not imported, because this file is
+// every agent's test-loop entry point and a static import would let a load error in
+// that lint hard-fail everyone's test:affected. The mirror is asserted equal to the
+// real exports by affected-tests-repo-wide-invariant-guards.test.ts; if the lint's
+// scan widens, this must follow or the guard silently stops firing on the new root.
+const OKF_SCAN_ROOTS = [
+  'apps/operator-docs/src/content/docs/agent-insights/',
+  'libs/papercusp/packages/harness/knowledge-packs/',
+];
+
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
     workspace: '@papercusp/operator-core',
@@ -507,6 +518,31 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) =>
       /\.[cm]?tsx?$/.test(f) &&
       UNTHREADED_APPLY_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
+  },
+  {
+    // okf-frontmatter-adoption-2026-08-08 P-006 — the D-034 shape, this time for a
+    // CONTENT corpus rather than a source one, which makes the escape total rather
+    // than partial. MEASURED before wiring:
+    //   --changed-paths <an agent-insights doc>   -> AFFECTED_WS @papercupai/operator-docs
+    // and that workspace runs no suite covering the corpus, so an insight doc that
+    // drops `type:` (or writes an unparseable `stale_after:`) produced NO local signal
+    // whatsoever. The pack half is worse in kind: those files are written by CODE
+    // (plan D-003), so the corpus can regress with no author involved at all and the
+    // first notice would be a red on files nobody edited.
+    workspace: '@papercusp/operator-core',
+    // The standalone script (~1.0s measured — the same order as lint:chunk-safe and
+    // lint:drop-database-force, both already accepted at that price). The narrow task
+    // only needs the tree RATCHET; the discrimination tests proving the detector can
+    // still fail live in docs-engine's own suite (okf-conformance.test.ts).
+    script: 'lint:okf-conformance',
+    // Mirrors isOkfScannedFile() in check-okf-conformance.mjs: the two corpus roots,
+    // the three extensions it opens, and the dot-path exclusion (Astro's loader never
+    // sees those, so the lint does not judge them and routing on them would spend the
+    // fleet's edit budget on a finding impossible by construction).
+    appliesTo: (f) =>
+      OKF_SCAN_ROOTS.some((r) => f.startsWith(r)) &&
+      !f.split('/').some((seg) => seg.startsWith('.')) &&
+      (f.endsWith('.md') || f.endsWith('.mdx') || /(^|\/)manifest\.ya?ml$/.test(f)),
   },
 ];
 
