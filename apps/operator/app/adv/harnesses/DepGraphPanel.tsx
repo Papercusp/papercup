@@ -64,6 +64,14 @@ interface DepEdgeRow {
   blockedKind: string;
   blockerKind: string | null;
   blockerStatus: string | null;
+  // Endpoint hydration (WI-36045) — what makes an edge drawable when its endpoint fell
+  // outside the list's 500-row window. Optional here so an in-flight cached payload from
+  // before this shipped degrades to id-labelled nodes rather than erroring the panel.
+  blockedTitle?: string | null;
+  blockedStatus?: string | null;
+  blockedPlanSlug?: string | null;
+  blockerTitle?: string | null;
+  blockerPlanSlug?: string | null;
 }
 
 const NODE_W = 190;
@@ -169,8 +177,11 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
       edges: edgeRows,
       selectedId: selectedId || null,
       healthOnly,
+      // WI-36045: the model must not guess why `items` is a subset of the corpus. Only the
+      // caller knows whether the user filtered, or whether this is just the list's window.
+      filterActive: cf.hasActive,
     });
-  }, [visibleItems, edgeRows, selectedId, healthOnly]);
+  }, [visibleItems, edgeRows, selectedId, healthOnly, cf.hasActive]);
 
   const [positioned, setPositioned] = useState<Positioned | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -237,6 +248,23 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
           {graph.hiddenCount} more hidden of {graph.totalInScope} — filter or select to narrow
         </span>
       )}
+      {graph.filteredEdgeCount > 0 && (
+        // WI-36045's detector. The original bug was invisible precisely because dropped edges
+        // had no counter — 2 nodes out of 122 read as real data. A filter narrowing the graph
+        // is legitimate; a filter narrowing it SILENTLY is what cost a week.
+        <span className="pc-advpanel__chip" role="status">
+          {graph.filteredEdgeCount} edge{graph.filteredEdgeCount === 1 ? '' : 's'} hidden by
+          filters
+        </span>
+      )}
+      {graph.hydratedNodeCount > 0 && (
+        // Not a warning: these are real rows, drawn from the same work_items rows the list
+        // reads, that simply fall outside its recency window. Stated so a reader is never
+        // puzzled by a node they cannot find in the list pane beside it.
+        <span className="pc-advpanel__chip" role="status">
+          {graph.hydratedNodeCount} outside the list&rsquo;s current page
+        </span>
+      )}
       {/* P-008: the integrity view, as a MODE on this pane rather than a second surface. */}
       <button
         type="button"
@@ -287,7 +315,10 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
           ? 'No work items for this harness.'
           : selectedId
             ? `${selectedId} has no dependencies.`
-            : 'No dependency edges among the visible work items.';
+            // NOT "among the visible work items" any more (WI-36045): the graph is no longer
+            // limited to the list's window, so an empty graph here really does mean the
+            // harness records no dependency edges — a stronger, more useful statement.
+            : 'No dependency edges recorded for this harness.';
     return (
       <div className="pc-advpanel pc-depgraph">
         {bar}

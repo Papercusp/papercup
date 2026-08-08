@@ -88,6 +88,13 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   const repoRoot = await projectDirForSlug(harnessSlug);
   if (!repoRoot) return null;
 
+  // P-005 (okf-frontmatter-adoption): the TIME-based freshness leg. Runs BEFORE every
+  // early return below on purpose — an OKF `stale_after` expires on a day when nothing
+  // changed and no doc record exists, which is precisely what the git-anchored sweep
+  // (diff-driven, records-driven) cannot see. Gated to once per UTC day per harness
+  // because the field is date-granular, and fully best-effort.
+  await runOkfExpirySweep(harnessSlug).catch(() => {});
+
   // Submodule roots, so the drift checker routes a submodule anchor's `git log` into
   // the submodule against its own baseline (#3) instead of a superproject log that
   // can't see inside it (silent rot). Best-effort; [] = superproject-only behavior.

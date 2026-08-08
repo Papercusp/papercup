@@ -236,31 +236,171 @@ describe('buildDepSubgraph — a dangling blocker is rendered as a BREAK, not dr
   });
 });
 
-describe('buildDepSubgraph — respects the caller\'s already-filtered row set', () => {
-  it('omits an edge whose blocker was filtered out of the row set', () => {
-    // The shared `wif`/`wq` filters (P-010) produce `items`; an edge pointing at a row the user
-    // filtered away must NOT resurrect that row into the picture. The edge goes, and since A
-    // then participates in no edge it falls out of the default scope too.
-    const g = buildDepSubgraph({ items: [item('A')], edges: [edge('A', 'FILTERED-OUT')] });
-    expect(g.edges).toEqual([]);
-    expect(g.nodes).toEqual([]);
+/**
+ * WI-36045 — the regression class that made the pane render 2 nodes out of a real 122.
+ *
+ * `items` is `workItems.byHarness`, a 500-row `updated_ts DESC` WINDOW over a ~48k corpus,
+ * while the edge query is HARNESS-WIDE. The original model required BOTH endpoints to appear
+ * in `items`, so on live papercusp data only 1 of 79 edges survived.
+ *
+ * ⚠ The tests that used to live here ASSERTED THAT BEHAVIOUR — they are why the suite was
+ * green while the pane was broken. They were not wrong to test the filter semantics; they
+ * conflated two different reasons an id can be missing from `items`:
+ *
+ *     absent because the WINDOW ends    -> an accident of recency. The edge must survive.
+ *     absent because the USER FILTERED  -> a deliberate choice. The edge should go.
+ *
+ * `filterActive` is what separates them, so every assertion below states which case it is in.
+ * A test that omits `filterActive` is testing the UNFILTERED (window) case on purpose.
+ */
+describe('buildDepSubgraph — window vs filter: WHY an endpoint is missing decides the outcome', () => {
+  // An edge that carries its endpoints, as the resolver now returns them.
+  const hydratableEdge = (
+    blockedId: string,
+    blockerId: string,
+    over: Partial<DepGraphEdgeInput> = {},
+  ): DepGraphEdgeInput => ({
+    ...edge(blockedId, blockerId),
+    blockedTitle: `title ${blockedId}`,
+    blockedStatus: 'open',
+    blockedKind: 'feature',
+    blockerTitle: `title ${blockerId}`,
+    blockerKind: 'feature',
+    ...over,
   });
 
-  it('keeps a DANGLING blocker even though it is also absent from the row set', () => {
-    // The two look identical from `items` alone — neither id is there — but they are opposite
-    // findings: a filtered-out row is a user choice, an unresolvable ref is a defect. The
-    // resolver distinguishes them (blockerId null vs set) and this must not re-conflate them.
-    const filtered = buildDepSubgraph({ items: [item('A')], edges: [edge('A', 'FILTERED-OUT')] });
-    const broken = buildDepSubgraph({ items: [item('A')], edges: [edge('A', null, { blockerRef: 'EI-gone' })] });
+  describe('NO filter active — `items` is just the list window, so nothing may be dropped', () => {
+    it('HYDRATES a blocker outside the window instead of discarding its edge', () => {
+      const g = buildDepSubgraph({
+        items: [item('A')],
+        edges: [hydratableEdge('A', 'OUT-OF-WINDOW')],
+      });
+      expect(g.edges).toHaveLength(1);
+      expect(g.nodes.map((n) => n.id).sort()).toEqual(['A', 'OUT-OF-WINDOW']);
+      expect(g.nodes.find((n) => n.id === 'OUT-OF-WINDOW')?.title).toBe('title OUT-OF-WINDOW');
+    });
 
-    expect(filtered.edges).toEqual([]);
+    it('HYDRATES a BLOCKED side outside the window too — the failure was symmetric', () => {
+      const g = buildDepSubgraph({
+        items: [item('A')],
+        edges: [hydratableEdge('OUT-OF-WINDOW', 'A')],
+      });
+      expect(g.edges).toHaveLength(1);
+      expect(g.nodes.map((n) => n.id).sort()).toEqual(['A', 'OUT-OF-WINDOW']);
+    });
+
+    it('draws a graph whose endpoints are ALL outside the window — the live papercusp shape', () => {
+      // The actual measured case: 79 edges, and the 500-row window contained BOTH endpoints of
+      // exactly one. Before the fix this produced 2 nodes; the corpus is entirely reachable now.
+      const edges = Array.from({ length: 40 }, (_, i) => hydratableEdge(`B${i}`, `K${i}`));
+      const g = buildDepSubgraph({ items: [], edges });
+      expect(g.edges).toHaveLength(40);
+      expect(g.nodes).toHaveLength(80);
+      expect(g.filteredEdgeCount).toBe(0);
+    });
+
+    it('marks a hydrated node `hydrated`, and NEVER `dangling`', () => {
+      // Conflating the two would report a healthy out-of-window row as a broken reference,
+      // which is precisely the signal integrity mode exists to carry.
+      const g = buildDepSubgraph({
+        items: [item('A')],
+        edges: [hydratableEdge('A', 'OUT-OF-WINDOW')],
+      });
+      const n = g.nodes.find((x) => x.id === 'OUT-OF-WINDOW');
+      expect(n?.hydrated).toBe(true);
+      expect(n?.dangling ?? false).toBe(false);
+      expect(g.hydratedNodeCount).toBe(1);
+    });
+
+    it('prefers the `items` row over the edge-carried fields when BOTH exist', () => {
+      // The list row is richer, and it is the corpus of record. The edge fields are a floor.
+      const g = buildDepSubgraph({
+        items: [item('A'), item('B', { title: 'the real row', planSlug: 'p' })],
+        edges: [hydratableEdge('A', 'B', { blockerTitle: 'edge-carried fallback' })],
+      });
+      const b = g.nodes.find((n) => n.id === 'B');
+      expect(b?.title).toBe('the real row');
+      expect(b?.planSlug).toBe('p');
+      expect(b?.hydrated ?? false).toBe(false);
+      expect(g.hydratedNodeCount).toBe(0);
+    });
+
+    it('resolves terminality with the HYDRATED kind, so issue vocabulary still applies', () => {
+      // `closed` is terminal for an issue and NOT for a feature (D-019). Reading kind only from
+      // `items` silently defaulted every out-of-window blocker to the FEATURE list, mis-drawing
+      // issue edges as live.
+      const g = buildDepSubgraph({
+        items: [item('A')],
+        edges: [
+          hydratableEdge('A', 'OUT-OF-WINDOW', { blockerKind: 'bug', blockerStatus: 'closed' }),
+        ],
+      });
+      expect(g.edges[0]?.satisfied).toBe(true);
+    });
+
+    it('falls back to the id as a label when an old payload carries no endpoint fields', () => {
+      // Forward-compat: a cached pre-fix payload must degrade to an identifiable node, not
+      // vanish (which would be the original bug) and not render as a blank box.
+      const g = buildDepSubgraph({ items: [item('A')], edges: [edge('A', 'OUT-OF-WINDOW')] });
+      expect(g.edges).toHaveLength(1);
+      expect(g.nodes.find((n) => n.id === 'OUT-OF-WINDOW')?.title).toBe('OUT-OF-WINDOW');
+    });
+  });
+
+  describe('filter ACTIVE — `items` is the user\'s choice, so it genuinely scopes', () => {
+    it('omits an edge with NEITHER endpoint in the filtered set, and COUNTS it', () => {
+      const g = buildDepSubgraph({
+        items: [item('A')],
+        edges: [hydratableEdge('X', 'Y')],
+        filterActive: true,
+      });
+      expect(g.edges).toEqual([]);
+      expect(g.nodes).toEqual([]);
+      // The counter is the point: a filter may narrow the graph, but never silently.
+      expect(g.filteredEdgeCount).toBe(1);
+    });
+
+    it('KEEPS an edge when either endpoint survived the filter — a dependency view must show blockers', () => {
+      // Filtering to "my plan's items" and being shown none of what blocks them would defeat
+      // the pane. The blocker is hydrated as context; the edge stays.
+      const g = buildDepSubgraph({
+        items: [item('A')],
+        edges: [hydratableEdge('A', 'OUT-OF-SCOPE')],
+        filterActive: true,
+      });
+      expect(g.edges).toHaveLength(1);
+      expect(g.nodes.find((n) => n.id === 'OUT-OF-SCOPE')?.hydrated).toBe(true);
+      expect(g.filteredEdgeCount).toBe(0);
+    });
+
+    it('reports ZERO hidden edges when the filter excluded nothing', () => {
+      const g = buildDepSubgraph({
+        items: [item('A'), item('B')],
+        edges: [hydratableEdge('A', 'B')],
+        filterActive: true,
+      });
+      expect(g.filteredEdgeCount).toBe(0);
+    });
+  });
+
+  it('keeps a DANGLING blocker, and does not confuse it with either other case', () => {
+    // Three reasons an id is absent from `items`, three different outcomes. A dangling ref is
+    // a DEFECT (INV-13) and survives regardless of filter state; the resolver distinguishes it
+    // by `blockerId: null` and the model must not re-conflate them.
+    const broken = buildDepSubgraph({
+      items: [item('A')],
+      edges: [edge('A', null, { blockerRef: 'EI-gone' })],
+    });
+    const brokenFiltered = buildDepSubgraph({
+      items: [item('A')],
+      edges: [edge('A', null, { blockerRef: 'EI-gone' })],
+      filterActive: true,
+    });
+
     expect(broken.edges).toHaveLength(1);
-  });
-
-  it('omits an edge whose BLOCKED side is not in the row set', () => {
-    const g = buildDepSubgraph({ items: [item('A')], edges: [edge('NOT-IN-VIEW', 'A')] });
-    expect(g.edges).toEqual([]);
-    expect(g.nodes).toEqual([]);
+    expect(broken.nodes.find((n) => n.dangling)?.title).toBe('EI-gone');
+    // Still a finding under an active filter: its BLOCKED side passed the filter.
+    expect(brokenFiltered.edges).toHaveLength(1);
   });
 
   // dependency-health-pane-2026-08-02 P-008 — the integrity view as a FILTER MODE.

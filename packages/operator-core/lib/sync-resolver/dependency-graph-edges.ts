@@ -3,20 +3,37 @@
  *
  * Plan: dependency-health-pane-2026-08-02 (P-003, the data seam).
  *
- * ── WHY THIS IS EDGES ONLY ──────────────────────────────────────────────────────────────
+ * ── WHY THIS IS EDGES ONLY (AND WHY EACH EDGE CARRIES ITS ENDPOINTS) ────────────────────
  * The owner's ask was a pane that "shows all the same data as our work items list view but in
  * graph form". Taken literally, that means the graph's NODES are the list's rows — so this
- * module deliberately does NOT re-query work items. The pane reuses the existing
- * `workItems.byHarness` sync query for nodes and adds only the edges the list has no column
- * for. Two things follow, and both are the point:
+ * module deliberately does NOT re-query work items as a second corpus. The pane reuses the
+ * existing `workItems.byHarness` sync query for the rich row fields and adds only the edges
+ * the list has no column for. Two things follow, and both are the point:
  *
- *   • ONE node corpus. A second node query would drift from the list's (different limit,
- *     different filters, different projection) and the two panes would disagree about what
- *     exists — the precise failure the "same data" phrasing rules out.
+ *   • ONE node corpus. A second independent node query would drift from the list's (different
+ *     limit, different filters, different projection) and the two panes would disagree about
+ *     what exists — the precise failure the "same data" phrasing rules out.
  *   • The same trick DetailPanel already uses: it reads the selected row out of the
  *     already-loaded `workItems.byHarness` result rather than firing its own fetch, because
  *     a second multi-MB fetch starves the WebView2 ~6-connection-per-host cap and shows up
  *     as a pane stuck on "Loading".
+ *
+ * ⚠ BUT "edges only" MUST NOT MEAN "edges whose endpoints happen to be in the list's page"
+ * (WI-36045). `workItems.byHarness` is a WINDOW — 500 rows ordered `updated_ts DESC` — while
+ * this query is HARNESS-WIDE. Those are different scopes, and pairing them silently discarded
+ * almost the entire graph: measured 2026-08-08 on `papercusp` (47,906 items), 79 edges
+ * resolved but only **1** had BOTH endpoints inside the 500-row window, so the pane rendered
+ * 2 nodes out of a real 122 and looked like honest sparse data.
+ *
+ * The fix is NOT a second node query (that reintroduces the drift above) and NOT a bigger
+ * window (47,906 enriched rows is exactly the multi-MB fetch the cap forbids). It is to make
+ * each edge row SELF-SUFFICIENT: the joins below already touch both endpoint rows, so they
+ * now also project the four fields a graph NODE needs (title, status, kind, plan provenance).
+ * The graph can therefore always draw an edge it was told about, whether or not that endpoint
+ * fell inside the list's window — while the values still come from the same `work_items` rows
+ * the list reads, so "one corpus" is strengthened rather than weakened. The list's page stays
+ * the source of the RICHER row fields and of filter composition; these fields are the floor
+ * that guarantees no edge is silently undrawable.
  *
  * ── ENDPOINT RESOLUTION IS FAMILY-AWARE, AND THAT IS THE WHOLE SUBTLETY ─────────────────
  * `work_item_deps` stores each endpoint as a `*_ref` whose FORM depends on the family of the
@@ -63,6 +80,22 @@ export interface DependencyGraphEdge {
   blockerKind: string | null;
   /** Blocker lifecycle status — lets the UI grey out an edge whose blocker is already terminal. */
   blockerStatus: string | null;
+
+  // ── ENDPOINT HYDRATION (WI-36045) ──────────────────────────────────────────────────────
+  // The minimum a graph NODE needs, carried on the edge so an endpoint outside the list's
+  // 500-row window is still drawable. See the header: without these, 78 of 79 papercusp
+  // edges were fetched and then discarded client-side. Nullable on the blocker side only,
+  // where the LEFT JOIN may not resolve (a dangling edge has no row to project).
+  /** The BLOCKED row's title. */
+  blockedTitle: string | null;
+  /** The BLOCKED row's lifecycle status. Its own status, not the blocker's. */
+  blockedStatus: string | null;
+  /** The BLOCKED row's originating plan, or null if it did not come from one. */
+  blockedPlanSlug: string | null;
+  /** The BLOCKER row's title, or null when the ref resolves to no row (dangling). */
+  blockerTitle: string | null;
+  /** The BLOCKER row's originating plan, or null (no row, or no plan). */
+  blockerPlanSlug: string | null;
 }
 
 /** Bound the payload. The pane renders a filtered subgraph (D-003), never the whole corpus. */
@@ -91,6 +124,11 @@ export async function resolveDependencyGraphEdges(
       blocked_kind: string;
       blocker_kind: string | null;
       blocker_status: string | null;
+      blocked_title: string | null;
+      blocked_status: string | null;
+      blocked_plan_slug: string | null;
+      blocker_title: string | null;
+      blocker_plan_slug: string | null;
     }>
   >`
     SELECT bd.feature_id  AS blocked_id,
@@ -98,7 +136,14 @@ export async function resolveDependencyGraphEdges(
            d.blocker_ref  AS blocker_ref,
            bd.item_kind   AS blocked_kind,
            bk.item_kind   AS blocker_kind,
-           bk.status      AS blocker_status
+           bk.status      AS blocker_status,
+           -- Endpoint hydration (WI-36045). Free: both rows are already joined below, so
+           -- this adds columns to an existing scan rather than a second query.
+           bd.title            AS blocked_title,
+           bd.status           AS blocked_status,
+           bd.source_plan_slug AS blocked_plan_slug,
+           bk.title            AS blocker_title,
+           bk.source_plan_slug AS blocker_plan_slug
       FROM harness_shared.work_item_deps d
       -- BLOCKED side: inner. An edge whose dependant is not in this harness is not ours.
       JOIN harness_shared.work_items bd
@@ -133,5 +178,10 @@ export async function resolveDependencyGraphEdges(
     blockedKind: r.blocked_kind,
     blockerKind: r.blocker_kind,
     blockerStatus: r.blocker_status,
+    blockedTitle: r.blocked_title,
+    blockedStatus: r.blocked_status,
+    blockedPlanSlug: r.blocked_plan_slug,
+    blockerTitle: r.blocker_title,
+    blockerPlanSlug: r.blocker_plan_slug,
   }));
 }

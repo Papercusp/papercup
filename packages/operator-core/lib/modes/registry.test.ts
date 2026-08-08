@@ -160,6 +160,17 @@ describe('GOAL mode', () => {
     expect(goal!.contract).toContain('work_items:checkpoint');
   });
 
+  it('points at the goal RECORD, not a pot, for the kill criterion and spend (P-009)', () => {
+    // The goals:* table is the only place a MULTI-project goal's kill criterion
+    // and ceiling can live — one goal spawns many pots, so no single pot can
+    // hold them. The contract has to say so, or the agent files neither.
+    expect(goal!.contract).toContain('goals:create');
+    expect(goal!.contract).toContain('goals:update');
+    expect(goal!.contract).toMatch(/goal record is NOT a pot/i);
+    // and a cold wake must be told to re-read it rather than reconstruct
+    expect(goal!.contract).toContain('goals:get');
+  });
+
   it('carries the standing owner-report cadence (P-008 of the plan)', () => {
     expect(goal!.contract).toContain('coord:escalate');
   });

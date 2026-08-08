@@ -24,6 +24,21 @@ export type {
   SearchResult,
 } from './types.js';
 
+export {
+  OKF_VERSION,
+  parseOkfFrontmatter,
+  okfFromObject,
+  normalizeOkfDate,
+  evaluateOkfTrust,
+  okfStaleBanner,
+  okfTrustIsNotable,
+  isMachineVerifier,
+  type OkfFrontmatter,
+  type OkfTrust,
+  type OkfTrustTier,
+  type OkfVerifiedEvent,
+} from './okf.js';
+
 export { buildOutline } from './outline.js';
 export { getDocs, MAX_PAYLOAD_BYTES } from './get.js';
 export { searchDocs, tokenize } from './search.js';

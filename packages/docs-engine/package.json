@@ -14,6 +14,7 @@
     "test": "vitest"
   },
   "dependencies": {
+    "js-yaml": "*",
     "remark": "*",
     "remark-gfm": "*",
     "remark-mdx": "*"

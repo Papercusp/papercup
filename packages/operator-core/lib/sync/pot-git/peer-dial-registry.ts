@@ -256,7 +256,15 @@ interface ChannelState {
    *  lazy `pair()` notifier), matching `selfDevicePubkeyBase64`'s own gate in
    *  `maybeSendHello`. */
   sign: ((bytes: Buffer) => Promise<Buffer> | Buffer) | null;
+  /** A hello send has been INITIATED on this channel (not proof it landed —
+   *  the peer never acks). Latches the FIRST send; a deliberate re-send passes
+   *  `{ resend: true }` past it. See `maybeSendHello`. */
   helloSent: boolean;
+  /** A hello send is mid-flight (the signature is async). Separate from
+   *  `helloSent` because that one must stay latched forever while this must
+   *  clear — without the split, a re-send racing the first send could emit two
+   *  hellos on one channel (WI-5210). */
+  helloInFlight: boolean;
   remoteDevicePubkey: string | null;
   /** The connection socket THIS side registered with (set by
    *  `wireHiveGitDial` — may still be null if the channel was materialized

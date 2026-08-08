@@ -28,6 +28,7 @@
  */
 
 import type { DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types.js';
+import { evaluateOkfTrust, okfTrustIsNotable } from './okf.js';
 
 // EI-10097: hyphen is a WORD separator for tokenization purposes (doc slugs
 // and runbook titles are kebab-case — 'su-persona-render-and-edit-path' must
@@ -158,6 +159,9 @@ function makeExcerpt(body: string, tokens: string[], window = 120): string {
 
 export async function searchDocs(source: DocSource, args: SearchArgs, ctx: EngineCtx = {}): Promise<SearchResult> {
   const limit = args.limit ?? 8;
+  // ONE clock for the whole result set (see getDocs) — hits must not disagree
+  // about whether "today" has crossed a stale_after boundary mid-response.
+  const now = ctx.now ?? new Date();
   if (ctx.signal?.aborted) throw new Error('cancelled');
   const tokens = tokenize(args.query);
   if (tokens.length === 0) {
@@ -234,6 +238,9 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
     score += slugMatchBonus(args.query, page);
     if (score === 0) continue;
 
+    // OKF read-time trust (P-005): a hit that is PAST its stale_after must say so
+    // in the result list, so a reader can skip it before spending a docs:get on it.
+    const trust = evaluateOkfTrust(page.okf, now);
     scored.push({
       slug: page.slug || '_root',
       url: page.url,
@@ -241,6 +248,7 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
       ...(description ? { description } : {}),
       score,
       excerpt: makeExcerpt(body, tokens),
+      ...(okfTrustIsNotable(trust) ? { trust } : {}),
     });
   }
 

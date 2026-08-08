@@ -282,11 +282,41 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
 
     const textItems = items.filter(isTextItem);
     const fullText = textItems.map((it) => it.text).join('\n\n');
-    const parts = scratchParts(opts);
-    const basename = `result-door-${Date.now()}.md`;
-    const uri = buildScratchUri({ ...parts, basename });
-    const fsPath = safeScratchFilesystemPath(uri);
-    mkdirSync(dirname(fsPath), { recursive: true });
+    // WI-36047 (borrow item 9, opencode/OMP research): THE SPILL GETS ITS OWN
+    // FAIL-SOFT BOUNDARY, SEPARATE FROM THE CAP.
+    //
+    // This door's cap is implemented as a side-effect of "park the full copy
+    // somewhere first", and that shape has TWO distinct failure modes which
+    // deserve OPPOSITE answers:
+    //   - the CAPPING fails  → returning the original result is right (the door
+    //     must never turn a good result into a failure);
+    //   - the SPILL WRITE fails → returning the original result is WRONG. It
+    //     re-exposes the full, context-blowing payload the door exists to bound,
+    //     and it does so precisely when the box is already unhealthy (disk full,
+    //     unwritable scratch, permissions).
+    // Until this fix ONE `try` spanned both, so the second case silently took the
+    // first case's answer. OMP has the identical bug with the sign flipped: it
+    // gets the save-FAILED path right (output-meta.ts:684-692, truncates anyway,
+    // under an explicit comment that a save failure must never re-expose the full
+    // output) and the store-ABSENT path wrong (`:656`, returns uncapped).
+    //
+    // So: a spill we could not write degrades to TRUNCATE-WITHOUT-RECOVERY —
+    // still capped, and the footer says the overflow is gone rather than naming a
+    // path that does not exist. Never to no-cap.
+    let fsPath: string | null = null;
+    let uri: string | null = null;
+    let spillError: string | null = null;
+    try {
+      const parts = scratchParts(opts);
+      const basename = `result-door-${Date.now()}.md`;
+      uri = buildScratchUri({ ...parts, basename });
+      fsPath = safeScratchFilesystemPath(uri);
+    } catch (err) {
+      // A path we cannot even NAME is the store-absent case: cap, disclose, move on.
+      spillError = err instanceof Error ? err.message : String(err);
+      fsPath = null;
+      uri = null;
+    }
     // EI-18745696571494110: no upstream `_meta` marker fired, but the tool may
     // have still truncated individual FIELDS inside its own body (coord:inbox's
     // per-entry `body_truncated`, a list's `summary_truncated`, …) — check only
@@ -334,7 +364,21 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // door's fail-soft contract: a missing index is an annoyance, a failed WRITE
     // loses the payload.
     const spillIndex = buildSpillIndex(fullText);
-    writeFileSync(fsPath, header + (spillIndex ? `${spillIndex}\n` : '') + fullText, { mode: 0o600 });
+    if (fsPath != null) {
+      try {
+        mkdirSync(dirname(fsPath), { recursive: true });
+        writeFileSync(fsPath, header + (spillIndex ? `${spillIndex}\n` : '') + fullText, {
+          mode: 0o600,
+        });
+      } catch (err) {
+        // WI-36047: the write failed — fall through to the CAP anyway, and null
+        // the path so no footer, no `_meta`, and no telemetry backfill advertises
+        // a spill file that is not there. Truncate-without-recovery, never no-cap.
+        spillError = err instanceof Error ? err.message : String(err);
+        fsPath = null;
+        uri = null;
+      }
+    }
 
     // Rebuild content: text items consume the budget in order (the boundary item
     // is cut at a line/space break); non-text items pass through untouched.
@@ -357,7 +401,22 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     }
     doored.push({
       type: 'text',
-      text: upstreamProjection
+      text: fsPath == null
+        ? // WI-36047: the cap still applied, but there is no file. Say so plainly
+          // and name no path — a footer pointing at a spill that was never written
+          // is worse than no footer, because the reader spends a call discovering it.
+          `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
+          `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
+          `⚠ THE OVERFLOW WAS DISCARDED, NOT SPILLED — writing the spill file FAILED ` +
+          `(${spillError ?? 'unknown error'}), so there is no file to page and the cut content is ` +
+          `NOT recoverable from anywhere. Re-call ${opts.toolName} with narrower args or a ` +
+          `projection to get what you need within the budget` +
+          (upstreamProjection
+            ? `; note it was ALSO tier-projected upstream (omittedCount=` +
+              `${upstreamProjection.omittedCount}), so those field(s) were never serialized either`
+            : '') +
+          `.]`
+        : upstreamProjection
         ? `\n[result-door: this result exceeded the ~${doorTokens}-token per-result budget ` +
           `(~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens) and was truncated. ` +
           `⚠ this is NOT the tool's full output — it was ALREADY tier-projected upstream ` +
@@ -399,8 +458,16 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // the prose (never instead of it — the footer is what teaches the fix).
     const resultDoorMeta = {
       truncated: true,
+      /** null when the spill could NOT be written (WI-36047) — the result was
+       *  still capped, but nothing was parked, so `_mcp-handler`'s outputRef
+       *  backfill correctly declines to advertise a file that is not there. */
       spillPath: fsPath,
       spillUri: uri,
+      /** True when the cap applied but the spill write failed, i.e. the cut
+       *  content is gone. Distinct from `upstreamProjected` (content that was
+       *  never serialized) — this is content the door itself discarded. */
+      spillFailed: fsPath == null,
+      spillError,
       originalChars: totalChars,
       doorTokens,
       /** True when `data` was ALREADY a lossy upstream projection before this

@@ -78,6 +78,27 @@ const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
   // row shape — the client still holds every row — it only stops re-sending rows that did not
   // change. Delta is the RIGHT lever precisely for a view that must stay complete.
   'featuresConsolidated.bySlug': { itemKeyField: 'featureId', schemaVersion: 'features-consolidated-v1' },
+  // ── D-092: the last two over-budget reads without a config. With these, ALL 9 eligible
+  // entries in sync-read-audit's accepted-over-budget allowlist are delta-negotiated; the
+  // tenth (`featuresConsolidated.byHive`) is permanently ineligible — see below.
+  //
+  // coord.plans — 932 rows / 385,366 B; `slug` distinct 932/932 measured live.
+  // ⚠ This resolver takes NO args and loads the coord-wide plan set, so `slug` is unique by
+  // DATA, not by construction: plans key on (workspace_id, harness_slug, slug), and two
+  // harnesses could hold the same slug. The projection carries no harness field, so `slug` is
+  // the only identity this view HAS — a same-slug pair is already indistinguishable here with
+  // or without a delta. Same precedent as `plans.byHive`: a collision costs a REFETCH (the
+  // response carries the full-view checksum and the client refetches on mismatch), never a
+  // wrong view.
+  'coord.plans': { itemKeyField: 'slug', schemaVersion: 'coord-plans-v1' },
+  // conversations.agentMessageList — 100 rows / 233,489 B; `msg_id` distinct 100/100.
+  // ⚠ Unlike every other entry here this is a FIXED 100-row SLIDING WINDOW over the
+  // append-only coord_event_log, so it churns by construction: each tick admits new rows and
+  // drops equally-old ones. The delta is therefore proportional to MESSAGE ARRIVAL RATE, not
+  // to the corpus — a removal is just an id (cheap), an addition carries ~2.3 KB. It is still
+  // strictly ≤ the full re-send, but do NOT expect the ~1000x of the static views; measure it
+  // rather than quoting a ratio from the others.
+  'conversations.agentMessageList': { itemKeyField: 'msg_id', schemaVersion: 'agent-message-list-v1' },
 };
 
 /** The delta config for a sync resource name, or undefined → serve full (today's behavior). */

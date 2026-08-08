@@ -39,6 +39,10 @@ const DELTA_RESOURCES: ReadonlySet<string> = new Set([
   'workItems.byHarness',
   'agentRunsConsolidated.bySlug',
   'featuresConsolidated.bySlug',
+  // D-092: the last two over-budget reads without a config. `conversations.agentMessageList`
+  // is a sliding window, so its delta tracks message ARRIVAL RATE rather than corpus size.
+  'coord.plans',
+  'conversations.agentMessageList',
 ]);
 
 /** Build a fresh codec — one DeltaToolClient + itemKeyField cache per provider lifetime. */

@@ -300,6 +300,53 @@ export default defineTool({
       }
     }
 
+    // Pausing a routine whose own seed script commits it to ACTIVE is a SILENCING event, so
+    // the owner-facing notice fires HERE — at the silencing instant — per plan
+    // silent-halt-detection-and-owner-rails-2026-08-08 D-001: this is the only moment the
+    // system holds both facts (that the routine is being silenced, and who did it). Any later
+    // detector has to rediscover state that no longer announces itself, and D-007 measured
+    // what that costs: `unguarded-halt-rescue` — the sweep that re-wakes silently-stopped
+    // agents — sat paused 11.9 days with nothing saying a word, because every age-based
+    // exemption downstream eventually reclassified it as decommissioned.
+    //
+    // This does NOT tighten the `reason` validator: D-006 rules that out (it would re-break
+    // the Agents pane's one-click pause, a regression with its own EI-18680916805234639). The
+    // pause is accepted exactly as before — a human is simply told it happened. That split is
+    // the point of D-006: when a required field is a deliberate trade-off, get the
+    // accountability from a DIFFERENT mechanism rather than breaking the field's caller.
+    //
+    // Fail-soft and non-blocking, like the SSE refresh above: the row is already written, so
+    // a dead notification rail must never turn a successful pause into an error.
+    if (outcome.applied && !outcome.dryRun && args.active === false) {
+      void (async () => {
+        try {
+          const { isAlwaysOnSystemRoutine, isReaffirmed } = await import(
+            '../../harness/routines/bespoke-active-seeds-check'
+          );
+          if (!isAlwaysOnSystemRoutine(args.name)) return;
+          // A dated re-affirmation is the sanctioned way to pause one of these on purpose
+          // (EI-19370236916382521) — respect it, or this notice becomes the cry-wolf noise
+          // that motivated the original pause.
+          if (isReaffirmed(args.reviewBy ?? null, Date.now())) return;
+          const { notifyAttention } = await import('../../attention-notify');
+          await notifyAttention({
+            kind: 'intervention',
+            importance: 'high',
+            harnessSlug: slug,
+            title: `Always-on routine paused: ${args.name}`,
+            body:
+              `"${args.name}" (${slug}) is seeded ACTIVE by default and was just paused — ` +
+              `reason: "${args.reason}". Nothing re-arms it on its own. Resume with ` +
+              `routines:set { name: "${args.name}", installSlug: "${slug}", active: true }, ` +
+              `or re-pause with a \`reviewBy\` date to silence this notice deliberately.`,
+            data: { routine: args.name, installSlug: slug, reason: args.reason ?? '', event: 'always-on-routine-paused' },
+          });
+        } catch (e) {
+          console.warn('[routines:set] always-on pause notice failed (non-fatal):', (e as Error)?.message ?? e);
+        }
+      })();
+    }
+
     return {
       content: [
         {

@@ -6,6 +6,8 @@
  * into outline, get, search.
  */
 
+import type { OkfFrontmatter, OkfTrust } from './okf';
+
 export interface DocHeading {
   /** Anchor id (no leading '#'). */
   id: string;
@@ -43,6 +45,12 @@ export interface DocPage {
    * frontmatter; undefined means searchable.
    */
   searchable?: boolean;
+  /**
+   * OKF v0.2 trust/staleness frontmatter, when the adapter's source carries it
+   * (okf-frontmatter-adoption-2026-08-08 P-005). Absent means the source has no
+   * OKF metadata — which reads as `unverified` + not-stale, never as verified.
+   */
+  okf?: OkfFrontmatter;
 }
 
 export interface SectionMeta {
@@ -81,6 +89,12 @@ export interface EngineCtx {
   signal?: AbortSignal;
   /** Forwarded ctx.progress from the dispatcher. Engine functions emit when defined. */
   progress?: (pct: number, msg: string) => void;
+  /**
+   * Injectable clock for OKF staleness (`today >= stale_after`). Production never
+   * passes it; tests do, so a staleness proof uses a SYNTHETIC past date rather
+   * than a fabricated corpus value (plan D-002 forbids the latter).
+   */
+  now?: Date;
 }
 
 /* ─── Outline result ──────────────────────────────────────────────────── */
@@ -125,6 +139,14 @@ export type GetEntry =
       bytes: number;
       truncated?: true;
       sliced?: true;
+      /**
+       * OKF trust verdict — present ONLY when it carries signal (stale, verified,
+       * or an unparseable `stale_after`). Its ABSENCE means `unverified` and not
+       * stale, which is the whole live corpus today. A stale doc ALSO gets a
+       * one-line banner prepended to `content`, because a field the reader never
+       * looks at cannot deliver "this is stale" at read time.
+       */
+      trust?: OkfTrust;
     }
   | {
       slug: string;
@@ -152,6 +174,8 @@ export interface SearchHit {
   description?: string;
   score: number;
   excerpt: string;
+  /** OKF trust verdict — present only when notable (see GetEntry.trust). */
+  trust?: OkfTrust;
 }
 
 export interface SearchResult {

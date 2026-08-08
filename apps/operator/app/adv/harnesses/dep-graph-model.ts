@@ -56,12 +56,28 @@ export interface DepGraphItem {
   planSlug?: string | null;
 }
 
-/** An edge as `workItems.depEdges` returns it. `blockerId: null` = dangling (INV-13). */
+/**
+ * An edge as `workItems.depEdges` returns it. `blockerId: null` = dangling (INV-13).
+ *
+ * ⚠ The endpoint fields are what make an edge DRAWABLE independently of the list's window
+ * (WI-36045). `items` is a 500-row `updated_ts DESC` page of a 47,906-row corpus, so requiring
+ * both endpoints to appear in it discarded 78 of 79 real papercusp edges and rendered a
+ * 122-node graph as 2 nodes. They are optional on this interface only so an older cached
+ * payload (or a fixture that predates them) still type-checks; when absent the node falls back
+ * to the id as its label rather than vanishing.
+ */
 export interface DepGraphEdgeInput {
   blockedId: string;
   blockerId: string | null;
   blockerRef: string;
   blockerStatus: string | null;
+  blockedKind?: string | null;
+  blockerKind?: string | null;
+  blockedTitle?: string | null;
+  blockedStatus?: string | null;
+  blockedPlanSlug?: string | null;
+  blockerTitle?: string | null;
+  blockerPlanSlug?: string | null;
 }
 
 export interface DepGraphNode extends DepGraphItem {
@@ -69,6 +85,14 @@ export interface DepGraphNode extends DepGraphItem {
   depth: number;
   /** True when this node's ref could not be resolved to a real row — a placeholder. */
   dangling?: boolean;
+  /**
+   * True when this node's fields came from its EDGE row rather than from `items` — i.e. the
+   * row exists but fell outside the list's window (WI-36045). It is a real item, drawn from
+   * the same `work_items` row the list would show, just with only the four fields the edge
+   * carries. Surfaced so the UI can offer "reveal in list" rather than implying the node is
+   * somehow lesser.
+   */
+  hydrated?: boolean;
 }
 
 export interface DepGraphEdge {
@@ -91,6 +115,19 @@ export interface DepSubgraph {
   truncated: boolean;
   /** Nodes in the graph BEFORE the budget — the honest denominator for a count label. */
   totalInScope: number;
+  /**
+   * Edges excluded because a FILTER removed both endpoints — the only legitimate reason to
+   * drop an edge now (WI-36045). Reported so the pane can say "N edges hidden by filters"
+   * instead of letting a filter masquerade as a sparse graph.
+   *
+   * ⚠ This is a DETECTOR, and it exists because its absence is what let the original bug
+   * hide for a week: edges were being dropped for a scope mismatch and the pane had no
+   * counter that could have shown it, so 2 nodes out of 122 looked like real data. Any
+   * future reason an edge is discarded must increment something the UI renders.
+   */
+  filteredEdgeCount: number;
+  /** Nodes drawn from edge-carried fields because they fell outside the list's window. */
+  hydratedNodeCount: number;
 }
 
 /**
@@ -221,6 +258,10 @@ function connectedComponent(
  *
  * `items` is expected to be the caller's ALREADY-FILTERED row set (the shared `wif`/`wq`
  * filters — P-010), so the user's filters compose with this scoping rather than fighting it.
+ * It is NOT the node corpus, and treating it as one is WI-36045: it is a 500-row window of a
+ * ~48k corpus, so every edge endpoint outside it is HYDRATED from the edge row instead of
+ * being dropped. Pass `filterActive` so the model can tell a deliberate filter from that
+ * window — see the option's own note.
  *
  * BUDGET: if the scoped set still exceeds `budget`, keep the DEEPEST nodes — depth is the
  * signal (P-007), so eliding shallow leaves loses least. The count of what was elided is
@@ -252,25 +293,86 @@ export function buildDepSubgraph(opts: {
    * healthy nodes — exactly backwards for a health view.
    */
   healthOnly?: boolean;
+  /**
+   * Whether the caller has any column filter active (WI-36045).
+   *
+   * The model cannot infer this, and the distinction is load-bearing. `items` being a strict
+   * subset of the corpus means one of two completely different things:
+   *   • no filter active → `items` is just the list's 500-row WINDOW, and an endpoint missing
+   *     from it is an accident of recency. Dropping its edge is the bug this flag fixes.
+   *   • filter active    → `items` is the user's deliberate selection, and an edge with
+   *     NEITHER endpoint in it is genuinely out of scope. Dropping it is correct — and it is
+   *     counted in `filteredEdgeCount` so the pane can say so.
+   * Guessing "subset ⇒ filtered" is exactly how the original defect read as intended
+   * behaviour, so the caller must state it.
+   */
+  filterActive?: boolean;
 }): DepSubgraph {
   const budget = opts.budget ?? DEP_GRAPH_NODE_BUDGET;
   const byId = new Map(opts.items.map((i) => [i.id, i]));
+
+  // Endpoint rows recovered from the EDGE payload for items outside the list's window. Keyed
+  // by id so a node appearing on many edges is hydrated once, and always LOSES to a real
+  // `items` row (which carries more fields) — `byId` is consulted first everywhere below.
+  const hydrated = new Map<string, DepGraphItem>();
+  const hydrate = (
+    id: string,
+    kind: string | null | undefined,
+    title: string | null | undefined,
+    state: string | null | undefined,
+    planSlug: string | null | undefined,
+  ) => {
+    if (byId.has(id) || hydrated.has(id)) return;
+    hydrated.set(id, {
+      id,
+      kind: kind ?? 'unknown',
+      // Fall back to the id rather than '' so a node from a payload predating the endpoint
+      // fields is still identifiable in the picture instead of rendering as a blank box.
+      title: title ?? id,
+      state: state ?? 'unknown',
+      planSlug: planSlug ?? null,
+    });
+  };
+  /** An item row by id, from the list's page first, then the edge-carried fallback. */
+  const itemFor = (id: string): DepGraphItem | undefined => byId.get(id) ?? hydrated.get(id);
 
   // Edges first: they define which nodes are interesting. A dangling blocker becomes a
   // PLACEHOLDER node so the break is visible in the picture rather than an edge to nowhere.
   const allEdges: DepGraphEdge[] = [];
   const danglingRefs = new Map<string, string>();
+  let filteredEdgeCount = 0;
   for (const e of opts.edges) {
-    // The blocked side must be a row we actually have; otherwise it is outside this view.
-    if (!byId.has(e.blockedId)) continue;
     const sourceId = e.blockerId ?? `dangling:${e.blockerRef}`;
-    if (!e.blockerId) danglingRefs.set(sourceId, e.blockerRef);
-    else if (!byId.has(e.blockerId)) continue; // resolved, but filtered out of this view
+
+    // A filter is the ONE legitimate reason to drop an edge: keep it when either endpoint
+    // survived the user's filter, so a filtered view still shows what blocks the rows it
+    // selected (a dependency view that hides the blockers is not a dependency view).
+    if (opts.filterActive && !byId.has(e.blockedId) && !byId.has(sourceId)) {
+      filteredEdgeCount++;
+      continue;
+    }
+
+    // Both endpoints are now guaranteed drawable: from `items` if the window happened to
+    // include them, otherwise from the fields this edge carries.
+    hydrate(e.blockedId, e.blockedKind, e.blockedTitle, e.blockedStatus, e.blockedPlanSlug);
+    if (e.blockerId) {
+      hydrate(e.blockerId, e.blockerKind, e.blockerTitle, e.blockerStatus, e.blockerPlanSlug);
+    } else {
+      danglingRefs.set(sourceId, e.blockerRef);
+    }
+
     allEdges.push({
       id: `${sourceId}->${e.blockedId}`,
       source: sourceId,
       target: e.blockedId,
-      satisfied: isBlockerSatisfied(byId.get(e.blockerId ?? '')?.kind, e.blockerStatus),
+      // Resolve the kind through the same fallback: reading it only from `items` made
+      // terminality silently default to the FEATURE vocabulary for every out-of-window
+      // blocker, which mis-greys issue edges (`closed` is terminal for an issue, not a
+      // feature — D-019).
+      satisfied: isBlockerSatisfied(
+        e.blockerId ? (itemFor(e.blockerId)?.kind ?? e.blockerKind) : null,
+        e.blockerStatus,
+      ),
       dangling: !e.blockerId,
     });
   }
@@ -281,7 +383,10 @@ export function buildDepSubgraph(opts: {
 
   // Which nodes are in scope, before the budget.
   let scopeIds: Set<string>;
-  if (opts.selectedId && (byId.has(opts.selectedId) || danglingRefs.has(opts.selectedId))) {
+  if (
+    opts.selectedId &&
+    (itemFor(opts.selectedId) !== undefined || danglingRefs.has(opts.selectedId))
+  ) {
     scopeIds = connectedComponent(opts.selectedId, rawEdges);
   } else {
     scopeIds = new Set<string>();
@@ -296,6 +401,11 @@ export function buildDepSubgraph(opts: {
   let nodes: DepGraphNode[] = [...scopeIds].map((id) => {
     const item = byId.get(id);
     if (item) return { ...item, depth: depths.get(id) ?? 0 };
+    // Outside the list's window but a REAL row — its fields came off the edge (WI-36045).
+    // Flagged `hydrated`, never `dangling`: conflating the two would report a healthy item
+    // as a broken reference, which is the integrity mode's whole signal.
+    const carried = hydrated.get(id);
+    if (carried) return { ...carried, depth: depths.get(id) ?? 0, hydrated: true };
     // A dangling placeholder — it has no row, so it carries the ref as its label and is
     // flagged so the UI can draw it as a break rather than a work item.
     return {
@@ -323,5 +433,15 @@ export function buildDepSubgraph(opts: {
   nodes.sort((a, b) => a.depth - b.depth || a.id.localeCompare(b.id));
   edges.sort((a, b) => a.id.localeCompare(b.id));
 
-  return { nodes, edges, hiddenCount, truncated: hiddenCount > 0, totalInScope };
+  return {
+    nodes,
+    edges,
+    hiddenCount,
+    truncated: hiddenCount > 0,
+    totalInScope,
+    filteredEdgeCount,
+    // Counted over the nodes actually RETURNED, not over the hydration map: a node the budget
+    // elided is reported by `hiddenCount`, and counting it here too would double-report it.
+    hydratedNodeCount: nodes.reduce((n, node) => n + (node.hydrated ? 1 : 0), 0),
+  };
 }

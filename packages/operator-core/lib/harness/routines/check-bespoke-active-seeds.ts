@@ -35,10 +35,12 @@ async function main(): Promise<void> {
     );
   }
   for (const entry of result.inactive) {
+    const why = entry.pauseReason ?? 'NONE RECORDED — flipped by a path that bypassed routines:set';
+    const held = entry.reviewBy ? ` [re-affirmed until ${entry.reviewBy}]` : '';
     console.error(
       `[check-bespoke-active-seeds] INACTIVE: "${entry.name}" row for "${installSlug}" is seeded but active=false — ` +
-        `its own header commits to ACTIVE by default. Fix: ` +
-        `tsx packages/operator-core/lib/harness/routines/${entry.seedScript}`,
+        `its own header commits to ACTIVE by default. Pause reason: ${why}${held}. Fix: ` +
+        `routines:set { name: "${entry.name}", installSlug: "${installSlug}", active: true }`,
     );
   }
   await sql.end({ timeout: 5 });

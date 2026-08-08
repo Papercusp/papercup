@@ -22,9 +22,13 @@ import {
   sliceByHeading,
   truncationTail,
 } from './shared';
+import { evaluateOkfTrust, okfStaleBanner, okfTrustIsNotable } from './okf';
 
 export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx = {}): Promise<GetResult> {
   const { slugs, heading } = args;
+  // ONE clock for the whole batch — two docs in the same call must never disagree
+  // about whether "today" has crossed a stale_after boundary mid-response.
+  const now = ctx.now ?? new Date();
   if (ctx.signal?.aborted) throw new Error('cancelled');
   if (slugs.length === 0) {
     ctx.metadata?.({ requested: 0, found: 0, not_found: 0, truncated: 0, sliced: 0, has_heading: !!heading });
@@ -66,6 +70,13 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
         body = sliced;
       }
 
+      // OKF read-time trust (P-005). The banner is prepended BEFORE the truncation
+      // cap so a stale warning is never the thing that gets cut off the end of a
+      // long doc (`bytes` then measures the content actually returned, banner included).
+      const trust = evaluateOkfTrust(page.okf, now);
+      const banner = okfStaleBanner(trust);
+      if (banner) body = banner + body;
+
       const originalBytes = body.length;
       let truncated = false;
       if (body.length > MAX_PAYLOAD_BYTES) {
@@ -85,6 +96,7 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
         bytes: originalBytes,
         ...(truncated ? { truncated: true as const } : {}),
         ...(onlyHeading ? { sliced: true as const } : {}),
+        ...(okfTrustIsNotable(trust) ? { trust } : {}),
       };
     }),
   );

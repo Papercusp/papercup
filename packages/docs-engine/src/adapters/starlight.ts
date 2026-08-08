@@ -23,6 +23,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { humanize } from '../shared.js';
 import { renderMdxToMarkdown } from '../render-mdx.js';
+import { parseOkfFrontmatter } from '../okf.js';
 import type { DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface StarlightContentAdapterOptions {
@@ -168,6 +169,10 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): D
       // (the *-index title-dumps) OUT of the search corpus. Only an explicit
       // `false` opts out — anything else (absent, `true`, junk) stays searchable.
       const searchable = meta.searchable === 'false' ? false : undefined;
+      // OKF v0.2 (P-005). Parsed from the RAW frontmatter block rather than `meta`
+      // above, which is a flat top-level-scalar reader by construction and so cannot
+      // see `generated:` / `verified:` (nested blocks) at all. Absent → no OKF keys.
+      const okf = parseOkfFrontmatter(content);
       const page: StarlightPage = {
         slug,
         slugs,
@@ -175,6 +180,7 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): D
         title,
         ...(meta.description ? { description: meta.description } : {}),
         ...(searchable === false ? { searchable: false as const } : {}),
+        ...(okf ? { okf } : {}),
         toc: extractHeadings(body),
         absolutePath: abs,
       };

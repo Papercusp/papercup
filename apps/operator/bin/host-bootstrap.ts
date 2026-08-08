@@ -315,6 +315,58 @@ export function runBootstrap(): void {
     }
   })();
 
+  // [D-007 startup validation] Always-on bespoke routines that are seeded but PAUSED. The two
+  // guards above ask "do the routines we have resolve?" and "do the routines we declared
+  // exist?" — neither asks "are the routines that must be RUNNING actually running?", and a
+  // paused row answers yes to both. That gap let `unguarded-halt-rescue` — the sweep that
+  // re-wakes silently-stopped agents — sit active=false for 11.9 days (measured 2026-08-08)
+  // while the other six routines in its registry fired normally.
+  //
+  // `routines:set` now escalates at the pause instant (D-001), which is the primary rail. This
+  // is the BACKSTOP for the case that rail cannot see: a flip that bypassed the tool. That is
+  // not hypothetical — EI-18137248342636257 found active=false written through an UNAUDITED
+  // path, with no audit_log row anywhere near the change.
+  //
+  // Boot is the right home precisely because it is SELF-ARMING: this checker must never become
+  // a bespoke-seeded routine, since the failure class it detects ("the seed script nobody ever
+  // ran") applies to it too, and it is the only thing that would catch that. Read-only and
+  // fail-soft like its siblings — a boot must never die over a health check.
+  void (async () => {
+    try {
+      const [{ checkBespokeActiveSeeds, operatorHomeScope }, { getOrgPg }] = await Promise.all([
+        import('@papercusp/operator-core/lib/harness/routines/bespoke-active-seeds-check'),
+        import('@papercusp/db-org'),
+      ]);
+      const { installSlug, workspaceId } = operatorHomeScope();
+      const { sql } = getOrgPg();
+      const r = await checkBespokeActiveSeeds({ sql: sql as unknown as never, installSlug, workspaceId });
+      if (r.ok) {
+        console.log(`[bespoke-active-seeds] startup validation passed — all always-on routines ACTIVE for "${installSlug}"`);
+        return;
+      }
+      for (const e of r.missing)
+        console.error(`[bespoke-active-seeds] MISSING: "${e.name}" has no row for "${installSlug}" — never seeded. Fix: tsx packages/operator-core/lib/harness/routines/${e.seedScript}`);
+      for (const e of r.inactive)
+        console.error(`[bespoke-active-seeds] INACTIVE: "${e.name}" is seeded but active=false (reason: ${e.pauseReason ?? 'NONE RECORDED — flipped by an unaudited path'})`);
+      // Only the un-re-affirmed ones wake a human; a dated `reviewBy` is a deliberate hold.
+      if (r.escalatable.length === 0) return;
+      const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
+      const names = r.escalatable.map((e) => e.name);
+      await notifyAttention({
+        kind: 'intervention',
+        importance: 'high',
+        harnessSlug: installSlug,
+        title: `${names.length} always-on routine(s) are not running`,
+        body:
+          `${names.join(', ')} — seeded ACTIVE by default but currently missing or paused, and ` +
+          `nothing re-arms them on their own. Detected at operator boot.`,
+        data: { routines: names.join(','), installSlug, event: 'always-on-routine-not-running' },
+      });
+    } catch (e) {
+      console.warn('[bespoke-active-seeds] startup validation skipped (non-fatal):', (e as Error)?.message ?? e);
+    }
+  })();
+
   // [EI-19298078028509573 startup visibility] Record the Postgres durability settings
   // (synchronous_commit / fsync / full_page_writes) on every boot. Purely observational —
   // never gates boot, never changes the setting — so that a post-crash "the row I know I
