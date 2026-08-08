@@ -121,10 +121,50 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   return edges.length;
 }
 
-registerSystemAction('fleet-transition-sweep', async (_ctx: SystemActionCtx) => {
+/**
+ * How often the control-state reconcile runs, independent of this sweep's own cadence.
+ * The sweep ticks every minute because a transition edge is time-sensitive; a fleet that
+ * has been dead for three days is not, and re-reading the whole registry every minute
+ * would be pure waste. Module-scoped for the same reason the snapshot above is — losing
+ * it to a restart costs one delayed pass, nothing more.
+ */
+const CONTROL_RECONCILE_INTERVAL_MS = 15 * 60 * 1000;
+let lastControlReconcileMs = 0;
+
+/** Test-only: let a case drive the reconcile without waiting out the interval. */
+export function __resetFleetControlReconcileThrottleForTests(): void {
+  lastControlReconcileMs = 0;
+}
+
+registerSystemAction('fleet-transition-sweep', async (ctx: SystemActionCtx) => {
   const fired = await runFleetTransitionSweep();
   // Only speak when something actually crossed — this runs every minute, and a
   // per-tick "swept, nothing to report" line is the log noise that trains readers
   // to filter the channel out.
   if (fired > 0) console.log(`[fleet-transition-sweep] fired ${fired} transition event(s)`);
+
+  // WI-35718: reconcile DECLARED fleet control state against observed reality, on its own
+  // slower clock. Rides this sweep rather than adding a routine — it needs the same fleet
+  // view, and the repo's scheduling rule is to reuse an existing mechanism rather than
+  // introduce a third one.
+  const nowMs = Date.now();
+  if (nowMs - lastControlReconcileMs < CONTROL_RECONCILE_INTERVAL_MS) return;
+  lastControlReconcileMs = nowMs;
+  try {
+    const { reconcileFleetControlStates, defaultFleetControlReconcileDeps } = await import(
+      './fleet-control-reconcile'
+    );
+    const res = await reconcileFleetControlStates(await defaultFleetControlReconcileDeps(ctx.workspaceId));
+    // Speak only on a real mutation. A wind-down is a registry write other components read,
+    // so it must be attributable in the log; a quiet pass must not be.
+    if (res.woundDown.length > 0) {
+      console.log(
+        `[fleet-control-reconcile] wound down ${res.woundDown.length} stale fleet(s): ` +
+          `${res.woundDown.join(', ')} (considered ${res.considered})`,
+      );
+    }
+  } catch (e) {
+    // Never let the reconcile cost the transition sweep — that is the time-sensitive half.
+    console.warn(`[fleet-control-reconcile] pass failed: ${e instanceof Error ? e.message : e}`);
+  }
 });
