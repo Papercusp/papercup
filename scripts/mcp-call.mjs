@@ -24,6 +24,10 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+/** The JSON-RPC id we send; parseSse selects the frame that answers it. */
+const REQUEST_ID = 1;
 
 function parseArgs(argv) {
   const flags = {};
@@ -39,21 +43,44 @@ function parseArgs(argv) {
   return { tool: pos[0], jsonArgs: pos[1], flags };
 }
 
-/** Extract the JSON-RPC result from an SSE response body (exported shape for clarity). */
-export function parseSse(raw) {
+/**
+ * Extract the JSON-RPC result from an SSE response body (exported shape for clarity).
+ *
+ * The stream carries frames we did NOT ask for: the server emits
+ * `notifications/tools/list_changed` (and friends) BEFORE the response to our
+ * `tools/call`. Those are JSON-RPC *notifications* — a `method`, no `id`, no
+ * `result`. Returning the first `data:` frame therefore handed callers the
+ * notification instead of the tool result, and because the old fallback
+ * (`d.result ?? d`) returned the raw frame rather than erroring, it looked like
+ * a successful call that answered `{"method":"notifications/tools/list_changed"}`
+ * — a well-formed, confidently wrong result on the exact path agents use when
+ * the papercusp-su MCP client has dropped. Select the frame that RESPONDS to us
+ * (`id` matching the request), never merely the first one.
+ */
+export function parseSse(raw, requestId = 1) {
+  let sawFrame = false;
   for (const line of raw.split('\n')) {
     const s = line.trim();
     if (!s.startsWith('data:')) continue;
     let d;
     try { d = JSON.parse(s.slice(5).trim()); } catch { continue; }
+    sawFrame = true;
+    // A notification has no id and never answers our call — skip it.
+    if (d.id === undefined || d.id === null) continue;
+    if (d.id !== requestId) continue;
     if (d.error) return { error: d.error };
+    if (!('result' in d)) continue;
     const text = d?.result?.content?.[0]?.text;
     if (text !== undefined) {
       try { return { result: JSON.parse(text) }; } catch { return { result: text }; }
     }
-    return { result: d.result ?? d };
+    return { result: d.result };
   }
-  return { error: { message: 'no data: line in SSE response', raw: raw.slice(0, 400) } };
+  return {
+    error: sawFrame
+      ? { message: `no JSON-RPC response frame for id ${requestId} in SSE stream`, raw: raw.slice(0, 400) }
+      : { message: 'no data: line in SSE response', raw: raw.slice(0, 400) },
+  };
 }
 
 async function main() {
@@ -89,11 +116,11 @@ async function main() {
       accept: 'application/json, text/event-stream',
       authorization: `Bearer ${tok}`,
     },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: REQUEST_ID, method: 'tools/call', params: { name: tool, arguments: args } }),
   });
   const raw = await res.text();
   if (flags.raw) { process.stdout.write(raw); return; }
-  const out = parseSse(raw);
+  const out = parseSse(raw, REQUEST_ID);
   if (out.error) {
     console.error('MCP_ERROR:', JSON.stringify(out.error));
     process.exit(1);
@@ -101,4 +128,13 @@ async function main() {
   console.log(typeof out.result === 'string' ? out.result : JSON.stringify(out.result, null, 2));
 }
 
-main().catch((e) => { console.error('mcp-call failed:', e?.message ?? e); process.exit(1); });
+// Run ONLY when invoked as a script. `parseSse` is exported for tests, and a
+// bare `main()` at module scope executed it on import — so importing the parser
+// fired a real MCP call and then process.exit(1), which reads as a broken test
+// rather than a non-importable module.
+const invokedDirectly =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((e) => { console.error('mcp-call failed:', e?.message ?? e); process.exit(1); });
+}

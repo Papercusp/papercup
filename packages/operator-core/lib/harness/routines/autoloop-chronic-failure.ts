@@ -518,29 +518,57 @@ function lastFiredAtMs(row: Pick<AutoloopStateRow, 'last_fired_at'>): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+/** PURE: will the CHRONIC sweep ACTUALLY escalate this row? Mirrors
+ *  `selectChronicFailures` exactly: it escalates only a row that BOTH breaches
+ *  the error threshold AND is not a frozen watermark. A breaching row that is
+ *  frozen is deliberately SUPPRESSED there as `skipped-stale` and escalated by
+ *  nobody — so deferring to the chronic sweep on it protects nothing.
+ *
+ *  EI-19908775413647773: the silent-stop sweep used to defer on the chronic
+ *  sweep's SCOPE (`consecutive_errors >= threshold`) rather than on its actual
+ *  OUTPUT, which opened a seam nothing covered — `errors >= threshold AND
+ *  silent > staleWindowMs()` escalated by neither. papercup::kettle sat in it
+ *  at exactly threshold, 44 days dead, logged `skipped-stale` 52 times and
+ *  alarmed zero times. Note the seam opened at staleWindowMs() (6h), not at
+ *  silentStopThresholdMs() (24h), because the two sweeps use different
+ *  staleness constants — and since 24h > 6h, EVERY row this sweep's own query
+ *  returns is already frozen from the chronic sweep's point of view, so the
+ *  old exclusion could only ever create the hole, never prevent a
+ *  double-escalation. */
+function chronicSweepWillEscalate(
+  row: AutoloopStateRow,
+  threshold: number,
+  now: number,
+  chronicStaleMs: number,
+): boolean {
+  return row.consecutive_errors >= threshold && !isStaleWatermark(row, now, chronicStaleMs);
+}
+
 /** PURE: which rows have SILENTLY STOPPED — stale beyond `silentStopMs`,
- *  EXCLUDING (a) anything at/over `threshold` (the chronic sweep's own scope,
- *  including rows it deliberately suppresses as a frozen watermark — never
- *  re-escalate the SAME row under a second mechanism); (b) a Red Queen drill
- *  row; (c) a loop:arm owner loop (owner-witnessed, its own dead-owner
- *  escalation); (d) an already explicitly-paused routine (`routine_active:
- *  false` — the stale-paused-routines alarm's job, not this one). `null`/absent
- *  `last_fired_at` never matches (nothing to measure a silence FROM), and
- *  `routine_active: null` (no matching routines row — a fixed system role with
- *  no `loop:arm`-materialized row) is NOT excluded — fail-open, matching every
- *  other predicate in this module. Sorted most-overdue (oldest last-fire) first. */
+ *  EXCLUDING (a) a row the chronic sweep WILL ACTUALLY ESCALATE (breaching AND
+ *  not frozen — never double-escalate the same row under two mechanisms; a row
+ *  it merely SUPPRESSES is ours, per `chronicSweepWillEscalate` above); (b) a
+ *  Red Queen drill row; (c) a loop:arm owner loop (owner-witnessed, its own
+ *  dead-owner escalation); (d) an already explicitly-paused routine
+ *  (`routine_active: false` — the stale-paused-routines alarm's job, not this
+ *  one). `null`/absent `last_fired_at` never matches (nothing to measure a
+ *  silence FROM), and `routine_active: null` (no matching routines row — a
+ *  fixed system role with no `loop:arm`-materialized row) is NOT excluded —
+ *  fail-open, matching every other predicate in this module. Sorted
+ *  most-overdue (oldest last-fire) first. */
 export function selectSilentlyStoppedRoles(
   rows: readonly AutoloopStateRow[],
   threshold: number,
-  opts?: { now?: number; silentStopMs?: number },
+  opts?: { now?: number; silentStopMs?: number; chronicStaleMs?: number },
 ): AutoloopStateRow[] {
   const silentStopMs = opts?.silentStopMs ?? silentStopThresholdMs();
   if (silentStopMs <= 0) return [];
   const now = opts?.now ?? Date.now();
+  const chronicStaleMs = opts?.chronicStaleMs ?? staleWindowMs();
   return rows
     .filter(
       (r) =>
-        r.consecutive_errors < threshold &&
+        !chronicSweepWillEscalate(r, threshold, now, chronicStaleMs) &&
         !isRedQueenDrillRow(r) &&
         !isLoopArmOwnerLoop(r) &&
         r.routine_active !== false &&

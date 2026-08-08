@@ -751,9 +751,30 @@ describe('selectSilentlyStoppedRoles (EI-19281872822982156)', () => {
     expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);
   });
 
-  it('a row at/over the chronic threshold is EXCLUDED — that is the chronic sweep\'s own scope, never double-escalated here', () => {
+  it('a row the chronic sweep WILL ACTUALLY escalate (breaching AND not frozen) is EXCLUDED — never double-escalated here', () => {
+    // 2h silent: past a 1h silent-stop window, but still INSIDE the 6h chronic
+    // staleness window, so selectChronicFailures genuinely does escalate it.
+    const rows = [row({ consecutive_errors: 9, last_fired_at: new Date(NOW - 2 * HOUR_MS).toISOString() })];
+    expect(
+      selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 1 * HOUR_MS, chronicStaleMs: 6 * HOUR_MS }),
+    ).toEqual([]);
+  });
+
+  it('EI-19908775413647773 — a breaching row the chronic sweep SUPPRESSES as a frozen watermark IS caught here', () => {
+    // 9 errors + 7d silent: over threshold, but far past the 6h chronic staleness
+    // window, so selectChronicFailures drops it as `skipped-stale`. Deferring on
+    // the chronic sweep's SCOPE rather than its OUTPUT left this escalated by nobody.
     const rows = [row({ consecutive_errors: 9 })];
-    expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);
+    expect(
+      selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS, chronicStaleMs: 6 * HOUR_MS }).map((r) => r.role),
+    ).toEqual(['kettle']);
+  });
+
+  it('EI-19908775413647773 — at EXACTLY the threshold too (the boundary papercup::kettle sat on for 44d)', () => {
+    const rows = [row({ consecutive_errors: 6, last_fired_at: new Date(NOW - 44 * 24 * HOUR_MS).toISOString() })];
+    expect(
+      selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS, chronicStaleMs: 6 * HOUR_MS }).map((r) => r.role),
+    ).toEqual(['kettle']);
   });
 
   it('a Red Queen drill row is excluded', () => {
@@ -989,7 +1010,56 @@ describe('autoloopSilentStopSweep (EI-19281872822982156) — the error-count-ind
     expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
   });
 
-  it('a currently-chronic (over-threshold) row never double-escalates here — the chronic sweep\'s own scope', async () => {
+  it('a row the chronic sweep WILL ACTUALLY escalate (breaching AND not yet frozen) never double-escalates here', async () => {
+    // Discriminating ONLY when silentStopMs < staleWindowMs() (6h): at 2h silent
+    // the row is past a 1h silent-stop window but is NOT yet a frozen watermark,
+    // so the chronic sweep still genuinely owns it and we must stand down.
+    // Under the shipped constants (24h > 6h) this case is unreachable, which is
+    // precisely why deferring on SCOPE instead of OUTPUT was pure hole.
+    process.env.PAPERCUSP_AUTOLOOP_SILENT_STOP_MS = String(60 * 60 * 1000);
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'gym-cycle',
+        consecutive_errors: 30,
+        last_status: 'x',
+        routine_active: true,
+        last_fired_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results).toEqual([]);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  // EI-19908775413647773 — THE SEAM. These two are the control the 85-test suite
+  // lacked: before the fix both returned [], because the sweep deferred to the
+  // chronic sweep's SCOPE while the chronic sweep was suppressing the same row as
+  // a frozen watermark. Nothing escalated them. Measured live: papercup::kettle,
+  // exactly at threshold, 44d dead, 52 `skipped-stale` records and 0 alarms.
+  it('THE SEAM, at the boundary: a breaching row the chronic sweep SUPPRESSES as a frozen watermark IS escalated here', async () => {
+    mockRows([
+      {
+        harness_slug: 'papercup',
+        role: 'kettle',
+        // EXACTLY chronicErrorThreshold() — `>= threshold` fell through, `< threshold` excluded it.
+        consecutive_errors: 6,
+        last_status: 'error: HTTP 404 — {"error":"unknown project"}',
+        routine_active: null,
+        last_fired_at: new Date(Date.now() - 44 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ harnessSlug: 'papercup', role: 'kettle', outcome: 'escalated' });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('THE SEAM, well above the boundary: 30 errors + 7d frozen also escalates (it is the suppression, not the count, that decides)', async () => {
     mockRows([
       {
         harness_slug: 'papercusp',
@@ -1003,8 +1073,8 @@ describe('autoloopSilentStopSweep (EI-19281872822982156) — the error-count-ind
 
     const results = await autoloopSilentStopSweep();
 
-    expect(results).toEqual([]);
-    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ role: 'gym-cycle', outcome: 'escalated' });
   });
 
   it('an explicitly-paused routine (routine_active:false) is left to the stale-paused-routines alarm', async () => {

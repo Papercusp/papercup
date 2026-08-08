@@ -1686,6 +1686,38 @@ describe('unified work_items surface (real PG)', () => {
     expect(onlyFeatures.items.every((w) => w.family === 'feature')).toBe(true);
   });
 
+  // P-018: `family` selects a WHOLE family without pinning an exact kind — the
+  // predicate `harness_features_consolidated` applies, and the thing /api/harness/search
+  // needs in order to delegate here without changing which rows it can see.
+  it('search `family` selects the whole family — including a kind `kind:feature` would EXCLUDE', async () => {
+    const parent = await wi.createWorkItem({ kind: 'feature', title: 'grimbex parent', harness: 'papercup', createdBy: 'agA' });
+    await wi.createWorkItem({ kind: 'chunk', title: 'grimbex chunk', harness: 'papercup', createdBy: 'agA', parent: parent.id });
+    await wi.createWorkItem({ kind: 'bug', title: 'grimbex bug', harness: 'papercup', createdBy: 'agA' });
+
+    const family = await wi.searchWorkItems('grimbex', { family: 'feature', semantic: false });
+    const titles = family.items.map((w) => w.title);
+    expect(family.items.every((w) => w.family === 'feature')).toBe(true);
+    expect(titles).toContain('grimbex parent');
+    // THE CALIBRATION: `chunk` is feature-FAMILY but not `kind:'feature'`, so this
+    // is the row that proves `family` is genuinely wider than the kind filter
+    // rather than a slower spelling of it.
+    expect(titles).toContain('grimbex chunk');
+    expect(titles).not.toContain('grimbex bug');
+
+    const byKind = await wi.searchWorkItems('grimbex', { kind: 'feature', semantic: false });
+    expect(byKind.items.map((w) => w.title)).not.toContain('grimbex chunk');
+
+    const issues = await wi.searchWorkItems('grimbex', { family: 'issue', semantic: false });
+    expect(issues.items.map((w) => w.title)).toEqual(['grimbex bug']);
+
+    // A contradictory pair selects NO sources. Asserted because it is the one
+    // path that reaches the engine with an empty source list, and because the
+    // alternative failure — silently widening to one of the two — would be
+    // invisible in every other test here.
+    const contradictory = await wi.searchWorkItems('grimbex', { family: 'feature', kind: 'bug', semantic: false });
+    expect(contradictory.items).toEqual([]);
+  });
+
   // P-016: the point of running on @papercusp/search is that the result can
   // SAY what ranked it. These pin the reported shape, because a leg report
   // that quietly reports nothing is exactly as useless as no leg report —

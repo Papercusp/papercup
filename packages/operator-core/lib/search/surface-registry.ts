@@ -294,9 +294,10 @@ export const RESULTS_DISCARDED_CEILING = 1;
  *
  * ─── WHY THIS EXISTS ───────────────────────────────────────────────────────
  * P-030's first pass audited a hand-collected LIST of candidates rather than
- * ENUMERATING the population, and missed `/api/harness/search` — a live,
- * owner-facing, entirely unranked `ILIKE` scan. The audit was careful and the
- * result was still a confident "complete" that was not. That is the same
+ * ENUMERATING the population, and missed `/api/harness/search` — at the time a
+ * live, owner-facing, entirely unranked `ILIKE` scan (P-018 has since migrated
+ * it). The audit was careful and the result was still a confident "complete"
+ * that was not. That is the same
  * defect this repo has now recorded three times about the module-pin detector:
  * anchor the search to the PROPERTY that defines membership, never to the
  * handful of instances you happened to have in hand.
