@@ -341,6 +341,88 @@ describe('readCell — path drift', () => {
   });
 });
 
+describe('WI-36259 — the headline source rides the SAME dispatch and fails SAFE', () => {
+  const withSource = () =>
+    spec({
+      headlineSource: {
+        path: 'gate.candidateSource',
+        authoritative: ['retriage-marker'],
+        why: "a probe degrades to the checkout's live HEAD on a cron run",
+      },
+    });
+
+  it('reports authoritative:true for a declared authoritative label, without a second call', () => {
+    registerCell(withSource());
+    dispatchReadOnlyTool.mockResolvedValue({
+      positions: { deployed: true },
+      gate: { candidateSource: 'retriage-marker' },
+    });
+
+    return readCell('test.cell', READER, ENV).then((r) => {
+      expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1);
+      expect(r.status).toBe('value');
+      if (r.status === 'value') {
+        expect(r.source?.value).toBe('retriage-marker');
+        expect(r.source?.authoritative).toBe(true);
+      }
+    });
+  });
+
+  it('reports authoritative:false for a known-but-inferred label', () => {
+    registerCell(withSource());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, gate: { candidateSource: 'run-probe' } });
+
+    return readCell('test.cell', READER, ENV).then((r) => {
+      if (r.status === 'value') {
+        expect(r.source?.value).toBe('run-probe');
+        expect(r.source?.authoritative).toBe(false);
+        // The caller is told what the untrusted reading actually degrades TO — the
+        // difference between an unactionable warning and a decision.
+        expect(r.source?.why).toContain('live HEAD');
+      }
+    });
+  });
+
+  /**
+   * THE DIRECTION THAT MATTERS. `material` OMITS on a drifted path and `hoistFrom` REPORTS
+   * the drift; this field does a third thing, and the asymmetry is the whole point:
+   * absence must never be able to manufacture trust. A drifted path, an unrecognised
+   * label, and a resolver that simply did not attribute the value all converge on
+   * "inference" — the same answer the caller would reach if the field were never declared.
+   */
+  it('fails SAFE to authoritative:false when the declared path is absent or unrecognised', () => {
+    registerCell(withSource());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    return readCell('test.cell', READER, ENV)
+      .then((r) => {
+        if (r.status === 'value') {
+          expect(r.source?.value).toBeNull();
+          expect(r.source?.authoritative).toBe(false);
+        }
+        dispatchReadOnlyTool.mockResolvedValue({
+          positions: { deployed: true },
+          gate: { candidateSource: 'some-future-source' },
+        });
+        return readCell('test.cell', READER, ENV);
+      })
+      .then((r) => {
+        if (r.status === 'value') {
+          expect(r.source?.authoritative).toBe(false);
+        }
+      });
+  });
+
+  it('omits `source` entirely for a cell that does not declare one', () => {
+    registerCell(spec({}));
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    return readCell('test.cell', READER, ENV).then((r) => {
+      if (r.status === 'value') expect(r.source).toBeUndefined();
+    });
+  });
+});
+
 describe('P-021 — the material lens rides the SAME dispatch', () => {
   const withMateriality = () =>
     spec({

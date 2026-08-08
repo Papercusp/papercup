@@ -32,6 +32,7 @@ import {
   deriveBlocker,
   mainBufferIsStale,
   mapCheckpointRunInFlight,
+  reconcileGateCandidates,
   MAIN_BUFFER_STALL_MS,
   type GitRunner,
   type PipelinePosition,
@@ -4560,5 +4561,82 @@ describe('runtime generations (WI-9974) — every host, both directions', () => 
       ]);
       expect(runtimeGenerationDivergenceNote(gens, 'x.ts')).toBeNull();
     });
+  });
+});
+
+/**
+ * WI-36259 — THE GUARD THAT WAS MISSING, which is why this survived WI-7035.
+ *
+ * WI-7035 taught `checkpointRunInFlight.candidate` to prefer the run's own re-triage
+ * marker over the probe. It never touched `changeInCandidate.judgingSha` — the headline of
+ * the `gate.greenCheckpoint.candidate` cell and the value CLAUDE.md points triagers at — so
+ * one resolver named two different shas for the same subject during a re-triage window, and
+ * the cell served the ABANDONED one.
+ *
+ * Nothing caught it because every existing test injects `deps.resolveGateCandidates`
+ * wholesale, which BYPASSES the reconciliation entirely: the fixture supplies the final
+ * answer, so no test ever observed the probe and the marker disagreeing. These tests pin
+ * the precedence at the pure seam instead, where a fixture cannot paper over it.
+ */
+describe('WI-36259: judgingSha prefers the re-triage marker over the probe', () => {
+  const probe = { judgingSha: 'abandoned0', nextCandidateSha: 'next111' };
+
+  it('takes the marker sha and labels it authoritative when a refire is in flight', () => {
+    const out = reconcileGateCandidates(probe, {
+      candidate: 'refiring9',
+      candidateSource: 'retriage-marker',
+    });
+    // THE REGRESSION: before the fix this was 'abandoned0' — the candidate the gate had
+    // already stopped judging — while checkpointRunInFlight.candidate said 'refiring9'.
+    expect(out.judgingSha).toBe('refiring9');
+    expect(out.judgingShaSource).toBe('retriage-marker');
+    // The other candidate answers a different question and must be left alone.
+    expect(out.nextCandidateSha).toBe('next111');
+  });
+
+  it('keeps the probe sha, labelled run-probe, when no marker is in flight', () => {
+    const out = reconcileGateCandidates(probe, { candidate: 'abandoned0', candidateSource: 'run-probe' });
+    expect(out.judgingSha).toBe('abandoned0');
+    expect(out.judgingShaSource).toBe('run-probe');
+  });
+
+  it('labels the probe run-probe even when the in-flight leg is absent entirely', () => {
+    // The cache-only / unreadable-lock shape. Provenance must still be stated: silence here
+    // would be indistinguishable from an authoritative reading to a caller that only checks
+    // for the field's presence.
+    expect(reconcileGateCandidates(probe, null).judgingShaSource).toBe('run-probe');
+    expect(reconcileGateCandidates(probe, undefined).judgingShaSource).toBe('run-probe');
+  });
+
+  it('attributes NOTHING when there is no judged sha to attribute', () => {
+    // A source label on a null headline would assert provenance for a value that does not
+    // exist, and a consumer branching on "is this attributed" would read it as a real,
+    // merely-untrusted candidate.
+    const out = reconcileGateCandidates({ judgingSha: null, nextCandidateSha: 'next111' }, null);
+    expect(out.judgingSha).toBeNull();
+    expect(out.judgingShaSource).toBeUndefined();
+  });
+
+  it('does NOT promote a marker-shaped source whose candidate is null', () => {
+    // Fails safe: an attributed-but-empty marker must not blank out a real probe answer.
+    const out = reconcileGateCandidates(probe, { candidate: null, candidateSource: 'retriage-marker' });
+    expect(out.judgingSha).toBe('abandoned0');
+    expect(out.judgingShaSource).toBe('run-probe');
+  });
+
+  it('surfaces the marker sha through evaluateChangeInCandidate to the cell headline', () => {
+    // The end-to-end shape the cell reads: reconcile -> evaluate -> changeInCandidate.
+    const reconciled = reconcileGateCandidates(probe, {
+      candidate: 'refiring9',
+      candidateSource: 'retriage-marker',
+    });
+    const cic = evaluateChangeInCandidate({
+      relPath: 'lib/x.ts',
+      candidates: reconciled,
+      judging: null,
+      next: null,
+    });
+    expect(cic.judgingSha).toBe('refiring9');
+    expect(cic.judgingShaSource).toBe('retriage-marker');
   });
 });

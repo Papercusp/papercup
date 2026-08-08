@@ -278,6 +278,27 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'changeInCandidate.judgingSha' },
 
   /**
+   * WI-36259 — THE RUNTIME PROVENANCE, and this cell is why the field exists.
+   *
+   * The headline can be reached two ways with very different trust, and until now the cell
+   * could not say which one answered. Worse, it did not merely omit the label: the headline
+   * itself was resolved from the marker-BLIND probe while the run's own published marker sat
+   * loaded one field away, so during a re-triage window this cell served the ABANDONED
+   * candidate while `checkpointRunInFlight.candidate` served the live one. Same subject, two
+   * shas, one resolver. `reconcileGateCandidates` fixes the value; this declares its source.
+   *
+   * The distinction is exactly the one a triager needs and cannot otherwise get: a
+   * 'run-probe' reading on a CRON run is the checkpoint checkout's live HEAD — an inference
+   * that changes between two reads — and acting on it is how agents re-fire a gate that
+   * already carries their fix.
+   */
+  headlineSource: {
+    path: 'changeInCandidate.judgingShaSource',
+    authoritative: ['retriage-marker'],
+    why: "'retriage-marker' is the run's OWN published inFlightRetriage marker — an authoritative observation of what it is judging. Anything else is a probe: on a MANUAL run its /tmp unit log, but on a CRON run it degrades to the checkpoint checkout's live HEAD, which is an INFERENCE that can change between two reads and is only right while that checkout stays pinned. Do not fire a manual re-run off a non-authoritative reading.",
+  },
+
+  /**
    * P-021 — THE MATERIALITY THRESHOLD, and this cell is why the field exists.
    *
    * `judgingSha` follows the gate's in-flight candidate, which is drawn from the

@@ -345,6 +345,38 @@ describe('registration refuses rather than admits-and-flags', () => {
   });
 });
 
+describe('WI-36259 — headlineSource is optional, but a declared one must be able to do work', () => {
+  const ruleOf = (spec: CellSpec) =>
+    validateCellSpec(spec).filter((r) => r.axis === 'headlineSource').map((r) => r.rule);
+  const src = { path: 'gate.candidateSource', authoritative: ['retriage-marker'], why: 'the probe degrades to live HEAD on cron' };
+
+  it('OMITTING it is valid — most cells reach their headline exactly one way', () => {
+    expect(ruleOf(pipelineCell())).toEqual([]);
+  });
+
+  it('accepts a source path into the same result that differs from the changeSignal path', () => {
+    expect(ruleOf({ ...pipelineCell(), headlineSource: src })).toEqual([]);
+  });
+
+  it('REFUSES a source path equal to the changeSignal path — a value cannot be its own provenance', () => {
+    const changeSignal = pipelineCell().changeSignal as { kind: 'poll'; tool: string; path: string };
+    const spec: CellSpec = { ...pipelineCell(), headlineSource: { ...src, path: changeSignal.path } };
+    expect(ruleOf(spec)).toContain('headline-source-is-changesignal-path');
+  });
+
+  it('REFUSES an empty authoritative list — it could only ever downgrade, never distinguish', () => {
+    const spec: CellSpec = { ...pipelineCell(), headlineSource: { ...src, authoritative: [] } };
+    expect(ruleOf(spec)).toContain('headline-source-no-authoritative-values');
+  });
+
+  it('REFUSES an unjustified source — `why` must say what the untrusted reading DEGRADES TO', () => {
+    // "Less trustworthy" is unactionable. The caller needs to know that a cron-path probe
+    // is the checkout's live HEAD, because that is what tells them not to act on it.
+    const spec: CellSpec = { ...pipelineCell(), headlineSource: { ...src, why: '  ' } };
+    expect(ruleOf(spec)).toContain('headline-source-unjustified');
+  });
+});
+
 describe('P-021 — materiality is optional, but a declared one must be able to do work', () => {
   const ruleOf = (spec: CellSpec) => validateCellSpec(spec).filter((r) => r.axis === 'materiality').map((r) => r.rule);
 

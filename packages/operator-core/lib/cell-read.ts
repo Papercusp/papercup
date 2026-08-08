@@ -55,7 +55,7 @@
  */
 
 import { cellUnknown, type CellUnknown } from './cell-contract';
-import { getCell, type CellReader, type CellSpec } from './cell-registry';
+import { getCell, type CellHeadlineSource, type CellReader, type CellSpec } from './cell-registry';
 import {
   dispatchReadOnlyTool,
   isAccessDenialCode,

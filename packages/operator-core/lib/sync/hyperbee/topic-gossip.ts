@@ -31,7 +31,9 @@
  *     empirically the ONLY driver that connects a standalone (non-corestore)
  *     transport on the current hyperswarm/hyperdht (see directory-swarm's
  *     original probe notes). Two-speed cadence: fast inside a post-join window,
- *     then a slow keepalive; losing a topic's last peer re-arms its fast window.
+ *     then a slow keepalive; losing a topic's last peer re-arms its fast window
+ *     — but a link that keeps dying immediately gets a DECAYING re-arm, never
+ *     another full window (EI-18808621019872598; see minUsefulChannelMs).
  *
  * Pure over an injected `HyperswarmLike` (the same test seam swarm.ts uses), so
  * join/pair/send/receive/broadcast all unit-test with a fake swarm.
@@ -89,8 +91,20 @@ interface TopicState<Frame> {
   /** Paired channels for THIS topic (one per socket whose peer also joined it). */
   channels: Set<FrameMessage<Frame>>;
   /** Start of the topic's FAST-refresh window (join time; re-armed when the
-   *  topic loses its last paired channel, so reconnection is snappy too). */
+   *  topic loses its last paired channel, so reconnection is snappy too).
+   *  ALSO the severed-link escalation's clock (`severedMs`) — deliberately
+   *  unchanged by EI-18808621019872598, which decays `fastWindowGrantedMs`
+   *  instead so the escalation ladder's behavior is not touched. */
   fastWindowStartMs: number;
+  /** EI-18808621019872598: the LENGTH of the currently-granted fast window.
+   *  `fastWindowMs` on join, after a genuinely-useful channel closes, and
+   *  after an escalation rejoin; halved per CONSECUTIVE flap-close beyond the
+   *  first, and 0 once it can no longer buy even one extra refresh round (at
+   *  which point the topic rides the slow keepalive alone). */
+  fastWindowGrantedMs: number;
+  /** EI-18808621019872598: consecutive closes of a channel that never stayed
+   *  open for `minUsefulChannelMs`. Reset to 0 by any useful close. */
+  consecutiveFlapCloses: number;
   /** Last refresh tick for this topic (drives the slow keepalive). */
   lastRefreshMs: number;
   /** EI-13317: has this topic EVER had a paired channel? Distinguishes
@@ -171,6 +185,15 @@ export interface CreateTopicGossipOpts<Frame> {
   /** Steady-state keepalive cadence once the fast window lapses (ms). Default DEFAULT_SLOW_REFRESH_MS. */
   slowRefreshMs?: number;
   /**
+   * EI-18808621019872598: how long a paired channel must stay open for its
+   * close to count as "a healthy link broke" (→ a full fresh fast window, the
+   * behavior the re-arm exists for) rather than a FLAP (→ a decaying window,
+   * so a link that cannot stay up stops being re-dialled every `refreshMs`
+   * forever). Default `DEFAULT_MIN_USEFUL_CHANNEL_MS`; `0` disables the decay
+   * entirely (byte-identical pre-fix behavior: every close re-arms in full).
+   */
+  minUsefulChannelMs?: number;
+  /**
    * EI-13317 escalation ladder: once a topic HAD a paired channel and then
    * sits at ZERO paired channels for this long — despite the refresh()
    * self-heal loop actively ticking — force a topic-level leave+rejoin (a
@@ -202,6 +225,16 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
   const sockets = new Set<unknown>();
   let connectionCount = 0;
   let closed = false;
+
+  // Cadence knobs — declared HERE (not beside the refresh loop below) because
+  // the channel `onclose` ladder reads them, and a channel can be created by
+  // the existing-connections seeding pass that runs before the loop is armed.
+  // A TDZ ReferenceError there would be swallowed by openTopicChannel's
+  // best-effort catch, i.e. silently.
+  const refreshMs = opts.refreshMs ?? DEFAULT_REFRESH_MS;
+  const fastWindowMs = opts.fastWindowMs ?? DEFAULT_FAST_WINDOW_MS;
+  const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SLOW_REFRESH_MS;
+  const minUsefulChannelMs = opts.minUsefulChannelMs ?? DEFAULT_MIN_USEFUL_CHANNEL_MS;
 
   /** Muxers that already carry our pair-notifier (one registration per muxer). */
   const pairedMuxers = new WeakSet<object>();
@@ -313,6 +346,9 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
 
       let message: FrameMessage<Frame> | null = null;
       const topicHex = st.topic.toString('hex');
+      /** EI-18808621019872598: when THIS channel paired (0 = never). Its close
+       *  is a FLAP unless it stayed open at least minUsefulChannelMs. */
+      let pairedAtMs = 0;
       const sendOurs = (): void => {
         if (!message) return;
         st.channels.add(message);
@@ -353,6 +389,7 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           // sits at zero (a topic that's never paired yet may just have no
           // peer online, which the ladder should not act on).
           st.everPaired = true;
+          pairedAtMs = Date.now();
           // WI-5355: record that THIS socket is live-paired on THIS topic, so
           // the severed-link escalation can tell a genuinely-idle (zombie)
           // socket apart from one still serving another shared topic.
@@ -370,7 +407,47 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           if (message) st.channels.delete(message);
           // Lost the topic's last peer → re-arm the FAST refresh window so
           // rediscovery/reconnection is snappy again.
-          if (st.channels.size === 0) st.fastWindowStartMs = Date.now();
+          //
+          // EI-18808621019872598: the re-arm is what makes reconnection snappy
+          // AND, unguarded, what makes a broken link a self-sustaining DHT
+          // storm — escaping back to the slow keepalive needs fastWindowMs of
+          // continuously-open channel, so a link that dies within refreshMs
+          // re-arms before it can ever lapse. Grant a full window for the
+          // FIRST loss (a transient drop keeps exactly today's behavior), then
+          // HALVE it per consecutive flap so a link that cannot stay up falls
+          // back toward the slow keepalive instead of being re-dialled
+          // forever. A close that follows a genuinely-useful channel resets
+          // the ladder, so a healthy link never pays for an earlier bad patch.
+          if (st.channels.size === 0) {
+            const now = Date.now();
+            const aliveMs = pairedAtMs ? now - pairedAtMs : 0;
+            if (minUsefulChannelMs <= 0 || aliveMs >= minUsefulChannelMs) {
+              st.consecutiveFlapCloses = 0;
+              st.fastWindowGrantedMs = fastWindowMs;
+            } else {
+              st.consecutiveFlapCloses += 1;
+              if (st.consecutiveFlapCloses <= 1) {
+                st.fastWindowGrantedMs = fastWindowMs;
+              } else {
+                const halvings = Math.min(st.consecutiveFlapCloses - 1, 30);
+                const decayed = Math.floor(fastWindowMs / 2 ** halvings);
+                // Below one refresh interval the grant cannot buy even a
+                // single extra DHT round — drop to the slow keepalive rather
+                // than pretend to a fast window.
+                st.fastWindowGrantedMs = decayed >= refreshMs ? decayed : 0;
+                if (!process.env.VITEST) {
+                  console.warn(
+                    `[topic-gossip:${opts.protocol}] topic ${topicHex.slice(0, 16)}… flapping ` +
+                      `(${st.consecutiveFlapCloses} consecutive channels closed after <${minUsefulChannelMs}ms; ` +
+                      `this one lasted ${aliveMs}ms) — fast-discovery window decayed to ` +
+                      `${st.fastWindowGrantedMs}ms` +
+                      `${st.fastWindowGrantedMs === 0 ? ' (slow keepalive only)' : ''} (EI-18808621019872598).`,
+                  );
+                }
+              }
+            }
+            st.fastWindowStartMs = now;
+          }
           // WI-5355: this socket no longer carries a live channel for this topic.
           socketTopics.get(socket as object)?.delete(topicHex);
         },
@@ -442,9 +519,6 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
   // rounds reliably miss on a fresh node — then a slow keepalive so a long-lived
   // topic doesn't hammer the public DHT forever. Losing a topic's last peer
   // re-arms its fast window (see the channel onclose).
-  const refreshMs = opts.refreshMs ?? DEFAULT_REFRESH_MS;
-  const fastWindowMs = opts.fastWindowMs ?? DEFAULT_FAST_WINDOW_MS;
-  const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SLOW_REFRESH_MS;
   let refreshTimer: ManagedHandle | null = null;
   if (refreshMs > 0) {
     refreshTimer = managedSetInterval(
@@ -582,8 +656,14 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
               void Promise.resolve(opts.swarm.leave(st.topic))
                 .then(() => {
                   st.discovery = opts.swarm.join(st.topic, { server: true, client: true }) as DiscoveryLike;
-                  // A fresh join re-arms the fast window too.
+                  // A fresh join re-arms the fast window too — in FULL, and it
+                  // clears the flap ladder (EI-18808621019872598): a brand-new
+                  // discovery session plus an evicted socket is a genuinely
+                  // different attempt, and it is already rate-limited to once
+                  // per severedEscalationMs, so it cannot itself amplify.
                   st.fastWindowStartMs = Date.now();
+                  st.fastWindowGrantedMs = fastWindowMs;
+                  st.consecutiveFlapCloses = 0;
                 })
                 .catch(() => {
                   // best-effort — a failed rejoin is retried at the next
@@ -592,7 +672,9 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
             }
           }
 
-          const inFastWindow = now - st.fastWindowStartMs < fastWindowMs;
+          // EI-18808621019872598: the window's LENGTH is per-topic state, not
+          // the constant — a flapping topic's grant decays toward 0.
+          const inFastWindow = now - st.fastWindowStartMs < st.fastWindowGrantedMs;
           const slowDue = now - st.lastRefreshMs >= slowRefreshMs;
           if (!inFastWindow && !slowDue) continue;
           st.lastRefreshMs = now;
@@ -636,6 +718,8 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
         discovery,
         channels: new Set(),
         fastWindowStartMs: Date.now(),
+        fastWindowGrantedMs: fastWindowMs,
+        consecutiveFlapCloses: 0,
         lastRefreshMs: 0,
         everPaired: false,
         lastEscalationMs: 0,

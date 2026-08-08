@@ -290,7 +290,23 @@ describe('locks:acquire — EI-19382183884861720: the two gaps EI-19324204900062
     statusM.mockRejectedValueOnce(connectionClosedError());
     // Inside the loop the connection has reconnected — resolves normally.
     pokeM.mockResolvedValue(undefined);
-    statusM.mockResolvedValueOnce({ status: 'waiting' });
+    // PERSISTENT, not ...Once: the step 4-5 loop's iteration count is not
+    // fixed. It re-polls until `wait_until` elapses, and an iteration can be
+    // cut short by a pending LISTEN wake (the `pendingWake` short-circuit)
+    // instead of running the full ceiling await — so the loop legitimately
+    // polls status one *or more* times before the deadline. A ...Once here
+    // under-provisions that: once the queue drains, the mock returns
+    // `undefined` and the production `status.status` read throws
+    // `TypeError: Cannot read properties of undefined` — a test-only artifact
+    // that reads exactly like a real crash. (`readWaiterStatus` cannot return
+    // undefined in production: it is typed `Promise<WaiterStatus>` and yields
+    // `{ status: 'missing' }` for a vanished row.) A persistent mock says the
+    // real thing — "every poll after the blip reports waiting" — and keeps the
+    // test coupled to the behaviour it asserts rather than to loop timing.
+    // The mockRejectedValueOnce above still wins the FIRST call (the Once
+    // queue drains before this default), so the immediate post-insert
+    // re-check still gets the transient error this test is about.
+    statusM.mockResolvedValue({ status: 'waiting' });
     // Step 6 after the loop exits on wait_until elapsing.
     expireM.mockResolvedValueOnce(undefined);
     tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2', owner_label: null, intent: 'edit', expires_ts: new Date(Date.now() + 60_000) }] });
