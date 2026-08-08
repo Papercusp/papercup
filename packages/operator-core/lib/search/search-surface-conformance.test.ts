@@ -76,6 +76,30 @@ function derive(entry: string): { callsEngine: boolean; callsFulltext: boolean; 
   };
 }
 
+/**
+ * Does this module CONSUME what the engine returns, or throw it away?
+ *
+ * Derived per call site, in the file that makes the call — which is where the
+ * property lives. (This is not the per-file grep D-027 ruling #1 rejects: that
+ * one asked "does search happen here?", a question about a graph. This asks
+ * "is this call's value used?", a question about one statement.)
+ *
+ * A call is DISCARDED when nothing precedes it on its line but optional
+ * `await` / `void`. Anything else — an assignment, a `return`, being an
+ * argument to something else — means a caller can see the results, so a
+ * relevance floor has a result set to protect and the exemption is void.
+ */
+function consumesEngineResult(entry: string): boolean {
+  const src = stripComments(readFileSync(entry, 'utf8'));
+  const call = /runHybridSearch\s*\(/g;
+  for (let m = call.exec(src); m !== null; m = call.exec(src)) {
+    const lineStart = src.lastIndexOf('\n', m.index) + 1;
+    const before = src.slice(lineStart, m.index).replace(/\b(?:await|void)\s+$/, '').trim();
+    if (before !== '') return true;
+  }
+  return false;
+}
+
 /** The engine entrypoint a surface's code actually reaches. */
 function deriveEngine(entry: string): 'hybrid' | 'fulltext' | 'none' {
   const d = derive(entry);
@@ -125,9 +149,9 @@ describe('search surface conformance (P-021)', () => {
     );
 
     it.each(
-      SEARCH_SURFACES.filter((s) => s.engine === 'hybrid' && !s.floorGap).map(
-        (s) => [s.id, s] as const,
-      ),
+      SEARCH_SURFACES.filter(
+        (s) => s.engine === 'hybrid' && !s.floorGap && !s.resultsDiscarded,
+      ).map((s) => [s.id, s] as const),
     )(
       '%s: hybrid-engine-backed, so it MUST inherit the P-017 floor',
       (_id, surface) => {
@@ -167,7 +191,54 @@ describe('search surface conformance (P-021)', () => {
     );
   });
 
+  describe('the results-discarded exemption is earned, not asserted', () => {
+    const exempt = SEARCH_SURFACES.filter((s) => s.resultsDiscarded);
+
+    it(`holds at most ${RESULTS_DISCARDED_CEILING} entr(y|ies)`, () => {
+      // Capped for the FLOOR_GAP_CEILING reason, against a sharper risk: this
+      // category describes a permanently-correct state, so unlike a gap it has
+      // no natural pressure to shrink — which makes it the attractive place to
+      // file an inconvenient surface.
+      expect(exempt.length).toBeLessThanOrEqual(RESULTS_DISCARDED_CEILING);
+    });
+
+    it('every exemption states WHY', () => {
+      for (const s of exempt) expect(s.resultsDiscarded?.trim(), `${s.id}`).toBeTruthy();
+    });
+
+    it.each(exempt.map((s) => [s.id, s] as const))(
+      '%s: really does discard what the engine returns',
+      (_id, surface) => {
+        // The exemption's whole claim, re-derived. A surface that starts USING
+        // its results has a result set again — and therefore needs the floor
+        // again — so it must fail here rather than keep an exemption it no
+        // longer earns.
+        expect(consumesEngineResult(abs(surface))).toBe(false);
+      },
+    );
+  });
+
   describe('CONTROLS — a guard whose subject vanished must fail, not pass', () => {
+    it('the discard-derivation can observe a CONSUMING call', () => {
+      // Without this, `consumesEngineResult` could return false unconditionally
+      // and every exemption above would verify itself. Controls live here as
+      // fixtures rather than as a mutation of the real file: the shared tree is
+      // swept into commits every few minutes, so a probe that edits a tracked
+      // file to prove a guard bites can have the mutant committed under it.
+      const dir = join(LIB, 'search');
+      const consuming = join(dir, '__conformance-fixture-consuming.ts');
+      const discarding = join(dir, '__conformance-fixture-discarding.ts');
+      try {
+        writeFileSync(consuming, 'const hits = await runHybridSearch(sources, {});\n');
+        writeFileSync(discarding, 'await runHybridSearch(sources, {});\n');
+        expect(consumesEngineResult(consuming)).toBe(true);
+        expect(consumesEngineResult(discarding)).toBe(false);
+      } finally {
+        for (const f of [consuming, discarding]) if (existsSync(f)) rmSync(f);
+      }
+    });
+
+
     it('discovery finds a substantial set, including a known surface', () => {
       const ids = discoverSearchTools().map((t) => t.id);
       // If the tool-name spelling or the directory layout changes, discovery

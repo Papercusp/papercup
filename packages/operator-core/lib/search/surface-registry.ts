@@ -186,6 +186,77 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'Searches a catalog of installable listings by kind/name, not prose. The useful ranking signal ' +
       'is structural (kind, install state), not semantic similarity over a body.',
   },
+
+  // ─── NOT in the `*:search` naming class — added by hand (P-030) ───────────
+  // Discovery cannot see any of these. Each was traced with the same import
+  // walk the conformance test runs, on 2026-08-08.
+  {
+    id: 'GET /adv/sessions/search',
+    entry: 'omp-sessions.ts',
+    engine: 'none',
+    whyNotEngine:
+      'THE TRAP THIS ENTRY EXISTS TO DEFUSE: two routes in one file whose paths differ by a suffix and ' +
+      'whose mechanisms have nothing in common. `/adv/sessions/search` (adv/sessions.ts:569) calls ' +
+      '`searchOmpSessions` (omp-sessions.ts:818) — a SYNCHRONOUS scan of Claude session JSONL files on ' +
+      'disk, matching with `queryMatches` (:311), an AND of case-folded substrings. No database, no ' +
+      'embedding, no ranking: hits come back in file/entry order and are truncated at `limit`, so the ' +
+      'result set is arbitrary rather than best-first. Its sibling ' +
+      '`/adv/sessions/search-transcripts` (:669) runs the hybrid engine over `session_turn` instead. ' +
+      'Both are correct for their own job — the grep reads live local files the ingest may not have ' +
+      'reached, the engine ranks the indexed corpus — but a caller who picks by name gets a completely ' +
+      'different retrieval model than they expect.\n\n' +
+      'NOTE the `entry` points at the MECHANISM module, not the route file. Pointing it at ' +
+      'adv/sessions.ts would derive `hybrid` from the SIBLING route and silently certify this one as ' +
+      'engine-backed — the per-module derivation limit called out in the header.',
+  },
+  {
+    id: 'GET /adv/sessions/search-transcripts',
+    entry: 'endpoint-route/routes/adv/sessions.ts',
+    engine: 'hybrid',
+  },
+  {
+    id: 'GET /user/search',
+    entry: 'endpoint-route/routes/user/search.ts',
+    engine: 'hybrid',
+  },
+  {
+    id: 'memory:corpus-recall',
+    entry: 'memory/corpus-recall-io.ts',
+    engine: 'hybrid',
+  },
+  {
+    id: 'coord:feed (q= filter)',
+    entry: 'agent-tools/coordination/feed.ts',
+    engine: 'none',
+    whyNotEngine:
+      'Not a search surface at all — a FILTER, and registered here so nobody mistakes it for one. `q=` ' +
+      'resolves to `matchesText` (feed.ts:188): a raw case-folded `String.includes` over ' +
+      'summary/body/from/to/plan_slug/event/detail joined with newlines. Not tokenized, not stemmed, ' +
+      'not ranked — a two-word `q` matches only where those exact characters are adjacent.\n\n' +
+      'The property that actually misleads: it is a POST-FILTER over an already-bounded page, not a ' +
+      'query over the corpus. The feed pages each surface from a cursor (RAW_SURFACE_FETCH_CAP 1000 ' +
+      'per surface per round, MAX_CURSOR_ROUNDS 10) and applies the predicate in memory to whatever ' +
+      'that window contained. So an empty result means "no match in the window this call reached", ' +
+      'NEVER "no such message exists" — and it degrades exactly when the stream is busiest. Use ' +
+      '`sessions:search` / `search:fulltext` to ask a corpus-wide question.',
+  },
+  {
+    id: 'transcript-search-warmup',
+    entry: 'transcript-search-warmup.ts',
+    engine: 'hybrid',
+    resultsDiscarded:
+      'Boot-time pre-warm (WI-4734), live from hono-host.ts:34. It runs one `limit: 1` hybrid search ' +
+      'over `session_turn` purely for the side effects — PG pool connections, prepared statements, ' +
+      'the query embedder, the module graph the route imports dynamically — so that the first HUMAN ' +
+      'search after a deploy is not the one paying a ~20s cold start. The call at :95 assigns its ' +
+      'result to nothing; only `legs.search = true` is recorded. A relevance floor filters a result ' +
+      'set, and this surface has no result set: flooring it could only make the warmup warm less.\n\n' +
+      'Its derivation is BLIND, which is the other reason this is declared rather than inferred: the ' +
+      'engine is reached through `await import()` (:75), so the walker resolves 0 modules and reports ' +
+      '`hasFloor: false` trivially — the same reading it would give a surface that genuinely lost its ' +
+      'floor. Do not read this entry as a measurement that a floor is absent; read it as a statement ' +
+      'that a floor is irrelevant here.',
+  },
 ];
 
 /**
@@ -197,3 +268,18 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
  * same bug class recurs stops being a ceiling.
  */
 export const FLOOR_GAP_CEILING = 1;
+
+/**
+ * The number of engine-backed surfaces allowed to be exempt from the floor
+ * because they discard their results.
+ *
+ * Capped for the same reason as `FLOOR_GAP_CEILING`, and against a sharper
+ * risk: a gap entry is embarrassing and someone eventually fixes it, whereas
+ * `resultsDiscarded` describes a permanently-correct state and so has no
+ * natural pressure to shrink. That makes it the more attractive place to file
+ * an inconvenient surface. The cap means adding one is a decision with a
+ * ceiling to argue against, not a quiet append — and the conformance test
+ * independently re-derives that each exempt surface really does throw its
+ * results away.
+ */
+export const RESULTS_DISCARDED_CEILING = 1;
