@@ -18,6 +18,10 @@ var __esm = (fn, res) => function __init() {
 var __commonJS = (cb, mod) => function __require2() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
@@ -35,12 +39,60 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
+// ../../libs/generic/module-singleton/src/index.ts
+function slots() {
+  const store = globalThis;
+  let map = store[SLOTS_KEY];
+  if (!map) {
+    map = /* @__PURE__ */ new Map();
+    store[SLOTS_KEY] = map;
+  }
+  return map;
+}
+function pinModuleState(key, init) {
+  if (typeof key !== "string" || key.length === 0) {
+    throw new TypeError("pinModuleState: key must be a non-empty string");
+  }
+  const map = slots();
+  const now = Date.now();
+  const existing = map.get(key);
+  if (existing) {
+    existing.evaluations += 1;
+    existing.lastSeenAt = now;
+    return existing.value;
+  }
+  const value = init();
+  map.set(key, { value, evaluations: 1, firstSeenAt: now, lastSeenAt: now });
+  return value;
+}
+var SLOTS_KEY;
+var init_src = __esm({
+  "../../libs/generic/module-singleton/src/index.ts"() {
+    "use strict";
+    SLOTS_KEY = Symbol.for("@papercusp/module-singleton.slots");
+  }
+});
+
 // ../../libs/generic/memory/src/config.ts
-var HOST_KEY;
+function memorySchema() {
+  return memoryHost().schema ?? "public";
+}
+function memoryHost() {
+  const host = state.host;
+  if (!host) {
+    throw new Error(
+      "@papercusp/memory is not configured \u2014 call configureMemory({ \u2026 }) before using the store (the operator does this in lib/memory/configure.ts)."
+    );
+  }
+  return host;
+}
+var STATE_KEY, state;
 var init_config = __esm({
   "../../libs/generic/memory/src/config.ts"() {
     "use strict";
-    HOST_KEY = Symbol.for("@papercusp/memory:host");
+    init_src();
+    STATE_KEY = "@papercusp/memory:host";
+    state = pinModuleState(STATE_KEY, () => ({ host: void 0 }));
   }
 });
 
@@ -5149,7 +5201,22 @@ var require_lib2 = __commonJS({
 });
 
 // ../../node_modules/pg/esm/index.mjs
-var import_lib, Client, Pool, Connection, types, Query, DatabaseError, escapeIdentifier, escapeLiteral, Result, TypeOverrides, defaults;
+var esm_exports = {};
+__export(esm_exports, {
+  Client: () => Client,
+  Connection: () => Connection,
+  DatabaseError: () => DatabaseError,
+  Pool: () => Pool,
+  Query: () => Query,
+  Result: () => Result,
+  TypeOverrides: () => TypeOverrides,
+  default: () => esm_default,
+  defaults: () => defaults,
+  escapeIdentifier: () => escapeIdentifier,
+  escapeLiteral: () => escapeLiteral,
+  types: () => types
+});
+var import_lib, Client, Pool, Connection, types, Query, DatabaseError, escapeIdentifier, escapeLiteral, Result, TypeOverrides, defaults, esm_default;
 var init_esm = __esm({
   "../../node_modules/pg/esm/index.mjs"() {
     import_lib = __toESM(require_lib2(), 1);
@@ -5164,10 +5231,41 @@ var init_esm = __esm({
     Result = import_lib.default.Result;
     TypeOverrides = import_lib.default.TypeOverrides;
     defaults = import_lib.default.defaults;
+    esm_default = import_lib.default;
   }
 });
 
 // ../../libs/generic/memory/src/mem0-connection.ts
+var mem0_connection_exports = {};
+__export(mem0_connection_exports, {
+  connectionString: () => connectionString,
+  pgClientFields: () => pgClientFields,
+  pgFields: () => pgFields
+});
+async function connectionString() {
+  return memoryHost().getAdminUrl();
+}
+async function pgFields() {
+  const url = await connectionString();
+  const u = new URL(url);
+  return {
+    host: u.hostname,
+    port: u.port ? Number(u.port) : 5432,
+    user: decodeURIComponent(u.username),
+    password: decodeURIComponent(u.password),
+    dbname: u.pathname.replace(/^\//, "") || memoryHost().defaultDbName || "postgres"
+  };
+}
+async function pgClientFields() {
+  const f = await pgFields();
+  return {
+    host: f.host,
+    port: f.port,
+    user: f.user,
+    password: f.password,
+    database: f.dbname
+  };
+}
 var init_mem0_connection = __esm({
   "../../libs/generic/memory/src/mem0-connection.ts"() {
     "use strict";
@@ -5187,9 +5285,681 @@ init_config();
 
 // ../../libs/generic/memory/src/canonical-store.ts
 init_esm();
+function safeKey(k) {
+  return k.replace(/[^a-zA-Z0-9_]/g, "");
+}
+var ENTITY_STOPWORDS = /* @__PURE__ */ new Set([
+  "the",
+  "a",
+  "an",
+  "of",
+  "in",
+  "on",
+  "at",
+  "to",
+  "for",
+  "and",
+  "or",
+  "but",
+  "so",
+  "is",
+  "was",
+  "are",
+  "were",
+  "be",
+  "been",
+  "being",
+  "it",
+  "its",
+  "this",
+  "that",
+  "these",
+  "those",
+  "with",
+  "as",
+  "by",
+  "from",
+  "just",
+  "else",
+  "before",
+  "after",
+  "nothing",
+  "something",
+  "anything",
+  "one",
+  "mid",
+  "re",
+  "ve",
+  "ll",
+  "no",
+  "not",
+  "than",
+  "then",
+  "up",
+  "out",
+  "off",
+  "over",
+  "per",
+  "via",
+  "their",
+  "there",
+  "here",
+  "when",
+  "while",
+  "into",
+  "onto",
+  "about",
+  "above",
+  "below"
+]);
+function isLowQualityCompoundEntity(text) {
+  let t = String(text ?? "").trim().toLowerCase();
+  if (!t) return true;
+  t = t.replace(/^(?:the|a|an)\s+/, "");
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 2) return true;
+  if (ENTITY_STOPWORDS.has(words[0]) || ENTITY_STOPWORDS.has(words[words.length - 1])) return true;
+  const hasContent = words.some((w) => w.length >= 3 && !ENTITY_STOPWORDS.has(w) && /[a-z]/.test(w));
+  return !hasContent;
+}
+function entityFilterEnabled() {
+  return process.env.PAPERCUSP_MEMORY_ENTITY_FILTER !== "off";
+}
+var LEXICAL_MAX_TOKENS = 32;
+function lexicalTokens(query) {
+  const whole = query.toLowerCase().split(/[^a-z0-9_-]+/).filter((t) => t.length >= 2);
+  const subs = [];
+  for (const t of whole) {
+    if (!/[_-]/.test(t)) continue;
+    for (const s of t.split(/[_-]+/)) if (s.length >= 2) subs.push(s);
+  }
+  return [.../* @__PURE__ */ new Set([...whole, ...subs])].slice(0, LEXICAL_MAX_TOKENS);
+}
+function toVectorLiteral(v) {
+  return `[${v.join(",")}]`;
+}
+function storeKindCond(alias, kind) {
+  const has = `${alias}payload ? 'entityType'`;
+  return kind === "entity" ? has : `NOT (${has})`;
+}
+function splitTemporalControls(filters) {
+  if (!filters) return { temporal: { includeSuperseded: false }, rest: void 0 };
+  const { as_of, include_superseded, ...rest } = filters;
+  const asOfMs = typeof as_of === "string" || typeof as_of === "number" ? new Date(as_of).getTime() : NaN;
+  return {
+    temporal: {
+      ...Number.isFinite(asOfMs) ? { asOf: new Date(asOfMs).toISOString() } : {},
+      includeSuperseded: include_superseded === true || include_superseded === 1 || include_superseded === "1" || include_superseded === "true"
+    },
+    rest
+  };
+}
+function validityCond(alias, temporal, params, nextIdx) {
+  if (temporal.asOf !== void 0) {
+    const i = nextIdx();
+    params.push(temporal.asOf);
+    return `COALESCE(${alias}valid_at, ${alias}created_at) <= $${i}::timestamptz AND (${alias}invalid_at IS NULL OR ${alias}invalid_at > $${i}::timestamptz)`;
+  }
+  if (temporal.includeSuperseded) return null;
+  return `(${alias}invalid_at IS NULL OR ${alias}invalid_at > now())`;
+}
+function foldValidity(payload, row, temporal) {
+  const validAt = row.valid_at ?? null;
+  const invalidAt = row.invalid_at ?? null;
+  const supersededBy = row.superseded_by ?? null;
+  if (validAt === null && invalidAt === null && supersededBy === null && temporal.asOf === void 0) {
+    return payload;
+  }
+  const refMs = temporal.asOf !== void 0 ? new Date(temporal.asOf).getTime() : Date.now();
+  const invalidMs = invalidAt !== null ? new Date(String(invalidAt)).getTime() : null;
+  return {
+    ...payload,
+    validity: {
+      valid_at: validAt,
+      invalid_at: invalidAt,
+      superseded_by: supersededBy,
+      status: invalidMs !== null && invalidMs <= refMs ? "superseded" : "current"
+    }
+  };
+}
+var CanonicalVectorStore = class {
+  cfg;
+  /** 'entity' when mem0 constructed this instance as its entity store. */
+  storeKind;
+  userId = "";
+  // A small Pool, not a single Client: concurrent callers (parallel
+  // memory writes, the bench's concurrent seeding) interleave queries,
+  // which a lone pg.Client only tolerates via a deprecated internal
+  // queue (removed in pg@9). Connection errors surface per query and
+  // retry naturally — no poison-cache to manage.
+  pool = null;
+  constructor(config) {
+    this.cfg = config;
+    this.storeKind = config.collectionName?.endsWith("_entities") ? "entity" : "memory";
+  }
+  async getClient() {
+    if (!this.pool) {
+      this.pool = new Pool({
+        host: this.cfg.host,
+        port: this.cfg.port,
+        user: this.cfg.user,
+        password: this.cfg.password,
+        database: this.cfg.dbname,
+        max: 5
+      });
+      this.pool.on("error", () => {
+      });
+    }
+    return this.pool;
+  }
+  /**
+   * Whether this server understands `hnsw.iterative_scan` (pgvector >= 0.8).
+   * Probed ONCE per store and cached. An older build rejects the GUC with
+   * `unrecognized configuration parameter`, so we must never assume it
+   * exists — failing open (a narrower result) beats failing search entirely.
+   */
+  iterativeScanSupport = null;
+  probeIterativeScan(pool) {
+    if (!this.iterativeScanSupport) {
+      this.iterativeScanSupport = (async () => {
+        const conn = await pool.connect();
+        try {
+          await conn.query("BEGIN");
+          await conn.query(`SET LOCAL hnsw.iterative_scan = relaxed_order`);
+          return true;
+        } catch {
+          return false;
+        } finally {
+          try {
+            await conn.query("ROLLBACK");
+          } catch {
+          }
+          conn.release();
+        }
+      })();
+    }
+    return this.iterativeScanSupport;
+  }
+  /**
+   * Run the vector search with HNSW *iterative* scanning enabled.
+   *
+   * Why this is required rather than a tuning nicety: the scope predicate
+   * (`c.payload->>'user_id'`) lives on the JOINED canonical table, so
+   * Postgres can only apply it AFTER the approximate index scan has already
+   * chosen its candidate set. Without iterative scanning that scan stops at
+   * `hnsw.ef_search` (default 40) candidates, and any scope whose rows are
+   * not among those 40 silently yields FEWER rows than LIMIT — with no error
+   * and no signal to the caller. Measured on the live store 2026-08-02
+   * (EI-19386910150607131): a `LIMIT 12` scoped pull returned **0 rows**
+   * against **18,510 eligible** ones. Iterative scanning keeps scanning
+   * until LIMIT is satisfied, bounded by `hnsw.max_scan_tuples` (default
+   * 20k), so a starved scope degrades to "fewer than asked" instead of zero.
+   *
+   * `relaxed_order` over `strict_order`: measured identical top-12 and
+   * identical worst score on the live store at ~4x the speed (8.6ms vs
+   * 35.2ms), and every caller re-ranks downstream anyway.
+   */
+  async runVectorSearch(pool, sql, params) {
+    if (!await this.probeIterativeScan(pool)) return pool.query(sql, params);
+    const conn = await pool.connect();
+    try {
+      await conn.query("BEGIN READ ONLY");
+      await conn.query(`SET LOCAL hnsw.iterative_scan = relaxed_order`);
+      const res = await conn.query(sql, params);
+      await conn.query("COMMIT");
+      return res;
+    } catch (err) {
+      try {
+        await conn.query("ROLLBACK");
+      } catch {
+      }
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+  async initialize() {
+  }
+  /**
+   * Close the cached PG pool. The mem0 client is torn down + rebuilt on a
+   * TTL (1h) and on `invalidateMemoryClient()`; each rebuild constructs a fresh
+   * store via the patched VectorStoreFactory. Without this, the prior store's
+   * pool is orphaned — a slow connection leak against embedded PG over a
+   * long-running operator. Idempotent and tolerant of a never-connected store.
+   */
+  async dispose() {
+    const p = this.pool;
+    this.pool = null;
+    if (!p) return;
+    try {
+      await p.end();
+    } catch {
+    }
+  }
+  async insert(vectors, ids, payloads) {
+    if (vectors.length !== ids.length || ids.length !== payloads.length) {
+      throw new Error("CanonicalVectorStore.insert: vectors/ids/payloads length mismatch");
+    }
+    const client = await this.getClient();
+    const vecTable = `${this.cfg.schema}.${this.cfg.vecTable}`;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const vec = vectors[i];
+      const { validity: _validity, ...payload } = payloads[i] ?? {};
+      if (this.storeKind === "entity" && entityFilterEnabled() && payload.entityType === "COMPOUND" && isLowQualityCompoundEntity(String(payload.data ?? ""))) {
+        continue;
+      }
+      if (vec.length !== this.cfg.embeddingModelDims) {
+        throw new Error(
+          `CanonicalVectorStore.insert: vector dim ${vec.length} !== expected ${this.cfg.embeddingModelDims}`
+        );
+      }
+      await client.query(
+        `INSERT INTO ${this.cfg.schema}.memory_canonical (id, payload, created_at, updated_at)
+         VALUES ($1, $2::jsonb, now(), now())
+         ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`,
+        [id, JSON.stringify(payload)]
+      );
+      await client.query(
+        `INSERT INTO ${vecTable} (memory_id, vector, embedded_at)
+         VALUES ($1, $2::vector, now())
+         ON CONFLICT (memory_id) DO UPDATE SET vector = EXCLUDED.vector, embedded_at = now()`,
+        [id, toVectorLiteral(vec)]
+      );
+    }
+  }
+  async search(query, topK = 5, filters) {
+    const client = await this.getClient();
+    const vecTable = `${this.cfg.schema}.${this.cfg.vecTable}`;
+    const { temporal, rest } = splitTemporalControls(filters);
+    const conds = [storeKindCond("c.", this.storeKind), `c.state != 'archived'`];
+    const params = [toVectorLiteral(query), topK];
+    let idx = 3;
+    if (rest) {
+      for (const [key, value] of Object.entries(rest)) {
+        if (value === void 0 || value === null) continue;
+        if (typeof value !== "string" && typeof value !== "number") continue;
+        conds.push(`c.payload->>'${safeKey(key)}' = $${idx}`);
+        params.push(String(value));
+        idx++;
+      }
+    }
+    if (this.storeKind === "memory") {
+      const vCond = validityCond("c.", temporal, params, () => idx++);
+      if (vCond) conds.push(vCond);
+    }
+    const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
+    const sql = `
+      SELECT c.id, c.payload, c.valid_at, c.invalid_at, c.superseded_by,
+             1 - (v.vector <=> $1::vector) AS score
+      FROM ${vecTable} v
+      JOIN ${this.cfg.schema}.memory_canonical c ON c.id = v.memory_id
+      ${where}
+      ORDER BY v.vector <=> $1::vector
+      LIMIT $2
+    `;
+    const res = await this.runVectorSearch(client, sql, params);
+    return res.rows.map(
+      (r) => ({
+        id: r.id,
+        payload: this.storeKind === "memory" ? foldValidity(r.payload, r, temporal) : r.payload,
+        score: Number(r.score)
+      })
+    );
+  }
+  // mem0 calls this for BM25 hybrid scoring. Returning null tells mem0
+  // to fall back to pure semantic; we can wire postgres FTS later if
+  // the quality gap is real.
+  async keywordSearch(_query, _topK, _filters) {
+    return null;
+  }
+  /**
+   * EMBED-FREE lexical search — originally the degraded-path fallback behind
+   * `MemoryBackend.searchLexical` (WI-4214); since P-002 of
+   * memory-pg-lexical-own-injection-2026-07-13 also the FIRST-CLASS lexical
+   * leg of the `hybrid-pg` backend, brought to scoring parity with the
+   * claude-file leg that benched best on exact-identifier recall. Pulls
+   * candidates matching ANY query token (ILIKE) across the payload's `name`,
+   * `description`, and `data` fields, then field-weight scores in JS — per
+   * token: name hit ×3, else description hit ×2, else data hit ×1,
+   * normalized 0..1 by tokens×3. NOT on the cosine scale; ordering only.
+   * Reuses the store-kind + archived guards and the post-filter semantics of
+   * search()/list(). Bounded: ≤ LEXICAL_MAX_TOKENS tokens, candidates
+   * capped, no vec-table join.
+   */
+  async lexicalSearch(query, topK = 5, filters) {
+    const tokens = lexicalTokens(query);
+    if (tokens.length === 0) return [];
+    const client = await this.getClient();
+    const { temporal, rest } = splitTemporalControls(filters);
+    const conds = [storeKindCond("", this.storeKind), `state != 'archived'`];
+    const params = [];
+    let idx = 1;
+    if (rest) {
+      for (const [key, value] of Object.entries(rest)) {
+        if (value === void 0 || value === null) continue;
+        if (typeof value !== "string" && typeof value !== "number") continue;
+        conds.push(`payload->>'${safeKey(key)}' = $${idx}`);
+        params.push(String(value));
+        idx++;
+      }
+    }
+    if (this.storeKind === "memory") {
+      const vCond = validityCond("", temporal, params, () => idx++);
+      if (vCond) conds.push(vCond);
+    }
+    const scoreTerms = [];
+    const matchTerms = [];
+    for (const t of tokens) {
+      params.push(`%${t.replace(/[\\%_]/g, (m) => `\\${m}`)}%`);
+      const p = `$${idx++}`;
+      scoreTerms.push(
+        `CASE WHEN nm ILIKE ${p} THEN 3 WHEN ds ILIKE ${p} THEN 2 WHEN dt ILIKE ${p} THEN 1 ELSE 0 END`
+      );
+      matchTerms.push(`nm ILIKE ${p} OR ds ILIKE ${p} OR dt ILIKE ${p}`);
+    }
+    const rawScore = scoreTerms.join(" + ");
+    params.push(topK);
+    const res = await client.query(
+      `SELECT id, payload, valid_at, invalid_at, superseded_by,
+              (${rawScore})::float AS lex_raw
+       FROM (
+         SELECT id, payload, valid_at, invalid_at, superseded_by, created_at,
+                payload->>'name' AS nm,
+                payload->>'description' AS ds,
+                payload->>'data' AS dt
+         FROM ${this.cfg.schema}.memory_canonical
+         WHERE ${conds.join(" AND ")}
+         OFFSET 0
+       ) c
+       WHERE (${matchTerms.join(" OR ")})
+       ORDER BY lex_raw DESC, created_at DESC
+       LIMIT $${idx}`,
+      params
+    );
+    return res.rows.map(
+      (r) => ({
+        id: r.id,
+        payload: this.storeKind === "memory" ? foldValidity(r.payload, r, temporal) : r.payload,
+        score: Number(r.lex_raw) / (tokens.length * 3)
+      })
+    );
+  }
+  async get(id) {
+    const client = await this.getClient();
+    const res = await client.query(
+      `SELECT id, payload FROM ${this.cfg.schema}.memory_canonical WHERE id = $1`,
+      [id]
+    );
+    if (res.rowCount === 0) return null;
+    return { id: res.rows[0].id, payload: res.rows[0].payload };
+  }
+  async update(id, vector, payload) {
+    await this.insert([vector], [id], [payload]);
+  }
+  /**
+   * Patch a memory row's metadata WITHOUT re-embedding — a shallow merge of
+   * `patch` into the existing `payload` jsonb (`payload || patch`, so patch keys
+   * override and unspecified keys are preserved). This is the store half of the
+   * neutral `MemoryBackend.update({ metadata })` path (mem0's OSS text-only
+   * update can't touch metadata). VEC-SAFE: the embedding lives in the separate
+   * `memory_vec_*` tables keyed by `memory_id`, untouched here — scope (`user_id`),
+   * `workspace_id`, `kind`, anchors etc. are filter/display fields, not embedded,
+   * so a metadata fix needs no re-embed. Guarded to MEMORY rows (never an mem0
+   * entity-linking row, which carries `entityType`). Returns whether a row matched
+   * (false = unknown id → the not-found contract the backend surfaces).
+   */
+  async updatePayload(id, patch) {
+    if (!patch || typeof patch !== "object" || Object.keys(patch).length === 0) return false;
+    const { validity: _validity, ...rest } = patch;
+    const client = await this.getClient();
+    const res = await client.query(
+      `UPDATE ${this.cfg.schema}.memory_canonical
+          SET payload = payload || $2::jsonb, updated_at = now()
+        WHERE id = $1 AND NOT (payload ? 'entityType')`,
+      [id, JSON.stringify(rest)]
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+  /**
+   * Close a memory row's validity window — the store half of soft-forget and
+   * supersession (temporal P-002/P-004). VEC-SAFE: a column-only UPDATE, the
+   * embedding is never touched (validity is not embedded), so invalidation
+   * costs no re-embed. First-wins idempotence: only an OPEN row
+   * (`invalid_at IS NULL`) matches, so a repeat call or a racing peer is a
+   * no-op returning false — the first closer's window (and superseded_by)
+   * stands. Entity rows are exempt (mem0's lifecycle). Returns whether an
+   * open memory row was closed.
+   */
+  async invalidate(id, opts = {}) {
+    const client = await this.getClient();
+    const res = await client.query(
+      `UPDATE ${this.cfg.schema}.memory_canonical
+          SET invalid_at = COALESCE($2::timestamptz, now()),
+              superseded_by = $3::uuid,
+              updated_at = now()
+        WHERE id = $1 AND NOT (payload ? 'entityType') AND invalid_at IS NULL`,
+      [id, opts.at ?? null, opts.supersededBy ?? null]
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+  async delete(id) {
+    const client = await this.getClient();
+    await client.query(`DELETE FROM ${this.cfg.schema}.memory_canonical WHERE id = $1`, [id]);
+  }
+  /**
+   * mem0 calls this for collection-wide reset (deleteAll, reset). The
+   * canonical table is SHARED across every user + harness (scope lives in
+   * `payload.user_id`), so an unscoped `DELETE` here would wipe EVERYONE's
+   * memories — a multi-tenant data-loss footgun. We scope the reset to the
+   * store's current `userId` instead: cascade clears that user's vec rows in
+   * both model tables, and other scopes are untouched. With no active scope we
+   * refuse rather than nuke the shared table.
+   */
+  async deleteCol() {
+    if (!this.userId) {
+      console.warn(
+        "[memory] CanonicalVectorStore.deleteCol called with no userId scope \u2014 refusing to wipe the shared memory_canonical table."
+      );
+      return;
+    }
+    const client = await this.getClient();
+    await client.query(
+      `DELETE FROM ${this.cfg.schema}.memory_canonical WHERE payload->>'user_id' = $1`,
+      [this.userId]
+    );
+  }
+  /**
+   * List canonical rows matching the filter. Crucially this does NOT
+   * gate on vec-table presence — entries written under another
+   * embedder mode are real memories the user expects to see and
+   * edit/delete. (Semantic SEARCH naturally requires a vector in the
+   * active model; LIST does not.)
+   */
+  async list(filters, topK = 100) {
+    const client = await this.getClient();
+    const { temporal, rest } = splitTemporalControls(filters);
+    const conds = [storeKindCond("", this.storeKind), `state != 'archived'`];
+    const params = [];
+    let idx = 1;
+    if (rest) {
+      for (const [key, value] of Object.entries(rest)) {
+        if (value === void 0 || value === null) continue;
+        if (typeof value !== "string" && typeof value !== "number") continue;
+        conds.push(`payload->>'${safeKey(key)}' = $${idx}`);
+        params.push(String(value));
+        idx++;
+      }
+    }
+    if (this.storeKind === "memory") {
+      const vCond = validityCond("", temporal, params, () => idx++);
+      if (vCond) conds.push(vCond);
+    }
+    const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
+    const listSql = `
+      SELECT id, payload, valid_at, invalid_at, superseded_by
+      FROM ${this.cfg.schema}.memory_canonical
+      ${where}
+      ORDER BY created_at DESC
+      LIMIT $${idx}
+    `;
+    const countSql = `
+      SELECT COUNT(*)::bigint AS n
+      FROM ${this.cfg.schema}.memory_canonical
+      ${where}
+    `;
+    const [listRes, countRes] = await Promise.all([
+      client.query(listSql, [...params, topK]),
+      client.query(countSql, params)
+    ]);
+    const rows = listRes.rows.map(
+      (r) => ({
+        id: r.id,
+        payload: this.storeKind === "memory" ? foldValidity(r.payload, r, temporal) : r.payload
+      })
+    );
+    return [rows, Number(countRes.rows[0].n)];
+  }
+  async getUserId() {
+    return this.userId;
+  }
+  async setUserId(userId) {
+    this.userId = userId;
+  }
+};
 
 // ../../libs/generic/memory/src/mem0-client.ts
 init_config();
+
+// ../../libs/generic/memory/src/embed-coalesce.ts
+import { createHash } from "node:crypto";
+function coalesceEmbedFn(fn, opts = {}) {
+  return coalesceEmbedFnWithStats(fn, opts).embed;
+}
+function coalesceEmbedFnWithStats(fn, opts = {}) {
+  const ttlMs = opts.ttlMs ?? 6e4;
+  const maxEntries = opts.maxEntries ?? 64;
+  const now = opts.now ?? Date.now;
+  const inFlight = /* @__PURE__ */ new Map();
+  const done = /* @__PURE__ */ new Map();
+  const stats = { hits: 0, coalesced: 0, misses: 0, size: () => done.size };
+  const embed = (text) => {
+    const key = createHash("sha256").update(text).digest("base64");
+    const hit = done.get(key);
+    if (hit) {
+      if (now() - hit.at < ttlMs) {
+        stats.hits += 1;
+        done.delete(key);
+        done.set(key, hit);
+        return Promise.resolve(hit.vector);
+      }
+      done.delete(key);
+    }
+    const pending = inFlight.get(key);
+    if (pending) {
+      stats.coalesced += 1;
+      return pending;
+    }
+    stats.misses += 1;
+    const p = (async () => {
+      const vector = await fn(text);
+      if (Array.isArray(vector) && vector.length > 0) {
+        done.set(key, { vector, at: now() });
+        while (done.size > maxEntries) {
+          const oldest = done.keys().next().value;
+          if (oldest === void 0) break;
+          done.delete(oldest);
+        }
+      }
+      return vector;
+    })();
+    const tracked = p.finally(() => {
+      inFlight.delete(key);
+    });
+    inFlight.set(key, tracked);
+    return tracked;
+  };
+  return { embed, stats };
+}
+
+// ../../libs/generic/memory/src/extraction-llm.ts
+var ExtractionAuthError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ExtractionAuthError";
+  }
+};
+var FallbackExtractionLlm = class {
+  constructor(primary, buildFallback, opts) {
+    this.primary = primary;
+    this.buildFallback = buildFallback;
+    this.opts = opts;
+  }
+  demoted = false;
+  fallbackPromise;
+  /** Test/diagnostic hook: has the primary been sticky-demoted? */
+  get isDemoted() {
+    return this.demoted;
+  }
+  label() {
+    return this.opts.primaryLabel ?? "session extraction LLM";
+  }
+  async fallback() {
+    this.fallbackPromise ??= this.buildFallback().catch((e) => {
+      this.opts.warn(
+        `extraction fallback rung failed to build: ${e.message}`
+      );
+      return null;
+    });
+    return this.fallbackPromise;
+  }
+  async route(viaPrimary, viaFallback) {
+    if (!this.demoted) {
+      try {
+        return await viaPrimary();
+      } catch (e) {
+        const err = e;
+        if (err instanceof ExtractionAuthError) {
+          this.demoted = true;
+          this.opts.warn(
+            `${this.label()} auth-rejected after refresh+retry \u2014 demoting to API-key extraction for this process lifetime (re-probed next boot): ${err.message}`
+          );
+        } else {
+          this.opts.warn(
+            `${this.label()} failed (${err.message.slice(0, 140)}) \u2014 serving this extraction from the API-key rung`
+          );
+        }
+        const fb2 = await this.fallback();
+        if (!fb2) {
+          this.opts.warn(
+            `no API-key extraction rung available \u2014 this extraction is LOST (add a key at /settings/api-keys or restore the Claude session)`
+          );
+          throw err;
+        }
+        return viaFallback(fb2);
+      }
+    }
+    const fb = await this.fallback();
+    if (!fb) {
+      throw new ExtractionAuthError(
+        `${this.label()} demoted and no API-key extraction rung available`
+      );
+    }
+    return viaFallback(fb);
+  }
+  generateResponse(messages, responseFormat, tools) {
+    return this.route(
+      () => this.primary.generateResponse(messages, responseFormat, tools),
+      (fb) => fb.generateResponse(messages, responseFormat, tools)
+    );
+  }
+  generateChat(messages) {
+    return this.route(
+      () => this.primary.generateChat(messages),
+      (fb) => fb.generateChat(messages)
+    );
+  }
+};
 
 // ../../libs/generic/memory/src/dynamic-import.ts
 var newFunctionImport = new Function("specifier", "return import(specifier)");
@@ -5207,15 +5977,839 @@ async function dynamicImport(specifier) {
 }
 
 // ../../libs/generic/memory/src/mem0-client.ts
+var LLM_MODEL = "claude-haiku-4-5";
+var MEM0_COLLECTION_PREFIX = "operator_memory";
+var _factoryPatched = false;
+var _embedderFactoryPatched = false;
+var _llmFactoryPatched = false;
+var _currentEmbedFn = null;
+function patchVectorStoreFactory(mem0Module) {
+  if (_factoryPatched) return;
+  const Factory = mem0Module.VectorStoreFactory;
+  if (!Factory || typeof Factory.create !== "function") {
+    warnOnce("mem0 VectorStoreFactory not patchable (interface changed?); canonical store unavailable");
+    return;
+  }
+  const orig = Factory.create.bind(Factory);
+  Factory.create = (provider, config) => {
+    if (provider === "canonical") {
+      const store = new CanonicalVectorStore(
+        config
+      );
+      _liveCanonicalStores.add(store);
+      return store;
+    }
+    return orig(provider, config);
+  };
+  _factoryPatched = true;
+}
+var _liveCanonicalStores = /* @__PURE__ */ new Set();
+async function disposeLiveCanonicalStores() {
+  const stores = [..._liveCanonicalStores];
+  _liveCanonicalStores.clear();
+  await Promise.allSettled(stores.map((s) => s.dispose()));
+}
+async function updateMemoryPayload(id, patch) {
+  await getMemoryClient();
+  const store = [..._liveCanonicalStores][0];
+  if (!store) throw new Error("mem0_unavailable");
+  return store.updatePayload(id, patch);
+}
+async function lexicalSearchCanonical(query, topK, filters) {
+  await getMemoryClient();
+  const store = [..._liveCanonicalStores][0];
+  if (!store) throw new Error("mem0_unavailable");
+  return store.lexicalSearch(query, topK, filters);
+}
+async function vectorSearchCanonical(vector, topK, filters) {
+  await getMemoryClient();
+  const store = [..._liveCanonicalStores][0];
+  if (!store) throw new Error("mem0_unavailable");
+  return store.search(vector, topK, filters);
+}
+async function embedForCurrentClient(text) {
+  const client = await getMemoryClient().catch(() => null);
+  if (!client || !_currentEmbedFn) return null;
+  try {
+    return await _currentEmbedFn(text);
+  } catch {
+    return null;
+  }
+}
+async function invalidateEntryCanonical(id, opts = {}) {
+  await getMemoryClient();
+  const store = [..._liveCanonicalStores][0];
+  if (!store) throw new Error("mem0_unavailable");
+  return store.invalidate(id, opts);
+}
+function patchEmbedderFactory(mem0Module) {
+  if (_embedderFactoryPatched) return;
+  const Factory = mem0Module.EmbedderFactory;
+  if (!Factory || typeof Factory.create !== "function") {
+    warnOnce("mem0 EmbedderFactory not patchable (interface changed?); custom embedder unavailable");
+    return;
+  }
+  const orig = Factory.create.bind(Factory);
+  Factory.create = (provider, config) => {
+    if (provider === "custom") {
+      return {
+        embed: (text) => _currentEmbedFn(text),
+        embedBatch: (texts) => Promise.all(texts.map((t) => _currentEmbedFn(t)))
+      };
+    }
+    return orig(provider, config);
+  };
+  _embedderFactoryPatched = true;
+}
+var _currentExtractionLlm = null;
+function patchLlmFactory(mem0Module) {
+  if (_llmFactoryPatched) return;
+  const Factory = mem0Module.LLMFactory;
+  if (!Factory || typeof Factory.create !== "function") {
+    warnOnce("mem0 LLMFactory not patchable (interface changed?); session extraction unavailable");
+    return;
+  }
+  const orig = Factory.create.bind(Factory);
+  Factory.create = (provider, config) => {
+    if (provider === "custom") {
+      const llm = {
+        generateResponse: (messages, responseFormat, tools) => _currentExtractionLlm.generateResponse(messages, responseFormat, tools),
+        generateChat: (messages) => _currentExtractionLlm.generateChat(messages)
+      };
+      return llm;
+    }
+    return orig(provider, config);
+  };
+  _llmFactoryPatched = true;
+}
+var MEM0_PACKAGE = "mem0ai/oss";
+var _client = null;
+var _clientMode = null;
+var _clientBuiltAt = 0;
 var _clientTtlMs = 60 * 60 * 1e3;
+var _clientPermanentFailure = false;
+var _seenWarnReasons = /* @__PURE__ */ new Set();
+function warnOnce(reason) {
+  if (_seenWarnReasons.has(reason)) return;
+  _seenWarnReasons.add(reason);
+  console.warn(`[mem0] ${reason}.`);
+}
+var _anthropicKeyProbeCache = /* @__PURE__ */ new Map();
+async function anthropicKeyUsable(key, fetchImpl = fetch) {
+  const cached = _anthropicKeyProbeCache.get(key);
+  if (cached !== void 0) return cached;
+  let usable = true;
+  try {
+    const r = await fetchImpl("https://api.anthropic.com/v1/models?limit=1", {
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01" }
+    });
+    usable = !(r.status === 401 || r.status === 403);
+  } catch {
+    usable = true;
+  }
+  _anthropicKeyProbeCache.set(key, usable);
+  return usable;
+}
+async function resolveExtractionLlmConfig(keys, probe = anthropicKeyUsable, sessionLlm) {
+  if (sessionLlm) {
+    return { provider: "custom", config: {} };
+  }
+  const { anthropicKey, openaiKey } = keys;
+  const anthropicOk = anthropicKey ? await probe(anthropicKey) : false;
+  if (anthropicKey && anthropicOk) {
+    return { provider: "anthropic", config: { apiKey: anthropicKey, model: LLM_MODEL } };
+  }
+  if (openaiKey) {
+    if (anthropicKey) {
+      warnOnce(
+        "anthropic key rejected (401/403) \u2014 falling back to OpenAI gpt-4o-mini for fact extraction; rotate the key at /settings/api-keys"
+      );
+    }
+    return { provider: "openai", config: { apiKey: openaiKey, model: "gpt-4o-mini" } };
+  }
+  if (anthropicKey) {
+    warnOnce(
+      "anthropic key rejected (401/403) and no OpenAI key \u2014 mem0 fact extraction WILL fail until the key is rotated at /settings/api-keys (search + verbatim writes still work)"
+    );
+    return { provider: "anthropic", config: { apiKey: anthropicKey, model: LLM_MODEL } };
+  }
+  return null;
+}
+var _clientBuildPromise = null;
+async function tryLoad() {
+  if (_client && Date.now() - _clientBuiltAt < _clientTtlMs) return _client;
+  if (_clientPermanentFailure) return null;
+  if (_clientBuildPromise) return _clientBuildPromise;
+  _clientBuildPromise = buildClient().finally(() => {
+    _clientBuildPromise = null;
+  });
+  return _clientBuildPromise;
+}
+async function buildClient() {
+  if (_client) {
+    _client = null;
+    void disposeLiveCanonicalStores();
+  }
+  if (_clientPermanentFailure) return null;
+  const resolved = await memoryHost().resolveEmbedder();
+  if (resolved.mode === "disabled") {
+    if (resolved.reason && resolved.reason !== "user_disabled") {
+      warnOnce(`embedder unavailable: ${resolved.reason} (set memoryEmbedderMode in /settings/user)`);
+    }
+    return null;
+  }
+  const coalescedEmbed = coalesceEmbedFn(resolved.embed);
+  let pgFields2;
+  try {
+    const { pgFields: getFields } = await Promise.resolve().then(() => (init_mem0_connection(), mem0_connection_exports));
+    pgFields2 = await getFields();
+  } catch (e) {
+    warnOnce(`couldn't resolve PG connection: ${e.message}`);
+    return null;
+  }
+  const creds = await memoryHost().getCredentials();
+  const anthropicKey = creds.anthropic_api_key ?? process.env.ANTHROPIC_API_KEY ?? "";
+  const openaiKey = creds.openai_api_key ?? process.env.OPENAI_API_KEY ?? "";
+  let sessionLlm = null;
+  try {
+    sessionLlm = await memoryHost().getExtractionLlm?.() ?? null;
+  } catch (e) {
+    warnOnce(`host getExtractionLlm threw (${e.message}); using key rungs`);
+  }
+  const llmConfig = await resolveExtractionLlmConfig({ anthropicKey, openaiKey }, void 0, sessionLlm);
+  if (!llmConfig) {
+    warnOnce("no Claude session and no Anthropic or OpenAI API key in operator-credentials or env (add at /settings/api-keys)");
+    return null;
+  }
+  const collectionName = `${MEM0_COLLECTION_PREFIX}_${resolved.mode}`;
+  const vecTable = resolved.mode === "openai" ? "memory_vec_openai" : resolved.mode === "gemma" ? "memory_vec_gemma" : resolved.mode === "harrier" ? "memory_vec_harrier" : "memory_vec_local";
+  let vectorStoreConfig;
+  try {
+    const pgMod = await Promise.resolve().then(() => (init_esm(), esm_exports));
+    const Client2 = pgMod.Client ?? pgMod.default?.Client;
+    if (!Client2) throw new Error("pg.Client not resolvable");
+    const probe = new Client2({ host: pgFields2.host, port: pgFields2.port, user: pgFields2.user, password: pgFields2.password, database: pgFields2.dbname });
+    await probe.connect();
+    const r = await probe.query("SELECT 1 FROM pg_available_extensions WHERE name='vector'");
+    await probe.end();
+    if (r.rowCount && r.rowCount > 0) {
+      vectorStoreConfig = {
+        provider: "canonical",
+        config: {
+          host: pgFields2.host,
+          port: pgFields2.port,
+          user: pgFields2.user,
+          password: pgFields2.password,
+          dbname: pgFields2.dbname,
+          schema: memorySchema(),
+          collectionName,
+          vecTable,
+          embeddingModelDims: resolved.dims,
+          // mem0 `_autoInitialize` reads `vectorStore.config.dimension` to skip its
+          // live-embed detection probe (see embedderConfig note) — EI-4027.
+          dimension: resolved.dims
+        }
+      };
+    } else {
+      warnOnce("pgvector extension not available in embedded PG \u2014 falling back to in-process memory store (volatile)");
+      vectorStoreConfig = {
+        provider: "memory",
+        config: { collectionName, embeddingModelDims: resolved.dims }
+      };
+    }
+  } catch (e) {
+    warnOnce(`pgvector probe failed: ${e.message}; falling back to in-process memory store`);
+    vectorStoreConfig = {
+      provider: "memory",
+      config: { collectionName, embeddingModelDims: resolved.dims }
+    };
+  }
+  const embedderConfig = {
+    provider: "custom",
+    config: { embed: coalescedEmbed, embeddingDims: resolved.dims }
+  };
+  let historyDbPath = ":memory:";
+  const localStoreDir = memoryHost().localStoreDir;
+  if (localStoreDir !== null) {
+    try {
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const fs = await import("node:fs/promises");
+      const dir = localStoreDir ?? os.tmpdir();
+      await fs.mkdir(dir, { recursive: true });
+      historyDbPath = path.join(dir, "mem0-history.db");
+    } catch {
+    }
+  }
+  let customInstructions;
+  try {
+    customInstructions = await memoryHost().getLearningInstructions?.() ?? void 0;
+  } catch {
+  }
+  try {
+    const nlpFix = process.env.PAPERCUSP_MEMORY_ENTITY_NLP !== "off";
+    const gt = globalThis;
+    const hadGlobalRequire = "require" in globalThis;
+    let installedRequire = false;
+    if (nlpFix && !hadGlobalRequire) {
+      try {
+        const { createRequire } = await import("node:module");
+        gt.require = createRequire(import.meta.url);
+        installedRequire = true;
+      } catch {
+      }
+    }
+    let mem0;
+    try {
+      mem0 = await dynamicImport(MEM0_PACKAGE);
+    } finally {
+      if (installedRequire) {
+        try {
+          delete gt.require;
+        } catch {
+          gt.require = void 0;
+        }
+      }
+    }
+    patchVectorStoreFactory(mem0);
+    _currentEmbedFn = coalescedEmbed;
+    patchEmbedderFactory(mem0);
+    if (sessionLlm) {
+      patchLlmFactory(mem0);
+      _currentExtractionLlm = new FallbackExtractionLlm(
+        sessionLlm,
+        async () => {
+          const cfg = await resolveExtractionLlmConfig({ anthropicKey, openaiKey });
+          if (!cfg || !mem0.LLMFactory) return null;
+          return mem0.LLMFactory.create(
+            cfg.provider,
+            cfg.config
+          );
+        },
+        { warn: warnOnce, primaryLabel: "claude-session extraction" }
+      );
+    }
+    const { Memory } = mem0;
+    _client = new Memory({
+      embedder: embedderConfig,
+      vectorStore: vectorStoreConfig,
+      llm: llmConfig,
+      historyDbPath,
+      ...customInstructions ? { customInstructions } : {}
+    });
+    _clientMode = resolved.mode;
+    _clientBuiltAt = Date.now();
+    const clientToWarm = _client;
+    void (async () => {
+      try {
+        await clientToWarm.search("warmup", { filters: { user_id: "__mem0_warmup__" }, topK: 1, limit: 1 });
+      } catch {
+      }
+    })();
+    return _client;
+  } catch (e) {
+    const msg = e.message ?? String(e);
+    if (/cannot find module|MODULE_NOT_FOUND|Cannot resolve/i.test(msg)) {
+      _clientPermanentFailure = true;
+      warnOnce(`${msg}. Run 'npm install --legacy-peer-deps' in apps/operator to enable.`);
+    } else {
+      warnOnce(msg);
+    }
+    return null;
+  }
+}
+async function getMemoryClient() {
+  return tryLoad();
+}
+function invalidateMemoryClient() {
+  _client = null;
+  _clientBuiltAt = 0;
+  void disposeLiveCanonicalStores();
+}
+
+// ../../libs/generic/memory/src/backend.ts
+var MemoryUnavailableError = class extends Error {
+  constructor(reason) {
+    super(`memory backend unavailable: ${reason}`);
+    this.reason = reason;
+    this.name = "MemoryUnavailableError";
+  }
+};
+function scopesOf(scope) {
+  const arr = typeof scope === "string" ? [scope] : [...scope];
+  return [...new Set(arr.filter((s) => typeof s === "string" && s.length > 0))];
+}
+
+// ../../libs/generic/memory/src/score-floor.ts
+function applyScoreFloor(entries, opts) {
+  const { minScore, minScoreRatio } = opts;
+  if (minScore === void 0 && minScoreRatio === void 0) return [...entries];
+  const scores = entries.map((e) => e.score).filter((s) => typeof s === "number");
+  if (scores.length === 0) return [...entries];
+  const top = Math.max(...scores);
+  const absFloor = minScore ?? -Infinity;
+  const relFloor = minScoreRatio !== void 0 ? minScoreRatio * top : -Infinity;
+  const floor = Math.max(absFloor, relFloor);
+  return entries.filter((e) => typeof e.score !== "number" || e.score >= floor);
+}
+
+// ../../libs/generic/memory/src/diversity-rerank.ts
+function diversityRerank(entries, opts) {
+  const lambda = clamp01(opts.lambda ?? 1);
+  if (entries.length <= 1 || lambda >= 1) return [...entries];
+  const { similarity } = opts;
+  const rawScores = entries.map((e) => typeof e.score === "number" ? e.score : 0);
+  const maxScore = Math.max(0, ...rawScores) || 1;
+  const remaining = entries.map((e, i) => ({ e, norm: rawScores[i] / maxScore }));
+  const selected = [];
+  while (remaining.length > 0) {
+    let bestIdx = 0;
+    let bestVal = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const cand = remaining[i];
+      let maxSim = 0;
+      for (const s of selected) {
+        const sim = similarity(cand.e, s);
+        if (sim > maxSim) maxSim = sim;
+      }
+      const val = lambda * cand.norm - (1 - lambda) * maxSim;
+      if (val > bestVal) {
+        bestVal = val;
+        bestIdx = i;
+      }
+    }
+    selected.push(remaining[bestIdx].e);
+    remaining.splice(bestIdx, 1);
+  }
+  return selected;
+}
+function clamp01(n) {
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(1, Math.max(0, n));
+}
+function trigrams(s) {
+  const norm = s.toLowerCase().replace(/\s+/g, " ").trim();
+  if (norm.length === 0) return /* @__PURE__ */ new Set();
+  if (norm.length < 3) return /* @__PURE__ */ new Set([norm]);
+  const out = /* @__PURE__ */ new Set();
+  for (let i = 0; i <= norm.length - 3; i++) out.add(norm.slice(i, i + 3));
+  return out;
+}
+function createTextSimilarity() {
+  const cache = /* @__PURE__ */ new WeakMap();
+  const gramsOf = (entry) => {
+    let g = cache.get(entry);
+    if (g === void 0) {
+      g = trigrams(entry.text);
+      cache.set(entry, g);
+    }
+    return g;
+  };
+  return (a, b) => {
+    if (a === b) return 1;
+    const ta = gramsOf(a);
+    const tb = gramsOf(b);
+    if (ta.size === 0 || tb.size === 0) return 0;
+    const [small, large] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+    let inter = 0;
+    for (const t of small) if (large.has(t)) inter++;
+    const union = ta.size + tb.size - inter;
+    return union === 0 ? 0 : inter / union;
+  };
+}
+function diversityDisabledByEnv() {
+  return process.env.PAPERCUSP_MEMORY_MMR === "0";
+}
 
 // ../../libs/generic/memory/src/vec-write.ts
 init_config();
+var VEC_TABLE = {
+  openai: "memory_vec_openai",
+  local: "memory_vec_local",
+  gemma: "memory_vec_gemma",
+  harrier: "memory_vec_harrier"
+};
+var MODE_DIMS = {
+  openai: 768,
+  local: 384,
+  gemma: 768,
+  harrier: 1024
+};
+function vecUpsertSql(schema, mode) {
+  return `INSERT INTO ${schema}.${VEC_TABLE[mode]} (memory_id, vector, embedded_at)
+          VALUES ($1, $2::vector, now())
+          ON CONFLICT (memory_id) DO UPDATE SET vector = EXCLUDED.vector, embedded_at = now()`;
+}
+function toVectorLiteral2(vec) {
+  return `[${vec.join(",")}]`;
+}
+async function embedAndUpsertVector(memoryId, text) {
+  try {
+    const resolved = await memoryHost().resolveEmbedder();
+    if (resolved.mode === "disabled") return false;
+    const mode = resolved.mode;
+    if (!VEC_TABLE[mode]) return false;
+    const vec = await resolved.embed(text);
+    if (!Array.isArray(vec) || vec.length !== MODE_DIMS[mode]) return false;
+    const schema = memorySchema();
+    const pgMod = await Promise.resolve().then(() => (init_esm(), esm_exports));
+    const Client2 = pgMod.Client ?? pgMod.default?.Client;
+    if (!Client2) return false;
+    const { pgClientFields: pgClientFields2 } = await Promise.resolve().then(() => (init_mem0_connection(), mem0_connection_exports));
+    const client = new Client2(await pgClientFields2());
+    await client.connect();
+    try {
+      const r = await client.query(vecUpsertSql(schema, mode), [memoryId, toVectorLiteral2(vec)]);
+      return (r.rowCount ?? 0) > 0;
+    } finally {
+      try {
+        await client.end();
+      } catch {
+      }
+    }
+  } catch {
+    return false;
+  }
+}
+
+// ../../libs/generic/memory/src/mem0-backend.ts
+function temporalFilters(opts) {
+  return {
+    ...opts.asOf !== void 0 ? { as_of: opts.asOf } : {},
+    ...opts.includeSuperseded ? { include_superseded: "true" } : {}
+  };
+}
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var DEFAULT_SEARCH_LIMIT = 8;
+var LIST_TOP_K = 5e3;
+function decayEnabled() {
+  return process.env.PAPERCUSP_MEMORY_DECAY !== "0";
+}
+function decayHalfLifeDays() {
+  const v = Number(process.env.PAPERCUSP_MEMORY_DECAY_HALF_LIFE_DAYS);
+  return Number.isFinite(v) && v > 0 ? v : 30;
+}
+function decayFloor() {
+  const v = Number(process.env.PAPERCUSP_MEMORY_DECAY_FLOOR);
+  return Number.isFinite(v) && v >= 0 && v <= 1 ? v : 0.9;
+}
+function recencyFactor(tsMs, nowMs) {
+  if (tsMs === null) return 1;
+  const ageDays = Math.max(0, (nowMs - tsMs) / 864e5);
+  const floor = decayFloor();
+  return floor + (1 - floor) * Math.pow(0.5, ageDays / decayHalfLifeDays());
+}
+function rowTimestampMs(row) {
+  for (const key of ["updatedAt", "createdAt"]) {
+    const raw = row[key];
+    if (typeof raw === "string" || typeof raw === "number") {
+      const t = new Date(raw).getTime();
+      if (Number.isFinite(t)) return t;
+    }
+  }
+  return null;
+}
+function canonicalPayloadTimestampMs(payload) {
+  for (const key of ["updated_at", "updatedAt", "created_at", "createdAt"]) {
+    const raw = payload?.[key];
+    if (typeof raw === "string" || typeof raw === "number") {
+      const t = new Date(raw).getTime();
+      if (Number.isFinite(t)) return t;
+    }
+  }
+  return null;
+}
+function rowEvent(row) {
+  const direct = row?.event;
+  if (typeof direct === "string") return direct.toUpperCase();
+  const nested = row?.metadata?.event;
+  return typeof nested === "string" ? nested.toUpperCase() : "";
+}
+function extractAddedIds(result) {
+  const rows = Array.isArray(result?.results) ? result.results : [];
+  const out = [];
+  for (const row of rows) {
+    if (rowEvent(row) !== "ADD") continue;
+    const id = typeof row.id === "string" ? row.id : null;
+    if (id && UUID_RE.test(id)) out.push(id);
+  }
+  return out;
+}
+function extractStoredEventCount(result) {
+  const rows = Array.isArray(result?.results) ? result.results : [];
+  let n = 0;
+  for (const row of rows) {
+    const event = rowEvent(row);
+    if (event === "ADD" || event === "UPDATE") n += 1;
+  }
+  return n;
+}
+function toEntry(row, scope) {
+  const metadata = row.metadata ?? void 0;
+  const kind = typeof metadata?.kind === "string" ? metadata.kind : void 0;
+  return {
+    id: row.id,
+    text: row.memory ?? "",
+    ...kind !== void 0 ? { kind } : {},
+    scope,
+    ...typeof row.score === "number" ? { score: row.score } : {},
+    ...metadata !== void 0 ? { metadata } : {}
+  };
+}
+function canonicalRowToEntry(row, scope) {
+  const { data, user_id: _userId, ...rest } = row.payload ?? {};
+  const kind = typeof rest.kind === "string" ? rest.kind : void 0;
+  return {
+    id: row.id,
+    text: typeof data === "string" ? data : String(data ?? ""),
+    ...kind !== void 0 ? { kind } : {},
+    scope,
+    ...typeof row.score === "number" ? { score: row.score } : {},
+    ...Object.keys(rest).length > 0 ? { metadata: rest } : {}
+  };
+}
+function mergeById(entries) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const e of entries) {
+    const prior = byId.get(e.id);
+    if (!prior || (e.score ?? 0) > (prior.score ?? 0)) byId.set(e.id, e);
+  }
+  return [...byId.values()];
+}
+var Mem0Backend = class {
+  name = "mem0";
+  /** pgvector similarity — an absolute, cross-call-comparable measure. */
+  scoreScale = "cosine";
+  /** The embed-free fallback scores token-overlap fractions, NOT cosine
+   *  (see `searchLexical` below) — a different scale from the same backend. */
+  lexicalScoreScale = "lexical";
+  getClient;
+  updatePayload;
+  lexicalSearch;
+  invalidateEntryStore;
+  reembedVector;
+  /** PUBLIC (EI-12992): satisfies MemoryBackend.embedQuery? — a caller issuing
+   *  several search() calls against the same query text embeds once here and
+   *  passes the result as SearchOptions.vector on each call. */
+  embedQuery;
+  vectorSearch;
+  constructor(deps = {}) {
+    this.getClient = deps.getClient ?? getMemoryClient;
+    this.updatePayload = deps.updatePayload ?? updateMemoryPayload;
+    this.lexicalSearch = deps.lexicalSearch ?? lexicalSearchCanonical;
+    this.invalidateEntryStore = deps.invalidateEntry ?? invalidateEntryCanonical;
+    this.reembedVector = deps.reembedVector ?? ((id, _scope, embedText) => embedAndUpsertVector(id, embedText));
+    this.embedQuery = deps.embedQuery ?? (deps.getClient ? async () => null : embedForCurrentClient);
+    this.vectorSearch = deps.vectorSearch ?? vectorSearchCanonical;
+  }
+  async available() {
+    const client = await this.getClient().catch(() => null);
+    return client ? { ok: true } : { ok: false, reason: "mem0_unavailable" };
+  }
+  /** Resolve the client or throw the contract's unavailable error. */
+  async client() {
+    const client = await this.getClient().catch(() => null);
+    if (!client) throw new MemoryUnavailableError("mem0_unavailable");
+    return client;
+  }
+  async remember(text, opts) {
+    const client = await this.client();
+    const metadata = { ...opts.metadata ?? {} };
+    if (opts.kind !== void 0) metadata.kind = opts.kind;
+    if (opts.shareable !== void 0) metadata.shareable = opts.shareable;
+    const result = await client.add(text, {
+      userId: opts.scope,
+      metadata,
+      ...opts.verbatim ? { infer: false } : {}
+    });
+    const ids = extractAddedIds(result);
+    if (opts.verbatim && ids.length > 0) {
+      const linker = client._linkEntitiesForMemory;
+      if (typeof linker === "function") {
+        for (const id of ids) {
+          await linker.call(client, id, text, { user_id: opts.scope }).catch(() => {
+          });
+        }
+      }
+    }
+    if (opts.embedText && opts.embedText !== text && ids.length > 0) {
+      for (const id of ids) {
+        await this.reembedVector(id, opts.scope, opts.embedText).catch(() => {
+        });
+      }
+    }
+    return { ids, storedEvents: extractStoredEventCount(result) };
+  }
+  async search(query, opts) {
+    const client = await this.client();
+    const limit = opts.limit ?? DEFAULT_SEARCH_LIMIT;
+    const scopes = scopesOf(opts.scope);
+    const tsById = /* @__PURE__ */ new Map();
+    let merged = null;
+    if (opts.vector || scopes.length > 1) {
+      const vector = opts.vector ?? await this.embedQuery(query);
+      if (vector) {
+        const pulls = scopes.map(async (scope) => {
+          const rows = await this.vectorSearch(vector, limit, {
+            user_id: scope,
+            ...temporalFilters(opts)
+          });
+          return rows.map((row) => {
+            tsById.set(row.id, canonicalPayloadTimestampMs(row.payload));
+            return canonicalRowToEntry(row, scope);
+          });
+        });
+        merged = mergeById((await Promise.all(pulls)).flat());
+      }
+    }
+    if (merged === null) {
+      const pulls = scopes.map(async (scope) => {
+        const r = await client.search(query, {
+          filters: { user_id: scope, ...temporalFilters(opts) },
+          topK: limit,
+          limit
+        });
+        return (r.results ?? []).map((row) => {
+          tsById.set(row.id, rowTimestampMs(row));
+          return toEntry(row, scope);
+        });
+      });
+      merged = mergeById((await Promise.all(pulls)).flat());
+    }
+    const ranked = merged.sort(
+      (a, b) => (b.score ?? 0) - (a.score ?? 0)
+    );
+    const floored = applyScoreFloor(ranked, { minScore: opts.minScore, minScoreRatio: opts.minScoreRatio });
+    const now = Date.now();
+    const decayed = !decayEnabled() ? floored : [...floored].sort(
+      (a, b) => (b.score ?? 0) * recencyFactor(tsById.get(b.id) ?? null, now) - (a.score ?? 0) * recencyFactor(tsById.get(a.id) ?? null, now)
+    );
+    if (!opts.diversify || diversityDisabledByEnv()) return decayed;
+    return diversityRerank(decayed, {
+      lambda: opts.diversify.lambda,
+      similarity: createTextSimilarity()
+    });
+  }
+  /**
+   * EMBED-FREE lexical fallback (WI-4214, the `MemoryBackend.searchLexical`
+   * capability): same per-scope fan-out + merge semantics as search(), but
+   * served by a plain token-ILIKE query over `memory_canonical` — no
+   * embedder anywhere on the path, so it works while the semantic leg is
+   * saturated or down. Scores are token-overlap fractions (0..1, ordering
+   * only — NOT cosine), so the relevance floor and decay deliberately do
+   * not apply.
+   */
+  async searchLexical(query, opts) {
+    const limit = opts.limit ?? DEFAULT_SEARCH_LIMIT;
+    const pulls = scopesOf(opts.scope).map(async (scope) => {
+      const rows = await this.lexicalSearch(query, limit, { user_id: scope, ...temporalFilters(opts) });
+      return rows.map((row) => canonicalRowToEntry(row, scope));
+    });
+    return mergeById((await Promise.all(pulls)).flat()).sort(
+      (a, b) => (b.score ?? 0) - (a.score ?? 0)
+    );
+  }
+  async list(opts) {
+    const client = await this.client();
+    const pulls = scopesOf(opts.scope).map(async (scope) => {
+      const r = await client.getAll({
+        filters: { user_id: scope, ...temporalFilters(opts) },
+        topK: LIST_TOP_K
+      });
+      return (r.results ?? []).map((row) => toEntry(row, scope));
+    });
+    let merged = mergeById((await Promise.all(pulls)).flat());
+    if (opts.kind !== void 0) merged = merged.filter((e) => e.kind === opts.kind);
+    return merged;
+  }
+  async get(id) {
+    const client = await this.client();
+    const row = await client.get(id);
+    if (!row) return null;
+    const scope = typeof row.user_id === "string" ? row.user_id : "";
+    return toEntry(row, scope);
+  }
+  async forget(id) {
+    const client = await this.client();
+    await client.delete(id);
+  }
+  async update(id, patch) {
+    if (patch.metadata !== void 0) {
+      const matched = await this.updatePayload(id, patch.metadata);
+      if (!matched) throw new Error(`Memory with ID ${id} not found`);
+    }
+    if (patch.text !== void 0) {
+      const client = await this.client();
+      await client.update(id, patch.text);
+    }
+  }
+  /** mem0's LLM fact-extraction over a conversation window. */
+  async rememberConversation(messages, opts) {
+    const client = await this.client();
+    const metadata = { ...opts.metadata ?? {} };
+    if (opts.kind !== void 0) metadata.kind = opts.kind;
+    const result = await client.add([...messages], { userId: opts.scope, metadata });
+    return { ids: extractAddedIds(result), storedEvents: extractStoredEventCount(result) };
+  }
+  invalidate() {
+    invalidateMemoryClient();
+  }
+  /**
+   * Temporal-lite validity close (the `MemoryBackend.invalidateEntry`
+   * capability): soft-forget / supersession as a vec-safe column update on
+   * the canonical store — never a delete, never a re-embed. Returns false
+   * when no OPEN memory row matched (unknown id or already closed).
+   */
+  async invalidateEntry(id, opts = {}) {
+    return this.invalidateEntryStore(id, opts);
+  }
+};
+
+// ../../libs/generic/memory/src/noop-backend.ts
+var NOOP_DISABLED_REASON = "memory_backend_disabled";
+var NoopBackend = class {
+  name = "noop";
+  /** Never returns an entry (every method throws unavailable), so there are
+   *  no scores to place on a scale. Declared rather than omitted to make the
+   *  "nothing to say" explicit instead of looking like an oversight. */
+  scoreScale = "unknown";
+  async available() {
+    return { ok: false, reason: NOOP_DISABLED_REASON };
+  }
+  async remember(_text, _opts) {
+    throw new MemoryUnavailableError(NOOP_DISABLED_REASON);
+  }
+  async search(_query, _opts) {
+    return [];
+  }
+  async list(_opts) {
+    return [];
+  }
+  async get(_id) {
+    return null;
+  }
+  async forget(_id) {
+    throw new MemoryUnavailableError(NOOP_DISABLED_REASON);
+  }
+  async update(_id, _patch) {
+    throw new MemoryUnavailableError(NOOP_DISABLED_REASON);
+  }
+};
 
 // ../../libs/generic/memory/src/backend-registry.ts
+init_src();
 init_config();
-var REGISTRY_KEY = Symbol.for("@papercusp/memory:backend-registry");
-var INSTANCES_KEY = Symbol.for("@papercusp/memory:backend-instances");
+var STATE_KEY2 = "@papercusp/memory:backend-registry";
+function builtinFactories() {
+  return /* @__PURE__ */ new Map([
+    ["mem0", () => new Mem0Backend()],
+    ["noop", () => new NoopBackend()]
+  ]);
+}
+var state2 = pinModuleState(STATE_KEY2, () => ({
+  registry: builtinFactories(),
+  instances: /* @__PURE__ */ new Map()
+}));
 
 // ../../libs/generic/memory/src/index.ts
 init_mem0_connection();
