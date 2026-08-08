@@ -64,6 +64,15 @@ export class InMemoryCoordLog implements CoordEventLog {
     this.events.set(surface, m);
   }
 
+  /** Atomic by construction: single-threaded, in-process, no await between check and set. */
+  async putEventIfAbsent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<boolean> {
+    const m = this.events.get(surface) ?? new Map<string, Seq>();
+    if (m.has(msgId)) return false;
+    m.set(msgId, { id: this.nextSeq(), envelope: record });
+    this.events.set(surface, m);
+    return true;
+  }
+
   async putEvents(
     surface: EventSurface,
     records: ReadonlyArray<{ msgId: string; record: CoordEnvelope }>,

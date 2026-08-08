@@ -56,6 +56,32 @@ export interface CoordEventLog {
   putEvent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<void>;
 
   /**
+   * Write one per-event record ONLY IF `msgId` is not already present, and report
+   * whether THIS call created it. Returns `true` for the single writer that won,
+   * `false` for every writer that lost — atomically, so N concurrent callers see
+   * exactly one `true`.
+   *
+   * This is the CLAIM primitive `putEvent` cannot provide. `putEvent` upserts, so
+   * a caller can never learn whether it inserted or overwrote; a caller that must
+   * act exactly once (announce a recovery, page a human, emit a broadcast) has no
+   * way to elect a single actor and every racing caller acts. Deriving the msgId
+   * deterministically makes the ROW unique, but only this return value makes the
+   * ACTION unique.
+   *
+   * Concretely (WI-10769): `resolveEscalation` read the open row, saw no sibling
+   * resolve, and wrote one keyed on a FRESH msg_id — so N request workers each
+   * wrote a distinct row and each believed it had transitioned the escalation,
+   * against a comment promising "only the worker whose resolve actually landed
+   * announces it". Measured 3.10x amplification (65 events / 21 real recoveries),
+   * 12 announcements of one recovery inside 0.8s.
+   *
+   * Implementations MUST make the presence-check and the write atomic with
+   * respect to other writers; a check-then-write is only acceptable where the
+   * backend is single-threaded and in-process (memory/fs). See `conformance.ts`.
+   */
+  putEventIfAbsent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<boolean>;
+
+  /**
    * Write MANY immutable per-event records to ONE surface in a single batch.
    * Semantically equal to calling `putEvent` once per entry (same keying: a
    * re-put on an existing msg_id upserts), but a backend SHOULD collapse the

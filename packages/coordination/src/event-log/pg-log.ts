@@ -571,6 +571,46 @@ export class PgCoordLog implements CoordEventLog {
     `;
   }
 
+  /**
+   * WI-10769: the atomic claim. `ON CONFLICT DO NOTHING ... RETURNING` yields a row
+   * ONLY when this statement actually inserted, so N concurrent callers see exactly
+   * one `true` — decided by Postgres, with no read-then-write window for them to
+   * race through. This is the property `putEvent` structurally cannot offer: it
+   * upserts, so every caller succeeds and none can tell whether it was first.
+   *
+   * NOTE the partial-index predicate is repeated here exactly as in `putEvent` —
+   * the unique index is `WHERE surface IN ('handoffs','escalations')`, and a
+   * conflict target that does not match the index's predicate does not resolve to
+   * it (Postgres raises "no unique or exclusion constraint matching"), so this
+   * method is only meaningful for those two surfaces.
+   */
+  async putEventIfAbsent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<boolean> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    try {
+      const rows = await sql`
+        INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, ts)
+        VALUES (${this.resolveWs()}, ${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::text::jsonb, ${record.harness_slug ?? null}, ${record.ts}::timestamptz)
+        ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
+        DO NOTHING
+        RETURNING 1 AS inserted
+      `;
+      return rows.length > 0;
+    } catch (e) {
+      // A unique violation on a NON-arbiter index still means "someone already holds
+      // this key", so it is a lost claim, not a failure. This table carries a SECOND
+      // partial unique index — `coord_event_log_fed_uq (workspace_id, msg_id) WHERE
+      // harness_slug IS NOT NULL AND body->>'notify_kind' IS NULL` — and an
+      // `ON CONFLICT` naming one arbiter does NOT suppress a conflict raised by a
+      // different index. Measured 2026-08-08: 19 of 562 recent `escalations` rows
+      // populate `harness_slug`, so that index really does cover part of this
+      // surface. Without this catch those rows would throw under exactly the
+      // concurrency this method exists to make safe.
+      if ((e as { code?: string })?.code === '23505') return false;
+      throw e;
+    }
+  }
+
   async putEvents(
     surface: EventSurface,
     records: ReadonlyArray<{ msgId: string; record: CoordEnvelope }>,

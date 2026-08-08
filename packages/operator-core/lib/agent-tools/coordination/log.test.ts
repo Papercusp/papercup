@@ -27,6 +27,7 @@ function fakeLog(extra: Partial<{ workspaceId: string; getSql: () => unknown }> 
     appendLine: vi.fn(async () => {}),
     readLines: vi.fn(async () => []),
     putEvent: vi.fn(async () => {}),
+    putEventIfAbsent: vi.fn(async () => true),
     readEvents: vi.fn(async () => []),
     readEventsBounded: vi.fn(async () => []),
     readLinesBounded: vi.fn(async () => []),

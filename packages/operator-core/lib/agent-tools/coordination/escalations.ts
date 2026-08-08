@@ -16,6 +16,7 @@ import {
   foldEscalations,
   foldResolved,
   indexResolves,
+  resolvedEventId,
   type EscalationSeverity,
   type EscalationOption,
   type OpenEscalationInput,
@@ -874,9 +875,14 @@ export async function resolveEscalation(
     return 'requires_spawn_approve';
   }
 
+  // WI-10769 — the resolve event's id is DERIVED from the escalation it resolves,
+  // not freshly minted. A resolve is terminal and one-per-escalation, so a fresh id
+  // was never expressing anything true: it made N concurrent resolves of the SAME
+  // row land as N distinct rows that no unique constraint could catch. Deriving it
+  // makes "at most one resolve per escalation" a property of the key.
   const ev: EscalationResolvedEvent = {
     ts: new Date().toISOString(),
-    msg_id: newMsgId(),
+    msg_id: resolvedEventId(input.msg_id),
     from: input.resolver ?? open.from,
     to: [open.from],
     kind: 'escalation_resolved',
@@ -886,6 +892,14 @@ export async function resolveEscalation(
   };
   if (input.resolver !== undefined) ev.by = input.resolver;
   if (input.note !== undefined) ev.note = input.note;
-  await coordLog.putEvent('escalations', ev.msg_id, ev);
+  // The check at the top of this function is a READ; between it and here, a peer
+  // worker may have resolved the same row. `putEventIfAbsent` is the atomic claim
+  // that closes that window: exactly one concurrent caller gets `true`, and every
+  // other one now learns it lost and reports the same `'already_resolved'` sentinel
+  // it would have got had it read a moment later. That is what makes
+  // liveness-alarm.ts's "only the worker whose resolve actually landed announces
+  // it" TRUE — before this, all N workers got a record back and all N announced.
+  const won = await coordLog.putEventIfAbsent('escalations', ev.msg_id, ev);
+  if (!won) return 'already_resolved';
   return foldResolved(open, ev);
 }

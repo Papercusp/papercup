@@ -104,6 +104,29 @@ export function indexResolves(
 }
 
 /**
+ * The msg_id of the `escalation_resolved` event that resolves `escalationMsgId`.
+ *
+ * A resolve is TERMINAL and one-per-escalation, so its identity is fully
+ * determined by its target — a freshly-minted id never expressed anything true
+ * about it, and it actively caused harm (WI-10769): N concurrent resolves of the
+ * same escalation landed as N distinct rows, which no unique index could collapse
+ * and which the reader above had to paper over by picking the earliest. Deriving
+ * the id makes "at most one resolve per escalation" a property of the KEY, which
+ * is the only place it can be enforced across processes.
+ *
+ * Deliberately NOT a hash: the id stays human-legible and greppable back to its
+ * escalation, which is how the duplicate storms were diagnosed in the first place.
+ * The `res-` prefix cannot collide with `newMsgId()` output (which starts `ms`).
+ *
+ * ⚠ Read-side compatibility: resolves are indexed by `related_msg_id`, never by
+ * their own msg_id (see `indexResolves` above), so rows written before this
+ * existed — with random ids — still fold correctly. Do not "migrate" them.
+ */
+export function resolvedEventId(escalationMsgId: string): string {
+  return `res-${escalationMsgId}`;
+}
+
+/**
  * Fold open escalations with their resolution events. Optionally filter
  * by open/resolved. Sorted ascending by (ts, msg_id).
  */

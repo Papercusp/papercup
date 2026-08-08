@@ -97,7 +97,7 @@ logs are from the green run `m1785117063`.
 | 19 | Spawn-request federation, fail-closed | 🟢 | `scn.spawn_request-220032.log` — a→b, signed request, sig-verified remote apply of the new kind, gate-OFF honor hook stayed silent |
 | 20 | Work-item federation to a peer's work queue | 🟢 | `scn.work_item-220032.log` — a→b, `engineer_issues` remote apply `origin='remote'` |
 | 21 | Fleet-directory card publish + verified remote apply | 🟢 | `scn.fleet_directory-220032.log` — owner-signed publish on create, sig-verified remote apply, substrate-attributed card |
-| 22 | **LIVE-2 end-to-end acceptance drill** (offer→pull→spawn→receipts→revocation, every leg observable from the origin, any silent leg = FAIL, on the 2-machine rig) | 🔴→🟡 | **RUN 2026-08-01 (P-205/WI-5135) — no longer "never run", but NOT a full pass; read the leg-by-leg, not the headline.** Single-box drill `PASS=12 FAIL=0 SKIP=6` (packaged deb, `bin/work-distribution-drill.sh`) **+** the federated-revocation leg proven cross-node by a NEW registered matrix scenario `bin/lib/scenarios/fed-reap.sh` (order 59), run `m1785612213`: `b: grant\|revoked\|remote → session\|reaped → receipt work-offer:reap`, with the ACTIVE-grant baseline passing first so the reap is *attributable*. Against this row's own bar: **offer ✓** · **pull ~** (X11 activation + the WI-3629 seam ship in the packaged bundle, but no live pull was ever exercised — nothing ticks it) · **spawn ✗ NOT EXERCISED** · **receipts ✓** (offer-threaded, single-box *and* cross-node) · **revocation ✓ local AND ✓ federated**. ⚠ Environment: 2 **container frames** on a **private testnet DHT** — *not* two physical machines, *not* the public DHT (sufficient for this leg because `origin='remote'` keys on hyperbee source-log/device provenance, not a physical boundary — but do not quote it as the 2-machine rig; row 35 still owes that). ⚠ Both proofs used a **SEEDED**, not spawned, foreign session — see the blocker note below. Also landed: **D-018** — this drill's SKIP census was six *hardcoded strings* whose reasons had rotted into falsehood (5 of 6 false; one contradicted the drill's own header), so a clean run would have produced a plausible, quotable, WRONG reading; every reason is now DETECTED at runtime from the artifact under test |
+| 22 | **LIVE-2 end-to-end acceptance drill** (offer→pull→spawn→receipts→revocation, every leg observable from the origin, any silent leg = FAIL, on the 2-machine rig) | 🔴→🟡 | **RUN 2026-08-01 (P-205/WI-5135) — no longer "never run", but NOT a full pass; read the leg-by-leg, not the headline.** Single-box drill `PASS=12 FAIL=0 SKIP=6` (packaged deb, `bin/work-distribution-drill.sh`) **+** the federated-revocation leg proven cross-node by a NEW registered matrix scenario `bin/lib/scenarios/fed-reap.sh` (order 59), run `m1785612213`: `b: grant\|revoked\|remote → session\|reaped → receipt work-offer:reap`, with the ACTIVE-grant baseline passing first so the reap is *attributable*. Against this row's own bar: **offer ✓** · **pull ~** (X11 activation + the WI-3629 seam ship in the packaged bundle, but no live pull was ever exercised — nothing ticks it) · **spawn ✓ EXERCISED 2026-08-08** (superseding this row's ✗ — see the correction under the blocker note below: real 2-machine rig, packaged install, BOTH refused and honored branches, receipts `425b8ab1` / `af20b5e3`; ⚠ the honored member never took a turn — WI-35786) · **receipts ✓** (offer-threaded, single-box *and* cross-node) · **revocation ✓ local AND ✓ federated**. ⚠ Environment: 2 **container frames** on a **private testnet DHT** — *not* two physical machines, *not* the public DHT (sufficient for this leg because `origin='remote'` keys on hyperbee source-log/device provenance, not a physical boundary — but do not quote it as the 2-machine rig; row 35 still owes that). ⚠ Both proofs used a **SEEDED**, not spawned, foreign session — see the blocker note below. Also landed: **D-018** — this drill's SKIP census was six *hardcoded strings* whose reasons had rotted into falsehood (5 of 6 false; one contradicted the drill's own header), so a clean run would have produced a plausible, quotable, WRONG reading; every reason is now DETECTED at runtime from the artifact under test |
 | 23 | Push-nudge wiring (latency only, never correctness) | 🔴→🟡 | BLOCKED (P-203/WI-5133, behind the same fresh-join class as WI-5863). **Not ship-blocking**: it is a latency optimisation; without it federation still converges on the poll cadence. Recorded as a deliberate ship-without |
 
 ### 2.3 Attestation + trust closure
@@ -149,6 +149,39 @@ logs are from the green run `m1785117063`.
    Consequence for GO/NO-GO: the spawn leg is **dead code on every shipped host** until WI-6680
    lands — which is precisely the state D-004 forbids ("a spawn leg no production path ever ticks
    is dead code"). This is a bounded, schedulable fix, not an open-ended exercise.
+
+   > ⚠ **CORRECTED 2026-08-08 (WI-7312) — the two paragraphs above are too strong, and row 22's
+   > `spawn ✗ NOT EXERCISED` is FALSE. Do not quote either as-is.** The **delegated-seat spawn
+   > honor** path was exercised end to end on the **real 2-machine rig** (Linux tower → Avis-iMac,
+   > a **packaged** install: `/Applications/Papercusp Server.app/…/sidecar`, migration 759), and it
+   > ticks on a shipped host **today**:
+   >
+   > - **refused branch** — `spawnreq-175c81e1e4c0ed7f` published 15:34:26Z, drained 15:34:26.720Z,
+   >   applied on the peer, honor hook ran 18:00:02.500Z →
+   >   `[work-offers] spawn-request … → refused (expired)` + receipt `425b8ab1` (a correct refusal:
+   >   the peer was down ~2.5h of the offer's life).
+   > - **honored branch** — `spawnreq-cb07e7849aebbb43` published 18:07:19Z → drained 18:07:21Z →
+   >   `honored (1 member(s) opened)` 18:07:28.967Z + receipt `af20b5e3` → member presence 18:07:44Z.
+   >   ~10s publish→honor.
+   >
+   > **Why this does not contradict WI-6680:** that defect is about the `p2p-work-intake` routine
+   > never seeding, i.e. the **pull** chain. The delegated-seat honor path is **push**-driven — the
+   > hyperbee replication-apply of the `p2p-work-offers` projection invokes the honor hook directly
+   > and never consults work-intake. So WI-6680 kills the *pull* leg, not this one; "dead code on
+   > every shipped host" over-generalises from one to the other. WI-6680 remains real and worth
+   > fixing on its own terms.
+   >
+   > **What is still NOT proven** (so this correction is not a green light): the honored member was a
+   > **phantom** — success receipt and a presence row, but no window, no process, and an EMPTY
+   > `projects/` dir, i.e. not one turn ever taken. Filed as **WI-35786**; likely the known macOS
+   > logged-out class (the honor log itself records that the account's usability "was ASSUMED, not
+   > verified"), NOT the GUI-console cause first suspected. So: **spawn orchestration + receipts are
+   > proven; a delegated member doing useful work is not.** Diagnose the phantom in ~30s with
+   > `find <session-dir>/projects -type f | wc -l` = 0.
+   >
+   > Note also that this run used two **physical machines** on the real network, unlike row 22's
+   > container-frame/private-testnet environment — relevant to the rig debt row 35 tracks, though
+   > it exercised only this leg.
    ⚠ Do **not** read row 22's revocation green as containment: it proves an *honest* session
    **winds down** on withdrawal. It does **not** prove a hostile one is stopped — mechanical kill
    (revocation-reaper deferred #1: cgroup / dedicated OS user after the X13 wind-down) is P-105

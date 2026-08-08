@@ -65,7 +65,13 @@ export default defineTool({
       return Response.json({ error: 'q too long (max 200 chars)' }, { status: 400 });
     }
     const kind = url.searchParams.get('kind') ?? 'features';
-    const limitN = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 20)));
+    // `Math.max(1, NaN)` is NaN, and so is `Math.min(200, NaN)` — so the
+    // obvious clamp does NOT sanitise a non-numeric `limit`, it launders one
+    // into the query. (Inherited from the pre-P-018 route, where `?limit=x`
+    // reached the SQL as `LIMIT NaN` and surfaced as a caught per-schema
+    // error string rather than a 400.) Check finiteness FIRST, then clamp.
+    const rawLimit = Number(url.searchParams.get('limit') ?? 20);
+    const limitN = Number.isFinite(rawLimit) ? Math.min(200, Math.max(1, Math.trunc(rawLimit))) : 20;
 
     // Answered explicitly rather than by falling through to "unknown kind", so
     // a caller still asking for the retired corpus is told what happened and

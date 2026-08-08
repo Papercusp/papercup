@@ -68,6 +68,48 @@ export function describeCoordEventLogConformance(
       expect(await log.getEvent('escalations', 'nope')).toBeNull();
     });
 
+    // ── putEventIfAbsent: the CLAIM contract (WI-10769) ──────────────────────
+    // Every backend must elect exactly ONE winner, because callers use the return
+    // value to decide whether to act exactly once (announce a recovery, page a
+    // human). A backend that returns `true` twice re-creates the duplicate-
+    // announcement storm this primitive was added to end.
+
+    it('putEventIfAbsent: first call creates and returns true', async () => {
+      const created = await log.putEventIfAbsent('escalations', 'c1', envelope({ msg_id: 'c1', kind: 'escalation_resolved', from: 'A' }));
+      expect(created).toBe(true);
+      expect((await log.getEvent('escalations', 'c1'))?.msg_id).toBe('c1');
+    });
+
+    it('putEventIfAbsent: a second call returns false and does NOT overwrite', async () => {
+      await log.putEventIfAbsent('escalations', 'c2', envelope({ msg_id: 'c2', kind: 'escalation_resolved', from: 'first', summary: 'original' }));
+      const second = await log.putEventIfAbsent('escalations', 'c2', envelope({ msg_id: 'c2', kind: 'escalation_resolved', from: 'second', summary: 'overwrite attempt' }));
+      expect(second).toBe(false);
+      // Unlike putEvent (which upserts), a lost claim must leave the winner's row intact.
+      const row = await log.getEvent('escalations', 'c2');
+      expect(row?.from).toBe('first');
+      expect(row?.summary).toBe('original');
+      expect((await log.readEvents('escalations')).filter((r) => r.msg_id === 'c2')).toHaveLength(1);
+    });
+
+    it('putEventIfAbsent: N concurrent claims on one key elect EXACTLY ONE winner', async () => {
+      // The actual defect shape: N request workers resolving the same escalation
+      // in the same instant. Sequential calls cannot catch a read-then-write race;
+      // only firing them together can.
+      const results = await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          log.putEventIfAbsent('escalations', 'race', envelope({ msg_id: 'race', kind: 'escalation_resolved', from: `w${i}` })),
+        ),
+      );
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect((await log.readEvents('escalations')).filter((r) => r.msg_id === 'race')).toHaveLength(1);
+    });
+
+    it('putEventIfAbsent does not disturb putEvent: a prior putEvent row blocks the claim', async () => {
+      await log.putEvent('escalations', 'c3', envelope({ msg_id: 'c3', kind: 'escalation', from: 'A' }));
+      expect(await log.putEventIfAbsent('escalations', 'c3', envelope({ msg_id: 'c3', kind: 'escalation_resolved', from: 'B' }))).toBe(false);
+      expect((await log.getEvent('escalations', 'c3'))?.kind).toBe('escalation');
+    });
+
     it('putEvent is keyed: re-put on same msg_id overwrites, not duplicates', async () => {
       await log.putEvent('handoffs', 'k1', envelope({ msg_id: 'k1', kind: 'handoff', from: 'A' }));
       await log.putEvent('handoffs', 'k1', envelope({ msg_id: 'k1', kind: 'handoff', from: 'B' }));

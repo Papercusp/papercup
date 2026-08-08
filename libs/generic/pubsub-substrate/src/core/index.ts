@@ -51,6 +51,7 @@ export {
   type EscalationResolvedEvent,
   foldResolved,
   indexResolves,
+  resolvedEventId,
   foldEscalations,
 } from './escalations';
 export {

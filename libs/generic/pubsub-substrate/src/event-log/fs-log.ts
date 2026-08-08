@@ -156,6 +156,22 @@ export class FsCoordLog implements CoordEventLog {
     await fs.writeFile(file, JSON.stringify(record, null, 2), 'utf8');
   }
 
+  /**
+   * `wx` = create-or-fail, which the kernel makes atomic — so this is a real claim
+   * even across processes sharing the directory, not a check-then-write that races.
+   */
+  async putEventIfAbsent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<boolean> {
+    const file = join(this.eventDir(surface), `${sanitise(msgId)}.json`);
+    await fs.mkdir(dirname(file), { recursive: true });
+    try {
+      await fs.writeFile(file, JSON.stringify(record, null, 2), { encoding: 'utf8', flag: 'wx' });
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === 'EEXIST') return false;
+      throw e;
+    }
+  }
+
   async putEvents(
     surface: EventSurface,
     records: ReadonlyArray<{ msgId: string; record: CoordEnvelope }>,

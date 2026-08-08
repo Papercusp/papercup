@@ -202,6 +202,10 @@ export const coordLog: CoordEventLog = {
     await coordScopeReady();
     return impl.putEvent(surface, msgId, record);
   },
+  putEventIfAbsent: async (surface, msgId, record) => {
+    await coordScopeReady();
+    return impl.putEventIfAbsent(surface, msgId, record);
+  },
   putEvents: async (surface, records) => {
     await coordScopeReady();
     return impl.putEvents(surface, records);
