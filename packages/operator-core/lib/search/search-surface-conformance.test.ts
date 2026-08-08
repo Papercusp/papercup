@@ -35,7 +35,12 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, resolve, join, relative } from 'node:path';
 import { importGraph, stripComments } from './import-graph';
-import { SEARCH_SURFACES, FLOOR_GAP_CEILING, type SearchSurface } from './surface-registry';
+import {
+  SEARCH_SURFACES,
+  FLOOR_GAP_CEILING,
+  RESULTS_DISCARDED_CEILING,
+  type SearchSurface,
+} from './surface-registry';
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const LIB = resolve(HERE, '..');
@@ -90,7 +95,18 @@ function derive(entry: string): { callsEngine: boolean; callsFulltext: boolean; 
  * relevance floor has a result set to protect and the exemption is void.
  */
 function consumesEngineResult(entry: string): boolean {
-  const src = stripComments(readFileSync(entry, 'utf8'));
+  return consumesEngineResultIn(readFileSync(entry, 'utf8'));
+}
+
+/**
+ * The pure core, so the control below can drive it with fixture SOURCE rather
+ * than fixture FILES. Writing a throwaway .ts into the tree to prove a guard
+ * bites is unsafe here: git-sync sweeps the whole working tree into a commit
+ * every few minutes, so a probe that dies between write and cleanup gets its
+ * fixture committed.
+ */
+function consumesEngineResultIn(raw: string): boolean {
+  const src = stripComments(raw);
   const call = /runHybridSearch\s*\(/g;
   for (let m = call.exec(src); m !== null; m = call.exec(src)) {
     const lineStart = src.lastIndexOf('\n', m.index) + 1;
@@ -220,22 +236,25 @@ describe('search surface conformance (P-021)', () => {
 
   describe('CONTROLS — a guard whose subject vanished must fail, not pass', () => {
     it('the discard-derivation can observe a CONSUMING call', () => {
-      // Without this, `consumesEngineResult` could return false unconditionally
-      // and every exemption above would verify itself. Controls live here as
-      // fixtures rather than as a mutation of the real file: the shared tree is
-      // swept into commits every few minutes, so a probe that edits a tracked
-      // file to prove a guard bites can have the mutant committed under it.
-      const dir = join(LIB, 'search');
-      const consuming = join(dir, '__conformance-fixture-consuming.ts');
-      const discarding = join(dir, '__conformance-fixture-discarding.ts');
-      try {
-        writeFileSync(consuming, 'const hits = await runHybridSearch(sources, {});\n');
-        writeFileSync(discarding, 'await runHybridSearch(sources, {});\n');
-        expect(consumesEngineResult(consuming)).toBe(true);
-        expect(consumesEngineResult(discarding)).toBe(false);
-      } finally {
-        for (const f of [consuming, discarding]) if (existsSync(f)) rmSync(f);
-      }
+      // Without this, `consumesEngineResultIn` could return false
+      // unconditionally and every exemption above would verify itself against
+      // a derivation that cannot say "no".
+      const consuming = [
+        'const hits = await runHybridSearch(sources, {});',
+        'return runHybridSearch(sources, {});',
+        'const [a] = await Promise.all([runHybridSearch(sources, {})]);',
+      ];
+      for (const src of consuming) expect(consumesEngineResultIn(src), src).toBe(true);
+
+      const discarded = [
+        '  await runHybridSearch(sources, {});',
+        '  void runHybridSearch(sources, {});',
+      ];
+      for (const src of discarded) expect(consumesEngineResultIn(src), src).toBe(false);
+
+      // And a mention in a comment is not a call at all — the stripComments
+      // dependency this shares with the import walk, exercised on this path.
+      expect(consumesEngineResultIn('// const x = await runHybridSearch(a, {});')).toBe(false);
     });
 
 
