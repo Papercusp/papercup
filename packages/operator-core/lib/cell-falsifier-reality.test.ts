@@ -101,14 +101,32 @@ function pathExists(obj: unknown, path: string): { exists: boolean; value: unkno
 }
 
 /** Every path a cell DECLARES into its resolver's payload, labelled for the failure message. */
-function declaredPaths(spec: CellSpec): Array<{ label: string; path: string }> {
-  const out: Array<{ label: string; path: string }> = [
+function declaredPaths(spec: CellSpec): Array<{ label: string; path: string; optional?: boolean }> {
+  const out: Array<{ label: string; path: string; optional?: boolean }> = [
     { label: 'headline', path: spec.headline },
     { label: 'falsifier.field', path: spec.falsifier.field },
   ];
   if (spec.changeSignal.kind === 'poll') out.push({ label: 'changeSignal.path', path: spec.changeSignal.path });
   if (spec.unknownHoist) out.push({ label: 'unknownHoist', path: spec.unknownHoist });
   if (spec.materiality?.path) out.push({ label: 'materiality.path', path: spec.materiality.path });
+  /**
+   * WI-36259 — walked too, or this sweep would watch the wrong set: its own sibling test
+   * (declared-consumed-sweep) calls that "THE COVERAGE VACUITY", and a new declared path
+   * nobody walks is exactly the drift this file exists to catch.
+   *
+   * ⚠ OPTIONAL, and the distinction is real rather than a convenience. A source label
+   * ATTRIBUTES a headline, so it exists only when there is a headline to attribute — for
+   * the gate candidate that means only while a run is in flight. Asserting its presence
+   * would make this suite pass or fail on whether a gate run happens to be live at the
+   * moment it runs: green all afternoon, red at 03:00, with no code change either way.
+   * A guard that flakes on ambient state is worse than no guard, because the first red
+   * teaches everyone to re-run it.
+   *
+   * So the leaf is allowed to be absent and the PARENT is not — which is what actually
+   * catches the drift (a renamed or mistyped container), while the value's own production
+   * is pinned by the reconcileGateCandidates tests in git-pipeline-position.test.ts.
+   */
+  if (spec.headlineSource?.path) out.push({ label: 'headlineSource.path', path: spec.headlineSource.path, optional: true });
   return out;
 }
 
@@ -158,12 +176,18 @@ describe('P-011: every registered cell declares paths its resolver ACTUALLY prod
       const payload = await livePipelinePayload(
         spec.callerRelativity.kind === 'parameter' ? 'packages/operator-core/lib/cell-registrations.ts' : undefined,
       );
-      for (const { label, path } of declaredPaths(spec)) {
-        const r = pathExists(payload, path);
+      for (const { label, path, optional } of declaredPaths(spec)) {
+        // An optional-by-design leaf (see declaredPaths) is checked one level up: the
+        // CONTAINER must be real, which is the drift this catches, while the leaf's
+        // absence is a legitimate runtime state rather than a broken declaration.
+        const target = optional ? path.split('.').slice(0, -1).join('.') : path;
+        if (optional && target === '') continue;
+        const r = pathExists(payload, target);
         expect(
           r.exists,
           `${spec.cell}: declared ${label} "${path}" is ABSENT from the live resolver payload ` +
-            `(missing at "${r.missingAt}"). The cell is unreadable: readCell would report insufficient-data. ` +
+            `(missing at "${r.missingAt}"${optional ? `; checked its container "${target}" because this path is optional-by-design` : ''}). ` +
+            `The cell is unreadable: readCell would report insufficient-data. ` +
             `Either the resolver's shape changed or the declaration has a typo — a declaration test cannot tell you.`,
         ).toBe(true);
       }

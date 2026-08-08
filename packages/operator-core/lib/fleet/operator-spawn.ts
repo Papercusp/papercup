@@ -55,6 +55,10 @@ import {
   spawnResultArtifactPath,
   WEDGE_REAP_SILENT_MS,
 } from './spawn-reclaim';
+// WI-36237: the SAME strip the classify path applies, so the persisted
+// error_message and the judged stderr cannot disagree about whether a death
+// was silent.
+import { stripActivityHeartbeat } from './invoke-outcome';
 // Re-exported for back-compat: the wedge-reap action threshold is now centralised in
 // spawn-reclaim.ts (beside the other reclaim thresholds) so the in-memory reaper here
 // and the durable DB `reclaimWedgedSpawns` sweep cannot drift. Existing importers

@@ -4639,4 +4639,53 @@ describe('WI-36259: judgingSha prefers the re-triage marker over the probe', () 
     expect(cic.judgingSha).toBe('refiring9');
     expect(cic.judgingShaSource).toBe('retriage-marker');
   });
+
+  /**
+   * THE WIRING GUARD — and for this bug it is the ONLY test that would have caught it.
+   *
+   * The pure units above can all pass while the resolver never CALLS them, which is
+   * precisely the state the code was in: `mapCheckpointRunInFlight` correctly preferred the
+   * marker and `evaluateChangeInCandidate` correctly copied `candidates.judgingSha`, both
+   * fully tested, both green — and the seam between them handed the second one a
+   * marker-blind probe. The defect lived entirely in the wiring, so it was invisible to
+   * every unit test of the things being wired.
+   *
+   * Driven through `gitPipelinePosition` with a CRON-shaped run (active, a probe candidate
+   * from the checkout HEAD, no log-derived provenance) plus a marker naming a different sha
+   * — the exact live shape WI-7035 documented and this cell got wrong.
+   */
+  it('gitPipelinePosition itself hands the cell the MARKER sha, not the probe (the seam)', async () => {
+    const MARKER = {
+      fromCandidate: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      refiringCandidate: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      refireAttempt: 1,
+      maxRefires: 2,
+    };
+    const res = await gitPipelinePosition(
+      { path: 'packages/operator-core/lib/cell-registrations.ts' },
+      {
+        git: fakeGit({ contains: { HEAD: ['abc1234567'] } }),
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap({ inFlightRetriage: MARKER }),
+        readCheckpointRunSnapshot: async () => ({
+          activeRun: {
+            active: true,
+            candidate: 'stale-worktree-head',
+            startedAtMs: Date.now() - 30 * 60_000,
+            elapsedSec: 1800,
+          },
+          computedAtMs: Date.now(),
+        }),
+        // The probe leg the OLD code trusted unconditionally. It deliberately disagrees with
+        // the marker: before the fix this sha reached the cell verbatim.
+        resolveGateCandidates: async () => ({ judgingSha: 'stale-worktree-head', nextCandidateSha: 'next999' }),
+      },
+    );
+
+    expect(res.gate.checkpointRunInFlight?.candidate).toBe(MARKER.refiringCandidate);
+    // THE REGRESSION: these two describe the SAME subject and used to disagree.
+    expect(res.changeInCandidate.judgingSha).toBe(MARKER.refiringCandidate);
+    expect(res.changeInCandidate.judgingShaSource).toBe('retriage-marker');
+    expect(res.changeInCandidate.judgingSha).toBe(res.gate.checkpointRunInFlight?.candidate);
+  });
 });

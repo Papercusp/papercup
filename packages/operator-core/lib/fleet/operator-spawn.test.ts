@@ -122,7 +122,7 @@ import { spawnInvokeOnceWithFallback } from '../dbos/orchestrator-runner';
 import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
-import { reclaimOrphanedSpawns, recordSpawnPid } from './spawn-reclaim';
+import { reclaimOrphanedSpawns, recordSpawnPid, removeSpawnResultArtifact } from './spawn-reclaim';
 import { releaseWorkItem } from '../work-items';
 import { evaluatePerfSignals } from '../system-health/perf-budgets';
 import {
@@ -413,6 +413,82 @@ describe('spawnAgentInHarness — happy path', () => {
       exitCode: 0,
       errorMessage: sessionMsg,
     }));
+  });
+
+  // ── WI-36237: the two diagnostic paths that were blinding every spawn ──────
+  //
+  // MEASURED 2026-08-08 on live harness_shared.spawned_agents cup rows: four
+  // failed spawns each carried error_message = "[papercusp:activity]\n" exactly,
+  // and a SUCCESSFUL 303s run carried fourteen of the same marker line. The
+  // marker is the outer-process activity heartbeat (WI-3302) and has no
+  // diagnostic content, so every one of those rows LOOKED like it had a cause
+  // recorded and had none.
+
+  it('WI-36237: a marker-only stderr persists as NULL, not as the raw activity marker', async () => {
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({
+      output: '', exitCode: 1, stderr: '[papercusp:activity]\n[papercusp:activity]\n',
+    });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
+    expect(res.ok).toBe(true);
+    await flush();
+    // NULL is the honest record for a silent death, and it is what restores the
+    // capacity_shed fingerprint's `stderr === ''` signature for anyone reading
+    // the row (invoke-outcome.ts:227).
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId, status: 'failed', exitCode: 1, errorMessage: null,
+    }));
+  });
+
+  it('WI-36237: a real diagnostic interleaved with activity markers SURVIVES the strip', async () => {
+    // CALIBRATION for the case above: the strip must remove only the marker, not
+    // flatten every stderr to null. Without this, a strip that nulled everything
+    // would pass the previous test while destroying the diagnostics it exists to
+    // uncrowd.
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({
+      output: '',
+      exitCode: 1,
+      stderr: '[papercusp:activity]\nEACCES: permission denied\n[papercusp:activity]\n',
+    });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
+    await flush();
+    const call = vi.mocked(finishSpawn).mock.calls.find((c) => c[1]?.spawnId === res.spawnId);
+    expect(call?.[1]?.errorMessage).toContain('EACCES: permission denied');
+    expect(call?.[1]?.errorMessage).not.toContain('[papercusp:activity]');
+  });
+
+  it('WI-36237: a SUCCESSFUL spawn no longer records activity markers as an error', async () => {
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({
+      output: 'did the thing', exitCode: 0, stderr: '[papercusp:activity]\n[papercusp:activity]\n',
+    });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
+    await flush();
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId, status: 'done', exitCode: 0, errorMessage: null,
+    }));
+  });
+
+  it('WI-36237: the invoke-once artifact is RETAINED on a FAILED terminal', async () => {
+    // The artifact holds the child's full teed stdout+stderr — the only record
+    // that is not a 2000-char tail. Deleting it on failure destroyed the sole
+    // diagnostic at the exact moment it became the only one, which presents as
+    // "the spawn log is never written".
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({ output: '', exitCode: 1, stderr: '' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
+    expect(res.ok).toBe(true);
+    await flush();
+    expect(removeSpawnResultArtifact).not.toHaveBeenCalled();
+  });
+
+  it('WI-36237: …and is still REMOVED on a successful terminal', async () => {
+    // CALIBRATION: proves the assertion above turns on the terminal STATUS and
+    // not on the unlink having become unreachable altogether — which would leak
+    // an artifact per spawn instead of per failed spawn.
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({ output: 'ok', exitCode: 0, stderr: '' });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'cup' });
+    await flush();
+    expect(removeSpawnResultArtifact).toHaveBeenCalledWith(
+      `/tmp/.papercusp/spawn-results/${res.spawnId}.log`,
+    );
   });
 });
 

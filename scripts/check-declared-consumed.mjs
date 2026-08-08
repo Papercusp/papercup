@@ -249,6 +249,14 @@ export const DECLARED_FIELDS = [
     why: 'P-021. Materiality SUPPRESSES change notifications, so an unconsumed declaration is the worst kind: the author believes noise is being filtered and the subscriber is told nothing was filtered. It fails silently and in the confident direction.',
   },
   {
+    id: 'CellSpec.headlineSource',
+    name: 'headlineSource',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: 'a cell registration declaring `headlineSource: { path, authoritative, why }`',
+    consumer: 'cell-read.ts resolving that path into the result `source` (+ state:read hoisting a non-authoritative reading into `summary`)',
+    why: 'WI-36259. This field says whether the value in your hand was OBSERVED or INFERRED, so an unconsumed declaration hands the caller an inference wearing an observation\'s clothes — the exact misread that made the gate candidate cell report the ABANDONED sha for six days while CLAUDE.md swore it was marker-backed. It fails silently and in the confident direction.',
+  },
+  {
     id: 'CellSpec.ordered',
     name: 'ordered',
     declaredIn: 'packages/operator-core/lib/cell-registry.ts',
