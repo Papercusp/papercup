@@ -24,7 +24,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
-import { modeById, MODES } from '../../modes/registry';
+import { modeById, MODES, modeImpliesAutonomy } from '../../modes/registry';
 import { setMode } from '../../modes/store';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getLoopStatus } from '../../harness/routines/loop';
@@ -62,8 +62,9 @@ export function wakeSourceWarning(opts: {
   loopActive: boolean;
 }): string | null {
   if (!opts.enabled) return null;
-  // `drain` is an overlay that IMPLIES auto; the autonomy axis covers auto + cold-auto.
-  const impliesAutonomy = opts.axis === 'autonomy' || opts.modeId === 'drain';
+  // The autonomy axis covers auto + cold-auto; an overlay may also IMPLY auto
+  // (drain, goal). Both readings live in the registry — never re-spell the list.
+  const impliesAutonomy = opts.axis === 'autonomy' || modeImpliesAutonomy(opts.modeId);
   if (!impliesAutonomy || opts.loopActive) return null;
   return (
     `⚠ NO WAKE SOURCE. '${opts.modeId}' is an AUTHORIZATION posture — it does not make you run. ` +
@@ -110,7 +111,7 @@ export function wakeSourceLostWarning(opts: {
   wakeSource?: 'loop' | 'event' | 'none';
 }): string | null {
   if (opts.wakeSource !== 'none') return null;
-  const autonomy = opts.modes.filter((m) => m === 'auto' || m === 'cold-auto' || m === 'drain');
+  const autonomy = opts.modes.filter((m) => modeImpliesAutonomy(m));
   if (autonomy.length === 0) return null;
   return (
     `⚠ WAKE SOURCE GONE. You are registered '${autonomy.join("' + '")}' — an autonomy posture that is ` +
@@ -127,7 +128,7 @@ export default defineTool({
   name: 'mode:set',
   profile: 'engineer',
   description:
-    'Enter/exit an official session mode (auto | cold-auto | ideate | drain | grade) for yourself or a peer. ' +
+    'Enter/exit an official session mode (auto | cold-auto | ideate | drain | grade | goal) for yourself or a peer. ' +
     '{ mode, reason, enabled?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); ' +
     'cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed ' +
     'incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the ' +

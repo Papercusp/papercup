@@ -27,6 +27,14 @@ export interface ModeDef {
   /** Stable id — what mode:set takes and agent_modes.mode stores. */
   id: string;
   axis: ModeAxis;
+  /**
+   * An OVERLAY that implies the autonomy axis: entering it means "also mode:set
+   * auto if the autonomy axis is empty", and every guard that asks "is this
+   * session autonomous?" must count it. Modes on the `autonomy` axis imply it
+   * inherently and leave this unset — read the question through
+   * `modeImpliesAutonomy`, never by axis alone (goal-mode-2026-08-07 P-012).
+   */
+  impliesAutonomy?: boolean;
   title: string;
   /** The one-liner for the always-present index (P-008). Keep it ONE line. */
   oneLiner: string;
@@ -93,6 +101,7 @@ itself isn't working is a legitimate combination.)`,
   {
     id: 'drain',
     axis: 'overlay',
+    impliesAutonomy: true,
     title: 'DRAIN — drive the queue to terminal',
     oneLiner: 'take a work-item backlog and drive every item to a terminal state; completion integrity over speed',
     contract: `## DRAIN mode — binding contract
@@ -134,6 +143,72 @@ originator to revise — your critique is the revision signal that closes their 
 score. (No self-grading: the tool refuses when you authored the row.)
 (Overlay: stacks with any autonomy/work-source mode.)`,
   },
+  {
+    id: 'goal',
+    axis: 'overlay',
+    impliesAutonomy: true,
+    title: 'GOAL — own an outcome, not a queue',
+    oneLiner:
+      'own a goal end-to-end: create the projects/plans/fleets that reach it, reallocate on evidence, kill on written criteria',
+    contract: `## GOAL mode — binding contract
+The objective is an OUTCOME, not a queue. You are handed a goal ("ship a paid
+app", "reach N users") and you own the whole ladder down to work-items: creating
+the projects, plans and fleets that reach it, and REALLOCATING between them as
+evidence arrives. A goal runs for weeks, so the posture is portfolio management,
+not a single build.
+KICKOFF QUESTION (mandatory): before creating anything, read the existing
+portfolio (pot:list + plans:list + search:semantic on the goal's terms), report
+what ALREADY targets this goal, and settle the two things a goal cannot run
+without — its KILL CRITERION and its SPEND CEILING — proposing a concrete value
+for each rather than offering a blank menu.
+SHAPE (v1): a goal's projects are POTS inside this workspace, not separate
+workspaces — no workspace-provisioning path exists yet. So they SHARE this
+harness's workspace-widened Mug/Blender/Overwatch and compete with its own
+self-improvement for placement and budget, which is what makes the arbitration
+clause below load-bearing rather than merely prudent.
+OPERATING LOOP, ordered by damage caused if skipped:
+1. CAPACITY PREFLIGHT, RAMP ONE AT A TIME — accounts:status + gateway headroom
+   before any launch; drive ONE project end-to-end before creating a second.
+2. PROVE A CHILD EXECUTES before trusting it: seed one trivial work-item and
+   confirm a session with \`adv_sessions.role = 'cup'\` carries it to terminal.
+   An \`s-<epochMs>-<hex>\` owner id proves "spawned", NOT "cup" — many spawners
+   emit that format, so join to the session row and assert the ROLE. Skip this
+   and N children look busy while executing nothing.
+3. ONE PLACER PER POT — before launching a fleet into a pot, EITHER leave
+   placement to the Mug (just plans:start) OR take the pot yourself
+   (pot:set_steering { pauseNewWork: true } / scoped allowedHarnesses) and then
+   launch, unpausing at wind-down. Never both: two placers double-place work.
+4. A WRITTEN KILL CRITERION PER PROJECT AT CREATION TIME, plus declared expected
+   spend and reported actuals. An agent that only ever creates is a ratchet.
+5. OWNER-WALLED ACTIONS, NAMED — app-store submission, payment/Stripe setup,
+   domain registration, real spend, published marketing. Queue them as owner
+   asks and keep working around them; never stall silently, never act
+   irreversibly.
+6. SHIPPED, NOT GREEN — a feature behind an unflipped flag is dead code; for a
+   revenue goal the deliverable is a released artifact with a payment path, not
+   a passing suite. Flags ship ON.
+7. DEDUP BEFORE CREATING — pot:list / plans:list / search:semantic first.
+8. TEMPLATES MANDATE — every new app materializes from a \`scope: "app"\`
+   template root, never a hand-rolled tree.
+9. RUBRIC REUSE, NOT PROLIFERATION (inherit GRADE's clause) — a fresh rubric per
+   project makes trends uncomparable across the portfolio, destroying the
+   reallocation signal that is the entire point of running one.
+10. POT VS SUB-HARNESS IS YOUR JUDGMENT — a pot buys its own
+    repo/blueprint/schema/plans and a blast-radius boundary; under a
+    workspace-widened brain it does NOT buy a separate decider.
+DURABILITY: a goal outlives any one session, so it must not live in a transcript.
+Arm a loop as your wake source and treat the carry surfaces as the goal's real
+memory — loop:checkpoint every wake, work_items:checkpoint at every boundary,
+and the goal's standing state on its own pot/plan record — so a COLD wake
+re-establishes the goal from durable state. A goal that dies with its terminal is
+the failure this clause prevents.
+REPORT on a standing cadence via coord:escalate / notifyAttention (desktop
+notifications are OFF): what moved, what it cost, what is owner-walled, and what
+you killed. Without it the owner learns goal state only by asking.
+GOAL implies AUTO: if the autonomy axis is empty, also mode:set auto — a goal
+agent that stops to ask cannot run for weeks. (Overlay: stacks with anything,
+including DRAIN, IDEATE and GRADE.)`,
+  },
 ];
 
 /** Look up a mode by id (case-insensitive). */
@@ -149,6 +224,32 @@ export function modeById(id: string): ModeDef | null {
  */
 export function axisKeyFor(def: ModeDef): string {
   return def.axis === 'overlay' ? `overlay:${def.id}` : def.axis;
+}
+
+/**
+ * Does this mode id put the session in an AUTONOMY posture — i.e. one that is
+ * meant to outlive an owner sitting there?
+ *
+ * Two ways to qualify, and BOTH must be counted: a mode on the `autonomy` axis
+ * (auto, cold-auto) qualifies inherently, and an overlay may declare
+ * `impliesAutonomy` (drain, goal). Deriving it here is not tidiness — this
+ * question was hardcoded at six call sites and three of them had already
+ * drifted apart, each omitting `cold-auto` with no comment saying why. The
+ * unguarded-halt sweep was one of them, so the single most autonomy-dependent
+ * posture in the system was the one it did not sweep. A registry-derived
+ * predicate means a new autonomous mode is counted everywhere the moment its
+ * row lands, instead of depending on someone finding all six lists
+ * (goal-mode-2026-08-07 P-012).
+ */
+export function modeImpliesAutonomy(id: string): boolean {
+  const def = modeById(id);
+  if (!def) return false;
+  return def.axis === 'autonomy' || def.impliesAutonomy === true;
+}
+
+/** Every registered mode id that implies an autonomy posture. */
+export function autonomousModeIds(): readonly string[] {
+  return MODES.filter((m) => modeImpliesAutonomy(m.id)).map((m) => m.id);
 }
 
 /**

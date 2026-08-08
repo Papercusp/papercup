@@ -42,6 +42,7 @@ import {
   type CarryBrief,
 } from './carry-brief';
 import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
+import { modeImpliesAutonomy } from './modes/registry';
 import type { RecordedTurnClass } from './turn-provenance/turn-ref';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
@@ -707,7 +708,7 @@ function renderSessionMode(sm: CarryDocSessionMode): string {
   // successor reading it while an owner WAS present correctly resolved it to "fine" — and then
   // silently inherited the halt when the owner walked away. State the consequence first, in
   // the imperative, and only soften it when there is genuinely a loop.
-  const autonomyOn = sm.modes.some((m) => m.mode === 'auto' || m.mode === 'cold-auto' || m.mode === 'drain');
+  const autonomyOn = sm.modes.some((m) => modeImpliesAutonomy(m.mode));
   lines.push(
     sm.loopActive
       ? `- loop: ARMED${sm.loopIntervalSec != null ? ` (every ${sm.loopIntervalSec}s)` : ''} — verify loop:status.active before ending the turn`

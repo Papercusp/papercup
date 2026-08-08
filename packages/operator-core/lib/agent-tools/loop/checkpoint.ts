@@ -44,6 +44,7 @@ import {
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { modeImpliesAutonomy } from '../../modes/registry';
 import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
 import { readWatermark, pickUnreadCursor } from '../coordination/watermarks';
@@ -633,7 +634,7 @@ export default defineTool({
             workspaceId ? getModes(workspaceId, ownerId).catch(() => []) : Promise.resolve([]),
           ]);
           rewakeGuaranteed = isRewakeGuaranteed({
-            autonomousModeActive: modes.some((m) => m.mode === 'auto' || m.mode === 'drain'),
+            autonomousModeActive: modes.some((m) => modeImpliesAutonomy(m.mode)),
             loopActive: Boolean(loop?.active),
             activeAwaitCount: awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length,
           });

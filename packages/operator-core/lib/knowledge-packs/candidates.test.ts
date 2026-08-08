@@ -24,7 +24,13 @@ import {
   reviewCandidateForAutoAdopt,
   type KnowledgePackCandidate,
 } from './candidates';
-import { parseLearningFile } from './pack-format';
+import {
+  OKF_MANIFEST_KEY,
+  OKF_VERSION,
+  parseLearningFile,
+  parseManifest,
+  type LearningKind,
+} from './pack-format';
 import { loadKnowledgePack } from './load-packs';
 
 describe('bumpPatchVersion', () => {
@@ -126,6 +132,35 @@ describe('renderCandidateLearningFile', () => {
     expect(raw).not.toContain('5741efa1c7dd'); // recurrence signature hash
     expect(raw).not.toContain('signature');
   });
+
+  // okf-frontmatter-adoption-2026-08-08 P-004. The backfill put `type` on all 70
+  // pack docs; THIS is the only code path that mints new ones, so without it the
+  // corpus walks back below 100% one adoption at a time — a regression a test of
+  // the backfill alone could never catch.
+  it('emits OKF `type` as a verbatim copy of `kind`, ADDITIVELY (P-004)', () => {
+    const render = (kind: LearningKind) =>
+      renderCandidateLearningFile({
+        itemId: 'lock-before-edit',
+        title: 'Always check locks',
+        text: 'Find how this project serializes concurrent edits before writing.',
+        kind,
+        appliesTo: ['any'],
+        signature: 'lock|edit',
+        scopes: ['operator'],
+        recurrenceCount: 4,
+        sourceItemIds: ['EI-1'],
+      });
+
+    expect(render('feedback')).toContain('\ntype: feedback\n');
+    // A COPY, not a constant: a kind other than today's uniform 'feedback' must
+    // carry through, or the field silently mislabels the first pack doc that
+    // uses one.
+    expect(render('reference')).toContain('\ntype: reference\n');
+    // Additive — `kind` is load-bearing (the loader maps it onto the seeded
+    // memory row's kind) and must survive alongside.
+    expect(render('reference')).toContain('\nkind: reference\n');
+    expect(parseLearningFile(render('reference'), 'fallback').item?.kind).toBe('reference');
+  });
 });
 
 describe('materializeCandidateIntoPack', () => {
@@ -172,6 +207,48 @@ describe('materializeCandidateIntoPack', () => {
       'coordinate-shared-tree-edits',
       'coordinate-shared-tree-edits-2',
     ]);
+  });
+
+  // okf-frontmatter-adoption-2026-08-08 P-004. renderManifest REWRITES
+  // manifest.yaml wholesale on every adoption, so a manifest field it does not
+  // emit is ERASED on the next write rather than merely ignored. This is the
+  // write-side half of the okf_version thread (parseManifest's read side is
+  // pinned in pack-format.test.ts).
+  describe('okf_version survives the manifest rewrite (P-004)', () => {
+    it('stamps the current OKF version on a manifest that predates the field', async () => {
+      const dir = join(root, FLEET_LESSONS_PACK_ID);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        join(dir, 'manifest.yaml'),
+        ['id: fleet-lessons', 'title: Fleet lessons', 'description: Pre-OKF.', 'version: 0.0.4', ''].join('\n'),
+        'utf8',
+      );
+
+      await materializeCandidateIntoPack(lesson('Stamp an un-stamped manifest'), { packsRoot: root });
+
+      const raw = await fs.readFile(join(dir, 'manifest.yaml'), 'utf8');
+      expect(raw).toContain(`${OKF_MANIFEST_KEY}:`);
+      const { manifest, error } = parseManifest(raw);
+      expect(error).toBeUndefined();
+      expect(manifest?.okfVersion).toBe(OKF_VERSION);
+      // …without disturbing the fields the rewrite already owned.
+      expect(manifest?.version).toBe('0.0.5');
+    });
+
+    it('preserves an EXISTING declared version rather than overwriting it', async () => {
+      const dir = join(root, FLEET_LESSONS_PACK_ID);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        join(dir, 'manifest.yaml'),
+        ['id: fleet-lessons', 'title: Fleet lessons', 'description: Newer spec.', 'version: 0.0.4', 'okf_version: "9.9"', ''].join('\n'),
+        'utf8',
+      );
+
+      await materializeCandidateIntoPack(lesson('Keep a declared okf version'), { packsRoot: root });
+
+      const { manifest } = parseManifest(await fs.readFile(join(dir, 'manifest.yaml'), 'utf8'));
+      expect(manifest?.okfVersion).toBe('9.9');
+    });
   });
 });
 

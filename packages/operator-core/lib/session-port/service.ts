@@ -19,6 +19,7 @@ import {
   SESSION_PORT_RENDERER_VERSION,
 } from './render';
 import { sanitizePortableText } from './security';
+import { modeImpliesAutonomy } from '../modes/registry';
 import {
   findCanonicalClaudeLiveJsonl,
   readCanonicalClaudeArchive,
@@ -149,7 +150,7 @@ export async function assertNoPortableAuthority(source: AdvSessionRow): Promise<
     active.fleetSlug ? `fleet ${active.fleetSlug}` : null,
     active.loopArmed ? 'armed loop' : null,
     active.claims.length ? `${active.claims.length} active claim(s)` : null,
-    active.modes.some((m) => m.mode === 'auto' || m.mode === 'drain')
+    active.modes.some((m) => modeImpliesAutonomy(m.mode))
       ? `mode ${active.modes.map((m) => m.mode).join(',')}`
       : null,
   ].filter(Boolean);

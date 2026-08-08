@@ -12,6 +12,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { runBulk, bulkContent } from '../_bulk';
 import { getModes } from '../../modes/store';
+import { modeImpliesAutonomy } from '../../modes/registry';
 import {
   getWorkItem,
   mergeWorkItemPayload,
@@ -96,7 +97,7 @@ export default defineTool({
     if (wantsAutoAuthority) {
       try {
         const modes = await getModes(identity.workspaceId ?? 'default', identity.ownerId);
-        autoAuthority = modes.some((row) => ['auto', 'cold-auto', 'drain'].includes(row.mode));
+        autoAuthority = modes.some((row) => modeImpliesAutonomy(row.mode));
       } catch {
         // Fail closed: a mode-read outage must never fabricate approval.
       }

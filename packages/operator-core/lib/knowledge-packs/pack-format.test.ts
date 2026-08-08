@@ -11,13 +11,14 @@ import {
   filterByShapes,
   memoryTextOf,
   parseLearningFile,
+  OKF_VERSION,
   parseManifest,
   provenanceOf,
   semverGt,
   validatePack,
   type KnowledgePack,
 } from './pack-format';
-import { listKnowledgePacks, loadKnowledgePack } from './load-packs';
+import { builtinKnowledgePacksRoot, listKnowledgePacks, loadKnowledgePack } from './load-packs';
 
 describe('parseManifest', () => {
   it('parses a valid manifest', () => {
@@ -44,6 +45,66 @@ describe('parseManifest', () => {
 
   it('rejects non-mapping yaml', () => {
     expect(parseManifest('- a\n- b').error).toMatch(/mapping/);
+  });
+
+  // okf-frontmatter-adoption-2026-08-08 P-004. parseManifest is a WHITELIST
+  // constructor — it builds a fresh object from named keys — so a manifest key
+  // it does not read is silently DROPPED, not rejected. These pin the read side
+  // of the okf_version thread; without it the field on disk is decorative.
+  describe('okf_version', () => {
+    const base = 'id: ok\ntitle: t\ndescription: d\nversion: 1.0.0';
+
+    it('is absent (not undefined-valued) when the manifest does not declare it', () => {
+      const { manifest } = parseManifest(base);
+      expect(manifest).toBeDefined();
+      expect('okfVersion' in manifest!).toBe(false);
+    });
+
+    it('reads a quoted string', () => {
+      expect(parseManifest(`${base}\nokf_version: "0.2"`).manifest?.okfVersion).toBe('0.2');
+    });
+
+    it('coerces the unquoted YAML NUMBER form', () => {
+      // `okf_version: 0.2` parses as 0.2 (a number), not '0.2'. Callers compare
+      // strings, so an un-coerced number would silently never match.
+      expect(parseManifest(`${base}\nokf_version: 0.2`).manifest?.okfVersion).toBe('0.2');
+    });
+
+    it('accepts an UNKNOWN version rather than rejecting it', () => {
+      // OKF's tolerate-unknown rule: a pack authored against a newer revision
+      // must still load. Validating against a known set here would make every
+      // future spec bump a hard load failure.
+      const { manifest, error } = parseManifest(`${base}\nokf_version: "9.9"`);
+      expect(error).toBeUndefined();
+      expect(manifest?.okfVersion).toBe('9.9');
+    });
+  });
+});
+
+describe('builtin manifests declare okf_version (P-004)', () => {
+  // The recurrence guard for the whole P-004 manifest leg: the codemod's write,
+  // the parser's read and the on-disk files must agree. A manifest rewritten by
+  // a path that drops the field (renderManifest is a full REWRITE, not a patch)
+  // reds here rather than silently regressing the corpus to 0/3.
+  it('every builtin pack manifest parses to okfVersion === OKF_VERSION', async () => {
+    const { readdirSync, readFileSync, existsSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const root = builtinKnowledgePacksRoot();
+    const packs = readdirSync(root, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort();
+
+    // "0 offenders" and "0 files examined" are the same output otherwise.
+    expect(packs.length, `no pack dirs under ${root}`).toBeGreaterThan(0);
+
+    for (const pack of packs) {
+      const file = join(root, pack, 'manifest.yaml');
+      if (!existsSync(file)) continue;
+      const { manifest, error } = parseManifest(readFileSync(file, 'utf8'));
+      expect(error, `${pack}/manifest.yaml`).toBeUndefined();
+      expect(manifest?.okfVersion, `${pack}/manifest.yaml okf_version`).toBe(OKF_VERSION);
+    }
   });
 });
 

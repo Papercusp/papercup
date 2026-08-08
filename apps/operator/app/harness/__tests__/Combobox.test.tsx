@@ -79,6 +79,7 @@ import {
   flattenComboboxEntries,
   type ComboboxEntry,
 } from '../Combobox';
+import { POPPER_WRAPPER_FLOOR_Z } from '../popper-z';
 
 const NONE = '__none__';
 
@@ -428,11 +429,35 @@ describe('ComboboxMenu', () => {
    * jsdom does not paint, so no render test can catch it. Asserting the VALUE
    * handed to the Popover is the honest guard at this layer. Primitive-level
    * fix tracked as EI-19470132622399873.
+   *
+   * UPDATED (WI-35969). This used to assert a PINNED `1500`. That looked like
+   * the safest possible value and was in fact the second half of a bug: the
+   * popper floor is no longer a constant — it rises above any open modal — so
+   * pinning the static floor here buried this menu underneath the modal it was
+   * opened inside. Delegating (passing nothing) is what makes it track the live
+   * floor, so the guard is now "never pin yourself below the floor", which
+   * still fails on the `zIndex = 90` shape that started all this.
    */
-  it('defaults to the popper wrapper floor, so it cannot paint behind the dock', () => {
+  it('never pins its own z-index below the popper floor — it delegates to the live floor', () => {
     renderMenu();
     openMenu();
-    expect(screen.getByTestId('popover-panel').getAttribute('data-z-index')).toBe('1500');
+    const raw = screen.getByTestId('popover-panel').getAttribute('data-z-index');
+    // The real assertion, stated so it survives a future re-introduction of a
+    // default: whatever is handed over must not be under the floor.
+    if (raw !== null) expect(Number(raw)).toBeGreaterThanOrEqual(POPPER_WRAPPER_FLOOR_Z);
+    // …and today it hands over nothing at all, which is what lets
+    // `harness/Popover` apply `popperFloorZ()` — above an open modal when there
+    // is one. (The arithmetic behind that floor is proven in
+    // `harness/popper-z.test.ts`; this file only owns the delegation.)
+    expect(raw).toBeNull();
+  });
+
+  it('still forwards an explicit zIndex, so a caller can order two menus', () => {
+    renderMenu({ zIndex: POPPER_WRAPPER_FLOOR_Z + 300 });
+    openMenu();
+    expect(screen.getByTestId('popover-panel').getAttribute('data-z-index')).toBe(
+      String(POPPER_WRAPPER_FLOOR_Z + 300),
+    );
   });
 
   it('is disabled-safe: a disabled trigger cannot open the panel', () => {

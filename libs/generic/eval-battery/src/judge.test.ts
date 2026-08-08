@@ -4,7 +4,7 @@
  * the shared eval-battery engine, reconciliation D-001).
  */
 import { describe, it, expect } from 'vitest';
-import { buildJudgePrompt, judgeBatteryRun, type JudgeLlmCall, type JudgeInput } from './judge';
+import { buildJudgePrompt, judgeBatteryRun, JudgeOutputContractError, type JudgeLlmCall, type JudgeInput } from './judge';
 import { rubricHash, composite, type BatteryRubric } from './scoring';
 
 const RUBRIC: BatteryRubric = {
@@ -92,5 +92,112 @@ describe('judgeBatteryRun', () => {
   it('throws when the judge produced no parseable scores', async () => {
     const { call } = fakeLlm({ json: undefined, text: 'I was unable to evaluate this run.' });
     await expect(judgeBatteryRun(input, { llmCall: call })).rejects.toThrow();
+  });
+});
+
+/** A fake that returns a DIFFERENT reply per call, so the repair path is observable. */
+function sequencedLlm(replies: Array<{ json?: unknown; text?: string }>): {
+  call: JudgeLlmCall;
+  calls: Parameters<JudgeLlmCall>[0][];
+} {
+  const calls: Parameters<JudgeLlmCall>[0][] = [];
+  const call: JudgeLlmCall = async (opts) => {
+    const r = replies[Math.min(calls.length, replies.length - 1)];
+    calls.push(opts);
+    return { text: r.text ?? '', json: r.json, costUsd: 0.25, inputTokens: 100, outputTokens: 20 };
+  };
+  return { call, calls };
+}
+
+describe('judgeBatteryRun — output-contract failure is diagnosable + repairable (WI-35902)', () => {
+  // REGRESSION ANCHOR: the papercusp gym-cycle sat wedged from 2026-07-27 on the message
+  // "battery judge produced no parseable JSON output" — which discarded the reply, so
+  // nothing downstream could tell WHY. Every assertion here is about evidence surviving.
+  it('repairs a malformed first reply with one strict re-ask, without inventing a score', async () => {
+    const { call, calls } = sequencedLlm([
+      { text: 'I reviewed the run carefully but will describe it in prose instead.' },
+      { text: '{"d1":9,"d2":7,"d3":5,"rationale":"repaired"}' },
+    ]);
+    const score = await judgeBatteryRun(input, { llmCall: call });
+
+    expect(calls).toHaveLength(2);
+    expect(score).toMatchObject({ d1: 9, d2: 7, d3: 5, rationale: 'repaired' });
+    // The re-ask shows the model its own rejected reply and demands the bare object.
+    expect(calls[1].messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+    expect(calls[1].messages[1].content).toContain('prose instead');
+    expect(calls[1].messages[2].content).toMatch(/SINGLE JSON object/i);
+  });
+
+  it('accumulates cost + tokens across the repair (a retried judgement really spent both calls)', async () => {
+    const { call } = sequencedLlm([{ text: 'nope' }, { text: '{"d1":1,"d2":1,"d3":1,"rationale":"r"}' }]);
+    const score = await judgeBatteryRun(input, { llmCall: call });
+    expect(score.costUsd).toBeCloseTo(0.5, 6);
+    expect(score.inputTokens).toBe(200);
+    expect(score.outputTokens).toBe(40);
+  });
+
+  it('repairs a reply that PARSES but has the wrong shape (missing rationale)', async () => {
+    const { call, calls } = sequencedLlm([
+      { json: { d1: 8, d2: 8, d3: 8 } },
+      { json: { d1: 8, d2: 8, d3: 8, rationale: 'now complete' } },
+    ]);
+    const score = await judgeBatteryRun(input, { llmCall: call });
+    expect(calls).toHaveLength(2);
+    expect(score.rationale).toBe('now complete');
+  });
+
+  it('honours repairAttempts:0 — one call, no re-ask', async () => {
+    const { call, calls } = sequencedLlm([{ text: 'still prose' }]);
+    await expect(judgeBatteryRun(input, { llmCall: call, repairAttempts: 0 })).rejects.toThrow(
+      JudgeOutputContractError,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it('carries the raw reply, its length, and the attempt count on the thrown error', async () => {
+    const bad = 'I am unable to evaluate this run because the trace was empty.';
+    const { call } = sequencedLlm([{ text: bad }]);
+    const err = await judgeBatteryRun(input, { llmCall: call }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(JudgeOutputContractError);
+    const e = err as JudgeOutputContractError;
+    expect(e.rawText).toBe(bad);
+    expect(e.textLength).toBe(bad.length);
+    expect(e.attempts).toBe(2); // the first call + one repair
+    expect(e.reason).toBe('unparseable');
+    expect(e.hadStructuredJson).toBe(false);
+    expect(e.judgeModel).toBe(RUBRIC.model);
+  });
+
+  it('inlines the fixed-shape facts BEFORE the excerpt so a truncated last_status stays diagnosable', async () => {
+    const { call } = sequencedLlm([{ text: 'refusal text' }]);
+    const err = (await judgeBatteryRun(input, { llmCall: call }).catch((e: unknown) => e)) as Error;
+    // The first ~160 chars are what an escalation surface records verbatim.
+    const head = err.message.slice(0, 160);
+    expect(head).toContain('battery judge produced');
+    expect(head).toContain(`model=${RUBRIC.model}`);
+    expect(head).toContain('chars=12');
+    expect(err.message).toContain('refusal text');
+  });
+
+  it('flags a maxTokens-truncated object as truncated=likely (vs. a refusal, which is not)', async () => {
+    const { call } = sequencedLlm([{ text: '{"d1":8,"d2":6,"d3":4,"rationale":"it started well but then' }]);
+    const err = (await judgeBatteryRun(input, { llmCall: call }).catch((e: unknown) => e)) as JudgeOutputContractError;
+    expect(err.looksTruncated).toBe(true);
+    expect(err.message).toContain('truncated=likely');
+
+    const { call: refusal } = sequencedLlm([{ text: 'I cannot score this.' }]);
+    const err2 = (await judgeBatteryRun(input, { llmCall: refusal }).catch(
+      (e: unknown) => e,
+    )) as JudgeOutputContractError;
+    expect(err2.looksTruncated).toBe(false);
+  });
+
+  it('reports an unrepairable WRONG SHAPE with the validator’s own complaint', async () => {
+    const { call } = sequencedLlm([{ json: { d1: 'high', d2: 2, d3: 3, rationale: 'r' } }]);
+    const err = (await judgeBatteryRun(input, { llmCall: call }).catch((e: unknown) => e)) as JudgeOutputContractError;
+    expect(err.reason).toBe('invalid-shape');
+    expect(err.validationError).toMatch(/d1/);
+    expect(err.message).toMatch(/invalid shape/);
   });
 });

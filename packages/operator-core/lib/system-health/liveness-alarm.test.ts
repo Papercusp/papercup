@@ -1383,6 +1383,89 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     expect(store.openCount()).toBe(1);
   });
 
+  // WI-36010: the durable dedup above is keyed on the SIGNATURE alone. Both stale-paused
+  // branches emit key 'stale-paused-routines' and differ ONLY in severity, so an open
+  // `advisory` row used to swallow every later `blocker` for that key. Measured live: an
+  // advisory opened 2026-08-06T19:20Z never resolved, and the alarm then fired zero times
+  // for 2 days while the detector still matched 57 routines — a release-critical stale
+  // pause (the literal WI-5839 incident) could not have paged anyone.
+  //
+  // ⚠ Read (a2) and (a3) TOGETHER. The guard alone would also pass with the dedup deleted
+  // outright; (a3) is what pins the break-through as NARROW rather than "blockers always
+  // re-fire". Reverting either half of the `escalatesToBlocker` condition reds one of them.
+  function stalePausedHealth(critical: number) {
+    return mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: {
+        workFeed: {
+          data: {
+            deadRoutines: 0,
+            stalePausedRoutines: critical > 0 ? 6 : 5,
+            stalePausedRoutineNames: critical > 0 ? ['release-trigger'] : ['scout-cycle'],
+            stalePausedCriticalRoutines: critical,
+          },
+        },
+      },
+    });
+  }
+
+  function stalePausedDeps(store: ReturnType<typeof makeStore>, readCritical: () => number) {
+    return {
+      readLast: () => stalePausedHealth(readCritical()),
+      computeHealth: async () => stalePausedHealth(readCritical()),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      now: () => 100 * 60_000 + 60_000,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 30 * 60_000,
+    };
+  }
+
+  it('(a2) WI-36010 GUARD: an open ADVISORY does not swallow a later BLOCKER for the same signature', async () => {
+    const store = makeStore();
+    let critical = 0;
+    const deps = stalePausedDeps(store, () => critical);
+
+    const first = await runLivenessAlarmTick('ws', deps);
+    expect(first.fired.map((s) => s.key)).toEqual(['stale-paused-routines']);
+    expect(first.fired[0]?.severity).toBe('advisory');
+
+    // The pause is now on a release-critical routine. Wipe the in-memory debounce so the
+    // durable signature dedup is the ONLY thing under test.
+    critical = 1;
+    _resetLivenessAlarmDebounce();
+    const second = await runLivenessAlarmTick('ws', deps);
+    expect(second.fired.map((s) => s.key)).toEqual(['stale-paused-routines']);
+    expect(second.fired[0]?.severity).toBe('blocker');
+    // NOTE: deliberately no openCount() assertion. This fixture's `escalate` appends
+    // unconditionally, so it shows 2 rows — production does NOT: openEscalation coalesces
+    // on (dedupKind, subjectSignature), both severity-independent for the explicit
+    // dedupKind this alarm stamps, folding the upgrade onto the ONE open row and
+    // refreshing its severity in place (EI-12546). Don't read 2 here as a duplicate-row bug.
+  });
+
+  it('(a3) WI-36010 stays NARROW: a same-severity repeat is still suppressed (advisory→advisory AND blocker→blocker)', async () => {
+    // advisory → advisory: unchanged pre-WI-36010 behavior.
+    const advisoryStore = makeStore();
+    const advisoryDeps = stalePausedDeps(advisoryStore, () => 0);
+    const advisoryFirst = await runLivenessAlarmTick('ws', advisoryDeps);
+    expect(advisoryFirst.fired.map((s) => s.key)).toEqual(['stale-paused-routines']);
+    _resetLivenessAlarmDebounce();
+    expect((await runLivenessAlarmTick('ws', advisoryDeps)).fired).toEqual([]);
+    expect(advisoryStore.openCount()).toBe(1);
+
+    // blocker → blocker: the break-through must NOT degrade into "a blocker always fires",
+    // which would re-arm exactly the fire storm the durable dedup exists to prevent.
+    const blockerStore = makeStore();
+    const blockerDeps = stalePausedDeps(blockerStore, () => 1);
+    const blockerFirst = await runLivenessAlarmTick('ws', blockerDeps);
+    expect(blockerFirst.fired[0]?.severity).toBe('blocker');
+    _resetLivenessAlarmDebounce();
+    expect((await runLivenessAlarmTick('ws', blockerDeps)).fired).toEqual([]);
+    expect(blockerStore.openCount()).toBe(1);
+  });
+
   it('(b) a cleared condition auto-resolves its open escalation, then re-fires only after recovery', async () => {
     const store = makeStore();
     let healthy = false;

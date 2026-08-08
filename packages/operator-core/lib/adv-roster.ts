@@ -120,7 +120,7 @@ export interface OpenAwait {
  * override it), a self-set one is the agent's own posture.
  */
 export interface AdvRosterMode {
-  /** Registry mode id — 'auto' | 'cold-auto' | 'ideate' | 'drain' | 'grade'. */
+  /** Registry mode id — see MODES in modes/registry.ts for the live set. */
   mode: string;
   /** True when the human owner armed it (agent_modes.owner_directed). */
   ownerDirected: boolean;

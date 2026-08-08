@@ -701,9 +701,12 @@ export function evaluateLivenessAlarm(
  *   ⚠ CORRECTION (2026-08-04) — an earlier revision of this comment ALSO cited "and ZERO
  *   fire→fire transitions — a perfect square wave" as part of that proof. That observation
  *   is real but carries NO information: the fire loop skips any signature that already has
- *   an open row (`if (openBySig.has(s.key)) continue`), so a second fire coalesces onto the
+ *   an open row (the `openForSig` guard in §2; before WI-36010, a bare
+ *   `if (openBySig.has(s.key)) continue`), so a second fire coalesces onto the
  *   open row instead of writing an event. fire→fire is therefore IMPOSSIBLE BY CONSTRUCTION
- *   in `coord_event_log`, for every signature, flapping or not — measured the same day on
+ *   in `coord_event_log`, for every signature, flapping or not — with the ONE exception
+ *   WI-36010 added: an advisory→`blocker` escalation now breaks through, and even then it
+ *   coalesces onto the same open row rather than writing a second event — measured the same day on
  *   three unrelated live signatures, all with zero fire→fire. The BYTE-IDENTICAL summary is
  *   the load-bearing evidence here; the alternation is not. Citing a structurally-forced
  *   observation as though it discriminated between hypotheses is how a sound-looking proof
@@ -1671,7 +1674,9 @@ export async function runLivenessAlarmTick(
   }
 
   // 2. Fire each NEW signal — durably deduped (skip a signature that already has
-  //    an open escalation) then in-memory cooldown-debounced. The escalation row
+  //    an open escalation AT >= THIS SEVERITY; WI-36010 lets an advisory→blocker
+  //    escalation through, coalescing onto that same row) then in-memory
+  //    cooldown-debounced. The escalation row
   //    itself is opened unconditionally here (WI-4181 dedup only); whether it ALSO
   //    pages the fleet is decided atomically below, together with the resolve
   //    step's recovery-broadcast decision.
@@ -1686,7 +1691,32 @@ export async function runLivenessAlarmTick(
   const fired: AlarmSignal[] = [];
   const newBlockerSignals: AlarmSignal[] = [];
   for (const s of signals) {
-    if (openBySig.has(s.key)) continue; // an open escalation already covers this signature
+    // WI-36010: this dedup used to be `if (openBySig.has(s.key)) continue` — keyed on
+    // the signature ALONE, so it was SEVERITY-BLIND. Both stale-paused branches emit
+    // key 'stale-paused-routines' and differ only in severity (see §2b above), so one
+    // open `advisory` row silently swallowed every later `blocker` for the same key.
+    // Measured live: an advisory opened 2026-08-06T19:20Z never resolved, and for the
+    // 2 days after it the alarm fired ZERO times while the detector still matched 57
+    // routines — i.e. a release-critical stale pause (the literal WI-5839 incident:
+    // release-trigger silently paused ~4 days, twice) could no longer page anyone.
+    //
+    // A signal that has ESCALATED to `blocker` must therefore reach `escalate()`. That
+    // does NOT open a second row or re-arm the fire/resolve churn: we stamp an explicit
+    // `dedupKind`/`subjectSignature` (below), and openEscalation's coalesce matches on
+    // exactly those two — both severity-independent — so it folds onto the ONE open row
+    // and refreshes its severity in place (EI-12546's advisory→blocker upgrade path,
+    // escalations.ts withRepeatMetadata). The machinery was already correct; this early
+    // `continue` was simply returning before it could ever run.
+    //
+    // Deliberately NARROW: only a `blocker` breaks through, and only when no open row is
+    // already `blocker`. Same-severity repeats stay suppressed exactly as before, and we
+    // do not rank 'question' against 'advisory' — that ordering is orthogonal, not a
+    // severity ladder, and inventing one here would change behavior nobody measured.
+    const openForSig = openBySig.get(s.key);
+    if (openForSig?.length) {
+      const escalatesToBlocker = s.severity === 'blocker' && !openForSig.some((r) => r.severity === 'blocker');
+      if (!escalatesToBlocker) continue; // an open escalation at >= this severity already covers it
+    }
     if (s.key === 'dead-routines' && reverifyDeadRoutines) {
       const fresh = await reverifyDeadRoutines(ws, now).catch(() => null);
       // A confirmed-empty fresh re-read means the condition already cleared —

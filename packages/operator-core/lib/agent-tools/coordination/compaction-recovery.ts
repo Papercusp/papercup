@@ -28,7 +28,8 @@ export interface CompactionRecovery {
    *  route, and active scope after compaction. */
   control?: import('./control-anchor').ControlAnchor | null;
   /** WI-7302 part 2: fires when this session is registered in an autonomy mode
-   *  (auto | cold-auto | drain) while NOTHING will wake it unprompted — no
+   *  (modeImpliesAutonomy — the registry's derived set) while NOTHING will wake
+   *  it unprompted — no
    *  armed loop and no standing wake-await. Present ONLY when it fires, so it
    *  costs nothing on the healthy path.
    *

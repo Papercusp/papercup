@@ -6,6 +6,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { Modal } from './Modal';
+import {
+  MODAL_FLOOR_Z,
+  POPPER_WRAPPER_FLOOR_Z,
+  _resetModalLayerRegistry,
+  popperFloorZ,
+  topOpenModalZ,
+} from './popper-z';
 
 beforeAll(() => {
   if (typeof (globalThis as { ResizeObserver?: unknown }).ResizeObserver === 'undefined') {
@@ -197,22 +204,81 @@ describe('Modal', () => {
     expect(dialog?.className).toContain('pc-modal-content');
   });
 
-  it('respects custom zIndex', () => {
+  /**
+   * THE BUG THIS PAIR EXISTS TO PREVENT (WI-35969, owner-reported 2026-08-08).
+   * `Modal` defaulted to z 100 — a number chosen when the tallest thing it had
+   * to clear was the OracleDock at 80. The body-portaled popper floor was later
+   * raised to 1500, which silently meant every modal opened FROM a dropdown was
+   * painted UNDER that dropdown. Measured live: clicking a conversation in the
+   * agents-running pill opened its modal beneath the popover that launched it,
+   * so the box read as "never opened" even though its transcript had arrived.
+   *
+   * jsdom cannot paint, and this file's sibling lint says at length that a
+   * render test therefore cannot prove stacking. But this defect was not a
+   * painting subtlety — it was an ARITHMETIC one, and the number is right here
+   * in the DOM, so asserting it is honest. (The ordering algebra itself is
+   * proven in harness/popper-z.test.ts.)
+   */
+  const wrapZ = () => {
+    const wrap = screen.getByRole('dialog').parentElement as HTMLElement;
+    return parseInt(window.getComputedStyle(wrap).zIndex) || 0;
+  };
+
+  it('opens above the popper floor, so a modal launched from a dropdown is not buried', () => {
+    render(
+      <Modal open={true} onOpenChange={() => {}} title="Default layer">
+        <div>Content</div>
+      </Modal>
+    );
+    expect(wrapZ()).toBeGreaterThanOrEqual(MODAL_FLOOR_Z);
+    expect(wrapZ()).toBeGreaterThan(POPPER_WRAPPER_FLOOR_Z);
+  });
+
+  it('lifts a legacy below-floor zIndex instead of honouring it', () => {
+    // Two callers really did pass one (BranchActionRunner 200, FeatureEditor
+    // 120). Honouring those is not "lower ordering" — it is burial behind every
+    // dropdown, which is the bug. Clamping is what makes the class impossible at
+    // the primitive rather than at each call site.
+    render(
+      <Modal open={true} onOpenChange={() => {}} title="Legacy z" zIndex={120}>
+        <div>Content</div>
+      </Modal>
+    );
+    expect(wrapZ()).toBeGreaterThan(POPPER_WRAPPER_FLOOR_Z);
+  });
+
+  it('respects a custom zIndex above the floor', () => {
     render(
       <Modal
         open={true}
         onOpenChange={() => {}}
         title="ZIndexed"
-        zIndex={1000}
+        zIndex={MODAL_FLOOR_Z + 100}
       >
         <div>Content</div>
       </Modal>
     );
     // zIndex lands on the overlay (z) and the centering wrap (z+1) that owns
     // stacking; the dialog content sits inside that wrap.
-    const wrap = screen.getByRole('dialog').parentElement as HTMLElement;
-    const style = window.getComputedStyle(wrap);
-    expect(parseInt(style.zIndex) || 0).toBeGreaterThanOrEqual(1000);
+    expect(wrapZ()).toBeGreaterThanOrEqual(MODAL_FLOOR_Z + 100);
+  });
+
+  it('publishes its layer while open so a menu inside it can clear it', () => {
+    // The other half of the fix: without this registration a Select opened
+    // INSIDE the modal stays pinned at the 1500 shell floor and is buried by
+    // the very modal that contains it.
+    _resetModalLayerRegistry();
+    expect(popperFloorZ()).toBe(POPPER_WRAPPER_FLOOR_Z);
+    const view = render(
+      <Modal open={true} onOpenChange={() => {}} title="Registers">
+        <div>Content</div>
+      </Modal>
+    );
+    expect(topOpenModalZ()).toBeGreaterThanOrEqual(MODAL_FLOOR_Z);
+    expect(popperFloorZ()).toBeGreaterThan(topOpenModalZ());
+    view.unmount();
+    expect(topOpenModalZ()).toBe(0);
+    expect(popperFloorZ()).toBe(POPPER_WRAPPER_FLOOR_Z);
   });
 
   it('applies custom overlayStyle', () => {

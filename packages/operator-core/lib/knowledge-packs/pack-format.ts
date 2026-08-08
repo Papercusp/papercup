@@ -64,6 +64,9 @@ export const PACK_MEMORY_SOURCE = 'pack';
  */
 export const OKF_VERSION = '0.2';
 
+/** The on-disk manifest key carrying {@link OKF_VERSION} (camelCased in TS). */
+export const OKF_MANIFEST_KEY = 'okf_version';
+
 export interface KnowledgePackManifest {
   /** Kebab-case pack id — globally unique (Comb listing_ref for published packs). */
   id: string;
@@ -188,6 +191,18 @@ export function parseManifest(raw: string): { manifest?: KnowledgePackManifest; 
   if (typeof version !== 'string' || !SEMVER_RE.test(version)) {
     return { error: `manifest version must be three-part semver (got ${String(m.version)})` };
   }
+  // `okf_version: 0.2` unquoted is a YAML NUMBER, and 0.20 would then stringify
+  // as '0.2' — so accept both scalar shapes and normalize, exactly as `version`
+  // above does. Not validated against a known set: unknown OKF versions must
+  // load (see KnowledgePackManifest.okfVersion).
+  const okfRaw = m[OKF_MANIFEST_KEY];
+  const okfVersion =
+    typeof okfRaw === 'number'
+      ? String(okfRaw)
+      : typeof okfRaw === 'string' && okfRaw.trim()
+        ? okfRaw.trim()
+        : undefined;
+
   return {
     manifest: {
       id: m.id,
@@ -195,6 +210,7 @@ export function parseManifest(raw: string): { manifest?: KnowledgePackManifest; 
       description: m.description.trim(),
       version,
       ...(typeof m.author === 'string' && m.author.trim() ? { author: m.author.trim() } : {}),
+      ...(okfVersion ? { okfVersion } : {}),
     },
   };
 }

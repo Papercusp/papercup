@@ -7,6 +7,7 @@
  * them (same contract as the carry-surface provenance stamp).
  */
 import { withBoundedTimeout } from './bounded-timeout';
+import { modeImpliesAutonomy } from './modes/registry';
 import {
   awaitGuaranteesRewake,
   composeMechanicalCheckpoint,
@@ -249,7 +250,7 @@ export async function sweepUnguardedHalt(input: {
       getLoopStatus(input.ownerId).catch(() => null),
       listActiveAwaits(input.ownerId).catch(() => []),
     ]);
-    const autonomousModeActive = modes.some((m) => m.mode === 'auto' || m.mode === 'drain');
+    const autonomousModeActive = modes.some((m) => modeImpliesAutonomy(m.mode));
     // WI-6604: an await counts as a re-wake GUARANTEE only if it is BOUNDED (has an
     // expiry) and set to WAKE on that deadline. An unbounded await, or one that merely
     // EXPIRES silently, wakes nobody when its event never fires — and "never fires" is a

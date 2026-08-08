@@ -8,6 +8,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { modeImpliesAutonomy } from './modes/registry';
 
 export interface InstructionRuleOccurrence {
   key: string;
@@ -152,7 +153,7 @@ export function buildInstructionPrecedenceTrace(
 ): InstructionPrecedenceTrace {
   const stable = stableRuntimeContext(runtime);
   const modes = new Set(stable.modes);
-  const auto = modes.has('auto') || modes.has('drain');
+  const auto = [...modes].some((m) => modeImpliesAutonomy(m));
   const drain = modes.has('drain');
   const ideate = modes.has('ideate');
   const decisions: InstructionPrecedenceDecision[] = [];

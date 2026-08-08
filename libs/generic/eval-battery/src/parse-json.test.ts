@@ -61,6 +61,45 @@ describe('tryParseJson — { … } slice-fallback branch', () => {
   });
 });
 
+describe('tryParseJson — balanced-scan branch (WI-35902)', () => {
+  // The first-{-to-last-} slice assumes the reply's FIRST brace opens the payload. A
+  // judge that reasons before answering breaks that assumption routinely, and every
+  // case below returned null (→ "no parseable JSON output", a dead gym cycle) before
+  // the balanced scan was added.
+  it('recovers the payload when PROSE contains an earlier balanced brace', () => {
+    const text = 'The harness wrote { a stub } in code. Verdict:\n{"d1":8,"d2":6,"d3":4,"rationale":"ok"}';
+    expect(tryParseJson(text)).toEqual({ d1: 8, d2: 6, d3: 4, rationale: 'ok' });
+  });
+
+  it('recovers the payload when an earlier prose brace never closes at all', () => {
+    const text = 'The trace showed { and then the verdict: {"d1":1,"d2":2,"d3":3,"rationale":"r"}';
+    expect(tryParseJson(text)).toEqual({ d1: 1, d2: 2, d3: 3, rationale: 'r' });
+  });
+
+  it('recovers a fenced payload that follows brace-bearing prose', () => {
+    const text = 'Considered { x } first.\n```json\n{"d1":5,"d2":5,"d3":5,"rationale":"r"}\n```\nDone.';
+    expect(tryParseJson(text)).toEqual({ d1: 5, d2: 5, d3: 5, rationale: 'r' });
+  });
+
+  it('does NOT miscount braces that live inside a string literal', () => {
+    const text = 'Note { pre } then {"rationale":"the harness emitted { } literally","d1":7}';
+    expect(tryParseJson(text)).toEqual({ rationale: 'the harness emitted { } literally', d1: 7 });
+  });
+
+  it('skips a non-JSON balanced span and keeps scanning to the real payload', () => {
+    const text = 'prefix { not: valid, json } then {"ok":true}';
+    expect(tryParseJson(text)).toEqual({ ok: true });
+  });
+
+  it('still returns null for a TRUNCATED object (nothing balanced to recover)', () => {
+    expect(tryParseJson('{"d1":8,"d2":6,"rationale":"cut off mid-str')).toBeNull();
+  });
+
+  it('does not invent data from a partial ARRAY span', () => {
+    expect(tryParseJson('scores: [1, 2, ')).toBeNull();
+  });
+});
+
 describe('tryParseJson — unrecoverable → null', () => {
   it('returns null for plain prose with no braces', () => {
     expect(tryParseJson('just some words, no json here')).toBeNull();

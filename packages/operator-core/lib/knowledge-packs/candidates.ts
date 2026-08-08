@@ -59,6 +59,8 @@ import {
   APPLIES_TO_SHAPES,
   LEARNING_KINDS,
   memoryTextOf,
+  OKF_MANIFEST_KEY,
+  OKF_VERSION,
   parseManifest,
   type AppliesTo,
   type LearningKind,
@@ -309,6 +311,7 @@ const FLEET_LESSONS_MANIFEST: KnowledgePackManifest = {
     'Cross-hive recurring lessons the owner adopted from the fleet’s recurrence-escalation candidates.',
   version: '0.0.0', // bumped to 0.0.1 by the first adoption
   author: 'papercusp-fleet',
+  okfVersion: OKF_VERSION,
 };
 
 const CANDIDATE_ID_MAX_LEN = 60;
@@ -412,6 +415,14 @@ export function renderCandidateLearningFile(opts: {
     `id: ${opts.itemId}`,
     `title: ${fmValue(opts.title)}`,
     `kind: ${opts.kind}`,
+    // OKF v0.2 `type`, a VERBATIM copy of `kind` — additive, never a
+    // replacement (`kind` is what the loader maps onto the seeded memory row).
+    // This is the doc-side counterpart of the manifest thread below: every pack
+    // doc on disk carries `type` after the P-004 backfill, and this is the only
+    // code path that MINTS new ones. Omitting it here would silently walk the
+    // corpus back below 100% one fleet-lesson adoption at a time — a regression
+    // no test of the backfill itself would ever catch.
+    `type: ${opts.kind}`,
     `applies_to: [${appliesTo.join(', ')}]`,
     '---',
     opts.text.trim(),
@@ -421,6 +432,12 @@ export function renderCandidateLearningFile(opts: {
   ].join('\n');
 }
 
+/**
+ * ⚠ This is a full REWRITE of manifest.yaml, not a patch — it runs on every
+ * fleet-lesson adoption. Any manifest field not emitted here is ERASED from disk
+ * the next time a candidate is adopted, so a new field must be added in BOTH
+ * `parseManifest` (read) and here (write) or it silently evaporates.
+ */
 function renderManifest(m: KnowledgePackManifest): string {
   return [
     `id: ${m.id}`,
@@ -428,6 +445,7 @@ function renderManifest(m: KnowledgePackManifest): string {
     `description: ${fmValue(m.description)}`,
     `version: ${fmValue(m.version)}`,
     ...(m.author ? [`author: ${fmValue(m.author)}`] : []),
+    ...(m.okfVersion ? [`${OKF_MANIFEST_KEY}: ${fmValue(m.okfVersion)}`] : []),
     '',
   ].join('\n');
 }
@@ -524,7 +542,16 @@ export async function materializeCandidateIntoPack(
     renderCandidateLearningFile({ ...opts, itemId }),
     'utf8',
   );
-  await fs.writeFile(join(dir, 'manifest.yaml'), renderManifest({ ...manifest, version }), 'utf8');
+  // Stamp the OKF version on write when the on-disk manifest predates the field.
+  // The fleet-lessons pack lives in the SHARED root (~/.papercusp/...), i.e. OUTSIDE
+  // the repo, so the P-004 codemod that edited the three builtin manifests cannot
+  // reach it — without this it would stay un-stamped indefinitely.
+  const okfVersion = manifest.okfVersion ?? OKF_VERSION;
+  await fs.writeFile(
+    join(dir, 'manifest.yaml'),
+    renderManifest({ ...manifest, version, okfVersion }),
+    'utf8',
+  );
 
   return { packId: FLEET_LESSONS_PACK_ID, packItemId: itemId, packVersion: version };
 }
