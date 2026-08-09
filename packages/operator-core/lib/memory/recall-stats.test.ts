@@ -524,3 +524,28 @@ describe('ADMISSION_STAGE_DESIGN_INTENT — every drop stage declares WHY it dro
     expect(ADMISSION_STAGE_DESIGN_INTENT.dedup).toMatch(/epoch/i);
   });
 });
+
+describe('ADMISSION_STAGE_SHORT_WHY — the one-clause gloss the dossier renders (WI-37549)', () => {
+  // Same drift guard as its long-form sibling above, for the same reason: this
+  // one is SHIPPED TO A HUMAN on every injection row, so a stage that gains a
+  // key here without a gloss would render a bare count — the exact "8" with no
+  // "why" that the whole panel exists to eliminate.
+  it('covers exactly ADMISSION_STAGES — no missing stage, no orphan key', async () => {
+    const { ADMISSION_STAGES, ADMISSION_STAGE_SHORT_WHY } = await import('./recall-stats');
+    expect(Object.keys(ADMISSION_STAGE_SHORT_WHY).sort()).toEqual([...ADMISSION_STAGES].sort());
+  });
+
+  it('reads as a REASON that completes "N dropped because …", not as a label', async () => {
+    const { ADMISSION_STAGES, ADMISSION_STAGE_SHORT_WHY } = await import('./recall-stats');
+    for (const stage of ADMISSION_STAGES) {
+      const why = ADMISSION_STAGE_SHORT_WHY[stage];
+      // Long enough to be a clause rather than a restatement of the key, short
+      // enough to sit inline after a count on one row.
+      expect(why.length, `${stage} gloss is too short to explain anything`).toBeGreaterThan(20);
+      expect(why.length, `${stage} gloss is too long for an inline row`).toBeLessThan(90);
+      expect(why, `${stage} gloss should not restate the stage key`).not.toBe(stage);
+      // Sentence-cased prose would read wrong after "8 — ".
+      expect(why[0], `${stage} gloss should start lowercase`).toBe(why[0].toLowerCase());
+    }
+  });
+});
