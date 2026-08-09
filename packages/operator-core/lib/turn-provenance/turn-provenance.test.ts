@@ -425,6 +425,39 @@ describe('stripInjectedChrome (P-048 — retrieve on the turn, not on its scaffo
     expect(stripInjectedChrome(wake())).toBe(GOAL);
   });
 
+  // P-017 (fleet-lead-instrumentation-audit-2026-08-09) changed the short-form wake's
+  // SHAPE: the mechanics became a leading standalone sentence and the frozen goal was
+  // demoted BELOW the checkpoint behind its own label. The old pattern anchored on a
+  // trailing "…fresher source)" parenthetical, so it matches nothing in a current wake.
+  // Both forms are asserted because both exist in the transcript store: the pre-P-017
+  // one is still replayed from turns recorded before the change.
+  const wakeP017 = () =>
+    `⟦turn-origin:loop-fire nonce:${mintNonce()}⟧\n` +
+    '[await-event] coord:inbox-wake:su-abc fired — Loop wake #55 — short form (the full loop ' +
+    'contract ships on wake 1, then every 10 wakes). ' +
+    `Arm-time goal (frozen at arm time — the checkpoint above is the fresher source): ${GOAL} ` +
+    '🧪 CARRIED CHECKS — claims + probes: • ✓ some long stale verification ledger '.repeat(40);
+
+  it('strips the CURRENT (P-017) form: leading mechanics sentence + demoted goal label', () => {
+    expect(stripInjectedChrome(wakeP017())).toBe(GOAL);
+  });
+
+  it('collapses the P-017 form under the query clamp too', () => {
+    const raw = wakeP017();
+    expect(raw.length).toBeGreaterThan(3_000);
+    expect(stripInjectedChrome(raw).length).toBeLessThan(1_000);
+  });
+
+  // CONTROL: proves the two assertions above are actually load-bearing. If the P-017
+  // patterns were dropped, this chrome would survive the strip and the recall query
+  // would be polluted by fleet-constant boilerplate again — the exact D-033 regression.
+  // Nothing errors when a strip pattern stops matching, so without a control the failure
+  // is silent: recall quality degrades and every test still passes.
+  it('would NOT strip the P-017 chrome if the goal label were unrecognised', () => {
+    const unrecognised = 'Arm-time objective (frozen at some other time): ' + GOAL;
+    expect(stripInjectedChrome(unrecognised)).toContain('Arm-time objective');
+  });
+
   it('collapses a ~12KB wake to well under the 1000-char query clamp', () => {
     const raw = wake();
     expect(raw.length).toBeGreaterThan(3_000);

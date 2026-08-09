@@ -432,8 +432,34 @@ function injectBudgetChars(): number {
  * no matter what" escape hatch. Mirrors the corpus leg's `CORPUS_TEASER_MAX_CHARS`
  * (corpus-recall.ts), sized larger because this pool renders full sentences rather than
  * resolve-on-demand pointers.
+ *
+ * HALVED 900 -> 450 on 2026-08-09 (P-024 / D-090, owner-chosen lever). D-089 measured
+ * the real constraint: reach is the QUOTIENT of the budget and the per-entry cost, not
+ * either number alone. Median cost per ADMITTED entry was 909 chars — this clamp plus
+ * the `- {scope}{id} ` prefix rendered below — against a 4,000-char turn-start budget,
+ * so 4000/909 = ~4.4 slots, exactly the observed admitted count (avg 8.4 returned ->
+ * 3.8 admitted, 45.1% admit rate, n=23 turn-start rows 17:16-18:15Z).
+ *
+ * Two levers reach ~8.8 slots and they are NOT equivalent in cost:
+ *   - PAPERCUSP_TURN_START_BUDGET_CHARS 4000 -> 8000: ~2x the context spend.
+ *   - MAX_ENTRY_CHARS 900 -> 450 (this one): the SAME spend, more entries.
+ * The asymmetry favors the clamp: a clamped line keeps scope + id + lede and says
+ * "memory:search for the rest", so it stays RECOVERABLE; an entry dropped for budget is
+ * invisible to the agent and unrecoverable. The owner was given all three options
+ * (clamp / raise budget / wait for more data) against the D-089 measurement and picked
+ * the clamp, declining the other two [owner 2026-08-09].
+ *
+ * ⚠ Do NOT "fix" a reach shortfall by raising the turn-start budget instead — that
+ * trades context cost for the same slot count. And do NOT touch MID_TURN_BUDGET_CHARS
+ * (D-073): the mid-turn port is governed separately and was explicitly excluded.
+ * ⚠ The setting is thinner than the mechanism: 450 rests on n=23 over ~1h in ONE
+ * workspace (su-39431's stated caveat, adopted here rather than overridden). The
+ * QUOTIENT model is solid; 450-vs-600-vs-300 is not settled. The A/B metric is the
+ * ADMITTED rate, never %budget (D-077). Nothing in the admission telemetry measures
+ * whether a delivered memory was USEFUL — only that it was delivered — so a reach win
+ * is not automatically a quality win.
  */
-const MAX_ENTRY_CHARS = 900;
+const MAX_ENTRY_CHARS = 450;
 
 /**
  * Phase telemetry (EI-12962): the injection measured ~10.7s of a ~11s prompt

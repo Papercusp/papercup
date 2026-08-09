@@ -578,10 +578,19 @@ describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
       expect(out).toContain('🔁 Loop wake toward: goal G');
       // P-006 (fleet-member-dx, EI-9018): labeled as the LOOP's own counter so it
       // can't be misread against the event-wake delivery-log id.
-      expect(out).toContain(`(your loop's wake #${fireNumber}; short form`);
+      expect(out).toContain(`Loop wake #${fireNumber} — short form`);
       expect(out).not.toContain('Each wake:');
       expect(out).toContain('## Next action');
       expect(out).toContain('refresh loop:checkpoint, then END YOUR TURN');
+      // P-017 (fleet-lead-instrumentation-audit-2026-08-09): the contract is POSITIONAL,
+      // not lexical — the wake must LEAD with what is always true and must NOT lead with
+      // the arm-time goal, which is frozen and routinely names torn-down PIDs/run-ids.
+      // Asserting only the wording would let a future edit re-promote the stale text
+      // while every assertion still passed; that re-promotion IS the defect P-017 fixed.
+      expect(out.startsWith(`Loop wake #${fireNumber} — short form`)).toBe(true);
+      expect(out.indexOf('Arm-time goal (frozen at arm time')).toBeGreaterThan(out.indexOf('## Next action'));
+      // The goal text itself must still be DELIVERED — demoted, never dropped.
+      expect(out).toContain('goal G');
     }
   });
 
@@ -612,7 +621,7 @@ describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
     });
     await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(opts.summary).toContain("(your loop's wake #5; short form");
+    expect(opts.summary).toContain('Loop wake #5 — short form');
     expect(opts.summary).not.toContain('Each wake:');
   });
 });
@@ -684,7 +693,7 @@ describe('the short-form recipe splice (P-005c — the moment-of-need reuse poin
     const res = await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
     expect(res).toMatchObject({ fired: true });
     const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(opts.summary).toContain("(your loop's wake #5; short form");
+    expect(opts.summary).toContain('Loop wake #5 — short form');
     expect(opts.summary).not.toContain('recipes:run {');
   });
 });

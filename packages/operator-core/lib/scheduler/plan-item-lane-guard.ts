@@ -111,12 +111,66 @@ const OWNER_GATE_MARKERS = [
  */
 const NEGATED_MARKER_PREFIX = /(?:\bnon[-\s]?|\bnot\s+)$/;
 
-function findOwnerGateMarker(text: string | null | undefined): string | null {
+/**
+ * A marker carrying an EXPLICIT parenthesised ITEM-ID attribution predicates over
+ * THOSE items and no others.
+ *
+ * This is the THIRD variant of one bug. EI-18718822565695446 scoped the marker to
+ * the right SENTENCE; EI-19968471075842609 stopped it matching by SPELLING through
+ * a negation; both left the case where the sentence is a STATUS-COUNTS LINE and the
+ * marker is a COUNT LABEL rather than a predication about anything it lists:
+ *
+ *     **27 of 36 done, 4 dropped, 1 owner-gated (P-035), 4 todo** (P-036 · P-023)
+ *
+ * That is one line and one sentence, so sentence-scoping cannot separate them, and
+ * the marker is not negated — yet it gates P-036/P-023/P-024, the very items the
+ * line exists to advertise as ACTIONABLE. It is the same inversion those two fixes
+ * name (the more precisely a Now block reports status, the more items it
+ * false-gates) arriving through a third door, and it is worse than the earlier two
+ * because that counts line is the STANDARD opening of a `## Now` block here — so it
+ * false-gates the whole todo list of every plan that keeps an accurate summary.
+ * Measured 2026-08-09 on semantic-search-fingerprint-coverage-2026-08-03: P-036 was
+ * refused self-select citing a marker that the same clause attributes to P-035.
+ *
+ * Deliberately NARROW, because the module's doc names the false-NEGATIVE as the
+ * dangerous direction (handing genuinely owner-gated work to a self-selector):
+ *   • only an IMMEDIATELY-following parenthesised group counts as an attribution;
+ *   • the group must contain ONLY item ids — `P-003 (zero-downtime deploy)` is
+ *     prose, carries no attribution, and keeps today's gate-everything-named
+ *     behaviour;
+ *   • an attribution that DOES name this item still gates it;
+ *   • a non-matching occurrence is SKIPPED, not fatal — the scan continues, so a
+ *     real unattributed marker later in the text still gates.
+ */
+const MARKER_ITEM_ATTRIBUTION = /^[\s*_:—–-]*\(\s*(p-\d{3,}(?:\s*[,;·&+/]\s*p-\d{3,})*)\s*\)/;
+
+/** The item ids a marker occurrence is explicitly attributed to, or null if it carries no attribution. */
+function markerAttributionIds(afterMarker: string): string[] | null {
+  const m = MARKER_ITEM_ATTRIBUTION.exec(afterMarker);
+  if (!m) return null;
+  const ids = m[1]
+    .split(/[,;·&+/\s]+/)
+    .filter(Boolean)
+    .map((s) => s.toUpperCase());
+  return ids.length > 0 ? ids : null;
+}
+
+/**
+ * `itemId` — when supplied, an occurrence explicitly attributed to OTHER items is
+ * skipped (see MARKER_ITEM_ATTRIBUTION). Omitted ⇒ unchanged behaviour, which is
+ * what the item's-own-text and Decision paths continue to use.
+ */
+function findOwnerGateMarker(text: string | null | undefined, itemId?: string | null): string | null {
   if (!text) return null;
   const lower = text.toLowerCase();
   for (const marker of OWNER_GATE_MARKERS) {
     for (let at = lower.indexOf(marker); at !== -1; at = lower.indexOf(marker, at + 1)) {
-      if (!NEGATED_MARKER_PREFIX.test(lower.slice(0, at))) return marker;
+      if (NEGATED_MARKER_PREFIX.test(lower.slice(0, at))) continue;
+      if (itemId) {
+        const attributed = markerAttributionIds(lower.slice(at + marker.length));
+        if (attributed && !attributed.includes(itemId.toUpperCase())) continue;
+      }
+      return marker;
     }
   }
   return null;
@@ -213,11 +267,11 @@ function findNowOwnerGateMarker(nowText: string, itemId: string, allItemIds: rea
   if (!nowText || !itemMentioned(nowText, itemId)) return null;
   for (const segment of markerScopeSegments(nowText)) {
     if (!itemMentioned(segment, itemId)) continue;
-    const marker = findOwnerGateMarker(segment);
+    const marker = findOwnerGateMarker(segment, itemId);
     if (marker) return marker;
   }
   const mentionsAnotherItem = allItemIds.some((id) => id !== itemId && itemMentioned(nowText, id));
-  return mentionsAnotherItem ? null : findOwnerGateMarker(nowText);
+  return mentionsAnotherItem ? null : findOwnerGateMarker(nowText, itemId);
 }
 
 export interface PlanItemStamp {

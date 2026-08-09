@@ -93,10 +93,13 @@ export const MANDATE_SEED_EXEMPT: ReadonlyMap<string, string> = new Map([
     'dev:listening_ports',
     '9 reaches/8 callers, 924 B, 10.0 reach/KB. Below the 22/11 admit precedent.',
   ],
-  [
-    'dev:processes',
-    '1 reach/1 caller, 631 B, 1.6 reach/KB. Negligible demand; deliberately narrow tool.',
-  ],
+  // NOTE: `dev:processes` is deliberately ABSENT. It appears in the registry's
+  // toolName field but the routing table never PROMOTES it, so exempting it was dead
+  // weight — caught by staleExemptions() on this guard's very first run, because the
+  // list above was first derived from a raw `grep toolName:` over every pair rather
+  // than from the promoted set. Same "matched the spelling, not the property" error
+  // this repo keeps paying for; the guard now owns that distinction so a hand-grep
+  // cannot reintroduce it.
 ]);
 
 /** The promoted set — exactly the rows `renderRoutingBlock` emits into CLAUDE.md. */

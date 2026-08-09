@@ -696,6 +696,96 @@ describe('planItemLaneBlockReason', () => {
       });
     });
 
+    describe('status-counts lines — a COUNT LABEL is not a predication', () => {
+      // The real shape, measured 2026-08-09 on
+      // semantic-search-fingerprint-coverage-2026-08-03. ONE line and ONE sentence
+      // (so sentence-scoping cannot split it) with the marker NOT negated (so the
+      // negation fix does not apply) — yet the marker is a COUNT whose own clause
+      // attributes it to P-035, and it gated P-036/P-023/P-024: precisely the items
+      // the line exists to advertise as actionable.
+      const COUNTS_NOW_STATE =
+        '**27 of 36 done, 4 dropped, 1 owner-gated (P-035), 4 todo** (P-036 · P-023 · P-024 · P-032).';
+
+      const countsPlan = () => ({
+        items: [
+          planItem({ id: 'P-023', storedStatus: 'todo', text: 'Make plans:list invalidation-driven.' }),
+          planItem({ id: 'P-032', storedStatus: 'todo', text: 'Re-examine WI-258 against dispatch starvation.' }),
+          planItem({ id: 'P-035', storedStatus: 'todo', text: 'BM25 scoring via a PG extension.' }),
+          planItem({ id: 'P-036', storedStatus: 'todo', text: 'Test session-level aggregation.' }),
+        ],
+        nowState: COUNTS_NOW_STATE,
+        nowNext: '',
+      });
+
+      it.each(['P-036', 'P-023', 'P-032'])(
+        'does NOT gate %s when the counts line attributes the marker to a DIFFERENT item',
+        async (itemId) => {
+          getPlanRowMock.mockResolvedValue(countsPlan());
+          const got = await planItemLaneBlockReason({
+            payload: { plan_item: { plan_slug: 'a-plan', item_id: itemId } },
+            harness: 'papercusp',
+            id: UNUSED_ID,
+            family: UNUSED_FAMILY,
+          });
+          expect(got).toBeNull();
+        },
+      );
+
+      // CONTROL 1 — the attribution must be HONOURED, not merely ignored. Without
+      // this, the cases above would also pass against a predicate gutted to never
+      // match a counts line at all, which is the failure a negative-only test
+      // cannot distinguish from a working fix.
+      it('CONTROL: still gates P-035, the item the counts line attributes the marker TO', async () => {
+        getPlanRowMock.mockResolvedValue(countsPlan());
+        const got = await planItemLaneBlockReason({
+          payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-035' } },
+          harness: 'papercusp',
+          id: UNUSED_ID,
+          family: UNUSED_FAMILY,
+        });
+        expect(got).not.toBeNull();
+        expect(got?.itemId).toBe('P-035');
+        expect(got?.reason).toMatch(/owner-gated \("owner-gated"\)/);
+      });
+
+      // CONTROL 2 — the narrowness guarantee. Strip ONLY the parenthesised
+      // attribution from that same line and the marker predicates over everything
+      // the sentence names again, exactly as it does today. This isolates the fix
+      // to the attribution and proves it did not weaken the unattributed case.
+      it('CONTROL: gates an item named on the SAME line once the attribution is removed', async () => {
+        getPlanRowMock.mockResolvedValue({
+          ...countsPlan(),
+          nowState: COUNTS_NOW_STATE.replace(' (P-035)', ''),
+        });
+        const got = await planItemLaneBlockReason({
+          payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-036' } },
+          harness: 'papercusp',
+          id: UNUSED_ID,
+          family: UNUSED_FAMILY,
+        });
+        expect(got).not.toBeNull();
+        expect(got?.itemId).toBe('P-036');
+      });
+
+      // The false-NEGATIVE direction the module's doc names as the dangerous one:
+      // an attributed occurrence must not MASK a real, unattributed marker later in
+      // the same text.
+      it('still gates when a REAL marker follows an attributed one', async () => {
+        getPlanRowMock.mockResolvedValue({
+          ...countsPlan(),
+          nowState: `${COUNTS_NOW_STATE} P-036 is itself owner-gated until the owner rules.`,
+        });
+        const got = await planItemLaneBlockReason({
+          payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-036' } },
+          harness: 'papercusp',
+          id: UNUSED_ID,
+          family: UNUSED_FAMILY,
+        });
+        expect(got).not.toBeNull();
+        expect(got?.itemId).toBe('P-036');
+      });
+    });
+
       // The WI-1774/P-003 shape at finer granularity: several items named in ONE
       // sentence that carries the marker are ALL legitimately gated by it.
       it('gates EVERY item named in a single sentence that carries the marker', async () => {

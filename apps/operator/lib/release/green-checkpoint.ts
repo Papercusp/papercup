@@ -5406,6 +5406,16 @@ export async function runPostSuiteLegs(
       // surface's D-047 review date arrives, precisely so landing it cannot red-pin
       // main for a condition no commit caused.
       { script: 'lint:plane-adoption', label: 'ADOPTION PROBE' },
+      // P-007 (auto-coupling-delivery-and-correctness-2026-08-09, D-088): the FOURTH
+      // reachability probe. The three above ask whether a field is written, read in
+      // source, or called by an agent; a DERIVED signal — computed at read time and
+      // persisted nowhere — passes all three while emitting nothing, which is how
+      // `holds-a-lock-on` stayed dead for 12 days. Wired HERE rather than shipped as
+      // a script someone must remember to run: an unrun detector is itself the dead
+      // signal it exists to find (WI-6476, the same defect one level up). Report-only
+      // until a relation's review date, and it exits 0 even when it cannot reach PG,
+      // so landing it cannot red-pin main.
+      { script: 'lint:derived-signal-firings', label: 'DERIVED-SIGNAL FIRING PROBE' },
       { script: 'lint:plane-guards', label: 'PLANE GUARD MUTATION TESTS' },
     ];
     const planeFailures: string[] = [];

@@ -1,0 +1,339 @@
+#!/usr/bin/env node
+/**
+ * check-derived-signal-firings.mjs — THE DEAD-DERIVED-SIGNAL DETECTOR
+ * (auto-coupling-delivery-and-correctness-2026-08-09 P-007, ruled by D-088).
+ *
+ * ── THE QUESTION NO EXISTING PROBE CAN ANSWER ───────────────────────────────
+ *
+ * The plane ships three reachability probes and a derived signal slips past all
+ * three at once:
+ *
+ *   · check-plane-producers.mjs   — is the FIELD written?        (a DB column fact)
+ *   · check-declared-consumed.mjs — is the field READ in source? (a static fact)
+ *   · check-plane-adoption.mjs    — does an AGENT ever call it?  (a call count)
+ *
+ * A derived coupling relation is computed at read time and persisted nowhere, so
+ * it HAS no column; it is plainly read in source; and its enclosing tool really is
+ * called. Three green ticks, and the relation can still emit nothing, ever.
+ *
+ * It has happened twice, to the same dimension of the same feature, and a human
+ * hand-querying live data found it both times:
+ *
+ *   · `current_files`    — real roster field, 119 live rows, ZERO populated.
+ *   · `holds-a-lock-on`  — shipped to REPLACE that dead signal, then silently
+ *                          inherited an unrelated flag's gate and fired zero times
+ *                          for 12 days (D-088).
+ *
+ * ── THE VERDICTS, AND WHY THERE ARE SIX ─────────────────────────────────────
+ *
+ * A bare firing count collapses situations with opposite remedies. Each verdict
+ * below is a distinct defect (or a distinct non-defect), and the two that FAIL are
+ * exactly the two that are decidable from the data without a judgement call:
+ *
+ *   firing        edges reached callers.                            ✓
+ *   armed-silent  wired, had input, produced no edges. Usually honest scarcity
+ *                 (nobody held overlapping locks). Reported, never fails.
+ *   starved       wired and consulted, but the INPUT was empty every time — the
+ *                 `current_files` shape: a live relation over a dead producer.
+ *                 Reported, never fails: the defect is upstream, not here.
+ *   never-armed   ⛔ runs happened and the input was never WIRED IN at all. This
+ *                 is `holds-a-lock-on`'s shape exactly, and it is a code defect
+ *                 with no benign reading. FAILS at review.
+ *   unobserved    ⛔ the census ran and never mentioned this relation, though its
+ *                 contract is to emit EVERY relation including zeros. That means
+ *                 the detector itself has gone blind to a signal — a new relation
+ *                 added without census coverage, or a schema drift. FAILS at
+ *                 review, because a detector with a hole is worse than none.
+ *   no-data       nothing was censused in the window at all. NEITHER pass nor
+ *                 fail — the same discipline as `judgeProducerField`'s `no-data`.
+ *
+ * ⚠ THE VACUOUS PASS THIS IS BUILT TO AVOID, TWICE OVER.
+ *
+ *   (1) An empty census window (fresh DB, pruned table, code not yet deployed)
+ *       would render every relation as dead. That is a confident wrong answer that
+ *       looks exactly like a real finding, so a zero is only believed once the
+ *       window is shown to contain census rows at all.
+ *   (2) The DECLARED relation list is parsed from the source of truth
+ *       (`DERIVED_COUPLING_RELATIONS` in coord/couplings.ts), never hardcoded here
+ *       — otherwise this probe goes stale in precisely the way it exists to
+ *       detect. A parse that yields ZERO relations is a hard ERROR, never a clean
+ *       report over nothing: a guard that silently measures an empty set is the
+ *       failure mode this whole probe family keeps re-learning.
+ *
+ * ── WHY IT IS REPORT-ONLY UNTIL A REVIEW DATE ───────────────────────────────
+ *
+ * Landing a probe that fails today would red-pin `main` for the whole fleet over a
+ * condition no commit caused and no commit can fix — the trap
+ * EI-18850142725126359 filed against the first live-DB gate. Same posture as the
+ * adoption probe: a failing verdict before its review date is REPORTED at exit 0;
+ * on/after that date it fails, and the remedy is a decision recorded on the plan
+ * (wire the leg, cut the relation, or record a `ruling` here).
+ */
+import { readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+/** Where the DERIVED relation vocabulary actually lives. */
+export const RELATIONS_SOURCE = 'packages/operator-core/lib/coord/couplings.ts';
+
+/** The census key written by coord/derived-signal-census.ts. Must match it. */
+export const CENSUS_KEY = 'derivedSignals';
+
+/** Days of history each relation is judged over. */
+export const WINDOW_DAYS = 14;
+
+/**
+ * The date a bad verdict starts FAILING rather than reporting.
+ *
+ * Chosen, not inherited: the census only writes on the opt-in `include_coupling`
+ * branch, measured at ~11 calls per fortnight, so a window shorter than this
+ * cannot accumulate enough runs for `never-armed` to mean anything. Moving this
+ * date is a decision to record on the plan, not a knob to nudge when it goes red.
+ */
+export const REVIEW_BY = '2026-09-13';
+
+/**
+ * Per-relation rulings: a permanent statement that a bad verdict is INTENDED.
+ * Unlike a work-item a ruling cannot close, which is the point — it must be
+ * re-read and re-justified rather than silently ageing out.
+ */
+export const RULINGS = {
+  // `shared-file` reads `current_files`, which is documented in the derivation
+  // itself as "all but dead in practice" (119 live rows, zero populated,
+  // EI-18772330418885814). Its `starved` verdict is therefore EXPECTED and already
+  // known; it is kept because the relation is correct on the rare row that has the
+  // field. A ruling only suppresses FAILURE — the row is still reported every run,
+  // so the day it starts firing is visible too.
+  'shared-file': 'EI-18772330418885814 — reads current_files, a live field with no producer; kept because it is correct on the rare populated row.',
+};
+
+export const FIRING_VERDICTS = ['firing', 'armed-silent', 'starved', 'never-armed', 'unobserved', 'no-data'];
+
+/** Verdicts that are CODE defects with no benign reading, hence the only failing ones. */
+export const FAILING_VERDICTS = ['never-armed', 'unobserved'];
+
+const int = (v) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : 0);
+
+/**
+ * Judge one relation. PURE ({counts} -> verdict) so every branch is testable with
+ * no database.
+ *
+ * ⚠ ORDER IS LOAD-BEARING. `firing` is decided FIRST: a relation that demonstrably
+ * delivered edges to a caller is alive whatever the arming bookkeeping says, and
+ * letting a bookkeeping disagreement mask real delivered output would be the
+ * detector lying in the expensive direction.
+ */
+export function judgeSignalFiring({ runs, armedRuns, inputRuns, edges, windowHadCensus }) {
+  if (windowHadCensus === false) return 'no-data';
+  const r = int(runs);
+  const a = int(armedRuns);
+  const i = int(inputRuns);
+  const e = int(edges);
+  if (e > 0) return 'firing';
+  if (r <= 0) return 'unobserved';
+  if (a <= 0) return 'never-armed';
+  if (i <= 0) return 'starved';
+  return 'armed-silent';
+}
+
+/** Has this row's review date arrived? PURE, so the transition is testable. */
+export function isPastReview(reviewBy, now) {
+  const d = Date.parse(`${reviewBy}T00:00:00Z`);
+  if (!Number.isFinite(d)) return false;
+  return now.getTime() >= d;
+}
+
+/**
+ * Parse the DECLARED relation vocabulary out of its source of truth.
+ *
+ * Deliberately not a hardcoded list: a relation added upstream must appear here
+ * automatically, or this probe rots into exactly the stale-and-silent surface it
+ * was built to catch. Returns [] on any failure so the CALLER decides — and every
+ * caller must treat [] as an error, never as "no relations to check".
+ */
+export function parseDeclaredRelations(source) {
+  const m = /DERIVED_COUPLING_RELATIONS\s*=\s*\[([\s\S]*?)\]\s*as\s+const/.exec(String(source ?? ''));
+  if (!m) return [];
+  const out = [];
+  // Comment lines inside the array carry quoted prose (the `same-fleet` tombstone
+  // quotes the owner verbatim), so strip comments BEFORE harvesting string
+  // literals — otherwise a retired relation named in a comment reads as declared.
+  const body = m[1]
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((l) => l.replace(/\/\/.*$/, ''))
+    .join('\n');
+  for (const lit of body.matchAll(/'([^']+)'|"([^"]+)"/g)) {
+    const v = (lit[1] ?? lit[2] ?? '').trim();
+    if (v) out.push(v);
+  }
+  return out;
+}
+
+export function rollupFirings(rows, now) {
+  const bad = (r) => FAILING_VERDICTS.includes(r.verdict) && !r.ruling;
+  return {
+    firing: rows.filter((r) => r.verdict === 'firing').length,
+    armedSilent: rows.filter((r) => r.verdict === 'armed-silent').length,
+    starved: rows.filter((r) => r.verdict === 'starved').length,
+    neverArmed: rows.filter((r) => r.verdict === 'never-armed').length,
+    unobserved: rows.filter((r) => r.verdict === 'unobserved').length,
+    noData: rows.filter((r) => r.verdict === 'no-data').length,
+    ruled: rows.filter((r) => r.ruling).length,
+    failing: rows.filter((r) => bad(r) && isPastReview(r.reviewBy, now)),
+    pending: rows.filter((r) => bad(r) && !isPastReview(r.reviewBy, now)),
+  };
+}
+
+const MARK = {
+  firing: '✓',
+  'armed-silent': '·',
+  starved: '⚠',
+  'never-armed': '✗',
+  unobserved: '✗',
+  'no-data': '?',
+};
+
+const MEANING = {
+  firing: 'edges delivered to callers',
+  'armed-silent': 'wired, had input, emitted nothing — usually honest scarcity',
+  starved: 'wired and consulted, but its INPUT was empty every run — dead producer upstream',
+  'never-armed': 'runs happened and the input was NEVER wired in — a dead gate (D-088 shape)',
+  unobserved: 'the census never mentioned this relation — the detector has a hole',
+  'no-data': 'nothing censused in this window — uninterpretable, neither pass nor fail',
+};
+
+export function formatReport(rows, roll, now, ctx = {}) {
+  const out = [`\nDERIVED-SIGNAL FIRING PROBE — is each derived relation alive in production? (P-007 / D-088)\n`];
+  out.push(`  window: ${WINDOW_DAYS}d · census rows: ${ctx.censusRows ?? 0} · source: ${RELATIONS_SOURCE}\n`);
+  for (const r of rows) {
+    const bar = `${r.edges} edges · armed ${r.armedRuns}/${r.runs} runs · input ${r.inputRuns}`;
+    out.push(`  ${MARK[r.verdict] ?? '?'} ${String(r.relation).padEnd(18)} ${String(bar).padEnd(44)} ${r.verdict}`);
+    if (r.verdict === 'firing') continue;
+    out.push(`      means:  ${MEANING[r.verdict] ?? r.verdict}`);
+    if (FAILING_VERDICTS.includes(r.verdict) && !r.ruling) {
+      out.push(`      ${isPastReview(r.reviewBy, now) ? 'REVIEW DUE' : `review ${r.reviewBy}`}`);
+    }
+    if (r.ruling) out.push(`      RULED:  ${r.ruling}`);
+  }
+  out.push(
+    `\n  ${roll.firing} firing · ${roll.armedSilent} armed-silent · ${roll.starved} starved · ` +
+      `${roll.neverArmed} NEVER-ARMED · ${roll.unobserved} UNOBSERVED · ${roll.noData} no-data · ${roll.ruled} ruled\n`,
+  );
+  if (roll.failing.length > 0) {
+    out.push(
+      '✗ a derived signal is DEAD and its review date has passed. This is not a number to nudge — the remedy is\n' +
+        '  a decision recorded on the plan: wire the leg, cut the relation, or record a `ruling` in this file:\n' +
+        roll.failing.map((r) => `    · ${r.relation} — ${MEANING[r.verdict]}`).join('\n'),
+    );
+  } else if (roll.pending.length > 0) {
+    out.push(
+      `⚠ ${roll.pending.length} relation(s) look dead, none past review yet — reported, not failing. The clock is running:\n` +
+        roll.pending.map((r) => `    · ${String(r.relation).padEnd(18)} ${r.verdict} · review ${r.reviewBy}`).join('\n'),
+    );
+  } else if (roll.noData === rows.length) {
+    out.push(
+      '? NO CENSUS DATA in the window — uninterpretable, reported as unknown rather than as a clean pass.\n' +
+        '  Expected until the census ships and an agent calls coord:presence with include_coupling.',
+    );
+  } else {
+    out.push('✓ every derived relation is either firing or accounted for.');
+  }
+  return out.join('\n');
+}
+
+function resolvePgUrl() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  try {
+    const p = JSON.parse(readFileSync(`${os.homedir()}/.papercusp/embedded-pg.json`, 'utf8'));
+    if (p?.host && p?.port && p.user && p.password) {
+      return `postgresql://${p.user}:${p.password}@${p.host}:${p.port}/papercusp`;
+    }
+  } catch {
+    /* no discovery file — fall through to the dev default */
+  }
+  return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+}
+
+async function main() {
+  const relSource = readFileSync(path.join(HERE, '..', RELATIONS_SOURCE), 'utf8');
+  const declared = parseDeclaredRelations(relSource);
+  if (declared.length === 0) {
+    // NOT a pass. A probe that cannot enumerate its subjects has measured nothing,
+    // and reporting that as green is the vacuous pass this family exists to refuse.
+    console.error(
+      `\n✗ could not parse DERIVED_COUPLING_RELATIONS from ${RELATIONS_SOURCE} — the probe has no subjects and\n` +
+        '  therefore measured NOTHING. Fix the parse or the source; this is never a clean run.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const postgres = (await import('postgres')).default;
+  const sql = postgres(resolvePgUrl(), { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
+  const now = new Date();
+  let observed = new Map();
+  let censusRows = 0;
+  try {
+    const [t] = await sql.unsafe(
+      `SELECT count(*)::int AS total
+         FROM harness_shared.tool_invocations
+        WHERE invoked_at > now() - ($1 || ' days')::interval
+          AND metadata_json ? $2`,
+      [String(WINDOW_DAYS), CENSUS_KEY],
+    );
+    censusRows = t?.total ?? 0;
+
+    const agg = await sql.unsafe(
+      `SELECT rel.key AS relation,
+              count(*)::int AS runs,
+              count(*) FILTER (WHERE rel.value->>'armed' = 'true')::int AS armed_runs,
+              count(*) FILTER (WHERE COALESCE((rel.value->>'inputs')::int, 0) > 0)::int AS input_runs,
+              COALESCE(sum(COALESCE((rel.value->>'edges')::int, 0)), 0)::int AS edges
+         FROM harness_shared.tool_invocations ti,
+              LATERAL jsonb_each(ti.metadata_json -> $2 -> 'relations') AS rel
+        WHERE ti.invoked_at > now() - ($1 || ' days')::interval
+          AND ti.metadata_json ? $2
+        GROUP BY 1`,
+      [String(WINDOW_DAYS), CENSUS_KEY],
+    );
+    observed = new Map(agg.map((r) => [r.relation, r]));
+  } finally {
+    await sql.end({ timeout: 2 }).catch(() => {});
+  }
+
+  const rows = declared.map((relation) => {
+    const o = observed.get(relation);
+    const counts = {
+      runs: o?.runs ?? 0,
+      armedRuns: o?.armed_runs ?? 0,
+      inputRuns: o?.input_runs ?? 0,
+      edges: o?.edges ?? 0,
+    };
+    return {
+      relation,
+      ...counts,
+      reviewBy: REVIEW_BY,
+      ruling: RULINGS[relation],
+      verdict: judgeSignalFiring({ ...counts, windowHadCensus: censusRows > 0 }),
+    };
+  });
+
+  const roll = rollupFirings(rows, now);
+  console.log(formatReport(rows, roll, now, { censusRows }));
+  if (roll.failing.length > 0) process.exitCode = 1;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((e) => {
+    // ⚠ DELIBERATELY EXIT 0, unlike its siblings. This probe has no failing verdict
+    // before its review date, so it has no teeth to protect — and a report-only
+    // probe that can red the fleet gate on a transient PG blip is pure liability.
+    // Being unable to measure cannot establish that a review date was breached,
+    // which is the `no-data` discipline applied to the probe itself.
+    console.error('\n? derived-signal firing probe could not run (reported UNKNOWN, not failed):', e?.message ?? e);
+  });
+}

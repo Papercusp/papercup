@@ -156,7 +156,17 @@ const INJECTED_CHROME_PATTERNS: readonly RegExp[] = [
   // The hinge that introduces the (frozen) goal text.
   /You are continuing your OWN warm session toward:\s*/,
   // The per-fire mechanics aside: wake number, short-form notice, staleness warning.
+  // Pre-P-017 form — the goal text LED the wake and this trailed it as a parenthetical.
+  // Kept so turns recorded before 2026-08-09 still strip cleanly.
   /\(your loop's wake #\d+;[\s\S]*?fresher source\)\s*/,
+  // P-017 (fleet-lead-instrumentation-audit-2026-08-09) form: the mechanics moved to a
+  // standalone LEADING sentence and the goal was demoted below the checkpoint, so the
+  // old single pattern (which anchored on a trailing "…fresher source)") matches nothing
+  // in a current wake. Two patterns now, because the chrome is in two places.
+  /Loop wake #\d+\s*—\s*short form\s*\([^)]*\)\.\s*/,
+  // The demoted goal's machine-authored label. The goal TEXT itself is deliberately KEPT
+  // — it is caller content and was retained under the old form too; only the prefix is chrome.
+  /Arm-time goal \(frozen at arm time[^)]*\):\s*/,
   // The cold-wake banner, up to the hand-off sentence.
   /❄️\s*COLD LOOP WAKE[\s\S]*?continue from its "Next action"\.\s*/,
   // The full loop contract, re-delivered every tenth wake.
