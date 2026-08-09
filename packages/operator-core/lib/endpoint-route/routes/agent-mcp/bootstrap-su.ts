@@ -1642,21 +1642,6 @@ const post = defineTool({
           409,
         );
       }
-      // WI-2185 (fleet-member-wake-immunity): a spawned MEMBER gets a per-agent `auto`
-      // wake-mode override at boot so its leader's steering wakes LAND even under a
-      // `manual` GLOBAL default (the D-005 gate) — without which a manual-default fleet
-      // deadlocks: the member can't receive steering, and its leader (often a weak local
-      // model) can't release a staged wake, only the owner can. Scoped per-agent, so the
-      // owner's global default is untouched for every non-member. Fail-soft: a write
-      // hiccup just reverts to the pre-fix inherited default, never blocks the launch
-      // (unlike the membership stamp, this is a coordination-quality write, not a
-      // no-ghost correctness gate).
-      try {
-        const { ensureFleetMemberWakeAuto } = await import('../../../agent-tools/coordination/wake-mode');
-        await ensureFleetMemberWakeAuto(sid, fleetPin.fleetRole);
-      } catch {
-        /* degrade to the inherited default; non-fatal */
-      }
     }
 
     // agent-allocation P-005 (launch-from-seats): record the seat consumption NOW —
@@ -1800,6 +1785,26 @@ const post = defineTool({
       } catch (e: any) {
         process.stderr.write(`[bootstrap-su] provenance fact assert failed (non-fatal): ${e?.message}\n`);
       }
+    }
+
+    // WI-2185 / EI-19965557940158384 (launched-wake-immunity): a spawned fleet
+    // MEMBER, or ANY session an agent launched (fleetless or not — `launchedBy` is
+    // the agent-launched-only signal, see the `launched_by` field doc above), gets a
+    // per-agent `auto` wake-mode override at boot so its launcher's steering wakes
+    // LAND even under a `manual` GLOBAL default (the D-005 gate). Without this, a
+    // manual-default launch deadlocks: the launched agent can't receive steering, and
+    // its launcher (often a weak local model, or another agent with no release
+    // authority) can't release a staged wake — only the owner can. A LEADER stays
+    // gated by design (the owner is assumed present for it). Scoped per-agent, so the
+    // owner's global default is untouched for every session neither a member nor
+    // agent-launched. Fail-soft: a write hiccup just reverts to the pre-fix inherited
+    // default, never blocks the launch (a coordination-quality write, not a
+    // correctness gate — unlike the WI-1893 membership stamp above).
+    try {
+      const { ensureLaunchedWakeAuto } = await import('../../../agent-tools/coordination/wake-mode');
+      await ensureLaunchedWakeAuto(sid, { fleetRole: fleetPin.fleetRole, launchedByAgent: !!launchedBy });
+    } catch {
+      /* degrade to the inherited default; non-fatal */
     }
 
     // kickoff-prompt-absorption-2026-07-17 P-001: auto-arm a plan-bound fleet

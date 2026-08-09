@@ -39,6 +39,41 @@ export function selectGatedPackages({ repoRoot, roots, exempt, untypecheckable, 
     stillInvisible: any[];
     unreadable: any[];
 };
+/**
+ * Read one package's INTERNAL dependency names — its `@papercusp/*` entries from
+ * dependencies + devDependencies.
+ *
+ * DECLARATIVE ON PURPOSE. The obvious alternative is scanning source for import statements, and
+ * that is the wrong tool here: a hand-rolled import walker under-reports (it misses a form, or a
+ * re-export, or a type-only import), and an under-reported edge does not fail loudly — it
+ * silently relaxes the ordering back toward alphabetical while still looking like it worked.
+ * package.json is the manifest npm itself resolves from, so it cannot disagree with what the
+ * symlinks in node_modules actually point at.
+ *
+ * @returns {string[]} package NAMES (not paths); unreadable/absent manifest ⇒ [].
+ */
+export function internalDepNames(pkgDir: any): string[];
+/**
+ * Order the gated packages so every package is compiled AFTER the ones it depends on, and build
+ * the blocker lookup `runPackages` short-circuits on.
+ *
+ * Both halves come from ONE traversal so they cannot disagree: the order and the edges a blocked
+ * verdict cites are the same graph.
+ *
+ * ⚠ `key` is mandatory here, not decorative. A dependency is looked up as a DIFFERENT object than
+ * the one in `nodes` (name → package record), and without `key` the helper compares by reference,
+ * reads every edge as external, and returns the input order — an ordering that silently does
+ * nothing. Keyed on `rel`, which is unique per package.
+ *
+ * @returns {{ordered: any[], blockersOf: (pkg: any) => string[], edges: number, external: string[], cycles: any[]}}
+ */
+export function orderPackages(packages: any): {
+    ordered: any[];
+    blockersOf: (pkg: any) => string[];
+    edges: number;
+    external: string[];
+    cycles: any[];
+};
 export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listInvisible, spawn, log, warn, error, }?: {
     repoRoot?: string | undefined;
     roots?: string[] | undefined;

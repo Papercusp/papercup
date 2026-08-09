@@ -35,6 +35,7 @@ import {
   EXEMPT,
   GATE_COVERAGE,
   main,
+  orderPackages,
   selectGatedPackages,
 } from '../../../scripts/lint-tsc-workspaces.mjs';
 
@@ -506,13 +507,15 @@ describe('dependency-ordered traversal (workstream G adoption, WI-36257)', () =>
     expect(ordered.length).toBe(packages.length);
     expect(edges).toBeGreaterThan(0);
 
-    const position = new Map(ordered.map((p: { rel: string }, i: number) => [p.rel, i]));
+    const position = new Map<string, number>(
+      (ordered as { rel: string }[]).map((p, i) => [p.rel, i] as [string, number]),
+    );
     for (const pkg of ordered as { rel: string }[]) {
-      for (const dep of blockersOf(pkg)) {
+      for (const dep of blockersOf(pkg) as string[]) {
         expect(
           position.get(dep),
           `${dep} must be compiled before its dependent ${pkg.rel}`,
-        ).toBeLessThan(position.get(pkg.rel)!);
+        ).toBeLessThan(position.get(pkg.rel) as number);
       }
     }
   });

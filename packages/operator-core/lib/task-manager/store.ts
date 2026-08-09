@@ -195,7 +195,7 @@ export async function markSpawned(taskId: string, facts: SpawnedFacts, inject?: 
 }
 
 export interface CloseTaskInput {
-  state: Extract<TaskState, 'exited' | 'killed' | 'timed_out' | 'stranded'>;
+  state: Extract<TaskState, 'exited' | 'killed' | 'timed_out' | 'stranded' | 'ended_unobserved'>;
   exitCode?: number | null;
   exitReason?: string | null;
 }
@@ -274,7 +274,7 @@ export async function touchAlive(
   return rows.length;
 }
 
-/** Close a batch of rows the reconciler judged absent. */
+/** Close a batch of rows the reconciler judged absent — the ESCAPE/anomaly class. */
 export async function markStranded(
   verdicts: readonly { taskId: string; reason: string }[],
   inject?: Sql,
@@ -282,6 +282,23 @@ export async function markStranded(
   let n = 0;
   for (const v of verdicts) {
     if (await closeTask(v.taskId, { state: 'stranded', exitReason: v.reason }, inject)) n++;
+  }
+  return n;
+}
+
+/**
+ * Close a batch of rows the reconciler confirmed ended in good order (D-018):
+ * absent from the scan, AND systemd independently confirms the task's scope was
+ * released (every process in it is actually gone) — not the escape/anomaly class
+ * `markStranded` is for, just an exit nobody happened to observe.
+ */
+export async function markEndedUnobserved(
+  verdicts: readonly { taskId: string; reason: string }[],
+  inject?: Sql,
+): Promise<number> {
+  let n = 0;
+  for (const v of verdicts) {
+    if (await closeTask(v.taskId, { state: 'ended_unobserved', exitReason: v.reason }, inject)) n++;
   }
   return n;
 }

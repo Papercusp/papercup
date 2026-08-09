@@ -14,8 +14,9 @@
  * nothing here imports them.
  */
 
-/** Lifecycle states. Mirrors the CHECK constraint in migration 696 — the two
- *  must be edited together (the store asserts membership before every write). */
+/** Lifecycle states. Mirrors the CHECK constraint in migration 696 (widened by
+ *  migration 774 for `ended_unobserved`) — the two must be edited together (the
+ *  store asserts membership before every write). */
 export const TASK_STATES = [
   'pending',
   'running',
@@ -25,6 +26,7 @@ export const TASK_STATES = [
   'stranded',
   'unaccounted',
   'foreign',
+  'ended_unobserved',
 ] as const;
 export type TaskState = (typeof TASK_STATES)[number];
 
@@ -34,12 +36,24 @@ export type TaskState = (typeof TASK_STATES)[number];
  * DISTINCT from `exited` because we never observed an exit code — reporting a
  * strand as a clean exit is exactly the kind of manufactured certainty that makes
  * an inherited "job COMPLETED" claim untrustworthy.
+ *
+ * `ended_unobserved` (task-manager-no-escape-2026-07-27#D-018) is ALSO kept
+ * distinct from both neighbours: unlike `exited`, no exit code was ever
+ * observed (the owning process died before `wireExit()` could record one);
+ * unlike `stranded`, this is NOT the escape/anomaly class — the reconciler
+ * independently confirmed via systemd that the task's transient scope was
+ * released in good order, i.e. every process in it is confirmed gone, not
+ * merely absent from one scan. A continuous stream of routine shutdowns filed
+ * as `stranded` buries the one real escape that state exists to surface —
+ * that is the whole reason this state exists rather than reusing `stranded`
+ * with a different `exitReason`.
  */
 export const TERMINAL_TASK_STATES: readonly TaskState[] = [
   'exited',
   'killed',
   'timed_out',
   'stranded',
+  'ended_unobserved',
 ];
 
 export function isTerminalState(state: TaskState): boolean {

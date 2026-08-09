@@ -627,6 +627,63 @@ export function parseRepoWideRegistrations(affectedTestsSource) {
   );
 }
 
+/**
+ * The same registrations as `parseRepoWideRegistrations`, but keeping the `workspace` each
+ * one names instead of discarding it — which is what makes the INERT check below possible.
+ *
+ * Line comments are stripped first: the entries in that registry are heavily commented, and
+ * a prose mention of a script name would otherwise be parsed as a registration.
+ */
+export function parseRepoWideRegistrationPairs(affectedTestsSource) {
+  const text = String(affectedTestsSource);
+  const start = text.indexOf('const REPO_WIDE_INVARIANT_GUARDS');
+  if (start < 0) return [];
+  const block = text.slice(start);
+  const end = block.indexOf('\n];');
+  const body = block.slice(0, end < 0 ? undefined : end).replace(/^\s*\/\/.*$/gm, '');
+  const pairs = [];
+  for (const chunk of body.split(/\n\s{2}\{/)) {
+    const ws = /workspace:\s*['"]([^'"]+)['"]/.exec(chunk);
+    const sc = /script:\s*['"]([^'"]+)['"]/.exec(chunk);
+    if (ws && sc) pairs.push({ workspace: ws[1], script: sc[1] });
+  }
+  return pairs;
+}
+
+/**
+ * Registrations that CANNOT run: the named workspace does not declare the named script.
+ *
+ * WHY THIS AXIS EXISTS (measured 2026-08-09, WI-37454). `affected-tests.mjs` skips a
+ * registered guard whose owning workspace does not declare the script:
+ *
+ *     if (!ws?.scripts?.[guard.script]) continue;        // affected-tests.mjs:815
+ *
+ * — silently, by design, because that `continue` also absorbs a workspace that is simply
+ * absent. Meanwhile `coverageOf` credited `verdict: 'full'` for anything merely PRESENT in
+ * the registry. Those two facts compose into the exact rot this whole script exists to
+ * catch, with the reporting surface pointing the wrong way: `lint:drop-database-force` was
+ * registered (WI-4311, for the ~88-parked-backends bug) but never declared by
+ * `@papercusp/operator-core`, so it ran NOWHERE while being scored fully enforced.
+ *
+ * A registration is a CLAIM about where a guard runs; declaring the script is what makes it
+ * true. Crediting the claim without checking the fact is how a guard's own coverage report
+ * becomes the thing that hides its absence.
+ *
+ * `scriptsByWorkspaceName` maps workspace package name → Set of declared script names. A
+ * workspace MISSING from that map is treated as declared (fail OPEN, like the rest of this
+ * file): an unreadable package.json must not red-pin the fleet gate on a file it could not
+ * read, and this axis is only meaningful when the map was built successfully.
+ */
+export function findInertRepoWideRegistrations({ pairs = [], scriptsByWorkspaceName = new Map() } = {}) {
+  const inert = [];
+  for (const pair of pairs) {
+    const declared = scriptsByWorkspaceName.get(pair.workspace);
+    if (!declared) continue; // fail open — see docstring
+    if (!declared.has(pair.script)) inert.push(pair);
+  }
+  return inert;
+}
+
 /** Workspace directories, expanded from package.json `workspaces` globs against the tree. */
 function discoverWorkspaceDirs(pkg, files) {
   const dirs = new Set();
@@ -690,6 +747,24 @@ function main() {
     );
   }
 
+  const workspaceDirs = discoverWorkspaceDirs(JSON.parse(readIfExists(resolve(ROOT, 'package.json')) || '{}'), files);
+
+  // package name -> declared script names, for the INERT-registration axis. A workspace whose
+  // package.json is unreadable/unparseable is simply OMITTED, which findInertRepoWideRegistrations
+  // treats as declared (fail open) rather than as a violation it cannot substantiate.
+  const scriptsByWorkspaceName = new Map();
+  for (const dir of workspaceDirs) {
+    try {
+      const wsPkg = JSON.parse(readIfExists(resolve(ROOT, dir, 'package.json')) || '{}');
+      if (wsPkg.name) scriptsByWorkspaceName.set(wsPkg.name, new Set(Object.keys(wsPkg.scripts ?? {})));
+    } catch {
+      // omitted => fail open for this workspace
+    }
+  }
+  const repoWidePairs = coverageMeasurable ? parseRepoWideRegistrationPairs(affectedTestsSource) : [];
+  const inertRegistrations = findInertRepoWideRegistrations({ pairs: repoWidePairs, scriptsByWorkspaceName });
+  const inertScripts = new Set(inertRegistrations.map((p) => p.script));
+
   const census = buildReachabilityCensus({
     scripts,
     corpora,
@@ -697,9 +772,14 @@ function main() {
     coverage: coverageMeasurable
       ? {
           enforcingTests,
-          workspaceDirs: discoverWorkspaceDirs(JSON.parse(readIfExists(resolve(ROOT, 'package.json')) || '{}'), files),
+          workspaceDirs,
           implSources,
-          repoWideRegistered: parseRepoWideRegistrations(affectedTestsSource),
+          // EFFECTIVE registrations only — an INERT one (workspace does not declare the
+          // script) is deliberately NOT credited, so it falls through to the ordinary
+          // coverage analysis and is reported as the partial/unenforced guard it really is.
+          repoWideRegistered: new Set(
+            [...parseRepoWideRegistrations(affectedTestsSource)].filter((s) => !inertScripts.has(s)),
+          ),
         }
       : null,
   });
@@ -742,6 +822,22 @@ function main() {
   }
 
   let failed = false;
+
+  // INERT registrations — see findInertRepoWideRegistrations. Reported FIRST because a guard
+  // in this state is the most misleading of all the states this script distinguishes: it
+  // looks deliberately wired (someone registered it, with a comment explaining why) and it
+  // runs nowhere. There is no watermark/allowlist for it on purpose — unlike partial
+  // coverage, this is never a considered trade-off, only ever a two-line mismatch.
+  if (inertRegistrations.length) {
+    failed = true;
+    console.error(
+      `\n❌ ${inertRegistrations.length} REPO_WIDE_INVARIANT_GUARDS registration(s) are INERT — the workspace does not declare the script:`,
+    );
+    for (const p of inertRegistrations) console.error(`     ${p.script}  →  ${p.workspace} declares no such script`);
+    console.error('   affected-tests.mjs:815 skips these SILENTLY, so the guard runs on no path at all.');
+    console.error('   Fix by declaring it in that workspace\'s package.json, e.g.:');
+    console.error('     "<script>": "node ../../scripts/<its-checker>.mjs"');
+  }
 
   if (census.staleAcknowledgements.length) {
     failed = true;

@@ -686,6 +686,105 @@ describe('reconcileLinkedWorkItemsForPlanItem — stale plan-lane hold cleared b
     expect(h4.mergeWorkItemPayload).not.toHaveBeenCalled();
     expect(h4.setWorkItemClaimHold).not.toHaveBeenCalled();
   });
+
+  it('EI-19968934836644509: clears the stale hold even when the item is SKIPPED as in-flight — the terminal flip is deferred, the hold-clear is not', async () => {
+    // Repro shape: WI-37408. A plan item's lane holds a linked work-item; the
+    // SAME agent then claims that work-item and makes real progress on it
+    // (lastProgressAt + a live assignee) while the plan item independently goes
+    // done. The reconciler must correctly refuse to yank the terminal flip out
+    // from under the active holder (skippedInFlight) — but that refusal must NOT
+    // also leave the now-stale lane blocker/hold in place forever, since every
+    // future sweep pass re-observes the SAME in-flight state and would `continue`
+    // right past a hold-clear that only ran after the skip checks.
+    const laneRef = planLaneBlockerRef('p1', 'P-013');
+    stub({
+      id: 'WI-active-held',
+      state: 'blocked',
+      lastProgressAt: '2026-08-09T09:50:00Z',
+      assignee: 'su-live-holder',
+      payload: {
+        held_open_by: 'system:plan-item-lane-sync',
+        held_open_at: new Date().toISOString(),
+        _claimHold: true,
+        externalBlockers: [
+          {
+            kind: 'gate',
+            capability: 'live-dependency',
+            capabilitySource: 'explicit',
+            ref: laneRef,
+            summary: 'plan lane blocked',
+            status: 'active',
+            createdAt: new Date().toISOString(),
+            createdBy: 'system:plan-item-lane-sync',
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+    await edge({ plan: 'p1', item: 'P-013', srcRef: 'WI-active-held' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-013', status: 'done' }] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-013' });
+
+    // The terminal flip is correctly deferred — never clobber active work.
+    expect(result.skippedInFlight).toEqual(['WI-active-held']);
+    expect(result.reconciled).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+    // But the stale lane hold IS lifted regardless, so the item is no longer
+    // gate-parked once its holder eventually releases/completes it.
+    expect(h4.mergeWorkItemPayload).toHaveBeenCalledWith(
+      'WI-active-held',
+      expect.objectContaining({ externalBlockers: expect.any(Array) }),
+      expect.anything(),
+    );
+    expect(h4.setWorkItemClaimHold).toHaveBeenCalledWith(
+      'WI-active-held',
+      false,
+      expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+    );
+  });
+
+  it('EI-19968934836644509: also clears the stale hold when the item is SKIPPED as unproven-link (stamp-only issue)', async () => {
+    const laneRef = planLaneBlockerRef('p1', 'P-014');
+    stub({
+      id: 'WI-stamp-only',
+      state: 'blocked',
+      family: 'issue',
+      lastProgressAt: null,
+      payload: {
+        held_open_by: 'system:plan-item-lane-sync',
+        held_open_at: new Date().toISOString(),
+        _claimHold: true,
+        externalBlockers: [
+          {
+            kind: 'gate',
+            capability: 'live-dependency',
+            capabilitySource: 'explicit',
+            ref: laneRef,
+            summary: 'plan lane blocked',
+            status: 'active',
+            createdAt: new Date().toISOString(),
+            createdBy: 'system:plan-item-lane-sync',
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+    // Stamp only — no `implements` edge — so viaImplementsEdge is false and this
+    // hits the skippedUnprovenLink branch, not the terminal flip.
+    await insertWorkItemRow({ id: 'WI-stamp-only', kind: 'bug', status: 'blocked', planSlug: 'p1', itemId: 'P-014' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-014', status: 'done' }] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-014' });
+
+    expect(result.skippedUnprovenLink).toEqual(['WI-stamp-only']);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+    expect(h4.setWorkItemClaimHold).toHaveBeenCalledWith(
+      'WI-stamp-only',
+      false,
+      expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+    );
+  });
 });
 
 describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)', () => {

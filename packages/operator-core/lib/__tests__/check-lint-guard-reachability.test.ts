@@ -34,6 +34,8 @@ import {
   deriveScanScope,
   workspaceOfPath,
   parseRepoWideRegistrations,
+  parseRepoWideRegistrationPairs,
+  findInertRepoWideRegistrations,
   ACKNOWLEDGED_PARTIAL_COVERAGE,
   PARTIAL_COVERAGE_HIGH_WATERMARK,
   // @ts-expect-error — untyped .mjs guard script, imported for its pure helpers.
@@ -323,6 +325,79 @@ describe('parseRepoWideRegistrations', () => {
 
   it('returns an empty set when the block is absent, never a crash', () => {
     expect(parseRepoWideRegistrations('const x = 1;').size).toBe(0);
+  });
+});
+
+describe('INERT registrations — registering a guard is a CLAIM, declaring the script is the fact (WI-37454)', () => {
+  // MEASURED: `lint:drop-database-force` was registered in REPO_WIDE_INVARIANT_GUARDS but
+  // never declared by @papercusp/operator-core, so affected-tests.mjs:815 skipped it
+  // silently — it ran on NO path — while coverageOf credited it `full` for being present in
+  // the registry. The reporting surface hid the absence it existed to report.
+  const src = [
+    'const REPO_WIDE_INVARIANT_GUARDS = [',
+    '  {',
+    '    // a prose mention of script: lint:commented-out must not be parsed',
+    "    workspace: '@papercusp/operator-core',",
+    "    script: 'lint:declared-one',",
+    '    appliesTo: () => true,',
+    '  },',
+    '  {',
+    "    workspace: '@papercusp/operator-core',",
+    "    script: 'lint:undeclared-one',",
+    '  },',
+    '];',
+  ].join('\n');
+
+  it('keeps the workspace of each registration, not just the script name', () => {
+    expect(parseRepoWideRegistrationPairs(src)).toEqual([
+      { workspace: '@papercusp/operator-core', script: 'lint:declared-one' },
+      { workspace: '@papercusp/operator-core', script: 'lint:undeclared-one' },
+    ]);
+  });
+
+  it('does not parse a script named only inside a comment', () => {
+    // Annotated because the SUT is an untyped .mjs import, so its return is `any` and an
+    // unannotated callback parameter trips noImplicitAny (TS7006) in this workspace.
+    const pairs = parseRepoWideRegistrationPairs(src) as { workspace: string; script: string }[];
+    expect(pairs.some((p) => p.script === 'lint:commented-out')).toBe(false);
+  });
+
+  const scriptsByWorkspaceName = new Map([['@papercusp/operator-core', new Set(['lint:declared-one'])]]);
+
+  it('flags ONLY the registration whose workspace does not declare the script', () => {
+    const inert = findInertRepoWideRegistrations({
+      pairs: parseRepoWideRegistrationPairs(src),
+      scriptsByWorkspaceName,
+    });
+    expect(inert).toEqual([{ workspace: '@papercusp/operator-core', script: 'lint:undeclared-one' }]);
+  });
+
+  it('CONTROL — an implementation that credits mere registration reports nothing, and is wrong', () => {
+    // The permanent wrong-implementation control this file's header prescribes: this is
+    // exactly what the checker did before WI-37454, and it must stay red-able forever.
+    const creditAnyRegistration = () => [];
+    expect(creditAnyRegistration()).toHaveLength(0);
+    expect(
+      findInertRepoWideRegistrations({ pairs: parseRepoWideRegistrationPairs(src), scriptsByWorkspaceName }),
+    ).not.toHaveLength(0);
+  });
+
+  it('FAILS OPEN for a workspace absent from the map, rather than inventing a violation', () => {
+    // An unreadable/unparseable package.json must not red-pin the fleet gate on a file the
+    // checker could not read — the same stance as the unreadable-registration-source branch.
+    expect(
+      findInertRepoWideRegistrations({
+        pairs: parseRepoWideRegistrationPairs(src),
+        scriptsByWorkspaceName: new Map(),
+      }),
+    ).toEqual([]);
+  });
+
+  it('REAL TREE — every registration in the live registry is actually declared', () => {
+    // The enforcing half: a logic-only version of this axis would itself be the false green
+    // this file exists to detect. Executes the checker over THIS repository.
+    const out = spawnSync('node', [SCRIPT], { cwd: REPO_ROOT, encoding: 'utf-8' });
+    expect(`${out.stdout ?? ''}${out.stderr ?? ''}`).not.toMatch(/registration\(s\) are INERT/);
   });
 });
 

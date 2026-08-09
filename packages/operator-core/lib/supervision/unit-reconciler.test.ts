@@ -21,6 +21,7 @@ import {
   SILENT_LOOP_THRESHOLD,
   SILENT_LOOP_WINDOW_MS,
   summarizeSystemctlStatusCause,
+  stdoutFromExecError,
   type SystemctlUnitStatus,
   type ReconcilerDeps,
 } from './unit-reconciler';
@@ -154,6 +155,36 @@ describe('summarizeSystemctlStatusCause', () => {
       ].join('\n'),
     );
     expect(cause).toContain('Main process exited, code=exited, status=1/FAILURE');
+  });
+});
+
+// EI-19966318801100410: `systemctl --user status` on a failed/inactive unit ALWAYS exits
+// non-zero, so `execSystemctlUser` (the production execUser) always REJECTS for exactly the
+// down-unit case this reconciler needs diagnostics for — but Node's `util.promisify(execFile)`
+// attaches the captured stdout to that rejection error regardless, per the same contract as the
+// callback form.
+describe('stdoutFromExecError (EI-19966318801100410)', () => {
+  it('recovers stdout from a promisified execFile-style rejection', () => {
+    const err = Object.assign(new Error('Command failed: systemctl --user status x exit code 3'), {
+      stdout: 'Active: failed (Result: exit-code)\nProcess: 1 ExecStartPre=/x.sh (code=exited, status=1/FAILURE)\n',
+      stderr: '',
+    });
+    expect(stdoutFromExecError(err)).toContain('ExecStartPre');
+  });
+
+  it('returns null for a genuine spawn failure with no captured stdout', () => {
+    expect(stdoutFromExecError(new Error('spawn systemctl ENOENT'))).toBeNull();
+  });
+
+  it('returns null for blank/whitespace-only stdout (nothing usable was captured)', () => {
+    const err = Object.assign(new Error('x'), { stdout: '   \n\t' });
+    expect(stdoutFromExecError(err)).toBeNull();
+  });
+
+  it('returns null for a non-object rejection (a thrown string, undefined, etc.)', () => {
+    expect(stdoutFromExecError('plain string rejection')).toBeNull();
+    expect(stdoutFromExecError(undefined)).toBeNull();
+    expect(stdoutFromExecError(null)).toBeNull();
   });
 });
 
@@ -933,5 +964,181 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart')).toBe(false);
     const pausedNotifiesAfter = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('respecting the pause'));
     expect(pausedNotifiesAfter).toHaveLength(1);
+  });
+
+  // ── EI-19966318801100410 WIRING ──────────────────────────────────────────
+  //
+  // Defect #1: `systemctl --user status` on a down unit ALWAYS exits non-zero (the promisified
+  // execUser therefore always REJECTS for the down-unit case), but the rejection still carries
+  // the diagnostic stdout — these assert the cause SEAM recovers it instead of discarding it.
+  // Defect #2: a give-up escalation must file a claimable EI, not just broadcast to `*`.
+
+  /** A REJECTED `status` call whose error still carries the diagnostic stdout — the real shape
+   *  of `execSystemctlUser` (`util.promisify(execFile)`) against a failed/inactive unit. */
+  function rejectingStatusErr(stdout: string): Error & { stdout: string } {
+    return Object.assign(new Error('Command failed: systemctl --user status x exit code 3'), { stdout });
+  }
+
+  it('an escalation page recovers the CAUSE from a REJECTED status call that still carries stdout, instead of falling back to "unavailable"', async () => {
+    const deps = depsWithStartLimit(async () => {
+      throw rejectingStatusErr(STATUS_WITH_CAUSE);
+    });
+    await reconcileTick(deps);
+    const page = deps.notify.mock.calls
+      .map((c) => c[0].summary as string)
+      .find((s) => s.includes('start-limit'));
+    expect(page).toBeDefined();
+    expect(page).toContain('Cause:');
+    expect(page).toContain('bundle-host.sh');
+    expect(page).not.toContain('Cause unavailable');
+  });
+
+  it('CONTROL: a rejection with NO stdout at all still falls back to "unavailable" (the recovery is additive, not a blanket cause-fabricator)', async () => {
+    const deps = depsWithStartLimit(async () => {
+      throw new Error('spawn systemctl ENOENT'); // no .stdout — a genuine spawn failure
+    });
+    await reconcileTick(deps);
+    const page = deps.notify.mock.calls
+      .map((c) => c[0].summary as string)
+      .find((s) => s.includes('start-limit'));
+    expect(page).toBeDefined();
+    expect(page).toContain('Cause unavailable');
+  });
+
+  it('the SILENT-crash-loop page also recovers "Last exit" from a rejected status call carrying stdout', async () => {
+    // Same shape as the EI-11344 test above, but the `status` probe REJECTS (carrying stdout)
+    // instead of resolving — the real contract of a promisified execFile against a down unit.
+    const upFixture = ['papercup-mcp-proxy.service                       loaded active   running Papercusp resilient MCP proxy', ''].join('\n');
+    let nRestarts = 0;
+    let now = 1_000_000;
+    const deps = makeDeps({
+      autoRestartFlagOn: async () => false,
+      now: () => now,
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return upFixture;
+        if (args[0] === 'show') return `Result=success\nNRestarts=${nRestarts}\nRestart=always\n`;
+        if (args[0] === 'status') throw rejectingStatusErr(STATUS_WITH_CAUSE);
+        return '';
+      }),
+      registry: () => [AUTORESTART_ENTRY],
+    });
+    for (let i = 0; i <= 4; i++) {
+      nRestarts = 8 + i;
+      await reconcileTick(deps);
+      now += 60_000;
+    }
+    const silentPage = deps.notify.mock.calls
+      .map((c) => c[0].summary as string)
+      .find((s) => s.includes('SILENTLY crash-looping'));
+    expect(silentPage).toBeDefined();
+    expect(silentPage).toContain('Last exit:');
+    expect(silentPage).toContain('bundle-host.sh');
+    expect(silentPage).not.toContain('Last exit unavailable');
+  });
+
+  it('EI-19966318801100410: an escalate-give-up transition FILES a durable EI via fileGiveUpEi, carrying the unit, restart count, and cause — not just a broadcast', async () => {
+    let now = 0;
+    const fileGiveUpEi = vi.fn(async () => 'EI-123');
+    const deps = makeDeps({
+      now: () => now,
+      fileGiveUpEi,
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return LIST_UNITS_FIXTURE;
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\n';
+        if (args[0] === 'status') return STATUS_WITH_CAUSE;
+        return '';
+      }),
+    });
+    // Drive GIVE_UP_THRESHOLD successful restarts (mirrors the pure decideReconcile test), each
+    // spaced past its own backoff wait so the reconciler actually attempts every one.
+    for (let i = 0; i < GIVE_UP_THRESHOLD; i++) {
+      await reconcileTick(deps);
+      now += 61_000;
+    }
+    expect(fileGiveUpEi).not.toHaveBeenCalled(); // not yet — still restarting, hasn't given up
+    // The next tick (still inside the give-up window) gives up instead of restarting again.
+    await reconcileTick(deps);
+    expect(fileGiveUpEi).toHaveBeenCalledTimes(1);
+    expect(fileGiveUpEi.mock.calls[0]![0]).toMatchObject({
+      unit: 'papercup-mcp-proxy',
+      restartsInWindow: GIVE_UP_THRESHOLD,
+    });
+    expect(fileGiveUpEi.mock.calls[0]![0].causeSuffix).toContain('bundle-host.sh');
+    // The broadcast still fires too — filing is additive, never a replacement.
+    const page = deps.notify.mock.calls.map((c) => c[0].summary as string).find((s) => s.includes('GIVING UP'));
+    expect(page).toBeDefined();
+  });
+
+  it('EI-19966318801100410: fileGiveUpEi is best-effort — a rejection must not affect the give-up broadcast or throw out of reconcileTick', async () => {
+    let now = 0;
+    const fileGiveUpEi = vi.fn(async () => {
+      throw new Error('PG unreachable');
+    });
+    const deps = makeDeps({ now: () => now, fileGiveUpEi });
+    for (let i = 0; i < GIVE_UP_THRESHOLD; i++) {
+      await reconcileTick(deps);
+      now += 61_000;
+    }
+    await expect(reconcileTick(deps)).resolves.toBeDefined();
+    expect(fileGiveUpEi).toHaveBeenCalledTimes(1);
+    const page = deps.notify.mock.calls.map((c) => c[0].summary as string).find((s) => s.includes('GIVING UP'));
+    expect(page).toBeDefined();
+  });
+
+  it('EI-19966318801100410: fileGiveUpEi is OPTIONAL — omitting it changes nothing (a give-up still broadcasts normally)', async () => {
+    let now = 0;
+    const deps = makeDeps({ now: () => now }); // no fileGiveUpEi override — makeDeps's base has none
+    for (let i = 0; i < GIVE_UP_THRESHOLD; i++) {
+      await reconcileTick(deps);
+      now += 61_000;
+    }
+    await expect(reconcileTick(deps)).resolves.toBeDefined();
+    const page = deps.notify.mock.calls.map((c) => c[0].summary as string).find((s) => s.includes('GIVING UP'));
+    expect(page).toBeDefined();
+  });
+
+  it('EI-19966318801100410: a down -> healthy "recovered" transition auto-resolves the give-up EI via resolveGiveUpEi', async () => {
+    let unitUp = false;
+    const resolveGiveUpEi = vi.fn(async () => ['EI-1']);
+    const upListUnits = LIST_UNITS_FIXTURE.replace(
+      'papercup-mcp-proxy.service                       loaded failed   failed  Papercusp resilient MCP proxy',
+      'papercup-mcp-proxy.service                       loaded active   running Papercusp resilient MCP proxy',
+    );
+    const deps = makeDeps({
+      resolveGiveUpEi,
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return unitUp ? upListUnits : LIST_UNITS_FIXTURE;
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\n';
+        return '';
+      }),
+    });
+    await reconcileTick(deps); // down tick — marks wasDown, restarts (not yet recovered)
+    expect(resolveGiveUpEi).not.toHaveBeenCalled();
+    unitUp = true;
+    await reconcileTick(deps); // down -> healthy => 'recovered'
+    expect(resolveGiveUpEi).toHaveBeenCalledWith({ unit: 'papercup-mcp-proxy' });
+  });
+
+  it('EI-19966318801100410: resolveGiveUpEi is OPTIONAL and best-effort — a recovery still notifies even if resolving throws or is omitted', async () => {
+    let unitUp = false;
+    const upListUnits = LIST_UNITS_FIXTURE.replace(
+      'papercup-mcp-proxy.service                       loaded failed   failed  Papercusp resilient MCP proxy',
+      'papercup-mcp-proxy.service                       loaded active   running Papercusp resilient MCP proxy',
+    );
+    const deps = makeDeps({
+      resolveGiveUpEi: vi.fn(async () => {
+        throw new Error('PG unreachable');
+      }),
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return unitUp ? upListUnits : LIST_UNITS_FIXTURE;
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\n';
+        return '';
+      }),
+    });
+    await reconcileTick(deps);
+    unitUp = true;
+    await expect(reconcileTick(deps)).resolves.toBeDefined();
+    const recoveredPage = deps.notify.mock.calls.map((c) => c[0].summary as string).find((s) => s.includes('recovered'));
+    expect(recoveredPage).toBeDefined();
   });
 });

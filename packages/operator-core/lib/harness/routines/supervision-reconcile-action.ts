@@ -18,6 +18,7 @@ import { FLAGS } from '@papercusp/flags';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { reconcileTick, type ReconcilerDeps } from '../../supervision/unit-reconciler';
+import { fileSupervisionGiveUpEi, resolveSupervisionGiveUpEi } from '../../supervision/give-up-ei';
 
 const execFileP = promisify(execFile);
 
@@ -52,6 +53,10 @@ function productionDeps(ctx: SystemActionCtx): ReconcilerDeps {
         harnessSlug: ctx.installSlug,
       })),
     autoRestartFlagOn: () => getFlag(FLAGS.SUPERVISOR_AUTO_RESTART, 'system').catch(() => false),
+    // EI-19966318801100410: file/resolve a durable EI around a give-up escalation so the down
+    // unit enters the claim queue instead of depending on someone reading the `*` broadcast.
+    fileGiveUpEi: fileSupervisionGiveUpEi,
+    resolveGiveUpEi: resolveSupervisionGiveUpEi,
   };
 }
 

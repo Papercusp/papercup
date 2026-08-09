@@ -66,6 +66,10 @@ export interface StrandedVerdict {
   reason: string;
 }
 
+/** Same shape as {@link StrandedVerdict} — a distinct name so call sites read
+ *  `endedUnobserved` verdicts as what they are, not as strands. */
+export type EndedUnobservedVerdict = StrandedVerdict;
+
 export interface ResidueGroup {
   cgroupPath: string;
   scopeUnit: string | null;
@@ -82,6 +86,17 @@ export interface OverdueVerdict {
 export interface ReconcileResult {
   alive: AliveVerdict[];
   stranded: StrandedVerdict[];
+  /**
+   * Rows absent from the scan the SAME way `stranded` rows are, but for which
+   * the caller independently confirmed (via `ReconcileOptions.releasedScopes`,
+   * systemd's authority — see the header note below) that the task's transient
+   * scope was released in good order: every process in it is confirmed gone,
+   * not merely unseen by one scan. D-018 (task-manager-no-escape-2026-07-27):
+   * an ending nobody observed, whose scope systemd cleanly collected, is *ended,
+   * exit code unknown* — never `stranded` (the escape/anomaly class) and never
+   * `exited` (that would fabricate an exit code nobody saw).
+   */
+  endedUnobserved: EndedUnobservedVerdict[];
   /** Inside our slice, no live ledger row. Someone bypassed the chokepoint, or a
    *  scope outlived the row that described it. REPORT-ONLY in v1 (D-010). */
   unaccounted: ResidueGroup[];
@@ -112,6 +127,44 @@ export interface ReconcileOptions {
    *  slack. Too low strands healthy tasks; too high leaves dead rows "running". */
   graceMs?: number;
   now?: number;
+  /**
+   * Scope units the CALLER has independently confirmed are released (D-018) —
+   * i.e. `systemctl --user show -p ActiveState pc-<taskId>.scope` (or the unit
+   * having been garbage-collected entirely) reports something other than
+   * active/activating/reloading/deactivating for that unit, meaning systemd's
+   * own cgroup-emptiness tracking says every process in that scope is gone.
+   *
+   * This function stays PURE by construction (see the header) — it never asks
+   * systemd itself. The caller (`reconcile-tick.ts`) queries it for exactly the
+   * scope units that are about to strand and passes the confirmed-released
+   * subset here, which is what turns an otherwise-`stranded` verdict into
+   * `endedUnobserved` instead. Omitted or empty ⇒ every candidate strands, the
+   * pre-D-018 behavior — this option is additive, never a new way to LOSE a
+   * genuine escape.
+   */
+  releasedScopes?: ReadonlySet<string>;
+}
+
+/**
+ * A row is about to strand (absent from the scan, aged past grace). Decide
+ * whether it is the escape/anomaly class or an unobserved-but-confirmed-clean
+ * end (D-018) and push it to the matching output list.
+ */
+function pushAbsent(
+  row: TaskRow,
+  reason: string,
+  releasedScopes: ReadonlySet<string> | undefined,
+  stranded: StrandedVerdict[],
+  endedUnobserved: EndedUnobservedVerdict[],
+): void {
+  if (row.scopeUnit && releasedScopes?.has(row.scopeUnit)) {
+    endedUnobserved.push({
+      taskId: row.taskId,
+      reason: `${reason} — but systemd confirms scope ${row.scopeUnit} was released in good order (all its processes exited); the owning process most likely died before recording the exit`,
+    });
+  } else {
+    stranded.push({ taskId: row.taskId, reason });
+  }
 }
 
 const DEFAULT_GRACE_MS = 60_000;
@@ -183,6 +236,7 @@ export function reconcile(
 
   const alive: AliveVerdict[] = [];
   const stranded: StrandedVerdict[] = [];
+  const endedUnobserved: EndedUnobservedVerdict[] = [];
   const overdue: OverdueVerdict[] = [];
   const tooYoung: string[] = [];
   /** Scopes and pids claimed by a live ledger row — everything left over is residue. */
@@ -231,10 +285,13 @@ export function reconcile(
       if (ageMs(row, now) < graceMs) {
         tooYoung.push(row.taskId);
       } else {
-        stranded.push({
-          taskId: row.taskId,
-          reason: `process identity ${row.processIdentity} is gone from the kernel`,
-        });
+        pushAbsent(
+          row,
+          `process identity ${row.processIdentity} is gone from the kernel`,
+          opts.releasedScopes,
+          stranded,
+          endedUnobserved,
+        );
       }
       continue;
     }

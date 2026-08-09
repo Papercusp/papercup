@@ -13,6 +13,7 @@ import {
   getWakeModeOverride,
   setWakeMode,
   ensureFleetMemberWakeAuto,
+  ensureLaunchedWakeAuto,
   DEFAULT_WAKE_MODE,
   WAKE_MODES,
 } from './wake-mode';
@@ -110,6 +111,35 @@ describe('ensureFleetMemberWakeAuto — fleet-member wake immunity (WI-2185)', (
     // The INSERT upsert stores value under the agent key regardless of description;
     // the description rides along to the KV write (asserted via the store value).
     expect(kv.store.get('wake_mode:agent:s-x')).toBe('auto');
+  });
+});
+
+describe('ensureLaunchedWakeAuto — generalized launched-wake-immunity (EI-19965557940158384)', () => {
+  it('unchanged member behavior: writes an auto override for a MEMBER regardless of launchedByAgent', async () => {
+    expect(await ensureLaunchedWakeAuto('s-member', { fleetRole: 'member', launchedByAgent: false })).toBe('auto');
+    expect(kv.store.get('wake_mode:agent:s-member')).toBe('auto');
+  });
+  it('is a NO-OP for a leader regardless of launchedByAgent — owner-gated by design', async () => {
+    await setDefaultWakeMode('manual');
+    expect(await ensureLaunchedWakeAuto('s-leader', { fleetRole: 'leader', launchedByAgent: true })).toBeNull();
+    expect(kv.store.has('wake_mode:agent:s-leader')).toBe(false);
+    expect(await resolveWakeMode('s-leader')).toBe('manual'); // still inherits the gate
+  });
+  it('the new case: a FLEETLESS agent-launched session (no fleetRole) gets the auto override', async () => {
+    await setDefaultWakeMode('manual');
+    expect(await ensureLaunchedWakeAuto('s-solo-launched', { fleetRole: null, launchedByAgent: true })).toBe('auto');
+    expect(kv.store.get('wake_mode:agent:s-solo-launched')).toBe('auto');
+    expect(await resolveWakeMode('s-solo-launched')).toBe('auto'); // immune to the manual global default
+  });
+  it('is a NO-OP for a fleetless, NOT agent-launched session (a human typing `psu su` directly)', async () => {
+    await setDefaultWakeMode('manual');
+    expect(await ensureLaunchedWakeAuto('s-human', { fleetRole: null, launchedByAgent: false })).toBeNull();
+    expect(kv.store.has('wake_mode:agent:s-human')).toBe(false);
+    expect(await resolveWakeMode('s-human')).toBe('manual'); // stays gated — the owner IS present
+  });
+  it('is a NO-OP for undefined fleetRole + launchedByAgent false (the fully-absent case)', async () => {
+    expect(await ensureLaunchedWakeAuto('s-nothing', { fleetRole: undefined, launchedByAgent: false })).toBeNull();
+    expect(kv.store.has('wake_mode:agent:s-nothing')).toBe(false);
   });
 });
 

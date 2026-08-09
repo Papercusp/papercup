@@ -640,8 +640,12 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           lastExitCause = summarizeSystemctlStatusCause(
             await deps.execUser(['status', entry.unit, '--no-pager', '--lines=50']),
           );
-        } catch {
-          /* best-effort: the crash-loop page itself must not depend on diagnostics */
+        } catch (err) {
+          // EI-19966318801100410: `systemctl --user status` on a failed unit ALWAYS exits
+          // non-zero, so execUser always rejects here — but the promisified rejection still
+          // carries the captured stdout. Recover it before giving up on diagnostics.
+          const stdout = stdoutFromExecError(err);
+          lastExitCause = stdout ? summarizeSystemctlStatusCause(stdout) : null;
         }
         await deps
           .notify({
@@ -687,8 +691,15 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           await deps.execUser(['status', unitName, '--no-pager', '--lines=50']),
         );
         return cause ? ` Cause: ${cause}` : fallback;
-      } catch {
-        return fallback;
+      } catch (err) {
+        // EI-19966318801100410: `systemctl --user status` on a failed/inactive unit ALWAYS
+        // exits non-zero (execUser always rejects here), even though it prints full diagnostic
+        // stdout — this is the STEADY STATE for exactly the down-unit case these two callers
+        // (escalate-start-limit-hit, escalate-give-up) exist for. Recover the stdout the
+        // rejection still carries before falling back to "unavailable".
+        const stdout = stdoutFromExecError(err);
+        const cause = stdout ? summarizeSystemctlStatusCause(stdout) : null;
+        return cause ? ` Cause: ${cause}` : fallback;
       }
     };
 
@@ -719,17 +730,27 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           })
           .catch(() => {});
         break;
-      case 'escalate-give-up':
+      case 'escalate-give-up': {
+        const causeSuffix = await failureCauseSuffix();
         await deps
           .notify({
             summary:
               `🚨 supervision: \`${entry.unit}\` crash-looped (${action.restartsInWindow} restarts in <10min) — ` +
               `GIVING UP, this is a code fault not a transient. Needs investigation.` +
-              (await failureCauseSuffix()),
+              causeSuffix,
             kind: 'escalation',
           })
           .catch(() => {});
+        // EI-19966318801100410: a give-up broadcast alone (`*`, expects:'none') leaves the down
+        // unit with no owner — file a durable, claimable work-item so it enters the triage queue
+        // instead of depending on someone reading a broadcast addressed to everyone. Best-effort
+        // and never awaited into the broadcast above: a filing failure must not read as "the
+        // give-up itself failed".
+        await deps
+          .fileGiveUpEi?.({ unit: entry.unit, restartsInWindow: action.restartsInWindow, causeSuffix })
+          .catch(() => {});
         break;
+      }
       case 'report-only':
         if (action.notify) {
           await deps
@@ -751,6 +772,9 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
         await deps
           .notify({ summary: `✅ supervision: \`${entry.unit}\` recovered`, category: 'supervision' })
           .catch(() => {});
+        // EI-19966318801100410: auto-resolve any give-up EI this unit had open. No-ops when
+        // none is open (the normal case — most recoveries never went through a give-up at all).
+        await deps.resolveGiveUpEi?.({ unit: entry.unit }).catch(() => {});
         break;
       default:
         break;

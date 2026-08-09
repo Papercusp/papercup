@@ -355,6 +355,46 @@ _gate_refuse_broad_sweep() {
   exit 75
 }
 
+# EI-19970072096315178 — RE-CHECK the refusal after the slot wait, not only at
+# admission. The check above runs BEFORE this script queues for a slot, and the
+# queue is not short: PC_HEAVY_TIMEOUT_SEC defaults to 900s, and a clamped gate
+# window (slots/2 during `suite`, /4 during the classifier phases) is exactly
+# when waits are longest. So the phase reading the refusal acts on can be many
+# minutes stale by the time the command actually starts.
+#
+# That staleness is not symmetric — it leaks in precisely the direction the
+# guard exists to prevent. A sweep arriving during `suite` is NOT refused (only
+# clamped), then waits; `suite` is the run's multi-hour bulk, and `isolating`/
+# `delivering` follow it. So the natural trajectory of a queued sweep is to be
+# admitted under the permissive phase and begin running under the classifier
+# phase — the one where contention flips a VERDICT rather than costing time.
+# Measured on this box 2026-08-09: waits of 60-90s were routine while a gate ran,
+# and a peer observed a sweep live during `isolating` despite the guard.
+#
+# Re-running `_gate_reserve_active` (rather than reusing the admission-time
+# result) also covers the case the admission check structurally CANNOT see: a
+# gate run that STARTED while we sat in the queue. Both directions are handled —
+# a gate that FINISHED during the wait leaves _gate_reserve_active false and the
+# command runs, unrefused.
+#
+# Same fail-open direction as the admission check: every unknown → run. The
+# refusal can only fire on a positive reading of a live run in a classifier
+# phase with protocol >= 2.
+_gate_recheck_refusal() {
+  case "${PC_HEAVY_ALLOW_DURING_GATE:-}" in 1|on|ON|true|TRUE|yes|YES) return 0 ;; esac
+  _gate_lockdir=""
+  _gate_phase=""
+  _gate_proto=""
+  # Re-detect: sets _gate_lockdir to the live run's lock dir, or returns
+  # non-zero when no live run holds one (or the reserve is switched off).
+  _gate_reserve_active || return 0
+  _gate_raw=$(head -c 4096 "${_gate_lockdir:-}/phase.json" 2>/dev/null | tr -d ' \n')
+  _gate_phase=$(printf '%s' "$_gate_raw" | sed -n 's/.*"phase":"\([a-zA-Z]*\)".*/\1/p' | head -1)
+  _gate_proto=$(printf '%s' "$_gate_raw" | sed -n 's/.*"phaseProtocol":\([0-9][0-9]*\).*/\1/p' | head -1)
+  [ -n "$_gate_phase" ] || _gate_phase="unknown"
+  _gate_refuse_broad_sweep "$@"
+}
+
 # Effective slot count: the steady-state target (fixed or load-adaptive), then
 # the gate clamp. The clamp applies to an explicit PC_HEAVY_SLOTS too — it is a
 # safety reserve, not load adaptation, and it has its own dedicated override.
@@ -811,6 +851,14 @@ fi
 # string when its deadline fires; keep the two in sync
 # (PC_HEAVY_SLOT_ACQUIRED_MARKER in
 # packages/operator-core/lib/agent-tools/capability/bash-jobs.ts).
+#
+# The gate-phase refusal is re-evaluated HERE, against a fresh phase read, before
+# the marker is printed (EI-19970072096315178) — the phase may have advanced into
+# a classifier phase while we were queued. It must stay ABOVE the marker: the
+# marker means "the real command is about to start", and bash-jobs.ts greps for
+# it, so emitting it and then refusing would make a refusal indistinguishable
+# from a command that ran.
+_gate_recheck_refusal "$@"
 echo "[pc-heavy] slot acquired — starting real work" >&2
 
 # The child self-limits via the slot it now (or effectively) holds — tell the

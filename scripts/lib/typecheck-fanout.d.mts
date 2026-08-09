@@ -30,11 +30,15 @@ export function runOne(pkg: any, spawn?: (pkg: any) => any, warn?: (...data: any
  * Returns the results plus the counts, so the caller decides what is fatal — the same fan-out
  * is BLOCKING for libs/papercusp and, per-package, advisory for a newly-covered root.
  */
-export function runPackages({ packages, label, unreadableCount, spawn, log, warn, error, }: {
+export function runPackages({ packages, label, unreadableCount, spawn, blockersOf, log, warn, error, }: {
     packages: any;
     label: any;
     unreadableCount?: number | undefined;
     spawn?: ((pkg: any) => any) | undefined;
+    /** OPTIONAL dependency short-circuit: given a package, the `rel`s it depends on. When one of
+     *  those already failed, the package is reported BLOCKED instead of compiled into a cascade.
+     *  Requires `packages` to already be in dependency order. */
+    blockersOf?: ((pkg: any) => Iterable<string>) | null | undefined;
     log?: ((...data: any[]) => void) | undefined;
     warn?: ((...data: any[]) => void) | undefined;
     error?: ((...data: any[]) => void) | undefined;
@@ -43,6 +47,7 @@ export function runPackages({ packages, label, unreadableCount, spawn, log, warn
     failed: any[];
     skipped: any[];
     passed: any[];
+    blocked: any[];
 };
 export const SKIP_DIRS: Set<string>;
 /** Deep enough for packages/harness/docs-viewer (3), with headroom; bounded so a symlink loop
