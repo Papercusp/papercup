@@ -1176,6 +1176,41 @@ describe('derivePushedContext', () => {
     expect(out.events[0].at).toBe('1970-01-01T00:00:00.000Z');
   });
 
+  it('normalises a raw PG timestamptz STRING to ISO, on both row kinds', () => {
+    // Measured live 2026-08-09: these reads hand back `2026-08-09 09:12:26.944435-04`
+    // — no T, no Z. The old passthrough shipped that as an "ISO" field, and it
+    // hid because `new Date()` parses it, so the UI looked right.
+    const out = derivePushedContext({
+      rows: [row({ created_at: '2026-08-09 09:12:26.944435-04' })],
+      refRows: [],
+      total: 1,
+      refDetail: [refRow({ surfaced_at: '2026-08-09 09:12:26.955934-04' })],
+    });
+    expect(out.events[0].at).toBe('2026-08-09T13:12:26.944Z');
+    expect(out.refs[0].at).toBe('2026-08-09T13:12:26.955Z');
+  });
+
+  it('orders correctly even when one source hands back a Date and the other a PG string', () => {
+    // The reason the fix above is load-bearing rather than cosmetic: this list
+    // merges two result sets and compares `at` LEXICALLY, and 'T' > ' ', so an
+    // unnormalised mix sorts the NEWER row last while looking perfectly sane.
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [],
+      total: 0,
+      refDetail: [
+        refRow({ ref: 'older', surfaced_at: '2026-08-09 09:00:00.000000-04' }),
+        refRow({ ref: 'newer', surfaced_at: new Date('2026-08-09T13:30:00.000Z') }),
+      ],
+    });
+    expect(out.refs.map((r) => r.ref)).toEqual(['newer', 'older']);
+  });
+
+  it('leaves an UNPARSEABLE timestamp alone rather than rendering "Invalid Date"', () => {
+    const out = derivePushedContext({ rows: [row({ created_at: 'not-a-timestamp' })], refRows: [], total: 1 });
+    expect(out.events[0].at).toBe('not-a-timestamp');
+  });
+
   // ── P-013: the per-ref rows ───────────────────────────────────────────────
   const refRow = (
     over: Partial<PushedContextRefDetailRow> = {},

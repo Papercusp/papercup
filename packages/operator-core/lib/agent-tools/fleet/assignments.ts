@@ -783,6 +783,23 @@ export default defineTool({
       harness: args.harness,
       activeOnly: !args.include_lapsed,
     });
+    // P-010 (fleet-lead-instrumentation-audit-2026-08-09): the filter and the
+    // number that describes it are derived together, so this response can say
+    // WHICH population its `agents` count counted. Same fleet, same minutes:
+    // leader-brief said 11 and 14, this tool said 8 and 9 — all correct, none
+    // reconciled, so a leader comparing two of them sees members appear/vanish.
+    const agentPopulation = selectFleetPopulation(
+      groupByAgent(rows),
+      (g) => args.include_stale || g.claims.length > 0 || g.alive,
+      {
+        population: 'agent(s) in scope',
+        basis:
+          'A row is in scope if this query resolved it (claim rows plus presence-only members); it ' +
+          'is shown if it holds a claim or is alive (heartbeat-fresh), or unconditionally under include_stale.',
+        withheldReason: 'idle AND not heartbeat-fresh (stale-idle)',
+        reveal: 'include_stale: true',
+      },
+    );
     const agents: (AgentAssignment & {
       sessionState?: SessionState | null;
       /** Stamped by decorateMemberVerdicts — the holder's last GENUINE work signal
@@ -794,7 +811,7 @@ export default defineTool({
       monitorState?: MonitorState | null;
       nextFireAt?: string | null;
       loopMode?: 'work' | 'monitor' | null;
-    })[] = groupByAgent(rows).filter((g) => args.include_stale || g.claims.length > 0 || g.alive);
+    })[] = agentPopulation.rows;
     // EI-6077: reconcile `alive` against coord:presence's own wakeability signal
     // (see reconcileWakeability above) — best-effort, a query failure just leaves
     // today's heartbeat-only `alive` and an absent `sessionState` (state unknown).
@@ -1006,6 +1023,11 @@ export default defineTool({
     // when the returned `agents` array is bounded below.
     const summary = {
       agents: agents.length,
+      // P-010: which population `agents` counts, and what this response withheld.
+      // `shown` is filled in below once the byte budget is known — the filter's
+      // verdict and what survived transport are two different reductions, and a
+      // single number cannot honestly stand for both.
+      population: agentPopulation.census,
       alive: agents.filter((a) => a.alive).length,
       claims: rows.filter((r) => r.source !== 'presence').length,
       orphaned_claims: orphans.length,

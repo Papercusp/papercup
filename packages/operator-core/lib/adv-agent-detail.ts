@@ -536,8 +536,31 @@ export interface AgentDetail {
 
 // ──────────────────────────── pure shaping ─────────────────────────────────
 
+/**
+ * Normalise a timestamp to real ISO-8601.
+ *
+ * ⚠ The string branch used to be a bare `String(d)` passthrough, and that was
+ * WRONG against live data rather than merely lax: measured 2026-08-09, this
+ * module's PG reads hand back timestamptz as the postgres wire format
+ * (`2026-08-09 09:12:26.944435-04`) — no `T`, no `Z` — so every field this
+ * DTO documents as "ISO" was shipping a non-ISO string. It went unnoticed
+ * because `new Date()` parses that form happily, so the UI rendered fine and
+ * only a consumer that treated the field AS a string could see it.
+ *
+ * Which is exactly what made it worth fixing rather than tolerating: the P-013
+ * ref list merges two independently-sorted result sets and orders them by
+ * comparing `at` LEXICALLY. Mixed formats sort wrongly — `'…T09:12'` sorts
+ * after `'… 09:12'` because `'T' > ' '` — so a single Date-valued row among
+ * string-valued ones would have silently mis-ordered the list.
+ *
+ * Unparseable input falls through unchanged: a label we cannot read is not
+ * improved by rendering it as "Invalid Date".
+ */
 function iso(d: Date | string): string {
-  return d instanceof Date ? d.toISOString() : String(d);
+  if (d instanceof Date) return d.toISOString();
+  const s = String(d);
+  const ms = Date.parse(s);
+  return Number.isNaN(ms) ? s : new Date(ms).toISOString();
 }
 
 /**
