@@ -165,6 +165,22 @@ describe('plan-item-reflect:set-state', () => {
     expect(renderArgs(rule, reopen)).toMatchObject({ status: 'todo' });
   });
 
+  it('EI-19972048649686949: renders onlyIfNoOtherOpenCoverage on a → dropped flip only, never on done/todo/blocked', () => {
+    const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
+
+    const drop = evt('work_items:set_state', stamped('deprecated'));
+    expect(renderArgs(rule, drop)).toMatchObject({ status: 'dropped', onlyIfNoOtherOpenCoverage: true });
+
+    const done = evt('work_items:set_state', stamped('resolved'));
+    expect(renderArgs(rule, done)).not.toHaveProperty('onlyIfNoOtherOpenCoverage');
+
+    const reopen = evt('work_items:set_state', stamped('open'));
+    expect(renderArgs(rule, reopen)).not.toHaveProperty('onlyIfNoOtherOpenCoverage');
+
+    const blocked = evt('work_items:set_state', stamped('blocked'));
+    expect(renderArgs(rule, blocked)).not.toHaveProperty('onlyIfNoOtherOpenCoverage');
+  });
+
   it('does NOT fire on an in-flight (unmapped) state', () => {
     const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
     expect(fires(rule, evt('work_items:set_state', stamped('validating')))).toBe(false);

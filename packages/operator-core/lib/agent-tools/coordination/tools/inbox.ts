@@ -53,7 +53,7 @@ import {
   CONTEXT_GAUGE_LOUD_PCT,
   CONTEXT_GAUGE_QUIET_PCT,
 } from "./inbox-context-usage";
-import { readPriorRespawnOutcome, droppedRespawnAmbientLine } from "../../../carry-respawn-outcome";
+import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-respawn-outcome";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
 import { currentContextTokensForOwner } from "../../../compaction-usage";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";

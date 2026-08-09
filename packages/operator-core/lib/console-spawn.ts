@@ -1751,27 +1751,27 @@ export function wrapHeadlessSigtermDiagnostic(oneliner: string): string {
  *
  * Pure (given the platform/PATH probes) + exported for unit tests.
  */
-export function buildHeadlessSpawnCommand(
-  oneliner: string,
+/**
+ * Shared systemd-run --user --scope argv builder underlying BOTH
+ * buildHeadlessSpawnCommand (headless su members, below) and
+ * buildConsoleScopedSpawnCommand (visible terminal windows — WI-37476/EI-9748
+ * Route B). One implementation of the escape so the two spawn shapes cannot
+ * drift the way the two linux-terminal tables once did (EI-19385011811175105
+ * / EI-19407722209410974).
+ *
+ * `bin`/`args` is the command to run INSIDE the scope (e.g. `bash -lc
+ * <oneliner>` for a headless member, or `<terminal-emulator> <its-args>` for
+ * a visible window) — the function wraps it, it does not interpret it.
+ * `unitPrefix` keeps each caller's unit names greppable/attributable
+ * (`papercup-headless-…` vs `papercup-console-…`) without hardcoding either
+ * prefix twice.
+ */
+function buildScopedSpawnArgv(
+  bin: string,
+  args: string[],
   label: string,
+  unitPrefix: string,
   probes: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean } = {},
-  /**
-   * task-manager-no-escape-2026-07-27 P-009 (follow-up): when the caller has
-   * enrolled this member in the task ledger, it passes the scope unit + slice here
-   * so the member lands inside `papercusp.slice` with a name the reconciler can
-   * join on.
-   *
-   * This path was originally ALLOWLISTED out of the task manager on the reasoning
-   * that console-spawn "opens a desktop TERMINAL for a human; the window is the
-   * unit of control". That is true for spawnConsole and FLATLY WRONG here: a
-   * headless member has no window at all, it is the largest agent subtree on the
-   * box, and it is the exact population EI-9748 is about. One file served two
-   * shapes and the allowlist treated it as one.
-   *
-   * Note the scope was ALREADY being created (EI-9748 Route A) — what was missing
-   * was only the slice and the name. So this is not new confinement machinery on
-   * a critical path; it is the same `systemd-run` call, addressed.
-   */
   taskScope?: { unit: string; slice: string } | null,
 ): { bin: string; args: string[]; scopeUnit: string | null } {
   const platform = probes.platform ?? process.platform;
@@ -1779,9 +1779,9 @@ export function buildHeadlessSpawnCommand(
   if (platform === 'linux' && hasSystemdRun()) {
     const safeLabel =
       label.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'member';
-    // Un-enrolled fallback keeps the historical name so nothing that greps for
-    // `papercup-headless-` breaks when the ledger is unavailable.
-    const unitName = taskScope?.unit ?? `papercup-headless-${safeLabel}-${process.pid}-${Date.now()}`;
+    // Un-enrolled fallback keeps a stable, prefix-greppable name when the ledger
+    // is unavailable (or, for the console caller, never used at all).
+    const unitName = taskScope?.unit ?? `${unitPrefix}-${safeLabel}-${process.pid}-${Date.now()}`;
     // EI-19366263067183489: the slice is UNCONDITIONAL. It used to be emitted only when
     // `taskScope` was non-null, which meant the un-enrolled fallback created a REAL systemd
     // scope holding a real agent subtree in `app.slice` — outside `papercusp.slice`, with no
@@ -1823,16 +1823,92 @@ export function buildHeadlessSpawnCommand(
         `--unit=${unitName}`,
         `--slice=${sliceName}`,
         '--',
-        'bash',
-        '-lc',
-        oneliner,
+        bin,
+        ...args,
       ],
     };
   }
   // No systemd-run: there is no scope at all, so there is genuinely no unit to record.
   // `null` here is the honest answer, not a fallback — distinct from the case above where a
   // scope exists and we simply used to forget its name.
-  return { bin: 'bash', args: ['-lc', oneliner], scopeUnit: null };
+  return { bin, args, scopeUnit: null };
+}
+
+export function buildHeadlessSpawnCommand(
+  oneliner: string,
+  label: string,
+  probes: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean } = {},
+  /**
+   * task-manager-no-escape-2026-07-27 P-009 (follow-up): when the caller has
+   * enrolled this member in the task ledger, it passes the scope unit + slice here
+   * so the member lands inside `papercusp.slice` with a name the reconciler can
+   * join on.
+   *
+   * This path was originally ALLOWLISTED out of the task manager on the reasoning
+   * that console-spawn "opens a desktop TERMINAL for a human; the window is the
+   * unit of control". That is true for spawnConsole and FLATLY WRONG here: a
+   * headless member has no window at all, it is the largest agent subtree on the
+   * box, and it is the exact population EI-9748 is about. One file served two
+   * shapes and the allowlist treated it as one.
+   *
+   * Note the scope was ALREADY being created (EI-9748 Route A) — what was missing
+   * was only the slice and the name. So this is not new confinement machinery on
+   * a critical path; it is the same `systemd-run` call, addressed.
+   */
+  taskScope?: { unit: string; slice: string } | null,
+): { bin: string; args: string[]; scopeUnit: string | null } {
+  return buildScopedSpawnArgv('bash', ['-lc', oneliner], label, 'papercup-headless', probes, taskScope);
+}
+
+/**
+ * EI-9748 Route B (WI-37476, 2026-08-09): the SAME cgroup escape as
+ * buildHeadlessSpawnCommand, applied to the VISIBLE-terminal spawn path
+ * (spawnConsole below — capability:terminal, every visible
+ * fleet:launch-on-plan member, and the operator "+" console button).
+ *
+ * Route A (2026-07-11) fixed exactly one of the two shapes console-spawn.ts
+ * produces: a plain `detached:true` child inherits its PARENT's cgroup (the
+ * operator process that served the spawn call — papercup-dev-api or
+ * papercup-staging-api), and both run with systemd's default
+ * `KillMode=control-group`, so ANY restart of that operator unit
+ * (papercup-staging-api is restarted routinely by this repo's own "test a
+ * server-side edit live" workflow, and papercup-dev-api by the auto-deploy
+ * pipeline) SIGTERMs the WHOLE cgroup — silently killing every process the
+ * spawn call started, with no error/OOM/crash signal of its own. This was
+ * fixed for headless members; the windowed path was left on the vulnerable
+ * plain-detached-child shape, on the (correct, but incomplete) reasoning
+ * that "the window is the unit of control" for a human-opened terminal —
+ * that reasoning says nothing about whether the WINDOW ITSELF, and every
+ * process inside it, can be reaped out from under the human by an unrelated
+ * operator restart.
+ *
+ * Filed from WI-37476: three desktop app processes died together in one
+ * launch, two of them on ISOLATED cargo target-dir slots the triggering
+ * build never touched — ruling out shared-target-dir corruption (WI-7101)
+ * as the cause of at least those two. A cgroup reap of the spawning
+ * console's whole process tree (bash → npm → cargo → the app binary) is the
+ * one mechanism that explains dissimilar, unrelated processes dying
+ * TOGETHER regardless of what each was individually doing. Unconfirmed for
+ * that specific incident (the processes were already gone by the time it
+ * was investigated, and papercup-dev-api/papercup-staging-api show no
+ * restart in the incident's own window per `journalctl`) — but the
+ * vulnerability itself is real and independent of that one incident, is the
+ * exact class EI-9748 already fixed once, and is worth closing regardless
+ * of whether it explains WI-37476's specific occurrence.
+ *
+ * Deliberately NOT task-manager-enrolled (unlike the headless path) — a
+ * human-opened terminal window IS the unit of control (the comment on
+ * buildHeadlessSpawnCommand's taskScope param is still correct for THIS
+ * caller), so `taskScope` is always null here: the un-enrolled fallback
+ * naming/slicing is the only shape this caller needs.
+ */
+export function buildConsoleScopedSpawnCommand(
+  bin: string,
+  args: string[],
+  label: string,
+  probes: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean } = {},
+): { bin: string; args: string[]; scopeUnit: string | null } {
+  return buildScopedSpawnArgv(bin, args, label, 'papercup-console', probes, null);
 }
 
 /**
