@@ -302,6 +302,37 @@ export function formatCellHoist(h: CellHoist): string | null {
 }
 
 /**
+ * P-006 — render pointers for a prose surface, or `null` when there are none.
+ *
+ * ⚠ UNCONDITIONAL BY CONSTRUCTION, and this is a stated limitation rather than an
+ * oversight. `CellPointer.when` is ADVISORY PROSE — the reader self-gates on it; nothing
+ * evaluates it. Gating emission would need a predicate over the payload, and this file's
+ * own materiality doc-block already settled that question in the opposite direction
+ * ("until it exposes one, that cell correctly stays un-gated rather than gaining a
+ * threshold DSL"). A pointer is also the one channel where firing on the healthy path is
+ * survivable: it is short, it carries its own condition, and — unlike a hoist — it makes
+ * no claim about the headline, so a reader who skips it has lost nothing but a hop.
+ *
+ * That is exactly why `when` is REQUIRED at registration. The condition cannot gate the
+ * channel, so it has to be legible IN the line, or an agent reading a healthy gate is
+ * told to go look at ownership for no reason.
+ */
+export function formatCellPointers(pointers: CellPointerRead[]): string | null {
+  if (pointers.length === 0) return null;
+  return pointers
+    .map((p) => {
+      if (p.drifted) {
+        return `⚠ this cell points at "${p.cell}", which is in NO registry — a declaration defect, not a value you are missing. Nobody can follow this pointer; report it rather than hunting for the cell.`;
+      }
+      if (p.hidden) {
+        return `↪ "${p.cell}" answers ${p.answers} (${p.when}) — but it is OUTSIDE YOUR AUDIENCE, so you cannot read it yourself. It exists and is not broken: ask a peer who holds that audience.`;
+      }
+      return `↪ next, ${p.when}: read \`state:read { cell: '${p.cell}' }\` — ${p.answers}`;
+    })
+    .join(' · ');
+}
+
+/**
  * Dispatcher error code → unknown code. Explicit and total-by-fallback rather than an
  * if-chain, so the classification is readable in one place and testable directly.
  *

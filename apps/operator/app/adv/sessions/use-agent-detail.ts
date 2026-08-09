@@ -227,6 +227,33 @@ export interface AgentSubscriptions {
   error?: string;
 }
 
+/** One injection moment — mirror of adv-agent-detail.ts's PushedContextEvent. */
+export interface PushedContextEvent {
+  at: string;
+  surface: string;
+  returned: number;
+  admitted: number;
+  truncated: boolean;
+  /** Tri-state: `null` = NOT RECORDED (pre-P-002 row), `false` = the leg was
+   *  recorded and did not run. The dossier renders those differently on
+   *  purpose — see the server DTO for why collapsing them is a bug. */
+  semanticRan: boolean | null;
+  lexicalRan: boolean | null;
+}
+
+export interface PushedContextPortRefs {
+  port: string;
+  refs: number;
+}
+
+export interface AgentPushedContext {
+  /** Newest first, capped — `count` carries the true window total. */
+  events: PushedContextEvent[];
+  count: number;
+  refsByPort: PushedContextPortRefs[];
+  error?: string;
+}
+
 export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
@@ -238,6 +265,10 @@ export interface AgentDetail {
   /** Optional for the same reason as `signals`, and additionally because an
    *  operator predating this field serves a payload without it. */
   subscriptions?: AgentSubscriptions;
+  /** Optional for the same reason as `subscriptions` — this is a NEW field and
+   *  the sidecar only rebuilds on restart, so a fresh SPA bundle can genuinely
+   *  be served a payload without it. Every read below goes through `?.`. */
+  pushedContext?: AgentPushedContext;
 }
 
 /** Lazy-load the Tier-3 dossier for one owner id through sync. Any number of

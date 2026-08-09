@@ -689,6 +689,124 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       expect(admission.admitted + totalDropped).toBe(admission.returned);
     });
 
+    /**
+     * D-081. `truncated: true` is reached by two situations that call for
+     * OPPOSITE fixes — an exhausted budget (raise the budget) and a remainder of
+     * individually-oversized entries (the MAX_ENTRY_CHARS clamp is the real
+     * ceiling; raising the budget buys little). Before `spent`/`budgetChars`
+     * they were indistinguishable in telemetry, which is why P-024's own stated
+     * acceptance criteria (`dropped.budget` + `truncated`) could not settle the
+     * question P-024 asks.
+     *
+     * The assertion is therefore NOT "the fields are populated" — it is that the
+     * two cases now SEPARATE. A future change that makes them read alike again
+     * fails here.
+     */
+    it('records spent against the budget, so a budget-bound cut is distinguishable from a clamp-bound one', async () => {
+      // CASE A — budget-bound: many small entries, so the packer fills the
+      // budget and cuts a tail of entries that would each have fit alone.
+      //
+      // ⚠ The texts must be lexically DISTINCT, not `alpha0..alpha19`:
+      // collapseNearDuplicates runs BEFORE the budget stage, so near-identical
+      // strings are removed as duplicates and the budget never binds — the test
+      // would then pass for the wrong reason (or fail confusingly).
+      const distinct = [
+        'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel',
+        'india', 'juliet', 'kilo', 'lima', 'mike', 'november', 'oscar', 'papa',
+        'quebec', 'romeo', 'sierra', 'tango',
+      ];
+      useBackend(
+        mockBackend(distinct.map((w, i) => ({ id: `a${i}`, text: `${w} ${w}` }))),
+      );
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+        budgetChars: 200,
+      });
+      await flush();
+
+      // CASE B — clamp-bound: one small entry lands, then every remaining entry
+      // is individually larger than the whole budget, so none can ever fit. The
+      // block is truncated with most of the budget UNSPENT.
+      // Distinct fill characters for the same reason as CASE A — five identical
+      // 400-char strings would collapse to one before the budget ever saw them.
+      useBackend(
+        mockBackend([
+          { id: 'b0', text: 'tiny' },
+          ...['p', 'q', 'r', 's', 't'].map((c, i) => ({ id: `b${i + 1}`, text: c.repeat(400) })),
+        ]),
+      );
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+        budgetChars: 200,
+      });
+      await flush();
+
+      type Funnel = { truncated: boolean; spent?: number; budgetChars?: number };
+      const caseA = (recordRecallStatsMock.mock.calls[0]![1] as { admission: Funnel }).admission;
+      const caseB = (recordRecallStatsMock.mock.calls[1]![1] as { admission: Funnel }).admission;
+
+      // The budget each was packed against is carried, so a historical row stays
+      // interpretable after the constant moves.
+      expect(caseA.budgetChars).toBe(200);
+      expect(caseB.budgetChars).toBe(200);
+
+      // Both hit the SAME terminal signal — this is the ambiguity being fixed.
+      expect(caseA.truncated).toBe(true);
+      expect(caseB.truncated).toBe(true);
+
+      // ...and `spent` is what tells them apart. A is budget-bound: it consumed
+      // most of what it was given. B is clamp-bound: it stopped far short.
+      // Asserted as a RELATION rather than exact chars, because the rendered
+      // line carries a scope/id prefix whose width is not this test's subject.
+      expect(caseA.spent).toBeGreaterThan(100);
+      expect(caseA.spent).toBeLessThanOrEqual(200);
+      expect(caseB.spent).toBeLessThan(100);
+      expect(caseA.spent!).toBeGreaterThan(caseB.spent!);
+    });
+
+    /**
+     * The THIRD reading of utilization, and the one most likely to be mistaken
+     * for a bad write: >1.0 is correct. `admit()` skips the budget check while
+     * `lines.length === 0` (the ALWAYS-EMIT-ONE-ROW contract), so a single
+     * oversized first entry is admitted whatever its length — this is the
+     * mid-turn WI-7163 case, where removing the exemption made mid-turn deliver
+     * nothing at all. Pinned so nobody "corrects" spent > budgetChars later.
+     */
+    it('reports spent ABOVE the budget when the always-emit-one-row exemption fires', async () => {
+      useBackend(
+        mockBackend([
+          { id: 'big1', text: 'y'.repeat(400) },
+          { id: 'big2', text: 'z'.repeat(400) },
+        ]),
+      );
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+        budgetChars: 50,
+      });
+      await flush();
+
+      const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
+        admission: { admitted: number; truncated: boolean; spent?: number; budgetChars?: number };
+      };
+      expect(admission.admitted).toBe(1);
+      expect(admission.truncated).toBe(true);
+      expect(admission.budgetChars).toBe(50);
+      // The exemption delivered a line far larger than the budget allowed.
+      expect(admission.spent!).toBeGreaterThan(50);
+    });
+
     it('records EVERY stage even at zero — a filter that ran and removed nothing is not a filter that never ran', async () => {
       useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
       await buildMemoryContextBlock({

@@ -25,8 +25,13 @@ vi.mock('@papercusp/flags', () => ({
   FLAGS: {
     LOOPS: 'papercusp-loops',
     HEADLESS_LOOPS_COLD_BY_DEFAULT: 'papercusp-headless-loops-cold-by-default',
+    SCOPED_SUPERUSER_CLAMP: 'papercusp-scoped-superuser-clamp',
   },
 }));
+// EI-19966210024116714: arm.ts reaches harness-core ONLY via a dynamic import inside the
+// cross-workspace guard, which is itself gated on a CLAMPED superuser ctx — so this mock is
+// never touched by any test that does not opt in with ctx.isSuperuser.
+vi.mock('../../harness-core', () => ({ resolveWorkspaceForHarnessSlugIn: vi.fn(async () => null) }));
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({
@@ -112,6 +117,9 @@ const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
 const findHostM = vi.mocked(findLiveHost);
 const wakeAwaitsM = vi.mocked((await import('../../events/await/store')).listWakeAwaitsForSubscriber);
+// EI-19966210024116714: hoisted to module scope — `await import` is illegal inside a
+// (non-async) describe callback, and this file's describes are synchronous.
+const resolveWsM = vi.mocked((await import('../../harness-core')).resolveWorkspaceForHarnessSlugIn);
 const tool = (await import('./arm')).default;
 
 type Out = { content: { text: string }[] };
@@ -283,6 +291,74 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
     expect(b.loop.harness).not.toBe('*');
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
+  });
+});
+
+// EI-19966210024116714 — a loop armed against a harness the OWNING SESSION cannot address
+// is doomed from `armedAt` and fails SILENTLY: every harness-scoped call its wake contract
+// prescribes is refused by the dispatch clamp with `harness_forbidden`, so the agent wakes on
+// cadence, errors on every pull, and produces nothing — until the stalled-loops guard disarms
+// it (WI-6639) and the claim reaper releases its held items as `reaper:dead`. Observed live
+// 2026-08-08/09 across four fleet members who armed on harness 'papercusp' from sessions
+// scoped to workspace 'default'; one burned 44 wakes over ~8h and lost a held item to the
+// reaper mid-diagnosis. The mismatch is fully determinable at arm time, so refuse there.
+describe('loop:arm — EI-19966210024116714: refuse a cross-workspace arm the session could never service', () => {
+  const scopedCtx = { harnessSlug: 'papercusp', isSuperuser: true, workspaceId: 'ws-1' };
+  const callAs = (ctx: Record<string, unknown>, args: Record<string, unknown> = {}) =>
+    tool.handler({ intervalSec: 120, goal: 'g', ...args } as never, ctx as never) as Promise<Out>;
+
+  it('REFUSES when the harness belongs to a different workspace — and arms nothing', async () => {
+    resolveWsM.mockResolvedValueOnce('papercusp-workspace' as never);
+    const b = body(await callAs(scopedCtx));
+    expect(b).toMatchObject({
+      ok: false,
+      error: 'harness_workspace_mismatch',
+      harness: 'papercusp',
+      harnessWorkspace: 'papercusp-workspace',
+      sessionWorkspace: 'ws-1',
+    });
+    // The whole point: no durable routine row, so no wake can fire into a doomed loop.
+    expect(materializeM).not.toHaveBeenCalled();
+  });
+
+  it('the refusal names the concrete consequence, not just the mismatch', async () => {
+    resolveWsM.mockResolvedValueOnce('papercusp-workspace' as never);
+    const b = body(await callAs(scopedCtx));
+    expect(b.message).toContain('harness_forbidden');
+    expect(b.message).toContain('reaped as dead');
+  });
+
+  it('ARMS NORMALLY when the harness resolves to the session\'s own workspace', async () => {
+    resolveWsM.mockResolvedValueOnce('ws-1' as never);
+    const b = body(await callAs(scopedCtx));
+    expect(b).toMatchObject({ ok: true });
+    expect(materializeM).toHaveBeenCalled();
+  });
+
+  it('fails OPEN on a resolver THROW — an unreadable registry never blocks a legitimate arm', async () => {
+    resolveWsM.mockRejectedValueOnce(new Error('ambiguous cross-workspace collision') as never);
+    const b = body(await callAs(scopedCtx));
+    expect(b).toMatchObject({ ok: true });
+    expect(materializeM).toHaveBeenCalled();
+  });
+
+  it('fails OPEN when the harness resolves to NOTHING — absence is not a confirmed foreign resolution', async () => {
+    resolveWsM.mockResolvedValueOnce(null as never);
+    const b = body(await callAs(scopedCtx));
+    expect(b).toMatchObject({ ok: true });
+    expect(materializeM).toHaveBeenCalled();
+  });
+
+  it('does NOT check an UNSCOPED (\'*\') superuser — spanning workspaces is legitimate there', async () => {
+    const b = body(await callAs({ harnessSlug: 'papercusp', isSuperuser: true, workspaceId: '*' }));
+    expect(b).toMatchObject({ ok: true });
+    expect(resolveWsM).not.toHaveBeenCalled();
+  });
+
+  it('does NOT check a NON-superuser session — the clamp that produces the failure does not apply', async () => {
+    const b = body(await callAs({ harnessSlug: 'papercusp', workspaceId: 'ws-1' }));
+    expect(b).toMatchObject({ ok: true });
+    expect(resolveWsM).not.toHaveBeenCalled();
   });
 });
 

@@ -116,10 +116,20 @@ export interface StalenessCandidate {
   lastActiveMs: number | null;
 }
 
-export interface StalenessDecision {
-  resolve: boolean;
-  reason: string;
-}
+/**
+ * The subset of skip reasons the PURE decision function can produce. Typed as a
+ * union (rather than a bare string) so the sweep's census cannot silently fail to
+ * count a decision — an uncounted skip is precisely the blind spot that let this
+ * sweep no-op undetected, so the compiler now enforces the accounting.
+ */
+export type StalenessDecisionSkipReason = Extract<
+  StalenessSkipReason,
+  'ineligible-kind' | 'ei-too-new' | 'unknown-activity-fail-closed' | 'harness-recently-active'
+>;
+
+export type StalenessDecision =
+  | { resolve: true; reason: string }
+  | { resolve: false; reason: StalenessDecisionSkipReason };
 
 /**
  * Pure: should this open replication-stall EI staleness-close? Every guard is
@@ -165,14 +175,67 @@ export interface StalenessSweepDeps {
   resolve(id: string, note: string): Promise<void>;
 }
 
+/**
+ * Every reason this sweep can decline to act on an EI it looked at. Counted so an
+ * inert sweep is DISTINGUISHABLE from a sweep that correctly found nothing — the
+ * distinction that hid WI-5563's no-op for 13 days.
+ */
+export type StalenessSkipReason =
+  | 'malformed-body'
+  | 'flag-off'
+  | 'harness-gone-orphan-sweeps-it'
+  | 'harness-exists-unreadable'
+  | 'ineligible-kind'
+  | 'ei-too-new'
+  | 'unknown-activity-fail-closed'
+  | 'harness-recently-active';
+
 export interface StalenessSweepResult {
   checked: number;
   resolvedIds: string[];
   errors: number;
+  /** Per-reason census of everything NOT resolved. Sums with resolvedIds to `checked`. */
+  skipped: Record<StalenessSkipReason, number>;
+}
+
+export function emptySkipCensus(): Record<StalenessSkipReason, number> {
+  return {
+    'malformed-body': 0,
+    'flag-off': 0,
+    'harness-gone-orphan-sweeps-it': 0,
+    'harness-exists-unreadable': 0,
+    'ineligible-kind': 0,
+    'ei-too-new': 0,
+    'unknown-activity-fail-closed': 0,
+    'harness-recently-active': 0,
+  };
+}
+
+/**
+ * Pure: combine the 5-minute orchestrator LEASE reading with the DURABLE work-item
+ * activity reading into one "last active" answer. Newest wins; null only when BOTH
+ * are unknown (the genuine fail-closed case).
+ *
+ * Kept pure and exported because it is the exact seam WI-5563 got wrong — a lease
+ * that is absent for every abandoned harness must never be the sole input to an
+ * "is this abandoned?" question.
+ */
+export function pickLastActiveMs(
+  leaseMs: number | null | undefined,
+  durableMs: number | null | undefined,
+): number | null {
+  const candidates = [leaseMs, durableMs].filter(
+    (v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0,
+  );
+  return candidates.length === 0 ? null : Math.max(...candidates);
 }
 
 async function defaultDeps(): Promise<StalenessSweepDeps> {
-  const [{ listIssues, setIssueState }, { harnessExistsInWorkspace, harnessStatusFor }, { REPLICATION_LIVENESS_TOPIC }] =
+  const [
+    { listIssues, setIssueState },
+    { harnessExistsInWorkspace, harnessStatusFor, harnessLastActivityMs },
+    { REPLICATION_LIVENESS_TOPIC },
+  ] =
     await Promise.all([
       import('../../issues-engineer'),
       import('../../device-harnesses'),
@@ -192,9 +255,16 @@ async function defaultDeps(): Promise<StalenessSweepDeps> {
       }));
     },
     harnessExists: harnessExistsInWorkspace,
+    // WI-5563: the NEWEST of the 5-minute orchestrator lease and the durable
+    // work-item activity. The lease alone is null for every abandoned harness —
+    // i.e. absent exactly when this sweep needs it — so it can never be the sole
+    // input here. See the ACTIVITY SOURCE note at the top of this file.
     harnessLastActiveMs: async (workspaceId, harnessSlug) => {
-      const status = await harnessStatusFor(workspaceId, harnessSlug);
-      return status?.last_active_ts ?? null;
+      const [status, durable] = await Promise.all([
+        harnessStatusFor(workspaceId, harnessSlug).catch(() => null),
+        harnessLastActivityMs(workspaceId, harnessSlug).catch(() => null),
+      ]);
+      return pickLastActiveMs(status?.last_active_ts ?? null, durable);
     },
     resolve: async (id, note) => {
       await setIssueState(id, 'resolved', STALENESS_SWEEP_OWNER, note);
@@ -214,21 +284,21 @@ export async function runReplicationLivenessStalenessSweepOnce(
   deps?: StalenessSweepDeps,
 ): Promise<StalenessSweepResult> {
   if (process.env.VITEST && !deps) {
-    return { checked: 0, resolvedIds: [], errors: 0 };
+    return { checked: 0, resolvedIds: [], errors: 0, skipped: emptySkipCensus() };
   }
 
   let d: StalenessSweepDeps;
   try {
     d = deps ?? (await defaultDeps());
   } catch {
-    return { checked: 0, resolvedIds: [], errors: 0 };
+    return { checked: 0, resolvedIds: [], errors: 0, skipped: emptySkipCensus() };
   }
 
   let open: Array<{ id: string; body: string; createdAtMs: number }>;
   try {
     open = await d.listOpenReplicationStallEis();
   } catch {
-    return { checked: 0, resolvedIds: [], errors: 0 };
+    return { checked: 0, resolvedIds: [], errors: 0, skipped: emptySkipCensus() };
   }
 
   const nowMs = Date.now();
@@ -239,11 +309,18 @@ export async function runReplicationLivenessStalenessSweepOnce(
   // body, exactly like orphan-sweep's harnessExists target).
   const flagCache = new Map<string, boolean>();
   const resolvedIds: string[] = [];
+  const skipped = emptySkipCensus();
+  const skip = (reason: StalenessSkipReason): void => {
+    skipped[reason] += 1;
+  };
   let errors = 0;
 
   for (const issue of open) {
     const target = parseStallEiTarget(issue.body);
-    if (!target) continue; // malformed/foreign body — never touched
+    if (!target) {
+      skip('malformed-body'); // malformed/foreign body — never touched
+      continue;
+    }
     const kind = parseStallEiKind(issue.body);
 
     if (!deps) {
@@ -259,7 +336,10 @@ export async function runReplicationLivenessStalenessSweepOnce(
         }
         flagCache.set(target.workspaceId, enabled);
       }
-      if (!enabled) continue;
+      if (!enabled) {
+        skip('flag-off');
+        continue;
+      }
     }
 
     // Orphan-sweep's job, not ours: a nonexistent harness is skipped here either way
@@ -268,9 +348,14 @@ export async function runReplicationLivenessStalenessSweepOnce(
     try {
       exists = await d.harnessExists(target.workspaceId, target.harnessSlug);
     } catch {
-      continue; // uncertain — leave it, never assume either sweep's precondition
+      // uncertain — leave it, never assume either sweep's precondition
+      skip('harness-exists-unreadable');
+      continue;
     }
-    if (!exists) continue;
+    if (!exists) {
+      skip('harness-gone-orphan-sweeps-it');
+      continue;
+    }
 
     const cacheKey = `${target.workspaceId}::${target.harnessSlug}`;
     let lastActiveMs = activeCache.get(cacheKey);
@@ -288,7 +373,10 @@ export async function runReplicationLivenessStalenessSweepOnce(
       nowMs,
       opts,
     );
-    if (!decision.resolve) continue;
+    if (!decision.resolve) {
+      skip(decision.reason);
+      continue;
+    }
 
     try {
       await d.resolve(
@@ -302,5 +390,5 @@ export async function runReplicationLivenessStalenessSweepOnce(
     }
   }
 
-  return { checked: open.length, resolvedIds, errors };
+  return { checked: open.length, resolvedIds, errors, skipped };
 }

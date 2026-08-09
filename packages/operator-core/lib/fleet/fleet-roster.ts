@@ -578,19 +578,29 @@ export function splitFleetRosterCounts(entries: Array<{ agentRole: string | null
  * the EMPTY set: a degraded oracle read must degrade these to the legacy
  * heartbeat-only behavior, never break them.
  */
+async function oracleSessionStates(subjects: LivenessSubject[]): Promise<Map<string, string>> {
+  if (subjects.length === 0) return new Map();
+  try {
+    const verdicts = await resolveSessionStates(subjects);
+    const states = new Map<string, string>();
+    for (const [id, v] of verdicts) states.set(id, v.sessionState);
+    return states;
+  } catch {
+    // Fail-soft to the EMPTY map: a degraded oracle read degrades every caller to the
+    // legacy heartbeat-only behavior (nobody dropped), never breaks them. Callers must
+    // therefore treat a MISSING verdict as "not known-dead", not as "dead".
+    return new Map();
+  }
+}
+
 async function oracleDeadOwnerIds(
   subjects: LivenessSubject[],
   deadStates: readonly string[],
 ): Promise<Set<string>> {
-  if (subjects.length === 0) return new Set();
-  try {
-    const verdicts = await resolveSessionStates(subjects);
-    const dead = new Set<string>();
-    for (const [id, v] of verdicts) if (deadStates.includes(v.sessionState)) dead.add(id);
-    return dead;
-  } catch {
-    return new Set();
-  }
+  const states = await oracleSessionStates(subjects);
+  const dead = new Set<string>();
+  for (const [id, state] of states) if (deadStates.includes(state)) dead.add(id);
+  return dead;
 }
 
 /** IO seam: live member/bee counts per fleet_slug — presence rows with a fresh heartbeat
@@ -689,31 +699,89 @@ export async function liveFleetBeeCountsFromNursery(workspaceId: string): Promis
 }
 
 /**
- * IO seam: the LIVE members of ONE named fleet → their coord owner-ids. The
- * id-only, single-fleet analog of liveFleetAgentCounts: presence rows carrying
- * `fleetSlug` with a fresh heartbeat (within PRESENCE_STALE_MS), scoped to the
- * workspace (fleet_slug is unique only per-workspace — mig 406). This is what the
- * coord audience resolver calls to expand `@fleet:<slug>` to its currently-live
- * recipients, with no roster enrichment (cheap enough for the per-send path).
+ * Why a fleet member did NOT enter the deliverable `@fleet:<slug>` audience.
+ *
+ * P-003 (fleet-lead-instrumentation-audit-2026-08-09). Every reason below is a drop
+ * this resolver ALREADY performed, silently: measured live 2026-08-09, a fleet-scoped
+ * broadcast returned `counts:{ok:1,failed:0}` with `recipients_resolved:6` against an
+ * 11-row roster, and nothing in the result could distinguish a FULL delivery from a
+ * PARTIAL one. Some of those omissions were legitimate (recipients had ended between
+ * the roster read and the send) — legitimacy is not the point; a leader steering a
+ * fleet has to be able to tell "everyone got it" from "six of eleven got it".
+ *
+ * Naming a drop does NOT change who is delivered to: `ids` below is byte-identical to
+ * what this resolver already returned. This is a reporting channel, not a policy change.
  */
-export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string): Promise<string[]> {
+export type FleetMemberOmissionReason = 'stale-heartbeat' | 'ended' | 'suspect' | 'bee-role';
+
+export interface FleetMemberOmission {
+  ownerId: string;
+  reason: FleetMemberOmissionReason;
+  /** The presence heartbeat behind the verdict — the evidence for a `stale-heartbeat` drop. */
+  heartbeatAt: string | null;
+}
+
+export interface DiagnosedFleetMembers {
+  /** The deliverable audience — byte-identical to `liveFleetMemberIds`. */
+  ids: string[];
+  /** Members dropped, with the reason. EMPTY means every fleet presence row was deliverable. */
+  omitted: FleetMemberOmission[];
+}
+
+/**
+ * IO seam: the LIVE members of ONE named fleet → their coord owner-ids, PLUS the
+ * members that were dropped and why (see `FleetMemberOmission`). The id-only,
+ * single-fleet analog of liveFleetAgentCounts: presence rows carrying `fleetSlug`,
+ * scoped to the workspace (fleet_slug is unique only per-workspace — mig 406). This is
+ * what the coord audience resolver calls to expand `@fleet:<slug>` to its currently-live
+ * recipients, with no roster enrichment (cheap enough for the per-send path).
+ *
+ * NB the heartbeat freshness filter is computed as a COLUMN rather than applied as a
+ * `WHERE`: a stale member is an omission to REPORT, not a row to hide. That is the whole
+ * difference between this and the pre-P-003 query — a `WHERE heartbeat_at > …` cannot
+ * report what it filtered out, which is exactly how a partial audience read as a total one.
+ */
+export async function liveFleetMemberIdsDiagnosed(
+  fleetSlug: string,
+  workspaceId: string,
+): Promise<DiagnosedFleetMembers> {
   const { sql } = getOrgPg();
   const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
-  const rows = await sql<{ owner_id: string; agent_role: string | null; heartbeat_at: string }[]>`
-    SELECT owner_id, agent_role, heartbeat_at
+  const rows = await sql<
+    { owner_id: string; agent_role: string | null; heartbeat_at: string; stale: boolean }[]
+  >`
+    SELECT owner_id,
+           agent_role,
+           heartbeat_at,
+           (heartbeat_at <= now() - ${`${secs} seconds`}::interval) AS stale
       FROM harness_shared.coord_presence
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug = ${fleetSlug}
-       AND heartbeat_at > now() - ${`${secs} seconds`}::interval
   `;
+
+  const omitted: FleetMemberOmission[] = [];
+  const candidates: typeof rows = [];
+  for (const r of rows) {
+    if (r.stale) {
+      omitted.push({ ownerId: r.owner_id, reason: 'stale-heartbeat', heartbeatAt: r.heartbeat_at });
+    } else if (isBeeRole(r.agent_role)) {
+      omitted.push({ ownerId: r.owner_id, reason: 'bee-role', heartbeatAt: r.heartbeat_at });
+    } else {
+      candidates.push(r);
+    }
+  }
+
   // P-006: drop AUTHORITATIVELY-dead owners (ended|suspect) before expanding the
   // audience — a warm-heartbeat corpse must not receive a fleet send. `draining`
   // is deliberately KEPT here (unlike the availability counts above): a draining
   // agent may still be winding down and the send is durable — never drop a
   // message to a maybe-alive recipient.
-  const dead = await oracleDeadOwnerIds(
-    rows.map((r) => ({ ownerId: r.owner_id, heartbeatAt: r.heartbeat_at, agentRole: r.agent_role })),
-    ['ended', 'suspect'],
+  const states = await oracleSessionStates(
+    candidates.map((r) => ({
+      ownerId: r.owner_id,
+      heartbeatAt: r.heartbeat_at,
+      agentRole: r.agent_role,
+    })),
   );
   // WI-37162: do NOT additionally require a live psu-pty HOST process here
   // (that is what livePsuFleetMemberIds/findLiveHost checks, and it is the right
@@ -733,9 +801,26 @@ export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string)
   // pid-liveness legs) is the correct authority for "is this member actually gone"
   // for DELIVERY purposes — a delivered message sits durably in the recipient's
   // inbox regardless of whether a live PTY exists to inject it immediately.
-  return rows
-    .filter((r) => !dead.has(r.owner_id) && !isBeeRole(r.agent_role))
-    .map((r) => r.owner_id);
+  const ids: string[] = [];
+  for (const r of candidates) {
+    const state = states.get(r.owner_id);
+    if (state === 'ended' || state === 'suspect') {
+      omitted.push({ ownerId: r.owner_id, reason: state, heartbeatAt: r.heartbeat_at });
+    } else {
+      ids.push(r.owner_id);
+    }
+  }
+  return { ids, omitted };
+}
+
+/**
+ * The deliverable `@fleet:<slug>` audience alone — the long-standing signature, now a
+ * thin projection of `liveFleetMemberIdsDiagnosed`. Callers that only route (headcount,
+ * launch-on-plan, the audience host) keep taking `string[]`; callers that must EXPLAIN a
+ * partial send take the diagnosed form.
+ */
+export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string): Promise<string[]> {
+  return (await liveFleetMemberIdsDiagnosed(fleetSlug, workspaceId)).ids;
 }
 
 /**

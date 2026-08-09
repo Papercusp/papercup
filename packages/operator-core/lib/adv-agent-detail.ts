@@ -400,6 +400,50 @@ export interface AgentSubscriptions {
   error?: string;
 }
 
+/** One injection moment: context this agent was PUSHED, and whether retrieval
+ *  was healthy when it happened. */
+export interface PushedContextEvent {
+  /** ISO — when the recall behind this injection ran. */
+  at: string;
+  /** The injection port that pushed it (turn-start, mid-turn, wake-brief, …). */
+  surface: string;
+  /** What the index RETURNED, before the six admission filters. */
+  returned: number;
+  /** What actually reached the agent. The gap between this and `returned` is
+   *  the whole point of the section — "was given context" vs "was given the
+   *  context that survived". */
+  admitted: number;
+  /** The char budget cut the tail off an already-RANKED list. */
+  truncated: boolean;
+  /** Did the SEMANTIC (cosine) leg execute? `null` = not recorded (a pre-P-002
+   *  row), which is NOT the same as `false` (the leg was short-circuited). That
+   *  distinction is the column P-013 exists for, so it must survive the DTO. */
+  semanticRan: boolean | null;
+  /** Did the LEXICAL leg execute? Same null-vs-false rule as above. */
+  lexicalRan: boolean | null;
+}
+
+/** Distinct memory refs surfaced to this session, per injection port. */
+export interface PushedContextPortRefs {
+  port: string;
+  refs: number;
+}
+
+export interface AgentPushedContext {
+  /** Newest first, CAPPED (see `count` for the true total in the window). */
+  events: PushedContextEvent[];
+  /** Every injection in the window, not just the ones `events` could carry —
+   *  the Coord section's lesson [owner 2026-07-28: "it says 38 unread, but I
+   *  only see 2 messages"]: a count must never name rows the list cannot show. */
+  count: number;
+  /** From the per-session surfaced ledger — the refs, never the bodies. */
+  refsByPort: PushedContextPortRefs[];
+  /** Set when the read FAILED. Never collapse a failure into an empty list:
+   *  "nothing was pushed to this agent" and "we could not ask" are opposite
+   *  conclusions (same rule as `getAgentSignals` / `getAgentSubscriptions`). */
+  error?: string;
+}
+
 export interface AgentDetail {
   ownerId: string;
   locks: AgentLocks;
@@ -415,6 +459,11 @@ export interface AgentDetail {
    *  readers whose fixtures predate the field. Always populated for real
    *  traffic by `getAgentDetail`. */
   subscriptions?: AgentSubscriptions;
+  /** Optional for the same reason as `signals`/`subscriptions` above — and
+   *  here it is load-bearing rather than courtesy: making it REQUIRED would
+   *  strand every fixture that constructs an AgentDetail, in files this change
+   *  never touches (the `lint:required-field-strands` trigger). */
+  pushedContext?: AgentPushedContext;
 }
 
 // ──────────────────────────── pure shaping ─────────────────────────────────
@@ -1242,14 +1291,162 @@ export async function getAgentSubscriptions(owner: string): Promise<AgentSubscri
   }
 }
 
+// ── Dynamically pushed context (P-011/P-012) ────────────────────────────────
+// Backed ENTIRELY by ledgers that already exist (D-004: no new write path):
+//   - harness_shared.memory_recall_stats     — one row per recall, carrying the
+//     per-leg provenance (`legs`, landed by P-002) and the admission funnel.
+//   - harness_shared.memory_session_surfaced — which refs were surfaced, per port.
+// Both key `session_id` on the coord ownerId, which is what the dossier is
+// keyed by — so this needs no owner→session mapping (verified live 2026-08-09).
+
+/** How far back the section looks. */
+const PUSHED_CONTEXT_WINDOW_HOURS = 24;
+/** Rows carried on the wire. `count` still reports the true window total. */
+const PUSHED_CONTEXT_MAX_EVENTS = 12;
+
+/** A `legs`/`admission` jsonb blob as it arrives — shape-checked, never cast. */
+type JsonBlob = Record<string, unknown> | null | undefined;
+
+function blob(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+function numAt(o: Record<string, unknown> | null, key: string): number {
+  const v = o?.[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * Did a named retrieval leg RUN? Tri-state on purpose.
+ *
+ * `null` (leg absent / not a boolean) means NOT RECORDED — a pre-P-002 row.
+ * `false` means the leg was recorded and did NOT execute (the cosine-gated
+ * short-circuit). Collapsing those two into one falsy value is exactly the
+ * mistake this column exists to prevent: it would render "we never measured
+ * retrieval health" identically to "retrieval was degraded".
+ */
+export function legRan(legs: JsonBlob, leg: 'cosine' | 'lexical'): boolean | null {
+  const ran = blob(blob(legs)?.[leg])?.ran;
+  return typeof ran === 'boolean' ? ran : null;
+}
+
+export interface PushedContextRow {
+  created_at: Date | string;
+  surface: string;
+  legs: JsonBlob;
+  admission: JsonBlob;
+}
+
+/** Pure shaping — unit-tested without PG, per this module's contract. */
+export function derivePushedContext(
+  rows: PushedContextRow[],
+  refRows: { port: string; refs: number | string }[],
+  total: number,
+): AgentPushedContext {
+  const events: PushedContextEvent[] = rows.map((r) => {
+    const admission = blob(r.admission);
+    return {
+      at: iso(r.created_at),
+      surface: r.surface,
+      returned: numAt(admission, 'returned'),
+      admitted: numAt(admission, 'admitted'),
+      truncated: admission?.truncated === true,
+      semanticRan: legRan(r.legs, 'cosine'),
+      lexicalRan: legRan(r.legs, 'lexical'),
+    };
+  });
+  return {
+    events,
+    // Never let the carried slice masquerade as the total.
+    count: Math.max(total, events.length),
+    refsByPort: refRows
+      .map((r) => ({ port: r.port, refs: Number(r.refs) || 0 }))
+      .filter((r) => r.refs > 0),
+  };
+}
+
+/**
+ * Read what context was PUSHED to this agent, and whether retrieval was healthy
+ * when it happened.
+ *
+ * ⚠ `workspace_id` is admitted as NULL-or-match rather than a strict equality.
+ * Measured 2026-08-09: 410 of 12,390 rows in the window carry a NULL
+ * workspace_id, so `workspace_id = $ws` would silently drop 3.3% of real
+ * injections — an empty/short list that reads exactly like "nothing was pushed".
+ * `session_id` is the real scope key here (it is this one agent's ownerId);
+ * the workspace predicate is defence-in-depth, and must not erase un-stamped rows.
+ */
+export async function getAgentPushedContext(owner: string): Promise<AgentPushedContext> {
+  try {
+    const ws = activeWorkspaceId();
+    const { withWorkspace } = await import('@papercusp/db-org');
+    return await withWorkspace(ws, async (tx) => {
+      const [rows, totals, refRows] = await Promise.all([
+        tx<PushedContextRow[]>`
+          SELECT created_at, surface, legs, admission
+            FROM harness_shared.memory_recall_stats
+           WHERE session_id = ${owner}
+             AND (workspace_id = ${ws} OR workspace_id IS NULL)
+             AND created_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
+           ORDER BY created_at DESC
+           LIMIT ${PUSHED_CONTEXT_MAX_EVENTS}
+        `,
+        tx<{ total: string }[]>`
+          SELECT count(*)::text AS total
+            FROM harness_shared.memory_recall_stats
+           WHERE session_id = ${owner}
+             AND (workspace_id = ${ws} OR workspace_id IS NULL)
+             AND created_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
+        `,
+        // The surfaced ledger has no workspace_id column at all — session_id
+        // carries the scope. Refs, never bodies.
+        tx<{ port: string; refs: string }[]>`
+          SELECT port, count(DISTINCT memory_id)::text AS refs
+            FROM harness_shared.memory_session_surfaced
+           WHERE session_id = ${owner}
+             AND surfaced_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
+           GROUP BY port
+           ORDER BY count(DISTINCT memory_id) DESC
+        `,
+      ]);
+      return derivePushedContext(
+        rows as unknown as PushedContextRow[],
+        refRows as unknown as { port: string; refs: string }[],
+        Number((totals as unknown as { total: string }[])[0]?.total ?? 0) || 0,
+      );
+    });
+  } catch (err) {
+    console.warn(`[adv-agent-detail] getAgentPushedContext(${owner}) threw:`, err);
+    return {
+      events: [],
+      count: 0,
+      refsByPort: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export async function getAgentDetail(owner: string): Promise<AgentDetail> {
-  const [locks, coord, nativeSession, codex, signals, subscriptions] = await Promise.all([
-    getAgentLocks(owner),
-    getAgentCoordState(owner),
-    getAgentNativeSession(owner),
-    getAgentCodexDiagnostics(owner),
-    getAgentSignals(owner),
-    getAgentSubscriptions(owner),
-  ]);
-  return { ownerId: owner, locks, coord, nativeSession, codex, signals, subscriptions };
+  const [locks, coord, nativeSession, codex, signals, subscriptions, pushedContext] =
+    await Promise.all([
+      getAgentLocks(owner),
+      getAgentCoordState(owner),
+      getAgentNativeSession(owner),
+      getAgentCodexDiagnostics(owner),
+      getAgentSignals(owner),
+      getAgentSubscriptions(owner),
+      getAgentPushedContext(owner),
+    ]);
+  return {
+    ownerId: owner,
+    locks,
+    coord,
+    nativeSession,
+    codex,
+    signals,
+    subscriptions,
+    pushedContext,
+  };
 }

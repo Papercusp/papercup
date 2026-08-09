@@ -267,6 +267,19 @@ export interface RecallAdmissionStats {
    * Read it BEFORE proposing any budget change, and note that D-077 already
    * requires such a change be argued on the admitted rate rather than on
    * %budget, which falls by construction when the budget is raised.
+   *
+   * ⚠ UTILIZATION CAN EXCEED 1.0, and that is CORRECT — not a bad write. The
+   * ALWAYS-EMIT-ONE-ROW contract in injection.ts `admit()` skips the budget
+   * check while `lines.length === 0`, so a single oversized first entry is
+   * admitted whatever its length (mid-turn passes a ~350 budget against lines
+   * clamped to 900, which is the WI-7163 case). So there are THREE readings,
+   * not two:
+   *   spent ≈ budgetChars → budget-bound (case a above)
+   *   spent ≪ budgetChars → clamp-bound (case b above)
+   *   spent >  budgetChars → the one-row exemption fired; this recall delivered
+   *                          exactly one entry and the budget never applied.
+   * Do not "fix" the third by tightening `admit()` — WI-6870 did, and mid-turn
+   * silently delivered NOTHING until WI-7163 restored it.
    */
   spent?: number;
   /**

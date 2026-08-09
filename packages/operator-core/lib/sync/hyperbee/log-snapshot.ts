@@ -413,10 +413,31 @@ export async function produceLogSnapshot(
   const coversUpTo = ownLog.length;
   if (coversUpTo === 0) return { appended: false, coversUpTo: 0, rowCount: 0, chunkCount: 0 };
 
+  // Read the history with a bounded PIPELINE, not one awaited `get` at a time.
+  //
+  // The serial form (`for i… await ownLog.get(i)`) pays a full async round-trip per
+  // block, so it runs at ~1/latency ops/sec no matter how cheap the store is. Measured
+  // on this box 2026-08-09 (P-014): 461,475 blocks had not finished after 29 MINUTES of
+  // one saturated core — and the holder is recycled on a ~8.5-min watchdog cadence, so
+  // the snapshot could never finish before its own process was restarted. Because
+  // `produceLogSnapshot` restarts from index 0 every time, that is not a slow operation
+  // but an UNCOMPLETABLE one: five successive release cuts failed here, and no retry
+  // budget can fix a non-resumable job that outlives its host.
+  //
+  // This is the same defect `RemoteLog.prefetch` already exists to solve on the replica
+  // path ("without it, WAN merge ingest is RTT-bound at ~1/RTT ops/sec per log" — EI-92);
+  // the own-log read never got the equivalent treatment.
+  //
+  // Order is preserved: `Promise.all` resolves positionally and the windows advance
+  // sequentially, so `ops` lands in exactly the index order the serial loop produced —
+  // which the fold depends on (last-writer-wins per key).
   const ops: PeerLogOp[] = [];
-  for (let i = 0; i < coversUpTo; i++) {
-    const op = await ownLog.get(i);
-    if (op) ops.push(op);
+  for (let start = 0; start < coversUpTo; start += SNAPSHOT_READ_CONCURRENCY) {
+    const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, coversUpTo);
+    const window = await Promise.all(
+      Array.from({ length: end - start }, (_, k) => ownLog.get(start + k)),
+    );
+    for (const op of window) if (op) ops.push(op);
   }
   const snapshotOps = buildSnapshotOps({
     ops,

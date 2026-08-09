@@ -791,6 +791,32 @@ export interface ListIssuesFilter {
   kinds?: readonly IssueStoreKind[];
   topic?: string; // issues tagged with this topic
   /**
+   * Restrict to rows whose `lane` column equals this value — the CANONICAL way to
+   * select the observation population (P-006 / D-031).
+   *
+   * ⚠ Prefer this over `topic: OBSERVATION_TOPIC`. They are NOT interchangeable, and
+   * the topic form is lossy in BOTH directions. `lane` is a STORED GENERATED column
+   * (`payload->>'lane'`, WI-6934) that lives ON the row; the topic form joins
+   * `coord_links` fenced to `cl.workspace_id = coordScopeWorkspace()`. Measured on the
+   * live box 2026-08-09, papercusp-workspace:
+   *
+   *   lane='observation'                      15,875 rows  (709 older than 30d)
+   *   topic join, as this file actually runs it 15,074 rows  (20 of those 709)
+   *
+   * The 834-row symmetric difference:
+   *   471  lane rows with NO tag edge anywhere (461 terminal, 5 open)
+   *   330  lane rows whose edge is filed under workspace_id='default' — the legacy
+   *        left behind when issues-engineer adopted coordScopeWorkspace() and the old
+   *        edges never moved (EI-2760 / WI-4308). ALL 330 are >30d: a one-time cutover.
+   *    33  rows tagged but with lane IS NULL, 6 of them OPEN — these were the harmful
+   *        ones: `excludeObservationLane` keys on `lane`, so a lane-NULL observation is
+   *        NOT excluded and sits in the triage queue as claimable `bug` work, which is
+   *        exactly what D-005 says must never happen. Backfilled by migration.
+   *
+   * The tag is still WRITTEN on capture, but it is a label — not an identity.
+   */
+  lane?: string;
+  /**
    * WI-4532: restrict to WATCHDOG-KEYED rows (`payload.watchdogKey` present) in SQL.
    *
    * ⚠ This is a CORRECTNESS filter, not an optimization. This read is
@@ -1105,6 +1131,10 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        -- floor into the general list read when the caller opts in (listWorkItems does,
        -- by default, via includeObservations).
        AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+       -- P-006/D-031: positive lane selection — the canonical observation-population
+       -- read. Same stored generated column the exclusion above keys on, so INCLUDE and
+       -- EXCLUDE can never disagree about what "the observation lane" is.
+       AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
        -- WI-4532: watchdog-keyed restriction (see ListIssuesFilter.watchdogKeyed). Must be
        -- applied HERE, not in JS after the read: the ORDER BY/LIMIT below makes a JS
        -- post-filter a recency window rather than a set.
@@ -1158,7 +1188,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
+         AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}`;
     return rows[0]?.n ?? 0;
   }
   const rows = await sql<{ n: number }[]>`
@@ -1188,7 +1219,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
-       AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
+       AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+       AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}`;
   return rows[0]?.n ?? 0;
 }
 
@@ -1250,6 +1282,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              : sql`TRUE`
          }
          AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
        GROUP BY ei.state`
     : await sql<{ state: string | null; n: number }[]>`
       SELECT state, count(*)::int AS n
@@ -1279,6 +1312,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              : sql`TRUE`
          }
          AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
        GROUP BY state`;
   const out: Record<string, number> = {};
   for (const row of rows) {

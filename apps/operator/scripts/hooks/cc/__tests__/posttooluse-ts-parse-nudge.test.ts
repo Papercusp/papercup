@@ -73,6 +73,13 @@ const CORPUS: Array<[name: string, file: string, text: string]> = [
   ['an empty-ish file', 'h.ts', '\n'],
   ['decorators + generics', 'i.ts', 'export class A<T> { m(x: T): T { return x; } }\n'],
   ['a stray closing brace', 'j.ts', 'export const a = 1;\n}\n'],
+  // WI-37398 — the DUPLICATE MODIFIER class. The parser accepts these (the error comes
+  // from the checker), so before the two-phase fix BOTH sides agreed on the wrong
+  // answer and this drift guard passed while exercising none of the code that matters.
+  // Without these rows the hook's grammar phase is never entered by any test.
+  ['the WI-37398 doubled export', 'corpus-recall-io.ts', "export export const A = ['x'] as const;\n"],
+  ['a doubled async modifier', 'k.ts', 'export async async function f() {}\n'],
+  ['a doubled accessibility modifier', 'l.ts', 'class C { public public x = 1; }\n'],
 ];
 
 describe('posttooluse-ts-parse-nudge', () => {

@@ -27,6 +27,8 @@ import {
   loopsStatus,
   coordinationStatus,
   memoryStatus,
+  classifyInjectionClient,
+  contextInjectionStatus,
   QUEEN_STALL_MS,
   SYNC_LAG_WARN_MS,
   DEPLOY_BEHIND_WARN,
@@ -57,6 +59,8 @@ import type {
   LoopsHealth,
   CoordinationHealth,
   MemoryPanelHealth,
+  ContextInjectionHealth,
+  ContextInjectionClientRow,
 } from './types';
 
 const queen = (o: Partial<QueenHealth> = {}): QueenHealth => ({
@@ -950,5 +954,87 @@ describe('memoryStatus — degraded recall over a real store (P-010)', () => {
       // with a live denominator means we failed to parse a value, not that we are blind.
       expect(memoryStatus(me({ zeroHitRate: null, recalls7d: 500 }))).toBe('ok');
     });
+  });
+});
+
+describe('context-injection delivery — a crit REQUIRES a baseline (P-005)', () => {
+  const row = (o: Partial<ContextInjectionClientRow> & { client: string }): ContextInjectionClientRow => {
+    const base = {
+      sessions: 0, events: 0, recalled: 0, unknownTool: 0,
+      driftTools: [] as string[], everObserved: false, ...o,
+    };
+    return { ...base, verdict: classifyInjectionClient(base) };
+  };
+  const health = (clients: ContextInjectionClientRow[]): ContextInjectionHealth => ({
+    windowHours: 24,
+    clients,
+    totalEvents: clients.reduce((a, c) => a + c.events, 0),
+    recordingPathSuspect: false,
+  });
+
+  describe('classifyInjectionClient', () => {
+    it('a client nobody ran is idle — never alarmed at, in either direction', () => {
+      expect(classifyInjectionClient({ sessions: 0, events: 0, unknownTool: 0, everObserved: true }))
+        .toBe('idle');
+    });
+    it('sessions + no rows + NO baseline = never-observed (a known gap, not a regression)', () => {
+      expect(classifyInjectionClient({ sessions: 385, events: 0, unknownTool: 0, everObserved: false }))
+        .toBe('never-observed');
+    });
+    it('sessions + no rows + a baseline = regressed (it worked before; it stopped)', () => {
+      expect(classifyInjectionClient({ sessions: 385, events: 0, unknownTool: 0, everObserved: true }))
+        .toBe('regressed');
+    });
+    it('delivering, but an unmapped tool = drift (the one actionable non-fatal outcome)', () => {
+      expect(classifyInjectionClient({ sessions: 11, events: 3, unknownTool: 1, everObserved: true }))
+        .toBe('drift');
+    });
+  });
+
+  /**
+   * THE REGRESSION GUARD FOR THE WHOLE DESIGN — measured production state,
+   * 2026-08-09, the day this shipped:
+   *   claude  385 sessions / 0 events / no baseline  (recorder not deployed on its port)
+   *   omp      10 sessions / 0 events / no baseline  (same)
+   *   codex    11 sessions / 3 events / baseline     (the probe rows)
+   * A literal reading of P-005 ("no rows at all fires") pages for claude AND omp
+   * here, with a confidently wrong cause. It must not.
+   */
+  it('does NOT page on the real day-one state (2 clients silent for a DEPLOY reason)', () => {
+    const d = health([
+      row({ client: 'claude', sessions: 385 }),
+      row({ client: 'codex', sessions: 11, events: 3, recalled: 1, unknownTool: 1, driftTools: ['X'], everObserved: true }),
+      row({ client: 'omp', sessions: 10 }),
+    ]);
+    expect(d.clients.map((c) => c.verdict)).toEqual(['never-observed', 'drift', 'never-observed']);
+    expect(contextInjectionStatus(d)).toBe('warn');
+    expect(contextInjectionStatus(d)).not.toBe('crit');
+  });
+
+  /**
+   * CONTROL — the baseline rule must be LOAD-BEARING, not decorative. The input
+   * is IDENTICAL to the test above except `everObserved`, and it must reach crit.
+   * The pair pins both directions and neither does alone: collapse the rule to
+   * "always regressed" and the previous test fails; collapse it to "never
+   * regressed" — the tempting way to silence a noisy alarm — and THIS one fails.
+   * A detector that cannot be shown to fire is not a detector.
+   */
+  it('DOES page once the same client has a baseline and goes silent', () => {
+    const d = health([
+      row({ client: 'claude', sessions: 385, everObserved: true }),
+      row({ client: 'codex', sessions: 11, events: 3, everObserved: true }),
+      row({ client: 'omp', sessions: 10, everObserved: true }),
+    ]);
+    expect(d.clients[0].verdict).toBe('regressed');
+    expect(contextInjectionStatus(d)).toBe('crit');
+  });
+
+  it('a fully-working fleet is ok — the alarm is silent when it should be', () => {
+    const d = health([
+      row({ client: 'claude', sessions: 385, events: 900, recalled: 700, everObserved: true }),
+      row({ client: 'codex', sessions: 11, events: 20, recalled: 12, everObserved: true }),
+      row({ client: 'omp', sessions: 10, events: 15, recalled: 9, everObserved: true }),
+    ]);
+    expect(contextInjectionStatus(d)).toBe('ok');
   });
 });

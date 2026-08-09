@@ -19,6 +19,8 @@ import {
   parseStallEiKind,
   decideStaleness,
   runReplicationLivenessStalenessSweepOnce,
+  emptySkipCensus,
+  pickLastActiveMs,
   STALENESS_SWEEP_OWNER,
   DEFAULT_MIN_EI_AGE_MS,
   DEFAULT_MIN_INACTIVITY_MS,
@@ -191,7 +193,119 @@ describe('runReplicationLivenessStalenessSweepOnce', () => {
 
   it('returns an inert, zero-op result under VITEST with no deps (never touches real PG / getFlag)', async () => {
     const result = await runReplicationLivenessStalenessSweepOnce();
-    expect(result).toEqual({ checked: 0, resolvedIds: [], errors: 0 });
+    expect(result).toEqual({ checked: 0, resolvedIds: [], errors: 0, skipped: emptySkipCensus() });
     expect(getFlagMock).not.toHaveBeenCalled();
+  });
+
+  it('censuses every skip reason, and the census + resolutions account for all checked items', async () => {
+    // ⚠ The IO sweep stamps its own `nowMs = Date.now()` — it does NOT take the
+    // frozen NOW the pure-decision tests use. Any age this test wants judged as
+    // "too new" must therefore be relative to REAL now; `NOW - 2d` is ~3 weeks old
+    // in real terms and sails past the 14d floor.
+    const REAL_NOW = Date.now();
+    const { deps } = fakeDeps({
+      open: [
+        { id: 'EI-C1', body: 'no target stamp here', createdAtMs: NOW - 20 * DAY_MS },
+        { id: 'EI-C2', body: bodyFor('ws1', 'renamed-away', 'no_replicator'), createdAtMs: NOW - 20 * DAY_MS },
+        { id: 'EI-C3', body: bodyFor('ws1', 'drainy', 'drain_stalled'), createdAtMs: NOW - 20 * DAY_MS },
+        { id: 'EI-C4', body: bodyFor('ws1', 'demo-a', 'no_replicator'), createdAtMs: REAL_NOW - 2 * DAY_MS },
+        { id: 'EI-C5', body: bodyFor('ws1', 'no-history', 'no_replicator'), createdAtMs: NOW - 20 * DAY_MS },
+        { id: 'EI-C6', body: bodyFor('ws1', 'live-harness', 'frozen'), createdAtMs: NOW - 20 * DAY_MS },
+        { id: 'EI-C7', body: bodyFor('ws1', 'abandoned', 'no_replicator'), createdAtMs: NOW - 20 * DAY_MS },
+      ],
+      existing: new Set(['ws1::drainy', 'ws1::demo-a', 'ws1::no-history', 'ws1::live-harness', 'ws1::abandoned']),
+      lastActive: new Map<string, number | null>([
+        ['ws1::drainy', NOW - 40 * DAY_MS],
+        ['ws1::demo-a', NOW - 40 * DAY_MS],
+        ['ws1::no-history', null],
+        ['ws1::live-harness', NOW - 1 * DAY_MS],
+        ['ws1::abandoned', NOW - 40 * DAY_MS],
+      ]),
+    });
+    const r = await runReplicationLivenessStalenessSweepOnce({}, deps);
+
+    expect(r.resolvedIds).toEqual(['EI-C7']);
+    expect(r.skipped).toEqual({
+      ...emptySkipCensus(),
+      'malformed-body': 1,
+      'harness-gone-orphan-sweeps-it': 1,
+      'ineligible-kind': 1,
+      'ei-too-new': 1,
+      'unknown-activity-fail-closed': 1,
+      'harness-recently-active': 1,
+    });
+
+    // The accounting invariant: nothing the sweep looked at goes uncounted. An
+    // uncounted skip is exactly how a sweep that CANNOT fire passes for one that
+    // merely had nothing to do.
+    const skippedTotal = Object.values(r.skipped).reduce((a, b) => a + b, 0);
+    expect(skippedTotal + r.resolvedIds.length + r.errors).toBe(r.checked);
+  });
+});
+
+describe('pickLastActiveMs — the WI-5563 activity-source seam', () => {
+  const LEASE = NOW - 2 * DAY_MS;
+  const DURABLE = NOW - 40 * DAY_MS;
+
+  it('returns null only when BOTH sources are unknown (fail-closed preserved)', () => {
+    expect(pickLastActiveMs(null, null)).toBeNull();
+    expect(pickLastActiveMs(undefined, undefined)).toBeNull();
+  });
+
+  it('takes the newest when both are known', () => {
+    expect(pickLastActiveMs(LEASE, DURABLE)).toBe(LEASE);
+    expect(pickLastActiveMs(DURABLE, LEASE)).toBe(LEASE);
+  });
+
+  it('ignores a zero/negative/non-finite reading rather than treating it as 1970', () => {
+    expect(pickLastActiveMs(0, DURABLE)).toBe(DURABLE);
+    expect(pickLastActiveMs(Number.NaN, DURABLE)).toBe(DURABLE);
+    expect(pickLastActiveMs(-1, null)).toBeNull();
+  });
+
+  /**
+   * THE REGRESSION THIS FILE EXISTS FOR. In production every abandoned harness had
+   * NO orchestrator-lease row — `harness_status` held one row workspace-wide, with a
+   * NULL last_active_ts — so the lease-only source returned null for exactly the
+   * harnesses the sweep is meant to act on, and fail-closed refused every one. The
+   * sweep resolved ZERO EIs in the 13 days its flag was on.
+   *
+   * The `leaseOnly` control below is the OLD implementation, kept deliberately so
+   * this pair fails if the durable source is ever removed or reverted: the control
+   * must still refuse, and the fix must still act, on identical inputs.
+   */
+  it('resolves an abandoned harness that has no lease row but does have durable activity', () => {
+    const leaseOnly = (lease: number | null, _durable: number | null) => lease;
+    const candidate = { id: 'EI-R', kind: 'no_replicator', createdAtMs: NOW - 20 * DAY_MS };
+
+    const oldVerdict = decideStaleness({ ...candidate, lastActiveMs: leaseOnly(null, DURABLE) }, NOW);
+    expect(oldVerdict.resolve).toBe(false);
+    expect(oldVerdict.reason).toBe('unknown-activity-fail-closed');
+
+    const newVerdict = decideStaleness({ ...candidate, lastActiveMs: pickLastActiveMs(null, DURABLE) }, NOW);
+    expect(newVerdict.resolve).toBe(true);
+  });
+
+  it('still refuses when the durable source is silent too — a harness with no history anywhere', () => {
+    const verdict = decideStaleness(
+      { id: 'EI-R2', kind: 'no_replicator', createdAtMs: NOW - 20 * DAY_MS, lastActiveMs: pickLastActiveMs(null, null) },
+      NOW,
+    );
+    expect(verdict.resolve).toBe(false);
+    expect(verdict.reason).toBe('unknown-activity-fail-closed');
+  });
+
+  it('does not let a durable reading resurrect a RECENTLY-active harness into a resolve', () => {
+    const verdict = decideStaleness(
+      {
+        id: 'EI-R3',
+        kind: 'no_replicator',
+        createdAtMs: NOW - 20 * DAY_MS,
+        lastActiveMs: pickLastActiveMs(null, NOW - 3 * DAY_MS),
+      },
+      NOW,
+    );
+    expect(verdict.resolve).toBe(false);
+    expect(verdict.reason).toBe('harness-recently-active');
   });
 });

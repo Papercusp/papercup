@@ -1108,12 +1108,21 @@ async function replicationLivenessStalenessSweepTick(): Promise<void> {
     try {
       const { runReplicationLivenessStalenessSweepOnce } = await import('../sync/hyperbee/replication-liveness-staleness-sweep');
       const r = await runReplicationLivenessStalenessSweepOnce();
-      if (r.resolvedIds.length > 0) {
-        console.log(
-          `[replication-liveness-staleness-sweep] resolved ${r.resolvedIds.length} stale stall EI(s) ` +
-            `(checked ${r.checked}${r.errors > 0 ? `, ${r.errors} resolve error(s)` : ''})`,
-        );
-      }
+      // Log UNCONDITIONALLY, including the per-reason skip census (WI-5563). This
+      // used to log only when it resolved something, which made "the sweep cannot
+      // fire" and "the sweep correctly found nothing" byte-identical from outside —
+      // and the sweep then no-op'd for 13 days after the flag went on without
+      // emitting one line. A daily census is the cheapest thing that tells the two
+      // apart: `resolved=0 unknown-activity-fail-closed=15` is a broken activity
+      // source, `resolved=0 ei-too-new=15` is a healthy sweep with nothing to do.
+      const census = Object.entries(r.skipped)
+        .filter(([, n]) => n > 0)
+        .map(([reason, n]) => `${reason}=${n}`)
+        .join(' ');
+      console.log(
+        `[replication-liveness-staleness-sweep] resolved=${r.resolvedIds.length} checked=${r.checked}` +
+          `${r.errors > 0 ? ` errors=${r.errors}` : ''}${census ? ` | skipped: ${census}` : ''}`,
+      );
     } catch (err) {
       console.warn(`[replication-liveness-staleness-sweep] run skipped (non-fatal): ${(err as Error).message}`);
     }

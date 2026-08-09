@@ -53,8 +53,27 @@
  * committed, which is the point at which it is real.
  */
 import { execFileSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const RETIRED_PREFIX = '_retired/';
+
+/**
+ * True only when this file is the process entrypoint. REALPATHED on both sides: node
+ * resolves `import.meta.url` through symlinks while `process.argv[1]` keeps the path
+ * as invoked, and this repo is reachable via a `papercupai-workspace/papercup ->
+ * papercusp` symlink, so a naive string compare is false exactly where it matters.
+ * Without this the `process.exit()` below fires on IMPORT and kills any test process
+ * that pulls in the pure helpers.
+ */
+function isDirectRun() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
 
 /** `git ls-files -s` → [{ sha, path }]. Exported for the unit test's fixtures. */
 export function parseLsFiles(stdout) {
@@ -149,4 +168,4 @@ function main() {
   return 1;
 }
 
-process.exit(main());
+if (isDirectRun()) process.exit(main());

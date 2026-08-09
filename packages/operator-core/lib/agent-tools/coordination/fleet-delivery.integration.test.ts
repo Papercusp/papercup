@@ -50,6 +50,8 @@ vi.mock('../../events/await/psu-pty-discovery', async (orig) => {
 
 const { hostAudienceResolvers } = await import('./audience-host');
 const { setFleetDelivery, getFleetDeliveryOverrides } = await import('./fleet-delivery');
+// Imported AFTER the @papercusp/db-org mock above, so it binds the throwaway-DB `sql`.
+const { liveFleetMemberIdsDiagnosed, liveFleetMemberIds } = await import('../../fleet/fleet-roster');
 
 let db: FreshPgDb;
 const WS = 'default';
@@ -158,6 +160,48 @@ describe('fleet delivery override + @fleet: member resolution (real PG)', () => 
                  (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode)
                VALUES (${WS}, 'zoe', 'bogus-kind', 'x', 'digest')`,
       ).rejects.toThrow(/coord_entity_subscriptions_kind_check|check constraint/i);
+    });
+  });
+
+  // P-003 (fleet-lead-instrumentation-audit-2026-08-09): a fleet send could report
+  // `recipients_resolved: 6` against an 11-row roster with NOTHING marking the result
+  // partial. `liveFleetMemberIdsDiagnosed` reports the drops it already performed, so a
+  // sender can tell a FULL delivery from a PARTIAL one.
+  describe('liveFleetMemberIdsDiagnosed — a partial audience says so (P-003)', () => {
+    it('reports each dropped member with its reason, and `ids` stays byte-identical to liveFleetMemberIds', async () => {
+      await seedMember('alice', 'payments'); // live, non-bee → delivered
+      await seedMember('dave', 'payments', { staleMinutes: 180 }); // dead heartbeat → dropped
+      await seedMember('eve', 'risk'); // other fleet → not a member at all
+      await db.sql`UPDATE harness_shared.coord_presence SET agent_role = 'bee' WHERE owner_id = 'alice'`;
+      await seedMember('frank', 'payments'); // live, non-bee → delivered
+
+      const { ids, omitted } = await liveFleetMemberIdsDiagnosed('payments', WS);
+
+      // The deliverable set is unchanged by this feature — reporting a drop must never
+      // alter who receives the message.
+      expect(new Set(ids)).toEqual(new Set(await liveFleetMemberIds('payments', WS)));
+      expect(new Set(ids)).toEqual(new Set(['frank']));
+
+      // ...and every member NOT delivered to is now named, with why.
+      expect(new Set(omitted.map((o) => `${o.ownerId}:${o.reason}`))).toEqual(
+        new Set(['dave:stale-heartbeat', 'alice:bee-role']),
+      );
+      // A member of ANOTHER fleet is not an omission — it was never in this audience.
+      expect(omitted.map((o) => o.ownerId)).not.toContain('eve');
+      // The stale drop carries its evidence, so the reader can judge how stale.
+      expect(omitted.find((o) => o.ownerId === 'dave')?.heartbeatAt).toBeTruthy();
+    });
+
+    it('a fully-deliverable fleet reports an EMPTY omitted list — the signal that means "everyone got it"', async () => {
+      await seedMember('alice', 'payments');
+      await seedMember('bob', 'payments');
+
+      const { ids, omitted } = await liveFleetMemberIdsDiagnosed('payments', WS);
+      expect(new Set(ids)).toEqual(new Set(['alice', 'bob']));
+      // This is the assertion that gives the empty array meaning: `omitted: []` has to be
+      // reachable, or "no omissions" and "omissions not computed" stay indistinguishable —
+      // the exact confident-zero failure this plan is about.
+      expect(omitted).toEqual([]);
     });
   });
 });

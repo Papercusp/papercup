@@ -62,6 +62,8 @@ import type {
   OverwatchPanelHealth,
   ScoutHealth,
   ToolEfficiencyHealth,
+  ContextInjectionHealth,
+  ContextInjectionClientRow,
   ToolEfficiencyRating,
   LoopsHealth,
   CoordinationHealth,
@@ -95,6 +97,8 @@ import {
   loopsStatus,
   coordinationStatus,
   memoryStatus,
+  classifyInjectionClient,
+  contextInjectionStatus,
   reconcilePausedQueen,
   QUEEN_STALL_MS,
   WATCHDOG_FIRES_WARN,
@@ -2473,6 +2477,97 @@ async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPa
   });
 }
 
+/**
+ * Context-injection delivery coverage (codex-context-injection-parity-2026-08-09
+ * P-005) — "is each client actually being asked for per-turn context?"
+ *
+ * The panel `data` IS P-005's exposure requirement and the panel STATUS drives
+ * its alarm: liveness-alarm's catch-all turns any panel reporting `crit` into a
+ * `panel:<key>` blocker signal, so no new alarm mechanism is needed. The
+ * never-alarm-without-a-baseline rule lives in `classifyInjectionClient`, which
+ * carries the reasoning.
+ */
+async function collectContextInjection(ctx: HealthCtx): Promise<HealthPanel<ContextInjectionHealth>> {
+  return panelSafe<ContextInjectionHealth>('contextInjection', async () => {
+    const { readInjectionDeliveryCoverage } = await import('../memory/injection-delivery-coverage');
+    const reading = await readInjectionDeliveryCoverage({ workspaceId: ctx.ws });
+
+    const clients: ContextInjectionClientRow[] = reading.clients.map((c) => {
+      const unknownTool = c.byOutcome['unknown-tool'];
+      return {
+        client: c.client,
+        sessions: c.sessions,
+        events: c.events,
+        recalled: c.byOutcome.recalled,
+        unknownTool,
+        driftTools: c.driftTools,
+        everObserved: c.everObserved,
+        verdict: classifyInjectionClient({
+          sessions: c.sessions,
+          events: c.events,
+          unknownTool,
+          everObserved: c.everObserved,
+        }),
+      };
+    });
+
+    // Three hook layers do not fail in the same tick; the one recording path they
+    // share does. Require >1 baselined client so a single client's genuine
+    // regression is never re-attributed to the recorder.
+    const baselined = clients.filter((c) => c.everObserved);
+    const recordingPathSuspect = baselined.length > 1 && baselined.every((c) => c.events === 0);
+
+    const data: ContextInjectionHealth = {
+      windowHours: reading.windowHours,
+      clients,
+      totalEvents: reading.totalEvents,
+      recordingPathSuspect,
+    };
+    const status = contextInjectionStatus(data);
+
+    const regressed = clients.filter((c) => c.verdict === 'regressed').map((c) => c.client);
+    const drifting = clients.filter((c) => c.verdict === 'drift');
+    const never = clients.filter((c) => c.verdict === 'never-observed').map((c) => c.client);
+
+    let summary: string;
+    if (recordingPathSuspect) {
+      summary =
+        `${regressed.join(', ')} all silent at once — suspect the shared recording path, not ${regressed.length} hooks`;
+    } else if (regressed.length > 0) {
+      summary = `${regressed.join(', ')} stopped delivering context (was working, now 0 rows)`;
+    } else {
+      const parts: string[] = [];
+      if (drifting.length > 0) {
+        const tools = [...new Set(drifting.flatMap((c) => c.driftTools))].slice(0, 3);
+        parts.push(
+          `${drifting.map((c) => c.client).join(', ')} vocabulary drift` +
+            (tools.length > 0 ? ` (${tools.join(', ')})` : ''),
+        );
+      }
+      if (never.length > 0) parts.push(`${never.join(', ')} never observed (known gap, not a regression)`);
+      const working = clients.filter((c) => c.verdict === 'ok').map((c) => c.client);
+      if (parts.length === 0) {
+        parts.push(working.length > 0 ? `${working.join(', ')} delivering` : 'no client sessions in window');
+      }
+      summary = parts.join('; ');
+    }
+
+    return {
+      status,
+      summary: `${summary} (${reading.windowHours}h)`,
+      data,
+      link: { label: 'Learning', href: '/adv?tab=learning' },
+      metrics: clients.map((c) =>
+        m(
+          c.client,
+          c.verdict === 'idle' ? 'idle' : `${c.events} ev / ${c.sessions} sess`,
+          c.verdict === 'regressed' ? 'crit' : c.verdict === 'drift' || c.verdict === 'never-observed' ? 'warn' : undefined,
+        ),
+      ),
+    };
+  });
+}
+
 // ── the aggregator ───────────────────────────────────────────────────────────
 
 /**
@@ -2561,14 +2656,14 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   const [
     queen, bees, workItems, workFeed, tokens, watchdog, deploy,
     plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
-    toolEfficiency, loops, coordination, memory,
+    toolEfficiency, loops, coordination, memory, contextInjection,
   ] = await Promise.all([
     collectQueen(ctx), collectBees(ctx), collectWorkItems(ctx), collectWorkFeed(ctx),
     collectTokens(ctx), collectWatchdog(ctx), collectDeploy(ctx), collectPlans(ctx),
     collectEscalations(ctx), collectAutonomy(ctx), collectObservations(ctx),
     collectImprovements(ctx), collectInfra(ctx), collectSuFleet(ctx), collectOverwatch(ctx),
     collectScout(ctx), collectToolEfficiency(ctx), collectLoops(ctx), collectCoordination(ctx),
-    collectMemory(ctx),
+    collectMemory(ctx), collectContextInjection(ctx),
   ]);
 
   // P-001 (health-tab-v2): the paused-Mug cry-wolf fix — reconcile the queen
@@ -2588,7 +2683,7 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   const panels: SystemHealthPanels = {
     queen, bees, workItems, workFeed, loops, tokens, watchdog, deploy,
     plans, escalations, autonomy, observations, improvements, infra, suFleet, coordination,
-    overwatch, scout, memory, toolEfficiency,
+    overwatch, scout, memory, toolEfficiency, contextInjection,
   };
   const overall = worstStatus(Object.values(panels).map((p) => p.status));
   // queenAlive — the who-watches-the-watcher LIVENESS signal (D-004), kept DISTINCT

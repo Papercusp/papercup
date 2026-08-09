@@ -29,9 +29,13 @@ threshold parsed to zero/empty, before suspecting the accounting.
 
 **Fix + recurrence guard:**
 
-* `apps/scout-service/src/scout/budget.ts` `parseBudgetUsd(raw, fallback)` —
-  empty / whitespace / non-numeric / non-finite / non-positive all fall back;
-  unit-pinned in `budget.test.ts` (the empty-string case is named for this outage).
+* `apps/scout-service/src/scout/budget.ts` `parseBudgetUsd(raw, fallback)` — since
+  deleted along with the rest of `apps/scout-service`, so this is a historical
+  reference with nothing left to point at (see the frontmatter note); kept because
+  the SHAPE is the reusable part: empty / whitespace / non-numeric / non-finite /
+  non-positive all fall back, unit-pinned in `budget.test.ts` (the empty-string case
+  was named for this outage). Note `packages/operator-core/lib/scout/budget.ts` is a
+  DIFFERENT file and does not carry this helper — do not read it as the successor.
 * If you want a compose-level default, write `${VAR:-1}` — a REAL value —
   never bare `${VAR:-}` feeding code that uses `??`.
 

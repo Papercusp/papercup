@@ -28,7 +28,7 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
   };
 });
 
-import { CELL_READ_TIMEOUT_MS, readCell, unknownForDispatchError } from './cell-read';
+import { CELL_READ_TIMEOUT_MS, formatCellPointers, readCell, unknownForDispatchError } from './cell-read';
 import { BUILTIN_CELLS } from './cell-registrations';
 import { ReadOnlyDispatchError } from './events/await/predicate-watch';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from './cell-registry';
@@ -1030,5 +1030,146 @@ describe('WI-6488 — readCell now BOUNDS a resolver that never settles', () => 
 
     expect(out.status).toBe('value');
     if (out.status === 'value') expect(out.value).toBe(true);
+  });
+});
+
+/**
+ * P-006 — POINTERS, projected.
+ *
+ * The feature fixes a DISCOVERY failure, not a measurement one: an agent reading
+ * `gate.greenCheckpoint.verdict` on a red gate got a correct answer and no route to the
+ * cell naming who owns the incident. So the assertions here are about REACHABILITY —
+ * which statuses carry the pointer, and whether the two quiet cases stay distinguishable.
+ */
+describe('readCell — pointers (P-006)', () => {
+  const ptr = {
+    cell: 'other.cell',
+    when: 'the streak is nonzero',
+    answers: 'who owns the red and whether that ownership is real',
+  };
+
+  /** A registrable target for the pointer to resolve to. */
+  const target = (over: Partial<CellSpec> = {}) => spec({ cell: 'other.cell', ...over });
+
+  it('carries the declared pointer on a VALUE read, resolved clean', async () => {
+    registerCell(spec({ pointers: [ptr] }));
+    registerCell(target());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    expect(r.status).toBe('value');
+    // when/answers are CARRIED, not re-derived — a reader must not have to consult the
+    // registry to know whether the hop is worth a dispatch.
+    if (r.status === 'value') expect(r.pointers).toEqual([ptr]);
+  });
+
+  it('carries pointers on an UNKNOWN too — the target has its OWN resolver', async () => {
+    // The case this exists for: `gate.greenCheckpoint.verdict` fails to resolve, but
+    // `readGateOwnership()` is a different apparatus that has not necessarily failed
+    // with it. A reader whose read just broke can still learn who owns the incident.
+    registerCell(spec({ pointers: [ptr] }));
+    registerCell(target());
+    dispatchReadOnlyTool.mockRejectedValue(new ReadOnlyDispatchError('handler_error', 'boom'));
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    expect(r.status).toBe('unknown');
+    if (r.status === 'unknown') expect(r.pointers).toEqual([ptr]);
+  });
+
+  it('does NOT carry pointers on ABSENT — a refusal must not enumerate neighbours', async () => {
+    // `absent` is load-bearing as a non-oracle (P-019/D-042). Naming this cell's
+    // neighbours to a reader who may not see the cell itself would turn the one
+    // deliberately-uninformative result into an enumeration surface.
+    registerCell(
+      spec({ cell: 'narrow.cell', visibility: { kind: 'owner', ref: 'su-other' }, pointers: [ptr] }),
+    );
+    registerCell(target());
+
+    expect(await readCell('narrow.cell', READER, ENV)).toEqual({ status: 'absent', cell: 'narrow.cell' });
+  });
+
+  it('flags a pointer to an UNREGISTERED cell as drifted — a declaration defect', async () => {
+    registerCell(spec({ pointers: [ptr] })); // `other.cell` deliberately never registered
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    if (r.status !== 'value') throw new Error('expected a value read');
+    expect(r.pointers).toEqual([{ ...ptr, drifted: true }]);
+  });
+
+  it("flags a pointer OUT OF THE READER'S AUDIENCE as hidden, NOT as drifted", async () => {
+    // The two demand opposite responses and are indistinguishable if merged: `drifted`
+    // means nobody can follow it (report the defect), `hidden` means the answer is real
+    // and a peer can fetch it (go ask). Collapsing them sends the reader the wrong way.
+    registerCell(spec({ pointers: [ptr] }));
+    registerCell(target({ visibility: { kind: 'owner', ref: 'su-someone-else' } }));
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    if (r.status !== 'value') throw new Error('expected a value read');
+    expect(r.pointers).toEqual([{ ...ptr, hidden: true }]);
+    expect(r.pointers?.[0]).not.toHaveProperty('drifted');
+  });
+
+  it('omits the field entirely when the spec declares none — no empty array to branch on', async () => {
+    registerCell(spec());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    if (r.status !== 'value') throw new Error('expected a value read');
+    expect(r).not.toHaveProperty('pointers');
+  });
+
+  it('resolves the pointer WITHOUT dispatching the target — one read stays one dispatch', async () => {
+    // A pointer says where to go; it must not fan out. Resolving the target's VALUE here
+    // would make one read an unbounded fan-out and re-derive a cell this one does not own.
+    registerCell(spec({ pointers: [ptr] }));
+    registerCell(
+      target({ changeSignal: { kind: 'poll', tool: 'other:tool', path: 'positions.deployed' } }),
+    );
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    await readCell('test.cell', READER, ENV);
+
+    expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1);
+    expect(dispatchReadOnlyTool).not.toHaveBeenCalledWith('other:tool', expect.anything(), expect.anything());
+  });
+});
+
+describe('formatCellPointers — the prose half', () => {
+  const ptr = {
+    cell: 'gate.greenCheckpoint.ownership',
+    when: 'the streak is nonzero',
+    answers: 'who owns the red',
+  };
+
+  it('is silent on an empty list', () => {
+    expect(formatCellPointers([])).toBeNull();
+  });
+
+  it('names the cell, its condition, and a ready call', () => {
+    const s = formatCellPointers([ptr]) ?? '';
+    expect(s).toContain('gate.greenCheckpoint.ownership');
+    expect(s).toContain('the streak is nonzero');
+    expect(s).toContain("state:read { cell: 'gate.greenCheckpoint.ownership' }");
+  });
+
+  it('a DRIFTED pointer reads as a defect to report, not a value to chase', () => {
+    const s = formatCellPointers([{ ...ptr, drifted: true }]) ?? '';
+    expect(s).toMatch(/NO registry/);
+    // It must NOT hand the reader a call that cannot possibly work.
+    expect(s).not.toContain('state:read {');
+  });
+
+  it('a HIDDEN pointer says the answer EXISTS and to ask a peer', () => {
+    const s = formatCellPointers([{ ...ptr, hidden: true }]) ?? '';
+    expect(s).toMatch(/OUTSIDE YOUR AUDIENCE/);
+    expect(s).toMatch(/ask a peer/);
+    expect(s).not.toMatch(/NO registry/);
   });
 });

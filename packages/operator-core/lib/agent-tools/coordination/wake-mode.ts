@@ -116,11 +116,45 @@ export async function ensureFleetMemberWakeAuto(
   ownerId: string,
   fleetRole: string | null | undefined,
 ): Promise<WakeMode | null> {
-  if (fleetRole !== 'member') return null;
+  return ensureLaunchedWakeAuto(ownerId, { fleetRole, launchedByAgent: false });
+}
+
+/**
+ * agent-launched-wake-auto (EI-19965557940158384): generalizes WI-2185's
+ * fleet-member reasoning above to EVERY session an AGENT launched, not just fleet
+ * members. `capability:launch-agent` / `capability:terminal` stamp
+ * `--launched-by=<callerOwnerId>` on every TOOL-driven psu launch (an
+ * agent-launched-only signal — a human typing `psu su` at their own terminal never
+ * carries it, see session/end.ts's PAPERCUSP_LAUNCHED_BY note). Before this, a
+ * FLEETLESS agent-launched session (e.g. `capability:launch-agent` with no
+ * `--fleet`) fell through the `fleetRole !== 'member'` check untouched, so under a
+ * `manual` GLOBAL default it inherited `manual` with no override — its launcher's
+ * `coord:send { wake:'required' }` then silently STAGED every steering wake instead
+ * of delivering it, `ok:true` and all (measured impact: a peer blocked ~36min on an
+ * unanswered directed question, see EI-19965557940158384). Same deadlock shape as
+ * the original WI-2185 fleet case, just without a fleet.
+ *
+ * Applies the auto override when EITHER holds:
+ *   - `fleetRole === 'member'` (the original WI-2185 case, behavior UNCHANGED)
+ *   - `launchedByAgent` is true AND `fleetRole` is not `'leader'` (the new case)
+ *
+ * A LEADER stays gated regardless of who launched it — unchanged from WI-2185: the
+ * owner is assumed present for a fleet's designated leader, and releasing its
+ * staged routing-gate wake is the gate working as intended.
+ */
+export async function ensureLaunchedWakeAuto(
+  ownerId: string,
+  opts: { fleetRole: string | null | undefined; launchedByAgent: boolean },
+): Promise<WakeMode | null> {
+  const { fleetRole, launchedByAgent } = opts;
+  if (fleetRole === 'leader') return null;
+  if (fleetRole !== 'member' && !launchedByAgent) return null;
   await setWakeMode(
     ownerId,
     'auto',
-    `Fleet MEMBER ${ownerId} pinned to auto wake-mode at boot (WI-2185) — immune to a manual global default so its leader's steering wakes land.`,
+    fleetRole === 'member'
+      ? `Fleet MEMBER ${ownerId} pinned to auto wake-mode at boot (WI-2185) — immune to a manual global default so its leader's steering wakes land.`
+      : `Agent-launched session ${ownerId} pinned to auto wake-mode at boot (EI-19965557940158384) — immune to a manual global default so its launcher's steering wakes land.`,
   );
   return 'auto';
 }

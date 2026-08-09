@@ -82,6 +82,20 @@ function fileRank(mark: 'held' | 'waiting' | null): number {
   return mark === 'waiting' ? 0 : mark === 'held' ? 1 : 2;
 }
 
+/**
+ * Render one retrieval leg's did-it-run state for the pushed-context rows.
+ *
+ * THREE glyphs for THREE states, deliberately — `null` means the row never
+ * recorded the leg (a pre-P-002 injection), which is our blind spot, while
+ * `false` means the leg was recorded and did NOT execute (the cosine-gated
+ * short-circuit), which is a finding about retrieval health. Rendering the
+ * unmeasured case as `✗` would report a degradation that was never observed;
+ * that inversion is exactly what this section is supposed to expose.
+ */
+function legMark(label: string, ran: boolean | null): string {
+  return `${label} ${ran === true ? '✓' : ran === false ? '✗' : '?'}`;
+}
+
 /** Build MetaRows from label/value pairs, DROPPING the ones that would render
  *  nothing. MetaRow itself returns null for an empty value, so handing a capped
  *  list the unfiltered set would make it promise "Show 6 more" and then reveal
@@ -354,6 +368,7 @@ export default function AgentDossier({
   const codex = detail?.codex;
   const signals = detail?.signals;
   const subs = detail?.subscriptions;
+  const pushed = detail?.pushedContext;
   // Same normalise-once rationale as `unreadRows`: `subscriptions` is a NEW
   // field, so an operator predating it serves a detail payload without one.
   const subRows = subs?.items ?? [];
@@ -1053,6 +1068,79 @@ export default function AgentDossier({
         )}
       </section>
       )}
+
+      {/* ── Dynamically pushed context ──
+          [owner 2026-08-03] the HUD half of context-injection-retrieval-reach-
+          and-visibility-2026-08-03 (P-011). Sits between Coord and Files: Coord
+          is what other AGENTS sent this one, this is what the SYSTEM pushed into
+          its context without anyone asking — the same "what is arriving at this
+          agent" question, one layer down.
+
+          The per-leg marks are the point of the section, not decoration (P-013):
+          they turn "the agent was given context" into "the agent was given
+          context, and here is whether retrieval was healthy when it happened".
+          `semanticRan`/`lexicalRan` are TRI-STATE and rendered as three distinct
+          glyphs — `?` (not recorded) must never render as `✗` (recorded, did not
+          run), because the first is our blind spot and the second is a finding. */}
+      {pushed && !pushed.error && pushed.count === 0 ? (
+        <RailQuiet label="Dynamically pushed context" none="nothing pushed in 24h" testId="rail-quiet-pushed" />
+      ) : pushed ? (
+        <section
+          className="pc-dossier__section"
+          id="pc-dossier-pushed"
+          data-collapsed={rail.closed('a-pushed') ? 'true' : 'false'}
+        >
+          <RailSectionHead
+            sectionId="a-pushed"
+            label="Dynamically pushed context"
+            className="pc-dossier__h"
+            closed={rail.closed('a-pushed')}
+            onToggle={() => rail.toggle('a-pushed')}
+          >
+            {pushed.error ? (
+              <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {pushed.error}</span>
+            ) : (
+              <span className="pc-dossier__badge-count">{pushed.count}</span>
+            )}
+          </RailSectionHead>
+          {pushed.error ? (
+            <div className="pc-dossier__empty-line">Couldn’t load pushed context: {pushed.error}</div>
+          ) : (
+            <>
+              {pushed.refsByPort.length > 0 ? (
+                <div className="pc-dossier__empty-line" data-testid="dossier-pushed-refs">
+                  {pushed.refsByPort.map((r) => `${r.port} ${r.refs}`).join(' · ')} refs surfaced
+                </div>
+              ) : null}
+              <CappedRows
+                noun="injections"
+                open={railOpen.has('pushed')}
+                onToggle={() => toggleRail('pushed')}
+                testId="dossier-pushed-list"
+                /* The true 24h total, not the carried slice — same honesty rule
+                   the Coord cap above exists to keep. */
+                totalCount={pushed.count}
+                rows={pushed.events.map((e) => (
+                  <div
+                    key={`push:${e.at}:${e.surface}`}
+                    className="pc-dossier__coord-line"
+                    data-testid="dossier-pushed-row"
+                  >
+                    <span className="pc-dossier__dir">{e.surface}</span>
+                    <span className="pc-dossier__coord-text">
+                      {e.admitted} of {e.returned} admitted
+                      {e.truncated ? ' · truncated' : ''}
+                      {' · '}
+                      {legMark('sem', e.semanticRan)} {legMark('lex', e.lexicalRan)}
+                    </span>
+                    <span className="pc-dossier__coord-ts">{formatRelativeUpdated(e.at)}</span>
+                  </div>
+                ))}
+              />
+            </>
+          )}
+        </section>
+      ) : null}
 
       {/* ── Files in play (cross-marked with this agent's lock state) ── */}
       {entry && entry.currentFiles.length > 0 ? (

@@ -111,6 +111,82 @@ describe('P-007: the four verdict cells', () => {
   });
 
   /**
+   * P-006 — THE CHECK REGISTRATION DELIBERATELY DOES NOT DO.
+   *
+   * `validateCellSpec` never resolves a pointer's target, because doing so would make a
+   * same-module pointer depend on declaration order — and the order authors naturally
+   * write (the general cell first, the specific one it points at second) is exactly the
+   * one that would fail. The cost of that choice is that a TYPO registers silently. This
+   * is what pays it: over the REAL registry, after every built-in is loaded, every
+   * declared pointer must name a cell that exists.
+   *
+   * Without this, `pointers` degrades in the worst direction available to it — a door
+   * that is confidently advertised and opens onto nothing, in the one situation (a red
+   * gate) where the reader is least able to afford a wild goose chase.
+   */
+  it('every SHIPPED pointer resolves to a registered cell', () => {
+    registerBuiltinCells();
+    const cells = listCellsUnchecked();
+
+    /**
+     * Extracted so the CONTROL below drives the identical expression. A guard asserting
+     * `[]` passes just as happily when it is looking at nothing — if `pointers` were
+     * renamed or dropped, `c.pointers ?? []` would yield an empty set forever and this
+     * test would keep printing green while measuring nothing. The control is what
+     * separates "no dangling pointers" from "no pointers examined".
+     */
+    const danglingIn = (specs: readonly CellSpec[]) => {
+      const registered = new Set(cells.map((c) => c.cell));
+      return specs.flatMap((c) =>
+        (c.pointers ?? []).filter((p) => !registered.has(p.cell)).map((p) => `${c.cell} -> ${p.cell}`),
+      );
+    };
+
+    expect(danglingIn(cells)).toEqual([]);
+
+    // CONTROL — the same detector, on a spec whose pointer names nothing. If this stops
+    // failing, the assertion above has stopped being able to fail too.
+    const planted: CellSpec = {
+      ...GATE_VERDICT_CELL,
+      cell: 'control.planted',
+      pointers: [{ cell: 'no.such.cell', when: 'always', answers: 'nothing — this is a control' }],
+    };
+    expect(danglingIn([planted])).toEqual(['control.planted -> no.such.cell']);
+
+    // CALIBRATION — and the control's own premise: the REAL pointers must be non-empty,
+    // or the population under test is empty and the green above is vacuous.
+    expect(cells.flatMap((c) => c.pointers ?? []).length).toBeGreaterThan(0);
+  });
+
+  /**
+   * The POSITIVE assertion, kept separate from the integrity check above: that check
+   * passes vacuously if the pointers are ever dropped, and a silently-dropped pointer is
+   * indistinguishable from a working one at the call site. This names the specific route
+   * P-006 exists to create — from the two cells an agent reads on a red gate, TO the cell
+   * that says who owns it (owner directive 2026-08-08: "surface it where agents look").
+   */
+  it('both red-gate cells route to the ownership cell', () => {
+    for (const cell of [GATE_VERDICT_CELL, GATE_CANDIDATE_CELL]) {
+      expect(cell.pointers?.map((p) => p.cell)).toEqual(['gate.greenCheckpoint.ownership']);
+    }
+  });
+
+  /**
+   * D-014, asserted rather than trusted: ownership stays a CELL with its own falsifier,
+   * and the pointer is only a route to it. If someone ever "simplifies" this by folding
+   * ownership into the verdict cell as a second falsifier, this fails.
+   */
+  it('the pointer did NOT replace the ownership cell — it still owns its own falsifier', () => {
+    registerBuiltinCells();
+    const ownership = listCellsUnchecked().find((c) => c.cell === 'gate.greenCheckpoint.ownership');
+
+    expect(ownership).toBeDefined();
+    expect(ownership!.falsifier.field).toBe('gate.ownership.holderSessionState');
+    // ...and the cell pointing AT it keeps its own, unrelated falsifier.
+    expect(GATE_VERDICT_CELL.falsifier.field).toBe('verdictProvenance.mainFastForwarded');
+  });
+
+  /**
    * #D-065 IS THE ASSERTION. Five cells naming one resolver is axis 5 satisfied (many
    * lenses over one derivation), and the thing that would break it is someone "fixing"
    * a cell by pointing it at a second resolver — or at a hand-rolled re-derivation of

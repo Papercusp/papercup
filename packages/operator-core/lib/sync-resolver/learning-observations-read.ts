@@ -64,9 +64,11 @@ export interface LearningObservationRow {
 /** Build the `learning.observations` rows (newest-first) with list `_meta` (total). */
 export async function computeLearningObservations(a: LearningObservationsArgs): Promise<LearningObservationRow[]> {
   const { listIssues, countIssues } = await import('../issues-engineer');
-  const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
+  // P-006/D-031: the `lane` column is the canonical observation identity; the topic
+  // join under-reads (fenced to coordScopeWorkspace(), and 471 rows carry no tag).
+  const { OBSERVATION_LANE } = await import('../harness/improvements/read-items');
   const filter = {
-    topic: OBSERVATION_TOPIC,
+    lane: OBSERVATION_LANE,
     ...(a.state ? { state: a.state } : {}),
   };
   const [issues, total] = await Promise.all([listIssues({ ...filter, limit: a.limit ?? 200 }), countIssues(filter)]);

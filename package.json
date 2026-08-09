@@ -185,6 +185,7 @@
     "okf:backfill": "tsx scripts/okf-backfill-insights.mjs",
     "okf:backfill:packs": "tsx scripts/okf-backfill-packs.mjs",
     "lint:no-retired": "node scripts/check-no-retired-imports.mjs",
+    "lint:no-retired-resurrection": "node scripts/check-retired-resurrection.mjs",
     "lint:no-retired-style": "node scripts/check-no-retired-style.mjs",
     "lint:no-ungated-infinite-animation": "node scripts/check-no-ungated-infinite-animation.mjs",
     "lint:no-ungated-infinite-animation:report": "node scripts/check-no-ungated-infinite-animation.mjs --report",

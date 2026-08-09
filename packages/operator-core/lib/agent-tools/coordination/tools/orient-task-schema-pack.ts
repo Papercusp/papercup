@@ -121,10 +121,17 @@ const SIGNAL_GROUPS: Array<{ id: string; pattern: RegExp; tools: readonly string
     // records that on this fleet promotion (docs/hints/mentions) asymptoted at 1.7%
     // while a pre-addressed HANDLE in a result the agent already holds is what moved
     // adoption. So this makes the verb callable without a tools:find round-trip; the
-    // handles in coord:presence and work_items:release are what make it reached for.
+    // handles in coord:presence and plan_items:release are what make it reached for.
+    //
+    // `plan_items:release` — not `work_items:release` — is the lane surface here:
+    // coord:dispatch's `items` are PLAN items (P-NNN), so plan_items:assign/release
+    // are the pair that actually moves a lane, and plan_items:release is the second
+    // site that emits the ready dispatch handle. work_items:release stays because a
+    // handoff usually releases the WI claim too, but it is the WI-id surface, not
+    // the one dispatch addresses.
     id: 'handoff',
     pattern: /\b(hand.?off|handing off|delegat|reassign|re-?assign|dispatch|pick(?:ed)? ?up|take over|taking over|park(?:ing)? (?:my|the) lane)\b/i,
-    tools: ['coord:dispatch', 'coord:presence', 'work_items:release', 'plan_items:assign'],
+    tools: ['coord:dispatch', 'coord:presence', 'plan_items:release', 'plan_items:assign', 'work_items:release'],
   },
   {
     id: 'recipe',

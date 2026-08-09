@@ -55,6 +55,18 @@ export const IMPROVEMENT_TOPIC = 'papercusp-improvement';
  */
 export const OBSERVATION_TOPIC = 'papercusp-observation';
 
+/**
+ * The CANONICAL identity of the observation population (P-006 / D-031).
+ *
+ * `OBSERVATION_TOPIC` above is still written on capture, but it is a LABEL — reads
+ * select on this lane value, which is a stored generated column (`payload->>'lane'`)
+ * on the row itself. The two disagreed by 834 rows when measured on 2026-08-09, in
+ * both directions, and the same column is what `excludeObservationLane` keys on — so
+ * selecting by lane is what makes "kept out of the work queue" and "read as an
+ * observation" the same set. Full measurement: `ListIssuesFilter.lane`.
+ */
+export const OBSERVATION_LANE = 'observation';
+
 /** Typed view over the kind-specific payload the improvement loop writes. */
 interface ImprovementPayload {
   improvementKind?: string;
@@ -275,7 +287,7 @@ export async function readImprovementItems(
   opts: ReadImprovementOpts = {},
   deps: ReadImprovementDeps = defaultDeps,
 ): Promise<ImprovementCandidate[]> {
-  return readByTopic(IMPROVEMENT_TOPIC, opts, deps);
+  return readBySelector({ topic: IMPROVEMENT_TOPIC }, opts, deps);
 }
 
 /**
@@ -348,7 +360,7 @@ export async function readObservationItems(
   opts: ReadImprovementOpts = {},
   deps: ReadImprovementDeps = defaultDeps,
 ): Promise<ImprovementCandidate[]> {
-  return readByTopic(OBSERVATION_TOPIC, opts, deps);
+  return readBySelector({ lane: OBSERVATION_LANE }, opts, deps);
 }
 
 /**
@@ -381,16 +393,23 @@ export async function countObservationFilingsSince(
   // origin allowlist it defaults to), minus the row materialisation — so this count
   // and that list can never disagree about what an "observation filing" is.
   return deps.countIssues({
-    topic: OBSERVATION_TOPIC,
+    lane: OBSERVATION_LANE,
     signalOrigins: ORGANIC_ONLY,
     createdBy,
     ...(sinceIso ? { createdAfter: sinceIso } : {}),
   });
 }
 
-/** Shared body for the topic-scoped candidate readers (improvement + observation). */
-async function readByTopic(
-  topic: string,
+/**
+ * Shared body for the candidate readers (improvement + observation).
+ *
+ * The population is chosen by a SELECTOR, not always a topic: improvements are still
+ * selected by their topic tag, observations by the `lane` COLUMN (P-006 / D-031 — the
+ * topic join is lossy in both directions for that population; see
+ * `ListIssuesFilter.lane` for the measurement).
+ */
+async function readBySelector(
+  selector: { topic: string; lane?: undefined } | { lane: string; topic?: undefined },
   opts: ReadImprovementOpts,
   deps: ReadImprovementDeps,
 ): Promise<ImprovementCandidate[]> {
@@ -407,14 +426,14 @@ async function readByTopic(
       // corpus under a name that promises the loop's output — reinstating the exact
       // 8,202-row Work-tab duplication this option exists to remove.
       throw new Error(
-        'readByTopic: loopOutputOnly requires deps.readLoopOutputIds (see improvements/loop-output.ts)',
+        'readBySelector: loopOutputOnly requires deps.readLoopOutputIds (see improvements/loop-output.ts)',
       );
     }
     issueIds = await deps.readLoopOutputIds();
   }
 
   const issues = await deps.listIssues({
-    topic,
+    ...selector,
     state: opts.state,
     limit: opts.limit ?? 500,
     signalOrigins: origins,

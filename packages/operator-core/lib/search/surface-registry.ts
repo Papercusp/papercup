@@ -321,4 +321,9 @@ export const CENSUS_EXCLUSIONS: Readonly<Record<string, string>> = {
   'memory/bench/corpus-leg-lexical-acceptance-cli.ts':
     'A benchmark CLI, not a product surface — it calls the engine to MEASURE retrieval quality, so ' +
     'its results are the experiment rather than something a user sees. Never runs in the operator.',
+  'memory/bench/corpus-rerank-reach-cli.ts':
+    'Same class as the acceptance CLI above: a P-008 pre-design measurement instrument ' +
+    '(context-injection-retrieval-reach-and-visibility-2026-08-03) run by hand via `npx tsx`, asking how much ' +
+    'of the corpus leg an upstream reranker can actually control. It calls the engine to MEASURE, and is ' +
+    'imported by no route, tool, or product path — only by its own unit test. Never runs in the operator.',
 };

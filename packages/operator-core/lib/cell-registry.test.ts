@@ -439,3 +439,112 @@ describe('P-021 — materiality is optional, but a declared one must be able to 
     expect(getCell('mat.broken', { ownerId: 'su-a' })).toBeUndefined();
   });
 });
+
+/**
+ * P-006 — POINTERS.
+ *
+ * Two properties carry this feature and both are asserted here rather than assumed:
+ *
+ *  (1) THE THING IT MUST NOT BECOME. D-014 rules that ownership stays its own cell with
+ *      its own falsifier, and the plan's earlier P-005 draft assumed a cell could carry a
+ *      falsifier per BLOCK. A pointer is the sanctioned alternative ONLY while it stays
+ *      incapable of asserting a measurement — which is a property of the TYPE, so the
+ *      test that matters is the compile-time one recorded at the bottom of this block.
+ *
+ *  (2) THE CHECK THAT IS DELIBERATELY *NOT* AT REGISTRATION. Target existence is resolved
+ *      per-read, so a forward reference is legal here; `cell-registrations.test.ts` is
+ *      what proves the SHIPPED pointers actually resolve. Both halves are needed: this one
+ *      alone would let a typo register, that one alone would make declaration order matter.
+ */
+describe('cell contract — pointers (P-006)', () => {
+  const ruleOf = (spec: CellSpec) =>
+    validateCellSpec(spec).filter((r) => r.axis === 'pointers').map((r) => r.rule);
+
+  const ok = { cell: 'gate.greenCheckpoint.ownership', when: 'the streak is nonzero', answers: 'who owns the red' };
+
+  it('ACCEPTS a well-formed pointer — including one whose target is not registered YET', () => {
+    const spec: CellSpec = { ...pipelineCell(), pointers: [{ ...ok, cell: 'not.registered.anywhere' }] };
+    expect(ruleOf(spec)).toEqual([]);
+    // And it REGISTERS: a forward reference must not be a load-order failure.
+    expect(() => registerCell({ ...spec, cell: 'ptr.forward' })).not.toThrow();
+  });
+
+  it('REFUSES a pointer at ITSELF — the emptiness axis 1 rejects, in a third field', () => {
+    const spec: CellSpec = { ...pipelineCell(), pointers: [{ ...ok, cell: 'git.pipelinePosition' }] };
+    expect(ruleOf(spec)).toContain('pointer-to-self');
+  });
+
+  it('REFUSES a self-pointer that differs only in case/punctuation', () => {
+    const spec: CellSpec = { ...pipelineCell(), pointers: [{ ...ok, cell: 'Git.Pipeline_Position' }] };
+    expect(ruleOf(spec)).toContain('pointer-to-self');
+  });
+
+  it('REFUSES the same target twice', () => {
+    const spec: CellSpec = { ...pipelineCell(), pointers: [ok, { ...ok, when: 'some other time' }] };
+    expect(ruleOf(spec)).toContain('pointer-duplicate-target');
+  });
+
+  it('REFUSES a target-less pointer', () => {
+    const spec: CellSpec = { ...pipelineCell(), pointers: [{ ...ok, cell: '   ' }] };
+    expect(ruleOf(spec)).toContain('pointer-target-missing');
+  });
+
+  /**
+   * `when` is the field that keeps an ALWAYS-EMITTED channel affordable: nothing
+   * evaluates it, so if it is not legible in the line, a reader on the healthy path is
+   * sent to look at ownership for no reason. That is why blank is a REFUSAL, not a warning.
+   */
+  it('REFUSES a pointer with no `when` — the condition is what a reader self-gates on', () => {
+    const spec: CellSpec = { ...pipelineCell(), pointers: [{ ...ok, when: '  ' }] };
+    expect(ruleOf(spec)).toContain('pointer-when-missing');
+  });
+
+  it('REFUSES a pointer with no `answers` — "see also X" costs a dispatch to evaluate', () => {
+    const spec: CellSpec = { ...pipelineCell(), pointers: [{ ...ok, answers: '' }] };
+    expect(ruleOf(spec)).toContain('pointer-answers-missing');
+  });
+
+  it('REFUSES a non-list', () => {
+    const spec = { ...pipelineCell(), pointers: ok } as unknown as CellSpec;
+    expect(ruleOf(spec)).toContain('pointers-not-a-list');
+  });
+
+  it('reports EVERY malformed pointer, not just the first — validate is total by contract', () => {
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      pointers: [
+        { cell: 'a.one', when: '', answers: 'x' },
+        { cell: 'b.two', when: 'y', answers: '' },
+      ],
+    };
+    expect(ruleOf(spec)).toEqual(['pointer-when-missing', 'pointer-answers-missing']);
+  });
+
+  it('registration THROWS on a bad pointer, so a half-declared door is absent not live', () => {
+    const spec: CellSpec = { ...pipelineCell(), cell: 'ptr.broken', pointers: [{ ...ok, when: '' }] };
+    expect(() => registerCell(spec)).toThrow(CellRegistrationError);
+    expect(getCell('ptr.broken', { ownerId: 'su-a' })).toBeUndefined();
+  });
+
+  /**
+   * D-014's GUARD, and the only form it can take. "A pointer must not be a second
+   * falsifier" is not a value a validator can check — it is a claim about the SHAPE of
+   * `CellPointer`, which has no field/measurement/kills to carry a measurement in. This
+   * asserts that shape stays closed: if someone widens it later, `@ts-expect-error`
+   * stops erroring and this test fails at COMPILE time, which is the only moment the
+   * property can actually be enforced.
+   */
+  it('CANNOT express a falsifier — the type has nowhere to put one (D-014)', () => {
+    const spec: CellSpec = {
+      ...pipelineCell(),
+      pointers: [
+        {
+          ...ok,
+          // @ts-expect-error a pointer carries no measurement — that is the whole guard
+          field: 'gate.ownership.holderSessionState',
+        },
+      ],
+    };
+    expect(ruleOf(spec)).toEqual([]);
+  });
+});

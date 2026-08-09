@@ -2392,6 +2392,75 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
   });
 
   /**
+   * EI-19966359020779598 — the filed bug: a BARE `$VAR` target (no parens, no
+   * backtick — so `_segment_has_unsplittable_expansion` above does NOT skip
+   * it) reaches `_resolve_write_target`, which bails on the `$` the same way
+   * it bails on any expansion marker, and until this fix that was fully
+   * silent — no deny, no signal at all, for an in-place rewrite that may be
+   * mutating dozens of tracked files with zero lock claimed. Repro'd live,
+   * both directions, in the SAME session: the literal-path form of this exact
+   * edit was correctly denied; the `$FILES`-multi-path form of it sailed
+   * through and wrote 24 tracked source files.
+   *
+   * This does NOT deny (a bare variable gives the guard nothing to prove
+   * lands in-tree — denying here would reopen this file's own documented
+   * false-positive history) — it now surfaces the gap as a non-blocking
+   * advisory instead of silence, the same shape as the interpreter guard's
+   * computed-path advisory (EI-18828866497684686).
+   */
+  function expectShellWriteAdvisory(out: { stdout: string; status: number | null }) {
+    expect(out.status).toBe(0);
+    const decision = parseDecision(out);
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('allow'); // soft — never blocks
+    const ctx = (decision.hookSpecificOutput as { additionalContext?: string }).additionalContext ?? '';
+    expect(ctx).toContain('EI-19966359020779598');
+    return ctx;
+  }
+
+  it.each([
+    ['the exact filed repro: `sed -i` against a bare multi-path `$FILES` variable', "sed -i 's/bm25/lexical/g' $FILES"],
+    ['the two-statement filed shape: `FILES=$(...)` assigned, THEN referenced bare in `sed -i`',
+      "FILES=$(ls libs/generic/search/src/*.ts | grep -v provenance.ts)\nsed -i 's/bm25/lexical/g' $FILES"],
+    ['`perl -i` against a bare `$FILES` variable', "perl -i -pe 's/a/b/' $FILES"],
+    ['`tee` against a bare `$OUT` variable', 'echo hi | tee $OUT'],
+    ['`cp` where BOTH source and dest are bare variables', 'cp $SRC $DEST'],
+  ])('allows %s (with the shell-write-guard bare-variable advisory — no longer fully silent)', (_label, command) => {
+    const ctx = expectShellWriteAdvisory(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(ctx).toContain('shell-write guard notice');
+  });
+
+  it('the bare-variable advisory is scoped to the in-place-rewrite family — a plain `>`/`>>` redirect to a bare $VAR stays fully silent (unchanged)', () => {
+    // Deliberately NOT advised: `> "$LOG"`/`>> $LOG` is the overwhelmingly
+    // common "write a computed scratch/log path" idiom, and this guard has a
+    // long documented history of false-positive incidents from guessing at
+    // expansion-bearing targets. Scoping the new advisory to
+    // sed-i/perl-i/ruby-i/awk-i-inplace/tee/cp (never a bare redirect) keeps
+    // that idiom exactly as quiet as it always was.
+    expectAllow(runGate(bashCmd('echo hi >> $LOGFILE', { cwd: CANON }), CANON_ENV));
+  });
+
+  it('the bare-variable advisory never fires for the ALREADY-hardened $(...)/backtick shape (unchanged, still fully silent)', () => {
+    // EI-18691980588797795's fix (tested above) deliberately skips target
+    // detection ENTIRELY for a `$(...)`/backtick segment — a substitution's
+    // literal text can contain a space that defeats the `.split()` these
+    // constructs use, so there is no safe signal to raise here at all. This
+    // fix must not reopen that: it only ever looks at `_targets`, and a
+    // `$(...)`/backtick segment never reaches `_targets` in the first place.
+    for (const command of [
+      'sed -i s/a/b/ $(npm prefix)/foo.ts',
+      'sed -i s/a/b/ `npm prefix`/foo.ts',
+    ]) {
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    }
+  });
+
+  it('the bare-variable advisory does not mask an existing deny — a LITERAL tree target alongside a bare $VAR still denies (masking control)', () => {
+    expectShellWriteDeny(
+      runGate(bashCmd("sed -i 's/a/b/' apps/operator/foo.ts $FILES", { cwd: CANON }), CANON_ENV),
+    );
+  });
+
+  /**
    * WI-6026 (EI-18664655909328670, 3rd instance) — a trailing REDIRECT used
    * to silence output (`cmd ... 2>/dev/null`, `cmd ... > out.log`) defeats
    * the same naive `.split()` as the substitution-fragment bug above, but in

@@ -8,9 +8,23 @@
  *   - MCP initialize stamps under ctx.uiClientId — which _mcp-handler derives
  *     from the `?client=` URL param, which claude-integration.ts templates as
  *     `client=${PAPERCUSP_SID:-<agentId>}`;
- *   - the turn-start hook (userpromptsubmit-memory.sh) POSTs owner=$PAPERCUSP_SID;
+ *   - the turn-start hook POSTs owner=$PAPERCUSP_SID;
  *   - compact re-prime + the claim/create ports key on ownerId (resolved from
  *     the same client param).
+ *
+ * ⚠ WHERE THE HOOK END LIVES MOVED (codex-context-injection-parity-2026-08-09
+ * P-002 / D-001). userpromptsubmit-memory.sh used to build the POST body inline
+ * (~60 lines of python-in-shell, where this test's original `'owner': sid` pin
+ * matched). It is now a THIN EXEC SHIM delegating to ONE shared dispatcher,
+ * apps/operator/scripts/hooks/inject/, with a per-client adapter — so the
+ * identity is derived in core.mjs, not in the bash file.
+ *
+ * The CONTRACT is unchanged and so is this test's job; only the address moved.
+ * Pinning the shim's text alone would be worse than useless now: the shim still
+ * mentions PAPERCUSP_SID in a COMMENT, so a bare /PAPERCUSP_SID/ match passes
+ * against prose while the real derivation could drift away unnoticed. So we pin
+ * BOTH links of the chain — the shim still reaches the dispatcher, AND the
+ * dispatcher still derives owner from PAPERCUSP_SID and sends it as `owner`.
  *
  * NOTHING type-checks this equivalence — it's a string convention across a TS
  * template, a bash hook, and a resolver. If any end drifts (a renamed env var, a
@@ -36,14 +50,29 @@ describe('cross-port session-identity contract (P-004b)', () => {
     expect(src).toContain('&client=\\${PAPERCUSP_SID:-');
   });
 
-  it('the turn-start hook sends the SAME identity (owner = $PAPERCUSP_SID)', () => {
+  it('the turn-start hook still REACHES the shared injection dispatcher', () => {
     const hook = readFileSync(
       join(REPO, 'apps/operator/scripts/hooks/cc/userpromptsubmit-memory.sh'),
       'utf8',
     );
-    // The hook gates on PAPERCUSP_SID and passes it as the endpoint's `owner`
-    // (the dedup sessionId for port 'turn-start').
-    expect(hook).toMatch(/PAPERCUSP_SID/);
-    expect(hook).toMatch(/'owner':\s*sid/);
+    // Link 1 of the chain. Deliberately NOT a bare /PAPERCUSP_SID/ match: that
+    // string survives in this file's comment banner, so it would pass on prose.
+    // What must hold is that the shim still dispatches, as THIS client.
+    expect(hook).toMatch(/inject\/index\.mjs/);
+    expect(hook).toMatch(/--client=claude/);
+  });
+
+  it('the dispatcher sends the SAME identity (owner = $PAPERCUSP_SID)', () => {
+    const core = readFileSync(
+      join(REPO, 'apps/operator/scripts/hooks/inject/core.mjs'),
+      'utf8',
+    );
+    // Link 2. The session id IS the gate (no PAPERCUSP_SID ⇒ not a psu session,
+    // so no injection at all), and it is what goes out as the endpoint's
+    // `owner` — the dedup sessionId every other port keys on.
+    expect(core).toMatch(/env\.PAPERCUSP_SID/);
+    expect(core).toMatch(/const owner = sessionId\(env\)/);
+    // ...and is actually PUT on the request, not merely computed.
+    expect(core).toMatch(/^\s*owner,\s*$/m);
   });
 });

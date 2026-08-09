@@ -3808,9 +3808,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed' };
       const { countObservationsByKind } = await import('../issues-engineer');
-      const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
+      // P-006/D-031: canonical observation identity is the `lane` column.
+      const { OBSERVATION_LANE } = await import('../harness/improvements/read-items');
       const filter = {
-        topic: OBSERVATION_TOPIC,
+        lane: OBSERVATION_LANE,
         ...(a.state ? { state: a.state } : {}),
       };
       const counts = await countObservationsByKind(filter);

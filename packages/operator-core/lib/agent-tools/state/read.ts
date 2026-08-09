@@ -20,7 +20,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { formatCellHoist, readCell, type CellRead } from '../../cell-read';
+import { formatCellHoist, formatCellPointers, readCell, type CellRead } from '../../cell-read';
 import { listCells } from '../../cell-registry';
 import { formatCellUnknown } from '../../cell-contract';
 
@@ -46,7 +46,20 @@ function valueResult(out: Extract<CellRead, { status: 'value' }>) {
           out.source.value === null ? 'an unattributed source' : `\`${out.source.value}\``
         } — ${out.source.why}`
       : null;
-  const summary = [hoistProse, sourceProse].filter((s): s is string => s !== null).join(' · ');
+  /**
+   * P-006 — THE DISCOVERY LINE. Unlike the two above it this one is NOT quiet on the
+   * healthy path, and that asymmetry is deliberate: those two QUALIFY the headline, so
+   * printing them when nothing is wrong would spend a warning channel to say "normal".
+   * A pointer qualifies nothing — it names a door — and a door only helps the reader who
+   * did not already know it was there. Gating it on the very condition the reader is
+   * trying to evaluate is what left `gate.greenCheckpoint.ownership` undiscoverable in
+   * the first place. It stays affordable because it carries its own `when`, so a reader
+   * on the healthy path dismisses it in one glance. See `formatCellPointers`.
+   */
+  const pointerProse = out.pointers ? formatCellPointers(out.pointers) : null;
+  const summary = [hoistProse, sourceProse, pointerProse]
+    .filter((s): s is string => s !== null)
+    .join(' · ');
   return summary === '' ? { ok: true, ...out } : { ok: true, ...out, summary };
 }
 
@@ -155,7 +168,18 @@ export default defineTool({
           type: 'text' as const,
           text: JSON.stringify(
             out.status === 'unknown'
-              ? { ok: true, ...out, summary: formatCellUnknown(out.unknown) }
+              ? {
+                  ok: true,
+                  ...out,
+                  // P-006 — the pointer survives an unknown, because the cell it names has
+                  // its OWN resolver: "I could not answer" is not "nothing here can".
+                  summary: [
+                    formatCellUnknown(out.unknown),
+                    out.pointers ? formatCellPointers(out.pointers) : null,
+                  ]
+                    .filter((s): s is string => s !== null && s !== '')
+                    .join(' · '),
+                }
               : out.status === 'absent'
                 ? {
                     ok: true,
