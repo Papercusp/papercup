@@ -826,6 +826,18 @@ export async function sweepStalledLoops(
             `standing inbox-wake await was registered, so no wake-delivery row was ever created. Those ` +
             `agents were never asked for a turn. Their watch has been re-armed and the loops made due ` +
             `(WI-36685).`
+          : '') +
+        (disarmedUnaddressableHarness.length > 0
+          ? `\n\nOF THE DISARMED ABOVE, ${disarmedUnaddressableHarness.length} could not have produced a ` +
+            `turn: ${disarmedUnaddressableHarness.join(', ')} were armed against a harness their OWN ` +
+            `session scope cannot address — the routine is on ${ws} while those sessions resolve to a ` +
+            `different workspace, so every harness-scoped call they made returned harness_forbidden. They ` +
+            `are not wedged; they were woken repeatedly to do work they could not reach. For THESE the ` +
+            `"re-arm with loop:arm" advice above does NOT apply — re-arming leaves the scope unchanged ` +
+            `and re-creates the same hole. Those sessions have to be relaunched with the correct ` +
+            `workspace scope. Start at agent-tools/loop/arm.ts's harness_workspace_mismatch guard (it ` +
+            `refuses to CREATE a new strand but cannot repair an existing one) and at whatever ` +
+            `re-resolved those sessions' scope after they armed (EI-19966210024116714).`
           : ''),
       category: 'severe-event',
     });
