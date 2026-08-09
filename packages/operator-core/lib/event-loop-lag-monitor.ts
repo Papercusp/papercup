@@ -19,6 +19,7 @@
  */
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { SENTINEL_SAB_IDX, SENTINEL_SAB_INT32_LEN } from './event-loop-sentinel';
 
 export interface LagMonitorOpts {
   /** How often to sample + evaluate the histogram (ms). Default 10_000. */

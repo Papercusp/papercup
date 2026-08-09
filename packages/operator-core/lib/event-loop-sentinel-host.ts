@@ -56,7 +56,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import type { LoopSentinelThresholds } from './event-loop-sentinel';
+import { SENTINEL_SAB_INT32_LEN, type LoopSentinelThresholds } from './event-loop-sentinel';
 import type { SentinelWorkerData } from './event-loop-sentinel.worker';
 
 /**
@@ -147,6 +147,16 @@ export interface EventLoopSentinelHandle {
   workerAlive(): boolean;
   /** Current heartbeat counter — diagnostics for /api/health. */
   beats(): number;
+  /**
+   * The sentinel's SharedArrayBuffer (layout: `SENTINEL_SAB_IDX`), or null when
+   * the sentinel is off/failed to spawn. Callers wire this into
+   * `setLagPublishTarget()` (event-loop-lag-monitor.ts) so the lag monitor's
+   * last-known percentiles ride along the SAME memory the sentinel already
+   * reads off-thread — a wedge's kill/warn log then carries the last observed
+   * lag even though the reader that would normally report it never runs
+   * during the block itself.
+   */
+  sab: SharedArrayBuffer | null;
 }
 
 const INACTIVE: EventLoopSentinelHandle = {
@@ -154,6 +164,7 @@ const INACTIVE: EventLoopSentinelHandle = {
   active: () => false,
   workerAlive: () => false,
   beats: () => 0,
+  sab: null,
 };
 
 /**
@@ -222,7 +233,9 @@ export function startEventLoopSentinel(
   // Int32Array + Atomics: the ONLY channel that works here. A postMessage
   // round-trip would need the main loop to answer, which is precisely what a
   // wedge prevents — measured: the worker's reply queued until the block ended.
-  const sab = new SharedArrayBuffer(4);
+  // Sized for SENTINEL_SAB_IDX (heartbeat + last-known lag percentiles), not
+  // just the heartbeat — see that layout's doc.
+  const sab = new SharedArrayBuffer(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
   const view = new Int32Array(sab);
 
   let worker: Worker;
@@ -308,5 +321,6 @@ export function startEventLoopSentinel(
     active: () => true,
     workerAlive: () => workerAlive,
     beats: () => Atomics.load(view, 0),
+    sab,
   };
 }

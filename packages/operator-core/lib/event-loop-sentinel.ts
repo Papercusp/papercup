@@ -55,6 +55,35 @@
  * decision itself stays exhaustively testable. Keep it that way.
  */
 
+/**
+ * Layout of the sentinel's SharedArrayBuffer. Index 0 is the heartbeat counter
+ * the main thread bumps every `heartbeatIntervalMs` (the sentinel's core
+ * liveness signal). Indices 1-4 are LAST-KNOWN loop-lag percentiles (rounded
+ * ms), published by `event-loop-lag-monitor.ts` on its own timer.
+ *
+ * WHY: the lag monitor's reader shares fate with the loop it watches (see that
+ * file's header) — during an actual wedge it never runs again, so it cannot
+ * report the one number that would explain the incident. But the LAST value it
+ * read before the block began is still informative, and the sentinel's worker
+ * thread keeps running through the block. So the lag monitor publishes into
+ * this same SAB on every tick (a plain `Atomics.store`, no reply needed — this
+ * is push, not the postMessage round-trip the file header rules out), and the
+ * worker reads it via `Atomics.load` at the moment it decides to warn or kill,
+ * turning a silent wedge into "last observed p95 lag Xms, N ms before this
+ * kill" instead of nothing at all.
+ *
+ * Both ends import this module for the indices so the layout cannot drift
+ * between publisher and reader.
+ */
+export const SENTINEL_SAB_INT32_LEN = 5;
+export const SENTINEL_SAB_IDX = {
+  HEARTBEAT: 0,
+  LAG_P50_MS: 1,
+  LAG_P95_MS: 2,
+  LAG_P99_MS: 3,
+  LAG_MAX_MS: 4,
+} as const;
+
 /** Tunables for the sentinel's decision. All times in milliseconds. */
 export interface LoopSentinelThresholds {
   /**

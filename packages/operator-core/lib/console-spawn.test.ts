@@ -657,6 +657,114 @@ describe('buildHeadlessSpawnCommand — the scope NAME is returned, so the ledge
   });
 });
 
+describe('buildConsoleScopedSpawnCommand (WI-37476, EI-9748 Route B — cgroup escape for VISIBLE terminals)', () => {
+  it('wraps the terminal emulator in systemd-run --user --scope --collect on Linux with systemd-run available', () => {
+    const { bin, args } = buildConsoleScopedSpawnCommand(
+      'gnome-terminal',
+      ['--wait', '--window', '--', 'bash', '-lc', 'exec claude'],
+      'my label',
+      { platform: 'linux', hasSystemdRun: () => true },
+    );
+    expect(bin).toBe('systemd-run');
+    expect(args.slice(0, 4)).toEqual(['--user', '--scope', '--collect', '--quiet']);
+    expect(args.some((a) => /^--unit=papercup-console-my-label-/.test(a))).toBe(true);
+    expect(args.some((a) => a.startsWith('--slice='))).toBe(true);
+    // the wrapped command is preserved verbatim, in order, after the `--` separator
+    expect(args.slice(-7)).toEqual([
+      'gnome-terminal',
+      '--wait',
+      '--window',
+      '--',
+      'bash',
+      '-lc',
+      'exec claude',
+    ]);
+  });
+
+  it('falls back to the plain terminal bin+args, byte-identical, when systemd-run is unavailable', () => {
+    const { bin, args, scopeUnit } = buildConsoleScopedSpawnCommand('xterm', ['-e', 'bash'], 'hl', {
+      platform: 'linux',
+      hasSystemdRun: () => false,
+    });
+    expect(bin).toBe('xterm');
+    expect(args).toEqual(['-e', 'bash']);
+    expect(scopeUnit).toBeNull();
+  });
+
+  it('falls back on a non-Linux platform even if hasSystemdRun somehow returns true', () => {
+    const { bin, args } = buildConsoleScopedSpawnCommand('xterm', ['-e'], 'hl', {
+      platform: 'darwin',
+      hasSystemdRun: () => true,
+    });
+    expect(bin).toBe('xterm');
+    expect(args).toEqual(['-e']);
+  });
+
+  it('lands in the owned papercusp slice, never task-manager-enrolled (always the un-enrolled fallback naming)', () => {
+    // Two independent calls must not collide on the same unit name/pid+time
+    // sensitivity, and both must carry a papercusp-owned slice — the same
+    // recurrence guard buildHeadlessSpawnCommand's sibling tests assert, ported
+    // here since this caller always takes the un-enrolled (taskScope: null) path.
+    const a = buildConsoleScopedSpawnCommand('xterm', ['-e'], 'hl', {
+      platform: 'linux',
+      hasSystemdRun: () => true,
+    });
+    const slice = a.args.find((x) => x.startsWith('--slice='));
+    expect(slice).toMatch(/^--slice=papercusp(-[a-z0-9-]+)?\.slice$/);
+    expect(a.scopeUnit).toMatch(/^papercup-console-/);
+  });
+});
+
+describe('spawnConsole — the VISIBLE-terminal window escapes the operator cgroup too (WI-37476, EI-9748 Route B)', () => {
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'true',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  beforeEach(() => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
+    spawnMock.mockReset();
+    vi.stubEnv('DISPLAY', ':99');
+    vi.stubEnv('TERMINAL', 'bash'); // see WI-1886(b) block above for why
+    _resetTerminalCacheForTests();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _resetTerminalCacheForTests();
+  });
+
+  it('spawns via systemd-run --user --scope, not the plain terminal binary, when systemd-run is available', async () => {
+    spawnMock.mockImplementation(() => fakeChild(4444)); // outlives the probe
+    const r = await spawnConsole({
+      envelope,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => true },
+    });
+    expect(r.status).toBe('ok');
+    const [bin, args] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(bin).toBe('systemd-run');
+    expect(args).toContain('bash'); // the stubbed $TERMINAL, still present after `--`
+    // the reported `terminal` field still names the real emulator, not the wrapper —
+    // callers care what window opened, not the escape mechanism.
+    expect((r as { terminal: string }).terminal).toBe('bash');
+  }, 10_000);
+
+  it('is byte-identical to the pre-fix plain spawn when systemd-run is unavailable', async () => {
+    spawnMock.mockImplementation(() => fakeChild(5555));
+    const r = await spawnConsole({
+      envelope,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
+    });
+    expect(r.status).toBe('ok');
+    const [bin] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(bin).toBe('bash'); // the stubbed $TERMINAL binary itself, unwrapped
+  }, 10_000);
+});
+
 describe('wrapHeadlessSigtermDiagnostic (EI-9748)', () => {
   it('prepends a TERM trap that logs + exits 143, then runs the original oneliner unmodified', () => {
     const out = wrapHeadlessSigtermDiagnostic("cd '/proj' ; (eval 'psu --headless')");
