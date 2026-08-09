@@ -52,6 +52,7 @@ import {
 } from './leadership-disposition';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
+import { selectFleetPopulation, type FleetPopulationCensus } from './fleet-population';
 import { COORD_ROLES } from '../coordination/roles';
 import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
 import type { AgentAssignment } from '../../fleet/assignments';
@@ -2114,6 +2115,12 @@ export default defineTool({
     const summary = {
       fleet,
       members: members.length,
+      // P-010: what `members` (and every count below it, all of which are filters
+      // OVER the same list) is a count OF. Without this the number is only
+      // comparable to itself: the same fleet read 11 / 11 / 14 / 8 / 9 across
+      // leader-brief and fleet:assignments within minutes, each defensible, none
+      // reconciled inline.
+      population: memberCensus,
       speaking: members.filter((m) => m.verdict === 'speaking').length,
       monitoring: members.filter((m) => m.monitorState === 'monitoring').length,
       waiting: members.filter((m) => m.monitorState === 'waiting').length,

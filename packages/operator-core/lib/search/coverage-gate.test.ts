@@ -292,6 +292,59 @@ describe('loadCoverageSnapshot', () => {
     }
   });
 
+  // This gate sits on the claim/injection path (assessCorpusGate), so ANY rig
+  // test that claims a work-item runs it. A partial test schema — or a deploy
+  // that has not yet run migration 746 — makes the read throw "does not exist",
+  // and a console.warn there is turned into a FAILURE by vitest-fail-on-console.
+  // That red 4 unrelated integration suites (claim-next-co-location,
+  // work-items-tools, spawn-child, grade-idea) while this gate was behaving
+  // exactly as designed. The verdict still has to degrade to `unknown` — the
+  // suppression is of the LOG, never of the signal.
+  it('a MISSING coverage table degrades to unknown SILENTLY (a partial schema is not a surprise)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let calls = 0;
+      const sql = {
+        unsafe: async () => {
+          calls += 1;
+          // The verbatim message observed from postgres.js in the run that
+          // caught this (migration 746's table absent from a rig schema).
+          throw new Error('relation "harness_shared.embed_coverage_samples" does not exist');
+        },
+      };
+      const s = await loadCoverageSnapshotCached(sql, 'ws', NOW);
+      expect(s.size).toBe(0);
+      expect(assessSourceCoverage('turns', s).verdict).toBe('unknown');
+      expect(warn).not.toHaveBeenCalled();
+      // Still memoised: silence must not buy a re-read on every query.
+      await loadCoverageSnapshotCached(sql, 'ws', new Date(NOW.getTime() + 1_000));
+      expect(calls).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a pool torn down mid-read degrades to unknown SILENTLY (rig teardown, not a surprise)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const err of [
+        Object.assign(new Error('write CONNECTION_ENDED'), { code: 'CONNECTION_ENDED' }),
+        Object.assign(new Error('boom'), { code: 'CONNECTION_DESTROYED' }),
+      ]) {
+        resetCoverageSnapshotCache();
+        const s = await loadCoverageSnapshotCached(
+          { unsafe: async () => { throw err; } },
+          'ws',
+          NOW,
+        );
+        expect(s.size).toBe(0);
+      }
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('does not re-read (or re-log) on EVERY query while a failure persists', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

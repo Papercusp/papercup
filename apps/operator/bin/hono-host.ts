@@ -32,7 +32,10 @@ import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { scheduleTranscriptSearchWarmup } from '@papercusp/operator-core/lib/transcript-search-warmup';
-import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
+import {
+  startEventLoopLagMonitor,
+  setLagPublishTarget,
+} from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 import { startLoopPressureGovernor } from '@papercusp/operator-core/lib/loop-pressure-governor';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -473,7 +476,13 @@ function startRequestServers(): void {
   // blocked loop and never run. Fail-soft throughout — a spawn failure disables the
   // sentinel and leaves the host running. Kill-switch:
   // PAPERCUSP_EVENT_LOOP_SENTINEL=0 (or =observe to detect + log without killing).
-  startEventLoopSentinel();
+  // EI-19484853609145439: wire the lag monitor's last-read percentiles into
+  // the sentinel's SAME shared memory, so a kill/warn log from the (off-thread,
+  // block-immune) sentinel carries the last observed loop-lag numbers even
+  // though the lag monitor's own reader — a timer on the main loop — goes
+  // silent for the whole duration of the block that triggered the sentinel.
+  const sentinel = startEventLoopSentinel();
+  setLagPublishTarget(sentinel.sab);
 
   // D4 (infra-fail-fast-build-integrity P-017): graceful HTTP connection-drain on
   // SIGTERM/SIGINT for the HTTP-SERVING process — the single-process host AND each

@@ -153,6 +153,7 @@ const timer = setInterval(() => {
           stalenessMs: action.stalenessMs,
           wedgeAfterMs: thresholds.wedgeAfterMs,
           consecutiveStale: action.consecutiveStale,
+          ...lastKnownLag(),
         });
       }
       return;
@@ -171,6 +172,7 @@ const timer = setInterval(() => {
           stalenessMs: action.stalenessMs,
           consecutiveStale: action.consecutiveStale,
           pid,
+          ...lastKnownLag(),
         },
       );
       return;
@@ -200,6 +202,7 @@ const timer = setInterval(() => {
           mode,
           pid,
           reason: action.reason,
+          ...lastKnownLag(),
         },
       );
       if (mode === 'kill') {
