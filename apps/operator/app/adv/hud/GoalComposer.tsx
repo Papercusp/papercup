@@ -108,6 +108,12 @@ export default function GoalComposer({
       description="An agent takes this on and owns it end to end."
       contentClassName="hud-goal-composer"
     >
+      {!harnessSlug ? (
+        <p className="hud-goal-composer__failure" role="alert" data-testid="goal-composer-no-harness">
+          Pick a harness first — a goal is filed against one, and its agent is
+          bootstrapped into it. Nothing was started.
+        </p>
+      ) : (
       <form
         className="hud-goal-composer__form"
         onSubmit={(e) => {
@@ -189,6 +195,7 @@ export default function GoalComposer({
           </button>
         </div>
       </form>
+      )}
     </Modal>
   );
 }
