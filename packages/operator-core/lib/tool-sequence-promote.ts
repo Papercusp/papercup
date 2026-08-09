@@ -279,6 +279,8 @@ export interface PromoteEverywhereResult {
   coalesced: number;
   graduated: number;
   heldForEvidence: number;
+  /** Any workspace whose read hit the row ceiling — see PromoteToolSequencesResult. */
+  truncated: boolean;
   disabled: boolean;
 }
 
@@ -296,7 +298,7 @@ export async function promoteToolSequencesEverywhere(
 ): Promise<PromoteEverywhereResult> {
   const log = deps.log ?? (() => {});
   if (process.env[SEQUENCE_PROMOTION_KILL_ENV] === 'off') {
-    return { targets: [], filed: 0, coalesced: 0, graduated: 0, heldForEvidence: 0, disabled: true };
+    return { targets: [], filed: 0, coalesced: 0, graduated: 0, heldForEvidence: 0, truncated: false, disabled: true };
   }
 
   const spanHours = (opts.windows ?? 7) * (opts.windowHours ?? 24);
@@ -312,6 +314,7 @@ export async function promoteToolSequencesEverywhere(
     coalesced: 0,
     graduated: 0,
     heldForEvidence: 0,
+    truncated: false,
     disabled: false,
   };
 
@@ -328,6 +331,7 @@ export async function promoteToolSequencesEverywhere(
       out.coalesced += r.coalesced.length;
       out.graduated += r.graduated.length;
       out.heldForEvidence += r.heldForEvidence;
+      out.truncated ||= r.truncated;
     } catch (err) {
       log(`promoteToolSequencesEverywhere: ${t.workspaceId} failed (${(err as Error)?.message ?? String(err)})`);
     }

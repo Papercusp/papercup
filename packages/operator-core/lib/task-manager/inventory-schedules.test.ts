@@ -60,17 +60,42 @@ describe('projectScheduleRows (P-019)', () => {
     expect(r.process).toBeNull();
   });
 
-  it('keys on source+scope+name, so the SAME sweep from two sources does not collide', () => {
-    // The real shape this guards: one sweep registered locally as `managed` and
-    // reported again by a sibling as `external-process`. Keying on name alone yields a
-    // duplicate React key and silently drops one row — losing precisely the federated
-    // row that tells you the timer runs somewhere else.
+  it('separates the SAME timer reported by two different sibling PROCESSES', () => {
+    // ⚠ REGRESSION TEST FOR A BUG THIS SUITE ORIGINALLY MISSED. The first key was
+    // `source:scope:name`, which passed a fixture-based uniqueness test and then
+    // collided on 35 keys / 138 rows against the live inventory. This is the exact
+    // shape it could not see: one timer, reported by two sibling processes, identical
+    // in every field the old key used and differing ONLY in `detail.process`.
     const rows = projectScheduleRows([
-      row({ source: 'managed', name: 'dbos-executor-reaper' }),
-      row({ source: 'external-process', name: 'dbos-executor-reaper' }),
-      row({ source: 'managed', scope: 'harness', name: 'dbos-executor-reaper' }),
+      row({ source: 'external-process', name: 'await-event-sweeper', detail: { process: 'operator:3170' } }),
+      row({ source: 'external-process', name: 'await-event-sweeper', detail: { process: 'operator:3270' } }),
+    ]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+  });
+
+  it('separates rows differing only by installSlug or category', () => {
+    // `routines` is the largest source (351 of 559 in one live sample) and repeats
+    // names across installs; category separates a watchdog from a sweep of the same name.
+    const rows = projectScheduleRows([
+      row({ source: 'routines', name: 'loop-tick', installSlug: 'papercusp' }),
+      row({ source: 'routines', name: 'loop-tick', installSlug: 'oddsmith' }),
+      row({ source: 'routines', name: 'loop-tick', installSlug: 'papercusp', category: 'watchdog' }),
     ]);
     expect(new Set(rows.map((r) => r.key)).size).toBe(3);
+  });
+
+  it('GUARANTEES uniqueness even when every encoded discriminator is identical', () => {
+    // The property that makes this durable rather than lucky. Two rows alike in every
+    // field the key encodes must STILL get distinct keys — otherwise a future source
+    // that repeats along an unencoded axis silently drops rows from the render, which
+    // is invisible in exactly the way this pane exists to prevent. Uniqueness is bound
+    // to "one key per row", not to a guess about which fields discriminate.
+    const rows = projectScheduleRows([row(), row(), row()]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(3);
+    // The first row keeps the clean natural key; only collisions are suffixed, so the
+    // common case stays readable and stable across refreshes.
+    expect(rows[0].key).not.toContain('#');
+    expect(rows[1].key).toBe(`${rows[0].key}#1`);
   });
 
   it('normalises every optional field to an explicit null', () => {

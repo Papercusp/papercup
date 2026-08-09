@@ -367,6 +367,59 @@ test('WI-36943 — recurrence guard: edge-throttle count alone (edge+wall === to
   assert.match(r.advice, /OWNER-GATED/);
 });
 
+/**
+ * fleet-lead-instrumentation-audit-2026-08-09 P-007. The live 2026-08-09T05:11Z reading on
+ * fleet `nonp2p-bug-drain`: 4 accounts, blind:true / blindAccounts:2, usableAccounts:0,
+ * factor:0, inFlight:0 — so the WI-36943 inFlight guard above cannot fire and the advice fell
+ * through to the OWNER-GATED escalation. An accounts:probe-capacity run moments later found
+ * THREE OF FOUR accounts answering 200. The escalation was manufactured from stale data.
+ */
+test('P-007 — a BLIND pool reading must not manufacture an owner-gated egress escalation', () => {
+  const hr = {
+    reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, queueDepth: 4, inFlight: 0,
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 4 }] },
+  };
+  const accountAvailability = {
+    provider: 'claude', total: 4, available: 0, usable: 0,
+    // edge(2) + wall(2) === total(4) → the WI-36943 "provably neither" bound cannot fire,
+    // and inFlight is 0 → its traffic evidence cannot fire either. Blindness is the ONLY
+    // thing standing between this reading and a false owner escalation.
+    edgeThrottledCount: 2, usageWalledCount: 2,
+    blindCount: 2, // 2/4 = 0.5 → majority-blind
+    sustainedlyLimitedCount: 4,
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.blind, true, 'fixture must actually be blind, or this test proves nothing');
+  assert.equal(r.poolExhausted, true, 'the operational half stays real — HOLD placements is still correct');
+  assert.match(r.advice, /EXHAUSTED/);
+  // The three clauses that sent a leader at the owner:
+  assert.doesNotMatch(r.advice, /DOMINANT CAUSE/, 'a blind reading cannot establish a dominant cause');
+  assert.doesNotMatch(r.advice, /OWNER-GATED/, 'must not manufacture an owner escalation from stale data');
+  assert.doesNotMatch(r.advice, /escalate rather than waiting/i);
+  // …replaced by the one call that actually resolves the ambiguity:
+  assert.match(r.advice, /NOT an owner escalation/i);
+  assert.match(r.advice, /accounts:probe-capacity/);
+});
+
+test('P-007 — companion: the SAME fixture with a non-blind reading still escalates (blindness is what suppresses it)', () => {
+  // Falsifiability control. Without this, the assertions above could be passing because the
+  // fixture never reaches the escalation branch at all, rather than because `blind` gates it.
+  const hr = {
+    reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, queueDepth: 4, inFlight: 0,
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 4 }] },
+  };
+  const accountAvailability = {
+    provider: 'claude', total: 4, available: 0, usable: 0,
+    edgeThrottledCount: 2, usageWalledCount: 2,
+    blindCount: 0, // the ONLY difference from the test above
+    sustainedlyLimitedCount: 4,
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.blind, false);
+  assert.match(r.advice, /DOMINANT CAUSE/, 'a MEASURED edge-throttle majority may still escalate');
+  assert.match(r.advice, /OWNER-GATED/);
+});
+
 test('EI-18683773458136367 — shared-egress evidence UNKNOWN (not supplied) ⇒ unchanged legacy phrasing (fail-safe-omit)', () => {
   // Regression guard for backward compat: omitting the new fields must reproduce byte-for-byte the
   // same OWNER-GATED escalate language as before this fix (the EI-18664933641195210 test above).

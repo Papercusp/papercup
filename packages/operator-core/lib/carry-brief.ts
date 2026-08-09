@@ -823,7 +823,9 @@ export function renderCarryBriefColdExtras(
     );
   }
   if (brief.facts.length > 0) {
-    const lines = brief.facts.map((f) => `  • ${f.key}: ${cap(f.body, COLD_FACT_BODY_CAP)}`);
+    // Same fix as the held-item checkpoint above — a fact body can carry a
+    // later imperative/supersession clause past the excerpt cut too.
+    const lines = brief.facts.map((f) => `  • ${f.key}: ${capPreservingOperative(f.body, COLD_FACT_BODY_CAP)}`);
     sections.push(
       `Your standing facts (owner-scoped; folded into every orient until retracted — walls/commitments live here):\n${lines.join('\n')}`,
     );

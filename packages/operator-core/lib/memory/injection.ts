@@ -34,7 +34,11 @@ import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
 // P-003. Pure — no I/O, no PG, and its two imports are type-only, so this stays
 // a static import while the SNAPSHOT read (which does pull the search graph)
 // remains dynamic below, beside the rest of the corpus leg's dynamic imports.
-import { assessCorpusCoverageGate, type CorpusGateDecision } from './corpus-coverage-gate';
+import {
+  assessCorpusCoverageGate,
+  CORPUS_GATE_SOURCES,
+  type CorpusGateDecision,
+} from './corpus-coverage-gate';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import {
@@ -598,9 +602,9 @@ export function _resetCorpusLegHealthForTests(): void {
  * Everything expensive is already paid for elsewhere: the coverage numbers come
  * from the samples the twice-hourly alarm persists, read through
  * `loadCoverageSnapshotCached` (one indexed DISTINCT ON, TTL-memoised, never a
- * live COUNT scan). The sources asked about are the leg's OWN
- * `CORPUS_SOURCE_NAMES`, imported rather than restated, so the gate cannot end
- * up judging a source the leg does not read — or missing one it does.
+ * live COUNT scan). The sources asked about are `CORPUS_GATE_SOURCES`, pinned
+ * by test against the leg's own list — see the note on that constant for why it
+ * is a pinned copy rather than an import.
  *
  * FAIL-OPEN, and the direction is deliberate: a gate that cannot be evaluated
  * returns `null`, which renders the section exactly as it does today. The
@@ -623,11 +627,12 @@ async function assessCorpusGate(
 ): Promise<CorpusGateDecision | null> {
   try {
     const { sql } = getOrgPg();
-    const [{ loadCoverageSnapshotCached, assessSearchCoverage }, { CORPUS_SOURCE_NAMES }] =
-      await Promise.all([import('../search/coverage-gate'), import('./corpus-recall-io')]);
+    const { loadCoverageSnapshotCached, assessSearchCoverage } = await import(
+      '../search/coverage-gate'
+    );
     const snapshot = await loadCoverageSnapshotCached(sql, workspaceId);
     return assessCorpusCoverageGate({
-      coverage: assessSearchCoverage(CORPUS_SOURCE_NAMES, snapshot),
+      coverage: assessSearchCoverage(CORPUS_GATE_SOURCES, snapshot),
       embedderAvailable: res.embedderAvailable,
       legs: res.legs,
       retrievalDepth: res.retrievalDepth,

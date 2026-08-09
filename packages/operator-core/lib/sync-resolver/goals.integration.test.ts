@@ -182,8 +182,9 @@ function closedItem(id: string, updatedTs = CLOSED_AT): Promise<void> {
 
 async function usage(slug: string, tsMs: number, costUsd: number): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.agent_usage_samples (workspace_id, ts, harness_slug, cost_usd, bucket_key)
-    VALUES (${WS}, ${tsMs}, ${slug}, ${costUsd}, 'b')
+    INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, ts, harness_slug, cost_usd, bucket_key, provider, model_class, source)
+    VALUES (${WS}, ${tsMs}, ${slug}, ${costUsd}, 'b', 'anthropic', 'sonnet', 'test')
   `;
 }
 
@@ -195,7 +196,7 @@ describe('goals.* resolvers against real SQL', () => {
     await goal();
     await project('alpha');
     await workItem('WI-1');
-    await workItem('WI-2', { status: 'done' });
+    await closedItem('WI-2');
     await workItem('WI-3', { needsHuman: true });
 
     const out = await resolveGoalsList({ workspaceId: WS });
@@ -242,11 +243,10 @@ describe('goals.* resolvers against real SQL', () => {
     // yield a field that looks populated and parses to NaN downstream (every
     // row then silently renders "unknown age").
     const { resolveGoalDetail } = await import('./goals');
-    const updated = Date.parse('2026-08-03T12:00:00Z');
-    const before = Date.now();
+    const updated = Date.parse('2026-08-05T09:30:00Z');
     await goal();
     await project('alpha');
-    await workItem('WI-done', { status: 'done', updatedTs: updated });
+    await closedItem('WI-done', updated);
 
     const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
       activity: Array<{ closedAt: string | null; updatedAt: string | null }>;
@@ -257,14 +257,12 @@ describe('goals.* resolvers against real SQL', () => {
     // conversion under test.
     expect(new Date(row.updatedAt as string).getTime()).toBe(updated);
 
-    // `closed_ts` is stamped by the trigger at insert time, so it is asserted
-    // as a real, parseable instant in a plausible window rather than a value
-    // the test handed itself.
+    // `closed_ts` travels the same bigint→timestamp conversion, and the two are
+    // asserted to DIFFER so a resolver that mapped one column into both fields
+    // could not pass.
     expect(row.closedAt).not.toBeNull();
-    const closedMs = new Date(row.closedAt as string).getTime();
-    expect(Number.isFinite(closedMs)).toBe(true);
-    expect(closedMs).toBeGreaterThanOrEqual(before - 60_000);
-    expect(closedMs).toBeLessThanOrEqual(Date.now() + 60_000);
+    expect(new Date(row.closedAt as string).getTime()).toBe(CLOSED_AT);
+    expect(row.closedAt).not.toBe(row.updatedAt);
   });
 
   it('KEEPS a removed project in the payload, carrying removedAt', async () => {

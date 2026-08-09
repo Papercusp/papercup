@@ -338,6 +338,52 @@ describe('computeRubricStaleness (P-011)', () => {
     expect(computeRubricStaleness([crit('c', 'unknown', 'unknown')], { minSamples: 2 }).stale).toBe(true);
   });
 
+  // A NEVER-GRADED rubric used to return the reassuring "criteria are being assessed"
+  // — byte-identical to a well-assessed one. Measured on the live store: 13-scorecard
+  // `autoloop-release-readiness` and 0-scorecard `cup-lifecycle-durability` produced the
+  // same staleness block. An agent standing up new success criteria reads this to decide
+  // whether its grading rails are live, so the false-clean is load-bearing.
+  it('does NOT report a never-graded rubric as clean — assessed:false, and the reason says UNKNOWN', () => {
+    const r = computeRubricStaleness([]);
+    expect(r.stale).toBe(false); // nothing was flagged...
+    expect(r.assessed).toBe(false); // ...but nothing was JUDGED either
+    expect(r.judgedCriteria).toBe(0);
+    expect(r.reason).toMatch(/UNKNOWN, not clean/);
+    expect(r.reason).toMatch(/never been graded/);
+    // The regression control: it must NOT claim assessment is happening.
+    expect(r.reason).not.toMatch(/criteria are being assessed/);
+  });
+
+  it('distinguishes never-graded from genuinely-assessed (they must not render alike)', () => {
+    const neverGraded = computeRubricStaleness([]);
+    const assessed = computeRubricStaleness([crit('end-to-end-flow', 'healthy', 'degraded', 'broken')]);
+    // Both are stale:false — that is exactly why `stale` alone cannot be trusted.
+    expect(neverGraded.stale).toBe(assessed.stale);
+    // The new fields are what separate them.
+    expect(neverGraded.assessed).toBe(false);
+    expect(assessed.assessed).toBe(true);
+    expect(assessed.judgedCriteria).toBe(1);
+    expect(neverGraded.reason).not.toBe(assessed.reason);
+  });
+
+  it('treats "every criterion below minSamples" as UNKNOWN too, not clean', () => {
+    // 2 unknowns < minSamples 3 → nothing judgeable, so this is not a clean bill either.
+    const r = computeRubricStaleness([crit('c', 'unknown', 'unknown')]);
+    expect(r.stale).toBe(false);
+    expect(r.assessed).toBe(false);
+    expect(r.judgedCriteria).toBe(0);
+    expect(r.reason).toMatch(/UNKNOWN, not clean/);
+  });
+
+  it('counts only the criteria it could actually judge', () => {
+    const r = computeRubricStaleness([
+      crit('judged-a', 'healthy', 'degraded', 'broken'), // 3 samples → judged
+      crit('too-quiet', 'healthy'), // 1 sample → not judged
+    ]);
+    expect(r.assessed).toBe(true);
+    expect(r.judgedCriteria).toBe(1);
+  });
+
   it('flags at/above the staleFraction threshold (default 0.5)', () => {
     // 2/4 unknown = 0.5 → stale (>= threshold).
     expect(computeRubricStaleness([crit('c', 'unknown', 'unknown', 'healthy', 'degraded')]).stale).toBe(true);

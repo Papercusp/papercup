@@ -1012,6 +1012,14 @@ async function recipeHygieneTick(): Promise<void> {
             `coalesced ${r.sequences.coalesced}, ${r.sequences.heldForEvidence} still accruing evidence`,
         );
       }
+      // Say it whether or not anything graduated: a truncated read makes a degraded
+      // sweep look like a quiet week, which is the one failure that hides itself.
+      if (r.sequences?.truncated) {
+        console.warn(
+          '[recipe-hygiene] tool-sequence read hit its row ceiling — this sweep judged a SHORTER ' +
+            'span than configured; raise maxRows (see DEFAULT_MAX_ROWS in tool-sequence-patterns.ts)',
+        );
+      }
     } catch (err) {
       console.warn(`[recipe-hygiene] run skipped (non-fatal): ${(err as Error).message}`);
     }

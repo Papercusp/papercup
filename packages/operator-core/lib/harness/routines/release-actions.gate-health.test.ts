@@ -214,9 +214,15 @@ describe('P-005: trackGateStall opens/closes the gate-red-streak CONDITION', () 
     // one un-owned red, losing the metadata write corrupts the streak state itself.
     broadcastSevereEvent.mockRejectedValueOnce(new Error('coord down'));
     seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() };
+    // The failure is REPORTED, not swallowed — assert the warn explicitly rather than
+    // silencing it, so "fails safe" cannot quietly become "fails silently".
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await expect(trackGateStall(ctx, 'error')).resolves.not.toThrow();
+
     expect(written().consecutiveReds).toBe(stallReds);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('red-streak condition broadcast failed'));
+    warn.mockRestore();
   });
 });
 

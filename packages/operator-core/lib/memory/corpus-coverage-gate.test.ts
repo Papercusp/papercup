@@ -17,7 +17,8 @@
 import { describe, expect, it } from 'vitest';
 import type { SearchLegs } from '@papercusp/search';
 import type { SearchCoverageReport, SourceCoverageAssessment } from '../search/coverage-gate';
-import { assessCorpusCoverageGate } from './corpus-coverage-gate';
+import { assessCorpusCoverageGate, CORPUS_GATE_SOURCES } from './corpus-coverage-gate';
+import { CORPUS_SOURCE_NAMES } from './corpus-recall-io';
 
 const RETRIEVAL_DEPTH = 24;
 
@@ -98,6 +99,17 @@ const gate = (over: Partial<Parameters<typeof assessCorpusCoverageGate>[0]> = {}
     retrievalDepth: RETRIEVAL_DEPTH,
     ...over,
   });
+
+describe('CORPUS_GATE_SOURCES', () => {
+  it('is pinned to the sources the corpus leg actually reads', () => {
+    // The gate keeps its OWN copy (both injection suites mock corpus-recall-io
+    // down to one export, so importing the real list would resolve `undefined`
+    // and silently disable the gate under test). This assertion is what makes
+    // the copy safe: widen the leg's sources without widening the gate's and
+    // this fails, instead of the gate quietly judging a stale scope.
+    expect([...CORPUS_GATE_SOURCES]).toEqual([...CORPUS_SOURCE_NAMES]);
+  });
+});
 
 describe('assessCorpusCoverageGate', () => {
   it('is ok when the semantic source is healthy and the embedder ran', () => {

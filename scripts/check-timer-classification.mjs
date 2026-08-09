@@ -38,8 +38,46 @@
  * file:startOffset) would catch that but adds real complexity for a marginal gain the
  * shrink-to-empty discipline (this BASELINE going to zero) removes entirely anyway.
  *
- * EXCLUDED (never scanned): vendored / build output / _retired / tests / non-source /
- *   .tsx (browser timers use the client sync layer, not managedSetInterval).
+ * ── TWO POPULATIONS, ONE TAXONOMY ─────────────────────────────────────────────────
+ *
+ * HOST timers (`managedSetInterval`) are covered by the scan described above.
+ *
+ * CLIENT timers (raw `setInterval` in the webview) are covered by the CLIENT scan below.
+ * They were previously excluded outright, on the stated rationale that ".tsx browser
+ * timers use the client sync layer, not managedSetInterval". Measured 2026-08-09 (P-026)
+ * that rationale is FALSE: 59 raw `setInterval` sites across 53 client files, of which
+ * only 10 carried any annotation at all. A client poller against an event-driven store is
+ * the SAME defect D-004 names — `notifySyncInvalidate` already pushes those updates — so
+ * it belongs under the same taxonomy, not a second one with a competing vocabulary.
+ *
+ * WHY THIS GUARD AND NOT `lint:no-raw-setinterval`: the two partition by REACHABILITY,
+ * not by preference. That guard's job is REGISTRY VISIBILITY (`schedule:inventory`), which
+ * a webview timer structurally cannot have — it runs in the renderer and cannot reach the
+ * host registry — so it excludes `.tsx` wholesale and allowlists browser/client `.ts` by
+ * name. Those exclusions are precisely this scan's scope: the population that guard hands
+ * off is the population nothing was checking. `client-timer-classification.test.ts` asserts
+ * the handoff stays airtight, so a file cannot fall between the two.
+ *
+ * CLIENT DECLARATION FORM is a COMMENT, not an option — there is no call seam to pass one
+ * through, and inventing a client wrapper purely to carry an argument would be a large
+ * refactor for a declaration a comment already expresses. This formalizes the convention
+ * the P-058 audit already left in the tree ("Documented polling exception (audit P-058):
+ * …", "the documented UI-timer exception …") into something machine-checkable:
+ *
+ *     // timer-classification: ui-timer — relative-time re-render, no data read
+ *     const t = setInterval(() => setNow(Date.now()), 1000);
+ *
+ * The client vocabulary adds `ui-timer` to the D-004 three: a pure render tick that reads
+ * NO store (re-rendering "3m ago" labels). D-005 already blessed exactly this shape, and 18
+ * of the 59 measured sites are it — a guard that flagged them would be pure noise, and a
+ * noisy guard gets disabled, which is the failure D-004 explicitly warns about.
+ *
+ * THE VERDICT IS "DID YOU DECLARE?", NEVER "IS YOUR CLASSIFICATION RIGHT". A lint cannot
+ * tell a legitimate external probe from a lazy poll; only a reader can. The heuristic that
+ * split clock-ticks from data-reads was used ONLY to seed CLIENT_BASELINE from a measured
+ * population — it never decides a verdict, so its false positives cost nothing.
+ *
+ * EXCLUDED (never scanned): vendored / build output / _retired / tests / non-source.
  *
  * ALLOWLIST_DIRS (permanently allowed): the registry's own impl + test files (the
  *   `classification:` option they define/exercise, not a call site needing one).
@@ -159,6 +197,36 @@ export const BASELINE = new Set([
   'packages/plugin-loader/src/daemon/supervisor.ts',
 ]);
 
+/**
+ * Browser/client `.ts` files (non-.tsx) that run in the WEBVIEW, not the host.
+ *
+ * Kept as an explicit list rather than sniffed from content: `window.`/`useEffect` markers
+ * appear in server files in strings and comments, and a sniffer's false positives would
+ * land on NEW files — the only ones this guard actually gates. These are exactly the
+ * entries `check-no-raw-setinterval.mjs` allowlists with a browser/client reason (its
+ * SEPARATE-PROCESS entries — the :8788 gateway, the systemd watchdogs, the perf children —
+ * are deliberately NOT here: those are host-shaped, just in another process).
+ * `client-timer-classification.test.ts` fails if that guard grows a browser/client entry
+ * this set does not know, so the handoff cannot silently develop a hole.
+ */
+export const CLIENT_TS_FILES = new Set([
+  'apps/operator/app/_components/SetupWizard/useWizardStatuses.ts',
+  'apps/operator/app/_components/voice/voice-leader.ts',
+  'apps/operator/app/_components/useWslGateBlocking.ts',
+  'apps/operator/app/admin/plans/plans-api.ts',
+  'apps/operator/app/admin/testing/_lib/vitals-recorder.ts',
+  'apps/operator/lib/ui/use-ui-presence.ts',
+  'apps/operator-vite/src/lib/video/camera-capture.ts',
+  'packages/operator-core/lib/operator-window-sync.ts',
+  'packages/operator-core/lib/voice-engines/deepgram.ts',
+]);
+
+/** True iff `f` is CLIENT code (webview), i.e. in scope for the raw-timer classification scan. */
+export const isClientFile = (f) => f.endsWith('.tsx') || CLIENT_TS_FILES.has(f);
+
+/** The classification vocabulary. `ui-timer` is client-only (D-005): a pure render tick. */
+export const CLASSIFICATIONS = ['must-sample', 'timeout-reaper', 'violation', 'ui-timer'];
+
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
   f.includes('/_retired/') ||
@@ -175,8 +243,8 @@ export const isExcluded = (f) =>
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||
-  f.endsWith('.tsx') ||
-  !/\.(ts|mjs|cjs)$/.test(f);
+  // P-026: `.tsx` is no longer excluded — it IS the client population (see the header).
+  !/\.(tsx|ts|mjs|cjs)$/.test(f);
 
 /** Strip block (incl. JSDoc) + line comments so a prose mention doesn't confuse detection. */
 export function stripComments(text) {

@@ -843,14 +843,30 @@ export function computeRubricStaleness(
   }
 
   const stale = staleCriteria.length > 0;
+  // `stale:false` has TWO opposite meanings and they must not render alike: "we judged
+  // the criteria and nothing drifted" vs "we could not judge anything at all". A rubric
+  // that has NEVER been graded yields criteria:[], so the loop above never runs and the
+  // old code returned the reassuring "criteria are being assessed" — a claim that is
+  // simply false, and indistinguishable from a well-assessed rubric (measured: a 13-
+  // scorecard rubric and a 0-scorecard one returned byte-identical staleness). That
+  // false-clean is load-bearing here, because an agent standing up NEW success criteria
+  // reads this to decide whether its grading rails are live. scorecards:freshness
+  // already reports the same rubric correctly as status:'stale'/emitted:false.
+  const assessed = judgedCriteria > 0;
   return {
     stale,
     staleCriteria,
+    judgedCriteria,
+    assessed,
     reason: stale
       ? `${staleCriteria.length} criteri${staleCriteria.length === 1 ? 'on' : 'a'} persistently unassessable (${staleCriteria
           .map((s) => s.criterion)
           .join(', ')}) — the rubric model may have drifted; re-ratify via the queen↔scout loop`
-      : 'no staleness detected (criteria are being assessed)',
+      : assessed
+        ? `no staleness detected (${judgedCriteria} criteri${judgedCriteria === 1 ? 'on is' : 'a are'} being assessed)`
+        : criteria.length === 0
+          ? 'UNKNOWN, not clean — NO scorecards in window, so this rubric has never been graded and nothing could be judged. Check scorecards:freshness for the emission gap before treating this as healthy.'
+          : `UNKNOWN, not clean — none of the ${criteria.length} criteri${criteria.length === 1 ? 'on' : 'a'} has the ${minSamples}+ non-idle ratings needed to judge staleness, so nothing could be judged.`,
   };
 }
 

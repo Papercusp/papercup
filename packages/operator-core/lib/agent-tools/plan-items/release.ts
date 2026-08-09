@@ -82,6 +82,57 @@ export default defineTool({
       },
       { keyOf: (it) => ({ plan: it.plan, item: it.item }) },
     );
-    return bulkContent(env);
+
+    // ── P-012 (coordination-spec-adoption-2026-08-03): the second dispatch
+    // handle site. Releasing a plan lane is the exact moment a peer could take
+    // it, and this surface natively speaks dispatch's shape — (plan, P-NNN).
+    //
+    // NB the plan item named work_items:release for this. That is the WRONG
+    // surface and would have shipped a broken handle: coord:dispatch's `items`
+    // are PLAN items, work_items:release releases WORK items, and the two are
+    // linked only through a plan_item_stamp relation — so a handle there needs a
+    // per-row join on a bulk write path, or it ships a target with no items,
+    // which is precisely the "bare wake that reads as a hand-off" shape
+    // dispatch-handle.ts exists to refuse. plan_items:release is the sibling
+    // that already holds the lane.
+    //
+    // Fail-soft BY CONTRACT: this is an affordance on a WRITE that has already
+    // committed. A presence hiccup must degrade to no handle, never to a failed
+    // release.
+    const releasedLane = env.results.filter(
+      (r): r is BulkItemResult & { plan: string; item: string } =>
+        Boolean((r as { ok?: boolean }).ok) && Boolean((r as { released?: boolean }).released),
+    );
+    let dispatch: DispatchHandleResult = null;
+    if (releasedLane.length > 0) {
+      try {
+        // Dynamic import: presence-snapshot pulls the whole wakeability layer, and
+        // a static import here would drag it into every plan-items caller
+        // (EI-19281789650149592 is the same trap in coupling-divergence-stamp).
+        const { resolvePresenceScope, assemblePresenceSnapshot } = await import(
+          '../coordination/presence-snapshot'
+        );
+        const scope = await resolvePresenceScope(
+          ctx as { workspaceId?: string | null; harnessSlug?: string | null } | undefined,
+        );
+        const snap = await assemblePresenceSnapshot(scope);
+        const peers = (snap.active ?? []) as unknown as DispatchCandidate[];
+        dispatch = buildDispatchHandle(
+          {
+            planSlug: releasedLane[0].plan,
+            items: releasedLane.map((r) => r.item),
+            harness: args.harness ?? null,
+            note: `Releasing ${releasedLane[0].plan} ${releasedLane.map((r) => r.item).join(', ')} — the lane is free and the item bodies are inlined below. Claim and continue.`,
+          },
+          peers ?? [],
+          { selfOwnerId: id.ownerId },
+        );
+      } catch {
+        dispatch = null;
+      }
+    }
+
+    const out = bulkContent(env);
+    return dispatch ? { ...out, data: { ...(out as { data?: object }).data, dispatch } } : out;
   },
 });
