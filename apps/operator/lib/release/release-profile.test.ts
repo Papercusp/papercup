@@ -158,7 +158,7 @@ describe('rubricReleaseComponent — real adapter, injected deps', () => {
     expect(result.reason).toMatch(/c2' rated 'broken'/);
   });
 
-  it('carries gradedGeneration through as lineage', async () => {
+  it('carries gradedGeneration through as lineage — BOTH the sha and the generation boundary', async () => {
     const comp = rubricReleaseComponent('test-rubric', {
       deps: {
         getRubric: async () => rubric(),
@@ -166,7 +166,113 @@ describe('rubricReleaseComponent — real adapter, injected deps', () => {
       },
     });
     const result = await comp.check();
-    expect(result.lineage).toEqual({ sha: 'shaX' });
+    // WI-5277: `generation` was previously DROPPED here, which is what made a restart that
+    // did not move the sha invisible to a profile's expectedLineage check.
+    expect(result.lineage).toEqual({ sha: 'shaX', generation: null });
+  });
+});
+
+/**
+ * WI-5277 — dead evidence must never authorize GO.
+ *
+ * The 2026-07-17 incident: a 4.5h soak and a 6/6 scorecard were voided by a bg-host
+ * restart three minutes after they were emitted, and NOTHING downstream could tell. The
+ * stamp (`gradedGeneration.hostStartedAt`) had been persisted since EI-12147, but no read
+ * path ever compared it against the live boundary — so the only thing preventing a GO
+ * being assembled from dead evidence was a hand-written, expiring fact.
+ *
+ * These drive the REAL adapter (`rubricReleaseComponent().check()`) with injected deps,
+ * not the pure comparator — the comparator already had unit coverage while the wiring
+ * that matters did not exist, which is exactly the failure mode being guarded against.
+ */
+describe('WI-5277 — a scorecard graded against a DEAD generation cannot authorize GO', () => {
+  /** EI-14957's real numbers: the restart moved the boundary but NOT the sha. */
+  const SHARED_SHA = '7beca0c677';
+  const GRADED_BOUNDARY = '2026-07-17T14:39:17.000Z';
+  const LIVE_BOUNDARY_AFTER_RESTART = '2026-07-17T17:25:32.000Z';
+
+  function component(opts: {
+    gradedHostStartedAt: string | null;
+    liveBoundaryMs: number | null;
+    ratings?: ScorecardRow['ratings'];
+  }) {
+    return rubricReleaseComponent('test-rubric', {
+      deps: {
+        getRubric: async () => rubric(),
+        listScorecards: async () => [
+          scorecardRow({
+            gradedGeneration: { deployedSha: SHARED_SHA, hostStartedAt: opts.gradedHostStartedAt },
+            ...(opts.ratings ? { ratings: opts.ratings } : {}),
+          }),
+        ],
+        readBgHostActiveEnterMs: async () => opts.liveBoundaryMs,
+      },
+    });
+  }
+
+  it('PRECONDITION — the very same all-pass fixture verdicts PASS while its generation is still live', async () => {
+    // Without this, every assertion below is satisfiable by a fixture that was never
+    // capable of passing in the first place, and the guard would prove nothing.
+    const result = await component({
+      gradedHostStartedAt: GRADED_BOUNDARY,
+      liveBoundaryMs: Date.parse(GRADED_BOUNDARY),
+    }).check();
+    expect(result.verdict).toBe('pass');
+  });
+
+  it('downgrades a 6/6 PASS to unknown once bg-host has restarted past the graded generation', async () => {
+    const result = await component({
+      gradedHostStartedAt: GRADED_BOUNDARY,
+      liveBoundaryMs: Date.parse(LIVE_BOUNDARY_AFTER_RESTART),
+    }).check();
+    expect(result.verdict).toBe('unknown');
+    expect(result.reason).toMatch(/no longer exists/);
+    expect(result.reason).toContain(LIVE_BOUNDARY_AFTER_RESTART);
+  });
+
+  it('CONTROL — the pre-fix signal (lineage.sha) is IDENTICAL across that restart, so only the boundary check can catch it', async () => {
+    // The pre-WI-5277 code compared shas and nothing else. In EI-14957 the sha did not
+    // move, so sha equality was — and still is — satisfied by the dead generation. This
+    // pins that the 'unknown' above cannot have come from a sha mismatch: the component
+    // reports the SAME sha it always did, and still refuses. Delete the staleness branch
+    // and this test reds, because the verdict reverts to 'pass'.
+    const result = await component({
+      gradedHostStartedAt: GRADED_BOUNDARY,
+      liveBoundaryMs: Date.parse(LIVE_BOUNDARY_AFTER_RESTART),
+    }).check();
+    expect(result.lineage).toEqual({ sha: SHARED_SHA, generation: GRADED_BOUNDARY });
+    expect(result.verdict).toBe('unknown');
+  });
+
+  it('CALIBRATION — a genuine FAIL is still reported as fail, not masked by the freshness path', async () => {
+    const result = await component({
+      gradedHostStartedAt: GRADED_BOUNDARY,
+      liveBoundaryMs: Date.parse(GRADED_BOUNDARY),
+      ratings: { c1: { rating: 'pass', evidence: 'e' }, c2: { rating: 'broken', evidence: 'e' } },
+    }).check();
+    expect(result.verdict).toBe('fail');
+  });
+
+  it('BLAST RADIUS — an UNREADABLE live boundary does NOT block GO; only a PROVEN restart does', async () => {
+    // Deliberate, and the conservative half of the design: readBgHostActiveEnterMs returns
+    // null whenever bg-host is not under systemd --user (CI, a dev box, a bundled build).
+    // Downgrading on "cannot tell" would turn this into a gate that blocks every release
+    // off-box. Only a POSITIVE stale determination blocks; an unresolvable boundary leaves
+    // the pre-existing verdict untouched and is surfaced as `unknown` freshness for a
+    // reader instead.
+    const result = await component({
+      gradedHostStartedAt: GRADED_BOUNDARY,
+      liveBoundaryMs: null,
+    }).check();
+    expect(result.verdict).toBe('pass');
+  });
+
+  it('a pre-stamp scorecard (no generation boundary at all) is likewise not blocked', async () => {
+    const result = await component({
+      gradedHostStartedAt: null,
+      liveBoundaryMs: Date.parse(LIVE_BOUNDARY_AFTER_RESTART),
+    }).check();
+    expect(result.verdict).toBe('pass');
   });
 });
 
