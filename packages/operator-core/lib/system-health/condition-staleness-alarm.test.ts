@@ -780,4 +780,43 @@ describe('runConditionStalenessTick — bridge wiring', () => {
     expect(bridgeCalls).toBe(0);
     expect(res.bridged).toEqual({ acquired: [], released: [], skipped: 0 });
   });
+
+  // REGRESSION GUARD (EI-19930875455827867): the tick MUST hand the bridge a concrete
+  // workspaceId.
+  //
+  // This assertion is deliberately about the OPTS the production call site passes —
+  // the one thing none of the sibling tests above check. All three of them stub
+  // `bridgeConditions` with a callback that ignores its second argument, and every
+  // condition-bridge integration test passes `{ workspaceId: WS }` explicitly. So the
+  // entire suite modelled a caller that supplies the workspace, while production
+  // supplied `{}` — 111 green tests over a bug that minted ~150 junk work-items/hour
+  // for five days. The defect was never in the normalization logic (D-022's
+  // `resolveStoredConditionHarness` is correct and was deployed); it was that its only
+  // caller passed nothing, and nothing asserted on what that caller passed.
+  //
+  // Assert the PROPERTY that fails in production (a concrete, non-empty workspace),
+  // not a specific value — the resolved workspace legitimately differs per deployment.
+  it('passes a concrete workspaceId to the bridge (never an empty opts object)', async () => {
+    const seenOpts: ({ workspaceId?: string } | undefined)[] = [];
+    await runConditionStalenessTick({
+      readStates: async () => [mkState({ condition_key: 'green-stall:papercusp', open: true })],
+      listOpen: async () => [],
+      escalate: async () => undefined,
+      homeHarness: () => 'papercusp',
+      bridgeConditions: async (_states, opts) => {
+        seenOpts.push(opts);
+        return { acquired: [], released: [], skipped: 0 };
+      },
+    });
+
+    expect(seenOpts).toHaveLength(1);
+    const opts = seenOpts[0];
+    expect(opts).toBeDefined();
+    // The exact failure mode: `workspaceId` undefined makes resolveWorkItemPot
+    // short-circuit and return the RAW member slug, so the ownership read misses a
+    // holder stored under the resolved pot slug.
+    expect(opts?.workspaceId).toBeDefined();
+    expect(typeof opts?.workspaceId).toBe('string');
+    expect((opts?.workspaceId ?? '').trim()).not.toBe('');
+  });
 });

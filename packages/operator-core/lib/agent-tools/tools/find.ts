@@ -11,7 +11,7 @@
  *
  * The semantic embedding index over the catalog is built at BOOT
  * (`warmToolFindIndex`, fired once at module load) with a settings-driven
- * embedder via `buildQueryEmbedder` (currently openai, 384-d) — so the semantic
+ * embedder via `buildQueryEmbedder` — so the semantic
  * leg is live for the FIRST agent call rather than each cold worker warming
  * lazily on first use (where rate-governed 551-tool warming may never finish
  * before a call lands, leaving agents perpetually on lexical-only). It rebuilds
@@ -20,6 +20,20 @@
  * lexical-only on any failure (no embedder, admission shed, fetch error) and the
  * result's `semantic` field reports which leg ran — so the tool is always
  * functional and never silently pretends semantic ran.
+ *
+ * ONE EMBEDDING SPACE, and deliberately unnamed here. `buildQueryEmbedder` is
+ * the SAME resolution the prose search uses, so the catalog index and every
+ * prose column live in one space — measured 2026-08-08: both gemma@768, 296,452
+ * session turns and 9,987 doc sections (P-019).
+ *
+ * ⚠ This comment used to say "currently openai, 384-d". It went stale when the
+ * embedder moved, and a plan item was later written FROM IT asserting the app
+ * ran two models at two dimensionalities. It does not, and never needed to —
+ * the point of routing through `buildQueryEmbedder` is that this file holds no
+ * opinion about model or width. Do not re-pin one here; a width named in prose
+ * is a claim nothing can keep true. `findTools` carries a width guard for the
+ * one mismatch that IS reachable: a boot-built index stranded in a different
+ * space by a settings change mid-process.
  */
 import { z } from 'zod';
 import { defineTool, listAllProjectedTools, AGENT_ROLES } from '@papercusp/agent-mcp';

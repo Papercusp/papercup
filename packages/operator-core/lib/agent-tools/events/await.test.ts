@@ -994,3 +994,73 @@ describe('EI-19344528739076339 — auto-scope a bare multi-pipeline gate key to 
     expect(String(out.unscoped_gate_key_advice)).toMatch(/never match|silent hang|can never/i);
   });
 });
+
+/**
+ * EI-19928976726540168 — the SAME auto-narrow as EI-19344528739076339 above, for the GLOB form
+ * of a gate-verdict key. The exact-key auto-narrow requires `!patternAwait`, so it never ran
+ * for `release:green:*` / `green-checkpoint:red:*` / `green-checkpoint:inconclusive:*` — the
+ * shape an agent reaches for when they actually want "any verdict for my pipeline". Live
+ * incident: a caller parked on `green-checkpoint:red:*` and was woken by a foreign pipeline's
+ * verdict, payload-shape-identical to its own.
+ */
+describe('EI-19928976726540168 — auto-scope a GLOB multi-pipeline gate key to THIS pipeline', () => {
+  const ORIGINAL_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
+  beforeEach(() => {
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/home/x/papercupai-workspace/papercusp';
+  });
+  afterEach(() => {
+    if (ORIGINAL_ROOT === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    else process.env.PAPERCUSP_INTEGRATION_ROOT = ORIGINAL_ROOT;
+  });
+
+  it('⭐ narrows a `release:green:*` pattern await to { pipeline } derived from THIS integration root', async () => {
+    const out = await call({ event: 'release:green:*' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { pipeline: { equals: 'papercusp' } },
+    });
+    expect(out.auto_scoped_payload_filter).toBe(true);
+    expect(out.payload_filter_source).toMatchObject({ source: 'pipeline', pipeline: 'papercusp' });
+  });
+
+  it('⭐ narrows `green-checkpoint:red:*` and `green-checkpoint:inconclusive:*` the same way', async () => {
+    await call({ event: 'green-checkpoint:red:*' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { pipeline: { equals: 'papercusp' } },
+    });
+    vi.clearAllMocks();
+    await call({ event: 'green-checkpoint:inconclusive:*' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { pipeline: { equals: 'papercusp' } },
+    });
+  });
+
+  /** The advice must compute the concrete scoped key by REPLACING the trailing `:*`, never
+   *  appending — appending onto the shared `autoScopedPipeline` var would render malformed
+   *  (`release:green:*:papercusp`), which is exactly why this uses separate variables. */
+  it('⭐ advice names the concrete pipeline-scoped key correctly (no malformed `:*:pipeline`)', async () => {
+    const out = await call({ event: 'green-checkpoint:red:*' });
+    expect(String(out.auto_scoped_payload_filter_advice)).toContain('green-checkpoint:red:papercusp');
+    expect(String(out.auto_scoped_payload_filter_advice)).not.toContain(':*:papercusp');
+  });
+
+  it('an explicit payload_filter always wins — never silently replaced', async () => {
+    const filter = { pipeline: { equals: 'oddsmith' } };
+    const out = await call({ event: 'release:green:*', payload_filter: filter });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: filter });
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+  });
+
+  it('⭐ WARNS instead of narrowing when this process\'s own pipeline cannot be resolved', async () => {
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/';
+    const out = await call({ event: 'green-checkpoint:red:*' });
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+    expect(out.unscoped_gate_key_await).toBe(true);
+    expect(String(out.unscoped_gate_key_advice)).toMatch(/never match|silent hang|can never/i);
+  });
+
+  it('does not fire for an unrelated glob', async () => {
+    const out = await call({ event: 'work-item:*' });
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+    expect(out.unscoped_gate_key_await).toBeUndefined();
+  });
+});

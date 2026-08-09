@@ -143,6 +143,24 @@ describe('GOAL mode', () => {
     expect(goal!.contract).toMatch(/never both/i);
   });
 
+  // P-013 / D-015. The item's premise was that taking a pot leaves its draft
+  // queue with NO disposer. Verified false: the scout-draft-review backstop
+  // never touches the steering gate (it goes sweep -> wakeMug, never pot:wake),
+  // and pauseNewWork empties the frontier, which makes the Mug reach plan-review
+  // SOONER rather than later. So the real hazard is the opposite one — two
+  // disposers racing the same queue, both writing dispositions that feed the
+  // Blender corpus. The clause has to say "do not double-dispose", and a clause
+  // that drifted back to "you are now the sole disposer" must fail here.
+  it('tells a goal agent that pausing placement does NOT pause draft disposal (P-013)', () => {
+    const c = goal!.contract;
+    expect(c).toMatch(/PAUSING PLACEMENT DOES NOT PAUSE DISPOSAL/);
+    expect(c).toMatch(/EXACTLY ONE disposition/);
+    // it must point at the Mug's rules rather than restate them (prompt weight)
+    expect(c).toContain('mug.base.md');
+    // and it must NOT claim the goal agent inherits sole ownership of the queue
+    expect(c).not.toMatch(/sole disposer|only disposer/i);
+  });
+
   it('gates child-executes proof on the cup ROLE, not the spawn-id prefix (P-002)', () => {
     expect(goal!.contract).toContain("adv_sessions.role = 'cup'");
     expect(goal!.contract).toMatch(/proves "spawned", NOT "cup"/);

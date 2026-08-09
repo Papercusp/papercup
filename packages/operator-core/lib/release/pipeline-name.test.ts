@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   currentPipelineName,
   isMultiPipelineGateKey,
+  isMultiPipelineGateKeyPattern,
   pipelineName,
   MULTI_PIPELINE_GATE_KEYS,
 } from './pipeline-name';
@@ -68,9 +69,12 @@ describe('currentPipelineName', () => {
 });
 
 describe('isMultiPipelineGateKey', () => {
-  it('⭐ flags the two GLOBALLY-emitted gate keys — the ones that fire from every co-hosted pipeline', () => {
+  it('⭐ flags the three GLOBALLY-emitted gate keys — the ones that fire from every co-hosted pipeline', () => {
     expect(isMultiPipelineGateKey('release:green')).toBe(true);
     expect(isMultiPipelineGateKey('green-checkpoint:red')).toBe(true);
+    // EI-19928976726540168: the third terminal-outcome family — was missing entirely before
+    // this fix, so even the EXACT-key form was unscoped for it.
+    expect(isMultiPipelineGateKey('green-checkpoint:inconclusive')).toBe(true);
   });
 
   it('does NOT flag an already pipeline-scoped key — that one is already safe', () => {
@@ -85,5 +89,33 @@ describe('isMultiPipelineGateKey', () => {
 
   it('every declared key is bare (no colon-suffixed pipeline segment baked in)', () => {
     for (const k of MULTI_PIPELINE_GATE_KEYS) expect(k.split(':').length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('isMultiPipelineGateKeyPattern', () => {
+  /**
+   * EI-19928976726540168: the glob form an agent reaches for when they actually want "any
+   * verdict for my pipeline" — exactly as cross-tenant as the bare key, but the exact-key
+   * auto-narrow never runs for it (it requires `!patternAwait`).
+   */
+  it('⭐ flags the exact `<family>:*` glob for each multi-pipeline gate key', () => {
+    expect(isMultiPipelineGateKeyPattern('release:green:*')).toBe(true);
+    expect(isMultiPipelineGateKeyPattern('green-checkpoint:red:*')).toBe(true);
+    expect(isMultiPipelineGateKeyPattern('green-checkpoint:inconclusive:*')).toBe(true);
+  });
+
+  it('does not flag a glob with no colon before the star', () => {
+    expect(isMultiPipelineGateKeyPattern('release:green*')).toBe(false);
+  });
+
+  it('does not flag a multi-segment or already-scoped glob', () => {
+    expect(isMultiPipelineGateKeyPattern('release:green:papercusp:*')).toBe(false);
+    expect(isMultiPipelineGateKeyPattern('release:green:papercusp')).toBe(false);
+  });
+
+  it('does not flag an unrelated glob or a bare non-glob key', () => {
+    expect(isMultiPipelineGateKeyPattern('work-item:*')).toBe(false);
+    expect(isMultiPipelineGateKeyPattern('release:green')).toBe(false);
+    expect(isMultiPipelineGateKeyPattern('')).toBe(false);
   });
 });

@@ -77,6 +77,13 @@ function fmtProgress(p: DownloadProgress): string {
   return `${fmtBytes(p.downloaded)} / ${fmtBytes(p.total)} (${pct}%)`;
 }
 
+/**
+ * The update LANES of this app — deliberately not every channel that can be cut.
+ * `nightly` is omitted on purpose: it is a side-by-side build with its own bundle
+ * id and data home, so it installs alongside this app rather than updating it,
+ * and offering it here would offer to replace someone's desktop with a different
+ * application. Do not "complete" this list from the release kit's `CHANNELS`.
+ */
 type Channel = 'alpha' | 'beta' | 'stable';
 
 const CHANNELS: readonly Channel[] = ['alpha', 'beta', 'stable'];

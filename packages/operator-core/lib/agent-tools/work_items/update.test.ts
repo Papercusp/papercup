@@ -11,11 +11,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
-vi.mock('../../work-items', () => ({ updateWorkItem: vi.fn(), mergeWorkItemPayload: vi.fn() }));
+vi.mock('../../work-items', () => ({
+  updateWorkItem: vi.fn(),
+  mergeWorkItemPayload: vi.fn(),
+  explainIssueClaimFloors: vi.fn(),
+}));
 
-import { updateWorkItem, mergeWorkItemPayload } from '../../work-items';
+import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors } from '../../work-items';
 const updM = vi.mocked(updateWorkItem);
 const mergeM = vi.mocked(mergeWorkItemPayload);
+const floorsM = vi.mocked(explainIssueClaimFloors);
 const tool = (await import('./update')).default;
 
 type Out = { data: any };
@@ -76,6 +81,51 @@ describe('work_items:update handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-14660' });
     expect(b.results[0].error).toMatch(/remote-authored/);
     expect(b.results[0].error).not.toMatch(/not found/);
+  });
+
+  // EI-19919820196426791: raising severity to critical/major on an item structurally
+  // unclaimable (observation lane / needs-human) used to report a plain ok:true with
+  // nothing flagging that the write can't move it into the work queue.
+  it('severity:major on an observation-lane item surfaces claimabilityWarning', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', harness: 'papercusp' } } as never);
+    floorsM.mockResolvedValue([
+      { id: 'EI-1', admissible: false, refusedBy: 'observation-lane', detail: 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)' },
+    ] as never);
+    const b = await body({ id: 'EI-1', severity: 'major' });
+    expect(floorsM).toHaveBeenCalledWith('papercusp', ['EI-1']);
+    expect(b.results[0].claimabilityWarning).toMatch(/structurally UNCLAIMABLE/);
+    expect(b.results[0].claimabilityWarning).toMatch(/observation/);
+  });
+
+  it('severity:critical on a needs-human item surfaces claimabilityWarning', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'WI-1', harness: 'papercusp' } } as never);
+    floorsM.mockResolvedValue([
+      { id: 'WI-1', admissible: false, refusedBy: 'needs-human', detail: 'payload.needsHuman = true — routed to a human for ratification (EI-7776)' },
+    ] as never);
+    const b = await body({ id: 'WI-1', severity: 'critical' });
+    expect(b.results[0].claimabilityWarning).toMatch(/needs a human|needs-human|human/i);
+  });
+
+  it('severity:minor never checks claim floors (only critical/major do)', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-2', harness: 'papercusp' } } as never);
+    const b = await body({ id: 'EI-2', severity: 'nit' });
+    expect(floorsM).not.toHaveBeenCalled();
+    expect(b.results[0].claimabilityWarning).toBeUndefined();
+  });
+
+  it('severity:major on an otherwise-admissible item adds no warning', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-3', harness: 'papercusp' } } as never);
+    floorsM.mockResolvedValue([{ id: 'EI-3', admissible: true, refusedBy: null, detail: null }] as never);
+    const b = await body({ id: 'EI-3', severity: 'major' });
+    expect(b.results[0].claimabilityWarning).toBeUndefined();
+  });
+
+  it('a floor lookup failure never fails the underlying field-edit', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-4', harness: 'papercusp' } } as never);
+    floorsM.mockRejectedValue(new Error('db down'));
+    const b = await body({ id: 'EI-4', severity: 'critical' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-4' });
+    expect(b.results[0].claimabilityWarning).toBeUndefined();
   });
 
   // EI-8497: a body edit the underlying updateWorkItem rejected as a fat-finger

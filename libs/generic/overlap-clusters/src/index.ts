@@ -226,11 +226,16 @@ export function configureOverlapScan(
   if (!Number.isInteger(maxPairs) || maxPairs < 1) {
     throw new TypeError('configureOverlapScan: `maxPairs` must be a positive integer');
   }
+  const minCoverage = overrides.minCoverage ?? DEFAULTS.minCoverage;
+  if (typeof minCoverage !== 'number' || !(minCoverage >= 0 && minCoverage <= 1)) {
+    throw new TypeError('configureOverlapScan: `minCoverage` must be a number in [0, 1]');
+  }
   return {
     threshold,
     neighbours,
     neighbourLimit,
     maxPairs,
+    minCoverage,
     crossGroupOnly: overrides.crossGroupOnly ?? DEFAULTS.crossGroupOnly,
   };
 }
@@ -498,8 +503,14 @@ export function judgeInconclusive(
  */
 export function describeOverlapReport(report: OverlapScanReport): string {
   const c = report.census;
+  // The denominator is unitsKnown, never unitsComparable: quoting the survivor
+  // count as the population is how a partial scan reads as a complete one.
+  const shortfall =
+    c.unitsUnavailable > 0
+      ? ` (${c.unitsUnavailable} known unit(s) could not be supplied — ${(c.coverage * 100).toFixed(1)}% coverage)`
+      : '';
   const base =
-    `${c.unitsComparable} comparable unit(s) across ${c.groupsSeen} source(s); ` +
+    `${c.unitsComparable} of ${c.unitsKnown} known unit(s) comparable${shortfall} across ${c.groupsSeen} source(s); ` +
     `${c.candidatePairs} candidate pair(s), ${c.pairsCrossGroup} cross-source, ` +
     `${c.pairsAboveThreshold} at or above threshold ${report.threshold}`;
   if (report.inconclusive) return `INCONCLUSIVE — ${report.inconclusive}. Measured: ${base}.`;

@@ -20,7 +20,7 @@ const MODE = 'gemma';
 
 function stubDeps(over: Partial<DocOverlapDeps> = {}): DocOverlapDeps {
   return {
-    loadUnits: async () => [],
+    loadUnits: async () => ({ units: [], unavailable: 0 }),
     neighboursOf: async () => [],
     sampleNullPairs: async () => [],
     ...over,
@@ -194,7 +194,7 @@ describe('loadDocSectionUnits', () => {
       deps: stubDeps({
         loadUnits: async (sources, mode) => {
           got = { sources, mode };
-          return [];
+          return { units: [], unavailable: 0 };
         },
       }),
     });
@@ -301,8 +301,10 @@ function miniCorpus(): DocOverlapDeps {
     ['gA', 'eX', 0.9], // cross-source: must be KEPT at 0.88
   ];
   return {
-    loadUnits: async () =>
-      Object.values(refs).map((r) => ({ id: encodeSectionId(r), group: pageGroupOf(r) })),
+    loadUnits: async () => ({
+      units: Object.values(refs).map((r) => ({ id: encodeSectionId(r), group: pageGroupOf(r) })),
+      unavailable: 0,
+    }),
     neighboursOf: async (ref) => {
       const selfKey = (Object.keys(refs) as Key[]).find(
         (k) => encodeSectionId(refs[k]) === encodeSectionId(ref),
@@ -395,10 +397,13 @@ describe('runDocSectionOverlapScan', () => {
         thresholds: THRESHOLDS,
         deps: {
           ...miniCorpus(),
-          loadUnits: async () => [
-            { id: encoded, group: pageGroupOf({ sourceKey: G, slug: 'guide/a', anchor: 's1' }) },
-            { id: 'not-an-encoded-id', group: 'some-other-page' },
-          ],
+          loadUnits: async () => ({
+            units: [
+              { id: encoded, group: pageGroupOf({ sourceKey: G, slug: 'guide/a', anchor: 's1' }) },
+              { id: 'not-an-encoded-id', group: 'some-other-page' },
+            ],
+            unavailable: 0,
+          }),
           // The neighbour PROVIDER decodes the probe, so the undecodable id has
           // to arrive as a HIT — which is exactly how a real corrupted row would
           // reach the pair path, past the provider's own guard.

@@ -125,10 +125,23 @@ export function pageGroupOf(ref: DocSectionRef): string {
   return `${ref.sourceKey}::${ref.slug}`;
 }
 
+/**
+ * What `loadUnits` found. The un-vectorised count is returned ALONGSIDE the
+ * units rather than filtered away, because a query that drops unusable rows
+ * destroys the only evidence that they existed: the caller then computes a
+ * numerator and a denominator from the same filtered population and gets a
+ * ratio that is structurally 1.0 no matter how much of the corpus is missing.
+ */
+export interface DocOverlapUnitLoad {
+  units: OverlapUnit[];
+  /** Sections in scope whose embedding has not been written yet. */
+  unavailable: number;
+}
+
 /** Injectable seam — tests and any future non-552 store. */
 export interface DocOverlapDeps {
-  /** Every embedded section in the given sources and space, as scan units. */
-  loadUnits: (sources: readonly string[], mode: string) => Promise<OverlapUnit[]>;
+  /** Every section in the given sources and space, split into vectorised and not. */
+  loadUnits: (sources: readonly string[], mode: string) => Promise<DocOverlapUnitLoad>;
   /** ANN neighbours of one section, excluding its own page. */
   neighboursOf: (
     ref: DocSectionRef,
@@ -152,23 +165,34 @@ export interface NullPairSample {
   max: number;
 }
 
-async function loadUnitsReal(sources: readonly string[], mode: string): Promise<OverlapUnit[]> {
+async function loadUnitsReal(sources: readonly string[], mode: string): Promise<DocOverlapUnitLoad> {
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ source_key: string; slug: string; anchor: string }>>`
-    SELECT source_key, slug, anchor
+  // The `embedding IS NOT NULL` test is deliberately a SELECTED COLUMN, not a
+  // WHERE clause. As a predicate it silently shrinks the population and takes
+  // the evidence of the shrinkage with it; as a column the shortfall is
+  // counted and reported. Both numbers therefore come from ONE snapshot, so a
+  // backfill running concurrently cannot make them disagree.
+  const rows = await sql<Array<{ source_key: string; slug: string; anchor: string; has_vector: boolean }>>`
+    SELECT source_key, slug, anchor, (embedding IS NOT NULL) AS has_vector
       FROM harness_shared.doc_sections
      WHERE source_key = ANY(${sources as string[]})
-       AND embedding IS NOT NULL
        AND embedding_mode = ${mode}
      ORDER BY source_key, slug, anchor`;
   // The vector field is deliberately omitted: an ANN-backed provider never
   // reads it, and materialising ~10k x 768 floats into process memory just to
   // hand them straight back to Postgres would lose the whole point of having
   // an index.
-  return rows.map((r) => {
+  const units: OverlapUnit[] = [];
+  let unavailable = 0;
+  for (const r of rows) {
+    if (!r.has_vector) {
+      unavailable++;
+      continue;
+    }
     const ref = { sourceKey: r.source_key, slug: r.slug, anchor: r.anchor };
-    return { id: encodeSectionId(ref), group: pageGroupOf(ref) };
-  });
+    units.push({ id: encodeSectionId(ref), group: pageGroupOf(ref) });
+  }
+  return { units, unavailable };
 }
 
 async function neighboursOfReal(
@@ -262,8 +286,8 @@ export interface DocOverlapOptions {
   deps?: DocOverlapDeps;
 }
 
-/** Every embedded section in the scanned sources, as overlap-clusters units. */
-export function loadDocSectionUnits(opts: DocOverlapOptions): Promise<OverlapUnit[]> {
+/** Every section in the scanned sources, split into vectorised units and a shortfall count. */
+export function loadDocSectionUnits(opts: DocOverlapOptions): Promise<DocOverlapUnitLoad> {
   const deps = opts.deps ?? realDocOverlapDeps;
   return deps.loadUnits(opts.sources ?? DOC_OVERLAP_SOURCES, opts.mode);
 }
@@ -427,6 +451,8 @@ export async function runDocSectionOverlapScan(
     thresholds: SourcePairThresholds;
     neighbourLimit?: number;
     maxPairs?: number;
+    /** Coverage floor below which the run is inconclusive. Default 0.99 — see the call site. */
+    minCoverage?: number;
   },
 ): Promise<DocOverlapScanReport> {
   const { sameSource, crossSource } = opts.thresholds ?? ({} as SourcePairThresholds);
@@ -442,11 +468,21 @@ export async function runDocSectionOverlapScan(
     }
   }
 
-  const units = await loadDocSectionUnits(opts);
+  const { units, unavailable } = await loadDocSectionUnits(opts);
   const config = configureOverlapScan({
     threshold: Math.min(sameSource, crossSource),
     neighbours: createDocSectionNeighbourProvider(opts),
-    neighbourLimit: opts.neighbourLimit ?? 10,
+    // 30, not the lib's default 10: measured convergence (D-009). K=60 returns
+    // the IDENTICAL set as K=30 while adding ~30k candidate pairs of work, and
+    // K=10 misses 9 real pairs — 5 of them CROSS-SOURCE, which is the leg this
+    // scan exists to find, so the lib's default would silently lose findings.
+    neighbourLimit: opts.neighbourLimit ?? 30,
+    // A section whose vector has not been written yet can only cause a MISSED
+    // finding, never a false one, so a small shortfall does not invalidate the
+    // pairs we found — it invalidates only the claim that nothing else exists.
+    // Relaxed from the lib's strict 1.0 because embed-backfill legitimately
+    // lags a live corpus; the shortfall is still reported in the census.
+    minCoverage: opts.minCoverage ?? 0.99,
     // Deliberately far above any plausible finding count: the cap must never be
     // what ends this scan, because a cap here silently biases the result set
     // (see the doc-comment above). It is a memory backstop, not a budget.
@@ -454,7 +490,10 @@ export async function runDocSectionOverlapScan(
     crossGroupOnly: true,
   });
 
-  const base = await scanOverlap(units, config);
+  const base = await scanOverlap(units, config, {
+    unitsUnavailable: unavailable,
+    unitsUnavailableReason: 'their embedding has not been written yet — embed-backfill lags a live corpus',
+  });
 
   const findings: DocOverlapFinding[] = [];
   const yields = new Map<string, SourcePairYield>();

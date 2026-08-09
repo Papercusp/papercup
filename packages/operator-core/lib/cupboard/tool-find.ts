@@ -28,9 +28,26 @@ import { searchTools } from './tools-search';
 
 export type Embedder = (text: string) => Promise<number[]>;
 
-/** Cosine similarity of two equal-length vectors. Returns 0 for degenerate input. */
+/**
+ * Cosine similarity of two equal-length vectors. Returns 0 for degenerate
+ * input, and 0 for MISMATCHED WIDTHS.
+ *
+ * ⚠ It used to compute over `Math.min(a.length, b.length)` — silently scoring
+ * the common PREFIX of two vectors from different embedding spaces. That is the
+ * worst available behaviour: a 384-d index vector against a 768-d query returns
+ * a perfectly plausible number in [-1, 1], so a whole semantic leg can rank on
+ * arithmetic that means nothing, with no error and nothing in the output that
+ * looks wrong. The docstring already promised equal length; only the code was
+ * lenient about it (P-019).
+ *
+ * Comparing prefixes is never the intent — two spaces of different width are
+ * not comparable at all, so "no signal" (0) is the only honest answer. The
+ * caller detects the mismatch up front and skips the leg entirely; this is
+ * defence in depth for any other caller.
+ */
 export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
-  const n = Math.min(a.length, b.length);
+  if (a.length !== b.length) return 0;
+  const n = a.length;
   if (n === 0) return 0;
   let dot = 0;
   let na = 0;
@@ -151,7 +168,21 @@ export async function findTools(
     } catch {
       qv = null; // embedder failure → lexical-only (graceful)
     }
-    if (qv && qv.length > 0) {
+    // WIDTH GUARD (P-019). The catalog index is built ONCE at boot with
+    // whatever `buildQueryEmbedder` resolved then; the query is embedded per
+    // call. Those are normally the same embedder — measured 2026-08-08, both
+    // are gemma@768, one space — but nothing STRUCTURALLY pins them together,
+    // so a settings change that swaps embedder width leaves a stale index in a
+    // different space from the live query.
+    //
+    // Skipping the leg outright (rather than letting every row score) is the
+    // load-bearing part: this tool's contract is that it "never silently
+    // pretends semantic ran", and it reports the leg as having run whenever it
+    // scores anything. Scoring a mismatched index would satisfy that reporting
+    // path with meaningless numbers. No cosine at all ⇒ lexical-only ⇒ the
+    // result says so, which is the documented degrade.
+    const indexWidth = opts.embeddings.values().next().value?.length ?? 0;
+    if (qv && qv.length > 0 && qv.length === indexWidth) {
       const byName = new Map(corpus.map((e) => [e.tool, e]));
       for (const [name, vec] of opts.embeddings) {
         if (!byName.has(name)) continue;

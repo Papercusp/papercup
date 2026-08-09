@@ -12,6 +12,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 
 const KEY = 'setup_wizard_state';
 
+/**
+ * The update LANE a user has chosen — deliberately excludes `nightly`, which is
+ * a side-by-side install (own bundle id, own data home) rather than a lane this
+ * app can switch to. Persisting it here would feed `resolveChannel`, which
+ * refuses it for the same reason.
+ */
 export type UpdateChannel = 'alpha' | 'beta' | 'stable';
 
 /** Onboarding-tutor progress (agent-first-onboarding-2026-07-03 P-012/P-013).

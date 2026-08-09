@@ -44,7 +44,11 @@ import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { resolvePlanScope } from '../plans/source';
-import { currentPipelineName, isMultiPipelineGateKey } from '../../release/pipeline-name';
+import {
+  currentPipelineName,
+  isMultiPipelineGateKey,
+  isMultiPipelineGateKeyPattern,
+} from '../../release/pipeline-name';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-workspace';
@@ -749,6 +753,31 @@ export default defineTool({
       }
     }
 
+    // ── EI-19928976726540168: the SAME auto-narrow as immediately above, for the GLOB form
+    // of a gate-verdict key ("release:green:*", "green-checkpoint:red:*",
+    // "green-checkpoint:inconclusive:*"). The exact-key block above requires `!patternAwait`,
+    // so it never ran for this shape — which is exactly the form an agent reaches for when they
+    // actually want "any verdict for my pipeline". The glob is just as cross-tenant as the bare
+    // key (the pipeline is the last key segment, so `*` matches every co-hosted pipeline's, not
+    // just the caller's). Live incident: a caller parked on `green-checkpoint:red:*` and was
+    // woken by a foreign pipeline's verdict, payload-shape-identical to its own.
+    //
+    // Deliberately separate variables (`patternAutoScopedPipeline` / `patternUnscopedGateKeyWarning`)
+    // rather than reusing `autoScopedPipeline`/`unscopedGateKeyWarning` above: the response text
+    // for the exact-key case interpolates `"${eventKey}:${autoScopedPipeline}"`, which would render
+    // MALFORMED for a glob (`release:green:*:papercusp`) if reused here.
+    let patternAutoScopedPipeline: string | null = null;
+    let patternUnscopedGateKeyWarning = false;
+    if (patternAwait && eventKey && isMultiPipelineGateKeyPattern(eventKey) && effectivePayloadFilter == null) {
+      const pipeline = currentPipelineName();
+      if (pipeline) {
+        effectivePayloadFilter = { pipeline: { equals: pipeline } };
+        patternAutoScopedPipeline = pipeline;
+      } else {
+        patternUnscopedGateKeyWarning = true;
+      }
+    }
+
     // ── EI-14225: retire the CALLER'S OWN prior pending registration(s) on this
     // EXACT key before adding a new one. events:await is one-shot by construction
     // (the caller only ever wants ONE outstanding wait per key) — the canonical
@@ -908,6 +937,20 @@ export default defineTool({
               ? {
                   unscoped_gate_key_await: true,
                   unscoped_gate_key_advice: `EI-19344528739076339: "${eventKey}" is emitted GLOBALLY by every co-hosted pipeline on this box, so this await can be woken by an UNRELATED pipeline's gate — the failure mode is a confident, wrong "the gate is green". It was NOT auto-scoped because this process's own pipeline could not be resolved from PAPERCUSP_INTEGRATION_ROOT, and a filter narrowed on a guess would be worse than none (an await that can never match is a silent hang, not a noisy wake). Await the pipeline-scoped key "${eventKey}:<pipeline>" instead, or pass payload_filter { pipeline: { equals: "<pipeline>" } } explicitly. Registered anyway — this is a warning, not a refusal.`,
+                }
+              : {}),
+            ...(patternAutoScopedPipeline
+              ? {
+                  auto_scoped_payload_filter: true,
+                  payload_filter: effectivePayloadFilter,
+                  payload_filter_source: { source: 'pipeline' as const, pipeline: patternAutoScopedPipeline },
+                  auto_scoped_payload_filter_advice: `EI-19928976726540168: "${eventKey}" is a GLOB over the pipeline segment of a gate-verdict key that every co-hosted pipeline on this box emits, so awaiting it bare subscribes you to strangers' gates — it has already woken an agent on a foreign pipeline's verdict, payload-shape-identical to its own. No payload_filter was passed, so this await was AUTOMATICALLY narrowed to { pipeline: "${patternAutoScopedPipeline}" }, derived from THIS process's integration root exactly as the emitter derives it. Pass an explicit payload_filter to override, or await the pipeline-scoped key "${eventKey.slice(0, -1) + patternAutoScopedPipeline}" directly.`,
+                }
+              : {}),
+            ...(patternUnscopedGateKeyWarning
+              ? {
+                  unscoped_gate_key_await: true,
+                  unscoped_gate_key_advice: `EI-19928976726540168: "${eventKey}" is a GLOB over the pipeline segment of a gate-verdict key that every co-hosted pipeline on this box emits, so this await can be woken by an UNRELATED pipeline's gate — the failure mode is a confident, wrong "the gate is green/red". It was NOT auto-scoped because this process's own pipeline could not be resolved from PAPERCUSP_INTEGRATION_ROOT, and a filter narrowed on a guess would be worse than none (an await that can never match is a silent hang, not a noisy wake). Await the pipeline-scoped key "${eventKey.slice(0, -1)}<pipeline>" instead, or pass payload_filter { pipeline: { equals: "<pipeline>" } } explicitly. Registered anyway — this is a warning, not a refusal.`,
                 }
               : {}),
             expires_ts: row.expiresTs,

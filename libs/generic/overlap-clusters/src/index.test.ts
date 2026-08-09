@@ -7,6 +7,7 @@ import {
   describeOverlapReport,
   scanOverlap,
   type NeighbourProvider,
+  type OverlapScanInput,
   type OverlapUnit,
 } from './index';
 
@@ -19,16 +20,22 @@ function unit(id: string, group: string, vector: number[]): OverlapUnit {
   return { id, group, vector };
 }
 
-const scan = (units: OverlapUnit[], over: Partial<Parameters<typeof configureOverlapScan>[0]> = {}) =>
-  scanOverlap(
+const scan = (
+  units: OverlapUnit[],
+  over: Partial<Parameters<typeof configureOverlapScan>[0]> & OverlapScanInput = {},
+) => {
+  const { unitsUnavailable, unitsUnavailableReason, ...config } = over;
+  return scanOverlap(
     units,
     configureOverlapScan({
       threshold: 0.9,
       neighbours: bruteForceNeighbours(units),
       neighbourLimit: 10,
-      ...over,
+      ...config,
     } as Parameters<typeof configureOverlapScan>[0]),
+    { unitsUnavailable, unitsUnavailableReason },
   );
+};
 
 describe('cosineSimilarity', () => {
   it('is 1 for parallel and 0 for orthogonal vectors', () => {
@@ -294,8 +301,50 @@ describe('describeOverlapReport', () => {
     const units = [unit('a', 'g1', at(0)), unit('b', 'g2', at(0.02))];
     const report = await scan(units);
     const line = describeOverlapReport(report);
-    expect(line).toMatch(/Measured: 2 comparable unit\(s\) across 2 source\(s\)/);
+    expect(line).toMatch(/Measured: 2 of 2 known unit\(s\) comparable across 2 source\(s\)/);
     expect(line).toMatch(/threshold 0\.9/);
+  });
+
+  it('quotes unitsKNOWN as the denominator, not the survivor count', async () => {
+    // The defect this guards: a host whose unit query filters out unusable rows
+    // reports a numerator and a denominator drawn from the SAME filtered
+    // population, so "N of N" is structurally true however much is missing.
+    // Here 2 units are supplied and 8 more are known to exist but could not be.
+    const units = [unit('a', 'g1', at(0)), unit('b', 'g2', at(0.02))];
+    const report = await scan(units, { unitsUnavailable: 8, unitsUnavailableReason: 'vectors pending' });
+    expect(report.census.unitsKnown).toBe(10);
+    expect(report.census.unitsUnavailable).toBe(8);
+    expect(report.census.coverage).toBeCloseTo(0.2, 10);
+    // The survivor count must NOT be able to masquerade as the population.
+    expect(describeOverlapReport(report)).toMatch(/2 of 10 known unit\(s\) comparable/);
+  });
+
+  it('is INCONCLUSIVE below the coverage floor, but still reports the pairs it did find', async () => {
+    const units = [unit('a', 'g1', at(0)), unit('b', 'g2', at(0.02))];
+    const report = await scan(units, { unitsUnavailable: 8, unitsUnavailableReason: 'vectors pending' });
+    // A shortfall can only cause MISSED findings, never false ones — so the
+    // pair survives while the "corpus is clean" claim does not.
+    expect(report.pairs).toHaveLength(1);
+    expect(report.inconclusive).toMatch(/20\.0% coverage/);
+    expect(report.inconclusive).toMatch(/vectors pending/);
+  });
+
+  it('does not fire the coverage floor when every known unit was supplied', async () => {
+    const units = [unit('a', 'g1', at(0)), unit('b', 'g2', at(0.02))];
+    const report = await scan(units, { unitsUnavailable: 0 });
+    expect(report.census.coverage).toBe(1);
+    expect(report.inconclusive).toBeNull();
+  });
+
+  it('CONTROL: an unreported shortfall is invisible — which is why the host must pass it', async () => {
+    // Calibration for the three cases above: the same 8 missing units, simply
+    // not declared, produce a report indistinguishable from a complete one.
+    // If this ever starts failing, the scan has gained a way to detect a
+    // shortfall on its own and the host-side contract can be relaxed.
+    const units = [unit('a', 'g1', at(0)), unit('b', 'g2', at(0.02))];
+    const report = await scan(units);
+    expect(report.census.coverage).toBe(1);
+    expect(report.inconclusive).toBeNull();
   });
 
   it('leads with INCONCLUSIVE when the run measured nothing', async () => {

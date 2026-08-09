@@ -55,6 +55,23 @@ describe('cosineSimilarity', () => {
     expect(cosineSimilarity([], [])).toBe(0);
     expect(cosineSimilarity([0, 0], [1, 1])).toBe(0);
   });
+
+  /**
+   * P-019 — two vectors of different width are from different embedding spaces
+   * and are not comparable at all.
+   *
+   * The pre-fix implementation scored `Math.min(a.length, b.length)` dimensions,
+   * so this pair returned a confident **1.0** — the strongest possible "these
+   * are the same thing" claim, from a comparison that means nothing. That is why
+   * 0 is the answer and not a prefix score: the failure has to be inert, not
+   * merely approximate.
+   */
+  it('MISMATCHED WIDTHS score 0, never a prefix comparison', () => {
+    expect(cosineSimilarity([1, 0, 0], [1, 0, 0, 0, 0, 0])).toBe(0);
+    expect(cosineSimilarity([1, 2, 3, 4], [1, 2, 3])).toBe(0);
+    // Equal widths still work — the guard must not blanket-zero the real path.
+    expect(cosineSimilarity([1, 0, 0], [1, 0, 0])).toBeCloseTo(1);
+  });
 });
 
 describe('findTools', () => {
@@ -168,5 +185,40 @@ describe('findTools', () => {
     // The base corpus entries have no argSchema → null, never undefined.
     const plain = await findTools(corpus, 'orient');
     expect(plain[0].argSchema).toBeNull();
+  });
+
+  /**
+   * P-019 — the boot-built catalog index and the per-call query embedding are
+   * normally the same space (measured 2026-08-08: both gemma@768), but nothing
+   * STRUCTURALLY pins them together. A settings change that swaps embedder width
+   * mid-process leaves a stale index in a different space.
+   *
+   * ⚠ Tested at the CALL SITE, not just on `cosineSimilarity`: a guard that the
+   * caller never invokes is not a guard. `deploy a bot` is the right probe
+   * because it has NO lexical overlap with `cup:spawn` — it can only be found
+   * semantically — so its ABSENCE proves the leg genuinely did not run, rather
+   * than merely scoring differently.
+   */
+  it('a WIDTH-MISMATCHED index skips the semantic leg entirely (lexical-only)', async () => {
+    const wideQuery = async (): Promise<number[]> => [0, 1, 0, 0, 0, 0]; // 6-d vs the index's 4-d
+    const hits = await findTools(corpus, 'deploy a bot', {
+      embedder: wideQuery,
+      embeddings, // 4-d
+    });
+    // Semantic-only discovery is gone, and no hit claims a semantic origin.
+    expect(hits.some((h) => h.tool === 'cup:spawn')).toBe(false);
+    expect(hits.every((h) => h.via === 'lexical')).toBe(true);
+    expect(hits.every((h) => h.cosine === null)).toBe(true);
+  });
+
+  /**
+   * CALIBRATION for the test above — without this, "no cup:spawn" would also be
+   * satisfied by a semantic leg that is broken for some unrelated reason, and
+   * the guard test would pass against a tool that can never search semantically.
+   */
+  it('CONTROL: the same query DOES find cup:spawn when the widths agree', async () => {
+    const hits = await findTools(corpus, 'deploy a bot', { embedder: mockEmbedder, embeddings });
+    expect(hits.some((h) => h.tool === 'cup:spawn')).toBe(true);
+    expect(hits.find((h) => h.tool === 'cup:spawn')?.via).toBe('semantic');
   });
 });

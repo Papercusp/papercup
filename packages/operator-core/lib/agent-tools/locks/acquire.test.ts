@@ -347,6 +347,48 @@ describe('locks:acquire — EI-19382183884861720: the two gaps EI-19324204900062
   });
 });
 
+describe('locks:acquire — EI-19921385348146413: a VANISHED waiter row is terminal, not "keep waiting"', () => {
+  beforeEach(() => {
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
+  });
+
+  it("readWaiterStatus returning {status:'missing'} inside the poll loop bails on the FIRST sighting — reason:'waiter_vanished', not spun until the deadline", async () => {
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-G', wait_until: new Date(Date.now() + 50) });
+    statusM.mockResolvedValueOnce({ status: 'waiting' }); // immediate post-insert re-check
+    statusM.mockResolvedValueOnce({ status: 'missing' }); // first (and only) loop iteration
+    expireM.mockResolvedValueOnce(undefined);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [] });
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+
+    expect(b).toMatchObject({ ok: false, ticket_id: 'T-G', reason: 'waiter_vanished' });
+    expect(String(b.reason_detail)).toMatch(/waiter row disappeared/);
+    // Broke on the first loop poll — never re-entered readWaiterStatus a third time.
+    expect(statusM).toHaveBeenCalledTimes(2);
+  });
+
+  it("'cancelled' still reports its own reason (regression coverage for the pre-existing terminal arm)", async () => {
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-H', wait_until: new Date(Date.now() + 50) });
+    statusM.mockResolvedValueOnce({ status: 'waiting' });
+    statusM.mockResolvedValueOnce({ status: 'cancelled' });
+    expireM.mockResolvedValueOnce(undefined);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [] });
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+    expect(b).toMatchObject({ ok: false, ticket_id: 'T-H', reason: 'cancelled' });
+  });
+
+  it("a genuine deadline timeout (status stays 'waiting' throughout) reports reason:'timeout'", async () => {
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-I', wait_until: new Date(Date.now() + 50) });
+    statusM.mockResolvedValue({ status: 'waiting' }); // persistent — never resolves, never vanishes
+    expireM.mockResolvedValueOnce(undefined);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [] });
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+    expect(b).toMatchObject({ ok: false, ticket_id: 'T-I', reason: 'timeout' });
+  });
+});
+
 describe('locks:acquire — EI-9033 pending_edit (apply-on-grant) guardrails', () => {
   it('rejects pending_edit without wake_on_grant (it runs on the wake queue)', async () => {
     const b = body(await call({ pending_edit: { file: 'a.ts', old_string: 'X', new_string: 'Y' } }));

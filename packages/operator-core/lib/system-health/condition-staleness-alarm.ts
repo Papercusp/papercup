@@ -41,6 +41,7 @@ import {
   type EscalationRecord,
 } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { coordScopeWorkspace } from '../agent-tools/coordination/log';
 import { SELF_RECONCILING_META_KEY } from '../attention/reconcile-escalations';
 import { broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import {
@@ -587,7 +588,19 @@ export async function runConditionStalenessTick(
   if (deps.bridgeConditions) {
     try {
       const homeHarness = (deps.homeHarness ?? operatorHomeHarnessSlug)();
-      bridged = await deps.bridgeConditions(toBridgeConditionStates(states, homeHarness), {});
+      // EI-19930875455827867: this opts object MUST carry a concrete workspaceId.
+      // Without it `resolveWorkItemPot` short-circuits at its `if (!ws) return rawSlug`
+      // guard and hands back the RAW member slug ('oddsmith') un-normalized — so the
+      // ownership READ looks under 'oddsmith' while `createWorkItem` stored the holder
+      // under the resolved pot ('oddsmith-hive'). The bridge then concludes the
+      // condition is unowned, mints, loses the partial-unique-index race to the real
+      // incumbent, and drops the row — ~150 junk work-items/hour, forever, and the
+      // release path shares the defect so it can never self-heal. D-022's
+      // `resolveStoredConditionHarness` normalization is correct and deployed; it was
+      // simply INERT because its only production caller passed `{}`.
+      bridged = await deps.bridgeConditions(toBridgeConditionStates(states, homeHarness), {
+        workspaceId: coordScopeWorkspace(),
+      });
     } catch {
       /* a bridge failure must never crash the request worker */
     }

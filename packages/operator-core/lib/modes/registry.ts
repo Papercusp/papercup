@@ -182,6 +182,13 @@ OPERATING LOOP, ordered by damage caused if skipped:
    placement to the Mug (just plans:start) OR take the pot yourself
    (pot:set_steering { pauseNewWork: true } / scoped allowedHarnesses) and then
    launch, unpausing at wind-down. Never both: two placers double-place work.
+   BUT PAUSING PLACEMENT DOES NOT PAUSE DISPOSAL — pauseNewWork empties the
+   frontier while the Mug keeps being woken on stale Blender-routed drafts and
+   keeps reviewing them, so a taken pot still has its disposer. Do not become a
+   second one: dispose a draft only when promoting it into work you are placing,
+   never re-dispose one the Mug already closed. EXACTLY ONE disposition per
+   draft, by exactly one agent; the Mug's rules are the reference
+   (mug.base.md 165-200), not restated here.
 4. A WRITTEN KILL CRITERION PER PROJECT AT CREATION TIME, plus declared expected
    spend and reported actuals — goals:update { spentCents } as they land, and
    goals:update { status: 'killed' } the moment the criterion trips. An agent

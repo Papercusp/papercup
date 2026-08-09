@@ -1,15 +1,25 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { isTaskManagerEnabled } from '../../../task-manager/enabled';
 import { getTaskInventory, disabledInventory } from '../../../task-manager/inventory';
+import { killTask } from '../../../task-manager/control';
+import { notifySyncInvalidate } from '../../../sync-sse';
 
 /**
  * Admin task inventory — the NON-UI read surface for the Task Manager
  * (task-manager-no-escape-2026-07-27, P-017).
  *
- * Mirrors `/admin/schedules/inventory` exactly, including its posture: it shares the
- * SAME store the `processes:list` MCP tool reads, and it is READ-ONLY. Control verbs
- * live on the MCP tools, which are separately capability-gated (`processes:kill` /
- * `processes:control`) — a dashboard fetch must not be able to kill anything.
+ * Mirrors `/admin/schedules/inventory` exactly: it shares the SAME store the
+ * `processes:list` MCP tool reads.
+ *
+ * ⚠ This file used to state that a dashboard fetch "must not be able to kill anything",
+ * and the panes were read-only on that basis. The owner reversed it on 2026-08-08
+ * ("there should be a way to kill processes in both the dropdown and the full page
+ * view") — a supervision pane that can SEE a runaway but not stop it sends the reader
+ * to a shell, which is exactly where `pkill -f` lives. The kill route below is the
+ * safe expression of that: it takes a `taskId` and nothing else, so it can only ever
+ * reach a row the ledger already owns, and it delegates to `killTask` whose two paths
+ * (cgroup scope, or a pid re-verified against its recorded kernel identity) are the
+ * same rails the `processes:kill` MCP tool rides. There is still no name/pattern form.
  *
  * ⚠ The PANE no longer reads through here (WI-6475). A bare `fetch` from the desktop
  * webview does not ride the sys:http IPC bridge that injects the loopback-superuser
@@ -22,7 +32,7 @@ import { getTaskInventory, disabledInventory } from '../../../task-manager/inven
  * `live=1` runs a dry-run reconcile so the caller can see kernel truth (unaccounted
  * groups, degraded scans) alongside the ledger. Still writes nothing.
  */
-export default defineTool({
+const inventory = defineTool({
   method: 'GET',
   path: '/admin/tasks/inventory',
   auth: { trust: ['verified', 'trusted'] },
@@ -42,3 +52,62 @@ export default defineTool({
     );
   },
 });
+
+/**
+ * POST /api/admin/tasks/kill  { taskId, escalateAfterMs? }
+ *
+ * The write half of the pane (P-023/P-024/P-025). BOTH surfaces — the AdvShell
+ * dropdown and the full page — call exactly this, through one shared component, so
+ * there is a single set of refusal semantics rather than two that drift.
+ *
+ * `auth: 'loopback'` and not the VT gate above, deliberately and for two reasons.
+ * (1) It is the posture every other destructive UI verb here already uses (harness
+ * pause/stop, external-bench delete), because it rejects a non-loopback host at the
+ * edge while requiring no principal token. (2) A bare `fetch` from the desktop webview
+ * does not ride the sys:http IPC bridge that injects the loopback-superuser bearer, so
+ * it resolves `unverified-loopback` — under the VT gate the button would 403 on the one
+ * surface the owner asked for it on (EI-338, the same trap that moved the READ off this
+ * route in WI-6475).
+ *
+ * The reply is `killTask`'s ControlOutcome VERBATIM, including `error` + `detail`, and
+ * always with HTTP 200 for a well-formed request. A refusal is a RESULT here, not a
+ * transport failure: `identity_mismatch` means the rail worked (the pid was recycled and
+ * we declined to signal a stranger), and mapping that onto a 4xx would present the
+ * safety property as a fault. The UI renders the reason verbatim — a destructive control
+ * that silently no-ops teaches people to click it twice.
+ */
+const kill = defineTool({
+  method: 'POST',
+  path: '/admin/tasks/kill',
+  auth: 'loopback',
+  timeoutSec: 30,
+  async handler(req): Promise<Response> {
+    if (!(await isTaskManagerEnabled('admin:task-manager:kill'))) {
+      return Response.json({ ok: false, error: 'disabled', detail: 'task manager is switched off' }, { status: 409 });
+    }
+
+    let body: { taskId?: unknown; escalateAfterMs?: unknown };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return Response.json({ ok: false, error: 'bad_request', detail: 'body must be JSON' }, { status: 400 });
+    }
+    const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : '';
+    if (!taskId) {
+      return Response.json({ ok: false, error: 'bad_request', detail: 'taskId is required' }, { status: 400 });
+    }
+    // Bounded: this is awaited inside the request, and the escalation is a SLEEP.
+    const escalateAfterMs =
+      typeof body.escalateAfterMs === 'number' && Number.isFinite(body.escalateAfterMs)
+        ? Math.max(0, Math.min(10_000, Math.floor(body.escalateAfterMs)))
+        : 5_000;
+
+    const outcome = await killTask(taskId, { escalateAfterMs });
+    // Both panes read `taskManager.inventory`; a killed row must not linger as running
+    // until the next 5s poll, or the reader clicks again.
+    void notifySyncInvalidate('taskManager.inventory', {}).catch(() => {});
+    return Response.json(outcome);
+  },
+});
+
+export default [inventory, kill];

@@ -18,6 +18,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'debugger'],
   args: z.object({
+    // Update LANES only — `nightly` is a side-by-side install (own bundle id,
+    // own data home), never a lane an existing install can be switched to.
     channel: z.enum(['alpha', 'beta', 'stable']),
   }),
   async handler(args) {

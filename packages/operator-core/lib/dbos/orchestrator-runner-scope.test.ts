@@ -271,4 +271,54 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     expect(r.exitCode).toBe(127);
     expect(spawnMock).toHaveBeenCalledTimes(2); // exactly one retry, never a third call
   });
+
+  // WI-5601: exit 127 in ~21ms with BOTH stdout and stderr completely empty —
+  // 40/344 (11.6%) of measured spawns, distinct from the scope-launch-failure
+  // class above (which requires a real launch-shaped stderr message). One
+  // bounded retry turns a transient host-pressure blip into a success instead
+  // of a permanently lost agent turn.
+  it('retries once on an exec-shaped failure (empty stdout+stderr, fast non-zero exit) and succeeds', async () => {
+    delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+    spawnMock
+      .mockImplementationOnce(() => fakeSpawn({ code: 127 })) // no stdout, no stderr
+      .mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
+    expect(r.exitCode).toBe(0);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('an exec-shaped failure that recurs on the retry still surfaces (bounded to exactly one retry)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+    spawnMock
+      .mockImplementationOnce(() => fakeSpawn({ code: 127 }))
+      .mockImplementationOnce(() => fakeSpawn({ code: 127 }));
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
+    expect(r.exitCode).toBe(127);
+    expect(spawnMock).toHaveBeenCalledTimes(2); // exactly one retry, never a third call
+  });
+
+  it('does NOT retry an empty-stream failure that is not fast (looks like a real hung/killed turn, not a launch blip)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+    vi.useFakeTimers();
+    try {
+      spawnMock.mockImplementationOnce(() => {
+        const child = new EventEmitter() as FakeChild;
+        child.pid = nextPid++;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        // Close with empty streams + non-zero code, but AFTER the 5s exec-shaped
+        // window — must not be mistaken for the fast launch-blip signature.
+        setTimeout(() => child.emit('close', 127), 6_000);
+        return child;
+      });
+      const p = spawnInvokeOnce(process.cwd(), 'cup', [], {});
+      await vi.advanceTimersByTimeAsync(6_100);
+      const r = await p;
+      expect(r.exitCode).toBe(127);
+      expect(spawnMock).toHaveBeenCalledTimes(1); // no retry — outside the 5s window
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

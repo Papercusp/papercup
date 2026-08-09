@@ -5,6 +5,10 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { commands } from '@papercusp/operator-core/lib/tauri-bindings';
 import { isTauri } from './tauri-detect';
 
+/**
+ * Update LANES only. `nightly` is excluded deliberately — it is a side-by-side
+ * install (own bundle id, own data home), not a lane this app can switch to.
+ */
 type Channel = 'alpha' | 'beta' | 'stable';
 
 interface UpdateState {
