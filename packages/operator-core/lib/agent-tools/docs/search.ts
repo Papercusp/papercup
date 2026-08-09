@@ -334,6 +334,30 @@ export default defineTool({
       limit,
       mode: 'hybrid',
       embedder,
+      // OPTED OUT because this source cannot honor the cascade's stage 2, not
+      // because widening is unwanted. `lexicalWithCascade` re-queries the same
+      // source with `lexicalMode: 'coverage-graded'` whenever stage 1
+      // under-fills, and APPENDS only rows stage 1 did not return. That is a
+      // real win for a source that implements the mode — the PG-backed
+      // `agent-tools/search/sources.ts` branches on it — but this source's
+      // `lexical()` above destructures ONLY `limit`, and `searchDocs` (the
+      // docs-engine) has no `lexicalMode` concept at all. So stage 2 would
+      // re-issue a request byte-identical to stage 1: same adapter, same args,
+      // same `Math.max(candidateLimit, MIN_CANDIDATES)`. Every row it returned
+      // would already be in the `seen` set, so `stage2Added` is 0 BY
+      // CONSTRUCTION — a doubled filesystem search on every under-filled
+      // docs:search, for provably zero rows.
+      //
+      // Regression, not a latent quirk: the leg rename bm25 -> lexical
+      // (f9ed5eb4f3) correctly reconnected this source to the engine's lexical
+      // leg and thereby opted it into a cascade written for hosts that
+      // implement the mode. `handlers.test.ts`'s
+      // `expect(searchDocs).toHaveBeenCalledTimes(1)` is what caught it.
+      //
+      // ⚠ DELETE THIS LINE if `lexical()` ever honors `lexicalMode` (thread it
+      // into searchDocs and give the engine a genuinely different stage-2
+      // query) — at that point the opt-out is the thing costing recall.
+      lexicalCascade: false,
       ...(ctxAny.signal ? { signal: ctxAny.signal } : {}),
     });
 

@@ -40,6 +40,7 @@ import { usePlanList } from '@/app/admin/plans/plans-api';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import HudBoard from './HudBoard';
 import HudEntityColumns from './HudEntityColumns';
+import GoalComposer from './GoalComposer';
 import GoalDetailPanel from './GoalDetailPanel';
 import { workItemIdForCard, type HudEntityCard } from './hud-entity-board';
 import { advRosterArgs } from '@/lib/adv-roster-args';
@@ -259,6 +260,17 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      agent needs to make on the owner's behalf via ui:dispatch, and anything in
      useState is invisible to it. */
   const [goalFilter, setGoalFilter] = useQueryState('hudgoal', parseAsString);
+  /* P-015 — the "+ Start a goal" composer's open-state. A SEPARATE param from
+     `hudgoal` on purpose: `hudgoal` names an EXISTING goal (the board's
+     selection and the detail panel's subject), and the composer's subject is a
+     goal that does not exist yet. Folding them would make "which goal is on
+     screen" unanswerable at exactly the moment the answer is "none, we are
+     making one". In the URL per the repo's nuqs rule — dialog open-state is
+     user-meaningful state, and the agent control surface reads the URL. */
+  const [goalComposerOpen, setGoalComposerOpen] = useQueryState(
+    'hudgoalnew',
+    parseAsBoolean.withDefault(false),
+  );
 
   /* The SESSIONS board's own search (owner ask 2026-07-26). Separate param from
      `hudq`: that one filters the entity tabs' loaded rows, this one searches
@@ -741,8 +753,18 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      reversible from the card that set it — otherwise the only way out of a
      scoped board is hand-editing the URL. */
   const onOpenGoalCard = useCallback(
-    (card: HudEntityCard) => void setGoalFilter((prev) => (prev === card.id ? null : card.id)),
-    [setGoalFilter],
+    (card: HudEntityCard) => {
+      /* P-015: the board's one non-goal card. Its intent is DECLARED
+         (`open.kind`), never re-derived from the id — the WI-6742 lesson from
+         the sibling handler below, where pattern-matching an id produced a
+         button that rendered fine and did nothing. */
+      if (card.open?.kind === 'start-goal') {
+        void setGoalComposerOpen(true);
+        return;
+      }
+      void setGoalFilter((prev) => (prev === card.id ? null : card.id));
+    },
+    [setGoalFilter, setGoalComposerOpen],
   );
   /* WI-6742 [owner-reported]: clicking a "Needs you" card did nothing, while
      every other column opened a popup.
@@ -1015,6 +1037,21 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         nowMs={nowMs}
         onClose={() => void setGoalFilter(null)}
         onOpenWorkItem={(id) => void setOpenItemId(id)}
+      />
+      {/* P-015: the ORIGIN of a goal, opposite the panel above which is its
+          destination. Submitting spawns the GOAL-mode agent (D-008), so on
+          success we select the new goal — the owner lands on the detail panel
+          for the thing they just started rather than back on an unchanged
+          board. `goalWorkspaceId` for the same tenant reason as the panel. */}
+      <GoalComposer
+        open={goalComposerOpen}
+        workspaceId={goalWorkspaceId}
+        harnessSlug={harnessSlug}
+        onClose={() => void setGoalComposerOpen(null)}
+        onStarted={(goalId) => {
+          void setGoalComposerOpen(null);
+          void setGoalFilter(goalId);
+        }}
       />
       {/* WI-6742: the ask's own popup, for asks that are not ABOUT a work item
           or plan. `OtherDetail` is the SAME component the Plans queue and

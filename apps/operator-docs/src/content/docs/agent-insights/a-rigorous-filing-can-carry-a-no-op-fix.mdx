@@ -1,6 +1,7 @@
 ---
 title: "A rigorous filing can carry a no-op fix - verify the REMEDY separately from the diagnosis"
 description: "EI-20019309044931698 was an exemplary bug report (end-to-end measurements, timestamps, log line numbers, its own probe, even a 'why the obvious fix does not work' section) whose proposed remedy AND stated mechanism were both wrong. The remedy - hypercore-storage storage.flush() - flushes the 'default' RocksDB column family while ALL hypercore data lives in the 'corestore' one, so it is a silent no-op: measured 0 new SSTs vs 1 for storage.db.flush(). The stated mechanism ('the unflushed memtable makes just-appended blocks invisible to a read-only open') is false: a read-only RocksDB open uses walRecoveryMode POINT_IN_TIME and REPLAYS the WAL, so the blocks were already visible - measured 245/245 cross-process with no flush at all. The filing's own ENOENT evidence was on a WAL file, which corroborated the WAL dependence and was read as its opposite. The recurrence guard the filing specified would have PASSED with and without the fix."
+type: Insight
 discovered: 2026-08-09
 tags: [rocksdb, hypercore, corestore, column-family, flush, seed-cut, release, falsifiability, positive-control, probe, review, EI-20019309044931698]
 status: active
