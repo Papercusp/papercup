@@ -966,18 +966,15 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       });
       if (deletionErrors.length > 0) contentErrors = [...contentErrors, ...deletionErrors];
     }
-    {
-      const priorQuarantined = preDeletionQuarantined;
-      if (priorQuarantined.length > 0) {
-        const dirtyForScan = await dirtyFiles(runGit, repoPath);
-        const importerErrors = await detectQuarantineImporters({
-          readText: (rel) => o.readText(repoPath, rel),
-          dirtyFiles: dirtyForScan,
-          alreadyQuarantined: priorQuarantined,
-          log: o.log,
-        });
-        if (importerErrors.length > 0) contentErrors = [...contentErrors, ...importerErrors];
-      }
+    if (preDeletionQuarantined.length > 0) {
+      const dirtyForScan = await dirtyFiles(runGit, repoPath);
+      const importerErrors = await detectQuarantineImporters({
+        readText: (rel) => o.readText(repoPath, rel),
+        dirtyFiles: dirtyForScan,
+        alreadyQuarantined: preDeletionQuarantined,
+        log: o.log,
+      });
+      if (importerErrors.length > 0) contentErrors = [...contentErrors, ...importerErrors];
     }
     // Exclude BOTH oversized + content offenders (incl. unsafe deletions + quarantined
     // importers) from the auto-commit (deduped — a file can be both). Everything else
