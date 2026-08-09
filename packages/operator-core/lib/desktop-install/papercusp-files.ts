@@ -834,6 +834,22 @@ function hookDirCandidates(operatorAppRoot: string, explicitRoot: boolean, subdi
 async function installInjectionHooks(home: string, injectSrcDir: string): Promise<string[]> {
   const ompHookSrc = path.join(path.dirname(injectSrcDir), 'omp', 'inject-hook.ts');
   const installed: string[] = [];
+  // EI-20006285243973245 — until now this installer recorded NOTHING, anywhere.
+  // The CC hooks beside it have carried a provenance stamp since WI-37405, but
+  // the injection pair had none, so "when were these installed, and from which
+  // build?" had no answer at all. That gap is what left a real omp injection
+  // outage (2026-08-09 18:15Z) permanently cause-UNDETERMINED: file mtimes are
+  // useless here because this function rewrites them on EVERY psu launch.
+  // Resolved once and reused for both stamps — the dispatcher and the omp
+  // artifact are copied from the same checkout.
+  const incomingProvenance = await resolveSourceGitProvenance(injectSrcDir);
+  const stampBase = {
+    ...incomingProvenance,
+    installedAt: new Date().toISOString(),
+    pid: process.pid,
+    installedBy: process.argv[1] ? path.basename(process.argv[1]) : undefined,
+  };
+  const dispatcherFiles: string[] = [];
   try {
     // Refuse the partial install before writing anything.
     await fs.access(path.join(injectSrcDir, 'index.mjs'));
@@ -863,9 +879,16 @@ async function installInjectionHooks(home: string, injectSrcDir: string): Promis
         });
         await fs.rename(tmp, dst);
         installed.push(path.join('inject', rel, name));
+        dispatcherFiles.push(path.join(rel, name));
       }
     }
 
+    // Written after the copies so it always describes what is actually on disk.
+    // `.installed-from` is inert here: the dispatcher is resolved by the exact
+    // path `index.mjs`, and the copy loops read the SOURCE dir, never this one.
+    if (dispatcherFiles.length > 0) {
+      await writeInstallStamp(injectDest, { sourceDir: injectSrcDir, ...stampBase, files: dispatcherFiles });
+    }
   } catch {
     return [];
   }
@@ -886,8 +909,38 @@ async function installInjectionHooks(home: string, injectSrcDir: string): Promis
     await fs.writeFile(ompTmp, await fs.readFile(ompHookSrc), { mode: 0o644 });
     await fs.rename(ompTmp, ompDst);
     installed.push(path.join('omp', 'inject-hook.ts'));
+    await writeInstallStamp(ompDest, {
+      sourceDir: path.dirname(ompHookSrc),
+      ...stampBase,
+      files: ['inject-hook.ts'],
+    });
   } catch {
     // omp hook absent/unreadable — claude + codex injection are unaffected.
+  }
+
+  // One greppable line per install pass. The stamps above are the durable record;
+  // this is the one that would have DATED the outage from the operator journal,
+  // which is where the investigation actually looked:
+  //   journalctl --user -u papercup-dev-api.service | grep -icE 'injectionHooks|hooks/inject|inject-hook'
+  // returned 0 for the entire window, because nothing on this path had ever
+  // logged anything. Keep the substrings 'hooks/inject' and 'inject-hook'
+  // present here — that exact probe is what a future diagnosis will re-run.
+  const hooksRoot = path.join(home, '.papercusp', 'hooks');
+  const sha = incomingProvenance.sourceSha ? ` @ ${incomingProvenance.sourceSha.slice(0, 12)}` : '';
+  if (installed.length > 0) {
+    console.log(
+      `[desktop-install] injection hooks: installed ${installed.length} file(s) into ` +
+        `${hooksRoot}/inject + ${hooksRoot}/omp from ${injectSrcDir}${sha} — ${installed.join(', ')}`,
+    );
+  } else {
+    // The invisible-failure case, and the reason this branch is worth a line at
+    // all: [] is documented as "omp injection inactive on this box", which every
+    // downstream turn then presents as the indistinguishable "no memories were
+    // relevant". Say it once, loudly, instead of leaving it to be inferred.
+    console.warn(
+      `[desktop-install] injection hooks: installed NOTHING (${hooksRoot}/inject dispatcher unavailable ` +
+        `from ${injectSrcDir}) — omp inject-hook injection is INACTIVE for sessions on this box`,
+    );
   }
   return installed;
 }

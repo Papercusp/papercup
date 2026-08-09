@@ -46,7 +46,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -124,14 +124,7 @@ const CUSTOM_TYPE = 'papercusp-context';
  *
  * Exported for tests, and pure apart from the existsSync probe.
  */
-export function resolveDispatcherPath(
-  env: NodeJS.ProcessEnv = process.env,
-  selfDir?: string,
-  exists: (p: string) => boolean = existsSync,
-): string | null {
-  const candidates: string[] = [];
-  if (env.PAPERCUSP_INJECT_DISPATCHER) candidates.push(env.PAPERCUSP_INJECT_DISPATCHER);
-  if (selfDir) candidates.push(resolve(selfDir, '..', 'inject', 'index.mjs'));
+export function papercuspHomeDir(env: NodeJS.ProcessEnv = process.env): string {
   // ⚠ EXCLUSIVE ON PURPOSE — `||`, NOT an ordered fallback. Do not "fix" this
   // into `[PAPERCUSP_HOME, ~/.papercusp]` tried in turn; that was attempted and
   // REVERTED with measurements (EI-20001110634702380).
@@ -150,12 +143,37 @@ export function resolveDispatcherPath(
   //
   // Nothing is stranded by the exclusive form: a psu session (whose
   // PAPERCUSP_HOME is workspace-scoped and holds no dispatcher) still resolves
-  // via the selfDir candidate ABOVE, because the installer always writes the omp
+  // via the selfDir candidate, because the installer always writes the omp
   // artifact and the dispatcher into the same `hooks/` tree. Verified live under
-  // the exact production env — see the docstring's resolution table.
-  const papercuspHome = env.PAPERCUSP_HOME || join(homedir(), '.papercusp');
-  candidates.push(join(papercuspHome, 'hooks', 'inject', 'index.mjs'));
-  for (const candidate of candidates) {
+  // the exact production env — see resolveDispatcherPath's resolution table.
+  //
+  // It is ALSO where the miss log below is written, which is what keeps that
+  // diagnostic inside the same isolation boundary as everything else here.
+  return env.PAPERCUSP_HOME || join(homedir(), '.papercusp');
+}
+
+/**
+ * The dispatcher paths that WOULD be tried, in resolution order.
+ *
+ * Split out from resolveDispatcherPath so a miss can report what it looked for.
+ * "No dispatcher" is otherwise indistinguishable from "nothing to inject", and
+ * the candidate list is the single most useful fact for telling a half-install
+ * (dispatcher absent beside a present hook) from a wrong-home pin.
+ */
+export function dispatcherCandidates(env: NodeJS.ProcessEnv = process.env, selfDir?: string): string[] {
+  const candidates: string[] = [];
+  if (env.PAPERCUSP_INJECT_DISPATCHER) candidates.push(env.PAPERCUSP_INJECT_DISPATCHER);
+  if (selfDir) candidates.push(resolve(selfDir, '..', 'inject', 'index.mjs'));
+  candidates.push(join(papercuspHomeDir(env), 'hooks', 'inject', 'index.mjs'));
+  return candidates;
+}
+
+export function resolveDispatcherPath(
+  env: NodeJS.ProcessEnv = process.env,
+  selfDir?: string,
+  exists: (p: string) => boolean = existsSync,
+): string | null {
+  for (const candidate of dispatcherCandidates(env, selfDir)) {
     try {
       if (exists(candidate)) return candidate;
     } catch {
@@ -176,6 +194,77 @@ export function shouldSkip(port: InjectionPort, env: NodeJS.ProcessEnv = process
   if (!env.PAPERCUSP_SID) return true;
   const suppressVar = SUPPRESSING_KILL_SWITCH[port];
   return suppressVar !== undefined && env[suppressVar] === 'off';
+}
+
+/** Basename of the miss log, written inside the session's pinned papercusp home. */
+export const MISS_LOG_BASENAME = 'inject-hook-misses.log';
+
+/** Size at which the miss log restarts rather than appending. Bounded so a
+ *  permanently-broken install cannot grow a file without limit. */
+export const MISS_LOG_MAX_BYTES = 64 * 1024;
+
+/**
+ * Record — OUT OF BAND — that a session which SHOULD have injected could not.
+ *
+ * ── WHY THIS EXISTS (EI-20006285243973245) ──
+ * Fail-silent is correct for the runtime path, but fail-silent plus zero logging
+ * made "injection is broken" and "no memories were relevant" indistinguishable
+ * from every vantage point, INCLUDING forensically. A real outage on 2026-08-09
+ * (zero rows at 18:15Z, correct injection by 19:41Z) could not be root-caused
+ * afterwards, because nothing anywhere recorded that the hook had run and found
+ * nothing. File mtimes cannot substitute — the installer rewrites them on every
+ * psu launch. The outage resolved cause-UNDETERMINED, and the un-investigability
+ * cost more than the outage.
+ *
+ * ── THE THREE CONSTRAINTS, ALL LOAD-BEARING ──
+ *  1. NEVER THROWS. A diagnostic that can break a turn is worse than no
+ *     diagnostic; every failure here is swallowed.
+ *  2. NEVER WRITES TO STDOUT. stdout IS the injection payload the caller reads
+ *     back, so a stray byte here would corrupt injected context. File only.
+ *  3. NOT ENV-GATED, deliberately. A detector you must switch on in advance is
+ *     off precisely when the incident happens — which is exactly how the 18:15Z
+ *     outage escaped. It is cheap without a gate because it writes ONLY when a
+ *     session with a SID resolved no dispatcher: on a healthy box, never.
+ *
+ * Writes into `papercuspHomeDir(env)`, so an isolated stack or a unit test with
+ * PAPERCUSP_HOME pinned keeps its misses inside that pin (see that function).
+ */
+export function noteInjectionMiss(
+  port: InjectionPort,
+  reason: string,
+  opts: { env?: NodeJS.ProcessEnv; selfDir?: string } = {},
+): void {
+  try {
+    const env = opts.env ?? process.env;
+    const home = papercuspHomeDir(env);
+    const line =
+      JSON.stringify({
+        at: new Date().toISOString(),
+        sid: env.PAPERCUSP_SID,
+        port,
+        reason,
+        // What was looked for — the fact that separates a half-install from a
+        // wrong-home pin, and the one thing no other surface can reconstruct.
+        triedCandidates: dispatcherCandidates(env, opts.selfDir),
+        selfDir: opts.selfDir,
+        pid: process.pid,
+      }) + '\n';
+
+    mkdirSync(home, { recursive: true });
+    const file = join(home, MISS_LOG_BASENAME);
+    let size = 0;
+    try {
+      size = statSync(file).size;
+    } catch {
+      /* absent is size 0 */
+    }
+    // Restart rather than append past the cap: a broken install misses on every
+    // turn, and an unbounded log would itself become a problem to diagnose.
+    if (size > MISS_LOG_MAX_BYTES) writeFileSync(file, line, { mode: 0o644 });
+    else appendFileSync(file, line, { mode: 0o644 });
+  } catch {
+    /* Constraint 1: diagnostics must never cost a turn. */
+  }
 }
 
 /**
@@ -209,7 +298,21 @@ export function runDispatcher(
       if (shouldSkip(port, env)) return finish(null);
 
       const dispatcher = resolveDispatcherPath(env, opts.selfDir);
-      if (!dispatcher) return finish(null);
+      if (!dispatcher) {
+        // shouldSkip() above already returned for a session with no SID, so
+        // reaching here means a REAL psu session that was owed injection and
+        // got none. That is the exact condition the 18:15Z outage presented and
+        // left no trace of (EI-20006285243973245).
+        //
+        // ⚠ SCOPED TO THIS PATH ON PURPOSE — do not widen to the spawn-error /
+        // timeout / non-zero-exit paths without re-reading noteInjectionMiss's
+        // isolation note first. Those paths run in tests whose env pins a
+        // dispatcher but NOT PAPERCUSP_HOME, so instrumenting them naively would
+        // write into the developer's real ~/.papercusp. The test fixture now
+        // pins a home for exactly this reason, but check it still does.
+        noteInjectionMiss(port, 'dispatcher-missing', { env, selfDir: opts.selfDir });
+        return finish(null);
+      }
 
       let payload: string;
       try {

@@ -100,6 +100,7 @@ const legsWith = (lexicalCandidates: number) => {
     status: 'ran',
     candidates,
     floored: 0,
+    stage2Added: 0,
     callsRun: 1,
     callsFailed: 0,
     failures: [],

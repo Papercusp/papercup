@@ -100,8 +100,19 @@ process.stdin.on('end', () => {
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+// ⚠ PAPERCUSP_HOME IS PINNED HERE ON PURPOSE — do not drop it as redundant.
+// SID_ENV deliberately carries no home, and today every envWith() case resolves
+// a dispatcher via the explicit pin, so nothing reaches the miss-log write.
+// That is a property of the CURRENT wiring, not a guarantee: the moment anyone
+// instruments the spawn-error / timeout / non-zero-exit paths (all of which run
+// under envWith), an unpinned home would send those writes into the developer's
+// REAL ~/.papercusp. That is the same isolation-escape class that made an
+// earlier unit test write a live row into production telemetry
+// (EI-20001110634702380). Pinning here disarms it once, mechanically, instead
+// of relying on the next author noticing.
 const envWith = (dispatcher: string, extra: Record<string, string> = {}) => ({
   ...SID_ENV,
+  PAPERCUSP_HOME: join(dir, 'home'),
   PAPERCUSP_INJECT_DISPATCHER: dispatcher,
   ...extra,
 });

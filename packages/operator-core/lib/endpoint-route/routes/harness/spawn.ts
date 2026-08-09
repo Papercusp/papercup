@@ -251,6 +251,39 @@ const invoke = defineTool({
     // forensic record and the spawned child/response (those reflect what was
     // literally invoked, not what's canonically stored).
     const canonicalRole = canonicalCoordRole(role);
+    // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-008 / D-018). The
+    // second of exactly TWO spawn chokepoints. This route is the one the comment
+    // above already calls "the ONE chokepoint every launch-blueprint spawn
+    // traverses", and fireLaunchBlueprint's own header adds that EVERY wake path
+    // reaches it (durable spawn, direct fire, manual /invoke) — so this single
+    // gate covers the Mug's whole launch family, including dbos/durable-spawn.ts
+    // and blueprint/launch-blueprint.ts, which P-008 listed as separate targets.
+    // The ROLE family (cup:spawn, place_batch, relaunch, …) funnels through the
+    // other chokepoint, fleet/operator-spawn.ts.
+    //
+    // Deliberately keyed on `canonicalRole`, not the raw string: this route's own
+    // comment records that real callers still invoke with the OLD spellings
+    // (`?role=queen` is documented as the production convention for Mug wakes),
+    // so a raw-string match would leave the retired tier reachable under every
+    // one of its old names.
+    const { isRetiredTierRole } = await import('../../../pot/retired-tier-roles');
+    if (isRetiredTierRole(role)) {
+      const { mugKettleSystemEnabled } = await import('../../../pot/started');
+      if (!(await mugKettleSystemEnabled())) {
+        return Response.json(
+          {
+            error: 'mug_kettle_retired',
+            flag: 'papercusp-mug-kettle-system',
+            message:
+              `Cannot spawn role="${role}" — the Mug/Kettle/Cup tier is RETIRED ` +
+              `(flag papercusp-mug-kettle-system is OFF, which is the delivered state). ` +
+              `Launch an su fleet instead — fleet:launch-on-plan. ` +
+              `To re-enable the tier for testing, flip the flag ON in /admin/features.`,
+          },
+          { status: 403 },
+        );
+      }
+    }
     const body = await req.json().catch(() => ({} as any));
     const isHiveLaunch = url.searchParams.get('bpkind') === 'hive';
     // overwatch-role-2026-06-15 B-04 (C-3): an overwatch wake is also a tracked

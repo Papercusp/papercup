@@ -91,6 +91,7 @@ function legs(over: { lexicalCandidates?: number; degraded?: boolean; warning?: 
     status: 'ran' as const,
     candidates,
     floored: 0,
+    stage2Added: 0,
     callsRun: 1,
     callsFailed: 0,
     failures: [],

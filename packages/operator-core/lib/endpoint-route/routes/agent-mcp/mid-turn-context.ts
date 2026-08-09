@@ -275,6 +275,10 @@ export const TOOL_QUERY_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
   // ── codex goal extension (0.146.0; postdates the rollout census above) ──
   // `objective` is the agent's own statement of what it is trying to achieve —
   // the same class of signal as claude's `description` and `update_plan.plan`.
+  // ⚠ SCHEMA-MEASURED, NOT YET OBSERVED LIVE (unlike `get_goal`, which the
+  // drift alarm caught twice). If a real `create_goal` call ever derives ''
+  // here, suspect this field name FIRST — a wrong name looks exactly like the
+  // deliberate omissions below, so it will not re-raise the alarm.
   create_goal: { fields: ['objective'] },
   get_goal: { fields: [] }, // no arguments at all; see DELIBERATE OMISSIONS
   update_goal: { fields: [] }, // `status` enum only; see DELIBERATE OMISSIONS

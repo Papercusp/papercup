@@ -877,20 +877,14 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // wake-executor's fresh-context spawn and the p2p offer executor, instead of
   // five hand-placed copies free to drift apart.
   //
-  // ⚠ CANONICALIZED ON PURPOSE. The pot-rename left live ALIASES —
-  // bee→cup, queen→mug, overwatch→kettle (coordination/roles.ts
-  // POT_RENAME_ROLE_MAP) — and callers still pass the old spellings (this very
-  // file's neighbours hand-roll `role === 'queen' || role === 'mug'`). Matching
-  // the raw string would leave three open doors under their old names, which is
-  // the "anchor to the property, not the spelling" failure this plan keeps
-  // hitting. `scout` also maps (→ blender) and is deliberately NOT in this set:
-  // D-001 keeps Scout/Blender INTACT.
-  const canonicalSpawnRole = canonicalCoordRole(role);
-  if (
-    canonicalSpawnRole === 'mug' ||
-    canonicalSpawnRole === 'kettle' ||
-    canonicalSpawnRole === 'cup'
-  ) {
+  // `isRetiredTierRole` CANONICALIZES before testing, which is load-bearing: the
+  // pot rename left live aliases (bee→cup, queen→mug, overwatch→kettle) and this
+  // file's own neighbours still hand-roll `role === 'queen' || role === 'mug'`,
+  // so a raw-string match would leave all three reachable under their old names.
+  // It is shared with the OTHER spawn chokepoint (the /invoke route) so the two
+  // cannot drift — see pot/retired-tier-roles.ts for why it is its own module.
+  const { isRetiredTierRole } = await import('../pot/retired-tier-roles');
+  if (isRetiredTierRole(role)) {
     const { mugKettleSystemEnabled } = await import('../pot/started');
     if (!(await mugKettleSystemEnabled())) {
       return fail(
