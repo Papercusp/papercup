@@ -130,27 +130,80 @@ export interface KillTaskOptions extends ControlDeps {
    *  takes OS descendants; this is for logically-nested tasks that got their own
    *  scope (an agent's spawned children are their own scopes, not sub-cgroups). */
   includeSubtree?: boolean;
+  /**
+   * WI-37521: opt-in escape hatch for a TERMINAL ledger row whose cgroup scope
+   * positively still holds live processes (the row closed — e.g. the launching
+   * client exited — while its payload kept running; WI-37509 is the confirmed
+   * source of this class). Without this flag a terminal row is refused exactly as
+   * before (`not_live`) — this never widens the DEFAULT behaviour.
+   *
+   * Deliberately narrower than the live path in two ways, both load-bearing:
+   *   1. Confined (cgroup-scope) rows ONLY. A terminal row's `pid` is not
+   *      re-verifiable the way `verifyPidStillOurs` re-verifies a LIVE row's pid
+   *      (a terminal row's `processIdentity` describes a process we already know
+   *      exited under that scope; trusting a bare `pid` on it is exactly the
+   *      recycled-pid hazard this module exists to prevent) — so the unconfined
+   *      path stays refused unconditionally, reap or not.
+   *   2. The scope must be POSITIVELY re-verified non-empty IN THIS CALL
+   *      (`countScopeProcesses`, the same live cgroup walk `processes:list` uses)
+   *      before anything is signalled — a terminal row whose scope has already
+   *      gone quiet is not residue, it is just a terminal row, and stays refused.
+   *
+   * The row's OWN state is left untouched on success: `closeTask` is a no-op on
+   * an already-`ended_at` row by design, and rewriting a `killed`/`exited`/etc.
+   * row's terminal state to describe a LATER reap would misattribute history
+   * rather than clarify it. The reap is reported in the outcome's `detail` and
+   * (like every `processes:kill` call) in the audit log.
+   */
+  reapTerminalResidue?: boolean;
 }
 
 export async function killTask(taskId: string, opts: KillTaskOptions = {}): Promise<ControlOutcome> {
   const d = deps(opts);
   const row = await getTask(taskId);
   if (!row) return { ok: false, taskId, action: 'kill', error: 'task_not_found' };
+
+  // Terminal row: refused by default (D-010 — residue is report-only unless a
+  // caller explicitly asks to reap it AND we can positively re-verify it's real).
+  let reapingResidue = false;
   if (!isLiveOwnedState(row.state)) {
-    return {
-      ok: false,
-      taskId,
-      action: 'kill',
-      error: 'not_live',
-      detail: `state is ${row.state} — a residue or terminal row is never ours to signal`,
-    };
+    if (!opts.reapTerminalResidue) {
+      return {
+        ok: false,
+        taskId,
+        action: 'kill',
+        error: 'not_live',
+        detail: `state is ${row.state} — a residue or terminal row is never ours to signal`,
+      };
+    }
+    if (!row.confined || !row.scopeUnit) {
+      return {
+        ok: false,
+        taskId,
+        action: 'kill',
+        error: 'not_live',
+        detail: `state is ${row.state} — reapTerminalResidue only supports a confined (cgroup) scope; this row is unconfined, so its pid cannot be safely re-verified`,
+      };
+    }
+    if (countScopeProcesses(row, d) === 0) {
+      return {
+        ok: false,
+        taskId,
+        action: 'kill',
+        error: 'not_live',
+        detail: `state is ${row.state} — reap requested but scope ${row.scopeUnit} holds no live process right now; nothing to reap`,
+      };
+    }
+    reapingResidue = true;
   }
 
   const signal = opts.signal ?? 'SIGTERM';
 
   if (opts.includeSubtree) {
     const tree = await getSubtree(row.rootTaskId);
-    const descendants = tree.filter((t) => t.taskId !== taskId && isLiveOwnedState(t.state));
+    const descendants = tree.filter(
+      (t) => t.taskId !== taskId && (isLiveOwnedState(t.state) || opts.reapTerminalResidue),
+    );
     for (const t of descendants) {
       await killTask(t.taskId, { ...opts, includeSubtree: false });
     }
@@ -183,6 +236,20 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
         action: 'kill',
         error: 'incomplete',
         detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} but ${survivors} process(es) still alive after the verification window — task left LIVE (not closed) so a retry or a fresh listing can still find it`,
+      };
+    }
+    if (reapingResidue) {
+      // The row was ALREADY terminal (that's what let us reach this branch at
+      // all) — `closeTask` no-ops on an `ended_at`-set row by design, and
+      // rewriting its terminal state to describe a reap that happened LATER
+      // would misattribute history rather than clarify it. Report the reap in
+      // `detail` instead; the row's own state/exitReason stay exactly as they
+      // were.
+      return {
+        ok: true,
+        taskId,
+        action: 'kill',
+        detail: `TERMINAL-ROW REAP (WI-37521): scope ${row.scopeUnit} was verified holding live process(es) despite ledger state '${row.state}', signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} — now verified empty. The row's own state is left unchanged (already terminal).`,
       };
     }
     await closeTask(taskId, { state: 'killed', exitReason: `scope kill ${signal}${escalated ? ' (escalated)' : ''}` });

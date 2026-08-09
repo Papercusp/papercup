@@ -535,7 +535,29 @@ export function buildPlanBoard(plans: HudPlanInput[], opts: HudEntityBuildOption
 
 /* ── goals (goal-mode-2026-08-07 P-020) ──────────────────────────────────── */
 
-const GOAL_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['closed', 'done', 'achieved', 'abandoned']);
+/**
+ * The goal statuses that are TERMINAL — reached, and advancing no further.
+ *
+ * Kept deliberately in lockstep with the canonical write vocabulary
+ * (`GOAL_STATUSES = ['active','achieved','killed','paused']` in
+ * `packages/agent-mcp/src/tools/goals/create.ts`, enforced by `z.enum` on both
+ * `goals:create` and `goals:update`), because a hand-spelled copy of an enum
+ * drifts silently and this one did:
+ *
+ * It previously read `['closed','done','achieved','abandoned']` — omitting
+ * `killed`, the transition GOAL mode's contract MANDATES when a kill criterion
+ * trips ("closing is the half that stops the ratchet"), while listing three
+ * statuses `z.enum` rejects outright. A killed goal therefore matched nothing
+ * here and fell through to needs-you / working / ready — rendering on the
+ * owner's board as a LIVE goal, and asking them to act on a goal they had
+ * deliberately killed. That is precisely the outcome precedence rule 1 below
+ * exists to prevent (WI-37520).
+ *
+ * Exported so the test can assert the two vocabularies against each other; the
+ * canonical enum is NOT imported here on purpose, as this module is pure and
+ * browser-bundled and must not pull the tool graph in.
+ */
+export const GOAL_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['achieved', 'killed']);
 
 /**
  * Which column a goal belongs in — keyed on WHAT IT IS WAITING ON, not on its

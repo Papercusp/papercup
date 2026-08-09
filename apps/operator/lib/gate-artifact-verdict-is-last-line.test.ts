@@ -49,6 +49,7 @@ const SCRIPT = resolve(
 // code this guard runs (replaying a COPY of the rule would prove nothing about the
 // guard), and so the other instances of this class can reuse it.
 import {
+  failRowMessageSource,
   lastEmittedLineOnFailPath,
   tailIsVerdictNotReassurance,
 } from './gate-artifact-verdict-tail';
@@ -116,5 +117,61 @@ describe('EI-19940993365684927 — a gate artifact must not tail as a pass when 
 
   it('CONTROL: the checker REJECTS a conditionally-replayed verdict that can print nothing', () => {
     expect(tailIsVerdictNotReassurance(WRONG_CONDITIONAL_VERDICT)).toBe(false);
+  });
+});
+
+/**
+ * The SECOND HALF of the same filing, and the reason fixing b8's tail was not
+ * enough. The matrix summary table drew each scenario's message from the log's
+ * last non-blank line whatever the verdict, rendering
+ *
+ *   FAIL  replication_soak   ✓ detector fire-path pin: replication_stalled present …
+ *
+ * — a FAIL whose message is a reassuring ✓ that never says what failed. Enforcing
+ * the invariant only at b8's emission site would leave the row wrong for EVERY
+ * other scenario that fails while ending on a ✓, which is a mitigation, not a fix.
+ */
+const MATRIX = resolve(__dirname, '../../../papercusp-desktop/bin/deb-hetzner-matrix.sh');
+
+const WRONG_LAST_LINE_ROW = `
+  SCN_RC[$id]=$rc
+  SCN_LINE[$id]="$(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -1)"
+  if [ "$rc" -eq 0 ]; then
+    echo "  ✓ PASS $id — \${SCN_LINE[$id]}"
+  else
+    echo "  ✗ FAIL $id (rc=$rc) — \${SCN_LINE[$id]}"
+  fi
+`;
+
+/** The prose-defeat case — see stripShellComments(). */
+const WRONG_ROW_EXPLAINED_IN_A_COMMENT = `
+  SCN_RC[$id]=$rc
+  # On FAIL we draw the message from the OVERALL: verdict line, never tail -1.
+  SCN_LINE[$id]="$(grep -v '^[[:space:]]*$' "$out" 2>/dev/null | tail -1)"
+  if [ "$rc" -eq 0 ]; then
+    echo "  ✓ PASS $id"
+  else
+    echo "  ✗ FAIL $id"
+  fi
+`;
+
+describe('EI-19940993365684927 — a FAIL row must say what failed', () => {
+  it('the matrix draws a FAILING scenario message from the failure lines, not the last line', () => {
+    expect(failRowMessageSource(readFileSync(MATRIX, 'utf8'))).toBe('failure-lines');
+  });
+
+  it('CONTROL: the checker REJECTS the pre-fix shape (tail -1 reaching the FAIL row)', () => {
+    expect(failRowMessageSource(WRONG_LAST_LINE_ROW)).toBe('last-line');
+  });
+
+  it('CONTROL: a comment DESCRIBING the correct behaviour does not satisfy the checker', () => {
+    // Without stripShellComments() this returns 'failure-lines' — the guard reading
+    // its own explanation as evidence. This exact failure (a comment quoting the
+    // anchor string) already broke this module's sibling checker once.
+    expect(failRowMessageSource(WRONG_ROW_EXPLAINED_IN_A_COMMENT)).toBe('last-line');
+  });
+
+  it('an unreadable shape returns null so the caller fails rather than passes blind', () => {
+    expect(failRowMessageSource('nothing resembling the matrix loop')).toBeNull();
   });
 });

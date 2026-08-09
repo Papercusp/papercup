@@ -56,3 +56,61 @@ export function tailIsVerdictNotReassurance(src: string): boolean {
   if (/^\s*✓/.test(last)) return false; // a reassuring tail on a failure path
   return /^OVERALL:/.test(last);
 }
+
+/**
+ * Drop whole-line shell comments before any structural check.
+ *
+ * This is load-bearing, not hygiene. A guard that parses source must not be
+ * SATISFIABLE — or DEFEATABLE — by prose ABOUT that source, and both directions
+ * have already bitten this very module: its sibling checker ended its search
+ * region on the first textual `return "$rc"`, which matched that string quoted
+ * inside a newly-written COMMENT, truncating the region before the exact lines
+ * the guard existed to inspect. The comments added alongside the fix below quote
+ * both `tail -1` and `OVERALL:`, so without this the check would read its own
+ * explanation as evidence and pass for the wrong reason.
+ */
+export function stripShellComments(src: string): string {
+  return src
+    .split('\n')
+    .filter((line) => !/^[ \t]*#/.test(line))
+    .join('\n');
+}
+
+/**
+ * Where the matrix summary table draws a FAILING scenario's human-readable
+ * message from.
+ *
+ * The second half of EI-19940993365684927's original filing: the per-scenario row
+ * rendered `FAIL  replication_soak  ✓ detector fire-path pin: …` because the
+ * message was the log's last non-blank line regardless of verdict. Fixing one
+ * scenario's tail does NOT fix this — the row stays wrong for any scenario that
+ * fails while ending on a ✓ — so the invariant is enforced at the renderer.
+ *
+ *   'failure-lines' — FAIL branch derives from OVERALL:/✗ (correct)
+ *   'last-line'     — a `tail -1` derivation reaches the FAIL row (the defect)
+ *   null            — the region could not be located; the caller must FAIL,
+ *                     never pass, on a shape this cannot read.
+ */
+export function failRowMessageSource(src: string): 'last-line' | 'failure-lines' | null {
+  const body = stripShellComments(src);
+  const start = body.indexOf('SCN_RC[$id]=$rc');
+  if (start < 0) return null;
+  const region = body.slice(start);
+  const endMatch = /^[ \t]*fi\b/m.exec(region);
+  if (!endMatch) return null;
+  const scoped = region.slice(0, endMatch.index);
+
+  const branchAt = scoped.search(/^[ \t]*if \[ "\$rc" -eq 0 \]/m);
+  if (branchAt < 0) return null;
+  const preBranch = scoped.slice(0, branchAt);
+
+  // An assignment BEFORE the rc split reaches both rows, so a tail -1 there is
+  // exactly the pre-fix defect no matter what the else-branch later does.
+  if (/SCN_LINE\[\$id\]=/.test(preBranch) && /tail -1/.test(preBranch)) return 'last-line';
+
+  const elseAt = scoped.search(/^[ \t]*else\b/m);
+  if (elseAt < 0) return null;
+  const failBranch = scoped.slice(elseAt);
+  if (!/SCN_LINE\[\$id\]=/.test(failBranch)) return 'last-line';
+  return /OVERALL:/.test(failBranch) || /✗/.test(failBranch) ? 'failure-lines' : 'last-line';
+}

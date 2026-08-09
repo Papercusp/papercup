@@ -5312,7 +5312,12 @@ export async function runPostSuiteLegs(
       haltedBy = 'lint:no-raw-setinterval failed';
       failingSignatures.push('lint:no-raw-setinterval');
       outputs.push(
-        '\n\n=== NO-RAW-SETINTERVAL LINT FAILED (npm run lint:no-raw-setinterval) — a new recurring timer bypassed managedSetInterval (P-008) ===\n' +
+        // NB: do NOT write `managedSetInterval` immediately followed by `(` in this
+        // string. check-timer-classification.mjs strips comments but NOT string
+        // literals, so a call-shaped token in prose is parsed as a real call site —
+        // this exact line red-pinned lint:timer-classification with a phantom offender
+        // whose parsed "arguments" were `P-008` (WI-37518). Root fix: EI-19989853369726696.
+        '\n\n=== NO-RAW-SETINTERVAL LINT FAILED (npm run lint:no-raw-setinterval) — a new recurring timer bypassed managedSetInterval — see P-008 ===\n' +
           noRawSetinterval.stdout +
           noRawSetinterval.stderr,
       );

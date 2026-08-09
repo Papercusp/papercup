@@ -26,12 +26,31 @@ describe('extractRefs', () => {
   });
 
   it('does not match bare words or wrong shapes', () => {
-    expect(extractRefs('WIP work, FIXME, D-1 too short, WI-999999 too long')).toEqual([]);
+    expect(
+      extractRefs('WIP work, FIXME, D-1 too short, WI-123456789012345678901 too long (21 digits)'),
+    ).toEqual([]);
   });
 
   it('caps at MAX_REFS', () => {
     const many = Array.from({ length: MAX_REFS + 5 }, (_, i) => `WI-${1000 + i}`).join(' ');
     expect(extractRefs(many)).toHaveLength(MAX_REFS);
+  });
+
+  it('matches a modern ~17-digit EI id (regression for the {2,5} width bug)', () => {
+    // Control: the OLD pattern (\d{2,5}) is structurally blind to these — it doesn't
+    // truncate-match, it matches NOTHING (backtracks through every length and fails
+    // once the boundary after digit 5 can't land on a word boundary).
+    const oldPattern = /\b((?:WI|EI|F|D)-\d{2,5})\b/g;
+    expect('EI-19988500685566622'.match(oldPattern)).toBeNull();
+
+    expect(extractRefs('found while shipping P-026, filed EI-19988500685566622 unlinked')).toEqual([
+      'EI-19988500685566622',
+    ]);
+    // A second real modern id, and a mix with a classic short-form id.
+    expect(extractRefs('see EI-19359711978838614 and WI-4028')).toEqual([
+      'EI-19359711978838614',
+      'WI-4028',
+    ]);
   });
 });
 

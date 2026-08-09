@@ -298,8 +298,8 @@ stale-docs-to-mistrust list:
 Some code is **retired but deliberately kept** — not deleted, not deployed, not
 tested, not to be extended. Don't write tests for it, wire new code to it, or
 "revive" it without an explicit ask. Currently: `_retired/papercup/` (public
-site), the standalone operator webapp path,
-`libs/papercusp-db`, `libs/holepunch-spike` (NOT zero-importers — shim implemented
+site), the standalone operator webapp path, `libs/papercusp-db`,
+`libs/holepunch-spike` (NOT zero-importers — shim implemented
 by live orchestrator files), `libs/papercusp-shared/**/*View.tsx`, the legacy
 orchestrator run-loop + orchestrator-spawn plugin
 (`libs/papercusp/_retired/…`), the harness-snapshot system

@@ -22,11 +22,24 @@
  */
 
 /**
- * Work-item-class reference: WI-/EI-/F-/D- + 2–5 digits. (Plan-slug and P-NNN
+ * Work-item-class reference: WI-/EI-/F-/D- + 2–20 digits. (Plan-slug and P-NNN
  * refs resolve through the same `RefResolver` seam when a resolver for them is
  * supplied; v1 wires only the work-item resolver — the dominant ref class.)
+ *
+ * The upper bound was 5 digits until EI-<this-item> (2026-08-09): ids on this
+ * box are no longer 2-5 digits — a modern EI id is ~17 digits (e.g.
+ * `EI-19988500685566622`) — and `\d{2,5}` doesn't truncate-match those, it
+ * matches NOTHING: the pattern eats the first 2-5 digits, then `\b` demands a
+ * word boundary, the next char is another digit (no boundary), and the regex
+ * backtracks through every length in the quantifier and fails outright. So
+ * every memory whose only ref was a modern EI id silently got the
+ * un-enriched baseline embedding — see the module doc's recall@10 numbers
+ * for what that costs. 20 digits keeps headroom well past any id width in
+ * use; the SQL-side ref grammar (packages/operator-core/lib/search/embed-backfill.ts,
+ * the `citedIds` P-026 target) already uses the same `{2,20}` bound — keep
+ * these two in sync if either changes again.
  */
-const REF_PAT = /\b((?:WI|EI|F|D)-\d{2,5})\b/g;
+const REF_PAT = /\b((?:WI|EI|F|D)-\d{2,20})\b/g;
 
 /** Cap the per-write resolve fan-out — a body with a wall of refs shouldn't
  *  turn one write into dozens of store lookups. */

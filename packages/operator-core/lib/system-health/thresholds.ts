@@ -279,7 +279,23 @@ export function workItemsStatus(d: WorkItemsHealth): PanelStatus {
   // failure (stuck items accumulate silently). A null age = never recorded (fresh
   // boot / unknown) → warn, not crit, to avoid alarming on the ~1 boot interval
   // before the first sweep stamps its heartbeat.
-  if (d.reaperStale && d.reaperAgeSec != null) return 'crit';
+  //
+  // P-016: ...but only when something is actually rotting. `reaperStale` is a
+  // clock (`age > threshold`), and a reaper with an empty backlog has nothing it
+  // failed to do — "stuck items accumulate silently" is the harm this crit names,
+  // and with `stuckBacklog === 0` that harm is measurably absent. Without this the
+  // crit recurred every tick against a very large queue and never resolved.
+  //
+  // Note this makes the branch CONSISTENT with the one immediately below: EI-2534
+  // already decided that a stale reaper is crit-worthy only alongside a real
+  // stranded backlog, and applied it to the null-age case. The same reasoning was
+  // simply never carried to the known-age case. Shares `isReaperWedged` with the
+  // summary wording in compute.ts so the panel's SEVERITY and its TEXT cannot
+  // disagree — a crit that no longer says WEDGED would be the same alarm wearing a
+  // quieter label, which is worse than either alone.
+  if (isReaperWedged({ reaperStale: d.reaperStale, reaperAgeSec: d.reaperAgeSec, stuckTotal: stuckBacklog })) {
+    return 'crit';
+  }
   // EI-2534: a reaper that has NEVER recorded a run (null age) is normally a benign
   // fresh-boot blip (warn, below) — UNLESS a real dead-held backlog is already
   // stranded. A never-armed/dark sweep WITH stuck rows is not a boot blip; it is the

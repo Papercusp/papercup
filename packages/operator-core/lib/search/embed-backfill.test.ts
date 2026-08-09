@@ -604,6 +604,30 @@ describe('text-recipe discriminator (P-026 / D-087)', () => {
     expect(update.params).toEqual([`[${VEC.join(',')}]`, 2, 'row-1']); // PK at $3
   });
 
+  it('work_items ships the Tier 0 ref expansion AND the version bump that makes it retroactive — the two are one change', () => {
+    // The pairing IS the contract, and either half alone is a silent no-op:
+    //   • expansion without a bump ⇒ only rows written from now on are enriched, and the
+    //     ~36.6k existing vectors keep the old recipe forever — the exact defect P-026 was
+    //     opened to remove, restored while looking finished.
+    //   • bump without the expansion ⇒ a gratuitous ~2.2h re-embed onto identical text.
+    // Nothing else can catch this: both halves are valid SQL/TS on their own.
+    const wi = TARGETS.find((t) => t.table === 'harness_shared.work_items')!;
+    expect(wi.bodySql).toContain('[refs] ');
+    expect(wi.recipeVersion).toBeGreaterThanOrEqual(2);
+
+    // The ref grammar must see MODERN ids. `[0-9]{2,5}` does not truncate a 17-digit
+    // EI — the trailing \y fails mid-number and it matches NOTHING, so a narrow range
+    // silently drops the whole class (the JS sibling still has it: WI-37523).
+    const range = wi.bodySql.match(/\[0-9\]\{(\d+),(\d+)\}/);
+    expect(range, 'work_items bodySql lost its ref pattern').not.toBeNull();
+    expect(Number(range![2])).toBeGreaterThanOrEqual(20);
+
+    // Resolution is scoped to the SAME harness. The PK is (harness_slug, feature_id), so
+    // an unscoped join can bind a ref to another tenant's item and embed a confidently
+    // wrong title into the vector.
+    expect(wi.bodySql).toContain('w2.harness_slug = work_items.harness_slug');
+  });
+
   it("the UPDATE guard accepts every row the SELECT calls stale — the sweep's convergence invariant", async () => {
     // THE failure this feature could introduce, and it is invisible: if the write guard is
     // narrower than the selector, the row is selected as stale, the UPDATE matches nothing,

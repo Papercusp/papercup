@@ -328,7 +328,21 @@ function inheritedCodexTrustToml(trustDir?: string | null): string[] {
           table[1].startsWith('projects.') ||
           // Nudge-dismissal state — see the model-availability note above.
           table[1] === 'tui.model_availability_nux' ||
-          table[1].startsWith('tui.model_availability_nux.');
+          table[1].startsWith('tui.model_availability_nux.') ||
+          // EI-19988517595776254 follow-up: `[notice]` carries the SAME class of
+          // interactive-nudge suppression as model_availability_nux (e.g.
+          // `hide_rate_limit_model_nudge = true`, `hide_gpt5_1_migration_prompt =
+          // true`) — a separate TUI notice family that can equally block a
+          // headless session's unanswerable fd0=/dev/null modal. `[notice.
+          // model_migrations]` is the deprecated->replacement model map codex
+          // consults when deciding whether to show the migration prompt at all,
+          // so it travels with the hide_* flags rather than being left to default.
+          // Inheriting whatever the user's real ~/.codex/config.toml already has
+          // set (opt-in only — nothing is forced true here) further reduces, but
+          // — like model_availability_nux — does not by itself cure, the class of
+          // wedge this whole function exists to mitigate.
+          table[1] === 'notice' ||
+          table[1].startsWith('notice.');
       }
       if (keep) out.push(line);
     }

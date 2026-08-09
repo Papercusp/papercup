@@ -89,8 +89,42 @@
  *   reintroduces a fast-clearing strike counter, so both are fixed rather than relying on one to save the
  *   other.
  *
+ * POOL-SHED CORROBORATION (WI-37506, 2026-08-09) — the SATURATION corroboration above
+ * (`schedulerIdleSec`) assumes a stale `routinesTick` scheduler signal ALSO means a dead ticker. That
+ * assumption breaks under genuine PG-pool starvation: `dbos.workflow_status` — the table BOTH
+ * `routineIdleSec` and `schedulerIdleSec` read — lives on the SAME starved pool, so when the pool is
+ * critically starved (routines-workflow.ts's `poolPressure()` shed, EI-9935/P-006/W4), DBOS's own
+ * bookkeeping writes can stall right alongside the routine fires they're supposed to corroborate.
+ * Measured live 2026-08-08/09 (`~/.papercusp/bghost-watchdog.log`): 45 kills in 17+ hours, clustered
+ * 2-3 per hour at the 510s boot-grace+poll floor, each restarting a process that was HEALTHY by every
+ * OTHER measure (event-loop p50 20ms, 76 harness joins per boot) — i.e. exactly the "both signals stale
+ * together, but the ticker is alive and shedding, not dead" case `shouldRestart` cannot distinguish.
+ *
+ * The durable signal that DOES distinguish them already exists and is already wired into a sibling
+ * consumer: `harness_shared.routine_pool_shed_events` (pool-pressure.ts's `recordPoolShedEvent`,
+ * migration 627) is written by routinesTickImpl the INSTANT a tick sheds under critical pool pressure —
+ * "so an instrument-staleness consumer can tell 'paused by this guardrail' from 'dead'" per that
+ * module's own doc comment. `red-queen/engine-death.ts` (WI-5456) already consults it
+ * (`hasPoolShedInWindow`) before filing a dead-engine alarm; this watchdog — which actually KILLS the
+ * process, the more consequential of the two consumers — did not. `poolShedIdleSec`/
+ * `poolShedExplainsFreeze` below close that gap: before restarting on a genuine-freeze verdict, check
+ * whether a shed event landed within the freeze window (+ `POOL_SHED_GRACE_S` slack, mirroring
+ * engine-death.ts's own grace window) — if so, this is the guardrail doing its job, not a dead ticker,
+ * and we do NOT restart.
+ *
+ * Self-limiting by construction, no new failure mode: `recordPoolShedEvent` is fire-and-forget on the
+ * SAME pool it's reporting on, and `poolPressure()`'s own probe is timeout-bounded (PROBE_TIMEOUT_MS,
+ * default 3s — a probe that can't finish IS classified critical), so as long as routinesTick can run AT
+ * ALL (even just far enough to shed), a fresh shed event lands roughly every POLL cadence throughout the
+ * storm. If the pool is EVER so dead that not even a fire-and-forget insert can land (a genuinely
+ * different, worse failure), `poolShedIdleSec` goes stale too and this corroboration silently stops
+ * explaining the freeze — falling straight back to the pre-existing restart behavior. UNKNOWN
+ * (no shed ever recorded, or the query itself fails) never explains a freeze — same
+ * never-infer-from-a-missing-signal asymmetry as `isFrozen`/`withinBootGrace` above.
+ *
  * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR,DB_URL,LOG,
- *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS,SUSTAINED_HEALTHY_POLLS}, PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
+ *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS,SUSTAINED_HEALTHY_POLLS,
+ *   POOL_SHED_GRACE_S}, PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
 import { execFile, execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -121,6 +155,11 @@ const ALERT_AFTER_RESTARTS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_ALERT_
 /** WI-37501: consecutive HEALTHY polls required before the strike counter clears — a single healthy poll
  *  is not evidence the boot succeeded (a stalled process can fire exactly one routine early in boot). */
 const SUSTAINED_HEALTHY_POLLS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SUSTAINED_HEALTHY_POLLS) || 3;
+/** WI-37506: extra slack (seconds) added to the observed freeze window (idleSec) when checking whether a
+ *  durable pool-shed guardrail event explains it — mirrors engine-death.ts's own `graceMinutes` window
+ *  (WI-5456). A shed event lands the INSTANT a tick's probe crosses critical, which can be a beat before
+ *  routine fires / the scheduler themselves cross FREEZE_SILENCE_S, so the window needs a little room. */
+const POOL_SHED_GRACE_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POOL_SHED_GRACE_S) || 120;
 /** Throttled "still monitoring + ticker healthy" line so the durable log proves the watchdog is ACTIVELY
  *  reading freshness (not silently early-returning) — the operability gap that made this whole class
  *  invisible for 44h. First healthy poll logs immediately, then at most every HEARTBEAT_MS. */
@@ -536,6 +575,30 @@ async function schedulerIdleSec(dbUrl) {
   return parseIdleSec(r.stdout);
 }
 
+/** Newest durable critical pool-shed event age (seconds) — `harness_shared.routine_pool_shed_events`,
+ *  written by THIS unit's routinesTickImpl (pool-pressure.ts's `recordPoolShedEvent`, migration 627) the
+ *  instant a tick sheds under critical PG-pool starvation. null on any read fault OR when no shed event
+ *  has EVER been recorded ⇒ UNKNOWN (never explains a freeze on a broken/absent signal — see
+ *  `poolShedExplainsFreeze`). Unscoped by workspace, matching `routineIdleSec`/`schedulerIdleSec` above —
+ *  this is a THIS-HOST liveness signal, not a per-tenant one. */
+async function poolShedIdleSec(dbUrl) {
+  if (!dbUrl) return null;
+  const q = 'SELECT EXTRACT(EPOCH FROM (now() - MAX(at)))::int FROM harness_shared.routine_pool_shed_events';
+  const r = await sh('psql', [dbUrl, '-tAqc', q]);
+  if (r.err) return null;
+  return parseIdleSec(r.stdout);
+}
+
+/** Pure (WI-37506): does a recent durable pool-shed guardrail event EXPLAIN an apparent freeze, rather
+ *  than the ticker actually being dead? True when the most recent recorded shed landed within the
+ *  observed freeze window (`idleSec`) plus `graceSec` slack. UNKNOWN(null) `shedIdleSec` NEVER
+ *  explains — mirrors `isFrozen`'s null-is-never-frozen asymmetry: absence of a clean shed signal must
+ *  never suppress a restart that would otherwise be correct. */
+export function poolShedExplainsFreeze(idleSec, shedIdleSec, graceSec = POOL_SHED_GRACE_S) {
+  if (shedIdleSec == null) return false;
+  return shedIdleSec <= (idleSec ?? 0) + graceSec;
+}
+
 /** @param collateral snapshot from `readCollateral()` taken BEFORE the restart is issued (the cgroup is
  *  torn down by the restart, so it cannot be read afterwards); null = UNKNOWN, report nothing. */
 function restart(reason, collateral = null) {
@@ -622,6 +685,19 @@ async function poll() {
       }
       return;
     }
+    // WI-37506: both signals are stale — before concluding a genuine freeze, check whether a durable
+    // pool-shed guardrail event explains it (dbos.workflow_status, which BOTH signals above read, lives
+    // on the same pool that a critical shed reports on, so a genuine starvation event can stale BOTH
+    // signals without the ticker being dead — see the file-header WI-37506 note).
+    const shedIdleSec = await poolShedIdleSec(dbUrl);
+    if (poolShedExplainsFreeze(idleSec, shedIdleSec)) {
+      const now = Date.now();
+      if (now - lastHeartbeat >= HEARTBEAT_MS) {
+        lastHeartbeat = now;
+        log(`explained by a critical PG-pool-shed guardrail event ${shedIdleSec}s ago (EI-9935/P-006/W4) — routine fires ${idleSec}s stale AND scheduler ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} stale, but the ticker is SHEDDING under pool starvation, not dead. NOT restarting (WI-37506).`);
+      }
+      return;
+    }
     // Snapshot the cgroup BEFORE restarting — the restart tears it down, so this is unreadable after.
     // Fail-soft (null ⇒ report nothing) and deliberately off the decision path: `restart()` is called
     // with whatever this returns, including null, so a collateral-read fault can never suppress a
@@ -694,7 +770,7 @@ async function reportVintage(unit) {
 function start() {
   log(
     `up — unit ${UNIT}, poll ${POLL_MS}ms, freeze-silence ${FREEZE_SILENCE_S}s, debounce ${DEBOUNCE_MS}ms (backoff x${BACKOFF_MULTIPLIER}, cap ${MAX_DEBOUNCE_MS}ms), ` +
-      `boot-grace ${BOOT_GRACE_MS}ms, alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr; ` +
+      `boot-grace ${BOOT_GRACE_MS}ms, alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr, pool-shed-grace ${POOL_SHED_GRACE_S}s; ` +
       `signal=PG-routine-freshness (journald-independent); durable log ${LOG_FILE}`,
   );
   // WI-37501: a recurrence guard, not just a fix — if POLL_MS/BOOT_GRACE_MS/MAX_RESTARTS_HR are ever

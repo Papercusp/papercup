@@ -43,7 +43,7 @@ export default defineTool({
   guidance: {
     when: 'You see a recurring characteristic worth grading consistently and no rubric covers it — or you are REVISING an existing rubric (rubrics:get first; resubmit ALL criteria). Author each criterion: model + method + driftMarkers + its own replication drill (the copy-runnable testing procedure); methodRef points at the rubric-level long-form runbook.',
     notWhen: 'A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.',
-    chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → rubrics:ratify (Mug/owner). The result reports `completeness` (criteria lacking a replication drill; missing methodRef) and `replicationSqlCheck` (embedded drill SQL that fails to parse/plan against live PG — a table/column that was renamed since the drill was written; EI-10514) — fill/fix the gaps.',
+    chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → rubrics:ratify (Mug/owner). The result reports `completeness` (criteria lacking a replication drill; missing methodRef) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only, bind-placeholder noise split out) — fill/fix the gaps.',
     seeAlso: [
       'rubrics:search (dedup before proposing)',
       'rubrics:get (fetch before revising — propose REPLACES the stored doc)',

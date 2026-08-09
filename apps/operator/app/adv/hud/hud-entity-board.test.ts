@@ -9,6 +9,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
+// Canonical goal write-vocabulary, imported HERE (test-only) rather than into
+// the board module: hud-entity-board.ts is pure and browser-bundled, so it must
+// not pull the tool graph in. See GOAL_TERMINAL_STATUSES' comment (WI-37520).
+import { GOAL_STATUSES } from '../../../../../packages/agent-mcp/src/tools/goals/create';
 import {
   askTargetFor,
   askToCard,
@@ -17,6 +21,7 @@ import {
   buildWorkItemBoard,
   goalColumn,
   goalSpendLabel,
+  GOAL_TERMINAL_STATUSES,
   HUD_DEFAULT_TAB,
   HUD_ENTITY_COLUMNS,
   HUD_TABS,
@@ -108,9 +113,34 @@ describe('goalColumn', () => {
     // Precedence case 1. A closed goal's leftover needs-human items are moot;
     // surfacing it under "needs you" would ask the owner to act on a finished
     // goal — the one outcome this column ordering exists to prevent.
-    for (const status of ['closed', 'done', 'achieved', 'abandoned']) {
+    //
+    // `killed` is the case that had regressed (WI-37520). It is the transition
+    // GOAL mode's contract MANDATES when a kill criterion trips, and it was
+    // missing from the terminal set — so a killed goal carrying parked asks
+    // landed in needs-you and the owner was chased about a goal they had
+    // deliberately killed. This loop previously iterated ['closed','done',
+    // 'achieved','abandoned']: three statuses `z.enum` rejects outright, and
+    // not the one that mattered.
+    for (const status of ['achieved', 'killed']) {
       expect(goalColumn(goal({ status, needsHuman: 5 }))).toBe('done');
     }
+  });
+
+  it('keeps the terminal set inside the canonical goal vocabulary', () => {
+    // The guard that would have caught WI-37520. The board's terminal set is a
+    // hand-maintained copy of a z.enum that lives in the tools package, and a
+    // copy drifts in BOTH directions: this one had GAINED three statuses the
+    // tools reject and LOST the one the contract depends on. Anchoring to the
+    // canonical enum makes either drift a red instead of a silent misrender.
+    for (const status of GOAL_TERMINAL_STATUSES) {
+      expect(GOAL_STATUSES).toContain(status);
+    }
+    // Pin the complement too, so a status ADDED to the enum later cannot
+    // silently default to "not terminal" — it has to be classified here.
+    expect([...GOAL_STATUSES].filter((s) => !GOAL_TERMINAL_STATUSES.has(s)).sort()).toEqual([
+      'active',
+      'paused',
+    ]);
   });
 
   it('prefers needs-you over blocked for a PAUSED goal that has asks', () => {
@@ -134,7 +164,11 @@ describe('goalColumn', () => {
   });
 
   it('is case-insensitive about status', () => {
-    expect(goalColumn(goal({ status: 'CLOSED' }))).toBe('done');
+    // Fixture uses a status the tools can actually EMIT. It read 'CLOSED'
+    // before WI-37520 — an unreachable status, so this case asserted the
+    // property against a value that never arrives.
+    expect(goalColumn(goal({ status: 'KILLED' }))).toBe('done');
+    expect(goalColumn(goal({ status: 'Achieved' }))).toBe('done');
     expect(goalColumn(goal({ status: 'Paused' }))).toBe('blocked');
   });
 

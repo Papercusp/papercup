@@ -76,10 +76,11 @@ async function runCli(
       [CLI, ...args],
       { env: { ...process.env, ...env }, timeout: 20_000 },
       (err, stdout, stderr) => {
-        const code =
-          err && typeof (err as NodeJS.ErrnoException & { code?: number }).code === 'number'
-            ? ((err as NodeJS.ErrnoException & { code?: number }).code as number)
-            : 0;
+        // Bind to a local before narrowing: two separate `(err as ...).code`
+        // cast expressions don't narrow each other, which is what triggered
+        // TS2352 here (a genuine, if pre-existing, type-safety gap).
+        const rawCode = err ? (err as NodeJS.ErrnoException).code : undefined;
+        const code = typeof rawCode === 'number' ? rawCode : 0;
         resolve({ code, stdout: String(stdout), stderr: String(stderr) });
       },
     );

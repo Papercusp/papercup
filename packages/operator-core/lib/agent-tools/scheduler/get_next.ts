@@ -162,6 +162,50 @@ export function specIsIssueFamilyOnly(spec: unknown): boolean {
 }
 
 /**
+ * WI-6409: the ONE cap-led refusal EVERY miss branch returns when the caller is at its
+ * concurrency cap — shared so the fleet-scoped and non-fleet branches cannot drift.
+ *
+ * Why it is shared rather than inlined at the (previously single) call site: EI-19931420102632438
+ * fixed exactly this misattribution on the NON-fleet branch — "lead with the CAP, never with the
+ * lane-empty phrase" — but a fleet member's miss routes to `fleetScopedMiss` instead, which never
+ * consulted concurrency at all. So the identical defect survived on the branch every fleet member
+ * actually takes, where it is strictly worse: `fleetScopedMiss` does not merely say "lane empty",
+ * it pronounces CLAIM-PATH/READ-PATH DIVERGENCE, calls the breakdown "the reproduction", and
+ * instructs the member to file a claim-path bug and NOT stand down.
+ *
+ * Measured live 2026-08-09 (this item's own reproduction, pool held constant): holding 1/1, two
+ * consecutive `scheduler:get_next` calls returned `divergenceRecheck:"confirmed-twice"` with
+ * "232 of 411 rows pass every floor"; releasing to 0 claims and re-calling seconds later SERVED an
+ * item under the same spec (rev 7). The claim path was healthy the whole time.
+ *
+ * Note the divergence RE-CHECK cannot discriminate this case by construction: it re-runs the same
+ * claim, which is still cap-blocked, so "confirmed-twice" is GUARANTEED rather than corroborating —
+ * which is why the false verdict reads as rigorously confirmed. Hence the check below runs BEFORE
+ * the re-check, not merely before the verdict.
+ */
+function concurrencyBlockedRefusal(concurrency: {
+  activeClaims: number;
+  maxConcurrentClaims: number;
+  heldIds: string[];
+}): { error: string; diagnosis: Record<string, unknown> } {
+  return {
+    // EI-19931420102632438: lead with the CAP, never with a lane-contents claim. A caller refused
+    // on its own cap had the lane never consulted at all.
+    error:
+      `claim cap reached: you already hold ${concurrency.activeClaims}/${concurrency.maxConcurrentClaims} ` +
+      `concurrent claim(s) — release or complete one before claiming another; ` +
+      `held: ${concurrency.heldIds.join(', ')}. (The claim lane itself was NOT evaluated — this is ` +
+      `not a statement about lane contents.)`,
+    diagnosis: {
+      concurrencyBlocked: true,
+      activeClaims: concurrency.activeClaims,
+      maxConcurrentClaims: concurrency.maxConcurrentClaims,
+      heldIds: concurrency.heldIds,
+    },
+  };
+}
+
+/**
  * WI-4413: build the self-explaining miss. Two layers:
  *  1. AGGREGATE — the POOL/READY split from diagnoseClaimNextMiss (already the source of truth
  *     shared with the claim itself). Distinguishes "genuinely drained, idling is correct" from
@@ -242,25 +286,9 @@ async function buildMissDiagnosis(args: {
       maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
     }).catch(() => null);
     if (concurrency?.blocked) {
-      return {
-        // EI-19931420102632438: same pre-lane-refusal fix as the fleet-transition branch
-        // above — lead with the CAP, never with the lane-empty STATIC phrase. A caller
-        // refused on its own concurrency cap had the lane never consulted at all, and the
-        // old `${STATIC}. Diagnosis: …` prefix produced a confident, plausible, WRONG claim
-        // about lane contents (measured: it manufactured a fleet-wide false starvation
-        // alarm — the member quoted the headline verbatim, the lane was healthy).
-        error:
-          `claim cap reached: you already hold ${concurrency.activeClaims}/${concurrency.maxConcurrentClaims} ` +
-          `concurrent claim(s) — release or complete one before claiming another; ` +
-          `held: ${concurrency.heldIds.join(', ')}. (The claim lane itself was NOT evaluated — this is ` +
-          `not a statement about lane contents.)`,
-        diagnosis: {
-          concurrencyBlocked: true,
-          activeClaims: concurrency.activeClaims,
-          maxConcurrentClaims: concurrency.maxConcurrentClaims,
-          heldIds: concurrency.heldIds,
-        },
-      };
+      // WI-6409: the message + diagnosis now live in `concurrencyBlockedRefusal` so the
+      // fleet-scoped branch returns the IDENTICAL verdict instead of a false divergence.
+      return concurrencyBlockedRefusal(concurrency);
     }
 
     // D-002 (drain-claim-spec-hardening-2026-07-13, fixes EI-11300): mirror getNextWorkItem's
@@ -553,6 +581,48 @@ export default defineTool({
       };
     }
     let res = claim.value;
+    // WI-6409: a caller at its CONCURRENCY CAP never had the lane evaluated — getNextForBee
+    // short-circuits before the claim query (EI-12095) — so this miss says NOTHING about pool
+    // admissibility. Answer it here, for EVERY caller, before the divergence machinery runs.
+    //
+    // This check used to exist only inside `buildMissDiagnosis`, which line ~839 skips entirely
+    // when `reconciliation.scope` is set — i.e. it never ran for a FLEET MEMBER, whose miss is
+    // routed to `fleetScopedMiss` instead. The result was a confident false verdict on the branch
+    // every fleet member takes: "CLAIM-PATH/READ-PATH DIVERGENCE … 232 of 411 rows pass every
+    // floor … this is an internal inconsistency in the claim path's own spec narrowing", with
+    // advice to file a claim-path bug and "do not stand down". Reproduced live on this fleet
+    // 2026-08-09 with the pool held constant (see concurrencyBlockedRefusal's doc comment).
+    //
+    // Placed BEFORE the WI-5947 re-check on purpose, for two reasons:
+    //  1. CORRECTNESS — the re-check re-runs the same cap-blocked claim, so it can only ever
+    //     return `divergenceRecheck:"confirmed-twice"`. The mechanism meant to distinguish a real
+    //     defect from lane churn is, for this cause, guaranteed to affirm. Running it first would
+    //     dress the false verdict in its strongest possible evidence.
+    //  2. COST — it also avoids a second claim attempt plus two full oracle reads per capped pull,
+    //     on the path a saturated fleet hits most often.
+    // Fails SOFT (a read error leaves `res` null and the ordinary miss reporting stands): a
+    // diagnosis must never become a new way for the claim path to fail.
+    if (!res) {
+      const capRec = await getClaimSpecRecord({
+        cupId: ident.ownerId,
+        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+      }).catch(() => null);
+      const capped = await readClaimConcurrency({
+        cupId: ident.ownerId,
+        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+        maxConcurrentClaims: capRec?.spec.limits?.maxConcurrentClaims,
+      }).catch(() => null);
+      if (capped?.blocked) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ ok: false, ...concurrencyBlockedRefusal(capped) }),
+            },
+          ],
+        };
+      }
+    }
     // WI-5947: RE-CONFIRM before letting a divergence verdict be pronounced.
     //
     // `fleetScopedMiss` reports CLAIM-PATH/READ-PATH DIVERGENCE when the claim above returned

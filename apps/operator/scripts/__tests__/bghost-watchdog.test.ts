@@ -12,6 +12,7 @@ let nextDebounceMs: (baseMs: number, consecutiveRestarts: number, multiplier?: n
 let shouldAlert: (consecutiveRestarts: number, alertAfter?: number) => boolean;
 let shouldClearStrikes: (healthyStreak: number, sustainedPolls?: number) => boolean;
 let maxReachableRestartsPerHr: (bootGraceMs?: number, pollMs?: number) => number;
+let poolShedExplainsFreeze: (idleSec: number | null, shedIdleSec: number | null, graceSec?: number) => boolean;
 let alertFleet: (
   summary: string,
   deps?: {
@@ -55,6 +56,7 @@ beforeAll(async () => {
     shouldAlert,
     shouldClearStrikes,
     maxReachableRestartsPerHr,
+    poolShedExplainsFreeze,
     alertFleet,
     circuitOpenMessage,
     parseCgroupProcs,
@@ -234,6 +236,39 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
       const looser = maxReachableRestartsPerHr(60_000, 5_000);
       const tighter = maxReachableRestartsPerHr(8 * 60_000, 30_000);
       expect(looser).toBeGreaterThan(tighter);
+    });
+  });
+
+  /**
+   * WI-37506: `shouldRestart`'s saturation corroboration (`schedulerIdleSec`) assumes a stale
+   * `routinesTick` scheduler signal means a dead ticker. Under genuine PG-pool starvation that
+   * assumption breaks — `dbos.workflow_status` (read by BOTH `routineIdleSec` and `schedulerIdleSec`)
+   * lives on the same starved pool a critical shed reports on, so both signals can go stale together
+   * while the ticker is merely SHEDDING, not dead. `poolShedExplainsFreeze` corroborates with the
+   * durable pool-shed record (pool-pressure.ts's `recordPoolShedEvent`) — the same signal
+   * `engine-death.ts`'s `hasPoolShedInWindow` already uses for the sibling infra-liveness alarm
+   * (WI-5456) — before the more consequential DESTRUCTIVE restart decision.
+   */
+  describe('poolShedExplainsFreeze — pool-starvation corroboration (WI-37506)', () => {
+    it('a shed event within the freeze window (+ grace) explains the freeze — do not restart', () => {
+      expect(poolShedExplainsFreeze(267, 30, 120)).toBe(true);
+      expect(poolShedExplainsFreeze(267, 267, 120)).toBe(true); // shed as old as the freeze itself
+    });
+    it('a shed event just inside the grace boundary still explains it', () => {
+      expect(poolShedExplainsFreeze(100, 220, 120)).toBe(true); // 220 <= 100+120
+    });
+    it('a shed event older than the freeze window + grace does NOT explain it — restart', () => {
+      expect(poolShedExplainsFreeze(100, 221, 120)).toBe(false); // 221 > 100+120
+      expect(poolShedExplainsFreeze(60, 6000, 120)).toBe(false); // a stale, long-past shed from a prior incident
+    });
+    it('UNKNOWN shedIdleSec (null — no shed ever recorded, or the query failed) NEVER explains a freeze', () => {
+      // The core asymmetry: absence of a clean shed signal must never suppress a restart that would
+      // otherwise be correct, mirroring isFrozen/withinBootGrace's null-is-never-frozen/grace rule.
+      expect(poolShedExplainsFreeze(267, null, 120)).toBe(false);
+      expect(poolShedExplainsFreeze(null, null, 120)).toBe(false);
+    });
+    it('a null idleSec with a fresh shed still explains it (treated as 0)', () => {
+      expect(poolShedExplainsFreeze(null, 10, 120)).toBe(true);
     });
   });
 
@@ -529,6 +564,44 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
       const restartCallIdx = pollBody.indexOf('restart(\n');
       expect(readIdx).toBeGreaterThan(-1);
       expect(restartCallIdx).toBeGreaterThan(readIdx);
+    });
+  });
+
+  /**
+   * WI-37506: the poolShedExplainsFreeze tests above exercise the pure predicate only — they would ALL
+   * still pass if the call were deleted from `poll()`. `poll()` cannot be imported directly (it shells
+   * out to `systemctl`/`psql`), so this pins the wiring at the source level, the same chokepoint
+   * approach the collateral WIRING block above uses.
+   */
+  describe('WIRING: pool-shed corroboration runs before the destructive restart (WI-37506)', () => {
+    let pollBody: string;
+    beforeAll(async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, resolve } = await import('node:path');
+      const subject = process.env.PROBE_SCRIPT || resolve(dirname(fileURLToPath(import.meta.url)), '../bghost-watchdog.mjs');
+      const src = readFileSync(subject, 'utf8');
+      const start = src.indexOf('async function poll(');
+      expect(start).toBeGreaterThan(-1);
+      pollBody = src.slice(start);
+    });
+
+    it('checks poolShedExplainsFreeze AFTER the saturation gate but BEFORE the collateral snapshot + restart', () => {
+      const satIdx = pollBody.indexOf('if (!shouldRestart(');
+      const shedIdx = pollBody.indexOf('poolShedExplainsFreeze(');
+      const collateralIdx = pollBody.indexOf('await readCollateral(');
+      expect(satIdx).toBeGreaterThan(-1);
+      expect(shedIdx).toBeGreaterThan(satIdx); // only consulted once a genuine-freeze verdict is reached
+      expect(collateralIdx).toBeGreaterThan(shedIdx); // and settled before the destructive path proceeds
+    });
+
+    it('the pool-shed check is NOT nested inside the saturation branch — it must run on every genuine-freeze verdict', () => {
+      const satIdx = pollBody.indexOf('if (!shouldRestart(');
+      const shedIdx = pollBody.indexOf('poolShedExplainsFreeze(');
+      const between = pollBody.slice(satIdx, shedIdx);
+      // The saturation branch's own `return;` and closing `}` must appear before the shed check begins —
+      // otherwise a future edit could silently swallow the shed check inside that unrelated branch.
+      expect(between).toMatch(/\breturn;\n\s*}\n/);
     });
   });
 

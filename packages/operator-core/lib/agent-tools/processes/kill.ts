@@ -63,6 +63,12 @@ export default defineTool({
         .optional()
         .describe('SIGTERM, then SIGKILL after this long IF the scope still holds processes (taskId mode only)'),
       signal: z.enum(['SIGTERM', 'SIGKILL']).optional().describe('the signal to send (batch-level; default SIGTERM)'),
+      reapTerminalResidue: z
+        .boolean()
+        .optional()
+        .describe(
+          'WI-37521: reap a TERMINAL row (taskId mode only) whose cgroup scope is POSITIVELY re-verified, in this call, to still hold live process(es) — the "row closed, payload kept running" class. Without this the normal `not_live` refusal applies unchanged. Refused for an unconfined row or a scope that is actually empty (nothing to reap).',
+        ),
     })
     .refine(
       (a) =>
@@ -84,6 +90,7 @@ export default defineTool({
               signal: args.signal,
               includeSubtree: args.includeSubtree,
               escalateAfterMs: args.escalateAfterMs,
+              reapTerminalResidue: args.reapTerminalResidue,
             }),
           { keyOf: (taskId) => ({ taskId }) },
         )

@@ -328,14 +328,128 @@ export function stripComments(text) {
 }
 
 /**
+ * Strip comments AND the CONTENTS of string/template literals, in ONE pass.
+ *
+ * WHY THIS EXISTS (EI-19989853369726696): the host scan used to run `stripComments`
+ * alone, which leaves string literals intact — so a call-shaped token appearing in
+ * PROSE inside a string was parsed as a real call site. That is not hypothetical and
+ * it was not cheap: `apps/operator/lib/release/green-checkpoint.ts` contains the error
+ * text of a DIFFERENT guard —
+ *
+ *     '... a new recurring timer bypassed managedSetInterval (P-008) ...'
+ *
+ * The detector regex is /\bmanagedSetInterval\s*\(/, and `\s*\(` happily matches the
+ * space before `(P-008)`. The scan then extracted `P-008` as that "call's" argument
+ * text, found no `classification:` in it, and reported a phantom offender — red-pinning
+ * the fleet gate on a file that does not even IMPORT managedSetInterval. A guard whose
+ * own failure message is quoted in another file will keep doing this, so the fix
+ * belongs in the scanner, not in a reword of the quoting file.
+ *
+ * ONE pass rather than strip-comments-then-strip-strings, because the two are mutually
+ * escaping: `//` inside a string does not start a comment ("http://x" must survive as a
+ * string, not silently truncate the rest of the line), and a quote inside a comment does
+ * not start a string (`// don't` would otherwise open an unterminated literal and eat
+ * the file). Chaining two independent regex passes gets both of those wrong.
+ *
+ * `${...}` template expressions are preserved AS CODE — a real call can legitimately
+ * live inside one, and dropping them would trade this false POSITIVE for a false
+ * NEGATIVE, which is the worse direction for a guard.
+ *
+ * The delimiters are kept (contents emptied) so nothing new is concatenated across a
+ * removal. Argument-level detection is unaffected: the check looks for the `classification:`
+ * KEY, which is code, never the string VALUE — `{ classification: 'must-sample' }` still
+ * reads as `{ classification: '' }` and still matches.
+ *
+ * KNOWN LIMIT, stated rather than papered over: a regex literal containing a quote or a
+ * slash (`/'/`) can still confuse this, since telling a regex from division needs real
+ * parsing. That is the same class of approximation `findManagedSetIntervalCalls` already
+ * documents ("without a real AST parse"), and it fails toward the pre-existing behaviour.
+ */
+export function stripCommentsAndStrings(text) {
+  let out = '';
+  let i = 0;
+  const n = text.length;
+
+  while (i < n) {
+    const c = text[i];
+    const c2 = text[i + 1];
+
+    if (c === '/' && c2 === '/') {
+      while (i < n && text[i] !== '\n') i += 1;
+      continue;
+    }
+
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+
+    if (c === '"' || c === "'") {
+      out += c;
+      i += 1;
+      while (i < n && text[i] !== c && text[i] !== '\n') {
+        i += text[i] === '\\' ? 2 : 1;
+      }
+      out += c;
+      i += 1;
+      continue;
+    }
+
+    if (c === '`') {
+      out += '`';
+      i += 1;
+      while (i < n && text[i] !== '`') {
+        if (text[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (text[i] === '$' && text[i + 1] === '{') {
+          out += '${';
+          i += 2;
+          let depth = 1;
+          const exprStart = i;
+          while (i < n && depth > 0) {
+            if (text[i] === '{') depth += 1;
+            else if (text[i] === '}') depth -= 1;
+            if (depth === 0) break;
+            i += 1;
+          }
+          out += text.slice(exprStart, i);
+          out += '}';
+          i += 1;
+          continue;
+        }
+        i += 1;
+      }
+      out += '`';
+      i += 1;
+      continue;
+    }
+
+    out += c;
+    i += 1;
+  }
+
+  return out;
+}
+
+/**
  * Find the balanced-paren text of every `managedSetInterval(...)` CALL in `text`
- * (after comments are stripped). Returns an array of the substrings between the
+ * (after comments AND string literals are stripped — see stripCommentsAndStrings for
+ * why strings must go too; a call-shaped token quoted in prose is not a call site).
+ * Returns an array of the substrings between the
  * call's opening `(` and its matching closing `)`, INCLUSIVE of nested parens —
  * good enough for a textual "does this call's arguments mention `classification:`"
  * check without a real AST parse (mirrors the simplicity of check-no-raw-setinterval).
+ *
+ * Stripping strings also HARDENS the balanced-paren walk below: an unbalanced paren
+ * inside a string (`'oops :-('`) previously threw the depth counter off and could run
+ * the argument text to the end of the file.
  */
 export function findManagedSetIntervalCalls(text) {
-  const clean = stripComments(text);
+  const clean = stripCommentsAndStrings(text);
   const calls = [];
   const re = /\bmanagedSetInterval\s*\(/g;
   let m;

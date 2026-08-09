@@ -180,6 +180,74 @@ describe('killTask — confined path', () => {
   });
 });
 
+describe('killTask — reapTerminalResidue (WI-37521)', () => {
+  it('refuses a terminal row exactly as before when the flag is absent — no behaviour change', async () => {
+    row({ taskId: 'r1', state: 'killed' });
+    const kill = vi.fn();
+    const out = await killTask('r1', {
+      kill,
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+    });
+    expect(out).toMatchObject({ ok: false, error: 'not_live' });
+    expect(kill).not.toHaveBeenCalled();
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it('reaps a terminal row whose scope is POSITIVELY re-verified to still hold processes', async () => {
+    row({ taskId: 'r2', state: 'killed' });
+    const calls: string[][] = [];
+    let signalled = false;
+    const out = await killTask('r2', {
+      reapTerminalResidue: true,
+      // Before the signal: the scope holds a live pid (the whole premise of the
+      // reap). After: it's gone — the signal actually worked.
+      fs: { readFile: () => (signalled ? '' : '4242\n'), readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        signalled = true;
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: true, taskId: 'r2' });
+    expect((out as { detail: string }).detail).toMatch(/TERMINAL-ROW REAP/);
+    expect(calls[0]).toEqual(['--user', 'kill', '--signal=SIGTERM', 'pc-r2.scope']);
+    // The row's OWN state must NOT be rewritten — closeTask no-ops on an
+    // already-ended row by design, and this must never fight that.
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it('still refuses when the flag is set but the scope is actually empty — nothing to reap', async () => {
+    row({ taskId: 'r3', state: 'exited' });
+    const out = await killTask('r3', {
+      reapTerminalResidue: true,
+      fs: { readFile: () => '', readDir: () => [], isDir: () => true },
+    });
+    expect(out).toMatchObject({ ok: false, error: 'not_live' });
+    expect((out as { detail: string }).detail).toMatch(/nothing to reap/);
+  });
+
+  it('still refuses an UNCONFINED terminal row even with the flag — pid re-verification is not trustworthy here', async () => {
+    row({ taskId: 'r4', state: 'exited', confined: false, scopeUnit: null, pid: 999, processIdentity: 'linux:b:1' });
+    const kill = vi.fn();
+    const out = await killTask('r4', { reapTerminalResidue: true, kill, readIdentity: () => 'linux:b:1' });
+    expect(out).toMatchObject({ ok: false, error: 'not_live' });
+    expect((out as { detail: string }).detail).toMatch(/unconfined/);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('an INCOMPLETE reap (survivors after the verification window) is reported honestly, not as success', async () => {
+    row({ taskId: 'r5', state: 'killed' });
+    const out = await killTask('r5', {
+      reapTerminalResidue: true,
+      sleep: async () => {},
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'incomplete' });
+    expect(store.closed).toHaveLength(0);
+  });
+});
+
 describe('killTask — refusals', () => {
   it('refuses a row that is not live-owned', async () => {
     row({ taskId: 'c1', state: 'unaccounted' });

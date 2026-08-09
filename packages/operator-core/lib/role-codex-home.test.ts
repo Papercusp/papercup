@@ -526,6 +526,48 @@ describe('writeSuCodexHome', () => {
     expect(diag.inheritedPromptsCopied).toBe(true);
   });
 
+  it('inherits [notice] + [notice.model_migrations] nudge-suppression state (EI-19988517595776254 follow-up) alongside [tui.model_availability_nux]', async () => {
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.codex', 'config.toml'),
+      [
+        'model = "gpt-5"',
+        '',
+        '[tui.model_availability_nux]',
+        '"gpt-5.5" = 4',
+        '',
+        '[notice]',
+        'hide_rate_limit_model_nudge = true',
+        '',
+        '[notice.model_migrations]',
+        '"gpt-5.4" = "gpt-5.5"',
+        '',
+        '[model_providers.default]',
+        'name = "Default"',
+        '',
+      ].join('\n'),
+    );
+
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({
+      sessionKey: 'inherit-notice',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 's',
+    });
+
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).toContain('[tui.model_availability_nux]');
+    expect(toml).toContain('"gpt-5.5" = 4');
+    expect(toml).toContain('[notice]');
+    expect(toml).toContain('hide_rate_limit_model_nudge = true');
+    expect(toml).toContain('[notice.model_migrations]');
+    expect(toml).toContain('"gpt-5.4" = "gpt-5.5"');
+    // Unrelated tables must NOT leak into the generated home.
+    expect(toml).not.toContain('[model_providers.default]');
+  });
+
   it('seeds launch-dir trust ([projects."<trustDir>"] trust_level) so a fresh CODEX_HOME never blocks at the boot trust prompt', async () => {
     const { writeSuCodexHome } = await loadMod();
     const dir = '/home/dev/papercupai-workspace/papercusp';

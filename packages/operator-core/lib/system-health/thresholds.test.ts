@@ -149,9 +149,19 @@ describe('workItemsStatus', () => {
   it('ok otherwise (backlog alone is not unhealthy)', () => {
     expect(workItemsStatus(wi({ blocked: 50 }))).toBe('ok');
   });
-  // Stuck-items recovery (work-queue-stuck-item-recovery P-008 / P-009).
-  it('crit when the reaper is WEDGED (recorded but aged-out: reaperStale + non-null age)', () => {
-    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: 600 }))).toBe('crit');
+  // Stuck-items recovery (work-queue-stuck-item-recovery P-008 / P-009), as
+  // RECALIBRATED by fleet-lead-instrumentation-audit-2026-08-09 D-010 / P-016.
+  it('crit when the reaper is WEDGED (recorded but aged-out) AND rows are actually rotting', () => {
+    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: 600, deadHeldClaims: 3 }))).toBe('crit');
+  });
+  // P-016 INVERTS the original P-009 expectation here (it asserted 'crit' on the
+  // clock alone). Deliberate: measured 2026-08-09 against the release checkout,
+  // the live crit fired every tick with stuckTotal === 0 and never resolved —
+  // the alarm text carried no ", N stuck" segment while shouting REAPER WEDGED.
+  // A reaper with nothing stuck has nothing it failed to do. The condition stays
+  // visible via the plain `reaperStale` warn leg; it just stops paging.
+  it('warn (NOT crit) when the reaper is aged-out but the recovery backlog is EMPTY', () => {
+    expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: 600 }))).toBe('warn');
   });
   it('warn (not crit) when the reaper has NEVER recorded a run (null age — fresh boot, no backlog)', () => {
     expect(workItemsStatus(wi({ reaperStale: true, reaperAgeSec: null }))).toBe('warn');
@@ -740,6 +750,38 @@ describe('isReaperWedged — a clock is not a cause (P-016)', () => {
 
   it('CONTROL: an absent staleness leg (undefined) does not alarm', () => {
     expect(isReaperWedged({ reaperStale: undefined, reaperAgeSec: 4000, stuckTotal: 12 })).toBe(false);
+  });
+
+  /**
+   * The SEVERITY must move with the wording, or the fix is cosmetic: a panel that
+   * still reds on the clock is the same alarm wearing a quieter label. These pin
+   * `workItemsStatus` to the same rule.
+   */
+  describe('workItemsStatus agrees with the wording', () => {
+    const base = { total: 20_000, byState: {}, todo: 60, inProgress: 11, blocked: 120, needsHuman: 0, done: 0 };
+
+    it('THE OBSERVED ALARM: stale reaper, CLEAN queue → warn, not crit', () => {
+      // Shape taken from a live broadcast (2026-08-09): "20048 items — 60 todo,
+      // 11 in-flight, 120 blocked, 55 need human — REAPER WEDGED", which carried
+      // NO ", N stuck" segment — that segment renders only when stuckTotal > 0,
+      // so this crit was firing against an empty backlog.
+      expect(
+        workItemsStatus({ ...base, needsHuman: 55, reaperAgeSec: 40_000, reaperStale: true }),
+      ).toBe('warn');
+    });
+
+    it('CONTROL: stale reaper WITH a stranded backlog is still crit', () => {
+      expect(
+        workItemsStatus({ ...base, deadHeldClaims: 9, reaperAgeSec: 40_000, reaperStale: true }),
+      ).toBe('crit');
+    });
+
+    it('CONTROL: the never-recorded-reaper branch (EI-2534) is unchanged', () => {
+      expect(
+        workItemsStatus({ ...base, deadHeldClaims: 3, reaperAgeSec: null, reaperStale: true }),
+      ).toBe('crit');
+      expect(workItemsStatus({ ...base, reaperAgeSec: null, reaperStale: true })).toBe('warn');
+    });
   });
 });
 
