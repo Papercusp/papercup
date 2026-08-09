@@ -123,20 +123,25 @@ const DOORS: DoorEntry[] = [
     disposition: {
       kind: 'lossless',
       reason:
-        'Lossless by a BOUND, not by a recovery path (WI-36683 — the previous reason here claimed ' +
-        're-delivery and was false). This door records every selected push as DELIVERED ' +
-        '(ambient-push-delivery.ts recordDelivered) BEFORE it renders and cuts, and deliveredRefs ' +
-        'feeds the novelty set, so anything it actually CUT would be marked delivered, never ' +
-        'shown, and suppressed as not-novel thereafter — a silent permanent drop. It is exempt ' +
-        'only because a real block cannot reach the door: the teaser block is bounded by the push ' +
-        'budgets x TEASER_MAX_CHARS, under the injections door. ⚠ MEASURED 2026-08-08: that is a ' +
-        'margin of 68 chars in 4000 (1.7%) at the worst case, and it is NOT structural — teaser ' +
-        'is clamped but handle.ref/handle.query are unbounded in the type, so a fat handle can ' +
-        'breach it (WI-36688 carries the fit-whole-teasers fix). The only cuttable tail today is ' +
-        'the appended peer-brief region, which is PAPERCUSP_AMBIENT_CURSOR-gated (default off) ' +
-        'and re-pullable from the teaser handle. The bound is pinned by ' +
-        "ambient-push-delivery.test.ts 'the `lossless` registration is EARNED by a bound' — if " +
-        'that reds, this entry is no longer true and the door needs a marker.',
+        'Lossless BY CONSTRUCTION as of WI-36688 (SHIPPED — this reason has now been wrong in ' +
+        'both directions, so read the ordering off the code, not off any prose: WI-36683 ' +
+        'corrected a false re-delivery claim, then this entry went stale the other way by still ' +
+        'describing the pre-WI-36688 order and calling the fix pending). The CURRENT order is: ' +
+        'fit FIRST (ambient-push-delivery.ts fitPushesToBudget), record ONLY the fitting set ' +
+        'delivered (recordDelivered), THEN render and pass the door. A push is delivered iff its ' +
+        'WHOLE teaser line is in the block; one that did not fit gets NEITHER recordDelivered nor ' +
+        'recordDropped, so it stays `queued` and is genuinely reconsidered next pass. The ' +
+        'exemption no longer rests on a margin: fitPushesToBudget composes header + n + Σ(line ' +
+        'lengths), byte-identical to renderPushBlock, and sizes against the SAME ' +
+        'pushInjectionDoorTokens × CHARS_PER_TOKEN_ESTIMATE the door itself uses — so the ' +
+        'rendered block cannot exceed the door and capInjectionText returns it untouched. The ' +
+        'only cuttable tail is the appended peer-brief region, which is ' +
+        'PAPERCUSP_AMBIENT_CURSOR-gated (default off) and re-pullable from the teaser handle; a ' +
+        'head-keep cut there cannot reach back into the teaser lines, which sit entirely within ' +
+        'the budget. Pinned by ambient-push-delivery.test.ts "a push selectPushes admits but the ' +
+        'injection door can\'t hold is left QUEUED, not delivered or dropped (WI-36688)", which ' +
+        'asserts block.length <= the real door AND that the overflow ids got neither store call. ' +
+        'If THAT reds, this entry is no longer true and the door needs a marker.',
     },
   },
 ];

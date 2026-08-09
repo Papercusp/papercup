@@ -86,20 +86,25 @@ describe('applyPushInjectionDoor', () => {
 /**
  * WI-36683 — the `ambient-push-door` entry in the truncation-honesty registry
  * (truncation-honesty-guard.test.ts DOORS) is the ONLY door registered
- * `lossless`, i.e. exempt from stamping any truncation marker. That exemption is
- * only sound while a real push block CANNOT REACH the door: this door records
- * every selected push as DELIVERED (ambient-push-delivery.ts:236) BEFORE it
- * renders (:240) and cuts (:286), and `deliveredRefs` feeds the novelty set, so
- * anything the door actually cut would be marked delivered, never shown, and
- * suppressed as 'not-novel' on every later pass — a silent, permanent drop with
- * no spill file and no marker.
+ * `lossless`, i.e. exempt from stamping any truncation marker.
  *
- * So the registration rests on a BOUND, not on a recovery path. These two tests
- * pin that bound to the REAL constants (the push budgets, the teaser cap, the
- * injections door). Raise a budget, raise TEASER_MAX_CHARS, or shrink the
- * injections door far enough and the first test reds — which is the signal that
- * the `lossless` registration has stopped being true and the door now needs a
- * marker (or the teaser-fitting rewrite), NOT that the test needs relaxing.
+ * ⚠ HISTORY, because it decides what these two tests are now FOR. Originally the
+ * door recorded every selected push delivered BEFORE it rendered and cut, so a
+ * cut line was marked delivered, never shown, and suppressed as 'not-novel'
+ * thereafter — a silent permanent drop. The exemption then rested on a BOUND (a
+ * real block could not reach the door), and these tests pinned that bound.
+ * WI-36688 REPLACED the bound with construction: prepareAmbientPushBlock now
+ * fits first (fitPushesToBudget) and records only the fitting set, so a push
+ * that does not fit is left `queued` rather than lost. The by-construction
+ * property is pinned by "a push selectPushes admits but the injection door
+ * can't hold is left QUEUED, not delivered or dropped (WI-36688)" below — THAT
+ * is the test guarding losslessness now.
+ *
+ * So these two tests no longer carry the `lossless` registration. They measure
+ * the worst-case block against the door as a THROUGHPUT signal: a breach means
+ * pushes start deferring to later passes (slower ambient delivery), NOT that
+ * anything is dropped. Keep them for that, and do not restore the old
+ * "silent permanent drop" reading if one reds.
  */
 describe('ambient-push door — the `lossless` registration is EARNED by a bound, not asserted', () => {
   /** Handle `ref`/`query` are unbounded in the type, so the worst case has to
@@ -133,17 +138,18 @@ describe('ambient-push door — the `lossless` registration is EARNED by a bound
     const block = worstCaseBlock(maxBudget);
     const budgetChars = pushInjectionDoorTokens('su-recv') * 4;
     // MEASURED 2026-08-08: budget 4000, worst-case block 3932 — a margin of 68
-    // chars, i.e. 1.7%. That is TIGHT, and it is deliberately recorded here
-    // rather than left implicit: the `lossless` registration currently survives
-    // its own worst case by less than one rendered line.
+    // chars, i.e. 1.7%. Recorded rather than left implicit: the worst case fits
+    // by less than one rendered line.
     expect(
       block.length,
       `The worst-case ambient push block (${block.length} chars) no longer fits the injections ` +
-        `door (${budgetChars} chars). The ambient-push-door is registered LOSSLESS in ` +
-        'truncation-honesty-guard.test.ts on exactly this bound, and the door records pushes as ' +
-        'DELIVERED before it cuts — so a cut here is a SILENT PERMANENT DROP, not a truncation. ' +
-        'Do not relax this test: either restore the bound, or change the registration and give ' +
-        'the door a marker / make it fit whole teasers (WI-36688).',
+        `door (${budgetChars} chars). Since WI-36688 this is a THROUGHPUT signal, not a ` +
+        'correctness one: prepareAmbientPushBlock fits before it records, so the overflow stays ' +
+        '`queued` and re-delivers on a later pass — nothing is dropped. Losslessness is guarded ' +
+        "by \"a push selectPushes admits but the injection door can't hold is left QUEUED\" " +
+        'below, NOT by this bound. So a red here means ambient delivery got slower (more passes ' +
+        'per push), and the fix is to widen the door or tighten the teaser/handle caps — do NOT ' +
+        'read it as a silent drop, and do not add a truncation marker on account of it.',
     ).toBeLessThan(budgetChars);
     expect(applyPushInjectionDoor(block, 'su-recv')).toBe(block);
   });

@@ -233,4 +233,69 @@ describe('coord_open_escalations projection trigger (migration 355)', () => {
     expect(firstPage.truncated).toBe(true);
     expect(firstPage.offset).toBe(0);
   });
+
+  // EI-19938772014458100 — the projection is sorted ASCENDING (oldest-first), and
+  // slicing it from the front with offset:0 silently served the OLDEST maxRecords
+  // rows while the tool documents (and every caller assumes) "newest-first". A
+  // workspace with more than maxRecords open escalations therefore had every
+  // RECENT escalation — including fresh blockers — permanently unreachable from
+  // the default, no-args call. This pins that the DEFAULT page contains the
+  // newest rows, not the oldest.
+  it('the DEFAULT (no offset) page of listEscalationsPaginated(status=open) contains the NEWEST rows (EI-19938772014458100)', async () => {
+    configureCoordLog(new PgCoordLog({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' }));
+    setFlagOverridesForTest({ [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: true });
+
+    // Seed a backlog wider than maxRecords, spanning an OLD cluster and a
+    // RECENT cluster of timestamps — exactly the "old, never-resolved rows
+    // bury fresh ones" shape from the bug report.
+    const oldCount = 5;
+    const recentCount = 5;
+    const maxRecords = 3;
+    for (let i = 1; i <= oldCount; i++) {
+      const msgId = `old-${String(i).padStart(2, '0')}`;
+      const row = {
+        ts: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+        msg_id: msgId,
+        from: 'A',
+        to: ['human'],
+        kind: 'escalation',
+        severity: 'question',
+        summary: `old escalation ${i}`,
+        resolved: null,
+      };
+      await db.sql`
+        INSERT INTO harness_shared.coord_open_escalations (workspace_id, msg_id, ts, body)
+        VALUES ('default', ${msgId}, ${row.ts}, ${db.sql.json(row)})`;
+    }
+    for (let i = 1; i <= recentCount; i++) {
+      const msgId = `recent-${String(i).padStart(2, '0')}`;
+      const row = {
+        ts: `2026-08-09T00:00:${String(i).padStart(2, '0')}.000Z`,
+        msg_id: msgId,
+        from: 'A',
+        to: ['human'],
+        kind: 'escalation',
+        severity: 'blocker',
+        summary: `recent escalation ${i}`,
+        resolved: null,
+      };
+      await db.sql`
+        INSERT INTO harness_shared.coord_open_escalations (workspace_id, msg_id, ts, body)
+        VALUES ('default', ${msgId}, ${row.ts}, ${db.sql.json(row)})`;
+    }
+    const all = [
+      ...Array.from({ length: oldCount }, (_, i) => `old-${String(i + 1).padStart(2, '0')}`),
+      ...Array.from({ length: recentCount }, (_, i) => `recent-${String(i + 1).padStart(2, '0')}`),
+    ];
+
+    const defaultPage = await listEscalationsPaginated({ status: 'open', maxRecords });
+    expect(defaultPage.trueOpenTotal).toBe(oldCount + recentCount);
+    // The newest `maxRecords` rows are the tail of `all` (all is already in ts order).
+    expect(defaultPage.escalations.map((e) => e.msg_id)).toEqual(all.slice(-maxRecords));
+    // Within the page, order stays ascending (byte-identical to the fold path).
+    const pageTs = defaultPage.escalations.map((e) => e.ts);
+    expect([...pageTs].sort()).toEqual(pageTs);
+    // The newest row overall must be the LAST row of the default page.
+    expect(defaultPage.escalations.at(-1)?.msg_id).toBe('recent-05');
+  });
 });

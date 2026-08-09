@@ -98,9 +98,7 @@ describe('collapseSpawnsToDecisions — one spawn is one agent decision', () => 
       row('a1', 'code:run', 'sp-1', '2026-08-09T00:00:30.136Z'),
       row('a1', 'events:cancel', 'sp-1', '2026-08-09T00:00:00.258Z'),
     ];
-    expect(collapseSpawnsToDecisions(rows)[0]?.symbol ?? collapseSpawnsToDecisions(rows).events[0]!.symbol).toBe(
-      'code:run',
-    );
+    expect(collapseSpawnsToDecisions(rows).events[0]!.symbol).toBe('code:run');
     expect(collapseSpawnsToDecisions([...rows].reverse()).events[0]!.symbol).toBe('code:run');
   });
 });

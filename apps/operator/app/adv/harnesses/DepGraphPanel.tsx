@@ -266,6 +266,14 @@ const ELK_OPTIONS: Record<string, string> = {
   'elk.spacing.edgeNode': '16',
 };
 
+/**
+ * The zoom ladder's numeric rungs, ascending — the `dgz` enum minus `fit`, which is not a
+ * fixed ratio. Module scope so stepping does not rebuild it per render, and ONE array so
+ * the nuqs enum, the stepper and the label cannot drift into disagreeing about what a
+ * valid zoom is.
+ */
+const ZOOM_RUNGS = ['50', '67', '75', '100', '125', '150'] as const;
+
 export default function DepGraphPanel({ params }: PanelComponentProps) {
   const slug = typeof params.harnessSlug === 'string' ? params.harnessSlug : '';
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
@@ -591,6 +599,70 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
    * that already fits.
    */
   const canvasRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * The canvas's own width, measured — needed ONLY by the `fit` rung, which is a ratio
+   * against the viewport and therefore cannot be computed from the layout alone.
+   *
+   * A ResizeObserver rather than a one-shot read: this pane lives in a dockview split the
+   * user drags, so a width captured once is wrong the moment the pane is resized, and a
+   * `fit` that silently stops fitting is the same class of quiet-wrongness this whole pass
+   * is about. Initialised to 0 and treated as "not yet measured" (see `scale`) so the first
+   * paint never divides by a width that does not exist.
+   */
+  const [canvasW, setCanvasW] = useState(0);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    setCanvasW(el.clientWidth);
+    const ro = new ResizeObserver(() => setCanvasW(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /**
+   * The effective scale factor. `fit` resolves against the measured canvas; every other
+   * rung is a literal percentage.
+   *
+   * Clamped to ≤1 for `fit` deliberately: "fit" means "get the whole thing on screen", and
+   * blowing a small graph up to fill the pane is a different request (that is what the 125
+   * and 150 rungs are for). Falls back to 1 while unmeasured or when the layout has no
+   * width, so an unresolved measurement can never render a zero-size canvas.
+   */
+  const scale = useMemo(() => {
+    if (zoom !== 'fit') return Number(zoom) / 100;
+    if (!positioned || positioned.width <= 0 || canvasW <= 0) return 1;
+    return Math.min(1, canvasW / positioned.width);
+  }, [zoom, positioned, canvasW]);
+
+  /**
+   * Below this, the 11px node titles stop being readable — so the pane SAYS SO rather than
+   * letting the reader conclude the labels failed to render. Stated as a threshold on the
+   * effective scale, which is what `fit` makes unpredictable: on a wide graph `fit` can land
+   * at 0.2, and that is a legitimate view of the SHAPE with no legible text in it.
+   */
+  const textLegible = scale >= 0.67;
+
+  /**
+   * Step one rung. Stepping OUT of `fit` starts from the rung nearest the fitted scale
+   * rather than from 100% — after fitting a wide graph to 22%, a `+` that jumped to 125%
+   * would read as the button having done something else entirely.
+   */
+  const stepZoom = useCallback(
+    (dir: 1 | -1) => {
+      const from =
+        zoom === 'fit'
+          ? ZOOM_RUNGS.reduce((best, r) =>
+              Math.abs(Number(r) / 100 - scale) < Math.abs(Number(best) / 100 - scale) ? r : best,
+            )
+          : zoom;
+      const i = ZOOM_RUNGS.indexOf(from as (typeof ZOOM_RUNGS)[number]);
+      const next = ZOOM_RUNGS[Math.min(ZOOM_RUNGS.length - 1, Math.max(0, i + dir))];
+      void setZoom(next);
+    },
+    [zoom, scale, setZoom],
+  );
+
   useEffect(() => {
     if (!selectedId || !positioned) return;
     const canvas = canvasRef.current;
@@ -790,6 +862,67 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
       >
         Key
       </button>
+      {/*
+        ZOOM (P-008). Four small controls, not seven rungs: the bar is already dense and
+        this file's own P-005 note is that crowding it is how the previous layout was lost.
+        `Fit` is a toggle (aria-pressed) because it is a MODE — it keeps fitting as the pane
+        is resized — while −/+ write a fixed rung, so pressing either necessarily leaves fit.
+        The percentage between them is a button, not a label: it is the reset-to-100% target,
+        which is the one zoom action a reader wants without hunting for a rung.
+      */}
+      <span className="pc-depgraph__zoom" role="group" aria-label="Graph zoom">
+        <button
+          type="button"
+          className="pc-advpanel__chip"
+          aria-pressed={zoom === 'fit'}
+          aria-label={
+            zoom === 'fit'
+              ? 'Fit to width — the whole graph is scaled to fit the pane, and re-fits when the pane is resized. Activate to return to 100%.'
+              : 'Fit to width — scale the whole graph down until it fits the pane.'
+          }
+          onClick={() => void setZoom(zoom === 'fit' ? '100' : 'fit')}
+        >
+          Fit
+        </button>
+        <button
+          type="button"
+          className="pc-advpanel__chip"
+          aria-label="Zoom out"
+          disabled={zoom !== 'fit' && zoom === ZOOM_RUNGS[0]}
+          onClick={() => stepZoom(-1)}
+        >
+          &minus;
+        </button>
+        <button
+          type="button"
+          className="pc-advpanel__chip"
+          // The accessible name carries the number because the visible text is a bare "%"
+          // reading that says nothing about what activating it does.
+          aria-label={`Zoom is ${Math.round(scale * 100)} percent. Activate to reset to 100 percent.`}
+          onClick={() => void setZoom('100')}
+        >
+          {Math.round(scale * 100)}%
+        </button>
+        <button
+          type="button"
+          className="pc-advpanel__chip"
+          aria-label="Zoom in"
+          disabled={zoom !== 'fit' && zoom === ZOOM_RUNGS[ZOOM_RUNGS.length - 1]}
+          onClick={() => stepZoom(1)}
+        >
+          +
+        </button>
+      </span>
+      {!textLegible && (
+        // SAY IT (P-008). At a small `fit` the node titles are present in the DOM and
+        // genuinely unreadable on screen. Unstated, that reads as "the labels failed to
+        // render" — the same absence-as-defect misreading the rest of this pane is built to
+        // prevent — so the pane names the trade and points at the two surfaces that still
+        // carry the text: the a11y list, and the list pane beside it.
+        <span className="pc-advpanel__chip pc-depgraph__chip--warn" role="status">
+          labels unreadable at this scale — shape only
+        </span>
+      )}
       {/* Same control, same `wif` param, same columns as the list pane (P-010).
           `promote={['plan']}` (P-002) lifts Plan out of the `+Add filter…` dropdown into a
           visible labelled axis — the owner asked for "a plan filter" against a pane that
@@ -905,10 +1038,24 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
             // Named explicitly rather than left to DOM order, which would silently make
             // any selector depend on whether the key happens to be open.
             className="pc-depgraph__svg"
-            width={Math.max(positioned.width, 1)}
-            height={Math.max(positioned.height, 1)}
+            // P-008 — ZOOM. The rendered box scales; the COORDINATE SPACE does not. Every
+            // x/y below (and the layout that produced them) stays in unscaled layout units
+            // because `viewBox` maps them onto whatever box we ask for — so zoom touches
+            // exactly these three attributes and nothing downstream has to know about it.
+            // Scaling by rewriting node coordinates instead would have meant scaling stroke
+            // widths, font sizes and the arrowhead markers by hand, each an opportunity to
+            // get one of them wrong.
+            width={Math.max(positioned.width * scale, 1)}
+            height={Math.max(positioned.height * scale, 1)}
+            viewBox={`0 0 ${Math.max(positioned.width, 1)} ${Math.max(positioned.height, 1)}`}
             role="img"
-            aria-label={`Dependency graph: ${positioned.nodes.length} items`}
+            aria-label={
+              // The scale belongs in the accessible name: at a small `fit` the labels are
+              // genuinely unreadable, and a screen-reader user has no other way to know the
+              // picture they are being described is a shape-level view.
+              `Dependency graph: ${positioned.nodes.length} items` +
+              (scale === 1 ? '' : `, shown at ${Math.round(scale * 100)}% scale`)
+            }
           >
             {/*
               ARROWHEADS (P-004). One marker per edge class, rather than one marker inheriting

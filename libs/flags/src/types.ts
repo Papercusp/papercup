@@ -2506,7 +2506,42 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter((entry) 
 // STANDING CAUTION for the next reviewer: bumping this date WITHOUT performing the review is
 // the one action that defeats the guard, and is exactly the silent-lingering it was built to
 // surface. If you are here only because the gate is red, stop and do the review instead.
-export const DARK_FLAGS_REVIEW_BY = '2026-08-09';
+// ─── REVIEW 2026-08-09 (su-01f8cbc4, WI-36258) — I arrived here BECAUSE the gate was red, which
+// the caution above names as the danger. So the review was performed and its verdict RE-DERIVED
+// from each entry's case + reason, not inherited from the 2026-07-26 block; the date moved only
+// after that. The deadline elapsed at 00:00Z and red-pinned the fleet gate (green-stall:papercusp,
+// 9 consecutive reds, main held at fa0763d05e96 ~7.5h) — a calendar tripwire, not a code defect.
+//
+// SCOPE: all 31 entries. parked 7 · incomplete 6 · owner-authority 15 · cutover 3.
+//   Budget-counted (parked+incomplete) = 13, watermark 13 — still AT capacity, UNCHANGED.
+//
+// MEMBERSHIP DELTA since 2026-07-26 (29 → 31), measured, not assumed:
+//   +CAPABILITY_ENVELOPE_OVERRIDES, +IMPROVEMENT_AUTO_IMPLEMENT (owner-authority)
+//   +LAZY_SUBSTRATE_BOOT (cutover)
+//   −WORKSPACE_COORDINATION  ← a REAL graduation; the list does shrink, as designed.
+//   All three additions are SAFETY cases, which sit outside the size budget — so 13/13 is
+//   unchanged and this growth is NOT a watermark breach. (Check what the number measures
+//   before reading 31-vs-13 as a defect; the 2026-07-26 block flags the same trap.)
+//
+// VERDICT: ZERO agent-graduatable candidates. No flag flipped. No behaviour changed.
+//   parked(7)                        — owner-directed V1/v2 scope cuts; flipping would SHIP a
+//                                      surface the owner explicitly cut. Not an agent's call.
+//   incomplete(6)                    — unbuilt or unverified. EXTERNAL_BENCH is now PERMANENTLY
+//                                      dark (blueprint retired, WI-5646) and is awaiting nothing,
+//                                      so it will never graduate and is not a standing candidate.
+//   owner-authority(15) + cutover(3) — unchanged on the merits; each needs personal owner
+//                                      ratification or an attended staged/two-machine verify.
+//
+// ⚠ STRUCTURAL NOTE for whoever reads this next — the honest limit of an AGENT review.
+// 18 of 31 entries (owner-authority + cutover) are BY DEFINITION not agent-graduatable, so an
+// agent-performed review can only ever return "zero candidates" for them. Two consecutive
+// reviews have now done exactly that. This tripwire therefore red-pins the SHARED fleet gate
+// every cycle for a backlog no agent is permitted to clear, and the only available action is to
+// move the date — the very act the caution above warns about, made unavoidable by construction.
+// That is a guard-design problem, not a reviewer problem: filed as EI-19941703547241191
+// (the elapsed-date symptom itself was filed independently by a peer as EI-19933138951557204).
+// Escalated to the owner in-session rather than left to lapse silently again.
+export const DARK_FLAGS_REVIEW_BY = '2026-08-23';
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //
 // WHY THIS GUARD KEEPS GETTING RAISED (22→24→25→26, every time for this same bug class,

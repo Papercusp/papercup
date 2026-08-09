@@ -149,10 +149,15 @@ export function pushInjectionDoorTokens(ownerId: string | null | undefined): num
 }
 
 /**
- * Cap a rendered push block at the recipient's injection door. Teasers are tiny
- * and each handle re-pulls its own detail, so an overflow simply drops the tail
- * teasers (no spill file needed — the dropped candidates stay queued and
- * re-deliver on the next pass). Returns the kept head. */
+ * Cap a rendered block at the recipient's injection door. Since WI-36688 this is
+ * a BACKSTOP, not the mechanism that keeps the door lossless: the teaser lines
+ * are chosen by {@link fitPushesToBudget} against this exact same budget, so
+ * they always fit and this call returns them untouched. The only region it can
+ * actually cut is the peer-brief appended after the block in
+ * {@link prepareAmbientPushBlock} (PAPERCUSP_AMBIENT_CURSOR-gated, default off),
+ * which is enrichment re-pullable from the teaser handle — and because the cut
+ * keeps the HEAD, it can never reach back into the teaser lines. Returns the
+ * kept head. */
 export function applyPushInjectionDoor(text: string, ownerId: string | null | undefined): string {
   if (!text) return text;
   const { kept } = capInjectionText(text, pushInjectionDoorTokens(ownerId));
