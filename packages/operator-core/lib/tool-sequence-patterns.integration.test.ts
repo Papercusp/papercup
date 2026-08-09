@@ -143,11 +143,12 @@ describe('tool-sequence mining (real PG)', () => {
       for (const agent of ['a1', 'a2', 'a3']) {
         for (let rep = 0; rep < 3; rep++) {
           const t0 = base + rep * 9 * 60_000;
-          await invoke(agent, 'inner:one', t0, 'in_process');
-          await invoke(agent, 'inner:two', t0 + 2_000, 'in_process');
+          invoke(agent, 'inner:one', t0, 'in_process');
+          invoke(agent, 'inner:two', t0 + 2_000, 'in_process');
         }
       }
     }
+    await flush();
     const res = await graduateToolSequences(db.adminSql, opts);
     expect(res.candidates.map((c) => c.label)).not.toContain('inner:one → inner:two');
   });

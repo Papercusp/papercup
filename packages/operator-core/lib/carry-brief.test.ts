@@ -566,7 +566,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       `${'filler context '.repeat(30)}`;
     const SUPERSEDING_BLOCK =
       '## ⛔ SUPERSEDING OWNER DIRECTIVE — NO MORE STATUS-REPORT ARTIFACTS\n' +
-      `[owner:Avi] "i dont need the live reports stop that"`;
+      `[owner 2026-08-09] "i dont need the live reports stop that"`;
     const CHECKPOINT = `${OLDER_PLAN}\n\n${SUPERSEDING_BLOCK}`;
 
     it('preserves the superseding directive when the plain cut would have landed before it', () => {

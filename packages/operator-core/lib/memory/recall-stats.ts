@@ -267,6 +267,23 @@ export interface RecallAdmissionStats {
 interface RecallStatsCommon {
   /** The documented set (RecallSurface) OR any port string — free-text column. */
   surface: RecallSurface | (string & {});
+  /**
+   * WHICH TUI received this recall (migration 770 / codex-context-injection-
+   * parity-2026-08-09 P-005). 'claude' | 'codex' | 'omp' — typed loosely on
+   * purpose, matching the free-text column: a new client must never be able to
+   * fail a write (see 583-drop-memory-recall-stats-surface-check.sql for the
+   * hours this table already lost to a stale CHECK).
+   *
+   * Supply it on any INJECTION-path write. Omitting it records NULL, which
+   * every coverage read treats as UNATTRIBUTED and excludes — deliberately, so
+   * "we never asked" stays distinguishable from "a client got nothing".
+   *
+   * ⚠ This is the column that makes THIS PLAN'S OWN WORK falsifiable. Injection
+   * was Claude-only for months and nothing reported it, because this table
+   * records what the injector DID and cannot record a call never made. A client
+   * ABSENT from a per-client coverage query is the alarm condition.
+   */
+  client?: 'claude' | 'codex' | 'omp' | (string & {}) | null;
   /** Workspace this recall ran for. Migration 290 added the column; nothing
    *  ever wrote it (0 of 56,841 rows) until P-026 — see the migration note. */
   workspaceId?: string | null;
@@ -416,7 +433,7 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
     await sql`
       INSERT INTO harness_shared.memory_recall_stats
         (surface, hit_count, top_score, scores, fragment_count, pools, workspace_id, pot_slug, score_scale,
-         query_chars, query_sha256, query_origin, session_id, legs, admission)
+         query_chars, query_sha256, query_origin, session_id, legs, admission, client)
       VALUES (
         ${input.surface},
         ${entries.length},
@@ -432,7 +449,8 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
         ${q ? q.origin : null},
         ${input.sessionId ?? null},
         ${legs}::text::jsonb,
-        ${admission}::text::jsonb
+        ${admission}::text::jsonb,
+        ${input.client ?? null}
       )
     `;
   } catch (err) {

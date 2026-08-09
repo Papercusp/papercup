@@ -390,6 +390,28 @@ describe('splitLegQueries — de-diluting the cosine query (P-044 / F-L, motivat
     expect(splitLegQueries('why empty memory/injection.ts').cosine).toBe('why empty');
   });
 
+  it('strips a path bounded by SHELL PUNCTUATION, not just whitespace (WI-37403)', () => {
+    // REGRESSION GUARD. The boundaries were `(?:^|\s)` … `(?=\s|$)`, which is
+    // right for prose and wrong for this port's dominant input — a Bash
+    // tool_input, where paths sit against punctuation constantly. Every case
+    // below is a real command shape that the whitespace-only boundary MISSED,
+    // leaving the path in the cosine query to pull the vector (D-041).
+    //
+    // The first one is the measured original: it injected two memories whose
+    // only tie to the task was the token `linuxbrew`.
+    expect(
+      splitLegQueries('resolve hook events B=$(readlink -f /home/linuxbrew/.linuxbrew/bin/codex); echo bin')
+        .cosine,
+    ).not.toMatch(/linuxbrew/);
+
+    // `);`  `"`  `|`  — closing paren + semicolon, quotes, and a pipe.
+    expect(splitLegQueries('why empty $(cat /home/x/repo/lib/a.ts); done').cosine).toBe(
+      'why empty $(cat ); done',
+    );
+    expect(splitLegQueries('why empty "/home/x/repo/lib/a.ts"').cosine).toBe('why empty " "');
+    expect(splitLegQueries('why empty memory/injection.ts|head').cosine).toBe('why empty |head');
+  });
+
   it('LEAVES prose that merely contains a slash — where the false positives live', () => {
     // `and/or`, `input/output`, `24/7` are things an agent really does type into
     // a Grep pattern or a Bash description; stripping them would delete meaning

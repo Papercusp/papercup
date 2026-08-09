@@ -186,7 +186,16 @@ const turnStartMemory = defineTool({
                 userText: queryText.slice(0, PROMPT_QUERY_CLAMP),
                 ...(agentSignals ? { agentSignals } : {}),
               },
-              session: { sessionId: owner, port: 'turn-start' },
+              // P-005 / migration 770: `client` is recorded on
+              // memory_recall_stats and NEVER branched on — this endpoint stays
+              // client-agnostic by contract (D-001 invariant 6). A caller that
+              // sends no client records NULL (unattributed), which is what every
+              // pre-P-005 hook does and what makes the coverage query honest.
+              session: {
+                sessionId: owner,
+                port: 'turn-start',
+                ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
+              },
               budgetChars: TURN_START_BUDGET_CHARS,
               heading: 'Relevant memory (turn-start delta)',
             })) ?? ''

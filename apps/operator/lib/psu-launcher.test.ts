@@ -98,6 +98,7 @@ import {
   ensureInteractiveConfigViaOperator,
   roleLaunchArgs,
   suLaunchArgs,
+  resolveOmpInjectHookPath,
   kickoffPositionalArgs,
   tagKickoffProvenance,
   resolveKickoffText,
@@ -6026,5 +6027,76 @@ describe('cache-proxy default-account routing (P-006)', () => {
     const s = defaultClaudeAuthSettings({ [ACCOUNT_ROUTING_MODE_ENV]: 'pin', ANTHROPIC_BASE_URL: GATEWAY_URL, ANTHROPIC_AUTH_TOKEN: 'tok' });
     expect(s.env.ANTHROPIC_BASE_URL).toBe(GATEWAY_URL);
     expect(s.env.ANTHROPIC_AUTH_TOKEN).toBe('tok');
+  });
+});
+
+describe('omp context-injection hook wiring (omp-context-injection-parity-2026-08-09 P-003)', () => {
+  let home: string;
+  const hookRel = ['.papercusp', 'hooks', 'omp', 'inject-hook.ts'];
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'psu-omp-inject-'));
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  const installHook = () => {
+    mkdirSync(join(home, '.papercusp', 'hooks', 'omp'), { recursive: true });
+    writeFileSync(join(home, ...hookRel), 'export default () => {};');
+    return join(home, ...hookRel);
+  };
+
+  it('resolves the installed hook for omp', () => {
+    const p = installHook();
+    expect(resolveOmpInjectHookPath('omp', home)).toBe(p);
+  });
+
+  it('returns undefined when the installer has not run — launch unchanged, not broken', () => {
+    // A box that never ran the installer has no hook file. Passing --hook at a
+    // missing path would make every omp launch fail; absent is the safe state.
+    expect(resolveOmpInjectHookPath('omp', home)).toBeUndefined();
+  });
+
+  it('is omp-only: claude and codex never get --hook', () => {
+    installHook();
+    expect(resolveOmpInjectHookPath('claude', home)).toBeUndefined();
+    expect(resolveOmpInjectHookPath('codex', home)).toBeUndefined();
+  });
+
+  it('APPENDS --hook without replacing the coord extension (both loaders coexist)', () => {
+    // omp merges --hook and -e into ONE additionalExtensionPaths list, so these
+    // accumulate. The regression this guards is a future edit that "simplifies"
+    // by making one flag replace the other, which would silently disable either
+    // lock enforcement or context injection.
+    const { args } = suLaunchArgs('omp', {
+      promptFile: '/p.md',
+      coordExtPath: '/h/.papercusp/papercusp-coord.ts',
+      injectHookPath: '/h/.papercusp/hooks/omp/inject-hook.ts',
+    });
+    expect(args).toContain('-e');
+    expect(args).toContain('/h/.papercusp/papercusp-coord.ts');
+    expect(args).toContain('--hook');
+    expect(args).toContain('/h/.papercusp/hooks/omp/inject-hook.ts');
+  });
+
+  it('omits --hook entirely when no hook path is supplied', () => {
+    expect(suLaunchArgs('omp', { promptFile: '/p.md' }).args).not.toContain('--hook');
+  });
+
+  it('threads --hook through the role and resume launch paths too', () => {
+    const hookPath = '/h/.papercusp/hooks/omp/inject-hook.ts';
+    expect(roleLaunchArgs('omp', { promptFile: '/p.md', injectHookPath: hookPath }).args).toContain(hookPath);
+    expect(
+      resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: null }, { injectHookPath: hookPath }).args,
+    ).toContain(hookPath);
+  });
+
+  it('stays ADDITIVE: adding the hook introduces no model or routing argument', () => {
+    // Owner standing preference 2026-06-29 — psu->omp launches on OMP's own
+    // default config and the owner picks the model interactively in-app. The
+    // injection wiring must never become a back door for forcing a model.
+    const withHook = suLaunchArgs('omp', { promptFile: '/p.md', injectHookPath: '/h/hook.ts' }).args;
+    const without = suLaunchArgs('omp', { promptFile: '/p.md' }).args;
+    expect(withHook.filter(a => !['--hook', '/h/hook.ts'].includes(a))).toEqual(without);
+    for (const modelFlag of ['--model', '-m', '--models']) expect(withHook).not.toContain(modelFlag);
   });
 });

@@ -1407,6 +1407,39 @@ if [ -f "$LEGACY_EXT" ]; then
   echo "✓ Removed legacy auto-discovered extension at $LEGACY_EXT"
 fi
 
+# 4c-ter. Context-injection dispatcher + the omp injection hook
+# (omp-context-injection-parity-2026-08-09 P-003 / D-001).
+#
+# TWO pieces, and they are installed together on purpose:
+#   hooks/inject/   — the SHARED dispatcher (index/core/ports + per-client
+#                     adapters). Client-agnostic; claude and codex reach it too.
+#   hooks/omp/inject-hook.ts — the omp client-native artifact, passed by
+#                     psu-launcher as `--hook`. It locates the dispatcher
+#                     RELATIVE TO ITSELF first (../inject/index.mjs), which is
+#                     why both land under the same ~/.papercusp/hooks root.
+#
+# Installing the hook WITHOUT the dispatcher is the one arrangement that fails
+# quietly: the hook loads, finds no dispatcher, and fail-silently injects
+# nothing on every turn — indistinguishable from "no memories were relevant".
+# Keep these in one block so neither can be added without the other.
+INJECT_SRC_DIR="${SCRIPT_DIR}/hooks/inject"
+INJECT_DEST_DIR="${HOME}/.papercusp/hooks/inject"
+OMP_INJECT_HOOK_SRC="${SCRIPT_DIR}/hooks/omp/inject-hook.ts"
+OMP_INJECT_HOOK_DEST="${HOME}/.papercusp/hooks/omp/inject-hook.ts"
+if [ -f "${INJECT_SRC_DIR}/index.mjs" ] && [ -f "$OMP_INJECT_HOOK_SRC" ]; then
+  mkdir -p "${INJECT_DEST_DIR}/adapters" "${HOME}/.papercusp/hooks/omp"
+  cp "${INJECT_SRC_DIR}"/*.mjs "${INJECT_DEST_DIR}/"
+  cp "${INJECT_SRC_DIR}"/adapters/*.mjs "${INJECT_DEST_DIR}/adapters/"
+  chmod 644 "${INJECT_DEST_DIR}"/*.mjs "${INJECT_DEST_DIR}"/adapters/*.mjs
+  chmod 755 "${INJECT_DEST_DIR}/index.mjs"
+  cp "$OMP_INJECT_HOOK_SRC" "$OMP_INJECT_HOOK_DEST"
+  chmod 644 "$OMP_INJECT_HOOK_DEST"
+  echo "✓ Installed context-injection dispatcher to $INJECT_DEST_DIR"
+  echo "✓ Installed omp injection hook to $OMP_INJECT_HOOK_DEST"
+else
+  echo "! Context-injection dispatcher or omp hook missing under ${SCRIPT_DIR}/hooks; skipping (omp turn-start/mid-turn injection inactive)"
+fi
+
 # 4c-bis. Install the shared Claude+Codex lock-enforcement hooks to a
 # stable runtime location. settings.json (Claude in step 4e, Codex in
 # step 4f) references these absolute paths. The OMP equivalent is the

@@ -149,6 +149,21 @@ export interface MemoryInjectionInput {
     epoch?: number;
     /** Which injection moment this is (initialize/turn-start/compact/brief/claim/create). */
     port?: string;
+    /**
+     * WHICH TUI is receiving this injection — 'claude' | 'codex' | 'omp'
+     * (migration 770 / codex-context-injection-parity-2026-08-09 P-005).
+     *
+     * Recorded on memory_recall_stats.client and used for NOTHING ELSE: it must
+     * never select behaviour. The server side is client-agnostic by contract
+     * (D-001 invariant 6) — the whole design is one endpoint per port with a
+     * per-client adapter on the CLIENT side, so branching on this value here
+     * would re-introduce exactly the fork that invariant forbids.
+     *
+     * Omitted ⇒ NULL ⇒ 'unattributed', which is honest and stays distinguishable
+     * from a real client. It exists to make "which clients actually receive
+     * per-turn injection" a query instead of an archaeology exercise.
+     */
+    client?: string;
   };
   /**
    * Per-call assembly budget override (chars). D-004 (memory-delivery-
@@ -1085,6 +1100,9 @@ async function buildBlockInner(
         // injection falls back to 'injection'.
         await recordRecallStats(sql, {
           surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
+          // P-005 / migration 770: WHICH TUI received this. Purely descriptive —
+          // nothing on this path branches on it. Absent ⇒ NULL ⇒ unattributed.
+          client: input.session?.client ?? null,
           workspaceId: input.workspaceId ?? null,
           potSlug: harnessSlugs[0] ?? null,
           // P-036 / migration 705: stamp the SCALE these scores are on. Taken

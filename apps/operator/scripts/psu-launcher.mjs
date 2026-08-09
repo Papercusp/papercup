@@ -871,6 +871,16 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
       ...modelArgsFor('omp', model),
     ];
     if (coordExtPath) args.push('-e', coordExtPath);
+    // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
+    // context injection, the omp half of what claude gets from its
+    // UserPromptSubmit/PostToolBatch hooks. STRICTLY ADDITIVE — one more module
+    // alongside the coord extension, no model and no routing touched, so
+    // psu->omp keeps launching on OMP's own default config and the owner still
+    // picks the model interactively [owner 2026-06-29].
+    // `--hook` and `-e` are the SAME loader in omp (main.ts:1049 merges both
+    // into additionalExtensionPaths); both flags are repeatable and accumulate,
+    // so this appends to — never replaces — any hook the user already has.
+    if (injectHookPath) args.push('--hook', injectHookPath);
     return { bin: 'omp', args };
   }
   if (backend === 'codex') {
@@ -969,6 +979,16 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, injectHookPath
       replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
     ];
     if (coordExtPath) args.push('-e', coordExtPath);
+    // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
+    // context injection, the omp half of what claude gets from its
+    // UserPromptSubmit/PostToolBatch hooks. STRICTLY ADDITIVE — one more module
+    // alongside the coord extension, no model and no routing touched, so
+    // psu->omp keeps launching on OMP's own default config and the owner still
+    // picks the model interactively [owner 2026-06-29].
+    // `--hook` and `-e` are the SAME loader in omp (main.ts:1049 merges both
+    // into additionalExtensionPaths); both flags are repeatable and accumulate,
+    // so this appends to — never replaces — any hook the user already has.
+    if (injectHookPath) args.push('--hook', injectHookPath);
     return { bin: 'omp', args };
   }
   if (backend === 'codex') {
@@ -1086,6 +1106,25 @@ export function resumeKickoffText(args, env = process.env) {
  * in the thread). codex re-supplies its bypass flags; its hooks/MCP live in the
  * CODEX_HOME the caller points at.
  */
+/**
+ * Path to the omp CONTEXT-INJECTION hook, or undefined when it should not be
+ * passed (omp-context-injection-parity-2026-08-09 P-003). Pure apart from the
+ * existsSync probe; exported for tests.
+ *
+ * Mirrors the coord-extension resolution directly above its call sites: a
+ * stable installed path, added ONLY when the file is actually there, so a box
+ * that has not run the installer launches exactly as it does today instead of
+ * failing on a missing --hook target.
+ *
+ * omp ONLY. claude gets this via its own UserPromptSubmit/PostToolBatch hooks
+ * and codex via its own config; passing --hook to either is meaningless.
+ */
+export function resolveOmpInjectHookPath(agent, home = homedir()) {
+  if (agent !== 'omp') return undefined;
+  const hook = join(home, '.papercusp', 'hooks', 'omp', 'inject-hook.ts');
+  return existsSync(hook) ? hook : undefined;
+}
+
 export function resumeArgsFor(session, { coordExtPath, injectHookPath, fork = false, forkSessionId = null, addDir = [], allowSubagents, model = null } = {}) {
   // --fork is native for claude and codex; omp has no branch-the-session flag,
   // and silently appending to the original would be the very clobber the user asked
@@ -5642,6 +5681,7 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
   // use -e. Stable path, only added when actually installed.
   const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
+  const injectHookPath = resolveOmpInjectHookPath(session.agent);
 
   // Identity + workspace scope survive the resume (see resumeEnvFor) — except a
   // FORK, which deliberately takes a fresh coord identity + no adv-row link so it
@@ -5724,6 +5764,7 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
 
   const { bin, args } = resumeArgsFor(session, {
     coordExtPath,
+    injectHookPath,
     fork,
     addDir,
     allowSubagents,
@@ -6871,6 +6912,7 @@ async function roleFlow(args, role, rolesMeta) {
     promptFile: res.promptFile,
     mcpJsonPath: res.mcpJsonPath,
     coordExtPath: roleCoordExtPath,
+    injectHookPath: resolveOmpInjectHookPath(res.agent),
     // Force the native session id the spec minted (claude only) so the session's
     // conversation id is known up-front and wake-executor can `--resume <uuid>`
     // EXACTLY it — never `--continue`'s most-recent-in-cwd peer on the shared
@@ -7332,6 +7374,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   const { bin, args: baseArgs } = suLaunchArgs(res.agent, {
     promptFile: res.promptFile,
     coordExtPath: res.coordExtPath,
+    injectHookPath: resolveOmpInjectHookPath(res.agent),
     // Force the recorded native session id on a FRESH launch — but not when
     // this invocation is itself resuming one: claude rejects --session-id with
     // --resume/--continue *unless* --fork-session is also present (that exception
