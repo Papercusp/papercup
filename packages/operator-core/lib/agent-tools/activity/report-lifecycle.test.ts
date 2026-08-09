@@ -18,11 +18,17 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({
   cancelInboxWake: h.cancel,
   ensureInboxWakeArmedForActiveSession: h.heal,
 }));
-// WI-37420: full-replacement mock — must mirror BOTH exports report.ts pulls from
-// adv-sessions (the regex is a real value, not a spy, so a UUID-shaped session_id
-// in a test actually routes through the same validation production code applies).
-vi.mock('../../adv-sessions', () => ({
-  NATIVE_SESSION_ID_RE: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+// WI-37420 / WI-37445: adv-sessions is a PROTECTED module — a bare factory that
+// enumerates its exports strands the moment one is added (WI-7185 red-pinned the
+// fleet gate exactly that way), so `lint:full-replacement-mocks` and
+// full-replacement-mock-guard.test.ts require the import-actual spread here.
+// The spread is also strictly more faithful than the enumeration it replaces:
+// NATIVE_SESSION_ID_RE now IS the real regex rather than a hand-copied duplicate
+// that could silently drift from production's, which is what the original
+// comment was reaching for — a UUID-shaped session_id routes through the same
+// validation production applies.
+vi.mock('../../adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('../../adv-sessions')>()),
   reanchorAdvSessionNativeIdByOwner: h.reanchor,
 }));
 

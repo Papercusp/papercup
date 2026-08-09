@@ -196,29 +196,61 @@ export function runOne(pkg, spawn = realSpawn, warn = console.warn) {
  * Run every package, print a per-package line with its timing, then one coherent failure block.
  * Returns the results plus the counts, so the caller decides what is fatal — the same fan-out
  * is BLOCKING for libs/papercusp and, per-package, advisory for a newly-covered root.
+ *
+ * `blockersOf` (OPTIONAL — omit for the historical behaviour) enables DEPENDENCY SHORT-CIRCUIT:
+ * given a package, it returns the `rel`s that package depends on. When any of those already
+ * failed, this package is not compiled at all — it is reported BLOCKED BY that root cause.
+ *
+ * Why this is worth having rather than just letting the cascade run: every @papercusp/* package
+ * resolves `types` to its own `./src/index.ts` (there is no dist), and node_modules/@papercusp/*
+ * symlinks to the source directory — so a dependent's tsc reads its dependency's SOURCE and
+ * re-reports ITS errors, attributed to a file the dependent does not own. Measured on this tree
+ * (WI-36257): one type error in libs/generic/module-singleton makes 7 packages report FAILED,
+ * 6 of them pure cascade, each printing the same error from module-singleton's file. Ordering
+ * the sweep leaves-first turns that into 1 failure + 6 blocked, and skips 6 compiles.
+ *
+ * ⚠ Callers MUST pass `packages` already in dependency order (dependencies before dependents) —
+ * this function trusts the order it is given and does not sort. A blocker that has not run yet
+ * is simply not known to have failed, so an unordered list silently degrades to the old
+ * behaviour rather than erroring. `lint-tsc-workspaces.mjs` orders via @papercusp/dependency-order.
  */
 export function runPackages({
   packages,
   label,
   unreadableCount = 0,
   spawn = realSpawn,
+  blockersOf = null,
   log = console.log,
   warn = console.warn,
   error = console.error,
 }) {
   const results = [];
+  /** rels whose OWN compile failed, plus rels blocked by one — either way, a dependent
+   *  compiling against them would report errors that are not its own. */
+  const poisoned = new Set();
   for (const pkg of packages) {
+    if (blockersOf) {
+      const blockedBy = [...blockersOf(pkg)].filter((rel) => poisoned.has(rel));
+      if (blockedBy.length > 0) {
+        log(`⊘ ${pkg.rel} — BLOCKED by ${blockedBy.join(', ')} (not compiled)`);
+        results.push({ ...pkg, status: 'blocked', blockedBy, exit: null, signal: null, output: '' });
+        poisoned.add(pkg.rel);
+        continue;
+      }
+    }
     const started = Date.now();
     const r = runOne(pkg, spawn, warn);
     const secs = ((Date.now() - started) / 1000).toFixed(1);
     const mark = r.status === 'passed' ? '✓' : r.status === 'skipped-oom' ? '⚠' : '✗';
     log(`${mark} ${pkg.rel} (${secs}s)${r.status === 'skipped-oom' ? ' — SKIPPED (OOM)' : ''}`);
     results.push(r);
+    if (r.status === 'failed') poisoned.add(pkg.rel);
   }
 
   const failed = results.filter((r) => r.status === 'failed');
   const skipped = results.filter((r) => r.status === 'skipped-oom');
   const passed = results.filter((r) => r.status === 'passed');
+  const blocked = results.filter((r) => r.status === 'blocked');
 
   for (const f of failed) {
     // Name the ACTUAL command — a package gated on its tsconfig is not run via
@@ -234,11 +266,23 @@ export function runPackages({
     error(f.output.trimEnd());
   }
 
+  // Printed as its own block, never folded into the failure list: a blocked package is NOT a
+  // second defect, and reporting it as one is exactly the cascade this mechanism removes.
+  if (blocked.length) {
+    log(
+      `\n  ⊘ NOT COMPILED — ${blocked.length} package(s) depend on one that failed above, so their\n` +
+        '    errors would be their dependency\'s, attributed to a file they do not own. Fix the\n' +
+        '    root cause and these are re-checked on the next run:',
+    );
+    for (const b of blocked) log(`      ⊘ ${b.rel} — blocked by ${b.blockedBy.join(', ')}`);
+  }
+
   log(
     `\n${label} typecheck: ${passed.length} passed, ${failed.length} failed` +
+      `${blocked.length ? `, ${blocked.length} blocked (dependency failed)` : ''}` +
       `${skipped.length ? `, ${skipped.length} skipped (OOM)` : ''}` +
       `${unreadableCount ? `, ${unreadableCount} unreadable package.json` : ''}.`,
   );
 
-  return { results, failed, skipped, passed };
+  return { results, failed, skipped, passed, blocked };
 }

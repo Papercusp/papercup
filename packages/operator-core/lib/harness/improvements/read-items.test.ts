@@ -5,6 +5,7 @@ import {
   readObservationItems,
   countImprovementItems,
   IMPROVEMENT_TOPIC,
+  OBSERVATION_LANE,
   OBSERVATION_TOPIC,
 } from './read-items';
 import type { EngineerIssue, ListIssuesFilter } from '../../issues-engineer';
@@ -283,11 +284,18 @@ describe('countImprovementItems (EI-18790490225750395 D2 — the TRUE corpus tot
 });
 
 describe('readObservationItems (turn-end-reflection-observations-2026-06-14 D-005)', () => {
-  it('queries the SEPARATE observation topic — NEVER the improvement topic (keeps observations out of the work pipeline)', async () => {
+  it('selects the SEPARATE observation LANE — never the improvement topic (keeps observations out of the work pipeline)', async () => {
+    // P-006/D-031: this used to assert `topic: OBSERVATION_TOPIC`. The intent is
+    // unchanged — observations are selected by something of their OWN, so they can
+    // never be read as improvement work — but the selector is now the `lane` column.
+    // The topic join was fenced to coordScopeWorkspace() and under-read the population
+    // by 834 rows, in both directions; `lane` is the same column the claim-queue
+    // EXCLUSION keys on, which is what makes the two sides agree.
     let seen: any;
     await readObservationItems({}, { listIssues: async (f) => ((seen = f), []) });
-    expect(seen).toMatchObject({ topic: OBSERVATION_TOPIC });
-    expect(seen.topic).not.toBe(IMPROVEMENT_TOPIC);
+    expect(seen).toMatchObject({ lane: OBSERVATION_LANE });
+    expect(seen.topic).toBeUndefined();
+    expect(seen.lane).not.toBe(IMPROVEMENT_TOPIC);
   });
 
   it('maps observation rows to candidates', async () => {
@@ -465,9 +473,10 @@ describe('loopOutputOnly — the Improve view scope (learning-tab-surface P-001 
     expect(seen[0]).not.toHaveProperty('issueIds');
   });
 
-  it('observations never carry the loop-output scope (separate topic, D-005)', async () => {
+  it('observations never carry the loop-output scope (separate LANE selector, D-005/D-031)', async () => {
     await readObservationItems({}, capture());
-    expect(seen[0]?.topic).toBe(OBSERVATION_TOPIC);
+    expect(seen[0]?.lane).toBe(OBSERVATION_LANE);
+    expect(seen[0]?.topic).toBeUndefined();
     expect(seen[0]).not.toHaveProperty('issueIds');
   });
 });

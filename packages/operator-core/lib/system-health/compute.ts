@@ -1561,8 +1561,10 @@ export function observationRole(it: {
 async function collectObservations(ctx: HealthCtx): Promise<HealthPanel<ObservationsHealth>> {
   return panelSafe<ObservationsHealth>('observations', async () => {
     const { listIssues, countIssues } = await import('../issues-engineer');
-    const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
-    const filter = { topic: OBSERVATION_TOPIC, state: 'open' as const };
+    // P-006/D-031: select the observation population by the `lane` COLUMN, not the
+    // topic join — the join is fenced to coordScopeWorkspace() and under-reads it.
+    const { OBSERVATION_LANE } = await import('../harness/improvements/read-items');
+    const filter = { lane: OBSERVATION_LANE, state: 'open' as const };
     // P-002 (health-tab-v2): the TRUE open count — the old read reported the
     // sampled list length, which silently PINNED at the 500 cap.
     const [items, total] = await Promise.all([

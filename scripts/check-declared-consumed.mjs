@@ -269,6 +269,14 @@ export const DECLARED_FIELDS = [
     // to hard-failing.
     knownUnbuilt: 'WI-6473',
   },
+  {
+    id: 'CellSpec.pointers',
+    name: 'pointers',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: 'a cell registration declaring `pointers: [{ cell, when, answers }]`',
+    consumer: 'cell-read.ts resolving each declared pointer into `pointers` on the read result (+ state:read rendering them via formatCellPointers)',
+    why: 'P-006. A pointer is how one cell tells a reader "the value you want next lives THERE, and here is the call that re-answers it". Unconsumed, the reader is handed a volatile number with no handle attached and transcribes it instead of re-reading — which is the single most expensive misread class on this pipeline: a candidate sha or deploy position that is correct when copied and confidently wrong an hour later. It fails silently and in the confident direction.',
+  },
 ];
 
 /**

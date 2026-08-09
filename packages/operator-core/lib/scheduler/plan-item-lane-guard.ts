@@ -88,11 +88,36 @@ const OWNER_GATE_MARKERS = [
   'owner-attended session',
 ] as const;
 
+/**
+ * EI-19968471075842609: a NEGATED mention must not read as the marker.
+ * `'non-owner-gated'.includes('owner-gated')` is true, so a Now-block clause
+ * written precisely to say an item is NOT gated — "the closest surviving
+ * non-owner-gated lever on Report 1" — registered as the positive marker and
+ * gated every item that sentence named (P-033/P-011/P-012, measured). It also
+ * quoted "owner-gated" back in the refusal as though it came from the item, so
+ * the reader goes looking for a gate that does not exist.
+ *
+ * This is the SAME inversion EI-18718822565695446 fixed one level up (the more
+ * carefully a Now block enumerates what is actionable, the more items it
+ * false-gated), reappearing inside the predicate that fix calls: scoping the
+ * marker to the right sentence cannot help when the marker itself is matched by
+ * SPELLING rather than by the property it stands for.
+ *
+ * Deliberately NARROW — only an IMMEDIATELY preceding negation is rejected, and
+ * the scan continues to later occurrences. The module's scoping doc names the
+ * dangerous direction (a false NEGATIVE hands genuinely owner-gated work to a
+ * self-selector), so "…non-owner-gated lever… and P-019 is owner-gated" still
+ * gates on the second, real mention.
+ */
+const NEGATED_MARKER_PREFIX = /(?:\bnon[-\s]?|\bnot\s+)$/;
+
 function findOwnerGateMarker(text: string | null | undefined): string | null {
   if (!text) return null;
   const lower = text.toLowerCase();
   for (const marker of OWNER_GATE_MARKERS) {
-    if (lower.includes(marker)) return marker;
+    for (let at = lower.indexOf(marker); at !== -1; at = lower.indexOf(marker, at + 1)) {
+      if (!NEGATED_MARKER_PREFIX.test(lower.slice(0, at))) return marker;
+    }
   }
   return null;
 }

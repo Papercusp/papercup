@@ -158,7 +158,6 @@ export function deriveCouplingsFromRoster(
   // a caller outside its own roster is a scope question, not a coupling question.
   if (!selfRow) return [];
 
-  const myFleet = cleanId(selfRow.fleetSlug);
   const myFiles = fileSet(selfRow.currentFiles);
   const myAwait = cleanId(selfRow.awaitingEventKey);
 
@@ -171,9 +170,10 @@ export function deriveCouplingsFromRoster(
     if (seen.has(ownerId)) continue;
     seen.add(ownerId);
 
-    if (myFleet && cleanId(row.fleetSlug) === myFleet) {
-      out.push({ ownerId, relation: 'same-fleet', because: `same fleet (${myFleet})` });
-    }
+    // ⛔ NO `same-fleet` EDGE HERE — D-054 cut it and this file emitted it anyway for 12 days.
+    // Do not "restore the missing fleet signal": fleet membership is already on every roster
+    // row as `fleetSlug`, so deriving an edge from it buys volume and no information. See
+    // DERIVED_COUPLING_RELATIONS for the measured blast radius (18-member fleet ⇒ 306 edges).
 
     if (myFiles.size > 0) {
       const shared: string[] = [];

@@ -56,9 +56,7 @@
 
 import { cellUnknown, type CellUnknown } from './cell-contract';
 import {
-  canReadCell,
   getCell,
-  getCellUnchecked,
   type CellHeadlineSource,
   type CellPointer,
   type CellReader,
@@ -204,16 +202,27 @@ export type CellRead =
  * reason `CellFalsifierRead` carries `kills`: a reader should not have to go read the
  * registry to know whether following the pointer is worth a dispatch.
  *
- * THE TWO QUIET CASES ARE SEPARATED, because they demand opposite responses and are
- * indistinguishable if merged — the lesson `CellHoist.drifted` records, applied here:
+ * ⚠ THE UNRESOLVED CASE IS DELIBERATELY *NOT* SPLIT, and this reverses the first draft
+ * of this file — recording the reversal because the reasoning that produced it is the
+ * kind that looks airtight from inside.
  *
- *   • `drifted: true` — the target is in NO registry. A declaration defect (a renamed
- *     or never-registered cell); following it is impossible for anyone.
- *   • `hidden: true`  — the target EXISTS but is outside THIS reader's audience.
- *     Nothing is broken; the answer is real and someone else can fetch it.
+ * The draft resolved the target through `getCellUnchecked` + `canReadCell` and reported
+ * two flags: `drifted` (in no registry — a declaration defect) and `hidden` (registered
+ * but outside YOUR audience — real, go ask a peer). That genuinely IS more useful, and
+ * it is exactly the `CellHoist.drifted` lesson applied one level out. It is also a
+ * P-019 violation: those two states are the SAME two `absent` holds indistinguishable
+ * for the cell being read, and splitting them here re-opens the enumeration oracle that
+ * closes there — a narrow cell's EXISTENCE becomes observable to a reader who may not
+ * see it, just by reading whatever ordinary cell points at it. `cell-access-parity`'s
+ * LEG C caught it.
  *
- * Collapsing those into one flag would tell an agent to give up on a question a peer
- * could answer in one call, or send them to file a bug against a perfectly good cell.
+ * The mitigating argument — that the target is author-declared, not caller-chosen, so
+ * there is no probe — is true and still not worth taking: it makes the leak's size a
+ * function of what future authors declare, which is not a property this file controls.
+ * So the target is resolved through the CHECKED accessor and the two collapse into one
+ * `unresolved`, whose prose names BOTH possibilities exactly as `absent`'s does. The
+ * cost is one wasted hop for a reader whose peer could have answered; the alternative
+ * cost was a disclosure channel that grows silently.
  */
 export interface CellPointerRead {
   /** The cell id to read next. */
@@ -222,10 +231,11 @@ export interface CellPointerRead {
   when: string;
   /** WHAT is answered over there (`CellPointer.answers`). */
   answers: string;
-  /** True ⇒ the target resolves in no registry at all: a declaration defect. */
-  drifted?: true;
-  /** True ⇒ the target is registered but outside YOUR audience — ask someone who holds it. */
-  hidden?: true;
+  /**
+   * True ⇒ the target did not resolve FOR YOU: unregistered, OR registered and outside
+   * your audience. Held indistinguishable on purpose (P-019) — see this interface's doc.
+   */
+  unresolved?: true;
 }
 
 /**
@@ -320,15 +330,11 @@ export function formatCellHoist(h: CellHoist): string | null {
 export function formatCellPointers(pointers: CellPointerRead[]): string | null {
   if (pointers.length === 0) return null;
   return pointers
-    .map((p) => {
-      if (p.drifted) {
-        return `⚠ this cell points at "${p.cell}", which is in NO registry — a declaration defect, not a value you are missing. Nobody can follow this pointer; report it rather than hunting for the cell.`;
-      }
-      if (p.hidden) {
-        return `↪ "${p.cell}" answers ${p.answers} (${p.when}) — but it is OUTSIDE YOUR AUDIENCE, so you cannot read it yourself. It exists and is not broken: ask a peer who holds that audience.`;
-      }
-      return `↪ next, ${p.when}: read \`state:read { cell: '${p.cell}' }\` — ${p.answers}`;
-    })
+    .map((p) =>
+      p.unresolved
+        ? `⚠ this cell points at "${p.cell}", which does not resolve FOR YOU — it may not exist, or it may be outside your audience; these are deliberately indistinguishable (P-019). It would have answered ${p.answers}. Ask a peer who may hold that audience; do NOT reconstruct the value from another surface.`
+        : `↪ next, ${p.when}: read \`state:read { cell: '${p.cell}' }\` — ${p.answers}`,
+    )
     .join(' · ');
 }
 
@@ -453,8 +459,11 @@ export async function readCell(
    * not turn a deliberately-uninformative refusal into an enumeration surface.
    */
   if (read.status === 'absent') return read;
-  const spec = getCellUnchecked(cell);
-  const pointers = spec?.pointers;
+  // The CHECKED accessor, though a non-absent result already proves this reader passed
+  // the audience gate: `readCellValue` opens with the same call and returns `absent`
+  // when it misses. Using the unchecked one here would be a bypass that happens to be
+  // safe today — and `cell-access-parity` LEG C is right to refuse that distinction.
+  const pointers = getCell(cell, reader)?.pointers;
   if (!pointers?.length) return read;
   return { ...read, pointers: pointers.map((p) => resolvePointer(p, reader)) };
 }
@@ -465,13 +474,14 @@ export async function readCell(
  * Reads the registry only; never dispatches. The pointer says where to go, and the
  * caller decides whether to pay for the hop — resolving the target's VALUE here would
  * turn one read into an unbounded fan-out and re-derive a cell this one does not own.
+ *
+ * `getCell` is the CHECKED accessor: it returns undefined for an unregistered cell AND
+ * for one outside `reader`'s audience, without saying which. That merge is the point,
+ * not a limitation — see `CellPointerRead`.
  */
 function resolvePointer(p: CellPointer, reader: CellReader): CellPointerRead {
   const base = { cell: p.cell, when: p.when, answers: p.answers };
-  const target = getCellUnchecked(p.cell);
-  if (!target) return { ...base, drifted: true };
-  if (!canReadCell(target, reader)) return { ...base, hidden: true };
-  return base;
+  return getCell(p.cell, reader) ? base : { ...base, unresolved: true };
 }
 
 async function readCellValue(

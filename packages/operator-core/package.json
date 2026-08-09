@@ -20,6 +20,8 @@
     "lint:migration-forward-compat": "node ../../scripts/check-migration-forward-compat.mjs",
     "lint:no-unthreaded-apply": "node ../../scripts/check-no-unthreaded-apply.mjs",
     "lint:okf-conformance": "tsx ../../scripts/check-okf-conformance.mjs",
+    "lint:drop-database-force": "node ../../scripts/check-drop-database-force.mjs",
+    "lint:no-retired-resurrection": "node ../../scripts/check-retired-resurrection.mjs",
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {

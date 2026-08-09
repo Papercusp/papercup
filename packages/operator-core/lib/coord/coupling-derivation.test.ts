@@ -20,13 +20,24 @@ import {
 const row = (o: Partial<Record<string, unknown>> & { ownerId: string }) => o;
 
 describe('deriveCouplingsFromRoster', () => {
-  it('couples peers in the same fleet, naming the fleet', () => {
+  // THE D-054 RECURRENCE GUARD. This test is the INVERSE of the one that stood
+  // here until 2026-08-09, which asserted that a shared fleet DOES couple two
+  // agents. D-054 cut that edge on 2026-07-27 — *"FLEETS CAN HAVE 30 MEMBERS
+  // THAT IS TOO MUCH COUPLING NO?"* — and the derivation emitted it anyway for
+  // 12 days, with six tests actively protecting the vetoed behaviour. The
+  // absence of this negative is why nobody noticed: every test asked "does the
+  // signal fire?", none asked "is it still gone?".
+  it('does NOT couple two agents merely because they share a fleet (D-054)', () => {
     const derived = deriveCouplingsFromRoster('su-me', [
       row({ ownerId: 'su-me', fleetSlug: 'alpha' }),
       row({ ownerId: 'su-peer', fleetSlug: 'alpha' }),
       row({ ownerId: 'su-other', fleetSlug: 'beta' }),
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' }]);
+    // Set membership is not a pairwise relation: it is O(n²) in fleet size and
+    // redundant with `fleetSlug`, which the base presence payload already puts
+    // on every row. Measured 2026-08-09 on the live fleet `nonp2p-bug-drain`:
+    // 18 members ⇒ 17 edges per caller, 306 fleet-wide.
+    expect(derived).toEqual([]);
   });
 
   it('does NOT couple two agents that merely both have no fleet', () => {
@@ -86,8 +97,10 @@ describe('deriveCouplingsFromRoster', () => {
         awaitingEventKey: 'gate:1',
       }),
     ]);
+    // The shared `alpha` fleet is left in the fixture ON PURPOSE: it contributes
+    // NOTHING (D-054), so this doubles as a second guard that the cut edge stays
+    // cut even on a row that trips every other signal.
     expect(derived.map((d) => d.because)).toEqual([
-      'same fleet (alpha)',
       'both working in x.ts',
       'both awaiting gate:1',
     ]);
@@ -122,52 +135,68 @@ describe('deriveCouplingsFromRoster', () => {
         { ownerId: 'su-peer', fleetSlug: 'alpha', currentFiles: [null, 7, 'x.ts'] },
       ]),
     ).not.toThrow();
+    // The junk entries are now EXERCISED INTO AN EMITTED EDGE rather than sitting
+    // beside one: the caller's list is well-formed, so the peer's `[null, 7,
+    // 'x.ts']` must be cleaned down to the single real overlap. Until 2026-08-09
+    // this asserted a `same-fleet` edge derived from `fleetSlug`, which meant the
+    // malformed `currentFiles` never actually reached the emit path it names.
     const derived = deriveCouplingsFromRoster('su-me', [
-      { ownerId: 'su-me', fleetSlug: 'alpha', currentFiles: 'not-an-array' },
+      { ownerId: 'su-me', fleetSlug: 'alpha', currentFiles: ['x.ts'] },
       { ownerId: 'su-peer', fleetSlug: 'alpha', currentFiles: [null, 7, 'x.ts'] },
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' }]);
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', relation: 'shared-file', because: 'both working in x.ts' },
+    ]);
   });
 
   it('deduplicates a repeated ownerId — first row wins', () => {
     const derived = deriveCouplingsFromRoster('su-me', [
-      row({ ownerId: 'su-me', fleetSlug: 'alpha' }),
-      row({ ownerId: 'su-peer', fleetSlug: 'alpha' }),
-      row({ ownerId: 'su-peer', fleetSlug: 'alpha' }),
+      row({ ownerId: 'su-me', awaitingEventKey: 'gate:1' }),
+      row({ ownerId: 'su-peer', awaitingEventKey: 'gate:1' }),
+      row({ ownerId: 'su-peer', awaitingEventKey: 'gate:1' }),
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' }]);
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting gate:1' },
+    ]);
   });
 });
 
 describe('deriveCouplingsFromRoster ∘ resolveCoupledPeers — the union contract', () => {
   it('feeds the union so signals accumulate into one derivedBecause', () => {
     const rows = [
-      row({ ownerId: 'su-me', fleetSlug: 'alpha', currentFiles: ['x.ts'] }),
-      row({ ownerId: 'su-peer', fleetSlug: 'alpha', currentFiles: ['x.ts'] }),
+      row({ ownerId: 'su-me', currentFiles: ['x.ts'], awaitingEventKey: 'gate:1' }),
+      row({ ownerId: 'su-peer', currentFiles: ['x.ts'], awaitingEventKey: 'gate:1' }),
     ];
     const peers = resolveCoupledPeers('su-me', deriveCouplingsFromRoster('su-me', rows), []);
     expect(peers).toEqual([
       {
         ownerId: 'su-peer',
         source: 'derived',
-        derivedBecause: 'same fleet (alpha); both working in x.ts',
+        derivedBecause: 'both working in x.ts; both awaiting gate:1',
         // D-087: the typed half survives END-TO-END, derivation through union —
         // asserted here on the real path, not only on hand-built rows.
-        derivedRelations: ['same-fleet', 'shared-file'],
+        derivedRelations: ['shared-file', 'awaits'],
       },
     ]);
   });
 
   it('SUPPRESSION STILL WINS over a live derivation — the D-061 R4 property', () => {
     // The reason the derivation feeds the union instead of bypassing it. The
-    // shared fleet is still real and this re-fires on every read, so if
+    // shared await is still real and this re-fires on every read, so if
     // suppression lost here the peer would silently return next tick and the
     // agent would rightly conclude decoupling is broken.
     const rows = [
-      row({ ownerId: 'su-me', fleetSlug: 'alpha' }),
-      row({ ownerId: 'su-peer', fleetSlug: 'alpha' }),
+      row({ ownerId: 'su-me', awaitingEventKey: 'gate:1' }),
+      row({ ownerId: 'su-peer', awaitingEventKey: 'gate:1' }),
     ];
-    const peers = resolveCoupledPeers('su-me', deriveCouplingsFromRoster('su-me', rows), [
+    // ⚠ THE ANTECEDENT, ASSERTED. Without this line the test passes whenever the
+    // derivation returns NOTHING — suppression is never exercised and the green is
+    // vacuous. That is not hypothetical: this test kept passing on 2026-08-09 when
+    // the `same-fleet` edge it used to rely on was removed, silently testing
+    // nothing. A suppression test must first prove there was something to suppress.
+    const derived = deriveCouplingsFromRoster('su-me', rows);
+    expect(derived).toHaveLength(1);
+    const peers = resolveCoupledPeers('su-me', derived, [
       {
         agentA: 'su-me',
         agentB: 'su-peer',
@@ -324,9 +353,25 @@ describe('deriveCouplingsFromCoordExchange', () => {
 });
 
 describe('deriveCouplings (orchestrator)', () => {
+  // `awaitingEventKey` is what makes the PURE ROSTER leg contribute here. It
+  // replaced `fleetSlug`, which contributes nothing since D-054 — the shared
+  // `alpha` fleet is kept in the fixture deliberately so these cases also prove
+  // the cut edge stays cut on the full orchestrator path, not just the pure one.
   const rows = [
-    row({ ownerId: 'su-me', fleetSlug: 'alpha', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
-    row({ ownerId: 'su-peer', fleetSlug: 'alpha', currentPlanSlug: 'p1', claimedItems: ['P-003'] }),
+    row({
+      ownerId: 'su-me',
+      fleetSlug: 'alpha',
+      awaitingEventKey: 'gate:1',
+      currentPlanSlug: 'p1',
+      claimedItems: ['P-005'],
+    }),
+    row({
+      ownerId: 'su-peer',
+      fleetSlug: 'alpha',
+      awaitingEventKey: 'gate:1',
+      currentPlanSlug: 'p1',
+      claimedItems: ['P-003'],
+    }),
   ];
 
   it('unions every signal, accumulating each distinct reason onto the one peer', async () => {
@@ -340,7 +385,7 @@ describe('deriveCouplings (orchestrator)', () => {
       recentPartners: async () => ['su-peer'],
     });
     expect(derived.map((d) => d.because)).toEqual([
-      'same fleet (alpha)',
+      'both awaiting gate:1',
       'you both hold locks in x.ts',
       'your P-005 is blocked by P-003, which they hold',
       'recent coord exchange',
@@ -350,7 +395,7 @@ describe('deriveCouplings (orchestrator)', () => {
     const peers = resolveCoupledPeers('su-me', derived, []);
     expect(peers).toHaveLength(1);
     expect(peers[0]?.derivedBecause).toBe(
-      'same fleet (alpha); you both hold locks in x.ts; your P-005 is blocked by P-003, which they hold; recent coord exchange',
+      'both awaiting gate:1; you both hold locks in x.ts; your P-005 is blocked by P-003, which they hold; recent coord exchange',
     );
   });
 
@@ -364,8 +409,11 @@ describe('deriveCouplings (orchestrator)', () => {
       },
       recentPartners: async () => ['su-peer'],
     });
+    // TWO legs still land — the pure roster leg and the one live source. A
+    // single surviving leg would make this test unable to distinguish "the
+    // others still work" from "only one thing was ever going to fire".
     expect(derived).toEqual([
-      { ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' },
+      { ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting gate:1' },
       { ownerId: 'su-peer', relation: 'coord-exchange', because: 'recent coord exchange' },
     ]);
   });
@@ -385,7 +433,7 @@ describe('deriveCouplings (orchestrator)', () => {
 
   it('works with no sources at all (pure roster derivation)', async () => {
     expect(await deriveCouplings('su-me', rows)).toEqual([
-      { ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' },
+      { ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting gate:1' },
     ]);
   });
 

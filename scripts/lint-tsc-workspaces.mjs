@@ -48,9 +48,10 @@
  *   npm run lint:tsc:workspaces -- --list-invisible # name every invisible dir, not just counts
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { orderByDependencies } from '@papercusp/dependency-order';
 import { discover, discoverInvisible, realSpawn, runPackages } from './lib/typecheck-fanout.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -271,6 +272,87 @@ export function selectGatedPackages({
  */
 export const GATE_COVERAGE = () => selectGatedPackages().packages.map((p) => `${p.rel}/`);
 
+/**
+ * Read one package's INTERNAL dependency names — its `@papercusp/*` entries from
+ * dependencies + devDependencies.
+ *
+ * DECLARATIVE ON PURPOSE. The obvious alternative is scanning source for import statements, and
+ * that is the wrong tool here: a hand-rolled import walker under-reports (it misses a form, or a
+ * re-export, or a type-only import), and an under-reported edge does not fail loudly — it
+ * silently relaxes the ordering back toward alphabetical while still looking like it worked.
+ * package.json is the manifest npm itself resolves from, so it cannot disagree with what the
+ * symlinks in node_modules actually point at.
+ *
+ * @returns {string[]} package NAMES (not paths); unreadable/absent manifest ⇒ [].
+ */
+export function internalDepNames(pkgDir) {
+  try {
+    const j = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+    return Object.keys({ ...j.dependencies, ...j.devDependencies }).filter((n) =>
+      n.startsWith('@papercusp/'),
+    );
+  } catch {
+    // A manifest we cannot read yields no edges. That degrades this package to alphabetical
+    // placement — never an error, and never a claim that it has no dependencies.
+    return [];
+  }
+}
+
+/**
+ * Order the gated packages so every package is compiled AFTER the ones it depends on, and build
+ * the blocker lookup `runPackages` short-circuits on.
+ *
+ * Both halves come from ONE traversal so they cannot disagree: the order and the edges a blocked
+ * verdict cites are the same graph.
+ *
+ * ⚠ `key` is mandatory here, not decorative. A dependency is looked up as a DIFFERENT object than
+ * the one in `nodes` (name → package record), and without `key` the helper compares by reference,
+ * reads every edge as external, and returns the input order — an ordering that silently does
+ * nothing. Keyed on `rel`, which is unique per package.
+ *
+ * @returns {{ordered: any[], blockersOf: (pkg: any) => string[], edges: number, external: string[], cycles: any[]}}
+ */
+export function orderPackages(packages) {
+  const byName = new Map(packages.filter((p) => p.name).map((p) => [p.name, p]));
+  /** rel -> the rels it depends on, restricted to packages this sweep actually compiles.
+   *  This is the BLOCKER set: only a package we compile can be observed to fail. */
+  const depRels = new Map();
+  /** rel -> every @papercusp dep as a node, including ones this sweep does NOT compile. Those
+   *  are handed to the helper deliberately so it reports them in `external` — a dep that should
+   *  have resolved but did not shows up there instead of silently imposing no ordering. */
+  const depNodes = new Map();
+  let edges = 0;
+  for (const p of packages) {
+    const nodes = [];
+    const rels = [];
+    for (const name of internalDepNames(p.dir)) {
+      const hit = byName.get(name);
+      if (hit && hit.rel === p.rel) continue; // a package may devDepend on itself; not an edge
+      // An unresolved dep becomes a stub node keyed by its package NAME. It is not in `nodes`,
+      // so the helper classifies it external rather than treating it as an ordering constraint.
+      nodes.push(hit ?? { rel: name, name, external: true });
+      if (hit) rels.push(hit.rel);
+    }
+    depNodes.set(p.rel, nodes);
+    depRels.set(p.rel, [...new Set(rels)]);
+    edges += new Set(rels).size;
+  }
+
+  const result = orderByDependencies({
+    nodes: packages,
+    key: (p) => p.rel,
+    dependenciesOf: (p) => depNodes.get(p.rel) ?? [],
+  });
+
+  return {
+    ordered: result.order,
+    blockersOf: (pkg) => depRels.get(pkg.rel) ?? [],
+    edges,
+    external: result.external ?? [],
+    cycles: result.cycles ?? [],
+  };
+}
+
 export function main({
   repoRoot = REPO_ROOT,
   roots = DEFAULT_ROOTS,
@@ -381,7 +463,43 @@ export function main({
     return 1;
   }
 
-  const { failed } = runPackages({ packages, label: 'workspaces', unreadableCount: unreadable.length, spawn, log, warn, error });
+  // Leaves-first (workstream G adoption, WI-36257). The gain is not speed for its own sake: a
+  // dependent compiled against a BROKEN dependency re-reports that dependency's errors against a
+  // file it does not own, so alphabetical order turns one defect into N indistinguishable
+  // failures. Ordering lets the sweep name the root cause and skip the cascade.
+  const { ordered, blockersOf, edges, external, cycles } = orderPackages(packages);
+  if (edges > 0) {
+    log(
+      `\n  ⓘ dependency-ordered: ${edges} internal @papercusp edge(s) among the gated set — ` +
+        'dependencies compile first,\n    and a package whose dependency fails is reported BLOCKED rather than compiled into a cascade.',
+    );
+    // Cycles are normal in a live tree; the helper batches them instead of throwing. Say so,
+    // because within a cycle no order is more correct than any other and a reader should know
+    // the ordering guarantee is weaker there.
+    if (cycles.length) {
+      log(`    ⚠ ${cycles.length} dependency cycle(s) — each compiles as one batch, order within it arbitrary.`);
+    }
+    // The external list is the ordering's own health check, and it is printed rather than
+    // asserted because the honest expectation is a RANGE, not a number: these are real
+    // @papercusp packages that this sweep does not compile (the libs/papercusp submodule has
+    // its own fan-out). It earns its line because the failure it catches is silent — if the
+    // name→package mapping broke, edges would collapse to ~0 and this list would swell, and
+    // the sweep would still print a perfectly ordinary green.
+    if (external.length) {
+      log(`    ⓘ ${external.length} @papercusp dep(s) resolve outside this sweep (own fan-out) — not ordering constraints.`);
+    }
+  }
+
+  const { failed } = runPackages({
+    packages: ordered,
+    label: 'workspaces',
+    unreadableCount: unreadable.length,
+    spawn,
+    blockersOf,
+    log,
+    warn,
+    error,
+  });
   return failed.length > 0 || unreadable.length > 0 ? 1 : 0;
 }
 

@@ -386,7 +386,11 @@ describe('forYouBecause (D-043)', () => {
     // The load-bearing half of D-043: an 'other' that participated in the diff
     // would reintroduce the false-agreement failure the escape hatch prevents.
     expect(participatesInCouplingDivergence({ relation: 'other', note: 'n' })).toBe(false);
-    expect(participatesInCouplingDivergence({ relation: 'same-fleet' })).toBe(true);
+    // The CONTROL, and it has to be a relation that genuinely participates or the
+    // `false` above proves nothing. It was `same-fleet` until 2026-08-09, when
+    // that relation stopped being comparable (D-054) — which would have quietly
+    // turned this control into a second copy of the assertion above it.
+    expect(participatesInCouplingDivergence({ relation: 'holds-a-lock-on' })).toBe(true);
   });
 
   it("EXCLUDES 'owns' too — it has no counterpart in the computed vocabulary", () => {
@@ -395,13 +399,15 @@ describe('forYouBecause (D-043)', () => {
     // metric that compared it would report the MAJORITY relation as permanent
     // disagreement — a number that measures the vocabulary gap, not the sender.
     expect(participatesInCouplingDivergence({ relation: 'owns' })).toBe(false);
-    expect(couplingDivergenceVerdict({ relation: 'owns' }, ['same-fleet'])).toBe('not-comparable');
+    expect(couplingDivergenceVerdict({ relation: 'owns' }, ['holds-a-lock-on'])).toBe(
+      'not-comparable',
+    );
   });
 });
 
 describe('couplingDivergenceVerdict (D-087) — three-valued, deliberately', () => {
   it('agrees when the computed graph carries the asserted signal', () => {
-    expect(couplingDivergenceVerdict({ relation: 'same-fleet' }, ['same-fleet'])).toBe('agrees');
+    expect(couplingDivergenceVerdict({ relation: 'awaits' }, ['awaits'])).toBe('agrees');
     expect(
       couplingDivergenceVerdict({ relation: 'holds-a-lock-on', ref: 'x.ts' }, [
         'coord-exchange',
@@ -411,9 +417,27 @@ describe('couplingDivergenceVerdict (D-087) — three-valued, deliberately', () 
   });
 
   it('scores DIVERGENCE only for the genuinely two-sided relations', () => {
-    // `same-fleet` is symmetric: if the graph does not show it, the sender's
-    // claim really is contradicted, and that is worth counting.
-    expect(couplingDivergenceVerdict({ relation: 'same-fleet' }, [])).toBe('diverges');
+    // `is-blocked-on` is two-sided AND computed, so a miss really is a
+    // contradiction of the sender's claim, and that is worth counting.
+    expect(couplingDivergenceVerdict({ relation: 'is-blocked-on' }, [])).toBe('diverges');
+  });
+
+  // THE HALF-FIX GUARD (D-054 / D-002 ruling 1). `same-fleet` was scored as
+  // divergence here until 2026-08-09, when the derivation stopped emitting the
+  // `same-fleet` edge. Removing that emitter WITHOUT flipping this rule is the
+  // expensive half-fix: `confirmedBy` becomes unsatisfiable, so an
+  // `absenceIsInformative: true` would score EVERY correctly-asserted
+  // `same-fleet` as divergence — manufacturing disagreement out of a signal we
+  // ourselves stopped computing, and then reporting it as a SENDER-accuracy
+  // problem. The assertion stays perfectly valid; it is simply undiffable now,
+  // exactly like `owns`.
+  it('never scores an asserted relation the graph no longer computes', () => {
+    expect(participatesInCouplingDivergence({ relation: 'same-fleet' })).toBe(false);
+    expect(couplingDivergenceVerdict({ relation: 'same-fleet' }, [])).toBe('not-comparable');
+    // Not even against a fully-populated graph — there is no token left to hit.
+    expect(
+      couplingDivergenceVerdict({ relation: 'same-fleet' }, ['holds-a-lock-on', 'awaits']),
+    ).toBe('not-comparable');
   });
 
   it('is DIRECTION-INSENSITIVE for is-blocked-on — one asserted token, two computed', () => {
@@ -423,7 +447,7 @@ describe('couplingDivergenceVerdict (D-087) — three-valued, deliberately', () 
     for (const dir of ['blocks-me', 'blocked-by-me'] as const) {
       expect(couplingDivergenceVerdict({ relation: 'is-blocked-on' }, [dir])).toBe('agrees');
     }
-    expect(couplingDivergenceVerdict({ relation: 'is-blocked-on' }, ['same-fleet'])).toBe(
+    expect(couplingDivergenceVerdict({ relation: 'is-blocked-on' }, ['coord-exchange'])).toBe(
       'diverges',
     );
   });
@@ -435,7 +459,7 @@ describe('couplingDivergenceVerdict (D-087) — three-valued, deliberately', () 
     expect(couplingDivergenceVerdict({ relation: 'holds-a-lock-on', ref: 'x.ts' }, [])).toBe(
       'not-comparable',
     );
-    expect(couplingDivergenceVerdict({ relation: 'awaits' }, ['same-fleet'])).toBe(
+    expect(couplingDivergenceVerdict({ relation: 'awaits' }, ['coord-exchange'])).toBe(
       'not-comparable',
     );
   });
@@ -449,7 +473,7 @@ describe('couplingDivergenceVerdict (D-087) — three-valued, deliberately', () 
   });
 
   it("never scores 'other' either way", () => {
-    expect(couplingDivergenceVerdict({ relation: 'other', note: 'n' }, ['same-fleet'])).toBe(
+    expect(couplingDivergenceVerdict({ relation: 'other', note: 'n' }, ['coord-exchange'])).toBe(
       'not-comparable',
     );
   });

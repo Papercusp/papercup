@@ -36,6 +36,17 @@
  * doubles; the host wires the PG-backed deps in ./audience-host.
  */
 
+/**
+ * A fleet member that was NOT delivered to, and why (P-003). Structural on purpose —
+ * this module stays host-agnostic, so the reason vocabulary is declared here rather
+ * than imported from the PG-backed fleet roster that produces it.
+ */
+export interface FleetAudienceOmission {
+  ownerId: string;
+  reason: 'stale-heartbeat' | 'ended' | 'suspect' | 'bee-role';
+  heartbeatAt?: string | null;
+}
+
 /** An active (fresh-heartbeat, non-revoked) agent + what it is working on. */
 export interface ActivePresence {
   ownerId: string;
@@ -54,6 +65,14 @@ export interface AudienceResolvers {
   /** Live (fresh-heartbeat) members of a named fleet (by slug or human name — the
    *  host slugifies) → ownerIds. Backs the `@fleet:` selector. */
   listFleetMembers(fleetSlug: string): Promise<string[]>;
+  /**
+   * P-003 — the fleet members this send did NOT reach, and why. OPTIONAL and purely
+   * DIAGNOSTIC: it never changes who is delivered to (that is `listFleetMembers`), it
+   * only lets a `@fleet:` result distinguish a FULL delivery from a PARTIAL one. A host
+   * that cannot answer omits it (or returns []), and the send reports no omissions —
+   * which is why callers must treat "absent" as UNKNOWN, never as "nobody was dropped".
+   */
+  explainFleetAudience?(fleetSlug: string): Promise<FleetAudienceOmission[]>;
   /** The named fleet's current leader → ownerId(s) (0 or 1; the durable registry,
    *  liveness-independent). Backs the `@fleet-leader:` selector. */
   listFleetLeader(fleetSlug: string): Promise<string[]>;

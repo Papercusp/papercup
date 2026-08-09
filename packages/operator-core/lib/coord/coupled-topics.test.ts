@@ -25,8 +25,17 @@ const PEER_A = 'su-peer-a';
 const PEER_B = 'su-peer-b';
 const STRANGER = 'su-stranger';
 
+// Nothing here is ABOUT the relation — it is a stand-in for "some valid derived
+// coupling". It was `same-fleet` until D-054's cut was applied on 2026-08-09,
+// which removed that token from `DerivedCouplingRelation`. Note this file was
+// never RED: vitest does not typecheck, so the stale token was a green test and
+// a broken build at once, visible only to `lint:tsc`.
 const coupled = (...ids: string[]): DerivedCoupling[] =>
-  ids.map((ownerId) => ({ ownerId, relation: 'same-fleet' as const, because: 'same fleet' }));
+  ids.map((ownerId) => ({
+    ownerId,
+    relation: 'coord-exchange' as const,
+    because: 'recent coord exchange',
+  }));
 
 const mapOf = (o: Record<string, readonly string[]>): ReadonlyMap<string, readonly string[]> =>
   new Map(Object.entries(o));

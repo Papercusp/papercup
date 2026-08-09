@@ -300,6 +300,21 @@ export async function reconcileLinkedWorkItemsForPlanItem(
         out.skippedAlreadyTerminal.push(wi.id);
         continue;
       }
+      // EI-19968934836644509: lift a stale plan-lane-sync hold on EVERY non-
+      // settled linked item, UNCONDITIONALLY — before either skip check below.
+      // This reconciler has just confirmed the plan item is genuinely terminal,
+      // so a `plan-lane:` external blocker / held_open lease this same sync
+      // mechanism left behind is stale REGARDLESS of whether the terminal STATE
+      // flip itself proceeds. It previously sat AFTER both skip checks, so an
+      // item that hit either — in-flight (an active assignee still working it)
+      // or unproven-link (issue-family, stamp-only) — `continue`d past it every
+      // single sweep pass and could stay gate-parked forever even though every
+      // pass re-confirmed its plan item was done: WI-37408 sat blocked
+      // ~1h20m behind a live `lastProgressAt`+assignee (genuinely being worked,
+      // correctly never auto-closed) while its lane hold, which is orthogonal to
+      // whether we trust the completion, was never lifted. Best-effort: a clear
+      // failure here must never block the skip/flip logic that follows.
+      await clearStaleLaneHold(wi, planLaneBlockerRef(item.planSlug, item.itemId));
       if (wi.lastProgressAt && wi.assignee) {
         // Independent in-flight progress recorded on THIS item AND someone
         // currently holds it — a sibling completed the plan item, but this one
@@ -367,21 +382,13 @@ export async function reconcileLinkedWorkItemsForPlanItem(
         continue;
       }
       const targetState = wi.family === 'feature' ? target.feature : target.issue;
-      // EI-18653945816361859: this SAME reconciler has just confirmed the plan item
-      // is genuinely terminal — so any plan-lane-sync hold it (or a prior blocked/
-      // needs-human pass) left on this work-item is by definition stale. Without
-      // this, a work-item that went blocked->done WITHOUT first passing back
-      // through `actionable` (the common shape: a blocked item is resolved
-      // straight to done) still carries the lane-sync `held_open_by` lease +
-      // `plan-lane:` external blocker from applyLaneGateToWorkItem's gate leg, and
-      // setWorkItemState's held-open guard below refuses the terminal transition
-      // ("HELD OPEN by system:plan-item-lane-sync") — silently swallowed by this
-      // function's outer try/catch, leaving the item non-terminal forever until an
-      // agent discovers it and force-closes it by hand. Lift it FIRST (the exact
-      // ungate mechanics applyLaneGateToWorkItem uses for an actionable lane) so
-      // the terminal flip below never races a hold it itself makes obsolete.
-      // Best-effort: a clear failure here must not block the transition attempt.
-      await clearStaleLaneHold(wi, planLaneBlockerRef(item.planSlug, item.itemId));
+      // EI-18653945816361859 / EI-19968934836644509: the stale plan-lane-sync
+      // hold on this item was already lifted above (hoisted ahead of the
+      // in-flight/unproven-link skip checks, unconditionally, for every
+      // non-settled linked item) — so by the time control reaches here
+      // setWorkItemState's held-open guard never has stale gate state left to
+      // trip on. No second clearStaleLaneHold call needed; it is idempotent
+      // but redundant.
       try {
         const attribution = item.triggeredBy ? ` (plan item flipped by ${item.triggeredBy})` : '';
         await setWorkItemState(wi.id, targetState, {

@@ -44,6 +44,11 @@ import { premiseProbes } from '../premise-probes';
 import { sendMessage, getMessageById } from '../messages';
 import { DIRECTIVE_EFFECT_KINDS, type DirectiveEffectSpec } from '../directive-effect';
 import { parseSlotSelector } from '../slot-selector';
+// NB `audience-host` is imported LAZILY at the one use site below, never statically:
+// it reaches the PG-backed fleet roster, and a static import drags that whole graph
+// into every consumer of this module (it broke three unit suites whose `../presence`
+// mock is deliberately partial). A diagnostic must not widen anyone else's imports.
+import type { FleetAudienceOmission } from '../audience';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote, type DormantScheduledInfo } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
@@ -926,6 +931,41 @@ async function sendOne(
     zeroRecipients = { selectors: audienceSelectors, note };
   }
 
+  // P-003 (fleet-lead-instrumentation-audit-2026-08-09): a PARTIAL fleet delivery used
+  // to be indistinguishable from a total one — measured live, a `['*']` fleet broadcast
+  // returned counts:{ok:1,failed:0} with recipients_resolved:6 against an 11-row roster
+  // and nothing said the other 5 were dropped. `recipients_resolved` alone cannot carry
+  // this: it is a count of who WAS reached, and no count can express who was not.
+  //
+  // Fail-soft and diagnostic-only — it never changes delivery. NB an EMPTY/absent list
+  // means "no omissions known", NOT "nobody was dropped": a host without the resolver,
+  // or a roster read that threw, both land here. Saying so is the point of the whole item.
+  let fleetOmitted: FleetAudienceOmission[] | undefined;
+  const fleetSelectors = audienceSelectors.filter((s) => s.startsWith('@fleet:'));
+  if (fleetSelectors.length > 0) {
+    try {
+      const { hostAudienceResolvers } = await import('../audience-host');
+      const explain = hostAudienceResolvers.explainFleetAudience;
+      if (explain) {
+        const seen = new Set<string>();
+        const collected: FleetAudienceOmission[] = [];
+        for (const sel of fleetSelectors) {
+          const slug = sel.slice('@fleet:'.length).trim();
+          if (!slug) continue;
+          for (const o of await explain(slug)) {
+            // A member dropped from two fleet selectors in one send is ONE omission.
+            if (seen.has(o.ownerId)) continue;
+            seen.add(o.ownerId);
+            collected.push(o);
+          }
+        }
+        if (collected.length > 0) fleetOmitted = collected;
+      }
+    } catch {
+      /* diagnostics must never fail a send that already delivered */
+    }
+  }
+
   // Reply-wake (coord-wake-on-reply): if THIS send is a REPLY (it carries a
   // related_msg_id), look the ORIGINAL message up by that id and — when the
   // original opted into wake-on-reply — fire an OPTIMISTIC wake back to its
@@ -1323,6 +1363,9 @@ async function sendOne(
     // nobody (an explicit selector reaching nobody already returned above).
     ...(audienceSelectors.length > 0 ? { recipients_resolved: env.to.length } : {}),
     ...(zeroRecipients ? { zero_recipients: zeroRecipients } : {}),
+    // P-003: who the `@fleet:` audience did NOT reach, and why — so a partial delivery
+    // is legible rather than reading as a complete one.
+    ...(fleetOmitted ? { fleet_omitted: fleetOmitted } : {}),
     // EI-18145: the reply was recorded (satisfying unanswered-directed /
     // delivery-ladder for `related_msg_id`) even though this addressee no
     // longer resolves in the roster — their session ended, so no wake was

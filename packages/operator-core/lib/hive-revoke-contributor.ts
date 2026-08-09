@@ -22,7 +22,7 @@
  * All collaborators-with-PG seams are injectable for hermetic unit tests.
  */
 
-import { loadHivePubkey } from './identity/hive-keypair';
+import { loadHiveKeyStatus, type HiveKeyStatus } from './identity/hive-keypair';
 import { loadHiveMemberDevicePubkeys, addRevokedHivePubkeys } from './hive-membership-store';
 import { resolveFederatedPotScope, type FederatedPotScope } from './federated-pot-scope';
 import {
@@ -56,7 +56,21 @@ export type RevokeHiveContributorResult =
        *  hand. Absent on the applied path (live:true). */
       reason?: BoundaryRekeyResult['reason'];
     }
-  | { ok: false; code: 'bad_target' | 'not_owner' | 'no_owner_identity' | 'no_target' | 'no_owner_row' | 'revoke_failed'; detail?: string };
+  | {
+      ok: false;
+      /** `owner_key_unreadable` (WI-37195): the Hive key IS present but could not be read/decrypted.
+       *  Deliberately DISTINCT from `not_owner` — collapsing the two is what let a C-001 breach
+       *  through. See the owner gate below. */
+      code:
+        | 'bad_target'
+        | 'not_owner'
+        | 'owner_key_unreadable'
+        | 'no_owner_identity'
+        | 'no_target'
+        | 'no_owner_row'
+        | 'revoke_failed';
+      detail?: string;
+    };
 
 export interface RevokeHiveContributorInput {
   workspaceId: string;
@@ -67,8 +81,12 @@ export interface RevokeHiveContributorInput {
 }
 
 export interface RevokeHiveContributorSeams {
-  /** Is THIS Swarm the Hive owner (holds the Hive private key)? Default: loadHivePubkey != null. */
-  isOwningSwarm?: (workspaceId: string, potHomeSlug: string) => Promise<boolean>;
+  /** This Swarm's Hive-key status — TRI-STATE by design (WI-37195), never a boolean.
+   *  Default: `loadHiveKeyStatus`. It MUST stay tri-state: `loadHivePubkey` flattens
+   *  "no key held" and "key held but unreadable" into one `null`, and this is precisely the
+   *  "security-relevant ownership guard" that `hive-keypair.ts` documents that flattening as
+   *  wrong for. Collapsing it back to a boolean re-opens the C-001 breach. */
+  loadOwnerKeyStatus?: (workspaceId: string, potHomeSlug: string) => Promise<HiveKeyStatus>;
   /** The local owner's numeric GitHub id (whose row holds the revoked set). */
   resolveOwnerGithubUserId?: () => Promise<number | null>;
   /** The target member's device pubkeys (the things to revoke).
@@ -162,14 +180,37 @@ async function revokeHiveContributorInner(
   }
 
   const {
-    isOwningSwarm = (ws, slug) => loadHivePubkey(ws, slug).then((pk) => pk !== null),
+    loadOwnerKeyStatus = loadHiveKeyStatus,
     resolveOwnerGithubUserId = realResolveOwnerGithubUserId,
     loadTargetPubkeys = loadHiveMemberDevicePubkeys,
     publishRevocation = realPublishRevocation,
   } = seams;
 
   // 1. Owner gate: only the Swarm that holds the Hive secret may revoke.
-  if (!(await isOwningSwarm(input.workspaceId, input.potHomeSlug))) {
+  //
+  // ⚠ TRI-STATE, and it must stay that way (WI-37195 — a live C-001 breach). This gate used to be
+  // `loadHivePubkey(...) !== null`, which FLATTENS two very different states into one `null`:
+  // "I hold no key for this Hive" and "a key IS here but I could not read/decrypt it". Both then
+  // returned `not_owner`, and `not_owner` makes the revoke return BEFORE the epoch advance — so a
+  // transient keychain read failure SILENTLY skipped the re-key and left the revoked contributor
+  // holding a valid key, still reading post-revoke content. A security control that failed OPEN
+  // and QUIET. `hive-keypair.ts:139-153` had already called out that flattening as "wrong for a
+  // security-relevant ownership guard" and shipped `loadHiveKeyStatus` for it; this call site had
+  // simply never been migrated.
+  //
+  // So: `not_found` is a genuine non-owner (a correct, quiet no-op — most Swarms are not the
+  // owner). `error` is NOT an answer to "am I the owner?" — it is a failure to determine it, and
+  // it FAILS THE REVOKE LOUDLY rather than pretending the revoke succeeded. Refusing is safe
+  // (the caller can retry); silently skipping the re-key is not.
+  const ownerKey = await loadOwnerKeyStatus(input.workspaceId, input.potHomeSlug);
+  if (ownerKey.kind === 'error') {
+    return {
+      ok: false,
+      code: 'owner_key_unreadable',
+      detail: `Hive key present but unreadable (${ownerKey.reason}) — cannot determine ownership, so the revoke is REFUSED rather than silently skipping the re-key (WI-37195). Retry once the keychain is readable.`,
+    };
+  }
+  if (ownerKey.kind !== 'ok') {
     return { ok: false, code: 'not_owner' };
   }
 

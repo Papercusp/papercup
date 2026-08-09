@@ -19,6 +19,7 @@ import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import {
   buildCapacityReport,
   deriveEdgeThrottleEvidence,
+  egressIdentityOf,
   type AccountPoolAvailability,
   type EdgeThrottleSnapshotEntry,
 } from '../../fleet/capacity-dispatch';
@@ -80,7 +81,12 @@ export async function readBeeProviderAvailability(): Promise<AccountPoolAvailabi
         edgeThrottled: r.edgeThrottled,
         edgeThrottleResetAt: r.edgeThrottleResetAt,
         penaltyCount: r.rate.penaltyCount,
-        egressIdentity: r.egress?.proxyUrl ?? r.egress?.localAddress ?? undefined,
+        // P-009: was `proxyUrl ?? localAddress ?? undefined`, which reported an account with no explicit
+        // binding as UNKNOWN. It is not unknown — it is on the box's default SHARED egress, and saying so
+        // is what lets deriveEdgeThrottleEvidence conclude sharedEgress at all. With the proxy entries
+        // pulled (permanent per owner directive 2026-08-09) every account hit that branch, so every
+        // identity was undefined and the shared-egress diagnosis was structurally unreachable.
+        egressIdentity: egressIdentityOf(r.egress),
       })),
       prevSnapshot,
     );

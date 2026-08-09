@@ -47,6 +47,7 @@
  * `execUser` + `now` + `notify` without shelling out — see the colocated `.test.ts`.
  */
 import { supervisedProcesses, type SupervisionEntry } from '../service-health';
+import type { SupervisionGiveUpEpisode, RecoveredSupervisionEpisode } from './give-up-ei';
 
 // ── Parsing (pure) ──────────────────────────────────────────────────────────
 
@@ -442,6 +443,21 @@ export interface ReconcilerDeps {
    *  service-health.ts — injectable for tests). */
   registry?: () => SupervisionEntry[];
   log?: (msg: string) => void;
+  /**
+   * EI-19966318801100410: file a durable EI when the reconciler gives up on a crash-looping
+   * unit — a give-up broadcast alone (`*`, `expects:'none'`) leaves the down unit unaddressed
+   * indefinitely, since every recipient is correctly told to skip it unless it bears on their
+   * task. Filing enters it into the claim queue (`work_items:claimable` / `scheduler:get_next`)
+   * instead of depending on someone reading a broadcast that named nobody. Optional so every
+   * existing `ReconcilerDeps` literal (this file's own tests, any other caller) keeps compiling
+   * unchanged; omitted means "don't file". Best-effort: never awaited into failing the give-up
+   * broadcast itself — see the call site.
+   */
+  fileGiveUpEi?: (episode: SupervisionGiveUpEpisode) => Promise<string | null>;
+  /** Auto-resolve the durable EI a give-up escalation filed, once the reconciler observes the
+   *  unit recovered (`decideReconcile`'s 'recovered' transition). Same optionality/best-effort
+   *  rationale as `fileGiveUpEi`. */
+  resolveGiveUpEi?: (recovery: RecoveredSupervisionEpisode) => Promise<string[]>;
 }
 
 /** Pull one compact failure-cause line out of `systemctl status` output. The
@@ -476,6 +492,26 @@ export function summarizeSystemctlStatusCause(output: string): string | null {
   );
   if (!cause) return null;
   return cause.replace(/^[-\u251c\u2514\u2502\s]+/, '').slice(0, 400);
+}
+
+/**
+ * EI-19966318801100410: recover the child's captured STDOUT from a rejected `execFile`/`exec`
+ * promise. Node's `util.promisify` wrapper for `execFile` attaches the captured stdout/stderr
+ * onto the rejection error (same as the callback form: `(err, stdout, stderr) => { err.stdout =
+ * stdout; ... }`) even when the process exits non-zero — and a non-zero exit is the STEADY
+ * STATE for `systemctl --user status <unit>` on a failed/inactive unit (exit code 3), which is
+ * exactly the case this reconciler needs diagnostics for. Without this, both cause-capture call
+ * sites below (`catch { }`) always hit their catch for a down unit and discard output that was
+ * fully captured — this is not occasional, it is the steady state for a unit that is down.
+ * Returns null when the error carries no usable stdout (a genuine spawn failure, ENOENT, or a
+ * timeout — no diagnostics were ever captured).
+ */
+export function stdoutFromExecError(err: unknown): string | null {
+  if (err && typeof err === 'object' && 'stdout' in err) {
+    const stdout = (err as { stdout?: unknown }).stdout;
+    if (typeof stdout === 'string' && stdout.trim().length > 0) return stdout;
+  }
+  return null;
 }
 
 /** Module-singleton flap state, keyed by unit name — survives across ticks within one process

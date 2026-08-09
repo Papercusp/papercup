@@ -43,7 +43,15 @@ afterEach(() => {
   while (trees.length) rmSync(trees.pop()!, { recursive: true, force: true });
 });
 
-type Spec = { typecheck?: boolean; tsconfig?: boolean; corrupt?: boolean };
+type Spec = {
+  typecheck?: boolean;
+  tsconfig?: boolean;
+  corrupt?: boolean;
+  /** Explicit package name — needed for dependency fixtures, which must be `@papercusp/*`. */
+  name?: string;
+  /** `@papercusp/*` names this package depends on (dependency-ordering fixtures). */
+  deps?: string[];
+};
 
 /** Build a fake superproject: { 'apps/thing': { typecheck: true, tsconfig: true }, … }. */
 function makeTree(pkgs: Record<string, Spec>): string {
@@ -60,8 +68,11 @@ function makeTree(pkgs: Record<string, Spec>): string {
     writeFileSync(
       join(dir, 'package.json'),
       JSON.stringify({
-        name: rel.replace(/\//g, '-'),
+        name: spec.name ?? rel.replace(/\//g, '-'),
         scripts: spec.typecheck ? { typecheck: 'tsc --noEmit' } : {},
+        ...(spec.deps?.length
+          ? { dependencies: Object.fromEntries(spec.deps.map((d) => [d, '*'])) }
+          : {}),
       }),
     );
   }
@@ -360,6 +371,150 @@ describe('a failing package', () => {
     expect(sink.warns.join('\n')).toContain('OOM-killed again');
     expect(sink.warns.join('\n')).toContain('NOT verified this run');
     expect(sink.stdout()).toContain('1 skipped (OOM)');
+  });
+});
+
+describe('dependency-ordered traversal (workstream G adoption, WI-36257)', () => {
+  // WHY THIS EXISTS, because the value is not obvious from the code: every @papercusp/* package
+  // resolves `types` to its own ./src/index.ts (there is no dist) and node_modules/@papercusp/*
+  // symlinks to the source dir, so a dependent's tsc reads its dependency's SOURCE and reports
+  // ITS errors against a file the dependent does not own. Verified on the real tree with
+  // scripts/mutation-probe.sh: a type error injected into libs/generic/module-singleton made
+  // `tsc -p libs/generic/lexicon/tsconfig.json` fail, citing module-singleton's file.
+  //
+  // So alphabetical order turns ONE defect into N indistinguishable failures. Measured on the
+  // real gated set: breaking module-singleton reported 7 failures (6 pure cascade) and ran 64
+  // compiles; leaves-first reports 1 failure + 6 blocked and runs 58.
+  const LEAF = '@papercusp/leaf';
+  const MID = '@papercusp/mid';
+
+  /** leaf <- mid <- top, declared in an order whose ALPHABETICAL sort is the exact reverse. */
+  const chain = () =>
+    makeTree({
+      'libs/generic/a-top': { tsconfig: true, name: '@papercusp/top', deps: [MID] },
+      'libs/generic/b-mid': { tsconfig: true, name: MID, deps: [LEAF] },
+      'libs/generic/c-leaf': { tsconfig: true, name: LEAF },
+    });
+
+  const relsOf = (root: string) => {
+    const { packages } = selectGatedPackages({ repoRoot: root, roots: ['libs/generic'], exempt: NO_EXEMPT });
+    return { packages, ordered: orderPackages(packages).ordered.map((p: { rel: string }) => p.rel) };
+  };
+
+  it('compiles dependencies BEFORE dependents, reversing the alphabetical order', () => {
+    const { packages, ordered } = relsOf(chain());
+    // The control: alphabetical really is the opposite order, so passing is not vacuous.
+    expect(packages.map((p: { rel: string }) => p.rel)).toEqual([
+      'libs/generic/a-top',
+      'libs/generic/b-mid',
+      'libs/generic/c-leaf',
+    ]);
+    expect(ordered).toEqual(['libs/generic/c-leaf', 'libs/generic/b-mid', 'libs/generic/a-top']);
+  });
+
+  it('a package whose dependency FAILED is reported BLOCKED, and is never compiled', () => {
+    const root = chain();
+    const sink = makeSink();
+    const compiled: string[] = [];
+    const code = main({
+      repoRoot: root,
+      roots: ['libs/generic'],
+      exempt: NO_EXEMPT,
+      spawn: (pkg: { rel: string }) => {
+        compiled.push(pkg.rel);
+        return pkg.rel === 'libs/generic/c-leaf'
+          ? { status: 2, stdout: 'src/index.ts(1,7): error TS2322: nope', stderr: '', signal: null }
+          : PASS;
+      },
+      ...sink.io,
+    });
+
+    expect(code).toBe(1); // the root cause still reds the run
+    // ONE defect is reported as one defect — this is the whole point.
+    expect(sink.stdout()).toContain('1 failed, 2 blocked (dependency failed)');
+    expect(sink.stdout()).toContain('libs/generic/b-mid — blocked by libs/generic/c-leaf');
+    // …and the cascade is not merely relabelled, it is not run at all.
+    expect(compiled).toEqual(['libs/generic/c-leaf']);
+  });
+
+  it('blocking is TRANSITIVE — a dependent of a blocked package is blocked too', () => {
+    // b-mid never runs, so "did b-mid fail?" has no answer; treating that as "fine, compile
+    // a-top" would put the cascade straight back.
+    const root = chain();
+    const sink = makeSink();
+    const code = main({
+      repoRoot: root,
+      roots: ['libs/generic'],
+      exempt: NO_EXEMPT,
+      spawn: (pkg: { rel: string }) =>
+        pkg.rel === 'libs/generic/c-leaf'
+          ? { status: 2, stdout: 'src/index.ts(1,1): error TS2322: nope', stderr: '', signal: null }
+          : PASS,
+      ...sink.io,
+    });
+    expect(code).toBe(1);
+    expect(sink.stdout()).toContain('libs/generic/a-top — blocked by libs/generic/b-mid');
+  });
+
+  it('a green run is unchanged — nothing is blocked when nothing fails', () => {
+    const root = chain();
+    const sink = makeSink();
+    const code = main({ repoRoot: root, roots: ['libs/generic'], exempt: NO_EXEMPT, spawn: () => PASS, ...sink.io });
+    expect(code).toBe(0);
+    expect(sink.stdout()).toContain('3 passed, 0 failed');
+    expect(sink.stdout()).not.toContain('blocked');
+  });
+
+  it('a dependency CYCLE is batched, not thrown — and the run says the order within it is arbitrary', () => {
+    // Import cycles are normal in a live tree (barrel files alone produce them). A traversal
+    // that throws on one would make this gate unrunnable.
+    const root = makeTree({
+      'libs/generic/x': { tsconfig: true, name: '@papercusp/x', deps: ['@papercusp/y'] },
+      'libs/generic/y': { tsconfig: true, name: '@papercusp/y', deps: ['@papercusp/x'] },
+    });
+    const { packages } = selectGatedPackages({ repoRoot: root, roots: ['libs/generic'], exempt: NO_EXEMPT });
+    const { ordered, cycles } = orderPackages(packages);
+    expect(cycles.length).toBe(1);
+    expect(ordered.map((p: { rel: string }) => p.rel).sort()).toEqual(['libs/generic/x', 'libs/generic/y']);
+
+    const sink = makeSink();
+    main({ repoRoot: root, roots: ['libs/generic'], exempt: NO_EXEMPT, spawn: () => PASS, ...sink.io });
+    expect(sink.stdout()).toContain('dependency cycle(s)');
+  });
+
+  it('a dep this sweep does not compile is EXTERNAL — reported, and never an ordering constraint', () => {
+    // libs/papercusp has its own fan-out, so its packages legitimately appear as deps here.
+    // The failure this guards is silent: if the name→package mapping broke, every edge would
+    // land in `external`, ordering would degrade to alphabetical, and the run would look normal.
+    const root = makeTree({
+      'libs/generic/solo': { tsconfig: true, name: '@papercusp/solo', deps: ['@papercusp/not-in-this-sweep'] },
+    });
+    const { packages } = selectGatedPackages({ repoRoot: root, roots: ['libs/generic'], exempt: NO_EXEMPT });
+    const { ordered, external, edges, blockersOf } = orderPackages(packages);
+    expect(edges).toBe(0);
+    expect(external.length).toBe(1);
+    expect(ordered.map((p: { rel: string }) => p.rel)).toEqual(['libs/generic/solo']);
+    // An unresolved dep can never block: only a package we actually compile can be seen to fail.
+    expect(blockersOf({ rel: 'libs/generic/solo' })).toEqual([]);
+  });
+
+  it('the REAL gated set is orderable, and every dependency precedes its dependent', () => {
+    // A live guard, not a fixture: if a future edit breaks the edge source (or someone drops
+    // `key`), edges collapse toward 0 and this ordering silently stops meaning anything.
+    const { packages } = selectGatedPackages();
+    const { ordered, blockersOf, edges } = orderPackages(packages);
+    expect(ordered.length).toBe(packages.length);
+    expect(edges).toBeGreaterThan(0);
+
+    const position = new Map(ordered.map((p: { rel: string }, i: number) => [p.rel, i]));
+    for (const pkg of ordered as { rel: string }[]) {
+      for (const dep of blockersOf(pkg)) {
+        expect(
+          position.get(dep),
+          `${dep} must be compiled before its dependent ${pkg.rel}`,
+        ).toBeLessThan(position.get(pkg.rel)!);
+      }
+    }
   });
 });
 

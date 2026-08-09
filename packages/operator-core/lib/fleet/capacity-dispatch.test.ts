@@ -10,6 +10,8 @@ import {
   buildFleetSizingAdvisory,
   buildCapacityReport,
   deriveEdgeThrottleEvidence,
+  egressIdentityOf,
+  DEFAULT_SHARED_EGRESS_IDENTITY,
 } from './capacity-dispatch';
 import { planBatchPlacement } from './batch-placement';
 import type { PlacementTask } from './placement-affinity';
@@ -1000,4 +1002,90 @@ test('P-001 — ABSENT on a healthy read and on an unreachable gateway (a non-al
   const unreachable = buildCapacityReport({ reachable: false }, { clampArmed: true, headroom: 10 });
   assert.equal('symptomKnowledge' in unreachable, false);
   assert.deepEqual(unreachable, preFixReport(unreachable));
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * P-009 (knowledge-at-symptom-time-2026-08-09): "no explicit egress binding" is the DEFAULT SHARED
+ * egress — a known identity — not an unknown one.
+ *
+ * THE REAL INCIDENT. On 2026-08-08 the datacenter proxy entries were pulled, so all four Claude
+ * accounts routed out the box's single egress IP. That IP collected Cloudflare per-IP bare-429 edge
+ * throttling, the pool reported `usableAccounts 1 / factor 0`, and `accounts:status` measured only 1
+ * of 4 genuinely usage-walled. `deriveEdgeThrottleEvidence` exists to name exactly that ("the fault
+ * is the shared egress, not the accounts") — but capacity.ts populated `egressIdentity` as
+ * `proxyUrl ?? localAddress ?? undefined`, so with no proxies EVERY identity was undefined,
+ * `knownIdentities` was empty, and the verdict could never be reached. The diagnosis was
+ * structurally unavailable in precisely the configuration that produced the incident.
+ *
+ * Owner directive 2026-08-09 ("dont re-renable rayobyte") makes default-shared egress PERMANENT
+ * here, so this is the normal configuration, not a transient one to wait out.
+ * ──────────────────────────────────────────────────────────────────────────────────────────────── */
+
+/** The pre-fix populate expression from capacity.ts, kept verbatim as a permanent control. */
+const preFixEgressIdentity = (egress?: { proxyUrl?: string; localAddress?: string }): string | undefined =>
+  egress?.proxyUrl ?? egress?.localAddress ?? undefined;
+
+/** The measured incident: 4 accounts, no proxies, all edge-throttled on the one box egress IP. */
+const INCIDENT_ACCOUNTS = [
+  { id: 'aviynw', edgeThrottled: true, penaltyCount: 12 },
+  { id: 'aviynw3', edgeThrottled: true, penaltyCount: 9 },
+  { id: 'aviynw10', edgeThrottled: true, penaltyCount: 7 },
+  { id: 'avi_storewolf.com', edgeThrottled: true, penaltyCount: 4 },
+] as const;
+
+test('P-009 PERMANENT FALSIFIABILITY CONTROL — the pre-fix identity made sharedEgress unreachable on the real incident input', () => {
+  // Every account has no binding, so the pre-fix expression yields undefined for all of them...
+  const preFix = INCIDENT_ACCOUNTS.map((a) => ({ ...a, egressIdentity: preFixEgressIdentity(undefined) }));
+  assert.deepEqual(
+    preFix.map((s) => s.egressIdentity),
+    [undefined, undefined, undefined, undefined],
+    'pre-fix: no binding was reported as UNKNOWN',
+  );
+  // ...and the shared-egress verdict is therefore unreachable, despite 4 accounts provably sharing one IP.
+  assert.equal(
+    deriveEdgeThrottleEvidence(preFix, new Map()).sharedEgress,
+    undefined,
+    'pre-fix: the one signal that explains a pool-wide collapse could not be computed',
+  );
+});
+
+test('P-009 — egressIdentityOf is TOTAL and reports the default shared egress as a known identity', () => {
+  assert.equal(egressIdentityOf({ proxyUrl: 'http://proxy1:3128' }), 'http://proxy1:3128', 'proxy wins');
+  assert.equal(egressIdentityOf({ localAddress: '10.0.0.7' }), 'src 10.0.0.7', "matches the gateway's egDesc spelling");
+  assert.equal(egressIdentityOf({ proxyUrl: 'http://p:3128', localAddress: '10.0.0.7' }), 'http://p:3128');
+  assert.equal(egressIdentityOf({}), DEFAULT_SHARED_EGRESS_IDENTITY, 'binding present but empty ⇒ default shared');
+  assert.equal(egressIdentityOf(undefined), DEFAULT_SHARED_EGRESS_IDENTITY, 'no binding at all ⇒ default shared');
+});
+
+test('P-009 — with the fix, 4 default-egress accounts all edge-throttled ⇒ sharedEgress TRUE (the incident is now diagnosable)', () => {
+  const samples = INCIDENT_ACCOUNTS.map((a) => ({ ...a, egressIdentity: egressIdentityOf(undefined) }));
+  const { sharedEgress } = deriveEdgeThrottleEvidence(samples, new Map());
+  assert.equal(sharedEgress, true, 'accounts sharing the box default egress are the strongest shared-IP case');
+});
+
+test('P-009 — a proxied account throttled alongside a default-egress one still DISPROVES a shared-IP fault', () => {
+  const { sharedEgress } = deriveEdgeThrottleEvidence(
+    [
+      { id: 'a', edgeThrottled: true, penaltyCount: 5, egressIdentity: 'http://proxy1:3128' },
+      { id: 'b', edgeThrottled: true, penaltyCount: 5, egressIdentity: egressIdentityOf(undefined) },
+    ],
+    new Map(),
+  );
+  assert.equal(sharedEgress, false, 'two throttled accounts on genuinely DIFFERENT egresses ⇒ not a shared-IP fault');
+});
+
+test('P-009 — `undefined` still means GENUINELY UNKNOWN, so the unknown-identity contract is unchanged', () => {
+  // The caller no longer manufactures undefined, but the pure function must keep honoring it: a sample
+  // whose binding truly could not be read must not be silently folded into the shared-egress majority.
+  assert.equal(
+    deriveEdgeThrottleEvidence(
+      [
+        { id: 'a', edgeThrottled: true, penaltyCount: 1 },
+        { id: 'b', edgeThrottled: true, penaltyCount: 1, egressIdentity: DEFAULT_SHARED_EGRESS_IDENTITY },
+      ],
+      new Map(),
+    ).sharedEgress,
+    undefined,
+    'one unknown + one known is still not enough to conclude either way',
+  );
 });

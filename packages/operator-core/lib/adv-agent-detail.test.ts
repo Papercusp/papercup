@@ -82,7 +82,10 @@ const {
   deriveClaimProgress,
   deriveLane,
   deriveAnnouncedGates,
+  derivePushedContext,
+  legRan,
 } = await import('./adv-agent-detail');
+type PushedContextRow = import('./adv-agent-detail').PushedContextRow;
 // The shared cursor rule, asserted alongside the counter it now feeds so the
 // two cannot drift (unread-count-truthfulness-2026-07-27 P-002/P-003).
 const { pickUnreadCursor } = await import('./agent-tools/coordination/watermarks');
@@ -1013,5 +1016,98 @@ describe('deriveAnnouncedGates (P-009 leg b)', () => {
   it('renders scope as kind:ref, and a scope-less announcement as global', () => {
     const out = deriveAnnouncedGates([gate('a', 'plan', 'my-plan'), gate('b')], []);
     expect(out.map((g) => g.scope)).toEqual(['plan:my-plan', 'global']);
+  });
+});
+
+// ── Dynamically pushed context (P-011/P-012) ────────────────────────────────
+// The shaping is pure by design so it tests without PG, per this module's
+// contract. The tri-state leg assertions below are CONTROLS, not coverage
+// padding: `null` (never recorded) and `false` (recorded, did not run) are
+// opposite conclusions about retrieval health, and collapsing them is the
+// specific defect this section was built to expose.
+describe('legRan (P-013 tri-state)', () => {
+  it('reports a leg that RAN', () => {
+    expect(legRan({ cosine: { ran: true } }, 'cosine')).toBe(true);
+  });
+
+  it('reports a leg that was recorded and did NOT run', () => {
+    expect(legRan({ lexical: { ran: false } }, 'lexical')).toBe(false);
+  });
+
+  it('returns null — NOT false — when the leg was never recorded', () => {
+    // A pre-P-002 row. `false` here would report a degradation nobody observed.
+    expect(legRan({ cosine: { ran: true } }, 'lexical')).toBeNull();
+    expect(legRan(null, 'cosine')).toBeNull();
+    expect(legRan(undefined, 'cosine')).toBeNull();
+  });
+
+  it('returns null for a non-boolean `ran`, rather than coercing it', () => {
+    expect(legRan({ cosine: { ran: 'yes' } }, 'cosine')).toBeNull();
+    expect(legRan({ cosine: 'ran' }, 'cosine')).toBeNull();
+  });
+});
+
+describe('derivePushedContext', () => {
+  const row = (over: Partial<PushedContextRow> = {}): PushedContextRow => ({
+    created_at: '2026-08-09T09:20:27.665Z',
+    surface: 'mid-turn',
+    legs: { cosine: { ran: true }, lexical: { ran: false } },
+    admission: { returned: 12, admitted: 1, truncated: true },
+    ...over,
+  });
+
+  it('shapes the admission funnel and both leg marks', () => {
+    const out = derivePushedContext([row()], [], 1);
+    expect(out.events).toEqual([
+      {
+        at: '2026-08-09T09:20:27.665Z',
+        surface: 'mid-turn',
+        returned: 12,
+        admitted: 1,
+        truncated: true,
+        semanticRan: true,
+        lexicalRan: false,
+      },
+    ]);
+  });
+
+  it('keeps `count` the TRUE window total, not the carried slice', () => {
+    // The Coord lesson [owner 2026-07-28]: a count must never name rows the
+    // list cannot show — here it must name MORE, so the cap can say so.
+    const out = derivePushedContext([row(), row()], [], 57);
+    expect(out.count).toBe(57);
+    expect(out.events).toHaveLength(2);
+  });
+
+  it('never lets `count` under-report the rows it is handed', () => {
+    // A total that disagrees with the slice (a racing write) must not render
+    // "showing 3 of 0" — the slice is the floor.
+    expect(derivePushedContext([row(), row(), row()], [], 0).count).toBe(3);
+  });
+
+  it('treats a missing admission blob as zeros rather than throwing', () => {
+    const out = derivePushedContext([row({ admission: null })], [], 1);
+    expect(out.events[0]).toMatchObject({ returned: 0, admitted: 0, truncated: false });
+  });
+
+  it('carries per-port ref COUNTS and drops empty ports', () => {
+    const out = derivePushedContext(
+      [],
+      [
+        { port: 'mid-turn', refs: '30' },
+        { port: 'turn-start', refs: 12 },
+        { port: 'wake-brief', refs: '0' },
+      ],
+      0,
+    );
+    expect(out.refsByPort).toEqual([
+      { port: 'mid-turn', refs: 30 },
+      { port: 'turn-start', refs: 12 },
+    ]);
+  });
+
+  it('normalises a Date created_at to ISO', () => {
+    const out = derivePushedContext([row({ created_at: new Date(0) })], [], 1);
+    expect(out.events[0].at).toBe('1970-01-01T00:00:00.000Z');
   });
 });

@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   gateStallConditionKey,
+  gateRedStreakConditionKey,
   toCellOwnership,
   unownedCell,
   unmeasuredCell,
@@ -315,7 +316,7 @@ describe('shouldStandDownForLivePeer (the P-007 rail decision)', () => {
 });
 
 describe('readGateOwnership', () => {
-  it('resolves the harness key and projects the found object', async () => {
+  it('resolves BOTH condition keys in one batched call and projects the stall object when only it is found', async () => {
     const seen: string[][] = [];
     const own = await readGateOwnership({
       harness: 'papercusp',
@@ -324,18 +325,61 @@ describe('readGateOwnership', () => {
         return new Map([['green-stall:papercusp', mkObj({ claimState: 'held', takenBy: 'su-x' })]]);
       }) as never,
     });
-    expect(seen).toEqual([['green-stall:papercusp']]);
+    expect(seen).toEqual([['green-stall:papercusp', 'gate-red-streak:papercusp']]);
     expect(own.claimState).toBe('held');
     expect(own.eventKey).toBe('green-stall:papercusp');
   });
 
-  it('returns no-object when the key resolves to nothing', async () => {
+  // REGRESSION GUARD (WI-37451). Measured live 2026-08-09: the gate was firing
+  // healthily and answering red (`gate-red-streak:papercusp` open, an ownable
+  // work-item existed) while `green-stall:` had never opened at all. The old
+  // resolver looked up ONLY the stall key, so this cell — and checkpoint-run's
+  // stand-down check, which reads the same function — reported "no-object" for
+  // an incident that was in fact owned and claimable.
+  it('resolves red-streak-only ownership — a red gate is ownable even when it never stalled', async () => {
+    const own = await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([
+          [
+            'gate-red-streak:papercusp',
+            mkObj({ conditionKey: 'gate-red-streak:papercusp', workItem: 'WI-37450', claimState: 'claimable' }),
+          ],
+        ])) as never,
+    });
+    expect(own.eventKey).toBe('gate-red-streak:papercusp');
+    expect(own.workItem).toBe('WI-37450');
+    expect(own.claimState).toBe('claimable');
+  });
+
+  // D-002(b): the two conditions can be open SIMULTANEOUSLY by design (a red
+  // streak outliving the 12h no-green backstop opens both). This cell stays
+  // single-valued, so it must pick one — red-streak, the more specific and
+  // currently-firing incident (see pickGateConditionKey's doc comment).
+  it('prefers gate-red-streak when BOTH conditions are open at once', async () => {
+    const own = await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([
+          ['green-stall:papercusp', mkObj({ conditionKey: 'green-stall:papercusp', workItem: 'WI-1' })],
+          [
+            'gate-red-streak:papercusp',
+            mkObj({ conditionKey: 'gate-red-streak:papercusp', workItem: 'WI-2' }),
+          ],
+        ])) as never,
+    });
+    expect(own.eventKey).toBe('gate-red-streak:papercusp');
+    expect(own.workItem).toBe('WI-2');
+  });
+
+  it('returns no-object, keyed by the stall key, when NEITHER key resolves to anything', async () => {
     const own = await readGateOwnership({
       harness: 'papercusp',
       findConditionObjects: (async () => new Map()) as never,
     });
     expect(own.claimState).toBe('no-object');
     expect(own.workItem).toBeNull();
+    expect(own.eventKey).toBe('green-stall:papercusp');
   });
 
   // A cell must ALWAYS render, but it must render UNMEASURED — never "no owner".

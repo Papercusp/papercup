@@ -138,8 +138,45 @@ export interface EdgeThrottleAccountSample {
   edgeThrottled: boolean;
   edgeThrottleResetAt?: number;
   penaltyCount: number;
-  /** proxyUrl ?? localAddress, or undefined when the account's egress binding is unknown/default-shared. */
+  /**
+   * This account's egress identity — see {@link egressIdentityOf}, which is how callers should build it.
+   *
+   * `undefined` means GENUINELY UNKNOWN (the binding could not be read) and NOTHING ELSE. It must NOT be
+   * used for "no explicit binding", because an account with neither `proxyUrl` nor `localAddress` is not
+   * unknown — it is definitively on the box's DEFAULT SHARED egress, which is the single most informative
+   * value this field can carry: if every throttled account is on the shared default, the throttle is a
+   * property of the IP, not of the accounts.
+   *
+   * That conflation was a real blind spot (P-009). The doc here used to read "or undefined when the
+   * account's egress binding is unknown/default-shared", and capacity.ts populated it as
+   * `proxyUrl ?? localAddress ?? undefined` — so with NO proxies configured, every account reported
+   * `undefined`, `knownIdentities` came back empty, and {@link deriveEdgeThrottleEvidence} could never
+   * conclude `sharedEgress` either way. The pool-wide collapse it exists to explain was therefore
+   * undiagnosable in precisely the configuration that produced it (2026-08-08: proxy entries pulled,
+   * all accounts on one box egress IP, `usableAccounts 1 / factor 0` while only 1 of 4 was truly walled).
+   * Owner directive 2026-08-09 makes default-shared egress the STANDING configuration, so this is not a
+   * transient state to tolerate — it is the normal one.
+   */
   egressIdentity?: string;
+}
+
+/** The egress identity of an account with no proxy and no bound source IP: the box's own default egress,
+ *  shared by every such account. Same spelling the gateway already uses for this case (its `egDesc`), so
+ *  a reader comparing a capacity verdict against a gateway log sees one vocabulary, not two. */
+export const DEFAULT_SHARED_EGRESS_IDENTITY = 'default-egress';
+
+/**
+ * Build an {@link EdgeThrottleAccountSample.egressIdentity} from an account's egress binding.
+ *
+ * TOTAL by design — it always returns a string, because for an account row we actually hold, the binding
+ * IS known: `proxyUrl` if set, else `src <localAddress>` if bound, else the default shared egress. Callers
+ * should therefore never pass `undefined` through to `egressIdentity` on the strength of "no binding";
+ * reserve that for the case where no row could be read at all.
+ */
+export function egressIdentityOf(egress: { proxyUrl?: string; localAddress?: string } | undefined): string {
+  if (egress?.proxyUrl) return egress.proxyUrl;
+  if (egress?.localAddress) return `src ${egress.localAddress}`;
+  return DEFAULT_SHARED_EGRESS_IDENTITY;
 }
 
 /** Per-account state from the PREVIOUS read, carried by the caller (capacity.ts keeps this in a

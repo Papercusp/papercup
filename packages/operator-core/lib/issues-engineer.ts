@@ -1366,6 +1366,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
              : sql`TRUE`
          }
+         AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
       -- GROUP BY 1 (the ORDINAL), never 'GROUP BY kind'. 'kind' is BOTH a real
       -- column on engineer_issues AND this SELECT's output alias, and Postgres
       -- resolves a bare name in GROUP BY to the COLUMN, not the alias. So
@@ -1406,6 +1407,11 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
+       -- P-006/D-031: without this, a lane-selected caller falls into this
+       -- (non-topic) branch UNRESTRICTED and tallies the whole issue store by
+       -- observation kind. The selector must bind in BOTH branches, or moving a
+       -- caller from the topic filter to the lane filter silently widens it.
+       AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
     -- GROUP BY 1 (the ORDINAL) — same reason as the topic-joined branch above:
     -- 'kind' is both a real column and this SELECT's alias, and the bare name
     -- binds to the column, which leaves 'payload' ungrouped and 500s.

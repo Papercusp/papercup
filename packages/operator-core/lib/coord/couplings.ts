@@ -90,8 +90,17 @@ export interface CouplingEdge {
  *   · `coord-exchange` / `shared-file` have no asserted counterpart.
  */
 export const DERIVED_COUPLING_RELATIONS = [
-  /** Both rows carry the same fleet slug. */
-  'same-fleet',
+  // ⛔ `same-fleet` WAS the first entry here and is deliberately GONE (D-054, re-fixed
+  // 2026-08-09). The owner cut it on 2026-07-27 — *"FLEETS CAN HAVE 30 MEMBERS THAT IS TOO
+  // MUCH COUPLING NO?"* — because it is SET MEMBERSHIP, not a pairwise relation: it is O(n²)
+  // in fleet size, and it is redundant with `fleetSlug`, which the base presence payload
+  // already puts on every row. It shipped anyway and stayed live for 12 days; measured
+  // 2026-08-09, fleet `nonp2p-bug-drain` had 18 live members, so one member calling
+  // `include_coupling` derived 17 edges and the fleet as a whole 306 — exactly the
+  // "expanded[] stops being an expansion and becomes a second roster" failure D-054 forbade.
+  // D-054's test for any FUTURE entry: an expansion edge must (a) be a pairwise relation the
+  // two agents actually ENTERED, and (b) carry information the base payload cannot already
+  // express. Every relation below passes both; `same-fleet` failed both.
   /** Declared `current_files` overlap. ⚠ all but dead in practice — see the
    *  derivation's note; kept because it is correct on the rare row that has it. */
   'shared-file',

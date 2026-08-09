@@ -679,6 +679,14 @@ const CC_HOOK_FILES = [
   // falling through to the affirmative (and WRONG) OWNER default. See the
   // script's own header for the full root-cause + fix writeup.
   'pretooluse-schedule-wakeup-provenance.mjs',
+  // EI-19966323166806405: PreToolUse (matcher "Write") ADVISORY guard — the native Write
+  // tool's own contract says an overwrite of an existing, un-Read file "will fail", but
+  // on 2026-08-09 it silently overwrote a 350-line shared module instead, crash-looping
+  // staging for ~13min. Independently reconstructs "was this path Read this session" from
+  // the transcript and warns (never denies — see the script header for why a hard deny
+  // would be the wrong trade on a shared tree) when a Write targets an existing file with
+  // no matching prior Read/Edit/MultiEdit/Write in the transcript.
+  'pretooluse-write-overwrite-guard.mjs',
   // EI-19374535041074908: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
   // when an edit adds a REQUIRED field to an exported interface (or tightens one from
   // optional), which silently strands every construction site in files the change never
@@ -1858,6 +1866,13 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-schedule-wakeup-provenance.mjs'), {
       matcher: 'ScheduleWakeup',
       hooks: cmd('pretooluse-schedule-wakeup-provenance.mjs'),
+    });
+  // merge_write_overwrite_guard_hook — PreToolUse, matcher 'Write' (EI-19966323166806405).
+  // Advisory only (additionalContext, never a deny) — see the script header for why.
+  if (has('pretooluse-write-overwrite-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-write-overwrite-guard.mjs'), {
+      matcher: 'Write',
+      hooks: cmd('pretooluse-write-overwrite-guard.mjs'),
     });
 
   return cfg;

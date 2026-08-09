@@ -16,7 +16,7 @@ import { coordWorkspaceId } from './log';
 // The locks shim (NOT `@papercusp/locks` directly) — it imports ./configure for its
 // side effect, so the package's host seam is wired before the first store call.
 import { ensureBootstrap, getTxPool, readQueue, normalizePaths } from '../locks/su-lock-store';
-import { liveFleetMemberIds } from '../../fleet/fleet-roster';
+import { liveFleetMemberIds, liveFleetMemberIdsDiagnosed } from '../../fleet/fleet-roster';
 import { getFleet, fleetSlugFromName } from '../../agent-fleets-store';
 import { getFleetDeliveryOverrides } from './fleet-delivery';
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
@@ -101,6 +101,25 @@ export const hostAudienceResolvers: AudienceResolvers = {
     try {
       const links = await linkStore.listOut({ kind: objectKind, ref: objectRef }, { rel: 'tagged' });
       return links.filter((l) => l.dst.kind === 'topic').map((l) => l.dst.ref);
+    } catch {
+      return [];
+    }
+  },
+  // P-003: the DIAGNOSTIC sibling of listFleetMembers — who this `@fleet:` audience
+  // dropped, and why. Fail-soft to [] (an unavailable roster must never fail a send);
+  // callers therefore read [] as "no omissions KNOWN", not as "nobody was dropped".
+  //
+  // Deliberately reports only the drops made by the LOCAL presence resolver. The
+  // federated/leader union below can only ADD recipients, and a delivery override
+  // (muted/digest) is a recipient's own standing choice rather than a delivery failure —
+  // folding either in would make `omitted` mean two different things.
+  async explainFleetAudience(fleetSlug) {
+    try {
+      const { omitted } = await liveFleetMemberIdsDiagnosed(
+        fleetSlugFromName(fleetSlug),
+        coordWorkspaceId(),
+      );
+      return omitted;
     } catch {
       return [];
     }

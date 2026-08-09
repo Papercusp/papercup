@@ -318,6 +318,11 @@ CC_NUL_BYTE_EDIT_GUARD_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-nul-byte-edit-guard.
 # per-row ttl sized to the requested delay), so its eventual delivery classifies
 # VERIFIED agent-origin instead of the affirmative-OWNER default. Never blocks.
 CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-schedule-wakeup-provenance.mjs"
+# PreToolUse ADVISORY hook (EI-19966323166806405): warns (never denies) when a Write
+# targets an existing file with no matching Read/Edit/MultiEdit/Write earlier in the
+# session's transcript — the native Write tool silently overwrote a 350-line un-Read
+# file instead of refusing, per its own stated contract. See the script's own header.
+CC_WRITE_OVERWRITE_GUARD_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-write-overwrite-guard.mjs"
 
 # Merge our PreToolUse + PostToolUse lock hooks into a settings.json
 # (Claude's ~/.claude/settings.json or a codex-su CODEX_HOME). Idempotent
@@ -1109,6 +1114,42 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+# merge_write_overwrite_guard_hook — PreToolUse, matcher 'Write' (EI-19966323166806405):
+# ADVISORY (additionalContext, never a deny) warning when a Write targets an existing
+# file with no matching Read/Edit/MultiEdit/Write earlier in the transcript. See the
+# script's own header for why this is advisory-only rather than a hard deny.
+merge_write_overwrite_guard_hook() {
+  python3 - "$1" "$CC_WRITE_OVERWRITE_GUARD_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
+arr.append({'matcher': 'Write', 'hooks': [{'type': 'command', 'command': hook}]})
+hooks['PreToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
 # OMP looks for its MCP server config at ~/.omp/agent/mcp.json. The
 # directory may not exist on a fresh OMP install — create it.
 OMP_CONFIG_DIR="${HOME}/.omp/agent"
@@ -1544,6 +1585,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/pretooluse-schedule-wakeup-provenance.mjs" "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK"
     chmod 755 "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-write-overwrite-guard.mjs" ]; then
+    cp "${CC_HOOK_SRC_DIR}/pretooluse-write-overwrite-guard.mjs" "$CC_WRITE_OVERWRITE_GUARD_HOOK"
+    chmod 755 "$CC_WRITE_OVERWRITE_GUARD_HOOK"
+  fi
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
@@ -1574,6 +1619,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_SECRETS_GUARD_HOOK" ] && merge_secrets_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_NUL_BYTE_EDIT_GUARD_HOOK" ] && merge_nul_byte_edit_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SCHEDULE_WAKEUP_PROVENANCE_HOOK" ] && merge_schedule_wakeup_provenance_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_WRITE_OVERWRITE_GUARD_HOOK" ] && merge_write_overwrite_guard_hook "$CLAUDE_SETTINGS"
   chmod 600 "$CLAUDE_SETTINGS"
   echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"
 else

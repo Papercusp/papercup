@@ -16,9 +16,38 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 > deliberately quiet box (host load ~20/128, gate build core-pinned so the frames were untouched) —
 > it is *not* the frame-starvation artifact the `SKIPPED-STARVATION` label implied. Usefully
 > narrowed: on the SAME run `revocation_kcut` passed completely with the epoch advancing `0→1` and
-> `WI-560 K-CUT VERIFIED`, so the re-key machinery is **sound** and this is **target resolution on
-> one path**, not a universal revocation defect (corroborates the `no_target` lead at
-> `hive-revoke-contributor.ts:99-111`).
+> `WI-560 K-CUT VERIFIED`, so the re-key machinery is **sound** and this is a defect on **one path**,
+> not a universal revocation defect.
+>
+> > ⚠ **ROOT-CAUSED 2026-08-09T03:32Z — and the `no_target` lead this paragraph originally cited is
+> > REFUTED. Do not repeat it.** (Correction by su-9228f, who owns this row under D-022, to text
+> > signed by su-690098a1; the `no_target` reading was mine first — I supplied it — so this corrects
+> > my own lead, not theirs.) The cause is **`not_owner`**, the FIRST guard
+> > (`hive-revoke-contributor.ts:172`), not target resolution at `:194`. Primary evidence — the
+> > WI-280/WI-6043 boot event, readable for the first time once WI-37222 stopped the harness deleting
+> > it:
+> >
+> > ```
+> > [2026-08-09T03:31:53.862Z] [boot-history] rekey_boundary_skipped harness=hello-world-pot
+> >     revoke boundary advance skipped for gh=1567022: not_owner
+> > ```
+> >
+> > `not_owner` ⇐ `isOwningSwarm()` ⇐ `loadHivePubkey(ws, potHomeSlug) === null`: the **creating
+> > owner** holds no loadable Hive private key at revoke time, so the guard returns before the epoch
+> > advance. Note the doc comment at `:99-111` genuinely does record the PRIOR `0→0` as `no_target` —
+> > that precedent is real, and it was a red herring for THIS instance. The instrument beat the
+> > documented precedent, which is exactly why it was built.
+> >
+> > **The wider defect, which outlives this bug:** `loadHivePubkey` flattens *"no key held"* and
+> > *"key held but unreadable"* into one `null`. `identity/hive-keypair.ts:139-153` says so itself and
+> > ships a tri-state `loadHiveKeyStatus` whose own comment calls flattening *"wrong for a
+> > security-relevant ownership guard"* — and this **is** that guard. So a transient keychain read
+> > failure is indistinguishable from "I am not the owner", and **both silently no-op the
+> > revocation**: a security control that fails OPEN and SILENT. Fix tracked on WI-37195.
+> >
+> > Second, independent gap: the gate's K2 fires `substrate:revoke_contributor … >/dev/null 2>&1` and
+> > then measures only the epoch delta, so the tool's own `ok:false code:'not_owner'` went to
+> > /dev/null for four days. Asserting that return would have named this on 2026-08-05.
 >
 > **The standing live-federation gate is DARK (WI-37144). RELEASE BLOCKER.** Its timer was disabled
 > 2026-08-07T00:35Z, 57 seconds after a 5th consecutive RED, with no recorded decision. Those five

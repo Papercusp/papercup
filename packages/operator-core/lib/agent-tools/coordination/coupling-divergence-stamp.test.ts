@@ -35,7 +35,7 @@ describe('the cost gate — an unscoreable message must not touch the database',
     // `owns` is 53% of live asserted uses and can never be compared, so the
     // common case must not pay for a presence snapshot. The gate and the
     // scoring rule are the SAME table, so this cannot drift from the verdict.
-    const read = readerReturning({ [PEER]: ['same-fleet'] });
+    const read = readerReturning({ [PEER]: ['coord-exchange'] });
     const stamps = await resolveCouplingDivergenceStamps(
       {
         selfOwnerId: SELF,
@@ -68,7 +68,7 @@ describe('the cost gate — an unscoreable message must not touch the database',
     const claims = comparableClaims([
       { forYouBecause: { relation: 'owns' } },
       {},
-      { forYouBecause: { relation: 'same-fleet' } },
+      { forYouBecause: { relation: 'holds-a-lock-on' } },
     ]);
     expect(claims.map((c) => c.section)).toEqual([2]);
   });
@@ -78,6 +78,11 @@ describe('never scored against a SET', () => {
   it('drops broadcast and audience-selector recipients, doing no IO', async () => {
     // The sender addressed a set, not a person, so "why THIS recipient" has no
     // subject to be right or wrong about. Scoring it would invent divergence.
+    // ⚠ The asserted relation must be a COMPARABLE one, or the claim is dropped
+    // by the cost gate before the audience rule is ever reached and this passes
+    // without testing anything. It was `same-fleet`, which stopped being
+    // comparable on 2026-08-09 (D-054) — the same silent-vacuum this file's
+    // fail-soft cases below also had to be rescued from.
     const read = readerReturning({ [PEER]: [] });
     for (const to of [['*'], ['human'], ['@fleet:alpha'], [SELF]]) {
       expect(
@@ -85,7 +90,7 @@ describe('never scored against a SET', () => {
           {
             selfOwnerId: SELF,
             to,
-            sections: [{ forYouBecause: { relation: 'same-fleet' } }],
+            sections: [{ forYouBecause: { relation: 'holds-a-lock-on' } }],
           },
           read,
         ),
@@ -101,7 +106,9 @@ describe('fail-soft — a measurement must never be able to eat a message', () =
       {
         selfOwnerId: SELF,
         to: [PEER],
-        sections: [{ forYouBecause: { relation: 'same-fleet' } }],
+        // Comparable ON PURPOSE — an uncomparable relation would short-circuit
+        // before the reader is ever called, and the throw would go untested.
+        sections: [{ forYouBecause: { relation: 'holds-a-lock-on' } }],
       },
       async () => {
         throw new Error('presence store down');
@@ -111,13 +118,13 @@ describe('fail-soft — a measurement must never be able to eat a message', () =
   });
 
   it('returns no stamps for an unresolvable sender', async () => {
-    const read = readerReturning({ [PEER]: ['same-fleet'] });
+    const read = readerReturning({ [PEER]: ['holds-a-lock-on'] });
     expect(
       await resolveCouplingDivergenceStamps(
         {
           selfOwnerId: '   ',
           to: [PEER],
-          sections: [{ forYouBecause: { relation: 'same-fleet' } }],
+          sections: [{ forYouBecause: { relation: 'holds-a-lock-on' } }],
         },
         read,
       ),
@@ -132,28 +139,31 @@ describe('scoring against the graph', () => {
       {
         selfOwnerId: SELF,
         to: [PEER],
-        sections: [{ forYouBecause: { relation: 'same-fleet' } }],
+        sections: [{ forYouBecause: { relation: 'holds-a-lock-on' } }],
       },
-      readerReturning({ [PEER]: ['same-fleet', 'coord-exchange'] }),
+      readerReturning({ [PEER]: ['holds-a-lock-on', 'coord-exchange'] }),
     );
     expect(stamps).toEqual([
       {
         section: 0,
         recipient: PEER,
-        asserted: 'same-fleet',
+        asserted: 'holds-a-lock-on',
         verdict: 'agrees',
-        computed: ['same-fleet', 'coord-exchange'],
+        computed: ['holds-a-lock-on', 'coord-exchange'],
       },
     ]);
   });
 
   it('records DIVERGENCE with the graph contents that produced it', async () => {
     // The `computed` array is the evidence: a bare verdict would be unauditable.
+    // `is-blocked-on` is the asserted relation here because it is the two-sided
+    // one — the only kind whose ABSENCE from the graph is a contradiction rather
+    // than silence, and therefore the only kind that can produce this verdict.
     const stamps = await resolveCouplingDivergenceStamps(
       {
         selfOwnerId: SELF,
         to: [PEER],
-        sections: [{ forYouBecause: { relation: 'same-fleet' } }],
+        sections: [{ forYouBecause: { relation: 'is-blocked-on' } }],
       },
       readerReturning({ [PEER]: ['coord-exchange'] }),
     );
@@ -186,15 +196,19 @@ describe('scoring against the graph', () => {
         selfOwnerId: SELF,
         to: ['su-a', 'su-b'],
         sections: [
-          { forYouBecause: { relation: 'same-fleet' } },
+          { forYouBecause: { relation: 'holds-a-lock-on' } },
           { forYouBecause: { relation: 'is-blocked-on' } },
         ],
       },
-      readerReturning({ 'su-a': ['same-fleet'], 'su-b': ['blocked-by-me'] }),
+      readerReturning({ 'su-a': ['holds-a-lock-on'], 'su-b': ['blocked-by-me'] }),
     );
+    // All THREE verdicts appear in one matrix, which the `same-fleet` version of
+    // this fixture could not produce — the pairing of a one-sided relation with a
+    // two-sided one is what makes `not-comparable` distinguishable from a miss.
     expect(stamps.map((s) => [s.section, s.recipient, s.verdict])).toEqual([
       [0, 'su-a', 'agrees'],
-      [0, 'su-b', 'diverges'],
+      // one-sided ⇒ the graph's silence about su-b is not a contradiction
+      [0, 'su-b', 'not-comparable'],
       [1, 'su-a', 'diverges'],
       // direction-insensitive: blocked-by-me satisfies the one asserted token
       [1, 'su-b', 'agrees'],
@@ -204,7 +218,9 @@ describe('scoring against the graph', () => {
   it('is BOUNDED — sections × recipients is quadratic in principle', () => {
     const claims = Array.from({ length: 20 }, (_, i) => ({
       section: i,
-      f: { relation: 'same-fleet' as const },
+      // A COMPARABLE relation: an uncomparable one is filtered upstream by
+      // `comparableClaims`, so bounding it here would bound an unreachable input.
+      f: { relation: 'is-blocked-on' as const },
     }));
     const recipients = Array.from({ length: 20 }, (_, i) => `su-${i}`);
     expect(scoreCouplingDivergence(claims, recipients, relations({}))).toHaveLength(

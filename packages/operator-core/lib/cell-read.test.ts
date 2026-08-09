@@ -1090,29 +1090,56 @@ describe('readCell — pointers (P-006)', () => {
     expect(await readCell('narrow.cell', READER, ENV)).toEqual({ status: 'absent', cell: 'narrow.cell' });
   });
 
-  it('flags a pointer to an UNREGISTERED cell as drifted — a declaration defect', async () => {
+  it('flags a pointer whose target does not resolve', async () => {
     registerCell(spec({ pointers: [ptr] })); // `other.cell` deliberately never registered
     dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
 
     const r = await readCell('test.cell', READER, ENV);
 
     if (r.status !== 'value') throw new Error('expected a value read');
-    expect(r.pointers).toEqual([{ ...ptr, drifted: true }]);
+    expect(r.pointers).toEqual([{ ...ptr, unresolved: true }]);
   });
 
-  it("flags a pointer OUT OF THE READER'S AUDIENCE as hidden, NOT as drifted", async () => {
-    // The two demand opposite responses and are indistinguishable if merged: `drifted`
-    // means nobody can follow it (report the defect), `hidden` means the answer is real
-    // and a peer can fetch it (go ask). Collapsing them sends the reader the wrong way.
+  /**
+   * P-019 CARRIES THROUGH THE POINTER, and this is the test that says so.
+   *
+   * An earlier draft split these into `drifted` (in no registry) and `hidden` (yours to
+   * ask a peer for) because that is more USEFUL. It also re-opened the enumeration
+   * oracle `absent` closes: a narrow cell's existence would become observable to a
+   * reader who may not see it, via whatever ordinary cell points at it. So the two must
+   * be BYTE-IDENTICAL here for the same reason `absent` is byte-identical there.
+   */
+  it('an OUT-OF-AUDIENCE target is indistinguishable from an unregistered one (P-019)', async () => {
     registerCell(spec({ pointers: [ptr] }));
     registerCell(target({ visibility: { kind: 'owner', ref: 'su-someone-else' } }));
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+
+    const outOfAudience = await readCell('test.cell', READER, ENV);
+
+    __resetCellRegistryForTests();
+    registerCell(spec({ pointers: [ptr] })); // same pointer, target never registered
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
+    const unregistered = await readCell('test.cell', READER, ENV);
+
+    if (outOfAudience.status !== 'value' || unregistered.status !== 'value') {
+      throw new Error('expected value reads');
+    }
+    // Same SHAPE, not merely both flagged — any field that differed would be the oracle.
+    expect(outOfAudience.pointers).toEqual(unregistered.pointers);
+    expect(outOfAudience.pointers).toEqual([{ ...ptr, unresolved: true }]);
+  });
+
+  it('a target the reader CAN see resolves clean — the flag is not simply always set', async () => {
+    // The calibration for the pair above: if `unresolved` were unconditional, both
+    // halves of the P-019 test would pass while the pointer measured nothing.
+    registerCell(spec({ pointers: [ptr] }));
+    registerCell(target({ visibility: { kind: 'workspace' } }));
     dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true } });
 
     const r = await readCell('test.cell', READER, ENV);
 
     if (r.status !== 'value') throw new Error('expected a value read');
-    expect(r.pointers).toEqual([{ ...ptr, hidden: true }]);
-    expect(r.pointers?.[0]).not.toHaveProperty('drifted');
+    expect(r.pointers?.[0]).not.toHaveProperty('unresolved');
   });
 
   it('omits the field entirely when the spec declares none — no empty array to branch on', async () => {
@@ -1159,17 +1186,14 @@ describe('formatCellPointers — the prose half', () => {
     expect(s).toContain("state:read { cell: 'gate.greenCheckpoint.ownership' }");
   });
 
-  it('a DRIFTED pointer reads as a defect to report, not a value to chase', () => {
-    const s = formatCellPointers([{ ...ptr, drifted: true }]) ?? '';
-    expect(s).toMatch(/NO registry/);
-    // It must NOT hand the reader a call that cannot possibly work.
+  it('an UNRESOLVED pointer names BOTH possibilities rather than asserting either', () => {
+    const s = formatCellPointers([{ ...ptr, unresolved: true }]) ?? '';
+    // It must not claim the cell is missing (a bug report against a fine cell) NOR that
+    // it exists (the P-019 leak). `absent`'s own wording is the model.
+    expect(s).toMatch(/may not exist/);
+    expect(s).toMatch(/outside your audience/i);
+    expect(s).toMatch(/ask a peer/i);
+    // And it must NOT hand the reader a call that cannot work for them.
     expect(s).not.toContain('state:read {');
-  });
-
-  it('a HIDDEN pointer says the answer EXISTS and to ask a peer', () => {
-    const s = formatCellPointers([{ ...ptr, hidden: true }]) ?? '';
-    expect(s).toMatch(/OUTSIDE YOUR AUDIENCE/);
-    expect(s).toMatch(/ask a peer/);
-    expect(s).not.toMatch(/NO registry/);
   });
 });

@@ -229,9 +229,19 @@ const COUPLING_DIVERGENCE_RULES: Record<
   ForYouBecauseRelation,
   { confirmedBy: readonly DerivedCouplingRelation[]; absenceIsInformative: boolean }
 > = {
-  // Genuinely two-sided: the computed signal IS the relation, so a miss is a real
-  // disagreement between what the sender claimed and what the graph shows.
-  'same-fleet': { confirmedBy: ['same-fleet'], absenceIsInformative: true },
+  // NO COMPUTED COUNTERPART, as of 2026-08-09 — same shape as `owns` below, and read it the
+  // same way: uncomputable is not lesser. This entry USED to be
+  // `{ confirmedBy: ['same-fleet'], absenceIsInformative: true }` on the reasoning that the
+  // relation was "genuinely two-sided". That was true only while the DERIVATION emitted a
+  // `same-fleet` edge — which D-054 had already cut as a coupling relation (set membership,
+  // O(n²) in fleet size, redundant with the `fleetSlug` the base payload carries anyway).
+  // Removing that emitter without touching this rule would have been the expensive half-fix:
+  // `confirmedBy` could never be satisfied again, so `absenceIsInformative: true` would have
+  // scored EVERY correctly-asserted `same-fleet` as a divergence — manufacturing disagreement
+  // out of a signal we ourselves stopped computing, and reporting it as a sender-accuracy
+  // problem. The ASSERTED relation stays valid: a sender may still say "I'm telling you
+  // because we're in the same fleet". It simply is not diffable, exactly like `owns`.
+  'same-fleet': { confirmedBy: [], absenceIsInformative: false },
   // Two-sided, but DIRECTION-INSENSITIVE: the graph splits blocked-by into
   // `blocks-me` / `blocked-by-me` because they mean opposite things to a reader,
   // while the asserted vocabulary has one token. Comparing against one direction

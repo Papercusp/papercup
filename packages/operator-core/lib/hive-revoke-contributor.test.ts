@@ -8,7 +8,7 @@ import { revokeHiveContributor, type RevokeHiveContributorSeams } from './hive-r
 
 function seams(over: Partial<RevokeHiveContributorSeams> = {}): RevokeHiveContributorSeams {
   return {
-    isOwningSwarm: async () => true,
+    loadOwnerKeyStatus: async () => ({ kind: 'ok', pubkeyBase64: 'hive-pk' }),
     resolveOwnerGithubUserId: async () => 1,
     loadTargetPubkeys: async () => ['t-pk-1', 't-pk-2'],
     publishRevocation: async () => ({ live: false }),
@@ -47,7 +47,7 @@ describe('revokeHiveContributor', () => {
     const r = await revokeHiveContributor(
       input,
       seams({
-        isOwningSwarm: async () => false,
+        loadOwnerKeyStatus: async () => ({ kind: 'not_found' }),
         loadTargetPubkeys: async () => {
           loaded = true;
           return ['x'];
@@ -56,6 +56,50 @@ describe('revokeHiveContributor', () => {
     );
     expect(r).toMatchObject({ ok: false, code: 'not_owner' });
     expect(loaded).toBe(false); // no target lookup leaks to a non-owner
+  });
+
+  // ── WI-37195 (C-001 breach) ────────────────────────────────────────────────────
+  // The owner gate is TRI-STATE. It used to be `loadHivePubkey(...) !== null`, which flattened
+  // "no key held" and "key held but UNREADABLE" into the same `null` → both returned `not_owner`
+  // → the revoke returned before the epoch advance → no re-key → the revoked contributor kept a
+  // valid key and went on reading post-revoke content. A security control failing OPEN and QUIET.
+  // These two tests pin the distinction; the second is the one that was breached.
+  it('owner_key_unreadable (NOT not_owner) when the Hive key is present but cannot be read — the revoke FAILS LOUDLY rather than silently skipping the re-key', async () => {
+    let loaded = false;
+    let published = false;
+    const r = await revokeHiveContributor(
+      input,
+      seams({
+        loadOwnerKeyStatus: async () => ({ kind: 'error', reason: 'decryption_failed' }),
+        loadTargetPubkeys: async () => {
+          loaded = true;
+          return ['x'];
+        },
+        publishRevocation: async () => {
+          published = true;
+          return { live: true };
+        },
+      }),
+    );
+    // The whole point: an unreadable key must NOT be reported as `not_owner`. A caller (or a gate)
+    // that sees `not_owner` reasonably concludes "this box isn't the owner, nothing to do here",
+    // when in truth ownership could not be DETERMINED and the re-key was skipped.
+    expect(r).toMatchObject({ ok: false, code: 'owner_key_unreadable' });
+    expect((r as { code: string }).code).not.toBe('not_owner');
+    // It must carry the underlying reason, so a 0→0 names its own cause instead of needing a manual trace.
+    expect((r as { detail?: string }).detail).toContain('decryption_failed');
+    // And it must refuse EARLY — never half-apply a revocation whose re-key it cannot perform.
+    expect(loaded).toBe(false);
+    expect(published).toBe(false);
+  });
+
+  it('a genuine non-owner and an unreadable key are DISTINGUISHABLE — the flattening that caused C-001 cannot silently return', async () => {
+    const notOwner = await revokeHiveContributor(input, seams({ loadOwnerKeyStatus: async () => ({ kind: 'not_found' }) }));
+    const unreadable = await revokeHiveContributor(
+      input,
+      seams({ loadOwnerKeyStatus: async () => ({ kind: 'error', reason: 'io_error' }) }),
+    );
+    expect((notOwner as { code: string }).code).not.toEqual((unreadable as { code: string }).code);
   });
 
   it('no_owner_identity when the local gh identity is unavailable', async () => {

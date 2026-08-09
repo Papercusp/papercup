@@ -621,6 +621,81 @@ describe('planItemLaneBlockReason', () => {
         expect(got?.itemId).toBe('P-019');
       });
 
+    // EI-19968471075842609: the locality fix above scopes a marker to the
+    // sentence naming the item, but the marker itself was matched by SPELLING —
+    // `'non-owner-gated'.includes('owner-gated')` — so a clause written to say an
+    // item is explicitly NOT gated gated every item its sentence named. Measured
+    // on semantic-search-fingerprint-coverage-2026-08-03, whose Now `Next` called
+    // P-011 "the closest surviving non-owner-gated lever" in the sentence that
+    // also named P-033 and P-012: work_items:complete then refused to close a
+    // FINISHED P-033, quoting "owner-gated" as though it came from the item.
+    describe('negated markers (EI-19968471075842609)', () => {
+      const NEGATED_NOW_NEXT =
+        'Otherwise P-033 (agent-insights docs for this plan, in progress), then P-011 (phrase-aware query building — the closest surviving non-owner-gated lever on Report 1) and P-012 (an embedding leg for the work_item source).';
+
+      const negatedPlan = () => ({
+        items: [
+          planItem({ id: 'P-011', storedStatus: 'todo', text: 'Phrase-aware query building.' }),
+          planItem({ id: 'P-012', storedStatus: 'todo', text: 'An embedding leg for the work_item source.' }),
+          planItem({ id: 'P-033', storedStatus: 'todo', text: 'Write the agent-insights docs.' }),
+        ],
+        nowState: '',
+        nowNext: NEGATED_NOW_NEXT,
+      });
+
+      it.each(['P-033', 'P-011', 'P-012'])(
+        'does NOT gate %s on a "non-owner-gated" mention asserting the opposite',
+        async (itemId) => {
+          getPlanRowMock.mockResolvedValue(negatedPlan());
+          const got = await planItemLaneBlockReason({
+            payload: { plan_item: { plan_slug: 'semantic-search-fingerprint-coverage-2026-08-03', item_id: itemId } },
+            harness: 'papercusp',
+            id: UNUSED_ID,
+            family: UNUSED_FAMILY,
+          });
+          expect(got).toBeNull();
+        },
+      );
+
+      // CONTROL. Without this, the case above would also pass against a predicate
+      // that had been gutted to never match anything — which is the failure mode
+      // a negative-only test cannot distinguish from a working fix.
+      it('CONTROL: still gates the SAME sentence shape when the marker is not negated', async () => {
+        getPlanRowMock.mockResolvedValue({
+          ...negatedPlan(),
+          nowNext: NEGATED_NOW_NEXT.replace('non-owner-gated', 'owner-gated'),
+        });
+        const got = await planItemLaneBlockReason({
+          payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-033' } },
+          harness: 'papercusp',
+          id: UNUSED_ID,
+          family: UNUSED_FAMILY,
+        });
+        expect(got).not.toBeNull();
+        expect(got?.reason).toMatch(/owner-gated \("owner-gated"\)/);
+      });
+
+      // The false-NEGATIVE direction, which the module's own doc names as the
+      // more dangerous one: a negated mention must not MASK a real marker that
+      // follows it in the same sentence.
+      it('still gates when a REAL marker follows a negated one in the same sentence', async () => {
+        getPlanRowMock.mockResolvedValue({
+          items: [planItem({ id: 'P-033', storedStatus: 'todo', text: 'Write the agent-insights docs.' })],
+          nowState: '',
+          nowNext:
+            'P-033 follows P-011 (the closest surviving non-owner-gated lever), but P-033 itself is owner-gated until the owner rules.',
+        });
+        const got = await planItemLaneBlockReason({
+          payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-033' } },
+          harness: 'papercusp',
+          id: UNUSED_ID,
+          family: UNUSED_FAMILY,
+        });
+        expect(got).not.toBeNull();
+        expect(got?.reason).toMatch(/owner-gated \("owner-gated"\)/);
+      });
+    });
+
       // The WI-1774/P-003 shape at finer granularity: several items named in ONE
       // sentence that carries the marker are ALL legitimately gated by it.
       it('gates EVERY item named in a single sentence that carries the marker', async () => {

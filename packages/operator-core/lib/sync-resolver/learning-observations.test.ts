@@ -7,7 +7,11 @@ vi.mock('../issues-engineer', () => ({
   countIssues: (...args: unknown[]) => countIssues(...args),
 }));
 vi.mock('../harness/improvements/read-items', () => ({
+  // P-006/D-031: the observation population is selected by the `lane` COLUMN. The
+  // topic constant stays exported (capture still writes the tag as a LABEL), so it is
+  // mocked too — but nothing in this resolver reads it any more.
   OBSERVATION_TOPIC: 'papercusp-observation',
+  OBSERVATION_LANE: 'observation',
 }));
 
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
@@ -46,8 +50,8 @@ describe('learning.observations — Work Queue pagination contract', () => {
   it('carries the authoritative store total on the flat row list, newest-first', async () => {
     const rows = await computeLearningObservations({ limit: 200 });
 
-    expect(listIssues).toHaveBeenCalledWith({ topic: 'papercusp-observation', limit: 200 });
-    expect(countIssues).toHaveBeenCalledWith({ topic: 'papercusp-observation' });
+    expect(listIssues).toHaveBeenCalledWith({ lane: 'observation', limit: 200 });
+    expect(countIssues).toHaveBeenCalledWith({ lane: 'observation' });
     expect(readListTotal(rows as unknown as Array<Record<string, unknown>>)).toBe(725);
     expect((rows as Array<{ id: string }>).map((row) => row.id)).toEqual(['EI-2', 'EI-1']);
   });
@@ -142,11 +146,11 @@ describe('learning.observations — Work Queue pagination contract', () => {
     // inline path AND applies the argsSchema clamp (50000 → 2000) before compute.
     await resolveNamedQueryV2('learning.observations', { state: 'open', limit: 50_000 });
     expect(listIssues).toHaveBeenCalledWith({
-      topic: 'papercusp-observation',
+      lane: 'observation',
       state: 'open',
       limit: 2000,
     });
-    expect(countIssues).toHaveBeenCalledWith({ topic: 'papercusp-observation', state: 'open' });
+    expect(countIssues).toHaveBeenCalledWith({ lane: 'observation', state: 'open' });
   });
 
   // ── WI-7289 shape guard ──────────────────────────────────────────────────

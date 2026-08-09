@@ -365,11 +365,48 @@ export function shouldStandDownForLivePeer(own: CellOwnership, callerOwnerId: st
 }
 
 /**
- * Read ownership of the green-checkpoint gate's stall condition.
+ * PURE. Choose which of the gate's two conditions an ownership cell reports as
+ * ITS incident, given whichever of them the store actually found.
+ *
+ * BUGFIX (WI-37451): the resolver used to look up ONLY `gateStallConditionKey`,
+ * so a gate that was firing healthily and answering red — `gate-red-streak:`
+ * open, `green-stall:` never opened at all — read as `claimState: 'no-object'`
+ * even while its ownable work-item existed and was claimable. Both consumers of
+ * this cell (`gate.greenCheckpoint.ownership`, and `checkpoint-run`'s
+ * stand-down check) were blind to it.
+ *
+ * D-002(b) of `gate-ownership-followup-2026-08-08` establishes the two keys can
+ * be open SIMULTANEOUSLY by design (a red streak outliving the 12h no-green
+ * backstop opens both) and deliberately does not couple their watchdogs. That
+ * makes this a single-valued cell reporting on a condition that can genuinely
+ * have two owners — so when only one key resolves, report it (this is the
+ * WI-37451 fix); when BOTH resolve, prefer `gate-red-streak:` — it is the more
+ * specific, currently-firing incident ("the gate IS producing verdicts and they
+ * are red"), which is what a reader of `gate.greenCheckpoint.verdict` or a
+ * manual-refire caller actually wants to know. A caller that specifically needs
+ * the stall condition's own ownership can resolve `green-stall:<harness>`
+ * directly via `findConditionObjects`; this cell stays intentionally
+ * single-valued rather than growing a merge shape nothing consumes.
+ */
+function pickGateConditionKey(
+  stallKey: string,
+  redStreakKey: string,
+  objs: ReadonlyMap<string, ConditionObject>,
+): string {
+  return objs.has(redStreakKey) ? redStreakKey : stallKey;
+}
+
+/**
+ * Read ownership of the green-checkpoint gate's incident — either the STALL
+ * condition (`green-stall:<harness>`, the gate not producing verdicts) or the
+ * RED-STREAK condition (`gate-red-streak:<harness>`, the gate producing red
+ * verdicts) — whichever is open. See {@link pickGateConditionKey} for the
+ * selection rule when both are.
  *
  * Costs ONE indexed SELECT (`findConditionObjects` is batched and capped), not a
  * fork or a git call — the same reasoning that makes `checkpointRunInFlight` safe
- * to read on every `dev:pipeline_position` call.
+ * to read on every `dev:pipeline_position` call. Batching both keys into that one
+ * call keeps this a single round trip regardless of which (or both) resolve.
  *
  * FAIL-SOFT to `no-object`: `findConditionObjects` already degrades rather than
  * throwing when the store is unreachable, and this adds the same guarantee at the
@@ -386,15 +423,19 @@ export async function readGateOwnership(
   } = {},
 ): Promise<CellOwnership> {
   const harness = opts.harness?.trim() || operatorHomeHarnessSlug();
-  const eventKey = gateStallConditionKey(harness);
+  const stallKey = gateStallConditionKey(harness);
+  const redStreakKey = gateRedStreakConditionKey(harness);
 
-  let obj: ConditionObject | undefined;
+  let objs: ReadonlyMap<string, ConditionObject>;
   try {
     const find = opts.findConditionObjects ?? findConditionObjects;
-    obj = (await find([eventKey], { harnessSlug: harness })).get(eventKey);
+    objs = await find([stallKey, redStreakKey], { harnessSlug: harness });
   } catch (err) {
-    return unmeasuredCell(eventKey, `ownership store unreachable: ${err instanceof Error ? err.message : String(err)}`);
+    return unmeasuredCell(stallKey, `ownership store unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
+
+  const eventKey = pickGateConditionKey(stallKey, redStreakKey, objs);
+  const obj = objs.get(eventKey);
   if (!obj) return unownedCell(eventKey);
 
   // The falsifier leg. Only worth a call when there IS a holder to measure —

@@ -34,7 +34,7 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
     const result = await revokeHiveContributor(
       { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
-        isOwningSwarm: async () => true,
+        loadOwnerKeyStatus: async () => ({ kind: 'ok', pubkeyBase64: 'hive-pk' }),
         resolveOwnerGithubUserId: async () => 1,
         loadTargetPubkeys: async () => [], // empty → no_target → advanceEpochOnHiveBoundary never reached
       },
@@ -49,7 +49,7 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
     const result = await revokeHiveContributor(
       { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
-        isOwningSwarm: async () => true,
+        loadOwnerKeyStatus: async () => ({ kind: 'ok', pubkeyBase64: 'hive-pk' }),
         resolveOwnerGithubUserId: async () => 1,
         loadTargetPubkeys: async () => ['pk-b'],
         publishRevocation: async () => ({ live: false }), // PG write ok, advance no-op'd → live:false
@@ -69,7 +69,7 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
     const result = await revokeHiveContributor(
       { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
-        isOwningSwarm: async () => true,
+        loadOwnerKeyStatus: async () => ({ kind: 'ok', pubkeyBase64: 'hive-pk' }),
         resolveOwnerGithubUserId: async () => 1,
         loadTargetPubkeys: async () => ['pk-b'],
         // 'no-author' = loadHivePubkey returned null. Per-run state, so it is a candidate
@@ -93,7 +93,7 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
     const result = await revokeHiveContributor(
       { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
-        isOwningSwarm: async () => true,
+        loadOwnerKeyStatus: async () => ({ kind: 'ok', pubkeyBase64: 'hive-pk' }),
         resolveOwnerGithubUserId: async () => 1,
         loadTargetPubkeys: async () => ['pk-b'],
         // advance applied → live:true, epoch advanced to 1, wrapped to 2 remaining members
@@ -112,7 +112,7 @@ describe('WI-280 boundary loud-signal — a skipped revoke epoch-advance is NAME
     const result = await revokeHiveContributor(
       { workspaceId: WS, potHomeSlug: HIVE, githubUserId: 42 },
       {
-        isOwningSwarm: async () => true,
+        loadOwnerKeyStatus: async () => ({ kind: 'ok', pubkeyBase64: 'hive-pk' }),
         resolveOwnerGithubUserId: async () => 1,
         loadTargetPubkeys: async () => ['pk-b'],
         publishRevocation: async () => ({

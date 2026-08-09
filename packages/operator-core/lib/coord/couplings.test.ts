@@ -58,10 +58,14 @@ describe('peerOf', () => {
 // Typed as DerivedCoupling ON PURPOSE, not left to inference: the annotation is
 // what makes a future required field fail HERE, at the fixture, instead of
 // silently passing vitest (which does not typecheck) and reding the fleet gate.
+// The default relation was `same-fleet` until 2026-08-09, when D-054's cut was
+// finally applied to the derivation. It is only ever a stand-in for "some valid
+// derived token" in this file — nothing here is ABOUT fleets — so it moved to a
+// signal that still exists rather than the tests being deleted with it.
 const d = (
   ownerId: string,
-  because = 'same fleet',
-  relation: DerivedCouplingRelation = 'same-fleet',
+  because = 'both awaiting gate:1',
+  relation: DerivedCouplingRelation = 'awaits',
 ): DerivedCoupling => ({ ownerId, relation, because });
 
 describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
@@ -86,8 +90,8 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
       {
         ownerId: 'su-derived',
         source: 'derived',
-        derivedBecause: 'same fleet',
-        derivedRelations: ['same-fleet'],
+        derivedBecause: 'both awaiting gate:1',
+        derivedRelations: ['awaits'],
       },
     ]);
   });
@@ -98,15 +102,18 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
     // useful half of the answer.
     const peers = resolveCoupledPeers(
       'su-me',
-      [d('su-peer', 'same fleet'), d('su-peer', 'recent coord exchange', 'coord-exchange')],
+      [
+        d('su-peer', 'both awaiting gate:1'),
+        d('su-peer', 'recent coord exchange', 'coord-exchange'),
+      ],
       [],
     );
     expect(peers).toEqual([
       {
         ownerId: 'su-peer',
         source: 'derived',
-        derivedBecause: 'same fleet; recent coord exchange',
-        derivedRelations: ['same-fleet', 'coord-exchange'],
+        derivedBecause: 'both awaiting gate:1; recent coord exchange',
+        derivedRelations: ['awaits', 'coord-exchange'],
       },
     ]);
   });
@@ -116,11 +123,11 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
     // must not render as an empty reason.
     const peers = resolveCoupledPeers(
       'su-me',
-      [{ ownerId: 'su-peer', relation: 'same-fleet', because: '  ' }],
+      [{ ownerId: 'su-peer', relation: 'awaits', because: '  ' }],
       [],
     );
     expect(peers).toEqual([
-      { ownerId: 'su-peer', source: 'derived', derivedRelations: ['same-fleet'] },
+      { ownerId: 'su-peer', source: 'derived', derivedRelations: ['awaits'] },
     ]);
   });
 
@@ -131,16 +138,16 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
     const peers = resolveCoupledPeers(
       'su-me',
       [
-        { ownerId: 'su-peer', relation: 'same-fleet', because: 'same fleet (alpha)' },
+        { ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting gate:1' },
         { ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you both hold locks in x.ts' },
         { ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you both hold locks in y.ts' },
       ],
       [],
     );
-    expect(peers[0]?.derivedRelations).toEqual(['same-fleet', 'holds-a-lock-on']);
+    expect(peers[0]?.derivedRelations).toEqual(['awaits', 'holds-a-lock-on']);
     // Both halves, not one or the other: the prose still accumulates every signal.
     expect(peers[0]?.derivedBecause).toBe(
-      'same fleet (alpha); you both hold locks in x.ts; you both hold locks in y.ts',
+      'both awaiting gate:1; you both hold locks in x.ts; you both hold locks in y.ts',
     );
   });
 

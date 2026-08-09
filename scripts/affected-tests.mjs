@@ -544,6 +544,34 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       !f.split('/').some((seg) => seg.startsWith('.')) &&
       (f.endsWith('.md') || f.endsWith('.mdx') || /(^|\/)manifest\.ya?ml$/.test(f)),
   },
+  {
+    // WI-37454 — the D-034 shape again, caught as a LATENT gate red rather than a live one.
+    // lint:no-retired-resurrection enumerates the WHOLE superproject index, but its only
+    // enforcement point is a vitest file in operator-core
+    // (packages/operator-core/lib/retired-resurrection-guard.test.ts), so it ran only when
+    // operator-core was independently affected. `lint:guard-reachability` scored it
+    // PARTIALLY COVERED and — being a blocking green-checkpoint leg — exited 1 at HEAD.
+    //
+    // It had not red-pinned the gate YET only because the lint legs are skipped once the
+    // gate has already halted (`haltedBy ? null : …`, green-checkpoint.ts:5095): the
+    // 10:01:04Z verdict was held by 6 test files, so the lint legs never ran. Those files
+    // were already passing at HEAD, so the next clean run would have reached this leg and
+    // red-pinned on it — the same surprise as WI-10589's "imminent gate red".
+    workspace: '@papercusp/operator-core',
+    // The standalone script (212/248/221ms measured over 3 runs) — the same order as
+    // lint:chunk-safe and lint:drop-database-force, both already accepted at that price.
+    // The narrow task only needs the tree RATCHET; the discrimination tests that prove the
+    // detector can still fail live in operator-core's own suite.
+    script: 'lint:no-retired-resurrection',
+    // EVERY tracked path, deliberately unnarrowed. The guard reads `git ls-files -s` with
+    // no extension filter and matches on BLOB SHA (findResurrections in
+    // check-retired-resurrection.mjs), so a resurrection is a content-identity fact about
+    // any two paths — one under `_retired/`, one live — regardless of file type. Narrowing
+    // this to a source-extension set (as chunk-safe's comment warns) would re-create the
+    // blind spot one level down: a resurrected .css/.json/.md would escape the very guard
+    // whose whole purpose is that nobody knows in advance which file gets un-retired.
+    appliesTo: () => true,
+  },
 ];
 
 const workspaces = [
