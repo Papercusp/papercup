@@ -165,18 +165,35 @@ describe('searchHitStreamUrl', () => {
 describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882; active+inactive 2026-07-11)', () => {
   it('active claude result → live:true, canFork:true, sessionId from the roster agent', () => {
     expect(
-      searchResultResumeTarget({ active: rosterAgent({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }), session: null }),
-    ).toEqual({ sessionId: 'sid-1', live: true, canFork: true });
+      searchResultResumeTarget({
+        active: rosterAgent({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null, ownerId: 'su-live-1' }),
+        session: null,
+      }),
+      // resume-in-gui-button-2026-08-09: an ACTIVE result's identity comes from the
+      // LIVE roster row, which is also the row the HUD conversation popup resolves.
+    ).toEqual({ sessionId: 'sid-1', live: true, canFork: true, guiOwnerId: 'su-live-1' });
   });
   it('inactive claude result → live:false, canFork:true (Fork now offered for inactive too)', () => {
     expect(
-      searchResultResumeTarget({ active: null, session: endedRow({ agent: 'claude', sessionId: 'sid-2' }) }),
-    ).toEqual({ sessionId: 'sid-2', live: false, canFork: true });
+      searchResultResumeTarget({ active: null, session: endedRow({ agent: 'claude', sessionId: 'sid-2', coordOwnerId: 'su-ended-2' }) }),
+      // …and an INACTIVE result's comes from the ended adv row. Never both: an
+      // active result's ended rows are older terminals of the same agent.
+    ).toEqual({ sessionId: 'sid-2', live: false, canFork: true, guiOwnerId: 'su-ended-2' });
   });
   it('inactive omp result → live:false, canFork:false (Resume ok, no Fork — omp has no --fork-session)', () => {
     expect(
       searchResultResumeTarget({ active: null, session: endedRow({ agent: 'omp', ompThreadId: 'thread-1' }) }),
-    ).toEqual({ sessionId: 'thread-1', live: false, canFork: false });
+      // guiOwnerId null here because the fixture carries none — and canFork:false
+      // would suppress the GUI button anyway (omp resumes never route through psu).
+    ).toEqual({ sessionId: 'thread-1', live: false, canFork: false, guiOwnerId: null });
+  });
+  // resume-in-gui-button-2026-08-09: a resumable session whose row simply has no
+  // coord owner id must report null rather than undefined-by-omission — the modal
+  // gates the GUI button on this value, and "no id" has to be an explicit answer.
+  it('resumable session with no coord owner id → guiOwnerId:null (no GUI destination)', () => {
+    expect(
+      searchResultResumeTarget({ active: null, session: endedRow({ agent: 'claude', sessionId: 'sid-3' }) }),
+    ).toEqual({ sessionId: 'sid-3', live: false, canFork: true, guiOwnerId: null });
   });
   it('codex (active or inactive) → null, never a dead resume/fork button', () => {
     expect(
@@ -191,8 +208,8 @@ describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882;
     // a Resume button (no Fork, since --fork-session is claude-only). live:true
     // tags the Resume collision-warning tooltip.
     expect(
-      searchResultResumeTarget({ active: rosterAgent({ agent: 'omp', sessionId: null, ompThreadId: 'thread-1' }), session: null }),
-    ).toEqual({ sessionId: 'thread-1', live: true, canFork: false });
+      searchResultResumeTarget({ active: rosterAgent({ agent: 'omp', sessionId: null, ompThreadId: 'thread-1', ownerId: 'su-omp' }), session: null }),
+    ).toEqual({ sessionId: 'thread-1', live: true, canFork: false, guiOwnerId: 'su-omp' });
   });
   it('neither active nor session → null', () => {
     expect(searchResultResumeTarget({ active: null, session: null })).toBeNull();
@@ -527,8 +544,10 @@ describe('SessionSearchResults in-flight honesty (WI-4734 — owner-hit: a 20s s
     await waitFor(() => expect(inspectorProps.last).not.toBeNull());
     expect(inspectorProps.last?.focusTarget).toBeUndefined();
     // …but Resume/Fork still wire up, so this is a focus-specific absence and
-    // not "the inspector got nothing".
-    expect(inspectorProps.last?.resumeTarget).toEqual({ sessionId: 'sid-ended', live: false, canFork: true });
+    // not "the inspector got nothing". resume-in-gui-button-2026-08-09 added
+    // guiOwnerId — null here because this ended fixture carries no coordOwnerId,
+    // which is exactly what suppresses the GUI button for a row with no identity.
+    expect(inspectorProps.last?.resumeTarget).toEqual({ sessionId: 'sid-ended', live: false, canFork: true, guiOwnerId: null });
   });
 
   it('clicking a LIVE match with neither handle passes NO focusTarget (pid alone is not focusable)', async () => {

@@ -796,3 +796,140 @@ test('buildFleetSizingAdvisory — fail-soft when the gateway/headroom signal is
   assert.equal(buildFleetSizingAdvisory(5, { reachable: false, healthyAccounts: 3 }), null);
   assert.equal(buildFleetSizingAdvisory(5, { reachable: true, healthyAccounts: null }), null);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// P-001 (knowledge-at-symptom-time-2026-08-09) — symptomKnowledge on the alarming branches.
+//
+// The measured incident: on 2026-08-09 an su read `degraded: true` + "place conservatively (top-ranked
+// only)", took the verdict at face value, and told the owner the only remaining lever was to BUY MORE
+// ACCOUNTS. It was wrong — three of four accounts held real budget and the pool had collapsed on a
+// shared-egress TRANSPORT throttle. The correct reading was already written down in three agent-insights
+// pages AND in two standing facts folded into that agent's own second tool call, where they were excerpted
+// mid-imperative ("...ALWAYS cross-read acco…"). So the fix is not more documentation: it is putting the
+// instruction ON the payload that reports the symptom.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The PROPERTY under test, stated once and applied to BOTH the real subject and the pre-fix control:
+ * does the payload that reports the symptom also carry the cross-read imperative, as the FIRST thing a
+ * reader meets? Reading `advice` when `symptomKnowledge` is absent is exactly what the pre-fix reader did.
+ */
+function meetsCrossReadImperativeFirst(payload: { advice: string; symptomKnowledge?: { before: string } }): boolean {
+  const lead = (payload.symptomKnowledge?.before ?? payload.advice).trim();
+  return /^ALWAYS cross-read accounts:status\b/.test(lead);
+}
+
+/** The PRE-FIX implementation of the report shape: identical, minus the field this item added. */
+function preFixReport<T extends { symptomKnowledge?: unknown }>(r: T): Omit<T, 'symptomKnowledge'> {
+  const { symptomKnowledge: _dropped, ...rest } = r;
+  return rest;
+}
+
+/** The literal 2026-08-09 incident reading: DEGRADED, all usable accounts sustainedly rate-limited. */
+function incidentDegradedReport() {
+  const hr = {
+    reachable: true, utilization: 0.82, utilizationPct: 82, paused: false, rejected: false, queueDepth: 2, inFlight: 3,
+    priorityTiers: { healthyAccounts: 4, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 3, queued: 2 }] },
+  };
+  const accountAvailability = {
+    provider: 'claude', total: 4, available: 1, usable: 1, edgeThrottledCount: 3, usageWalledCount: 0,
+    sustainedlyLimitedCount: 1,
+  };
+  return buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+}
+
+test('P-001 FALSIFIABILITY CONTROL — the PRE-FIX report FAILS the cross-read property on the real 2026-08-09 incident input; the fixed one passes', () => {
+  // This control is PERMANENT on purpose. Without it, the assertions below could all pass against an
+  // implementation that never delivers the imperative where a reader actually meets it, and the suite
+  // would go vacuously green. The control must FAIL on the pre-fix shape or it is not measuring anything.
+  const r = incidentDegradedReport();
+  assert.equal(r.degraded, true, 'calibration: the fixture must land on the DEGRADED branch the incident hit');
+
+  const preFix = preFixReport(r);
+  assert.equal(
+    meetsCrossReadImperativeFirst(preFix),
+    false,
+    'CONTROL: the pre-fix payload (advice only) does NOT lead with the cross-read imperative — this is the reading that produced the misdiagnosis',
+  );
+  assert.match(preFix.advice, /place conservatively/, 'CONTROL: and what it DOES lead with is an actionable-sounding instruction that is wrong here');
+
+  assert.equal(
+    meetsCrossReadImperativeFirst(r),
+    true,
+    'the fixed payload leads with the imperative — the control above is what proves this assertion is not vacuous',
+  );
+});
+
+test('P-001 — the imperative LEADS and survives the 180-char excerpt that decapitated it in the incident', () => {
+  const r = incidentDegradedReport();
+  const before = r.symptomKnowledge?.before ?? '';
+  assert.match(before, /^ALWAYS cross-read accounts:status\b/, 'the verb is first, not after the evidence');
+
+  // The two standing facts that would have prevented this were folded in at a 180-char excerpt and BOTH
+  // lost their verb mid-word. The instruction here must be whole inside that same budget.
+  const excerpt = before.slice(0, 180);
+  assert.match(
+    excerpt,
+    /^ALWAYS cross-read accounts:status before escalating, holding placements, or telling an owner to add accounts\b/,
+  );
+  assert.ok(before.length <= 180, `the operative clause must fit a 180-char excerpt intact (was ${before.length})`);
+  assert.match(before, /NOT self-validating/, 'and it must say why the verdict cannot be taken at face value');
+});
+
+test('P-001 — `why` names the THREE collapsed signals that need opposite responses, and `insights` points at the pages that already explain them', () => {
+  const sk = incidentDegradedReport().symptomKnowledge;
+  assert.ok(sk, 'present on the degraded branch');
+  // The whole misdiagnosis was reading one number as one failure. Naming all three is the fix's payload.
+  assert.match(sk!.why, /TRANSPORT/i);
+  assert.match(sk!.why, /RATE 429|rate/i);
+  assert.match(sk!.why, /USAGE WALL/i);
+  assert.match(sk!.why, /usageWalled/, 'names the concrete per-account fields to disambiguate with');
+  assert.match(sk!.why, /edgeThrottled/);
+  assert.equal(sk!.insights.length, 3);
+  for (const p of sk!.insights) assert.match(p, /^\/internal\/docs\/agent-insights\//);
+});
+
+test('P-001 — present on ALL THREE alarming branches (exhausted / blocked / degraded)', () => {
+  // EXHAUSTED: zero usable accounts while the gateway still claims queue slots.
+  const exhausted = buildCapacityReport(
+    {
+      reachable: true, utilization: 0.5, utilizationPct: 50, paused: false, rejected: false, queueDepth: 1, inFlight: 1,
+      priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 1, queued: 1 }] },
+    },
+    { clampArmed: true, headroom: 10, accountAvailability: { provider: 'claude', total: 3, available: 0, usable: 0 } },
+  );
+  assert.equal(exhausted.poolExhausted, true, 'calibration: fixture lands on the EXHAUSTED branch');
+  assert.equal(meetsCrossReadImperativeFirst(exhausted), true);
+
+  // BLOCKED: gateway paused/rejecting with NO tiered spare capacity to override the bound-account block
+  // (healthyAccounts + a spare bee-tier slot would suppress poolBlocked — capacity-oracle-false-saturation).
+  const blocked = buildCapacityReport(
+    {
+      reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, rejected: false, queueDepth: 5, inFlight: 2,
+      priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 2, inFlight: 2, queued: 5 }] },
+    },
+    { clampArmed: true, headroom: 10 },
+  );
+  assert.match(blocked.advice, /SATURATED/, 'calibration: fixture lands on the BLOCKED branch');
+  assert.equal(meetsCrossReadImperativeFirst(blocked), true);
+
+  // DEGRADED: covered by the incident fixture.
+  assert.equal(meetsCrossReadImperativeFirst(incidentDegradedReport()), true);
+});
+
+test('P-001 — ABSENT on a healthy read and on an unreachable gateway (a non-alarming report is byte-identical to pre-fix)', () => {
+  const abundant = buildCapacityReport(
+    {
+      reachable: true, utilization: 0.1, utilizationPct: 10, paused: false, rejected: false, queueDepth: 0, inFlight: 0,
+      priorityTiers: { healthyAccounts: 6, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 0 }] },
+    },
+    { clampArmed: true, headroom: 10, accountAvailability: { provider: 'claude', total: 6, available: 5, usable: 5 } },
+  );
+  assert.match(abundant.advice, /abundant/, 'calibration: fixture lands on the healthy branch');
+  assert.equal('symptomKnowledge' in abundant, false, 'the KEY must be absent, not present-and-undefined');
+  assert.deepEqual(abundant, preFixReport(abundant), 'a healthy report is byte-identical to the pre-fix shape');
+
+  const unreachable = buildCapacityReport({ reachable: false }, { clampArmed: true, headroom: 10 });
+  assert.equal('symptomKnowledge' in unreachable, false);
+  assert.deepEqual(unreachable, preFixReport(unreachable));
+});

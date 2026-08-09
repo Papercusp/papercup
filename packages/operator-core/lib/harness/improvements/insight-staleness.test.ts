@@ -306,4 +306,33 @@ describe('collectInsightStalenessSignals — fs glue over the real docs tree', (
       );
     }
   });
+
+  // EI-16474 regression. The first attempt at the ignore-rule leg used
+  // `git check-ignore --stdin`, which resolves the batch as ONE pathspec set and
+  // aborts ALL of it with exit 128 on the first path inside a submodule — this
+  // repo has dozens, so it silently returned "nothing is ignored" for every
+  // cited path and the collector behaved exactly as it had before. The pure-unit
+  // tests still passed, because the defect lived entirely in the glue.
+  //
+  // So this asserts through the REAL collector: no emitted signal may blame a
+  // path that git itself calls ignored. Count-free, so it can't drift.
+  it('never reports a gitignored (generated) path as missing', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { REPO_ROOT } = await import('../../agent-tools/docs/_repo-paths');
+    const signals = await collectInsightStalenessSignals();
+    const blamed = signals.flatMap((s) =>
+      [...(s.body ?? '').matchAll(/^ {2}- `([^`]+)`$/gm)].map((m) => m[1]),
+    );
+    const ignored = blamed.filter((p) => {
+      try {
+        execFileSync('git', ['-C', REPO_ROOT, 'check-ignore', '-q', '--', p], {
+          stdio: 'ignore',
+        });
+        return true; // exit 0 = git considers it ignored
+      } catch {
+        return false; // exit 1 (not ignored) or 128 (pathspec error) → not our case
+      }
+    });
+    expect(ignored).toEqual([]);
+  });
 });

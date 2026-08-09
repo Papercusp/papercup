@@ -37,8 +37,25 @@ const listPresence = vi.fn(async () => [
   { ownerId: 'su-bee-1' },
   { ownerId: 'su-bee-2' },
 ]);
-vi.mock('../presence', () => ({
+vi.mock('../presence', async () => ({
   listPresence: () => listPresence(),
+  /* The THREE exports the liveness-oracle cross-check inside reportIdleRecipients
+     resolves through this mocked module (liveness-oracle.ts imports
+     probeProcessLiveness + getPresence + PRESENCE_STALE_MS from './presence').
+     They are not used by this file directly, which is exactly why a
+     full-replacement mock strands here: omit any one and the oracle THROWS, and
+     the fail-soft catch's console.warn reds the test via vitest-fail-on-console
+     — a failure that names an assertion having nothing to do with the cause
+     (EI-19948371369670710).
+
+     null = "inconclusive", what the real probe returns for a record with no
+     local-host pid — which is what these synthetic fixtures are. */
+  probeProcessLiveness: () => null,
+  getPresence: async (ownerId: string) =>
+    (await listPresence()).find((r) => r.ownerId === ownerId) ?? null,
+  // Re-sourced from the DEFINING package, not hand-copied, so it cannot drift
+  // from the real value (mirrors deliver-and-wake.test.ts).
+  PRESENCE_STALE_MS: (await import('@papercusp/coordination/presence')).PRESENCE_STALE_MS,
 }));
 // Pin wake-mode to `auto` + stub staging so the unit test never touches live PG /
 // depends on the box's hive-pause state (the EI-275 lesson from deliver-and-wake).

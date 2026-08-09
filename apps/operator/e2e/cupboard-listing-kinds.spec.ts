@@ -16,7 +16,7 @@
  * operator-vite SPA in the e2e Chromium project (the sanctioned browser-E2E
  * framework); the storefront is engine-agnostic.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -96,7 +96,13 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
   test('filters by kind and shows the correct per-kind action', async ({ page }) => {
     await stubCupboard(page);
     const mounted = await cupboardMounts(page);
-    test.skip(!mounted, 'The /cupboard SPA did not mount (stale HMR :3055). Run against the prebuilt operator-vite bundle.');
+    assertMounted(
+      mounted,
+      // EI-19917451944474469: don't assert a specific unverified cause here — a
+      // near-identical "stale HMR" claim on a sibling spec was measured wrong.
+      'The /cupboard SPA did not mount. Check OPERATOR_E2E_REUSE_SERVER/PAPERCUSP_ENABLE_HMR ' +
+        'and inspect the trace/screenshot attached to this failure.',
+    );
 
     // All kinds visible initially: 4 cards, one per kind.
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(4);
@@ -126,7 +132,13 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
   test('per-Hive rollup groups a project\'s facets together (D-005)', async ({ page }) => {
     await stubCupboard(page);
     const mounted = await cupboardMounts(page);
-    test.skip(!mounted, 'The /cupboard SPA did not mount (stale HMR :3055). Run against the prebuilt operator-vite bundle.');
+    assertMounted(
+      mounted,
+      // EI-19917451944474469: don't assert a specific unverified cause here — a
+      // near-identical "stale HMR" claim on a sibling spec was measured wrong.
+      'The /cupboard SPA did not mount. Check OPERATOR_E2E_REUSE_SERVER/PAPERCUSP_ENABLE_HMR ' +
+        'and inspect the trace/screenshot attached to this failure.',
+    );
 
     // Each card carries a Hive chip; the `papercupai/demo` project has two
     // facets (blueprint + pack). Click its chip to enter the rollup.

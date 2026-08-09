@@ -18,6 +18,7 @@ import {
   MAX_TIMEOUT_MS,
   PC_HEAVY_SLOT_ACQUIRED_MARKER,
   __resetBashJobs,
+  detectBufferingLastStage,
   formatJobLogEndMarker,
   getJob,
   killJob,
@@ -209,6 +210,50 @@ describe('terminal log marker (EI-18764990059061608)', () => {
     const logContent = readFileSync(r.logPath, 'utf8');
     expect(logContent).toContain(JOB_LOG_END_MARKER_PREFIX);
     expect(logContent).toContain('status=completed');
+  });
+});
+
+describe('detectBufferingLastStage (EI-19915289191989412)', () => {
+  it('detects tail as the last pipeline stage', () => {
+    expect(detectBufferingLastStage('npx vitest run 2>&1 | tail -45')).toBe('tail');
+  });
+
+  it('detects head, sort, uniq, wc as the last stage', () => {
+    expect(detectBufferingLastStage('cmd | head -20')).toBe('head');
+    expect(detectBufferingLastStage('cmd | sort')).toBe('sort');
+    expect(detectBufferingLastStage('cmd | uniq -c')).toBe('uniq');
+    expect(detectBufferingLastStage('cmd | wc -l')).toBe('wc');
+  });
+
+  it('returns null for a command with no pipe at all', () => {
+    expect(detectBufferingLastStage('npm run build')).toBeNull();
+  });
+
+  it('returns null when the last stage is a streaming filter, not a buffering one', () => {
+    // grep/cat/sed stream line-by-line; only the LAST stage matters for whether
+    // the pipeline as a whole withholds output until exit.
+    expect(detectBufferingLastStage('cmd | tail -45 | grep ERROR')).toBeNull();
+    expect(detectBufferingLastStage('cmd 2>&1 | grep -i fail')).toBeNull();
+  });
+
+  it('looks only at the LAST stage — an early tail followed by a streaming stage is not flagged', () => {
+    expect(detectBufferingLastStage('cmd | tail -f | cat')).toBeNull();
+  });
+
+  it('resolves a full path to its basename', () => {
+    expect(detectBufferingLastStage('cmd | /usr/bin/tail -n 20')).toBe('tail');
+  });
+
+  it('skips a leading inline env assignment on the last stage', () => {
+    expect(detectBufferingLastStage('cmd | LC_ALL=C sort')).toBe('sort');
+  });
+
+  it('does not split on `||` (logical OR), only real pipes', () => {
+    expect(detectBufferingLastStage('cmd1 || cmd2')).toBeNull();
+  });
+
+  it('ignores a `|` inside a quoted argument', () => {
+    expect(detectBufferingLastStage("echo 'a|b' | grep a")).toBeNull();
   });
 });
 

@@ -232,7 +232,7 @@ export const ADMISSION_STAGE_DESIGN_INTENT: Record<AdmissionStage, string> = {
   nearDuplicate:
     'The same fact stored under several ids, collapsed after ranking. Correct dedup; the loss is the feature.',
   budget:
-    'Deliberately aggressive, and PER-PORT — this is the stage that has caused the most false defect reports. `mid-turn` runs ~350 chars against a 16,000-char global default because that port is a per-tool-call interruption that "must be cheap enough to ignore" (mid-turn-context.ts); its low admit rate is the design working (D-073). DO NOT raise MID_TURN_BUDGET_CHARS off an aggregate — it taxes every agent on ~89% of all retrieval volume. Only a port whose budget was NOT deliberately tightened (e.g. turn-start) is a legitimate tuning candidate, and only measured alone.',
+    'Deliberately aggressive, and PER-PORT — this is the stage that has caused the most false defect reports. `mid-turn` runs ~350 chars against a 16,000-char global default because that port is a per-tool-call interruption that "must be cheap enough to ignore" (mid-turn-context.ts); its low admit rate is the design working (D-073). DO NOT raise MID_TURN_BUDGET_CHARS off an aggregate — it taxes every agent on ~89% of all retrieval volume. ⚠ This text used to name turn-start as the port that was NOT deliberately tightened; it IS (4,000 vs the 16,000 default, "D-004 small budget", turn-start-memory.ts) — EVERY port here is tightened, so "untightened" is never the argument (D-077). Reopen a budget only when a stated PREMISE of its decision changed, and A/B it — %budget falls by construction when you raise the budget, so it cannot validate the change; read the admitted rate.',
 };
 
 /**

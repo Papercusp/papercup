@@ -95,6 +95,44 @@ export {
   type TestInfo,
 } from '@playwright/test';
 
+/**
+ * Assert that the shell/dock/SPA a spec depends on actually mounted — use this
+ * instead of `test.skip(!mounted, msg)` for a mount/render precondition.
+ *
+ * WHY THIS EXISTS (EI-19917451944474469). `test.skip()` exits the process with
+ * status 0. That is indistinguishable from a genuine pass to anything reading
+ * only the exit code — CI, a wrapper script, or an agent claiming "e2e green" —
+ * so a spec whose only local invocation path can silently no-op is *worse* than
+ * one that fails outright: it launders a real problem (the shell didn't mount)
+ * into a green checkmark. Same class as the zero-work false-greens already
+ * fixed for `tsc -p .`, `test:affected`, and `test:file -t <no match>`.
+ *
+ * A handful of skips in this directory are genuinely conditional and are NOT
+ * this class — "no superuser token, can't auth /api/admin/*", "no non-legacy
+ * plan with items exists" — those describe a fixture/credential that legitimately
+ * may not exist and `test.skip()` remains correct for them. This helper is only
+ * for "the SPA/dock/shell failed to mount", which is always either a real
+ * regression or a genuine environment misconfiguration — either way, loud.
+ *
+ * Do NOT bake a specific root cause into `context` (e.g. "stale HMR-disabled
+ * :3055 serves a blank #root"). That was the ORIGINAL wording here and it was
+ * measured wrong at least once: HMR was confirmed live (a real `/@vite/client`
+ * module, not the noop stub) while the mount still failed for an undiagnosed
+ * reason. State only what is actually known — the route/slug attempted and
+ * where to look — never a canned diagnosis nobody has re-verified recently.
+ */
+export function assertMounted(mounted: boolean, context: string): asserts mounted {
+  if (mounted) return;
+  throw new Error(
+    `${context}\n\n` +
+      'This is a hard failure, not a skip — a mount failure here used to exit 0 ' +
+      '(a false green; see EI-19917451944474469). If this truly is an unrunnable ' +
+      'local environment, fix the environment (OPERATOR_E2E_REUSE_SERVER pointed at ' +
+      'an HMR-enabled vite, a free :3055, correct route stubs) rather than relying on ' +
+      'this spec to silently no-op past it.',
+  );
+}
+
 /** What a spec may configure, via `test.use({ ... })`. */
 export interface EgressFixtureOptions {
   /**

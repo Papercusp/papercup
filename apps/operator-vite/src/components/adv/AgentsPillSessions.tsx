@@ -30,6 +30,7 @@ import {
   type FacetSelection,
 } from '@papercusp/facets';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
+import { useOpenHudConversation } from './use-open-hud-conversation';
 /* WI-37204 — the SAME pure merge the server's id leg runs, so the instant
    client-side id matches and the server's results are unioned by one rule
    rather than two that can drift. adv-session-search imports only types, so it
@@ -344,6 +345,10 @@ interface InspectTarget {
   /** WI-4009 / 2026-07-11: whether the source can be FORKED (claude-only) —
    *  gates the Fork button, independent of active/inactive. */
   resumeCanFork?: boolean;
+  /** resume-in-gui-button-2026-08-09: the matched session's COORD owner id — the
+   *  key the HUD conversation popup opens on, so the inspector's "Resume in GUI"
+   *  button has a destination. null/absent ⇒ no GUI button (never a dead one). */
+  resumeGuiOwnerId?: string | null;
   /** WI-6816: the OS terminal-window handles for a still-RUNNING matched
    *  session — present ⇒ the inspector shows its "⤢ Focus window" button.
    *  undefined ⇒ no button (an ended session, or a live one with neither
@@ -364,13 +369,32 @@ interface InspectTarget {
  *  — exported for tests. */
 export function searchResultResumeTarget(
   result: Pick<SearchSessionResult, 'active' | 'session'>,
-): { sessionId: string; live: boolean; canFork: boolean } | null {
+): { sessionId: string; live: boolean; canFork: boolean; guiOwnerId: string | null } | null {
   if (result.active) {
     const sessionId = resumableSessionId(result.active);
-    return sessionId ? { sessionId, live: true, canFork: canForkSession(result.active) } : null;
+    return sessionId
+      ? {
+          sessionId,
+          live: true,
+          canFork: canForkSession(result.active),
+          // resume-in-gui-button-2026-08-09: the coord owner id the HUD conversation
+          // popup is keyed by. Read from whichever half of the result is authoritative
+          // — the LIVE roster row here, the ended adv row below — because those are
+          // the two places this surface already gets its identity from. Never both:
+          // an active result's ended row is an OLDER terminal of the same agent.
+          guiOwnerId: result.active.ownerId ?? null,
+        }
+      : null;
   }
   const sessionId = result.session ? resumableSessionId(result.session) : null;
-  return sessionId ? { sessionId, live: false, canFork: result.session ? canForkSession(result.session) : false } : null;
+  return sessionId
+    ? {
+        sessionId,
+        live: false,
+        canFork: result.session ? canForkSession(result.session) : false,
+        guiOwnerId: result.session?.coordOwnerId ?? null,
+      }
+    : null;
 }
 
 /**
@@ -451,6 +475,7 @@ function SearchResultRow({
       resumeSessionId: resumeTarget?.sessionId ?? null,
       resumeLive: resumeTarget?.live ?? false,
       resumeCanFork: resumeTarget?.canFork ?? false,
+      resumeGuiOwnerId: resumeTarget?.guiOwnerId ?? null,
       // WI-6816 — null ⇒ the modal shows no Focus button (never a dead one).
       focusTarget: searchResultFocusTarget(result) ?? undefined,
     });
@@ -694,6 +719,9 @@ export function SessionSearchResults({
   // heavy queries onto the exact condition that caused the failure.
   const [attempt, setAttempt] = useState(0);
   const [inspecting, setInspecting] = useState<InspectTarget | null>(null);
+  // resume-in-gui-button-2026-08-09: where the inspector's "Resume in GUI" button
+  // sends you — the HUD tab with this agent's conversation popup open.
+  const openHudConversation = useOpenHudConversation();
   // Recency window (server-side re-query) + facet selection — both URL-backed
   // like the rest of the popover (agentsQ / agentsRoster / agentsMachine). Plain
   // useQueryState (no parser) to stay compatible with the suite-wide nuqs mocks
@@ -929,12 +957,20 @@ export function SessionSearchResults({
           streamUrl={inspecting.streamUrl}
           highlightTerm={inspecting.highlightTerm}
           resumeTarget={inspecting.resumeSessionId
-            ? { sessionId: inspecting.resumeSessionId, live: Boolean(inspecting.resumeLive), canFork: Boolean(inspecting.resumeCanFork) }
+            ? {
+                sessionId: inspecting.resumeSessionId,
+                live: Boolean(inspecting.resumeLive),
+                canFork: Boolean(inspecting.resumeCanFork),
+                guiOwnerId: inspecting.resumeGuiOwnerId ?? null,
+              }
             : undefined}
           // WI-6816: restores the "⤢ Focus window" button when the match is a
           // still-running, focusable agent — parity with the roster call site
           // (AgentsRunningPill.tsx). undefined for an ended session ⇒ no button.
           focusTarget={inspecting.focusTarget}
+          // resume-in-gui-button-2026-08-09 — parity with the roster call site: a
+          // session reached through the search box gets the same GUI resume.
+          onOpenInGui={openHudConversation}
           open
           onClose={() => setInspecting(null)}
         />
@@ -989,6 +1025,8 @@ export function InactiveSessionsSection({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [inspecting, setInspecting] = useState<EndedSessionRow | null>(null);
+  // resume-in-gui-button-2026-08-09 — same destination as the search-results view.
+  const openHudConversation = useOpenHudConversation();
   const nextBeforeRef = useRef<string | null>(null);
   const fetchInFlightRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1117,8 +1155,19 @@ export function InactiveSessionsSection({
           role={endedDisplayName(inspecting, lex)}
           streamUrl={endedSessionStreamUrl(inspecting) ?? undefined}
           resumeTarget={resumableSessionId(inspecting)
-            ? { sessionId: resumableSessionId(inspecting)!, live: false, canFork: canForkSession(inspecting) }
+            ? {
+                sessionId: resumableSessionId(inspecting)!,
+                live: false,
+                canFork: canForkSession(inspecting),
+                // resume-in-gui-button-2026-08-09: an ENDED row's own coord owner id.
+                // This is the case the GUI button exists for — the session is dead, so
+                // clicking it really does spawn a headless `psu --resume`, which comes
+                // back under this same id (psu's resume is identity-preserving) and is
+                // therefore reachable at this address in the HUD conversation popup.
+                guiOwnerId: inspecting.coordOwnerId ?? null,
+              }
             : undefined}
+          onOpenInGui={openHudConversation}
           open
           onClose={() => setInspecting(null)}
         />

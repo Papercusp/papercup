@@ -22,6 +22,8 @@ import { probeBgHostTicker } from '../service-health';
 import { activeWorkspaceId } from '../workspace-registry';
 import { getOperatorCache } from '../cache/instance';
 import { LOOP_WAKE_SOURCE_PREFIX } from '../agent-tools/coordination/inbox-wake';
+import { withPgRetry } from '../pg-transient-retry';
+import { isTransientPgConnectionError } from '../host-benign-errors';
 import {
   countPlaceableFrontier,
   countQuarantinedFrontier,
@@ -727,10 +729,25 @@ export async function readPotSoakReport(
     contextBurn,
     placeableCount,
     quarantinedCount,
-  ] = await Promise.all([
-    probeBgHostTicker(),
-    readBgHostJournal(windowHours),
-    sql<SpawnAggRow[]>`
+    // EI-19934273886988915: every leg below is a READ-ONLY fan-out (no
+    // mutation ever touches this pool), so retrying the whole batch on a
+    // postgres-js connection-setup failure cannot double-apply anything —
+    // at worst it re-runs a handful of idempotent SELECTs. This is the exact
+    // failure connect-retry.ts documents for `withWorkspace` (EI-9279:
+    // PgBouncer idle-reaps a pooled connection between sessions; the first
+    // query issued against it fails immediately with `CONNECTION_CLOSED`),
+    // but `readPotSoakReport` calls `getOrgPg().sql` directly and never
+    // routes through `withWorkspace`, so it never inherited that protection.
+    // `isTransientPgConnectionError` is deliberately broader than
+    // `withPgRetry`'s CONNECT_TIMEOUT-only default (which exists because
+    // THAT module's callers may be mutating) — see its own doc: "Read-only
+    // call sites MAY pass a broader predicate."
+  ] = await withPgRetry(
+    () =>
+      Promise.all([
+        probeBgHostTicker(),
+        readBgHostJournal(windowHours),
+        sql<SpawnAggRow[]>`
       SELECT child_role,
              count(*) FILTER (WHERE status IN ('done', 'failed', 'cancelled', 'reaped'))::int AS total_terminal,
              count(*) FILTER (WHERE status = 'done')::int AS successful
@@ -827,9 +844,11 @@ export async function readPotSoakReport(
     // The two halves of the frontier: what the pot MAY place, and what the admission
     // gate is withholding from it. Both, or the readiness gate cannot tell an idle
     // pot (nothing to do) from a deadlocked one (work it may never touch).
-    countPlaceableFrontier(sql, workspaceId, surveySlugs),
-    countQuarantinedFrontier(sql, workspaceId, surveySlugs),
-  ]);
+        countPlaceableFrontier(sql, workspaceId, surveySlugs),
+        countQuarantinedFrontier(sql, workspaceId, surveySlugs),
+      ]),
+    { classifier: isTransientPgConnectionError, label: 'readPotSoakReport' },
+  );
 
   const curse = curseRows[0] ?? { placements_seen: 0, infra_curses: 0, recovering_open: 0, stale_recovering: 0 };
   const escalation = escalationRows[0] ?? { open_now: 0, older_open_count: 0, newer_open_count: 0 };

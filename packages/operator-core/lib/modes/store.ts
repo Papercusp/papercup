@@ -31,6 +31,16 @@ export interface ModeRow {
   setBy: string;
   ownerDirected: boolean;
   setAt: string;
+  /**
+   * WHAT this mode is about — mode-defined and optional (migration 767,
+   * goal-mode-2026-08-07 P-016). GOAL stores the `harness_shared.goals.id` the
+   * session is running, which is how goal provenance is stamped from SESSION
+   * CONTEXT rather than agent self-report. Deliberately generic: DRAIN's scope
+   * or GRADE's rubric ref fit the same slot, which is why this is not named
+   * `goalId` and is not a foreign key. A dangling value must degrade to "no
+   * stamp", never to a failed write.
+   */
+  subject: string | null;
 }
 
 export interface SetModeOpts {
@@ -56,6 +66,16 @@ export interface SetModeOpts {
    * channel, not to arbitrary agent peers.
    */
   callerIsOwnerAuthority?: boolean;
+  /**
+   * WHAT this mode is about — see ModeRow.subject. Tri-state on purpose:
+   *   undefined → leave the incumbent's subject untouched (a reason-only
+   *               refresh must not silently erase which goal is running);
+   *   null      → clear it explicitly;
+   *   string    → set it.
+   * Ignored when `enabled: false`, since clearing a mode deletes the row and
+   * the subject cannot outlive the mode it parameterises.
+   */
+  subject?: string | null;
   sql?: Sql;
 }
 
@@ -85,7 +105,34 @@ function toRow(r: Record<string, unknown>): ModeRow {
     setBy: String(r.set_by ?? ''),
     ownerDirected: Boolean(r.owner_directed),
     setAt: r.set_at instanceof Date ? r.set_at.toISOString() : String(r.set_at),
+    subject: r.subject == null || r.subject === '' ? null : String(r.subject),
   };
+}
+
+/**
+ * The subject of one specific mode, or null when the agent is not in it —
+ * the read half of ModeRow.subject.
+ *
+ * Returns null rather than throwing for every "not applicable" case (unknown
+ * mode id, not in the mode, in it with no subject) because every caller is a
+ * STAMPING path: the correct behaviour when provenance cannot be resolved is
+ * to write no stamp, never to fail the creation the stamp was decorating.
+ */
+export async function getModeSubject(
+  workspaceId: string,
+  ownerId: string,
+  modeId: string,
+  sql?: Sql,
+): Promise<string | null> {
+  const def = modeById(modeId);
+  if (!def || !workspaceId || !ownerId) return null;
+  const rows = await pg(sql)`
+    SELECT subject FROM harness_shared.agent_modes
+    WHERE workspace_id = ${workspaceId} AND owner_id = ${ownerId}
+      AND axis_key = ${axisKeyFor(def)} AND mode = ${def.id}
+    LIMIT 1`;
+  const raw = rows.length ? (rows[0] as { subject?: unknown }).subject : null;
+  return raw == null || raw === '' ? null : String(raw);
 }
 
 /** Current modes for one agent. */
@@ -176,21 +223,41 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     return { ok: true, mode: def, switchedFrom: null };
   }
 
+  // `subject` is tri-state (see SetModeOpts): undefined preserves whatever the
+  // incumbent had, so a reason-only refresh cannot silently erase which goal a
+  // session is running. On an auto-switch to a DIFFERENT mode there is no
+  // subject to preserve — the incumbent's belonged to the mode being displaced.
+  const nextSubject =
+    opts.subject !== undefined
+      ? opts.subject
+      : incumbent?.mode === def.id
+        ? incumbent.subject
+        : null;
+
   if (incumbent?.mode === def.id) {
-    // Already in this mode — refresh reason/sticky only if they changed.
-    if (incumbent.ownerDirected === ownerDirected && incumbent.reason === opts.reason) {
+    // Already in this mode — refresh reason/sticky/subject only if they changed.
+    // subject MUST be part of this comparison: without it, re-asserting GOAL
+    // mode with a new goal id would short-circuit as a noop and leave every
+    // subsequent work-item stamped with the PREVIOUS goal — a silently wrong
+    // stamp, which is worse than no stamp at all.
+    if (
+      incumbent.ownerDirected === ownerDirected &&
+      incumbent.reason === opts.reason &&
+      incumbent.subject === nextSubject
+    ) {
       return { ok: true, noop: true, mode: def };
     }
   }
 
   await sql`
     INSERT INTO harness_shared.agent_modes
-      (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at)
+      (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject)
     VALUES (${opts.workspaceId}, ${opts.ownerId}, ${axisKey}, ${def.id}, ${opts.reason},
-            ${opts.setBy}, ${ownerDirected}, now())
+            ${opts.setBy}, ${ownerDirected}, now(), ${nextSubject})
     ON CONFLICT (workspace_id, owner_id, axis_key) DO UPDATE SET
       mode = EXCLUDED.mode, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by,
-      owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at`;
+      owner_directed = EXCLUDED.owner_directed, set_at = EXCLUDED.set_at,
+      subject = EXCLUDED.subject`;
   await audit(sql, {
     workspaceId: opts.workspaceId, ownerId: opts.ownerId, axisKey,
     oldMode: incumbent?.mode ?? null, newMode: def.id, reason: opts.reason, setBy: opts.setBy, ownerDirected,

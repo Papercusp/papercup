@@ -12,7 +12,7 @@
  * needed): the roster returns one Latitude frame and the SSE stream emits a
  * status + one 1×1-JPEG thumb event.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { FRAME_THUMB_TESTSRC, FRAME_THUMB_SMPTE, FRAME_THUMB_RGB } from './__fixtures__/frame-thumbs';
@@ -143,7 +143,13 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
     mkdirSync(ARTIFACT_DIR, { recursive: true });
     await stubRealisticSwarm(page);
     const mounted = await framesTabMounts(page);
-    test.skip(!mounted, 'The /adv shell did not mount the Frames tab (stale dev server).');
+    assertMounted(
+      mounted,
+      // EI-19917451944474469: don't assert a specific unverified cause — a near-identical
+      // "stale dev server" claim on a sibling spec was measured wrong.
+      'The /adv shell did not mount the Frames tab. Check OPERATOR_E2E_REUSE_SERVER/' +
+        'PAPERCUSP_ENABLE_HMR and inspect the trace/screenshot attached to this failure.',
+    );
 
     await expect(page.locator('.pc-frames__tile')).toHaveCount(3, { timeout: 15_000 });
     await expect(page.locator('.pc-frames__chip')).toHaveCount(2);
@@ -218,7 +224,13 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
       });
     });
     const mounted = await framesTabMounts(page);
-    test.skip(!mounted, 'The /adv shell did not mount the Frames tab (stale dev server).');
+    assertMounted(
+      mounted,
+      // EI-19917451944474469: don't assert a specific unverified cause — a near-identical
+      // "stale dev server" claim on a sibling spec was measured wrong.
+      'The /adv shell did not mount the Frames tab. Check OPERATOR_E2E_REUSE_SERVER/' +
+        'PAPERCUSP_ENABLE_HMR and inspect the trace/screenshot attached to this failure.',
+    );
 
     await page.locator('.pc-frames__tile').first().click();
     const panel = page.getByRole('dialog', { name: 'Frame live view' });
@@ -250,7 +262,13 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
       });
     });
     const mounted = await framesTabMounts(page);
-    test.skip(!mounted, 'The /adv shell did not mount the Frames tab (stale dev server).');
+    assertMounted(
+      mounted,
+      // EI-19917451944474469: don't assert a specific unverified cause — a near-identical
+      // "stale dev server" claim on a sibling spec was measured wrong.
+      'The /adv shell did not mount the Frames tab. Check OPERATOR_E2E_REUSE_SERVER/' +
+        'PAPERCUSP_ENABLE_HMR and inspect the trace/screenshot attached to this failure.',
+    );
     await expect(
       page.locator('.pc-frames__state', { hasText: 'No deployed frames' }),
     ).toBeVisible({ timeout: 15_000 });

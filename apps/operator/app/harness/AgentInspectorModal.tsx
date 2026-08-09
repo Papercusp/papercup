@@ -18,6 +18,20 @@ import {
 } from './AgentThinkingStream';
 
 /**
+ * The header's three session-continuation actions. All POST the SAME
+ * `/api/agent-mcp/console/launch` route with the same `resumeSessionId`; they differ
+ * only in what the spawned process is:
+ *   - `resume` — `psu --resume=<id>` in a NEW TERMINAL (resume in place).
+ *   - `fork`   — `psu --resume=<id> --fork` in a new terminal (branch; claude-only).
+ *   - `gui`    — `psu --resume=<id> --headless`, NO terminal, then the caller opens
+ *                the session's conversation in the HUD popup
+ *                (resume-in-gui-button-2026-08-09; claude-only for the same reason
+ *                fork is — see the button's comment).
+ * Each keeps its OWN busy/error state, so one failing never disables the others.
+ */
+type LaunchAction = 'resume' | 'fork' | 'gui';
+
+/**
  * AgentInspectorModal — the pinned, full-height view of a run's live thinking
  * stream. Opened by clicking a running agent's row in the AgentsRoster
  * (operator-vite's AgentsRunningPill → onInspect), the LIVE surface for this
@@ -50,6 +64,7 @@ export default function AgentInspectorModal({
   streamUrl,
   focusTarget,
   resumeTarget,
+  onOpenInGui,
   highlightTerm,
 }: {
   slug: string;
@@ -73,7 +88,7 @@ export default function AgentInspectorModal({
    * WI-3882 (P-012, adv-sessions-live-roster): the session id to fork/resume
    * into a NEW terminal via `POST /api/agent-mcp/console/launch`'s
    * `resumeSessionId` (plan-agent-launch P-023 — `<agent-cli> -r <id>`,
-   * console-launcher.ts). Present ⇒ up to TWO independent buttons, BOTH offered
+   * console-launcher.ts). Present ⇒ up to THREE independent buttons, ALL offered
    * for active AND ended sessions (owner ask 2026-07-11 — retracted the earlier
    * "fork only for active / resume only for inactive" split):
    *   • "Resume in new terminal" (fork:false) — always shown when resumeTarget
@@ -88,12 +103,52 @@ export default function AgentInspectorModal({
    *     (console-launcher.ts) — omp has no fork command — so callers set
    *     `canFork` = "is a claude session" (see `canForkLive` in
    *     AgentsRunningPill.tsx), independent of active/inactive.
+   *   • "Resume in GUI" (headless:true) — resume-in-gui-button-2026-08-09. The same
+   *     in-place resume as the first button, but spawned with NO terminal window
+   *     (`psu --resume=<id> --headless` via spawnHeadless); the caller then opens the
+   *     session's conversation in the HUD popup via `onOpenInGui`. Shown only with
+   *     `canFork` + `guiOwnerId` + an `onOpenInGui` host — see the button itself for
+   *     why claude-only is structural here rather than incidental. A still-LIVE
+   *     source skips the spawn entirely (it is already reachable).
    * Absent ⇒ no buttons (never a dead one). `live` no longer gates which button
-   * shows — it only tags the Resume button's collision tooltip.
+   * shows — it tags the Resume button's collision tooltip, and turns the GUI
+   * button into a pure "open the conversation" with no relaunch.
    * Linux-only for now, same constraint as the primary /console/launch spawn
    * path itself (see native-console.ts) — mirrors focusTarget's posture.
    */
-  resumeTarget?: { sessionId: string; live: boolean; canFork: boolean; label?: string | null } | null;
+  resumeTarget?: {
+    sessionId: string;
+    live: boolean;
+    canFork: boolean;
+    label?: string | null;
+    /**
+     * resume-in-gui-button-2026-08-09: the session's COORD OWNER ID — the key the
+     * HUD conversation popup (`SessionChatModal`, via `hudsession=`) is addressed by.
+     * Supplied by the caller rather than resolved server-side because the caller
+     * already holds it on every call site (a roster row's `ownerId`, an ended row's
+     * `coordOwnerId`) and it is the id the popup will actually key on — one source,
+     * so the button cannot open a popup on a different agent than the one it resumed.
+     *
+     * Safe to hand to a resumed session because `psu --resume` is
+     * IDENTITY-PRESERVING: `resumeEnvFor` reuses `session.coordOwnerId` rather than
+     * minting a fresh SID, so the resumed process re-registers under this same id.
+     * Absent ⇒ no GUI button (never a dead one).
+     */
+    guiOwnerId?: string | null;
+  } | null;
+  /**
+   * resume-in-gui-button-2026-08-09 (owner ask 2026-08-09: "add a 'resume in GUI'
+   * button that does the same thing as resume in terminal but instead of opening in
+   * the terminal it opens it in the HUD -> conversation popup").
+   *
+   * Called with `resumeTarget.guiOwnerId` once the session is resumed (or immediately,
+   * when it was already live). The CALLER owns the navigation — this component lives
+   * in `apps/operator` and the HUD's nuqs params (`tab` / `hudsession`) belong to the
+   * operator-vite /adv shell, which it cannot import (AGENT-ENV § cross-tree alias
+   * trap). Absent ⇒ no GUI button, so a host with nowhere to open a conversation
+   * never renders one.
+   */
+  onOpenInGui?: (ownerId: string) => void;
   /** Search-hit deep-link (agents-pill-inactive-search-2026-07-09 P-005): the
    *  term to highlight throughout the transcript. Pair with a streamUrl that
    *  carries `find`/`anchorTs` — the stream's `anchor` event then names the
@@ -181,13 +236,31 @@ export default function AgentInspectorModal({
   // TASK2 (owner ask 2026-07-11): Resume (fork:false) and Fork (fork:true) are
   // two INDEPENDENT actions now, each offered for active AND ended sessions —
   // so track launch state + the server's failure reason per action.
-  const [launchState, setLaunchState] = useState<{ resume: 'idle' | 'busy' | 'err'; fork: 'idle' | 'busy' | 'err' }>({ resume: 'idle', fork: 'idle' });
+  //
+  // resume-in-gui-button-2026-08-09 adds a THIRD action on the same route + the same
+  // per-action bookkeeping: `gui` — a resume with `headless:true`, i.e. no terminal
+  // window, whose conversation the caller then opens in the HUD.
+  const [launchState, setLaunchState] = useState<Record<LaunchAction, 'idle' | 'busy' | 'err'>>(
+    { resume: 'idle', fork: 'idle', gui: 'idle' },
+  );
   // The server's actual failure reason (WI-3988/WI-3989) per action — shown as
   // that button's tooltip so a failure is diagnosable, not a bare "failed".
-  const [launchErr, setLaunchErr] = useState<{ resume: string | null; fork: string | null }>({ resume: null, fork: null });
-  const launchInNewTerminal = useCallback(async (fork: boolean) => {
+  const [launchErr, setLaunchErr] = useState<Record<LaunchAction, string | null>>(
+    { resume: null, fork: null, gui: null },
+  );
+  const launchResume = useCallback(async (key: LaunchAction) => {
     if (!resumeTarget) return;
-    const key = fork ? 'fork' : 'resume';
+    const guiOwnerId = resumeTarget.guiOwnerId ?? null;
+    if (key === 'gui' && (!guiOwnerId || !onOpenInGui)) return;
+    // A still-LIVE source needs NO spawn to be reachable in the GUI: it is already
+    // running and already injectable, so the conversation popup can talk to it right
+    // now. Resuming it anyway would open a second CLI on the same transcript — the
+    // exact collision the Resume tooltip warns about — and buy nothing. (The terminal
+    // Resume keeps offering that, deliberately: the owner wants the option there.)
+    if (key === 'gui' && resumeTarget.live) {
+      onOpenInGui!(guiOwnerId!);
+      return;
+    }
     setLaunchState((s) => ({ ...s, [key]: 'busy' }));
     setLaunchErr((e) => ({ ...e, [key]: null }));
     try {
@@ -208,13 +281,22 @@ export default function AgentInspectorModal({
           // untouched, claude-only); fork:false → `-r` (resume in place). A
           // resume-in-place of a still-LIVE session opens a second CLI on the
           // same transcript (the collision the Resume tooltip warns about).
-          fork,
-          label: resumeTarget.label ?? `${fork ? 'fork' : 'resume'} · ${displayRole}`,
+          fork: key === 'fork',
+          // resume-in-gui-button-2026-08-09: the ONLY difference between `resume`
+          // and `gui` on the wire. Server-side it swaps `spawnConsole` for
+          // `spawnHeadless` and appends psu's `--headless` — no window, but the
+          // managed pty (and so the injectability the HUD composer needs) stays on.
+          ...(key === 'gui' ? { headless: true } : {}),
+          label: resumeTarget.label ?? `${key} · ${displayRole}`,
         }),
       });
       const data = await res.json().catch(() => null);
       if (res.ok && data?.status === 'ok') {
         setLaunchState((s) => ({ ...s, [key]: 'idle' }));
+        // Hand the conversation over ONLY once the resume actually succeeded —
+        // opening the popup on a launch that failed would show an agent that is not
+        // there and a composer with nobody to wake.
+        if (key === 'gui') onOpenInGui!(guiOwnerId!);
       } else {
         setLaunchErr((e) => ({ ...e, [key]: data?.error ?? `HTTP ${res.status}` }));
         setLaunchState((s) => ({ ...s, [key]: 'err' }));
@@ -223,7 +305,7 @@ export default function AgentInspectorModal({
       setLaunchErr((e2) => ({ ...e2, [key]: e instanceof Error ? e.message : 'request failed' }));
       setLaunchState((s) => ({ ...s, [key]: 'err' }));
     }
-  }, [resumeTarget, displayRole]);
+  }, [resumeTarget, displayRole, onOpenInGui]);
 
   const elapsedMs = Math.max(0, now - (startedAtMs ?? openedAtRef.current));
   const waiting = waitingMessage(status, elapsedMs);
@@ -307,7 +389,7 @@ export default function AgentInspectorModal({
             <button
               type="button"
               data-testid="resume-terminal-btn"
-              onClick={() => launchInNewTerminal(false)}
+              onClick={() => launchResume('resume')}
               disabled={launchState.resume === 'busy'}
               title={launchState.resume === 'err' && launchErr.resume
                 ? launchErr.resume
@@ -334,7 +416,7 @@ export default function AgentInspectorModal({
             <button
               type="button"
               data-testid="fork-terminal-btn"
-              onClick={() => launchInNewTerminal(true)}
+              onClick={() => launchResume('fork')}
               disabled={launchState.fork === 'busy'}
               title={launchState.fork === 'err' && launchErr.fork ? launchErr.fork : undefined}
               style={{
@@ -351,6 +433,48 @@ export default function AgentInspectorModal({
                 : launchState.fork === 'err'
                   ? 'fork failed'
                   : 'Fork in new terminal'}
+            </button>
+          ) : null}
+          {/* resume-in-gui-button-2026-08-09 (owner ask 2026-08-09) — "Resume in GUI",
+              deliberately to the RIGHT of Resume + Fork. Same resume as those, minus
+              the terminal: the session comes back headless (no window) and the caller
+              opens its conversation in the HUD popup, where the composer talks to it.
+
+              Gated on `canFork` — which is literally `agent === 'claude'`
+              (canForkSession) — because the claude branch is the ONLY one whose
+              console resume routes through psu, and psu is what gives the resumed
+              session its coord presence + injectable pty. A headless codex/omp resume
+              would exec a bare CLI nobody could reach, so the server refuses it too;
+              the gate here just avoids offering a button that would 400.
+
+              Also gated on `guiOwnerId` + `onOpenInGui`: with no id to key the popup
+              on, or no host able to open one, the action has no destination — so it
+              is not rendered rather than rendered dead. */}
+          {resumeTarget?.canFork && resumeTarget.guiOwnerId && onOpenInGui ? (
+            <button
+              type="button"
+              data-testid="resume-gui-btn"
+              onClick={() => launchResume('gui')}
+              disabled={launchState.gui === 'busy'}
+              title={launchState.gui === 'err' && launchErr.gui
+                ? launchErr.gui
+                : resumeTarget.live
+                  ? 'This session is still running, so nothing is re-launched — this just opens its conversation in the HUD.'
+                  : 'Resumes the session with no terminal window and opens its conversation in the HUD.'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                font: 'inherit', fontSize: 11, cursor: launchState.gui === 'busy' ? 'default' : 'pointer',
+                color: launchState.gui === 'err' ? TONE.bad : 'var(--fg)',
+                background: 'var(--bg-1)', border: '1px solid var(--border)',
+                borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
+              }}
+            >
+              <span aria-hidden>⧉</span>
+              {launchState.gui === 'busy'
+                ? 'resuming…'
+                : launchState.gui === 'err'
+                  ? 'GUI resume failed'
+                  : 'Resume in GUI'}
             </button>
           ) : null}
           {focusTarget ? (

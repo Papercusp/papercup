@@ -110,11 +110,26 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // and the HUD's mode chips both read. This is the one the owner watched fail
     // to update.
     'advRoster.list',
-    // The session popup's ORDERS panel — it shows what the agent was TOLD,
-    // modes included ("who set them"), so it goes stale on exactly this write.
-    'agentOrders.byOwner',
-    // The dossier half of the same popup, for the same reason.
+    // The dossier half of the session popup — it shows what the agent was TOLD,
+    // modes included, so it goes stale on exactly this write.
     'agentDetail.byOwner',
+    /* NOT `agentOrders.byOwner`, deliberately — this list ORIGINALLY named it and
+       that was a regression in two ways (caught by resolver-backing-table-coverage's
+       stale-PUSH_EXEMPT guard, which is precisely what that guard is for).
+
+       1. REDUNDANT. modes/store.ts already calls notifyAgentOrdersChanged(ownerId)
+          on both write paths (L175, L201 — verified, not assumed), so the Orders
+          panel was ALREADY live on a mode change. The bridge entry bought nothing.
+       2. STRICTLY WORSE. That push is scoped to `{ ownerId }`, so it refetches the
+          ONE panel viewing that agent. A table trigger cannot see the owner, so it
+          full-busts EVERY open Orders panel whenever ANY agent changes posture —
+          exactly the cost WI-6974 removed, re-added by a one-line list entry.
+
+       The PUSH_EXEMPT entry for this pair therefore stays TRUE and stays put. Its
+       own RE-ARM note already called this shot: wire the table here only if the
+       producer push is dropped, OR if the bridge gains an owner-scoped
+       `{ name, scope }` target — scoping is what would make a trigger safe, and
+       there is still no production user of that mechanism. */
   ],
   // saved_prompts backs the Quick Panel prompts outline (savedPrompts.byScope).
   // Trigger attached in migration 598 (quick-panel-saved-prompts-2026-07-13):

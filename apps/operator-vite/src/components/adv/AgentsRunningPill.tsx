@@ -21,6 +21,7 @@ import { LivenessDot } from '@/app/coord/presence-ui';
 import { LIVE_MS, type Liveness } from '@papercusp/operator-core/lib/liveness';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
+import { useOpenHudConversation } from './use-open-hud-conversation';
 import {
   InactiveSessionsSection,
   SessionSearchResults,
@@ -626,6 +627,11 @@ export function AgentsRoster({
   // strip mounted before the first hover and across push-driven roster refreshes.
   const [previewed, setPreviewed] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState<RosterAgent | null>(null);
+  // resume-in-gui-button-2026-08-09: where the inspector's "Resume in GUI" button
+  // sends you — the HUD tab with this agent's conversation popup open (and this
+  // popover closed). The navigation lives vite-side because AgentInspectorModal is in
+  // apps/operator, which cannot import from here.
+  const openHudConversation = useOpenHudConversation();
   // Deep-link focus (?agentsFocus=): pin + preview + scroll — handled ONCE per
   // focus value (push-driven roster refreshes re-run the effect; re-pinning is
   // harmless but re-scrolling would fight the user).
@@ -1098,10 +1104,16 @@ export function AgentsRoster({
                 // (canFork) branches a fresh session and avoids the collision.
                 live: true,
                 canFork: canForkSession(inspecting),
+                // resume-in-gui-button-2026-08-09: the coord owner id the HUD
+                // conversation popup is keyed by. Because `live` is true here, the
+                // GUI button spawns NOTHING — this agent is already running and
+                // already injectable, so it just opens the conversation on it.
+                guiOwnerId: inspecting.ownerId,
                 // No fixed label: each button self-labels (fork · / resume · role)
-                // since the two actions share this resumeTarget.
+                // since the actions share this resumeTarget.
               }
             : undefined}
+          onOpenInGui={openHudConversation}
           open
           onClose={() => setInspecting(null)}
         />

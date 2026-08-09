@@ -26,7 +26,7 @@
  * HarnessesDock.tsx makes the layout engine-agnostic, so the panel renders in
  * both; pixel-identical WebKitGTK capture is out of scope here.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -180,7 +180,7 @@ test.describe('/adv Contributors panel (P-048)', () => {
   test('Add-panel catalog lists both Contributors and Insights (reachability)', async ({ page }) => {
     await stubApis(page);
     const mounted = await dockMounts(page);
-    test.skip(!mounted, 'The /adv shell did not mount the dock (see the sibling test for why).');
+    assertMounted(mounted, 'The /adv shell did not mount the dock.');
     await page.getByRole('button', { name: 'Add panel' }).click();
     const catalog = page.getByRole('dialog', { name: 'Panel catalog' });
     await expect(catalog).toBeVisible();

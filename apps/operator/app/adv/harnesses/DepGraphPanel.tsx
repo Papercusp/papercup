@@ -933,7 +933,8 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
         activeChips={cf.activeChips}
         hasActive={cf.hasActive}
         clearAll={cf.clearAll}
-        promote={PROMOTED_FILTERS}
+        // TEMP DIAGNOSTIC BISECT (WI-37370) — promote={PROMOTED_FILTERS} disabled to confirm
+        // whether the promoted picker-chip Tooltip is the crash trigger. REVERT before done.
       />
       {cf.hasActive && (
         // P-004 — SAY WHAT THE FILTER DID, the way the corpus rule is stated above.

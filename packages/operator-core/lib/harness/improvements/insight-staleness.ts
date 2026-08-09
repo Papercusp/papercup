@@ -298,39 +298,44 @@ async function listTrackedFiles(root: string): Promise<string[] | null> {
 }
 
 /**
+ * Upper bound on how many paths we will ask git about, so a pathological docs
+ * tree can never turn this collector into hundreds of subprocess calls. Only
+ * paths that fail EVERY cheap check reach here, so in practice this is a
+ * handful.
+ */
+const MAX_IGNORE_PROBES = 200;
+
+/**
  * Which of `candidates` match a .gitignore rule at `root`.
  *
  * `git check-ignore` consults the ignore RULES, not the filesystem, so it
  * answers for a path that does not exist — which is the whole point here
  * (EI-16474): the runtime artifacts this guards are absent precisely when the
- * tree is healthy. Fails OPEN (empty set) when git is unavailable, so the
- * caller degrades to the previous tracked-or-on-disk behaviour rather than
- * silently suppressing real staleness.
+ * tree is healthy.
+ *
+ * ⚠ Deliberately ONE PATH PER CALL, not the far cheaper `--stdin` batch. git
+ * resolves the whole batch as a single pathspec set and ABORTS ALL OF IT with
+ * exit 128 on the first path that lives in a submodule ("fatal: Pathspec
+ * 'libs/generic/sync/src/query-fetcher.ts' is in submodule 'libs/generic/sync'").
+ * This repo has dozens of submodules, so the batch form returned zero results
+ * for all 609 cited paths — indistinguishable from "nothing is ignored", which
+ * is precisely the silent no-op this function exists to prevent.
+ *
+ * Exit codes: 0 = ignored, 1 = not ignored, 128 = pathspec error. Anything
+ * other than 0 is treated as NOT ignored, so the collector degrades to the
+ * previous tracked-or-on-disk behaviour rather than suppressing a real signal.
  */
-async function listIgnoredPaths(
-  root: string,
-  candidates: readonly string[],
-): Promise<Set<string>> {
+async function listIgnoredPaths(root: string, candidates: readonly string[]): Promise<Set<string>> {
   const ignored = new Set<string>();
   if (candidates.length === 0) return ignored;
   try {
     const { execFile } = await import('node:child_process');
-    const stdout = await new Promise<string>((resolve) => {
-      const child = execFile(
-        'git',
-        ['-C', root, 'check-ignore', '--stdin'],
-        { maxBuffer: 8 * 1024 * 1024 },
-        (err, so) => {
-          // exit 1 = "none of them are ignored" — a normal answer, not a failure.
-          if (err && (err as { code?: unknown }).code !== 1) return resolve('');
-          resolve(so ?? '');
-        },
-      );
-      child.stdin?.end(`${candidates.join('\n')}\n`);
-    });
-    for (const line of stdout.split('\n')) {
-      const p = line.trim();
-      if (p) ignored.add(p);
+    const isIgnored = (p: string) =>
+      new Promise<boolean>((resolve) => {
+        execFile('git', ['-C', root, 'check-ignore', '-q', '--', p], (err) => resolve(!err));
+      });
+    for (const p of candidates.slice(0, MAX_IGNORE_PROBES)) {
+      if (await isIgnored(p)) ignored.add(p);
     }
   } catch {
     /* git unavailable → no ignore data; existence falls back to tracked/on-disk */
@@ -376,12 +381,17 @@ export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]
   // catches the same class when the artifact is legitimately ABSENT, which is the
   // steady state for a failure-only artifact. "Missing" now means not-tracked AND
   // not-ignored AND not-on-disk = genuinely gone.
+  const existsOnDisk = (p: string) => fs.existsSync(path.join(REPO_ROOT, p));
+  // Ask git ONLY about paths that fail every cheap check — that keeps the
+  // one-call-per-path probe (see listIgnoredPaths) down to a handful.
+  const cheapResolver = makeCitationResolver({ trackedFiles: tracked, existsOnDisk });
   const cited = [...new Set(insights.flatMap((i) => extractCitedPaths(i.raw)))];
-  const ignoredPaths = [...(await listIgnoredPaths(REPO_ROOT, cited))];
+  const unresolved = cited.filter((p) => !cheapResolver(p));
+  const ignoredPaths = [...(await listIgnoredPaths(REPO_ROOT, unresolved))];
   const existsFn = makeCitationResolver({
     trackedFiles: tracked,
     ignoredPaths,
-    existsOnDisk: (p) => fs.existsSync(path.join(REPO_ROOT, p)),
+    existsOnDisk,
   });
   // Class-2 apoptosis guard (EI-510): only available with the tracked-file list; the
   // packaged-build fallback can't enumerate basenames, so apoptosis stays strict there.

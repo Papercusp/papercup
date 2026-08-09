@@ -65,8 +65,11 @@
 import type postgres from 'postgres';
 import {
   minePatternsFromEvents,
+  segmentBursts,
+  containsRun,
   type SequenceEvent,
   type MinedPattern,
+  type Burst,
 } from '@papercusp/sequence-patterns';
 import {
   computeGraduationStandings,
@@ -390,30 +393,53 @@ export async function graduateToolSequences(
     opts.dispatcherTools ?? DEFAULT_DISPATCHER_TOOLS,
   );
 
-  // Partition into consecutive windows, oldest first, and mine each alone.
+  // ── Ranking comes from the FULL span; windows supply ONLY persistence ──────
+  //
+  // Mining each window independently under the caller's floors looks like the
+  // obvious design and is wrong in a way that inverts the result. The floors
+  // (minOccurrences, minAgents) are sized for the whole span, so inside a single
+  // day only HIGH-FREQUENCY traffic can clear them — and the highest-frequency
+  // traffic is exactly the ambient telemetry this module exists to reject. A
+  // genuine dance performed six times a week clears a weekly floor and no daily
+  // one, so it scores a streak of zero.
+  //
+  // Measured before the fix (7×24h over papercusp, 539k rows): ZERO patterns
+  // graduated, and the top of the held list was `activity:report →
+  // locks:check_command → coord:glance` across 90 agents — ambient promoted by
+  // its own ubiquity while every real finding sat at streak 0.
+  //
+  // So: rank once over the whole span (where the floors mean what the caller
+  // intended), then ask each window only the cheap yes/no question "did this
+  // exact run occur here?".
+  const fullSpan = mineEvents(events, opts);
   const windowMs = windowHours * 3600 * 1000;
-  const perWindow: Map<string, MinedPattern>[] = [];
+
+  const windowBursts: Burst[][] = [];
   for (let w = 0; w < windows; w++) {
     const from = startMs + w * windowMs;
     const to = from + windowMs;
-    const slice = events.filter((e) => e.at >= from && e.at < to);
-    const mined = mineEvents(slice, opts);
-    perWindow.push(new Map(mined.patterns.map((p) => [sequenceId(p.symbols), p])));
+    windowBursts.push(
+      segmentBursts(events.filter((e) => e.at >= from && e.at < to), {
+        gapMs: (opts.gapSec ?? 120) * 1000,
+        minBurstLength: 2,
+      }),
+    );
   }
 
-  // Every pattern seen anywhere in the span becomes one evidence CLASS, with one
-  // pass per window: present ⇒ a clean pass, absent ⇒ recurred (streak resets).
-  const allIds = new Set<string>();
-  for (const w of perWindow) for (const id of w.keys()) allIds.add(id);
+  const presentIn = (bursts: Burst[], symbols: string[]): boolean =>
+    bursts.some((b) => containsRun(b.symbols, symbols));
 
+  // One evidence CLASS per full-span candidate, one pass per window: present ⇒
+  // a clean 'verified' pass, absent ⇒ 'recurred' (which resets the streak).
   const evidence: GraduationEvidenceItem[] = [];
-  for (const id of allIds) {
-    for (let w = 0; w < perWindow.length; w++) {
+  for (const p of fullSpan.patterns) {
+    const id = sequenceId(p.symbols);
+    for (let w = 0; w < windows; w++) {
       evidence.push({
         id: `${id}@w${w}`,
         findingClass: id,
         resolvedAtMs: startMs + (w + 1) * windowMs,
-        lifecycle: perWindow[w]!.has(id) ? 'verified' : 'recurred',
+        lifecycle: presentIn(windowBursts[w]!, p.symbols) ? 'verified' : 'recurred',
         autoDispatched: true,
         hasEvidence: true,
       });
@@ -433,17 +459,13 @@ export async function graduateToolSequences(
   );
   const streakOf = new Map(standings.map((s) => [s.findingClass, s]));
 
-  // The CURRENT picture comes from the latest window; older windows supply only
-  // the evidence that the pattern is not a one-afternoon artifact.
-  const latest = perWindow[perWindow.length - 1] ?? new Map<string, MinedPattern>();
-  const latestMined = mineEvents(
-    events.filter((e) => e.at >= startMs + (windows - 1) * windowMs),
-    opts,
-  );
-
-  const annotated: PersistentToolSequenceCandidate[] = [...latest.entries()]
-    .map(([id, p]) => {
-      const s = streakOf.get(id);
+  // Rank by the full-span STRENGTH, not by streak: persistence is a GATE (you
+  // graduate or you wait), never a ranking. Sorting on streak first would put
+  // the most ubiquitous traffic on top for the same reason the per-window floors
+  // did — and that is the failure this restructure removed.
+  const annotated: PersistentToolSequenceCandidate[] = fullSpan.patterns
+    .map((p) => {
+      const s = streakOf.get(sequenceId(p.symbols));
       const windowStreak = s?.cleanStreak ?? 0;
       return {
         ...toCandidate(p),
@@ -453,7 +475,7 @@ export async function graduateToolSequences(
         graduated: windowStreak >= minStreak,
       };
     })
-    .sort((a, b) => b.windowStreak - a.windowStreak || b.strength - a.strength);
+    .sort((a, b) => b.strength - a.strength);
 
   const graduated = annotated.filter((c) => c.graduated).slice(0, opts.limit ?? 25);
 
@@ -465,11 +487,11 @@ export async function graduateToolSequences(
       droppedNonAgent: 0,
       collapsedInnerCalls: collapsed,
       decisions: events.length,
-      agents: latestMined.stats.cohorts,
-      bursts: latestMined.stats.bursts,
-      distinctTools: latestMined.stats.distinctSymbols,
-      candidatesConsidered: latestMined.stats.candidatesConsidered,
-      rejected: latestMined.stats.rejected,
+      agents: fullSpan.stats.cohorts,
+      bursts: fullSpan.stats.bursts,
+      distinctTools: fullSpan.stats.distinctSymbols,
+      candidatesConsidered: fullSpan.stats.candidatesConsidered,
+      rejected: fullSpan.stats.rejected,
       truncated: rows.length >= maxRows,
       windows,
       windowHours,

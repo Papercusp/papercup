@@ -593,3 +593,64 @@ describe('claimNextIssueWorkItem honors a caller/spec `states` override (WI-6453
     expect(claimed?.id).toBe('EI-STATE-4');
   });
 });
+
+// WI-37356: explainIssueClaimFloors used to SELECT/check only 11 of the ~13 real claim
+// floors — it never computed ok_no_blocker (depsBlockedExclusionSql), ok_cooldown, or
+// ok_origin (isIssueLocallyClaimableWhereSql) at all, so an item excluded ONLY by one of
+// those three reported `admissible:true / refusedBy:null` — a false "should be claimable"
+// verdict from the one tool meant to explain per-id claim-floor refusals. These pin that
+// each of the 3 newly-wired floors is now actually detected and reported.
+describe('explainIssueClaimFloors reports the 3 previously-missing floors (WI-37356)', () => {
+  it('a row with a PRESENT non-terminal blocker reports refusedBy:"blocked-dep" (was admissible:true)', async () => {
+    await seedIssue('EI-FLOOR-BLOCKED', { state: 'open', createdTs: 100 });
+    await seedFeature('EI-FLOOR-BLOCKER', { status: 'open' });
+    await blockEdge('EI-FLOOR-BLOCKED', 'EI-FLOOR-BLOCKER', 'issue', 'feature');
+    const [attr] = await wi.explainIssueClaimFloors(H, ['EI-FLOOR-BLOCKED']);
+    expect(attr.admissible).toBe(false);
+    expect(attr.refusedBy).toBe('blocked-dep');
+  });
+
+  it('a row released by THIS caller within the cooldown window reports refusedBy:"cooldown" (was admissible:true)', async () => {
+    await seedIssue('EI-FLOOR-COOLDOWN', { state: 'open', createdTs: 100 });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET last_released_by = 'cooldown-caller', last_released_at = now()
+       WHERE feature_id = 'EI-FLOOR-COOLDOWN'`;
+    const [attr] = await wi.explainIssueClaimFloors(H, ['EI-FLOOR-COOLDOWN'], {
+      assignee: 'cooldown-caller',
+    });
+    expect(attr.admissible).toBe(false);
+    expect(attr.refusedBy).toBe('cooldown');
+  });
+
+  it('a row NOT released by THIS caller is unaffected by the cooldown floor (admissible)', async () => {
+    await seedIssue('EI-FLOOR-COOLDOWN-OTHER', { state: 'open', createdTs: 100 });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET last_released_by = 'someone-else', last_released_at = now()
+       WHERE feature_id = 'EI-FLOOR-COOLDOWN-OTHER'`;
+    const [attr] = await wi.explainIssueClaimFloors(H, ['EI-FLOOR-COOLDOWN-OTHER'], {
+      assignee: 'cooldown-caller',
+    });
+    expect(attr.admissible).toBe(true);
+    expect(attr.refusedBy).toBeNull();
+  });
+
+  it('a true-remote-origin row (no own-node author key) reports refusedBy:"origin" (was admissible:true)', async () => {
+    await seedIssue('EI-FLOOR-ORIGIN', { state: 'open', createdTs: 100 });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET origin = 'remote', author_pubkey = 'a-true-peer-key-not-ours'
+       WHERE feature_id = 'EI-FLOOR-ORIGIN'`;
+    const [attr] = await wi.explainIssueClaimFloors(H, ['EI-FLOOR-ORIGIN']);
+    expect(attr.admissible).toBe(false);
+    expect(attr.refusedBy).toBe('origin');
+  });
+
+  it('an ordinary local, unblocked, no-cooldown row is still admissible:true (no false positive introduced)', async () => {
+    await seedIssue('EI-FLOOR-OK', { state: 'open', createdTs: 100 });
+    const [attr] = await wi.explainIssueClaimFloors(H, ['EI-FLOOR-OK']);
+    expect(attr.admissible).toBe(true);
+    expect(attr.refusedBy).toBeNull();
+  });
+});

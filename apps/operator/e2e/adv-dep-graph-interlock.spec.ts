@@ -51,11 +51,15 @@
  * which means the import + any reload it triggered has already settled.
  *
  * NB: like the sibling adv specs this drives the operator-vite SPA in the e2e
- * Chromium project. A stale HMR-disabled :3055 serves a blank #root — the shell
- * never mounts and the spec SKIPS (it does not falsely fail). Run against an
- * HMR-enabled Vite (the config's own webServer boots one) to actually exercise it.
+ * Chromium project. If the shell fails to mount (any cause — a stale/misconfigured
+ * reused server, a broken route stub, a real regression) the spec FAILS LOUDLY
+ * (assertMounted in ./_egress.ts) rather than skipping — a mount failure here used
+ * to `test.skip()`, which exits 0 and reads as a pass to anything checking only the
+ * exit code. See EI-19917451944474469. Run against an HMR-enabled Vite (the config's
+ * own webServer boots one, or point OPERATOR_E2E_REUSE_SERVER at one that carries
+ * PAPERCUSP_ENABLE_HMR=1) to actually exercise it.
  */
-import { test, expect, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
@@ -183,10 +187,18 @@ const DEP_EDGES = [
   },
 ];
 
-const SKIP_MSG =
-  'The /adv shell did not mount the harnesses dock. Run against an HMR-enabled ' +
-  'operator-vite (the config webServer boots one with PAPERCUSP_ENABLE_HMR=1) — a ' +
-  "stale HMR-disabled :3055 serves a blank #root ('/@vite/client' noop stub).";
+// EI-19917451944474469: this used to assert a SPECIFIC cause ("stale HMR-disabled
+// :3055 serves a blank #root") — that claim was measured WRONG (a live check found
+// HMR genuinely on: a real ~210KB '/@vite/client' module, not the noop stub, while
+// the dock still failed to mount). Don't restate a diagnosis nobody has re-verified;
+// name only what is actually known.
+const MOUNT_FAIL_MSG =
+  `The /adv shell did not mount the harnesses dock at ${baseURL}/adv?tab=harnesses&slug=${SLUG}. ` +
+  'Check: is OPERATOR_E2E_REUSE_SERVER pointed at a server that actually carries ' +
+  'PAPERCUSP_ENABLE_HMR=1 + PAPERCUSP_FAKE_LLM=1 (the standing dev:operator systemd ' +
+  'service does NOT)? Did the route stubs in stubApis() match the app\'s real ' +
+  'request shapes? Re-run with --headed or inspect the trace/screenshot attached to ' +
+  'this failure before assuming the old HMR hypothesis — it has already been wrong once.';
 
 async function stubApis(page: Page) {
   await page.route('**/api/harness/projects/lite', async (route) => {
@@ -293,7 +305,7 @@ test.describe('/adv dependency graph — selection interlock with the Detail pan
   test('a graph node click writes ?sel and the Detail pane follows it', async ({ page }) => {
     await stubApis(page);
     const mounted = await dockMounts(page);
-    test.skip(!mounted, SKIP_MSG);
+    assertMounted(mounted, MOUNT_FAIL_MSG);
 
     const graph = page.locator('.pc-depgraph').first();
     const detail = page.locator('.pc-adv-detail').first();

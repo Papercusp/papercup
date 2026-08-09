@@ -175,6 +175,83 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
       }),
     ).rejects.toThrow(/only claude sessions support --fork-session/);
   });
+
+  // resume-in-gui-button-2026-08-09 — "Resume in GUI": the same in-place resume, minus
+  // the terminal window, because the human will talk to it in the HUD conversation
+  // popup instead. `--headless` is the load-bearing part: it is what keeps psu's
+  // managed pty alive under non-TTY stdio, i.e. what keeps the resumed session
+  // INJECTABLE for the popup's `coord:send { wake:'required' }` composer. A windowless
+  // resume without it parks after one turn and nothing can reach it.
+  it('claude resume with headless appends --headless to the psu resume', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      headless: true,
+      skipMcpJson: true,
+    });
+    expect(envelope.greetingCmd).toContain(
+      'exec psu --resume=3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8 --headless',
+    );
+    // Still a resume IN PLACE — the GUI button must never quietly branch.
+    expect(envelope.greetingCmd).not.toContain('--fork');
+  });
+
+  // The headed path must stay BYTE-IDENTICAL — this is the control for the case
+  // above. Without it, an unconditional `--headless` would pass the assertion there
+  // and silently window-less every ordinary "Resume in new terminal" too.
+  it('claude resume WITHOUT headless emits no --headless (the terminal path is unchanged)', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      skipMcpJson: true,
+    });
+    expect(envelope.greetingCmd).not.toContain('--headless');
+  });
+
+  it('claude fork + headless keeps BOTH flags (they are orthogonal)', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      fork: true,
+      headless: true,
+      skipMcpJson: true,
+    });
+    expect(envelope.greetingCmd).toContain(
+      'exec psu --resume=3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8 --fork --headless',
+    );
+  });
+
+  // Refused for the same structural reason fork is, one step further: the codex/omp
+  // branch execs the BARE interactive CLI rather than routing through psu, so it
+  // registers no coord presence and hosts no injectable pty. Headless, that is a
+  // process no GUI conversation could ever reach — so fail loudly instead of
+  // spawning something invisible and unreachable.
+  it('omp resume in GUI is refused (bare CLI ⇒ no presence, no injectable pty)', async () => {
+    process.env.AGENT_CMD = 'omp';
+    delete process.env.AGENT_BACKEND;
+    await expect(
+      buildConsoleEnvelope({
+        workspaceId: 'default',
+        slug: null,
+        operatorBaseUrl: 'http://localhost:3070',
+        resumeSessionId: 'abc-123',
+        headless: true,
+        skipMcpJson: true,
+      }),
+    ).rejects.toThrow(/only claude sessions resume through psu/);
+  });
 });
 
 describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () => {

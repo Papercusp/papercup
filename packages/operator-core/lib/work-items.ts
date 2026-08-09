@@ -5101,7 +5101,7 @@ export async function explainIssueClaimFloors(
            (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})               AS ok_rig,
            (${depsBlockedExclusionSql(sql)})                                      AS ok_no_blocker,
            (${
-             cooldown > 0 && assignee
+             cooldown > 0
                ? sql`(wi.last_released_by IS NULL
                    OR wi.last_released_by <> ${assignee}
                    OR wi.last_released_at IS NULL

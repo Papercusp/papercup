@@ -16,7 +16,13 @@
  * coord:resolve/ack/send, so acking a coord message and setting a posture mode
  * from the same admin session are attributed identically.
  *
- * POST /api/admin/mode/set { mode, reason, enabled?, agent?, ownerDirected? } → mode:set
+ * POST /api/admin/mode/set { mode, reason, enabled?, instructions?, agent?, ownerDirected? } → mode:set
+ *
+ * The body is forwarded WHOLESALE to the tool, so `instructions` (P-005: drain
+ * scope that must survive compaction) needed no change here — it is listed
+ * because this comment is the route's field contract, and a reader checking
+ * whether the browser can reach a mode:set argument should not have to infer it
+ * from the absence of a filter.
  */
 
 import { handleHttpToolRequest } from '@papercusp/agent-mcp';

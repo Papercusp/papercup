@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { getJob, readJobOutput, scratchDir } from './bash-jobs';
+import { detectBufferingLastStage, getJob, readJobOutput, scratchDir } from './bash-jobs';
 import { getTaskByBashJobId } from '../../task-manager/store';
 import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
@@ -249,6 +249,22 @@ export default defineTool({
         const ledgerVerdict = diagnoseFromLedger(ledgerRow);
 
         if (ledgerVerdict.kind === 'confirmed_alive') {
+          // EI-19915289191989412: the "log tail will keep growing" promise below is
+          // FALSE for a command whose last pipeline stage is a buffering filter
+          // (`| tail -45`, `| head`, …) — that stage flushes nothing until the
+          // whole pipeline exits, so `total_bytes_written` can legitimately sit at
+          // 0 for the job's entire (confirmed-alive) run. `argv` is
+          // `['bash', '-o', 'pipefail', '-c', <the raw command>]` (see
+          // startBackground) — the raw command is always its LAST element.
+          const ledgerArgv = ledgerRow?.argv;
+          const rawCommand = ledgerArgv && ledgerArgv.length > 0 ? ledgerArgv[ledgerArgv.length - 1] : undefined;
+          const bufferingStage = rawCommand ? detectBufferingLastStage(rawCommand) : null;
+          const growthAdvice = bufferingStage
+            ? `Keep polling capability:bash_output — but this job's last pipeline stage pipes through ` +
+              `\`${bufferingStage}\`, which BUFFERS its output, so \`total_bytes_written: 0\` here is NOT ` +
+              'evidence the job is stuck or produced nothing: expect the log to stay empty until it exits, ' +
+              'then poll for the "[capability:bash] JOB END" marker rather than for growing output'
+            : 'Keep polling capability:bash_output (the log tail below will keep growing as it runs)';
           return {
             content: [
               {
@@ -261,9 +277,8 @@ export default defineTool({
                     `${ledgerVerdict.scopeUnit ? `, systemd scope ${ledgerVerdict.scopeUnit}` : ''}) is CONFIRMED ` +
                     'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
                     'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
-                    'SECOND concurrent job and double the load. Keep polling capability:bash_output (the log tail ' +
-                    'below will keep growing as it runs), or read log_path directly. To stop it, use processes:kill ' +
-                    'with the taskId/scopeUnit below — never a bare kill.',
+                    `SECOND concurrent job and double the load. ${growthAdvice}, or read log_path directly. To stop ` +
+                    'it, use processes:kill with the taskId/scopeUnit below — never a bare kill.',
                   pid: ledgerVerdict.pid,
                   scope_unit: ledgerVerdict.scopeUnit,
                   task_id: ledgerVerdict.taskId,

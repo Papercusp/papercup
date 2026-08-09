@@ -648,6 +648,9 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
         sparse: true,
         openStore,
         findHolderImpl: noHolder,
+        // One look: this asserts the REFUSAL MESSAGE, not the recycle-waiting policy
+        // (covered in live-head-snapshot-client.test.ts). Production waits out a recycle.
+        holderWaitMs: 0,
         backfillImpl: (async () => {
           ran.push('backfill');
           return { enqueued: 0, dropped: 0 };
@@ -701,6 +704,9 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
         openStore,
         ...live,
         findHolderImpl: noHolder,
+        // One look: this asserts the REFUSAL MESSAGE, not the recycle-waiting policy
+        // (covered in live-head-snapshot-client.test.ts). Production waits out a recycle.
+        holderWaitMs: 0,
       }).then(
         () => new Error('expected a refusal, got a resolved cut'),
         (e: unknown) => e,

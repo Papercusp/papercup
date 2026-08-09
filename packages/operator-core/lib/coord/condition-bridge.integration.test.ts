@@ -497,51 +497,61 @@ describe('the two-writes/one-read asymmetry (column vs link)', () => {
   // `skipped`/refused instead of the stand-down below. It failing at that point is
   // the guard working — it is the only test that exercises the un-resolved path at
   // all, and deleting it would restore the blind spot this whole exercise was about.
-  it('WITHOUT a workspaceId a member harness is NOT normalized, so the next tick cannot adopt (the live defect)', async () => {
+  it('WITHOUT a workspaceId the acquire is REFUSED, not degraded — nothing is minted at all (D-001, INVERTED)', async () => {
     const key = 'green-stall:member';
     const MEMBER = 'member';
 
-    // Note the absent workspaceId — production's shape, not the happy path's.
+    // Note the absent workspaceId — production's shape, and precisely the shape that
+    // minted 29,645 junk rows on `green-stall:oddsmith` (45.3% of the table).
     const first = await bridge.acquireConditionOwner(key, {
       title: 'stalled',
       summary: 'evidence',
       harness: MEMBER,
       severity: 'critical' as const,
     });
-    expect(first.created).toBe(true);
 
-    // The next tick asks identically and CANNOT adopt: the read looks under the raw
-    // member slug while the row was stored under the pot home.
+    // INVERTED per D-001(b), as the preamble above required. This test previously
+    // asserted `first.created === true` and a 2-row table — a mint, a lost race, and a
+    // dropped row. The fix's whole point is that none of that happens now.
+    expect(first.created).toBe(false);
+    expect(first.skipped).toBe('unresolved-harness');
+
+    // ⚠ `no-workspace` SPECIFICALLY, and this assertion is the one that matters most in
+    // this file. The obvious implementation — delegate to `resolveWorkItemPot` and treat
+    // an empty result as unresolved — is INERT here: that function opens with
+    // `if (!ws || ws === '*') return args.rawSlug?.trim() || null` (pot-membership.ts:125),
+    // so with no workspace it returns the raw slug 'member', non-null and
+    // indistinguishable from a real normalization. An emptiness-based guard would report
+    // ok and change nothing. Asserting the REASON, not merely the refusal, is what pins
+    // the workspace precondition in place; asserting only `skipped` would still pass if
+    // someone rewrote the guard as the inert version.
+    expect(first.unresolvedHarness?.reason).toBe('no-workspace');
+    expect(first.unresolvedHarness?.requested).toBe(MEMBER);
+
+    // The original defect was worse than the churn: `workItem: null` with no `lostRaceTo`
+    // read as a positive "nobody owns this condition" at the exact moment the unique
+    // index proved somebody did. `workItem` is still null here — but `skipped` is now
+    // set, and that is what makes it "could not determine" rather than "unowned".
+    expect(first.workItem).toBeNull();
+    expect(first.skipped).toBeDefined();
+
+    // The next tick asks identically: same refusal, still silent, no accumulation.
     const second = await bridge.acquireConditionOwner(key, {
       title: 'stalled',
       summary: 'evidence',
       harness: MEMBER,
       severity: 'critical' as const,
     });
+    expect(second.skipped).toBe('unresolved-harness');
     expect(second.created).toBe(false);
-    // It stood down rather than adopting — the signature of the churn loop: it had to
-    // mint a row first and then discard it.
     expect(second.duplicateLeftOpen).toBeUndefined();
 
-    // ⚠ MEASURED, and WORSE than the churn itself: the stand-down reports
-    // `workItem: null` and no `lostRaceTo` — i.e. "nobody owns this condition" — at the
-    // exact moment the unique index proved somebody does. This test was originally
-    // written asserting `lostRaceTo ?? workItem === first.workItem` and FAILED with
-    // `expected null`, which is how the behavior was found.
-    //
-    // The header of `acquireConditionOwner` step 3 anticipates precisely this hazard
-    // and guards it by resolving the winner from the COLUMN before the link. That guard
-    // cannot help here: BOTH reads are scoped by the same wrong harness, so both miss.
-    // So on the un-normalized path the bridge does not merely waste a row — it hands
-    // its caller a positive "unowned" answer for an owned condition.
-    expect(second.workItem).toBeNull();
-    expect(second.lostRaceTo).toBeUndefined();
-
-    // Exactly one row still HOLDS the key (the index did its job) but a second row
-    // was created and dropped to get there — the waste this defect produced.
-    expect(await holdersOf(key)).toEqual([first.workItem]);
+    // THE POINT, stated as data: no rows, no keys held. Previously this pair of ticks
+    // left 2 rows (one kept, one dropped) and one held key — repeated every tick,
+    // forever, which is how the count reached 29,645.
+    expect(await holdersOf(key)).toEqual([]);
     const total = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.work_items`;
-    expect(total[0].n).toBe(2);
+    expect(total[0].n).toBe(0);
   });
 
   it('a key held by an item with NO link is now ADOPTED — the column is the enforcement point', async () => {

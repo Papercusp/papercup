@@ -140,6 +140,24 @@ vi.mock('../presence', async () => ({
   // value (it is 10 * 60 * 1000, not the 90s one might assume).
   PRESENCE_STALE_MS: (await import('@papercusp/coordination/presence')).PRESENCE_STALE_MS,
   listPresence: () => listPresence(),
+  /* Consumed by the liveness-oracle cross-check that reportIdleRecipients runs
+     (inbox-wake.ts) — NOT by this file directly, which is why a full-replacement
+     mock strands the moment that path grows a new import from '../presence'.
+     Omitting it made the oracle THROW, and the fail-soft catch's console.warn
+     then failed the test via vitest-fail-on-console: four cases red for a
+     missing mock export rather than anything they assert (EI-19948371369670710).
+
+     `null` is FAITHFUL, not a fudge: the real probe returns null ("inconclusive")
+     for any record without a pid on the local host, and these fixtures are
+     synthetic presence rows with no real pid — so null is what the real function
+     would answer here. Returning true/false would invent liveness the oracle
+     then acts on. */
+  probeProcessLiveness: () => null,
+  /* DERIVED from the same fixture list rather than a second hand-written one, so
+     the single-record getter can never disagree with listPresence() about who
+     exists — a divergence the oracle would read as real state. */
+  getPresence: async (ownerId: string) =>
+    (await listPresence()).find((r) => r.ownerId === ownerId) ?? null,
 }));
 vi.mock('../../../events/await/handle', () => ({
   captureWakeHandleForOwner: () => captureWakeHandleForOwner(),

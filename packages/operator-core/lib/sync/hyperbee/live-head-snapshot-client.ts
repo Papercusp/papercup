@@ -312,6 +312,12 @@ export async function waitForLiveOperatorHoldingHive(inp: {
       }
       return found;
     }
+    // No operator-shaped process on this box AT ALL is a real absence, not a recycle —
+    // nothing is coming back, so waiting the full budget would just delay a correct
+    // refusal by ten minutes (a CI box, or a cut run somewhere the operator never runs).
+    // A sibling that was PROBED but did not answer is the opposite case: that is what a
+    // restarting holder looks like, so those are worth waiting out.
+    if (found.probed.length === 0) return found;
     if (now() - startedAt + delayMs > budgetMs) {
       if (attempts > 1) {
         inp.warn?.(

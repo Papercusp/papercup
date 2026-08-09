@@ -370,11 +370,12 @@ describe('retrying across a holder recycle', () => {
     expect(passes).toBe(1);
   });
 
-  it('a REAL absence still terminates — waiting cannot become hanging', async () => {
+  it('a holder that never comes back still terminates — waiting cannot become hanging', async () => {
+    // Siblings exist but none ever boots: worth waiting out, but strictly bounded.
     const findHolderImpl = (async () => ({
       kind: 'no-holder' as const,
-      answered: [],
-      probed: [],
+      answered: [3070],
+      probed: [3070, 3271],
       staleBuild: [],
     })) as never;
     const c = clock();
@@ -387,6 +388,21 @@ describe('retrying across a holder recycle', () => {
     });
     expect(out.kind).toBe('no-holder');
     expect(c.slept).toEqual([15_000, 15_000, 15_000, 15_000]);
+  });
+
+  it('a box with NO operator at all refuses instantly — it is an absence, not a recycle', async () => {
+    // Waiting 10 minutes to say "there is no operator here" would be a regression in the
+    // one case where the one-shot answer was always right (a CI box, a dev checkout).
+    const findHolderImpl = (async () => ({
+      kind: 'no-holder' as const,
+      answered: [],
+      probed: [],
+      staleBuild: [],
+    })) as never;
+    const c = clock();
+    const out = await waitForLiveOperatorHoldingHive({ ...base, findHolderImpl, ...c });
+    expect(out.kind).toBe('no-holder');
+    expect(c.slept).toEqual([]);
   });
 
   it('the retry budget outlasts a real bg-host recycle', async () => {

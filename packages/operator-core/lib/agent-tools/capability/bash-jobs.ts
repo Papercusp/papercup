@@ -334,6 +334,77 @@ export function formatJobLogEndMarker(status: BashStatus, exitCode: number | nul
   );
 }
 
+/**
+ * EI-19915289191989412 — commands whose LAST pipeline stage is a buffering
+ * filter (`tail`, `head`, `sort`, `uniq`, `wc`, …) do not flush any output
+ * until the WHOLE pipeline exits: `some-long-command | tail -45` is a natural
+ * idiom for bounding what you'll read back, but it means a background job's
+ * spill log — and `capability:bash_output`'s `total_bytes_written` — stays at
+ * exactly 0 for the job's entire runtime, then fills all at once at exit. A
+ * caller polling that job sees a well-formed, confident-looking EMPTY result
+ * that is indistinguishable from "never started" / "produced nothing", which
+ * invites re-running (doubling the load) rather than just waiting for the
+ * `JOB_LOG_END_MARKER_PREFIX` line.
+ *
+ * This is a best-effort HEURISTIC on the raw shell text, not a real parser —
+ * false negatives (an unrecognized buffering stage) are fine, the only thing
+ * that matters is not producing a false ALARM on a command that streams fine.
+ */
+const BUFFERING_LAST_STAGE_COMMANDS = new Set(['tail', 'head', 'sort', 'uniq', 'wc', 'column', 'less', 'more']);
+
+/** Split a shell command on top-level `|` (pipeline stages), respecting single-
+ *  and double-quoted spans and leaving `||` (logical OR) untouched. Not a real
+ *  shell parser — good enough to find the LAST pipeline stage of a typical
+ *  `cmd 2>&1 | tail -45` idiom. */
+function splitTopLevelPipes(command: string): string[] {
+  const parts: string[] = [];
+  let cur = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      cur += ch;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      cur += ch;
+      continue;
+    }
+    if (!inSingle && !inDouble && ch === '|') {
+      if (command[i + 1] === '|') {
+        cur += '||';
+        i++;
+        continue;
+      }
+      parts.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  parts.push(cur);
+  return parts;
+}
+
+/**
+ * Returns the buffering command name (`'tail'`, `'head'`, …) if `command`'s
+ * LAST top-level pipeline stage is one of the known output-buffering filters,
+ * else `null`. A command with no pipe at all always returns `null`.
+ */
+export function detectBufferingLastStage(command: string): string | null {
+  const stages = splitTopLevelPipes(command);
+  if (stages.length < 2) return null;
+  const last = stages[stages.length - 1].trim();
+  // Skip any leading inline env assignments (`FOO=bar tail -45`).
+  const m = /^(?:[A-Za-z_][\w]*=\S+\s+)*(\S+)/.exec(last);
+  if (!m) return null;
+  const base = m[1].split('/').pop() ?? m[1];
+  return BUFFERING_LAST_STAGE_COMMANDS.has(base) ? base : null;
+}
+
 export interface RunOptions {
   command: string;
   cwd: string;

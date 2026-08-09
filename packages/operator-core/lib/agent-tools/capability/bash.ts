@@ -24,6 +24,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
+  detectBufferingLastStage,
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   runForeground,
@@ -111,6 +112,19 @@ export default defineTool({
 
     if (args.run_in_background) {
       const job = startBackground({ command: args.command, cwd, stateDir: ctx.stateDir, sandboxEnabled, ...(desktopEnv ? { env: desktopEnv } : {}) }, timeoutMs);
+      // EI-19915289191989412: a command whose LAST pipeline stage is a buffering
+      // filter (`| tail -45`, `| head`, `| sort`, …) does not flush anything to
+      // the job's log until the WHOLE pipeline exits — the log stays at exactly
+      // 0 bytes for the entire run, then fills all at once at exit. Say so NOW,
+      // at launch, rather than leaving the reader to discover it from a string of
+      // empty bash_output polls that look identical to "never started".
+      const bufferingStage = detectBufferingLastStage(args.command);
+      const bufferingNote = bufferingStage
+        ? ` NOTE: this command's last pipeline stage pipes through \`${bufferingStage}\`, which BUFFERS its ` +
+          `output — the log will most likely stay at 0 bytes for the whole run and fill all at once at exit. ` +
+          `An empty bash_output read here is NOT evidence the job hasn't started or produced nothing — poll for ` +
+          `the "[capability:bash] JOB END" marker rather than for growing output.`
+        : '';
       return {
         content: [
           {
@@ -130,7 +144,8 @@ export default defineTool({
                 `Background shell started. Read output: capability:bash_output { bash_id: "${job.id}" }. ` +
                 `Stop: capability:bash_kill { bash_id: "${job.id}" }. ` +
                 `It is terminated at ${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'its deadline'} — ` +
-                `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if it needs longer.`,
+                `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if it needs longer.` +
+                bufferingNote,
             }),
           },
         ],

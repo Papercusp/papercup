@@ -465,6 +465,12 @@ export async function openSourceStoreForCut(inp: {
   readonly headSnapshotImpl?: typeof requestLiveOperatorHeadSnapshot;
   /** P-019 seam — the cheap, side-effect-free "who holds this hive?" discovery. */
   readonly findHolderImpl?: typeof findLiveOperatorHoldingHive;
+  /**
+   * How long the pre-flight gate waits for a holder to appear before refusing. Defaults
+   * to the client's budget, which spans a full bg-host recycle. 0 = one look (tests, and
+   * anywhere a fast refusal beats a correct one).
+   */
+  readonly holderWaitMs?: number;
   readonly warn?: (msg: string) => void;
 }): Promise<{ store: Corestore; sourceWritable: boolean }> {
   const warn = inp.warn ?? ((m: string) => console.warn(m));
@@ -525,6 +531,7 @@ export async function openSourceStoreForCut(inp: {
         workspaceId: inp.workspaceId!,
         hive: inp.hive,
         findHolderImpl: inp.findHolderImpl,
+        retryBudgetMs: inp.holderWaitMs,
         warn,
       });
       if (found.kind !== 'holder') {
@@ -645,7 +652,7 @@ export async function openSourceStoreForCut(inp: {
       // the natural next move is "just retry the cut" — which re-runs the ~17-min drain to
       // arrive at the same place. If we already waited out the retry budget, the holder is
       // not merely recycling and remedy (a) is NOT the answer.
-      const tried = outcome.kind !== 'produced' && outcome.retry
+      const tried = outcome.retry
         ? ` (after ${outcome.retry.attempts} attempts over ~${Math.round(outcome.retry.waitedMs / 1000)}s of waiting — ` +
           `so this is NOT a transient recycle; retrying the cut unchanged will re-run the drain and fail again)`
         : '';
