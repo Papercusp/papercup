@@ -17,7 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { buildHudBoard, HUD_DEFAULT_THRESHOLDS, type HudRosterEntry } from './hud-board-model';
-import { buildGoalBoard, type HudGoalInput } from './hud-entity-board';
+import { buildGoalBoard, GOAL_START_CARD_ID, type HudGoalInput } from './hud-entity-board';
 
 const NOW = Date.parse('2026-08-09T12:00:00.000Z');
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
@@ -133,7 +133,12 @@ describe('P-020 — a goal session renders on exactly one board', () => {
     );
     const goals = buildGoalBoard([], { nowMs: NOW });
 
-    expect(goalIds(goals)).toHaveLength(0);
+    // PRECONDITION: no goal CARD exists for this agent. The "+ Start a goal"
+    // action card (P-015 D-008) is always on the board and is not a goal, so it
+    // is excluded rather than asserted away — this line must keep failing if a
+    // real goal card ever appears here, which is what makes the next one mean
+    // something.
+    expect(goalIds(goals).filter((id) => id !== GOAL_START_CARD_ID)).toHaveLength(0);
     // Hiding it here would put it on NO board at all.
     expect(sessionOwners(sessions)).toContain(GOAL_AGENT);
   });

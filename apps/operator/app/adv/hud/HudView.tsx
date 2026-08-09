@@ -787,7 +787,12 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       if (!target) return;
       if (target.kind === 'work-item') void setOpenItemId(target.id);
       else if (target.kind === 'plan') void setOpenPlanSlug(target.slug);
-      else void setOpenAskId(target.askId);
+      else if (target.kind === 'ask') void setOpenAskId(target.askId);
+      /* `start-goal` is the Goals board's own card and never reaches this
+         handler — but it is named rather than swept into a trailing `else`,
+         because the trailing else is what silently broke when the union grew:
+         it read `target.askId` off a member that has none. A named branch turns
+         the NEXT addition into a compile error instead of a runtime undefined. */
     },
     [setOpenItemId, setOpenPlanSlug, setOpenAskId],
   );

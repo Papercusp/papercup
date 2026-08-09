@@ -42,7 +42,18 @@ export default function GoalComposer({
   /** The REAL workspace id — same non-null discipline as GoalDetailPanel: an
    *  absent workspace would file the goal against the 'default' tenant. */
   workspaceId: string;
-  harnessSlug: string;
+  /**
+   * The harness the goal is filed against — NULLABLE on purpose, and handled
+   * rather than defaulted.
+   *
+   * `useResolvedHarnessSlug()` genuinely returns null (a deep link with no
+   * `slug`, a fresh profile with no localStorage), and a goal is filed against
+   * an `install_slug`. Substituting a fallback would file it — and spawn its
+   * agent — against a harness the owner never chose, which is the WI-5125
+   * shape: a healthy-looking success pointed at the wrong place. So a null
+   * harness renders as a refusal with the fix, not as a form that misfiles.
+   */
+  harnessSlug: string | null;
   onClose: () => void;
   /** Called with the new goal id once the agent is actually running. */
   onStarted: (goalId: string) => void;
@@ -65,7 +76,7 @@ export default function GoalComposer({
   }, [open]);
 
   const submit = async () => {
-    if (busy) return;
+    if (busy || !harnessSlug) return;
     setFailure(null);
     const validated = validateGoalDraft(draft);
     if (!validated.ok) {
