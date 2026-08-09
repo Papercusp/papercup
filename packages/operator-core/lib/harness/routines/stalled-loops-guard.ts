@@ -354,6 +354,7 @@ export async function sweepStalledLoops(
       disarmedWhileReachable: [],
       repairedWakeStarved: [],
       vetoedByWithheldFire: [],
+      disarmedUnaddressableHarness: [],
       dryRun,
     };
 
@@ -718,10 +719,43 @@ export async function sweepStalledLoops(
     }
 
     stalledOwners.push(ownerId);
+
+    // EI-19966210024116714: name WHY, when the why is knowable.
+    //
+    // A loop whose routine sits on THIS workspace while its owner's own session resolves to a
+    // DIFFERENT one is armed against a harness that session cannot address — every harness-scoped
+    // call it makes comes back `harness_forbidden`. That agent is neither wedged nor a corpse: it
+    // is being woken, repeatedly, to do work it is structurally unable to reach.
+    //
+    // Disarming is still right (more fires will not help), so this changes no disposition. What it
+    // changes is the RECORD. The generic reason below states the symptom and loses the cause, and
+    // every remedy the other surfaces print — "re-arm with loop:arm" — silently re-creates the
+    // identical hole, because re-arming does not change the session's scope. `loop:arm`'s own
+    // `harness_workspace_mismatch` guard now refuses to CREATE a strand; nothing repairs an
+    // existing one, so the disarm reason is the only place a human learns what happened.
+    //
+    // Pushed BEFORE the dryRun bail, like `stalledOwners` itself: this is a pure lookup in a map
+    // already in hand, so a dry run can report the population honestly.
+    //
+    // Fails OPEN on an owner absent from the map (an unknown scope, or a failed resolve): only a
+    // CONFIRMED, different workspace qualifies. The module's governing asymmetry is that a wrong
+    // repair self-corrects and a wrong disarm is permanent — and while this branch flips no
+    // disposition, a wrong ACCUSATION in a permanent record carries its own cost.
+    const ownerWs = ownerWorkspaces.get(ownerId);
+    const unaddressableHarness = typeof ownerWs === 'string' && ownerWs !== ws;
+    if (unaddressableHarness) disarmedUnaddressableHarness.push(ownerId);
+
     if (dryRun) continue;
     const reason =
       `turns-stalled: ${status.fireCount} fire(s), last fired ${status.lastFiredAt ?? 'never'}, ` +
-      `last turn ${status.lastTurnAt ?? 'never'}`;
+      `last turn ${status.lastTurnAt ?? 'never'}` +
+      (unaddressableHarness
+        ? ` — UNADDRESSABLE HARNESS: this loop's routine is on workspace '${ws}', but the owner's ` +
+          `own session scope resolves to '${ownerWs}', so every harness-scoped call it makes ` +
+          `returns harness_forbidden. It was being woken to do work it cannot reach, which is why ` +
+          `no turn followed. Re-arming alone will NOT fix this — the session must be relaunched ` +
+          `with the correct workspace scope (EI-19966210024116714).`
+        : '');
     await autoPause(sql, routineId, `stalled-loops-guard (WI-6639): ${reason}`);
 
     // EI-19899301656065801: ask whether the owner we just permanently disarmed is STILL THERE.
@@ -901,6 +935,7 @@ export async function sweepStalledLoops(
     disarmedWhileReachable,
     repairedWakeStarved,
     vetoedByWithheldFire,
+    disarmedUnaddressableHarness,
     dryRun,
   };
 }
