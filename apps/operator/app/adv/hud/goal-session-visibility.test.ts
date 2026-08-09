@@ -73,9 +73,14 @@ function sessionOwners(board: ReturnType<typeof buildHudBoard>): string[] {
   return board.columns.flatMap((c) => c.sessions.map((s) => s.ownerId));
 }
 
-/** Every card ref rendered on the goals board, across all columns. */
-function goalRefs(board: ReturnType<typeof buildGoalBoard>): string[] {
-  return board.columns.flatMap((c) => c.cards.map((card) => card.ref));
+/** Every goal id rendered on the goals board, across all columns.
+ *  `id` and NOT `ref`: `ref` is the short monospace display form (the goal id
+ *  truncated for the card's handle slot), while `id` is the stable identity a
+ *  click resolves against — which is the thing that has to match the session's
+ *  goal subject. Asserting on `ref` passes for a truncation and fails for a
+ *  real id, which is backwards. */
+function goalIds(board: ReturnType<typeof buildGoalBoard>): string[] {
+  return board.columns.flatMap((c) => c.cards.map((card) => card.id));
 }
 
 const ORDINARY = 'su-aaaa1111-2222-3333-4444-555566667777';
@@ -105,7 +110,7 @@ describe('P-020 — a goal session renders on exactly one board', () => {
     // ...and that goal card genuinely exists, which is the half a sessions-only
     // test cannot see. Without this the filter above would pass while having
     // made the session disappear entirely.
-    expect(goalRefs(goals)).toContain(GOAL_ID);
+    expect(goalIds(goals)).toContain(GOAL_ID);
 
     expect(sessions.total).toBe(1);
     expect(goals.total).toBe(1);
@@ -128,7 +133,7 @@ describe('P-020 — a goal session renders on exactly one board', () => {
     );
     const goals = buildGoalBoard([], { nowMs: NOW });
 
-    expect(goalRefs(goals)).toHaveLength(0);
+    expect(goalIds(goals)).toHaveLength(0);
     // Hiding it here would put it on NO board at all.
     expect(sessionOwners(sessions)).toContain(GOAL_AGENT);
   });

@@ -20,6 +20,16 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: h.identity })
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'], QUEEN_PLACEMENT_ROLES: ['operator'] }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
 vi.mock('../../fleet/operator-spawn', () => ({ spawnAgentInHarness: h.spawnAgentInHarness }));
+// TIER ENABLED for this suite (retire-mug-kettle-su-only-2026-08-09 P-010 /
+// D-017): cup:spawn now opens with a retirement gate, and the flag's polarity is
+// INVERTED (OFF = retired, the delivered state). With no answer here the real
+// flag store resolves it OFF and every case below would assert the refusal
+// instead of the spawn behaviour it is about. The gate itself is covered by
+// ../mug-kettle-tool-gate.test.ts. Other flags keep their real defaults.
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getFlag: async (key: string) => key === 'papercusp-mug-kettle-system',
+}));
 vi.mock('../../work-items', () => ({
   claimWorkItem: h.claimWorkItem,
   releaseWorkItem: h.releaseWorkItem,

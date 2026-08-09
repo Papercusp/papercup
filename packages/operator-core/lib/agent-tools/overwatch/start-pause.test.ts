@@ -105,7 +105,17 @@ describe('kettle:start', () => {
   });
 
   it('flag OFF → persists the bit + cadence (pre-armed) but does NOT wake, and warns', async () => {
-    getFlag.mockResolvedValue(false);
+    // "flag OFF" here means FLAGS.OVERWATCH, not the mug/kettle RETIREMENT flag
+    // (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017). They are different
+    // questions — OVERWATCH gates whether the supervisor runs, MUG_KETTLE_SYSTEM
+    // gates whether the tier exists at all — and the retirement flag's polarity
+    // is INVERTED, so a blanket `false` retires the tier and kettle:start
+    // refuses before reaching the pre-arm behaviour under test here.
+    // This distinction is exactly why kettle:start needed its own gate rather
+    // than leaning on the OVERWATCH read: the branch this test pins PERSISTS
+    // started + cadence while OVERWATCH is off, so a retired Kettle would sit
+    // pre-armed to launch the moment anyone flipped OVERWATCH on.
+    getFlag.mockImplementation(async (key: string) => key === 'papercusp-mug-kettle-system');
     const out = await call(overwatchStart as never, { harness: 'my-hive' });
     expect(out.ok).toBe(true);
     expect(out.started).toBe(true);

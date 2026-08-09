@@ -24,6 +24,17 @@ vi.mock('../../overwatch/control-state', () => ({
   getOverwatchCadenceSec: (...a: unknown[]) => getOverwatchCadenceSec(...a),
 }));
 
+// TIER ENABLED for this suite (retire-mug-kettle-su-only-2026-08-09 P-010 /
+// D-017): kettle:declare-wake now opens with a retirement gate, and the flag's
+// polarity is INVERTED (OFF = retired, the delivered state), so with no answer
+// here every case below would assert the refusal instead of the wake-arming
+// behaviour it is about. The gate itself is covered by
+// ../mug-kettle-tool-gate.test.ts.
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getFlag: async (key: string) => key === 'papercusp-mug-kettle-system',
+}));
+
 vi.mock('../../pot/wake', () => ({
   resolvePotHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
     explicit?.trim() || ctxSlug?.trim() || null,

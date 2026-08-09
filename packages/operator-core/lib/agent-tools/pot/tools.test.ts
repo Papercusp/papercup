@@ -78,6 +78,11 @@ const getPotStarted = vi.fn(async () => true);
 const recentWatchdogFires = vi.fn(async () => 0);
 vi.mock('../../pot/started', () => ({
   getPotStarted: (...a: unknown[]) => getPotStarted(...(a as [])),
+  // TIER ENABLED (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017): pot:wake
+  // now opens with a retirement gate, so without this the wake-floor cases below
+  // would assert the refusal instead of the debounce behaviour they are about.
+  // The gate itself is covered by ../mug-kettle-tool-gate.test.ts.
+  mugKettleSystemEnabled: async () => true,
 }));
 vi.mock('../../pot/watchdog', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
