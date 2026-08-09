@@ -24,6 +24,7 @@ import {
   headlessLogPath,
   wrapHeadlessSigtermDiagnostic,
   buildHeadlessSpawnCommand,
+  buildConsoleScopedSpawnCommand,
   _resetTerminalCacheForTests,
   pickLinuxTerminal,
   resolveTerminalPreference,
