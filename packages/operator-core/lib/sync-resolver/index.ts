@@ -3491,6 +3491,70 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return Array.isArray(r?.runs) ? r.runs : [];
     },
   },
+  /**
+   * The plan-lock banner's read (plan semantic-search-fingerprint-coverage-2026-08-03,
+   * P-025 step 2). Replaces the 30s `window.setInterval` poll of
+   * `/api/admin/locks/queue` that `usePlanLock` used to run.
+   *
+   * Args are a SINGLE scalar `{ path }`, matching `notifyPlanLockChange`'s emit
+   * exactly (notify-lock-change.ts / D-038): the bus dedupe key is
+   * `name|args|dataHash`, so one scalar gives every plan its own dedupe bucket
+   * rather than one shared bucket for every lock in the fleet.
+   *
+   * Returns `[]` or a ONE-row array — `resolve` must return an array, and the
+   * banner shows at most one holder. Timestamps are serialized to ISO here so
+   * the row is byte-identical to what `/api/admin/locks/queue` returned, which
+   * is what the client's `ActiveLock` type (plans-api.ts) already expects.
+   *
+   * ⚠ `coordinationDomain` is `lockCoordinationDomain()` — the SAME derivation
+   * the HTTP route reached through `readIdentity(ctx)`. It resolves to the repo
+   * root of whichever process evaluates it, so it is only correct while this
+   * resolver runs in the operator, exactly as the route did. Deliberate PARITY
+   * with the surface being replaced, not an endorsement: if the banner is ever
+   * served from a different checkout it was already wrong before this change.
+   *
+   * ⚠ No `holder_context` enrichment (locks:queue P-027/D-055 does it). That
+   * decoration needs a tool ctx a sync resolver does not have, and the banner
+   * neither reads nor renders it — adding it would be scope the client discards.
+   */
+  'planLock.byPath': {
+    // The lock rows live in the SEPARATE `papercusp_su` database, not the
+    // operator DB every other entry here reads — so no PG trigger can reach
+    // them and no entry in table-to-query-names.ts is possible. The push comes
+    // from the WRITERS instead (notifyPlanLockChange, wired at file-lock-guard
+    // acquire+release, release.ts and acquire_granular.ts). Declared + exempted
+    // rather than omitted, so the gap is documented instead of merely absent —
+    // see PUSH_EXEMPT in __tests__/resolver-backing-table-coverage.test.ts.
+    backingTables: ['papercusp_su.agent_file_locks'],
+    argsSchema: z.object({ path: z.string().min(1) }),
+    resolve: async (args) => {
+      const { path } = args as { path: string };
+      const { ensureBootstrap, getTxPool, readQueue } = await import(
+        '../agent-tools/locks/su-lock-store'
+      );
+      const { lockCoordinationDomain } = await import(
+        '../agent-tools/locks/coordination-domain'
+      );
+      await ensureBootstrap();
+      const result = await readQueue(getTxPool(), {
+        coordinationDomain: lockCoordinationDomain(),
+        paths: [path],
+      });
+      // readQueue already filters `path = ANY(paths)`; the find() keeps the
+      // exact-match semantics the client had (`active_locks.find(l => l.path
+      // === lockPath)`) so an overlap-style change upstream cannot widen this.
+      const hit = result.active_locks.find((l) => l.path === path);
+      return hit
+        ? [
+            {
+              ...hit,
+              acquired_ts: hit.acquired_ts.toISOString(),
+              expires_ts: hit.expires_ts.toISOString(),
+            },
+          ]
+        : [];
+    },
+  },
   'plans.lint': {
     // PRECOMPUTED (P-004). Linting the whole plan corpus measured 13.8s inline.
     // The precomputed snapshot covers the nullary call — the only shape any UI

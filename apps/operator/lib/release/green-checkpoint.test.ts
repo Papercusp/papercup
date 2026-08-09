@@ -4705,6 +4705,7 @@ describe("post-suite legs get their own heap (WI-37510: fork cap OOM'd lint:tsc,
       // The env EXACTLY as the gate builds it: the bg-host's 128 GiB stripped and
       // pinned to the per-fork cap. This is the input that caused the outage.
       const suiteEnv: NodeJS.ProcessEnv = {
+        NODE_ENV: 'test',
         NODE_OPTIONS: sanitizeForkNodeOptions('--expose-gc --max-old-space-size=131072'),
       };
       // Precondition: prove the fixture reproduces the BAD input, so a passing

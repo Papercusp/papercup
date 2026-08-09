@@ -65,6 +65,19 @@ import { OPERATOR_STATE_SYNC_NAMES } from '../../operator-state-pg';
  * from a bug.
  */
 const PUSH_EXEMPT: Record<string, string> = {
+  // The plan-lock banner (semantic-search-fingerprint-coverage-2026-08-03 P-025).
+  // Structurally exempt rather than merely unwired: `agent_file_locks` lives in the
+  // SEPARATE `papercusp_su` database, so it is not reachable by a trigger on the
+  // operator DB and cannot appear in table-to-query-names.ts at all — unlike every
+  // other table in this file. The push comes from the WRITERS instead
+  // (notifyPlanLockChange, wired at file-lock-guard acquire+release, release.ts and
+  // acquire_granular.ts), each emitting with a short per-call dedupeWindowMs because
+  // the bus's 90s window is FIRST-WINS and would otherwise DROP the release (D-042).
+  // RE-ARM: if the lock store ever moves into the operator database, or the bridge
+  // gains cross-database targets — then wire the table normally and delete this.
+  'planLock.byPath :: papercusp_su.agent_file_locks':
+    'lock rows live in a different database (papercusp_su), unreachable by an operator-DB trigger; the lock writers push explicitly via notifyPlanLockChange.',
+
   // Continuous heartbeat gauge: shared_presence is rewritten by every agent's keepalive, so a
   // per-row notify is the notify-storm anti-pattern (/internal/docs/performance) for a panel whose
   // entire content is "who is alive right now" — polling IS the semantics here.
