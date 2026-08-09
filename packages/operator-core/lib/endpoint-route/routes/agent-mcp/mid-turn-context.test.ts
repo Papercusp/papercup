@@ -598,6 +598,58 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
       // Known-but-omitted, NOT unknown: the alarm must not read this as drift.
       expect(miss).toBe('no-signal');
     });
+
+    /**
+     * codex's goal extension (0.146.0) postdates the rollout census in the
+     * vocabulary's provenance block, so these three were REAL drift — and
+     * `get_goal` is the one the drift alarm actually caught in production:
+     * two live rows in context_injection_coverage on 2026-08-09,
+     * client=codex port=mid-turn outcome='unknown-tool' tool='get_goal'.
+     */
+    it("get_goal reads as expected quiet, not drift — it takes NO arguments", () => {
+      const { query, miss } = deriveQueryDetailed('get_goal', {});
+      expect(query).toBe('');
+      // The measured production symptom was 'unknown-tool'. This is the fix.
+      expect(miss).toBe('no-signal');
+    });
+
+    it("update_goal derives nothing — its only argument is a status enum", () => {
+      // Measured from the codex binary: `struct UpdateGoalArgs with 1 element`,
+      // admissible values "complete" / "blocked". Embedding "complete" as a
+      // recall query matches on a token carrying no topic.
+      for (const status of ['complete', 'blocked']) {
+        const { query, miss } = deriveQueryDetailed('update_goal', { status });
+        expect(query).toBe('');
+        expect(miss).toBe('no-signal');
+      }
+    });
+
+    it('create_goal DOES derive — `objective` is the agent stating its own aim', () => {
+      const { query, miss } = deriveQueryDetailed('create_goal', {
+        objective: 'make codex mid-turn injection emit a recall row',
+        token_budget: 50_000,
+      });
+      expect(query).toBe('make codex mid-turn injection emit a recall row');
+      expect(miss).toBeNull();
+      // token_budget is a number and must never reach the embedder.
+      expect(query).not.toContain('50000');
+    });
+
+    /**
+     * CONTROL for the omission asymmetry documented on the vocabulary. A tool
+     * mapped to a field it does NOT have derives '' and classifies
+     * 'no-signal' — indistinguishable from a deliberate omission — so a
+     * guessed mapping silently converts a working drift alarm into permanent
+     * quiet. This asserts we did not do that to update_goal: it must stay
+     * empty-by-decision rather than pick up a plausible-looking text field.
+     */
+    it('update_goal is empty BY DECISION, not by a wrong field name', () => {
+      expect(TOOL_QUERY_VOCABULARY.update_goal?.fields).toEqual([]);
+      // Had we mapped it to a guessed free-text field, these would derive.
+      for (const guessed of ['goal', 'description', 'objective', 'plan']) {
+        expect(deriveQuery('update_goal', { [guessed]: 'some text' })).toBe('');
+      }
+    });
   });
 
   describe('batch derive reports both miss kinds', () => {
@@ -634,6 +686,7 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
         ['exec_command', { cmd: 'ls -la' }],
         ['view_image', { path: '/tmp/a.png' }],
         ['update_plan', { plan: 'step one' }],
+        ['create_goal', { objective: 'ship the thing' }],
         ['bash', { command: 'ls' }],
         ['read', { path: '/a.ts' }],
         ['grep', { pattern: 'x' }],

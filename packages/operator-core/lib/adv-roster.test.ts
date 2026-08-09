@@ -889,11 +889,13 @@ describe('mergeRosterEntries — activity + loop-armed (WI-1488)', () => {
       new Map(),
       new Set(),
       new Map([
-        ['a', [{ mode: 'auto', ownerDirected: true, since: iso(NOW - 60_000) }]],
+        // `subject` is null for AUTO — it is the GOAL axis that populates it
+        // (the goal id this session runs, D-007/P-020).
+        ['a', [{ mode: 'auto', ownerDirected: true, since: iso(NOW - 60_000), subject: null }]],
       ]),
     );
     expect(e.modes).toEqual([
-      { mode: 'auto', ownerDirected: true, since: iso(NOW - 60_000) },
+      { mode: 'auto', ownerDirected: true, since: iso(NOW - 60_000), subject: null },
     ]);
     expect(none.modes).toEqual([]);
   });

@@ -206,6 +206,26 @@ type ToolQuerySpec = {
  *     rollouts in ~/.codex/sessions: exec_command 3034 (cmd/workdir/
  *     justification), write_stdin 539, apply_patch 336 (freeform), exec 145
  *     (freeform), view_image 47 (path), wait 24, update_plan 3.
+ *   • codex GOAL EXTENSION (`get_goal` / `update_goal` / `create_goal`) —
+ *     measured 2026-08-09 from the SHIPPED BINARY, not from rollouts, because
+ *     rollouts cannot supply them: they postdate the census above and appear
+ *     ZERO times in all 61. `get_goal` was nonetheless observed live twice
+ *     (context_injection_coverage, client=codex port=mid-turn
+ *     outcome='unknown-tool'), which is what surfaced the drift.
+ *     Source: codex-cli 0.146.0, `codex-linux-x64/.../bin/codex`, serde
+ *     struct/field strings + the tool-parameter descriptions —
+ *     `struct UpdateGoalArgs with 1 element` (`status`, and the binary's own
+ *     prose is exclusively `update_goal` with status "complete"/"blocked");
+ *     `struct CreateGoalRequest with 2 elements` (`objective` — "Required. The
+ *     concrete objective to start pursuing" — and `token_budget`); `get_goal`
+ *     documented as a pure read ("Get the current goal for this thread...").
+ *     ⚠ Read the BINARY, not a rollout, when adding a codex tool: a rollout
+ *     shows only what a model happened to call, whereas the binary IS the
+ *     schema. Grepping rollouts for these names DOES hit two files, but both
+ *     hits are inside `custom_tool_call_output` TEXT (a script that printed
+ *     codex's tool list) — not calls. That false positive is what made an
+ *     earlier draft of this entry map `update_goal` to a nonexistent free-text
+ *     field; see the omissions below.
  *   • omp — tool-call records in ~/.omp: read 1771, grep 443, find 402,
  *     bash 181 (command), edit 168, search 116, write 68, ast_grep 14, glob 4;
  *     field names confirmed against the shipped schemas in
@@ -220,6 +240,17 @@ type ToolQuerySpec = {
  *     signal. `detectPossibleSecrets` guards the text table but not the embed.
  *   • codex `wait` / `list_mcp_resources`, omp `yield` / `submit_result` /
  *     `report_finding` / `irc`: no investigation signal to carry.
+ *   • codex `get_goal`: a pure read that takes NO arguments at all.
+ *   • codex `update_goal`: its ONLY argument is `status`, a closed enum whose
+ *     admissible values are "complete" and "blocked". Embedding the word
+ *     "complete" as a recall query is retrieval NOISE, not signal — it matches
+ *     on a token that carries no topic. Mapping it to `status` would be worse
+ *     than leaving it here, and mapping it to a free-text field it does not
+ *     have would be worse still: a wrong field name derives '' and classifies
+ *     'no-signal', which is INDISTINGUISHABLE from this deliberate omission —
+ *     i.e. a guessed mapping silently converts a working drift alarm into
+ *     permanent quiet. That asymmetry is why an unmeasured tool must be left
+ *     unmapped (loudly 'unknown-tool') rather than mapped on a guess.
  * These are known tools with no fields, so they classify as 'no-signal' rather
  * than 'unknown-tool' — the alarm must not read a deliberate omission as drift.
  */
@@ -241,6 +272,12 @@ export const TOOL_QUERY_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
   wait: { fields: [] },
   list_mcp_resources: { fields: [] },
   write_stdin: { fields: [] }, // credential-shaped; see DELIBERATE OMISSIONS
+  // ── codex goal extension (0.146.0; postdates the rollout census above) ──
+  // `objective` is the agent's own statement of what it is trying to achieve —
+  // the same class of signal as claude's `description` and `update_plan.plan`.
+  create_goal: { fields: ['objective'] },
+  get_goal: { fields: [] }, // no arguments at all; see DELIBERATE OMISSIONS
+  update_goal: { fields: [] }, // `status` enum only; see DELIBERATE OMISSIONS
 
   // ── omp (lowercase) — `read`/`edit`/`write` key on `path`, not claude's
   //    `file_path`, so both spellings are accepted rather than assumed ──
