@@ -64,10 +64,14 @@ export default defineTool({
       const ended =
         j?.summary?.byState?.ended ??
         Number(/\bended\b["']?\s*:\s*(\d+)/.exec(text)?.[1] ?? 0);
+      // NB coord:dispatch is deliberately NOT listed here any more (P-012): this
+      // read now returns a ready `dispatch` CALL in its payload when one is
+      // resolvable. Re-adding the mention would restore the 1.7% mechanism the
+      // handle replaced, and would advertise the verb in exactly the cases where
+      // the handle correctly declined to (no lane / no wakeable peer).
       const out: SeeAlsoEntry[] = [
         'coord:roster { view:"live" } (the unified presence/roster door with lenses)',
         'coord:glance (one-line fleet headline for a status surface)',
-        'coord:dispatch (wake/dispatch a parked agent you spotted)',
       ];
       if (ended > 0) {
         out.push({
@@ -356,11 +360,34 @@ export default defineTool({
     const cursorEnabled =
       args.include_cursor === true && (cursorFlag === '1' || cursorFlag === 'true');
     active = await overlayPresenceCursors(active, { enabled: cursorEnabled });
+
+    // ── P-012: a ready coord:dispatch CALL, not a mention ────────────────────
+    // (coordination-spec-adoption-2026-08-03, D-100 kept the verb / D-101 fixed
+    // the mechanism.) The `seeAlso` below has pointed at coord:dispatch for
+    // months and it bought 1 call in 30 days; a mention is the 1.7% lever. The
+    // handle is built ONLY from the snapshot this read already computed — no
+    // extra IO on a hot path — and emits nothing rather than a half-filled call
+    // when either the lane or the target is unresolvable. See dispatch-handle.ts
+    // for why a blank `items` is the specific shape that must never ship.
+    const selfRow = self
+      ? (active as Array<Record<string, unknown>>).find((r) => r.ownerId === self.ownerId)
+      : undefined;
+    const dispatch = buildDispatchHandle(
+      {
+        planSlug: (selfRow?.currentPlanSlug as string | undefined) ?? null,
+        items: (selfRow?.claimedItems as string[] | undefined) ?? null,
+        harness: args.harness ?? null,
+      },
+      active as unknown as DispatchCandidate[],
+      { selfOwnerId: self?.ownerId ?? null },
+    );
+
     const out = {
       ...snapshot,
       ...(self ? { self } : {}),
       active,
       ...coupling,
+      ...(dispatch ? { dispatch } : {}),
     };
     // {data} envelope so the payload-tier shapers apply; HTTP consumers (the
     // pui roster panes) still read identical lossless JSON text.

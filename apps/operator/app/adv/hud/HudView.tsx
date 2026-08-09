@@ -1000,6 +1000,22 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         onSelect={(id) => void setOpenItemId(id)}
         onClose={() => void setOpenItemId(null)}
       />
+      {/* P-021: the Goals tab's destination. Keyed off `hudgoal` — the SAME
+          param the board uses for "the selected goal", not a second detail key,
+          so the board and this panel can never disagree about which goal is on
+          screen. Closing therefore clears the selection, matching what a second
+          click on the card already does.
+
+          `goalWorkspaceId` (the RESOLVED id), never the nullable `workspaceId`
+          prop: an absent workspace reads the 'default' tenant and renders a
+          healthy-looking empty page pointed at the wrong one. */}
+      <GoalDetailPanel
+        goalId={goalFilter}
+        workspaceId={goalWorkspaceId}
+        nowMs={nowMs}
+        onClose={() => void setGoalFilter(null)}
+        onOpenWorkItem={(id) => void setOpenItemId(id)}
+      />
       {/* WI-6742: the ask's own popup, for asks that are not ABOUT a work item
           or plan. `OtherDetail` is the SAME component the Plans queue and
           SessionChatModal already render — never a second renderer — so these

@@ -514,9 +514,16 @@ function emptyCorpusLeg(
 /** One compact suffix for the phases log — never a second log site. */
 function describeCorpusLeg(corpus: CorpusLegResult | null): string {
   if (!corpus) return ' corpus=absent';
+  // P-003: `corpusGate` is the difference between "admitted 0 because the corpus
+  // had nothing" and "admitted 0 because the gate suppressed a section it could
+  // not stand behind" — two states that are otherwise identical on this line.
+  // `unevaluated` says the gate itself did not run; it never reads as healthy.
+  const gate = corpus.gate;
   return (
     ` corpus=ran corpusEmbedder=${corpus.embedderAvailable ? 'yes' : 'no'}` +
-    ` corpusCandidates=${corpus.candidateCount} corpusAdmitted=${corpus.lines.length}`
+    ` corpusCandidates=${corpus.candidateCount} corpusAdmitted=${corpus.lines.length}` +
+    ` corpusGate=${gate ? gate.verdict : 'unevaluated'}` +
+    (gate && gate.reasons.length > 0 ? ` corpusGateWhy=${gate.reasons.join(',')}` : '')
   );
 }
 

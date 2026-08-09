@@ -241,6 +241,20 @@ function toCandidate(p: MinedPattern): ToolSequenceCandidate {
  * Read the agent-initiated invocations for a window. The provenance filter lives
  * HERE, in the query: `in_process` rows are a tool implementation's fan-out (see
  * the module docstring) and must never enter a sequence.
+ *
+ * ⚠ The row cap selects the NEWEST rows (`ORDER BY invoked_at DESC`), then restores
+ * ascending order in memory. The direction is load-bearing, not a preference.
+ *
+ * Ordering ASC and capping keeps the OLDEST rows, which silently deletes the
+ * TRAILING windows — and the graduation streak is counted backwards from the most
+ * recent window, so every candidate scores a streak of zero and NOTHING can ever
+ * graduate. Measured 2026-08-09 on live data (528,878 rows over 7 days, the old
+ * 200k cap): 0 graduated / 1,610 held; the same call at 1M rows: 6 graduated /
+ * 3,118 held. The failure is invisible from the outside — a four-figure held list
+ * looks like a healthy miner being appropriately picky.
+ *
+ * Dropping the oldest rows instead is the harmless direction: it shortens the span,
+ * which weakens marginals but leaves the recency the streak actually depends on.
  */
 async function readAgentInvocations(
   sql: postgres.Sql,
@@ -249,7 +263,7 @@ async function readAgentInvocations(
   maxRows: number,
 ): Promise<InvocationRow[]> {
   const harnessFrag = opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``;
-  return (await sql`
+  const rows = (await sql`
       SELECT coord_owner_id AS agent, tool_name, spawn_id, invoked_at
         FROM harness_shared.tool_invocations
        WHERE invoked_at > ${sinceIso}::timestamptz
@@ -259,9 +273,10 @@ async function readAgentInvocations(
          AND status = 'ok'
          AND coord_owner_id IS NOT NULL
          AND spawn_id IS NOT NULL AND spawn_id <> ''
-       ORDER BY invoked_at
+       ORDER BY invoked_at DESC
        LIMIT ${maxRows}
   `) as unknown as InvocationRow[];
+  return rows.reverse();
 }
 
 /** Mine one already-collapsed event set with this call's floors. */
