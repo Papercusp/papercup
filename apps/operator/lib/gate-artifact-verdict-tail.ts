@@ -111,8 +111,17 @@ export function typecheckFailureBanner(exitCode: number, output: string): string
   if (/error TS\d+/.test(output)) {
     return '\n\n=== TYPECHECK FAILED (npm run lint:tsc) — operator-core type regressions block the release ===\n';
   }
+  // ⚠ `TYPECHECK FAILED (npm run lint:tsc` is a LOAD-BEARING ANCHOR, not prose. Three
+  // separate consumers key off this exact phrase: the WI-9613 greppability ratchet
+  // (green-checkpoint-leg-banner-shape.test.ts), the real-path wiring tests
+  // (green-checkpoint-real-deps.test.ts), and the triage grep CLAUDE.md documents
+  // (`grep -oE 'FAILED \(npm run [a-z:-]+'`). Inserting a word between TYPECHECK and
+  // FAILED — this branch read "TYPECHECK LEG FAILED" for ~3.5h on 2026-08-09 — breaks all
+  // three at once and makes the gate's most important leg invisible to the triage path,
+  // which is the very failure WI-9613 exists to prevent. The honesty this function was
+  // built for (WI-37527) lives in the clause BELOW, never in the anchor.
   return (
-    `\n\n=== TYPECHECK LEG FAILED (npm run lint:tsc, exit=${exitCode}) — the run reported NO type diagnostics, ` +
+    `\n\n=== TYPECHECK FAILED (npm run lint:tsc, exit=${exitCode}) — the run reported NO type diagnostics, ` +
     'so this is NOT a known type regression. A crash (V8 heap OOM — WI-37503), a config fault, or a run that ' +
     'checked zero files all produce this exact shape. Read the output below before hunting for type errors ' +
     'that may not exist. ===\n'

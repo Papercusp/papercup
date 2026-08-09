@@ -16,6 +16,7 @@ import {
   rerankCandidateCount,
   rerankPageHead,
   rerankProseHits,
+  rerankRows,
   rerankText,
 } from './rerank';
 // Real constants (not mocked): the ordering between these three IS the guard.
@@ -396,5 +397,94 @@ describe('rerankPageHead — candidate budget, not page size', () => {
     const pool = page(30);
     const out = await rerankPageHead('q', pool, 30);
     expect(out.map((h) => h.source_id)).toEqual(pool.map((h) => h.source_id));
+  });
+});
+
+/**
+ * `rerankRows` is the row-shape-agnostic core extracted for P-008 so the corpus
+ * leg could rerank its own `CorpusHit` without adapting it into a `SearchHit`.
+ * These pin the two properties a second caller depends on and that
+ * `rerankProseHits`'s own tests structurally cannot cover, because it always
+ * passes a page-sized `limit` and never observes the outcome callback.
+ */
+describe('rerankRows — the generic core', () => {
+  type Row = { id: string; text: string; q: number };
+  const rows: Row[] = [
+    { id: 'r1', text: 't1', q: 0.9 },
+    { id: 'r2', text: 't2', q: 0.5 },
+    { id: 'r3', text: 't3', q: 0.1 },
+    { id: 'r4', text: 't4', q: 0.05 },
+  ];
+  type Outcome = { attempted: boolean; reason?: string };
+  const opts = (over: Record<string, unknown> = {}) => ({
+    limit: rows.length,
+    id: (r: Row) => r.id,
+    text: (r: Row) => r.text,
+    qualityScore: (r: Row) => r.q,
+    rerankTimeoutMs: 1_000,
+    ...over,
+  });
+  /** Reverse the pool, honouring whatever `limit` the caller passed. */
+  const reversing = () =>
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, o) =>
+      [...docs].reverse().slice(0, (o as { limit: number }).limit).map((d) => d.row),
+    );
+
+  it('REORDERS WITHOUT CUTTING when limit === rows.length — the corpus leg depends on this', async () => {
+    // THE PROPERTY, not a constant. The corpus leg reranks its 4x over-fetched
+    // pool and lets `selectCorpusLines` take the cut, because selection drops
+    // self-session echoes / out-of-scope work-items / no-overlap hits BEFORE its
+    // own 6-item cap. Slicing to the page HERE would starve those filters and
+    // silently turn a reorder into a truncation — admitting FEWER lines than
+    // before, which no line-count acceptance would catch (D-066).
+    reversing();
+    const out = await rerankRows<Row>('q', rows, opts());
+    expect(out).toHaveLength(rows.length); // nothing dropped
+    expect(out.map((r) => r.id)).toEqual(['r4', 'r3', 'r2', 'r1']); // genuinely reordered
+  });
+
+  it('a caller that DOES want a page still gets one — limit is honoured', async () => {
+    reversing();
+    const out = await rerankRows<Row>('q', rows, opts({ limit: 2 }));
+    expect(out.map((r) => r.id)).toEqual(['r4', 'r3']);
+  });
+
+  it('engine throws → input order kept, nothing dropped, reported NOT attempted', async () => {
+    vi.mocked(rankWithReranker).mockRejectedValue(new Error('engine down'));
+    const seen: Outcome[] = [];
+    const out = await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+    expect(out.map((r) => r.id)).toEqual(['r1', 'r2', 'r3', 'r4']);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].attempted).toBe(false);
+  });
+
+  it('no engine resolvable → passthrough reported NOT attempted, so an A/B can VOID itself', async () => {
+    // The measurement-integrity contract, and the reason `onOutcome` exists at
+    // all. A dead engine produces output BYTE-IDENTICAL to a rerank-disabled
+    // control arm, so without this signal a treatment arm that quietly lost its
+    // engine reports a clean null that reads as "reranking does not help" — and
+    // the natural response to that null is to abandon the feature
+    // (context-injection-retrieval-reach-and-visibility-2026-08-03#D-093).
+    vi.mocked(getFlag).mockResolvedValue(false); // LOCAL_RERANK off, and no hosted key
+    const seen: Outcome[] = [];
+    const out = await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+    expect(out.map((r) => r.id)).toEqual(['r1', 'r2', 'r3', 'r4']);
+    expect(seen).toEqual([{ attempted: false, reason: 'no-engine' }]);
+  });
+
+  it('success reports attempted EXACTLY ONCE — a bench counts engaged calls with it', async () => {
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) => docs.map((d) => d.row));
+    const seen: Outcome[] = [];
+    await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].attempted).toBe(true);
+  });
+
+  it('≤1 row → vacuous, so no engine is resolved and it says so', async () => {
+    const seen: Outcome[] = [];
+    const out = await rerankRows<Row>('q', [rows[0]], opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+    expect(out).toEqual([rows[0]]);
+    expect(seen).toEqual([{ attempted: false, reason: 'nothing-to-reorder' }]);
+    expect(vi.mocked(rankWithReranker)).not.toHaveBeenCalled();
   });
 });

@@ -1624,6 +1624,22 @@ const PUSHED_REF_TITLE_MAX_CHARS = 110;
  *  sync payload (40 × 800 ≈ 32KB worst case). */
 export const PUSHED_REF_DETAIL_MAX_CHARS = 800;
 
+/**
+ * Strip a leading turn-provenance envelope (`⟦turn-origin:… nonce:…⟧`) from a
+ * transcript turn. PURE.
+ *
+ * Two reasons, and the second is not cosmetic: the envelope is machine
+ * bookkeeping that says nothing about what the session was DOING, and it
+ * carries a `nonce` — rendering it as a row's human-readable title would put an
+ * internal auth token on screen as the label. Returns the remainder, or the
+ * original when stripping would leave nothing (an envelope-only turn is still
+ * better than a blank row).
+ */
+export function stripTurnEnvelope(text: string): string {
+  const stripped = text.replace(/^\s*⟦[^⟧]*⟧\s*/u, '');
+  return stripped.trim() ? stripped : text;
+}
+
 /** Collapse whitespace and cut to `max`, appending an ellipsis only when the cut
  *  actually removed something. PURE. */
 export function oneLineClamp(text: string, max: number): string {
@@ -1740,12 +1756,20 @@ export async function resolvePushedRefTitles(
 
   const [wiRows, memRows, sessRows] = await Promise.all([
     workItemIds.length > 0
-      ? tx<{ feature_id: string; title: string | null; kind: string | null; state: string | null; summary: string | null }[]>`
+      /* Column names verified against the live relation, not inferred from the
+         DTO: it is `status` (not `state`), `updated_ts` (bigint epoch-ms, not
+         `updated_at`), and the badge wants `item_kind` — the bug/change/task
+         DISCRIMINATOR — rather than the legacy `kind`, which is a feature
+         sub-category (infra/security/…) and would print a confusing word for
+         every issue-family row. All three read plausibly and all three were
+         wrong; the fake-tag unit tests below cannot catch that class, which is
+         why this is exercised against the real DB. */
+      ? tx<{ feature_id: string; title: string | null; item_kind: string | null; status: string | null; summary: string | null }[]>`
           SELECT DISTINCT ON (feature_id)
-                 feature_id, title, kind, state, summary
+                 feature_id, title, item_kind, status, summary
             FROM harness_shared.work_items
            WHERE feature_id = ANY(${workItemIds}::text[])
-           ORDER BY feature_id, updated_at DESC NULLS LAST
+           ORDER BY feature_id, updated_ts DESC NULLS LAST
         `
       : Promise.resolve([] as never[]),
     memoryIds.length > 0
@@ -1758,19 +1782,29 @@ export async function resolvePushedRefTitles(
         `
       : Promise.resolve([] as never[]),
     sessionIds.length > 0
+      /* The ORDER BY is the interesting part. "First user turn" alone is wrong
+         for THREE QUARTERS of this corpus: measured 2026-08-09, 487 of 645
+         sessions open with a machine `⟦turn-origin:…⟧` wake envelope, so the
+         naive read titled them `⟦turn-origin:loop-fire nonce:…⟧` — a nonce, in
+         the UI, as the human-readable label. `(text LIKE '⟦%')` sorts false
+         before true in PG, so this takes the earliest turn that is NOT an
+         envelope and falls back to the earliest one that is, in a single pass.
+         (`session_briefs.intent` would have been the better source and was
+         measured first: `native_session_id` matched 0 of 40 real refs, so that
+         join is dead — recorded here so nobody rebuilds it.) */
       ? tx<{ session_id: string; text: string | null }[]>`
           SELECT DISTINCT ON (session_id) session_id, text
             FROM harness_shared.session_turns
            WHERE session_id = ANY(${sessionIds}::text[])
              AND speaker = 'user'
-           ORDER BY session_id, turn_idx ASC
+           ORDER BY session_id, (text LIKE '⟦%') ASC, turn_idx ASC
         `
       : Promise.resolve([] as never[]),
   ]);
 
-  for (const w of wiRows as unknown as { feature_id: string; title: string | null; kind: string | null; state: string | null; summary: string | null }[]) {
+  for (const w of wiRows as unknown as { feature_id: string; title: string | null; item_kind: string | null; status: string | null; summary: string | null }[]) {
     if (!w.title) continue;
-    const badge = [w.kind, w.state].filter(Boolean).join(' · ');
+    const badge = [w.item_kind, w.status].filter(Boolean).join(' · ');
     out.set(`corpus:${w.feature_id}`, {
       title: oneLineClamp(w.title, PUSHED_REF_TITLE_MAX_CHARS),
       detail: oneLineClamp(
@@ -1787,11 +1821,11 @@ export async function resolvePushedRefTitles(
   for (const s of sessRows as unknown as { session_id: string; text: string | null }[]) {
     const ref = sessionRefBySessionId.get(s.session_id);
     if (!ref || !s.text) continue;
-    // The session's FIRST user turn is the closest thing a transcript has to a
-    // title — it is what the human actually asked for. Not the matched turn:
-    // the ledger records the ref, never which turn matched (D-085's per-ref
-    // attribution limit), so claiming otherwise would be an invented precision.
-    const res = resolutionFromBody(s.text, '↳');
+    // The session's first CONTENTFUL user turn is the closest thing a
+    // transcript has to a title. Not the matched turn: the ledger records the
+    // ref, never which turn matched (D-085's per-ref attribution limit), so
+    // claiming otherwise would be an invented precision.
+    const res = resolutionFromBody(stripTurnEnvelope(s.text), '↳');
     if (res) out.set(`corpus:${ref}`, res);
   }
   return out;

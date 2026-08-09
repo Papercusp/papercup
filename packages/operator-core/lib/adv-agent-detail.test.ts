@@ -88,6 +88,7 @@ const {
   applyPushedRefTitles,
   resolutionFromBody,
   resolvePushedRefTitles,
+  stripTurnEnvelope,
 } = await import('./adv-agent-detail');
 type PushedContextRow = import('./adv-agent-detail').PushedContextRow;
 type PushedContextRefDetailRow = import('./adv-agent-detail').PushedContextRefDetailRow;
@@ -1390,6 +1391,22 @@ describe('applyPushedRefTitles', () => {
   });
 });
 
+describe('stripTurnEnvelope', () => {
+  it('removes a turn-provenance envelope, NONCE INCLUDED', () => {
+    // Measured 2026-08-09: 487 of 645 sessions open with one of these, so the
+    // naive "first user turn" title rendered a nonce as the row's label.
+    expect(
+      stripTurnEnvelope('⟦turn-origin:loop-fire nonce:c0807fa7c608db84⟧\n❄️ COLD LOOP WAKE (fire #117)'),
+    ).toBe('❄️ COLD LOOP WAKE (fire #117)');
+    expect(stripTurnEnvelope('a plain human turn')).toBe('a plain human turn');
+  });
+
+  it('keeps an envelope-ONLY turn rather than emptying the row', () => {
+    const only = '⟦turn-origin:wake-pump nonce:abc⟧';
+    expect(stripTurnEnvelope(only)).toBe(only);
+  });
+});
+
 describe('resolutionFromBody', () => {
   it('takes the first NON-EMPTY line as the title', () => {
     const res = resolutionFromBody('\n\nThe real first line\nand more below');
@@ -1433,7 +1450,11 @@ describe('resolvePushedRefTitles', () => {
 
   it('resolves all three ref classes from their own stores', async () => {
     const { tag } = fakeTag({
-      work_items: [{ feature_id: 'WI-7005', title: 'Gate red: skip-guard', kind: 'bug', state: 'open', summary: 'body' }],
+      /* Column names as the LIVE relation has them — `status` not `state`,
+         `item_kind` not `kind`. A fixture that mirrors the DTO instead of the
+         table makes this suite green against SQL that cannot run (measured:
+         all three names were wrong and every unit test still passed). */
+      work_items: [{ feature_id: 'WI-7005', title: 'Gate red: skip-guard', item_kind: 'bug', status: 'open', summary: 'body' }],
       session_turns: [{ session_id: 'abc12345-0000-0000-0000-000000000000', text: 'For our public release I want…' }],
       memory_canonical: [{ id: '0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f', body: 'Papercusp host map\nmore', kind: 'reference' }],
     });

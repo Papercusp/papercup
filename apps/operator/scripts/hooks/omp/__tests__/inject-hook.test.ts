@@ -24,7 +24,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // @ts-ignore — pure JS adapter, no .d.ts; the dispatcher's frozen CLI contract is the seam.
@@ -306,18 +306,66 @@ describe('adapters/omp.mjs — render', () => {
 
 describe('inject-hook — resolveDispatcherPath', () => {
   it('prefers the explicit env override', () => {
-    expect(resolveDispatcherPath({ PAPERCUSP_INJECT_DISPATCHER: '/x/index.mjs' }, undefined, () => true)).toBe(
+    expect(
+      resolveDispatcherPath({ NODE_ENV: 'test', PAPERCUSP_INJECT_DISPATCHER: '/x/index.mjs' }, undefined, () => true),
+    ).toBe(
       '/x/index.mjs',
     );
   });
 
   it('falls back to the installed layout under PAPERCUSP_HOME', () => {
-    const got = resolveDispatcherPath({ PAPERCUSP_HOME: '/ph' }, undefined, p => p === '/ph/hooks/inject/index.mjs');
+    const got = resolveDispatcherPath(
+      { NODE_ENV: 'test', PAPERCUSP_HOME: '/ph' },
+      undefined,
+      p => p === '/ph/hooks/inject/index.mjs',
+    );
     expect(got).toBe('/ph/hooks/inject/index.mjs');
   });
 
   it('returns null when nothing is installed (never a fabricated path)', () => {
-    expect(resolveDispatcherPath({ PAPERCUSP_HOME: '/ph' }, undefined, () => false)).toBeNull();
+    expect(resolveDispatcherPath({ NODE_ENV: 'test', PAPERCUSP_HOME: '/ph' }, undefined, () => false)).toBeNull();
+  });
+
+  // ── ISOLATION GUARD (EI-20001110634702380) ────────────────────────────────
+  // PAPERCUSP_HOME is an ISOLATION PIN, not a first preference: when it is set
+  // and holds no dispatcher, resolution must return null rather than reaching
+  // into the shared ~/.papercusp.
+  //
+  // This pins a change that was made and then REVERTED with measurements. The
+  // `||` on the home line reads like a bug — it contradicted the docstring,
+  // which promised ordered fallbacks — and "make the code match its comment"
+  // looks obviously right. It is not: with the fallback in place, the
+  // fail-silent test below (which points PAPERCUSP_HOME at an empty temp dir)
+  // reached the REAL installed dispatcher and wrote a live `client='omp'` row
+  // into harness_shared.memory_recall_stats in production, session_id
+  // 'su-test-0001' at 2026-08-09T19:35:32Z. The docstring was corrected instead.
+  //
+  // Nothing real is stranded by the exclusive form: a psu session resolves via
+  // the selfDir candidate, verified live under the exact production env.
+  it('does NOT escape a pinned PAPERCUSP_HOME to the shared ~/.papercusp (isolation, not fallback)', () => {
+    const shared = join(homedir(), '.papercusp', 'hooks', 'inject', 'index.mjs');
+    // Only the SHARED dispatcher exists; the pinned home has none.
+    const got = resolveDispatcherPath(
+      { NODE_ENV: 'test', PAPERCUSP_HOME: '/home/u/.papercusp-workspaces/ws/.papercusp' },
+      undefined,
+      p => p === shared,
+    );
+    expect(got).toBeNull();
+  });
+
+  // The production path, and the reason the exclusive form strands nobody: the
+  // installer writes the omp artifact and the dispatcher into the SAME hooks/
+  // tree, so the sibling candidate resolves even when PAPERCUSP_HOME is pinned
+  // somewhere that has no dispatcher. Measured live 2026-08-09 against a real
+  // `psu --agent=omp --headless` session.
+  it('resolves via selfDir even when PAPERCUSP_HOME is pinned elsewhere (the real psu shape)', () => {
+    const sibling = '/home/u/.papercusp/hooks/inject/index.mjs';
+    const got = resolveDispatcherPath(
+      { NODE_ENV: 'test', PAPERCUSP_HOME: '/home/u/.papercusp-workspaces/ws/.papercusp' },
+      '/home/u/.papercusp/hooks/omp',
+      p => p === sibling,
+    );
+    expect(got).toBe(sibling);
   });
 });
 
@@ -396,7 +444,7 @@ describe('inject-hook — runDispatcher', () => {
 
   it('FAIL-SILENT: missing PAPERCUSP_SID injects nothing and spawns nothing', async () => {
     expect(await runDispatcher('turn-start', 'before_agent_start', { prompt: 'hi' }, {
-      env: { PAPERCUSP_INJECT_DISPATCHER: echoDispatcher },
+      env: { NODE_ENV: 'test', PAPERCUSP_INJECT_DISPATCHER: echoDispatcher },
     })).toBeNull();
   });
 

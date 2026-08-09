@@ -667,17 +667,6 @@ export const FLAGS = {
   // (2s), and fail-open. OFF = the clean kill-switch — the block returns to
   // its mem0-only form byte-identically.
   MEMORY_CORPUS_RECALL: "papercusp-memory-corpus-recall",
-  // context-injection-retrieval-reach-and-visibility-2026-08-03 P-008 / D-091:
-  // stage-1 cross-encoder rerank of the corpus leg's over-fetched pool, before
-  // `selectCorpusLines` takes its hard 6-item cut over 24 candidates. The
-  // reranker already runs for agents on `search:semantic` and /api/user/search;
-  // injection arguably needs it MOST, because an interactive searcher scans a
-  // page and picks while this leg picks FOR the agent — so the order handed to
-  // selection IS what survives the budget. Default ON (derived FLAG_DEFAULTS —
-  // not in DARK_FLAGS): it reorders only, never cuts, and is bounded strictly
-  // below the leg's own 2s bound so a slow rerank degrades to RRF order rather
-  // than costing the whole pointer section. OFF = pre-P-008 RRF order exactly.
-  MEMORY_CORPUS_RERANK: "papercusp-memory-corpus-rerank",
   // WI-36046 (workstream A): hand the nightly anchor sweep's verdict to the AGENT.
   // `memory/audit-memory-anchors.ts` has been re-checking every memory's extracted
   // anchors nightly (DBOS `0 0 5 * * *`) and writing last_check_ok per anchor — but

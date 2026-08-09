@@ -102,13 +102,27 @@ const CUSTOM_TYPE = 'papercusp-context';
 /**
  * Locate the shared dispatcher entry.
  *
- * Ordered candidates, first hit wins. Exported for tests, and pure apart from
- * the existsSync probe.
+ * Resolution order (first hit wins):
+ *   1. PAPERCUSP_INJECT_DISPATCHER — explicit pin, so an installer or a test can
+ *      point at a path without depending on layout.
+ *   2. `<selfDir>/../inject/index.mjs` — next to this file. The installed layout
+ *      mirrors the repo (`hooks/inject/` beside `hooks/omp/`), and the installer
+ *      writes both into the same tree, so IN PRACTICE THIS IS THE CANDIDATE THAT
+ *      RESOLVES for a real psu session.
+ *   3. `<PAPERCUSP_HOME or ~/.papercusp>/hooks/inject/index.mjs`.
  *
- * The explicit env override is first so an installer (or a test) can pin the
- * path without depending on layout. Otherwise we look next to this file — the
- * installed layout mirrors the repo (`hooks/inject/` beside `hooks/omp/`) — then
- * under PAPERCUSP_HOME, then the default ~/.papercusp.
+ * ⚠ Step 3 is EXCLUSIVE: when PAPERCUSP_HOME is set, ~/.papercusp is NOT also
+ * tried. That is deliberate and load-bearing, and this docstring used to claim
+ * the opposite ("then under PAPERCUSP_HOME, then the default ~/.papercusp"),
+ * which is how it came to be read as a bug. PAPERCUSP_HOME is an ISOLATION PIN
+ * — isolated operator stacks and this hook's own unit tests set it precisely to
+ * keep off the shared home — so falling back past it would escape the isolation.
+ * Implementing the fallback was tried and reverted: it made a unit test reach
+ * the real installed dispatcher and write a live row into production telemetry
+ * (EI-20001110634702380). Both properties are pinned by tests in
+ * `__tests__/inject-hook.test.ts`.
+ *
+ * Exported for tests, and pure apart from the existsSync probe.
  */
 export function resolveDispatcherPath(
   env: NodeJS.ProcessEnv = process.env,
@@ -118,6 +132,27 @@ export function resolveDispatcherPath(
   const candidates: string[] = [];
   if (env.PAPERCUSP_INJECT_DISPATCHER) candidates.push(env.PAPERCUSP_INJECT_DISPATCHER);
   if (selfDir) candidates.push(resolve(selfDir, '..', 'inject', 'index.mjs'));
+  // ⚠ EXCLUSIVE ON PURPOSE — `||`, NOT an ordered fallback. Do not "fix" this
+  // into `[PAPERCUSP_HOME, ~/.papercusp]` tried in turn; that was attempted and
+  // REVERTED with measurements (EI-20001110634702380).
+  //
+  // PAPERCUSP_HOME set means "this session's papercusp home is HERE" — it is the
+  // isolation pin used by isolated operator stacks and by this hook's own unit
+  // tests. Falling back to the shared ~/.papercusp when the pinned home has no
+  // dispatcher does not rescue anything real; it ESCAPES the isolation and runs
+  // the shared box's dispatcher against whatever operator the session points at.
+  // Measured consequence of the fallback version: the fail-silent unit test
+  // (PAPERCUSP_HOME -> an empty temp dir) reached the real installed dispatcher
+  // and wrote a live `client='omp'` row into harness_shared.memory_recall_stats
+  // in production (session_id 'su-test-0001', 2026-08-09T19:35:32Z). A unit test
+  // silently emitting production telemetry is a worse failure than the
+  // fail-silent null it replaced.
+  //
+  // Nothing is stranded by the exclusive form: a psu session (whose
+  // PAPERCUSP_HOME is workspace-scoped and holds no dispatcher) still resolves
+  // via the selfDir candidate ABOVE, because the installer always writes the omp
+  // artifact and the dispatcher into the same `hooks/` tree. Verified live under
+  // the exact production env — see the docstring's resolution table.
   const papercuspHome = env.PAPERCUSP_HOME || join(homedir(), '.papercusp');
   candidates.push(join(papercuspHome, 'hooks', 'inject', 'index.mjs'));
   for (const candidate of candidates) {

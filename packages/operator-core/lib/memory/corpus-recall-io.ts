@@ -135,6 +135,21 @@ export function corpusEmbedBudgetMs(): number {
  * above the p50 — so a healthy rerank completes and is not needlessly discarded —
  * while still reserving 500ms for search, selection and stage 2. That 1.7% tail
  * is precisely what this converts from "no pointer section" into "RRF order".
+ *
+ * ⚠⚠ THIS BOUND — AND THE LEG'S OWN — CANNOT FIRE AGAINST THE IN-PROCESS ENGINE.
+ * Both are `Promise.race` + `setTimeout`, and a timer cannot preempt a stage that
+ * blocks the event loop. On a host with NO embed sidecar the cross-encoder runs
+ * in-process and does exactly that, so the "degrade to RRF order" contract above
+ * is INOPERATIVE there and the rerank runs to completion however long it takes.
+ *
+ * MEASURED, not inferred (D-093): with no sidecar configured, `recallCorpusContext`
+ * returned `outcome: 'ok'` after 2,473ms, 2,455ms and 2,302ms — through a 2,000ms
+ * `withBound`. Had the timer fired, those would have been `'timed-out'` at ~2,000ms.
+ *
+ * Out-of-process (sidecar configured — every operator unit on the dev box) the
+ * stage is an HTTP call, genuinely async, and both bounds work as documented.
+ * So this is a DEPLOYMENT-SHAPED hazard, not a universal one — and it lands on
+ * the desktop install, which is the shipping target and the case with no sidecar.
  */
 export function corpusRerankTimeoutMs(): number {
   const raw = Number(process.env.PAPERCUSP_MEMORY_CORPUS_RERANK_TIMEOUT_MS);
@@ -177,12 +192,25 @@ export interface CorpusRecallInput {
    *  arm. Absent ⇒ the search source's default. */
   anchorDfBudget?: number;
   /**
-   * P-008: run the stage-1 cross-encoder rerank. Absent ⇒ the flag decides.
+   * P-008: run the stage-1 cross-encoder rerank. **DEFAULT OFF — MEASURED AND
+   * NOT ADOPTED (D-093).** Deliberately not flag-gated; see `rerankStage1`.
    *
-   * `false` is the bench's CONTROL arm. Exposed for the same reason
-   * `gradedMaxTerms` is: the corpus is written continuously by the fleet, so two
-   * runs minutes apart are not a paired comparison, and P-018 shipped once on a
-   * real-but-unrelated gain measured exactly that way.
+   * ⚠ READ D-093 BEFORE TURNING THIS ON. The wiring is complete and correct, and
+   * it is off because it was measured, not because it is unfinished:
+   *
+   *   • RELEVANCE: 0/7 → 0/7 on the WI-6512 answer-bearing acceptance set. The
+   *     reorder is REAL (it moved the admitted order on 5/7 batches) — it just
+   *     never moved the ANSWER. Of the 7 batches only 2 were rescuable by ANY
+   *     reordering (5 were NOT-RETRIEVED, which no reorder can fix), and it
+   *     rescued neither.
+   *   • COST: +1,801ms per call on a leg whose control p50 is ~40-240ms and
+   *     whose entire bound is 2,000ms — charged to EVERY turn's prompt build.
+   *
+   * Kept as a re-measurable seam rather than deleted, for the same reason
+   * `anchorDfBudget` keeps its: the cost side is an engine property, so if the
+   * reranker gets an order of magnitude cheaper this becomes worth re-running
+   * rather than re-deriving. Re-measure with:
+   *   --mode none --ceiling --rerank-arms
    *
    * ⚠ A rerank is a REORDER, so it CANNOT change how many lines are admitted —
    * an acceptance measured on line counts produces a confident null (D-066).
@@ -213,6 +241,28 @@ export type CorpusRecallOutcome =
   | 'no-query'
   /** The leg threw (PG down, engine error). Best-effort, never rethrown. */
   | 'failed';
+
+/**
+ * Did the P-008 stage-1 rerank run, and if not, why not?
+ *
+ * Every non-`'reranked'` value produces the SAME observable output — the RRF
+ * order — which is why this needs its own field rather than a boolean: the
+ * states call for opposite responses. `'off'` is a deliberate control;
+ * `'no-engine'` is a misconfigured host; `'failed'` is a bug or a sick engine.
+ * Collapsing them loses the ability to tell "the experiment was not run" from
+ * "the experiment ran and found nothing".
+ */
+export type CorpusRerankOutcome =
+  /** An engine resolved and scored the pool. The ONLY value that licenses an A/B. */
+  | 'reranked'
+  /** The flag (or the caller's explicit `rerank: false`) held it off. */
+  | 'off'
+  /** No hosted key and the local engine is flagged off — the pre-P-007 dark seam. */
+  | 'no-engine'
+  /** The stage threw or its bound expired. Fail-soft: RRF order was kept. */
+  | 'failed'
+  /** Fewer than 2 candidates — a reorder is vacuous, so no engine was resolved. */
+  | 'nothing-to-reorder';
 
 export interface CorpusRecallResult {
   /** The rendered markdown section, or null when nothing was admitted. */
@@ -272,6 +322,10 @@ const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
   // different — and here false — claim.
   legs: null,
   retrievalDepth: 0,
+  // The leg never reached stage 1. Same reasoning as `legs: null` above —
+  // `'off'` would claim a deliberate control arm, which is a different (and here
+  // false) statement about why no reranking happened.
+  rerank: 'nothing-to-reorder',
 });
 
 type QueryEmbedder = (text: string) => Promise<number[]>;
@@ -384,21 +438,6 @@ function toCorpusHits(fused: { results: readonly SearchHit[] }): CorpusHit[] {
 }
 
 /**
- * Is the stage-1 rerank enabled? Default ON — same rule as the leg itself.
- * OFF restores the exact pre-P-008 RRF order, which is the clean kill-switch.
- */
-async function corpusRerankEnabled(): Promise<boolean> {
-  try {
-    const { FLAGS } = await import('@papercusp/flags');
-    const { getFlag } = await import('@papercusp/flags/server');
-    return await getFlag(FLAGS.MEMORY_CORPUS_RERANK, 'memory-corpus-rerank');
-  } catch {
-    // A flags hiccup must not silently disable a default-ON feature.
-    return true;
-  }
-}
-
-/**
  * The text the cross-encoder scores against the query.
  *
  * Mirrors `rerankText` for `SearchHit` and for the same reason: `excerpt` is
@@ -447,10 +486,14 @@ async function rerankStage1(
   queryUsed: string,
   override: boolean | undefined,
 ): Promise<{ hits: CorpusHit[]; outcome: CorpusRerankOutcome }> {
-  // Nothing to reorder → no flag read, no engine resolution, no import.
+  // Nothing to reorder → no engine resolution, no import.
   if (hits.length <= 1) return { hits, outcome: 'nothing-to-reorder' };
-  const on = override ?? (await corpusRerankEnabled());
-  if (!on) return { hits, outcome: 'off' };
+  // DEFAULT OFF — measured, not adopted (D-093). Not a flag: an unadopted
+  // feature behind a runtime flag is dead code waiting to be flipped by someone
+  // who has not read the measurement. This is a bench seam, exactly like
+  // `anchorDfBudget`, whose default is likewise pinned to the control arm
+  // because the widening measured neutral.
+  if (override !== true) return { hits, outcome: 'off' };
   let outcome: CorpusRerankOutcome = 'failed';
   const ordered = await rerankRows<CorpusHit>(queryUsed, hits, {
     // Reorder the whole pool; the cut belongs to `selectCorpusLines`.
@@ -510,6 +553,11 @@ export async function recallCorpusContext(
   // the caller rather than hard-coding one in the gate means the two cannot
   // drift apart when this over-fetch is retuned.
   const retrievalDepth = Math.max(maxItems * 4, 8);
+
+  // Declared out here so the RESULT can report it even though the stage runs
+  // deep inside `run`. Defaults to the honest "we never got there": every early
+  // return below leaves the leg short of stage 1.
+  let rerankOutcome: CorpusRerankOutcome = 'nothing-to-reorder';
 
   try {
     const { sql } = getOrgPg();
@@ -730,7 +778,7 @@ export async function recallCorpusContext(
     const out = await withBound(run, corpusRecallTimeoutMs(), null);
     // The bound expired. This is NOT "the corpus had nothing" — say so, so a
     // caller (and any benchmark) can tell the two apart (EI-19460902984682209).
-    if (!out) return empty('timed-out');
+    if (!out) return { ...empty('timed-out'), rerank: rerankOutcome };
 
     return {
       block: renderCorpusBlock(out.lines),
@@ -739,6 +787,7 @@ export async function recallCorpusContext(
       embedderAvailable: out.fused.embedderAvailable,
       candidateCount: out.count,
       outcome: 'ok',
+      rerank: rerankOutcome,
       // The LAST search's report. The cascade can run the engine twice, and it
       // is stage 2 (when it runs) that produced the final admitted set, so its
       // leg accounting is the one that describes this result.

@@ -60,6 +60,7 @@ interface Args {
   oracleTurns: number[];
   gradedArms: boolean;
   anchorArms: boolean;
+  rerankArms: boolean;
   ceiling: boolean;
   arity: boolean;
   /** Restrict --arity to these replay turns (empty = all). */
@@ -539,13 +540,23 @@ async function runCeiling(args: Args): Promise<void> {
     arm: 'bm25' | 'hybrid',
     gradedMaxTerms?: number,
     anchorDfBudget?: number,
-  ): Promise<{ verdict: CeilingVerdict; detail: string; candidates: number; admitted: number }> => {
+    rerank?: boolean,
+  ): Promise<{
+    verdict: CeilingVerdict;
+    detail: string;
+    candidates: number;
+    admitted: number;
+    rerank: string;
+    refs: string[];
+    ms: number;
+  }> => {
     // Re-establish the arm immediately before the call: after a reset the leg
     // kicks off a BACKGROUND warmup, so an arm set once at the top of the run
     // does not survive seven batches.
     if (arm === 'bm25') resetCorpusEmbedderWarmup();
     else await warmCorpusEmbedder();
 
+    const t0 = Date.now();
     const res = await recallCorpusContext({
       queryText,
       workspaceId: args.workspace,
@@ -553,7 +564,13 @@ async function runCeiling(args: Args): Promise<void> {
       skipFlagCheck: true,
       ...(gradedMaxTerms === undefined ? {} : { gradedMaxTerms }),
       ...(anchorDfBudget === undefined ? {} : { anchorDfBudget }),
+      ...(rerank === undefined ? {} : { rerank }),
     });
+    const ms = Date.now() - t0;
+    // The ADMITTED ORDER, not just the set. A rerank is a REORDER: it cannot
+    // change how many lines are admitted, so a set- or count-based comparison
+    // is structurally incapable of seeing it (D-066's confident null, exactly).
+    const refs = res.lines.map((l) => l.handle.ref);
 
     // How many of the 6 slots the leg actually filled. This is the ONLY
     // stage-2 tell available without changing the leg: `corpus-recall-io.ts`
@@ -562,44 +579,33 @@ async function runCeiling(args: Args): Promise<void> {
     // still finished short. `admitted === 6` stays ambiguous (stage 1 filled,
     // or stage 2 topped it up) — read the implication in one direction only.
     const admitted = res.lines.length;
+    const mk = (verdict: CeilingVerdict, detail: string) => ({
+      verdict,
+      detail,
+      candidates: res.candidateCount,
+      admitted,
+      rerank: res.rerank,
+      refs,
+      ms,
+    });
 
     const armHeld = arm === 'bm25' ? !res.embedderAvailable : res.embedderAvailable;
     if (!armHeld || res.outcome !== 'ok') {
-      return {
-        verdict: 'void',
-        detail: `arm=${arm} embedderAvailable=${res.embedderAvailable} outcome=${res.outcome}`,
-        candidates: res.candidateCount,
-        admitted,
-      };
+      return mk(
+        'void',
+        `arm=${arm} embedderAvailable=${res.embedderAvailable} outcome=${res.outcome}`,
+      );
     }
 
-    if (res.lines.some((l) => l.handle.ref === KNOWN_ITEM)) {
-      return { verdict: 'admitted', detail: '', candidates: res.candidateCount, admitted };
-    }
+    if (res.lines.some((l) => l.handle.ref === KNOWN_ITEM)) return mk('admitted', '');
 
     const reasons = res.dropped.filter((d) => d.ref === KNOWN_ITEM).map((d) => d.reason);
-    if (reasons.length === 0) {
-      return { verdict: 'not-retrieved', detail: '', candidates: res.candidateCount, admitted };
-    }
+    if (reasons.length === 0) return mk('not-retrieved', '');
     // Precedence, not first-match: a ref can appear twice (a collapsed duplicate
     // PLUS the winner's own drop). `duplicate-ref` alone never means excluded.
-    if (reasons.some((r) => ORDER_DROPS.has(r))) {
-      return {
-        verdict: 'order-blocked',
-        detail: reasons.join(','),
-        candidates: res.candidateCount,
-        admitted,
-      };
-    }
-    if (reasons.some((r) => FILTER_DROPS.has(r))) {
-      return {
-        verdict: 'filter-blocked',
-        detail: reasons.join(','),
-        candidates: res.candidateCount,
-        admitted,
-      };
-    }
-    return { verdict: 'anomaly', detail: reasons.join(','), candidates: res.candidateCount, admitted };
+    if (reasons.some((r) => ORDER_DROPS.has(r))) return mk('order-blocked', reasons.join(','));
+    if (reasons.some((r) => FILTER_DROPS.has(r))) return mk('filter-blocked', reasons.join(','));
+    return mk('anomaly', reasons.join(','));
   };
 
   /**
@@ -684,8 +690,73 @@ async function runCeiling(args: Args): Promise<void> {
     treatment: { admitted: 0, reachable: 0, notRetrieved: 0, cand: 0 },
   };
 
+  // PAIRED RERANK ARMS (P-008 / D-091). Same one-process discipline as the two
+  // arm sets above; the ONLY difference is whether stage 1 reranks.
+  //   CONTROL   rerank false = the shipped RRF order, bit for bit
+  //   TREATMENT rerank true  = cross-encoder reorder of the same 24 candidates
+  //
+  // ⚠⚠ READ ORDER, NEVER COUNTS. A rerank is a REORDER of a pool that is cut
+  // downstream — it CANNOT change how many lines are admitted. So `admitted`,
+  // line counts and candidate counts are all guaranteed-flat by construction,
+  // and scoring this arm on any of them manufactures a confident null. That is
+  // not hypothetical: it is exactly how P-018 was accepted on a metric that
+  // could not see what it changed (D-066). The headline is the KNOWN-ITEM
+  // verdict migration, and the diagnostic is whether the admitted REF ORDER
+  // moved at all.
+  //
+  // ⚠ HYBRID IS THE HEADLINE, BM25 IS NOT. Under BM25-only there is a single
+  // agreement tier by construction, so an upstream reorder decides the tiebreak
+  // trivially and OVERSTATES the effect — D-091 §1 records that trap on the
+  // permutation bench, where the BM25 arm's 100% is a control artifact rather
+  // than a result. Hybrid is also what production runs.
+  const rerankArms = args.rerankArms;
+  const tallyRerank = {
+    control: { admitted: 0, reachable: 0, ms: 0 },
+    treatment: { admitted: 0, reachable: 0, ms: 0 },
+  };
+  // INSTRUMENT INTEGRITY (see CorpusRecallResult.rerank). The stage is fail-soft:
+  // with no engine it returns the RRF order, which is byte-identical to the
+  // control — so a treatment arm that silently lost its engine reports a clean
+  // 0/7 delta that reads as "reranking does not help". Both counters must be
+  // non-zero for the run to mean anything, and the summary VOIDS it otherwise.
+  let treatmentActuallyReranked = 0;
+  let orderMovedOn = 0;
+
   for (const batch of REPLAY) {
     const queryText = deriveBatchQuery(batch.calls);
+    if (rerankArms) {
+      const ctl = await probe(queryText, 'hybrid', undefined, undefined, false);
+      const tr = await probe(queryText, 'hybrid', undefined, undefined, true);
+      if (tr.rerank === 'reranked') treatmentActuallyReranked++;
+      const moved = ctl.refs.join('|') !== tr.refs.join('|');
+      if (moved) orderMovedOn++;
+      for (const [side, r] of [['control', ctl], ['treatment', tr]] as const) {
+        const t = tallyRerank[side];
+        if (r.verdict === 'admitted') t.admitted++;
+        if (r.verdict === 'admitted' || r.verdict === 'order-blocked') t.reachable++;
+        t.ms += r.ms;
+      }
+      const mark =
+        ctl.verdict !== 'admitted' && tr.verdict === 'admitted'
+          ? '✅ RESCUED'
+          : ctl.verdict === 'admitted' && tr.verdict !== 'admitted'
+            ? '🔻 LOST'
+            : moved
+              ? '~ reordered'
+              : '   flat';
+      console.log(
+        `\n   turn ${batch.turn} ${mark}` +
+          `\n     CONTROL   (RRF order)     ${ctl.verdict.toUpperCase().padEnd(14)} (${ctl.candidates} cand, ${ctl.admitted}/6, ${ctl.ms}ms)` +
+          `\n     TREATMENT (reranked)      ${tr.verdict.toUpperCase().padEnd(14)} (${tr.candidates} cand, ${tr.admitted}/6, ${tr.ms}ms) [stage=${tr.rerank}]`,
+      );
+      // The order IS the treatment. Print it when it moved, so a reviewer can
+      // see WHAT the reranker preferred rather than trusting a verdict tally.
+      if (moved) {
+        console.log(`       control   order: ${ctl.refs.join(' , ') || '(none)'}`);
+        console.log(`       treatment order: ${tr.refs.join(' , ') || '(none)'}`);
+      }
+      continue;
+    }
     if (anchorArms) {
       // BM25 arm only, for the same reason the graded arms use it: it is
       // deterministic, so a verdict difference is attributable to the anchor
@@ -764,6 +835,72 @@ async function runCeiling(args: Args): Promise<void> {
   }
 
   const n = REPLAY.length;
+  if (rerankArms) {
+    const c = tallyRerank.control;
+    const t = tallyRerank.treatment;
+    console.log('\n   ── STAGE-1 RERANK, PAIRED arms (HYBRID) ──');
+
+    // INTEGRITY FIRST, RESULT SECOND. A null from an instrument that never
+    // engaged is not a finding, and it is indistinguishable from a real null by
+    // looking at the numbers — so refuse to print a verdict rather than let one
+    // be quoted. This is the same rule the arm-integrity check upstream applies
+    // to `embedderAvailable`.
+    if (treatmentActuallyReranked === 0) {
+      console.log(
+        `   ⛔ VOID — the treatment arm NEVER reranked (0/${n} batches reported stage='reranked').\n` +
+          `      No engine resolved, so both arms ran the identical RRF path and any delta below is\n` +
+          `      structurally 0. This is NOT evidence about P-008. Fix the engine and re-run:\n` +
+          `      check FLAGS.LOCAL_RERANK and the embed sidecar's /rerank endpoint.`,
+      );
+      return;
+    }
+    if (orderMovedOn === 0) {
+      console.log(
+        `   ⛔ VOID — the stage ran on ${treatmentActuallyReranked}/${n} batches but the admitted order\n` +
+          `      NEVER moved on any of them. A cross-encoder reproducing RRF order exactly on every\n` +
+          `      batch is far more likely a scorer returning a constant than a genuine agreement.\n` +
+          `      Treat as an engine fault, not as "rerank has no effect".`,
+      );
+      return;
+    }
+
+    const dAdm = t.admitted - c.admitted;
+    const dReach = t.reachable - c.reachable;
+    console.log(
+      `   instrument: stage ran on ${treatmentActuallyReranked}/${n} batches; admitted ORDER moved on ${orderMovedOn}/${n}.`,
+    );
+    console.log(
+      `   CONTROL   (RRF order):  known-item admitted ${c.admitted}/${n}  reachable ${c.reachable}/${n}  ${Math.round(c.ms / n)}ms/batch`,
+    );
+    console.log(
+      `   TREATMENT (reranked) :  known-item admitted ${t.admitted}/${n}  reachable ${t.reachable}/${n}  ${Math.round(t.ms / n)}ms/batch`,
+    );
+    console.log(
+      `   ADMITTED delta ${dAdm > 0 ? `+${dAdm}` : dAdm}` +
+        (dAdm > 0
+          ? '  — the reranker RESCUED a known item the RRF order buried. This is the case FOR P-008.'
+          : dAdm === 0
+            ? '  — NO relevance effect on the acceptance set, despite the order moving. The reorder is real\n' +
+              '     but it is not moving the ANSWER, so the latency below buys nothing measurable here.'
+            : '  — WORSE. The reranker DEMOTED a known item the RRF order admitted. Do not ship it.'),
+    );
+    console.log(
+      `   REACH delta ${dReach > 0 ? `+${dReach}` : dReach} — expected 0: a reorder cannot change what RETRIEVAL returned.` +
+        ' A non-zero value here means the arms differed in something other than the rerank; treat the run as suspect.',
+    );
+    const costPerBatch = Math.round((t.ms - c.ms) / n);
+    console.log(
+      `   ⏱ COST ${costPerBatch > 0 ? '+' : ''}${costPerBatch}ms/batch on a leg whose whole bound is ${'2000ms'}.` +
+        ' This rides the pre-turn prompt build on EVERY turn, so it is charged to every agent whether or not\n' +
+        '     the reorder helped that turn. Weigh the admitted delta against it — a positive delta is not\n' +
+        '     automatically worth paying for, and D-079 found the FILTERS, not the ranking cut, do the selecting.',
+    );
+    console.log(
+      '   ⚠ 7 batches is a SMALL acceptance set: it can establish "this rescues a real buried answer",\n' +
+        '     but a 0/7 delta bounds the effect loosely rather than proving absence.',
+    );
+    return;
+  }
   if (anchorArms) {
     const c = tallyAnchor.control;
     const t = tallyAnchor.treatment;
@@ -1009,6 +1146,8 @@ function parseArgs(argv: readonly string[]): Args {
     // Implies --ceiling's machinery; run it as: --mode none --ceiling --graded-arms
     gradedArms: argv.includes('--graded-arms'),
     anchorArms: argv.includes('--anchor-arms'),
+    // P-008: --mode none --ceiling --rerank-arms
+    rerankArms: argv.includes('--rerank-arms'),
     arityTurns: (get('--arity-turns') ?? '')
       .split(',')
       .map((s) => Number(s.trim()))

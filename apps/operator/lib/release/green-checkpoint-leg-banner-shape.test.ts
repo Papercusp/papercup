@@ -54,11 +54,28 @@ export function bannerIsGreppable(banner: LegBanner): boolean {
   return /FAILED\s*\(npm run/.test(banner.raw);
 }
 
-const SOURCE_PATH =
-  process.env.PROBE_GREEN_CHECKPOINT_SOURCE ?? join(__dirname, 'green-checkpoint.ts');
+/**
+ * Every file that OWNS a leg failure banner — not just green-checkpoint.ts.
+ *
+ * This used to be a single hardcoded path, and that was a hole of exactly the kind this
+ * guard exists to close. WI-37527 extracted the `lint:tsc` banner into
+ * `gate-artifact-verdict-tail.ts` (so the wording could be derived from what the run
+ * actually produced), and the banner left this guard's field of view WITHOUT FAILING IT:
+ * the extractor simply found one fewer banner and every greppability assertion still
+ * passed over the remaining 12. Only the `toContain('lint:tsc')` pin below — which happens
+ * to name that one script — turned a silent coverage loss into a red.
+ *
+ * That is the repo's recurring "unobservable is not empty" shape: a guard whose measurement
+ * is scoped to one location reports a confident green about a population that has moved.
+ * Scan the SET, and add to it whenever a banner moves into a new helper.
+ */
+const BANNER_SOURCE_PATHS = [
+  process.env.PROBE_GREEN_CHECKPOINT_SOURCE ?? join(__dirname, 'green-checkpoint.ts'),
+  join(__dirname, '..', 'gate-artifact-verdict-tail.ts'),
+];
 
 describe('WI-9613: every gate-leg failure banner is greppable', () => {
-  const source = readFileSync(SOURCE_PATH, 'utf8');
+  const source = BANNER_SOURCE_PATHS.map((p) => readFileSync(p, 'utf8')).join('\n');
   const banners = extractLegBanners(source);
 
   it('finds the leg banners at all (guards a vacuous green from a broken extractor)', () => {

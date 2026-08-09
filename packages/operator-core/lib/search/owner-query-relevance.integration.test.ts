@@ -63,36 +63,118 @@ const GROUND_TRUTH_CUTOFF = '2026-08-08T00:00:00Z';
 const HIT_LIMIT = 30;
 
 /**
- * MEASURED FLOORS (2026-08-08, D-031) — SHRINK-ONLY, i.e. ratchet these UP as
- * first-stage ranking improves; never down to make a red go away.
+ * MEASURED FLOORS — SHRINK-ONLY, i.e. ratchet UP as ranking improves; never down
+ * to make a red go away.
  *
- * `theory` recall@30 stands at 2/9 ≈ 0.222 and that is a REAL, OPEN BUG, not a
- * target: 8 of the 9 sessions are retrieved by depth 300 but rank 65–170, so
- * the top-30 cut misses them. Note what that shape means: the sessions are
- * ALREADY ADMITTED and merely ordered too low, so a fix must REORDER what is
- * retrieved. Narrowing the candidate set cannot help.
+ * ── REPORT 1'S FLOOR IS A SESSION COUNT, NOT A RATIO ────────────────────────
+ * At least `THEORY_RECALL_MIN_SESSIONS` of the pinned ground-truth sessions must
+ * appear in the top `HIT_LIMIT`. It is a COUNT because the denominator is
+ * DERIVED LIVE (`tomSessions`) and can only shrink: GROUND_TRUTH_CUTOFF pins the
+ * set's UPPER bound so no new session can enter, but nothing pins the LOWER
+ * bound — a pruned session silently leaves it. The set has already drifted 9 → 8.
  *
- * ⚠ THE TWO FIXES THIS COMMENT USED TO NAME ARE BOTH DEAD. Do not pursue
- * either, and do not re-open them by citing D-031 (which raised both to high
- * on a premise since refuted):
- *   • P-014 (length normalisation) — DROPPED BY MEASUREMENT (D-032). Every
- *     `ts_rank_cd` call site omits the normalisation argument, so there is no
- *     document-length term to tune in the first place.
- *   • P-011 (phrase-awareness) — a STRUCTURAL NO-OP for this report (D-040),
- *     proven rather than measured: the query below is the SINGLE WORD `theory`,
- *     and `phraseto_tsquery('english','theory')` is byte-identical to
- *     `plainto_tsquery('english','theory')` — both emit `'theori'`. Identical
- *     tsquery ⇒ identical candidates ⇒ identical scores ⇒ identical fusion. A
- *     one-word query has no phrase structure to exploit, so no amount of
- *     tuning can rescue it here.
+ * A fixed RATIO against a shrinking denominator is a guard that silently
+ * WEAKENS: 2/9 demands two sessions at denominator 9, 8 and 6, but only ONE at
+ * 4. That is the same false-green class as the vacuous-run hazard in the header,
+ * arriving through the denominator instead of through an empty corpus. Raising
+ * the ratio does NOT fix it — 2/8 weakens at exactly the same denominator — so
+ * only a count does. See `theoryRecallFloor` and the control beside it.
  *
- * The one live route is true term-frequency-aware (BM25) scoring, which PG
- * cannot supply natively — P-035, an owner-gated packaging decision. This floor
- * exists to stop the bug getting WORSE until that ruling lands.
+ * ── WHERE REPORT 1 ACTUALLY STANDS (2026-08-09, D-045) ──────────────────────
+ * recall@30 = 2/8, up from 0/8, once D-045 removed an RRF rank-scale mismatch
+ * that let the 48h fresh-window leg outrank the relevance ranking it continues.
+ * Two gaps remain, in priority order — and NEITHER is a lexical-tuning job:
+ *
+ *   1. The recency DECAY still costs one ground-truth session (production 2/8
+ *      against 3/8 with recency off). That is a DEFAULT_WEIGHT product question,
+ *      not a bug: recency exists because WI-5097 reported staleness AS the bug.
+ *      Do not retune it on the evidence of this one query.
+ *   2. The other 5 are a LEXICAL CEILING (D-041, measured): of 968 turns
+ *      matching `theory`, 859 — 89% — tie at exactly `ts_rank_cd` 0.1000,
+ *      because a passing mention and a real discussion are the same document to
+ *      a keyword ranker. No term-frequency-derived signal can separate them, so
+ *      the only route is the SEMANTIC leg.
+ *
+ * ⚠ FOUR FIXES THIS COMMENT HAS NAMED OVER TIME ARE ALL DEAD. Do not re-open one
+ * by citing the decision that first raised it — each was killed by a LATER
+ * measurement:
+ *   • P-014 (length normalisation) — D-032: every `ts_rank_cd` call site omits
+ *     the normalisation argument, so there is no length term to tune.
+ *   • P-011 (phrase-awareness) — D-040, proven rather than measured: the query
+ *     is the SINGLE WORD `theory`, and `phraseto_tsquery('english','theory')` is
+ *     byte-identical to `plainto_tsquery('english','theory')` — both emit
+ *     `'theori'`. Identical tsquery ⇒ identical candidates, scores and fusion.
+ *   • P-035 (BM25 via a PG extension) — D-041 SUPERSEDES the framing this very
+ *     comment used to carry ("the one live route"). On a ONE-WORD query every
+ *     BM25 ingredient is inert: IDF is a per-TERM scalar that multiplies every
+ *     document identically and so cannot reorder anything at |Q|=1; TF
+ *     saturation has nothing to saturate at tf 0–1; length normalisation is
+ *     D-032 again. BM25 remains right for MULTI-word queries — it is not a fix
+ *     for THIS one.
+ *   • Session-level dedup/rollup — D-044: measured at EXACTLY ZERO recall change
+ *     in both regimes on the real engine. (Its "2→4" was measured on the LEXICAL
+ *     LEG ALONE, where the recency re-rank and fresh-window leg do not exist.)
  */
-const THEORY_RECALL_FLOOR = 2 / 9;
+const THEORY_RECALL_MIN_SESSIONS = 2;
+
+/**
+ * The ratio `assertRelevance` takes, DERIVED from the live denominator so that
+ * the demanded session COUNT stays constant however far the corpus is pruned.
+ *
+ * A zero denominator yields Infinity — an unclearable floor — which is the safe
+ * direction. `skipReason` below refuses that corpus before this is ever reached.
+ */
+function theoryRecallFloor(groundTruthSize: number): number {
+  return THEORY_RECALL_MIN_SESSIONS / groundTruthSize;
+}
 /** Report 2's fix: pollution is at ZERO and must stay there. */
 const KNOWLEDGE_PACK_ACCESSORY_CEILING = 0;
+
+/**
+ * CONTROL for the floor derivation — deliberately OUTSIDE the live-corpus
+ * `describe` below, so it still runs on the fresh/empty database where the eval
+ * itself skips. A guard that has never failed is a guard nobody has tested.
+ *
+ * This floor REPLACED a rule that was wrong in one specific direction, so the
+ * control's job is to FAIL against that retired rule rather than merely agree
+ * with the new one — an agreeing-only control passes just as happily when the
+ * property it claims to police is broken.
+ *
+ * Both predicates below mirror the REAL comparison (`recallAtK >= floor`, i.e.
+ * two divisions by the same denominator) instead of reconstructing it as
+ * `ceil(floor * denominator)`. That is not stylistic: `Math.ceil((2 / 9) * 9)`
+ * is at the mercy of whether the product rounds to 1.999… or 2.000…4, which
+ * would make this control's verdict a floating-point coin toss.
+ */
+describe('P-015 — Report 1\'s recall floor is denominator-independent', () => {
+  /** The smallest number of ground-truth sessions that clears a given rule. */
+  const demandOf = (floor: (denominator: number) => number) => (denominator: number) => {
+    for (let hits = 0; hits <= denominator; hits += 1) {
+      if (hits / denominator >= floor(denominator)) return hits;
+    }
+    return Infinity;
+  };
+  const demanded = demandOf(theoryRecallFloor);
+  /** The rule this replaced: a fixed absolute ratio, measured at denominator 9. */
+  const retired = demandOf(() => 2 / 9);
+
+  it('demands the same session count at every denominator', () => {
+    for (const denominator of [9, 8, 6, 4, 2]) {
+      expect(demanded(denominator), `denominator ${denominator}`).toBe(THEORY_RECALL_MIN_SESSIONS);
+    }
+  });
+
+  it('FAILS against the retired fixed-ratio rule, which weakened as the corpus shrank', () => {
+    // Calibration first: at the denominator the retired rule was authored for,
+    // the two agree. Without this, the divergence below could just as well mean
+    // the control is comparing two unrelated things.
+    expect(retired(9)).toBe(demanded(9));
+    // The divergence that motivated the change: one pruned-corpus denominator at
+    // which the retired rule silently accepted HALF the evidence.
+    expect(retired(4)).toBe(1);
+    expect(demanded(4)).toBe(2);
+  });
+});
 
 /** Everything this eval needs from the live store + engine, or a skip reason. */
 async function setup() {
@@ -216,19 +298,28 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
       // A vacuous run is a failure, never a pass — see the header.
       expect(out.coverage).toBe('complete');
 
-      const verdict = assertRelevance(out, { minRecallAtK: THEORY_RECALL_FLOOR });
+      const verdict = assertRelevance(out, { minRecallAtK: theoryRecallFloor(tomSessions.length) });
       expect(
         verdict.ok,
-        `recall@${HIT_LIMIT}=${out.recallAtK?.toFixed(3)} over ${tomSessions.length} pinned sessions. ` +
-          `${verdict.failures.join(' | ')}\n` +
-          'This floor is SHRINK-ONLY. A red here means first-stage ranking got WORSE — ' +
-          'see D-031: the sessions ARE retrieved (8/9 by depth 300) but rank 65-170, so the ' +
-          'fix must REORDER what is already admitted; more reranking depth will not help.\n' +
-          'Do NOT reach for P-014 or P-011 — both are dead ends and both were once named here: ' +
-          'P-014 (length normalisation) is dropped by measurement (D-032, no normalisation arg ' +
-          'is passed to ts_rank_cd anywhere), and P-011 (phrase-awareness) is a proven no-op for ' +
-          'this query (D-040 — "theory" is one word, so phraseto_tsquery and plainto_tsquery ' +
-          'both emit \'theori\'). The only live route is BM25 via a PG extension: P-035, owner-gated.',
+        `recall@${HIT_LIMIT}=${out.recallAtK?.toFixed(3)} — fewer than ` +
+          `${THEORY_RECALL_MIN_SESSIONS} of the ${tomSessions.length} pinned sessions reached the ` +
+          `top ${HIT_LIMIT}. ${verdict.failures.join(' | ')}\n` +
+          'This floor is SHRINK-ONLY, and it is a COUNT rather than a ratio: it demands the same ' +
+          `${THEORY_RECALL_MIN_SESSIONS} sessions however far the corpus is pruned, so a red here ` +
+          'is a RANKING regression and never a smaller denominator.\n' +
+          'SUSPECT THE FUSION STAGE FIRST. D-045 found an RRF rank-scale mismatch that drove this ' +
+          'exact metric to 0/8: each leg was scored by its rank WITHIN ITS OWN list, so the 48h ' +
+          'fresh-window leg — carrying exactly the rows that had LOST the relevance cut — was ' +
+          're-indexed from 0 in an uncontested pool and collected what the corpus best hit gets. ' +
+          'Run the DIAGNOSTIC below before theorising; it isolates the stage that moved.\n' +
+          'D-031 measured these sessions as RETRIEVED (8 of 9 by depth 300) but ranked 65-170. If ' +
+          'that still holds the fix must REORDER what is already admitted and more reranking ' +
+          'depth cannot help — but re-measure rather than assume: that figure PRE-DATES D-045.\n' +
+          'Do NOT reach for P-014, P-011, P-035 or session dedup. All four are dead ends, and all ' +
+          'four were once named in this very message as the way forward — see the floor comment ' +
+          'above for the measurement that killed each. In particular P-035 (BM25) is NOT the live ' +
+          'route: D-041 superseded that framing, because every BM25 ingredient is inert on a ' +
+          'one-word query.',
       ).toBe(true);
     },
     120_000,
