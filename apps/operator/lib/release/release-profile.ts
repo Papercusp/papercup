@@ -36,7 +36,11 @@ import {
 } from '@papercusp/release-profile';
 import { getRubric as defaultGetRubric, listRubrics as defaultListRubrics } from '@papercusp/operator-core/lib/rubrics';
 import { listScorecards as defaultListScorecards, type ScorecardRow } from '@papercusp/operator-core/lib/scorecards';
-import { readRunningGeneration as defaultReadRunningGeneration } from '@papercusp/operator-core/lib/scout/generation-watermark';
+import {
+  readRunningGeneration as defaultReadRunningGeneration,
+  readBgHostActiveEnterMs as defaultReadBgHostActiveEnterMs,
+  compareGenerationFreshness,
+} from '@papercusp/operator-core/lib/scout/generation-watermark';
 import { currentSha as defaultCurrentSha, commitUnixTime as defaultCommitUnixTime, commitsBetween as defaultCommitsBetween } from './git-ops';
 import {
   evaluateDeployStaleness,
@@ -94,6 +98,9 @@ export const DEFAULT_RUBRIC_STALE_AFTER_MS = 6 * 60 * 60_000;
 export interface RubricComponentDeps {
   getRubric?: typeof defaultGetRubric;
   listScorecards?: typeof defaultListScorecards;
+  /** WI-5277: read the LIVE bg-host generation boundary, to judge whether the latest
+   *  scorecard's generation still exists. Defaults to the real systemd read. */
+  readBgHostActiveEnterMs?: () => Promise<number | null>;
 }
 
 export interface RubricComponentOpts {
@@ -109,16 +116,19 @@ export interface RubricComponentOpts {
  * Build a `ComponentSpec` that reduces one rubric's LATEST COMPLETE scorecard to a
  * pass/fail/unknown verdict. 'unknown' when: the rubric doesn't resolve, isn't
  * `active` (not ratified — grading an unratified draft can never authorize GO), has no
- * scorecard on record, or its latest scorecard is INCOMPLETE (missing/extra keys —
- * never misread an incomplete card's happenstance-empty gaps as "all rated").
- * `gradedGeneration` (when the scorecard carries one) becomes this component's
- * `lineage`, so a profile-level `expectedLineage` mismatch is caught by the evaluator.
+ * scorecard on record, its latest scorecard is INCOMPLETE (missing/extra keys — never
+ * misread an incomplete card's happenstance-empty gaps as "all rated"), or (WI-5277) that
+ * scorecard graded a GENERATION THAT HAS SINCE ENDED.
+ * `gradedGeneration` (when the scorecard carries one) becomes this component's `lineage`
+ * — both its `sha` AND its `generation` boundary — so a profile-level `expectedLineage`
+ * mismatch is caught by the evaluator.
  */
 export function rubricReleaseComponent(rubricRef: string, opts: RubricComponentOpts = {}): ComponentSpec {
   const mandatory = opts.mandatory ?? true;
   const maxAgeMs = opts.maxAgeMs ?? DEFAULT_RUBRIC_STALE_AFTER_MS;
   const getRubricFn = opts.deps?.getRubric ?? defaultGetRubric;
   const listScorecardsFn = opts.deps?.listScorecards ?? defaultListScorecards;
+  const readBoundaryFn = opts.deps?.readBgHostActiveEnterMs ?? defaultReadBgHostActiveEnterMs;
 
   return {
     key: `rubric:${rubricRef}`,
@@ -144,8 +154,34 @@ export function rubricReleaseComponent(rubricRef: string, opts: RubricComponentO
       if (!latest) {
         return { verdict: 'unknown', reason: `no scorecard on record for '${rubricRef}'`, measuredAt: now, evidence: [] };
       }
-      const lineage = latest.gradedGeneration ? { sha: latest.gradedGeneration.deployedSha } : null;
+      // WI-5277: carry the generation BOUNDARY on the lineage stamp, not the sha alone.
+      // LineageStamp already declares `generation`; leaving it unset made a restart that
+      // did NOT move the sha invisible to a profile's expectedLineage check — the exact
+      // shape of EI-14957 (hostStartedAt 14:39:17Z → 17:25:32Z, sha unchanged 7beca0c677).
+      const lineage = latest.gradedGeneration
+        ? { sha: latest.gradedGeneration.deployedSha, generation: latest.gradedGeneration.hostStartedAt }
+        : null;
       const evidence = [{ ref: latest.issueId, kind: 'scorecard', detail: { sourceHive: latest.sourceHive ?? null } }];
+      // WI-5277: dead evidence can never authorize GO. A scorecard graded against a
+      // generation that has since ENDED is exactly as unusable as an incomplete or
+      // unratified one, so it reports 'unknown' — blocking a mandatory component instead
+      // of silently assembling a GO from a stale 6/6. This cannot be delegated to
+      // expectedLineage: that only fires when a profile declares one, whereas the
+      // 2026-07-17 void needed no configuration to happen. The boundary is read ONLY when
+      // there is a stamp to compare it against.
+      const gradedBoundary = latest.gradedGeneration?.hostStartedAt ?? null;
+      const freshness = gradedBoundary
+        ? compareGenerationFreshness(gradedBoundary, await readBoundaryFn().catch(() => null))
+        : null;
+      if (freshness?.status === 'stale') {
+        return {
+          verdict: 'unknown',
+          reason: `latest scorecard for '${rubricRef}' graded a generation that no longer exists — ${freshness.reason}`,
+          measuredAt: latest.createdAt,
+          evidence,
+          lineage,
+        };
+      }
       if (!latest.rubricResolved || latest.missingKeys.length > 0 || latest.extraKeys.length > 0) {
         return {
           verdict: 'unknown',

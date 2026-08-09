@@ -24,11 +24,37 @@
  * per-(ws,install) keying, byte-identical to today.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import {
   isWorkspaceCoordinationOn,
   workspaceBrainScopeKey,
   workspaceBrainReadKeys,
 } from '../workspace-brain-scope';
+
+/**
+ * Is the Mug/Kettle/Cup tier still RUNNABLE?
+ * (retire-mug-kettle-su-only-2026-08-09 P-006/P-007.)
+ *
+ * ⚠ Note the polarity, which is inverted from a normal flag: OFF (the default)
+ * is the DELIVERED state — the tier is retired and su + GOAL mode are the only
+ * way to drive the app. ON is the reversible testing escape hatch. So `false`
+ * here is the expected steady-state answer, not a degraded one.
+ *
+ * Fail-CLOSED: an unreadable flag resolves to retired. The asymmetry is
+ * deliberate — a false `true` silently restarts an autonomous loop the owner
+ * retired, while a false `false` leaves a deliberately-retired tier retired.
+ *
+ * Exported so the watchdog's own sweeps share ONE predicate with the started
+ * bit; two hand-rolled flag reads would be free to drift apart.
+ */
+export async function mugKettleSystemEnabled(): Promise<boolean> {
+  try {
+    return await getFlag(FLAGS.MUG_KETTLE_SYSTEM, 'system');
+  } catch {
+    return false;
+  }
+}
 
 const PREFIX = 'hive_started:';
 const key = (workspaceId: string, installSlug: string): string => `${PREFIX}${workspaceId}:${installSlug}`;
@@ -65,6 +91,30 @@ async function setPotPausedDeliberate(workspaceId: string, scope: string, delibe
  *  per-pot row (zero regression pre-backfill). OFF ⇒ the per-pot row only,
  *  byte-identical to today. */
 export async function getPotStarted(workspaceId: string, installSlug: string): Promise<boolean> {
+  // THE ENGINE GATE (retire-mug-kettle-su-only-2026-08-09 P-007, D-004/D-008).
+  //
+  // The retirement is expressed as a PERMANENT PAUSE rather than as a new
+  // special case, and that is deliberate: watchdog.ts's invariant already says
+  // "SOME next wake is ALWAYS armed while the pot is started — pause
+  // (started=false) is the only thing allowed to clear it." So resolving this
+  // bit false is not a novel code path the system has never taken; it is the
+  // one state every seam downstream already knows how to handle correctly.
+  // One read gates the whole engine: armFallbackPotWake (the single chokepoint
+  // for all three arming seams — turn-end, boot, tick) returns 'pot not
+  // started' and never arms; pot:declare-wake and the event-wake path refuse;
+  // overwatch/loop's own started check goes false.
+  //
+  // FAIL-CLOSED on an unreadable flag: OFF is the delivered state (the tier
+  // retired), so an unknown must not resurrect the mug loop.
+  //
+  // ⚠ This gates the MUG LOOP's liveness bit ONLY — never the shared pot
+  // substrate (D-003). Verified 2026-08-09: packages/operator-core/lib/
+  // agent-tools/loop/** (loop:arm, loop:checkpoint — the su engine loop that
+  // REPLACES this one) contains zero references to getPotStarted, the watchdog
+  // or armFallbackPotWake; its pot/wake import is resolvePotHomeSlug, a slug
+  // resolver. Breaking the replacement system with the flag that retires the
+  // old one is the specific trap D-003 exists to prevent.
+  if (!(await mugKettleSystemEnabled())) return false;
   const { sql } = getOrgPg();
   const on = await isWorkspaceCoordinationOn();
   // OFF → exactly one key (installSlug); the loop is byte-identical to the

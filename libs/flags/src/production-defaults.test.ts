@@ -343,6 +343,28 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // is part of the standard release; when it does, DELETE this entry (do not comment it
   // out as still-dark) and ratchet the watermark 14 → 13 in the same change.
   'papercusp-conversations-rail-tab',
+  //
+  // 2026-08-09 (retire-mug-kettle-su-only-2026-08-09 P-006, owner-directed: "the rest
+  // of the cup/mug/kettle system should be retired") — papercusp-mug-kettle-system.
+  // A DECLARED darkening, so it belongs in this snapshot; but read its polarity before
+  // you act on it, because it is the INVERSE of every other entry here.
+  //
+  // For every flag above, OFF means "the new thing is not on yet" and graduation means
+  // flipping it ON. For this one OFF *IS* the delivered state — the Mug + Kettle +
+  // Cup/nursery tier retired, su + GOAL mode the only way to drive the app. ON is the
+  // reversible TESTING escape hatch. So the usual sweep reflex ("finished work ships
+  // ON — remove it from the dark set") would here silently UN-RETIRE the whole tier,
+  // with nothing erroring: the mug loop, kettle loop and cup placement would simply
+  // come back. It graduates when D-004's Stage 2/3 land (separate the shared pot
+  // substrate, then move the deciders to _retired/) and the flag is DELETED — not when
+  // it is flipped on. D-008 deferred those stages as cleanup, so expect this entry to
+  // outlive the usual review cadence; that is intended, not neglect.
+  //
+  // Count 32 → 33. Parking subset + DARK_FLAGS_HIGH_WATERMARK UNCHANGED at 14: this is
+  // `case: 'cutover'` (a kill switch), and cutover/owner-authority entries are not
+  // rationed by the parking budget — so no graduation trade was owed for the slot.
+  // The polarity + case are pinned by libs/flags/src/mug-kettle-cutover-flag.test.ts.
+  'papercusp-mug-kettle-system',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -584,7 +606,16 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // parked, so the parking subset and DARK_FLAGS_HIGH_WATERMARK both move 13 → 14.
     // Count 31 → 32. It parks the rail TAB only — /adv keeps the same conversations on the
     // same queries — which is why the slot was bought with a raise rather than a trade.
-    expect(offCount).toBe(32);
+    // 2026-08-09 (retire-mug-kettle-su-only-2026-08-09 P-006) — papercusp-mug-kettle-system:
+    // DELIBERATE darkening on an explicit owner directive ("the rest of the cup/mug/kettle
+    // system should be retired"). case: 'cutover', so NO parking-subset or watermark impact
+    // (both stay 14) and no graduation trade was owed. Count 32 → 33.
+    // ⚠ INVERTED POLARITY — unlike every other entry in this ledger, OFF is the DELIVERED
+    // state (the tier retired; su + GOAL mode the only way to drive the app) and ON is the
+    // testing escape hatch. It graduates by being DELETED once D-004's Stage 2/3 land, never
+    // by being flipped on; treating it as ordinary parked work and "graduating" it would
+    // silently un-retire the tier. Pinned by libs/flags/src/mug-kettle-cutover-flag.test.ts.
+    expect(offCount).toBe(33);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

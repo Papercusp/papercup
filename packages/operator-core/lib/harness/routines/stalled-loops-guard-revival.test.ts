@@ -117,15 +117,65 @@ const noRevivable = () => vi.fn<ReadRevivableFn>(async () => []);
 // that logging is the operator-visible half of both fixes (a veto nobody can see in the routine
 // log is indistinguishable from a disabled guard). Silenced rather than asserted-on here; the
 // dispositions are asserted through the result and the write mocks.
+/**
+ * THE CLOCK IS FROZEN, and that is load-bearing — this file EXPIRED once.
+ *
+ * Every fixture above is an ABSOLUTE wall-clock instant, but the code under test compares them
+ * against `Date.now()`: the veto is refused once `nowMs - lastRealTurnAt` reaches
+ * `TOOL_LIVENESS_VETO_CEILING_MS` (stalled-loops-guard.ts ~L1173-1177). With a real clock the
+ * default `lastRealTurnAt` of 16:29Z therefore aged past the 6h ceiling at exactly
+ * 2026-08-09T22:29:00Z, and 'refuses to disarm an owner still making PROGRESSING tool calls'
+ * began failing — permanently, and with no code change to explain it. The last green run was
+ * 22:25:32Z; the red was attributed to the commit that happened to land at 22:26 (61eaf8a4c2),
+ * which had touched nothing in this module. A time bomb reads exactly like a regression.
+ *
+ * Freezing (rather than making each fixture `Date.now()`-relative) is deliberate: it keeps the
+ * absolute literals the other tests assert on — the `sinceIso` probe identities, `pausedAtMs` —
+ * meaningful forever, and it means a test added LATER with a literal timestamp inherits the
+ * fix instead of re-arming the bomb.
+ *
+ * Only `Date` is faked. Faking timers wholesale would stall the awaited sweep.
+ *
+ * The instant is the fixture narrative's own "now": just after WORKING's last tool call (19:21Z),
+ * with the last completed turn 3h01m back — inside the 6h ceiling, as these tests intend.
+ */
+const FROZEN_NOW = '2026-08-09T19:30:00.000Z';
+
 let warnSpy: ReturnType<typeof vi.spyOn>;
 let logSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(FROZEN_NOW));
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 afterEach(() => {
+  vi.useRealTimers();
   warnSpy.mockRestore();
   logSpy.mockRestore();
+});
+
+/**
+ * The recurrence guard for the expiry described at FROZEN_NOW. It fails LOUDLY and by name the
+ * moment the calibration these fixtures rely on stops holding — instead of the suite quietly
+ * going red hours later and reading as a regression in the module under test.
+ */
+describe('fixture clock (recurrence guard — this file expired once, see FROZEN_NOW)', () => {
+  it('runs under the frozen clock, so no fixture can age out mid-suite', () => {
+    expect(Date.now()).toBe(Date.parse(FROZEN_NOW));
+  });
+
+  it("keeps the default status() INSIDE the veto ceiling — the exact calibration that expired", () => {
+    const s = status({ turnsStalled: true });
+    const turnlessForMs = Date.now() - Date.parse(s.lastRealTurnAt as string);
+    expect(turnlessForMs).toBeGreaterThan(0);
+    expect(turnlessForMs).toBeLessThan(TOOL_LIVENESS_VETO_CEILING_MS);
+  });
+
+  it('keeps the turn-stalled shape: the last turn precedes the last fire', () => {
+    const s = status({ turnsStalled: true });
+    expect(Date.parse(s.lastTurnAt as string)).toBeLessThan(Date.parse(s.lastFiredAt as string));
+  });
 });
 
 describe('isProgressingToolActivity (WI-37546 — progress, not volume)', () => {

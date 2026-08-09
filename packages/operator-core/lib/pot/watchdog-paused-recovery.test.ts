@@ -18,6 +18,15 @@ vi.mock('./started', () => ({
   listStartedWorkspaceLoops: vi.fn(),
   listPausedPots: vi.fn(),
   setPotStarted: vi.fn(),
+  // P-007 (retire-mug-kettle-su-only-2026-08-09): pausedPotRecoverySweep now
+  // gates on the tier predicate — a retired tier is a DELIBERATE pause, so
+  // auto-resume must not run against it. Held `true` here so these cases keep
+  // testing the live-tier recovery behaviour they were written for; the
+  // retired-tier case lives in watchdog.test.ts.
+  // Omitting it does not fail loudly: the sweep's own try/catch swallows the
+  // "No mugKettleSystemEnabled export" error into a console.warn, so every
+  // assertion below silently sees an EMPTY result set instead of a real one.
+  mugKettleSystemEnabled: vi.fn(async () => true),
 }));
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({

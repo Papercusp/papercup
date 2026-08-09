@@ -55,6 +55,19 @@ const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[])
 };
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
+// P-007 (retire-mug-kettle-su-only-2026-08-09): getPotStarted now short-circuits
+// to false while the mug/kettle tier is RETIRED (the flag's default). Every case
+// in this file is about K1 papercup-vs-legacy row SCOPING, which only exists to
+// be exercised while the tier is live — so pin the tier ON here. Without this
+// the whole file goes green-to-red in the least informative way: getPotStarted
+// returns false before it reads any row, so the scoping assertions fail with
+// "expected false to be true" and say nothing about scoping at all.
+// Key-aware rather than a blanket `true`: this file's only other flag read
+// (isWorkspaceCoordinationOn) is mocked separately just below, and a blanket
+// true would silently switch that behaviour too if it were ever un-mocked.
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: async (key: string) => key === 'papercusp-mug-kettle-system',
+}));
 // Keep the REAL pure papercup math; only stub the flag read.
 vi.mock('../workspace-brain-scope', async (importActual) => {
   const actual = await importActual<typeof import('../workspace-brain-scope')>();

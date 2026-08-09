@@ -251,8 +251,24 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
       if (!probe) continue;
       const a = await search(probe.query, 'hybrid', RECENCY_PROD);
       const b = await search(probe.query, 'hybrid', RECENCY_PROD);
-      if (a.legs?.degraded || b.legs?.degraded) {
-        checked.push(`${band}: UNVERIFIED (degraded after ${MAX_ATTEMPTS} attempts)`);
+      // ⚠ THIRD site of the `legs.degraded` union trap (see the note at the
+      // lexicalEmpty counter). Gating the control on `degraded` made it abstain
+      // whenever the lexical leg returned zero candidates — which is 45-90% of
+      // mid/long queries — so the control reported UNVERIFIED for precisely the
+      // two bands whose numbers most needed validating, while reporting success
+      // for the one band that needed it least. It looked like a cautious control
+      // and functioned as no control at all.
+      //
+      // Determinism is a property of the ENGINE. A query where BM25 contributes
+      // nothing is still perfectly determinism-testable: two identical runs must
+      // still return identical sets. The ONLY genuine confound is the SEMANTIC
+      // leg differing BETWEEN the two runs (an intermittent embed failure makes
+      // them different configurations, so a disagreement would not be evidence
+      // of nondeterminism). Test exactly that, and nothing else.
+      const semA = a.legs?.semantic.candidates ?? 0;
+      const semB = b.legs?.semantic.candidates ?? 0;
+      if (semA === 0 || semB === 0) {
+        checked.push(`${band}: UNVERIFIED (semantic leg empty in one/both runs — not comparable)`);
         continue;
       }
       const [setA, setB] = [idsOf(a.results), idsOf(b.results)];
@@ -278,13 +294,14 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
       callsTotal: number;
       unmeasurable: number;
       lexicalEmpty: number;
+      lexicalFloored: number;
       reasons: Set<string>;
     };
     const cells = new Map<string, Cell>();
     const cellOf = (k: string) => {
       let c = cells.get(k);
       if (!c) {
-        c = { lexical: [], fresh: [], lexIdentical: 0, callsWeighted: 0, callsTotal: 0, unmeasurable: 0, lexicalEmpty: 0, reasons: new Set() };
+        c = { lexical: [], fresh: [], lexIdentical: 0, callsWeighted: 0, callsTotal: 0, unmeasurable: 0, lexicalEmpty: 0, lexicalFloored: 0, reasons: new Set() };
         cells.set(k, c);
       }
       return c;
@@ -320,7 +337,26 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
         continue;
       }
       // Measured, AND counted: a cell's zero-rate is itself a headline result.
-      if ([prod, noFresh, semantic].some((r) => r.legs?.degraded)) cell.lexicalEmpty += 1;
+      //
+      // ⚠ Read this from the STRUCTURAL field, never from `legs.degraded`.
+      // `summariseLegs` (libs/generic/search/src/legs.ts:204) sets `degraded`
+      // from a UNION of seven reasons — either leg blocked, either leg's calls
+      // all failing, EITHER leg contributing zero, and partial source failures
+      // ("'work_item' is only 75.5% embedded"). Only one of those is "BM25
+      // returned nothing", and the `semantic` arm runs mode:'embeddings' where
+      // its lexical leg is `not-run`, so that arm can NEVER exhibit it. Testing
+      // `.some(r => r.legs?.degraded)` therefore counted six unrelated
+      // conditions under a headline reading "BM25 RETURNED NOTHING".
+      //
+      // `legs.lexical.candidates` is what the fusion stage genuinely saw from
+      // the lexical leg, after the score floor and the fresh-leg dedupe — its
+      // docblock calls it "the number that detects a silently single-legged
+      // search". `floored` separates "the floor ate them" from "there were none".
+      const lexLeg = noFresh.legs?.lexical;
+      if (lexLeg && lexLeg.candidates === 0) {
+        cell.lexicalEmpty += 1;
+        if (lexLeg.floored > 0) cell.lexicalFloored += 1;
+      }
 
       const [p, nf, se] = [idsOf(prod.results), idsOf(noFresh.results), idsOf(semantic.results)];
       const lexicalChurn = minus(nf, se).length; // one knob: the lexical leg
@@ -342,7 +378,8 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
         `  ${key.padEnd(26)} n=${String(lex.n).padStart(3)} of ${String(attempted).padStart(3)} attempted` +
           ` (${c.unmeasurable} unmeasurable — embed failed${c.unmeasurable ? `: ${[...c.reasons].join('; ').slice(0, 60)}` : ''})\n` +
           `      BM25 RETURNED NOTHING for ${c.lexicalEmpty}/${lex.n} queries (${zeroRate.toFixed(0)}%)` +
-          ' — counted as churn 0, NOT excluded\n' +
+          ` — counted as churn 0, NOT excluded` +
+          `${c.lexicalFloored ? ` [${c.lexicalFloored} of them had candidates the SCORE FLOOR removed — a tuning knob, not an absent leg]` : ''}\n` +
           `      LEXICAL leg churn   median ${lex.median} (${asPct(lex.median)})  ` +
           `p25 ${lex.p25} / p75 ${lex.p75}  mean ${lex.mean.toFixed(1)}  ` +
           `| ${c.lexIdentical}/${lex.n} pages IDENTICAL without it\n` +
@@ -363,8 +400,14 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
         '    fresh-window leg is added to production. Each is a ONE-knob comparison.\n' +
         '  • This is INFLUENCE, a CEILING on what improving that leg could affect. It is NOT\n' +
         '    correctness — there is no ground truth here, so it cannot say better or worse.\n' +
-        '  • "degraded" rows are EXCLUDED and counted. A band with many is a band whose\n' +
-        '    numbers are drawn from a biased subset — read n, not just the median.',
+        '  • A query whose LEXICAL leg returned nothing is MEASURED (churn 0), never\n' +
+        '    excluded — those zeros ARE the finding, and the per-cell zero-rate above\n' +
+        '    is a headline result in its own right. Only a query whose SEMANTIC arm\n' +
+        '    came back empty is unmeasurable (the arms are then incomparable); that\n' +
+        '    count is reported per cell as "unmeasurable".\n' +
+        '  • An earlier revision skipped on `legs.degraded` — a 7-reason UNION that\n' +
+        '    includes "lexical contributed 0" — so it deleted precisely the zeros and\n' +
+        '    overstated this leg\'s influence several-fold in the mid and long bands.',
     );
 
     const measured = [...cells.values()].reduce((n, c) => n + c.lexical.length, 0);

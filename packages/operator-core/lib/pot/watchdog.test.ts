@@ -26,11 +26,20 @@ const listStartedPots = vi.fn();
 // the de-duped workspace-loop set; OFF it is byte-identical to listStartedPots.
 const listStartedWorkspaceLoops = vi.fn();
 const setPotStarted = vi.fn();
+// P-007 (retire-mug-kettle-su-only-2026-08-09): the watchdog now shares ONE
+// tier predicate with the started bit. It MUST be present in this mock — a
+// partial vi.mock factory makes the whole suite fail to COLLECT, with an error
+// naming neither the new import nor the change that added it. Defaulted to
+// `true` (tier enabled) so every pre-existing case below keeps exercising the
+// live-tier behaviour it was written for; the retirement cases live in
+// mug-kettle-engine-gate.test.ts.
+const mugKettleSystemEnabled = vi.fn(async () => true);
 vi.mock('./started', () => ({
   getPotStarted: (...a: unknown[]) => getPotStarted(...a),
   listStartedPots: (...a: unknown[]) => listStartedPots(...a),
   listStartedWorkspaceLoops: (...a: unknown[]) => listStartedWorkspaceLoops(...a),
   setPotStarted: (...a: unknown[]) => setPotStarted(...a),
+  mugKettleSystemEnabled: (...a: unknown[]) => mugKettleSystemEnabled(...(a as [])),
 }));
 
 // harness-registry.ts is OUT OF SCOPE — the real export is isRegisteredHive
@@ -86,6 +95,8 @@ import {
   watchdogDemandSleepSec,
   watchdogStaleSec,
   scopedFireReason,
+  clearRetiredTierWakes,
+  pausedPotRecoverySweep,
 } from './watchdog';
 
 const NOW = 1_750_000_000_000;
@@ -433,5 +444,86 @@ describe('scopedFireReason — a scoped fire must be findable by its own key', (
 
   it('is a no-op when no scopeKey is in play — unscoped callers are unaffected', () => {
     expect(scopedFireReason('plain reason', undefined, 'tick')).toBe('plain reason');
+  });
+});
+
+/**
+ * P-007 — the watchdog side of the retirement gate
+ * (retire-mug-kettle-su-only-2026-08-09, D-004/D-008).
+ *
+ * getPotStarted going false stops NEW arming (covered in
+ * mug-kettle-engine-gate.test.ts). These cases cover the two things that gate
+ * cannot do by itself: un-arming a wake scheduled BEFORE the flip, and stopping
+ * the paused-pot sweep from writing started=true against a deliberately
+ * retired tier.
+ */
+describe('P-007: the mug/kettle tier is RETIRED (papercusp-mug-kettle-system OFF)', () => {
+  beforeEach(() => {
+    mugKettleSystemEnabled.mockResolvedValue(false);
+  });
+
+  it('the 30s sweep arms nothing and never reaches the per-pot liveness queries', async () => {
+    listStartedWorkspaceLoops.mockResolvedValue([{ workspaceId: 'ws', installSlug: 'papercusp' }]);
+    getPotTimeWake.mockResolvedValue(null);
+
+    const res = await potWatchdogSweep({ now: Date.now() });
+
+    expect(res).toEqual([]);
+    expect(declarePotTimeWake).not.toHaveBeenCalled();
+    // The sweep must not keep paying for registry/liveness reads every 30s
+    // forever once the tier is retired.
+    expect(isRegisteredPot).not.toHaveBeenCalled();
+  });
+
+  it('CLEARS a wake armed BEFORE the flip, so it cannot fire post-retirement', async () => {
+    // This is the one way the retirement leaks: the owner turns the Mug off and
+    // it wakes anyway, once, for reasons nothing in the logs explains.
+    listStartedWorkspaceLoops.mockResolvedValue([{ workspaceId: 'ws', installSlug: 'papercusp' }]);
+    getPotTimeWake.mockResolvedValue({ nextWakeAt: Date.now() + 60_000 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { cleared } = await clearRetiredTierWakes();
+
+    expect(cleared).toBe(1);
+    expect(clearPotTimeWake).toHaveBeenCalledTimes(1);
+    // The disarm must be ANNOUNCED, not silent. A wake vanishing with no log is
+    // indistinguishable from the bug this fixes (a wake that never fires), and
+    // whoever debugs the Mug next needs to see why it stopped.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/RETIRED.*cleared a wake armed before the flip/s);
+    warn.mockRestore();
+  });
+
+  it('the clear is IDEMPOTENT — a second pass finds nothing, so it needs no marker row', async () => {
+    listStartedWorkspaceLoops.mockResolvedValue([{ workspaceId: 'ws', installSlug: 'papercusp' }]);
+    getPotTimeWake.mockResolvedValue(null); // already cleared by an earlier pass
+
+    const { cleared } = await clearRetiredTierWakes();
+
+    expect(cleared).toBe(0);
+    expect(clearPotTimeWake).not.toHaveBeenCalled();
+  });
+
+  it('paused-pot AUTO-RESUME does not run — a retired tier is a deliberate pause', async () => {
+    // Not just inert-by-downstream-read: a resume write WIPES the deliberate
+    // pause provenance (WI-3261/WI-3309), so the owner's pause record would be
+    // destroyed on a timer by a sweep whose effect no longer applies.
+    const res = await pausedPotRecoverySweep({ now: Date.now() });
+
+    expect(res).toEqual([]);
+    expect(setPotStarted).not.toHaveBeenCalled();
+  });
+
+  it('CALIBRATION — tier ENABLED: the clear is a no-op and live wakes survive', async () => {
+    mugKettleSystemEnabled.mockResolvedValue(true);
+    listStartedWorkspaceLoops.mockResolvedValue([{ workspaceId: 'ws', installSlug: 'papercusp' }]);
+    getPotTimeWake.mockResolvedValue({ nextWakeAt: Date.now() + 60_000 });
+
+    const { cleared } = await clearRetiredTierWakes();
+
+    // Without this, a clear that ignored the flag would pass every case above
+    // while silently disarming the tier whenever it is flipped ON for testing.
+    expect(cleared).toBe(0);
+    expect(clearPotTimeWake).not.toHaveBeenCalled();
   });
 });

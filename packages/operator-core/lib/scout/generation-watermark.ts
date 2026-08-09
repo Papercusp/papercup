@@ -238,3 +238,92 @@ export async function resolveWatermarkRef(ref: string): Promise<WatermarkResolut
   }
   return { ok: true, ms };
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Generation FRESHNESS (WI-5277) — has the generation this evidence graded ENDED?
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The verdict of comparing evidence's STAMPED generation boundary against the boundary
+ * running RIGHT NOW.
+ *
+ * ⚠ This is NOT {@link RunningGeneration.staleHost}, and confusing the two is what let
+ * WI-5277 survive a year of near-misses. `staleHost` is computed AT STAMP TIME and then
+ * frozen into the row forever: it answers *"was the scout provably executing
+ * `deployedSha`'s code at the moment this was graded"*. `GenerationFreshness` answers a
+ * question **no stored field can ever answer** — *"has that generation ended since?"* —
+ * because it requires reading the live boundary at READ time. A row can carry
+ * `staleHost: false` (proven fresh when graded) and still be `stale` here; that is
+ * exactly the 2026-07-17 incident this exists for, where a 4.5h soak and a 6/6 scorecard
+ * were voided by a bg-host restart three minutes after they were emitted.
+ *
+ * Fails toward NOT-PROVEN-FRESH in every ambiguous case, mirroring `staleHost`'s own
+ * convention: `fresh` is reported ONLY on a positive match of two resolved boundaries.
+ */
+export type GenerationFreshness =
+  | { status: 'fresh'; gradedHostStartedAt: string; liveHostStartedAt: string }
+  | { status: 'stale'; gradedHostStartedAt: string; liveHostStartedAt: string; reason: string }
+  | { status: 'unknown'; reason: string };
+
+/**
+ * PURE: compare a stamped generation boundary against the live one.
+ *
+ * `gradedHostStartedAt` is the ISO boundary carried on the evidence (a scorecard's
+ * `gradedGeneration.hostStartedAt`); `liveHostStartedAtMs` is the boundary running now
+ * (from {@link readBgHostActiveEnterMs}, whose epoch-ms is the SAME source the stamp was
+ * derived from, so an unchanged generation compares exactly equal).
+ *
+ * Kept pure + IO-free so the decision is testable without systemd and so a caller can
+ * resolve the live boundary ONCE and judge many rows against it.
+ */
+export function compareGenerationFreshness(
+  gradedHostStartedAt: string | null | undefined,
+  liveHostStartedAtMs: number | null,
+): GenerationFreshness {
+  if (typeof gradedHostStartedAt !== 'string' || !gradedHostStartedAt.trim()) {
+    return {
+      status: 'unknown',
+      reason:
+        'this evidence carries no generation boundary (a pre-stamp row, or hostStartedAt was ' +
+        'unresolvable when it was graded) — freshness cannot be judged, so it must not be read as fresh',
+    };
+  }
+  const gradedMs = Date.parse(gradedHostStartedAt);
+  if (!Number.isFinite(gradedMs)) {
+    return {
+      status: 'unknown',
+      reason: `the stamped generation boundary '${gradedHostStartedAt}' is not a parseable timestamp`,
+    };
+  }
+  if (liveHostStartedAtMs == null) {
+    return {
+      status: 'unknown',
+      reason:
+        `the LIVE ${BG_HOST_UNIT} generation boundary is unreadable, so this evidence's generation ` +
+        'can be neither confirmed nor refuted',
+    };
+  }
+  const liveHostStartedAt = new Date(liveHostStartedAtMs).toISOString();
+  if (liveHostStartedAtMs === gradedMs) {
+    return { status: 'fresh', gradedHostStartedAt, liveHostStartedAt };
+  }
+  if (liveHostStartedAtMs > gradedMs) {
+    return {
+      status: 'stale',
+      gradedHostStartedAt,
+      liveHostStartedAt,
+      reason:
+        `${BG_HOST_UNIT} restarted at ${liveHostStartedAt}, ending the generation that began ` +
+        `${gradedHostStartedAt} — the generation this evidence measured no longer exists`,
+    };
+  }
+  // live < graded: the stamp claims a boundary NEWER than the running one. Impossible for
+  // a single healthy host — clock skew, a restored row, or a stamp made against a
+  // different machine. "Not proven fresh" is the only safe reading; never report fresh.
+  return {
+    status: 'unknown',
+    reason:
+      `the stamped generation boundary ${gradedHostStartedAt} is NEWER than the live one ` +
+      `(${liveHostStartedAt}) — clock skew or a stamp from a different host; freshness cannot be established`,
+  };
+}

@@ -34,7 +34,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { clearPotTimeWake, declarePotTimeWake, getPotTimeWake, readPotWakeState } from './wake';
-import { getPotStarted, listStartedWorkspaceLoops, setPotStarted } from './started';
+import { getPotStarted, listStartedWorkspaceLoops, mugKettleSystemEnabled, setPotStarted } from './started';
 
 // ── tunables (env-overridable, like the wake floor) ──────────────────────────
 
@@ -758,9 +758,54 @@ export async function potTurnEndCheck(opts: { workspaceId: string; installSlug: 
  * process died mid-turn). For every STARTED pot with no wake armed, arm the
  * fallback. Fail-soft; never blocks boot.
  */
+/**
+ * P-007 — the RETIREMENT TRANSITION CLEAR
+ * (retire-mug-kettle-su-only-2026-08-09, D-004/D-008).
+ *
+ * Gating `getPotStarted` stops the watchdog ARMING a new wake, but it cannot
+ * un-arm one that was already scheduled before the flip. A time wake armed
+ * while the tier was live outlives the flag flip and fires afterwards, which is
+ * the one way the retirement leaks: the owner turns the Mug off and it wakes up
+ * anyway, once, for reasons nothing in the logs explains.
+ *
+ * So: while the tier is retired, clear any still-armed pot time wake. This is
+ * "once on the transition" BY CONSTRUCTION rather than by bookkeeping — the
+ * first pass after the flip clears them and every later pass finds nothing to
+ * clear, so there is no marker row to get out of sync with reality (and a pass
+ * that fails is simply retried by the next one, which a one-shot marker would
+ * not be). No-ops entirely while the tier is enabled, so a testing session that
+ * flips the flag ON keeps its wakes.
+ */
+export async function clearRetiredTierWakes(): Promise<{ cleared: number }> {
+  let cleared = 0;
+  try {
+    if (await mugKettleSystemEnabled()) return { cleared: 0 };
+    const loops = await listStartedWorkspaceLoops();
+    if (loops.length === 0) return { cleared: 0 };
+    const { sql } = getOrgPg();
+    for (const { workspaceId, installSlug } of loops) {
+      const wake = await getPotTimeWake(sql, installSlug, { workspaceId }).catch(() => null);
+      if (!wake) continue;
+      await clearPotTimeWake(sql, installSlug, { workspaceId });
+      cleared += 1;
+      console.warn(
+        `[pot-watchdog] mug/kettle tier is RETIRED (papercusp-mug-kettle-system OFF) — cleared a ` +
+          `wake armed before the flip for ${workspaceId}/${installSlug}, so it cannot fire post-retirement.`,
+      );
+    }
+  } catch (e) {
+    // Never throw into boot or the 30s tick; the next pass retries.
+    console.warn(`[pot-watchdog] retired-tier wake clear failed: ${e instanceof Error ? e.message : e}`);
+  }
+  return { cleared };
+}
+
 export async function potBootCheck(): Promise<FallbackArmResult[]> {
   const results: FallbackArmResult[] = [];
   try {
+    // P-007: un-arm anything scheduled before the retirement flip, BEFORE the
+    // arming pass below (which is itself inert while retired).
+    await clearRetiredTierWakes();
     // K1 (workspace-scoped-coordination P-003): the de-duped liveness set — ONE
     // loop per workspace when WORKSPACE_COORDINATION is ON, the raw per-pot set
     // (byte-identical) when OFF.
@@ -795,6 +840,15 @@ export async function potWatchdogSweep(opts: { now?: number } = {}): Promise<Fal
   try {
     // K1 (workspace-scoped-coordination P-003): ONE loop per workspace when
     // WORKSPACE_COORDINATION is ON; the raw per-pot set (byte-identical) OFF.
+    // P-007: while the tier is retired this sweep does no arming (every path
+    // below funnels through armFallbackPotWake, which sees started=false) — but
+    // it IS the seam that notices the flip without waiting for a reboot, so it
+    // owns the transition clear. Returning here also keeps the retired steady
+    // state cheap: no per-pot liveness/registry queries every 30s forever.
+    if (!(await mugKettleSystemEnabled())) {
+      await clearRetiredTierWakes();
+      return results;
+    }
     const started = await listStartedWorkspaceLoops();
     if (started.length === 0) return results;
     const { sql } = getOrgPg();
@@ -966,6 +1020,16 @@ export async function pausedPotRecoverySweep(opts: { now?: number } = {}): Promi
   const staleSec = pausedRecoveryStaleSec();
   if (staleSec <= 0) return results; // kill switch
   try {
+    // P-007 (retire-mug-kettle-su-only-2026-08-09): this sweep exists to undo an
+    // ACCIDENTAL pause — it writes setPotStarted(true). A retired tier is a
+    // DELIBERATE, permanent pause, so auto-resume must not run against it. The
+    // resume would be inert (getPotStarted gates false regardless), but "inert"
+    // is not good enough here: it would rewrite the started rows on a timer and,
+    // per the WI-3261/WI-3309 history below, a resume write WIPES the deliberate
+    // pause provenance — so the owner's pause record would be destroyed by a
+    // sweep whose own effect no longer applies. Gate it, don't rely on the
+    // downstream read.
+    if (!(await mugKettleSystemEnabled())) return results;
     const { listPausedPots, setPotStarted } = await import('./started');
     const paused = await listPausedPots();
     if (paused.length === 0) return results;

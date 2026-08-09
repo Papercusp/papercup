@@ -31,6 +31,11 @@ import {
 import { issuesScopeWorkspace, issuesOutLinksMany, type IssueOutLink } from './issues-engineer';
 import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
 import { pgTimestampToIso } from './pg-timestamp';
+import {
+  compareGenerationFreshness,
+  readBgHostActiveEnterMs,
+  type GenerationFreshness,
+} from './scout/generation-watermark';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
@@ -279,6 +284,19 @@ export interface ScorecardRow {
    * doc comment for the full shape rationale. Absent on pre-stamp scorecards.
    */
   gradedGeneration?: GradedGeneration;
+  /**
+   * WI-5277: whether {@link gradedGeneration}'s boundary is STILL the running one, judged
+   * at READ time against the live bg-host watermark. Present whenever the row carries a
+   * `gradedGeneration` at all.
+   *
+   * ⚠ Do NOT substitute `gradedGeneration.staleHost` for this. That field is frozen at
+   * stamp time and says whether the scout was provably running the graded code THEN; it
+   * cannot say whether the generation has since ENDED. A row reading `staleHost: false`
+   * can still be `{ status: 'stale' }` here — which is precisely the 2026-07-17 failure
+   * (a 4.5h soak + 6/6 verdict voided by a restart 3 minutes after emit) that no reader
+   * noticed because a plausible-looking `staleHost` was sitting right next to it.
+   */
+  generationFreshness?: GenerationFreshness;
 }
 
 /** The projected {@link parseGradedGeneration} shape — see RunningGeneration
@@ -464,6 +482,16 @@ export interface ListScorecardsFilter {
    * Cheap+visible beats expensive+invisible, so absence of an opinion must mean "don't".
    */
   includeLinks?: boolean;
+  /**
+   * Test seam (WI-5277) — override the LIVE generation-boundary read used to judge each
+   * row's {@link ScorecardRow.generationFreshness}. Production leaves this unset and
+   * reads systemd. Injectable so the freshness verdict is testable without a running
+   * bg-host, and so a test can prove the STALE branch (which no fixture can otherwise
+   * reach, since the live boundary is whatever this box happens to be doing).
+   */
+  deps?: {
+    readBgHostActiveEnterMs?: () => Promise<number | null>;
+  };
 }
 
 interface ScorecardRowDb {
@@ -527,6 +555,20 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
     ? await issuesOutLinksMany(rows.map((r) => r.issue_id))
     : new Map<string, IssueOutLink[]>();
 
+  // WI-5277: resolve the LIVE generation boundary AT MOST ONCE per call, and only when
+  // some row actually carries a stamp to judge — a read that could produce no freshness
+  // verdict anyway must not pay for a systemd probe. Deliberately NOT
+  // readRunningGeneration(): that also runs a `git log --before` and a tick-ledger query
+  // to rebuild the full identity, and all we need here is the boundary itself.
+  const anyStamped = rows.some(
+    (r) =>
+      (r.payload as { observation?: { gradedGeneration?: unknown } } | null)?.observation?.gradedGeneration != null,
+  );
+  const readLiveBoundary = filter.deps?.readBgHostActiveEnterMs ?? readBgHostActiveEnterMs;
+  // Best-effort by construction: a freshness verdict must never fail the read it rides
+  // on, and an unreadable boundary degrades to `unknown`, never to a false `fresh`.
+  const liveHostStartedAtMs = anyStamped ? await readLiveBoundary().catch(() => null) : null;
+
   for (const row of rows) {
     const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
     // The SQL guarantees rubricRef is set, but parse defensively (a malformed
@@ -568,6 +610,12 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
     const gradedGeneration = parseGradedGeneration(
       (row.payload as { observation?: { gradedGeneration?: unknown } } | null)?.observation?.gradedGeneration,
     );
+    // WI-5277: the stamp alone never told a reader whether the generation it names is
+    // still alive — that answer only exists at READ time. Attach it to the row so no
+    // consumer has to remember to compare boundaries by hand (nobody did).
+    const generationFreshness = gradedGeneration
+      ? compareGenerationFreshness(gradedGeneration.hostStartedAt, liveHostStartedAtMs)
+      : null;
 
     out.push({
       issueId: row.issue_id,
@@ -585,6 +633,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       score10: scorecardScore10(projectionRatings, meta.overrides),
       linkedItems: linksByIssue.get(row.issue_id) ?? [],
       ...(gradedGeneration ? { gradedGeneration } : {}),
+      ...(generationFreshness ? { generationFreshness } : {}),
     });
   }
 

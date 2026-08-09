@@ -1066,6 +1066,29 @@ export const FLAGS = {
   // DARK_FLAGS): this gates behaviour that already ships. OFF = no synthesized floor;
   // agent-emitted scorecards are unaffected.
   SCORECARD_EMISSION_PULSE: "papercusp-scorecard-emission-pulse",
+  // retire-mug-kettle-su-only-2026-08-09 (D-004/D-008, owner-directed 2026-08-09):
+  // the single cutover switch for the MUG + KETTLE + CUP/nursery tier. su + GOAL mode
+  // become the only way to drive the app; Scout and Blender survive INTACT (D-001) and
+  // are NOT gated by this flag.
+  //
+  // ⚠ READ THE POLARITY CAREFULLY — it is INVERTED relative to a normal dark flag, and
+  // that inversion is the whole point of the item. For an ordinary flag OFF means "the
+  // old behaviour, nothing new happens". Here OFF is the CHANGE:
+  //   DEFAULT OFF = the tier is RETIRED (no mug loop, no kettle loop, no cup/nursery
+  //                 placement). This is the intended steady state.
+  //   ON          = the tier is available again, for TESTING only — the reversible
+  //                 escape hatch, which is why this is `case: 'cutover'` and not a
+  //                 parked/incomplete entry (it is a kill switch, not unfinished work,
+  //                 so it is NOT rationed by DARK_FLAGS_HIGH_WATERMARK).
+  // So "graduating" this flag does NOT mean flipping it ON. It means deleting the
+  // tier (Stage 2/3 of D-004, deferred by D-008) and removing the flag entirely.
+  //
+  // Do NOT gate the SHARED POT SUBSTRATE on this (D-003): loop:arm and loop:checkpoint —
+  // the su engine loop itself — import resolvePotHomeSlug from pot/wake, and 53 of the
+  // 87 wake findings in docs/mug-kettle-surface-census.json are substrate the su system
+  // runs on. Gating those would break the replacement system with the flag that is
+  // supposed to be retiring the old one.
+  MUG_KETTLE_SYSTEM: "papercusp-mug-kettle-system",
   // sentinel-as-herald-2026-06-21: gates the PAPERCUP role (formerly `sentinel`) — a
   // new always-on autonomous system-health supervisor (sibling to the Mug, mirrors
   // OVERWATCH). The flag gates (a) the `papercup` role registration, (b) the
@@ -2452,6 +2475,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.AUTHORITY_EVICTION_PROBE, { case: 'cutover', reason: 'shared-hive-hardening-2026-06-13 P-016: wires the φ-accrual + SWIM failure detector into authority selection so a crashed authority is evicted promptly instead of waiting out the 90s staleness window. Rides the same unverified cross-machine RPC seam as AUTHORITY_RPC_PROTOMUX; real-hardware-UNVERIFIED (D-003). Comment always said "DEFAULT OFF (dark)... KNOWN_DARK_FLAGS" but was never added here, so P-011 derived it live-ON. wirePeerEviction installs no monitor when off and single-box/no-transport is a no-op anyway; OFF = staleness-only selection, byte-identical to pre-P-016. Owner/leader flips ON after the two-machine proof.' }],
     [FLAGS.MUG_FULL_AUTONOMY, { case: 'owner-authority', reason: 'WI-4238: the recursive-self-improvement boundary. When ON, (1) the autonomy decider returns `auto` for categorical HARD GATES — authority:\'owner\', protected/locked categories, irreversible actions, above-ceiling, and graduation:* ratification asks — so the Queen widens her own ceilings without pausing; and (2) the self-improvement auto-implement loop lifts the protectedPathPatterns/protectedKeywords TCB bars, making a kind=bug that touches the deploy gate / flags / capability dispatch / migrations / the loop\'s OWN code auto-implement-eligible. The flag\'s own comment has always said "OFF by default — DELIBERATE, NOT the alpha flags-default-on policy" and warned it "removes the last human check on the system widening its own ceilings and editing its own safety machinery" — but it was never added here, so the 2026-06-29 P-011 inversion silently derived it default-ON. OFF ⇒ the documented gated residue is restored VERBATIM (pinned both directions in tests); the decider/loop fail-DARK on a flag-IO error. Owner flips ON only by personally ratifying full autonomy.' }],
     [FLAGS.FLEET_HEADCOUNT_GOVERNOR, { case: 'owner-authority', reason: 'WI-2479: persistent per-fleet headcount auto-top-up can open real agent sessions without an attended launch call. The routine is bounded to a live deficit, uses an atomic retry lease plus the existing launch-window guard, and exponentially backs off failures, but it remains a fleet-autonomy escalation surface. OFF is a pure no-op; owner flips ON only after reviewing the no-storm and no-double-open tests.' }],
+    [FLAGS.MUG_KETTLE_SYSTEM, { case: 'cutover', reason: 'retire-mug-kettle-su-only-2026-08-09 (D-004/D-008, owner-directed 2026-08-09: "the rest of the cup/mug/kettle system should be retired"). THE POLARITY IS INVERTED vs every other entry here, so do not read this as unfinished work: OFF (the default) is the DELIVERED end state — the Mug + Kettle + Cup/nursery tier is retired and su + GOAL mode are the only way to drive the app. ON is the reversible TESTING escape hatch, which is exactly what makes this a cutover kill-switch rather than a parked/incomplete entry (and therefore not rationed by DARK_FLAGS_HIGH_WATERMARK). Consequently this flag does NOT graduate by being flipped ON: it graduates when Stage 2/3 of D-004 (separate the shared pot substrate, then move the deciders to _retired/) lands and the flag is DELETED. D-008 deferred those stages as cleanup, so this entry is expected to outlive the usual review cadence. Scout + Blender survive intact (D-001) and are NOT gated here; neither is the shared pot substrate (D-003) — loop:arm/loop:checkpoint import resolvePotHomeSlug from pot/wake, so gating it would break the replacement system with the very flag retiring the old one. Two gap-closers land BEFORE the flip and are non-optional (D-008): P-034 (retarget the three Scout watchdogs whose only consumer is the Mug) and P-035 (the scorecard-emission pulse, decoupled in D-015) — without them the flip degrades SILENTLY rather than erroring.' }],
     [FLAGS.MEM0_FEDERATION_EGRESS, { case: 'owner-authority', reason: 'mem0-cross-machine-federation-2026-07-10 (F1-1 mirror, D-006 privacy): gates the cross-machine federation of SHAREABLE memories (memory:remember with shareable=true). When ON, capture triggers enqueue shareable=true memories to the peer-log outbox, and receive-side projections apply remote memories to the local store (source-partitioned H6 pattern mirroring agent-facts). OWNER-AUTHORITY: memory federation affects what personal memory data leaves the machine — only the owner ratifies when/how/which memories federate. The privacy gates ride the SAME pot-visibility + member-admission guards as agent-facts (private pots never leak; only admitted members receive). OFF ⇒ shareable flag has no effect — capture stays quiet and egress never happens (byte-identical to today\'s personal-only behavior). Owner flips ON after reviewing privacy implications + confirming the privacy gates are in effect.' }],
   ]);
 
