@@ -478,6 +478,26 @@ const decisions: SearchSource = {
  * ⚠ Never `SELECT *` from `harness_shared.engineer_issues` — since 776 that ships a
  * 768-dim vector per row, on what is the single largest DB consumer here (WI-6993).
  * Name your columns, as both legs below do.
+ *
+ * ─── WORK_ITEM_RECENCY_NOTE (P-009) ───────────────────────────────────────────
+ *
+ * Both legs project `ts` from `updated_at`. This is a PRECONDITION for the corpus
+ * leg's recency re-rank, not an optimisation, because "no timestamp" and "old" are
+ * the SAME value downstream: `applyRecencyRerank` scores a hit with no time as
+ * `decay = 0` — i.e. maximally old — by documented design, never as "unknown".
+ *
+ * Measured 2026-08-09: work-items are 36.6% of all corpus refs surfaced in 24h, and
+ * every one of them arrived with `ts: null`. Turning recency on while this leg stayed
+ * blind would therefore have demoted better than a third of the section for being
+ * UNMEASURABLE — and demoted exactly the population D-078/P-005 had just finished
+ * making retrievable. Worse, it would have looked like recency working correctly
+ * (work-items sinking) rather than like a bug.
+ *
+ * `updated_at` is 100% populated (33,346/33,346 rows in scope, spanning 2026-06-18
+ * → now), so this closes the gap rather than narrowing it. It is read from the VIEW,
+ * like every other column here — the base table's `updated_ts` is the same fact in
+ * epoch-ms, and reaching past the view for it would restate the scope/severity
+ * derivation the view exists to hold exactly once.
  */
 const workItem: SearchSource = {
   name: 'work_item',
@@ -547,7 +567,7 @@ const workItem: SearchSource = {
    */
   async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
     const rows = (await sql`
-      SELECT issue_id, scope, title, body, kind, state, severity,
+      SELECT issue_id, scope, title, body, kind, state, severity, updated_at,
              1 - (embedding <=> ${qVec}::vector) AS sim,
              ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
                plainto_tsquery('english', ${query}),
@@ -568,6 +588,7 @@ const workItem: SearchSource = {
       kind: string;
       state: string;
       severity: string;
+      updated_at: string | Date | null;
       sim: number;
       highlight: string;
     }>;
@@ -583,6 +604,8 @@ const workItem: SearchSource = {
           excerpt: `[${r.kind}/${r.state}/${r.severity}] ${trunc(body)}`,
           highlight: r.highlight,
           score: r.sim,
+          // Mirrors the lexical leg — see WORK_ITEM_RECENCY_NOTE.
+          ts: r.updated_at,
           rankers: ['embeddings'],
         },
       };

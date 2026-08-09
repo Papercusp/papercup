@@ -100,7 +100,7 @@ vi.mock('../../bounded-timeout', () => ({
 const tool = (await import('./checkpoint')).default;
 // REAL (the carry-note mock above spreads importOriginal) — used to build prior notes
 // through the same renderer the store persists, rather than a drift-prone literal.
-const { mergeCarryRows } = await import('../../carry-note');
+const { mergeCarryRows, CARRY_NOTE_MAX_CHECKS } = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -735,9 +735,10 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.checks).toBe(1);
     expect(b.checksDropped).toBeUndefined();
     // The stored note is the artifact a cold wake reads — assert against IT, not a count.
-    expect(written()).toContain('gate is green AT TIP, not at the candidate');
-    expect(written()).toContain('saw 30/30');
-    expect(written()).not.toContain('- ✓ [#gate] gate is green —');
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    expect(written).toContain('gate is green AT TIP, not at the candidate');
+    expect(written).toContain('saw 30/30'); // evidence inherited across the reword
+    expect(written).not.toContain('- ✓ [#gate] gate is green —'); // the old wording is GONE, not duplicated
   });
 
   it("explains that merge's [] is a no-op, so a caller never reads it as a failed clear", async () => {

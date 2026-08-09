@@ -540,11 +540,11 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
     byRef.set(ref, { hit, terms: shared, rank });
   });
 
-  // 5: order. The engine's fused order is the primary key; multi-ranker
-  // agreement (a hit BOTH legs found) breaks ties, since it is the only
-  // quality signal here that does not depend on an absolute scale.
+  // 5: order. Multi-ranker AGREEMENT leads (it is the one quality signal here
+  // that does not depend on an absolute scale), and the engine's fused order —
+  // which since P-009 is recency-blended — orders within each agreement tier.
   const ordered = [...byRef.entries()].sort((a, b) => {
-    const agree = (b[1].hit.rankers?.length ?? 1) - (a[1].hit.rankers?.length ?? 1);
+    const agree = retrievalAgreement(b[1].hit) - retrievalAgreement(a[1].hit);
     if (agree !== 0) return agree;
     return a[1].rank - b[1].rank;
   });
