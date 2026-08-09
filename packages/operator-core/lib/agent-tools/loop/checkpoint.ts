@@ -38,6 +38,7 @@ import {
   CARRY_ROW_SOFT_CAPS,
   CARRY_TEXT_SOFT_CAP,
   CARRY_CAP_HARD_MULTIPLE,
+  CARRY_ROW_ID_MAX,
   coerceCarryRowShape,
   truncateCarryField,
   type CarryArgRepair,
@@ -57,6 +58,19 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
 export const CONTINUATION_READ_BUDGET_MS = 5_000;
+
+/** P-013 — the optional stable row identity, shared by the walls and checks schemas
+ *  (their contract is deliberately identical). Out-of-charset input is REPAIRED, not
+ *  rejected, by `sanitizeCarryRowId` downstream; the loose `.max()` here is the same
+ *  sanity backstop the row text fields use. */
+const CARRY_ROW_ID_SCHEMA = z
+  .string()
+  .max(CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE)
+  .optional()
+  .describe(
+    "Stable id for this row (e.g. 'gate-green'), independent of wording. Lets you RE-WORD the claim without " +
+      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. Omitted ⇒ identity is the claim text.',
+  );
 
 /**
  * P-007 (fleet-member-dx-improvements-2026-07-10, EI-9035): the owner's most
@@ -259,7 +273,16 @@ export default defineTool({
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
             'relying on it. Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
             'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
-            'kept (dropped claims come back as `checksDropped`); [] clears.',
+            "kept (dropped claims come back as `checksDropped`) or pass rowsMode:'merge'; [] clears.",
+        ),
+      rowsMode: z
+        .enum(['replace', 'merge'])
+        .optional()
+        .describe(
+          "How a supplied walls/checks list combines with the carried set. 'replace' (default) — the list IS the " +
+            "new set, so rows you omit are DROPPED (the only way to retire one). 'merge' — rows UPSERT by `id` " +
+            '(else by exact claim text) and unmentioned rows SURVIVE, so adding/updating ONE row needs only that ' +
+            "row. Under 'merge' a [] list is a no-op, never a clear.",
         ),
       ownerId: z
         .string()
@@ -387,6 +410,9 @@ export default defineTool({
     const effectiveWalls = capRows(args.walls ?? rescued?.walls, 'walls');
     const effectiveChecks = capRows(args.checks ?? rescued?.checks, 'checks');
     const hasNoteWrite = hasStructured || args.note !== undefined;
+    // P-013: replace stays the DEFAULT — it is the only way to retire a stale row, and
+    // silently switching every existing caller to merge would make a clear impossible.
+    const rowsMode = args.rowsMode ?? 'replace';
 
     // WI-6813: the walls/checks merge runs INSIDE the row's locked transaction (the
     // `transform` seam), not out here. The caller-side read → merge → write it
@@ -411,6 +437,7 @@ export default defineTool({
             walls: effectiveWalls,
             checks: effectiveChecks,
             hasNoteWrite,
+            mode: rowsMode,
           });
           return captured.merged.note;
         },
@@ -470,6 +497,7 @@ export default defineTool({
         walls: effectiveWalls,
         checks: effectiveChecks,
         hasNoteWrite,
+        mode: rowsMode,
       });
 
     // P-009: advisory lint — an external-state ASSERTION in the narrative prose whose
@@ -680,6 +708,20 @@ export default defineTool({
             contentHash,
             walls: walls.length,
             checks: checks.length,
+            /** P-013: which row semantics this write actually ran under, so a caller
+             *  never has to infer it from the counts. Present only when it was NOT the
+             *  default, keeping the common reply shape unchanged. */
+            ...(rowsMode !== 'replace' ? { rowsMode } : {}),
+            /** P-013: under merge, `[]` deliberately means "change nothing" rather than
+             *  "clear" — a clear must be explicit. Say so, or the caller reads a silent
+             *  no-op as a clear that failed. */
+            ...(rowsMode === 'merge' && (args.walls?.length === 0 || args.checks?.length === 0)
+              ? {
+                  rowsModeNote:
+                    "rowsMode:'merge' treats an empty list as a NO-OP, not a clear — the carried rows are " +
+                    "untouched. To clear, re-send with rowsMode:'replace' (the default) and [].",
+                }
+              : {}),
             /**
              * EI-19463731740128181: a supplied list REPLACES, so carried rows the caller
              * left out are GONE. The reply used to carry only these post-merge COUNTS —
@@ -696,9 +738,10 @@ export default defineTool({
                   checksDropped: droppedChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   checksDroppedNote:
                     `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
-                    `claim(s) were not in this write and are now gone. Re-send the FULL set you want carried ` +
-                    `(a re-sent claim inherits its prior recheck/verified), or pass no \`checks\` at all to leave ` +
-                    `the carried rows untouched.`,
+                    `claim(s) were not in this write and are now gone. To restore: re-send them (a re-sent claim ` +
+                    `inherits its prior recheck/verified). To AVOID this next time, pass rowsMode:'merge' — ` +
+                    `unmentioned rows then survive and you send only the rows you are changing; give a row an ` +
+                    `\`id\` if you expect to re-word its claim.`,
                 }
               : {}),
             /** Same contract for WALLS — and a dropped wall is worse than a dropped check:

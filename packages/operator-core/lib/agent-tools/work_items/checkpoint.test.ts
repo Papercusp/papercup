@@ -1052,14 +1052,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
        * only way to retire a stale check, and the test above pins it.
        */
       describe('EI-19944669306930709: `append: true` governs `checks` too (union, not replace)', () => {
-        /** Seed a prior note and point BOTH read paths at it (the append join reads
-         *  getWorkItemCheckpoint; the transform reads the store's locked prior). */
+        /** Seed a prior note, then serve it to BOTH reader paths STATEFULLY.
+         *  `getWorkItemCheckpoint` backs the append pre-read AND the post-write
+         *  verify-read, so a static mock returns the stale prior to the verify and the
+         *  write fails `checkpoint_verify_failed` — advance it when the store commits. */
         const seed = async (checks: Array<{ claim: string; recheck?: string; verified?: string }>) => {
           withPrior(null);
           await one({ id: 'WI-7', checkpoint: 'the body worth keeping', checks });
           const prior = await lastStored();
-          withPrior(prior);
-          getWorkItemCheckpoint.mockResolvedValue(prior);
+          let current = prior;
+          getWorkItemCheckpoint.mockImplementation(async () => current);
+          setWorkItemCheckpointWithPrior.mockImplementation(
+            async (
+              _ref: unknown,
+              cp: string | null | undefined,
+              opts?: { transform?: (p: string | null, n: string | null | undefined) => string | null | undefined },
+            ) => {
+              const effective = opts?.transform ? opts.transform(prior, cp) : cp;
+              const trimmed = (effective ?? '').trim();
+              const stored = trimmed.length > 0 ? trimmed : null;
+              current = stored;
+              return { stored, priorLength: (prior ?? '').length };
+            },
+          );
           return prior;
         };
 
@@ -1077,7 +1092,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             checks: [{ claim: 'D holds', recheck: 'probe D', verified: 'measured just now' }],
           })) as { ok: boolean; checks: number; checksDropped?: string[] };
 
-          expect(r).toMatchObject({ ok: true });
+          expect(r.ok).toBe(true);
           const stored = await lastStored();
           // The new row landed...
           expect(stored).toContain('- ✓ D holds');

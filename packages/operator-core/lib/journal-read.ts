@@ -128,8 +128,16 @@ export interface JournalReadResult {
    * slicing afterwards). So when `truncated` is true this is a FLOOR on the true
    * match count, never the total. Narrow `grep`/`since` to learn the real number;
    * do not report `matched` as "there were N matches" on a truncated read.
+   *
+   * `null` ⇒ the read FAILED (`journalError` is set) — NEVER 0. A failed scan
+   * has no honest count to report, and reporting 0 there is exactly the false
+   * negative that made a still-firing defect read as "stopped reproducing"
+   * (EI-19980767336148101): a slow `--grep`+wide-`since`+tail-cap scan hit the
+   * exec timeout, and the old code still reported `matched: 0` alongside the
+   * error — indistinguishable from a genuinely clean window unless the caller
+   * separately checked `journalError`.
    */
-  matched: number;
+  matched: number | null;
   /** Lines removed by consecutive-identical collapsing. */
   collapsed: number;
   /** True when older rows were dropped to honour `limit` (newest are kept). */
@@ -351,7 +359,7 @@ export function collapseConsecutive(records: RawJournalRecord[]): {
   return { entries, collapsed };
 }
 
-export type JournalFailureKind = 'no-match' | 'no-systemd' | 'error';
+export type JournalFailureKind = 'no-match' | 'no-systemd' | 'timeout' | 'error';
 
 /**
  * PURE — classify a journalctl rejection.
@@ -361,12 +369,33 @@ export type JournalFailureKind = 'no-match' | 'no-systemd' | 'error';
  * error makes the tool report a read failure for the most common good outcome;
  * treating a real failure as no-match makes it report an empty log for a journal
  * it could not read. Both are wrong in opposite, equally quiet directions.
+ *
+ * `timeout` is the SECOND such trap, found live (EI-19980767336148101): a
+ * `--grep` combined with a wide `since` and the `-n` tail cap forces journalctl
+ * into a REVERSE scan that must walk back to the `--since` boundary whenever the
+ * window holds fewer than `limit` matches — genuinely slow against a chatty unit
+ * (measured >35s against `papercup-bg-host` over a 48h window, well past
+ * `JOURNAL_TIMEOUT_MS`). Node's own `execFile({ timeout })` then SIGTERMs the
+ * child: per Node's documented contract that yields `err.killed === true`,
+ * `err.code === null`, and (because journalctl never got to print anything)
+ * EMPTY stderr — a shape that used to fall through to the generic `error`
+ * branch below with a bare "Command failed: <argv>" message and no indication
+ * anything unusual happened. Distinguishing it lets the caller report a
+ * specific, actionable cause instead of an opaque one.
  */
 export function classifyJournalctlFailure(err: unknown): { kind: JournalFailureKind; message: string } {
-  const e = err as { code?: unknown; stderr?: unknown; message?: unknown };
+  const e = err as { code?: unknown; stderr?: unknown; message?: unknown; killed?: unknown; signal?: unknown };
   const stderr = String(e?.stderr ?? '').trim();
   if (e?.code === 'ENOENT') return { kind: 'no-systemd', message: 'no journalctl binary on this host' };
   if (e?.code === 1 && !stderr) return { kind: 'no-match', message: '' };
+  if (e?.killed === true) {
+    return {
+      kind: 'timeout',
+      message:
+        `journalctl was killed (${String(e?.signal ?? 'timeout')}) after ${JOURNAL_TIMEOUT_MS}ms with no output — ` +
+        'the scan did not finish, it is NOT a clean/empty window. Narrow `since`, tighten `grep`, or lower `limit` and retry.',
+    };
+  }
   return { kind: 'error', message: (stderr || String(e?.message ?? 'journalctl read failed')).slice(0, 300) };
 }
 
@@ -449,8 +478,13 @@ export async function readJournal(
     if (kind === 'no-match') {
       return withUnknownUnits({ ...base, entries: [], journalAvailable: true, journalError: null });
     }
+    // matched:null, not 0 — the scan did not complete (or the journal is
+    // unreadable), so there is no honest count to report. See the field's own
+    // doc comment (EI-19980767336148101): a failed/timed-out read must never
+    // report the same `matched: 0` shape a genuinely clean window reports.
     return {
       ...base,
+      matched: null,
       entries: [],
       journalAvailable: kind !== 'no-systemd',
       journalError: kind === 'no-systemd' ? null : message,
