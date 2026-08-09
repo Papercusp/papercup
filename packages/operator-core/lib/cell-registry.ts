@@ -210,6 +210,30 @@ export interface CellHeadlineSource {
   why: string;
 }
 
+/**
+ * P-006 — A POINTER FROM ONE CELL TO ANOTHER. See `CellSpec.pointers`.
+ *
+ * ⚠ THE ABSENT FIELDS ARE THE DESIGN. There is no `field`, no `measurement`, no
+ * `kills` — so a pointer is STRUCTURALLY INCAPABLE of being a second falsifier,
+ * which is what D-014 forbids. It carries no value and makes no claim about this
+ * cell's headline; it says only "the question you are about to ask next is
+ * answered THERE". A reader who ignores it loses nothing but a hop.
+ */
+export interface CellPointer {
+  /**
+   * The cell id this points AT. NOT resolved at registration — a pointer between two
+   * cells declared in the same module would then depend on their declaration order,
+   * and the natural order (a general cell before the specific one it points to) is
+   * exactly the one that would fail. It is resolved per-READ instead, where an
+   * unresolvable target is reported as drift rather than silently dropped.
+   */
+  cell: string;
+  /** WHEN a reader of THIS cell should follow it — the condition, not a description. */
+  when: string;
+  /** WHAT they get there that this cell does not answer. */
+  answers: string;
+}
+
 /** A caller, for the audience check. Deliberately small: everything here is
  *  already known at dispatch, so the check costs no lookup. */
 export interface CellReader {
@@ -281,6 +305,27 @@ export interface CellSpec {
    * inferred) and `checkpointRunInFlight.activeSource` ('run-lock' authoritative vs absent).
    */
   headlineSource?: CellHeadlineSource;
+  /**
+   * P-006 — OPTIONAL. WHERE TO GO NEXT, for the question this cell does NOT answer.
+   *
+   * Every other field here makes THIS cell's answer harder to misread. This one
+   * addresses a different failure entirely: a reader who gets a correct answer, has
+   * a correct follow-up question, and never learns the cell that answers it exists.
+   * Discovery is not a property of any single cell's contract, so no amount of rigour
+   * on `gate.greenCheckpoint.verdict` could surface `gate.greenCheckpoint.ownership`
+   * to the agent reading a red gate. Measured: the ownership block ships in
+   * `dev:pipeline_position`, but a caller who reached the verdict through
+   * `state:read` — which is what this repo's own guidance tells them to do before
+   * acting on a gate value — saw no trace of it.
+   *
+   * A POINTER, NEVER A FALSIFIER (D-014). `CellPointer` has no field/measurement/kills
+   * by construction, so this cannot become the "falsifier per block" the plan's P-005
+   * assumed and the contract rejects. Ownership keeps its own cell, its own headline
+   * and its own independent check; this only makes it reachable.
+   *
+   * Targets are resolved PER-READ, not at registration — see `CellPointer.cell`.
+   */
+  pointers?: CellPointer[];
   /** Human-readable result shape. */
   shape: string;
   /**
@@ -297,7 +342,7 @@ export interface CellRejection {
   /** A D-038 axis number, or a P-019 dimension. The two are labelled differently on
    *  purpose: `visibility`/`federation` are NOT contract axes, they are the access
    *  model P-019 added, and blurring them would misrepresent D-038 as having eight. */
-  axis: 1 | 2 | 3 | 4 | 5 | 'visibility' | 'federation' | 'materiality' | 'headlineSource';
+  axis: 1 | 2 | 3 | 4 | 5 | 'visibility' | 'federation' | 'materiality' | 'headlineSource' | 'pointers';
   rule: string;
   detail: string;
 }
@@ -439,6 +484,55 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
         'headline-source-is-changesignal-path',
         `headlineSource.path "${src.path}" IS changeSignal.path — a value cannot be its own provenance. This is axis 1's falsifier-is-headline emptiness in a second field: it looks like corroboration and carries no information.`,
       );
+    }
+  }
+
+  // ── P-006 — POINTERS. Optional, and deliberately the THINNEST gate in this function.
+  //
+  // Every check below is a SHAPE check answerable from the spec alone. Target existence
+  // is NOT checked here on purpose (see `CellPointer.cell`): a same-module pointer would
+  // then be order-dependent, and the order authors naturally write — the general cell
+  // first, the specific one it points at second — is the one that would fail. A pointer
+  // whose target is unregistered surfaces at READ time as drift, where it is a live fact
+  // rather than a load-order artifact.
+  const pointers = spec.pointers;
+  if (pointers !== undefined) {
+    if (!Array.isArray(pointers)) {
+      reject('pointers', 'pointers-not-a-list', '`pointers` must be a list. Omit the field entirely to mean "this cell points nowhere".');
+    } else {
+      const seen = new Set<string>();
+      for (const p of pointers) {
+        const target = p?.cell?.trim();
+        if (!target) {
+          reject('pointers', 'pointer-target-missing', 'every pointer must name the `cell` it points at.');
+          continue;
+        }
+        if (norm(target) === norm(spec.cell)) {
+          reject(
+            'pointers',
+            'pointer-to-self',
+            `pointer target "${target}" IS this cell. A pointer exists to reach an answer this cell does not give; pointing at itself is axis 1's falsifier-is-headline emptiness in a third field.`,
+          );
+        }
+        if (seen.has(norm(target))) {
+          reject('pointers', 'pointer-duplicate-target', `"${target}" is pointed at twice. Two reasons to follow one pointer belong in ONE \`when\`, or the second is noise.`);
+        }
+        seen.add(norm(target));
+        if (!p.when?.trim()) {
+          reject(
+            'pointers',
+            'pointer-when-missing',
+            `pointer to "${target}" must state \`when\` — the CONDITION under which to follow it. An unconditional pointer is read on every healthy call, which is how a signal becomes noise a reader learns to skip (the same rule \`formatCellHoist\` spends prose only on a non-empty channel for).`,
+          );
+        }
+        if (!p.answers?.trim()) {
+          reject(
+            'pointers',
+            'pointer-answers-missing',
+            `pointer to "${target}" must state \`answers\` — WHAT is over there. "See also X" costs the reader a full dispatch to discover whether X was worth it; naming the question lets them decide before paying.`,
+          );
+        }
+      }
     }
   }
 

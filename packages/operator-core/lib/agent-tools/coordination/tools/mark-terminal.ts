@@ -85,6 +85,12 @@ async function ttyClaimedBy(ttyPath: string, ownerId: string): Promise<boolean> 
 
 export default defineTool({
   name: 'coord:mark-terminal',
+  // @no-coord-tier A human-affordance utility, not an agent coordination behaviour: it retitles a
+  // peer's terminal window so a PERSON can find/focus it where the window manager cannot (GNOME
+  // Wayland). D-001's ladder ranks how reliably an AGENT is made to perform a coordination
+  // behaviour; nothing should make an agent call this unbidden — it is invoked only when a human
+  // asks "where is agent X's window". A tier here would assert enforcement of a behaviour that
+  // deliberately has no adoption target.
   description:
     "Visually mark a peer agent's owned terminal window — retitles it with a loud, unmistakable marker — so a human can find/focus it. Answers 'where is agent X's window' on desktops (GNOME Wayland) where window-manager tools (wmctrl/xdotool) can't locate or focus by title/pid. Best-effort over two paths (a live psu-pty host, else a direct write to the session's recorded terminal device); reports which path (if either) actually landed.",
   guidance: {

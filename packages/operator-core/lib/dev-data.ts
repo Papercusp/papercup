@@ -806,21 +806,21 @@ export async function resolveOwnerSessions(ownerId: string): Promise<OwnerResolu
   return { owner_id: ownerId, sessions, activity: actRows };
 }
 
-// ── Tool co-occurrence (which tools fire together in one spawn) ────
+// ── Tool co-occurrence (which tools fire together in one agent TURN) ────
 
 export interface CooccurrenceEntry {
   tool_a: string;
   tool_b: string;
-  /** # of spawns (agent turns) in which BOTH tools were invoked. */
+  /** # of turns (decision bursts) in which BOTH tools were invoked. */
   support: number;
-  /** # of spawns containing tool_a / tool_b individually. */
-  spawns_a: number;
-  spawns_b: number;
-  /** support / spawns(rarer of the two) — the STRONGEST directional
+  /** # of turns containing tool_a / tool_b individually. */
+  turns_a: number;
+  turns_b: number;
+  /** support / turns(rarer of the two) — the STRONGEST directional
    *  conditional. ~1.0 ⇒ whenever the rarer tool fires, the other almost
    *  always accompanies it (a near-deterministic pairing — wrapper bait). */
   confidence: number;
-  /** support * total_spawns / (spawns_a * spawns_b) — symmetric bond
+  /** support * total_turns / (turns_a * turns_b) — symmetric bond
    *  strength vs chance. 1 = independent, >1 = attract, <1 = repel. The
    *  signal that separates a real pairing from two individually-common tools. */
   lift: number;
@@ -829,9 +829,13 @@ export interface CooccurrenceEntry {
 export interface ToolCooccurrenceInput {
   workspaceIds: string[] | null;
   hours?: number;
-  /** Drop pairs seen in fewer than this many spawns (noise floor — a high
+  /** Drop pairs seen in fewer than this many turns (noise floor — a high
    *  lift on tiny support is spurious). Default 3. */
   minSupport?: number;
+  /** Idle gap that ends a decision burst, in seconds. Default 120 — the same
+   *  default as the sequence miner's `gapSec` (tool-sequence-patterns.ts), so
+   *  the two legs segment agent activity into the SAME unit. */
+  gapSec?: number;
   limit?: number;
   /** Result ordering. 'support' (default) = highest co-occurrence volume
    *  first (where wrapping saves the most round-trips); 'lift' = strongest
@@ -841,7 +845,8 @@ export interface ToolCooccurrenceInput {
 
 /**
  * Pairwise tool co-occurrence over harness_shared.tool_invocations, grouped
- * by spawn_id (one agent turn). MCP transport only — HTTP/IPC/in-process and
+ * into one agent TURN = a gap-segmented DECISION BURST keyed on
+ * `coord_owner_id`. MCP transport only — HTTP/IPC/in-process and
  * routine/loopback (palette) callers are not agent reasoning round-trips and
  * are excluded (palette is filtered at record time; transport='mcp' drops the
  * rest). Pure deterministic counting — plan tool-call-batching-wrappers
@@ -849,6 +854,20 @@ export interface ToolCooccurrenceInput {
  * determinism (lift != determinism). No new table, no index — this is
  * offline/analytical, and a CREATE INDEX on the hottest table risks a
  * deploy-wedge (D-009/P-002).
+ *
+ * ⚠ This used to `GROUP BY spawn_id`, which made the leg measure almost
+ * nothing (okf-frontmatter §D, WI-36875). `spawn_id` is a PER-REQUEST id
+ * (`ephemeral-<hash>`), NOT a turn: measured 24h/papercusp, 111,686 mcp rows
+ * carried 109,230 distinct spawn_ids (~1.02 rows/spawn). So `transport='mcp'`
+ * and `GROUP BY spawn_id` destroyed each other — the rows that DO share a
+ * spawn_id are exactly the `in_process` fan-out rows the transport filter
+ * removes. Only 998 of 53,295 spawns (1.9%) held >=2 tools, yielding 149 pairs
+ * of which every top one contained a dispatcher (`code:run` + `dev:pg_query`,
+ * `tools:invoke` + …) — i.e. it reported which tool a dispatcher dispatched,
+ * not which tools an agent chose together. Re-keying onto agent bursts recovers
+ * the corpus: 2,459 of 3,130 bursts (78.6%) hold a pair, ~41x more usable
+ * units. The 120s default gap matches the sequence miner so both legs of §D
+ * segment identically.
  */
 export async function toolCooccurrence(
   input: ToolCooccurrenceInput,
@@ -856,6 +875,7 @@ export async function toolCooccurrence(
   const hours = Math.max(1, Math.min(168, input.hours ?? 24));
   const minSupport = Math.max(1, Math.min(100000, input.minSupport ?? 3));
   const limit = Math.max(1, Math.min(500, input.limit ?? 100));
+  const gapSec = Math.max(1, Math.min(3600, input.gapSec ?? 120));
   const { sql } = getOrgPg();
   const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
 

@@ -475,7 +475,7 @@ describe('search:semantic — output projection (scope → harness_slug remap)',
   it('remaps the generic engine `scope` field to domain `harness_slug`', async () => {
     hybridResult = {
       results: [
-        { source: 'escalations', source_id: 'e1', scope: 'sheets', excerpt: 'ex', highlight: 'h', score: 0.7, rankers: ['bm25'] },
+        { source: 'escalations', source_id: 'e1', scope: 'sheets', excerpt: 'ex', highlight: 'h', score: 0.7, rankers: ['lexical'] },
         { source: 'turns', source_id: 't1', excerpt: 'ex2', highlight: 'h2', score: 0.3, rankers: ['vec'] },
       ],
       totalHits: 2,

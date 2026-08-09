@@ -36,6 +36,7 @@ import { isWorkspaceContended } from '../locks/contention-retry';
 import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release';
 import { consumeRespawnExpected } from '../../carry-respawn-marker';
 import { recentContextResetWake } from '../../session-reset-continuation';
+import { NATIVE_SESSION_ID_RE, reanchorAdvSessionNativeIdByOwner } from '../../adv-sessions';
 import { buildActivityHookBundle } from './hook-bundle';
 import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
 
@@ -215,6 +216,31 @@ export default defineTool({
           // inbox-wake hiccup never skips it, and vice-versa.
           await writeWatermark(owner, { snapshot_rebootstrap_pending: true }).catch(() => {});
           await armInboxWake({ ownerId: owner, workspaceId: ctx.principal?.workspaceId });
+          // WI-37420: a COLD loop wake delivered over psu-socket-reset types
+          // `/clear` into the LIVE pty (session-reset-continuation.ts) — the CLI
+          // child mints a brand-new native session id for that in-place reset
+          // WITHOUT the host ever kill+respawning the process, so the WI-5075
+          // respawn report (reportSessionRespawned → reanchorAdvSessionNativeId*)
+          // never fires for this leg: it is only called from psu-pty-host's
+          // recycleChild, which 'reset' never goes through. This SessionStart
+          // hook fire is the ONLY signal that crosses process boundaries with the
+          // fresh id in hand (the hook literally reads it off its own stdin
+          // event), so re-anchor here too — otherwise `adv_sessions.session_id`
+          // for this owner is permanently stuck on the FIRST launch's transcript
+          // across every subsequent reset, and every owner→native-session
+          // consumer (the compaction watchdog's context estimate, loop-cost-cap's
+          // spend read) silently tracks a dead/nonexistent transcript forever.
+          // Idempotent (`session_id IS DISTINCT FROM`) and validated against the
+          // same UUID shape the respawn report requires, so a malformed or
+          // already-current id is a safe no-op. Best-effort: reanchor hygiene
+          // must never fail this report.
+          if (args.session_id && NATIVE_SESSION_ID_RE.test(args.session_id.trim())) {
+            await reanchorAdvSessionNativeIdByOwner(owner, args.session_id.trim()).catch((e) => {
+              console.warn(
+                `[activity:report] SessionStart reanchor for ${owner} failed: ${e instanceof Error ? e.message : e}`,
+              );
+            });
+          }
         } else {
           await cancelInboxWake(owner, ctx.principal?.workspaceId); // D-003: cancel on clean end
         }

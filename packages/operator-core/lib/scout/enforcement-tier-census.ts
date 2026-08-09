@@ -96,6 +96,14 @@ export interface TierDeclaration {
  */
 export const DECLARED_COORD_TIERS: ReadonlyMap<string, TierDeclaration> = new Map<string, TierDeclaration>([
   [
+    'coord:dispatch',
+    {
+      tier: 'see-also',
+      evidence:
+        "coord:presence's resolver unconditionally builds a READY-TO-INVOKE coord:dispatch call into its payload (buildDispatchHandle, coordination/dispatch-handle.ts) whenever a lane and a wakeable target both resolve — a prefilled call, not a mention. This is DECLARED rather than derived because P-012/D-101 deliberately REMOVED the seeAlso string literal from presence.ts (it bought 1 call in 30 days; see the NB at presence.ts) and replaced it with the handle. The tier-3 derivation scans source for that literal, so it structurally cannot see the stronger mechanism that replaced it. Falsifiable, not self-asserted: delete the buildDispatchHandle call and dispatch-handle.ts's tests plus dispatch-adoption-falsifier.ts fail.",
+    },
+  ],
+  [
     'coord:send',
     {
       tier: 'schema-refusal',

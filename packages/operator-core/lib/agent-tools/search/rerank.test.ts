@@ -31,7 +31,7 @@ const hit = (source_id: string, score: number, excerpt = `body-${source_id}`): S
   excerpt,
   highlight: `<mark>${excerpt}</mark>`,
   score,
-  rankers: ['bm25'],
+  rankers: ['lexical'],
 });
 
 // RRF order: a (0.9) > b (0.5) > c (0.1).
@@ -230,7 +230,7 @@ describe('rerankText — scores the MATCHED passage, not the document opening', 
     excerpt,
     highlight,
     score: 1,
-    rankers: ['bm25'],
+    rankers: ['lexical'],
   });
 
   it('strips <mark> tags — they are a rendering concern, not model input', () => {

@@ -493,8 +493,8 @@ describe('P-034 — session_turn.embedding unions chunk vectors, deduped by MAX'
 });
 
 describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => {
-  it('escalations.bm25: only workspace A; composite source_id `${slug}:${phase}`, scope=slug, rankers=[bm25]', async () => {
-    const out = await byName('escalations').bm25(params());
+  it('escalations.lexical: only workspace A; composite source_id `${slug}:${phase}`, scope=slug, rankers=[bm25]', async () => {
+    const out = await byName('escalations').lexical(params());
     const ids = out.map((r) => r.row.source_id).sort();
     expect(ids).toEqual(['docs:staging', 'sheets:staging']);
     // No B/decoy row leaked in.
@@ -503,37 +503,37 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
     const sheets = out.find((r) => r.row.source_id === 'sheets:staging')!;
     expect(sheets.row.source).toBe('escalations');
     expect(sheets.row.scope).toBe('sheets');
-    expect(sheets.row.rankers).toEqual(['bm25']);
+    expect(sheets.row.rankers).toEqual(['lexical']);
     expect(sheets.row.excerpt).toContain('kubernetes scaling escalation');
     expect(sheets.row.excerpt).toContain('reviewed by lead'); // escalation + supervisor_notes joined
     expect(sheets.row.highlight).toContain('<mark>');
     expect(sheets.key).toBe('escalations:sheets:staging');
   });
 
-  it('brainstorm.bm25: only A; source_id=`${slug}:${phase}`, scope=slug', async () => {
-    const out = await byName('brainstorm').bm25(params());
+  it('brainstorm.lexical: only A; source_id=`${slug}:${phase}`, scope=slug', async () => {
+    const out = await byName('brainstorm').lexical(params());
     expect(out.map((r) => r.row.source_id)).toEqual(['sheets:staging']);
     expect(out[0].row.scope).toBe('sheets');
     expect(out[0].row.source).toBe('brainstorm');
     expect(out[0].row.excerpt).toContain('kubernetes autoscaling');
   });
 
-  it('decisions.bm25: only A; source_id=`${slug}:${line_hash}`, excerpt prefixed with [iso]', async () => {
-    const out = await byName('decisions').bm25(params());
+  it('decisions.lexical: only A; source_id=`${slug}:${line_hash}`, excerpt prefixed with [iso]', async () => {
+    const out = await byName('decisions').lexical(params());
     expect(out.map((r) => r.row.source_id)).toEqual(['sheets:h1']);
     expect(out[0].row.scope).toBe('sheets');
     expect(out[0].row.excerpt).toBe('[2026-01-01] ADOPT kubernetes for orchestration');
     expect(out[0].key).toBe('decisions:sheets:h1');
   });
 
-  it('SECURITY — turns.bm25: workspace A ONLY via the conversation JOIN; the B-workspace decoy turn does NOT leak', async () => {
-    const out = await byName('turns').bm25(params());
+  it('SECURITY — turns.lexical: workspace A ONLY via the conversation JOIN; the B-workspace decoy turn does NOT leak', async () => {
+    const out = await byName('turns').lexical(params());
     // Exactly the two A turns; NOT the B decoy.
     expect(out).toHaveLength(2);
     for (const r of out) {
       expect(r.row.source).toBe('turns');
       expect(r.row.scope).toBeUndefined(); // turns carries no scope (no harness_slug)
-      expect(r.row.rankers).toEqual(['bm25']);
+      expect(r.row.rankers).toEqual(['lexical']);
       // role-prefixed excerpt/highlight
       expect(r.row.excerpt).toMatch(/^\[(user|assistant)\] /);
       expect(r.row.highlight).toMatch(/^\[(user|assistant)\] /);
@@ -544,8 +544,8 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
 
   // EI-6984: the work_item source — no embedding method (engineer_issues has no
   // embedding column yet), so only bm25 is exercised here.
-  it('SECURITY — work_item.bm25: only workspace A; source_id=issue_id, scope=the harness:<slug> scope column, excerpt prefixed [kind/state/severity]', async () => {
-    const out = await byName('work_item').bm25(params());
+  it('SECURITY — work_item.lexical: only workspace A; source_id=issue_id, scope=the harness:<slug> scope column, excerpt prefixed [kind/state/severity]', async () => {
+    const out = await byName('work_item').lexical(params());
     const ids = out.map((r) => r.row.source_id).sort();
     expect(ids).toEqual(['EI-1', 'EI-2']);
     expect(out.some((r) => r.row.source_id === 'EI-9')).toBe(false); // the B decoy never leaks
@@ -553,36 +553,36 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
     const ei1 = out.find((r) => r.row.source_id === 'EI-1')!;
     expect(ei1.row.source).toBe('work_item');
     expect(ei1.row.scope).toBe('harness:sheets');
-    expect(ei1.row.rankers).toEqual(['bm25']);
+    expect(ei1.row.rankers).toEqual(['lexical']);
     expect(ei1.row.excerpt).toBe('[bug/open/major] kubernetes scaling bug\npods do not autoscale');
     expect(ei1.row.highlight).toContain('<mark>');
     expect(ei1.key).toBe('work_item:EI-1');
   });
 
-  it('work_item.bm25 with scopeFilter=sheets → only EI-1 (scope column stores harness:<slug>)', async () => {
-    const out = await byName('work_item').bm25(params({ scopeFilter: 'sheets' }));
+  it('work_item.lexical with scopeFilter=sheets → only EI-1 (scope column stores harness:<slug>)', async () => {
+    const out = await byName('work_item').lexical(params({ scopeFilter: 'sheets' }));
     expect(out.map((r) => r.row.source_id)).toEqual(['EI-1']);
   });
 
-  it('a B-scoped work_item.bm25 returns ONLY the B decoy, never the A issues', async () => {
-    const out = await byName('work_item').bm25(params({ workspaceId: WS_B }));
+  it('a B-scoped work_item.lexical returns ONLY the B decoy, never the A issues', async () => {
+    const out = await byName('work_item').lexical(params({ workspaceId: WS_B }));
     expect(out.map((r) => r.row.source_id)).toEqual(['EI-9']);
   });
 });
 
 describe('GAP 10 — harness_slug scopeFilter narrows the ws-scoped sources', () => {
-  it('escalations.bm25 with scopeFilter=sheets → only the sheets row', async () => {
-    const out = await byName('escalations').bm25(params({ scopeFilter: 'sheets' }));
+  it('escalations.lexical with scopeFilter=sheets → only the sheets row', async () => {
+    const out = await byName('escalations').lexical(params({ scopeFilter: 'sheets' }));
     expect(out.map((r) => r.row.source_id)).toEqual(['sheets:staging']);
   });
 
-  it('escalations.bm25 with scopeFilter=docs → only the docs row', async () => {
-    const out = await byName('escalations').bm25(params({ scopeFilter: 'docs' }));
+  it('escalations.lexical with scopeFilter=docs → only the docs row', async () => {
+    const out = await byName('escalations').lexical(params({ scopeFilter: 'docs' }));
     expect(out.map((r) => r.row.source_id)).toEqual(['docs:staging']);
   });
 
-  it('decisions.bm25 with a non-matching scopeFilter → empty', async () => {
-    const out = await byName('decisions').bm25(params({ scopeFilter: 'no-such-harness' }));
+  it('decisions.lexical with a non-matching scopeFilter → empty', async () => {
+    const out = await byName('decisions').lexical(params({ scopeFilter: 'no-such-harness' }));
     expect(out).toEqual([]);
   });
 });
@@ -634,13 +634,13 @@ describe('GAP 10 — embedding SQL: cosine sim = 1 - (emb <=> qVec), nearest-fir
 });
 
 describe('GAP 10 — workspace B sees its OWN rows (proves the filter is scoping, not just hiding)', () => {
-  it('a B-scoped escalations.bm25 returns ONLY the B decoy, never the A rows', async () => {
-    const out = await byName('escalations').bm25(params({ workspaceId: WS_B }));
+  it('a B-scoped escalations.lexical returns ONLY the B decoy, never the A rows', async () => {
+    const out = await byName('escalations').lexical(params({ workspaceId: WS_B }));
     expect(out.map((r) => r.row.source_id)).toEqual(['decoy:staging']);
   });
 
-  it('a B-scoped turns.bm25 returns ONLY the B turn, never the two A turns', async () => {
-    const out = await byName('turns').bm25(params({ workspaceId: WS_B }));
+  it('a B-scoped turns.lexical returns ONLY the B turn, never the two A turns', async () => {
+    const out = await byName('turns').lexical(params({ workspaceId: WS_B }));
     expect(out).toHaveLength(1);
     expect(out[0].row.excerpt).toContain('another workspace');
   });
@@ -671,7 +671,7 @@ const p17Params = (over: Partial<SearchSourceParams> = {}): SearchSourceParams =
 const HEADLINE_OPTS_MIRROR =
   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
 
-describe('P-017 — session_turn.bm25 lexicalMode', () => {
+describe('P-017 — session_turn.lexical lexicalMode', () => {
   it("'and' mode is the PRE-P-017 query exactly — same rows, order, ranks and highlight bytes", async () => {
     // The literal query as it stood before `lexicalSql` was introduced.
     const legacy = (await sql`
@@ -686,7 +686,7 @@ describe('P-017 — session_turn.bm25 lexicalMode', () => {
     ORDER BY rank DESC LIMIT 20
     `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; rank: number; highlight: string }>;
 
-    const out = await byName('session_turn').bm25(p17Params());
+    const out = await byName('session_turn').lexical(p17Params());
 
     expect(out.map((r) => r.row.source_id)).toEqual(
       legacy.map((r) => `${r.source_kind}:${r.session_id}:${r.turn_idx}`),
@@ -698,8 +698,8 @@ describe('P-017 — session_turn.bm25 lexicalMode', () => {
   });
 
   it("'coverage-graded' is a strict SUPERSET of 'and', with the AND rows in the top coverage tier", async () => {
-    const and = await byName('session_turn').bm25(p17Params());
-    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const and = await byName('session_turn').lexical(p17Params());
+    const graded = await byName('session_turn').lexical(p17Params({ lexicalMode: 'coverage-graded' }));
 
     const andIds = and.map((r) => r.row.source_id);
     const gradedIds = graded.map((r) => r.row.source_id);
@@ -713,8 +713,8 @@ describe('P-017 — session_turn.bm25 lexicalMode', () => {
   });
 
   it('recovers a 4-of-5 document the AND query discards outright', async () => {
-    const and = await byName('session_turn').bm25(p17Params());
-    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const and = await byName('session_turn').lexical(p17Params());
+    const graded = await byName('session_turn').lexical(p17Params({ lexicalMode: 'coverage-graded' }));
 
     expect(and.map((r) => r.row.source_id)).not.toContain(T_FOUR);
     expect(graded.map((r) => r.row.source_id)).toContain(T_FOUR);
@@ -727,7 +727,7 @@ describe('P-017 — session_turn.bm25 lexicalMode', () => {
   });
 
   it('COVERAGE outranks ts_rank_cd — the frequency trap scores higher yet places last', async () => {
-    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const graded = await byName('session_turn').lexical(p17Params({ lexicalMode: 'coverage-graded' }));
     const byId = new Map(graded.map((r) => [r.row.source_id, r]));
 
     const trap = byId.get(T_TRAP);
@@ -742,7 +742,7 @@ describe('P-017 — session_turn.bm25 lexicalMode', () => {
   });
 
   it('the rarest-lexeme anchor is STRICT — 4-of-5 documents lacking it are excluded (the cost that bounds the scan)', async () => {
-    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const graded = await byName('session_turn').lexical(p17Params({ lexicalMode: 'coverage-graded' }));
     const ids = graded.map((r) => r.row.source_id);
     // stId(10) matches corpus+recall+pointer+section — coverage 4, no `clamp`.
     expect(ids).not.toContain(stId(10));
@@ -751,29 +751,29 @@ describe('P-017 — session_turn.bm25 lexicalMode', () => {
   });
 
   it('graded highlights render against the DISJUNCTIVE query, so a partial match gets a real fragment', async () => {
-    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const graded = await byName('session_turn').lexical(p17Params({ lexicalMode: 'coverage-graded' }));
     const four = graded.find((r) => r.row.source_id === T_FOUR);
     expect(four?.row.highlight).toContain('<mark>');
   });
 
   it('SECURITY — the workspace-B decoy is counted by the unfiltered DF probe but leaks into NEITHER mode', async () => {
     for (const mode of ['and', 'coverage-graded'] as const) {
-      const out = await byName('session_turn').bm25(p17Params({ lexicalMode: mode }));
+      const out = await byName('session_turn').lexical(p17Params({ lexicalMode: mode }));
       expect(out.map((r) => r.row.source_id)).not.toContain(T_DECOY_B);
       for (const r of out) expect(r.row.excerpt).not.toContain('another workspace');
     }
     // …and B still sees its OWN row, so this is scoping, not blanket hiding.
-    const b = await byName('session_turn').bm25(
+    const b = await byName('session_turn').lexical(
       p17Params({ workspaceId: WS_B, lexicalMode: 'coverage-graded' }),
     );
     expect(b.map((r) => r.row.source_id)).toEqual([T_DECOY_B]);
   });
 });
 
-describe('P-017 — work_item.bm25 lexicalMode (the second source the corpus leg reads)', () => {
+describe('P-017 — work_item.lexical lexicalMode (the second source the corpus leg reads)', () => {
   it("'and' returns only the all-terms issue; 'coverage-graded' is a superset ordered by coverage", async () => {
-    const and = await byName('work_item').bm25(p17Params());
-    const graded = await byName('work_item').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const and = await byName('work_item').lexical(p17Params());
+    const graded = await byName('work_item').lexical(p17Params({ lexicalMode: 'coverage-graded' }));
 
     expect(and.map((r) => r.row.source_id)).toEqual(['EI-C1']);
     // C2 is 4-of-5 with the anchor; C3 is 2-of-5 with the anchor; the N-rows
@@ -786,7 +786,7 @@ describe('P-017 — work_item.bm25 lexicalMode (the second source the corpus leg
 
   it('SECURITY — the workspace-B issue never leaks under either mode', async () => {
     for (const mode of ['and', 'coverage-graded'] as const) {
-      const out = await byName('work_item').bm25(p17Params({ lexicalMode: mode }));
+      const out = await byName('work_item').lexical(p17Params({ lexicalMode: mode }));
       expect(out.map((r) => r.row.source_id)).not.toContain('EI-D9');
     }
   });

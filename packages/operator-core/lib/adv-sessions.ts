@@ -34,6 +34,13 @@ function warnUnlessMissingTable(e: unknown, label: string): void {
   console.warn(`[adv-sessions] ${label} failed:`, (e as Error).message);
 }
 
+/** Claude native session ids are v4 UUIDs; refuse anything else so a corrupted
+ *  report can never poison the authoritative owner→native mapping (WI-5075).
+ *  Shared by every writer of `adv_sessions.session_id` from an externally
+ *  reported id (the respawn report, the SessionStart lifecycle hook) so the
+ *  validation can't drift between call sites. */
+export const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Who wrote a row's `ended_at` (migration 735).
  *

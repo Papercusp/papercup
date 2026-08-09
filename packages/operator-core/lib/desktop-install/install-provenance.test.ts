@@ -12,6 +12,7 @@ import {
   INSTALLED_FROM_BASENAME,
   type InstallStamp,
 } from './install-provenance';
+import { unwritablePath } from '../testing/unwritable-path';
 
 const iso = (msFromEpoch: number) => new Date(msFromEpoch).toISOString();
 const DAY = 86_400_000;
@@ -124,7 +125,7 @@ describe('stamp round-trip', () => {
   });
 
   it('never throws on an unwritable dest', async () => {
-    await expect(writeInstallStamp('/proc/nonexistent-xyz', stamp())).resolves.toBeUndefined();
+    await expect(writeInstallStamp(unwritablePath('nonexistent-xyz'), stamp())).resolves.toBeUndefined();
   });
 });
 

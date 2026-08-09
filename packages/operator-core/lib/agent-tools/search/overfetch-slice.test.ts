@@ -134,7 +134,7 @@ const hit = (i: number): SearchHit => {
     // Descending, so retrieval order is unambiguous and doubles as the
     // `qualityScore` tiebreak the handler passes.
     score: 1 - i / 100,
-    rankers: ['bm25'],
+    rankers: ['lexical'],
   };
 };
 const poolOf = (n: number) => Array.from({ length: n }, (_, i) => hit(i));

@@ -27,6 +27,7 @@ import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../work
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import {
+  NATIVE_SESSION_ID_RE,
   markAdvSessionEnded,
   reactivateAdvSession,
   reanchorAdvSessionNativeId,
@@ -2491,10 +2492,6 @@ const optionsForSessionResumed = defineTool({
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   },
 });
-
-/** Claude native session ids are v4 UUIDs; refuse anything else so a corrupted
- *  report can never poison the authoritative owner→native mapping (WI-5075). */
-const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * POST /api/agent-mcp/console/bootstrap-su/session-respawned

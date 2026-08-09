@@ -133,6 +133,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'featureAudit.byHarness': null, // needs a featureId despite the name
   'featureDebugNotes.byHarness': null,
   'featureNotes.byHarness': null,
+  'goals.detail': null, // a specific goalId (from goals.list)
   'hiveFromRepo.progress': null,
   'operatorTurns.page': null,
   'planItems.byPlan': null,
