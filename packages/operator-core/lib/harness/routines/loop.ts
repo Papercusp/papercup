@@ -886,6 +886,62 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
 }
 
 /**
+ * WI-37546 — UN-disarm a loop this system disarmed, when its owner turns out to still be
+ * working. The third member of the family above: `autoPauseLoopRoutine` stops firing at an
+ * agent, `rearmFireStarvedLoop` nudges a loop that is still ARMED, and this one is the only
+ * write that crosses back over `active = FALSE`.
+ *
+ * WHY IT HAS TO EXIST AT ALL. Until now a disarm was a one-way door for everyone: the agent
+ * cannot re-arm itself (it is asleep waiting for the fire that no longer comes), and
+ * `reconcileLoopRoutines` gates its rescue sweep on `active = TRUE` (reconcile-loop-routines.ts),
+ * so the one mechanism built to recover a stuck loop can never see a disarmed one. The only
+ * remaining recovery was a human noticing and typing `loop:arm` by hand. Measured 2026-08-09
+ * on this workspace: 19 loops were disarmed as turn-stalled and 18 of their owners were making
+ * tool calls in the hour BEFORE the disarm — the population that door was closing on was
+ * overwhelmingly alive. One of them was a fleet leader, and its reaping silently dropped a
+ * standing owner directive for 1h45m.
+ *
+ * `next_fire_at = now()` for the same reason `rearmFireStarvedLoop` uses it: the revival is a
+ * self-correcting EXPERIMENT, not a bet. If the owner really is working, it answers the next
+ * fire and never reaches this sweep again; if the revival was wrong, the fire lands with no turn
+ * behind it, the verdict flips back to `turnsStalled`, and the guard disarms it again on the
+ * next sweep — with `loop_revived_count` now higher, which is what bounds the cycle.
+ *
+ * `loop_revived_count` is the ONLY new state, and it is a RATCHET, never reset here: it is what
+ * stops a genuinely broken loop from flapping between this write and the disarm forever. The
+ * caller refuses to revive past its own ceiling by reading this same counter.
+ *
+ * Clears `pause` and `loop_paused_reason` because they are now false — a row that is `active`
+ * with a live pause reason reads as a stale/unexplained pause to `readStalePausedRoutines`
+ * (system-health/compute.ts), which is the exact misclassification EI-19479519679704136 fixed
+ * in the other direction. `loop_revived_from_pause_reason` keeps the disarm's own words, so the
+ * history a human needs is preserved rather than overwritten.
+ *
+ * Guarded `AND active = FALSE` so it is a no-op against a loop that is already running — this
+ * write must never disturb the cadence of a healthy loop, and a concurrent `loop:arm` by the
+ * owner should win rather than be re-stamped by the sweep.
+ */
+export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: string): Promise<void> {
+  await sql`
+    UPDATE harness_shared.routines
+       SET active = TRUE,
+           next_fire_at = now(),
+           metadata = (COALESCE(metadata, '{}'::jsonb) - 'pause' - 'loop_paused_reason')
+                    || jsonb_build_object(
+                         'loop_revived_reason', ${reason}::text,
+                         'loop_revived_at', now()::text,
+                         -- The disarm's own words, preserved rather than dropped: a human
+                         -- reading this row later needs to know what it was accused of.
+                         'loop_revived_from_pause_reason', COALESCE(metadata->'loop_paused_reason', 'null'::jsonb),
+                         -- RATCHET. Never reset by this write; the caller's ceiling reads it.
+                         'loop_revived_count', to_jsonb(COALESCE((metadata->>'loop_revived_count')::int, 0) + 1)
+                       ),
+           updated_at = now()
+     WHERE id = ${routineId} AND active = FALSE
+  `;
+}
+
+/**
  * Read an owner's loop status (NULL if none). A lean shape rather than the full
  * RoutineRow — and it correctly reads the parked sentinel: postgres-js parses
  * `next_fire_at='infinity'::timestamptz` to an invalid Date, so we detect parked

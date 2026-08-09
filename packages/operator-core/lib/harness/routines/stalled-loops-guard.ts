@@ -103,6 +103,51 @@
  * nothing else, so on this population it fires straight back into the same hole. The standing
  * watch must be re-armed FIRST (`armInboxWake` — what `loop:arm` itself does); the nudge only
  * decides when the now-deliverable fire happens.
+ *
+ * A FIFTH POPULATION, AND THE DOOR ITSELF (WI-37546). Every exemption above asks a question about
+ * the DELIVERY PATH — did a turn land, is a wall up, did a fire go out, did a wake reach anyone.
+ * None asks the simplest liveness question there is: IS THIS OWNER STILL MAKING TOOL CALLS? An
+ * agent issuing tool calls is not wedged, whatever the turn tracker says, and `harness_shared`
+ * has recorded every one of those calls all along (`tool_invocations.coord_owner_id`, with a
+ * dedicated index).
+ *
+ * Measured 2026-08-09 on this workspace, the census D-006 of plan
+ * fleet-lead-instrumentation-audit-2026-08-09 mandated before any fix was written: of the 19
+ * loops disarmed by this module that day, **18 owners were making tool calls in the hour BEFORE
+ * their disarm**, and all 19 made calls after. Zero corpses. One of them was the leader of a
+ * 10-member fleet: its reaping at 17:07Z is why an owner directive typed at 16:20Z sat
+ * unexecuted for 1h45m — nothing could re-wake it.
+ *
+ * THE CONTROL THAT MAKES THAT A FINDING RATHER THAN A CORRELATION. The same module's OTHER
+ * verdict path, the `dead-owner:` disarm, ran 7 times that day and was **7/7 correct** — every
+ * one of those owners made zero calls afterwards. Same table, same signal, same sweep window.
+ * So `tool_invocations` is not an unreliable signal and the reaper concept is not broken: the
+ * defect is specific to the `turns-stalled` INFERENCE, which reads absence-of-recorded-turns as
+ * wedged. The `dead-owner` path is deliberately left untouched by everything below.
+ *
+ * ⚠ WHY THE VETO NEEDS A PROGRESS TERM, NOT CALL VOLUME. D-006's own test is "what ELSE
+ * converges on this signal's steady state?", and raw volume has an obvious convergent
+ * population: an agent stuck in a tight tool-call RETRY loop hammers one tool forever and would
+ * look alive forever. So the term is PROGRESS — a second distinct tool, or at least one call
+ * that actually succeeded — which a single-tool error storm cannot satisfy. It is bounded a
+ * second way by `TOOL_LIVENESS_VETO_CEILING_MS`: an owner that makes progressing calls yet
+ * completes NO turn for hours is pathological by any reading and eventually falls through.
+ *
+ * AND THE DOOR: A DISARM IS NOW RECOVERABLE (WI-37546, sub-case B). The veto above fixes the 18;
+ * it CANNOT fix the 19th, and that one matters most. An owner that is genuinely quiet at the
+ * moment of judgement — the fleet leader was, its turn having timed out — is correctly read as
+ * stalled, and the disarm is defensible. What is NOT defensible is that the disarm was
+ * PERMANENT: it converts a transient stall into an indefinite halt, because the agent cannot
+ * re-arm itself and `reconcileLoopRoutines` only ever looks at `active = TRUE` rows. So this
+ * sweep now opens with a REVIVAL pass: a loop THIS module disarmed as turn-stalled, whose owner
+ * has since made progressing tool calls, is re-armed. The disarm becomes a pause with a
+ * condition instead of a one-way door — which is what a wrong verdict is allowed to be.
+ *
+ * The revival is bounded on three axes so it cannot become a resurrection engine: only rows
+ * carrying THIS module's own turns-stalled pause reason (never the `dead-owner` path, never a
+ * cost-cap or dead-man pause), only inside `REVIVE_WINDOW_MS`, and only `MAX_REVIVALS` times per
+ * loop — a loop that keeps needing revival is a real fault, and the ratchet is what makes it
+ * stay down and stay visible rather than flapping.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -111,6 +156,7 @@ import {
   getLoopStatuses,
   turnsStalledFloorMs,
   rearmFireStarvedLoop,
+  reviveDisarmedLoop,
   computeLifecycleBackoff,
   type LoopStatus,
 } from './loop';
@@ -119,6 +165,98 @@ import { probeWakeReachability, type WakeReachabilityVerdict } from '../../event
 import type { AttentionNotifyInput } from '../../attention-notify';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
+/**
+ * WI-37546 — the EXACT prefix this module writes onto a routine it disarms as turn-stalled, and
+ * the predicate the revival pass selects on.
+ *
+ * ONE constant, used by both the write and the read, because the two halves are only correct
+ * relative to each other: a revival query keyed on a hand-typed copy of this string silently
+ * matches NOTHING the day the reason is reworded, and a revival pass that matches nothing looks
+ * exactly like a revival pass that found nobody to revive. (`stalled-loops-guard-revival.test.ts`
+ * asserts the disarm reason this module actually writes is selected by the predicate it actually
+ * queries with, so the pairing is checked behaviourally rather than by eye.)
+ *
+ * It deliberately names the TURN-STALLED disarm only. The `dead-owner` verdict — a different
+ * write site, measured 7/7 CORRECT on the same day this module measured 18/19 wrong — must never
+ * be revived by this pass, and the narrow prefix is what guarantees that structurally rather
+ * than by intent.
+ */
+export const TURN_STALLED_PAUSE_PREFIX = 'stalled-loops-guard (WI-6639): turns-stalled:';
+
+/**
+ * WI-37546 — how long an owner that is making PROGRESSING tool calls but completing no turn
+ * keeps its veto before falling through to the (now revivable) disarm.
+ *
+ * This is the answer to D-006's convergence test. The veto's other bound is self-limiting by
+ * construction — an owner that truly goes comatose stops making calls, and the veto stops
+ * matching on the very next sweep — but the eternal-spinner shape (an agent looping on tool
+ * calls forever without ever completing a turn) does NOT self-limit, and without a ceiling this
+ * exemption would hold on it indefinitely. Six hours is far beyond any legitimate single turn
+ * here; past it, "still calling tools" has stopped being evidence of progress.
+ *
+ * The ceiling is only reachable when the last completed turn is KNOWN. An owner with no turn
+ * history at all is unknown, not old, and takes the veto — the module's governing asymmetry (a
+ * wrong veto costs one sweep, a wrong disarm is permanent) decides every uncertain read.
+ */
+export const TOOL_LIVENESS_VETO_CEILING_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * WI-37546 — how long after a turn-stalled disarm a loop stays revivable.
+ *
+ * Bounds the pass to the window in which a revival is plausibly the RIGHT answer. Past it, a
+ * silent loop is old news: `gc-dead-loops` owns the row, and re-arming a day-old disarm on the
+ * strength of a single tool call would be resurrecting sessions the fleet has moved on from.
+ */
+export const REVIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * WI-37546 — how many times ONE loop may be revived after a turn-stalled disarm.
+ *
+ * The flap bound. A loop that is disarmed, revived, and disarmed again is telling us the
+ * revival was wrong; the counter is a ratchet (`reviveDisarmedLoop` never resets it), so after
+ * this many attempts the loop stays down and stays visible as a repeat offender rather than
+ * cycling between the two writes forever.
+ */
+export const MAX_REVIVALS = 2;
+
+/**
+ * WI-37546 — one owner's recent tool-call activity, as the liveness veto and the revival pass
+ * both read it.
+ *
+ * Deliberately more than a count: `calls` alone is the measure D-006 warned against, since a
+ * retry storm maximises it. The other three fields are what let {@link isProgressingToolActivity}
+ * separate work from spinning.
+ */
+export interface OwnerToolActivity {
+  /** Total calls in the window. Never the sole basis for a verdict — see the interface doc. */
+  calls: number;
+  /** Distinct `tool_name`s in the window. A retry storm converges on 1. */
+  distinctTools: number;
+  /** Calls with `status = 'ok'`. A storm of `harness_forbidden` / errors converges on 0. */
+  okCalls: number;
+  /** ISO timestamp of the most recent call, for the log/reason text. */
+  lastCallAt: string | null;
+}
+
+/**
+ * WI-37546 — is this activity evidence of an agent WORKING, as opposed to an agent SPINNING?
+ *
+ * Exported and pure so the judgement can be tested directly, rather than only through a sweep
+ * that has to be stood up around it.
+ *
+ * A second distinct tool, or a single successful call. Both are cheap for a working agent to
+ * satisfy and neither is reachable by the convergent population D-006 named: an agent stuck
+ * retrying ONE failing tool produces `distinctTools === 1` and `okCalls === 0` no matter how
+ * many thousands of calls it makes.
+ *
+ * ⚠ Do NOT "simplify" this to `calls > 0`. That is the exact measure the census could not
+ * distinguish from a retry loop, and the reason this fix was filed rather than hot-patched.
+ */
+export function isProgressingToolActivity(activity: OwnerToolActivity | undefined | null): boolean {
+  if (!activity || activity.calls <= 0) return false;
+  return activity.distinctTools >= 2 || activity.okCalls >= 1;
+}
+
 export interface StalledLoopsSweepDeps {
   /** Injectable for tests; defaults to the real batch status read. */
   getStatuses?: typeof getLoopStatuses;
@@ -126,6 +264,52 @@ export interface StalledLoopsSweepDeps {
   autoPause?: typeof autoPauseLoopRoutine;
   /** Injectable for tests; defaults to the real re-arm write (EI-19406534159939583). */
   rearm?: typeof rearmFireStarvedLoop;
+  /**
+   * Injectable for tests; defaults to the real UN-disarm write (WI-37546).
+   *
+   * Separate from `rearm` and not a variant of it: `rearmFireStarvedLoop` is guarded
+   * `AND active = TRUE` and so is a no-op on exactly the population this one exists for. This is
+   * the only write in the module that crosses back over `active = FALSE`.
+   */
+  revive?: typeof reviveDisarmedLoop;
+  /**
+   * Injectable for tests; defaults to one indexed read of `harness_shared.tool_invocations`
+   * (WI-37546).
+   *
+   * Answers "has this owner been making progressing tool calls since <its own boundary>?" —
+   * the liveness question no other exemption in this module asks. The boundary is PER OWNER (a
+   * stalled loop's last fire; a disarmed loop's pause time), which is why the probes arrive as
+   * pairs rather than as a list plus one shared `since`.
+   *
+   * NOT dynamically imported and NOT one query per owner: it is a single `unnest`-joined SELECT
+   * over `tool_invocations_coord_owner_idx (coord_owner_id, invoked_at DESC)` for the whole
+   * sweep, on a connection this sweep already holds.
+   *
+   * Deliberately NOT workspace-scoped. The question is whether the AGENT is alive, and an owner
+   * doing work under another workspace is alive; scoping would turn a cross-workspace session
+   * into a corpse on a technicality — which is precisely the failure mode
+   * EI-19966210024116714 documents from the other side.
+   *
+   * Returns a Map keyed by ownerId. An owner ABSENT from the map has NO qualifying activity —
+   * callers must treat a read FAILURE as absent too (fail toward the pre-existing behaviour, not
+   * toward a blanket veto), which is why the default catches into an empty map at the call site.
+   */
+  readOwnerToolActivity?: (
+    probes: Array<{ ownerId: string; sinceIso: string }>,
+    o: { sql: Sql },
+  ) => Promise<Map<string, OwnerToolActivity>>;
+  /**
+   * Injectable for tests; defaults to a plain read of `harness_shared.routines` (WI-37546).
+   *
+   * The revival pass's candidate set: loops THIS module disarmed as turn-stalled, recently
+   * enough to still be revivable and not already at the revival ceiling. Every bound is applied
+   * in SQL so the pass cannot accidentally widen — in particular the pause-reason predicate,
+   * which is what keeps the 7/7-correct `dead-owner` disarms (and cost-cap / dead-man pauses)
+   * structurally out of reach.
+   */
+  readRevivableLoops?: (
+    o: { sql: Sql; workspaceId: string; pausedAfterMs: number; maxRevivals: number },
+  ) => Promise<Array<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }>>;
   /** Injectable for tests; defaults to the real wake-reachability probe — the SAME oracle
    *  reconcileLoopRoutines uses to refuse terminating a live owner (EI-19406534159939583). */
   probeReachability?: typeof probeWakeReachability;
@@ -280,6 +464,36 @@ export interface StalledLoopsSweepResult {
    * discriminator stopped matching, not that the fault was fixed.
    */
   disarmedUnaddressableHarness: string[];
+  /**
+   * WI-37546: owners whose verdict was `turnsStalled:true` but which this module refused to
+   * disarm because they were still making PROGRESSING tool calls since their last fire — a
+   * second distinct tool, or at least one call that succeeded. An agent issuing tool calls is
+   * not wedged, whatever the turn tracker says.
+   *
+   * Expected to be the LARGEST veto population on a busy workspace, and that is the finding, not
+   * a fault: measured 2026-08-09, 18 of 19 turn-stalled disarms that day had this evidence
+   * available and nothing was reading it. Like `vetoedByProviderWall`, its diagnostic value is
+   * INVERTED — a sustained ZERO on a workspace whose agents are demonstrably working means the
+   * activity read has stopped matching (a renamed column, an unattributed `coord_owner_id`, a
+   * retention window that aged the rows out) and the false disarms have silently resumed.
+   */
+  vetoedByToolActivity: string[];
+  /**
+   * WI-37546: loops this module had ALREADY disarmed as turn-stalled and has now RE-ARMED,
+   * because the owner made progressing tool calls after the disarm — i.e. the verdict was wrong
+   * and the agent came back.
+   *
+   * This is the population the permanent disarm used to strand. It exists because the veto above
+   * cannot help the one shape it does not cover: an owner genuinely quiet AT THE MOMENT OF
+   * JUDGEMENT (a turn that timed out, a carry-respawn mid-flight) is correctly read as stalled,
+   * and only recovers by being asked again.
+   *
+   * A non-zero count is a signal about THIS MODULE's verdict quality, not about the agents — each
+   * entry is one disarm that should not have stood. Sustained non-zero means the turn-stalled
+   * inference is still over-firing and the upstream question is why `last_turn_at` goes stale for
+   * owners that are visibly working.
+   */
+  revivedAfterDisarm: string[];
   dryRun: boolean;
 }
 
@@ -304,7 +518,82 @@ export async function sweepStalledLoops(
   const getStatuses = deps.getStatuses ?? getLoopStatuses;
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
   const rearm = deps.rearm ?? rearmFireStarvedLoop;
+  const revive = deps.revive ?? reviveDisarmedLoop;
   const probeReachability = deps.probeReachability ?? probeWakeReachability;
+  // WI-37546 — one indexed read for the whole sweep. `unnest` pairs each owner with its OWN
+  // boundary (last fire for a live candidate, pause time for a revival candidate), so the
+  // per-owner `since` costs no extra round-trips. The join drives off
+  // `tool_invocations_coord_owner_idx (coord_owner_id, invoked_at DESC)`.
+  const readOwnerToolActivity =
+    deps.readOwnerToolActivity ??
+    (async (probes: Array<{ ownerId: string; sinceIso: string }>, o: { sql: Sql }) => {
+      const out = new Map<string, OwnerToolActivity>();
+      if (probes.length === 0) return out;
+      const rows = await o.sql<
+        Array<{
+          owner_id: string;
+          calls: number;
+          distinct_tools: number;
+          ok_calls: number;
+          last_call_at: string | null;
+        }>
+      >`
+        SELECT t.coord_owner_id                                   AS owner_id,
+               count(*)::int                                      AS calls,
+               count(DISTINCT t.tool_name)::int                   AS distinct_tools,
+               count(*) FILTER (WHERE t.status = 'ok')::int        AS ok_calls,
+               max(t.invoked_at)::text                            AS last_call_at
+          FROM unnest(${probes.map((p) => p.ownerId)}::text[], ${probes.map(
+            (p) => p.sinceIso,
+          )}::timestamptz[]) AS b(owner_id, since)
+          JOIN harness_shared.tool_invocations t
+            ON t.coord_owner_id = b.owner_id
+           AND t.invoked_at > b.since
+         GROUP BY t.coord_owner_id
+      `;
+      for (const r of rows) {
+        if (typeof r?.owner_id !== 'string' || r.owner_id.length === 0) continue;
+        out.set(r.owner_id, {
+          calls: Number(r.calls) || 0,
+          distinctTools: Number(r.distinct_tools) || 0,
+          okCalls: Number(r.ok_calls) || 0,
+          lastCallAt: r.last_call_at ?? null,
+        });
+      }
+      return out;
+    });
+  // WI-37546 — the revival candidate set. Every bound lives in SQL: this module's OWN
+  // turns-stalled pause reason (never `dead-owner`, never a cost-cap/dead-man pause), inside the
+  // revival window, under the revival ceiling.
+  const readRevivableLoops =
+    deps.readRevivableLoops ??
+    (async (o: { sql: Sql; workspaceId: string; pausedAfterMs: number; maxRevivals: number }) => {
+      const rows = await o.sql<
+        Array<{ id: string; target_owner_id: string; paused_at_ms: string | number; revived_count: number }>
+      >`
+        SELECT id,
+               target_owner_id,
+               (metadata->'pause'->>'pausedAtMs')::bigint            AS paused_at_ms,
+               COALESCE((metadata->>'loop_revived_count')::int, 0)   AS revived_count
+          FROM harness_shared.routines
+         WHERE workspace_id = ${o.workspaceId}
+           AND name LIKE 'loop-%'
+           AND target_owner_id IS NOT NULL
+           AND active = false
+           AND metadata->>'loop_paused_reason' LIKE ${TURN_STALLED_PAUSE_PREFIX + '%'}
+           AND (metadata->'pause'->>'pausedAtMs')::bigint >= ${o.pausedAfterMs}
+           AND COALESCE((metadata->>'loop_revived_count')::int, 0) < ${o.maxRevivals}
+      `;
+      return rows
+        .filter((r) => typeof r?.target_owner_id === 'string' && r.target_owner_id.length > 0)
+        .map((r) => ({
+          routineId: r.id,
+          ownerId: r.target_owner_id,
+          pausedAtMs: Number(r.paused_at_ms),
+          revivedCount: Number(r.revived_count) || 0,
+        }))
+        .filter((r) => Number.isFinite(r.pausedAtMs));
+    });
   const resolveOwnerWorkspaces =
     deps.resolveOwnerWorkspaces ??
     (async (ownerIds: string[], o: { sql: Sql }) => {
@@ -335,6 +624,88 @@ export async function sweepStalledLoops(
     });
   const broadcast = deps.broadcast ?? broadcastSevereEvent;
 
+  // ── WI-37546: REVIVAL PASS ────────────────────────────────────────────────────────────────
+  //
+  // Runs FIRST, and deliberately ahead of the active-loop discovery below, for a reason that is
+  // easy to get wrong: its candidates are `active = FALSE` rows, so a workspace whose every loop
+  // has already been disarmed reads as "nothing to do" to the rest of this sweep — which is
+  // exactly the state that most needs a revival pass, and exactly the state the early return
+  // below would have bailed out of.
+  //
+  // What it undoes: a disarm THIS module wrote as turn-stalled, whose owner has since made
+  // progressing tool calls. That combination means the verdict was wrong and the agent came
+  // back — a fact nothing else in this system was reading, so the loop stayed dark until a human
+  // noticed and typed `loop:arm`.
+  //
+  // The bounds are in `readRevivableLoops`'s SQL, not here, so the candidate set cannot widen by
+  // accident: this module's own pause-reason prefix (never the `dead-owner` path, which measured
+  // 7/7 CORRECT on the day this one measured 18/19 wrong), inside REVIVE_WINDOW_MS, under
+  // MAX_REVIVALS. The progress term is the same one the veto uses.
+  //
+  // Fails toward the STATUS QUO on a read fault: an empty candidate set means "revive nobody",
+  // which is precisely the behaviour that existed before this pass. A revival is a correction, so
+  // failing to make one costs a sweep; the disarm it would have undone is already written.
+  const revivedAfterDisarm: string[] = [];
+  const reviveCandidates = await readRevivableLoops({
+    sql,
+    workspaceId: ws,
+    pausedAfterMs: Date.now() - REVIVE_WINDOW_MS,
+    maxRevivals: MAX_REVIVALS,
+  }).catch((e) => {
+    console.warn(
+      `[stalled-loops-guard] revival candidate read failed (${e instanceof Error ? e.message : e}) — ` +
+        `reviving nobody this sweep; previously-disarmed loops stay down.`,
+    );
+    return [] as Array<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }>;
+  });
+  if (reviveCandidates.length > 0) {
+    const sinceDisarm = await readOwnerToolActivity(
+      reviveCandidates.map((c) => ({ ownerId: c.ownerId, sinceIso: new Date(c.pausedAtMs).toISOString() })),
+      { sql },
+    ).catch((e) => {
+      console.warn(
+        `[stalled-loops-guard] revival activity read failed (${e instanceof Error ? e.message : e}) — ` +
+          `reviving nobody this sweep.`,
+      );
+      return new Map<string, OwnerToolActivity>();
+    });
+    for (const c of reviveCandidates) {
+      const activity = sinceDisarm.get(c.ownerId);
+      if (!isProgressingToolActivity(activity)) continue;
+      revivedAfterDisarm.push(c.ownerId);
+      console.warn(
+        `[stalled-loops-guard] REVIVED ${c.ownerId}: disarmed as turn-stalled at ` +
+          `${new Date(c.pausedAtMs).toISOString()}, but has made ${activity?.calls} tool call(s) since ` +
+          `(${activity?.distinctTools} distinct tool(s), ${activity?.okCalls} ok, last ` +
+          `${activity?.lastCallAt ?? 'unknown'}) — the owner is working, so the verdict was wrong. ` +
+          `Re-arming (revival ${c.revivedCount + 1}/${MAX_REVIVALS}); a disarm is a pause with a ` +
+          `condition, not a one-way door (WI-37546).`,
+      );
+      if (!dryRun) {
+        await revive(
+          sql,
+          c.routineId,
+          `stalled-loops-guard (WI-37546): revived — disarmed as turn-stalled at ` +
+            `${new Date(c.pausedAtMs).toISOString()}, then made ${activity?.calls} tool call(s) ` +
+            `(${activity?.distinctTools} distinct, ${activity?.okCalls} ok, last ` +
+            `${activity?.lastCallAt ?? 'unknown'}). The owner was working; the turn-stalled verdict ` +
+            `was wrong. Revival ${c.revivedCount + 1} of ${MAX_REVIVALS}.`,
+        );
+      }
+    }
+  }
+  /**
+   * WI-37546 — owners the revival pass just re-armed, held so the disarm loop below SKIPS them.
+   *
+   * Load-bearing, not defensive. The revival sets `active = TRUE`, and the discovery query below
+   * runs after it, so a just-revived loop reappears in `rows` — carrying the SAME stale
+   * `turnsStalled` verdict that got it disarmed in the first place (its rescue fire has not
+   * happened yet, by construction: it is scheduled for `now()`). Without this skip the sweep
+   * would revive a loop and re-disarm it in the same pass, burning a revival off the ratchet each
+   * time and leaving the loop exactly where it started.
+   */
+  const revivedThisSweep = new Set(revivedAfterDisarm);
+
   const rows = await sql<Array<{ id: string; target_owner_id: string }>>`
     SELECT id, target_owner_id
       FROM harness_shared.routines
@@ -355,6 +726,8 @@ export async function sweepStalledLoops(
       repairedWakeStarved: [],
       vetoedByWithheldFire: [],
       disarmedUnaddressableHarness: [],
+      vetoedByToolActivity: [],
+      revivedAfterDisarm,
       dryRun,
     };
 
@@ -383,8 +756,46 @@ export async function sweepStalledLoops(
     },
   );
 
+  // WI-37546 — one batched activity read for every owner the verdict has already condemned.
+  //
+  // Hoisted out of the per-owner loop for the same reason `ownerWorkspaces` is: it is a single
+  // indexed SELECT for the whole sweep, and the loop body must not grow a query per iteration.
+  // Scoped to `turnsStalled` owners only — the rest are not candidates for any disposition here,
+  // so reading their activity would be work with no reader.
+  //
+  // The boundary is each loop's own LAST FIRE, not a shared window: the question this veto asks
+  // is "has this owner done anything since we last asked it for a turn?", and every loop was
+  // last asked at a different moment. A loop that has never fired falls back to the verdict's own
+  // stall floor, which is the same window `turnsStalled` itself judged over.
+  const stalledCandidates = [...routineIdByOwner.keys()].filter((o) => statuses.get(o)?.turnsStalled === true);
+  const nowMsForProbe = Date.now();
+  const toolActivity = await readOwnerToolActivity(
+    stalledCandidates.map((ownerId) => {
+      const s = statuses.get(ownerId);
+      const firedMs = s?.lastFiredAt ? Date.parse(s.lastFiredAt) : NaN;
+      const sinceMs = Number.isFinite(firedMs)
+        ? firedMs
+        : nowMsForProbe - turnsStalledFloorMs(s?.intervalSec ?? null);
+      return { ownerId, sinceIso: new Date(sinceMs).toISOString() };
+    }),
+    { sql },
+  ).catch((e) => {
+    // Fails toward the PRE-EXISTING behaviour (no veto), never toward a blanket exemption. A read
+    // fault must not silently disable the reaper for the whole workspace — that would be the
+    // WI-36792 lesson (blunting a reaper is invisible; it still reports `checked: N`) with a
+    // wider blast radius than any single wrong disarm.
+    console.warn(
+      `[stalled-loops-guard] tool-activity read failed (${e instanceof Error ? e.message : e}) — ` +
+        `proceeding WITHOUT the liveness veto; disarms this sweep are decided as they were before ` +
+        `WI-37546. A repeat here is a real fault: it re-opens the 18-of-19 false-disarm window.`,
+    );
+    return new Map<string, OwnerToolActivity>();
+  });
+
   const stalledOwners: string[] = [];
   const vetoedByRecentTurn: string[] = [];
+  /** WI-37546: owners still making PROGRESSING tool calls since their last fire. */
+  const vetoedByToolActivity: string[] = [];
   const reArmedFireStarved: string[] = [];
   const vetoedByProviderWall: string[] = [];
   /** EI-19899301656065801: disarmed owners the reachability probe still finds PRESENT. */
@@ -399,6 +810,12 @@ export async function sweepStalledLoops(
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
     if (!status?.turnsStalled) continue;
+
+    // WI-37546 — do not judge a loop this same sweep just revived. Its `turnsStalled` verdict is
+    // the stale one that got it disarmed; the fire that will refresh it is scheduled for `now()`
+    // and has not happened yet. Re-disarming here would undo the revival within milliseconds and
+    // spend one of its bounded revival attempts doing it.
+    if (revivedThisSweep.has(ownerId)) continue;
 
     // EI-19362678179163398 — SECOND-SOURCE VETO. Disarming a loop is an automated write
     // against a live agent, and the verdict above rests on ONE column (`last_turn_at`)
@@ -718,6 +1135,63 @@ export async function sweepStalledLoops(
       }
     }
 
+    // WI-37546 — LIVE, NOT STALLED. The fifth and last exemption, deliberately positioned HERE,
+    // after every other branch has taken the population it can explain.
+    //
+    // Placement is a design choice, not an accident. Put earlier, this veto would poach owners
+    // that `vetoedByProviderWall` and `vetoedByWithheldFire` currently claim, and those counts
+    // are read as measurements ("how much silent halting is this exemption preventing"). Put
+    // last, its own count means exactly one thing and can be compared straight against the census
+    // that motivated it: DISARMS PREVENTED.
+    //
+    // The question it asks is the one no other branch asks. Every exemption above interrogates
+    // the DELIVERY PATH — did a turn land, is a wall up, did a fire go out, did a wake reach
+    // anyone. This one interrogates the AGENT: is it still making tool calls? That evidence sat
+    // in `harness_shared.tool_invocations` the whole time, indexed by `coord_owner_id`, and
+    // nothing read it.
+    //
+    // Measured 2026-08-09 on this workspace: 18 of the 19 loops disarmed that day had an owner
+    // making tool calls in the hour BEFORE the disarm — this branch is the difference between
+    // that day and a correct one. The 19th was genuinely quiet at judgement time and is NOT
+    // rescued here; it is rescued by the revival pass at the top of this sweep, which is why both
+    // halves had to ship together. Shipping only this branch would have left the worst case (a
+    // transient stall converted into an indefinite halt) exactly as it was.
+    //
+    // ⚠ PROGRESS, NOT VOLUME — see `isProgressingToolActivity`. Raw call count has a convergent
+    // population (an agent stuck retrying one failing tool), which would read as alive forever.
+    //
+    // BOUNDED, so it cannot become a standing exemption: `TOOL_LIVENESS_VETO_CEILING_MS` past the
+    // owner's last COMPLETED turn, "still calling tools" stops counting as evidence and the loop
+    // falls through to the disarm — which is now revivable, so even that is no longer terminal.
+    const activity = toolActivity.get(ownerId);
+    if (isProgressingToolActivity(activity)) {
+      // The ceiling anchors on the last time this owner FINISHED something. Unknown (a loop whose
+      // owner has no turn history at all) is not old — it takes the veto, per this module's
+      // governing asymmetry.
+      const lastCompletedMs = [status.lastRealTurnAt, status.lastTurnAt, status.armedAt]
+        .map((t) => (t ? Date.parse(t) : NaN))
+        .find((n) => Number.isFinite(n));
+      const turnlessForMs = lastCompletedMs == null ? null : nowMs - lastCompletedMs;
+      if (turnlessForMs == null || turnlessForMs < TOOL_LIVENESS_VETO_CEILING_MS) {
+        vetoedByToolActivity.push(ownerId);
+        console.warn(
+          `[stalled-loops-guard] LIVE ${ownerId}: turnsStalled:true but the owner has made ` +
+            `${activity?.calls} tool call(s) since its last fire (${activity?.distinctTools} distinct ` +
+            `tool(s), ${activity?.okCalls} ok, last ${activity?.lastCallAt ?? 'unknown'}) — refusing to ` +
+            `disarm. An agent issuing tool calls is not wedged, whatever last_turn_at claims ` +
+            `(WI-37546: 18 of 19 disarms on 2026-08-09 had exactly this evidence available).`,
+        );
+        continue;
+      }
+      console.warn(
+        `[stalled-loops-guard] CEILING ${ownerId}: making progressing tool calls ` +
+          `(${activity?.calls} since last fire) yet has completed NO turn for ` +
+          `${Math.round(turnlessForMs / 3600_000)}h — past TOOL_LIVENESS_VETO_CEILING_MS, so tool ` +
+          `activity has stopped counting as progress. Disarming; the disarm is revivable ` +
+          `(WI-37546).`,
+      );
+    }
+
     stalledOwners.push(ownerId);
 
     // EI-19966210024116714: name WHY, when the why is knowable.
@@ -746,8 +1220,11 @@ export async function sweepStalledLoops(
     if (unaddressableHarness) disarmedUnaddressableHarness.push(ownerId);
 
     if (dryRun) continue;
+    // WI-37546: composed FROM the shared prefix rather than re-typing it, because the revival
+    // pass selects on that exact string. Two hand-written copies of one predicate is how a
+    // revival query silently starts matching nothing.
     const reason =
-      `turns-stalled: ${status.fireCount} fire(s), last fired ${status.lastFiredAt ?? 'never'}, ` +
+      `${TURN_STALLED_PAUSE_PREFIX} ${status.fireCount} fire(s), last fired ${status.lastFiredAt ?? 'never'}, ` +
       `last turn ${status.lastTurnAt ?? 'never'}` +
       (unaddressableHarness
         ? ` — UNADDRESSABLE HARNESS: this loop's routine is on workspace '${ws}', but the owner's ` +
@@ -756,7 +1233,7 @@ export async function sweepStalledLoops(
           `no turn followed. Re-arming alone will NOT fix this — the session must be relaunched ` +
           `with the correct workspace scope (EI-19966210024116714).`
         : '');
-    await autoPause(sql, routineId, `stalled-loops-guard (WI-6639): ${reason}`);
+    await autoPause(sql, routineId, reason);
 
     // EI-19899301656065801: ask whether the owner we just permanently disarmed is STILL THERE.
     //
