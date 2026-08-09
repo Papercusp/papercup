@@ -12,7 +12,7 @@
  * change, plus an explicit `refresh()`. No SSE/live-sync in v1.
  */
 
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import type { ReportBlock } from '@papercusp/chat-protocol';
 import type { AuthorIdentity } from '../../_components/AuthorBadge';
@@ -1853,11 +1853,6 @@ export interface ActiveLock {
   expires_ts: string;  // ISO
 }
 
-export interface LockQueueResult {
-  active_locks: ActiveLock[];
-  waiting?: unknown[];
-}
-
 const PLANS_DIR_REL = 'apps/operator/docs/plans';
 
 /** Workspace-relative lock key matching what with-plan-lock.ts uses
@@ -1868,73 +1863,65 @@ export function planLockPath(slug: string, archived: boolean): string {
     : `${PLANS_DIR_REL}/${slug}.md`;
 }
 
-async function fetchLockQueue(paths: string[]): Promise<LockQueueResult> {
-  const url = new URL('/api/admin/locks/queue', window.location.origin);
-  for (const p of paths) url.searchParams.append('paths', p);
-  const r = await fetch(url.toString());
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`locks:queue → ${r.status}: ${text.slice(0, 200)}`);
-  }
-  return (await r.json()) as LockQueueResult;
-}
-
 /**
- * Poll the lock queue for one plan's path. Re-fetches on slug change,
- * on document focus / visibility-change, and on a 30s timer while
- * visible. Per D-008 (no SSE/live-sync) and the lock-banner spec
- * (P-205). Returns the matching active lock or null.
+ * The open plan's lock holder, or null. PUSH, not poll (plan
+ * semantic-search-fingerprint-coverage-2026-08-03, P-025).
+ *
+ * This used to `fetch('/api/admin/locks/queue')` on a 30s
+ * `window.setInterval`, justified in its own comment by "D-008 (no SSE/live
+ * -sync)". That premise expired when plans moved onto `@papercusp/sync`: the
+ * lock writers now emit `planLock.byPath` invalidations
+ * (agent-tools/locks/notify-lock-change.ts, wired at acquire AND release), so
+ * the banner updates on the actual transition instead of up to 30s late.
+ *
+ * ⚠ THE FOCUS / VISIBILITYCHANGE RE-FETCH IS DELIBERATELY KEPT — do not delete
+ * it as leftover polling. The emit is fire-and-forget by design (a sync-bus
+ * fault must never fail, or delay, the lock operation that triggered it), so a
+ * dropped notify has NO retry behind it. The 30s poll was self-correcting by
+ * construction; push is not, and without this backstop a lost invalidation
+ * strands the banner on a holder that has already gone — strictly worse than
+ * what it replaced. Returning to the tab is precisely when someone is about to
+ * act on what this says.
  */
 export function usePlanLock(
   slug: string | null,
   archived: boolean,
 ): AsyncResult<ActiveLock | null> {
-  const [data, setData] = useState<ActiveLock | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
-  const refresh = () => setTick((t) => t + 1);
+  const lockPath = slug ? planLockPath(slug, archived) : null;
+  const args = useMemo<Record<string, unknown>>(
+    () => (lockPath ? { path: lockPath } : {}),
+    [lockPath],
+  );
+  const rows = useSyncRows<ActiveLock>('planLock.byPath', args, !!lockPath);
+
+  // `refresh` is a fresh closure every render, so it cannot go in the deps
+  // below — that would tear down and re-register both listeners on every
+  // render. The ref keeps the listeners bound for the lifetime of a lockPath
+  // while still firing the CURRENT invalidate.
+  const refreshRef = useRef(rows.refresh);
+  refreshRef.current = rows.refresh;
 
   useEffect(() => {
-    if (!slug) {
-      setData(null);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    const lockPath = planLockPath(slug, archived);
-    const poll = async () => {
-      setLoading(true);
-      try {
-        const res = await fetchLockQueue([lockPath]);
-        if (cancelled) return;
-        const hit = res.active_locks.find((l) => l.path === lockPath) ?? null;
-        setData(hit);
-        setError(null);
-      } catch (e) {
-        if (cancelled) return;
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+    if (!lockPath) return;
+    const onFocus = () => refreshRef.current();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshRef.current();
     };
-    poll();
-    const onFocus = () => poll();
-    const onVisible = () => { if (document.visibilityState === 'visible') poll(); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
-    const interval = window.setInterval(poll, 30_000);
     return () => {
-      cancelled = true;
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
-      window.clearInterval(interval);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, archived, tick]);
+  }, [lockPath]);
 
-  return { data, loading, error, refresh };
+  return {
+    // The resolver returns a 0- or 1-row array (at most one holder per path).
+    data: rows.data[0] ?? null,
+    loading: rows.loading,
+    error: rows.error,
+    refresh: rows.refresh,
+  };
 }
 
 /* ── plan_revisions (plan-agent-launch P-004 / P-017) ──────────────── */
