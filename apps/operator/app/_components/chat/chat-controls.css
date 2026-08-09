@@ -1207,6 +1207,255 @@
   min-width: 0;
 }
 
+/* ═══ FLEET rail — the fourth zone ══════════════════════════════════════════
+ *
+ * chat-popup-fleet-peers-rail-2026-08-09 P-004. The right-hand twin of
+ * `.pc-zone--orders`, one column further out: Orders | conversation | Activity |
+ * Fleet. Its boundary is drawn here rather than in the .tsx for the reason the
+ * two rails above already state — `--pc-zone-rule` is a popup-local token, and
+ * the css-tokens lint only resolves a component-local token inside the file that
+ * DEFINES it, so a `var(--pc-zone-rule)` in a .tsx reads as undefined and reds
+ * the lint.
+ */
+.pc-zone--peers {
+  border-left: 1px solid var(--pc-zone-rule);
+}
+
+.pc-peers {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* The fleet's identity: colour chip, slug, headcount. Its own row under the zone
+   title rather than crammed into it, because the slug is the one string here
+   that must never be truncated into ambiguity — two fleets on this box have
+   shared a 16-character prefix. */
+.pc-peers__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.pc-peers__swatch {
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  flex: none;
+  /* Runtime-set per fleet by the rail's inline style (the same
+     `--hud-fleet` the board's cards carry, so one fleet is one colour
+     everywhere). Falls back to the muted rule when a fleet has no colour. */
+  background: var(--hud-fleet, var(--fg-mute));
+}
+.pc-peers__slug {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-peers__count {
+  margin-left: auto;
+  font-size: 9.5px;
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Shown ONLY when something needs a human, so its absence is meaningful. Amber
+   text on a faint amber wash — the same treatment the popup's other warn
+   surfaces use, rather than a second alert vocabulary. */
+.pc-peers__warn {
+  flex: none;
+  padding: 4px 9px;
+  font-size: 9.5px;
+  color: var(--warn);
+  background: rgb(from var(--warn) r g b / 0.09);
+  border-bottom: 1px solid var(--border);
+}
+
+.pc-peers__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.pc-peers__group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Sticky, for the same reason the rails' other section caps are: a 24-member
+   fleet scrolls, and the group a row belongs to must not scroll away from it. */
+.pc-peers__cap {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  font-size: 8.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  /* NO letter-spacing — see this file's header rule 1: `lint:design-primitives`
+     enforces 0 across app UI and it is expectNoUnexpected, not warn-only. The
+     uppercase caps above (.pc-zone-cap) carry none either. */
+  color: var(--pc-zone-label);
+  background: var(--pc-zone-fill);
+  border-bottom: 1px solid var(--pc-zone-rule);
+}
+.pc-peers__cap-n {
+  margin-left: auto;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-peers__empty {
+  padding: 7px 9px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--fg-mute);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── a peer row ───────────────────────────────────────────────────────────
+   Rendered as a <button> when it navigates and a plain <li> when it does not,
+   so the two never look alike. Both share this block; only `--btn` adds the
+   affordances. */
+.pc-peer {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 9px 7px 8px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.pc-peer--btn {
+  cursor: pointer;
+}
+.pc-peer--btn:hover {
+  background: var(--bg-raised);
+}
+.pc-peer--btn:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -2px;
+}
+/* The agent already on screen. Marked in FORM (a fleet-coloured rail) as well as
+   by the word, and deliberately NOT a button — re-opening the reader onto
+   themselves is a no-op that reads as a broken row. */
+.pc-peer[data-current='true'] {
+  border-left-color: var(--hud-fleet, var(--accent-strong));
+  background: rgb(from var(--accent-strong) r g b / 0.09);
+}
+
+.pc-peer__r1 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.pc-peer__glyph {
+  font-size: 10px;
+  flex: none;
+}
+.pc-peer__handle {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-peer__kind {
+  font-size: 8.5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--fg-mute);
+  flex: none;
+}
+.pc-peer__here {
+  margin-left: auto;
+  font-size: 8.5px;
+  font-weight: 700;
+  /* NO letter-spacing — same rule as .pc-peers__cap above. */
+  text-transform: uppercase;
+  color: var(--hud-fleet, var(--accent-strong));
+  white-space: nowrap;
+}
+.pc-peer__ctx {
+  margin-left: auto;
+  font-size: 9.5px;
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+}
+.pc-peer__ctx[data-hot='true'] {
+  color: var(--warn);
+}
+
+.pc-peer__r2 {
+  display: block;
+  margin-top: 2px;
+  padding-left: 13px;
+  font-size: 10px;
+  color: var(--fg-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-peer__state {
+  color: var(--fg-dim);
+}
+
+/* State is carried by the DOT's colour and by the word beside it, never colour
+   alone — the rail has to survive a greyscale screenshot pasted into an
+   escalation, and a colour-blind operator reading it at 2am.
+
+   The colours are the board's own (.hud__dot--*), verbatim: an agent that is
+   amber on the board behind the popup must not be green in the rail in front of
+   it. Keep these in step with hud.css if that mapping ever changes. */
+.pc-peer__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--fg-mute);
+}
+.pc-peer__dot[data-col='working'] {
+  background: var(--good);
+}
+.pc-peer__dot[data-col='needs-you'] {
+  background: var(--warn);
+  box-shadow: 0 0 0 2px rgb(from var(--warn) r g b / 0.18);
+}
+.pc-peer__dot[data-col='blocked'] {
+  background: var(--bad);
+  box-shadow: 0 0 0 2px rgb(from var(--bad) r g b / 0.15);
+}
+.pc-peer__dot[data-col='stalled'] {
+  background: var(--warn);
+}
+.pc-peer__dot[data-col='parked'] {
+  background: var(--border-strong);
+}
+.pc-peer__state[data-col='needs-you'],
+.pc-peer__state[data-col='stalled'] {
+  color: var(--warn);
+}
+.pc-peer__state[data-col='blocked'] {
+  color: var(--bad);
+}
+
 /* ═══ shared focus treatment ════════════════════════════════════════════════ */
 
 .pc-ctl-mode:focus-visible,

@@ -189,7 +189,12 @@ describe('requestLiveOperatorHeadSnapshot', () => {
       snapshotReply: { ok: false, booted: true, error: 'this harness engine is stopped/closing.' },
     });
     const out = await requestLiveOperatorHeadSnapshot({ ...base, ...f });
-    expect(out).toEqual({ kind: 'failed', port: 3070, error: 'this harness engine is stopped/closing.' });
+    expect(out).toEqual({
+      kind: 'failed',
+      port: 3070,
+      error: 'this harness engine is stopped/closing.',
+      transport: false,
+    });
   });
 
   it('a transport failure on the REAL call is FAILED, not no-holder (the difference is the remedy)', async () => {
@@ -202,15 +207,138 @@ describe('requestLiveOperatorHeadSnapshot', () => {
       if (phase === 1) throw new Error('socket hang up');
       return r;
     }) as never;
-    const out = await requestLiveOperatorHeadSnapshot({ ...base, ...f, fetchImpl });
-    expect(out).toEqual({ kind: 'failed', port: 3070, error: 'socket hang up' });
+    // retryBudgetMs:0 pins ONE attempt, so this stays a test about classification.
+    const out = await requestLiveOperatorHeadSnapshot({ ...base, ...f, fetchImpl, retryBudgetMs: 0 });
+    expect(out).toEqual({ kind: 'failed', port: 3070, error: 'socket hang up', transport: true });
   });
 
   it('propagates no-holder from discovery without ever making the expensive call', async () => {
     const f = fleet({ ports: [3070, 3170] });
-    const out = await requestLiveOperatorHeadSnapshot({ ...base, ...f });
+    const out = await requestLiveOperatorHeadSnapshot({ ...base, ...f, retryBudgetMs: 0 });
     expect(out.kind).toBe('no-holder');
     expect(f.calls.every((c) => c.body.probeOnly === true)).toBe(true);
+  });
+});
+
+/**
+ * P-014 (2026-08-09). The holder self-recycles roughly twice as often as a cut needs it
+ * to stay up, so surviving a recycle is the difference between a cut that lands and one
+ * that throws away a 17-minute drain.
+ */
+describe('retrying across a holder recycle', () => {
+  /** Records sleeps instead of taking them, so budget arithmetic is exact and instant. */
+  function clock() {
+    let t = 0;
+    const slept: number[] = [];
+    return {
+      slept,
+      nowImpl: () => t,
+      sleepImpl: async (ms: number) => {
+        slept.push(ms);
+        t += ms;
+      },
+    };
+  }
+
+  it('a holder that recycles mid-request is WAITED OUT — the cut lands instead of dying', async () => {
+    // The measured failure: discovery finds a booted holder, then the POST hits the
+    // restart and returns `fetch failed`. Attempt 2 finds the new process and succeeds.
+    let realCalls = 0;
+    const f = fleet({ ports: [3070, 3271], holderPort: 3271 });
+    const fetchImpl = (async (url: string, init: { body: string }) => {
+      const isReal = JSON.parse(init.body).probeOnly !== true;
+      if (isReal && ++realCalls === 1) throw new Error('fetch failed');
+      return await (f.fetchImpl as unknown as (u: string, i: { body: string }) => Promise<unknown>)(url, init);
+    }) as never;
+
+    const c = clock();
+    const out = await requestLiveOperatorHeadSnapshot({ ...base, ...f, fetchImpl, ...c });
+
+    expect(out.kind).toBe('produced');
+    expect(realCalls).toBe(2);
+    expect(out.retry).toEqual({ attempts: 2, waitedMs: DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS });
+  });
+
+  it('CONTROL: the same recycle KILLS the cut when retry is disabled', async () => {
+    // Without this the test above passes just as happily against a build that never
+    // retries at all — the fake would simply not get asked a second time.
+    let realCalls = 0;
+    const f = fleet({ ports: [3070, 3271], holderPort: 3271 });
+    const fetchImpl = (async (url: string, init: { body: string }) => {
+      const isReal = JSON.parse(init.body).probeOnly !== true;
+      if (isReal && ++realCalls === 1) throw new Error('fetch failed');
+      return await (f.fetchImpl as unknown as (u: string, i: { body: string }) => Promise<unknown>)(url, init);
+    }) as never;
+
+    const out = await requestLiveOperatorHeadSnapshot({ ...base, ...f, fetchImpl, retryBudgetMs: 0 });
+    expect(out).toMatchObject({ kind: 'failed', transport: true, error: 'fetch failed' });
+    expect(realCalls).toBe(1);
+  });
+
+  it('waits out a COLD hive too — a just-restarted holder reads as no-holder while its LRU warms', async () => {
+    // D-025: the new process takes the fd lock immediately but `getBootedHarness` is an
+    // in-process LRU that stays cold until something touches the hive, so the box reports
+    // booted:false everywhere. Transient, and indistinguishable from "nothing holds it".
+    let booted = false;
+    const listSiblingsImpl = (async () => [{ port: 3271, pid: 4271, startedAt: 1 }]) as never;
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      const probe = JSON.parse(init.body).probeOnly === true;
+      if (probe) {
+        const was = booted;
+        booted = true; // warms by the next pass
+        return { ok: true, status: 200, json: async () => ({ ok: true, booted: was }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, appended: true, coversUpTo: 9 }) };
+    }) as never;
+
+    const c = clock();
+    const out = await requestLiveOperatorHeadSnapshot({ ...base, listSiblingsImpl, fetchImpl, ...c });
+    expect(out).toMatchObject({ kind: 'produced', coversUpTo: 9 });
+    expect(out.retry?.attempts).toBe(2);
+  });
+
+  it('does NOT retry an operator that ANSWERED and refused — that is a real answer', async () => {
+    // Retrying it would burn the whole budget re-asking a question already answered.
+    const f = fleet({
+      ports: [3070],
+      holderPort: 3070,
+      snapshotReply: { ok: false, error: 'this harness engine is stopped/closing.' },
+    });
+    const c = clock();
+    const out = await requestLiveOperatorHeadSnapshot({ ...base, ...f, ...c });
+    expect(out).toMatchObject({ kind: 'failed', transport: false });
+    expect(c.slept).toEqual([]);
+  });
+
+  it('gives up inside the budget, and reports how hard it tried', async () => {
+    // A holder that never comes back must terminate — and say so, so the refusal is not
+    // mistaken for a transient blip worth re-running a 17-minute drain against.
+    const f = fleet({ ports: [3070], holderPort: 3070 });
+    const fetchImpl = (async (url: string, init: { body: string }) => {
+      if (JSON.parse(init.body).probeOnly !== true) throw new Error('fetch failed');
+      return await (f.fetchImpl as unknown as (u: string, i: { body: string }) => Promise<unknown>)(url, init);
+    }) as never;
+
+    const c = clock();
+    const out = await requestLiveOperatorHeadSnapshot({
+      ...base,
+      ...f,
+      fetchImpl,
+      ...c,
+      retryBudgetMs: 60_000,
+      retryDelayMs: 15_000,
+    });
+    expect(out.kind).toBe('failed');
+    // Stops BEFORE overrunning the budget rather than after — 4 attempts, 45s waited.
+    expect(c.slept).toEqual([15_000, 15_000, 15_000]);
+    expect(out.retry).toEqual({ attempts: 4, waitedMs: 45_000 });
+  });
+
+  it('the retry budget outlasts a real bg-host recycle', async () => {
+    // Measured cadence 2026-08-09: 8.5m/8.5m/15.7m/26.8m/8.5m/8.5m between restarts, and
+    // a recycle returns in seconds. A budget under one recycle would be decorative.
+    expect(DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS).toBeGreaterThanOrEqual(5 * 60_000);
+    expect(DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS).toBeLessThanOrEqual(30_000);
   });
 });
 

@@ -422,3 +422,25 @@ describe('computeSoakReport', () => {
     ]);
   });
 });
+
+describe('readBgHostJournalUncached — bounded against a hung journalctl (EI-19937931088042507)', () => {
+  it('degrades to an explicit journalError instead of hanging when journalctl is killed by the timeout', async () => {
+    const start = Date.now();
+    const result = await readBgHostJournalUncached(24);
+    // The stub resolves ~immediately; a real hang would never resolve at all. This bound
+    // (well under any CI/test timeout) is the recurrence guard: it fails if a future edit
+    // reintroduces an unbounded execFile call whose promise never settles.
+    expect(Date.now() - start).toBeLessThan(2_000);
+    expect(result.journalAvailable).toBe(true);
+    expect(result.journalError).toMatch(/timed out/i);
+    // A bounded-but-failed read must report UNKNOWN counts, never a fabricated clean bill
+    // of health (the false-green class the maxBuffer test above already guards).
+    expect(result).toMatchObject({
+      oomKillCount: 0,
+      restartCount: 0,
+      failureCount: 0,
+      peakMemoryMb: null,
+      highMemoryPeakCount: 0,
+    });
+  });
+});

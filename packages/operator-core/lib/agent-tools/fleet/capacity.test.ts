@@ -5,12 +5,18 @@ import { buildCapacityReport } from './capacity';
 import type { GatewayHeadroom } from '../../inference-gateway/observability';
 import type { AccountStatusRow } from '../../deployment/account-pool-store';
 
-const { mockAccountStatus } = vi.hoisted(() => ({ mockAccountStatus: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
-vi.mock('../../deployment/account-session-override', () => ({
-  getAccountOverride: async () => ({ forcedAccounts: [], excludeAccounts: [] }),
-  applyAccountOverride: (ids: readonly string[]) => [...ids],
+const { mockAccountStatus, mockGetAccountOverride } = vi.hoisted(() => ({
+  mockAccountStatus: vi.fn(),
+  mockGetAccountOverride: vi.fn(async () => ({ forcedAccounts: [], excludeAccounts: [] })),
 }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
+vi.mock('../../deployment/account-session-override', async (importOriginal) => {
+  // Keep the REAL applyAccountOverride (a pure filter — worth exercising for real, not a
+  // stand-in) and mock only getAccountOverride (the DB-backed read), default no-op so the
+  // pre-existing readBeeProviderAvailability tests below are unaffected.
+  const actual = await importOriginal<typeof import('../../deployment/account-session-override')>();
+  return { ...actual, getAccountOverride: mockGetAccountOverride };
+});
 vi.mock('../../deployment/account-pool-store', () => ({ accountStatus: mockAccountStatus }));
 
 const tieredHr = (over: Partial<GatewayHeadroom> = {}): GatewayHeadroom => ({
@@ -183,4 +189,43 @@ test('EI-19944752041493781: sustainedlyLimitedCount DOES count a sustainedlyLimi
   assert.ok(acct);
   assert.equal(acct!.usable, 2);
   assert.equal(acct!.sustainedlyLimitedCount, 1, 'exactly the one usable, sustainedlyLimited account counts');
+});
+
+test('EI-19932168784507536: an account excluded by the owner session override is NOT counted ' +
+  'available/usable, even though raw pool-health says it is healthy', async () => {
+  const { readBeeProviderAvailability } = await import('./capacity');
+  // Reproduces the measured incident: two pool-healthy accounts, one of which is outside the
+  // session-override allow-list (the same override spawn-env.ts's resolveSpawnGatewayEnv
+  // enforces at admission) — that one must be excluded from available/usable, or the capacity
+  // read stays a false-green for a route that spawn admission will actually refuse.
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('aviynw3', {}), // healthy, and allowed
+    acctRow('excluded-acct', {}), // healthy, but session-override-excluded
+  ]);
+  mockGetAccountOverride.mockResolvedValueOnce({ forcedAccounts: [], excludeAccounts: ['excluded-acct'] });
+
+  const acct = await readBeeProviderAvailability();
+  assert.ok(acct, 'expected an availability read');
+  assert.equal(acct!.available, 1, 'the override-excluded account must not count as available');
+  assert.equal(acct!.usable, 1, 'the override-excluded account must not count as usable');
+  assert.equal(acct!.overrideExcludedCount, 1, 'the report must name how many accounts the override excluded');
+});
+
+test('EI-19932168784507536: the full fleet:capacity report surfaces overrideExcludedAccounts ' +
+  'end-to-end (capacity and admission must agree about the same pool)', async () => {
+  vi.resetModules();
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce(tieredHr());
+  mockAccountStatus.mockResolvedValueOnce([acctRow('aviynw3', {}), acctRow('excluded-acct', {})]);
+  mockGetAccountOverride.mockResolvedValueOnce({ forcedAccounts: [], excludeAccounts: ['excluded-acct'] });
+
+  const res = (await capacityMod.default.handler({} as never, { role: 'su' } as never)) as {
+    content: { text: string }[];
+  };
+  const body = JSON.parse(res.content[0]!.text);
+  assert.equal(body.ok, true);
+  assert.equal(body.availableAccounts, 1, 'admission-excluded account must not inflate availableAccounts');
+  assert.equal(body.usableAccounts, 1, 'admission-excluded account must not inflate usableAccounts');
+  assert.equal(body.overrideExcludedAccounts, 1, 'the report must name the excluded account so a caller can tell "no capacity" from "fenced off"');
 });

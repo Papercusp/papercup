@@ -95,6 +95,27 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // session recorded for a plan (or one ending) live-refreshes the tab. Low
   // write rate + a small per-plan payload keep the broad bust cheap.
   'harness_shared.adv_sessions': ['advSessions.list', 'advRoster.list', 'planSessions.list'],
+  /* agent_modes — the standing MODE per agent per axis (auto / ideate / drain /
+     grade). session-chat-popup-timestamps-and-modes-2026-08-09 P-003; trigger
+     attached in migration 763.
+     [owner 2026-08-09] "I changed drain mode from off to on, but the display
+     still showed off afterward." — `mode:set` wrote this table and NOTHING
+     refetched, because the table had no trigger and no entry here. Both halves
+     were missing; either one alone is inert.
+     Full-bust rather than row-keyed: every consumer is keyed by owner/workspace
+     rather than by this table's PK, and the write rate is a human or an agent
+     deciding to change posture — not telemetry. */
+  'harness_shared.agent_modes': [
+    // The roster row's `modes`, which is what the chat control band's mode pills
+    // and the HUD's mode chips both read. This is the one the owner watched fail
+    // to update.
+    'advRoster.list',
+    // The session popup's ORDERS panel — it shows what the agent was TOLD,
+    // modes included ("who set them"), so it goes stale on exactly this write.
+    'agentOrders.byOwner',
+    // The dossier half of the same popup, for the same reason.
+    'agentDetail.byOwner',
+  ],
   // saved_prompts backs the Quick Panel prompts outline (savedPrompts.byScope).
   // Trigger attached in migration 598 (quick-panel-saved-prompts-2026-07-13):
   // full-bust — the query is keyed by scope (harness), not the row PK.

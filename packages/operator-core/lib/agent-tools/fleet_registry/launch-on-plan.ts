@@ -575,7 +575,10 @@ export function isLeaderAuthoredClaimSpec(specId: string, fleetSlug: string): bo
  * filter.
  */
 export function mergeKindIntoClaimSpec(existing: ClaimSpec, kinds: readonly string[]): Record<string, unknown> {
-  const kindLeaf = { field: 'kind', op: 'in', value: [...kinds] };
+  type ClaimFilter = NonNullable<ClaimSpec['view']['filter']>;
+  // Annotated (not inferred) so `op` keeps its literal type: inference widens it to `string`, which
+  // no longer satisfies FilterNode once the leaf flows through the typed dedupe below.
+  const kindLeaf: ClaimFilter = { field: 'kind', op: 'in', value: [...kinds] };
   const existingFilter = existing.view?.filter;
 
   // Keep conjunctions canonical. In particular, the issue-family fallback's
@@ -584,7 +587,6 @@ export function mergeKindIntoClaimSpec(existing: ClaimSpec, kinds: readonly stri
   // `{ all: [...] }` as `{ all: [existingFilter, kindLeaf] }` hides that cohort and
   // makes an otherwise-valid fixed bug wave falsely report windDown=true. Flatten
   // recursively so a relaunch also repairs specs persisted by the old merge shape.
-  type ClaimFilter = NonNullable<ClaimSpec['view']['filter']>;
   const flattenAll = (filter: ClaimFilter): ClaimFilter[] =>
     'all' in filter ? filter.all.flatMap(flattenAll) : [filter];
 

@@ -45,6 +45,7 @@ import { Tooltip } from '../../harness/Tooltip';
 import { OperatorChat } from '../OperatorChat';
 import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
 import { mapSessionTimeline } from './session-transcript-mapping';
+import { mergeSentEchoes, recordSentEcho, settleSentEcho, useSentEchoes } from './sent-message-echo';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import { ChatActionBar } from './ChatActionBar';
@@ -52,6 +53,12 @@ import FleetRoleGlyph from '../FleetRoleGlyph';
 import FleetLaunchRow from './FleetLaunchRow';
 import { LocalCardHost } from './LocalCardHost';
 import AgentDossier from '../../adv/sessions/AgentDossier';
+// chat-popup-fleet-peers-rail-2026-08-09: the FLEET rail + its pure derivation.
+// The rail is presentational; every rule about what counts as a fleet, how peers
+// group and how they sort lives in the unit-tested module beside it.
+import FleetPeersRail from './FleetPeersRail';
+import { deriveFleetPeers } from './fleet-peers';
+import { useChatClock } from './message-timestamp';
 // P-015: the ORDERS panel — what the agent was TOLD (mission/authority,
 // modes + who set them, owner directives, standing facts, walls, carry brief).
 // Sibling of the dossier, opposite edge; see ORDERS_RAIL_SIDE_STYLE below.
@@ -176,6 +183,42 @@ const DOSSIER_RAIL_OVERLAY_STYLE: React.CSSProperties = {
  *  matchMedia + useEffect pattern BrainstormFull.tsx already uses for its own
  *  compact-layout switch. */
 const DOSSIER_NARROW_MEDIA_QUERY = '(max-width: 860px)';
+
+/* ── chat-popup-fleet-peers-rail-2026-08-09: the FLEET rail ──────────────────
+   The fourth zone, one column further out than Activity, so the popup reads
+   told → conversation → doing → who with. Like both other rails it is a SIBLING
+   of the conversation region (P-015's guard), which since D-007 means it is
+   INSIDE the fullscreen target and shows in both maximize modes for free. */
+const PEERS_RAIL_SIDE_STYLE: React.CSSProperties = {
+  flex: '0 0 248px',
+  width: 248,
+  minWidth: 0,
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
+const PEERS_RAIL_OVERLAY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 0,
+  right: 0,
+  width: 'min(280px, 88vw)',
+  background: 'var(--bg-popover, #0d1829)',
+  boxShadow: '-8px 0 24px rgba(0,0,0,0.35)',
+  overflowY: 'auto',
+  /* Above the dossier's own overlay (5): with both rails collapsed on a narrow
+     window they occupy the same edge, and the one the reader opened last should
+     not render underneath the other. */
+  zIndex: 6,
+};
+
+/* D-002 [owner 2026-08-09]: under width pressure the rails give way Fleet →
+   Orders → Activity, so this breakpoint is the WIDEST of the three (Orders
+   1180px, the dossier 860px). Four columns need ~1330px of content — 248 fleet
+   + 300 dossier + 272 orders + ~510 conversation — so below 1400 there is no
+   honest way to seat this one as a column. Activity survives longest because it
+   changes every turn; this rail is the most situational. */
+const PEERS_NARROW_MEDIA_QUERY = '(max-width: 1400px)';
 
 /* ── session-chat-popup-direction-d-2026-08-02 P-015: the ORDERS panel ───────
    The second panel [owner 2026-08-02: "Two panels: told on the left, did on
@@ -770,7 +813,17 @@ function LiveSessionChat({
     () => mapSessionTimeline(events, rosterEntry?.currentPlanSlug),
     [events, rosterEntry?.currentPlanSlug],
   );
-  const messages = mapped.messages;
+
+  /* P-002: the owner's OWN sends, merged in.
+     A coord:send to a LIVE agent is injected mid-turn and the timeline parser
+     suppresses it (see sent-message-echo.ts's header), so without this the
+     transcript never changes when you send something — which is exactly the
+     "nothing happened" the owner reported against a send that had in fact
+     succeeded.
+     Appended at the TAIL, so `focusIndex` below — which indexes into the mapped
+     stream — keeps pointing at the same turns. */
+  const echoes = useSentEchoes(sessionOwnerId);
+  const messages = useMemo(() => mergeSentEchoes(mapped.messages, echoes), [mapped.messages, echoes]);
 
   /* Search deep-link (owner ask 2026-08-02, part b). The stream's `anchor`
      event names the matched entry by its index in the FLAT timeline the server
@@ -892,6 +945,7 @@ export default function SessionChatModal({
   focusAnchorTs = null,
   focusTerm = null,
   focusSessionId = null,
+  onSelectPeer,
 }: {
   /** The inbox item's ownerAgentId — null hides the modal. */
   sessionOwnerId: string | null;
@@ -928,6 +982,20 @@ export default function SessionChatModal({
    *  that would otherwise be streamed. Overrides the resolved session id for
    *  the stream only. */
   focusSessionId?: string | null;
+  /**
+   * chat-popup-fleet-peers-rail-2026-08-09 P-005 [owner 2026-08-09]: "Clicking
+   * on a peer should update the conversation popup to display that peer."
+   *
+   * The modal is a pure function of props — the CALLER owns which agent is open
+   * (HudView's `hudsession` param), exactly as it owns `onClose`. So switching
+   * peers is the caller's write to make, not something this component can do to
+   * itself.
+   *
+   * OPTIONAL, and its absence is a real case rather than an oversight: a host
+   * that cannot re-target the popup passes nothing and the rail renders its rows
+   * read-only, instead of offering clicks that quietly do nothing.
+   */
+  onSelectPeer?: (ownerId: string) => void;
 }) {
   const [resolved, setResolved] = useState<SessionListRow | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -1039,9 +1107,21 @@ export default function SessionChatModal({
     setSendError(null);
     setSentOk(null);
     setSending(true);
+    /* P-002: record the send BEFORE awaiting it, so the message appears in the
+       transcript the instant you hit enter rather than a round-trip later. The
+       optimism is settled either way below — a failed send un-renders (the error
+       banner is what reports it), because a message that never left must not sit
+       in the conversation looking like part of it. */
+    const echoId = recordSentEcho(sessionOwnerId, text);
     sendToSessionOwner(sessionOwnerId, text)
-      .then((delivery) => setSentOk(delivery))
-      .catch((e: unknown) => setSendError(e instanceof Error ? e.message : String(e)))
+      .then((delivery) => {
+        setSentOk(delivery);
+        settleSentEcho(sessionOwnerId, echoId, 'sent');
+      })
+      .catch((e: unknown) => {
+        setSendError(e instanceof Error ? e.message : String(e));
+        settleSentEcho(sessionOwnerId, echoId, 'failed');
+      })
       .finally(() => setSending(false));
   };
 
@@ -1175,6 +1255,47 @@ export default function SessionChatModal({
   const [dossierOpen, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean.withDefault(true));
   const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
 
+  /* ── chat-popup-fleet-peers-rail-2026-08-09: the FLEET rail ────────────────
+     Derived HERE rather than inside the rail because the answer is load-bearing
+     OUTSIDE it too: a null model means no rail, no toggle, and no widening — all
+     layout decisions the rail cannot make from within itself.
+
+     No new query. `actionRoster` above is the advRoster.list subscription this
+     popup already holds (shared by {queryName, args} with the identity chip and
+     the dossier), so the peers list is a filter over data that is already here.
+     That is also what makes the rail PUSH-fed with nothing new wired: a member
+     joining/leaving/stalling writes coord_presence, which the existing
+     table-to-query bridge SSE-invalidates onto advRoster.list, which re-renders
+     this memo. See fleet-peers.ts's header for the full chain. */
+  const nowMs = useChatClock();
+  const fleetPeers = useMemo(() => {
+    const payload = actionRoster.data?.[0];
+    if (!payload) return null;
+    return deriveFleetPeers(payload.active ?? [], sessionOwnerId, { nowMs });
+  }, [actionRoster.data, sessionOwnerId, nowMs]);
+
+  /* Room-aware default, following the NEWER of the two precedents in this file
+     (Orders' D-009, not the dossier's flat withDefault(true)) — and it matters
+     more here than there, because D-002 puts this rail's breakpoint at the
+     widest of the three, so it is the rail most often without a column to sit
+     in. [owner 2026-08-09] asked for default-OPEN, which this delivers at every
+     width where the rail HAS a column; below that "expanded" would mean
+     "covering the conversation you just opened", which is not what was asked
+     for. An explicit ?chatFleet= choice still wins at every width, so the toggle
+     never reads as a broken button.
+
+     `??` not `||`: `false` is a real explicit choice and must not fall through
+     to the derived default. (The mocked nuqs stores in this file's suite yield
+     `undefined` rather than nuqs's own `null`, so both must fall through — which
+     `??` does and `||` would do wrongly for `false`.) */
+  const [fleetParam, setFleetOpen] = useQueryState('chatFleet', parseAsBoolean);
+  const isPeersNarrow = useIsNarrowViewport(PEERS_NARROW_MEDIA_QUERY);
+  const fleetOpen = fleetParam ?? !isPeersNarrow;
+  /* The rail is only ever on screen for an agent that IS in a fleet — a solo
+     agent gets no rail AND no toggle, rather than a toggle that opens an empty
+     column explaining it is empty. */
+  const peersVisible = open && fleetOpen && fleetPeers != null;
+
   /* P-015: the Orders panel's own toggle, nuqs like every other bit of this
      popup's state. Defaults OPEN, same as the dossier
      [owner 2026-08-03, verbatim: "In the HUD tab when opening a conversation
@@ -1289,6 +1410,25 @@ export default function SessionChatModal({
      `agentOrders.byOwner` runs the carry-brief gather, so a closed panel must
      cost nothing. */
   const ordersVisible = open && ordersOpen;
+
+  /* ── how wide the popup has to be ─────────────────────────────────────────
+     Replaces the nested ternary that enumerated the rail COMBINATIONS: with
+     three rails that is eight cases, and the fourth zone would have made it
+     sixteen — a shape where adding a rail means editing every branch and
+     forgetting one is invisible. Summing the columns instead means a rail
+     contributes its own width and nothing else has to know it exists.
+
+     Only a rail that TAKES A COLUMN counts. Below its own breakpoint a rail
+     OVERLAYS (it is drawn on top of the conversation, not beside it), so
+     widening for it would leave a band of empty popup behind the drawer.
+
+     The +16 per rail is its gutter; the 720 base is the transcript's own
+     comfortable width, which is what this whole scheme protects — the popup
+     grows to make room for a rail rather than the transcript shrinking. */
+  const railColumns =
+    (ordersVisible && !isOrdersNarrow ? 272 + 16 : 0) +
+    (dossierOpen && !isNarrow ? 300 + 16 : 0) +
+    (peersVisible && !isPeersNarrow ? 248 + 16 : 0);
 
   const exitScreen = useCallback(async () => {
     // Desktop first: if the window is carrying the mode, the document is not.
@@ -1504,14 +1644,7 @@ export default function SessionChatModal({
               // conversation + 300 dossier + chrome). The ladder is
               // both-open → dossier-only → bare, so opening Orders widens the
               // popup rather than crushing the transcript between two panels.
-              width:
-                ordersVisible && dossierOpen && !isNarrow
-                  ? 'min(1320px, 97vw)'
-                  : ordersVisible
-                    ? 'min(1040px, 96vw)'
-                    : dossierOpen && !isNarrow
-                      ? 'min(1040px, 96vw)'
-                      : 'min(720px, 92vw)',
+              width: `min(${720 + railColumns}px, ${railColumns > 0 ? 97 : 92}vw)`,
               height: 'min(80vh, 820px)',
               padding: 0,
               display: 'flex',
@@ -1698,6 +1831,33 @@ export default function SessionChatModal({
                 <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
               ) : null}
             </button>
+            {/* The FLEET rail's toggle. Rendered ONLY when this agent is in a
+                fleet: a solo agent has no rail to open, and a control that
+                opens an empty column saying "not in a fleet" is chrome
+                pretending to be information.
+
+                Same grammar as Activity beside it — constant label, chevron
+                carrying the verb, `aria-pressed` + `aria-label` spelling the
+                action out for a reader who cannot see a chevron point. */}
+            {fleetPeers ? (
+              <button
+                type="button"
+                className="pc-button"
+                onClick={() => void setFleetOpen(!fleetOpen)}
+                aria-pressed={fleetOpen}
+                aria-label={fleetOpen ? 'Hide fleet peers' : 'Show fleet peers'}
+                data-testid="session-chat-fleet-toggle"
+                style={CHAT_TOOLBAR_BUTTON_STYLE}
+              >
+                {fleetOpen ? null : (
+                  <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
+                )}
+                Fleet
+                {fleetOpen ? (
+                  <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
+                ) : null}
+              </button>
+            ) : null}
             {/* Maximized covers the backdrop, and in fullscreen Esc is spoken
                 for — so without an explicit ✕ there is no way out but the
                 maximize toggles. */}
@@ -1854,6 +2014,27 @@ export default function SessionChatModal({
               // launch the banner beside it already reports as dead.
               launchFailed={launchFailed}
               onClose={() => void setDossierOpen(false)}
+            />
+          </div>
+        ) : null}
+        {/* ── FLEET (chat-popup-fleet-peers-rail-2026-08-09) — the FOURTH zone,
+            and the last child so the DOM order matches the reading order the
+            layout promises: told → conversation → doing → who with.
+
+            A SIBLING of the conversation region like both other rails, which is
+            the layout contract P-015's guard asserts — and since D-007 that is
+            what INCLUDES it in both maximize modes for free, with no hide-list
+            to keep. Do NOT move it inside the conversation element. ── */}
+        {peersVisible ? (
+          <div
+            className="pc-zone pc-zone--peers"
+            data-testid="session-chat-peers-rail"
+            style={isPeersNarrow ? PEERS_RAIL_OVERLAY_STYLE : PEERS_RAIL_SIDE_STYLE}
+          >
+            <FleetPeersRail
+              model={fleetPeers!}
+              onSelectPeer={onSelectPeer}
+              onClose={() => void setFleetOpen(false)}
             />
           </div>
         ) : null}

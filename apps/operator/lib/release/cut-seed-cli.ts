@@ -634,9 +634,17 @@ export async function openSourceStoreForCut(inp: {
               staleBuild: outcome.staleBuild,
             }).message
           : `the operator on port ${outcome.port} could not produce it: ${outcome.error}`;
+      // Say how hard we tried. Without this the refusal reads as a first-try failure, and
+      // the natural next move is "just retry the cut" — which re-runs the ~17-min drain to
+      // arrive at the same place. If we already waited out the retry budget, the holder is
+      // not merely recycling and remedy (a) is NOT the answer.
+      const tried = outcome.kind !== 'produced' && outcome.retry
+        ? ` (after ${outcome.retry.attempts} attempts over ~${Math.round(outcome.retry.waitedMs / 1000)}s of waiting — ` +
+          `so this is NOT a transient recycle; retrying the cut unchanged will re-run the drain and fail again)`
+        : '';
       throw new Error(
         `[cut-seed] --sparse needs a fresh head snapshot at the own-log tail. This box's operator ` +
-          `holds the corestore, so only IT can append one — and ${why}. Proceeding would silently ` +
+          `holds the corestore, so only IT can append one — and ${why}${tried}. Proceeding would silently ` +
           `ship the FULL core (computeSparseFrom → 0). Remedies: (a) confirm the operator holding ` +
           `${inp.workspaceId}::${inp.hive} is healthy and serving /api/internal/substrate/head-snapshot, ` +
           `then retry; (b) quiesce the operator and re-run, so this cut opens the store WRITABLE and ` +

@@ -119,6 +119,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       vetoedByProviderWall: [],
       disarmedWhileReachable: [],
       repairedWakeStarved: [],
+      vetoedByWithheldFire: [],
       dryRun: false,
     });
     expect(getStatuses).not.toHaveBeenCalled();
@@ -1148,5 +1149,139 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
     expect(res.paused).toBe(0);
     expect(armWake).not.toHaveBeenCalled();
     expect(autoPause).not.toHaveBeenCalled();
+  });
+
+  describe('withheld-fire veto (WI-36792)', () => {
+    it('refuses to disarm when the last fire was WITHHELD by the gate — not repairable, but nothing to repair', async () => {
+      // Same wake-starved shape as the corpse CONTROL above (unreachable, not repairable), but
+      // this owner's most recent fire never actually went out: the fire gate withheld it, which
+      // is why lastWakeAt is frozen too (a withheld fire creates no delivery row, same as a
+      // black-holed one). The session is live with a VALID standing await — there is nothing for
+      // armWake to fix, and nothing corpse-like about it either. Must be vetoed, not disarmed.
+      const sql = fakeSql([{ id: 'rt_withheld', target_owner_id: 'su-withheld' }]);
+      const getStatuses = vi.fn(
+        async () =>
+          new Map([
+            [
+              'su-withheld',
+              status({
+                ownerId: 'su-withheld',
+                turnsStalled: true,
+                lastFiredAt: FIRED,
+                lastWakeAt: WAKE_FROZEN,
+                lastTurnAt: WAKE_FROZEN,
+                lastRealTurnAt: WAKE_FROZEN,
+                // The discriminator: the gate withheld THIS fire (at/after lastFiredAt), not a
+                // stale one from an earlier cycle.
+                lastWithheldAt: FIRED,
+              }),
+            ],
+          ]),
+      );
+      const autoPause = vi.fn(async () => {});
+      const rearm = vi.fn<RearmFn>(async () => {});
+      const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const notify = vi.fn<NotifyFn>(async () => {});
+
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        // Not repairable AND unreachable — the corpse-shaped probe. The veto must engage anyway,
+        // because repairability is not what distinguishes this population from a corpse.
+        { getStatuses, autoPause, rearm, armWake, probeReachability: reach(false), broadcast, notify },
+      );
+
+      expect(res.vetoedByWithheldFire).toEqual(['su-withheld']);
+      expect(res.paused).toBe(0);
+      expect(autoPause).not.toHaveBeenCalled();
+      // VETOED, not repaired and not re-armed — the gate's own backoff owns this loop's cadence.
+      expect(armWake).not.toHaveBeenCalled();
+      expect(rearm).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('CONTROL — the SAME wake-starved+unrepairable shape with NO withhold (or a STALE one) is still disarmed', async () => {
+      // Falsifiability control: a veto that fires unconditionally on "not repairable" would pass
+      // the test above and blunt the guard for every genuine corpse (WI-6639's original
+      // population is exactly this: unreachable, not repairable, `lastWithheldAt` absent). Also
+      // covers the direction of the `>=` comparison — a withhold timestamp from a PRIOR cycle
+      // (strictly before this fire) must not retroactively excuse the current one.
+      const sql = fakeSql([{ id: 'rt_corpse2', target_owner_id: 'su-corpse2' }]);
+      const getStatuses = vi.fn(
+        async () =>
+          new Map([
+            [
+              'su-corpse2',
+              status({
+                ownerId: 'su-corpse2',
+                turnsStalled: true,
+                lastFiredAt: FIRED,
+                lastWakeAt: WAKE_FROZEN,
+                lastTurnAt: WAKE_FROZEN,
+                lastRealTurnAt: WAKE_FROZEN,
+                // A withhold from a STRICTLY EARLIER cycle than the current fire — must not
+                // veto the current disarm.
+                lastWithheldAt: WAKE_FROZEN,
+              }),
+            ],
+          ]),
+      );
+      const autoPause = vi.fn(async () => {});
+      const rearm = vi.fn<RearmFn>(async () => {});
+      const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const notify = vi.fn<NotifyFn>(async () => {});
+
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, rearm, armWake, probeReachability: reach(false), broadcast, notify },
+      );
+
+      expect(res.vetoedByWithheldFire).toEqual([]);
+      expect(res.paused).toBe(1);
+      expect(autoPause).toHaveBeenCalledWith(sql, 'rt_corpse2', expect.stringContaining('WI-6639'));
+      expect(armWake).not.toHaveBeenCalled();
+      expect(rearm).not.toHaveBeenCalled();
+    });
+
+    it('does NOT veto when the wake-starved probe says the await IS repairable — repair still wins', async () => {
+      // The veto must be reachable ONLY through the not-repairable branch. If it engaged
+      // unconditionally on a withheld timestamp it would short-circuit the WI-36685 repair path
+      // for a session that is actually fixable right now.
+      const sql = fakeSql([{ id: 'rt_repair', target_owner_id: 'su-repair' }]);
+      const getStatuses = vi.fn(
+        async () =>
+          new Map([
+            [
+              'su-repair',
+              status({
+                ownerId: 'su-repair',
+                turnsStalled: true,
+                lastFiredAt: FIRED,
+                lastWakeAt: WAKE_FROZEN,
+                lastTurnAt: WAKE_FROZEN,
+                lastRealTurnAt: WAKE_FROZEN,
+                lastWithheldAt: FIRED,
+              }),
+            ],
+          ]),
+      );
+      const autoPause = vi.fn(async () => {});
+      const rearm = vi.fn<RearmFn>(async () => {});
+      const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const notify = vi.fn<NotifyFn>(async () => {});
+
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, rearm, armWake, probeReachability: wakeStarvedProbe(), broadcast, notify },
+      );
+
+      expect(res.vetoedByWithheldFire).toEqual([]);
+      expect(res.repairedWakeStarved).toEqual(['su-repair']);
+      expect(res.paused).toBe(0);
+      expect(armWake).toHaveBeenCalledTimes(1);
+      expect(rearm).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -219,6 +219,23 @@ export interface StalledLoopsSweepResult {
    * here they continued and landed nowhere.
    */
   repairedWakeStarved: string[];
+  /**
+   * WI-36792: owners whose MOST RECENT fire was never sent at all — the fire gate WITHHELD it
+   * (`lastWithheldAt >= lastFiredAt`) while the session was still reachable. They read as
+   * wake-starved for the same mechanical reason as `repairedWakeStarved` (a withheld fire
+   * creates no `event_wake_deliveries` row, so `lastWakeAt` freezes under an advancing
+   * `lastFiredAt`) but there is nothing to repair: the standing await is intact and the session
+   * is live. Nothing is wrong with the agent — it was simply never asked for a turn.
+   *
+   * VETOED, not repaired and not re-armed: the gate's backoff is a deliberate cadence and this
+   * module has no business overwriting it (the same "leave it alone" reasoning as
+   * `vetoedByProviderWall`). Re-arming a withheld PARKED loop belongs to reconcileLoopRoutines'
+   * `gate-backoff` rebase, which honours `retryAfterSec`.
+   *
+   * A non-zero count is a signal about the FIRE GATE, not the agent — the circuit is denying
+   * fires to a live session. Sustained non-zero means the backoff is not clearing.
+   */
+  vetoedByWithheldFire: string[];
   dryRun: boolean;
 }
 
@@ -276,6 +293,7 @@ export async function sweepStalledLoops(
       vetoedByProviderWall: [],
       disarmedWhileReachable: [],
       repairedWakeStarved: [],
+      vetoedByWithheldFire: [],
       dryRun,
     };
 
@@ -295,6 +313,8 @@ export async function sweepStalledLoops(
   const disarmedWhileReachable: string[] = [];
   /** WI-36685: owners whose fires were black-holing for want of a standing await. */
   const repairedWakeStarved: string[] = [];
+  /** WI-36792: owners whose last fire the GATE withheld — never sent, so never answerable. */
+  const vetoedByWithheldFire: string[] = [];
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
@@ -490,6 +510,31 @@ export async function sweepStalledLoops(
       Number.isFinite(lastFiredMs) &&
       (!Number.isFinite(lastWakeMs) || lastFiredMs - lastWakeMs >= turnsStalledFloorMs(status.intervalSec));
 
+    // WI-36792 — WITHHELD, NOT WAKE-STARVED. The block below has THREE sub-cases and until now
+    // implemented only two, so the third fell through to the permanent disarm.
+    //
+    // `wakeStarved` is already TRUE for a gate-withheld fire, and that is not a coincidence — it
+    // is the same mechanical signature by a different cause. The claim stamps `last_fired_at` and
+    // parks the row; the gate then DENIES the fire before `wake()` is ever called, so no
+    // `event_wake_deliveries` row is created and `lastWakeAt` stays frozen under an advancing
+    // `lastFiredAt`. Identical history, opposite remedy: there the wake was attempted and reached
+    // nobody, here it was never attempted at all.
+    //
+    // The block escapes only via `awaitRepairable`, and that is exactly where this case falls
+    // through: a withheld fire leaves the session's standing await INTACT (nothing consumed it),
+    // so there is nothing to repair, `awaitRepairable` is false, and control reaches the disarm.
+    // The healthiest possible state — live session, valid await — was being read as terminal.
+    //
+    // Measured on su-4a6e2255 (2026-08-08): `last_withheld_at` 21:54:40.570Z, reason 'fire-gate',
+    // detail 'backoff (consecutive_errors=4, retry in ~454s)' — 9s after the 21:54:31.403Z claim,
+    // with await 44729 alive and unfired the whole window. Disarmed at 22:07:36Z; dark until the
+    // owner typed into the session by hand ~55 minutes later. `lastWithheldAt >= lastFiredAt` is
+    // the whole discriminator, and it needs no new I/O — see LoopStatus.lastWithheldAt (loop.ts),
+    // where it was surfaced for this reader.
+    const withheldMs = status.lastWithheldAt ? Date.parse(status.lastWithheldAt) : NaN;
+    const lastFireWasWithheld =
+      Number.isFinite(withheldMs) && Number.isFinite(lastFiredMs) && withheldMs >= lastFiredMs;
+
     // Held so the disarm path below can reuse this probe instead of paying a second one.
     let probed: WakeReachabilityVerdict | null = null;
     if (wakeStarved) {
@@ -533,6 +578,39 @@ export async function sweepStalledLoops(
             continue;
           }
         } else {
+          continue;
+        }
+      }
+
+      // WI-36792 — Case 2 of the wake-starved split: NOT repairable (a live session with a
+      // VALID standing await has nothing for `armWake` to fix), but the reason `lastWakeAt`
+      // is frozen is that the fire GATE withheld the most recent fire outright — it never
+      // went out, so nobody was ever asked for a turn. Only reachable when the branch above
+      // did not already `continue` (i.e. `!probed?.awaitRepairable`, or its repair write
+      // failed and fell through — see the `repairedWakeStarved.pop()` path just above).
+      //
+      // `lastWithheldAt >= lastFiredAt` is the discriminator loop.ts documents on the field
+      // itself: the claim stamps `lastFiredAt` and the gate is consulted immediately after,
+      // so a withheld-at at or after it means THIS fire, not a stale one from a prior cycle.
+      //
+      // VETOED, not repaired and not re-armed — the gate's backoff is a deliberate cadence
+      // (reconcileLoopRoutines' `gate-backoff` rebase honours `retryAfterSec`; re-arming here
+      // would fight it, the same "leave it alone" reasoning as `vetoedByProviderWall`).
+      if (!probed?.awaitRepairable) {
+        const lastWithheldMs = status.lastWithheldAt ? Date.parse(status.lastWithheldAt) : NaN;
+        const fireWasWithheld =
+          Number.isFinite(lastWithheldMs) &&
+          Number.isFinite(lastFiredMs) &&
+          lastWithheldMs >= lastFiredMs;
+        if (fireWasWithheld) {
+          vetoedByWithheldFire.push(ownerId);
+          console.warn(
+            `[stalled-loops-guard] WITHHELD-FIRE VETO ${ownerId}: fires advanced to ${status.lastFiredAt} ` +
+              `while lastWakeAt stayed at ${status.lastWakeAt ?? 'never'} — but the fire gate WITHHELD that ` +
+              `claim (lastWithheldAt=${status.lastWithheldAt}), so it was never actually sent. The session ` +
+              `is live with a valid standing await; there is nothing to repair. Refusing to disarm — the ` +
+              `agent was never asked for a turn (WI-36792).`,
+          );
           continue;
         }
       }
@@ -721,6 +799,7 @@ export async function sweepStalledLoops(
     vetoedByProviderWall,
     disarmedWhileReachable,
     repairedWakeStarved,
+    vetoedByWithheldFire,
     dryRun,
   };
 }

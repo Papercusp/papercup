@@ -197,6 +197,43 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
       expect(r.claimabilityWarning).toMatch(/needs a human|needs-human|human/i);
     });
 
+    // EI-19932455002723461 (MEASURED 2026-08-09): the original check covered only 2 of the
+    // ~12 real claim floors — a priority set on an item excluded by any OTHER structural
+    // floor (claim-hold: 61 open items on papercusp; federation-detector: 98;
+    // cross-machine-rig: 6; …) silently reported success with no warning at all, reproducing
+    // the "Mug's priority lever is silently ineffective" symptom for the majority of the
+    // items it actually affects on this harness.
+    it.each([
+      ['claim-hold', 'payload._claimHold = true — deliberately held (WI-2797).'],
+      ['federation-detector', 'an auto-filed replication-liveness detector, gated to the p2p fleet (WI-2633)'],
+      ['cross-machine-rig', 'needs a ≥2-machine rig this caller does not have (WI-2796)'],
+      ['plan-lane-reserved', 'reserved to its own plan lane while that plan is active (WI-2118/WI-3667)'],
+      ['loop-noise', 'an AUTO-loop-iteration bookkeeping marker, not work (EI-8802)'],
+      ['already-completed', 'already carries a terminal completion record (EI-8972)'],
+      ['external-blocker', 'payload.externalBlockers contains an active typed capability dependency'],
+      ['not-claimable-status', 'status is terminal or otherwise not in the claimable set'],
+    ])('set mode: a committed write on a %s item ALSO surfaces claimabilityWarning', async (refusedBy, detail) => {
+      setM.mockResolvedValue({ id: 'EI-2', harness: 'papercusp', priority: -100, applicable: true } as never);
+      floorsM.mockResolvedValue([{ id: 'EI-2', admissible: false, refusedBy, detail }] as never);
+      const r = await one({ workItem: 'EI-2', priority: -100 });
+      expect(r).toMatchObject({ ok: true, written: true });
+      expect(r.claimabilityWarning).toMatch(/structurally UNCLAIMABLE/);
+      expect(r.claimabilityWarning).toContain(detail);
+    });
+
+    // 'already-taken' is deliberately EXCLUDED: it's a TRANSIENT state (the current holder
+    // may release it any time), not a standing structural exclusion — priority steering IS
+    // effective the moment it's released, so warning here would be a false alarm on the
+    // single most common non-admissible state.
+    it('set mode: an already-taken item does NOT surface a claimability warning (transient, not structural)', async () => {
+      setM.mockResolvedValue({ id: 'EI-3', harness: 'papercusp', priority: -100, applicable: true } as never);
+      floorsM.mockResolvedValue([
+        { id: 'EI-3', admissible: false, refusedBy: 'already-taken', detail: 'already claimed by another agent', heldBy: 'su-abc' },
+      ] as never);
+      const r = await one({ workItem: 'EI-3', priority: -100 });
+      expect(r.claimabilityWarning).toBeUndefined();
+    });
+
     it('clearing (priority:null) never checks claim floors — nothing to warn about', async () => {
       setM.mockResolvedValue({ id: 'EI-1', harness: 'papercusp', priority: null, applicable: true } as never);
       const r = await one({ workItem: 'EI-1', priority: null });

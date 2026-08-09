@@ -286,9 +286,20 @@ describe('minePatterns — strength makes lengths comparable', () => {
       minLift: 0,
       maximalOnly: false,
     });
-    // `a b c d` is a perfectly reliable 4-run; `a q` shares its head with two
-    // other continuations, so each of its transitions is less surprising.
-    expect(res.patterns[0]!.symbols.join(' ')).toBe('a b c d');
+    const strengthOfKey = (k: string) =>
+      res.patterns.find((p) => p.symbols.join(' ') === k)!.strength;
+    // The LONGER `a b c d` outranks the shorter `a b` it contains, because its
+    // extra transitions are reliable — normalization must not simply invert the
+    // old bias into a preference for short patterns.
+    expect(strengthOfKey('a b c d')).toBeGreaterThan(strengthOfKey('a b'));
+
+    // But `b c d` outranks `a b c d`, and that is CORRECT rather than a defect:
+    // `a` heads three different continuations here, so the a→b step is weakly
+    // predictive and drags the mean down. Ranking the tail above the whole is
+    // exactly what "how surprising is each step" should say — and it is the
+    // behaviour a raw-lift ranking (which scores `a b c d` highest at 1365)
+    // cannot express.
+    expect(strengthOfKey('b c d')).toBeGreaterThan(strengthOfKey('a b c d'));
   });
 });
 

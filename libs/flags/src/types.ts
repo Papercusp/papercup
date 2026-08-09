@@ -2423,6 +2423,19 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter((entry) 
 // ASSERTIONS (review-by not past, parking cases <= watermark); it now IMPORTS these
 // instead of re-declaring them, so the watchdog and the CI guard reason over one set of numbers.
 //
+//   ⚠ BEFORE you conclude a review: run `npm run audit:dark-flags`
+//     (scripts/audit-dark-flags-live-state.ts). A text-only read of case+reason
+//     is BLIND to a flag that is already running live — WI-37354 caught the
+//     2026-08-09 review below concluding "CODEX_GATEWAY_OAUTH_PROXY: canary not
+//     yet run, stays dark" in the SAME cycle the flag was resolving `enabled:
+//     true` on this box via a runtime override the whole time. The script
+//     cross-references every DARK_FLAGS entry's case against its live PG
+//     override + env state and flags any 'incomplete'/'parked' entry that
+//     resolves true anywhere (a sanctioned-nowhere combination) as CRITICAL;
+//     an 'owner-authority'/'cutover' entry live via override is expected and
+//     reported only for visibility. Fold its CRITICAL output into your review
+//     notes below — don't just re-read the prose.
+//
 //   DARK_FLAGS_REVIEW_BY    — the date the allowlist must be RE-REVIEWED by. Past it,
 //                             walk every dark flag: flip what's ready (remove it from
 //                             DARK_FLAGS), THEN push this date out with a fresh look —
@@ -2540,6 +2553,24 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter((entry) 
 // move the date — the very act the caution above warns about, made unavoidable by construction.
 // That is a guard-design problem, not a reviewer problem: filed as EI-19941703547241191
 // (the elapsed-date symptom itself was filed independently by a peer as EI-19933138951557204).
+// ─── LIVE-STATE ADDENDUM (WI-37354, same day) — the 2026-08-09 review above is a TEXT read
+// of case+reason and is right about the *prose*, but `npm run audit:dark-flags` (added by this
+// fix — see the pointer above DARK_FLAGS_REVIEW_BY) shows the PROSE and the RUNTIME disagree for
+// one entry in papercusp-workspace right now: CODEX_GATEWAY_OAUTH_PROXY resolves `enabled: true`
+// live (PG override, harness_shared.operator_flag_overrides — set by WI-3596's `flags:set`),
+// while its case is 'incomplete' and its own reason says "Dark until [an owner-attended] canary
+// passes" — 'incomplete' has no sanctioned live path (only 'owner-authority'/'cutover' do), so
+// this is exactly the audit's CRITICAL case. NOT resolved here, on purpose: whether WI-3596's
+// canary was owner-attended is a fact only the owner can confirm (its own completion evidence
+// doesn't say), and CLAUDE.md's owner-authority carve-out means an agent flipping the default (or
+// the override) on a reverse-engineered proprietary-transport surface is precisely the call this
+// file reserves for the owner. Left dark; left live; flagged for the owner rather than guessed
+// either way. The 2026-08-09 verdict above ("owner-attended canary not yet run") should be read
+// as "not yet CONFIRMED", not "not yet run" — the audit script is now how a future review checks
+// this instead of re-asserting the prose. (The three owner-authority live overrides the same run
+// found — ACCEPT_DELEGATED_SEATS, WATCHDOG_AUTO_CLOSE, REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE
+// — are the EXPECTED shape for that case: the override IS their sanctioned per-install
+// ratification, so their shipped default correctly stays OFF for a fresh install. No action.)
 // Escalated to the owner in-session rather than left to lapse silently again.
 export const DARK_FLAGS_REVIEW_BY = '2026-08-23';
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.

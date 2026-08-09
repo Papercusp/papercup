@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   extractCitedPaths,
   scanInsightStaleness,
+  makeCitationResolver,
   makeRepoPathResolver,
   makeRepoBasenameResolver,
   collectInsightStalenessSignals,
@@ -193,6 +194,60 @@ describe('makeRepoPathResolver — suffix-aware existence (EI-510 dropped-prefix
   it('a basename match that is not a whole-component suffix does not over-resolve', () => {
     // real path ends `/lib/loopback-fetch.ts`, NOT `/core/loopback-fetch.ts`.
     expect(makeRepoPathResolver(tracked)('core/loopback-fetch.ts')).toBe(false);
+  });
+});
+
+describe('makeCitationResolver — gitignored runtime artifacts are not "missing" (EI-16474)', () => {
+  const tracked = ['apps/operator/lib/spa-build-status.ts'];
+  // The artifact that exposed this: written beside dist/ ONLY by a failed build,
+  // so it is never tracked and is absent exactly when the tree is healthy.
+  const ARTIFACT = 'apps/operator-vite/.vite-build-failure.json';
+
+  it('resolves a gitignored path that is ABSENT from disk', () => {
+    const resolve = makeCitationResolver({
+      trackedFiles: tracked,
+      ignoredPaths: [ARTIFACT],
+      existsOnDisk: () => false,
+    });
+    expect(resolve(ARTIFACT)).toBe(true);
+  });
+
+  it('CONTROL: without the ignore leg the same path reads as missing (guard is not vacuous)', () => {
+    // This is the pre-fix behaviour — it must still be reachable, or the test
+    // above would pass for reasons unrelated to the ignore rule.
+    const resolve = makeCitationResolver({
+      trackedFiles: tracked,
+      ignoredPaths: [],
+      existsOnDisk: () => false,
+    });
+    expect(resolve(ARTIFACT)).toBe(false);
+  });
+
+  it('still flags a genuinely-deleted source file (no tracked, no ignore, no disk)', () => {
+    const resolve = makeCitationResolver({
+      trackedFiles: tracked,
+      ignoredPaths: [ARTIFACT],
+      existsOnDisk: () => false,
+    });
+    expect(resolve('packages/operator-core/lib/really-gone.ts')).toBe(false);
+  });
+
+  it('an insight citing only a gitignored artifact produces NO staleness signal', () => {
+    const raw = [
+      '# runbook',
+      'Read `apps/operator-vite/.vite-build-failure.json` and fix the error.',
+      'The reader is `apps/operator/lib/spa-build-status.ts`.',
+    ].join('\n');
+    const resolve = makeCitationResolver({
+      trackedFiles: tracked,
+      ignoredPaths: [ARTIFACT],
+      existsOnDisk: () => false,
+    });
+    const signals = scanInsightStaleness(
+      [{ slug: 'red-vite-build-destroys-the-live-bundle', status: 'current', raw }],
+      resolve,
+    );
+    expect(signals).toEqual([]);
   });
 });
 

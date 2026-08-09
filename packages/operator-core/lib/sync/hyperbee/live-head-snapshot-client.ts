@@ -71,10 +71,14 @@ export interface LiveHeadSnapshotProduced {
   readonly chunkCount: number;
   readonly rowCount: number;
   readonly elapsedMs: number;
+  /** Present only when the request needed more than one attempt. */
+  readonly retry?: HeadSnapshotRetryLog;
 }
 
 export interface LiveHeadSnapshotNoHolder {
   readonly kind: 'no-holder';
+  /** Present only when the request needed more than one attempt. */
+  readonly retry?: HeadSnapshotRetryLog;
   /** Ports that answered the discovery pass at all (a live sibling we could talk to). */
   readonly answered: readonly number[];
   /** Every operator-shaped sibling we found on the box, answering or not. */
@@ -117,6 +121,8 @@ export interface LiveHeadSnapshotFailed {
    * engine is stopped/closing" is a real answer that will not change by asking again.
    */
   readonly transport: boolean;
+  /** Present only when the request needed more than one attempt. */
+  readonly retry?: HeadSnapshotRetryLog;
 }
 
 /** How many attempts a retrying request burned, and how long it spent waiting between them. */
@@ -268,8 +274,92 @@ export async function findLiveOperatorHoldingHive(inp: {
  * legitimately run for minutes, and the operator is recycled every ~12 min by the
  * watchdog. The holder at the end of the drain is the only one whose answer means
  * anything.
+ *
+ * RETRIES across that recycle (P-014, 2026-08-09). Re-running discovery per attempt was
+ * necessary but NOT sufficient: it makes each attempt ask the right process, while a
+ * recycle landing between the probe and the POST still killed the whole cut on the first
+ * transport error. Measured on this box, the holder's typical lifetime (~8.5 min) is
+ * HALF the drain this call sits behind (~17.4 min), so "launch into a booted window" can
+ * never carry a cut to completion — the window is structurally too short. Waiting the
+ * recycle out is the only thing that closes it. See DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS.
+ *
+ * Retries only what a restart can actually fix — a transport failure, or a `no-holder`
+ * (a freshly-recycled process holds the fd lock while its `getBootedHarness` LRU is
+ * still cold, which reads as "nobody has this hive"). An operator that ANSWERED and
+ * refused is a real answer and returns immediately.
+ *
+ * Retrying is safe against double-append: the reader resolves the sparse start with
+ * `findLatestCompleteSnapshot`, so a second snapshot supersedes the first — and, being
+ * later, trims MORE history rather than less.
  */
 export async function requestLiveOperatorHeadSnapshot(inp: {
+  readonly workspaceId: string;
+  readonly hive: string;
+  readonly probeTimeoutMs?: number;
+  readonly timeoutMs?: number;
+  /** Total time to keep re-attempting. 0 disables retry (one shot). */
+  readonly retryBudgetMs?: number;
+  readonly retryDelayMs?: number;
+  readonly fetchImpl?: FetchLike;
+  readonly listSiblingsImpl?: typeof listSiblingOperators;
+  readonly sleepImpl?: (ms: number) => Promise<void>;
+  readonly nowImpl?: () => number;
+  readonly warn?: (msg: string) => void;
+}): Promise<LiveHeadSnapshotOutcome> {
+  const budgetMs = inp.retryBudgetMs ?? DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS;
+  const delayMs = inp.retryDelayMs ?? DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS;
+  const now = inp.nowImpl ?? Date.now;
+  const sleep = inp.sleepImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  const startedAt = now();
+  let attempts = 0;
+  let waitedMs = 0;
+  let last: LiveHeadSnapshotOutcome | null = null;
+
+  for (;;) {
+    attempts += 1;
+    const outcome = await attemptHeadSnapshot(inp);
+    // Only a restart-shaped failure is worth waiting out; a refusal is a real answer.
+    const retryable = outcome.kind === 'no-holder' || (outcome.kind === 'failed' && outcome.transport);
+    if (!retryable) {
+      return attempts > 1 ? withRetryLog(outcome, { attempts, waitedMs }) : outcome;
+    }
+    last = outcome;
+
+    // Budget governs when we stop STARTING attempts — it never truncates an in-flight
+    // one. The real call can legitimately run for minutes (it reads the whole own log),
+    // and cutting that short would abandon work the operator is still doing.
+    if (now() - startedAt + delayMs > budgetMs) {
+      inp.warn?.(
+        `[head-snapshot] giving up after ${attempts} attempt(s) over ${now() - startedAt}ms — ` +
+          `the holder never came back within the ${budgetMs}ms retry budget.`,
+      );
+      return withRetryLog(last, { attempts, waitedMs });
+    }
+
+    inp.warn?.(
+      `[head-snapshot] attempt ${attempts} did not land (${describeOutcome(outcome)}) — the holder ` +
+        `is most likely mid-recycle; retrying in ${delayMs}ms ` +
+        `(${Math.max(0, budgetMs - (now() - startedAt))}ms of budget left).`,
+    );
+    await sleep(delayMs);
+    waitedMs += delayMs;
+  }
+}
+
+function describeOutcome(o: LiveHeadSnapshotOutcome): string {
+  if (o.kind === 'no-holder')
+    return `no booted holder among [${o.probed.join(', ')}]`;
+  if (o.kind === 'failed') return `port ${o.port}: ${o.error}`;
+  return 'produced';
+}
+
+function withRetryLog(o: LiveHeadSnapshotOutcome, retry: HeadSnapshotRetryLog): LiveHeadSnapshotOutcome {
+  return { ...o, retry } as LiveHeadSnapshotOutcome;
+}
+
+/** ONE discovery + request cycle. The retry policy lives in the caller above. */
+async function attemptHeadSnapshot(inp: {
   readonly workspaceId: string;
   readonly hive: string;
   readonly probeTimeoutMs?: number;
@@ -290,13 +380,14 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
     inp.timeoutMs ?? DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS,
   );
   if (isTransportError(reply)) {
-    return { kind: 'failed', port: holder.port, error: reply.__transportError };
+    return { kind: 'failed', port: holder.port, error: reply.__transportError, transport: true };
   }
   if (reply.ok !== true) {
     return {
       kind: 'failed',
       port: holder.port,
       error: typeof reply.error === 'string' ? reply.error : 'operator reported ok:false',
+      transport: false,
     };
   }
   return {

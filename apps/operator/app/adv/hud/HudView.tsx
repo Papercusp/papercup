@@ -853,6 +853,26 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         focusAnchorTs={openFocusTs}
         focusTerm={openFocusQ}
         focusSessionId={openFocusSid}
+        /* chat-popup-fleet-peers-rail-2026-08-09 P-005 [owner 2026-08-09]:
+           "Clicking on a peer should update the conversation popup to display
+           that peer."
+
+           The SAME handler the board's session cards use — a peer click and a
+           card click are the identical action (open this agent's conversation),
+           so they must not drift into two behaviours. Reusing it also gets the
+           focus-param handling right for free, which is the part that is easy
+           to miss: `hudfocus*` anchor into a SPECIFIC agent's transcript, and
+           `onOpenSession` re-resolves them against the agent being opened
+           (clearing them when that agent has no search hit) rather than
+           carrying the previous agent's anchor across. Left uncleared, hopping
+           to a peer would scroll their transcript to a turn that does not
+           exist in it.
+
+           Everything else re-resolves on `sessionOwnerId` already — transcript,
+           Orders, Activity, the status band — and the fleet rail itself does not
+           flicker, because the new agent is in the same fleet: the "viewing"
+           marker just moves down the column. */
+        onSelectPeer={onOpenSession}
         onClose={() => {
           // WI-6367: the launch context is only meaningful for the modal it
           // opened — drop it on close so reopening the same session later

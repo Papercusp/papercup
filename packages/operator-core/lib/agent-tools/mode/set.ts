@@ -26,10 +26,47 @@ import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { modeById, MODES, modeImpliesAutonomy } from '../../modes/registry';
 import { setMode } from '../../modes/store';
+import { assertFact, retractFact, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getLoopStatus } from '../../harness/routines/loop';
 
 const MODE_IDS = MODES.map((m) => m.id);
+
+/**
+ * Key prefix for the standing fact a mode's `instructions` are asserted under
+ * (session-chat-popup-timestamps-and-modes-2026-08-09 D-002).
+ *
+ * One key PER MODE, not one per call: the fact is an UPSERT target, so
+ * re-scoping a running drain overwrites the standing instruction rather than
+ * stacking a second one beside it — and turning the mode off has exactly one
+ * key to retract.
+ */
+export const MODE_INSTRUCTIONS_KEY_PREFIX = 'mode-instructions:';
+
+export function modeInstructionsFactKey(modeId: string): string {
+  return `${MODE_INSTRUCTIONS_KEY_PREFIX}${modeId}`;
+}
+
+/**
+ * The fact body. OPERATIVE CLAUSE FIRST, provenance last — deliberately, because
+ * the store hard-clips at FACT_BODY_MAX_CHARS and the caller's `instructions`
+ * may be longer than everything else here combined. Clipping the "who set it"
+ * tail costs an anchor; clipping the instruction itself would silently change
+ * what the agent is told to do.
+ */
+export function renderModeInstructionsFact(opts: {
+  modeId: string;
+  instructions: string;
+  ownerDirected: boolean;
+  setBy: string;
+}): string {
+  const who = opts.ownerDirected ? 'the owner' : opts.setBy;
+  return (
+    `${opts.modeId.toUpperCase()} SCOPE — while '${opts.modeId}' is on, obey this verbatim: ` +
+    `${opts.instructions.trim()} ` +
+    `(set by ${who}; retracted when the mode is turned off)`
+  );
+}
 
 /**
  * WI-6949 — the wake-source guard, fired at the ACTION-POINT that creates the hazard.
@@ -152,6 +189,13 @@ export default defineTool({
   args: z.object({
     mode: z.enum(MODE_IDS as [string, ...string[]]).describe('the mode id'),
     reason: z.string().min(1).max(2000).describe('why — MANDATORY; delivered to a peer target verbatim'),
+    instructions: z
+      .string()
+      .max(4000)
+      .optional()
+      .describe(
+        `SCOPE INSTRUCTIONS that must survive compaction — e.g. drain "all bugs except the ones related to the p2p features". Delivered with the mode change AND asserted as a standing fact on the target (key '${MODE_INSTRUCTIONS_KEY_PREFIX}<mode>'), so it is re-injected VERBATIM on every wake until the mode is turned off, which retracts it. Clipped at ${FACT_BODY_MAX_CHARS} chars. Use \`reason\` for WHY the mode changed; use this for WHAT the mode is scoped to.`,
+      ),
     enabled: z.boolean().optional().describe('default true; false ⇒ exit the mode'),
     agent: z.string().max(120).optional().describe('target ownerId (exact, e.g. su-…); omit for yourself'),
     ownerDirected: z
@@ -231,6 +275,36 @@ export default defineTool({
           extra: { mode_change: { mode: def.id, enabled, applied: res.ok === true, stickyConflict: res.stickyConflict === true, by: ident.ownerId } },
         });
       } catch { /* fail-soft */ }
+
+      /* WAKE the target — session-chat-popup-timestamps-and-modes-2026-08-09
+         P-004. [owner 2026-08-09] "chanfing the mode didnt send a message to the
+         [agent] shouldnt mode changes also automatically message the agent?"
+
+         The message above was ALREADY being sent; what was missing is that
+         `sendMessage` is the raw append-to-outbox seam and does not wake anyone
+         (the wake lives one layer up, in coord:send's own tool). So a mode set
+         on a LIVE, working agent sat unread in its inbox until that agent
+         happened to take another turn — which, for an agent parked on an
+         `events:await`, can be a very long time. The owner flips a posture and
+         nothing observable happens, which is indistinguishable from the write
+         having failed.
+
+         A mode change is precisely the kind of message that must not wait for
+         the next turn: it CHANGES THE CONTRACT the agent is operating under, and
+         every turn it takes before reading it is a turn taken under the old one.
+
+         Fail-soft, and deliberately AFTER the applied write: waking is a
+         courtesy on top of a durable inbox row, so a wake failure must never
+         roll back or fail an applied mode change. A miss simply degrades to the
+         pre-existing behavior — the agent reads it on its next turn. */
+      try {
+        const { wakeRecipients } = await import('../coordination/inbox-wake');
+        await wakeRecipients([target], {
+          summary: `mode '${def.id}' ${enabled ? 'set' : 'cleared'} by ${ident.ownerId}`,
+          source: 'mode:set',
+          workspaceId: ident.workspaceId ?? undefined,
+        });
+      } catch { /* fail-soft — the durable inbox row already landed above */ }
     }
 
     const payload: Record<string, unknown> = {
