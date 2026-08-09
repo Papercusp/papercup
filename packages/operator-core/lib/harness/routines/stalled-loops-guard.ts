@@ -130,6 +130,23 @@ export interface StalledLoopsSweepDeps {
    *  reconcileLoopRoutines uses to refuse terminating a live owner (EI-19406534159939583). */
   probeReachability?: typeof probeWakeReachability;
   /**
+   * Injectable for tests; defaults to a plain read of `harness_shared.session_briefs`
+   * (EI-19966210024116714).
+   *
+   * Answers "which workspace does this owner's own SESSION resolve to?" — the discriminator for
+   * the cross-workspace scope strand. A loop routine on workspace X whose owner session scopes to
+   * workspace Y is armed against a harness that session cannot address: every harness-scoped call
+   * it makes returns `harness_forbidden`, so its fires land, it cannot do the work it was woken
+   * for, and no turn follows.
+   *
+   * NOT dynamically imported (contrast `armWake`/`notify`): this is one indexed SELECT against a
+   * connection this sweep already holds, not a transport with machinery to keep off the hot path.
+   *
+   * Returns a Map keyed by ownerId. An owner ABSENT from the map is UNKNOWN, never "mismatched" —
+   * callers fail OPEN on absence.
+   */
+  resolveOwnerWorkspaces?: (ownerIds: string[], o: { sql: Sql }) => Promise<Map<string, string>>;
+  /**
    * Injectable for tests; defaults to the real standing-await (re-)arm (WI-36685).
    *
    * The REPAIR half of the wake-starved branch, and it has to be a separate write from
