@@ -1499,6 +1499,185 @@
   overscroll-behavior: contain;
 }
 
+/* ── ONE scroll, not three ───────────────────────────────────────────────────
+ *
+ * [owner 2026-08-09] "the additional scrollable text in that box is weird to
+ * navigate." Measured live before this fix: 3,280 characters (486px of text)
+ * inside a scroll port **24 pixels tall**, nested inside `__list`'s scroll.
+ *
+ * `OtherDetail` is shared with the Queue, the HUD and PreviewPanel, where it
+ * owns a tall pane — `height: 100%` + a `flex-shrink: 0` toolbar + an
+ * `overflow: auto` body is exactly right there. In a height-CAPPED shelf the
+ * same rules invert: the toolbar took 147px of the card's 146px and handed the
+ * text what was left. So the fix is not a bigger number, it is telling the card
+ * it is no longer the one that owns a viewport. Scoped to `.pc-chat-decisions`
+ * so the three hosts that DO give it a pane keep today's behavior.
+ */
+.pc-chat-decisions .pc-items__detail {
+  height: auto;
+}
+.pc-chat-decisions .pc-items__detail-body {
+  overflow: visible;
+  padding: 10px 12px;
+}
+.pc-chat-decisions .pc-items__detail-toolbar {
+  /* Nothing can starve it now that the card is intrinsic-height, and letting it
+     shrink would squeeze the action row this pass just made legible. */
+  flex-shrink: 1;
+}
+
+/* Each decision is a discrete card, not a run-on. With the single scroll above,
+   several open decisions stack — so they need a visible edge between them. */
+.pc-chat-decisions__card + .pc-chat-decisions__card {
+  border-top: 1px solid var(--pc-zone-rule);
+}
+
+/* CLAMP + expand-in-place. One scroll fixed the nesting, but a 3,000-character
+   escalation would still turn the shelf into a tunnel you scroll three screens
+   of to discover there is a second decision underneath. So the request text is
+   clamped to a preview and the reader opens the one they mean to act on.
+   The clamp lands on `.ask-choice-card` — the request — never on the body that
+   also hosts the Answer box and the Discuss thread; clipping a chat you just
+   opened would be a worse bug than the one being fixed. */
+.pc-chat-decisions__card:not(.is-expanded) .ask-choice-card {
+  max-height: 132px;
+  overflow: hidden;
+  /* Fades the cut instead of guillotining a line mid-x-height, so "there is
+     more here" is legible without reading the toggle first. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 92px, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 92px, transparent 100%);
+}
+
+/* Rendered only when the text actually overflows (measured, not guessed) — a
+   toggle that expands nothing reads as broken. */
+.pc-chat-decisions__more {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  padding: 3px 12px 7px;
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.pc-chat-decisions__more:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.pc-chat-decisions__more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── What the buttons DO ─────────────────────────────────────────────────────
+ * [owner 2026-08-09] "What do those buttons actually do its unclear."
+ * Sits under the cap, above the cards: the answer/Discuss split is a property
+ * of the whole shelf, so it is said once rather than under every decision. */
+.pc-chat-decisions__legend {
+  flex: none;
+  margin: 0;
+  padding: 5px 10px 6px;
+  border-bottom: 1px solid var(--pc-zone-rule);
+  color: var(--fg-mute);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.pc-chat-decisions__legend b {
+  color: var(--fg-dim);
+  font-weight: 700;
+}
+
+/* ── The action row: buttons, not more tags ──────────────────────────────────
+ *
+ * [owner 2026-08-09] "improve the design of the reolsve and discuss buttons
+ * highlighting them making them more distinguishable from th other pills and
+ * more like buttons."
+ *
+ * Measured, they were barely distinguishable and the owner is right: the chips
+ * beside them run 16-20px tall, 9.5-10.5px type, 4px/999px radii, translucent
+ * tint fills, several with a 1px hairline. The buttons were 28px, 12px type,
+ * 10px radius — and a translucent tint fill with a 1px hairline. Same visual
+ * language, one size up. Worse, `--nav` (Discuss) was fully TRANSPARENT, so the
+ * only action that opens a conversation read as weaker than a metadata tag.
+ *
+ * Three separations, because one is not enough when the vocabulary is shared:
+ *   1. POSITION — the action group takes its own full-width row under a rule,
+ *      instead of wrapping into the same line as the chips.
+ *   2. WEIGHT   — primary becomes an OPAQUE filled surface. A translucent tint
+ *      is the chips' entire idiom; opacity is the one axis they never use, so
+ *      it separates without inventing a new colour.
+ *   3. GEOMETRY — 30px tall, 8px radius: deliberately neither the 4px of a
+ *      `pc-kind` badge nor the 999px pill of a `pc-tier`.
+ *
+ * Scoped to `.pc-chat-decisions`. The Queue and the HUD render the same toolbar
+ * and would arguably benefit, but they did not ask and their layouts differ;
+ * promoting this is a deliberate follow-up, not a side effect. */
+.pc-chat-decisions .pc-items__detail-actions {
+  flex-basis: 100%;
+  margin-left: 0;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  gap: 8px;
+}
+
+.pc-chat-decisions .pc-items__action {
+  min-height: 30px;
+  padding: 6px 13px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 650;
+  /* The escalation options are whole sentences, so they must wrap and read
+     left-aligned rather than stretch one unreadable line across the shelf. */
+  white-space: normal;
+  text-align: left;
+  max-width: 100%;
+  line-height: 1.3;
+}
+
+/* PRIMARY = the answer. Opaque plate, high-contrast ink, and a lift — the one
+   thing in the toolbar that looks pressable. */
+.pc-chat-decisions .pc-items__action--primary {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: var(--accent-ink);
+  box-shadow: 0 1px 0 var(--pc-zone-rule);
+}
+.pc-chat-decisions .pc-items__action--primary:hover {
+  background: color-mix(in oklab, var(--accent-strong) 84%, var(--fg));
+  border-color: color-mix(in oklab, var(--accent-strong) 84%, var(--fg));
+}
+.pc-chat-decisions .pc-items__action--primary:active {
+  /* Reads as pressed rather than merely re-tinted. */
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* SECONDARY = Discuss. An outlined button on a real surface: subordinate to the
+   answer, but unmistakably still a button — which the transparent ghost was
+   not. */
+.pc-chat-decisions .pc-items__action--nav {
+  border-color: var(--border);
+  background: var(--bg-popover);
+  color: var(--fg-dim);
+  font-weight: 600;
+}
+.pc-chat-decisions .pc-items__action--nav:hover {
+  border-color: var(--accent-strong);
+  background: var(--bg-2);
+  color: var(--fg);
+}
+.pc-chat-decisions .pc-items__action--nav:active {
+  transform: translateY(1px);
+}
+
+.pc-chat-decisions .pc-items__action--danger {
+  border-color: var(--bad);
+  background: color-mix(in oklab, var(--bad) 24%, var(--bg-popover));
+  color: var(--fg);
+}
+
 /* How many decisions are waiting. Right-aligned on the title bar, and the one
    place in this popup that earns an alert fill: the count is the whole reason
    the shelf is on screen at all. Takes the plate's ground as ink, the same way

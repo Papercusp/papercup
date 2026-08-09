@@ -37,7 +37,7 @@
  * `OtherDetail`'s own action path unmodified, so it is byte-identical to
  * answering from the inbox (P-006's resolve/reply routing + provenance stamp).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
@@ -48,6 +48,7 @@ import { mapSessionTimeline } from './session-transcript-mapping';
 import { mergeSentEchoes, recordSentEcho, settleSentEcho, useSentEchoes } from './sent-message-echo';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
+import type { AttentionItem } from '@/app/admin/plans/plans-api';
 import { ChatActionBar } from './ChatActionBar';
 import FleetRoleGlyph from '../FleetRoleGlyph';
 import FleetLaunchRow from './FleetLaunchRow';
@@ -933,6 +934,90 @@ function LiveSessionChat({
       // unscoped conversation.
       harnessSlug={rosterEntry?.harnessSlug ?? undefined}
     />
+  );
+}
+
+/**
+ * One decision in the shelf: the shared `OtherDetail` card, wrapped so the
+ * SHELF owns the only scroll [owner 2026-08-09: "the additional scrollable text
+ * in that box is weird to navigate"].
+ *
+ * The measurement behind this, taken live before the fix: the escalation body
+ * held 3,280 characters (486px of laid-out text) inside a scroll port
+ * **24 pixels tall** — 20× its own height, nested inside the shelf list's own
+ * scroll. Not a stylistic nit; a two-line reading window.
+ *
+ * The cause is structural, not a missing height. `.pc-items__detail` is
+ * `height: 100%` — correct in the Queue, where the card owns a tall pane — and
+ * its toolbar is `flex-shrink: 0`. In a height-CAPPED shelf that inverts: the
+ * toolbar (chips + three sentence-long option buttons, wrapping) measured 147px
+ * of the card's 146px, and the body got the remainder. So the same crowding
+ * that made the buttons unreadable is what starved the text. One root, two of
+ * the three asks.
+ *
+ * The fix is CSS (the card goes intrinsic-height, the body stops scrolling —
+ * see chat-controls.css `.pc-chat-decisions`); this component adds only what
+ * CSS cannot: an accessible expand toggle, so a 3,000-character escalation is
+ * clamped to a readable preview instead of turning the shelf into a tunnel you
+ * scroll several screens of to reach the second decision.
+ *
+ * Deliberately NOT pushed into `OtherDetail`: it is shared with the Queue, the
+ * HUD and PreviewPanel, none of which cap their host and none of which asked
+ * for a clamp.
+ */
+function DecisionCard({ item, onResolved }: { item: AttentionItem; onResolved: () => void }) {
+  // Collapsed by default: the shelf's job is "how many decisions, and roughly
+  // what" — reading one in full is the deliberate act. `overflowing` is set by
+  // the layout effect below, so the toggle never appears on a card that already
+  // fits (a control that expands nothing reads as broken).
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    // The clamp lands on `.ask-choice-card` — the request text — and NOT on the
+    // body that contains it, because the body is also where the Answer box and
+    // the Discuss thread mount. Clamping the body would clip a chat you had
+    // just opened, which is a worse bug than the one being fixed.
+    const target = () => root.querySelector<HTMLElement>('.ask-choice-card');
+    // Truth comes from the laid-out element, not from a copy of the CSS clamp
+    // kept in JS: overflowing IS `scrollHeight > clientHeight`, so retuning the
+    // `max-height` in chat-controls.css alone can never desync the toggle from
+    // what is actually clipped.
+    const measure = () => {
+      const el = target();
+      setOverflowing(!!el && el.scrollHeight > el.clientHeight + 4);
+    };
+    measure();
+    // Re-measure on reflow: the popup maximizes/drags/resizes, and the card
+    // hydrates its full body in after the slim list row paints.
+    const ro = new ResizeObserver(measure);
+    ro.observe(root);
+    const el = target();
+    if (el) ro.observe(el);
+    return () => ro.disconnect();
+  }, [item.id]);
+
+  return (
+    <div className={`pc-chat-decisions__card${expanded ? ' is-expanded' : ''}`} ref={rootRef}>
+      {/* key remounts per item so its local card state (answered/discuss)
+          resets on selection change — same contract as OtherDetail's other
+          hosts (the Queue's PlansClient, the HUD, PreviewPanel). */}
+      <OtherDetail key={item.id} item={item} onResolved={onResolved} />
+      {overflowing ? (
+        <button
+          type="button"
+          className="pc-chat-decisions__more"
+          aria-expanded={expanded}
+          data-testid="decision-expand"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? 'Show less' : 'Show full request'}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -1983,12 +2068,29 @@ export default function SessionChatModal({
               <span className="pc-zone-title__sub">— what needs you</span>
               <span className="pc-chat-decisions__count">{pendingEscalations.length}</span>
             </header>
+            {/* [owner 2026-08-09] "What do those buttons actually do its
+                unclear." The two rows of buttons below do CATEGORICALLY
+                different things and nothing on screen said so: an answer is a
+                terminal, agent-waking, not-undoable-here act; Discuss touches
+                no server state at all. Stated once for the shelf rather than
+                per card — the split is a property of the surface, and repeating
+                it under every decision would be the noise the owner is already
+                complaining about.
+
+                Every clause is checked against the dispatch it describes:
+                `resolveAttentionAction` (coord-escalation branch) resolves the
+                escalation and then best-effort delivers the picked option's
+                LABEL to `item.ownerAgentId`, waking them; `discuss` is in
+                NAVIGATE_ACTION_IDS, so it returns before any of that and only
+                opens DiscussPanel. Change either and change this line. */}
+            <p className="pc-chat-decisions__legend">
+              Picking an answer replies to the agent, wakes it, and closes the decision.
+              {' '}
+              <b>Discuss</b> just opens a thread — it answers nothing.
+            </p>
             <div className="pc-chat-decisions__list">
               {pendingEscalations.map((i) => (
-                // key remounts per item so its local card state (answered/discuss)
-                // resets on selection change — same contract as OtherDetail's other
-                // hosts (InboxPane, the Queue's PlansClient).
-                <OtherDetail key={i.id} item={i} onResolved={refreshAttention} />
+                <DecisionCard key={i.id} item={i} onResolved={refreshAttention} />
               ))}
             </div>
           </section>

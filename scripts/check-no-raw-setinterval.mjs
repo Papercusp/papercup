@@ -105,6 +105,13 @@ export const ALLOWLIST = new Set([
   // "setInterval(" (the thing it bans), exactly as check-no-raw-agent-spawn allowlists
   // its own definition site.
   'scripts/check-no-raw-setinterval.mjs',
+  // Its sibling guard's CLIENT scan (P-026) carries the literal detection regex
+  // `setInterval\s*\(` as CODE, not prose — so stripComments() cannot remove it and the
+  // textual scan flags the guard that exists to police this very pattern. This is the
+  // exact reciprocal of the entry check-timer-classification.mjs already keeps for THIS
+  // file; the pair of guards must allowlist each other or each reds on the other's
+  // detector. Added when the client scan landed (2026-08-09) left this lint red.
+  'scripts/check-timer-classification.mjs',
   // worker_threads BODY — runs on the worker's own event loop, so registering there
   // buys nothing this guard is asking for. MEASURED 2026-08-04: the registry's state
   // is pinned per-isolate, so a managedSetInterval call inside a Worker succeeds but
@@ -158,6 +165,14 @@ export const isExcluded = (f) =>
   // Only became reachable when the enumerator started recursing into submodules
   // (papercusp-desktop); the sibling guards already carried this exclusion.
   f.includes('/env-sidecars/') ||
+  // P-026: TRACKED build output, same class as `/dist/` above — the `-sidecar` suffix
+  // means the existing `/dist/` substring does not match it. Holds the compiled copy of
+  // event-loop-sentinel.worker.ts, whose SOURCE is already in ALLOWLIST for the
+  // worker_threads reason, so flagging the artifact re-litigates a settled exemption
+  // against a file no one edits. Committed 2026-08-08; the guard went red on it the
+  // moment it landed and stayed red, unnoticed, because this lint runs only in CI on
+  // `main` and green-checkpoint does not carry it as a leg.
+  f.includes('/dist-sidecar/') ||
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||

@@ -2,85 +2,43 @@
 # UserPromptSubmit hook — TURN-START CTRL TRANSITION + MEMORY DELTA
 # (agent-operability P-014; memory-delivery-unification P-003a).
 #
-# On every submitted prompt in a psu session, fetch the next one-shot compact
-# CTRL transition plus a SMALL high-precision memory delta from the local
-# operator (/api/agent-mcp/turn-start-memory):
-# the one admission pipeline runs with queryContext = this prompt, under the
-# session-epoch dedup (P-002, port 'turn-start') — so anything already
-# surfaced this epoch (the initialize prelude, an orient recall, a claim
-# port) is never re-paid, and only NEWLY-relevant memories land.
+# ── THIN EXEC SHIM (codex-context-injection-parity-2026-08-09 P-002 / D-001) ──
+# This file used to carry ~60 lines of python-in-shell that parsed the hook
+# event, POSTed to the operator, and printed Claude's additionalContext shape.
+# That logic now lives in the ONE shared dispatcher, with a per-client adapter:
 #
-# Posture (mirrors the provenance hook): psu sessions only (PAPERCUSP_SID),
-# FAIL-OPEN — never blocks a prompt, never exits non-zero, hard 2.5s wall so
-# a slow/down operator costs nothing but this hook's own silence. Unlike the
-# provenance hook this one DOES call the operator (an embed cannot be local);
-# that is why it is a SEPARATE hook — provenance stays local-only by design.
+#     apps/operator/scripts/hooks/inject/            (repo)
+#     ~/.papercusp/hooks/inject/                     (installed, beside this dir)
 #
-# PAPERCUSP_TURN_START_MEMORY=off disables only memory recall. CTRL transitions
-# remain enabled: a memory preference must never hide a safety-critical mode /
-# loop / route transition.
+# Owner directive [owner 2026-08-09]: "there is a single inject context
+# function that calls the appropriate function for each tui." The clients still
+# invoke a COMMAND — that contract is unchanged, and this file remains that
+# command — but every behaviour now has exactly one implementation. Copying this
+# script per client was explicitly rejected: it triples the drift surface.
+#
+# WHAT THE DISPATCHER PRESERVES (D-001 invariants — all still enforced, in
+# adapters/claude.mjs + core.mjs, and unit-tested there rather than here):
+#   * no PAPERCUSP_SID              -> exit 0, no output (not a psu session)
+#   * hard 2.5s wall on turn-start  -> a slow/down operator costs the turn nothing
+#   * any failure                   -> exit 0, no output (never wedge a turn)
+#   * prompt clamped to 4000 chars  -> bounds the server's query construction
+#   * PAPERCUSP_TURN_START_MEMORY=off DEGRADES, it does not suppress: the request
+#     still fires with memoryEnabled=false, because turn-start carries the
+#     one-shot CTRL transition (mode / loop / route) as well as the memory delta,
+#     and a MEMORY preference must never be able to hide a safety-critical
+#     control transition. (ports.mjs encodes this as a MODE, not a boolean, so it
+#     cannot be flattened by accident — see D-003 §2.)
+#
+# WHY NOT `exec`: the dispatcher's contract is "always exit 0", but `exec`
+# would also surface an interpreter-level failure (a missing `node`) as this
+# hook's exit code, which is exactly the class of error that must never reach a
+# turn. Running it as a child and forcing exit 0 costs one process and closes
+# that hole. stderr is swallowed for the same reason; stdout passes through
+# untouched, since that IS the injection payload.
 
-set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || exit 0
+dispatcher="$here/../inject/index.mjs"
+[ -x "$dispatcher" ] || exit 0
 
-if [ -z "${PAPERCUSP_SID:-}" ]; then
-  exit 0
-fi
-INPUT=$(cat)
-
-# Fail-open backstop: any uncaught crash injects nothing and allows the turn.
-python3 - "$PAPERCUSP_SID" "$INPUT" <<'PYEOF' || exit 0
-import json, os, sys, urllib.request
-
-sid, raw = sys.argv[1], sys.argv[2]
-try:
-    data = json.loads(raw)
-except Exception:
-    sys.exit(0)
-prompt = data.get('prompt') or ''
-if not isinstance(prompt, str):
-    sys.exit(0)
-
-base = (os.environ.get('PAPERCUSP_OPERATOR_URL') or 'http://localhost:3070').rstrip('/')
-body = json.dumps({
-    'owner': sid,
-    'prompt': prompt[:4000],
-    'workspace': os.environ.get('PAPERCUSP_WORKSPACE') or '',
-    'harness': os.environ.get('PAPERCUSP_HARNESS_SLUG') or '',
-    # EI-18893248175645463: PAPERCUSP_HARNESS_SLUG is only exported for
-    # harness-scoped spawns — an operator/superuser-scope session (common: it
-    # can span multiple harnesses) never has it, so turn-start's harness+hive
-    # memory pools were unconditionally empty for that session's ENTIRE
-    # lifetime (measured: a clean per-session split, 0 mixed, zero
-    # intra-session flakiness — this is the missing-detection case, not a
-    # transient miss). cwd lets the server apply the SAME env→marker-file→
-    # meta-repo fallback chain detect-harness-slug.ts already offers (used by
-    # the MCP 'initialize' prelude) instead of giving up outright.
-    'cwd': os.getcwd(),
-    'memoryEnabled': os.environ.get('PAPERCUSP_TURN_START_MEMORY', 'on') != 'off',
-}).encode('utf-8')
-
-# localhost operator: never via egress http(s)_proxy (502s the local call).
-urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
-req = urllib.request.Request(
-    base + '/api/agent-mcp/turn-start-memory',
-    data=body,
-    headers={'Content-Type': 'application/json'},
-    method='POST',
-)
-try:
-    with urllib.request.urlopen(req, timeout=2.5) as res:
-        payload = json.loads(res.read().decode('utf-8'))
-except Exception:
-    sys.exit(0)
-
-text = payload.get('text') if isinstance(payload, dict) else ''
-if not isinstance(text, str) or not text.strip():
-    sys.exit(0)
-
-print(json.dumps({
-    'hookSpecificOutput': {
-        'hookEventName': 'UserPromptSubmit',
-        'additionalContext': text,
-    },
-}))
-PYEOF
+"$dispatcher" --client=claude --event=UserPromptSubmit 2>/dev/null || true
+exit 0

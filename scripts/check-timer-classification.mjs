@@ -203,11 +203,14 @@ export const BASELINE = new Set([
  * Kept as an explicit list rather than sniffed from content: `window.`/`useEffect` markers
  * appear in server files in strings and comments, and a sniffer's false positives would
  * land on NEW files — the only ones this guard actually gates. These are exactly the
- * entries `check-no-raw-setinterval.mjs` allowlists with a browser/client reason (its
- * SEPARATE-PROCESS entries — the :8788 gateway, the systemd watchdogs, the perf children —
- * are deliberately NOT here: those are host-shaped, just in another process).
- * `client-timer-classification.test.ts` fails if that guard grows a browser/client entry
- * this set does not know, so the handoff cannot silently develop a hole.
+ * entries `check-no-raw-setinterval.mjs` exports as BROWSER_CLIENT_ALLOWLIST (its
+ * SEPARATE_PROCESS_ALLOWLIST — the :8788 gateway, the systemd watchdogs, the perf children —
+ * is deliberately NOT here: those are host-shaped, just in another process).
+ *
+ * This set and that one must stay EQUAL: `client-timer-classification.test.ts` asserts it
+ * in both directions, so the handoff cannot silently develop a hole (a file exempt there
+ * and unclaimed here is checked by NEITHER guard). Verified falsifiable 2026-08-09 by
+ * mutation probe — adding an entry there and not here fails that test, exit 1.
  */
 export const CLIENT_TS_FILES = new Set([
   'apps/operator/app/_components/SetupWizard/useWizardStatuses.ts',

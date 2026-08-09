@@ -73,6 +73,74 @@ function optionStyle(a: AttentionAction): AskChoiceOption['style'] {
   return 'default';
 }
 
+/* ── What each button ACTUALLY does ──────────────────────────────────────────
+ * [owner 2026-08-09] "What do those buttons actually do its unclear."
+ *
+ * `AskChoiceOption.hint` has always existed and QueueCardActions has always
+ * rendered it as the button's Tooltip (`opt.hint ?? opt.label`) — but nothing
+ * ever SET it, so every tooltip in the Queue, the HUD and the chat popup just
+ * repeated the word already printed on the button. A designed seam sitting
+ * unused. These fill it.
+ *
+ * The text is derived from `resolveAttentionAction` below and from
+ * `OtherDetail.onResponse`, and lives HERE — beside the dispatch it describes —
+ * precisely so it cannot drift from the behavior. If you change what a branch
+ * of `resolveAttentionAction` does, change its sentence in the same edit.
+ *
+ * Two distinctions these exist to make legible, both of which cost real
+ * incidents when they were invisible:
+ *   - a TERMINAL pick closes the record for everyone and (for escalations)
+ *     wakes the agent that asked. It is not undoable from this UI.
+ *   - a NAVIGATE pick (`discuss`, `answer`) changes NOTHING server-side; it
+ *     only opens a sub-surface. `discuss` missing from NAVIGATE_ACTION_IDS is
+ *     what once made the Discuss button silently resolve real owner gates
+ *     (EI-13037) — a button whose label admits neither outcome is how that
+ *     stayed unnoticed.
+ */
+function hintFor(item: AttentionItem, optionId: string, namedEscalationOption: boolean): string | undefined {
+  const kind = (item.ref as { kind: string }).kind;
+
+  if (namedEscalationOption) {
+    // Expanded from the generic `resolve`: the pick's LABEL is delivered to the
+    // asking agent as the reply text, then the escalation is closed.
+    return 'Answers the agent with this choice, wakes it, and closes this decision. Not undoable here.';
+  }
+
+  switch (optionId) {
+    case 'discuss':
+      return 'Opens a message thread with the agent below. Does not answer or close this.';
+    case 'answer':
+      return 'Opens a text box below. Your reply is recorded as the accepted answer and closes this.';
+    case 'chat':
+    case 'message-owner':
+      return 'Opens a chat below. Nothing is answered or closed.';
+    case 'view-log':
+    case 'open':
+      return 'Opens this item where it lives. Nothing is answered or closed.';
+    case 'ack':
+      return 'Acknowledges the message and clears it from your queue.';
+    case 'drop':
+      return 'Marks the item dropped (won’t-do). Deliberately does NOT resume the agent’s loop.';
+    case 'dismiss':
+      return kind === 'standing-approval'
+        ? 'Declines the standing approval and drops the candidate.'
+        : 'Rejects the idea and closes it.';
+    case 'grant':
+      return 'Grants this capability standing approval — the agent stops asking each time.';
+    case 'resolve':
+    case 'mark-done':
+      if (kind === 'coord-escalation') {
+        // No named options to pick, so the reply text is the bare word "Resolved".
+        return 'Closes this decision and replies “Resolved” to the agent — no detail. Not undoable here.';
+      }
+      if (kind === 'plan-item') return 'Marks the item done and wakes the agent’s loop to carry on.';
+      if (kind === 'operator-report') return 'Files this report as handled (recorded, with who did it).';
+      return 'Closes this item.';
+    default:
+      return undefined;
+  }
+}
+
 type EscalationOption = { id: string; label: string };
 function escalationOptions(item: AttentionItem): EscalationOption[] {
   const ref = item.ref as { kind: string; options?: unknown };
@@ -119,7 +187,7 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
     // dispatch passes as `choice`).
     if ((a.id === 'resolve' || a.id === 'mark-done') && escOpts.length) {
       for (const o of escOpts) {
-        options.push({ id: o.id, label: o.label, style: 'primary' });
+        options.push({ id: o.id, label: o.label, style: 'primary', hint: hintFor(item, o.id, true) });
       }
       continue;
     }
@@ -127,6 +195,7 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
       id: a.id,
       label: a.label,
       style: optionStyle(a),
+      hint: hintFor(item, a.id, false),
       // Navigate options stay live (open a sub-surface); terminal options
       // commit + disable. `undefined` ⇒ terminal (the renderer default).
       terminal: NAVIGATE_ACTION_IDS.has(a.id) ? false : undefined,

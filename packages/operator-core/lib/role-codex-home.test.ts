@@ -713,3 +713,124 @@ describe('writeSuCodexHome', () => {
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-activity-report.sh');
   });
 });
+
+/**
+ * CONTEXT-INJECTION registration — codex-context-injection-parity-2026-08-09 P-004.
+ *
+ * These assert the codex leg of the shared dispatcher (D-001) is wired into the
+ * per-session CODEX_HOME. The premise they rest on was MEASURED live, not assumed:
+ * codex-cli 0.146.0 DOES fire a `UserPromptSubmit` MatcherGroup declared in
+ * `$CODEX_HOME/hooks.json` (D-004) — the file's own prior comment claimed no such
+ * event existed there, which is why this is asserted rather than trusted.
+ */
+describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
+  /** Stub the shared dispatcher at its installed path (installInjectionHooks
+   *  puts it at ~/.papercusp/hooks/inject/index.mjs, BESIDE the cc hooks). */
+  function installFakeDispatcher() {
+    const dir = join(fakeHome, '.papercusp', 'hooks', 'inject');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'index.mjs'), '#!/usr/bin/env node\n');
+  }
+
+  function injectEntries(hooks: any, event: string) {
+    return (hooks.hooks[event] ?? []).filter((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('hooks/inject/index.mjs'),
+    );
+  }
+
+  it('registers BOTH ports through the ONE shared dispatcher, with the right --client/--event', async () => {
+    await installFakeHooks();
+    installFakeDispatcher();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({
+      sessionKey: 40,
+      mcpUrl: 'http://x/?role=worker&sig=1',
+      promptText: 'P',
+      sid: 'role-inject-40',
+    });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+
+    // turn-start ← UserPromptSubmit (the port carrying ~94% of recall volume)
+    const turnStart = injectEntries(hooks, 'UserPromptSubmit');
+    expect(turnStart).toHaveLength(1);
+    expect(turnStart[0].hooks[0].command).toContain('--client=codex');
+    expect(turnStart[0].hooks[0].command).toContain('--event=UserPromptSubmit');
+
+    // mid-turn ← PostToolUse. PER CALL on codex (it has no batch event, D-002 §5).
+    const midTurn = injectEntries(hooks, 'PostToolUse');
+    expect(midTurn).toHaveLength(1);
+    expect(midTurn[0].hooks[0].command).toContain('--event=PostToolUse');
+
+    // The dispatcher is SHARED — a codex-specific transport copy would be the
+    // D-001 violation this whole seam exists to prevent.
+    expect(JSON.stringify(hooks)).not.toContain('adapters/codex.mjs');
+  });
+
+  it('BAKES PAPERCUSP_SID — an un-baked sid makes the hook fire and inject NOTHING', async () => {
+    // This is the falsifiability control for D-001 invariant 3: codex hands hook
+    // commands a minimal env, and the dispatcher treats a missing PAPERCUSP_SID as
+    // "not a psu session" → exit 0, no output. That failure is INVISIBLE (a hook
+    // that ran, succeeded, and injected nothing looks identical to one that never
+    // fired), so the bake is asserted explicitly rather than left to review.
+    await installFakeHooks();
+    installFakeDispatcher();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({
+      sessionKey: 41,
+      mcpUrl: 'http://x/?role=worker&sig=1',
+      promptText: 'P',
+      sid: 'role-inject-41',
+    });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    for (const event of ['UserPromptSubmit', 'PostToolUse']) {
+      const [entry] = injectEntries(hooks, event);
+      expect(entry, `${event} injection hook missing`).toBeTruthy();
+      expect(entry.hooks[0].command).toContain("PAPERCUSP_SID='role-inject-41'");
+      expect(entry.hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
+    }
+  });
+
+  it('registers NOTHING when the dispatcher is not installed — never a hook pointing at a missing file', async () => {
+    await installFakeHooks(); // cc hooks present, dispatcher deliberately absent
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({
+      sessionKey: 42,
+      mcpUrl: 'http://x/?role=worker&sig=1',
+      promptText: 'P',
+      sid: 'role-inject-42',
+    });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    // The key is OMITTED entirely, not present-but-empty: "is turn-start
+    // registered on this home?" must be answerable by reading hooks.json.
+    expect(hooks.hooks.UserPromptSubmit).toBeUndefined();
+    expect(injectEntries(hooks, 'PostToolUse')).toHaveLength(0);
+    // ...and the pre-existing lock/activity hooks are UNAFFECTED.
+    expect(JSON.stringify(hooks)).toContain('pretooluse-locks-acquire.sh');
+  });
+
+  it('registers NOTHING when the session has no sid', async () => {
+    await installFakeHooks();
+    installFakeDispatcher();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 43, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(hooks.hooks.UserPromptSubmit).toBeUndefined();
+    expect(injectEntries(hooks, 'PostToolUse')).toHaveLength(0);
+  });
+
+  it('SU homes get injection too (su sessions are the dominant codex surface)', async () => {
+    await installFakeHooks();
+    installFakeDispatcher();
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({
+      sessionKey: 44,
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-inject-44',
+    });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(injectEntries(hooks, 'UserPromptSubmit')).toHaveLength(1);
+    expect(injectEntries(hooks, 'PostToolUse')).toHaveLength(1);
+    expect(injectEntries(hooks, 'UserPromptSubmit')[0].hooks[0].command).toContain("PAPERCUSP_SID='su-inject-44'");
+  });
+});
