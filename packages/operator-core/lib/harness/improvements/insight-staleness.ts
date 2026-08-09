@@ -67,9 +67,19 @@ const REPO_PATH_RE = /^(?:apps|packages|libs|scripts|bin)\/[\w@./-]+\.[a-z]{1,5}
 const REMOVAL_MARKER_RE =
   /\b(?:used to|moved (?:off|from|to|onto)|moved the|no longer|removed|deleted|retired|replaced|superseded|since deleted|migrated (?:off|from|onto)|formerly|previously|was (?:at|in)|lived (?:at|in)|old(?:er)? (?:path|location)|deprecated)\b/i;
 
+/**
+ * Sentence-terminator followed by whitespace. Applied to backtick-MASKED text so a
+ * filename's own dots (`batch-fetcher.ts`) can never read as a sentence boundary.
+ */
+const SENTENCE_BREAK_RE = /[.!?](?=\s)/g;
+
 export function extractCitedPaths(raw: string): string[] {
   const clean = new Set<string>();
   const acknowledgedRemoved = new Set<string>();
+  // Mask every backticked span with same-length filler ONCE, so offsets still line
+  // up with `raw` while filenames contribute neither sentence breaks nor marker
+  // words (a file literally named `removed.ts` must not self-suppress).
+  const masked = raw.replace(/`[^`]*`/g, (s) => ' '.repeat(s.length));
   for (const m of raw.matchAll(/`([^`\n]+)`/g)) {
     const token = m[1].trim();
     // Exclude globs (`*`), placeholders (`<x>`), spaces, and ELLIPSIS placeholders

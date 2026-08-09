@@ -28,6 +28,12 @@
 import { useMemo } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '@/app/harness/Modal';
+// Self-sufficient, the way SessionChatModal imports this same sheet: the panel
+// mounts on the Goals tab, where HudBoard (the file that otherwise pulls
+// hud.css in) is not the rendered branch. It works today only because HudView
+// imports HudBoard at module scope, which is an accident of import order rather
+// than anything this component controls.
+import './hud.css';
 import {
   agoText,
   ceilingLine,

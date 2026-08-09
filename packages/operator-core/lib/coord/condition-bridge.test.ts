@@ -28,9 +28,32 @@ describe('isActionableConditionKey', () => {
       'single-primary:no-primary',
       'single-primary:split-brain-primary',
       'single-primary:no-dedicated-primary',
+      // P-005: emitted by trackGateStall (harness/routines/release-actions.ts).
+      'gate-red-streak:papercusp',
     ]) {
       expect(isActionableConditionKey(key)).toBe(true);
     }
+  });
+
+  it('⭐ P-005: the key the PRODUCER emits is the key the catalog admits', () => {
+    // The whole value of the opt-in is that a red gate mints an owning work-item, and
+    // that depends on two strings in two modules agreeing. Asserting the literal
+    // 'gate-red-streak:papercusp' above cannot catch a rename of the producer's key
+    // function — it would keep passing while the live gate silently stopped minting
+    // anything, which is indistinguishable from the pre-P-005 behaviour this item
+    // exists to fix. So test the composed key, not a copy of it.
+    const key = gateRedStreakConditionKey('papercusp');
+    expect(isActionableConditionKey(key)).toBe(true);
+    // ...and the harness must be recoverable from it, or the bridge files the item
+    // under a harness nobody queries (the failure mode `harnessFrom` documents).
+    expect(resolveConditionHarness(key, 'some-other-ambient')).toBe('papercusp');
+  });
+
+  it('P-005: the red-streak condition is NOT the stall condition', () => {
+    // They describe opposite gate states (producing reds vs. producing nothing) and
+    // are deliberately separate keys — a re-point would violate D-012/D-013 and
+    // silently move the ownership block on gate.greenCheckpoint.verdict.
+    expect(gateRedStreakConditionKey('papercusp')).not.toBe(gateStallConditionKey('papercusp'));
   });
 
   it('rejects keys that are not opted in, so a transient condition mints nothing', () => {
