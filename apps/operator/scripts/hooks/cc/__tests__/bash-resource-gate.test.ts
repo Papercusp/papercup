@@ -3906,3 +3906,73 @@ describe('cd + EXIT-trap/restore path-drift advisory (EI-19409854431997137)', ()
     );
   });
 });
+
+// ── ancestor-chain kill guard (WI-36926) ────────────────────────────────────
+// The owner lost their GNOME session on 2026-08-08 11:52:49 EDT to an agent's
+// ad-hoc rig teardown: it walked its app's ancestor chain stopping at pid 1 —
+// which INCLUDES `systemd --user`, whose PPID *is* 1 — and SIGTERM'd it. A
+// SIGTERM to a user systemd manager activates exit.target, i.e. a logout.
+// No repo library could have caught this one: the command was typed by an agent
+// and never committed, so this gate is the only chokepoint it passed through.
+describe('ancestor-chain kill guard (WI-36926)', () => {
+  const gate = (command: string) =>
+    runGate({
+      tool_name: 'Bash',
+      tool_input: { command },
+      cwd: process.cwd(),
+      session_id: 'wi36926',
+    });
+
+  it('DENIES the verbatim 2026-08-08 command that logged the owner out', () => {
+    const decision = parseDecision(
+      gate(
+        'cd /repo || exit 1\n' +
+          'APP=$(cat "$SP/app2.pid")\n' +
+          "# walk MY app's ancestor chain, stopping before systemd — exact pids only\n" +
+          'CHAIN="$APP"; P=$(ps -o ppid= -p "$APP" 2>/dev/null | tr -d \' \')\n' +
+          'while [ -n "$P" ] && [ "$P" != "1" ]; do CHAIN="$CHAIN $P"; ' +
+          'P=$(ps -o ppid= -p "$P" 2>/dev/null | tr -d \' \'); done\n' +
+          'for p in $CHAIN $OP $XV; do kill "$p" 2>/dev/null && echo "TERM $p"; done',
+      ),
+    );
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+    // The reason must name the MECHANISM, not merely say "blocked" — an agent that
+    // does not learn why reaches for the same shape again on the next turn.
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('systemd --user');
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('session-floor');
+  });
+
+  it('DENIES the /proc/<pid>/status variant of the same walk', () => {
+    const decision = parseDecision(
+      gate(
+        'cur=$$; while :; do cur=$(awk \'/^PPid:/{print $2}\' /proc/$cur/status); ' +
+          '[ "$cur" != "1" ] || break; kill -9 $cur; done',
+      ),
+    );
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
+  // Calibration. All three signals (walk + stop-at-1 + signal) are required
+  // together, so the guard must stay SILENT on each alone — a guard that denies
+  // routine teardown gets worked around, which is worse than not existing.
+  it('ALLOWS killing a recorded pid (no ancestor walk)', () => {
+    expectAllow(gate('PID=$(cat /tmp/myapp.pid); kill "$PID" 2>/dev/null || true; echo done'));
+  });
+
+  it('ALLOWS a read-only ancestor walk that signals nothing', () => {
+    expectAllow(
+      gate(
+        'cur=$$; while [ "$cur" != "1" ]; do echo "$cur"; cur=$(ps -o ppid= -p "$cur" | tr -d \' \'); done',
+      ),
+    );
+  });
+
+  it('ALLOWS `kill -0` liveness probing along the chain', () => {
+    expectAllow(
+      gate(
+        'cur=$$; while [ "$cur" != "1" ]; do kill -0 "$cur" 2>/dev/null && echo alive; ' +
+          'cur=$(ps -o ppid= -p "$cur" | tr -d \' \'); done',
+      ),
+    );
+  });
+});
