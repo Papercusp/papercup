@@ -1032,6 +1032,115 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect(r.checksDroppedNote).toContain('REPLACES');
       });
 
+      /**
+       * EI-19944669306930709: `append: true` declares an ADDITIVE write — but `checks`
+       * REPLACED the carried set inside that same call. So the single most natural
+       * incremental write ("append a progress note, and record the one claim I just
+       * verified") destroyed every other carried check. Reported twice in one session
+       * ~25 min apart by an agent who had ALREADY read the replace-semantics warning:
+       * knowing the rule did not help, because `append: true` sitting in the same call
+       * establishes an additive frame for the whole invocation, and `checks` reads as
+       * one more field of that append.
+       *
+       * The prior fix (EI-19460631385508515) made the loss VISIBLE via `checksDropped`.
+       * Necessary but not sufficient — it is after-the-fact, rides on an `ok: true`, and
+       * recovery means re-sending the full set verbatim (where any retyped claim text
+       * silently becomes a new, unevidenced row). Under `append: true` the drop is now
+       * PREVENTED rather than merely reported.
+       *
+       * Plain (non-append) replace semantics are deliberately UNCHANGED — that is the
+       * only way to retire a stale check, and the test above pins it.
+       */
+      describe('EI-19944669306930709: `append: true` governs `checks` too (union, not replace)', () => {
+        /** Seed a prior note and point BOTH read paths at it (the append join reads
+         *  getWorkItemCheckpoint; the transform reads the store's locked prior). */
+        const seed = async (checks: Array<{ claim: string; recheck?: string; verified?: string }>) => {
+          withPrior(null);
+          await one({ id: 'WI-7', checkpoint: 'the body worth keeping', checks });
+          const prior = await lastStored();
+          withPrior(prior);
+          getWorkItemCheckpoint.mockResolvedValue(prior);
+          return prior;
+        };
+
+        it('UNIONS a supplied row onto the carried set instead of dropping the rest', async () => {
+          await seed([
+            { claim: 'A holds', recheck: 'probe A' },
+            { claim: 'B holds', recheck: 'probe B', verified: 'saw B at 19:00Z' },
+            { claim: 'C holds', recheck: 'probe C' },
+          ]);
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'ran the suite, 30/30',
+            append: true,
+            checks: [{ claim: 'D holds', recheck: 'probe D', verified: 'measured just now' }],
+          })) as { ok: boolean; checks: number; checksDropped?: string[] };
+
+          expect(r).toMatchObject({ ok: true });
+          const stored = await lastStored();
+          // The new row landed...
+          expect(stored).toContain('- ✓ D holds');
+          // ...and NOTHING carried was destroyed — the whole point.
+          expect(stored).toContain('A holds');
+          expect(stored).toContain('B holds');
+          expect(stored).toContain('C holds');
+          // B keeps its own evidence, not D's.
+          expect(stored).toContain('saw B at 19:00Z');
+          expect(r.checks).toBe(4);
+          // Nothing was lost, so nothing is reported lost.
+          expect(r.checksDropped).toBeUndefined();
+          // The body still appended (EI-9036's contract, unaffected).
+          expect(stored).toContain('the body worth keeping');
+          expect(stored).toContain('ran the suite, 30/30');
+        });
+
+        it('a supplied row UPDATES a carried claim of the same text rather than duplicating it', async () => {
+          await seed([
+            { claim: 'A holds', recheck: 'probe A' },
+            { claim: 'B holds', recheck: 'probe B' },
+          ]);
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'verified A',
+            append: true,
+            checks: [{ claim: 'A holds', recheck: 'probe A', verified: 'ran it, 12/12' }],
+          })) as { ok: boolean; checks: number; checksDropped?: string[] };
+
+          expect(r.ok).toBe(true);
+          const stored = await lastStored();
+          // Promoted from PREDICTED to VERIFIED in place — one row, not two.
+          expect(stored).toContain('- ✓ A holds');
+          expect(stored).not.toContain('- ? A holds');
+          expect(stored).toContain('B holds');
+          expect(r.checks).toBe(2);
+          expect(r.checksDropped).toBeUndefined();
+        });
+
+        it('PLAIN (non-append) replace is UNCHANGED — retiring a stale check still works', async () => {
+          // The escape hatch: no `append`, so the supplied list still REPLACES. This is
+          // what keeps EI-19460631385508515's contract reachable; the fix above must not
+          // take it away, or a stale check becomes unretirable.
+          await seed([
+            { claim: 'A holds', recheck: 'probe A' },
+            { claim: 'B is stale', recheck: 'probe B' },
+          ]);
+
+          const r = (await one({
+            id: 'WI-7',
+            checks: [{ claim: 'A holds', recheck: 'probe A' }],
+          })) as { ok: boolean; checks: number; checksDropped?: string[] };
+
+          expect(r.ok).toBe(true);
+          const stored = await lastStored();
+          expect(stored).toContain('A holds');
+          expect(stored).not.toContain('B is stale');
+          expect(r.checks).toBe(1);
+          expect(r.checksDropped).toEqual(['B is stale']);
+        });
+      });
+
       it('a re-sent claim INHERITS its stored evidence, so replace-semantics never loses a ✓ you kept', async () => {
         withPrior(null);
         await one({

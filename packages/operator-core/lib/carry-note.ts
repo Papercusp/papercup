@@ -695,6 +695,18 @@ export function normalizeCheckEntries(
  * / `droppedChecks` make the loss VISIBLE so it is never inferable only by diffing a
  * count you would have had to record beforehand. Mirrors the `checksDropped` report
  * work_items:checkpoint landed for the identical defect (EI-19460631385508515).
+ *
+ * P-013 (fleet-lead-instrumentation-audit-2026-08-09): making the loss visible was
+ * necessary but NOT sufficient — the report lands AFTER the write, so the rows are
+ * already gone by the time you read it. Two additions make the loss AVOIDABLE:
+ *
+ *  1. `mode: 'merge'` — supplied rows upsert onto the carried set; unmentioned rows
+ *     survive. The natural "add one row to my carried set" write stops being
+ *     destructive. `replace` remains the default (it is the only way to retire a row).
+ *  2. A row `id` — identity independent of WORDING (see {@link carryRowKey}). Without
+ *     it, tightening a claim's phrasing makes it a NEW row: it loses the evidence and
+ *     `sinceMs` it had inherited, and the old wording reads to the drop-report as a
+ *     carried claim that vanished. Both were observed live, twice.
  */
 export function mergeCarryRows(opts: {
   /** The AUTHORITATIVE prior note. Inside a `transform` this is the locked row's. */
@@ -738,17 +750,30 @@ export function mergeCarryRows(opts: {
   const priorCheckParts = splitCarryNoteChecks(priorParts.body);
   const rawParts = splitCarryNoteWalls(opts.baseNote ?? '');
   const rawCheckParts = splitCarryNoteChecks(rawParts.body);
+  const merging = opts.mode === 'merge';
   const walls =
     opts.walls !== undefined
-      ? normalizeWallEntries(opts.walls, priorParts.walls, opts.nowMs)
+      ? normalizeWallEntries(upsertOntoPrior(opts.walls, priorParts.walls, merging), priorParts.walls, opts.nowMs)
       : rawParts.walls.length > 0
-        ? normalizeWallEntries(rawParts.walls, priorParts.walls, opts.nowMs)
+        ? normalizeWallEntries(
+            upsertOntoPrior(rawParts.walls, priorParts.walls, merging),
+            priorParts.walls,
+            opts.nowMs,
+          )
         : priorParts.walls;
   const checks =
     opts.checks !== undefined
-      ? normalizeCheckEntries(opts.checks, priorCheckParts.checks, opts.nowMs)
+      ? normalizeCheckEntries(
+          upsertOntoPrior(opts.checks, priorCheckParts.checks, merging),
+          priorCheckParts.checks,
+          opts.nowMs,
+        )
       : rawCheckParts.checks.length > 0
-        ? normalizeCheckEntries(rawCheckParts.checks, priorCheckParts.checks, opts.nowMs)
+        ? normalizeCheckEntries(
+            upsertOntoPrior(rawCheckParts.checks, priorCheckParts.checks, merging),
+            priorCheckParts.checks,
+            opts.nowMs,
+          )
         : priorCheckParts.checks;
   const narrativeBody = opts.hasNoteWrite ? rawCheckParts.body : priorCheckParts.body;
   return {
@@ -761,19 +786,55 @@ export function mergeCarryRows(opts: {
   };
 }
 
-/** Prior claims absent from the surviving set, compared on the SAME trimmed key the
- *  normalizers dedup by — so a row that merely changed its recheck/evidence (or was
- *  re-passed with surrounding whitespace) never reads as dropped. Blank prior claims
- *  are ignored: they can never be re-passed (the normalizers skip them), so counting
- *  them would report a permanent phantom loss on every write. */
+/**
+ * P-013 merge pre-pass: expand a supplied row list to include the carried rows it did
+ * not mention, so the normalizer downstream is unchanged — it still sees ONE incoming
+ * list and applies dedup, inheritance and the cap exactly once.
+ *
+ * Order is deliberate: an upserted row keeps its PRIOR position and genuinely-new rows
+ * append, so a merge does not reshuffle a note the author reads every wake. Under
+ * `replace` (or an empty prior) this is the identity function.
+ *
+ * Note the cap still applies afterwards — a merge that overflows
+ * {@link CARRY_NOTE_MAX_CHECKS} loses the overflow, and those rows surface through the
+ * ordinary `droppedChecks` report rather than vanishing.
+ */
+function upsertOntoPrior<T extends { id?: string; claim: string }>(
+  supplied: ReadonlyArray<T>,
+  prior: ReadonlyArray<{ id?: string; claim: string }>,
+  merging: boolean,
+): ReadonlyArray<T | { id?: string; claim: string }> {
+  if (!merging || prior.length === 0) return supplied;
+  const suppliedByKey = new Map(supplied.map((r) => [carryRowKey(r), r] as const));
+  const out: Array<T | { id?: string; claim: string }> = [];
+  const used = new Set<string>();
+  for (const p of prior) {
+    const key = carryRowKey(p);
+    const replacement = suppliedByKey.get(key);
+    if (replacement) used.add(key);
+    out.push(replacement ?? p);
+  }
+  for (const s of supplied) {
+    if (!used.has(carryRowKey(s))) out.push(s);
+  }
+  return out;
+}
+
+/** Prior claims absent from the surviving set, compared on the SAME {@link carryRowKey}
+ *  the normalizers dedup by — so a row that merely changed its recheck/evidence, was
+ *  re-passed with surrounding whitespace, or (P-013) was RE-WORDED under a stable `id`
+ *  never reads as dropped. The reported string is still the human-readable claim, since
+ *  that is what a caller needs to re-send. Blank prior claims are ignored: they can never
+ *  be re-passed (the normalizers skip them), so counting them would report a permanent
+ *  phantom loss on every write. */
 function droppedClaims(
-  prior: ReadonlyArray<{ claim: string }>,
-  kept: ReadonlyArray<{ claim: string }>,
+  prior: ReadonlyArray<{ id?: string; claim: string }>,
+  kept: ReadonlyArray<{ id?: string; claim: string }>,
 ): string[] {
-  const keptClaims = new Set(kept.map((r) => (r.claim ?? '').trim()));
+  const keptKeys = new Set(kept.map((r) => carryRowKey(r)));
   return prior
-    .map((r) => (r.claim ?? '').trim())
-    .filter((claim) => claim.length > 0 && !keptClaims.has(claim));
+    .filter((r) => (r.claim ?? '').trim().length > 0 && !keptKeys.has(carryRowKey(r)))
+    .map((r) => (r.claim ?? '').trim());
 }
 
 // ── External-state-claim lint (P-009) ────────────────────────────────────────

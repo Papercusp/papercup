@@ -181,6 +181,7 @@ export default defineTool({
               .min(1)
               .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
               .describe('The pending owner-gated action/decision, stated concretely.'),
+            id: CARRY_ROW_ID_SCHEMA,
             recheck: z
               .string()
               .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
@@ -193,7 +194,8 @@ export default defineTool({
         .describe(
           'Open WALLS (owner-gated commitments) as rows — rendered into EVERY wake + carry brief until cleared. ' +
             'OMITTED ⇒ existing walls CARRY FORWARD (a rewrite or note-clear never drops them); a supplied list ' +
-            'REPLACES, so pass the full current set (dropped ones come back as `wallsDropped`); [] clears.',
+            "REPLACES (pass rowsMode:'merge' to upsert instead), so pass the full current set (dropped ones come " +
+            'back as `wallsDropped`); [] clears.',
         ),
       checks: z
         .preprocess(
@@ -230,6 +232,7 @@ export default defineTool({
                 .min(1)
                 .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
                 .describe('The external-state claim, stated concretely.'),
+              id: CARRY_ROW_ID_SCHEMA,
               recheck: z
                 .string()
                 .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
