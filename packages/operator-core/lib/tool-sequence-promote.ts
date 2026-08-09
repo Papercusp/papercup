@@ -48,6 +48,12 @@ export const SEQUENCE_PROMOTION_KILL_ENV = 'PAPERCUSP_TOOL_SEQUENCE_PROMOTION';
 /** Cap filings per sweep, so a tuning slip cannot flood the queue. */
 export const DEFAULT_MAX_FILINGS = 5;
 
+/**
+ * A workspace with fewer agent-initiated calls than this over the span cannot
+ * clear the miner's cohort/occurrence floors, so mining it is pure cost.
+ */
+export const DEFAULT_MIN_WORKSPACE_ROWS = 5_000;
+
 export interface PromoteToolSequencesDeps {
   capture: (input: CaptureImprovementInput) => Promise<CaptureImprovementResult>;
   log?: (msg: string) => void;
@@ -58,6 +64,18 @@ export interface PromoteToolSequencesOpts extends GraduateToolSequencesOpts {
   maxFilings?: number;
   /** Compute candidates and render, but do not file. */
   dryRun?: boolean;
+  /**
+   * Harness the filing is SCOPED to — deliberately separate from `harnessSlug`,
+   * which scopes the MINING query.
+   *
+   * Conflating the two silently shrinks the evidence: most agent traffic carries
+   * the wildcard harness (measured 514,614 rows vs 19,620 for the named one), so
+   * mining "the harness we want to file into" throws away the cohort the pattern
+   * lives in. The pattern is found across everything; the work-item still has to
+   * land somewhere claimable. Defaults to `harnessSlug` when a caller genuinely
+   * did scope the mining, and omitting both homes the filing to the platform Pot.
+   */
+  filingHarness?: string;
 }
 
 export interface PromoteToolSequencesResult {
@@ -144,13 +162,14 @@ export async function promoteToolSequences(
       continue;
     }
     const { title, body } = renderSequenceFiling(c);
+    const filingHarness = opts.filingHarness ?? opts.harnessSlug;
     try {
       const res = await deps.capture({
         title,
         body,
         kind: 'change',
         severity: 'minor',
-        scope: opts.harnessSlug ? `harness:${opts.harnessSlug}` : undefined,
+        scope: filingHarness ? `harness:${filingHarness}` : undefined,
         foundDuring: SEQUENCE_PROMOTION_SOURCE,
         // Stable identity ⇒ a re-graduation coalesces instead of duplicating.
         watchdogKey: sequenceWatchdogKey(c),
@@ -173,4 +192,138 @@ export async function promoteToolSequences(
     dryRun: !!opts.dryRun,
     disabled: false,
   };
+}
+
+/** One workspace worth mining, plus the harness its filings should land in. */
+export interface PromotionTarget {
+  workspaceId: string;
+  /** Agent-initiated rows over the span — the reason it qualified. */
+  rows: number;
+  /**
+   * Modal REAL harness among that workspace's traffic, or undefined when there
+   * is none. Undefined ⇒ the filing homes to the workspace platform Pot.
+   */
+  harnessSlug?: string;
+}
+
+/**
+ * Which workspaces are worth a promotion sweep — asked of the data, never
+ * configured.
+ *
+ * A scheduled routine must not carry a hardcoded workspace id: this ships in the
+ * desktop app, where the id is whatever that install generated, so a constant
+ * here would make the whole loop a silent no-op everywhere except the box it was
+ * written on.
+ *
+ * The harness is derived the same way, and needs care because `harness_slug` is
+ * NOT the filing target for most rows. Measured 2026-08-09 over 7 days: 514,614
+ * agent rows carry the wildcard `'*'` (su sessions are not harness-scoped) against
+ * 19,620 for `papercusp` — so grouping the MINING by harness would shatter the
+ * cohort the pattern actually lives in. Mining is therefore per WORKSPACE, and
+ * the harness is used only to scope the resulting work-item so agents of that
+ * harness can claim it (an unclaimable filing closes no loop). Wildcard and empty
+ * slugs are excluded from that vote precisely because they name no claim pool.
+ */
+export async function discoverPromotionTargets(
+  sql: postgres.Sql,
+  opts: { hours?: number; minRows?: number; limit?: number } = {},
+): Promise<PromotionTarget[]> {
+  const hours = Math.max(1, Math.min(720, opts.hours ?? 168));
+  const minRows = Math.max(0, opts.minRows ?? DEFAULT_MIN_WORKSPACE_ROWS);
+  const limit = Math.max(1, Math.min(50, opts.limit ?? 5));
+  const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+  const rows = (await sql`
+      WITH agent_rows AS (
+        SELECT workspace_id, harness_slug
+          FROM harness_shared.tool_invocations
+         WHERE invoked_at > ${sinceIso}::timestamptz
+           AND transport = 'mcp'
+           AND status = 'ok'
+           AND coord_owner_id IS NOT NULL
+           AND workspace_id IS NOT NULL
+      ), totals AS (
+        SELECT workspace_id, count(*) AS rows FROM agent_rows GROUP BY 1
+      ), named AS (
+        SELECT workspace_id, harness_slug, count(*) AS n,
+               row_number() OVER (PARTITION BY workspace_id ORDER BY count(*) DESC, harness_slug) AS rk
+          FROM agent_rows
+         WHERE harness_slug IS NOT NULL AND harness_slug <> '' AND harness_slug <> '*'
+         GROUP BY 1, 2
+      )
+      SELECT t.workspace_id, t.rows, n.harness_slug
+        FROM totals t
+        LEFT JOIN named n ON n.workspace_id = t.workspace_id AND n.rk = 1
+       WHERE t.rows >= ${minRows}
+       ORDER BY t.rows DESC
+       LIMIT ${limit}
+  `) as unknown as { workspace_id: string; rows: string | number; harness_slug: string | null }[];
+
+  return rows.map((r) => ({
+    workspaceId: r.workspace_id,
+    rows: Number(r.rows),
+    ...(r.harness_slug ? { harnessSlug: r.harness_slug } : {}),
+  }));
+}
+
+export interface PromoteEverywhereResult {
+  targets: PromotionTarget[];
+  filed: number;
+  coalesced: number;
+  graduated: number;
+  heldForEvidence: number;
+  disabled: boolean;
+}
+
+/**
+ * Sweep every qualifying workspace. This is the entry point a scheduled caller
+ * wants: it needs no per-install configuration and no workspace argument.
+ *
+ * A failure in one workspace never stops the others — the sweep's job is to
+ * make progress where it can, not to be all-or-nothing.
+ */
+export async function promoteToolSequencesEverywhere(
+  sql: postgres.Sql,
+  opts: Omit<PromoteToolSequencesOpts, 'workspaceId'> & { minWorkspaceRows?: number; maxWorkspaces?: number } = {},
+  deps: PromoteToolSequencesDeps,
+): Promise<PromoteEverywhereResult> {
+  const log = deps.log ?? (() => {});
+  if (process.env[SEQUENCE_PROMOTION_KILL_ENV] === 'off') {
+    return { targets: [], filed: 0, coalesced: 0, graduated: 0, heldForEvidence: 0, disabled: true };
+  }
+
+  const spanHours = (opts.windows ?? 7) * (opts.windowHours ?? 24);
+  const targets = await discoverPromotionTargets(sql, {
+    hours: spanHours,
+    ...(opts.minWorkspaceRows !== undefined ? { minRows: opts.minWorkspaceRows } : {}),
+    ...(opts.maxWorkspaces !== undefined ? { limit: opts.maxWorkspaces } : {}),
+  });
+
+  const out: PromoteEverywhereResult = {
+    targets,
+    filed: 0,
+    coalesced: 0,
+    graduated: 0,
+    heldForEvidence: 0,
+    disabled: false,
+  };
+
+  for (const t of targets) {
+    try {
+      const r = await promoteToolSequences(
+        sql,
+        // NOTE the asymmetry, and do not "tidy" it into harnessSlug: the mining
+        // stays workspace-wide; only the FILING is harness-scoped.
+        { ...opts, workspaceId: t.workspaceId, ...(t.harnessSlug ? { filingHarness: t.harnessSlug } : {}) },
+        deps,
+      );
+      out.filed += r.filed.length;
+      out.coalesced += r.coalesced.length;
+      out.graduated += r.graduated.length;
+      out.heldForEvidence += r.heldForEvidence;
+    } catch (err) {
+      log(`promoteToolSequencesEverywhere: ${t.workspaceId} failed (${(err as Error)?.message ?? String(err)})`);
+    }
+  }
+  return out;
 }

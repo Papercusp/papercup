@@ -52,7 +52,8 @@ import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
-import { runEmbedCoverageAlarmOnce } from '../search/embed-coverage';
+import { emitCoverageToast, runEmbedCoverageAlarmOnce } from '../search/embed-coverage';
+import { assessInjectionReach, formatInjectionReachToast } from '../memory/injection-coverage';
 import { runWalCheckpointSweep } from '../storage/localstorage-wal-guard';
 import { runMemoryAnchorAuditOnce } from '../memory/audit-memory-anchors';
 import { runDesktopPerfScheduledRun } from '../system-health/desktop-perf-scheduled-run';
@@ -838,6 +839,30 @@ async function embedCoverageAlarmTick(): Promise<void> {
           r.breaches.map((b) => `${b.surface}/${b.kind}`).join(', '),
       );
     }
+
+    // P-004 (context-injection-retrieval-reach-and-visibility-2026-08-03): the same
+    // pass, re-read for ONE consumer — the pre-turn context block. It re-measures
+    // nothing and re-derives no floor; it filters the verdicts above to the surfaces
+    // the injection corpus leg actually reads, with union-aware (best-leg) semantics.
+    //
+    // It rides HERE, not on the query-time coverage snapshot, because the recurrence
+    // signal (`settledCoverage`) is evaluated instantaneously and is never persisted to
+    // embed_coverage_samples — inside this pass is the only place it exists.
+    try {
+      const reach = assessInjectionReach(r.surfaces, r.breaches);
+      if (reach.breaches.length > 0) {
+        console.log(
+          `[injection-coverage] ${reach.breaches.length} breach(es): ` +
+            reach.breaches.map((b) => `${b.source ?? 'corpus'}/${b.kind}`).join(', '),
+        );
+        await emitCoverageToast(formatInjectionReachToast(reach));
+      }
+    } catch (err) {
+      // Never let the derived read affect the alarm it derives from.
+      console.warn(
+        `[injection-coverage] skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
   }, { name: 'embed-coverage-alarm' });
 }
 const embedCoverageAlarmWorkflow = idempotentRegisterWorkflow('embedCoverageAlarm', () =>
@@ -952,20 +977,39 @@ DBOS.registerScheduled(specTriadSweepWorkflow, { name: 'specTriadSweep', crontab
 // sweepRecipes (a reversible status flip that NEVER touches hot / promoted / merged /
 // NULL-last-run recipes) and (2) LOGS the current promote/merge worklist for visibility
 // (the Queen still pulls recipes:candidates live; this is a passive heartbeat so a
-// Queen-less window still surfaces what's graduating). Default ON; kill-switch
-// PAPERCUSP_RECIPE_HYGIENE=0. Never throws → can't poison the scheduler. Shed under load.
+// Queen-less window still surfaces what's graduating), and (3) PROMOTES persistent
+// tool-sequence graduates into work-items (okf-frontmatter §D) — the one non-passive
+// leg, because §D's point is that a worklist nobody reads is where real findings go to
+// wait. Default ON; kill-switches PAPERCUSP_RECIPE_HYGIENE=0 (whole routine) and
+// PAPERCUSP_TOOL_SEQUENCE_PROMOTION=off (the filing leg only). Never throws → can't
+// poison the scheduler. Shed under load.
 async function recipeHygieneTick(): Promise<void> {
   await DBOS.runStep(async () => {
     if (process.env.PAPERCUSP_RECIPE_HYGIENE === '0') return;
     if (shouldShedHeavyTick('recipe-hygiene')) return;
     try {
       const { runRecipeHygieneOnce } = await import('../recipe-hygiene');
+      const { captureImprovement } = await import('../harness/improvements/capture-core');
       const { sql } = getOrgPg();
-      const r = await runRecipeHygieneOnce(sql);
+      const r = await runRecipeHygieneOnce(sql, {
+        sequenceDeps: {
+          capture: captureImprovement,
+          log: (m) => console.warn(`[recipe-hygiene] ${m}`),
+        },
+      });
       if (r.sweptIds.length > 0 || r.promoteCandidates > 0 || r.mergeClusters > 0) {
         console.log(
           `[recipe-hygiene] retired ${r.sweptIds.length} stale one-off recipe(s); ` +
             `${r.promoteCandidates} promote candidate(s), ${r.mergeClusters} merge cluster(s) awaiting Mug review`,
+        );
+      }
+      if (r.sequenceError) {
+        console.warn(`[recipe-hygiene] tool-sequence promotion failed (non-fatal): ${r.sequenceError}`);
+      } else if (r.sequences && (r.sequences.filed > 0 || r.sequences.graduated > 0)) {
+        console.log(
+          `[recipe-hygiene] tool-sequences: ${r.sequences.graduated} graduated across ` +
+            `${r.sequences.targets.length} workspace(s) → filed ${r.sequences.filed}, ` +
+            `coalesced ${r.sequences.coalesced}, ${r.sequences.heldForEvidence} still accruing evidence`,
         );
       }
     } catch (err) {

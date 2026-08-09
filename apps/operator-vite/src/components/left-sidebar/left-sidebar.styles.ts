@@ -1593,6 +1593,62 @@ body.has-left-sidebar .pc-header {
 .pc-auto__foot { display: flex; align-items: flex-start; gap: 4px; margin: 2px 0 0; font-size: 9.5px;
   line-height: 1.35; color: var(--fg-mute, #7f9bb4); }
 
+/* ── GOAL mode's rail card (components/left-sidebar/GoalTab.tsx,
+   goal-mode-2026-08-07 P-019). Its own namespace rather than more .pc-auto__*
+   because the card is the first rail surface with a PROGRESS BAR, and a
+   tripwire track sized for the 300px rail minimum is not reusable as a generic
+   automation row.
+
+   The two states that carry meaning are both attribute-driven, so the markup
+   states them once and CSS reads them — no conditional class strings:
+     [data-breached="true"]  a tripwire is AT or PAST its threshold
+     [data-over="true"]      fleet spend has reached the ceiling
+   Both are the moment a goal should stop, so they share one alarm colour. */
+.pc-goal__card { display: flex; flex-direction: column; gap: 5px; padding: 7px 8px;
+  border: 1px solid var(--border-subtle, #1d3548); border-radius: 6px;
+  background: var(--bg-raised, #0d1c27); }
+/* A paused goal is still listed — it is the one the owner may need to resume —
+   but it must not compete visually with what is actually running. */
+.pc-goal__card[data-status="paused"] { opacity: 0.62; }
+.pc-goal__head { display: flex; align-items: baseline; gap: 6px; }
+.pc-goal__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11.5px; font-weight: 600; color: var(--fg, #e7f7ff); }
+.pc-goal__status { margin-left: auto; flex: none; font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); }
+.pc-goal__status[data-status="active"] { color: var(--ok, #4ec9a5); }
+
+.pc-goal__ends { display: flex; flex-direction: column; gap: 1px; }
+.pc-goal__ends-label { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--fg-mute, #7f9bb4); }
+.pc-goal__criterion { font-size: 10.5px; line-height: 1.35; color: var(--fg, #e7f7ff); }
+/* A goal with no criterion cannot ever end, so the absence is rendered LOUDLY
+   rather than as an empty line the eye skips. */
+.pc-goal__criterion--missing { display: flex; align-items: center; gap: 4px;
+  color: var(--warn, #e0a955); }
+
+.pc-goal__wires { display: flex; flex-direction: column; gap: 3px; }
+.pc-goal__wire { display: grid; grid-template-columns: minmax(0, 4.5rem) 1fr auto; gap: 6px;
+  align-items: center; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); }
+.pc-goal__wire-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-goal__wire-track { height: 4px; border-radius: 2px; overflow: hidden;
+  background: var(--border-subtle, #1d3548); }
+.pc-goal__wire-fill { display: block; height: 100%; border-radius: 2px;
+  background: var(--accent, #3f8fc9); }
+.pc-goal__wire[data-breached="true"] .pc-goal__wire-fill { background: var(--warn, #e0a955); }
+.pc-goal__wire[data-breached="true"] .pc-goal__wire-value { color: var(--warn, #e0a955); font-weight: 600; }
+.pc-goal__wire-value { font-variant-numeric: tabular-nums; }
+
+.pc-goal__meters { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.pc-goal__meter { display: inline-flex; align-items: baseline; gap: 4px; font-size: 9.5px;
+  color: var(--fg-mute, #7f9bb4); }
+.pc-goal__meter-value { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--fg, #e7f7ff); }
+.pc-goal__meter-value em { font-style: normal; font-weight: 400; color: var(--fg-mute, #7f9bb4); }
+.pc-goal__meter[data-over="true"] .pc-goal__meter-value { color: var(--warn, #e0a955); }
+.pc-goal__meter--you { color: var(--accent, #3f8fc9); align-items: center; }
+.pc-goal__meter--you .pc-goal__meter-value { color: var(--accent, #3f8fc9); }
+
+.pc-goal__foot { display: flex; gap: 5px; font-size: 9px; color: var(--fg-mute, #7f9bb4); }
+
 /* ── RailSection — the rail's shared collapsible section (components/left-sidebar/
    RailSection.tsx). Same disclosure idiom the Mug tab uses (.pc-queen__collapse),
    lifted out of that private namespace so the Pots tab and the automation panes can

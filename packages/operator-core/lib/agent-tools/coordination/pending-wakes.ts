@@ -84,6 +84,33 @@ function assertOwnerId(ownerId: string, fn: string): void {
  * headline — instead of inserting review-spam duplicates. This mirrors the live pump's
  * per-subscriber coalescing (events/await/engine.ts) at the staging boundary, so a
  * wake storm against a paused agent reads as "watchdog ×11", not 11 queue rows.
+ *
+ * WI-37390 — `workspaceId` DEFAULTS to `activeWorkspaceId()`; a stage must never persist
+ * NULL. The four readers below split in exactly the wrong direction: the two TARGETED
+ * reads (`listPendingWakes` / `countPendingWakes`) carry no workspace predicate, while the
+ * two DISCOVERY surfaces — `listAllPendingWakes` (the owner's fleet-wide board) and
+ * `countAllPendingWakes` (the roster badge) — filter `WHERE workspace_id =
+ * activeWorkspaceId()`, which is never true for NULL. So a NULL row was visible only to a
+ * caller who ALREADY knew whose queue to open, i.e. hidden on precisely the surface whose
+ * job is to tell you that.
+ *
+ * That was not a corner case: EVERY agent-authored stage landed NULL. The sole non-test
+ * call site (inbox-wake.ts:190) forwards `opts.workspaceId`, which the agent `coord:send`
+ * path leaves undefined — so `coord:send { wake:'required' }` at a manual-mode agent
+ * returned `staged: 1` with a note saying the wake was "queued for owner review", for a row
+ * no review surface listed. Recipient gated by the manual mode, owner never shown it: the
+ * pause/edit gate silently degraded from pause-and-review into DROP, and reported success
+ * while doing so. Measured live 2026-08-09 on all 6 rows of the table — the 4 with a
+ * workspace were UI `mode:set` notices, both NULL rows were real agent directives, one of
+ * them a handoff of the critical release blocker WI-37144.
+ *
+ * Defaulting HERE — the single insert every stage passes through — rather than at the
+ * caller keeps F-C3's isolation intact BY CONSTRUCTION: the row is written with the same
+ * value the board filters on, instead of relying on a second rule at each call site that
+ * can drift. A genuine cross-workspace stage still overrides it by passing `workspaceId`.
+ * ⚠ Note this also changes the dedupe key's third component
+ * (`coalesce(workspace_id, '')`), so a row staged before this fix will not coalesce with an
+ * otherwise-identical one staged after; both simply appear on the board.
  */
 export async function stagePendingWake(input: StageWakeInput): Promise<void> {
   assertOwnerId(input.ownerId, 'stagePendingWake');
@@ -96,7 +123,10 @@ export async function stagePendingWake(input: StageWakeInput): Promise<void> {
       ${input.summary ?? null},
       ${payloadJson}::text::jsonb,
       ${input.source ?? null},
-      ${input.workspaceId ?? null}
+      -- WI-37390: DEFAULT the workspace, never persist NULL -- a NULL row is invisible
+      -- to the owner's board and the roster badge (both filter on workspace_id) while
+      -- staying visible to the two targeted reads. Full rationale in the JSDoc above.
+      ${input.workspaceId ?? activeWorkspaceId()}
     )
     ON CONFLICT (owner_id, coalesce(source, ''), coalesce(summary, ''), coalesce(workspace_id, ''))
     DO UPDATE SET

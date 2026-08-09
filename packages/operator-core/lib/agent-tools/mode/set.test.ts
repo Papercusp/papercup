@@ -12,7 +12,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentIdentity } from '../coordination/identity';
 
 const h = vi.hoisted(() => ({
-  setMode: vi.fn(async (_opts: unknown) => ({ ok: true, mode: { id: 'auto' }, switchedFrom: null, noop: false })),
+  // stickyConflict is optional here (not part of the default resolved value) so
+  // TS infers a return type wide enough for the sticky-guard-refusal test below
+  // (mockResolvedValue({ ..., stickyConflict: true, ... })) without an excess-
+  // property error — pre-existing drift, unrelated to EI-19952118814692217,
+  // fixed in passing because this file's tsc baseline is otherwise 0.
+  setMode: vi.fn(async (_opts: unknown) => ({
+    ok: true,
+    mode: { id: 'auto' },
+    switchedFrom: null,
+    noop: false,
+    stickyConflict: undefined as boolean | undefined,
+  })),
   sendMessage: vi.fn(async (..._args: unknown[]) => ({ msg_id: 'm-1' })),
   refreshControlAnchorAfterMutation: vi.fn(async (_opts: unknown) => ({ generation: 1 })),
   getLoopStatus: vi.fn(async (_ownerId: string) => null as { active: boolean } | null),
@@ -182,11 +193,39 @@ describe('mode:set — instructions become a standing fact', () => {
      is REPORTED, because the instruction is now push-only and will not survive
      the agent's next compaction. */
   it('a facts failure degrades the change instead of failing it', async () => {
+    // EI-19952118814692217: the catch now LOGS the cause (see the dedicated test
+    // below) — this suite runs fail-on-console, so a degrade-path test that
+    // triggers a real warn must spy+suppress it explicitly or the harness itself
+    // fails the test on the unexpected console call.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     h.assertFact.mockRejectedValue(new Error('pg down'));
     const res = parse(
       await run({ mode: 'drain', reason: 'owner scoped a drain', instructions: SCOPE, agent: PEER }),
     );
     expect(res).toMatchObject({ ok: true, instructionsFact: 'failed' });
+    warn.mockRestore();
+  });
+
+  /* EI-19952118814692217: the catch used to be bare (`catch {}`) — the error was
+     discarded entirely, so a broken assert was undiagnosable from logs even though
+     every downstream signal (the mode write, the UI, the peer wake) still reported
+     success. This pins that the cause is now surfaced instead of swallowed. */
+  it('a facts failure is LOGGED, not silently swallowed', async () => {
+    // Not `toHaveBeenCalledTimes(1)`: this suite's fail-on-console harness keeps
+    // console.warn spied file-wide, so an already-spied mock's call history can
+    // carry residue across `it()` blocks depending on spy-nesting order — the
+    // count itself is not the contract. What matters is that OUR call landed
+    // with the right content, which the slice-since-`before` isolates.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const before = warn.mock.calls.length;
+    h.assertFact.mockRejectedValue(new Error('UNDEFINED_VALUE: Undefined values are not allowed'));
+    await run({ mode: 'drain', reason: 'owner scoped a drain', instructions: SCOPE, agent: PEER });
+    const calls = warn.mock.calls.slice(before);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    const logged = calls.map((c) => c.join(' ')).join(' | ');
+    expect(logged).toContain('drain');
+    expect(logged).toContain('UNDEFINED_VALUE');
+    warn.mockRestore();
   });
 });
 

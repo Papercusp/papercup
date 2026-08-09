@@ -23,7 +23,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * frost tokens (they don't inherit the theme) or reuse the panel classes.
  */
 
-import { useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { memo, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { ChevronDown, ListFilter, X } from 'lucide-react';
 import { FLAGS } from '@papercusp/flags';
 import type { ColumnFilterValue, FilterableColumn, NumberFilterValue } from '@papercusp/grid-core';
@@ -325,7 +325,39 @@ export function FilterEditor<TRow>({
   );
 }
 
-export function ColumnFilterBar<TRow>({
+/**
+ * memo()'d deliberately (P-BUG-WI-37386): every caller (DepGraphPanel,
+ * WorkItemsPanel) already returns a stably-memoized `controller`/`activeChips`/
+ * `hasActive`/`clearAll` from `useColumnFilters` when the underlying filter
+ * state hasn't changed — but WITHOUT memo() here, React re-renders this whole
+ * subtree on every parent re-render regardless of prop stability (that's just
+ * how React works for a plain function component), including parent re-renders
+ * driven by something totally unrelated to filters (DepGraphPanel's ResizeObserver-
+ * driven canvasW/zoom/scale state, for instance).
+ *
+ * That mattered because of a Radix landmine: `@radix-ui/react-slot`'s
+ * SlotClone recomposes each Tooltip/Select trigger's ref UNMEMOIZED on every
+ * render (`props2.ref = composeRefs(forwardedRef, childrenRef)`, called fresh
+ * in the render body — see node_modules/@radix-ui/react-slot/dist/index.mjs).
+ * Tooltip/SelectTrigger's own composed ref chain ends in an UNGUARDED
+ * `context.onTriggerChange = setTrigger` (a raw useState setter with no
+ * null-guard, unlike our own Popover.tsx's `anchorRef` callback which DOES
+ * guard `if (!node) return`). A high enough re-render CADENCE of this bar's
+ * Tooltip-wrapped picker-chip buttons (verified live: DepGraphPanel's own
+ * ResizeObserver settling is enough, no external driver needed — reproduces
+ * within seconds of mounting the harnesses dock) pushes that unguarded
+ * detach/attach churn past React's nested-update ceiling: "Maximum update
+ * depth exceeded", crashing the panel's error boundary (WI-37386).
+ *
+ * memo() here breaks the fuel supply at its true source — this bar re-renders
+ * only when ITS OWN (already-stable) props actually change, independent of
+ * how often the parent re-renders for unrelated reasons. See
+ * ColumnFilterBar.crash-regression.test.tsx for the guarding case, and keep
+ * `controller`/`activeChips`/`hasActive`/`clearAll` genuinely stable at every
+ * call site (`useColumnFilters`'s own `cols`/`rows` args must not be fresh
+ * literals per render) — memo() only helps if its inputs actually hold still.
+ */
+function ColumnFilterBarImpl<TRow>({
   controller,
   activeChips,
   hasActive,
@@ -597,3 +629,5 @@ export function ColumnFilterBar<TRow>({
     </div>
   );
 }
+
+export const ColumnFilterBar = memo(ColumnFilterBarImpl) as typeof ColumnFilterBarImpl;

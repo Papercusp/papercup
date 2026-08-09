@@ -456,6 +456,30 @@ describe('buildDepSubgraph — window vs filter: WHY an endpoint is missing deci
       expect(g.nodes.map((n) => n.id).sort()).toEqual(['BLOCKER-ELSEWHERE', 'P3']);
     });
 
+    it('returns an EMPTY graph — never throws — when the filter matches nothing', () => {
+      // The unmatched-value case, reached live by a hand-typed or agent-written
+      // `?wif=plan:<slug-that-does-not-exist>`. nuqs params are a first-class input
+      // surface here (`ui:dispatch` writes the URL), so "nobody would type that" is not
+      // a defence — an agent will.
+      //
+      // The REQUIRED behaviour is an empty graph, because that is what lets the panel
+      // render its "No work items match the active filters" branch. A throw here would
+      // surface as a pane that silently fails to mount, which is indistinguishable from
+      // "this plan has no dependencies" — the exact absence-rendered-as-zero confusion
+      // this model exists to prevent.
+      const g = buildDepSubgraph({
+        items: [],
+        edges: outOfWindowPlanEdges,
+        filterActive: true,
+        filteredIds: new Set<string>(),
+      });
+      expect(g.nodes).toEqual([]);
+      expect(g.edges).toEqual([]);
+      // Every edge is ACCOUNTED FOR rather than merely gone: the count is what the pane
+      // renders as "N edges hidden by filters", so an empty graph still explains itself.
+      expect(g.filteredEdgeCount).toBe(2);
+    });
+
     it('falls back to `items` membership when the caller supplies no filteredIds', () => {
       // The documented fallback: pre-fix behaviour, so an un-migrated caller type-checks
       // AND behaves predictably. It is not safe — it is merely unchanged.

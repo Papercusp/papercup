@@ -4120,6 +4120,100 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
     });
   });
 
+  /**
+   * EI-19931692050586322 — THE RECURRENCE GUARD for the SIBLING marker.
+   *
+   * WI-7035 (above) made the refire marker authoritative. But `inFlightRetriage` only exists
+   * once a run has REFIRED, which is the uncommon case — so the ORDINARY hourly cron run, on
+   * its first candidate, still fell through to `'run-probe'`: a value this very module
+   * documents as an INFERENCE that "can change between two reads". Meanwhile
+   * `in-flight-candidate.ts` was already publishing the authoritative answer on every
+   * invocation, and no reader consulted it. Producer wired, reader missing.
+   *
+   * Measured live 2026-08-09T00:05Z on the real stalled gate: `dev:pipeline_position` reported
+   * `candidateSource: 'run-probe'` while `gate_health.inFlightCandidate` in the SAME routines
+   * row (already loaded by git-pipeline-stats) held
+   * `{candidate: 2b8dddcb18f4…, refireDepth: 0, pid: 2353910}`.
+   *
+   * The fix must not overreach in the other direction: BOTH markers are best-effort writes that
+   * swallow their own errors, so `'run-probe'` has to stay reachable and honestly labelled —
+   * measured the same night, the 00:13Z run published no marker at all while genuinely active.
+   */
+  describe('EI-19931692050586322: the inFlightCandidate marker is authoritative for a NON-refiring run', () => {
+    const CAND = {
+      candidate: '2b8dddcb18f4bb034ca691d05f7bf6503dab9ad5',
+      refireDepth: 0,
+      quietCutApplied: false,
+      pid: 2353910,
+    };
+    // A refire marker naming a DIFFERENT sha, so the precedence case below can only pass by
+    // actually choosing between them — two markers agreeing would prove nothing.
+    const MARKER_FOR_PRECEDENCE = {
+      fromCandidate: '2b8dddcb18f4bb034ca691d05f7bf6503dab9ad5',
+      refiringCandidate: 'eb9de957d45d0c1a2f3b4c5d6e7f8091a2b3c4d5',
+      refireAttempt: 1,
+      maxRefires: 2,
+    };
+    const cronRun = {
+      activeRun: { active: true, candidate: 'stale-worktree-head', startedAtMs: NOW - 30 * 60_000, elapsedSec: 1800 },
+      computedAtMs: NOW,
+    };
+
+    it('⭐ a refireDepth:0 run WITH a published marker resolves to the AUTHORITATIVE source, not run-probe', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, null, null, CAND);
+      expect(out?.candidate).toBe(CAND.candidate);
+      expect(out?.candidateSource).toBe('in-flight-candidate');
+    });
+
+    it('the REFIRE marker still wins when both are present — a refire supersedes the starting candidate', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, MARKER_FOR_PRECEDENCE, null, CAND);
+      expect(out?.candidate).toBe(MARKER_FOR_PRECEDENCE.refiringCandidate);
+      expect(out?.candidateSource).toBe('retriage-marker');
+    });
+
+    /**
+     * The fallback is NOT dead code — it is the honest answer when a live run published
+     * nothing. Deleting this case would let a future "simplification" assume a marker always
+     * exists and start reporting an inference as an observation.
+     */
+    it('keeps run-probe REACHABLE and labelled when the run published no marker (best-effort write)', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, null, null, null);
+      expect(out?.candidate).toBe('stale-worktree-head');
+      expect(out?.candidateSource).toBe('run-probe');
+    });
+
+    it('does NOT attach the marker to an IDLE run — a finished run is judging nothing', () => {
+      const idle = { activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null }, computedAtMs: NOW };
+      const out = mapCheckpointRunInFlight(idle, NOW, null, null, CAND);
+      expect(out?.candidate).toBeNull();
+      expect(out?.candidateSource).toBeUndefined();
+    });
+
+    /**
+     * On the cron path the log-derived `refireObserved` can never fire (only MANUAL runs write
+     * the /tmp log), so before this an in-process rescue was invisible whenever the refire
+     * marker happened to be absent. `refireDepth` is the run's own report of the same fact.
+     */
+    it('reports refireObserved from refireDepth — the cron path has no log to derive it from', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, null, null, { ...CAND, refireDepth: 2 });
+      expect(out?.refireObserved).toBe(true);
+    });
+
+    it('a refireDepth:0 marker does NOT claim a refire happened', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, null, null, CAND);
+      expect(out?.refireObserved).toBeUndefined();
+    });
+
+    it('reconcileGateCandidates treats it as authoritative, so judgingSha stops being an inference', () => {
+      const out = reconcileGateCandidates(
+        { judgingSha: 'stale-worktree-head' } as never,
+        { candidate: CAND.candidate, candidateSource: 'in-flight-candidate' },
+      );
+      expect(out.judgingSha).toBe(CAND.candidate);
+      expect(out.judgingShaSource).toBe('in-flight-candidate');
+    });
+  });
+
   it('an idle probe result ({ active: false }) is NOT collapsed to null — it is the genuine "gate is idle" reading', () => {
     const out = mapCheckpointRunInFlight(
       { activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null }, computedAtMs: NOW },

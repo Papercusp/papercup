@@ -336,8 +336,18 @@ export default defineTool({
           });
           if (removed) instructionsFact = 'retracted';
         }
-      } catch {
+      } catch (e) {
+        // EI-19952118814692217: this used to be a bare `catch {}` — the error was
+        // discarded entirely, so a broken assert/retract was undiagnosable from
+        // logs (every downstream signal — the mode write, the UI, the peer wake —
+        // still said success, because they are all downstream of the mode write,
+        // which DID succeed). Fail-soft still degrades the response rather than
+        // rolling back the applied mode change; it just stops doing so silently.
         instructionsFact = 'failed';
+        console.warn(
+          `[mode:set] standing-instructions fact ${enabled && instructions ? 'assert' : 'retract'} failed for ` +
+            `mode '${def.id}' scopeRef=${scopeRef}: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
 

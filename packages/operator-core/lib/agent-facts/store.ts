@@ -1130,7 +1130,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        -- since there is no longer an UPDATE branch to COALESCE against.
        COALESCE(${input.potHomeSlug ?? null}, (SELECT harness_slug FROM superseded)),
        ${input.scope}, ${ref}, ${key}, ${body},
-       ${input.sourceRef ?? null}, ${input.createdBy},
+       ${input.sourceRef ?? null}, ${input.createdBy ?? null},
        now() + make_interval(secs => ${ttl}), ${input.shareable === true},
        ${audienceScope},
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,

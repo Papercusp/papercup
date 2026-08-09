@@ -1915,82 +1915,25 @@ export async function markLeaderTriage(
   return updated;
 }
 
-/**
- * HARD-delete issues by id, with the coupled coordination edges (tags/links,
- * thread + posts, subscriptions) so no orphaned coord_* rows are left to grow.
- * No FK references engineer_issues (migration 131), and the coord_* tables key
- * the issue only by its string ObjectRef (`issue:<id>`), so a plain row delete is
- * clean — this helper just sweeps those by-ref edges in the same pass.
- *
- * This is a TRUE deletion, NOT the lifecycle close (`setIssueState(...'closed')`)
- * — it is for DISPOSABLE rows whose recall value has expired (the observation-lane
- * retention sweep, turn-end-reflection-observations-2026-06-14 P-045). Do NOT use
- * it on improvement-lane items: those close through the reject route so the
- * recurrence matcher can recall "already decided" on a re-capture.
- *
- * Returns the count of engineer_issues rows actually removed. No fan-out — a
- * deleted disposable signal has no subscribers to notify.
- */
-export async function deleteIssues(ids: readonly string[]): Promise<number> {
-  if (ids.length === 0) return 0;
-  const { sql } = getOrgPg();
-  const idList = ids as string[];
-  const refs = idList.map((id) => `${ISSUE_KIND}:${id}`);
-  // Sweep the coordination edges first (they reference the issue only by string
-  // ref, so the order is cosmetic — but deleting edges before the row keeps a
-  // reader from seeing a dangling row mid-sweep). thread_ids are deterministic
-  // (`issue-thread-<id>`), so posts + threads delete by id without a join.
-  const threadIds = idList.map((id) => threadId(id));
-  await sql`
-    DELETE FROM harness_shared.coord_links
-     WHERE workspace_id = ${issuesScopeWorkspace()}
-       AND ((src_kind = ${ISSUE_KIND} AND src_ref = ANY(${idList}))
-         OR (dst_kind = ${ISSUE_KIND} AND dst_ref = ANY(${idList})))`;
-  await sql`
-    DELETE FROM harness_shared.coord_thread_posts
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND thread_id = ANY(${threadIds})`;
-  await sql`
-    DELETE FROM harness_shared.coord_threads
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND thread_id = ANY(${threadIds})`;
-  await sql`
-    DELETE FROM harness_shared.coord_entity_subscriptions
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND target_kind = 'object' AND target_ref = ANY(${refs})`;
-  const deleted = await sql`
-    DELETE FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ANY(${idList})`;
-  return deleted.count ?? 0;
-}
-
-/** A row's id + age — the minimal shape a retention/cap sweep needs (no body). */
-export interface IssueAgeRow {
-  id: string;
-  createdAt: string;
-}
-
-/**
- * List EVERY issue tagged `topic` (all states + all origins), newest-first, as a
- * minimal id+createdAt projection — UNCAPPED, unlike `listIssues` (which clamps to
- * 500 for the interactive surfaces). A retention/row-cap sweep must see the whole
- * lane to decide what is beyond a hard cap, so it reads here, not through
- * `listIssues`. Loads no body/payload — id + created_at only, joined to the topic
- * tag edge (coord_links, rel='tagged'). (P-045.)
- */
-export async function listIssueAgesByTopic(topic: string): Promise<IssueAgeRow[]> {
-  const { sql } = getOrgPg();
-  const rows = await sql<{ issue_id: string; created_at: unknown }[]>`
-    SELECT ei.issue_id, ei.created_at
-      FROM harness_shared.engineer_issues ei
-      JOIN harness_shared.coord_links cl
-        ON cl.workspace_id = ${coordScopeWorkspace()}
-       AND cl.rel = 'tagged'
-       AND cl.src_kind = ${ISSUE_KIND}
-       AND cl.src_ref = ei.issue_id
-       AND cl.dst_kind = 'topic'
-       AND cl.dst_ref = ${topic}
-     WHERE ei.workspace_id = ${issuesScopeWorkspace()}
-     ORDER BY ei.created_at DESC`;
-  return rows.map((r) => ({ id: r.issue_id, createdAt: tsIso(r.created_at) }));
-}
+// ── There is deliberately NO hard-delete of issue rows in this module ─────────
+// `deleteIssues(ids)` and its companion reader `listIssueAgesByTopic` lived here
+// until 2026-08-09. They existed for exactly ONE caller — the observation-lane
+// retention sweep in harness/improvements/hygiene.ts — which was retired by owner
+// directive (plan learning-loop-identity-and-consumption-2026-08-08, D-001:
+// "why would we ever want to throw out observations?"; D-005: observations are a
+// time series, never bulk-closed or purged). With that caller gone the primitive
+// had zero callers, so it was removed rather than left in place: an unused
+// hard-delete over engineer_issues is a loaded gun aimed at precisely what D-001
+// forbids, and the next agent to want a "storage bound" would have found it and
+// used it. Removing it makes observation loss structurally impossible instead of
+// merely absent (D-029).
+//
+// Issues END through the LIFECYCLE close — `setIssueState(id, 'closed', by)` —
+// which is what the recurrence matcher recalls as "already decided" on a
+// re-capture; a deleted row silently loses that memory. If a storage bound is
+// ever genuinely required it must be archive/rollup over rows already marked
+// CONSUMED (harness/improvements/observation-consumption.ts), never a DELETE.
+// Re-introducing a hard delete here is an owner-level decision, not a local one.
 
 /**
  * Shallow-merge keys into the issue's kind-specific `payload` jsonb (NULL payload

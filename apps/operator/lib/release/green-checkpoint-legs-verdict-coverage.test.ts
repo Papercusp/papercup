@@ -84,8 +84,17 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
   });
 
   it('reds the verdict for EVERY leg script that can fail (no leg excluded from legs.ok)', async () => {
-    const { invokedScripts } = await runLegs(null);
+    const { legs: happy, invokedScripts } = await runLegs(null);
     const scripts = [...new Set(invokedScripts)];
+
+    /** Legs that actually RAN on this tree — the population that must be provably red-able.
+     *  A leg whose script is absent from the candidate is legitimately 'skipped' forever and
+     *  is not something this test can (or should) exercise. */
+    const ranLegs = legEntries(happy)
+      .filter(([, l]) => l.status === 'passed')
+      .map(([name]) => name);
+    /** Legs observed going 'failed' at least once during the sweep below. */
+    const provenRedable = new Set<string>();
 
     const escaped: { script: string; failedLegs: string[]; skippedAfter: string[] }[] = [];
     for (const script of scripts) {
@@ -93,6 +102,7 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
       const failed = legEntries(legs)
         .filter(([, l]) => l.status === 'failed')
         .map(([name]) => name);
+      for (const name of failed) provenRedable.add(name);
       if (failed.length > 0 && legs.ok !== false) {
         escaped.push({
           script,
@@ -111,5 +121,33 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
         `GREEN on their red (and skip every later leg). Add the leg field to the legs.ok ` +
         `aggregation in runPostSuiteLegs:\n${JSON.stringify(escaped, null, 2)}`,
     ).toEqual([]);
+
+    // ANTI-VACUITY. The sweep above only proves what it actually exercised: if a leg never
+    // went 'failed' in any iteration, the assertion passed WITHOUT saying anything about it,
+    // and a leg missing from legs.ok would sail straight through. Require that every leg
+    // which RAN was observed reddening — so the guard's coverage is measured, not assumed.
+    expect(
+      ranLegs.filter((name) => !provenRedable.has(name)),
+      `These legs RAN but were never observed failing, so the assertion above proves NOTHING ` +
+        `about them — the sweep could not reach them by failing a single npm script (a leg ` +
+        `keyed off a non-npm command, or one sharing a script name). Extend runLegs() so each ` +
+        `is exercised; do not delete this check.`,
+    ).toEqual([]);
+  });
+
+  // P-026 item (b). Named deliberately, unlike the property-anchored sweeps above: that this
+  // PARTICULAR guard gates promotion is the deliverable, not an incidental instance. Its only
+  // blocking path used to be .github/workflows/test.yml (push/PR to `main` + this gate's own
+  // POST-fast-forward dispatch), both downstream of promotion — so an unclassified timer was
+  // invisible for its whole life on staging and only red once already promoted.
+  it('gates lint:timer-classification BEFORE promotion, and its red holds the gate', async () => {
+    const { legs: happy, invokedScripts } = await runLegs(null);
+    expect(invokedScripts).toContain('lint:timer-classification');
+    expect(happy.lintTimerClassification.status).toBe('passed');
+
+    const { legs } = await runLegs('lint:timer-classification');
+    expect(legs.lintTimerClassification.status).toBe('failed');
+    expect(legs.ok).toBe(false);
+    expect(legs.failingSignatures).toContain('lint:timer-classification');
   });
 });

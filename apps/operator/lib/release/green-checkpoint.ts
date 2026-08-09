@@ -1891,6 +1891,10 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // repo-wide script with no PG or network dependency, so a red a peer has since fixed by
   // typing the offending fixture is cheap to re-verify at tip rather than red-pinning.
   'lint:mock-cast-escape': ['lint:mock-cast-escape'],
+  // P-026: qualifies on this header's own terms — one fast (~1s), deterministic, repo-wide
+  // script with no PG or network dependency, so a red a peer has since fixed by classifying
+  // the timer is cheap to re-verify at tip instead of red-pinning the fleet.
+  'lint:timer-classification': ['lint:timer-classification'],
   // P-020: the agent-state plane's standing probes. Deterministic and repo-wide like the
   // rest, so the same auto-refire applies. NOTE the census + ratchet legs are PG-backed, so
   // a re-verify at tip re-reads live state — which is correct here: if the producer resumed
@@ -4594,6 +4598,10 @@ interface PostSuiteLegs {
   lintNoControlBytes: LegOutcome;
   lintGuardReachability: LegOutcome;
   lintMockCastEscape: LegOutcome;
+  /** P-026: D-004's push-don't-poll classification on every NEW recurring timer. Its
+   *  only blocking path was .github/workflows/test.yml, which fires on push/PR to
+   *  `main` — i.e. AFTER this gate has already promoted the offender. */
+  lintTimerClassification: LegOutcome;
   lintPlane: LegOutcome;
   build: LegOutcome;
   /** Concatenated failure detail, appended verbatim to the suite output. */
@@ -4620,6 +4628,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintNoControlBytes: skipped,
     lintGuardReachability: skipped,
     lintMockCastEscape: skipped,
+    lintTimerClassification: skipped,
     lintPlane: skipped,
     build: skipped,
     output: '',
@@ -5134,6 +5143,52 @@ export async function runPostSuiteLegs(
     }
   }
 
+  // P-026 (stop-discarded-dedup-and-audit-server-polling-2026-07-26 / D-004): every NEW
+  // recurring timer must declare a push-don't-poll classification ('must-sample' |
+  // 'timeout-reaper' | 'violation'). The guard existed and was genuinely wired — but ONLY
+  // into .github/workflows/test.yml, which fires on push/PR to `main` plus this gate's own
+  // POST-fast-forward workflow_dispatch. Both are downstream of promotion, so an offender
+  // committed to `staging` was invisible for its entire life on staging and only red AFTER
+  // it had already been promoted to the green branch. Reachability is not TIMELINESS — the
+  // meta-guard (`lint:guard-reachability`) correctly scored it ENFORCED the whole time, and
+  // its census footer says exactly that: enforced means a blocking path RUNS it, never that
+  // it runs BEFORE the damage. Gate it HERE, where a red actually stops the promotion.
+  // Deterministic, whole-tree, ~1s. Wired only once its own tree was green (4 unclassified
+  // sites fixed first) — wiring a rotten guard reds the fleet for drift it accrued while
+  // unwatched, which is the trap check-lint-guard-reachability.mjs's header documents.
+  const lintTimerClassCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:timer-classification');
+  if (haltedBy) {
+    legs.lintTimerClassification = { status: 'skipped', skipReason: haltedBy };
+  } else if (lintTimerClassCheck === 'unreadable') {
+    legs.lintTimerClassification = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:timer-classification)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:timer-classification ===\n`,
+    );
+  } else if (lintTimerClassCheck === 'absent') {
+    legs.lintTimerClassification = {
+      status: 'skipped',
+      skipReason: 'candidate provides no lint:timer-classification script',
+    };
+  } else {
+    const timerClass = await exec('npm', ['run', 'lint:timer-classification'], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+    });
+    legs.lintTimerClassification = { status: timerClass.code === 0 ? 'passed' : 'failed' };
+    if (timerClass.code !== 0) {
+      haltedBy = 'lint:timer-classification failed';
+      failingSignatures.push('lint:timer-classification');
+      outputs.push(
+        '\n\n=== TIMER CLASSIFICATION LINT FAILED (npm run lint:timer-classification) — a new recurring timer landed without a D-004 push-don\'t-poll classification ===\n' +
+          timerClass.stdout +
+          timerClass.stderr,
+      );
+    }
+  }
+
   // agent-state-plane-verification P-020: the agent-state plane's five STANDING probes. The
   // predecessor plan shipped 8 defects past a fully green unit gate, every one the same shape
   // — the derivation was correct and the DISCLOSURE was dropped between derivation and reader
@@ -5299,6 +5354,13 @@ export async function runPostSuiteLegs(
     legs.lintDesignPrimitives,
     legs.lintNoControlBytes,
     legs.lintGuardReachability,
+    // P-026 / 2026-08-09: was MISSING from this list while its leg (5111) both set
+    // `status:'failed'` and `haltedBy` — so a `lint:mock-cast-escape` red skipped
+    // `lintPlane` + `build` and STILL reported green. Every leg above must appear
+    // here; `green-checkpoint-legs-verdict-coverage.test.ts` discovers the legs
+    // dynamically and fails if a new one is ever omitted again.
+    legs.lintMockCastEscape,
+    legs.lintTimerClassification,
     legs.lintPlane,
     legs.build,
   ].some((l) => l.status === 'failed');

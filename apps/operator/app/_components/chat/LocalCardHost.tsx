@@ -6,22 +6,26 @@
  * Plan: bespoke-card-improvements-2026-05-13.md §4.4 (M6 boundary)
  *
  * `askUserLocal` (in lib/chat-cards/ask-user-local.ts) is the
- * client-side companion to server-side `ctx.askUser`. It uses a
- * subscriber registry — call sites push a CardSpec into the registry,
- * the FIRST mounted host renders the card, the user's response
- * resolves the call's promise.
+ * client-side companion to server-side `ctx.askUser`. Every mounted host
+ * subscribes to the SAME shared queue; a HOST ELECTION picks exactly one
+ * of them (the most-recently-mounted) to actually render the head card
+ * (EI-19952165837170400 — previously each host kept its own independently
+ * fed queue, so a card rendered in every mounted host at once and
+ * resolving one left the rest orphaned and still answerable).
  *
- * Mount LocalCardHost anywhere a card-rendering slot makes sense
- * (the operator chat sidebar mounts it once; OracleDock mounts a
- * separate instance for its own tabs). Without a mounted host, every
- * askUserLocal call immediately resolves `{action:'cancel'}`.
+ * Mount LocalCardHost anywhere a card-rendering slot makes sense (the
+ * operator chat sidebar mounts it once; an open session popup mounts a
+ * second instance). Without a mounted host, every askUserLocal call
+ * immediately resolves `{action:'cancel'}`. With more than one mounted,
+ * only the most-recently-mounted renders — closing it promotes the
+ * next-most-recently-mounted host, so a still-pending card surfaces there.
  *
  * Renderer reuse: same AskChoiceCard / InputCard dispatch as
  * PendingCardsBar (the server-side state-channel consumer), so cards
  * look identical regardless of which path emitted them.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import {
   AskChoiceCard,
@@ -30,6 +34,8 @@ import {
 } from './AskChoiceCard';
 import { InputCard, type InputCardResponse } from './InputCard';
 import {
+  isActiveLocalCardHost,
+  registerLocalCardHost,
   subscribeAskUserLocal,
   type OpenLocalCard,
 } from '@/lib/chat-cards/ask-user-local';
@@ -46,15 +52,27 @@ interface SchemaWithPresentation {
 }
 
 export function LocalCardHost(): ReactNode {
-  const [queue, setQueue] = useState<OpenLocalCard[]>([]);
+  // Stable per-mount identity for the host election (EI-19952165837170400).
+  const hostIdRef = useRef<string | null>(null);
+  if (hostIdRef.current === null) {
+    hostIdRef.current = crypto.randomUUID();
+  }
+  const hostId = hostIdRef.current;
 
-  useEffect(() => {
-    return subscribeAskUserLocal((card) => {
-      setQueue((prev) => [...prev, card]);
-    });
-  }, []);
+  const [queue, setQueue] = useState<readonly OpenLocalCard[]>([]);
+
+  // Mirror the SHARED queue — every host sees the same state, so resolving
+  // in one host is instantly reflected in every other mounted host too.
+  useEffect(() => subscribeAskUserLocal(setQueue), []);
+
+  // Register in the host election. Registering/unregistering re-notifies
+  // every queue subscriber (including this one), which is what makes a
+  // newly-mounted host immediately supersede an already-mounted one, and
+  // an unmounting active host promote whichever mounted host is next.
+  useEffect(() => registerLocalCardHost(hostId), [hostId]);
 
   if (queue.length === 0) return null;
+  if (!isActiveLocalCardHost(hostId)) return null;
   const head = queue[0];
   const remaining = queue.length - 1;
 
@@ -68,9 +86,11 @@ export function LocalCardHost(): ReactNode {
   const fallbackText = spec.fallbackText;
   const allowDecline = spec.allowDecline ?? true;
 
+  // No local setQueue here: head.resolve() mutates the SHARED queue and
+  // broadcasts it (ask-user-local.ts), which flows back to this (and every
+  // other mounted) host through the subscribeAskUserLocal effect above.
   const resolveHead = (response: ReturnType<typeof inputToCardResponse>): void => {
     head.resolve(response);
-    setQueue((prev) => prev.slice(1));
   };
 
   let body: ReactNode;

@@ -268,6 +268,56 @@ function scanSchedules(now: number): Promise<ScheduleScanResult> {
   return promise;
 }
 
+/**
+ * The recurring-row projection — PURE, so its unit tests are the spec.
+ *
+ * Typed structurally rather than against `ScheduleInventoryRow` so this stays free of
+ * the schedule-inventory (DBOS + federation) graph; the caller supplies real rows.
+ */
+export function projectScheduleRows(
+  rows: readonly {
+    source: string;
+    scope: string;
+    tier: string;
+    category: string;
+    name: string;
+    installSlug?: string | null;
+    cadence: string;
+    armed?: boolean | null;
+    lastFire?: string | null;
+    nextFire?: string | null;
+    lastError?: string | null;
+    detail?: Record<string, unknown>;
+  }[],
+): ScheduleTaskRow[] {
+  return rows.map((r) => ({
+    // `source:scope:name` — a name alone is NOT unique. The same sweep legitimately
+    // appears as a local `managed` row AND as a federated `external-process` row from a
+    // sibling that also runs it, so keying on name alone collides exactly where the
+    // inventory is most interesting. Duplicate React keys are a filed perf
+    // anti-pattern here, and a collision silently drops a row from the render.
+    key: `${r.source}:${r.scope}:${r.name}`,
+    name: r.name,
+    source: r.source,
+    tier: r.tier,
+    category: r.category,
+    scope: r.scope,
+    installSlug: r.installSlug ?? null,
+    cadence: r.cadence,
+    // `?? null` NOT `|| null`: `armed: false` is a real, load-bearing reading
+    // (disarmed), and `||` would flatten it into the same `null` the pane renders as
+    // "unknown" — turning a timer we KNOW is off into one we cannot see.
+    armed: r.armed ?? null,
+    lastFire: r.lastFire ?? null,
+    nextFire: r.nextFire ?? null,
+    lastError: r.lastError ?? null,
+    // Strict `=== true`, so a missing/odd `detail` can never read as federated. The
+    // whole point of the flag is that it licenses trusting armed/lastFire.
+    federated: r.detail?.federated === true,
+    process: typeof r.detail?.process === 'string' ? r.detail.process : null,
+  }));
+}
+
 async function runScheduleScan(): Promise<ScheduleScanResult> {
   try {
     // Imported lazily for the same reason the pane's arm is opt-in: this module is on
@@ -276,25 +326,7 @@ async function runScheduleScan(): Promise<ScheduleScanResult> {
     const { collectScheduleInventory, summarizeInventory } = await import('../schedule-inventory');
     const rows = await collectScheduleInventory();
     return {
-      schedules: rows.map((r) => ({
-        // `source:scope:name` — a name alone is NOT unique (the same sweep can appear
-        // as a local `managed` row and again as a federated `external-process` row from
-        // a sibling), and duplicate React keys are a filed perf anti-pattern here.
-        key: `${r.source}:${r.scope}:${r.name}`,
-        name: r.name,
-        source: r.source,
-        tier: r.tier,
-        category: r.category,
-        scope: r.scope,
-        installSlug: r.installSlug ?? null,
-        cadence: r.cadence,
-        armed: r.armed ?? null,
-        lastFire: r.lastFire ?? null,
-        nextFire: r.nextFire ?? null,
-        lastError: r.lastError ?? null,
-        federated: r.detail?.federated === true,
-        process: typeof r.detail?.process === 'string' ? r.detail.process : null,
-      })),
+      schedules: projectScheduleRows(rows),
       scheduleSummary: summarizeInventory(rows),
       scheduleError: null,
     };

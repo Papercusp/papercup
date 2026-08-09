@@ -28,7 +28,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { runHybridSearch, type SearchHit } from '@papercusp/search';
+import { runHybridSearch, type SearchHit, type SearchLegs } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 import { buildQueryEmbedder } from '../agent-tools/search/embedder';
 import {
@@ -51,7 +51,11 @@ import {
 /** The two registered sources this leg reads. Anything else in SEARCH_SOURCES
  *  (escalations, brainstorm, decisions, coord_message, operator turns) is out
  *  of P-008's scope — widening this list is a plan decision, not an edit. */
-const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
+// Exported so the P-004 injection-reach alarm can PIN its own copy against this one
+// (`injection-coverage.test.ts`) instead of drifting from it. Exported for the
+// assertion only — the alarm deliberately does not import it at runtime, which would
+// drag the whole live retrieval stack into the DBOS alarm process.
+export export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
 
 /**
  * Wall-clock bound for the WHOLE corpus leg (search + embed). This rides the
@@ -150,6 +154,25 @@ export interface CorpusRecallResult {
   /** Why the leg ended here — see `CorpusRecallOutcome`. Read this before
    *  concluding anything from an empty `lines`. */
   outcome: CorpusRecallOutcome;
+  /**
+   * P-003 — the engine's per-leg execution report for the search that produced
+   * `lines`, or null when the leg never reached fusion.
+   *
+   * Threaded for the same reason P-001 threaded `embedderAvailable`, and it is
+   * the STRONGER of the two signals: `embedderAvailable` only says a query
+   * vector was produced, which stays true when every per-source embedding query
+   * fails and when a leg runs perfectly but returns nothing. `legs.lexical`
+   * additionally answers "did the term leg contribute anything to this fusion",
+   * which is what separates a degraded section from an unearned one.
+   */
+  legs: SearchLegs | null;
+  /**
+   * Candidates asked of the engine (the over-fetch depth). The coverage gate
+   * derives its near-empty floor from this rather than from a constant — an
+   * index holding fewer vectors than the leg over-fetches cannot rank
+   * selectively, whatever its coverage percentage says.
+   */
+  retrievalDepth: number;
 }
 
 const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
@@ -159,6 +182,11 @@ const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
   embedderAvailable: false,
   candidateCount: 0,
   outcome,
+  // The leg never reached fusion, so there is no leg report to give. `null` says
+  // that; `emptyLegs()` would say "every leg ran and found nothing", which is a
+  // different — and here false — claim.
+  legs: null,
+  retrievalDepth: 0,
 });
 
 type QueryEmbedder = (text: string) => Promise<number[]>;
@@ -303,6 +331,16 @@ export async function recallCorpusContext(
   if (sources.length === 0) return empty('disabled');
 
   const budgetChars = input.budgetChars ?? CORPUS_BUDGET_CHARS;
+  // Over-fetch depth: the pure core drops self-session echoes, out-of-scope
+  // work-items, no-overlap hits and duplicate refs before the cap.
+  //
+  // Named once and returned, because P-003's coverage gate derives its
+  // near-empty floor from this exact number: a vector index holding fewer rows
+  // than the leg over-fetches returns essentially all of itself for any query,
+  // so its "nearest neighbours" carry no selectivity. Deriving the floor from
+  // the caller rather than hard-coding one in the gate means the two cannot
+  // drift apart when this over-fetch is retuned.
+  const retrievalDepth = Math.max(maxItems * 4, 8);
 
   try {
     const { sql } = getOrgPg();
@@ -365,7 +403,7 @@ export async function recallCorpusContext(
           scopeFilter: null,
           // Over-fetch: the pure core drops self-session echoes, out-of-scope
           // work-items, no-overlap hits and duplicate refs before the cap.
-          limit: Math.max(maxItems * 4, 8),
+          limit: retrievalDepth,
           mode: 'hybrid',
           embedder,
           embedTimeoutMs: embedBudget,
@@ -509,6 +547,11 @@ export async function recallCorpusContext(
       embedderAvailable: out.fused.embedderAvailable,
       candidateCount: out.count,
       outcome: 'ok',
+      // The LAST search's report. The cascade can run the engine twice, and it
+      // is stage 2 (when it runs) that produced the final admitted set, so its
+      // leg accounting is the one that describes this result.
+      legs: out.fused.legs,
+      retrievalDepth,
     };
   } catch (err) {
     if (process.env.NODE_ENV !== 'test') {

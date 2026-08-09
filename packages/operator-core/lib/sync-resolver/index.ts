@@ -54,6 +54,12 @@ import { attachListMeta } from './list-meta';
 // one and left every panel's error branch unreachable for the data-layer class.
 import { classifyReadFailure, degraded } from './degraded-snapshot';
 import { projectAuthoredFields } from '../agent-tools/coordination/message-fields';
+// GOAL mode's two client reads (goal-mode-2026-08-07 P-017). They live in their
+// own module rather than inline here because both carry a counting rule the SQL
+// alone does not state: a project can serve several goals, so per-goal spend
+// figures deliberately DO NOT SUM and the list returns a distinct-project
+// portfolio total instead. See ./goals.
+import { resolveGoalDetail, resolveGoalsList } from './goals';
 
 // CLAMP, don't REJECT (clamp-not-reject, plan coordination-unification-data-sync-hardening
 // P-001 / D-002): a client-sent pagination `limit` must never make the resolver throw on
@@ -969,6 +975,63 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'designTokens.list': {
     argsSchema: z.object({ category: z.string().optional() }).optional(),
     resolve: async (args) => resolveDesignTokens((args ?? {}) as { category?: string }),
+  },
+
+  // ── GOAL mode (goal-mode-2026-08-07 P-017) ──────────────────────────
+  //
+  // The first goal-shaped reads in the registry: before these, the goals table
+  // had a schema, write tools and an MCP resource, but no path a client could
+  // subscribe to at all. Every Phase 4 surface — the rail Goal tab, the HUD
+  // goals tab, the goal detail view — reads from exactly these two.
+  //
+  // BOTH return a SINGLE row wrapping an object, not a row-per-goal. The list's
+  // portfolio totals are computed server-side over DISTINCT projects precisely
+  // so a client never re-sums the goals itself (a shared project's spend counts
+  // in full against each goal it serves, so the per-goal figures do not add up
+  // — D-021). Emitting them as sibling rows would put the wrong arithmetic back
+  // within easy reach of every consumer. Same shape as automation.catalog.
+  //
+  // All four backing tables genuinely move these reads: `goals` is the record,
+  // `goal_projects` changes both the project count and the spend denominator,
+  // `work_items` carries the open/needs-human counters through its goal_id
+  // stamp, and `agent_usage_samples` is what the spend meters sum.
+  'goals.list': {
+    backingTables: [
+      'harness_shared.goals',
+      'harness_shared.goal_projects',
+      'harness_shared.work_items',
+      'harness_shared.agent_usage_samples',
+    ],
+    // Plain object, NOT `.default({})`: every field already carries its own
+    // default, so `{}` parses to a complete args object anyway, and the wrapper
+    // only costs an overload mismatch against the registry's arg type. Same
+    // shape as designFeatures.detail above.
+    argsSchema: z.object({
+      workspaceId: z.string().default('default'),
+      status: z.string().nullish(),
+      limit: clampedLimit(500, 100),
+    }),
+    resolve: async (args) => [
+      await resolveGoalsList(args as { workspaceId: string; status?: string | null; limit?: number }),
+    ],
+  },
+  'goals.detail': {
+    backingTables: [
+      'harness_shared.goals',
+      'harness_shared.goal_projects',
+      'harness_shared.work_items',
+      'harness_shared.agent_usage_samples',
+    ],
+    argsSchema: z.object({
+      workspaceId: z.string().default('default'),
+      goalId: z.string().min(1),
+      activityLimit: clampedLimit(200, 40),
+    }),
+    resolve: async (args) => [
+      await resolveGoalDetail(
+        args as { workspaceId: string; goalId: string; activityLimit?: number },
+      ),
+    ],
   },
 
   // ── Batch 2: drizzle-backed simple selects (audit/scan/state) ────────

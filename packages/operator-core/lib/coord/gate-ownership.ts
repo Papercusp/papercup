@@ -59,6 +59,35 @@ export function gateStallConditionKey(harness: string): string {
 }
 
 /**
+ * The condition whose lifetime IS a RED gate — distinct from the stall above.
+ *
+ * ── WHY A SECOND KEY AND NOT A RE-POINT (P-005, and D-012/D-013 read literally) ─
+ * `green-stall:` is the gate NOT PRODUCING verdicts: its two legs are fire-staleness
+ * (the routine engine is not running it) and a 12h no-green backstop. A gate that
+ * fires hourly and reds every time is the OPPOSITE state — the apparatus is healthy
+ * and the answer is "no" — and the two need different responses (recover the engine
+ * vs. fix the failing suite). Measured: `green-checkpoint:red` existed ONLY as an
+ * event key (release-checkpoint-launch.ts) and NEVER as a conditionKey, so a plain
+ * red gate had no condition at all, and therefore no ownable work-item — which is
+ * why a 6-red streak could hold `main` for ~4h while `claimState` read `no-object`.
+ *
+ * So this is ADDITIVE: `green-stall:` keeps its existing meaning and stays the key
+ * behind `gate.greenCheckpoint.verdict`'s ownership block.
+ *
+ * ⚠ BOTH CAN BE OPEN AT ONCE, deliberately, and a responder should know it. A red
+ * streak that outlives the 12h no-green backstop opens `green-stall:` too, so one
+ * gate can carry two owning work-items. That is accepted rather than suppressed:
+ * cross-process suppression would couple two watchdogs that run in different
+ * processes on different cadences, and the failure mode of getting THAT wrong is a
+ * red gate with no owner at all — strictly worse than one with two. The alarm body
+ * names the sibling instead, so the second claimant learns it from the alert rather
+ * than from re-deriving it. See the plan Decision for the full trade-off.
+ */
+export function gateRedStreakConditionKey(harness: string): string {
+  return `gate-red-streak:${harness}`;
+}
+
+/**
  * Ownership of the incident a state cell describes.
  *
  * ⚠ TWO MISREADS THIS BLOCK INVITES, both of which turn a helpful field into a

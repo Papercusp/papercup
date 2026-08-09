@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { captureImprovement, storageKindOf, type CaptureDeps } from './capture-core';
+import {
+  captureImprovement,
+  storageKindOf,
+  DUP_THRESHOLD,
+  CONTAINMENT_THRESHOLD,
+  type CaptureDeps,
+} from './capture-core';
+import { titleSimilarity, titleContainment } from './digest';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
 
@@ -818,5 +825,115 @@ describe('captureImprovement — atomic claim-on-file (WI-5950)', () => {
       d,
     );
     expect(d.created[0].assignee).toBeUndefined();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────────────
+// P-007 (knowledge-at-symptom-time-2026-08-09) — symptom-first dedup lookup.
+//
+// The MEASURED incident, 2026-08-09: I filed EI-19948333346987654, then ran the
+// `checkDuplicatesOnly` lookup with a query that is a VERBATIM SUBSTRING of that item's
+// own title. It returned `possibleDuplicates: []`. The exact full title returned it at
+// similarity 1.0 — so the item was indexed and reachable; the NET was the problem.
+//
+// Root cause: titleSimilarity is token-set Jaccard, which divides by the UNION. A short
+// query that is a perfect SUBSET of a longer stored title therefore scores |query|/|title|
+// and can never clear DUP_THRESHOLD. That is a structural bias against the exact shape of
+// a symptom-first lookup: at symptom time the query is SHORT (the error you just saw)
+// while stored titles are LONG (written after diagnosis).
+//
+// A prior filing (EI-19502216864373653, dropped) attributed an identical empty result
+// SOLELY to the embedder being down. That was one cause; this is a second, independent
+// one that persists with a perfectly healthy semantic leg.
+// ───────────────────────────────────────────────────────────────────────────────────────
+
+/** The real stored title, verbatim. */
+const REAL_TITLE =
+  'No way to locate or focus an agent\'s desktop terminal window — GNOME Wayland makes wmctrl/xdotool return EMPTY with exit 0, indistinguishable from "no window exists"';
+/** The real symptom-first query, verbatim — a literal substring of REAL_TITLE. */
+const SYMPTOM_QUERY = "No way to locate or focus an agent's desktop terminal window";
+
+describe('P-007 — symptom-first containment lookup', () => {
+  it('FALSIFIABILITY CONTROL: the PRE-FIX metric (Jaccard alone) misses the real measured pair; containment catches it', () => {
+    // This control is PERMANENT. Every assertion below would pass against an implementation
+    // that quietly did nothing if the underlying pair were not actually hard for Jaccard —
+    // so pin BOTH sides of the discrimination on the real strings.
+    const jac = titleSimilarity(SYMPTOM_QUERY, REAL_TITLE);
+    expect(jac).toBeLessThan(DUP_THRESHOLD); // CONTROL: the pre-fix net genuinely fails here
+    const contained = titleContainment(SYMPTOM_QUERY, REAL_TITLE);
+    expect(contained).toBeGreaterThanOrEqual(CONTAINMENT_THRESHOLD); // and the fix genuinely rescues it
+  });
+
+  it('surfaces the containment hit that Jaccard missed, flagged as such', async () => {
+    const d = deps({ found: [existing({ id: 'EI-19948333346987654', title: REAL_TITLE })] });
+    const res = await captureImprovement({ title: SYMPTOM_QUERY, kind: 'bug', checkDuplicatesOnly: true }, d);
+    expect(res.possibleDuplicates.map((p) => p.id)).toEqual(['EI-19948333346987654']);
+    expect(res.possibleDuplicates[0].lexical).toBe('containment');
+    expect(res.possibleDuplicates[0].similarity).toBeGreaterThanOrEqual(CONTAINMENT_THRESHOLD);
+  });
+
+  it('SAFETY: a containment-only hit NEVER declines a capture — surfacing is widened, blocking is not', async () => {
+    // The asymmetry matters: containment says "your short title is covered by this broad
+    // one", which is true for many genuinely-distinct narrow items. Missing a duplicate
+    // costs a duplicate; wrongly declining costs the FINDING.
+    const d = deps({ found: [existing({ id: 'EI-19948333346987654', title: REAL_TITLE })] });
+    const res = await captureImprovement({ title: SYMPTOM_QUERY, kind: 'bug' }, d);
+    expect(res.created).toBe(true);
+    expect(d.created).toHaveLength(1);
+    expect(res.possibleDuplicates[0].lexical).toBe('containment'); // still SHOWN, just not blocking
+  });
+
+  it('does not re-label a candidate the lexical net already caught (exact title keeps similarity 1, no containment flag)', async () => {
+    const d = deps({ found: [existing({ id: 'EI-19948333346987654', title: REAL_TITLE })] });
+    const res = await captureImprovement({ title: REAL_TITLE, kind: 'bug', checkDuplicatesOnly: true }, d);
+    expect(res.possibleDuplicates[0].similarity).toBe(1);
+    expect(res.possibleDuplicates[0].lexical).toBeUndefined();
+  });
+
+  it('a too-short query is NOT a containment match (below CONTAINMENT_MIN_TOKENS it would match half the backlog)', async () => {
+    const d = deps({ found: [existing({ id: 'EI-1', title: REAL_TITLE })] });
+    const res = await captureImprovement({ title: 'window focus', kind: 'bug', checkDuplicatesOnly: true }, d);
+    expect(res.possibleDuplicates).toEqual([]);
+  });
+});
+
+describe('P-007 — dedupCoverage: an empty result must disclose whether it could CHECK', () => {
+  it('reports semantic UNAVAILABLE + degraded when the embedding leg returns no verdict', async () => {
+    // The embedder fails OPEN (null on timeout / down / disabled). EI-19502216864373653
+    // measured the cost of not saying so: an agent read a bare [] as "no duplicates",
+    // filed, and retracted minutes later against an open major item from ~12h earlier.
+    const d = { ...deps(), findSemanticDupes: async () => null };
+    const res = await captureImprovement({ title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true }, d);
+    expect(res.possibleDuplicates).toEqual([]);
+    expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+  });
+
+  it('reports semantic OK + not degraded when the embedding leg DOES answer — so [] is a real all-clear', async () => {
+    const d = { ...deps(), findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }) };
+    const res = await captureImprovement({ title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true }, d);
+    expect(res.possibleDuplicates).toEqual([]);
+    expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+  });
+
+  it('CONTROL: the two cases above are DISTINGUISHABLE — pre-fix they were byte-identical', async () => {
+    // Without dedupCoverage both calls return exactly `possibleDuplicates: []`. If this
+    // assertion ever fails, the disclosure has been dropped and the ambiguity is back.
+    const down = await captureImprovement(
+      { title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true },
+      { ...deps(), findSemanticDupes: async () => null },
+    );
+    const up = await captureImprovement(
+      { title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true },
+      { ...deps(), findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }) },
+    );
+    expect(down.possibleDuplicates).toEqual(up.possibleDuplicates); // the pre-fix payload: identical
+    expect(down.dedupCoverage).not.toEqual(up.dedupCoverage); // the fix: no longer identical
+  });
+
+  it('the CREATE path carries coverage too — that is where the retraction incident happened', async () => {
+    const d = { ...deps(), findSemanticDupes: async () => null };
+    const res = await captureImprovement({ title: 'a brand new finding', kind: 'bug' }, d);
+    expect(res.created).toBe(true);
+    expect(res.dedupCoverage?.degraded).toBe(true);
   });
 });

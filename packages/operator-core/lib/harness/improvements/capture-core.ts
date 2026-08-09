@@ -46,7 +46,7 @@ import {
   type StructuredObservation,
 } from './observation-types';
 import { getRubric, autoRatifyRubricOnFirstScorecard, type Rubric } from '../../rubrics';
-import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
+import { titleSimilarity, titleContainment, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 import { isFlakeKey } from '../../calibration/types';
@@ -55,6 +55,13 @@ import { isFlakeKey } from '../../calibration/types';
 export type ImprovementKind = 'bug' | 'change' | 'feature';
 
 export const DUP_THRESHOLD = 0.6;
+
+/**
+ * Fraction of the SHORTER title that must be covered for a candidate to be SURFACED as a
+ * containment hit (knowledge-at-symptom-time-2026-08-09 P-007). Advisory-only: a
+ * containment hit is never eligible to decline a capture — see `blockEligible` below.
+ */
+export const CONTAINMENT_THRESHOLD = 0.9;
 
 export interface CaptureImprovementInput {
   /** One-line summary — clean, NO [kind] prefix (kind is a real column now). */
@@ -192,6 +199,32 @@ export interface PossibleDuplicate {
    *  refile). `similarity` is then the cosine, not titleSimilarity. 'hard'
    *  may decline the capture like a lexical dup; 'soft' is advisory-only. */
   semantic?: 'hard' | 'soft';
+  /** P-007 (knowledge-at-symptom-time-2026-08-09): present when this candidate arrived via
+   *  the CONTAINMENT net — your (shorter) title is almost entirely covered by this one, but
+   *  Jaccard scored below DUP_THRESHOLD because the stored title is much longer. `similarity`
+   *  is then the containment coefficient, not titleSimilarity. ALWAYS advisory-only: a
+   *  containment hit is surfaced and never declines a capture. */
+  lexical?: 'containment';
+}
+
+/**
+ * What the dedup search actually managed to CHECK (P-007). Without this, an empty
+ * `possibleDuplicates` is ambiguous between "checked, nothing similar exists" and
+ * "could not check" — and the two demand opposite responses.
+ *
+ * The embedder-backed leg fails OPEN (returns null on timeout/unavailability), which is
+ * correct for availability but silently degrades recall. EI-19502216864373653 measured the
+ * cost: an agent read a bare `[]` as "no duplicates", filed, and had to retract minutes
+ * later against an open major item filed ~12h earlier.
+ */
+export interface DedupCoverage {
+  /** Token-based title match. Always runs; 'skipped' only for the observation lane. */
+  lexical: 'ok' | 'skipped';
+  /** Embedding leg. 'unavailable' = it returned no verdict (embedder down / over budget /
+   *  disabled), so a differently-worded duplicate would NOT have been found. */
+  semantic: 'ok' | 'unavailable' | 'skipped';
+  /** True when any leg could not run — i.e. an empty result is NOT a clean bill of health. */
+  degraded: boolean;
 }
 
 export interface CaptureImprovementResult {
@@ -205,6 +238,9 @@ export interface CaptureImprovementResult {
   issue?: EngineerIssue;
   topics?: string[];
   possibleDuplicates: PossibleDuplicate[];
+  /** P-007: what the dedup search could actually check. Read this BEFORE reading an empty
+   *  `possibleDuplicates` as "nothing similar exists". */
+  dedupCoverage?: DedupCoverage;
   /**
    * "Already decided" recall (self-learning-central P-003): prior RESOLVED/closed
    * items whose STABLE signature matches this capture — so the loop recognises a
@@ -330,6 +366,10 @@ export async function captureImprovement(
   // the guard itself. A 'hard' hit may DECLINE like a lexical dup; 'soft' is
   // advisory-only (surfaced, never blocks).
   const semanticBand = new Map<string, { similarity: number; band: 'hard' | 'soft' }>();
+  // P-007: track whether the embedding leg actually produced a verdict. It fails OPEN
+  // (null on timeout / embedder down / disabled), so without this the caller cannot tell
+  // a checked-clean [] from a could-not-check [].
+  let semanticLeg: DedupCoverage['semantic'] = isObservation ? 'skipped' : 'unavailable';
   if (!isObservation) {
     try {
       const sem = await (deps.findSemanticDupes ?? findSemanticDupes)({
@@ -337,6 +377,7 @@ export async function captureImprovement(
         ...(input.body ? { summary: input.body } : {}),
       });
       if (sem) {
+        semanticLeg = 'ok';
         for (const band of ['hard', 'soft'] as const) {
           for (const c of sem[band]) if (!semanticBand.has(c.id)) semanticBand.set(c.id, { similarity: c.similarity, band });
         }
@@ -360,18 +401,30 @@ export async function captureImprovement(
       // A candidate the lexical net already catches keeps its lexical score and
       // blocking behavior; the semantic flag marks ONLY net-new semantic catches.
       const semanticOnly = sem && lexical < DUP_THRESHOLD;
+      // P-007: CONTAINMENT is the third net, and it marks ONLY net-new catches — a
+      // candidate already caught lexically or semantically keeps its existing score and
+      // behavior, so this can never re-label an existing hit.
+      const containment = Math.round(titleContainment(input.title, i.title) * 100) / 100;
+      const containmentOnly = !semanticOnly && lexical < DUP_THRESHOLD && containment >= CONTAINMENT_THRESHOLD;
       return {
         id: i.id,
         title: i.title,
         state: i.state,
         severity: i.severity,
-        similarity: semanticOnly ? Math.round(sem.similarity * 100) / 100 : lexical,
+        similarity: semanticOnly ? Math.round(sem.similarity * 100) / 100 : containmentOnly ? containment : lexical,
         ...(semanticOnly ? { semantic: sem.band } : {}),
+        ...(containmentOnly ? { lexical: 'containment' as const } : {}),
       };
     })
-    .filter((d) => d.similarity >= DUP_THRESHOLD || d.semantic !== undefined)
+    .filter((d) => d.similarity >= DUP_THRESHOLD || d.semantic !== undefined || d.lexical !== undefined)
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, 5);
+
+  const dedupCoverage: DedupCoverage = {
+    lexical: isObservation ? 'skipped' : 'ok',
+    semantic: semanticLeg,
+    degraded: semanticLeg === 'unavailable',
+  };
 
   // "Already decided" recall (P-003): signature-match this capture against the
   // PRIOR resolved/closed items so a settled friction is recognised before it
@@ -387,6 +440,7 @@ export async function captureImprovement(
       created: false,
       reason: 'check-only',
       possibleDuplicates,
+      dedupCoverage,
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
     };
   }
@@ -403,7 +457,11 @@ export async function captureImprovement(
   // P-011: a soft semantic hit is advisory-only — visible in possibleDuplicates,
   // never eligible to decline the capture (mirrors the create-time work-item
   // guard's soft band → similarOpen contract).
-  const blockEligible = possibleDuplicates.filter((d) => d.semantic !== 'soft');
+  // P-007: a CONTAINMENT hit is advisory-only, exactly like a soft semantic hit. Widening
+  // the surfacing net is cheap (you see one more candidate); widening the BLOCKING net
+  // trades a missed duplicate for a LOST filing, which is the more expensive failure —
+  // and containment is asymmetric, so a broad stored title covers many narrow real ones.
+  const blockEligible = possibleDuplicates.filter((d) => d.semantic !== 'soft' && d.lexical !== 'containment');
   const compatible = input.watchdogKey
     ? blockEligible.filter((d) => {
         const ck = candidateKeyOf(d.id);
@@ -445,6 +503,7 @@ export async function captureImprovement(
       created: false,
       reason: declineReason,
       possibleDuplicates,
+      dedupCoverage,
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
       hint: declineHint,
     };
@@ -507,6 +566,7 @@ export async function captureImprovement(
         issue: finalIssue,
         topics,
         possibleDuplicates,
+        dedupCoverage,
         ...(alreadyDecided.length ? { alreadyDecided } : {}),
       };
     }
@@ -622,6 +682,7 @@ export async function captureImprovement(
     issue,
     topics,
     possibleDuplicates,
+    dedupCoverage,
     ...(alreadyDecided.length ? { alreadyDecided } : {}),
   };
 }

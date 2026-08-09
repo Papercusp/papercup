@@ -3,9 +3,10 @@
  * follow-verb family's agent-facing metadata (linking-notify-family-hardening
  * P-001 / WI-4053, decision D-001).
  *
- * The axis is the invisible seam agents reliably fail on: topics:subscribe and
- * work_items:subscribe INJECT into the next turn and never re-invoke an idle
- * session, while events:await is the ONLY waking verb and is one-shot. These
+ * The axis is the invisible seam agents reliably fail on: work_items:subscribe and
+ * a standing watch:create { wake:false } INJECT into the next turn and never
+ * re-invoke an idle session, while events:await is the ONLY waking verb and is
+ * one-shot. These
  * assertions read the SOURCE TEXT (not the compiled modules) so the guard has
  * zero import side effects and survives handler refactors — it fails only if
  * a rewording drops the axis declaration itself.
@@ -29,12 +30,23 @@ describe('wake-vs-inject axis stays declared at tool choice (D-001)', () => {
     expect(src).toMatch(/mention = only @-mentions/i);
   });
 
-  it('topics:subscribe declares inject-only + never-wakes and points at events:await', () => {
-    const src = read('../coordination/tools/topics-subscribe.ts');
-    expect(src).toMatch(/inject-only/i);
-    expect(src).toMatch(/never WAKES/i);
-    expect(src).toMatch(/events:await/);
-    expect(src).toMatch(/digest = coalesced/i);
+  // `topics:subscribe` held this slot until 2026-08-09, when it was retired
+  // (coordination-spec-adoption-2026-08-03 D-102) as the zero-call named sugar for
+  // watch:create { targetKind:'topic', wake:false }. The axis it declared did not go
+  // with it — it moved UP to the base primitive, which is now the door agents use for
+  // ambient topic interest, so that is what this asserts. Both halves of BOTH knobs
+  // must stay legible at the point of choice, since the whole failure mode is picking
+  // a waking verb for something you merely wanted to see.
+  it('watch:create declares both axes (wake vs inject, one-shot vs standing) at the door', () => {
+    const src = read('../events/watch.ts');
+    expect(src).toMatch(/wake:false/);
+    expect(src).toMatch(/injects into your inbox/i);
+    expect(src).toMatch(/wake:true/);
+    expect(src).toMatch(/re-invokes you/i);
+    expect(src).toMatch(/once:true one-shot/i);
+    expect(src).toMatch(/once:false standing/i);
+    // the topic cell stays reachable and NAMED, or the retirement deleted capability
+    expect(src).toMatch(/targetKind/);
   });
 
   it('events:await declares itself the one-shot WAKE verb', () => {
@@ -62,7 +74,7 @@ describe('wake-vs-inject axis stays declared at tool choice (D-001)', () => {
     const start = prompt.indexOf('notify ≠ wake');
     expect(start).toBeGreaterThan(-1);
     const block = prompt.slice(start, start + 900);
-    expect(block).toContain('topics:subscribe');
+    expect(block).toContain('watch:create');
     expect(block).toContain('work_items:subscribe');
     expect(block).toContain('events:await');
     expect(block).toMatch(/inject-only/i);

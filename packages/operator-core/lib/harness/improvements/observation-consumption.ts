@@ -226,7 +226,12 @@ export interface RecordConsumptionResult {
 /**
  * Record that this cycle read these observations. Best-effort by contract: it
  * NEVER throws, so a stamping fault cannot cost a Scout cycle (the same fail-soft
- * rule `runObservationRetention` and the accumulator sweep already follow).
+ * rule the accumulator sweep already follows).
+ *
+ * This stamp is now the ONLY bound on observation growth. The delete-based
+ * retention sweep that used to sit beside it was retired 2026-08-09 (D-001/D-029),
+ * so consumption is what makes an observation's usefulness legible — and any
+ * future storage bound must be archive/rollup over CONSUMED rows, never a DELETE.
  */
 export async function recordObservationConsumption(
   opts: {

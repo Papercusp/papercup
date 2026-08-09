@@ -106,7 +106,7 @@ describe('<LeftSidebar> shell', () => {
   // t('overwatch')); the useLexicon mock above echoes the key, so they render as
   // the bare key names (restore-pot-lexicon P-005 — the classic pack shows
   // Pots / Papercup / Brain / Kettle at runtime).
-  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Agents · System · Spend', () => {
+  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Goals · Agents · System · Spend', () => {
     // The shared useFlag mock answers every flag, so this turns BOTH gated tabs
     // (overwatch + sentinel) on — the full rail is what the owner's ordering
     // describes; the gated-off subset is covered by the flag tests below.
@@ -119,6 +119,15 @@ describe('<LeftSidebar> shell', () => {
       'operator',
       'brain',
       'overwatch',
+      // 🎯 Goals is INSERTED between Kettle and Agents, not appended — the one
+      // deliberate exception to the append-only convention this test enforces,
+      // and it is here because the OWNER placed it, not in spite of them.
+      // D-018 (goal-mode-2026-08-07), verbatim 2026-08-09: a "LEFT-RAIL tab
+      // beside Mug/Overwatch". Beside is load-bearing: Mug and Overwatch are the
+      // supervised-agent tabs and a goal is what they are supervised AGAINST, so
+      // appending it after Convos would have put the objective at the far end of
+      // the rail from the agents pursuing it.
+      'Goals',
       // The scheduled-work rail, split by whether a fire RUNS A MODEL (owner ask
       // 2026-07-26). These two REPLACE the former Blender + Docs tabs, whose rows
       // redistributed into the split.
@@ -157,6 +166,11 @@ describe('<LeftSidebar> shell', () => {
       'sentinel',
       'queen',
       'overwatch',
+      // The tab ID is 'goal' (singular) while the LABEL is "Goals" — ids are
+      // frozen deep-link keys (`?lst=goal`, ui:dispatch), so they name the
+      // CONCEPT and never track the display string. Same split as hives/Pots
+      // and queen/Brain above.
+      'goal',
       'agents',
       'system',
       'spend',

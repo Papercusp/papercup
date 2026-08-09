@@ -485,6 +485,12 @@ interface CorpusLegResult {
    *  `lines.length` it separates "retrieval found nothing" from "retrieval
    *  found plenty and selection rejected all of it". */
   candidateCount: number;
+  /**
+   * P-003 — what this leg's retrieval was ENTITLED to claim, given the state of
+   * the indexes it read. `null` when the gate could not be evaluated (the leg
+   * faulted before fusion); that is treated as no-decision, never as health.
+   */
+  gate: CorpusGateDecision | null;
 }
 
 /**

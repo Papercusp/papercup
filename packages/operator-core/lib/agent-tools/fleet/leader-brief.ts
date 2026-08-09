@@ -1076,6 +1076,266 @@ export function computeFloorStarvedFleetAlert(input: {
 }
 
 /**
+ * The five layers a fleet can be blocked AT, in the order they physically dominate one
+ * another. Named as a closed union rather than left implicit in prose because the whole
+ * point of the verdict below is that exactly ONE of them is the leader's next action.
+ */
+export type FleetBlockLayer =
+  | 'fleet-paused'
+  | 'inference-pool'
+  | 'spec-scope'
+  | 'claim-floors'
+  | 'members';
+
+/** The arbitrated answer to "is my fleet blocked, and AT WHICH LAYER". */
+export interface FleetBlockVerdict {
+  layer: FleetBlockLayer;
+  /** Why THIS layer, stated so the reader can check it against the summary counts. */
+  reason: string;
+  /** The one action that addresses this layer. Deliberately singular. */
+  remedy: string;
+  /**
+   * Sibling alerts that are TRUE but SUBORDINATE at this layer — named so a leader does
+   * not act on them first. Empty is meaningful: nothing else was firing.
+   */
+  subordinate: string[];
+  falsifier: AlertFalsifier;
+}
+
+/**
+ * fleet-lead-instrumentation-audit-2026-08-09 P-019 (+P-012): the ARBITER over the alert
+ * family above.
+ *
+ * THE GAP THIS CLOSES. Every alert above is individually correct and independently
+ * computed, and the brief renders them FLAT. So a starved fleet trips several at once and
+ * the leader — who has no precedence rule — picks one. Measured live on `nonp2p-bug-drain`
+ * 2026-08-09T02:31Z: `fleet:leader-brief` said "DO NOT bench... wake it to re-run
+ * scheduler:get_next" while `fleet:capacity` simultaneously said "place conservatively,
+ * prefer a warm-inject over a fresh spawn". Both readings were TRUE. They pointed opposite
+ * ways, and the brief offered nothing to choose between them (P-012). The leader-facing
+ * question — "is my fleet blocked, and at which layer: pool, floors, spec, or the members
+ * themselves?" — had no single answer anywhere (P-019).
+ *
+ * WHY PRECEDENCE, NOT SEVERITY. The order below is the physical dependency chain, not a
+ * ranking of badness. A member cannot claim work without inference capacity; a claim floor
+ * cannot be observed to withhold anything from a member that never got a turn. So every
+ * lower layer's evidence is MEASURED THROUGH the layers above it, and reading a lower layer
+ * while an upper one is blocked yields a confident wrong answer:
+ *
+ *   1. `fleet-paused`    — the leader paused this fleet. Every idle member is COMPLYING;
+ *                          the other layers are not failing, they are switched off.
+ *   2. `inference-pool`  — no capacity. Members physically cannot take turns, so they read
+ *                          as idle at every other layer. This is the one that inverts the
+ *                          remedy: the flat brief's advice here is "wake them", and a wake
+ *                          adds another request behind the same congestion (WI-37161).
+ *   3. `spec-scope`      — the spec admits nothing. Floors are not the constraint; there
+ *                          is nothing for them to withhold.
+ *   4. `claim-floors`    — the spec matches plenty and floors withhold all of it.
+ *   5. `members`         — capacity fine, queue non-empty, work claimable, members still
+ *                          idle. ONLY HERE is "wake them" the right act.
+ *
+ * The verdict fires only when the fleet is NOT progressing (some member idle, or paused) —
+ * a fleet with every member working is not blocked at any layer and returns `undefined`
+ * rather than a reassuring "layer: none" row that would just be one more thing to read.
+ *
+ * FAIL-SOFT DIRECTION. An UNREAD pool (`poolCapacity == null`) never satisfies layer 2, so
+ * an unreadable substrate cannot manufacture a pool verdict — but it also must not silently
+ * promote layer 5, whose remedy is the harmful one. When the pool is unread and the
+ * remaining evidence would name `members`, the verdict says so in `reason` and the
+ * falsifier sends the leader to probe the pool FIRST. Same discipline as
+ * `readPoolDegradedState`: unknown is stated, never rounded to healthy.
+ *
+ * PURE: exported for direct unit-testing.
+ */
+export function computeFleetBlockVerdict(input: {
+  fleetPaused?: boolean | null;
+  poolCapacity?: PoolDegradedState | null;
+  /** Post-floor claimable; null = unread (never folded into 0). */
+  claimable: number | null;
+  /** Pre-floor spec match count; null = unread. */
+  matchedByFilter: number | null;
+  /** Members idle beside a NONEMPTY queue (summary.idle_with_claimable). */
+  idleMemberCount: number;
+  /** Members idle beside an empty/unread queue (summary.laneless_idle). */
+  lanelessIdleCount: number;
+  harness?: string | null;
+  fleet?: string | null;
+}): FleetBlockVerdict | undefined {
+  const idleTotal = input.idleMemberCount + input.lanelessIdleCount;
+  if (!input.fleetPaused && idleTotal <= 0) return undefined;
+
+  // Which siblings are TRUE right now, so a dominant layer can name what it is overruling.
+  const firing: string[] = [];
+  if (isPoolCongested(input.poolCapacity)) firing.push('pool congested');
+  if (input.matchedByFilter === 0) firing.push('specStarvedAlert');
+  if (input.claimable === 0 && (input.matchedByFilter ?? 0) > 0) firing.push('floorStarvedAlert');
+  if ((input.claimable ?? 0) > 0 && input.idleMemberCount > 0) {
+    firing.push('idleWithClaimableAlert');
+  }
+  const subordinateTo = (mine: string) => firing.filter((f) => f !== mine);
+
+  if (input.fleetPaused) {
+    return {
+      layer: 'fleet-paused',
+      reason:
+        `This fleet's own control_state is paused/winding-down, and ${idleTotal} member(s) are ` +
+        'idle BECAUSE OF THAT. No other layer is failing — they are switched off. Any alert ' +
+        'below is describing a consequence of the pause, not an independent fault.',
+      remedy: 'fleet:resume (or finish the wind-down) — nothing else here is actionable first.',
+      subordinate: subordinateTo('fleet-paused'),
+      falsifier: {
+        tool: 'fleet:status',
+        check: renderFalsifierCall('fleet:status', { fleet: input.fleet }),
+        measurement: "the fleet's live control_state, read independently of this brief's snapshot",
+        kills:
+          'control_state is NOT paused/winding-down → the pause was lifted between reads; ' +
+          're-run the brief and act on the layer it names instead.',
+      },
+    };
+  }
+
+  if (isPoolCongested(input.poolCapacity)) {
+    const p = input.poolCapacity;
+    return {
+      layer: 'inference-pool',
+      reason:
+        `${idleTotal} member(s) idle while the shared inference pool is congested ` +
+        `(factor ${p.factor}, queueDepth ${p.queueDepth ?? 'unknown'}, usableAccounts ` +
+        `${p.usableAccounts ?? 'unknown'}). Those members are QUEUED FOR INFERENCE, not ` +
+        'declining work — a member that cannot get a turn reads as idle at every other layer, ' +
+        'which is why the alerts below fire simultaneously and mean nothing on their own.',
+      remedy:
+        'Wait for the pool, or add capacity (accounts:scale_out / accounts:link-start). Do NOT ' +
+        'coord:send wake:required these members — a wake adds another request behind the same ' +
+        'congestion and makes it worse (WI-37161). Do NOT fleet:bench them either: they are ' +
+        'ready to work the moment capacity returns.',
+      subordinate: subordinateTo('pool congested'),
+      falsifier: {
+        tool: 'accounts:probe-capacity',
+        check: renderFalsifierCall('accounts:probe-capacity', { apply: true }),
+        // The pool verdict is derived from a PROJECTION that can go stale while reporting
+        // full confidence; the probe is a live upstream read. They are different sources,
+        // which is the whole point — see `kills`.
+        measurement:
+          'the LIVE per-account upstream status (200 vs 429), independent of the cached ' +
+          'headroom projection this verdict was computed from',
+        kills:
+          'accounts answer 200 → the projection is STALE and this verdict is a false positive; ' +
+          'the pool is usable and you should re-read the brief for the real layer. Measured ' +
+          'twice on 2026-08-09: fleet:capacity reported poolExhausted with usableAccounts 0 ' +
+          'while 3 of 4 accounts answered 200. NEVER escalate a pool/egress fault to the owner ' +
+          'on the projection alone — probe first.',
+      },
+    };
+  }
+
+  if (input.matchedByFilter === 0) {
+    return {
+      layer: 'spec-scope',
+      reason:
+        `${idleTotal} member(s) idle and this fleet's claim spec matches ZERO rows. The floors ` +
+        'are not the constraint — there is nothing for them to withhold. The scope itself is ' +
+        'the block.',
+      remedy:
+        'Widen the scope via scheduler:set_claim_spec, or fleet:wind-down if the lane is ' +
+        'genuinely finished.',
+      subordinate: subordinateTo('specStarvedAlert'),
+      falsifier: {
+        tool: 'work_items:claimable',
+        check: renderFalsifierCall('work_items:claimable', { harness: input.harness }),
+        measurement:
+          'the HARNESS-WIDE claimable pool, pre-spec-narrowing — a different question from ' +
+          "this fleet's spec-scoped match count",
+        kills:
+          'the harness-wide pool is ALSO 0 → the queue is drained, not mis-scoped; widening ' +
+          'the spec finds nothing and fleet:wind-down is the honest call.',
+      },
+    };
+  }
+
+  if (input.claimable === 0 && (input.matchedByFilter ?? 0) > 0) {
+    return {
+      layer: 'claim-floors',
+      reason:
+        `${idleTotal} member(s) idle while the spec matches ${input.matchedByFilter} row(s) of ` +
+        'which ZERO survive the claim floors. The lane is GATED, not drained, and the pool is ' +
+        'healthy — so this is the layer that is actually holding the work.',
+      remedy:
+        "Act on the dominant floor (work_items:claimable's excludedBreakdown), or widen the " +
+        'spec. Do NOT bench these members — benching parks them on a completion event that ' +
+        'cannot fire.',
+      subordinate: subordinateTo('floorStarvedAlert'),
+      falsifier: {
+        tool: 'work_items:claimable',
+        check: renderFalsifierCall('work_items:claimable', {
+          harness: input.harness,
+          spec: input.fleet,
+          breakdownOnly: true,
+          sampleExcluded: 5,
+        }),
+        measurement:
+          'the ROW IDENTITIES behind each floor bucket — this verdict fired on bucket COUNTS, ' +
+          'from which the holders cannot be recovered',
+        kills:
+          'the dominant bucket is `taken` and its rows are held by live, progressing members ' +
+          '→ the lane is being WORKED, not gated; there is nothing to clear.',
+      },
+    };
+  }
+
+  if ((input.claimable ?? 0) > 0 && input.idleMemberCount > 0) {
+    // The ONLY layer whose remedy is a wake — so it is also the one that must state, out
+    // loud, when it was reached without being able to rule the pool out.
+    const poolUnread = input.poolCapacity == null;
+    return {
+      layer: 'members',
+      reason:
+        `${input.idleMemberCount} member(s) are idle beside ${input.claimable} claimable row(s) ` +
+        'with no upstream layer blocking them' +
+        (poolUnread
+          ? ' — EXCEPT that the inference pool could NOT be read on this brief, so layer 2 was ' +
+            'not ruled out. Probe it before acting: this layer is the only one whose remedy ' +
+            '(waking members) makes a congested pool WORSE.'
+          : ' (pool read and healthy, spec matching, floors clear). The members themselves are ' +
+            'the block.'),
+      remedy: poolUnread
+        ? 'Run the falsifier FIRST. If the pool is genuinely usable, coord:send { wake: "required" } ' +
+          'those members so they re-run scheduler:get_next.'
+        : 'coord:send { wake: "required" } those members so they re-run scheduler:get_next now.',
+      subordinate: subordinateTo('idleWithClaimableAlert'),
+      falsifier: poolUnread
+        ? {
+            tool: 'fleet:capacity',
+            check: renderFalsifierCall('fleet:capacity', {}),
+            measurement:
+              'the inference-pool state this brief could not read — the layer that dominates ' +
+              'this one',
+            kills:
+              'the pool is degraded/exhausted with a nonzero queue → this verdict is WRONG, the ' +
+              'real layer is inference-pool, and waking these members worsens it.',
+          }
+        : {
+            tool: 'work_items:claimable',
+            check: renderFalsifierCall('work_items:claimable', {
+              harness: input.harness,
+              spec: input.fleet,
+              breakdownOnly: true,
+              sampleExcluded: 5,
+            }),
+            measurement:
+              'the row identities behind the claimable count — whether those rows are genuinely ' +
+              'available to THESE members',
+            kills:
+              'the claimable rows are all already `taken` by live members → the members are not ' +
+              'idle-by-choice and there is nothing to wake them for.',
+          },
+    };
+  }
+
+  return undefined;
+}
+
+/**
  * EI-18681259560385029: IO shell for the alert above — the fleet's live authoritative
  * claimable count, or `null` when it genuinely could not be read.
  *
@@ -1506,6 +1766,22 @@ export default defineTool({
       '`…Federated` sibling is remote + unclaimable (WI-6846). ' +
       'Every `*Alert` ships `*AlertFalsifier` — RUN its `check` before acting; it confirms or ' +
       'KILLS the alert.',
+    // Not counted against the P-011 prompt-weight budget (description + when/notWhen/
+    // chaining are) — response documentation belongs here, demand-loaded via tools:find.
+    returns:
+      '`blockedAt` — READ IT FIRST. The arbitrated answer to "is my fleet blocked, and at ' +
+      'WHICH layer": one of fleet-paused | inference-pool | spec-scope | claim-floors | ' +
+      'members, with a single `remedy`, the `subordinate` alerts it overrules, and a ' +
+      '`falsifier`. Absent ⇒ no layer is blocking (every member working), NOT "unknown". ' +
+      'It exists because the `*Alert` booleans in `summary` are flat and CO-FIRE: a starved ' +
+      'fleet trips several at once and they prescribe opposite acts (measured 2026-08-09 — ' +
+      'the brief said "wake them" while fleet:capacity said "place conservatively"; both ' +
+      'true). The layers are a physical dependency chain, not a severity ranking — each ' +
+      "lower layer's evidence is measured THROUGH the ones above it, so a member starved of " +
+      'inference reads as idle at every layer below. At `inference-pool` the flat advice ' +
+      'inverts: a wake adds another request behind the same congestion and makes it WORSE ' +
+      '(WI-37161). `members` is the ONLY layer whose remedy is a wake, and when the pool ' +
+      'could not be read it says so rather than silently promoting itself.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
@@ -1893,6 +2169,19 @@ export default defineTool({
       harness: args.harness ?? null,
       fleet,
     });
+    // fleet-lead-instrumentation-audit-2026-08-09 P-019/P-012: ARBITRATE the alerts above
+    // into ONE dominant layer. Computed from the same inputs the siblings fired on (never a
+    // second read), so it cannot disagree with them — it only ORDERS them.
+    const blockedAt = computeFleetBlockVerdict({
+      fleetPaused: fleetPause.paused,
+      poolCapacity,
+      claimable: fleetClaimableCount,
+      matchedByFilter: fleetLaneHealth?.matchedByFilter ?? null,
+      idleMemberCount: summary.idle_with_claimable,
+      lanelessIdleCount: summary.laneless_idle,
+      harness: args.harness ?? null,
+      fleet,
+    });
     let specStarvedAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
     // WI-5937 acceptance #3: "leader-brief returns spec filter + both counts + per-member
     // doing in one read" — the fleet's OWN active view.filter (so a leader reads WHAT is
@@ -1958,6 +2247,11 @@ export default defineTool({
         // member rows — the value of this branch is that the caller learns it.
         ...(notLeader ? { notLeader } : {}),
         ...(leadershipClaimed ? { leadershipClaimed } : {}),
+        // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
+        // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
+        // reading them in field order is what produced the inverted remedy this fixes.
+        // Absent ⇒ no layer is blocking (every member working), not "unknown".
+        ...(blockedAt ? { blockedAt } : {}),
         summary: {
           ...summary,
           strandedFleetAlert: strandedFleetAlert != null,

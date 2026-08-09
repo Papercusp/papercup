@@ -4,10 +4,13 @@ import assert from 'node:assert/strict';
 import { buildCapacityReport } from './capacity';
 import type { GatewayHeadroom } from '../../inference-gateway/observability';
 import type { AccountStatusRow } from '../../deployment/account-pool-store';
+import type { AccountSessionOverride } from '../../deployment/account-session-override';
 
 const { mockAccountStatus, mockGetAccountOverride } = vi.hoisted(() => ({
   mockAccountStatus: vi.fn(),
-  mockGetAccountOverride: vi.fn(async () => ({ forcedAccounts: [], excludeAccounts: [] })),
+  mockGetAccountOverride: vi.fn(
+    async (): Promise<AccountSessionOverride> => ({ forcedAccounts: [], excludeAccounts: [] }),
+  ),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('../../deployment/account-session-override', async (importOriginal) => {

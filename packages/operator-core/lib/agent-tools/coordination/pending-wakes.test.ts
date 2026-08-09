@@ -201,6 +201,43 @@ describe('pending-wakes staging coalescing (EI-312)', () => {
     ]);
   });
 
+  it('WI-37390: a stage that OMITS workspaceId still reaches the board + the badge (never persists NULL)', async () => {
+    // THE REGRESSION THIS FILE COULD NOT SEE. Every pre-existing board assertion above
+    // hand-passes `workspaceId: 'ws-active'` — but the real production caller does NOT:
+    // the sole non-test call site (inbox-wake.ts:190) forwards `opts.workspaceId`, which
+    // the agent coord:send path leaves undefined. So the board was only ever tested on
+    // an input shape the shipping code never produces, and the untested shape landed
+    // workspace_id NULL — invisible to `WHERE workspace_id = activeWorkspaceId()`.
+    //
+    // The failure that made this concrete: coord:send { wake:'required' } at a
+    // manual-mode agent returns `staged: 1` and a note saying the wake is "queued for
+    // owner review", while the owner's review board lists nothing. Recipient gated,
+    // owner unaware — the pause/edit gate degrades into a DROP that reports success.
+    //
+    // Deliberately asserts the two DISCOVERY surfaces, not the targeted ones: the
+    // targeted reads carry no workspace predicate and were GREEN throughout the bug, so
+    // asserting them here would pass against the defect and prove nothing.
+    await stagePendingWake({ ownerId: 's-1', summary: 'no-workspace-passed' });
+
+    expect(await listAllPendingWakes()).toEqual([
+      expect.objectContaining({ ownerId: 's-1', summary: 'no-workspace-passed', workspaceId: 'ws-active' }),
+    ]);
+    expect(await countAllPendingWakes()).toEqual(new Map([['s-1', 1]]));
+  });
+
+  it('WI-37390 CONTROL: an EXPLICIT foreign workspaceId is still honoured and stays OFF this board (F-C3 isolation)', async () => {
+    // The paired control. The fix defaults a MISSING workspace; it must not coerce a
+    // supplied one, or it would fix visibility by re-opening the cross-workspace leak
+    // the `WHERE workspace_id` predicate was added for. Without this, "default to the
+    // active workspace" and "always use the active workspace" are indistinguishable.
+    await stagePendingWake({ ownerId: 's-9', summary: 'other tenant', workspaceId: 'ws-elsewhere' });
+
+    expect(await listAllPendingWakes()).toEqual([]);
+    expect(await countAllPendingWakes()).toEqual(new Map());
+    // ...and it is genuinely stored, not dropped — the targeted read still sees it.
+    expect((await listPendingWakes('s-9')).map((w) => w.workspaceId)).toEqual(['ws-elsewhere']);
+  });
+
   it('hasPendingWakeFromSource matches owner + source prefix only (the watchdog idempotence probe, EI-312)', async () => {
     await stagePendingWake({ ownerId: 's-1', summary: 'boot', source: 'hive-watchdog:boot' });
     await stagePendingWake({ ownerId: 's-2', summary: 'tick', source: 'system:wake-brain' });

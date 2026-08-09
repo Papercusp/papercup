@@ -136,6 +136,53 @@ describe('LocalCardHost', () => {
     expect(await secondPromise).toEqual({ action: 'submit', payload: { picks: ['ok'] } });
   });
 
+  // EI-19952165837170400: sidebar + session-popup mount LocalCardHost
+  // simultaneously. A single askUserLocal card must render in exactly ONE
+  // of them, and resolving it must not leave an orphaned, still-answerable
+  // copy in the other.
+  it('EI-19952165837170400: two mounted hosts — card renders in only the LATER-mounted one; resolving clears both', async () => {
+    render(
+      <div>
+        <div data-testid="host-a">
+          <LocalCardHost />
+        </div>
+        <div data-testid="host-b">
+          <LocalCardHost />
+        </div>
+      </div>,
+    );
+    const promise = askUserLocal({
+      prompt: 'Pick one',
+      dataSchema: z.object({ picks: z.tuple([z.enum(['a', 'b'])]) }),
+      presentation: {
+        kind: 'radio',
+        options: [
+          { id: 'a', label: 'Option A' },
+          { id: 'b', label: 'Option B' },
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Pick one')).toHaveLength(1);
+    });
+
+    // Renders in host-b (mounted after host-a — the DOM-later host wins the
+    // election), and host-a stays empty rather than showing its own copy.
+    const hostA = screen.getByTestId('host-a');
+    const hostB = screen.getByTestId('host-b');
+    expect(hostA.querySelector('.local-card-host')).toBeNull();
+    expect(hostB.querySelector('.local-card-host')).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Option A$/i }));
+    expect(await promise).toEqual({ action: 'submit', payload: { picks: ['a'] } });
+
+    // No orphaned copy anywhere after resolving.
+    await waitFor(() => {
+      expect(screen.queryByText('Pick one')).toBeNull();
+    });
+  });
+
   it('unknown presentation: dismiss button cancels', async () => {
     render(<LocalCardHost />);
     const promise = askUserLocal({

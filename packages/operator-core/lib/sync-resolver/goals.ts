@@ -16,7 +16,11 @@
  * expected; it is the shared work, not a bug.
  */
 
-import type { Sql } from 'postgres';
+// NOTE: the `tx` handle inside `sql.begin` is deliberately left INFERRED below.
+// Annotating it `Sql` is wrong and does not merely lose precision — postgres.js
+// hands the callback a `TransactionSql`, which is not assignable to `Sql`, so
+// the annotation fails to typecheck outright. Every other `sql.begin` in this
+// package leaves it inferred for the same reason.
 
 export interface GoalTripwire {
   metric: string;
@@ -126,7 +130,7 @@ export async function resolveGoalsList(args: {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const { workspaceId, status = null, limit = 100 } = args;
-  const rows = await sql.begin(async (tx: Sql) => {
+  const rows = await sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
     return (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
@@ -200,7 +204,7 @@ export async function resolveGoalDetail(args: {
   const { sql } = getOrgPg();
   const { workspaceId, goalId, activityLimit = 40 } = args;
 
-  return sql.begin(async (tx: Sql) => {
+  return sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
 
     const [goalRow] = (await tx`

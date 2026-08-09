@@ -289,6 +289,44 @@ export function titleSimilarity(a: string, b: string): number {
   return jaccard(tokenSet(a), tokenSet(b));
 }
 
+/** A containment query needs at least this many signature tokens to count. Below it,
+ *  "every token of my query appears in that title" is not evidence — a 2-token query
+ *  is contained in half the backlog. */
+export const CONTAINMENT_MIN_TOKENS = 4;
+
+/**
+ * Title CONTAINMENT in [0,1] — the overlap coefficient (|A∩B| / min(|A|,|B|)),
+ * i.e. "how much of the SHORTER title is covered by the longer one".
+ *
+ * Why this exists alongside {@link titleSimilarity} (knowledge-at-symptom-time-2026-08-09
+ * P-007): Jaccard divides by the UNION, so a short query that is a perfect SUBSET of a
+ * longer stored title scores only |query|/|title|. That is a structural bias against the
+ * exact shape of a symptom-first lookup — at symptom time your query is SHORT (the error
+ * you just saw), while stored titles are LONG (written after diagnosis, so specific).
+ *
+ * MEASURED 2026-08-09: the query "No way to locate or focus an agent's desktop terminal
+ * window" is a VERBATIM SUBSTRING of the stored title of EI-19948333346987654, and scored
+ * BELOW the 0.6 lexical threshold — the dedup net returned `possibleDuplicates: []` for a
+ * literal substring of an item filed 20 minutes earlier. Containment scores it 1.0.
+ *
+ * This is deliberately a SEPARATE signal, never folded into `titleSimilarity`: containment
+ * is recall-oriented and asymmetric, so it is surfaced as advisory-only and MUST NOT be
+ * allowed to decline a capture (see the blockEligible filter in capture-core). Widening
+ * the BLOCKING net would trade a missed duplicate for a LOST filing, which is the more
+ * expensive failure.
+ *
+ * Returns 0 when the shorter side has fewer than {@link CONTAINMENT_MIN_TOKENS} tokens.
+ */
+export function titleContainment(a: string, b: string): number {
+  const sa = tokenSet(a);
+  const sb = tokenSet(b);
+  const shorter = Math.min(sa.size, sb.size);
+  if (shorter < CONTAINMENT_MIN_TOKENS) return 0;
+  let inter = 0;
+  for (const t of sa) if (sb.has(t)) inter += 1;
+  return inter / shorter;
+}
+
 const NEAR_DUP_JACCARD = 0.8;
 
 /** Minimum length of a quoted span to count as an error/exception SIGNATURE rather

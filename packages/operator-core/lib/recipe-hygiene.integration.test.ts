@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { upsertRecipe, recordRecipeRun, getRecipe } from './code-recipes-store';
 import { runRecipeHygieneOnce } from './recipe-hygiene';
+import type { CaptureImprovementInput, CaptureImprovementResult } from './harness/improvements/capture-core';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 

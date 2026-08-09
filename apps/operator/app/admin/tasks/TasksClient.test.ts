@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtBytes, fmtCpu, fmtAge, stateColor } from './TasksClient';
+import { fmtBytes, fmtCpu, fmtAge, stateColor, fmtArmed, armedColor, TASK_KINDS } from './TasksClient';
 
 describe('fmtBytes', () => {
   it('scales through the units', () => {
@@ -67,5 +67,49 @@ describe('stateColor', () => {
 
   it('distinguishes foreign (not ours) from running (ours)', () => {
     expect(stateColor('foreign')).not.toBe(stateColor('running'));
+  });
+});
+
+describe('fmtArmed (P-019)', () => {
+  it('renders THREE outcomes, because `armed` has three values', () => {
+    // `armed: null` means NOT APPLICABLE OR UNREACHABLE, never "off" (WI-6447). The
+    // filed defect is `armed !== false`, which reports a timer whose state could not be
+    // read as armed — and on this pane the reader's next move after "armed" is to stop
+    // looking, so the false-confident direction is the expensive one.
+    expect(fmtArmed(null, true)).toBe('unknown');
+    expect(fmtArmed(false, true)).toBe('disarmed');
+    expect(fmtArmed(true, true)).toBe('armed');
+  });
+
+  it('marks an UNFEDERATED armed row as declared, not measured', () => {
+    // An unfederated row's armed flag came from a static manifest, not from asking the
+    // process that owns the timer. The repo convention is to read `federated` before
+    // trusting fire-state; this is that convention made visible in the cell.
+    expect(fmtArmed(true, false)).toBe('armed (declared)');
+    expect(fmtArmed(true, false)).not.toBe(fmtArmed(true, true));
+  });
+
+  it('does not let federation dress up a disarmed or unknown row', () => {
+    // Federation qualifies a POSITIVE claim. It must not change what we say about a
+    // row that is off or unreachable.
+    expect(fmtArmed(false, false)).toBe(fmtArmed(false, true));
+    expect(fmtArmed(null, false)).toBe(fmtArmed(null, true));
+  });
+});
+
+describe('armedColor (P-019)', () => {
+  it('never paints UNKNOWN with the good colour', () => {
+    // A grey unknown and a green armed must not be confusable at a glance — that is
+    // the whole reason the null is preserved through the projection.
+    expect(armedColor(null)).not.toBe(armedColor(true));
+    expect(armedColor(false)).not.toBe(armedColor(true));
+  });
+});
+
+describe('TASK_KINDS', () => {
+  it('offers both kinds plus the combined default', () => {
+    // The pane's claim is that it is a task manager, not a process manager — so
+    // `recurring` must be reachable, and `all` is what makes that the default posture.
+    expect([...TASK_KINDS]).toEqual(['all', 'running', 'recurring']);
   });
 });

@@ -28,6 +28,16 @@ import KillTaskControl, { KillOutcomeProvider, useKillOutcomeHoist } from './Kil
  * inventory of everything RUNNING. Same posture too — nuqs-backed filters so agents
  * and deep links work.
  *
+ * ⚠ As of P-019 that one-axis split no longer describes this pane, and the difference
+ * is worth stating because the sentence above is still true of /admin/schedules. This
+ * pane now carries BOTH kinds behind a `kind` filter — it renders the SAME
+ * `collectScheduleInventory()` collection /admin/schedules does, projected through
+ * `projectScheduleRows`, never re-derived. That is what makes it a task manager rather
+ * than a process manager: a recurring sweep is invisible to a process view for the 99%
+ * of the time it sits between fires, which is exactly how `dbos-executor-reaper` failed
+ * every pass for six days unnoticed (EI-19445595198254637). /admin/schedules remains the
+ * richer surface for arming/disarming; this is the one place both kinds sit side by side.
+ *
  * ⚠ NO LONGER READ-ONLY (owner ask 2026-08-08, P-023/P-024): each row carries a kill
  * control. This file used to argue "a dashboard read must not be able to end someone's
  * work" — but a pane that shows a runaway and cannot stop it sends the reader to a
@@ -452,6 +462,11 @@ export default function TasksClient(): ReactElement {
 
   const live = data?.live ?? null;
   const liveProcs = useMemo(() => data?.liveProcesses ?? [], [data]);
+  // `undefined` (server did not ship the key) and `[]` (it did, and there are none) are
+  // different answers — see the Payload comment. Only the second may render an empty
+  // table; the first renders nothing at all.
+  const schedules = data && 'schedules' in data ? (data.schedules ?? []) : null;
+  const scheduleError = data?.scheduleError ?? null;
   const unaccountedGroups = useMemo(() => {
     const u = live && 'unaccounted' in live ? (live as { unaccounted?: unknown }).unaccounted : undefined;
     return Array.isArray(u) ? (u as { cgroupPath: string; pids: number[]; sample: string }[]) : [];
@@ -483,7 +498,9 @@ export default function TasksClient(): ReactElement {
       <p style={{ opacity: 0.7, marginBottom: 12, maxWidth: 780 }}>
         Every task this operator launched, with the provenance a process table cannot give: who started it, for which
         work-item, under what budget, and what it costs. <strong>kill</strong> ends the whole cgroup subtree, so no
-        grandchild is orphaned — freeze / limit are still the <code>processes:*</code> tools.
+        grandchild is orphaned — freeze / limit are still the <code>processes:*</code> tools. Two kinds:{' '}
+        <strong>running</strong> (what is executing now) and <strong>recurring</strong> (what is scheduled to run at
+        all) — a sweep between fires is invisible to the first and only ever shows up in the second.
       </p>
 
       {/* WI-7371 — live totals across the RUNNING tracked set. Deliberately above the
@@ -542,6 +559,21 @@ export default function TasksClient(): ReactElement {
       )}
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        {/* P-019 — FIRST control, because it selects which kind of task the rest of the
+            filters even apply to. state/class narrow the RUNNING kind only. */}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          kind{' '}
+          <Select
+            ariaLabel="filter by task kind"
+            value={kind}
+            onChange={(v) => void setKind((v as TaskKind) || 'all')}
+            options={[
+              { value: 'all', label: 'all' },
+              { value: 'running', label: 'running' },
+              { value: 'recurring', label: 'recurring' },
+            ]}
+          />
+        </label>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           state{' '}
           <Select
@@ -593,7 +625,7 @@ export default function TasksClient(): ReactElement {
           the rail (the DOM assertion passed happily: the full text IS in innerText,
           just not visible). Outside the wrapper it wraps to the pane's real width in
           both the rail and the full-width admin page. */}
-      {data && data.rows.length === 0 ? (
+      {showRunning && data && data.rows.length === 0 ? (
         // An empty table is USUALLY correct, not a fault, so lead with that — the common
         // case is simply that nothing enrolled is running this second. Enrolment binds at
         // SPAWN, so anything started before the task manager was enabled stays outside the
@@ -612,7 +644,7 @@ export default function TasksClient(): ReactElement {
           they show up as their subtrees cycle. Tick <em>include finished</em> for completed tasks, or open the{' '}
           <strong>System</strong> tab to check the <code>task-reconcile</code> routine is armed.
         </div>
-      ) : (
+      ) : showRunning ? (
         <KillOutcomeProvider value={killOutcomeContext}>
           <div style={{ overflowX: 'auto' }}>
             <Table
@@ -623,7 +655,7 @@ export default function TasksClient(): ReactElement {
             />
           </div>
         </KillOutcomeProvider>
-      )}
+      ) : null}
 
       {/* Renders only once the killed row has left the table — see `useKillOutcomeHoist`.
           A successful kill drops the row out of the default running-only view, taking the
@@ -636,7 +668,7 @@ export default function TasksClient(): ReactElement {
           so the pane showed 0 rows beside its own "400 process(es) scanned". Both
           numbers were right and the pane still read as broken (owner-reported).
           This section answers the question the tab actually promises. */}
-      {liveProcs.length > 0 && (
+      {showRunning && liveProcs.length > 0 && (
         <div style={{ marginTop: 18 }}>
           <div style={{ ...mono, fontSize: 13, marginBottom: 6 }}>
             Running now · {liveProcs.length} process(es)
@@ -658,6 +690,62 @@ export default function TasksClient(): ReactElement {
               getRowKey={(p) => String(p.pid)}
             />
           </div>
+        </div>
+      )}
+
+      {/* WHAT IS SCHEDULED TO RUN AT ALL (P-019) — the second KIND.
+          The sections above are a PROCESS manager: they answer "what is executing this
+          second", and everything recurring is invisible to them for the 99% of the time
+          it is between fires. A sweep that has been failing every 2 minutes for six days
+          looks identical to one that never existed, which is exactly how
+          `dbos-executor-reaper` failed 100% of its passes undetected
+          (EI-19445595198254637). These rows are the same collection /admin/schedules
+          renders — projected through `collectScheduleInventory`, never re-derived, so the
+          two panes cannot disagree about what exists. */}
+      {showRecurring && scheduleError && (
+        <div style={{ marginTop: 18, ...cell, border: '1px solid var(--warn)' }}>
+          ⚠ Recurring inventory unavailable — {scheduleError}. This is NOT "nothing is scheduled": the read
+          failed, so the recurring set is unknown right now.
+        </div>
+      )}
+      {showRecurring && !scheduleError && schedules !== null && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ ...mono, fontSize: 13, marginBottom: 6 }}>
+            Recurring · {schedules.length} scheduled task(s)
+            {data?.scheduleSummary ? (
+              <span style={{ opacity: 0.65 }}>
+                {' '}
+                ·{' '}
+                {Object.entries(data.scheduleSummary.byTier)
+                  .map(([t, n]) => `${n} ${t}`)
+                  .join(' · ')}
+              </span>
+            ) : null}
+          </div>
+          <p style={{ opacity: 0.65, fontSize: 12, maxWidth: 780, marginBottom: 8, lineHeight: 1.45 }}>
+            What is scheduled to run, across every mechanism — DBOS workflows, the routines table, in-process
+            sweeps, and timers owned by sibling processes. <strong>armed (declared)</strong> means the row came
+            from a static manifest rather than from asking the process that owns the timer, and{' '}
+            <strong>unknown</strong> means its fire-state could not be reached — neither is a measurement of a
+            live timer.
+          </p>
+          {schedules.length === 0 ? (
+            <div style={{ ...cell, opacity: 0.8, maxWidth: 780, lineHeight: 1.5 }}>
+              Nothing recurring is registered in this operator&apos;s view. That is a real answer, not a failed
+              read — but note this inventory is PER-PROCESS: sweeps that run in <code>papercup-bg-host</code>{' '}
+              appear only via federation, and a sibling that did not answer is reported as an unknown row rather
+              than omitted.
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <Table
+                style={{ minWidth: 980, ...mono }}
+                columns={SCHEDULE_COLUMNS}
+                rows={schedules}
+                getRowKey={(s) => s.key}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

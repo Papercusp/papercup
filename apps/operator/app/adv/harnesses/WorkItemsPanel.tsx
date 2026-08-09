@@ -127,9 +127,6 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     () => new Set((trustQuery.data ?? []).map((t) => t.githubUserId)),
     [trustQuery.data],
   );
-  const isTrusted = (r: WorkItemRow): boolean =>
-    r.verifiedAuthorGithubUserId != null && trustedSet.has(r.verifiedAuthorGithubUserId);
-
   // True total in the store (carried on row[0]._meta by the resolver), falling
   // back to the downloaded length. This is what the count label reports — the DB
   // total, not the loaded length.
@@ -143,9 +140,28 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // Column + filter definitions live in ./work-item-columns — SHARED with the
   // dependency-graph pane (dependency-health-pane-2026-08-02 P-010 / D-003 req 4:
   // "all the filters from the work item list pane should also be brought over").
-  // Built per render exactly as the inline array was, so `isTrusted` always closes
-  // over the current trust set.
-  const columns = buildWorkItemColumns({ isTrusted });
+  //
+  // MEMOIZED (P-BUG-WI-37386) on `trustedSet` — not rebuilt every render like the
+  // inline array it replaced. `useColumnFilters`'s `controller`/`activeChips` are
+  // only as stable as the `cols` array passed in (see useColumnFilters.ts's own
+  // note: "cols is a fresh array literal per render in most panels"), and
+  // ColumnFilterBar is now memo()'d specifically so that instability doesn't
+  // matter ONLY IF callers hold up their end. Rebuilding `columns` fresh every
+  // render fed a Radix `@radix-ui/react-slot` SlotClone ref-churn landmine in
+  // ColumnFilterBar's Tooltip/Select triggers into "Maximum update depth
+  // exceeded" (WI-37386) — this pane's own re-renders (search typing, sync
+  // polling, etc.) were sustained fuel for it. `isTrusted` closes over
+  // `trustedSet` (itself already memoized on `trustQuery.data`), so keying on
+  // `trustedSet` keeps this correctly fresh whenever the trust list actually
+  // changes, and stable otherwise.
+  const columns = useMemo(
+    () =>
+      buildWorkItemColumns({
+        isTrusted: (r: WorkItemRow) =>
+          r.verifiedAuthorGithubUserId != null && trustedSet.has(r.verifiedAuthorGithubUserId),
+      }),
+    [trustedSet],
+  );
 
   // Per-column filters (kind/state/severity/priority/…) → ONE `wif` nuqs param.
   // The hook re-derives enum options from the live rows and AND-s every active

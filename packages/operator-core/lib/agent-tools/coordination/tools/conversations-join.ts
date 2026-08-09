@@ -2,7 +2,7 @@
  * conversations:join — follow ONE OR MANY conversations (the "I can contribute to
  * THIS thread" motivation, substrate D-005a). Each conversation's
  * replies/answers/resolution get injected into your inbox, honoring the delivery
- * mode you pick. This is the per-object subscribe; topics:subscribe is the
+ * mode you pick. This is the per-object subscribe; a topic-scoped watch is the
  * standing-interest one.
  *
  * Bulk by default (bulk-endpoint-standardization-2026-06-21): join ONE inline

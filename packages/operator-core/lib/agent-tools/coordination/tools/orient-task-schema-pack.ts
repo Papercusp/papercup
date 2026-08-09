@@ -110,6 +110,23 @@ const SIGNAL_GROUPS: Array<{ id: string; pattern: RegExp; tools: readonly string
     tools: ['tools:find', 'tools:invoke', 'agent_tools:list'],
   },
   {
+    // coordination-spec-adoption-2026-08-03 P-011 / D-100 / D-101. `coord:dispatch`
+    // is the only single call that assigns a lane, inlines each item's body, wakes
+    // the target and reports whether pickup happened — and it took 1 call in 30 days
+    // from 1 agent. The kept-under-test hypothesis is that its zero use is DELIVERY,
+    // not absent demand: it reaches a trimmed session only as a deferred name, so it
+    // is callable only by an agent who already suspected it existed.
+    //
+    // Seeding is the NECESSARY half and explicitly not the sufficient one — D-101
+    // records that on this fleet promotion (docs/hints/mentions) asymptoted at 1.7%
+    // while a pre-addressed HANDLE in a result the agent already holds is what moved
+    // adoption. So this makes the verb callable without a tools:find round-trip; the
+    // handles in coord:presence and work_items:release are what make it reached for.
+    id: 'handoff',
+    pattern: /\b(hand.?off|handing off|delegat|reassign|re-?assign|dispatch|pick(?:ed)? ?up|take over|taking over|park(?:ing)? (?:my|the) lane)\b/i,
+    tools: ['coord:dispatch', 'coord:presence', 'work_items:release', 'plan_items:assign'],
+  },
+  {
     id: 'recipe',
     pattern: /\b(recipe|orchestrat|batch|fan.?out)\b/i,
     tools: ['recipes:get', 'recipes:run', 'recipes:search', 'code:run'],

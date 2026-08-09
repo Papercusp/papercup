@@ -14,9 +14,28 @@
  *     presentation: { kind: 'radio', options: [{id:'yes',label:'Yes'},{id:'no',label:'No'}] },
  *   });
  *
- * Implementation: a global `Subject<OpenLocalCard>` that the host
- * component (OracleDock, ChatPane) subscribes to. The first subscribed
- * host renders the card and resolves the promise on user action.
+ * Implementation: a SHARED queue (single source of truth) plus a set of
+ * subscribed host renderers. Every subscribed host receives every queue
+ * change (push AND resolve) so its local view can never drift from the
+ * canonical state.
+ *
+ * EI-19952165837170400: this used to be a per-card FAN-OUT — each host kept
+ * its OWN `queue` React state, independently appended to on every incoming
+ * card. Multiple mounted hosts (the chat sidebar AND an open session popup,
+ * the normal case for this surface) each rendered their own copy of the same
+ * card, and resolving one left the other's copy mounted and answerable — a
+ * stale, orphaned duplicate the owner could act on after the real one had
+ * already resolved. The shared-queue design makes that impossible: there is
+ * exactly one queue, and every host's view IS that queue.
+ *
+ * A shared queue alone would still render the card in every mounted host at
+ * once, though, which is its own bug (two visible copies of the same
+ * question). So hosts additionally run a HOST ELECTION
+ * (registerLocalCardHost / isActiveLocalCardHost): only the
+ * most-recently-mounted host actually renders the head card; other mounted
+ * hosts render nothing. Unmounting the active host promotes the
+ * next-most-recently-mounted one, so a card raised while a modal is open and
+ * left pending after the modal closes still surfaces in the sidebar.
  *
  * Falls back to {action:'cancel'} when no host is mounted.
  */
@@ -30,37 +49,119 @@ export interface OpenLocalCard<TSchema extends ZodTypeAny = ZodTypeAny> {
   resolve: (response: CardResponse<TSchema>) => void;
 }
 
-type LocalCardListener = (card: OpenLocalCard) => void;
+type QueueListener = (queue: readonly OpenLocalCard[]) => void;
+type ElectionListener = () => void;
 
 const __SYM = Symbol.for('papercusp.askUserLocalRegistry');
 type Registry = {
-  listeners: Set<LocalCardListener>;
+  queue: OpenLocalCard[];
+  listeners: Set<QueueListener>;
+  /** Host ids in mount order — the LAST entry is the active (rendering) host. */
+  hostOrder: string[];
+  electionListeners: Set<ElectionListener>;
 };
 type RegistryGlobals = typeof globalThis & { [__SYM]?: Registry };
 
 function registry(): Registry {
   const g = globalThis as RegistryGlobals;
-  if (!g[__SYM]) g[__SYM] = { listeners: new Set() };
+  if (!g[__SYM]) {
+    g[__SYM] = { queue: [], listeners: new Set(), hostOrder: [], electionListeners: new Set() };
+  }
   return g[__SYM]!;
 }
 
+function notifyQueue(): void {
+  const r = registry();
+  const snapshot = r.queue.slice();
+  for (const l of r.listeners) {
+    try {
+      l(snapshot);
+    } catch (e) {
+      console.warn('[askUserLocal] listener threw', e);
+    }
+  }
+}
+
+function notifyElection(): void {
+  const r = registry();
+  for (const cb of r.electionListeners) {
+    try {
+      cb();
+    } catch (e) {
+      console.warn('[askUserLocal] election listener threw', e);
+    }
+  }
+}
+
 /**
- * Subscribe a host renderer. Returns an unsubscribe function. The host
- * receives every askUserLocal call and is responsible for rendering
- * the card + calling resolve().
+ * Subscribe a host renderer to the SHARED queue. Fires immediately with the
+ * current queue, then again on every push/resolve. Returns an unsubscribe
+ * function.
  */
-export function subscribeAskUserLocal(cb: LocalCardListener): () => void {
-  registry().listeners.add(cb);
+export function subscribeAskUserLocal(cb: QueueListener): () => void {
+  const r = registry();
+  r.listeners.add(cb);
+  // Deliver the current snapshot immediately, same error handling as the
+  // broadcast path — a throwing subscriber must not block registration or
+  // propagate out of subscribeAskUserLocal itself.
+  try {
+    cb(r.queue.slice());
+  } catch (e) {
+    console.warn('[askUserLocal] listener threw', e);
+  }
   return () => {
-    registry().listeners.delete(cb);
+    r.listeners.delete(cb);
   };
 }
 
 /**
- * Request a local prompt. Returns a promise that resolves when any
- * host calls `resolve()`. If no host is subscribed, resolves
- * immediately with `{action:'cancel'}` (the caller decides how to
- * handle that).
+ * Host election (EI-19952165837170400). Register a mounted host renderer —
+ * the most-recently-registered host is ACTIVE; only the active host should
+ * actually render the head card (see `isActiveLocalCardHost`). Registering
+ * or unregistering a host notifies every subscribed queue listener so every
+ * mounted host re-evaluates its own active-ness. Call once per host mount;
+ * the returned function unregisters it (call on unmount).
+ */
+export function registerLocalCardHost(hostId: string): () => void {
+  const r = registry();
+  r.hostOrder = r.hostOrder.filter((id) => id !== hostId);
+  r.hostOrder.push(hostId);
+  notifyElection();
+  notifyQueue();
+  return () => {
+    const rr = registry();
+    rr.hostOrder = rr.hostOrder.filter((id) => id !== hostId);
+    notifyElection();
+    notifyQueue();
+  };
+}
+
+/** Is `hostId` the currently-elected (rendering) host? */
+export function isActiveLocalCardHost(hostId: string): boolean {
+  const r = registry();
+  return r.hostOrder.length > 0 && r.hostOrder[r.hostOrder.length - 1] === hostId;
+}
+
+/**
+ * Subscribe to election changes (a host registered/unregistered) without
+ * caring about the queue itself. Most callers should just re-derive
+ * `isActiveLocalCardHost` inside their `subscribeAskUserLocal` callback —
+ * `registerLocalCardHost` already triggers a queue notification on every
+ * election change — but this is exposed for callers that need to react to
+ * election changes even while the queue is empty.
+ */
+export function subscribeLocalCardHostElection(cb: ElectionListener): () => void {
+  const r = registry();
+  r.electionListeners.add(cb);
+  return () => {
+    r.electionListeners.delete(cb);
+  };
+}
+
+/**
+ * Request a local prompt. Returns a promise that resolves when any host
+ * calls `resolve()`. If no host is subscribed, resolves immediately with
+ * `{action:'cancel'}` (the caller decides how to handle that).
  */
 export function askUserLocal<TSchema extends ZodTypeAny>(
   spec: CardSpec<TSchema>,
@@ -75,25 +176,29 @@ export function askUserLocal<TSchema extends ZodTypeAny>(
       spec,
       resolve,
     };
-    // Fan out to every subscriber. First resolver wins.
     let resolved = false;
-    const wrap = (response: CardResponse<TSchema>) => {
+    card.resolve = (response: CardResponse<TSchema>) => {
       if (resolved) return;
       resolved = true;
+      // Remove from the SHARED queue and broadcast — every subscribed host
+      // (not just whichever one the user answered from) drops its view of
+      // this card in the same tick, so no stale copy survives to be
+      // answered twice (EI-19952165837170400).
+      const rr = registry();
+      rr.queue = rr.queue.filter((c) => c.id !== card.id);
+      notifyQueue();
       resolve(response);
     };
-    card.resolve = wrap;
-    for (const l of r.listeners) {
-      try {
-        l(card as unknown as OpenLocalCard);
-      } catch (e) {
-        console.warn('[askUserLocal] listener threw', e);
-      }
-    }
+    r.queue.push(card as unknown as OpenLocalCard);
+    notifyQueue();
   });
 }
 
-/** Test-only: clear all subscribers. */
+/** Test-only: clear all subscribers, hosts, and the queue. */
 export function _resetAskUserLocalForTests(): void {
-  registry().listeners.clear();
+  const r = registry();
+  r.queue = [];
+  r.listeners.clear();
+  r.hostOrder = [];
+  r.electionListeners.clear();
 }

@@ -37,10 +37,21 @@ import { SEVERITY_TONE } from '../../harness/theme';
 
 /* ── tabs ────────────────────────────────────────────────────────────────── */
 
-export const HUD_TABS = ['sessions', 'plans', 'items'] as const;
+/**
+ * `goals` is FIRST, which also makes it the board's DEFAULT tab.
+ *
+ * [owner 2026-08-09 interactive, verbatim: "make the goal tab in the hud tab
+ * the left most tab"] — recorded as D-018 on goal-mode-2026-08-07. The ordering
+ * is not cosmetic: sessions/plans/items each answer "what is happening", and a
+ * board that opens on those reads as activity with no stated purpose. Goals
+ * answers "what is it FOR", so it is the frame the other three tabs are read
+ * inside — which only works if the owner meets it first.
+ */
+export const HUD_TABS = ['goals', 'sessions', 'plans', 'items'] as const;
 export type HudTabId = (typeof HUD_TABS)[number];
 
 export const HUD_TAB_LABEL: Record<HudTabId, string> = {
+  goals: 'Goals',
   sessions: 'Sessions',
   plans: 'Plans',
   items: 'Work items',
@@ -76,6 +87,14 @@ const PLAN_COLUMN_EMPTY: Record<HudEntityColumnId, string> = {
   blocked: 'Nothing is blocked',
   ready: 'Nothing queued',
   done: 'Nothing finished yet',
+};
+
+const GOAL_COLUMN_EMPTY: Record<HudEntityColumnId, string> = {
+  'needs-you': 'No goal is waiting on a decision',
+  working: 'No goal has work in flight',
+  blocked: 'No goal is paused',
+  ready: 'No goal is idle',
+  done: 'No goal has been closed yet',
 };
 
 const ITEM_COLUMN_EMPTY: Record<HudEntityColumnId, string> = {
@@ -180,6 +199,29 @@ export interface HudPlanInput {
   nextAction?: string | null;
   itemCounts?: Record<string, number> | null;
   archived?: boolean;
+}
+
+/**
+ * The `goals.list` wire row, narrowed the same way (goal-mode-2026-08-07 P-020).
+ *
+ * Declared here rather than imported from the resolver for the reason the file
+ * doc gives for the other two: this module's whole value is being testable
+ * without pulling a server module (and its `postgres` import) into a DOM-free
+ * unit test.
+ */
+export interface HudGoalInput {
+  id: string;
+  title: string;
+  status: string;
+  killCriterion?: string | null;
+  /** Items on this goal parked on the owner — the needs-you signal. */
+  needsHuman?: number | null;
+  openWorkItems?: number | null;
+  projectCount?: number | null;
+  /** FLEET spend: what the goal's child agents cost. Not the goal's own turns. */
+  spendUsd?: number | null;
+  budgetCents?: number | null;
+  updatedAt?: string | null;
 }
 
 /** The work-item wire row (workItems.byHarness), narrowed the same way. */
@@ -469,6 +511,111 @@ export function buildPlanBoard(plans: HudPlanInput[], opts: HudEntityBuildOption
   return assemble(
     plans.map((p) => toPlanCard(p, opts.nowMs)),
     PLAN_COLUMN_EMPTY,
+    opts,
+  );
+}
+
+/* ── goals (goal-mode-2026-08-07 P-020) ──────────────────────────────────── */
+
+const GOAL_TERMINAL_STATUSES: ReadonlySet<string> = new Set(['closed', 'done', 'achieved', 'abandoned']);
+
+/**
+ * Which column a goal belongs in — keyed on WHAT IT IS WAITING ON, not on its
+ * status string alone.
+ *
+ * The precedence is the interesting part, so it is stated rather than left to
+ * be reverse-engineered from the `if` order:
+ *
+ *   1. TERMINAL first. A closed goal's leftover needs-human items are moot;
+ *      routing it to `needs-you` would ask the owner to act on a finished goal.
+ *   2. needs-you BEFORE paused. Both are owner actions, but `needsHuman` is a
+ *      CONCRETE ask ("3 items are parked on you") while a pause is a state. A
+ *      paused goal that also has asks still surfaces the pause — as a badge, so
+ *      the fact is never lost, it just does not outrank the actionable thing.
+ *   3. paused ⇒ blocked. Nothing on a paused goal advances until a human
+ *      resumes it, which is exactly what `blocked` means on this board.
+ *   4. open work ⇒ working; otherwise ⇒ ready ("active, but nothing is moving"),
+ *      which is the state most worth noticing and the one a status field alone
+ *      cannot express: a goal can be `active` and completely idle.
+ *
+ * Pure — no clock, no I/O.
+ */
+export function goalColumn(goal: HudGoalInput): HudEntityColumnId {
+  const status = (goal.status ?? '').toLowerCase();
+  if (GOAL_TERMINAL_STATUSES.has(status)) return 'done';
+  if ((goal.needsHuman ?? 0) > 0) return 'needs-you';
+  if (status === 'paused' || status === 'blocked') return 'blocked';
+  if ((goal.openWorkItems ?? 0) > 0) return 'working';
+  return 'ready';
+}
+
+/** `$310 / $500` — or bare spend when no ceiling was set. Pure. */
+export function goalSpendLabel(goal: HudGoalInput): string {
+  const spend = Math.round(goal.spendUsd ?? 0);
+  if (goal.budgetCents == null) return `$${spend}`;
+  return `$${spend} / $${Math.round(goal.budgetCents / 100)}`;
+}
+
+export function toGoalCard(goal: HudGoalInput, nowMs: number): HudEntityCard {
+  const column = goalColumn(goal);
+  const status = (goal.status ?? '').toLowerCase();
+  const badges: HudBadge[] = [];
+
+  const needsHuman = goal.needsHuman ?? 0;
+  if (needsHuman > 0) {
+    badges.push({
+      id: `${goal.id}:needs-human`,
+      label: `${needsHuman} needs you`,
+      tone: 'warn',
+      title: `${needsHuman} item${needsHuman === 1 ? '' : 's'} under this goal need a human decision`,
+    });
+  }
+  // Rendered even when the goal sorted into `needs-you` — see the precedence
+  // note on goalColumn: the column loses the pause, the badge keeps it.
+  if (status === 'paused') {
+    badges.push({ id: `${goal.id}:paused`, label: 'paused', tone: 'neutral', title: 'Nothing under this goal advances until it is resumed' });
+  }
+  const open = goal.openWorkItems ?? 0;
+  if (open > 0) {
+    badges.push({ id: `${goal.id}:open`, label: `${open} open`, tone: 'good', title: `${open} open work item${open === 1 ? '' : 's'} stamped to this goal` });
+  }
+  const projects = goal.projectCount ?? 0;
+  if (projects > 0) {
+    badges.push({ id: `${goal.id}:projects`, label: `${projects} proj`, tone: 'neutral', title: `${projects} project${projects === 1 ? '' : 's'} serve this goal` });
+  }
+  // The spend chip goes `bad` only at/over the ceiling — the second of the two
+  // things that can actually stop a goal, so it earns an alarm tone.
+  const ceilingUsd = goal.budgetCents == null ? null : goal.budgetCents / 100;
+  const overCeiling = ceilingUsd != null && (goal.spendUsd ?? 0) >= ceilingUsd;
+  badges.push({
+    id: `${goal.id}:spend`,
+    label: goalSpendLabel(goal),
+    tone: overCeiling ? 'bad' : 'neutral',
+    title: overCeiling
+      ? 'Fleet spend has reached this goal’s ceiling'
+      : 'Fleet spend — what this goal’s CHILD agents cost. The goal agent’s own turns are subscription-billed.',
+  });
+
+  return {
+    id: goal.id,
+    ref: goal.id.slice(0, 8),
+    title: goal.title?.trim() || goal.id,
+    // The kill criterion IS the reason line. It is the one sentence that says
+    // when this goal stops, and a goal with none can never stop — so its
+    // absence is stated outright rather than falling back to a count summary
+    // that would read as though the card were merely uninformative.
+    reason: goal.killCriterion?.trim() || 'No kill criterion — nothing can stop this goal',
+    context: null,
+    badges,
+    sinceSec: ageSec(goal.updatedAt, nowMs),
+    sortKey: sortKeyFor(column, goal.updatedAt),
+  };
+}
+
+export function buildGoalBoard(goals: HudGoalInput[], opts: HudEntityBuildOptions): HudEntityBoard {
+  return assemble(
+    goals.map((g) => toGoalCard(g, opts.nowMs)),
+    GOAL_COLUMN_EMPTY,
     opts,
   );
 }

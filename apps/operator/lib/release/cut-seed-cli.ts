@@ -353,6 +353,8 @@ export async function refreshCorestoreStateForSeed(inp: {
    */
   readonly sparse?: boolean;
   readonly produceSnapshotImpl?: typeof produceLogSnapshot;
+  /** False ⇒ --no-force-backfill; see the note on the call site below. */
+  readonly forceBackfill?: boolean;
 }): Promise<RefreshCorestoreStateForSeedResult> {
   const warn = inp.warn ?? ((m: string) => console.warn(m));
   const pg = inp.pg ?? getOrgPg().sql;
@@ -366,7 +368,7 @@ export async function refreshCorestoreStateForSeed(inp: {
   } as unknown as BootedHarnessHandle;
 
   const backfill = await (inp.backfillImpl ?? backfillLocalState)(handle, pg, {
-    force: true,
+    force: inp.forceBackfill !== false,
     maxOpsPerAuthor: 0,
   });
 
@@ -456,6 +458,23 @@ export async function openSourceStoreForCut(inp: {
   readonly sparse: boolean;
   /** False ⇒ --skip-corestore-refresh. */
   readonly wantRefresh: boolean;
+  /**
+   * False ⇒ --no-force-backfill: RESUMING a cut whose backfill already ran.
+   *
+   * The default (`force: true`) makes backfillLocalState skip its per-target marker read
+   * and treat EVERY target as unswept — belt-and-braces for a release artifact, but it
+   * re-enqueues the whole corpus (~35k rows here) on every attempt. Those rows are
+   * already in substrate_outbox and still draining, so a relaunch STACKS onto the live
+   * backlog for zero information gain: measured 2026-08-09, 27.9k undrained + 35.5k
+   * re-enqueued = ~63k rows at ~4.4 rows/s ≈ 4h of pure waiting.
+   *
+   * With this false we trust the markers and sweep only genuinely-unswept targets. That
+   * is SAFE for the seed's currency because the drain wait below is unchanged: it still
+   * blocks until undrained === 0, and the fresh head snapshot is still appended after it.
+   * The precondition it assumes is that a PRIOR backfill enqueued the corpus — true when
+   * resuming, false on a first-ever cut for a workspace, which is why this is OPT-IN.
+   */
+  readonly forceBackfill?: boolean;
   readonly openStore?: (dir: string, opts?: { readOnly?: boolean; wait?: boolean }) => Corestore;
   readonly pg?: postgres.Sql;
   readonly refreshImpl?: typeof refreshCorestoreStateForSeed;
@@ -581,6 +600,7 @@ export async function openSourceStoreForCut(inp: {
       hive: inp.hive,
       store: store!,
       sparse: inp.sparse,
+      forceBackfill: inp.forceBackfill,
     });
   } else if (wantRefresh) {
     // Live-operator box: split the refresh along the write boundary. backfill is a
@@ -591,8 +611,17 @@ export async function openSourceStoreForCut(inp: {
     // never received would lose them permanently.
     const pg = inp.pg ?? getOrgPg().sql;
     const handle = { workspaceId: inp.workspaceId, harnessSlug: inp.hive } as unknown as BootedHarnessHandle;
+    const forceBackfill = inp.forceBackfill !== false;
+    if (!forceBackfill) {
+      warn(
+        '[cut-seed] --no-force-backfill: trusting backfillLocalState markers, so already-swept ' +
+          'targets are NOT re-enqueued. The drain wait below is unchanged (still to zero), and the ' +
+          'fresh head snapshot is still appended after it — currency is preserved. Only valid when a ' +
+          'PRIOR backfill enqueued this corpus.',
+      );
+    }
     const backfill = await (inp.backfillImpl ?? backfillLocalState)(handle, pg, {
-      force: true,
+      force: forceBackfill,
       maxOpsPerAuthor: 0,
     });
     const { waitedMs } = await (inp.waitImpl ?? waitForOperatorDrain)({

@@ -26,6 +26,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import type { ReactElement } from 'react';
 
 const H = vi.hoisted(() => ({
   calls: [] as unknown[],
@@ -39,7 +40,13 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
-import KillTaskControl, { killability, refusalHelp, type KillableRow } from './KillTaskControl';
+import KillTaskControl, {
+  KillOutcomeProvider,
+  killability,
+  refusalHelp,
+  useKillOutcomeHoist,
+  type KillableRow,
+} from './KillTaskControl';
 
 /** Resolve a repo-root-relative path by walking up from the run cwd. */
 function repoFile(rel: string): string {
@@ -210,5 +217,112 @@ describe('refusals are surfaced verbatim (P-025)', () => {
     ]) {
       expect(refusalHelp(e).length).toBeGreaterThan(0);
     }
+  });
+});
+
+/**
+ * The outcome must OUTLIVE the row — a regression guard for a defect measured live, not
+ * imagined (2026-08-09, real Tauri webview, real server).
+ *
+ * The kill is exactly the event that removes its own row: the route invalidates
+ * `taskManager.inventory`, the task stops being running, and the default view is
+ * running-only. Driving a genuine refusal end-to-end (`not_live`, HTTP 200, verbatim
+ * detail) produced NEITHER `task-kill-refused-…` NOR `task-kill-done-…` anywhere in the
+ * DOM, because the row carrying them had already unmounted. A destructive control whose
+ * ANSWER is unreadable is the failure P-025 exists to prevent — the reader cannot tell a
+ * refusal from a success, and the natural response to that ambiguity is to click again.
+ *
+ * `rowsPresent` below models the ONE thing that matters: the row leaving the pane's row
+ * set. When it is gone the control unmounts, exactly as it does in the live pane.
+ */
+describe('kill outcome survives its row unmounting', () => {
+  function Harness({ rows, r }: { rows: { taskId: string }[]; r: KillableRow }): ReactElement {
+    const { outcomeContext, notice } = useKillOutcomeHoist(rows);
+    return (
+      <div>
+        {notice}
+        <KillOutcomeProvider value={outcomeContext}>
+          {rows.some((x) => x.taskId === r.taskId) ? <KillTaskControl row={r} /> : null}
+        </KillOutcomeProvider>
+      </div>
+    );
+  }
+
+  /** Arm and fire, leaving the outcome reported. */
+  async function killIt(): Promise<void> {
+    fireEvent.click(screen.getByTestId('task-kill-t1'));
+    fireEvent.click(await screen.findByTestId('task-kill-yes-t1'));
+  }
+
+  it('shows NOTHING at pane level while the row is still on screen (the chip is the better placement)', async () => {
+    H.reply = { ok: true, detail: 'scope pc-t1.scope signalled SIGTERM' };
+    render(<Harness rows={[{ taskId: 't1' }]} r={row()} />);
+    await killIt();
+
+    await screen.findByTestId('task-kill-done-t1');
+    // Two banners saying the same thing would read as two separate events.
+    expect(screen.queryByTestId('task-kill-notice-t1')).toBeNull();
+  });
+
+  it('surfaces a SUCCESS at pane level once the killed row has left the table', async () => {
+    H.reply = { ok: true, detail: 'scope pc-t1.scope signalled SIGTERM' };
+    const { rerender } = render(<Harness rows={[{ taskId: 't1' }]} r={row()} />);
+    await killIt();
+    await screen.findByTestId('task-kill-done-t1');
+
+    // The invalidation lands: the task is no longer running, so it drops out of the view.
+    rerender(<Harness rows={[]} r={row()} />);
+
+    const notice = await screen.findByTestId('task-kill-notice-t1');
+    expect(notice.textContent).toContain('t1');
+    expect(notice.textContent).toContain('signalled');
+    // The server's own words survive the row.
+    expect(notice.textContent).toContain('scope pc-t1.scope signalled SIGTERM');
+    expect(screen.queryByTestId('task-kill-done-t1')).toBeNull();
+  });
+
+  it('surfaces a REFUSAL verbatim at pane level once the row is gone, as role=alert', async () => {
+    // The exact refusal the live probe produced.
+    H.reply = {
+      ok: false,
+      error: 'not_live',
+      detail: 'state is exited — a residue or terminal row is never ours to signal',
+    };
+    const { rerender } = render(<Harness rows={[{ taskId: 't1' }]} r={row()} />);
+    await killIt();
+    await screen.findByTestId('task-kill-refused-t1');
+
+    rerender(<Harness rows={[]} r={row()} />);
+
+    const notice = await screen.findByTestId('task-kill-notice-t1');
+    expect(notice.getAttribute('role')).toBe('alert');
+    expect(notice.textContent).toContain('not_live');
+    // VERBATIM — the server's sentence, not a paraphrase.
+    expect(notice.textContent).toContain('state is exited — a residue or terminal row is never ours to signal');
+    // And the sentence that says a refusal is the rail working, not a fault.
+    expect(notice.textContent).toContain(refusalHelp('not_live'));
+  });
+
+  it('is dismissable, and stays dismissed', async () => {
+    H.reply = { ok: false, error: 'identity_mismatch', detail: 'pid 42 is gone' };
+    const { rerender } = render(<Harness rows={[{ taskId: 't1' }]} r={row()} />);
+    await killIt();
+    rerender(<Harness rows={[]} r={row()} />);
+
+    fireEvent.click(await screen.findByTestId('task-kill-notice-dismiss-t1'));
+    expect(screen.queryByTestId('task-kill-notice-t1')).toBeNull();
+  });
+
+  it('reports the taskId, which is the only handle left once the row is gone', async () => {
+    H.reply = { ok: true, detail: 'scope pc-other.scope signalled SIGTERM' };
+    const other = row({ taskId: 'other-task' });
+    const { rerender } = render(<Harness rows={[{ taskId: 'other-task' }]} r={other} />);
+    fireEvent.click(screen.getByTestId('task-kill-other-task'));
+    fireEvent.click(await screen.findByTestId('task-kill-yes-other-task'));
+    await screen.findByTestId('task-kill-done-other-task');
+
+    rerender(<Harness rows={[]} r={other} />);
+    const notice = await screen.findByTestId('task-kill-notice-other-task');
+    expect(notice.textContent).toContain('other-task');
   });
 });

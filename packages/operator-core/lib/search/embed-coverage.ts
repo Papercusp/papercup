@@ -743,6 +743,14 @@ async function defaultEmitToast(t: { level: string; message: string; description
   void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
 }
 
+/**
+ * The same toast path, shared with the P-004 injection-reach alarm
+ * (`../memory/injection-coverage`) so the two alarms cannot drift into two different
+ * notification mechanisms for the same measurement pass. Pure re-export of the default
+ * emitter — this module's behaviour is unchanged.
+ */
+export const emitCoverageToast = defaultEmitToast;
+
 export interface CoverageAlarmResult {
   surfaces: SurfaceCoverage[];
   drains: DrainObservation[];

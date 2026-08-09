@@ -3,20 +3,13 @@
  * (learning-system-audit-improvements-2026-06-09 P-014).
  */
 
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
-import {
-  planHygieneSweep,
-  runHygieneSweep,
-  planObservationRetention,
-  runObservationRetention,
-  DEFAULT_OBSERVATION_WINDOW_DAYS,
-  DEFAULT_OBSERVATION_HARD_CAP,
-  type HygieneSweepDeps,
-  type ObservationRetentionDeps,
-} from './hygiene';
-import { OBSERVATION_TOPIC, IMPROVEMENT_TOPIC } from './read-items';
+import { planHygieneSweep, runHygieneSweep, type HygieneSweepDeps } from './hygiene';
 import type { ImprovementCandidate } from './policy';
-import type { EngineerIssue, IssueAgeRow } from '../../issues-engineer';
+import type { EngineerIssue } from '../../issues-engineer';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 
 const NOW = Date.parse('2026-06-09T12:00:00Z');
@@ -250,117 +243,65 @@ describe('runHygieneSweep — persistence + dryRun', () => {
   });
 });
 
-// ── Observation-lane retention (turn-end-reflection-observations-2026-06-14 P-045)
+// ── RECURRENCE GUARD: observation retention is retired and must stay retired ──
+// P-005 of learning-loop-identity-and-consumption-2026-08-08 removed the sweep that
+// hard-deleted observation rows past a 30d window, by owner directive (D-001: "why
+// would we ever want to throw out observations?"; D-005: observations are a time
+// series; D-029: it was ~30 min from its first permanent deletion when removed).
+//
+// The guard is anchored to the PROPERTY that defines the defect — SQL that DELETEs
+// issue rows — not to the names the retired code happened to use. A name-anchored
+// check would pass the moment someone re-added the same behaviour as
+// `pruneStaleObservations`, which is exactly how a guard ends up reporting clean
+// while the thing it guards is back (the form-blind-detector trap in CLAUDE.md).
 
-const ageRow = (id: string, ageDays: number): IssueAgeRow => ({ id, createdAt: daysAgo(ageDays) });
+/** Scan roots are overridable so falsifiability can be probed against a COPY,
+ *  outside the shared tree — never by mutating these files in place. */
+const guardRoot = process.env.PAPERCUSP_HYGIENE_GUARD_ROOT
+  ? resolve(process.env.PAPERCUSP_HYGIENE_GUARD_ROOT)
+  : resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-describe('planObservationRetention — window + cap intersection', () => {
-  it('prunes ONLY rows that are BOTH older than the window AND beyond the cap', () => {
-    // Newest-first by age: recent-a (2d), recent-b (5d), old-within-cap (60d), old-surplus (90d).
-    const rows: IssueAgeRow[] = [
-      ageRow('recent-a', 2), // newest, within cap, within window → keep
-      ageRow('recent-b', 5), // within cap, within window → keep
-      ageRow('old-within-cap', 60), // beyond window BUT within cap (idx 2 < cap 3) → keep (cap protects)
-      ageRow('old-surplus', 90), // beyond window AND beyond cap (idx 3 ≥ cap 3) → PRUNE
-    ];
-    const prune = planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 3 });
-    expect(prune).toEqual(['old-surplus']);
+/** Any SQL that hard-deletes an issue/work-item row. Whitespace-tolerant so a
+ *  multi-line tagged template cannot slip past on formatting alone. */
+const HARD_DELETE_SQL = /DELETE\s+FROM\s+harness_shared\.(engineer_issues|work_items)\b/i;
+
+const findHardDeletes = (source: string): string[] =>
+  source.split(/\n/).flatMap((line, i) => (HARD_DELETE_SQL.test(line) ? [`${i + 1}: ${line.trim()}`] : []));
+
+describe('observation retention stays RETIRED — no hard-delete of issue rows (D-001/D-005/D-029)', () => {
+  it('CONTROL: the detector FIRES on a re-introduced hard delete (proves it can fail)', () => {
+    // A deliberately-wrong sample kept permanently in the test, so this guard is
+    // never a check that has only ever been observed passing.
+    expect(findHardDeletes('  DELETE FROM harness_shared.engineer_issues WHERE issue_id = ANY($1)')).toHaveLength(1);
+    expect(findHardDeletes('await sql`DELETE   FROM\tharness_shared.work_items`')).toHaveLength(1);
+    // ...and CALIBRATION: it does not fire on deletes of other, legitimately
+    // ephemeral tables (watchdog ticks), or on the lifecycle close that replaces it.
+    expect(findHardDeletes('DELETE FROM harness_shared.watchdog_ticks WHERE ts < $1')).toEqual([]);
+    expect(findHardDeletes("setIssueState(id, 'closed', by)")).toEqual([]);
   });
 
-  it('keeps every row younger than the window regardless of the cap (busy fleet)', () => {
-    // 50 recent rows, cap of 5 — none are old enough to prune, so nothing goes.
-    const rows = Array.from({ length: 50 }, (_, i) => ageRow(`r${i}`, 2));
-    expect(planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 5 })).toEqual([]);
+  it('issues-engineer.ts contains no hard-delete of issue rows', () => {
+    const src = readFileSync(resolve(guardRoot, 'issues-engineer.ts'), 'utf8');
+    expect(findHardDeletes(src)).toEqual([]);
   });
 
-  it('keeps the newest `hardCap` rows even when they are older than the window (quiet fleet)', () => {
-    // All rows ancient, but only the surplus beyond the cap prunes — the newest
-    // `hardCap` are retained for Scout even though every row is past the window.
-    const rows = Array.from({ length: 10 }, (_, i) => ageRow(`r${i}`, 100 + i)); // r0 newest … r9 oldest
-    const prune = planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 3 });
-    // keep r0,r1,r2 (newest 3); prune r3..r9
-    expect(prune.sort()).toEqual(['r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']);
+  it('no improvements-lane module hard-deletes issue rows', () => {
+    const dir = resolve(guardRoot, 'harness/improvements');
+    const offenders: string[] = [];
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.ts') || f.includes('.test.')) continue; // fixtures clean up their own rows
+      const hits = findHardDeletes(readFileSync(resolve(dir, f), 'utf8'));
+      if (hits.length) offenders.push(`${f} → ${hits.join('; ')}`);
+    }
+    expect(offenders).toEqual([]);
   });
 
-  it('an unparseable createdAt sorts oldest, so it cannot shield itself from the cap', () => {
-    const rows: IssueAgeRow[] = [
-      ageRow('good', 100),
-      { id: 'bad', createdAt: 'not-a-date' },
-    ];
-    // cap=1 → the newest (good) is kept; bad sorts oldest (createdMs=0) and, being
-    // both over-cap and "older than" the window, prunes.
-    expect(planObservationRetention(rows, { nowMs: NOW, windowDays: 30, hardCap: 1 })).toEqual(['bad']);
-  });
-
-  it('defaults: 30d window + 1000-row cap', () => {
-    expect(DEFAULT_OBSERVATION_WINDOW_DAYS).toBe(30);
-    expect(DEFAULT_OBSERVATION_HARD_CAP).toBe(1000);
-    // With the default cap, a sub-cap lane (even when ancient) prunes nothing.
-    const rows = Array.from({ length: 500 }, (_, i) => ageRow(`r${i}`, 365));
-    expect(planObservationRetention(rows, { nowMs: NOW })).toEqual([]);
-  });
-});
-
-describe('runObservationRetention — reads ONLY the observation topic, hard-deletes', () => {
-  const mkDeps = (rows: IssueAgeRow[]) => {
-    const deletedBatches: string[][] = [];
-    const readTopics: string[] = [];
-    const deps: ObservationRetentionDeps = {
-      readObservationAges: vi.fn(async () => {
-        readTopics.push(OBSERVATION_TOPIC); // the default dep reads OBSERVATION_TOPIC only
-        return rows;
-      }),
-      deleteIssues: vi.fn(async (ids) => {
-        deletedBatches.push([...ids]);
-        return ids.length;
-      }),
-    };
-    return { deps, deletedBatches, readTopics };
-  };
-
-  it('hard-deletes the planned surplus and returns the pruned count', async () => {
-    const rows = Array.from({ length: 6 }, (_, i) => ageRow(`o${i}`, 100 + i));
-    const { deps, deletedBatches } = mkDeps(rows);
-    const res = await runObservationRetention({ nowMs: NOW, windowDays: 30, hardCap: 2 }, deps);
-    expect(res.scanned).toBe(6);
-    expect(res.pruned).toBe(4);
-    expect(deletedBatches).toHaveLength(1);
-    expect(deletedBatches[0].sort()).toEqual(['o2', 'o3', 'o4', 'o5']);
-  });
-
-  it('dryRun plans without deleting', async () => {
-    const rows = Array.from({ length: 5 }, (_, i) => ageRow(`o${i}`, 100 + i));
-    const { deps, deletedBatches } = mkDeps(rows);
-    const res = await runObservationRetention({ nowMs: NOW, windowDays: 30, hardCap: 1, dryRun: true }, deps);
-    expect(res.dryRun).toBe(true);
-    expect(res.planned.length).toBe(4);
-    expect(res.pruned).toBe(0);
-    expect(deletedBatches).toHaveLength(0);
-  });
-
-  it('nothing to prune ⇒ no delete call', async () => {
-    const rows = [ageRow('recent', 1)];
-    const { deps, deletedBatches } = mkDeps(rows);
-    const res = await runObservationRetention({ nowMs: NOW }, deps);
-    expect(res.pruned).toBe(0);
-    expect(deletedBatches).toHaveLength(0);
-  });
-
-  it('NEVER touches the improvement lane — the topics are distinct and the reader sees only OBSERVATION_TOPIC', async () => {
-    // Construct rows whose ids look like improvement-lane items; the retention
-    // reader only ever reads OBSERVATION_TOPIC (asserted via readTopics), and the
-    // two topic constants are guaranteed distinct — so no improvement-lane row can
-    // ever reach deleteIssues through this path.
-    expect(OBSERVATION_TOPIC).not.toBe(IMPROVEMENT_TOPIC);
-    const rows = Array.from({ length: 4 }, (_, i) => ageRow(`obs-${i}`, 100 + i));
-    const { deps, deletedBatches, readTopics } = mkDeps(rows);
-    await runObservationRetention({ nowMs: NOW, windowDays: 30, hardCap: 1 }, deps);
-    // The only topic ever read is the observation topic — the improvement lane is
-    // never queried, so the prune is structurally incapable of touching it.
-    expect(readTopics.every((t) => t === OBSERVATION_TOPIC)).toBe(true);
-    expect(readTopics).not.toContain(IMPROVEMENT_TOPIC);
-    // Everything deleted came from the observation rows we fed in.
-    const deletedIds = deletedBatches.flat();
-    expect(deletedIds.every((id) => id.startsWith('obs-'))).toBe(true);
+  it('the retired retention surface is gone from the hygiene module', async () => {
+    const mod = await import('./hygiene');
+    const revived = Object.keys(mod).filter((k) =>
+      /observationretention|observation_hard_cap|observation_window/i.test(k),
+    );
+    expect(revived).toEqual([]);
   });
 });
+

@@ -152,7 +152,16 @@ export default defineTool({
       'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.',
     chaining:
       'improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them.',
+    returns:
+      'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, alreadyDecided? }.\n\n' +
+      'possibleDuplicates[] carries THREE kinds of hit, and they do NOT mean the same thing:\n' +
+      '  • no flag        — token-overlap (Jaccard) above threshold. May DECLINE your capture.\n' +
+      '  • semantic:hard  — embedding match. May DECLINE your capture.\n' +
+      '  • semantic:soft  — weaker embedding match. ADVISORY ONLY, never declines.\n' +
+      '  • lexical:"containment" — your (shorter) title is almost fully covered by a much longer stored one. ADVISORY ONLY, never declines. This is the net that makes a SHORT symptom query work: Jaccard divides by the union, so a short query that is a perfect subset of a long stored title scores |query|/|title| and cannot clear the threshold on its own.\n\n' +
+      'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates as "nothing similar exists". The embedding leg fails OPEN (semantic:"unavailable" when the embedder is down/over budget), so degraded:true means a differently-worded duplicate would NOT have been found and your empty result is "could not check", not "checked and clean".',
     seeAlso: [
+      'SYMPTOM-FIRST — improvements:capture { title, checkDuplicatesOnly:true } BEFORE you diagnose: "has anyone already hit this?" costs one call and a title, and creates nothing',
       'improvements:digest (triage the backlog this lands in)',
       'work_items:create (a problem in a MANAGED harness, not papercusp itself)',
       'plans:new (something needing real design — capture kind=feature linking it)',
@@ -226,7 +235,12 @@ export default defineTool({
           .boolean()
           .optional()
           .describe('file even if a likely duplicate exists (default false → search-first declines)'),
-        checkDuplicatesOnly: z.boolean().optional().describe('only run the dedup search, do not create'),
+        checkDuplicatesOnly: z
+          .boolean()
+          .optional()
+          .describe(
+            'SEARCH ONLY, creates nothing: "has anyone already hit this?" — run BEFORE you diagnose, with just a `title` (the symptom in your own words).',
+          ),
         // WI-5950. Kept SHORT on purpose: the prompt-weight budget (≤1500 soft / ≤1600 hard
         // per tool) is shared across every field, and the first draft of this description
         // blew the hard cap on its own. The rationale lives here, not in the agent's context:

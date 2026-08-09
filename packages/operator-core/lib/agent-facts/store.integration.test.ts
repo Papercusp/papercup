@@ -278,6 +278,57 @@ describe('assertFact against the REAL mig-461 identity index', () => {
   });
 });
 
+// EI-19952118814692217: `created_by` was the ONLY bind in assertFact's INSERT
+// without a `?? null` coalesce. mode:set called assertFact directly (not through
+// the facts:assert TOOL, which fills createdBy server-side) and omitted it, so
+// postgres-js threw a driver-level `UNDEFINED_VALUE` before any row was written —
+// and mode:set's bare `catch {}` discarded that error entirely, making the whole
+// failure undiagnosable from logs. Every unit test stayed green because
+// mode/set.test.ts MOCKS assertFact, so a missing required arg was invisible to it.
+describe('createdBy binding (EI-19952118814692217 regression guard)', () => {
+  it('succeeds with ONLY the documented-required fields — every other caller-omittable bind must coalesce', async () => {
+    // Mirrors the actual failure shape: a direct (non-tool) caller supplying just
+    // scope/scopeRef/key/body/createdBy/workspaceId and nothing else. Every
+    // OPTIONAL AssertFactInput field left off here must resolve to a safe default
+    // in the INSERT (`?? null` or equivalent) — an un-coalesced bind throws before
+    // a row is ever written, exactly as `created_by` did.
+    const fact = await assertFact(
+      {
+        scope: 'owner',
+        scopeRef: 'su-required-fields-only',
+        key: 'required-only',
+        body: 'minimal required-field assert',
+        createdBy: 'su-int',
+        workspaceId: WS,
+      },
+      db.sql,
+    );
+    expect(fact.key).toBe('required-only');
+    expect(fact.createdBy).toBe('su-int');
+  });
+
+  it('omitting createdBy fails LOUDLY with an attributable NOT NULL error, not a bare "undefined values" throw', async () => {
+    // `createdBy` is REQUIRED in AssertFactInput — TypeScript refuses this at
+    // compile time for any typed caller. This guards a caller that reaches the
+    // store WITHOUT going through that type contract (mode:set's original direct
+    // call did exactly this). Before the fix: postgres-js threw
+    // `UNDEFINED_VALUE: Undefined values are not allowed` — a message naming no
+    // column and no fix. After the fix (`${input.createdBy ?? null}`): the
+    // NOT NULL constraint fires instead and names the actual column, which is
+    // what makes the fail-soft catch's logged error diagnosable at all.
+    const badInput = {
+      scope: 'owner',
+      scopeRef: 'su-missing-createdby',
+      key: 'missing-createdby',
+      body: 'no createdBy on purpose',
+      workspaceId: WS,
+      // createdBy deliberately omitted — the cast bypasses the type contract to
+      // simulate a caller that skips it, the same shape as the original bug.
+    } as unknown as Parameters<typeof assertFact>[0];
+    await expect(assertFact(badInput, db.sql)).rejects.toThrow(/created_by/i);
+  });
+});
+
 describe('P-008 (a) append-versioning — a correction APPENDS, it never destroys (D-003)', () => {
   const base = { scope: 'owner' as const, scopeRef: 'su-v', key: 'ver', createdBy: 'su-int', workspaceId: WS };
   const chain = () =>

@@ -94,6 +94,14 @@ export interface ActionableCondition {
  */
 export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   { prefix: 'green-stall:', harnessFrom: 'suffix', severity: 'critical' },
+  // P-005 (gate-ownership-followup-2026-08-08). A gate that FIRES hourly and reds
+  // every time is not a stall — `green-stall:` above cannot see it (its legs are
+  // fire-staleness and a 12h no-green backstop), so until this entry existed a plain
+  // red gate had NO condition and therefore no ownable work-item. Emitted by
+  // `trackGateStall` (harness/routines/release-actions.ts) at the SAME edge that
+  // already fires the urgent stall alert, so the condition's open/close cannot drift
+  // from the state machine that decides the gate is stuck. Critical: `main` is frozen.
+  { prefix: 'gate-red-streak:', harnessFrom: 'suffix', severity: 'critical' },
   { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-fire-stale:', harnessFrom: 'suffix', severity: 'major' },
