@@ -136,6 +136,24 @@ describe('classifyJournalctlFailure', () => {
   it('falls back to the error message when there is no stderr', () => {
     expect(classifyJournalctlFailure(new Error('spawn timed out')).message).toContain('spawn timed out');
   });
+
+  it('classifies an exec-TIMEOUT kill as `timeout`, not a bare generic error (EI-19980767336148101)', () => {
+    // Node's own execFile({ timeout }) contract on a killed child: killed:true,
+    // code:null, and (because the child never got to print anything) empty
+    // stderr — measured live against a slow --grep + wide `since` + `-n` tail
+    // cap scan of a chatty unit. This shape used to fall through to the
+    // catch-all `error` branch with an opaque "Command failed: <argv>" message.
+    const out = classifyJournalctlFailure({ killed: true, code: null, signal: 'SIGTERM', stderr: '' });
+    expect(out.kind).toBe('timeout');
+    expect(out.message).toContain('killed');
+    expect(out.message).toContain('SIGTERM');
+  });
+
+  it('a TIMEOUT kill is never misread as the --grep-matched-nothing clean case', () => {
+    // Both share `code` outside {1, 'ENOENT'} and empty stderr, so a naive
+    // check could conflate them — a timeout must never come back as 'no-match'.
+    expect(classifyJournalctlFailure({ killed: true, code: null, stderr: '' }).kind).not.toBe('no-match');
+  });
 });
 
 describe('parseJournalJson', () => {
@@ -364,6 +382,41 @@ describe('readJournal — an empty result from a unit that does not exist', () =
     const probe = vi.fn(async () => []);
     await readJournal({ units: ['systemd-oomd.service'], scope: 'system' }, execReturning(''), probe);
     expect(probe).toHaveBeenCalledWith(['systemd-oomd.service'], 'system');
+  });
+});
+
+/**
+ * The false-zero this whole module now guards against directly
+ * (EI-19980767336148101): a FAILED or TIMED-OUT read must never report
+ * `matched: 0` — that is byte-identical to a genuinely clean window unless the
+ * caller separately checks `journalError`, and a slow `--grep` + wide `since`
+ * + `-n` tail cap against a chatty unit hits the exec timeout for real.
+ */
+describe('readJournal — a failed or timed-out read never reports matched:0', () => {
+  it('reports matched:null (not 0) on a generic journalctl error', async () => {
+    const exec: JournalExec = async () => {
+      throw Object.assign(new Error('boom'), { code: 1, stderr: 'Failed to add match: Invalid argument' });
+    };
+    const out = await readJournal({ units: ['a.service'], grep: 'x' }, exec, noUnknownUnits);
+    expect(out.journalError).not.toBeNull();
+    expect(out.matched).toBeNull();
+    expect(out.entries).toEqual([]);
+  });
+
+  it('reports matched:null (not 0) when the scan is killed by the exec timeout', async () => {
+    const exec: JournalExec = async () => {
+      throw Object.assign(new Error('journalctl <args>'), { killed: true, code: null, signal: 'SIGTERM', stderr: '' });
+    };
+    const out = await readJournal(
+      { units: ['papercup-bg-host.service'], grep: 'channel CLOSED', since: '-48 hours' },
+      exec,
+      noUnknownUnits,
+    );
+    expect(out.journalError).not.toBeNull();
+    expect(out.journalError).toContain('killed');
+    expect(out.matched).toBeNull();
+    expect(out.entries).toEqual([]);
+    expect(out.journalAvailable).toBe(true); // a timeout is not "no journal at all"
   });
 });
 

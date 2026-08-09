@@ -267,11 +267,12 @@ function checksSpec() {
         '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
-        'plain rewrite never silently drops them) and [] clears them — but a SUPPLIED list REPLACES the set: ' +
-        'send the FULL set you want stored, because any stored claim you leave out is DROPPED. (A supplied row ' +
-        'whose claim text matches a stored one inherits that row\'s recheck/verified/sinceMs when you omit them, ' +
-        'so re-sending a claim never loses its evidence — but that inheritance is per-row, it is NOT a union.) ' +
-        'Rows dropped this way come back as `checksDropped` in the result.',
+        'plain rewrite never silently drops them) and [] clears them. With `append: true` a supplied list is ' +
+        'UNIONED onto the carried set (supplied wins on matching claim text), so an additive write can never ' +
+        'drop a row. WITHOUT append a supplied list REPLACES the set: send the FULL set you want stored, ' +
+        'because any stored claim you leave out is DROPPED — that is how you RETIRE a stale check. A supplied ' +
+        'row whose claim text matches a stored one inherits that row\'s recheck/verified/sinceMs when you omit ' +
+        'them, so re-sending a claim never loses its evidence. Rows dropped come back as `checksDropped`.',
     );
 }
 
@@ -287,9 +288,11 @@ const itemSpec = z.object({
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
   append: looseBoolean().describe(
     'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
-      'of replacing it. Reads the current checkpoint first via the same path a future pickup uses. Requires a ' +
-      'non-blank `checkpoint` (append + clear is contradictory — rejected, not silently treated as a clear). ' +
-      'Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would overflow it.',
+      'of replacing it. Makes the WHOLE write additive: supplied `checks` are UNIONED onto the carried set ' +
+      'rather than replacing it (EI-19944669306930709). Reads the current checkpoint first via the same path a ' +
+      'future pickup uses. Requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not ' +
+      'silently treated as a clear). Bounded to the 32000-char cap: the OLDEST content is trimmed first if the ' +
+      'join would overflow it.',
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
@@ -340,7 +343,8 @@ export default defineTool({
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
       append: looseBoolean().describe(
         'single shorthand default for `append` (EI-9036): join `checkpoint` onto the existing stored checkpoint ' +
-          'instead of replacing it. Also the default applied to any `items[]` entry that omits its own `append`.',
+          'instead of replacing it, and UNION supplied `checks` onto the carried set instead of replacing them ' +
+          '(EI-19944669306930709). Also the default applied to any `items[]` entry that omits its own `append`.',
       ),
       confirmShrink: looseBoolean().describe(
         'single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.',
@@ -581,8 +585,38 @@ export default defineTool({
                 // at all, so the STORED one is the body — read authoritatively here, inside
                 // the store's locked transaction, so a concurrent writer cannot interleave.
                 const body = isChecksOnlyPatch ? priorSplit.body : incomingBody;
+                // EI-19944669306930709: under `append: true` the supplied rows are
+                // UNIONED onto the carried set instead of replacing it. `append` is an
+                // explicit declaration that this write is ADDITIVE, and it governed only
+                // the body — so "append a progress note, and record the one claim I just
+                // verified", the single most natural incremental write, destroyed every
+                // other carried check. Reported twice in one session ~25min apart by an
+                // agent who had already READ the replace-semantics warning: the rule was
+                // known and did not help, because `append: true` in the same call frames
+                // the whole invocation as additive and `checks` reads as one more field
+                // of it.
+                //
+                // EI-19460631385508515 made that loss VISIBLE (`checksDropped`). Visible
+                // is not prevented: the report is after-the-fact, rides on an `ok: true`,
+                // and recovery means re-sending the full set verbatim — where any claim
+                // whose text you retype slightly differently loses its inherited
+                // recheck/verified and silently becomes a new, unevidenced row. Under an
+                // explicitly additive write there is nothing to trade off, so prevent it.
+                //
+                // Order matters: supplied FIRST. normalizeCheckEntries dedups by claim
+                // text (first occurrence wins) and caps at CARRY_NOTE_MAX_CHECKS, so a
+                // re-sent claim updates in place rather than duplicating, and if the cap
+                // bites it is the carried tail that yields — never the row the caller
+                // just told us mattered. A carried row passed through inherits from
+                // itself, so its evidence and original sinceMs survive untouched.
+                //
+                // PLAIN (non-append) replace is deliberately UNCHANGED: it is the only
+                // way to RETIRE a stale check, and dropping that would trade one footgun
+                // for another. Retiring a row while appending is two calls, by design.
+                const effectiveChecks =
+                  suppliedChecks === undefined ? undefined : wantsAppend ? [...suppliedChecks, ...prior] : suppliedChecks;
                 const merged =
-                  suppliedChecks !== undefined ? normalizeCheckEntries(suppliedChecks, prior) : prior;
+                  effectiveChecks !== undefined ? normalizeCheckEntries(effectiveChecks, prior) : prior;
                 // Recomputed on every transform invocation (the store may retry it under
                 // its lock) so the last run — the one whose result is stored — wins.
                 const keptClaims = new Set(merged.map((c) => c.claim.trim()));

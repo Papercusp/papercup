@@ -1362,6 +1362,85 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
   });
 });
 
+describe('a crashed tsc with non-empty garbage output must NOT read as clean (WI-37485)', () => {
+  // WHY THIS EXISTS. Confirmed live against green-checkpoint candidate b15ff819ad2e (a real,
+  // committed TS2741 in federated-presence.ts): `npx tsc -p packages/operator-core/tsconfig.json
+  // --noEmit --incremental false` OOM-crashed under real fleet memory pressure (V8 "FATAL ERROR:
+  // Ineffective mark-compacts near heap limit ... JavaScript heap out of memory", SIGABRT, exit
+  // 134) — reproduced THREE times in one sitting, both with pc-heavy coalescing on and fully
+  // disabled, ruling out the cache as the cause. The crash trace is non-empty, so the pre-existing
+  // `tscThrew && !tscOutput` guard (which only catches a totally EMPTY crash) never fires;
+  // `parseTscErrors` then — correctly, per its own contract — finds zero "file.ts(l,c): error
+  // TSxxxx:" lines in a V8 native stack trace and returns `[]`. That empty list reads as "every
+  // baselined file improved to 0 errors", i.e. the gate reports the candidate CLEAN despite the
+  // real, un-fixed TS2741 never having been type-checked at all.
+  //
+  // `tscCommand` is injectable and shell-executed (see the wiring describe block above) — a canned
+  // command that prints non-diagnostic garbage and exits non-zero stands in for the OOM crash
+  // without needing to actually exhaust heap.
+  const REPO_ROOT_C = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const GATE_C = pathToFileURL(join(REPO_ROOT_C, 'scripts', 'lib', 'tsc-baseline-gate.mjs')).href;
+
+  /** Run the real gate with a canned tscCommand; returns its combined stdout+stderr. */
+  function runGateWithCommand(tscCommand: string, baseline: Record<string, number>): string {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-crash-'));
+    try {
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: baseline }));
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(GATE_C)};\n` +
+          `await runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  tscCommand: ${JSON.stringify(tscCommand)},\n` +
+          `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
+          `  label: 'test',\n` +
+          `  argv: [],\n` +
+          `});\n`,
+      );
+      try {
+        return execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch (e: any) {
+        return `${e.stdout ?? ''}${e.stderr ?? ''}`;
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // THE MUTANT this test exists to catch: a genuinely-cached pre-fix gate would print exactly this.
+  const CLEAN_MUTANT = 'TSC operator-core: 0 type errors across 0 file(s)';
+
+  it('an OOM-shaped crash (non-empty garbage, non-zero exit) is reported as a toolchain failure, never clean', () => {
+    const crashCmd =
+      "(printf 'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - " +
+      "JavaScript heap out of memory\\nAborted (core dumped)\\n'; exit 134)";
+    const out = runGateWithCommand(crashCmd, { 'lib/a.ts': 3, 'lib/b.ts': 5 });
+    expect(out).toContain('toolchain failure');
+    expect(out).toContain('JavaScript heap out of memory');
+    expect(out).not.toContain(CLEAN_MUTANT);
+    expect(out).not.toContain('below baseline');
+  });
+
+  it('a genuinely EMPTY crash still hits the original (pre-existing) guard, unchanged', () => {
+    const out = runGateWithCommand('exit 134', { 'lib/a.ts': 3 });
+    expect(out).toContain('tsc produced no output');
+    expect(out).not.toContain(CLEAN_MUTANT);
+  });
+
+  it('CONTROL: a real red (non-zero exit, real diagnostics) still parses and gates normally', () => {
+    const realRed =
+      "(printf 'lib/a.ts(10,3): error TS2322: Type mismatch.\\n'; exit 1)";
+    const out = runGateWithCommand(realRed, { 'lib/a.ts': 0 });
+    expect(out).not.toContain('toolchain failure');
+    expect(out).toContain('lib/a.ts: 0 → 1');
+  });
+
+  it('CONTROL: a genuinely clean run (exit 0, no output) is still reported clean', () => {
+    const out = runGateWithCommand('true', { 'lib/a.ts': 3 });
+    expect(out).toContain(CLEAN_MUTANT);
+  });
+});
+
 describe('new-file reds: COMMITTED does not mean SETTLED (WI-6767)', () => {
   // WHY THIS EXISTS. EI-19278299775574199 split new-file reds into a peer's UNCOMMITTED live edit
   // (don't touch) and a COMMITTED standing red (fix it now). That split is right — but it assumes

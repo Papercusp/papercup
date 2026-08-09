@@ -1672,6 +1672,34 @@ export async function runTscBaselineGate({
   }
 
   const errors = parseTscErrors(tscOutput);
+
+  // EI-19478xxxxxx (WI-37485): the guard above only catches an EMPTY-output crash. A crash that
+  // exits non-zero and prints NON-diagnostic garbage — most measured: a V8 "FATAL ERROR:
+  // Ineffective mark-compacts near heap limit ... JavaScript heap out of memory" trace followed
+  // by "Aborted (core dumped)" when `tsc` OOMs mid-compile on a loaded box — sails straight past
+  // it: `tscOutput` is non-empty (the crash trace itself), so `!tscOutput` is false, and execution
+  // falls through to parseTscErrors, which correctly finds ZERO lines matching the TS-diagnostic
+  // format in a stack trace and returns `[]`. That empty list is then compared against a non-empty
+  // baseline and reported as "every file improved to 0 errors" — a real, un-fixed type regression
+  // (confirmed reproduced against candidate b15ff819ad2e: a genuine TS2741 in
+  // federated-presence.ts) reads as a clean gate.
+  //
+  // A LEGITIMATE tsc run that exits non-zero because it found real compile errors ALWAYS reports
+  // them as parseable diagnostics — that is the one and only way `tsc --noEmit` produces a
+  // non-zero exit under normal operation (exit 1 = diagnostics reported; a genuine exit 2 config
+  // failure also emits a parseable TS5xxx line). So `tscThrew` true together with ZERO parsed
+  // diagnostics is never a legitimate "0 errors" answer — it is the abnormal-crash signature this
+  // gate's whole job is refusing to report clean on. Fail loudly instead of silently ratcheting
+  // every file's baseline to 0.
+  if (tscThrew && errors.length === 0) {
+    console.error(
+      '❌ tsc exited non-zero (crashed) but produced ZERO parseable diagnostics — ' +
+        'toolchain failure (e.g. an OOM crash), not a clean run. Raw output follows:',
+    );
+    console.error(tscOutput.slice(0, 4000));
+    process.exit(1);
+  }
+
   const brokenFiles = syntaxBrokenFiles(errors);
   const currentByFile = countByFile(errors);
 

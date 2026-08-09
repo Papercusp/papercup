@@ -753,7 +753,7 @@ export default defineTool({
                   wallsDroppedNote:
                     `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
                     `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
-                    `or pass no \`walls\` at all to leave the carried rows untouched.`,
+                    `pass no \`walls\` at all, or use rowsMode:'merge' so unmentioned rows survive.`,
                 }
               : {}),
             /** WI-7264: fields trimmed to their soft cap so the write could SUCCEED instead

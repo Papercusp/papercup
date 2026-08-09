@@ -1496,6 +1496,56 @@ describe('runGreenCheckpoint', () => {
       expect(calls.indexOf('cancelStaleAwaits')).toBeLessThan(secondRunGreen);
     });
 
+    // WI-37490: a run that auto-refires and then dies mid-refire (process kill, deploy
+    // restart, host reboot) used to record NOTHING — recordOwnVerdict only fires on the
+    // FINAL resolution of the (possibly-recursive) runGreenCheckpoint call, so the first
+    // pass's already-computed verdict was silently discarded. Pins the fix: the superseded
+    // pass's own verdict is recorded via deps.recordVerdict BEFORE the recursive re-fire.
+    it('a STALE red that REFIRES records the SUPERSEDED pass verdict before recursing (WI-37490)', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2'); // the candidate about to be ABANDONED
+      const c3 = await commit('src/failing.test.ts', 'fixed', 'c3 — the fix'); // the newer tip
+      const { deps, calls } = bothPathsWired({ passesAtTip: true });
+      let run = 0;
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        run += 1;
+        return run === 1
+          ? {
+              green: false,
+              summary: '1 failed',
+              failingTests: ['@papercusp/web'],
+              failingFiles: [{ file: 'src/failing.test.ts', workspace: '@papercusp/web' }],
+            }
+          : { green: true, summary: 'all pass' };
+      };
+      const recorded: Array<{ green: boolean; candidate: string }> = [];
+      deps.recordVerdict = async (r) => {
+        calls.push('recordVerdict');
+        recorded.push({ green: r.green, candidate: r.candidate });
+        return true;
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      // The overall run still resolves green, advanced to the tip — recording the
+      // superseded pass must not change the final outcome.
+      expect(r.green).toBe(true);
+      expect(r.advanced).toBe(true);
+      expect(r.candidate).toBe(c3);
+      // Exactly ONE recorded verdict: the superseded first pass, NOT-green, still pinned
+      // to the ABANDONED candidate c2 (never c3 — the final resolution's own recorder,
+      // recordOwnVerdict, is a separate call path this test does not stub).
+      expect(recorded).toEqual([{ green: false, candidate: c2 }]);
+      // Recorded on the FIRST (failing) pass, strictly before the recursive re-run's own
+      // runGreen call — a superseded-pass record left dangling after the recursion would
+      // mean it ran too late to survive a death during the refire itself.
+      const secondRunGreen = calls.lastIndexOf('runGreen');
+      expect(calls.indexOf('recordVerdict')).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf('recordVerdict')).toBeLessThan(secondRunGreen);
+    });
+
     it('the cheap tip re-triage runs BEFORE any prefix-salvage work', async () => {
       const c1 = await commit('a', '1', 'c1');
       await git(repo, ['branch', 'ready', c1]);
@@ -1574,6 +1624,45 @@ describe('runGreenCheckpoint', () => {
       expect(r.green).toBe(true);
       expect(r.advanced).toBe(true);
       expect(r.candidate).toBe(c3); // advanced to the TIP, not held on the stale lint red
+    });
+
+    // WI-37490: the gate-only (lint/typecheck) sibling of the file-based rescue's own
+    // superseded-pass recording, above. Same defect, same fix, independent call site
+    // (green-checkpoint.ts's second `deps.recordVerdict?.(buildNotGreenResult(...))` before
+    // its own recursive re-fire) — this pins THAT site so it can't silently regress alone.
+    it('a STALE gate red that REFIRES records the SUPERSEDED pass verdict before recursing (WI-37490)', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2'); // the candidate about to be ABANDONED
+      const c3 = await commit('b', '2', 'c3 — fixes the identity-leak lint'); // the newer tip
+      const { deps, calls } = gatePathWired({ passesAtTip: true });
+      let run = 0;
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        run += 1;
+        return run === 1
+          ? { green: false, summary: '1 failed', failingTests: ['lint:identity-leak'] } // no failingFiles ⇒ gate-only red
+          : { green: true, summary: 'all pass' };
+      };
+      const recorded: Array<{ green: boolean; candidate: string }> = [];
+      deps.recordVerdict = async (r) => {
+        calls.push('recordVerdict');
+        recorded.push({ green: r.green, candidate: r.candidate });
+        return true;
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(r.green).toBe(true);
+      expect(r.advanced).toBe(true);
+      expect(r.candidate).toBe(c3);
+      // Exactly one recorded verdict: the superseded first pass, not-green, pinned to the
+      // abandoned candidate c2 — never c3, which belongs to the final resolution's own
+      // (separately-tested) recordOwnVerdict path.
+      expect(recorded).toEqual([{ green: false, candidate: c2 }]);
+      const secondRunGreen = calls.lastIndexOf('runGreen');
+      expect(calls.indexOf('recordVerdict')).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf('recordVerdict')).toBeLessThan(secondRunGreen);
     });
 
     it('a REAL gate red (still fails at tip) holds the gate and still gets the prefix salvage', async () => {
