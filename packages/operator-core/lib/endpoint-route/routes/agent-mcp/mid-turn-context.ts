@@ -56,6 +56,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 // because it drags nothing behind it, and because clampToBudget must stay a
 // pure sync function its tests can call directly.
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
+import { recordInjectionCoverage } from '../../../memory/injection-coverage';
 
 /** Query clamp — embed the head of a long command, not a pasted heredoc. */
 const QUERY_CLAMP = 1_000;
@@ -424,6 +425,22 @@ export function deriveBatchQuery(calls: BatchCall[]): string {
 }
 
 /**
+ * The SINGLE-call form (a direct caller / probe — the hook sends a batch),
+ * lifted into the batch shape so the handler has ONE coverage code path
+ * instead of two that can drift apart.
+ */
+function singleCallDetail(tool: string, input: unknown): DerivedBatch {
+  const { query, miss } = deriveQueryDetailed(tool, input);
+  return {
+    query,
+    // An empty tool name still has to be countable, or the most likely
+    // malformed-payload case is the one that stays invisible.
+    unknownTools: miss === 'unknown-tool' ? [tool || '(empty)'] : [],
+    noSignalTools: miss === 'no-signal' ? [tool] : [],
+  };
+}
+
+/**
  * A path-shaped token, for removal from the COSINE query only.
  *
  * Two shapes, and the second condition is what keeps it honest: ≥2 slashes
@@ -532,12 +549,50 @@ const midTurnContext = defineTool({
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
 
     try {
-      const derived = (
+      // P-005 / D-005 §3b — derive DETAILED so a miss can leave a TRACE.
+      // This used to compute a bare string and `return` on empty, recording
+      // nothing, which is precisely why "the hook fired but the server derived
+      // no query" was indistinguishable from "the hook never fired" and let
+      // codex/omp sit structurally zeroed on this port without a fault.
+      const detail =
         Array.isArray(body.toolCalls) && body.toolCalls.length
-          ? deriveBatchQuery(body.toolCalls)
-          : deriveQuery((body.tool ?? '').trim(), body.toolInput)
-      ).slice(0, QUERY_CLAMP);
-      // No signal in this tool call — drop before spending anything.
+          ? deriveBatchQueryDetailed(body.toolCalls)
+          : singleCallDetail((body.tool ?? '').trim(), body.toolInput);
+      const derived = detail.query.slice(0, QUERY_CLAMP);
+
+      // Resolved BEFORE the first coverage write, not at the recall site, so a
+      // miss row and a recall row for the same session key on the same
+      // workspace. Split keys would make per-workspace coverage unreadable.
+      const workspace = (body.workspace ?? '').trim();
+      const { activeWorkspaceId } = await import('../../../workspace-registry');
+      const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
+
+      const coverage = {
+        port: 'mid-turn' as const,
+        client: typeof body.client === 'string' ? body.client : '',
+        workspaceId,
+      };
+      // Recorded even when OTHER calls in the batch DID carry signal: a tool we
+      // cannot read is vocabulary drift whether or not this particular batch
+      // happened to succeed around it. Never awaited — telemetry must not cost
+      // the turn.
+      if (detail.unknownTools.length || detail.noSignalTools.length) {
+        void recordInjectionCoverage([
+          ...detail.unknownTools.map((tool) => ({
+            ...coverage,
+            outcome: 'unknown-tool' as const,
+            tool,
+          })),
+          ...detail.noSignalTools.map((tool) => ({
+            ...coverage,
+            outcome: 'no-signal' as const,
+            tool,
+          })),
+        ]);
+      }
+
+      // No signal in this tool call — drop before spending anything. The
+      // difference from before is that the drop is now RECORDED above.
       if (!derived) return Response.json({ ok: true, text: '' });
       // P-044: one derived signal, two per-leg queries. See splitLegQueries().
       const { cosine: query, lexical: lexicalQuery } = splitLegQueries(derived);
@@ -568,9 +623,6 @@ const midTurnContext = defineTool({
           /* best-effort — an empty harness just stays a bare-session pull */
         }
       }
-      const workspace = (body.workspace ?? '').trim();
-      const { activeWorkspaceId } = await import('../../../workspace-registry');
-      const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
 
       const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }] = await Promise.all([
         import('../../../memory/injection'),
@@ -606,6 +658,11 @@ const midTurnContext = defineTool({
           budgetChars: MID_TURN_BUDGET_CHARS,
           heading: 'Possibly relevant (mid-turn)',
         })) ?? '';
+
+      // The recall RAN. Separate "returned context" from "found nothing
+      // relevant": the second is healthy quiet, and an alarm that cannot tell
+      // it from a dead hook is the false alarm D-005 §3 exists to prevent.
+      void recordInjectionCoverage([{ ...coverage, outcome: block ? 'recalled' : 'no-recall' }]);
 
       // The budget is advisory inside buildMemoryContextBlock; see clampToBudget.
       return Response.json({ ok: true, text: clampToBudget(block) });

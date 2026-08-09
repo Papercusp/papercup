@@ -202,7 +202,7 @@ const wakeArg = z
   })
   .optional()
   .describe(
-    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when a durable backstop re-dispatches a miss (e.g. the Mug survey) — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify woken≥1) or coord:handoff. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when a durable backstop re-dispatches a miss (e.g. the Mug survey) — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify woken≥1) or coord:handoff. Don't stop at woken alone: a target in manual wake-mode STAGES the wake (queued for owner review, NOT delivered) and also reports woken:0, the same scalar as a dead miss — read `wakeOutcome` ('delivered'/'partial-staged'/'staged-manual-mode'/'missed') to tell them apart. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
   );
 
 const wakeOnReplyArg = z
@@ -1047,6 +1047,18 @@ async function sendOne(
         targets: string[];
         woken: number;
         staged?: number;
+        /** EI-19965318428068990: an explicit, non-numeric discriminant so a caller reading
+         *  ONLY `woken` (the field the persona/docs teach to check) cannot conflate a STAGED
+         *  wake (manual wake-mode — the target is alive and wakeable, but the wake was queued
+         *  for owner review instead of firing) with a genuine miss (`woken:0` is the SAME
+         *  scalar for both). 'delivered' = every target fired (staged===0); 'partial-staged' =
+         *  a mixed multi-target send, some delivered and some staged; 'staged-manual-mode' =
+         *  nothing delivered, everything staged (the case the finding calls out — do NOT read
+         *  this as "target unreachable": release the staged wake or flip the target to auto,
+         *  per `note`); 'missed' = staged===0 AND woken===0 — the pre-existing miss path
+         *  (`recipient_absent`/`recipient_dead`/`recipient_remote`/`recipient_dormant_scheduled`
+         *  already disambiguate further within this case). */
+        wakeOutcome?: 'delivered' | 'partial-staged' | 'staged-manual-mode' | 'missed';
         /** EI-5957: the ownerIds whose wake STAGED (manual wake-mode) — named so a
          *  leader-steering send surfaces WHO didn't get the directive, alongside `note`. */
         stagedTargets?: string[];
@@ -1090,6 +1102,22 @@ async function sendOne(
     });
     wake = { mode: wakeMode, targets: fan.targets, woken: fan.woken };
     if (fan.staged > 0) wake.staged = fan.staged;
+    // EI-19965318428068990: compute the explicit discriminant BEFORE the staged-note /
+    // missed-classification branches below — it depends only on the woken/staged/targets
+    // counts already known here, and every branch after this point only adds detail, never
+    // changes which of these buckets applies. `fan.targets.length === 0` (every addressee
+    // was non-wakeable, e.g. '*'/'human' only) is left unset — there was nothing to wake,
+    // which is not the "missed" case (a genuinely-addressed target that got no wake).
+    if (fan.targets.length > 0) {
+      wake.wakeOutcome =
+        fan.woken > 0 && fan.staged === 0
+          ? 'delivered'
+          : fan.woken > 0 && fan.staged > 0
+            ? 'partial-staged'
+            : fan.woken === 0 && fan.staged > 0
+              ? 'staged-manual-mode'
+              : 'missed';
+    }
     // EI-5957: a wake that STAGED (target in manual wake-mode) is NOT delivered —
     // the leader-steering failure was a quiet `staged:1` read as success while the
     // member never got the directive. Surface it LOUDLY: name the staged target(s)

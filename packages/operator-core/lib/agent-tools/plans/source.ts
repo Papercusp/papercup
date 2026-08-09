@@ -437,11 +437,20 @@ export async function resolvePlanScope(
   return { workspaceId, harnessSlug: hiveHome };
 }
 
-/** Synthetic stable locator for a plan (the old `.md` path) — display + lock key. */
+/**
+ * Synthetic stable locator for a plan — display + lock-key only, never a real
+ * file (EI-19964793024613369): plans are PG-canonical
+ * (plans-pg-canonical-migration-2026-06-03) and `docs/plans/*.md` was
+ * git-rm'd, so this string is never written to disk for ANY plan, old or
+ * new. It used to render as `apps/operator/docs/plans/<slug>.md` — a real
+ * *former* on-disk shape — which taught callers (agents grepping for a
+ * "filePath" the tool response handed them) to search the filesystem for a
+ * plan that only ever lived in Postgres. The `plan://` scheme makes clear at
+ * a glance that this is a locator, not a path: read a plan via
+ * `plans:get` / `plans:search`, never a filesystem read.
+ */
 export function syntheticPlanPath(harnessSlug: string, slug: string): string {
-  return harnessSlug === operatorHomeHarnessSlug()
-    ? `${PLANS_DIR_REL}/${slug}.md`
-    : `${harnessSlug}/${DEFAULT_HARNESS_PLANS_REL}/${slug}.md`;
+  return `plan://${harnessSlug}/${slug}`;
 }
 
 // ── Filesystem dir helpers (repo-root / cwd resolution only — NOT plan bytes) ──

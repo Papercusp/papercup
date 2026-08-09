@@ -101,6 +101,33 @@ describe('ensureWorkIntakeRoutineInactive (WI-6680 D3)', () => {
     // owner's activation and their supplied sourceRepoPath on every restart.
     expect(upsertRoutineMock).not.toHaveBeenCalled();
   });
+
+  /**
+   * WI-37417 — the existence probe must scope on workspace_id too.
+   *
+   * `harness_shared.routines` is multi-tenant, and this probe drives a NEGATIVE
+   * guard, so an unscoped match fails in the EAGER direction: workspace B's boot
+   * matches workspace A's row for the same installSlug, returns null, and B never
+   * gets its inactive placeholder — the silent absence WI-6680 D3 exists to
+   * remove, reintroduced one tenant over. recordWorkIntakeHealth states this rule
+   * 45 lines above in the same file and scopes correctly; this pins the sibling to
+   * it so the two cannot drift apart again.
+   */
+  it('scopes the existence probe on workspace_id, not just install_slug + name', async () => {
+    const sqlFn = vi.fn(async () => [] as Array<Record<string, unknown>>);
+    await ensureWorkIntakeRoutineInactive(
+      { workspaceId: 'ws-1', installSlug: 'papercusp', host: HOST, inactiveReason: REASON },
+      sqlFn as unknown as Parameters<typeof ensureWorkIntakeRoutineInactive>[1],
+    );
+
+    expect(sqlFn).toHaveBeenCalledTimes(1);
+    const [strings, ...bindings] = sqlFn.mock.calls[0] as unknown as [string[], ...unknown[]];
+    // Assert the BINDING, not just the SQL text: a `workspace_id` that appears in
+    // the template but is never bound to input.workspaceId would read as fixed
+    // while filtering on nothing.
+    expect(bindings).toEqual(['ws-1', 'papercusp', WORK_INTAKE_ROUTINE_NAME]);
+    expect(strings.join('?')).toContain('workspace_id');
+  });
 });
 
 /**

@@ -100,3 +100,57 @@ describe('ingestInteractiveUsage — session_id attribution (P3)', () => {
     expect(Math.round((rows[0]?.usd ?? 0) * 100)).toBeGreaterThan(0);
   });
 });
+
+describe('ingestInteractiveUsage — per-owner isolation root sweep (EI-19964643447670242)', () => {
+  it('ingests a transcript under <isolationBase>/<owner>/projects/, not just the global root', async () => {
+    // Mirrors the REAL on-disk shape every psu-launched agent (su/queen/overwatch/bee)
+    // writes to: ~/.papercusp/session-claude/<ownerId>/projects/<munged-cwd>/<uuid>.jsonl —
+    // a root the ingester never swept before this fix, so this whole population's
+    // interactive usage was structurally invisible to agent_usage_samples.
+    const uuid = 'cccc3333-dddd-4444-eeee-555566667777';
+    const isolationBase = await fs.mkdtemp(path.join(os.tmpdir(), 'p3-isobase-'));
+    tmpDirs.push(isolationBase);
+    const ownerProjectsDir = path.join(isolationBase, 'su-fake-owner-id', 'projects', 'munged-cwd');
+    await fs.mkdir(ownerProjectsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(ownerProjectsDir, `${uuid}.jsonl`),
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 500, output_tokens: 700 } } }) + '\n',
+    );
+
+    // Empty explicit `adapters` (no global-root pollution) + includeIsolationRoots:true
+    // (test seam override) + isolationBase pointed at our temp fixture — never touches
+    // the real $HOME tree.
+    const res = await ingestInteractiveUsage({
+      adapters: [],
+      includeIsolationRoots: true,
+      isolationBase,
+    });
+    expect(res.samples).toBeGreaterThan(0);
+
+    const rows = await sql<Array<{ session_id: string | null; source: string; cost_usd: number | null }>>`
+      SELECT session_id, source, cost_usd FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].source).toBe('interactive');
+    expect(rows[0].cost_usd).toBeGreaterThan(0);
+  });
+
+  it('a caller-supplied `adapters` array WITHOUT includeIsolationRoots opts out — no real-$HOME sweep', async () => {
+    // Recurrence guard for the test-pollution risk: every pre-existing test in this
+    // file relies on exactly this default (adapters given, includeIsolationRoots
+    // unset) to stay hermetic. Pin it explicitly so a future change to the default
+    // can't silently start sweeping the real machine's isolation tree in every test.
+    const uuid = 'dddd4444-eeee-5555-ffff-666677778888';
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'p3-noiso-'));
+    tmpDirs.push(dir);
+    await fs.writeFile(
+      path.join(dir, `${uuid}.jsonl`),
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 10, output_tokens: 10 } } }) + '\n',
+    );
+    const res = await ingestInteractiveUsage({
+      adapters: [{ name: 'claude', root: dir, parse: parseTranscriptChunk }],
+    });
+    // Only the one file under `dir` — no other adapter (isolation or otherwise) ran.
+    expect(res.root).toBe(dir);
+  });
+});

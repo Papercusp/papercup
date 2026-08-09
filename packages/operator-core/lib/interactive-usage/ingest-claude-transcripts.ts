@@ -150,6 +150,17 @@ export interface IngestOptions {
   /** Adapter set to ingest (P-015). Default: claude + codex + OMP
    *  (`defaultAdapters()` from ingest-adapters.ts). */
   adapters?: Array<{ name: string; root: string; parse: (chunk: string) => ParsedChunk }>;
+  /** Also sweep each per-session Claude isolation root
+   *  (`~/.papercusp/session-claude/<owner>/projects`) in addition to the
+   *  global `~/.claude/projects` claude adapter. Default true; only applies
+   *  on the true default path (`adapters` not supplied — a caller passing
+   *  its own `adapters` array, e.g. every existing test, opts out by
+   *  construction). Set false to restrict to the single global root. */
+  includeIsolationRoots?: boolean;
+  /** Isolation base override for the isolation-root sweep — the parent dir
+   *  holding one subdir per owner (default `~/.papercusp/session-claude`,
+   *  same default as `claudeProjectsRoots()`). Test seam only. */
+  isolationBase?: string;
 }
 
 export interface IngestResult {
@@ -171,6 +182,24 @@ const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
  * persist one `source='interactive'` usage sample per (file-delta × model).
  * Safe to re-run (the system-actions contract). All adapters share the one
  * watermark table — file paths are absolute, so roots can't collide.
+ *
+ * EI-19964643447670242: `defaultAdapters()`'s claude entry only ever swept the
+ * GLOBAL `~/.claude/projects` root. Every psu-launched agent (su fleet
+ * members, queen/overwatch/bee, and every other psu console role) runs under
+ * an ISOLATED per-owner `CLAUDE_CONFIG_DIR` and writes its transcript to
+ * `~/.papercusp/session-claude/<ownerId>/projects/**` instead — a root this
+ * ingester never scanned, so the ENTIRE fleet's interactive usage was
+ * structurally invisible to `agent_usage_samples`: not merely "not yet
+ * ingested" but never ingested at all. Two real consumers silently no-op'd on
+ * this: `loop-cost-cap.ts`'s `readLoopSpendCents` (owner → adv_sessions.
+ * session_id → agent_usage_samples.session_id → SUM(cost_usd)) always found 0
+ * for a warm psu/loop session and the cost-cap guardrail never bound, and any
+ * attempt to read a psu session's own spend via that same join came back
+ * empty. Sweeping the isolation roots too (below, default on) closes the gap
+ * with NO schema change — the existing session_id-keyed join already works
+ * once the source rows exist. (A residual, DISTINCT bug remains for a
+ * cold-loop-respawned session whose `adv_sessions.session_id` was never
+ * re-anchored to its live successor transcript — filed separately.)
  */
 export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<IngestResult> {
   const maxFiles = opts.maxFilesPerTick ?? DEFAULT_MAX_FILES;
@@ -186,6 +215,26 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     // Back-compat: a `root` override re-points the claude adapter (the
     // routine's `trigger_config.root` knob predates the adapter set).
     adapters = adapters.map((a) => (a.name === 'claude' ? { ...a, root: opts.root! } : a));
+  }
+  // Default ON only when the caller took the true default path (no `adapters`
+  // supplied) — every existing test passes its own `adapters` array and so
+  // opts out by construction, with zero risk of sweeping the real $HOME
+  // isolation tree into a test's temp DB. `includeIsolationRoots: true`
+  // explicitly overrides that opt-out (paired with `isolationBase` below) so
+  // the sweep itself stays test-injectable rather than reachable only via the
+  // real machine's `~/.papercusp/session-claude`.
+  const wantIsolationRoots = opts.includeIsolationRoots ?? !opts.adapters;
+  if (wantIsolationRoots) {
+    // Distinct adapter names so the `root` back-compat remap above (which
+    // matches name==='claude' only) can't collide two adapters onto the same
+    // directory and double-ingest a tick.
+    const { claudeProjectsRoots, defaultClaudeProjectsRoot } = await import('../claude-sessions');
+    const globalRoot = defaultClaudeProjectsRoot();
+    const isoRoots = (await claudeProjectsRoots(globalRoot, opts.isolationBase)).filter((r) => r !== globalRoot);
+    adapters = [
+      ...adapters,
+      ...isoRoots.map((root, i) => ({ name: `claude-iso-${i}`, root, parse: parseTranscriptChunk })),
+    ];
   }
 
   const result: IngestResult = {

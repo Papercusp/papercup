@@ -37,6 +37,11 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/_components/chat/chat-controls.css :: .pc-chat-decisions .pc-items__action--nav:hover :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
   "operator/app/_components/plans/plans-pane.css :: .plan-popup__close:hover :: color:--fg on background:--bg-3
     black:background:unsupported-function(rgba(255, 255, 255, 0.075))
     default:background:unsupported-function(rgba(255, 255, 255, 0.075))
@@ -168,6 +173,11 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
   "operator/app/adv/harnesses/adv-panel-chrome.css :: .pc-advpanel__select :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/adv/hud/hud.css :: .hud-goal__close :: color:--fg on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))

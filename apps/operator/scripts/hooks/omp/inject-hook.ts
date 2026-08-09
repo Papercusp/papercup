@@ -205,9 +205,12 @@ export function runDispatcher(
       // delay omp's exit.
       killTimer.unref?.();
 
-      // Accumulate BYTES, decode once at the end. `out += String(chunk)` splits a
-      // multi-byte UTF-8 character across two 'data' events into replacement
-      // chars — silent corruption, no error. That is not hypothetical here: the
+      // Accumulate BYTES, decode once at the end. String-concatenating each
+      // chunk as it arrives splits a multi-byte UTF-8 character across two
+      // 'data' events into replacement chars — silent corruption, no error.
+      // (Do not restore that shape, and do not quote it literally here either:
+      // child-output-scan.ts matches the pattern by line, so even a comment
+      // re-arms the guard.) That is not hypothetical here: the
       // payload this hook injects is dense with non-ASCII (⚠ ⛔ • → ⟦ ⟧), so a
       // chunk boundary landing mid-character garbles injected context.
       // Deliberately NOT routed through operator-core's collectChildOutput():

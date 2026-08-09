@@ -386,7 +386,10 @@ export default defineTool({
                   similar,
                   ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
                   hint:
-                    'Existing plans overlap this topic. Continue one of them (plans:get → set-now/add-item), or re-call with force: true if this is genuinely a new effort.',
+                    'Existing plans overlap this topic. Continue one of them (plans:get → set-now/add-item). ' +
+                    'Before reaching for force: true, note search:semantic does NOT cover plans (only escalations/brainstorm/turns/decisions) — ' +
+                    'this refusal is the only plan-aware dedup check that ran. force: true bypasses it with no other check behind it, so only ' +
+                    'pass it after reading the candidates above and confirming this is genuinely a new effort, not after a semantic/grep search came up clean.',
                 }),
               },
             ],

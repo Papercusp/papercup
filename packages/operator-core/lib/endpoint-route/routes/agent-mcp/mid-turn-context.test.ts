@@ -22,13 +22,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { buildMemoryContextBlockMock } = vi.hoisted(() => ({
+const { buildMemoryContextBlockMock, recordInjectionCoverageMock } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
+  recordInjectionCoverageMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (colocated).
 vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: buildMemoryContextBlockMock,
+}));
+vi.mock('../../../memory/injection-coverage', () => ({
+  recordInjectionCoverage: recordInjectionCoverageMock,
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
@@ -66,7 +70,14 @@ const firstCall = () => buildMemoryContextBlockMock.mock.calls[0]![0] as Record<
 
 beforeEach(() => {
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM');
+  recordInjectionCoverageMock.mockReset();
 });
+
+/** Every coverage event recorded this test, flattened across calls. */
+const coverageEvents = (): Array<Record<string, unknown>> =>
+  recordInjectionCoverageMock.mock.calls.flatMap(
+    (call) => (call[0] ?? []) as Array<Record<string, unknown>>,
+  );
 
 describe('mid-turn-context — query derivation', () => {
   it('reads a Bash call as its command plus the agent\'s own description', () => {
@@ -644,5 +655,98 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
         expect(TOOL_QUERY_VOCABULARY[tool]).toBeDefined();
       }
     });
+  });
+});
+
+/**
+ * THE DERIVE-MISS TRACE (D-005 §3b — the durable half of P-005).
+ *
+ * Widening the vocabulary fixes today's clients. It does NOT fix the thing that
+ * let the gap hide: the handler dropped an empty derive BEFORE the stats write,
+ * so "the hook fired and the server derived nothing" wrote no row and was
+ * indistinguishable from "the hook never fired". The next vocabulary drift
+ * would have recreated the same blind spot.
+ *
+ * These assert the four outcomes stay DISTINGUISHABLE from the outside, which
+ * is what lets the alarm name a cause instead of guessing one.
+ */
+describe('derive-miss leaves a trace (D-005 §3b)', () => {
+  it('records unknown-tool for an unmapped tool — the previously SILENT path', () => {
+    // Before this, the handler returned here having written nothing at all.
+    return post({ owner: owner(), client: 'codex', tool: 'MysteryTool', toolInput: {} }).then(
+      (res) => {
+        expect(res.text).toBe('');
+        expect(coverageEvents()).toContainEqual(
+          expect.objectContaining({
+            port: 'mid-turn',
+            client: 'codex',
+            outcome: 'unknown-tool',
+            tool: 'MysteryTool',
+          }),
+        );
+      },
+    );
+  });
+
+  it('records no-signal for a KNOWN tool that carried nothing', async () => {
+    await post({ owner: owner(), client: 'codex', tool: 'wait', toolInput: { cell_id: '4' } });
+    expect(coverageEvents()).toContainEqual(
+      expect.objectContaining({ outcome: 'no-signal', tool: 'wait' }),
+    );
+  });
+
+  it('records drift even when OTHER calls in the batch DID carry signal', async () => {
+    // The dangerous case: the batch succeeds, so nothing looks wrong, while a
+    // tool we cannot read goes unnoticed.
+    const res = await post({
+      owner: owner(),
+      client: 'codex',
+      toolCalls: [
+        { tool: 'exec_command', toolInput: { cmd: 'rg foo' }, toolResponse: 'hit' },
+        { tool: 'BrandNewTool', toolInput: {}, toolResponse: '' },
+      ],
+    });
+    expect(res.text).toContain('MEM'); // the batch DID produce a recall
+    expect(coverageEvents()).toContainEqual(
+      expect.objectContaining({ outcome: 'unknown-tool', tool: 'BrandNewTool' }),
+    );
+  });
+
+  it("records 'recalled' when the recall returned context", async () => {
+    await post({ owner: owner(), client: 'claude', tool: 'Bash', toolInput: { command: 'rg x' } });
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({ outcome: 'recalled' }));
+  });
+
+  it("records 'no-recall' — healthy quiet — when it ran and found nothing", async () => {
+    // The state an alarm must NOT fire on, and cannot see without this.
+    buildMemoryContextBlockMock.mockResolvedValue('');
+    await post({ owner: owner(), client: 'omp', tool: 'bash', toolInput: { command: 'ls' } });
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({ outcome: 'no-recall' }));
+    expect(coverageEvents()).not.toContainEqual(expect.objectContaining({ outcome: 'recalled' }));
+  });
+
+  it('threads client and workspace so coverage is per-(client, port)', async () => {
+    await post({ owner: owner(), client: 'omp', tool: 'read', toolInput: { path: '/a.ts' } });
+    expect(coverageEvents()[0]).toMatchObject({
+      client: 'omp',
+      port: 'mid-turn',
+      workspaceId: 'ws-test',
+    });
+  });
+
+  it("uses '' — not a guessed client — when the caller sent none", async () => {
+    // A host without the P-005 threading is a REAL and distinct reading; a
+    // defaulted client name would silently attribute rows to the wrong TUI.
+    await post({ owner: owner(), tool: 'Bash', toolInput: { command: 'rg x' } });
+    expect(coverageEvents()[0]).toMatchObject({ client: '' });
+  });
+
+  /** CONTROL — fails if the trace is removed and the early return goes silent again. */
+  it('CONTROL: a miss-only call records at least one event', async () => {
+    await post({ owner: owner(), client: 'codex', tool: 'NoSuchTool', toolInput: {} });
+    expect(
+      coverageEvents().length,
+      'a derive-miss that records nothing is the exact D-005 §3b regression',
+    ).toBeGreaterThan(0);
   });
 });

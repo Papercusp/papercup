@@ -246,10 +246,22 @@ export async function ensureWorkIntakeRoutineInactive(
   },
   sql: Sql = getOrgPg().sql,
 ): Promise<RoutineRow | null> {
+  // WI-37417: scope on BOTH workspace_id AND install_slug — the same rule
+  // recordWorkIntakeHealth states above and applies in its own WHERE.
+  // harness_shared.routines is multi-tenant, and this is a NEGATIVE guard, so an
+  // unscoped match fails in the eager direction: workspace B's boot would see
+  // workspace A's row for the same installSlug, conclude "already seeded", and
+  // return null — leaving B with no inactive placeholder at all, which is the
+  // silent-absence failure WI-6680 D3 exists to eliminate, one tenant over.
+  // Currently masked by the phase-1 global UNIQUE(install_slug, name) and by
+  // ensureP2pHostRoutinesSeededOnce seeding only activeWorkspaceId(); both are
+  // stated phase-1 conditions (per-workspace coexistence is a separate
+  // migration), so the mask is a coincidence of today's schema, not a guarantee.
   const existing = await sql<Array<{ one: number }>>`
     SELECT 1 AS one
       FROM harness_shared.routines
-     WHERE install_slug = ${input.installSlug}
+     WHERE workspace_id = ${input.workspaceId}
+       AND install_slug = ${input.installSlug}
        AND name = ${WORK_INTAKE_ROUTINE_NAME}
      LIMIT 1
   `;

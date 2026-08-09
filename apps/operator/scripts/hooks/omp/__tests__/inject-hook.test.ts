@@ -27,6 +27,7 @@ import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// @ts-ignore — pure JS adapter, no .d.ts; the dispatcher's frozen CLI contract is the seam.
 import adapter, { portForEvent, parse, render } from '../../inject/adapters/omp.mjs';
 import {
   PORT_TIMEOUT_MS,
