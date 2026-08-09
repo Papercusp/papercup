@@ -122,8 +122,23 @@ async function setup() {
   // certify a hybrid-measured floor against.
   const embedder = await buildQueryEmbedder({ acquireBudgetMs: 30_000 }).catch(() => null);
 
-  const search = async (query: string) => {
-    const { results, legs } = await runHybridSearch(sources, {
+  // The route's defaults (adv-session-search.ts), stated ONCE. A diagnostic
+  // below varies a single knob against this; re-declaring the whole shape per
+  // variant is how a "control" silently stops being the control.
+  const PROD_RECENCY = {
+    halfLifeMs: 24 * 7 * 3_600_000,
+    weight: 0.5,
+    freshWindowMs: 48 * 3_600_000,
+  } as const;
+
+  const search = async (
+    query: string,
+    override: {
+      recency?: { halfLifeMs: number; weight: number; freshWindowMs: number } | false;
+      groupBy?: (hit: SearchHit) => string | null;
+    } = {},
+  ) => {
+    const { results, legs, totalGroups } = await runHybridSearch(sources, {
       sql,
       query,
       workspaceId: activeWorkspaceId(),
@@ -132,17 +147,20 @@ async function setup() {
       mode: 'hybrid',
       embedder,
       embedTimeoutMs: 30_000,
-      // The route's defaults (adv-session-search.ts) — measure what the owner
-      // actually experiences, not a cleaner configuration than production.
-      recency: { halfLifeMs: 24 * 7 * 3_600_000, weight: 0.5, freshWindowMs: 48 * 3_600_000 },
+      // Measure what the owner actually experiences, not a cleaner
+      // configuration than production. `'recency' in override` (not `??`)
+      // because `false` is a MEANINGFUL value here — it means "force
+      // pure-relevance", which `??` would silently discard back to the default.
+      recency: 'recency' in override ? override.recency : PROD_RECENCY,
+      ...(override.groupBy ? { groupBy: override.groupBy } : {}),
       signal: new AbortController().signal,
       deferHighlight: true,
     });
-    return { results: results as SearchHit[], legs };
+    return { results: results as SearchHit[], legs, totalGroups };
   };
 
   const sessionOf = (h: SearchHit) => parseTurnRef(h.source_id)?.sessionId ?? h.source_id;
-  return { search, rerankPageHead, sessionOf, hitProvenance, tomSessions };
+  return { search, rerankPageHead, sessionOf, hitProvenance, tomSessions, PROD_RECENCY };
 }
 
 /**
@@ -214,6 +232,62 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
       ).toBe(true);
     },
     120_000,
+  );
+
+  /**
+   * WHERE IN THE PIPELINE IS REPORT 1 LOST? (P-036)
+   *
+   * Report 1's floor is a single number, so a red says the ranking got worse
+   * without saying WHICH STAGE made it worse — and the plan then spends its
+   * effort on whichever stage the last agent happened to suspect. Every dead
+   * direction on this plan (D-032/D-036/D-040/D-041) was killed by a
+   * measurement someone eventually ran; this runs the ones that are cheap to
+   * run EVERY time, so the next red arrives already triaged.
+   *
+   * It varies ONE knob at a time against the production control and REPORTS.
+   * Deliberately not a second floor: two assertions over one measurement would
+   * red twice for one cause, and the pinned floor above is the guard.
+   */
+  it(
+    'DIAGNOSTIC: which ranking stage loses the theory-of-mind sessions (reports, does not gate)',
+    async (t) => {
+      const { search, sessionOf, tomSessions, PROD_RECENCY } = ctx!;
+      const bySession = (h: SearchHit) => sessionOf(h);
+      const found = (ranked: SearchHit[]) =>
+        new Set(ranked.map(sessionOf).filter((s) => tomSessions.includes(s))).size;
+
+      const variants: Array<[string, Parameters<typeof search>[1]]> = [
+        ['production (control)', {}],
+        // Isolates the 48h fresh-window LEG from the recency re-rank: same
+        // decay, but no extra RRF input. A session with no turn in the window
+        // cannot earn that leg's vote at all, so it is the one knob that can
+        // deny a candidate points rather than merely reweight it.
+        ['no fresh-window leg', { recency: { ...PROD_RECENCY, freshWindowMs: 0 } }],
+        ['no recency at all', { recency: false }],
+        ['+ session dedup', { groupBy: bySession }],
+        ['no recency + session dedup', { recency: false, groupBy: bySession }],
+      ];
+
+      const rows: string[] = [];
+      for (const [label, override] of variants) {
+        const { results, legs, totalGroups } = await search('theory', override);
+        if (skipIfDegraded(legs, t)) return;
+        const distinct = new Set(results.map(sessionOf)).size;
+        rows.push(
+          `  ${label.padEnd(28)} recall ${found(results)}/${tomSessions.length}` +
+            `  page ${results.length} rows / ${distinct} distinct sessions` +
+            (totalGroups === undefined ? '' : ` (pool held ${totalGroups})`),
+        );
+      }
+      console.warn(`[P-015] Report-1 stage isolation (k=${HIT_LIMIT}):\n${rows.join('\n')}`);
+
+      // The one PROPERTY worth asserting here, because it is what the rollup
+      // claims to do and it cannot be true by accident: with a session groupBy,
+      // every row on the page is a distinct session.
+      const { results: deduped } = await search('theory', { groupBy: bySession });
+      expect(new Set(deduped.map(sessionOf)).size).toBe(deduped.length);
+    },
+    180_000,
   );
 
   it(

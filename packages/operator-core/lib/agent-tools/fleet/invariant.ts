@@ -28,7 +28,10 @@ export default defineTool({
     'ROWS RETURNED == VIOLATED (zero rows == satisfied); the rows come back as the evidence. ' +
     'REGISTER: { name, sql, description?, severity? } — re-registering a name replaces it. ' +
     'LIST: { list: true }. REMOVE: { remove: name }. Use {{fleet}} / {{workspace}} in the SQL ' +
-    'rather than hardcoding a slug, so a copied invariant checks the fleet it now belongs to. ' +
+    'rather than hardcoding a slug, so a copied invariant checks the fleet it now belongs to — ' +
+    'both substitute as ALREADY-QUOTED literals, so write `= {{fleet}}`, NOT `= \'{{fleet}}\'` ' +
+    '(doubling the quotes is a syntax error on any hyphenated slug). Registering does not RUN ' +
+    'it: read one fleet:leader-brief and confirm status:\'satisfied\', not \'error\'. ' +
     `Capped at ${INVARIANT_MAX_PER_FLEET} per fleet; each runs read-only, row-capped and ` +
     'timeout-bounded, and one that errors is reported as errored — never silently as passing.',
   guidance: {

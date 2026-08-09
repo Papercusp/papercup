@@ -8,6 +8,7 @@
  * apart is the bare firing count this replaced.
  */
 import { describe, expect, it } from 'vitest';
+import { couplingSourcesFor } from '../agent-tools/coordination/coupling-sources';
 import { deriveCouplings } from './coupling-derivation';
 import { DERIVED_COUPLING_RELATIONS, type DerivedCoupling } from './couplings';
 import {
@@ -229,5 +230,53 @@ describe('deriveCouplings publishes a census to whoever wires the sink', () => {
 
   it('emits nothing and stays silent when no sink is wired', async () => {
     await expect(deriveCouplings('su-self', rows, {})).resolves.toEqual([]);
+  });
+});
+
+/**
+ * THE WIRING presence.ts ACTUALLY BUILDS, against the REAL `couplingSourcesFor`.
+ *
+ * P-007 restructured that call site: `couplingSourcesFor(...)` went from being the
+ * whole third argument to being SPREAD into an object literal alongside `observe`.
+ * The regression that would create is worse than the feature it adds — a dropped
+ * leg silently disarms a signal, which is the exact class D-088 is about. These
+ * cases pin the composition rather than a fixture of it.
+ *
+ * The source closures do real IO, which is fine and deliberate here: `deriveCouplings`
+ * settles each leg fail-soft, so with no DB they resolve empty. `armed` records that
+ * the leg was SUPPLIED, not that it succeeded — so this still measures the wiring.
+ */
+describe('the presence.ts composition: spread sources + observe', () => {
+  const rows = [{ ownerId: 'su-self' }, { ownerId: 'su-peer' }];
+
+  it('keeps every querying leg armed when a coordination domain resolved', async () => {
+    let census: any;
+    await deriveCouplings('su-self', rows, {
+      ...couplingSourcesFor({
+        selfOwnerId: 'su-self',
+        rosterOwnerIds: ['su-self', 'su-peer'],
+        coordinationDomain: 'papercusp',
+      }),
+      observe: (c) => (census = c),
+    });
+    expect(census.relations['holds-a-lock-on'].armed).toBe(true);
+    expect(census.relations['coord-exchange'].armed).toBe(true);
+    expect(census.relations['blocks-me'].armed).toBe(true);
+  });
+
+  /**
+   * The pre-P-004 production shape: no domain ⇒ `couplingSourcesFor` omits
+   * `heldFiles` ⇒ the lock signal cannot fire. Every OTHER leg stays armed, so the
+   * census names the one dead gate instead of smearing suspicion across the run.
+   */
+  it('reports ONLY the lock leg unarmed when no coordination domain resolved', async () => {
+    let census: any;
+    await deriveCouplings('su-self', rows, {
+      ...couplingSourcesFor({ selfOwnerId: 'su-self', rosterOwnerIds: ['su-self', 'su-peer'] }),
+      observe: (c) => (census = c),
+    });
+    expect(census.relations['holds-a-lock-on'].armed).toBe(false);
+    expect(census.relations['coord-exchange'].armed).toBe(true);
+    expect(census.relations['blocks-me'].armed).toBe(true);
   });
 });
