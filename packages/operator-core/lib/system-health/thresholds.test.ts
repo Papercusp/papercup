@@ -41,6 +41,7 @@ import {
   diskBandWithHysteresis,
   BACKUP_STALE_MS,
   UNANSWERED_DIRECTED_WARN_MS,
+  isReaperWedged,
 } from './thresholds';
 import type {
   QueenHealth,
@@ -704,6 +705,41 @@ describe('infraStatus — disk / migration-drift / backup legs (health-tab-v2 P-
     expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: BACKUP_STALE_MS + 1, lastStatus: 'ok' } }))).toBe('warn');
     expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: 60_000, lastStatus: 'ok' } }))).toBe('ok');
     expect(infraStatus(infra({ backup: null }))).toBe('ok'); // leg unreadable — fail-soft
+  });
+});
+
+/**
+ * P-016 — the sibling miscalibration to the disk alarm below.
+ *
+ * "REAPER WEDGED" was derived from `reaperStale` alone, which is only
+ * `age > threshold`. A clock cannot tell idle from stuck, so the crit recurred
+ * every tick against a very large queue and never resolved.
+ */
+describe('isReaperWedged — a clock is not a cause (P-016)', () => {
+  it('stale WITH rows rotting is a real wedge — the alarm still fires', () => {
+    expect(isReaperWedged({ reaperStale: true, reaperAgeSec: 4000, stuckTotal: 7 })).toBe(true);
+  });
+
+  it('THE BUG: stale with a CLEAN queue is idle, not wedged', () => {
+    // The reaper's job is to clear stuck rows. Nothing stuck ⇒ nothing it failed
+    // to do ⇒ no crit. The plain `reaperStale` leg still surfaces this as a warn,
+    // so the condition stays visible — it just stops shouting.
+    expect(isReaperWedged({ reaperStale: true, reaperAgeSec: 40_000, stuckTotal: 0 })).toBe(false);
+  });
+
+  it('CONTROL: a FRESH reaper never reads as wedged, however much is stuck', () => {
+    // Guards against the opposite overreach — blaming the reaper for a backlog
+    // it is actively working through.
+    expect(isReaperWedged({ reaperStale: false, reaperAgeSec: 10, stuckTotal: 900 })).toBe(false);
+  });
+
+  it('CONTROL: an UNREADABLE last-run time is unknown, never upgraded to a cause claim', () => {
+    expect(isReaperWedged({ reaperStale: true, reaperAgeSec: null, stuckTotal: 12 })).toBe(false);
+    expect(isReaperWedged({ reaperStale: true, reaperAgeSec: undefined, stuckTotal: 12 })).toBe(false);
+  });
+
+  it('CONTROL: an absent staleness leg (undefined) does not alarm', () => {
+    expect(isReaperWedged({ reaperStale: undefined, reaperAgeSec: 4000, stuckTotal: 12 })).toBe(false);
   });
 });
 

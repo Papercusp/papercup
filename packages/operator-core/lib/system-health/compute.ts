@@ -90,6 +90,7 @@ import {
   infraStatus,
   infraSummary,
   diskBandWithHysteresis,
+  isReaperWedged,
   overwatchStatus,
   worstStatus,
   deriveQueenAlive,
@@ -524,21 +525,13 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
       (data.deadHeldClaims ?? 0) +
       (data.deadAssignedIssues ?? 0) +
       (data.deadHeldAssignments ?? 0);
-    // P-016: "WEDGED" is a CAUSE claim, and it used to be drawn from a clock
-    // alone (`reaperStale` is just `age > threshold`). A reaper that has not run
-    // recently while NOTHING is stuck has no work to do — that is idle, not
-    // wedged, and shouting WEDGED at it is the same overstatement the disk alarm
-    // was corrected for in EI-19944041837110102 ("writes are about to fail" at
-    // 95% with 100+G free). It recurred every tick against a very large queue and
-    // never resolved, which is how a reader learns to skip the line.
-    //
-    // `stuckTotal` is the reaper's OWN job — dead-held claims, dead-assigned
-    // issues, stuck features. Gating on it moves the alarm from a clock to an
-    // IMPACT: stale with rows rotting is a real wedge and still fires; stale with
-    // a clean queue drops to the `warn` the `reaperStale` leg below already
-    // gives it, so nothing becomes invisible — only less shouty. The signal was
-    // already computed here; no new read.
-    const reaperWedged = data.reaperStale === true && data.reaperAgeSec != null && stuckTotal > 0;
+    // P-016: WEDGED is a cause claim; `reaperStale` is only a clock. See
+    // `isReaperWedged` for why the reaper's own backlog is the discriminator.
+    const reaperWedged = isReaperWedged({
+      reaperStale: data.reaperStale,
+      reaperAgeSec: data.reaperAgeSec,
+      stuckTotal,
+    });
     return {
       status,
       summary: `${data.total} items — ${data.todo} todo, ${inProgress} in-flight, ${data.blocked} blocked${data.needsHuman > 0 ? `, ${data.needsHuman} need human` : ''}${stuckTotal > 0 ? `, ${stuckTotal} stuck` : ''}${reaperWedged ? ' — REAPER WEDGED' : ''}`,

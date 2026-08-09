@@ -33,6 +33,7 @@
  * somewhere unexpected would yield zero files, zero violations, and a confident green.
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
@@ -51,21 +52,34 @@ const GUARD = path.join(REPO_ROOT, 'scripts/check-no-retired-imports.mjs');
  */
 const MIN_SCANNED = 3_000;
 
+/**
+ * ⚠ EVERY offending fixture below is ASSEMBLED AT RUNTIME from these fragments, never
+ * written as a literal.
+ *
+ * This file is tracked, so the guard scans it — and a literal
+ * `import … from '…/_retired/…'` in a fixture IS an offender by the guard's own rules.
+ * Measured: writing them literally made this very file the repo's only 3 violations.
+ *
+ * The tempting fix is to add this path to the guard's `isExcluded` list, next to its
+ * existing `f === 'scripts/check-no-retired-imports.mjs'` self-exclusion. Don't: that
+ * exclusion's own comment (WI-6730) calls it "the same bug papered over one file at a
+ * time". Splitting the token keeps the guard maximally strict and costs one const.
+ */
+const RETIRED = '_retired/';
+const SPAWN_ROUTE = '/api/plugins/orchestrator/' + 'spawn';
+
 describe('no-retired-imports guard — capability (both directions)', () => {
   it('FLAGS an import that reaches across the retirement boundary', () => {
     const hits = findOffendersInText(
       'apps/operator/app/_components/Some.tsx',
-      "import { OracleDock } from '../../../_retired/legacy-web-chats/OracleDock';\n",
+      `import { OracleDock } from '../../../${RETIRED}legacy-web-chats/OracleDock';\n`,
     );
     expect(hits).toHaveLength(1);
     expect(hits[0]).toMatch(/imports a _retired\/ module/);
   });
 
   it('FLAGS the retired orchestrator-spawn fetch', () => {
-    const hits = findOffendersInText(
-      'libs/x/y.ts',
-      "await fetch('/api/plugins/orchestrator/spawn', { method: 'POST' });\n",
-    );
+    const hits = findOffendersInText('libs/x/y.ts', `await fetch('${SPAWN_ROUTE}', { method: 'POST' });\n`);
     expect(hits).toHaveLength(1);
     expect(hits[0]).toMatch(/orchestrator\/spawn fetch/);
   });
@@ -76,8 +90,8 @@ describe('no-retired-imports guard — capability (both directions)', () => {
     // best-documented files in the repo would be the ones that red the build.
     const hits = findOffendersInText(
       'packages/operator-core/lib/whatever.ts',
-      '// a read from `_retired/` is a read by something deliberately not deployed\n' +
-        ' * imports from _retired/legacy-web-chats are forbidden\n',
+      `// a read from \`${RETIRED}\` is a read by something deliberately not deployed\n` +
+        ` * imports from ${RETIRED}legacy-web-chats are forbidden\n`,
     );
     expect(hits).toEqual([]);
   });
@@ -85,9 +99,16 @@ describe('no-retired-imports guard — capability (both directions)', () => {
   it('STAYS SILENT on a bare mention that is not an import context', () => {
     const hits = findOffendersInText(
       'packages/operator-core/lib/whatever.ts',
-      "const dir = '_retired/legacy-web-chats';\n",
+      `const dir = '${RETIRED}legacy-web-chats';\n`,
     );
     expect(hits).toEqual([]);
+  });
+
+  it('CONTROL: this test file is itself clean, so its fixtures cannot red the live leg', () => {
+    // The assembled-at-runtime discipline above is only true if it stays true. This
+    // asserts it directly rather than trusting the comment.
+    const self = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    expect(findOffendersInText('packages/operator-core/lib/no-retired-imports-guard.test.ts', self)).toEqual([]);
   });
 });
 

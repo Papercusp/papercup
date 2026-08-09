@@ -45,37 +45,13 @@ const SCRIPT = resolve(
   '../../../papercusp-desktop/bin/lib/scenarios/b8-replication-soak.sh',
 );
 
-/**
- * Returns the payload of the LAST `echo "…"` emitted on the scenario's FAILURE
- * path — i.e. the line a reader's `tail` actually lands on.
- *
- * Deliberately anchored to `^\s*echo "` so that quoted strings inside the
- * drv_exec/grep heredocs in this region are not mistaken for emitted output.
- */
-export function lastEmittedLineOnFailPath(src: string): string | null {
-  const start = src.indexOf('replication-liveness soak FAIL');
-  if (start < 0) return null;
-  // Anchor the end on the `return "$rc"` STATEMENT (line-start), not on the first
-  // textual occurrence: the script's own comments quote `return "$rc"` in prose, and
-  // an indexOf() would end the region there — silently excluding the very lines this
-  // guard exists to inspect. (That is not hypothetical: it is exactly how this guard
-  // failed on its first run, reporting the ✗ branch as the final emitted line while
-  // the unconditional verdict sat just past the truncation point.)
-  const rest = src.slice(start);
-  const endMatch = /^[ \t]*return "\$rc"/m.exec(rest);
-  if (!endMatch) return null;
-  const region = rest.slice(0, endMatch.index);
-  const echoes = [...region.matchAll(/^[ \t]*echo "([^"]*)"/gm)].map((m) => m[1]);
-  return echoes.length > 0 ? echoes[echoes.length - 1]! : null;
-}
-
-/** The invariant itself, as a predicate, so controls and the real file share it. */
-export function tailIsVerdictNotReassurance(src: string): boolean {
-  const last = lastEmittedLineOnFailPath(src);
-  if (last === null) return false;
-  if (/^\s*✓/.test(last)) return false; // a reassuring tail on a failure path
-  return /^OVERALL:/.test(last);
-}
+// The checker lives in a module, not here, so a history replay exercises the SAME
+// code this guard runs (replaying a COPY of the rule would prove nothing about the
+// guard), and so the other instances of this class can reuse it.
+import {
+  lastEmittedLineOnFailPath,
+  tailIsVerdictNotReassurance,
+} from './gate-artifact-verdict-tail';
 
 // ── Deliberately-WRONG controls. These are the pre-fix shapes; they must FAIL. ──
 const WRONG_REASSURING_TAIL = `
