@@ -132,6 +132,15 @@ export async function dispatch(opts = {}) {
     env = process.env,
     fetchImpl,
   } = opts;
+  // TEST-ONLY SEAM (EI-19989482108652654): dispatch()'s own try/catch below
+  // absorbs every error a real invocation can produce, so nothing in this repo
+  // can exercise the CLI entry's OUTER catch (`.catch(() => process.exit(0))`
+  // at the bottom of this file) without it. Throwing here — before that
+  // try/catch — is the cheapest way to simulate a genuinely unexpected
+  // rejection reaching the outer guard. Never set outside a test harness.
+  if (env.PAPERCUSP_INJECT_TEST_FORCE_THROW === '1') {
+    throw new Error('PAPERCUSP_INJECT_TEST_FORCE_THROW (test-only seam)');
+  }
   try {
     const args = parseArgs(argv);
     const client = args.client;

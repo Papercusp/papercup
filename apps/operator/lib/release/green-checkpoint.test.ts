@@ -980,6 +980,55 @@ describe('runGreenCheckpoint', () => {
     // Guards the `AFFECTED_TESTS_RESULT failed=N` misread class: the label must say what
     // the entries ARE, so the count is never read as a failing-FILE count.
     expect(body).toMatch(/LEG signatures AND failing TEST files/);
+    // Sibling of the unattributed case below: when there ARE entries the line must say so,
+    // so `attribution=` can never be read as decorative.
+    expect(heldByLine).toContain('attribution=attributed');
+  });
+
+  it('EI-19988460746986622: a red with NO attributable failing entries still emits GATE_HELD_BY, as count=0 attribution=unattributed — never silence', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logDir = mkdtempSync(join(tmpdir(), 'gc-heldby-unattributed-'));
+    const logPath = join(logDir, 'stamp-base-deadbeef-cand-cafebabe.log');
+    writeFileSync(logPath, '[green-checkpoint] candidate=... green=false\nSUITE BODY MARKER\n');
+    const deps: CheckpointDeps = {
+      setupTree: async () => {},
+      // The shape this guards: a genuine red whose entries could NOT be attributed. Reached
+      // via the SUITE route (r.code !== 0) when extractFailingTests parses nothing out of the
+      // output — recorded as having really happened at green-checkpoint.ts ~L1048. Before the
+      // fix this emitted NO GateHeldBy line at all, which reads as "nothing held it".
+      runGreen: async () => ({
+        green: false,
+        summary: 'suite failed but nothing could be attributed',
+        failingTests: [],
+        logPath,
+      }),
+      advance: (candidate) => advanceReady(repo, candidate, 'ready'),
+      push: async () => {},
+      broadcast: async () => {},
+      escalate: async () => {},
+      clearEscalation: async () => {},
+      emitEvent: async () => {},
+      log: () => {},
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const body = readFileSync(logPath, 'utf8');
+    rmSync(logDir, { recursive: true, force: true });
+    expect(r.green).toBe(false);
+    expect(body).toContain('SUITE BODY MARKER');
+    // ⭐ The decisive one: the line EXISTS on a red that named nothing. Its whole failure
+    // mode was silence, so asserting presence is the point of the test.
+    expect(body).toContain('GATE_HELD_BY');
+    const heldByLine = body.split('\n').find((l) => l.includes('GATE_HELD_BY'));
+    expect(heldByLine).toBeDefined();
+    expect(heldByLine).toContain('count=0');
+    expect(heldByLine).toContain('entries=[]');
+    // The status must be explicit, so count=0 is never read as "the gate held on nothing".
+    expect(heldByLine).toContain('attribution=unattributed');
+    expect(heldByLine).not.toContain('attribution=attributed');
+    // And the reader must be told what count=0 does NOT mean.
+    expect(body).toMatch(/NOT "nothing held it"/);
   });
 
   // WI-7482: the re-triage verdict must reach the persisted log on the NON-refiring paths.

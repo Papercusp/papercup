@@ -665,10 +665,55 @@ export const TARGETS: BackfillTarget[] = [
   // work_items:search gains a semantic leg and work_items:create can prescreen
   // a new title against OPEN items by cosine similarity — the 2026-07-10
   // 30-dupe bug-storm class (WI-3358..WI-3477) that lexical dedup missed.
+  //
+  // P-026 (D-086 §6.3 Tier 0) — INDEX-SIDE REF EXPANSION. A work-item body that says
+  // "superseded by WI-4028" embeds the STRING "WI-4028", which carries no meaning in
+  // vector space: a query about that item's TOPIC cannot reach this row. Resolving the
+  // ref to its TITLE at index time bridges that hop once, at write time, instead of at
+  // query time — the EI-10048 mechanism (`memory/ref-expand.ts`), which until now was
+  // wired at exactly ONE call site (memory/remember.ts) and never reached the surfaces
+  // the corpus leg actually retrieves, because those are embedded in pure SQL here.
+  //
+  // Expressible as a self-join, so there is no JS seam to add: the resolver is the same
+  // table. Measured 2026-08-09 on the live 36,609-row table — 16,500 rows mention a ref,
+  // 6,373 of 6,651 distinct refs resolve (95.8%), and the whole-table evaluation costs
+  // 1.6s (the sweep pulls 64 rows at a time; only the coverage detector scans all of it).
+  //
+  // ⚠ The digit range is {2,20}, NOT ref-expand.ts's {2,5}. Modern EI ids on this box are
+  // 17 digits (EI-19988500685566622), and `\y[0-9]{2,5}\y` cannot match one AT ALL — the
+  // trailing boundary fails mid-number, so it matches nothing rather than truncating.
+  // Widening covers 1,206 more rows (+7.9%). The JS path still carries the narrow form
+  // and is correspondingly blind to those refs.
+  //
+  // ⚠ Scoped to the SAME harness. The PK is (harness_slug, feature_id), so the schema
+  // explicitly permits two harnesses to hold the same id — an unscoped join would bind a
+  // ref to a DIFFERENT tenant's item and embed a confidently wrong title. Same-harness is
+  // the only sound reading whatever today's data happens to look like.
+  //
+  // The appendix format mirrors ref-expand.ts exactly (`\n\n[refs] ID: title; ...`, cap 6)
+  // so a row enriched by this path and one enriched by the JS path are indistinguishable
+  // to the embedder.
   {
     table: 'harness_shared.work_items',
     embedCol: 'embedding',
-    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(summary, ''), 2000)`,
+    bodySql:
+      `COALESCE(title, '') || E'\\n' || left(COALESCE(summary, ''), 2000)` +
+      ` || COALESCE((SELECT E'\\n\\n[refs] ' || string_agg(t.ref || ': ' || left(COALESCE(t.rtitle, ''), 200), '; ' ORDER BY t.ord)` +
+      ` FROM (SELECT d.ref, d.ord, w2.title AS rtitle` +
+      ` FROM (SELECT DISTINCT ON (mm.ref) mm.ref, mm.ord` +
+      ` FROM (SELECT m.match[1] AS ref, m.ord` +
+      ` FROM regexp_matches(COALESCE(work_items.title, '') || ' ' || COALESCE(work_items.summary, ''),` +
+      ` '\\y((?:WI|EI|F|D)-[0-9]{2,20})\\y', 'g') WITH ORDINALITY AS m(match, ord)) mm` +
+      ` ORDER BY mm.ref, mm.ord) d` +
+      ` JOIN harness_shared.work_items w2` +
+      ` ON w2.harness_slug = work_items.harness_slug AND w2.feature_id = d.ref` +
+      ` ORDER BY d.ord LIMIT 6) t), '')`,
+    // P-026: bumped from the implicit baseline 1 in the SAME edit that changed bodySql
+    // above — that pairing IS the discriminator's contract. This is what makes the
+    // ~36.6k already-vectorised rows stale and re-embeds them onto the new recipe
+    // (~2.2h of sidecar); without it the expansion would improve only rows written
+    // from now on, which is the exact defect P-026 exists to remove.
+    recipeVersion: 2,
     keyCols: ['harness_slug', 'feature_id'],
     // Backed by hfc_updated_idx (updated_ts DESC). bigint epoch-ms, not a timestamp.
     orderBySql: 'updated_ts DESC',

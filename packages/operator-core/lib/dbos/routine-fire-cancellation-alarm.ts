@@ -267,7 +267,13 @@ export function startRoutineFireCancellationAlarm(opts: { intervalMs?: number } 
     'routine-fire-cancellation-alarm',
     intervalMs,
     () => runRoutineFireCancellationAlarmTick().then(() => undefined, () => undefined),
-    { category: 'watchdog' },
+    // D-004: must-sample. The condition this alarm reports — a routineFire that DBOS
+    // recovery-cancelled after exhausting `recovery_attempts` — is a terminal state
+    // written into `dbos.workflow_status` by DBOS itself. Nothing emits an event for
+    // it (that silence IS the bug this alarm exists to surface: `last_fired_at` has
+    // already advanced, so every existing surface reads healthy), so there is no push
+    // signal to subscribe to and the state must be polled.
+    { category: 'watchdog', classification: 'must-sample' },
   );
   return {
     stop() {

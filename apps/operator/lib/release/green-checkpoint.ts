@@ -3808,15 +3808,41 @@ export async function runGreenCheckpoint(
     // silently mislabels, and a mislabeled cause is worse than an unlabeled one. The
     // label says plainly what the list contains so it cannot be misread as a file count
     // (the failure mode of `AFFECTED_TESTS_RESULT failed=N`, which counts workspaces).
-    let heldByNote = '';
-    if (failingTests?.length) {
-      const MAX_HELD_BY = 40;
-      const shown = failingTests.slice(0, MAX_HELD_BY);
-      heldByNote =
-        `\n\nGATE_HELD_BY count=${failingTests.length} truncated=${failingTests.length > MAX_HELD_BY} ` +
-        `entries=${JSON.stringify(shown)}` +
-        `\n(post-suite LEG signatures AND failing TEST files, combined — this is the list the gate held the release on)`;
-    }
+    // EI-19988460746986622: WI-9613 gated this line on `failingTests?.length`, so a red
+    // that produced no attributable signature emitted SILENCE. Absence is ambiguous in
+    // the expensive direction — it reads identically as "this run predates the feature"
+    // and as "nothing held it", and for a red whose tests all passed the natural reading
+    // is "a flake", which is the one conclusion that stops investigation. `count=0`
+    // STATED is honest; silence is not. Emitted unconditionally on the red path now
+    // (this whole block is the not-green branch), mirroring how
+    // AFFECTED_TESTS_FAILING_FILES already reports `coverage=none` rather than going quiet.
+    //
+    // ⚠ SCOPE — this does NOT explain a log carrying no GATE_HELD_BY line AT ALL, and was
+    // deliberately not shipped as a fix for one. Measured 2026-08-09 across the 13 most
+    // recent red verdict logs: GATE_HELD_BY and the `lineage:` note — two lines with
+    // INDEPENDENT emission conditions — are PERFECTLY CORRELATED. Twelve reds carry both;
+    // the single one carrying neither (cand ae90fdd1db2b) lost the entire appended verdict
+    // block and ends on a raw `Aborted (core dumped)`. A guard here can only ever drop THIS
+    // line, never `lineage:` with it, so that witness is the lost-append family
+    // (WI-37490 / EI-18850448565330905) and is out of scope.
+    //
+    // The hole this DOES close is the SUITE route. A red is `r.code !== 0 || !legs.ok`
+    // (~L5795). Every leg in the `legs.ok` list pushes a signature when it fails — L4758
+    // pushes on the EXIT CODE, not on parseable diagnostics, so even an OOM-crashed leg is
+    // named (verdict 9f3c0024552a emitted `entries=["lint:tsc"]` while crashing exactly
+    // that way) — so the LEG route cannot yield an empty list. The SUITE route derives
+    // entries by PARSING output via extractFailingTests, which L1048 records returning []
+    // on a genuine red. That is the case that used to go silent.
+    const MAX_HELD_BY = 40;
+    const heldByEntries = failingTests ?? [];
+    const heldByNote =
+      `\n\nGATE_HELD_BY count=${heldByEntries.length} ` +
+      `attribution=${heldByEntries.length ? 'attributed' : 'unattributed'} ` +
+      `truncated=${heldByEntries.length > MAX_HELD_BY} ` +
+      `entries=${JSON.stringify(heldByEntries.slice(0, MAX_HELD_BY))}` +
+      (heldByEntries.length
+        ? `\n(post-suite LEG signatures AND failing TEST files, combined — this is the list the gate held the release on)`
+        : `\n(the gate decided RED but produced NO attributable leg signature or failing test file — this is NOT "nothing held it". Read this log's own leg output; see the empty-failingTests red noted at green-checkpoint.ts ~L1048.)`);
     // EI-19370028836452003: the per-candidate log is WRITTEN by runGreen (see the
     // writeFileSync ~line 4550) BEFORE this verdict block runs, so the file named
     // `...-cand-<X>.log` never contained X's OWN lineage / already-fixed-since /

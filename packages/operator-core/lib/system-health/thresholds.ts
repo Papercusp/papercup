@@ -68,6 +68,35 @@ export const DISK_CRIT_URGENT_PCT = 98;
 export const DISK_CRIT_URGENT_LOW_FREE_GB = 5;
 
 /**
+ * P-016: is the work-queue reaper WEDGED, or merely idle?
+ *
+ * `reaperStale` is a clock reading and nothing more (`age > threshold`). "WEDGED"
+ * is a claim about CAUSE, and deriving one from the other overstates exactly the
+ * way `DISK_CRIT_URGENT_PCT` above was added to stop the disk alarm overstating
+ * ("writes are about to fail" at 95% used with 100+G free). Against a very large
+ * queue the old form recurred on every tick and never resolved, which teaches the
+ * reader to skip the line — the failure P-016 is about.
+ *
+ * The discriminator is the reaper's OWN job: `stuckTotal` (dead-held claims,
+ * dead-assigned issues, stuck features). Stale WITH rows rotting is a real wedge.
+ * Stale with a clean queue is a reaper that had nothing to do — still surfaced as
+ * a `warn` by the plain `reaperStale` leg, just not shouted as a crit.
+ *
+ * `reaperAgeSec == null` means the last-run time was unreadable — an UNKNOWN, and
+ * never upgraded to a cause claim (the same fail-open the callers use elsewhere).
+ *
+ * Pure so it is unit-testable, mirroring `diskBandWithHysteresis` below — the
+ * other calibration fix in this file, extracted for the same reason.
+ */
+export function isReaperWedged(opts: {
+  reaperStale: boolean | undefined;
+  reaperAgeSec: number | null | undefined;
+  stuckTotal: number;
+}): boolean {
+  return opts.reaperStale === true && opts.reaperAgeSec != null && opts.stuckTotal > 0;
+}
+
+/**
  * Classify a disk-used% reading against DISK_USED_WARN_PCT/DISK_USED_CRIT_PCT WITH
  * hysteresis: once a band is entered, usage must drop DISK_HYSTERESIS_BUFFER_PCT points
  * below that band's own entry threshold to leave it, rather than merely crossing back over

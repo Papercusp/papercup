@@ -25,7 +25,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CLI = path.join(HERE, '..', 'index.mjs');
+// Overridable via PROBE_SCRIPT (CLAUDE.md's "Proving a guard is falsifiable"
+// tier-2 shape) so scripts/mutation-probe.sh can point this suite at a
+// mutated COPY of index.mjs — e.g. with the outer fail-silent catch removed —
+// without ever mutating the tracked file (EI-19989482108652654).
+const CLI = process.env.PROBE_SCRIPT || path.join(HERE, '..', 'index.mjs');
 
 const claude = await import(path.join(HERE, '..', 'adapters', 'claude.mjs'));
 const codex = await import(path.join(HERE, '..', 'adapters', 'codex.mjs'));
@@ -253,6 +257,19 @@ describe('fail-silent: EXIT 0 AND EMPTY STDOUT (D-001 invariant 1)', () => {
         stdin: JSON.stringify({ prompt: 'hi' }),
         // Reserved-by-convention discard port: nothing listens, connect fails fast.
         env: { PAPERCUSP_SID: 's', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9' },
+      },
+      {
+        // EI-19989482108652654: the 8 cases above are all absorbed by dispatch()'s
+        // OWN try/catch, so none of them can observe whether the OUTER catch at the
+        // bottom of index.mjs (`dispatch().then(...).catch(() => process.exit(0))`)
+        // still exists. This case forces dispatch() itself to reject (via the
+        // test-only env seam), which only the outer catch can absorb — deleting
+        // that line turns this into an unhandled promise rejection (Node exits
+        // non-zero), so this case is what makes that line's removal detectable.
+        name: 'unexpected throw reaching dispatch() (outer catch, not the inner one)',
+        args: ['--client=claude', '--event=UserPromptSubmit'],
+        stdin: JSON.stringify({ prompt: 'hi' }),
+        env: { PAPERCUSP_SID: 's', PAPERCUSP_INJECT_TEST_FORCE_THROW: '1' },
       },
     ];
 
