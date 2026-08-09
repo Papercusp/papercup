@@ -250,6 +250,34 @@ export interface RecallAdmissionStats {
   /** The char budget cut the block. */
   truncated: boolean;
   /**
+   * Chars actually SPENT by the admitted lines, against `budgetChars` below.
+   * Absent = not recorded by that caller (never 0 — a recall that admitted
+   * nothing records spent: 0 explicitly, same doctrine as `dropped`).
+   *
+   * ⚠ WHY THIS EXISTS, because its absence made a whole question unanswerable
+   * (D-081): `truncated` is TRUE in two situations that call for OPPOSITE fixes
+   * and are otherwise indistinguishable —
+   *   (a) the budget was genuinely exhausted (spent ≈ budgetChars) → the budget
+   *       is the binding constraint, and raising it delivers more;
+   *   (b) every remaining entry was individually too large for the space left
+   *       (spent well under budgetChars) → the ENTRY CLAMP is the binding
+   *       constraint, raising the budget buys little, and the real lever is
+   *       MAX_ENTRY_CHARS (injection.ts) or the packing.
+   * Utilization (spent / budgetChars) is the only field that separates them.
+   * Read it BEFORE proposing any budget change, and note that D-077 already
+   * requires such a change be argued on the admitted rate rather than on
+   * %budget, which falls by construction when the budget is raised.
+   */
+  spent?: number;
+  /**
+   * The budget those lines were packed against, carried so a historical row
+   * stays interpretable after the constant moves. Per-port and deliberately
+   * tightened everywhere (see `ADMISSION_STAGE_DESIGN_INTENT.budget`), so a
+   * funnel row without it cannot be compared across ports at all — mid-turn's
+   * ~350 and turn-start's 4,000 are the same `truncated: true` otherwise.
+   */
+  budgetChars?: number;
+  /**
    * Per stage. EVERY stage is recorded even at zero: "this filter ran and
    * removed nothing" and "this filter never ran" are different facts and only
    * the first is a healthy zero — the same reason `LegRunStats.ran` exists.

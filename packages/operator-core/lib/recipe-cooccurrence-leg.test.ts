@@ -11,7 +11,7 @@ const h = vi.hoisted(() => ({ entries: [] as CooccurrenceEntry[], throwIt: false
 vi.mock('./dev-data', () => ({
   toolCooccurrence: vi.fn(async () => {
     if (h.throwIt) throw new Error('miner down');
-    return { totalSpawns: 100, entries: h.entries };
+    return { totalTurns: 100, entries: h.entries };
   }),
 }));
 
@@ -21,8 +21,8 @@ const E = (tool_a: string, tool_b: string, confidence: number): CooccurrenceEntr
   tool_a,
   tool_b,
   support: 5,
-  spawns_a: 10,
-  spawns_b: 10,
+  turns_a: 10,
+  turns_b: 10,
   confidence,
   lift: 1,
 });

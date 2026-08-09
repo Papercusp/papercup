@@ -224,6 +224,35 @@ export const GATE_VERDICT_CELL: CellSpec = {
   visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.consecutiveReds' },
+
+  /**
+   * P-006 — THE DISCOVERY LEG, and this cell is the primary reason the field exists.
+   *
+   * A red gate is the single most-read state on this fleet, and `consecutiveReds` is
+   * where an agent lands. The question that follows a nonzero read is always the same —
+   * *is anyone already on this?* — and until now nothing in this answer said that
+   * question had a home. Measured while writing P-006: `dev:pipeline_position` carries
+   * the whole ownership block, but `state:read { cell: 'gate.greenCheckpoint.verdict' }`
+   * carried no ownership and no route to it, so an agent following this repo's own
+   * re-read-the-cell guidance was strictly WORSE informed than one who called the tool.
+   *
+   * ⚠ THE `shape` STRING ABOVE ALREADY MENTIONED `ownership`, AND THAT IS EXACTLY WHY
+   * THIS IS NOT REDUNDANT. `shape` is prose describing the RESOLVER'S payload; it named
+   * a block without naming the cell that owns it, and a reader who noticed it had no id
+   * to read next. Naming a field is not naming a door.
+   *
+   * NOT a second falsifier (D-014). The mutual-falsifier pairing with cell 4 documented
+   * above is untouched; this adds no measurement and kills no misreading of its own.
+   */
+  pointers: [
+    {
+      cell: 'gate.greenCheckpoint.ownership',
+      when: 'the streak is nonzero (or `stalled`) — i.e. any time you are about to act on a red gate',
+      answers:
+        'WHO owns this red and whether that ownership is REAL — the owning work-item, its claim state, and the holder\'s live session state, which is the falsifier that separates "someone is on it" from a lease held by an agent that died. Read it before you claim the incident yourself or conclude nobody has it.',
+    },
+  ],
+
   shape:
     '{ gate: { consecutiveReds, stalled, lastGreenAtMs, fireStale, fireStaleReason, ' +
     'ownership: { eventKey, workItem, claimState, takenBy, takenAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
@@ -337,6 +366,27 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
     why:
       'judgingSha follows the staging tip — measured 335 commits/24h (git rev-list --since=24h staging, 2026-07-27) — but the question this cell exists to answer is "is the gate judging MY change", which is judgingContainsPath and moves only when the subject path itself lands. Suppressing a candidate step A→B that contains the path in both cases withholds news about OTHER agents\' commits; a containment flip is still reported loudly.',
   },
+
+  /**
+   * P-006 — the same discovery leg as cell 1, and the pairing is the point rather than
+   * duplication: these two ARE the pair an agent reads when the gate is red. Cell 1
+   * answers "is it red", cell 2 "is it red about MY change" — and both leave the reader
+   * one question short of knowing whether to pick the incident up.
+   *
+   * `when` is narrower here than on cell 1, and deliberately so. A caller reading this
+   * cell about their own path has a containment answer, not a redness answer: the
+   * pointer earns its line only once containment says the red IS about them. Firing it
+   * on every candidate read would spend the channel on the healthy path — the noise
+   * failure `pointer-when-missing` rejects at registration.
+   */
+  pointers: [
+    {
+      cell: 'gate.greenCheckpoint.ownership',
+      when: '`judgingContainsPath` is true — the gate is judging YOUR change, so the red is yours to answer for',
+      answers:
+        'WHO already owns this red, so you join the existing incident instead of opening a duplicate — including whether the recorded holder is still alive, which a claim row alone cannot tell you.',
+    },
+  ],
 
   shape:
     '{ changeInCandidate: { judgingSha, judgingContainsPath, nextCandidateSha, nextContainsPath, missingReason, detail }, ' +

@@ -2486,6 +2486,7 @@ def _effective_cwd_before(pos, base_cwd, clean, has_paren):
 
 
 def _shell_write_guard():
+    global ADVISORY
     _canon = _canonical_tree_root()
     if not _canon:
         return
@@ -2496,6 +2497,14 @@ def _shell_write_guard():
     _clean = _strip_quotes_and_comments(_strip_heredoc_bodies(command))
     _has_paren = '(' in _clean or ')' in _clean
     _targets = []  # (raw_target, human-readable construct name, position in _clean)
+    # EI-19966359020779598 — set when an in-place-write construct's target
+    # COULD NOT be checked because it is a bare variable reference (see the
+    # loop below, after `_resolve_write_target` bails). Advisory-only; see the
+    # comment above the ADVISORY assignment at the end of this function for
+    # why this is scoped to a bare `$VAR` and not the `$(...)`/backtick shapes
+    # `_segment_has_unsplittable_expansion` already (deliberately) fails open
+    # on with no signal at all.
+    _saw_unresolvable_inplace_target = False
 
     # `>`/`>>` redirects. The lookahead excludes fd-duplication/comparison
     # forms (`2>&1`, `>=`, `2>&2`) so those never get misread as file targets.
@@ -2618,6 +2627,48 @@ def _shell_write_guard():
                 'target, do not assume an earlier part of it already ran.'
                 % (_construct, _raw)
             )
+        # EI-19966359020779598 — `_resolve_write_target` bailed on `_raw`
+        # because it carries an expansion marker ($/`/~/*/?/[), the same
+        # LITERAL-PATHS-ONLY policy this whole guard has always used. That
+        # policy is right for a REDIRECT target (`> "$LOG"` overwhelmingly
+        # writes a scratch/log path outside the tree, and denying it on a
+        # guess would reopen this file's own well-documented false-positive
+        # history) — so this is scoped to the IN-PLACE-REWRITE family
+        # (`sed -i`/`perl -i`/`ruby -i`/`awk -i inplace`/`tee`/`cp`), never a
+        # plain shell redirect. Filed repro: `FILES=$(ls *.ts); sed -i
+        # 's/a/b/' $FILES` — `$FILES` is a BARE variable (no parens/backtick),
+        # so `_segment_has_unsplittable_expansion` above does not skip it and
+        # it reaches this loop as an ordinary candidate token; it silently
+        # fails resolution here with ZERO signal today. A `$(...)`/backtick
+        # target is a DIFFERENT, already-hardened case
+        # (EI-18691980588797795): its own segment is skipped BEFORE reaching
+        # `_targets` at all, because a substitution's raw text can contain
+        # spaces that defeat the `.split()` these constructs use to find
+        # their target(s) — false-DENYING on a garbled fragment cost real
+        # incidents, and this fix must not reopen that (hence: advisory only,
+        # and only for the bare-`$VAR` shape actually reaching this loop —
+        # never touching the `_segment_has_unsplittable_expansion` skip
+        # branches above).
+        elif (not _resolved and not _construct.startswith('shell redirect')
+              and any(ch in _raw for ch in ('$', '`', '~', '*', '?', '['))):
+            _saw_unresolvable_inplace_target = True
+
+    if _saw_unresolvable_inplace_target and not ADVISORY:
+        ADVISORY = (
+            'shell-write guard notice (EI-19966359020779598, extends '
+            'EI-18664655909328670): this command runs an in-place-rewrite/`tee`/`cp` '
+            'construct whose target is a shell variable, `~`, or a glob — not a '
+            'literal path. This guard only recognizes a literal path token; a '
+            'variable-driven target list (e.g. `FILES=$(ls *.ts); sed -i \'s/a/b/\' '
+            '$FILES`) is invisible to it, the same "honest limit" already documented '
+            'for interpreter writes (EI-18828866497684686). Raw shell writes skip the '
+            'file-lock hook entirely — if this write actually lands inside the shared '
+            'staging tree, no lock is being claimed and no denial will fire for it. If '
+            'you have not already verified the expanded file list yourself, prefer '
+            'Edit/Write per file (they claim the lock for you), or claim the resolved '
+            'paths yourself first: locks:acquire { paths, intent }. Advisory only; '
+            'this command is proceeding as issued.'
+        )
 
 
 try:

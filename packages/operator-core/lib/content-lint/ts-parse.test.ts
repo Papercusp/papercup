@@ -91,6 +91,85 @@ describe('findTsParseError', () => {
   });
 });
 
+/**
+ * WI-37398 — the DUPLICATE MODIFIER class.
+ *
+ * TypeScript's parser is deliberately error-TOLERANT here: `export export const X = 1`
+ * parses to a valid AST carrying two `export` modifiers, and the error is reported by
+ * the CHECKER (TS1030), not the parser. So a parse-only check returns CLEAN while
+ * esbuild rejects the file outright — and esbuild is what bundle-host.sh runs as
+ * ExecStartPre for the staging, bg-host and release services.
+ *
+ * Measured live: git-sync swept exactly this into corpus-recall-io.ts at the shared
+ * tip on 2026-08-09T05:55Z. Both surfaces running this check said clean; it surfaced
+ * only because :3170 happened to restart and crash-looped 6 times. A doubled keyword
+ * is the classic bad-edit artifact, so this is the shape an agent-edited tree makes.
+ */
+describe('findTsParseError — duplicate modifiers (WI-37398)', () => {
+  it('catches the exact line git-sync swept to the tip (doubled `export`)', () => {
+    const hit = findTsParseError(
+      'packages/operator-core/lib/memory/corpus-recall-io.ts',
+      "export export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;\n",
+    );
+    expect(hit).not.toBeNull();
+    expect(hit!.code).toBe(1030); // "'export' modifier already seen."
+    expect(hit!.line).toBe(1);
+    expect(hit!.reason).toContain('already seen');
+  });
+
+  it('catches sibling spellings of the same bad-edit artifact', () => {
+    // A doubled `async`, and a doubled accessibility modifier (TS1028). Neither is
+    // reported by the parser, and the first is also rejected by esbuild.
+    expect(findTsParseError('x.ts', 'export async async function f() {}\n')).not.toBeNull();
+    expect(findTsParseError('x.ts', 'class C { public public x = 1; }\n')).not.toBeNull();
+  });
+
+  it('does not flag the same file once the duplicate is removed', () => {
+    expect(
+      findTsParseError(
+        'packages/operator-core/lib/memory/corpus-recall-io.ts',
+        "export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;\n",
+      ),
+    ).toBeNull();
+  });
+
+  /**
+   * The narrowness property, re-pinned for the grammar phase specifically. Phase 2
+   * runs the CHECKER, so it is the phase that could plausibly start quarantining
+   * files over type errors — the codes are filtered to < 2000 precisely so it cannot.
+   * Every construct below is valid TypeScript that a checker sees "problems" in once
+   * no lib and no modules are loaded.
+   */
+  it('does NOT flag valid TypeScript that merely cannot be typechecked in isolation', () => {
+    const cases = [
+      "import type { Nope } from './does-not-exist';\nexport const a: Nope | null = null;\n",
+      'export class S { constructor(private readonly x: number) {} }\n',
+      'export function f<T>(a: T): T { return a; }\n',
+      'export enum E { A, B }\nexport abstract class C { abstract m(): void; }\n',
+      "export const o = { a: 1 } satisfies Record<string, number>;\n",
+      'export class D { declare x: number; }\n',
+      'export const big = 1n; const s = Symbol("x"); export type U = keyof typeof o;\n',
+    ];
+    for (const text of cases) {
+      expect(findTsParseError('x.ts', text), text).toBeNull();
+    }
+  });
+
+  it('reports the EARLIEST grammar error when a file has several', () => {
+    const text = ['export const a = 1;', 'export export const b = 2;', 'export export const c = 3;'].join('\n');
+    const hit = findTsParseError('x.ts', text);
+    expect(hit).not.toBeNull();
+    expect(hit!.line).toBe(2);
+  });
+
+  it('prefers a real PARSE error over a grammar error (phase 1 short-circuits)', () => {
+    // Both faults present: the unterminated brace is the parser's, and it wins.
+    const hit = findTsParseError('x.ts', 'export export const a = 1;\nexport function f() {\n');
+    expect(hit).not.toBeNull();
+    expect(hit!.code).not.toBe(1030);
+  });
+});
+
 describe('tsParseDetector', () => {
   it('scopes to tracked .ts/.tsx and skips retired/vendored/build trees', () => {
     expect(tsParseDetector.matches('packages/operator-core/lib/x.ts')).toBe(true);

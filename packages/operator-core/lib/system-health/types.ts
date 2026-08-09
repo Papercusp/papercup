@@ -63,7 +63,8 @@ export type PanelKey =
   | 'overwatch'
   | 'scout'
   | 'memory'
-  | 'toolEfficiency';
+  | 'toolEfficiency'
+  | 'contextInjection';
 
 /** Canonical render order for the tab's status-card grid. */
 export const PANEL_ORDER: readonly PanelKey[] = [
@@ -87,6 +88,7 @@ export const PANEL_ORDER: readonly PanelKey[] = [
   'scout',
   'memory',
   'toolEfficiency',
+  'contextInjection',
 ] as const;
 
 export const PANEL_LABELS: Record<PanelKey, string> = {
@@ -110,6 +112,7 @@ export const PANEL_LABELS: Record<PanelKey, string> = {
   scout: 'Blender / ideation',
   memory: 'Memory',
   toolEfficiency: 'Tool efficiency',
+  contextInjection: 'Context injection',
 };
 
 /**
@@ -929,6 +932,54 @@ export interface ToolEfficiencyHealth {
 }
 
 /**
+ * Per-client context-injection DELIVERY (codex-context-injection-parity-2026-08-09
+ * P-005). Answers "is client X actually being asked for per-turn context at all?",
+ * which was unanswerable from outside for months — the gap this plan closes was
+ * invisible precisely because "injected nothing" and "was never asked" look
+ * identical once both have written nothing.
+ *
+ * DISTINCT from the `memory` panel, deliberately (D-006): that one asks whether
+ * the CORPUS can answer; this one asks whether anybody ASKED. A regression in
+ * either is invisible in the other.
+ */
+export type InjectionClientVerdict =
+  /** Injection ran and produced context. */
+  | 'ok'
+  /** No sessions for this client in the window — not in play, nothing to judge. */
+  | 'idle'
+  /** It fired, but a tool is absent from the shared vocabulary. Actionable. */
+  | 'drift'
+  /** Sessions ran, nothing recorded, and this client has NO baseline — a known
+   *  gap, NOT a regression, and explicitly not pageable (see thresholds). */
+  | 'never-observed'
+  /** Sessions ran, nothing recorded, and this client HAS a baseline. Real. */
+  | 'regressed';
+
+export interface ContextInjectionClientRow {
+  client: string;
+  sessions: number;
+  events: number;
+  recalled: number;
+  unknownTool: number;
+  driftTools: string[];
+  everObserved: boolean;
+  verdict: InjectionClientVerdict;
+}
+
+export interface ContextInjectionHealth {
+  windowHours: number;
+  clients: ContextInjectionClientRow[];
+  totalEvents: number;
+  /**
+   * True when EVERY client holding a baseline recorded nothing this window. Three
+   * independent hook layers failing at once is far less likely than the one
+   * recording path they share having broken, so the summary must point there
+   * instead of blaming three clients with the wrong cause.
+   */
+  recordingPathSuspect: boolean;
+}
+
+/**
  * Who-watches-the-watcher (overwatch-role C-1 / D-004). `overwatchAlive` is null
  * until the overwatch role lands (overwatch-role-2026-06-15). The Health tab
  * surfaces it; the overwatch brief raises an anomaly when a counterpart goes dark.
@@ -960,6 +1011,7 @@ export interface SystemHealthPanels {
   scout: HealthPanel<ScoutHealth>;
   memory: HealthPanel<MemoryPanelHealth>;
   toolEfficiency: HealthPanel<ToolEfficiencyHealth>;
+  contextInjection: HealthPanel<ContextInjectionHealth>;
 }
 
 /**

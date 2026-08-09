@@ -46,10 +46,48 @@ export interface TsParseError {
 }
 
 /**
+ * The highest diagnostic code that is still SYNTACTIC/GRAMMAR rather than type-semantic.
+ * TypeScript partitions its codes: 1xxx are syntax + grammar errors, 2xxx and above are
+ * the type system (unresolved name, wrong annotation, missing property). Phase 2 below
+ * runs the checker, so this bound is what keeps a TYPE error from ever quarantining a
+ * file — the narrowness property this detector's whole safety argument rests on.
+ */
+const MAX_GRAMMAR_DIAGNOSTIC_CODE = 2000;
+
+/**
  * Pure detector: the FIRST syntactic diagnostic in `text`, or null when the file
  * parses cleanly. Never throws on a syntax error (that is the expected result and
  * is returned); it throws only if the TS build cannot report parse diagnostics at
  * all — see below.
+ *
+ * TWO PHASES, because the parser alone is not enough (WI-37398):
+ *
+ *  1. `createSourceFile` + `parseDiagnostics` — the cheap pure parse (~0.85ms/file).
+ *  2. Only when phase 1 is clean: TypeScript's GRAMMAR diagnostics, filtered to
+ *     codes < 2000 (~6ms/file).
+ *
+ * Phase 2 exists because TypeScript's parser is deliberately ERROR-TOLERANT about
+ * DUPLICATE MODIFIERS, and reports them from the checker instead. `export export
+ * const X = 1` parses to a perfectly good AST carrying two `export` modifiers, so
+ * phase 1 alone returns CLEAN — while esbuild rejects the file outright
+ * (`Unexpected "export"`), taking down every consumer of the package.
+ *
+ * That is not hypothetical: on 2026-08-09T05:55Z git-sync swept exactly that line
+ * into `packages/operator-core/lib/memory/corpus-recall-io.ts` at the shared tip —
+ * the commit green-checkpoint cuts its candidate from — and BOTH surfaces that run
+ * this check (the git-sync content guard and the PostToolUse edit-time nudge) said
+ * clean. It surfaced only by coincidence, when :3170 happened to restart and its
+ * esbuild pre-step crash-looped the service 6 times. A doubled keyword is the
+ * classic bad-edit artifact (a replace that prepends a modifier to a line that
+ * already has one), so it is precisely the shape an agent-edited tree produces.
+ *
+ * Measured over all 11,583 tracked .ts/.tsx files in this repo: ZERO files flagged
+ * by phase 2 (no false positives), at 6.18ms/file. Both callers check only a tiny
+ * set — git-sync the files DIRTY on a tick, the hook the ONE file just edited — so
+ * the real per-invocation cost is noise. The `< 2000` filter is what makes it safe:
+ * an unresolved import, a missing lib, or a wrong annotation are all 2xxx+ and are
+ * dropped, so phase 2 can no more quarantine a merely-untypecheckable file than
+ * phase 1 could.
  */
 export function findTsParseError(fileName: string, text: string): TsParseError | null {
   const scriptKind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
@@ -67,12 +105,58 @@ export function findTsParseError(fileName: string, text: string): TsParseError |
     );
   }
   const first = diags[0];
-  if (!first) return null;
-  const pos = typeof first.start === 'number' ? sf.getLineAndCharacterOfPosition(first.start) : null;
+  if (first) return toParseError(sf, first);
+  // Phase 2 — the parser accepted it; ask the grammar checks too.
+  return findTsGrammarError(fileName, text, scriptKind);
+}
+
+/**
+ * The grammar half of the check: build a single-file Program with NO lib and NO
+ * module resolution, then keep only sub-2000 diagnostics. `noLib`/`noResolve` mean
+ * nothing is read from disk and no dependency graph is loaded, so this stays as
+ * self-contained as the pure parse — it is the CHECKER we need, not a type graph.
+ *
+ * Returns null on any internal failure: phase 1 has already run and answered, so a
+ * checker that cannot complete must not turn a clean parse into a quarantine.
+ */
+function findTsGrammarError(fileName: string, text: string, scriptKind: ts.ScriptKind): TsParseError | null {
+  let sf: ts.SourceFile;
+  let diagnostics: readonly ts.Diagnostic[];
+  try {
+    // Grammar checks read node.parent, so this parse needs parent pointers.
+    sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, /*setParentNodes*/ true, scriptKind);
+    const host: ts.CompilerHost = {
+      getSourceFile: (name) => (name === fileName ? sf : undefined),
+      getDefaultLibFileName: () => 'lib.d.ts',
+      writeFile: () => {},
+      getCurrentDirectory: () => '',
+      getDirectories: () => [],
+      getCanonicalFileName: (name) => name,
+      useCaseSensitiveFileNames: () => true,
+      getNewLine: () => '\n',
+      fileExists: (name) => name === fileName,
+      readFile: (name) => (name === fileName ? text : undefined),
+    };
+    const program = ts.createProgram([fileName], { noResolve: true, noLib: true }, host);
+    diagnostics = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)];
+  } catch {
+    return null;
+  }
+  let earliest: ts.Diagnostic | undefined;
+  for (const d of diagnostics) {
+    if (d.code >= MAX_GRAMMAR_DIAGNOSTIC_CODE) continue; // a TYPE error — never ours to flag
+    if (!earliest || (d.start ?? 0) < (earliest.start ?? 0)) earliest = d;
+  }
+  return earliest ? toParseError(sf, earliest) : null;
+}
+
+/** Render a diagnostic as the 1-based position + the compiler's own reason. */
+function toParseError(sf: ts.SourceFile, d: ts.Diagnostic): TsParseError {
+  const pos = typeof d.start === 'number' ? sf.getLineAndCharacterOfPosition(d.start) : null;
   return {
     line: pos ? pos.line + 1 : null,
     col: pos ? pos.character + 1 : null,
-    code: first.code,
-    reason: ts.flattenDiagnosticMessageText(first.messageText, ' '),
+    code: d.code,
+    reason: ts.flattenDiagnosticMessageText(d.messageText, ' '),
   };
 }

@@ -28,16 +28,38 @@
  *     active outbox-drain defect that could still affect a currently-idle-but-alive
  *     harness and needs a human/agent look, not a blanket time sweep.
  *   - Requires BOTH the EI itself to be old (`minEiAgeMs`) AND the target harness to
- *     have recorded NO activity (`harness_status.last_active_ts`) for a long,
- *     separate inactivity window (`minInactivityMs`) — an EI can be old on a harness
- *     that only just went quiet; this sweep only fires once the harness itself has
- *     been silent for a long time too.
- *   - FAILS CLOSED: a harness with no `harness_status` row at all (last_active_ts
- *     unknowable — could be a harness that was only just registered and never run)
- *     is left untouched, exactly like an existence-check error in orphan-sweep.
+ *     have recorded NO activity for a long, separate inactivity window
+ *     (`minInactivityMs`) — an EI can be old on a harness that only just went quiet;
+ *     this sweep only fires once the harness itself has been silent for a long time too.
+ *   - FAILS CLOSED: a harness whose last activity is unknowable is left untouched,
+ *     exactly like an existence-check error in orphan-sweep.
  *   - Gated behind a NEW default-OFF flag (`FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE`,
  *     owner-authority class, same precedent as `WATCHDOG_AUTO_CLOSE`) — inert until
  *     the owner reviews and enables it. KNOWN_DARK_FLAGS.
+ *
+ * ⚠ THE ACTIVITY SOURCE IS THE PART THAT WAS WRONG — and it made this sweep a
+ * structural no-op for 13 days without emitting a single signal (WI-5563, fixed
+ * 2026-08-09). It originally read `harness_status.last_active_ts` alone. That table
+ * is NOT an activity ledger: it is a 5-minute orchestrator LEASE
+ * (expirable-registrations.ts), so a row exists only while an orchestrator is
+ * actively running the harness. An ABANDONED harness — the only kind this sweep
+ * exists to act on — therefore has no row, `lastActiveMs` comes back null, and the
+ * fail-closed guard refuses. The guard was inverted against its own purpose: the more
+ * certainly abandoned the harness, the more certainly the sweep declined to act.
+ * Measured 2026-08-09: the whole `harness_status` table held ONE row, with a NULL
+ * `last_active_ts`; all 15 age-eligible EIs skipped as `unknown-activity`; the flag
+ * had been ON since 2026-07-27 and the sweep had resolved exactly ZERO EIs, ever.
+ *
+ * The fix takes the NEWEST of the lease read and a DURABLE per-harness activity read
+ * (`harnessLastActivityMs` — newest work-item touch, never TTL'd), so "quiet for 30
+ * days" is answerable for a harness that has been dead for months. Fail-closed is
+ * kept, but now only fires when BOTH sources are silent.
+ *
+ * ⚠ It also reported nothing when it did nothing, which is why the no-op was
+ * invisible: the scheduled tick logged only `if (resolvedIds.length > 0)`. A sweep
+ * that cannot fire and a sweep that correctly found nothing to do were byte-identical
+ * from outside. `StalenessSweepResult.skipped` is a per-reason census so the two are
+ * now distinguishable, and the tick logs it unconditionally.
  */
 
 import { FLAGS } from '@papercusp/flags';

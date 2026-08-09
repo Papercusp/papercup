@@ -138,9 +138,24 @@ export function findRepoRoot(filePath, exists = existsSync) {
 }
 
 /**
+ * The highest diagnostic code that is still SYNTACTIC/GRAMMAR rather than type-semantic.
+ * Mirrors MAX_GRAMMAR_DIAGNOSTIC_CODE in ts-parse.ts — 1xxx are syntax + grammar errors,
+ * 2xxx+ are the type system, and phase 2 runs the checker, so this bound is what stops a
+ * TYPE error ever producing a nudge.
+ */
+const MAX_GRAMMAR_DIAGNOSTIC_CODE = 2000;
+
+/**
  * The parse check itself — deliberately identical in behaviour to
  * `findTsParseError` in packages/operator-core/lib/content-lint/ts-parse.ts.
  * Returns the FIRST syntactic diagnostic, or null when the text parses cleanly.
+ * (A drift-guard test asserts the two agree on every corpus case.)
+ *
+ * TWO PHASES, mirroring that function (WI-37398): the parser is error-TOLERANT about
+ * DUPLICATE MODIFIERS and reports them from the checker, so `export export const X = 1`
+ * yields a clean `parseDiagnostics` while esbuild rejects the file outright. Phase 2
+ * therefore runs TypeScript's grammar checks, filtered to codes < 2000 so a type error
+ * can never produce a nudge.
  *
  * Throws only when the TypeScript build cannot report parse diagnostics at all:
  * a check that can only ever answer "clean" is precisely the silent non-guard this
@@ -155,13 +170,55 @@ export function findParseError(ts, fileName, text) {
     throw new Error('ts-parse-nudge: SourceFile.parseDiagnostics is unavailable — the parse check cannot run');
   }
   const first = diags[0];
-  if (!first) return null;
-  const pos = typeof first.start === 'number' ? sf.getLineAndCharacterOfPosition(first.start) : null;
+  if (first) return toParseError(ts, sf, first);
+  return findGrammarError(ts, fileName, text, scriptKind);
+}
+
+/**
+ * The grammar half — a single-file Program with NO lib and NO module resolution, so
+ * nothing is read from disk and no dependency graph is loaded. Returns null on any
+ * internal failure: phase 1 has already answered, so a checker that cannot complete
+ * must not turn a clean parse into a nudge.
+ */
+function findGrammarError(ts, fileName, text, scriptKind) {
+  let sf;
+  let diagnostics;
+  try {
+    // Grammar checks read node.parent, so this parse needs parent pointers.
+    sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, /*setParentNodes*/ true, scriptKind);
+    const host = {
+      getSourceFile: (name) => (name === fileName ? sf : undefined),
+      getDefaultLibFileName: () => 'lib.d.ts',
+      writeFile: () => {},
+      getCurrentDirectory: () => '',
+      getDirectories: () => [],
+      getCanonicalFileName: (name) => name,
+      useCaseSensitiveFileNames: () => true,
+      getNewLine: () => '\n',
+      fileExists: (name) => name === fileName,
+      readFile: (name) => (name === fileName ? text : undefined),
+    };
+    const program = ts.createProgram([fileName], { noResolve: true, noLib: true }, host);
+    diagnostics = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)];
+  } catch {
+    return null;
+  }
+  let earliest;
+  for (const d of diagnostics) {
+    if (d.code >= MAX_GRAMMAR_DIAGNOSTIC_CODE) continue; // a TYPE error — never ours to flag
+    if (!earliest || (d.start ?? 0) < (earliest.start ?? 0)) earliest = d;
+  }
+  return earliest ? toParseError(ts, sf, earliest) : null;
+}
+
+/** Render a diagnostic as the 1-based position + the compiler's own reason. */
+function toParseError(ts, sf, d) {
+  const pos = typeof d.start === 'number' ? sf.getLineAndCharacterOfPosition(d.start) : null;
   return {
     line: pos ? pos.line + 1 : null,
     col: pos ? pos.character + 1 : null,
-    code: first.code,
-    reason: ts.flattenDiagnosticMessageText(first.messageText, ' '),
+    code: d.code,
+    reason: ts.flattenDiagnosticMessageText(d.messageText, ' '),
   };
 }
 

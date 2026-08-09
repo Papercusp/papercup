@@ -532,6 +532,65 @@ export default defineTool({
       };
     }
 
+    // EI-19966210024116714 — a loop armed against a harness its OWN SESSION cannot
+    // address is doomed from `armedAt`, and the failure is SILENT for hours. Every
+    // harness-scoped call the wake contract prescribes (`coord:orient`,
+    // `scheduler:get_next`) is refused by the scoped-superuser dispatch clamp with
+    // `harness_forbidden`, so the agent wakes on cadence, errors on every pull, and
+    // produces no turn output — until the stalled-loops guard disarms it (WI-6639) and
+    // the claim reaper releases its held work-items as `reaper:dead`. Every individual
+    // signal reads healthy meanwhile: wakes report `delivered`, `turnsStalled` stays
+    // false, `lastRealTurnAt` keeps advancing. The agent looks dead from outside and
+    // fine from inside. Observed live 2026-08-08/09 across FOUR fleet members
+    // (su-334bd763, su-28297628, su-b5111af0, +1) who armed loops on harness
+    // 'papercusp' from sessions scoped to workspace 'default'; one burned 44 wakes over
+    // ~8h and lost a held item mid-diagnosis to the reaper.
+    //
+    // The mismatch is fully determinable HERE, so refuse at arm time rather than let it
+    // present as death 8h later. Mirrors the dispatch clamp's semantics EXACTLY
+    // (`_mcp-handler.ts` scopedSuperuserClamp + resolveWorkspaceForHarnessSlugIn), so
+    // this can only ever refuse an arm that clamp would go on to refuse call-by-call:
+    // only a CLAMPED session is checked (an UNSCOPED '*' superuser legitimately spans
+    // workspaces), and we fail OPEN on a resolver throw/miss — fail CLOSED only on a
+    // CONFIRMED foreign resolution.
+    const scopedClamp =
+      ctx.isSuperuser === true &&
+      workspaceId !== '*' &&
+      (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
+    if (scopedClamp) {
+      let harnessWs: string | null = null;
+      try {
+        const { resolveWorkspaceForHarnessSlugIn } = await import('../../harness-core');
+        harnessWs = await resolveWorkspaceForHarnessSlugIn(workspaceId, harness);
+      } catch {
+        // Ambiguous cross-workspace collision (resolver throws) or an infra error:
+        // fail OPEN — never block a legitimate arm on a read we could not complete.
+        harnessWs = null;
+      }
+      if (harnessWs && harnessWs !== workspaceId) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'harness_workspace_mismatch',
+                harness,
+                harnessWorkspace: harnessWs,
+                sessionWorkspace: workspaceId,
+                message:
+                  `Refusing to arm: harness "${harness}" belongs to workspace "${harnessWs}", but this session is scoped to workspace "${workspaceId}". ` +
+                  'Every harness-scoped call this loop would make (coord:orient, scheduler:get_next) would be refused with harness_forbidden, so the ' +
+                  'loop would wake on cadence, accomplish nothing, and eventually be auto-disarmed while your held work-items are reaped as dead. ' +
+                  'Arm from a session scoped to that workspace (or an unscoped --all-workspaces session), or pass a harness that is in scope.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
     // softText fields (P-002): never bounced on length — clamp to cap here.
     const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);

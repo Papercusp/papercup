@@ -1427,6 +1427,16 @@ async function buildBlockInner(
   // report a block that delivered nothing as having delivered one.
   funnel.admitted = admittedEntries.length;
   funnel.truncated = truncated;
+  // D-081: `truncated` alone cannot say WHICH constraint bound — an exhausted
+  // budget and a remainder of individually-oversized entries both set it, and
+  // they call for opposite fixes. Recording what was actually spent against the
+  // budget it was spent from makes utilization readable, which is the only way
+  // to tell "raise the budget" from "the MAX_ENTRY_CHARS clamp is the ceiling".
+  // Set HERE, beside the other delivered-end fields and before the
+  // `lines.length === 0` early return below, so a block that admitted nothing
+  // still records spent: 0 rather than going silently absent.
+  funnel.spent = spent;
+  funnel.budgetChars = budget;
   // Attributed on the STATIC path, deliberately — never inside the deferred
   // writer, whose failures are swallowed (see `admittedByLeg`'s note).
   funnel.byLeg = admittedByLeg(admittedEntries);

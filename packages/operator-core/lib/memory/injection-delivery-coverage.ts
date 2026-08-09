@@ -137,3 +137,141 @@ export async function recordInjectionCoverage(
     /* swallow — see the fail-silent note in the header. */
   }
 }
+
+// ── the READ side: the detector's data source ────────────────────────────────
+
+/**
+ * The frozen injection client set (D-001). The denominator is deliberately
+ * restricted to these three: `agent_chat` and harness-chat sessions never had a
+ * hook layer and never will, so counting them would manufacture a permanent
+ * "gap" for a client that is working exactly as designed.
+ */
+export const INJECTION_CLIENTS = ['claude', 'codex', 'omp'] as const;
+export type InjectionClient = (typeof INJECTION_CLIENTS)[number];
+
+/**
+ * ⚠⚠ THE TWO `workspace_id`s ARE NOT INTERCHANGEABLE — DO NOT "FIX" THIS INTO A JOIN.
+ *
+ * `harness_shared.session_turns` (the denominator) is written under the LITERAL
+ * string 'default' — the session-transcript CORPUS namespace, which is NOT a
+ * tenant (session-ingest.ts:1075/1458/1781 hardcode it; the warning at
+ * session-ingest.ts:1703 explains why).
+ * `harness_shared.context_injection_coverage` (the numerator) is written under
+ * the REAL tenant (activeWorkspaceId(), 'papercusp-workspace' here).
+ *
+ * Measured 2026-08-09: session_turns held 53,936 rows in 7d, 100% under
+ * 'default' and ZERO under 'papercusp-workspace'. So scoping the sessions leg to
+ * the tenant — the obviously-correct-looking thing, and what the multi-tenant
+ * SQL advisory actively suggests — returns zero sessions ALWAYS, which makes the
+ * detector structurally incapable of ever firing while looking perfectly
+ * healthy. That is the same shape as the defect this whole plan exists to fix
+ * (D-005 §1: a Claude-only deriveQuery made non-Claude rows structurally
+ * impossible, not merely rare), and it is the second time this corpus-vs-tenant
+ * confusion has bitten this codebase — the first cost the substitution registry
+ * every bucket count.
+ */
+const SESSION_CORPUS_NAMESPACE = 'default';
+
+export interface ClientInjectionCoverage {
+  client: string;
+  /** Sessions seen for this client in the window — the DENOMINATOR. */
+  sessions: number;
+  /** Coverage events recorded in the window. */
+  events: number;
+  byOutcome: Record<InjectionDeliveryOutcome, number>;
+  /** Tool names behind `unknown-tool` — the actionable drift, named. */
+  driftTools: string[];
+  /**
+   * Has this client EVER produced a coverage row, at any time? A client with no
+   * baseline gives us no evidence that its recording path is even deployed, so
+   * it can never be a REGRESSION — only a known gap. See the status function.
+   */
+  everObserved: boolean;
+}
+
+export interface InjectionDeliveryCoverageReading {
+  windowHours: number;
+  clients: ClientInjectionCoverage[];
+  /** Total events across all clients in the window. */
+  totalEvents: number;
+}
+
+const ZERO_OUTCOMES = (): Record<InjectionDeliveryOutcome, number> => ({
+  recalled: 0, 'no-recall': 0, 'no-signal': 0, 'unknown-tool': 0,
+});
+
+/**
+ * Read per-client injection-delivery coverage for the health panel.
+ *
+ * THROWS on an unreadable source — the caller runs under `panelSafe`, which
+ * turns a throw into a greyed `unknown` panel. That is the correct degradation:
+ * a detector that cannot read its inputs must not report health.
+ */
+export async function readInjectionDeliveryCoverage(opts: {
+  workspaceId: string;
+  windowHours?: number;
+}): Promise<InjectionDeliveryCoverageReading> {
+  const windowHours = opts.windowHours ?? 24;
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const sql = getOrgPg().sql;
+
+  const clients = INJECTION_CLIENTS as readonly string[];
+
+  // Denominator — corpus namespace, NOT the tenant (see the block comment above).
+  const sessionRows = await sql<{ client: string; sessions: number }[]>`
+    SELECT source_kind AS client, count(DISTINCT session_id)::int AS sessions
+      FROM harness_shared.session_turns
+     WHERE workspace_id = ${SESSION_CORPUS_NAMESPACE}
+       AND source_kind = ANY(${sql.array(clients as string[])}::text[])
+       AND ts > now() - (${windowHours}::text || ' hours')::interval
+     GROUP BY 1
+  `;
+
+  // Numerator — real tenant.
+  const windowRows = await sql<
+    { client: string; outcome: string; tool: string; n: number }[]
+  >`
+    SELECT client, outcome, tool, sum(n)::int AS n
+      FROM harness_shared.context_injection_coverage
+     WHERE workspace_id = ${opts.workspaceId}
+       AND day >= (now() - (${windowHours}::text || ' hours')::interval)::date
+     GROUP BY 1, 2, 3
+  `;
+
+  // Baseline — has this client EVER been observed, at any time?
+  const everRows = await sql<{ client: string }[]>`
+    SELECT DISTINCT client
+      FROM harness_shared.context_injection_coverage
+     WHERE workspace_id = ${opts.workspaceId}
+  `;
+  const ever = new Set(everRows.map((r) => r.client));
+
+  const sessionsBy = new Map(sessionRows.map((r) => [r.client, Number(r.sessions) || 0]));
+
+  const out: ClientInjectionCoverage[] = clients.map((client) => {
+    const byOutcome = ZERO_OUTCOMES();
+    const driftTools: string[] = [];
+    let events = 0;
+    for (const r of windowRows) {
+      if (r.client !== client) continue;
+      const n = Number(r.n) || 0;
+      events += n;
+      if (r.outcome in byOutcome) byOutcome[r.outcome as InjectionDeliveryOutcome] += n;
+      if (r.outcome === 'unknown-tool' && r.tool) driftTools.push(r.tool);
+    }
+    return {
+      client,
+      sessions: sessionsBy.get(client) ?? 0,
+      events,
+      byOutcome,
+      driftTools: [...new Set(driftTools)].sort(),
+      everObserved: ever.has(client),
+    };
+  });
+
+  return {
+    windowHours,
+    clients: out,
+    totalEvents: out.reduce((a, c) => a + c.events, 0),
+  };
+}

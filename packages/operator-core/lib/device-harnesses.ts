@@ -102,6 +102,43 @@ export interface HarnessStatusFull {
   escalation: string | null;
 }
 
+/**
+ * Durable "when did this harness last do anything", in unix-ms — the newest
+ * work-item touch in that harness's lane, or null when it has no work-items at all.
+ *
+ * WHY THIS EXISTS (WI-5563). `harness_status.last_active_ts` reads like an activity
+ * ledger and is not one: the row is a 5-minute orchestrator LEASE (registered in
+ * expirable-registrations.ts, refreshed on every pg_write_status), so it only ever
+ * describes a harness with a RUNNING orchestrator. A caller asking "has this harness
+ * been quiet for 30 days?" from `harness_status` alone therefore gets `null` for
+ * precisely the abandoned harnesses it is trying to detect — the guard inverts
+ * against its own purpose. Measured 2026-08-09: the whole table held ONE row, with a
+ * NULL last_active_ts, while 56 harnesses had work-item history and 44 of those were
+ * idle >30d.
+ *
+ * `work_items` is durable and never TTL'd, so it still answers for a harness that has
+ * been dead for months — which is the only case such a caller cares about. Callers
+ * wanting "live orchestrator right now" still want harnessStatusFor; the two are
+ * different questions and should not be substituted for one another.
+ */
+export async function harnessLastActivityMs(
+  workspaceId: string,
+  slug: string,
+): Promise<number | null> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<{ last_ms: string | number | null }[]>`
+      SELECT MAX(GREATEST(COALESCE(updated_ts, 0), COALESCE(created_ts, 0))) AS last_ms
+      FROM harness_shared.work_items
+      WHERE harness_slug = ${slug}
+    `;
+    const raw = rows[0]?.last_ms;
+    if (raw == null) return null;
+    // bigint columns arrive as strings from postgres.js — never Number() a null away.
+    const ms = typeof raw === 'string' ? Number(raw) : raw;
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
+  });
+}
+
 export async function harnessStatusFor(
   workspaceId: string,
   slug: string,

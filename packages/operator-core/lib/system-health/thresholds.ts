@@ -11,6 +11,8 @@
  */
 import type {
   PanelStatus,
+  ContextInjectionHealth,
+  InjectionClientVerdict,
   QueenHealth,
   BeesHealth,
   WorkItemsHealth,
@@ -676,4 +678,62 @@ export function memoryStatus(d: MemoryPanelHealth): PanelStatus {
     if (d.zeroHitRate !== null && d.zeroHitRate >= 0.9) return 'warn';
   }
   return 'ok';
+}
+
+/**
+ * Context-injection delivery (codex-context-injection-parity-2026-08-09 P-005).
+ *
+ * ── A CRIT REQUIRES A BASELINE. THIS IS THE WHOLE DESIGN. ──
+ * P-005 specified the firing condition as "a client with no turn-start/mid-turn
+ * rows at all". Shipped literally, that alarm fires for a client in FOUR
+ * distinguishable situations, only one of which is the fault it means to catch:
+ *
+ *   1. the hook never fired                         ← the actual target
+ *   2. the SERVER-side recorder is not deployed on the port that client talks to
+ *   3. the client ran no sessions at all
+ *   4. the table is new and nobody has written to it yet
+ *
+ * Measured on this box the day it was written (2026-08-09): claude had 385
+ * sessions/24h and ZERO coverage rows; omp had 10 and zero. Both for reason 2 —
+ * the recorder was live only on staging. A literal implementation would have
+ * paged for two of the three clients on its first tick, with a confidently wrong
+ * cause, which is precisely the false-alarm trap D-005 §3 caught one level down.
+ *
+ * So: a client may only reach `crit` if it has been observed working BEFORE —
+ * `everObserved`. Absence of a baseline is absence of evidence that this client's
+ * recording path is even deployed, and a detector must not convert "I have never
+ * seen this work" into "this broke". It is the same principle memoryStatus
+ * applies to a rate over zero observations (EI-10625): no denominator is not a
+ * good score, it is NO score.
+ *
+ * The cost is deliberate and worth naming: a client whose hook has NEVER worked
+ * cannot page. That is correct — a permanently-red alarm for a known-open gap is
+ * noise, not signal, and the gap is still fully VISIBLE in the panel (verdict
+ * 'never-observed', with its session count). Fixing that gap is the plan's job;
+ * the alarm's job is to catch it REGRESSING once fixed.
+ */
+export function classifyInjectionClient(c: {
+  sessions: number;
+  events: number;
+  unknownTool: number;
+  everObserved: boolean;
+}): InjectionClientVerdict {
+  // Not in play this window — no sessions means nothing to conclude, in either
+  // direction. Never alarm on a client nobody ran.
+  if (c.sessions <= 0) return 'idle';
+  if (c.events <= 0) return c.everObserved ? 'regressed' : 'never-observed';
+  // It fired and recorded. Drift is the one actionable outcome left: the hook
+  // reached us but the tool is outside the shared vocabulary, so that call
+  // contributed nothing and nothing else would have said so.
+  if (c.unknownTool > 0) return 'drift';
+  return 'ok';
+}
+
+export function contextInjectionStatus(d: ContextInjectionHealth): PanelStatus {
+  let worst: PanelStatus = 'ok';
+  for (const c of d.clients) {
+    if (c.verdict === 'regressed') return 'crit';
+    if (c.verdict === 'drift' || c.verdict === 'never-observed') worst = 'warn';
+  }
+  return worst;
 }
