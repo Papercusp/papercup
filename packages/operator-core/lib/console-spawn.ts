@@ -924,6 +924,15 @@ export interface SpawnConsoleOpts {
     sleep?: (ms: number) => Promise<void>;
     windowMs?: number;
   };
+  /**
+   * WI-37476 (EI-9748 Route B): injectable platform/PATH probes for
+   * {@link buildConsoleScopedSpawnCommand}, mirroring
+   * {@link SpawnHeadlessOpts.spawnCommandProbes}. Tests pass fakes so the
+   * cgroup-escape branch is exercised deterministically instead of depending
+   * on whether the CI box happens to have `systemd-run` on PATH. Production
+   * callers omit it.
+   */
+  spawnCommandProbes?: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean };
 }
 
 export type SpawnConsoleResult =
@@ -1277,8 +1286,23 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   // WAYLAND_DISPLAY so GTK/webkit children in the spawned terminal bind the
   // X11 backend on the override display instead of the seat's Wayland socket.
   if (opts.displayOverride) delete spawnEnv.WAYLAND_DISPLAY;
+  // WI-37476 (EI-9748 Route B): escape the operator service's own cgroup via
+  // systemd-run --user --scope, exactly like buildHeadlessSpawnCommand does for
+  // headless members — so a `systemctl --user restart` of
+  // papercup-dev-api/papercup-staging-api (KillMode=control-group) cannot reap
+  // this window and everything spawned inside it (the login shell, and whatever
+  // build/dev-server tree the caller's one-liner starts). See
+  // buildConsoleScopedSpawnCommand's doc comment for the full rationale. `bin`/
+  // `args` below are what actually get spawned — on hosts without `systemd-run`
+  // (or non-Linux) this is byte-identical to the pre-fix `term.bin`/`childArgs`.
+  const { bin: spawnBin, args: spawnArgs } = buildConsoleScopedSpawnCommand(
+    term.bin,
+    childArgs,
+    opts.label ?? term.bin,
+    opts.spawnCommandProbes,
+  );
   try {
-    const child = spawn(term.bin, childArgs, {
+    const child = spawn(spawnBin, spawnArgs, {
       detached: true,
       stdio: ['ignore', 'ignore', stderrFd ?? 'ignore'],
       cwd: envelope.cwd,

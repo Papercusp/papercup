@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveLastRespawnOutcome,
   priorRespawnNote,
-  droppedRespawnAmbientLine,
-  DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS,
+  lostRespawnAmbientLine,
+  isOrphanedPendingRespawn,
+  LOST_RESPAWN_AMBIENT_MAX_AGE_MS,
+  PENDING_RESPAWN_DEFAULT_CAP_MS,
+  PENDING_RESPAWN_ORPHAN_GRACE_MS,
+  type PriorRespawn,
 } from './carry-respawn-outcome';
 
 /**
@@ -103,8 +107,11 @@ describe('priorRespawnNote', () => {
     expect(note).toContain('An acknowledged request is NOT a landed cut');
   });
 
-  it('says a pending re-poll is SUPERSEDED by this request rather than racing it', () => {
-    const note = priorRespawnNote({ outcome: 'pending', ts: '2026-08-04T00:28:00.818Z', ageMs: 19 * 60_000 });
+  // The age here is load-bearing since P-009: a pending attempt past its re-poll
+  // cap is ORPHANED, not racing, and gets the other branch (see the orphan suite
+  // at the bottom). This one is deliberately well inside the window.
+  it('says a pending re-poll STILL INSIDE its window is SUPERSEDED by this request rather than racing it', () => {
+    const note = priorRespawnNote({ outcome: 'pending', ts: '2026-08-04T00:28:00.818Z', ageMs: 90_000 });
     expect(note).toContain('prior-respawn-STILL-PENDING');
     expect(note).toContain('SUPERSEDES');
   });
@@ -132,7 +139,7 @@ describe('priorRespawnNote', () => {
  * to call again. Measured on session bd819348: the owner read the resulting
  * silence as "the successor got an error" when no successor had ever existed.
  */
-describe('droppedRespawnAmbientLine', () => {
+describe('lostRespawnAmbientLine', () => {
   const dropped = (over: Partial<{ reason: string; ageMs: number | null }> = {}) => ({
     outcome: 'dropped' as const,
     reason: 'busy-gate-expired',
@@ -142,7 +149,7 @@ describe('droppedRespawnAmbientLine', () => {
   });
 
   it('warns on a RECENT drop, naming the reason and the observable that confirms it', () => {
-    const line = droppedRespawnAmbientLine(dropped());
+    const line = lostRespawnAmbientLine(dropped());
     expect(line).toContain('carry-respawn DROPPED');
     expect(line).toContain('busy-gate-expired');
     // The observable is what makes this actionable rather than merely alarming:
@@ -154,26 +161,26 @@ describe('droppedRespawnAmbientLine', () => {
   // A line that fires when nothing is wrong is a line agents learn to skip —
   // which would defeat the entire point of adding another per-turn line.
   it('is SILENT for delivered / pending / none / null', () => {
-    expect(droppedRespawnAmbientLine({ outcome: 'delivered', ageMs: 1_000 })).toBeNull();
-    expect(droppedRespawnAmbientLine({ outcome: 'pending', ageMs: 1_000 })).toBeNull();
-    expect(droppedRespawnAmbientLine({ outcome: 'none' })).toBeNull();
-    expect(droppedRespawnAmbientLine(null)).toBeNull();
-    expect(droppedRespawnAmbientLine(undefined)).toBeNull();
+    expect(lostRespawnAmbientLine({ outcome: 'delivered', ageMs: 1_000 })).toBeNull();
+    expect(lostRespawnAmbientLine({ outcome: 'pending', ageMs: 1_000 })).toBeNull();
+    expect(lostRespawnAmbientLine({ outcome: 'none' })).toBeNull();
+    expect(lostRespawnAmbientLine(null)).toBeNull();
+    expect(lostRespawnAmbientLine(undefined)).toBeNull();
   });
 
   it('goes quiet once the drop is old news, treating the boundary itself as still-recent', () => {
-    expect(droppedRespawnAmbientLine(dropped({ ageMs: DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS }))).not.toBeNull();
-    expect(droppedRespawnAmbientLine(dropped({ ageMs: DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS + 1 }))).toBeNull();
+    expect(lostRespawnAmbientLine(dropped({ ageMs: LOST_RESPAWN_AMBIENT_MAX_AGE_MS }))).not.toBeNull();
+    expect(lostRespawnAmbientLine(dropped({ ageMs: LOST_RESPAWN_AMBIENT_MAX_AGE_MS + 1 }))).toBeNull();
   });
 
   // An unparseable host timestamp yields ageMs null. Rendering that as "recent"
   // would nag every turn forever on exactly the rows we know least about.
   it('is SILENT on a drop of UNKNOWN age rather than assuming it is recent', () => {
-    expect(droppedRespawnAmbientLine(dropped({ ageMs: null }))).toBeNull();
+    expect(lostRespawnAmbientLine(dropped({ ageMs: null }))).toBeNull();
   });
 
   it('omits the reason clause cleanly when the host recorded none', () => {
-    const line = droppedRespawnAmbientLine({ outcome: 'dropped', ageMs: 60_000 });
+    const line = lostRespawnAmbientLine({ outcome: 'dropped', ageMs: 60_000 });
     expect(line).toContain('carry-respawn DROPPED');
     expect(line).not.toContain('(reason:');
   });
@@ -186,6 +193,108 @@ describe('droppedRespawnAmbientLine', () => {
     const ancient = dropped({ ageMs: 30 * 24 * 3_600_000 });
     const ageBlindGate = (p: ReturnType<typeof dropped>) => (p.outcome === 'dropped' ? 'would fire' : null);
     expect(ageBlindGate(ancient)).not.toBeNull();
-    expect(droppedRespawnAmbientLine(ancient)).toBeNull();
+    expect(lostRespawnAmbientLine(ancient)).toBeNull();
+  });
+});
+
+/**
+ * P-009 (fleet-lead-instrumentation-audit-2026-08-09) — the ORPHANED attempt.
+ * `session:request-compaction` acked `respawn: true`, an internal claude re-exec
+ * pre-empted the cut, and context resumed at 79%. Nothing distinguished the
+ * requested cut from a performed one, because the pre-empted attempt never got a
+ * verdict row: it stayed `pending`, and every warning in this module was gated on
+ * `dropped`. The rows below carry the real `capMs` values the host stamps
+ * (~/.papercusp/psu-pty/su-b8422496-….events.jsonl, 2026-08-09T01:46:12Z).
+ */
+describe('isOrphanedPendingRespawn', () => {
+  const pending = (over: Partial<PriorRespawn> = {}): PriorRespawn => ({
+    outcome: 'pending',
+    reason: 'busy-gate-expired',
+    ts: '2026-08-09T01:46:12.000Z',
+    ageMs: 20 * 60_000,
+    capMs: 360_000,
+    ...over,
+  });
+
+  it('reads capMs off the deciding row so the verdict tracks the HOST budget, not a copy of it', () => {
+    const rows = [
+      { ts: '2026-08-09T01:46:12.000Z', kind: 'carry-respawn-busy-gate-expired', capMs: 180_000 },
+      { ts: '2026-08-09T01:46:12.000Z', kind: 'respawn-rearm-queued', reason: 'busy-gate-expired', capMs: 360_000 },
+      { ts: '2026-08-09T01:46:22.406Z', kind: 'wake-turn-deferred-for-pending-respawn' },
+    ];
+    const out = deriveLastRespawnOutcome(rows, { now: Date.parse('2026-08-09T02:06:12.000Z') });
+    expect(out.outcome).toBe('pending');
+    expect(out.capMs).toBe(360_000);
+    expect(isOrphanedPendingRespawn(out)).toBe(true);
+  });
+
+  it('is FALSE while the re-poll window is still open — a slow attempt is not a lost one', () => {
+    expect(isOrphanedPendingRespawn(pending({ ageMs: 60_000 }))).toBe(false);
+    expect(isOrphanedPendingRespawn(pending({ ageMs: 360_000 }))).toBe(false);
+    // The grace band: the cap is a wait budget, not a promise to write the row on
+    // the tick, so a verdict trailing it slightly must not read as pre-emption.
+    expect(isOrphanedPendingRespawn(pending({ ageMs: 360_000 + PENDING_RESPAWN_ORPHAN_GRACE_MS }))).toBe(false);
+    expect(isOrphanedPendingRespawn(pending({ ageMs: 360_000 + PENDING_RESPAWN_ORPHAN_GRACE_MS + 1 }))).toBe(true);
+  });
+
+  // The discriminating case: a row stamped with a LONGER cap than the default is
+  // still in flight at an age that would be orphaned under the default. If this
+  // ever passes with the row's capMs ignored, the predicate is reading a constant.
+  it('honours a LONGER host cap instead of the default, and falls back only when the row carried none', () => {
+    expect(isOrphanedPendingRespawn(pending({ ageMs: 10 * 60_000, capMs: 1_800_000 }))).toBe(false);
+    expect(isOrphanedPendingRespawn(pending({ ageMs: 10 * 60_000, capMs: null }))).toBe(true);
+    expect(PENDING_RESPAWN_DEFAULT_CAP_MS).toBe(360_000);
+  });
+
+  it('is FALSE on unknown age, and on every non-pending outcome', () => {
+    expect(isOrphanedPendingRespawn(pending({ ageMs: null }))).toBe(false);
+    expect(isOrphanedPendingRespawn({ outcome: 'dropped', ageMs: 10 * 3_600_000 })).toBe(false);
+    expect(isOrphanedPendingRespawn({ outcome: 'delivered', ageMs: 10 * 3_600_000 })).toBe(false);
+    expect(isOrphanedPendingRespawn({ outcome: 'none' })).toBe(false);
+    expect(isOrphanedPendingRespawn(null)).toBe(false);
+  });
+});
+
+describe('lostRespawnAmbientLine — orphaned pending (P-009)', () => {
+  const orphan: PriorRespawn = {
+    outcome: 'pending',
+    reason: 'busy-gate-expired',
+    ts: '2026-08-09T01:46:12.000Z',
+    ageMs: 20 * 60_000,
+    capMs: 360_000,
+  };
+
+  it('warns that the cut was PRE-EMPTED, and never claims a verdict the host did not record', () => {
+    const line = lostRespawnAmbientLine(orphan);
+    expect(line).toContain('carry-respawn ORPHANED');
+    expect(line).toContain('NEVER recorded an outcome');
+    expect(line).toContain('still the same session');
+    // A drop has a verdict row to quote; an orphan does not. Reporting one as the
+    // other manufactures certainty the host never produced.
+    expect(line).not.toContain('DROPPED');
+    // The re-poll budget is named so the reader can check the claim themselves.
+    expect(line).toContain('360s');
+  });
+
+  it('stays SILENT on an attempt still inside its window, and once the orphan is old news', () => {
+    expect(lostRespawnAmbientLine({ ...orphan, ageMs: 60_000 })).toBeNull();
+    expect(lostRespawnAmbientLine({ ...orphan, ageMs: LOST_RESPAWN_AMBIENT_MAX_AGE_MS + 1 })).toBeNull();
+  });
+
+  // CONTROL (falsifiability): the cap gate is the only thing between this line and
+  // firing on every healthy in-flight respawn — which would nag exactly the agents
+  // whose cut IS about to land. A cap-blind gate fires where the real one is silent.
+  it('CONTROL: a cap-blind gate fires on a healthy in-flight pending where the real one does not', () => {
+    const fresh: PriorRespawn = { ...orphan, ageMs: 30_000 };
+    const capBlindGate = (p: PriorRespawn) => (p.outcome === 'pending' ? 'would fire' : null);
+    expect(capBlindGate(fresh)).not.toBeNull();
+    expect(lostRespawnAmbientLine(fresh)).toBeNull();
+  });
+
+  it('priorRespawnNote calls an orphan ORPHANED and does NOT tell the caller it inherits the dead re-poll', () => {
+    const note = priorRespawnNote(orphan);
+    expect(note).toContain('prior-respawn-ORPHANED');
+    expect(note).toContain('does NOT inherit it');
+    expect(note).not.toContain('SUPERSEDES');
   });
 });

@@ -146,6 +146,54 @@ describe('device-push-dispatcher', () => {
 });
 
 /**
+ * WI-37479 — a CONFIGURED-BUT-BROKEN provider must not report as an unconfigured host.
+ *
+ * ⚠ Note what this suite can and cannot do. The original fault was a bare CJS `require()` in an
+ * ESM module, and it is INVISIBLE to vitest: the module runner defines `require`, so the
+ * pre-existing "pushEnabled() is true with a valid service account" test exercised this exact
+ * path and passed, while the real ESM host (bg-host, via tsx) threw `require is not defined` on
+ * every push for the entire audited window. A runtime test cannot reproduce a fault that only
+ * exists under the host's module semantics — so the require itself is locked by a SOURCE
+ * assertion, and the runtime tests below lock the reporting that let it hide.
+ */
+describe('FCM credential faults report as faults, not skips (WI-37479)', () => {
+  it('source carries no bare require() — it is not defined in the ESM hosts that serve pushes', () => {
+    const src = readFileSync(join(__dirname, 'device-push-dispatcher.ts'), 'utf8');
+    // `requireCjs(` (createRequire) is correct; a bare `require(` is the bug.
+    expect(src).not.toMatch(/[^a-zA-Z.]require\s*\(/);
+    expect(src).toContain('createRequire(import.meta.url)');
+  });
+
+  it('an ABSENT service account is a silent skip — most hosts never configure push', async () => {
+    process.env.FCM_SERVICE_ACCOUNT_PATH = join(dir, 'nope.json');
+    __resetPushCredsForTest();
+    const [r] = await dispatchPush([{ platform: 'fcm', token: 't' }], {
+      title: 't',
+      body: 'b',
+      data: { kind: 'intervention' },
+    });
+    expect(r).toMatchObject({ ok: false, status: 'skipped' });
+    expect(r.detail).toBeUndefined();
+  });
+
+  it('a PRESENT but unusable service account is an ERROR carrying the cause', async () => {
+    const path = join(dir, 'broken.json');
+    writeFileSync(path, '{ this is not valid json');
+    process.env.FCM_SERVICE_ACCOUNT_PATH = path;
+    __resetPushCredsForTest();
+    const [r] = await dispatchPush([{ platform: 'fcm', token: 't' }], {
+      title: 't',
+      body: 'b',
+      data: { kind: 'intervention' },
+    });
+    // The whole point: NOT 'skipped'. A broken credential must be distinguishable from a host
+    // that simply has no phone paired — that conflation hid 91 of 141 failed pushes.
+    expect(r.status).toBe('error');
+    expect(r.detail).toContain('broken.json');
+  });
+});
+
+/**
  * WI-37477 — reaping a token the provider says is permanently dead.
  *
  * The property under test is ASYMMETRIC: failing to reap costs a wasted push, reaping wrongly

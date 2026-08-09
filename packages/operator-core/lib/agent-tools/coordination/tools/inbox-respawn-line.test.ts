@@ -79,7 +79,7 @@ vi.mock("../../../cache", () => ({
 vi.mock("../../../compaction-usage", () => ({
   currentContextTokensForOwner: vi.fn(async () => null),
 }));
-// PARTIAL mock: only the IO leg is stubbed. `droppedRespawnAmbientLine` stays
+// PARTIAL mock: only the IO leg is stubbed. `lostRespawnAmbientLine` stays
 // REAL so the assertions below pin the production wording, not a fixture.
 vi.mock("../../../carry-respawn-outcome", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../carry-respawn-outcome")>();
@@ -174,6 +174,37 @@ describe("coord:inbox — dropped carry-respawn ambient line (EI-193263315018497
     // unwind the enclosing presence/usage block.
     expect(out.ok).not.toBe(false);
     expect(String(out.injection ?? "")).not.toContain("carry-respawn DROPPED");
+  });
+
+  // P-009 (fleet-lead-instrumentation-audit-2026-08-09): the pre-empted attempt.
+  // It never gets a verdict row, so it reads `pending` forever — and this whole
+  // surface used to be gated on `dropped`, which is why the acked-but-never-cut
+  // case with NO host evidence was also the one case nothing ever said.
+  it("surfaces an ORPHANED pending respawn — the acked cut that was pre-empted, not refused", async () => {
+    prior({
+      outcome: "pending",
+      reason: "busy-gate-expired",
+      ts: "2026-08-09T07:00:00.000Z",
+      ageMs: 20 * 60 * 1000,
+      capMs: 360_000,
+    });
+    const injection = String((await callInbox()).injection ?? "");
+    expect(injection).toContain("carry-respawn ORPHANED");
+    expect(injection).toContain("NEVER recorded an outcome");
+    expect(injection.split("\n")[0]).toContain("carry-respawn ORPHANED");
+  });
+
+  it("stays silent for a pending respawn still INSIDE its re-poll window", async () => {
+    prior({
+      outcome: "pending",
+      reason: "busy-gate-expired",
+      ts: "2026-08-09T07:00:00.000Z",
+      ageMs: 30_000,
+      capMs: 360_000,
+    });
+    const injection = String((await callInbox()).injection ?? "");
+    expect(M.readPriorRespawnOutcome).toHaveBeenCalled();
+    expect(injection).not.toContain("carry-respawn ORPHANED");
   });
 
   it("CONTROL: a gate-blind wiring would fail these cases (calibration)", async () => {

@@ -217,8 +217,22 @@ export function serveUploadPack(
     const child = spawn('git', ['upload-pack', '--strict', repoPath], {
       env: { ...process.env, GIT_PROTOCOL: 'version=2', LC_ALL: 'C', LANG: 'C' },
     });
-    const killChild = (why: string): void => {
-      timedOut = true;
+    /**
+     * `kind` separates a CEILING firing (the idle / absolute timers below) from
+     * an ABANDONMENT (the requester's duplex went away, or our caller aborted).
+     * Both kill the child, but only the former is a timeout.
+     *
+     * EI-18808621019872598: this used to set `timedOut = true` unconditionally,
+     * so every abandonment was reported as a timeout. Measured on the tower
+     * 2026-08-08T17:01Z, serves lasting 169ms / 238ms / 241ms were all logged
+     * `code=-1 timedOut=true` against a 120000ms idle ceiling — a signal that
+     * invites a timeout-TUNING fix for what is actually a connection teardown.
+     * That misattribution cost real diagnosis time on this exact blocker, so
+     * `kind` is required rather than defaulted: a new call site must say which
+     * it is instead of silently inheriting the wrong one.
+     */
+    const killChild = (why: string, kind: 'timeout' | 'abandon'): void => {
+      if (kind === 'timeout') timedOut = true;
       stderrOut.append(`\nupload-pack ${why} (served ${bytesServed}B)`);
       // Report HERE, at the moment of the decision, not from the 'close'
       // handler's generic fallback: this names the ceiling that actually fired
@@ -236,13 +250,16 @@ export function serveUploadPack(
     const armIdle = (): void => {
       if (settled) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => killChild(`timed out after ${idleMs}ms idle`), idleMs);
+      timer = setTimeout(() => killChild(`timed out after ${idleMs}ms idle`, 'timeout'), idleMs);
       timer.unref?.();
     };
     armIdle();
     // ABSOLUTE ceiling: never rearmed, so a slow-drip peer still cannot pin the
     // stream open forever.
-    hardTimer = setTimeout(() => killChild(`timed out after ${maxMs}ms (absolute ceiling)`), maxMs);
+    hardTimer = setTimeout(
+      () => killChild(`timed out after ${maxMs}ms (absolute ceiling)`, 'timeout'),
+      maxMs,
+    );
     hardTimer.unref?.();
     stderrOut.attach(child.stderr);
     child.stderr.on('data', () => {
@@ -279,10 +296,23 @@ export function serveUploadPack(
      */
     const abandon = (why: string): void => {
       if (settled) return;
-      killChild(why);
+      killChild(why, 'abandon');
     };
     // Never let a stream error crash the host (peer resets, EPIPE mid-pack).
-    duplex.on('error', () => abandon('abandoned: requester duplex errored'));
+    //
+    // EI-18808621019872598: "requester duplex errored" NAMES THE WRONG PARTY in
+    // the common case. A destroyed duplex is exactly what a LOCAL channel close
+    // produces — `serve-wiring.failAllSessions` destroys every in-flight session
+    // with `d.destroy(new Error('pot-git: serve channel closed …'))` — so this
+    // handler fires for our own teardown just as readily as for a peer fault,
+    // and the bare string sends diagnosis to the peer either way. Carrying the
+    // underlying message through makes the two distinguishable at a glance
+    // without coupling this module to serve-wiring's wording (serve-wiring
+    // imports THIS file, so a shared constant would be a cycle).
+    duplex.on('error', (e?: Error) => {
+      const detail = e?.message ? ` (${e.message})` : '';
+      abandon(`abandoned: requester duplex errored${detail}`);
+    });
     duplex.on('close', () => abandon('abandoned: requester duplex closed'));
     // WI-6373/EI-18802033487678337: the serving side may also be told to stand
     // down by its caller (a newer request for the same repo on the same channel

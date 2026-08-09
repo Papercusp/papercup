@@ -4,6 +4,7 @@ import {
   resolveMemoryWatchdogLimitMb,
   MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND,
   MEMORY_WATCHDOG_LIMIT_MB_REQUEST,
+  MEMORY_WATCHDOG_LIMIT_MB_STAGING,
 } from './memory-watchdog';
 
 describe('startMemoryWatchdog', () => {
@@ -213,10 +214,27 @@ describe('resolveMemoryWatchdogLimitMb (EI-1613 — role-aware RSS default)', ()
     expect(resolveMemoryWatchdogLimitMb({} as unknown as NodeJS.ProcessEnv)).toBe(12288);
   });
 
-  it('the :3170 staging operator is request-only by design → 3200', () => {
+  // EI-19484864948547581: :3170 is request-only (BG=0) but its real born
+  // working set (~5.5 GB, measured) is far heavier than a plain request
+  // worker's 3200 default — that mismatch let the born-over-budget guard
+  // suppress the recycle on every boot (10 of 10 observed). :3170 gets its
+  // own STAGING tier instead of inheriting REQUEST.
+  it('the :3170 staging operator is request-only but heavier than a plain request worker → its own STAGING tier', () => {
     expect(
       resolveMemoryWatchdogLimitMb({ PAPERCUSP_HONO_PORT: '3170' } as unknown as NodeJS.ProcessEnv),
-    ).toBe(3200);
+    ).toBe(MEMORY_WATCHDOG_LIMIT_MB_STAGING);
+    expect(MEMORY_WATCHDOG_LIMIT_MB_STAGING).toBe(10240);
+  });
+
+  it(':3170 STAGING tier only applies when BG is not otherwise forced on', () => {
+    // An explicit PAPERCUSP_BACKGROUND_WORKERS=1 on :3170 (unusual, but
+    // possible) still wins the substrate-sized 12288 — BACKGROUND is checked
+    // before the port-based STAGING fallback.
+    expect(
+      resolveMemoryWatchdogLimitMb(
+        bg({ PAPERCUSP_HONO_PORT: '3170' }) as unknown as NodeJS.ProcessEnv,
+      ),
+    ).toBe(MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND);
   });
 
   it('an explicit PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB always wins, in either role', () => {

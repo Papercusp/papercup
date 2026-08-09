@@ -21,6 +21,15 @@
  * 14+ minutes → a second request-compaction was terminally dropped at 00:38:29,
  * and the agent learned none of it.
  *
+ * SECOND FAILURE, SAME SHAPE (P-009, fleet-lead-instrumentation-audit-2026-08-09):
+ * an attempt can be PRE-EMPTED instead of refused — an internal claude re-exec or
+ * a host restart takes the pending cut with it — and then NO verdict row is ever
+ * written. The reader reported `pending` indefinitely and every warning here was
+ * gated on `dropped`, so the one case with no evidence to quote was also the one
+ * case that said nothing. {@link isOrphanedPendingRespawn} decides it from the
+ * host's own stamped re-poll budget: past `capMs`, a pending attempt is not slow,
+ * it is gone.
+ *
  * The derivation is PURE and exported separately from the IO so it can be
  * unit-tested without a host. The row reader is the EXISTING
  * `readOwnerHostEvents` — deliberately not a second reader of the same file.

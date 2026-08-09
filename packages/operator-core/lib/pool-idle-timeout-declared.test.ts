@@ -528,3 +528,177 @@ describe('admin pools track the URL they were built with (EI-19306394439939264)'
     ).toEqual([]);
   });
 });
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WI-37473: no singleton pool is built by a CHECK-THEN-ACT async memo
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Does this file memoize an in-flight build as a PROMISE? That is the canonical fix
+ * for the race below (`let x: Promise<T> | null = null`, assigned synchronously), and
+ * it is what makes a surviving guard inside the private builder harmless.
+ *
+ * Why this exemption has to exist: the fix deliberately leaves the cheap
+ * `if (memo) return memo;` short-circuit in place inside the builder, so the builder
+ * still LOOKS like check-then-act. It is safe because the only caller assigns the
+ * promise synchronously and therefore never enters it twice. Without this check the
+ * ratchet would red exactly the people who applied the fix correctly — measured on
+ * `sync/hyperbee/swarm.ts`, whose post-fix `buildSharedSwarm()` retains that shape.
+ */
+function memoizesAnInFlightPromise(source: string): boolean {
+  return /^let\s+\w+\s*:\s*Promise<[^>]*>\s*\|\s*null\s*=\s*null\s*;/m.test(source);
+}
+
+/**
+ * WI-37473: find a module-scoped pool memo GUARDED and then ASSIGNED with an `await`
+ * in between — the check-then-act race.
+ *
+ * ```ts
+ * let _pgClient: any = null;
+ * async function pg() {
+ *   if (_pgClient) return _pgClient;          // ← guard
+ *   const postgres = (await import('postgres')).default;   // ← await: the window
+ *   _pgClient = postgres(url, { ... });       // ← assignment
+ * }
+ * ```
+ *
+ * Every caller entering during the await passes the guard and constructs its OWN pool.
+ * Only the last assignment is retained, so each loser's pool is unreferenced and never
+ * `.end()`-ed, holding its connections until process exit.
+ *
+ * SCOPE, stated deliberately: this keys on the guard, the await and the assignment
+ * sitting in ONE function. It does NOT reason about whether that function can actually
+ * be entered concurrently — that needs call-graph analysis. The narrow population here
+ * (module-scoped `postgres(...)` memos, 22 sites measured 2026-08-09) is what makes the
+ * approximation safe: every member's accessor is called directly from many call sites,
+ * so concurrent entry is the default rather than something to prove. Do NOT lift this
+ * to a general "any awaited memo" lint on that basis — measured against the whole tree
+ * the same shape returns 88 sites, overwhelmingly teardown clears (`x = null`) and
+ * already-correct promise memos.
+ */
+function findRacedPoolMemoSites(source: string): { line: number; name: string }[] {
+  if (memoizesAnInFlightPromise(source)) return [];
+  const lines = source.split('\n');
+  return findSingletonPoolSites(source).filter((site) => {
+    // Walk back to the start of the enclosing function.
+    let start = 0;
+    for (let j = site.line - 1; j >= 0; j--) {
+      if (/^(export\s+)?(async\s+)?(function|const|let)\b/.test(lines[j]) || /^\}/.test(lines[j])) {
+        start = j;
+        break;
+      }
+    }
+    let guard = -1;
+    let awaited = -1;
+    for (let j = start; j < site.line; j++) {
+      if (guard < 0 && new RegExp(`\\bif\\s*\\(\\s*!?\\s*${site.name}\\b`).test(lines[j])) guard = j;
+      if (/\bawait\b/.test(lines[j])) awaited = j;
+    }
+    return guard >= 0 && awaited > guard;
+  });
+}
+
+describe('the race guard itself detects a check-then-act pool memo (non-vacuity)', () => {
+  // Fixtures, never a temporary mutation of a real file: this tree is shared and
+  // auto-committed every few minutes (CLAUDE.md, "proving a guard is falsifiable").
+  // VERBATIM the real pre-fix accessor from libs/papercusp/plugins/jira-sync/index.ts
+  // at be301cf9^ (the last commit before the WI-37473 fix), not a reconstruction — so
+  // this control provably reproduces the bug that shipped, and stays a permanent
+  // regression witness after the real file is fixed.
+  const RACED = `
+let _pgClient: any = null;
+async function pg() {
+  if (_pgClient) return _pgClient;
+  const postgres = (await import('postgres')).default;
+  const url =
+    process.env.HARNESS_ADMIN_DATABASE_URL ||
+    process.env.HARNESS_DATABASE_URL ||
+    readDiscoveryUrl('app') ||
+    'postgresql://harness_app:harness_app_pwd@localhost:5432/papercusp';
+  _pgClient = postgres(url, {
+    onnotice: () => {},
+    max: 2,
+    idle_timeout: 30,
+    connection: { application_name: \`pcusp:jira-sync:p\${process.pid}\`.slice(0, 63) },
+  });
+  return _pgClient;
+}`;
+  // The WI-37473 fix: the guard-bearing accessor is SYNC and memoizes the promise; the
+  // builder holds the await but no guard.
+  const FIXED = `
+let _pgClient: any = null;
+let _pgClientPromise: Promise<any> | null = null;
+async function buildPgClient(): Promise<any> {
+  const postgres = (await import('postgres')).default;
+  _pgClient = postgres(url, { idle_timeout: 30 });
+  return _pgClient;
+}
+function pg(): Promise<any> {
+  if (_pgClient) return Promise.resolve(_pgClient);
+  if (_pgClientPromise) return _pgClientPromise;
+  _pgClientPromise = buildPgClient().catch((err: unknown) => {
+    _pgClientPromise = null;
+    throw err;
+  });
+  return _pgClientPromise;
+}`;
+  // No await between guard and assignment — the classic sync singleton is not this bug.
+  const SYNC_SINGLETON = `
+let pool: Sql | null = null;
+function db() {
+  if (!pool) pool = postgres(getHarnessAdminUrl(), { idle_timeout: 30 });
+  return pool;
+}`;
+
+  it('flags the check-then-act shape', () => {
+    const sites = findRacedPoolMemoSites(RACED);
+    expect(sites).toHaveLength(1);
+    expect(sites[0].name).toBe('_pgClient');
+  });
+
+  it('does NOT flag the promise-memo fix (the guard must not punish its own remedy)', () => {
+    expect(findRacedPoolMemoSites(FIXED)).toEqual([]);
+  });
+
+  it('does NOT flag a synchronous singleton (no await between check and act)', () => {
+    expect(findRacedPoolMemoSites(SYNC_SINGLETON)).toEqual([]);
+  });
+});
+
+describe('no singleton pool is built by a check-then-act async memo (WI-37473)', () => {
+  const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));
+
+  it('the tree scan is wired correctly (test is not vacuously green)', () => {
+    // Anchored to the scan, never to a population floor — same reasoning as the two
+    // describes above: this population is meant to reach zero and stay there.
+    expect(files.length).toBeGreaterThan(100);
+  });
+
+  it('no module-scoped pool memo is assigned across an await from its own guard', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      for (const site of findRacedPoolMemoSites(source)) {
+        offenders.push(`${relative(REPO_ROOT, file)}:${site.line + 1} (${site.name})`);
+      }
+    }
+    expect(
+      offenders,
+      `These pools are built by a check-then-act async memo: an \`await\` sits between the ` +
+        `guard that reads the memo and the assignment that fills it, so N concurrent callers ` +
+        `construct N pools. Only the last is retained — every loser's pool is unreferenced, ` +
+        `never .end()-ed, and holds its connections against Postgres until process exit ` +
+        `(WI-37473; jira-sync + linear-sync each had ~20 call sites into one such accessor).\n` +
+        `Fix: memoize the PROMISE and assign it SYNCHRONOUSLY, so no await sits between ` +
+        `check and set —\n` +
+        `  let _xPromise: Promise<T> | null = null;\n` +
+        `  function x(): Promise<T> {\n` +
+        `    if (_x) return Promise.resolve(_x);\n` +
+        `    if (_xPromise) return _xPromise;\n` +
+        `    _xPromise = buildX().catch((e) => { _xPromise = null; throw e; });  // sync assign\n` +
+        `    return _xPromise;\n` +
+        `  }\n` +
+        offenders.map((o) => `  - ${o}`).join('\n'),
+    ).toEqual([]);
+  });
+});

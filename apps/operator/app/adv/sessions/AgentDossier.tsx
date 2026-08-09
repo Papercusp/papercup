@@ -1149,7 +1149,7 @@ export default function AgentDossier({
               {/* P-013's "what was pushed": one row per HANDLE, not a per-port
                   tally. `kind` is rendered because it is also the LEG OF
                   ORIGIN — each ledger has exactly one writer — and it is the
-                  only per-ref leg attribution that exists (D-078: the finer
+                  only per-ref leg attribution that exists (D-085: the finer
                   cosine-vs-lexical split is recorded as COUNTS on the recall
                   row, never per ref, so inventing it here would be a claim the
                   ledgers cannot support). The `sem`/`lex` marks below stay on

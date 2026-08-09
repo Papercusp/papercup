@@ -29,6 +29,7 @@
  */
 import { connect as http2Connect } from 'node:http2';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 
 /**
@@ -151,7 +152,27 @@ interface FcmCreds {
   getAccessToken: () => Promise<string>;
   projectId: string;
 }
-let _fcm: FcmCreds | null | undefined; // undefined = not resolved yet; null = unconfigured
+let _fcm: FcmCreds | null | undefined; // undefined = not resolved yet; null = unavailable
+
+/**
+ * WHY `_fcm` is null. `null` used to mean only "unconfigured", and every caller rendered it as
+ * `status: 'skipped'` — a benign, expected no-op. That conflation hid a total outage for the
+ * whole audited window (WI-37479): **91 of 141 mobile pushes reported `fcm:skipped` while the
+ * service account was present and perfectly valid**, because `resolveFcmCreds` threw
+ * `require is not defined` and the catch below flattened a hard failure into the same `null`
+ * that "no push configured on this host" produces.
+ *
+ * A genuinely absent credential file (ENOENT) IS a skip — most hosts never configure push, and
+ * that must stay silent. Anything else is a FAULT and now says so, so the next breakage of this
+ * kind surfaces as an error instead of looking like a host that simply has no phone paired.
+ */
+let _fcmFailure: string | null = null;
+
+/** CJS interop: this module is loaded as ESM by the hosts that serve pushes (bg-host runs it
+ *  through tsx straight from the tree), where a bare `require` is NOT defined — that is the
+ *  exact fault above. `createRequire` is the established idiom here (native-addon-preflight.ts,
+ *  boot-integrity-preflight.ts, plugin-host-runtime.ts). */
+const requireCjs = createRequire(import.meta.url);
 
 /**
  * Resolve (once) the FCM service-account credential + a token minter.
@@ -172,17 +193,19 @@ export function resolveFcmCreds(): FcmCreds | null {
     };
     if (!sa.client_email || !sa.private_key || !sa.project_id) {
       console.warn(`[push] FCM service account at ${path} is missing required fields; skipping FCM`);
+      _fcmFailure = `service account at ${path} is missing required fields`;
       _fcm = null;
       return _fcm;
     }
     // Lazy require so the (heavy) auth lib only loads when push is actually configured.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { JWT } = require('google-auth-library') as typeof import('google-auth-library');
+    const { JWT } = requireCjs('google-auth-library') as typeof import('google-auth-library');
     const client = new JWT({
       email: sa.client_email,
       key: sa.private_key,
       scopes: [FCM_SCOPE],
     });
+    _fcmFailure = null; // resolved cleanly — clear any prior fault before memoizing success
     _fcm = {
       projectId: sa.project_id,
       getAccessToken: async () => {
@@ -193,8 +216,15 @@ export function resolveFcmCreds(): FcmCreds | null {
     };
     return _fcm;
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // ENOENT = push was simply never configured on this host: the expected, silent case.
+    // Anything else is a FAULT wearing the same `null` — record it so it REPORTS as one.
+    const unconfigured = (e as NodeJS.ErrnoException)?.code === 'ENOENT';
+    _fcmFailure = unconfigured ? null : `${path}: ${msg}`;
     console.warn(
-      `[push] FCM service account not usable (${path}): ${e instanceof Error ? e.message : String(e)}; skipping FCM`,
+      unconfigured
+        ? `[push] no FCM service account at ${path}; skipping FCM`
+        : `[push] FCM service account NOT USABLE (${path}): ${msg} — this is a FAULT, not an unconfigured host`,
     );
     _fcm = null;
     return _fcm;
@@ -204,6 +234,7 @@ export function resolveFcmCreds(): FcmCreds | null {
 /** Test-only: reset the memoized FCM creds so a test can re-resolve with new env. */
 export function __resetPushCredsForTest(): void {
   _fcm = undefined;
+  _fcmFailure = null;
   _apnsJwt = null;
 }
 
@@ -222,7 +253,12 @@ export function buildFcmMessage(deviceToken: string, payload: PushPayload) {
 
 async function sendFcm(deviceToken: string, payload: PushPayload): Promise<PushSendResult> {
   const creds = resolveFcmCreds();
-  if (!creds) return { platform: 'fcm', ok: false, status: 'skipped' };
+  if (!creds) {
+    // A configured-but-broken provider is an ERROR, not a skip (WI-37479).
+    return _fcmFailure
+      ? { platform: 'fcm', ok: false, status: 'error', detail: _fcmFailure }
+      : { platform: 'fcm', ok: false, status: 'skipped' };
+  }
   let accessToken: string;
   try {
     accessToken = await creds.getAccessToken();

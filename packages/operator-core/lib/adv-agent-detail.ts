@@ -457,8 +457,10 @@ export interface PushedContextPortRefs {
  * construction (`memory/injection.ts` → `stampSurfacedRefs`). The finer
  * cosine-vs-lexical attribution is NOT recorded per ref anywhere — recall_stats'
  * `admission.byLeg` carries COUNTS (`{cosineOnly, lexicalOnly, both}`), never a
- * per-ref label, and no column ties a surfaced row back to a recall row. That
- * gap is measured and recorded as plan decision D-078, not papered over here.
+ * per-ref label, and no column ties a surfaced row back to a recall row. The
+ * only available tie is a (session, port, nearest-time) heuristic, measured at
+ * 76% exact / 21% no-match / 3% ambiguous — so it is recorded as plan decision
+ * D-085 rather than rendered as if it were exact.
  */
 export interface PushedContextRef {
   /** The handle: a corpus pointer (`WI-6512`) or a mem0 memory id (uuid). */

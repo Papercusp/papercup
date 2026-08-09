@@ -916,13 +916,19 @@ export default defineTool({
       // reads it is the NEXT session:request-compaction reply, which a settled agent
       // has no reason to call. Surfacing it here reaches the agent on its next TURN.
       //
+      // P-009 (fleet-lead-instrumentation-audit-2026-08-09) widened this from
+      // `dropped` to LOST: an attempt pre-empted mid-flight (internal claude re-exec,
+      // host restart) never gets a verdict row at all, so it sat `pending` forever and
+      // this line stayed silent — the exact "acked but never performed" case it was
+      // built for, on the one path where the host records nothing to quote.
+      //
       // Gated on the same quiet band as the gauge, for cost AND correctness: a dropped
       // respawn means the session is at/over its soft limit by construction, so a
       // low-% turn cannot have an actionable one — and low-% turns keep paying nothing
       // extra, the discipline the flush-gate read above already follows.
       if (pct != null && pct >= CONTEXT_GAUGE_QUIET_PCT) {
         try {
-          respawnLine = droppedRespawnAmbientLine(await readPriorRespawnOutcome(identity.ownerId));
+          respawnLine = lostRespawnAmbientLine(await readPriorRespawnOutcome(identity.ownerId));
         } catch {
           respawnLine = null;
         }

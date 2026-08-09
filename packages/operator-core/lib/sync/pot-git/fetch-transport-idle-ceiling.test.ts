@@ -382,8 +382,18 @@ describe('serveUploadPack — abandoned requester (EI-18802033487678337)', () =>
 
     const res = await p;
     expect(Date.now() - startedAt).toBeLessThan(4_000);
-    expect(res.timedOut).toBe(true);
+    // The KILL is the property this test is named for, and `stderr` is what
+    // actually witnesses it — killChild writes the reason there.
     expect(res.stderr).toContain('abandoned');
+    // EI-18808621019872598: an abandonment is NOT a timeout. This used to assert
+    // `timedOut === true` because killChild set it unconditionally, which is how
+    // a 169ms serve came to be logged `timedOut=true` against a 120000ms idle
+    // ceiling — a signal that sends triage after a timeout that never fired.
+    expect(res.timedOut).toBe(false);
+    // The underlying cause must survive into the reason, rather than being
+    // flattened to a bare "requester duplex errored" that blames the peer for
+    // what was OUR channel closing (serve-wiring.failAllSessions).
+    expect(res.stderr).toContain('pot-git: serve channel closed');
   });
 
   /** The same stand-down, driven by the caller — `serve-wiring` aborts a serve
