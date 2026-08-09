@@ -745,6 +745,20 @@ export function mergeCarryRows(opts: {
   /** Prior CHECK claims this write did not carry forward. Same contract as
    *  {@link droppedWalls}. */
   droppedChecks: string[];
+  /**
+   * P-013 — SUPPLIED rows that did not make it into the stored set, i.e. the row cap
+   * cut them. The mirror image of `droppedChecks`/`droppedWalls`, which report rows
+   * lost from the PRIOR set and therefore cannot see this: a caller who sends 13 rows
+   * into a 12-row cap silently loses the 13th.
+   *
+   * Pre-existing (the cap always worked this way), but `mode:'merge'` makes it far
+   * likelier to fire — carried rows hold their slots, so it is the caller's NEW row
+   * that falls off the end. Shipping a merge mode that silently eats new rows would
+   * re-create, on the additive path, the very silence the mode exists to remove.
+   */
+  overflowWalls: string[];
+  /** Supplied CHECK claims the row cap cut. Same contract as {@link overflowWalls}. */
+  overflowChecks: string[];
 } {
   const priorParts = splitCarryNoteWalls(opts.priorNote ?? null);
   const priorCheckParts = splitCarryNoteChecks(priorParts.body);

@@ -1407,8 +1407,9 @@ describe('a crashed tsc with non-empty garbage output must NOT read as clean (WI
     }
   }
 
-  // THE MUTANT this test exists to catch: a genuinely-cached pre-fix gate would print exactly this.
-  const CLEAN_MUTANT = 'TSC operator-core: 0 type errors across 0 file(s)';
+  // THE MUTANT this test exists to catch: a genuinely-cached pre-fix gate would print exactly this
+  // (label is 'test' here, per runGateWithCommand — the real gate's own label is 'operator-core').
+  const CLEAN_MUTANT = 'TSC test: 0 type errors across 0 file(s)';
 
   it('an OOM-shaped crash (non-empty garbage, non-zero exit) is reported as a toolchain failure, never clean', () => {
     const crashCmd =
