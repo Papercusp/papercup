@@ -291,7 +291,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const totalEmbeds = pool.length * 2 + candidateQueries.length;
+  const totalEmbeds = pool.length * 2 + candidateQueries.length * 2;
   console.log(
     `[ref-expansion-recall] pool=${pool.length} treated rows · queries=${candidateQueries.length} · ` +
       `k=${k} · ${totalEmbeds} embeddings at concurrency ${concurrency}`,
@@ -305,6 +305,9 @@ async function main(): Promise<void> {
   );
   const qVecs = await mapPool(candidateQueries, concurrency, async (q) =>
     normalise(await embedWithRetry(embed, q.text)),
+  );
+  const qdVecs = await mapPool(candidateQueries, concurrency, async (q) =>
+    normalise(await embedWithRetry(embed, q.degraded)),
   );
 
   const rank = (qVec: Float64Array, vecs: Float64Array[], excludeId: string): string[] =>
@@ -320,46 +323,63 @@ async function main(): Promise<void> {
   // Rank ONCE per query per arm, then read every cutoff off the same ranking —
   // the embeddings are the expensive part, so extra k values are ~free.
   const cutoffs = [...new Set([1, 5, k])].sort((a, b) => a - b);
-  const v1Recall = new Map<number, number[]>(cutoffs.map((c) => [c, [] as number[]]));
-  const v2Recall = new Map<number, number[]>(cutoffs.map((c) => [c, [] as number[]]));
-  let wins = 0;
-  let losses = 0;
-  let ties = 0;
 
-  candidateQueries.forEach((q, i) => {
-    const qVec = qVecs[i]!;
-    const ranked1 = rank(qVec, v1Vecs, q.ref);
-    const ranked2 = rank(qVec, v2Vecs, q.ref);
+  const reportArm = (label: string, caveat: string, queryVecs: Float64Array[]): void => {
+    const v1Recall = new Map<number, number[]>(cutoffs.map((c) => [c, [] as number[]]));
+    const v2Recall = new Map<number, number[]>(cutoffs.map((c) => [c, [] as number[]]));
+    let wins = 0;
+    let losses = 0;
+    let ties = 0;
+
+    candidateQueries.forEach((q, i) => {
+      const qVec = queryVecs[i]!;
+      const ranked1 = rank(qVec, v1Vecs, q.ref);
+      const ranked2 = rank(qVec, v2Vecs, q.ref);
+      for (const c of cutoffs) {
+        const r1 = recallAtK(ranked1, q.relevantIds, c);
+        const r2 = recallAtK(ranked2, q.relevantIds, c);
+        if (r1 === null || r2 === null) continue; // no referent — never scored as 0
+        v1Recall.get(c)!.push(r1);
+        v2Recall.get(c)!.push(r2);
+        if (c !== k) continue;
+        if (r2 > r1) wins++;
+        else if (r2 < r1) losses++;
+        else ties++;
+      }
+    });
+
+    console.log('');
+    console.log(`--- ${label} ---`);
+    console.log(`  ${caveat}`);
     for (const c of cutoffs) {
-      const r1 = recallAtK(ranked1, q.relevantIds, c);
-      const r2 = recallAtK(ranked2, q.relevantIds, c);
-      if (r1 === null || r2 === null) continue; // no referent — never scored as 0
-      v1Recall.get(c)!.push(r1);
-      v2Recall.get(c)!.push(r2);
-      if (c !== k) continue;
-      if (r2 > r1) wins++;
-      else if (r2 < r1) losses++;
-      else ties++;
+      const m1 = mean(v1Recall.get(c)!);
+      const m2 = mean(v2Recall.get(c)!);
+      console.log(
+        `  recall@${String(c).padEnd(2)} v1 ${pct(m1).padStart(6)}  ->  v2 ${pct(m2).padStart(6)}` +
+          `   delta ${((m2 - m1 >= 0 ? '+' : '') + pct(m2 - m1)).padStart(7)}` +
+          `   ${m1 > 0 ? `${(m2 / m1).toFixed(2)}x` : 'n/a (v1 0)'}`,
+      );
     }
-  });
+    console.log(`  per-query @${k}: v2 better ${wins}   worse ${losses}   tied ${ties}`);
+  };
 
   console.log('');
-  console.log('=== P-026 Tier 0 ref-expansion: paired recall A/B (UPPER BOUND) ===');
-  console.log(`scored queries      : ${v1Recall.get(k)!.length}`);
-  console.log(`pool (treated rows) : ${pool.length}`);
-  for (const c of cutoffs) {
-    const m1 = mean(v1Recall.get(c)!);
-    const m2 = mean(v2Recall.get(c)!);
-    console.log(
-      `recall@${String(c).padEnd(2)} v1 ${pct(m1).padStart(6)}  ->  v2 ${pct(m2).padStart(6)}` +
-        `   delta ${((m2 - m1 >= 0 ? '+' : '') + pct(m2 - m1)).padStart(7)}` +
-        `   ${m1 > 0 ? `${(m2 / m1).toFixed(2)}x` : 'n/a (v1 0)'}`,
-    );
-  }
-  console.log(`per-query @${k} v2 better: ${wins}   worse: ${losses}   tied: ${ties}`);
+  console.log('=== P-026 Tier 0 ref-expansion: paired recall A/B ===');
+  console.log(`queries: ${candidateQueries.length}   pool (treated rows): ${pool.length}`);
+
+  reportArm(
+    'ARM A — verbatim referenced title (CEILING)',
+    'the query IS the injected string, so this is the most the appendix can buy',
+    qVecs,
+  );
+  reportArm(
+    'ARM B — degraded query, ~half the title words (closer to real use)',
+    'no exact-substring advantage; still not a paraphrase, so not a lower bound either',
+    qdVecs,
+  );
   console.log('');
-  console.log('Reminder: queries are verbatim referenced titles, i.e. exactly the injected');
-  console.log('text — this is the CEILING of the effect, not expected production lift.');
+  console.log('Read A and B as BRACKETING the effect, not as one number. Both arms query for');
+  console.log('text the appendix injects, so neither estimates lift on an unrelated query.');
 
   await sql.end({ timeout: 5 });
 }
