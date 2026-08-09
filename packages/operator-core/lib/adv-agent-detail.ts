@@ -447,9 +447,19 @@ export interface PushedContextPortRefs {
 }
 
 /**
- * ONE ref actually surfaced to this session — the handle, never the body
- * (D-004: the ledgers store pointers, and resolving them here would invent the
- * write path that decision forbids).
+ * ONE ref actually surfaced to this session.
+ *
+ * The LEDGER stores the handle and never the body (D-004: the surfaced ledgers
+ * are pointer stores, and stamping a title INTO them would invent the write
+ * path that decision forbids). `title`/`detail` below do not touch that: they
+ * are resolved at READ time from the canonical row the pointer already names,
+ * and nothing is persisted. Recorded as plan decision D-088 so the next reader
+ * does not have to re-derive that a read-side join is not a write path.
+ *
+ * [owner 2026-08-09] "the user doesn't care about the ids, it should show a
+ * title" — a dossier row reading `mem 89f230d3…` names a fact the operator
+ * cannot act on, which is the same defect as a count that names rows the list
+ * cannot show.
  *
  * `kind` doubles as the LEG OF ORIGIN, and it is the ONLY leg attribution that
  * exists per ref: each ledger has exactly one writer, so a `corpus` row came

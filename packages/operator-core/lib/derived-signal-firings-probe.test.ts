@@ -7,8 +7,12 @@
  * refuse to report a clean run — those are the exact shapes that let a real dead
  * signal read as healthy.
  */
+// prettier-ignore — ENFORCES the "ONE line" rule below rather than merely documenting it:
+// prettier wants to reflow this import into a multi-line list, which is exactly what unguards
+// the specifier. It sits above the pair because @ts-ignore must own the slot nearest the import.
+// prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- plain .mjs gate script, no type declarations by design
+// @ts-ignore — pure JS gate script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
 import { CENSUS_KEY, FAILING_VERDICTS, FIRING_VERDICTS, RELATIONS_SOURCE, RULINGS, formatReport, isPastReview, judgeSignalFiring, parseDeclaredRelations, rollupFirings } from '../../../scripts/check-derived-signal-firings.mjs';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';

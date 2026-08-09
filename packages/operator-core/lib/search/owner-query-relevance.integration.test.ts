@@ -279,7 +279,13 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
             (totalGroups === undefined ? '' : ` (pool held ${totalGroups})`),
         );
       }
-      console.warn(`[P-015] Report-1 stage isolation (k=${HIT_LIMIT}):\n${rows.join('\n')}`);
+      // console.LOG, not warn: `vitest-fail-on-console` fails a test on an
+      // unexpected warn/error, and the escape hatch for that is an
+      // infrastructure-NOISE allowlist ("keep this list short and exact —
+      // broadening it weakens the guard for every test in the monorepo").
+      // A deliberate report is not noise, so it belongs at a level the guard
+      // does not police rather than in that list.
+      console.log(`[P-015] Report-1 stage isolation (k=${HIT_LIMIT}):\n${rows.join('\n')}`);
 
       // The one PROPERTY worth asserting here, because it is what the rollup
       // claims to do and it cannot be true by accident: with a session groupBy,

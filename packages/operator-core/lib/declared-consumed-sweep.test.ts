@@ -8,8 +8,12 @@
  * only trustworthy once it FAILED on a field a human had already proven dead, so
  * these cases pin the failure, not the pass.
  */
+// prettier-ignore — ENFORCES the "ONE line" rule below rather than merely documenting it:
+// prettier wants to reflow this import into a multi-line list, which is exactly what unguards
+// the specifier. It sits above the pair because @ts-ignore must own the slot nearest the import.
+// prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- plain .mjs gate script, no type declarations by design
+// @ts-ignore -- plain .mjs gate script, no .d.ts. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build. This file was the ONE sibling missing this warning, and is the one P-007 copied the preamble from (EI-20003406761040732).
 import { stripComments, blankQuotedStrings, interfaceRanges, classifyTsField, classifySqlColumn, judgeConsumption, rollupSweep, looksGenerated, isBuildOutput, isTestFile, DECLARED_FIELDS, DECLARED_COLUMNS } from '../../../scripts/check-declared-consumed.mjs';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
