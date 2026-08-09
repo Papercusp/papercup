@@ -22,6 +22,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { anyPotPlacementStarted, setPotStarted, setPotPlacementStarted } from '../../pot/started';
+import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';
 import { armDefaultPotWakeSubscriptions } from '../../pot/wake-defaults';
 import { setDefaultWakeMode } from '../coordination/wake-mode';
 import { requestUrgentPotWake } from '../../pot/urgent-wake';
@@ -56,6 +57,17 @@ export default defineTool({
     kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the immediate wake. Auto-truncated to 2000 chars if longer.'),
   }),
   async handler(args, ctx) {
+    // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017).
+    // FIRST statement in the handler: this tool's whole body is the restart —
+    // setPotStarted(true) + arm subscriptions + wake-mode auto + an urgent wake.
+    // The engine gate (P-007/D-016) makes getPotStarted RESOLVE false, but this
+    // tool would still write the row and fire the wake, so the engine gate alone
+    // does not cover it.
+    const retired = await refuseIfMugKettleRetired(
+      'start the Mug',
+      'Drive the app with an su session (GOAL mode) instead.',
+    );
+    if (retired) return retired;
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {

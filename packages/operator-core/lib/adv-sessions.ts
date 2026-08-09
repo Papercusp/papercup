@@ -80,31 +80,6 @@ export interface AdvSessionRow {
    *  correlate this row. null for omp (uses ompThreadId), codex (resumes via
    *  its per-session CODEX_HOME), and rows that predate native-id tracking. */
   sessionId: string | null;
-  /**
-   * The `harness_shared.goals.id` this session is RUNNING, when it is a goal
-   * session — the single marker both goal-aware surfaces key on
-   * (goals-tab-improvement-2026-08-09 D-007/P-020).
-   *
-   * Source is `agent_modes.subject` for this session's `coordOwnerId` on the
-   * `mode='goal'` row, which `goals:create` stamps as a documented side effect.
-   * There is NO `session_kind` column and none is needed: the mode row IS the
-   * marker, and its primary key `(workspace_id, owner_id, axis_key)` is what
-   * makes D-006's "one directed agent = one goal" a property of the schema
-   * rather than a rule the UI has to police.
-   *
-   * NULL covers TWO different situations and the sessions board must not
-   * conflate them:
-   *  - not a goal session at all (the overwhelming majority); and
-   *  - a session that entered GOAL mode but has not yet filed its goal, so
-   *    `subject` is still NULL. Measured 2026-08-09: the one live goal-mode row
-   *    on this box was exactly this.
-   * Both stay VISIBLE in the ordinary sessions pane, and that is deliberate.
-   * Hiding on "is in goal mode" rather than on "has a goal" would take the
-   * second case off the sessions board while it has no goal card to appear
-   * under either — invisible on both boards with nothing on screen to say so,
-   * which is the precise failure P-020's guard exists to catch.
-   */
-  goalId: string | null;
   /** Pane-worthiness hint (pui-reactive-session-panes D-002/D-006): 'workbench'
    *  marks an INTERACTIVE launch the pui should reactively open a pane for;
    *  null for normal already-spawned sessions + autonomous cup:spawn rows. */
@@ -213,12 +188,6 @@ export function mapAdvSessionRow(r: {
   cwd: string | null;
   coord_owner_id: string | null;
   session_id: string | null;
-  /** Optional for the same reason as `display` below: only the queries whose
-   *  consumers are goal-aware pay for the agent_modes lookup. A SELECT that
-   *  omits it maps to null = "not known to be a goal session", which is the
-   *  safe direction — the row stays VISIBLE rather than silently vanishing
-   *  from a board that never asked the question (P-020). */
-  goal_id?: string | null;
   // pui-reactive-session-panes (D-006): optional — only the pending-launch query
   // SELECTs them; every other query omits them and they map to null.
   display?: string | null;
@@ -250,7 +219,6 @@ export function mapAdvSessionRow(r: {
     cwd: r.cwd,
     coordOwnerId: r.coord_owner_id ?? null,
     sessionId: r.session_id ?? null,
-    goalId: r.goal_id ?? null,
     display: r.display ?? null,
     launchArgv: r.launch_argv ?? null,
     launchedAt: toIsoTimestamp(r.launched_at ?? null),
@@ -988,7 +956,6 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
         port_source_adv_session_id?: number | string | null;
         port_status?: string | null;
         port_metadata?: Record<string, unknown> | null;
-        goal_id: string | null;
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
@@ -996,22 +963,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
-             to_jsonb(a)->'port_metadata' AS port_metadata,
-             -- The goal this session is RUNNING, when it is a goal session
-             -- (goals-tab-improvement-2026-08-09 D-007/P-020). Deliberately a
-             -- SCALAR SUBQUERY rather than a LEFT JOIN: agent_modes is keyed
-             -- (workspace_id, owner_id, axis_key), so a join on mode='goal'
-             -- alone would MULTIPLY this row if an owner ever held two axes at
-             -- that mode — silently duplicating sessions on the roster, a fault
-             -- that reads as a UI bug for a week. A scalar subquery cannot
-             -- change the row count whatever the mode table holds.
-             (SELECT m.subject
-                FROM harness_shared.agent_modes m
-               WHERE m.workspace_id = a.workspace_id
-                 AND m.owner_id = a.coord_owner_id
-                 AND m.mode = 'goal'
-               ORDER BY m.set_at DESC
-               LIMIT 1) AS goal_id
+             to_jsonb(a)->'port_metadata' AS port_metadata
         FROM harness_shared.adv_sessions a
        WHERE workspace_id = ${activeWorkspaceId()}
          AND NOT (

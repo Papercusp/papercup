@@ -152,6 +152,20 @@ export default defineTool({
     })
     .strict(),
   async handler(args, ctx) {
+    // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017).
+    // cup:spawn IS the Cup/nursery tier's entry point, and D-001 retires that
+    // tier alongside the Mug and Kettle. The pre-existing MUG_TIER_SELECTION
+    // read below is a different question entirely (which MODEL a mug-supplied
+    // tier resolves to), not a gate on spawning at all.
+    // Imported LAZILY to match this module's convention for flag reads — the
+    // handler already defers @papercusp/flags and fleet/operator-spawn rather
+    // than paying for them at registration time.
+    const { refuseIfMugKettleRetired } = await import('../_mug-kettle-gate');
+    const retired = await refuseIfMugKettleRetired(
+      'spawn a cup',
+      'Launch an su fleet instead — fleet:launch-on-plan (observable, coordinated, restart-durable).',
+    );
+    if (retired) return retired;
     const actor = resolveAgentIdentity(ctx);
     // An unscoped (superuser) identity carries workspaceId='*' — never record a
     // nursery row under the wildcard: it would escape the real workspace's

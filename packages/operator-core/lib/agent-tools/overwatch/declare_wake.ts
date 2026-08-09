@@ -26,6 +26,7 @@ import { defineTool } from "@papercusp/agent-mcp";
 import { COORD_ROLES } from "../coordination/roles";
 import { activeWorkspaceId } from "../../workspace-registry";
 import { resolvePotHomeSlug } from "../../pot/wake";
+import { refuseIfMugKettleRetired } from "../_mug-kettle-gate";
 import { getOrgPg } from "@papercusp/db-org";
 import {
   declareOverwatchTimeWake,
@@ -92,6 +93,17 @@ export default defineTool({
       },
     ),
   async handler(args, ctx) {
+    // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017).
+    // The Kettle's own dead-man's switch: this is how a live Kettle turn arms
+    // its NEXT wake, so leaving it open lets an already-running Kettle sustain
+    // itself indefinitely past the retirement. Its Mug counterpart
+    // (pot:declare-wake) is already covered via getPotStarted (P-007/D-016);
+    // this one had no gate of any kind.
+    const retired = await refuseIfMugKettleRetired(
+      'arm the Kettle’s next wake',
+      'System-health supervision now runs as plain `system:` routines (P-035/D-015).',
+    );
+    if (retired) return retired;
     const workspaceId =
       ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);

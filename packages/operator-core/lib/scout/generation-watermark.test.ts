@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BG_HOST_RESTART_WATERMARK,
   KNOWN_WATERMARK_REFS,
+  compareGenerationFreshness,
   parseSystemdTimestamp,
   resolveStagingHeadAsOf,
   resolveWatermarkRef,
@@ -128,5 +129,67 @@ describe('resolveWatermarkRef — the ref vocabulary', () => {
 
   it('the known-refs vocabulary carries bg-host-restart', () => {
     expect(KNOWN_WATERMARK_REFS).toContain(BG_HOST_RESTART_WATERMARK);
+  });
+});
+
+/**
+ * WI-5277 — "has the generation this evidence graded ENDED?", which is a question no
+ * STORED field can answer (it needs the live boundary at read time). Every ambiguous case
+ * must resolve to `unknown`, never to `fresh`: a false `fresh` is what lets a GO be
+ * assembled from dead evidence, which is the whole failure this exists to stop.
+ */
+describe('compareGenerationFreshness — is a stamped generation still the live one?', () => {
+  const GRADED = '2026-07-17T14:39:17.000Z';
+  const AFTER_RESTART = '2026-07-17T17:25:32.000Z';
+
+  it('FRESH only when the two boundaries match exactly', () => {
+    const r = compareGenerationFreshness(GRADED, Date.parse(GRADED));
+    expect(r.status).toBe('fresh');
+  });
+
+  it('STALE when the live boundary is later — the generation ended (the 2026-07-17 case)', () => {
+    const r = compareGenerationFreshness(GRADED, Date.parse(AFTER_RESTART));
+    expect(r.status).toBe('stale');
+    if (r.status === 'stale') {
+      expect(r.gradedHostStartedAt).toBe(GRADED);
+      expect(r.liveHostStartedAt).toBe(AFTER_RESTART);
+      expect(r.reason).toMatch(/no longer exists/);
+    }
+  });
+
+  it('UNKNOWN, never fresh, when the evidence carries no boundary (a pre-stamp row)', () => {
+    for (const absent of [null, undefined, '', '   ']) {
+      expect(compareGenerationFreshness(absent, Date.parse(GRADED)).status).toBe('unknown');
+    }
+  });
+
+  it('UNKNOWN, never fresh, when the LIVE boundary is unreadable', () => {
+    const r = compareGenerationFreshness(GRADED, null);
+    expect(r.status).toBe('unknown');
+    if (r.status === 'unknown') expect(r.reason).toMatch(/unreadable/);
+  });
+
+  it('UNKNOWN on an unparseable stamp rather than throwing', () => {
+    expect(compareGenerationFreshness('not-a-timestamp', Date.parse(GRADED)).status).toBe('unknown');
+  });
+
+  it('UNKNOWN — never FRESH — when the stamp is NEWER than the live boundary (skew / foreign host)', () => {
+    // The tempting shortcut is `live > graded ? stale : fresh`, which reports a
+    // backwards-skewed stamp as FRESH. It is not fresh; it is unexplained.
+    const r = compareGenerationFreshness(AFTER_RESTART, Date.parse(GRADED));
+    expect(r.status).toBe('unknown');
+  });
+
+  it('CONTROL — a stamp-time `staleHost:false` cannot substitute for this verdict', () => {
+    // The field that hid this bug for a year: `staleHost` is frozen at stamp time and
+    // says the scout was provably running the graded code THEN. A row can be
+    // staleHost:false and still be judging a generation that has since ended — so a
+    // reader consulting staleHost alone gets a confident, wrong all-clear. This asserts
+    // the two properties genuinely diverge on the same input.
+    const stampSaidFreshWhenGraded = { hostStartedAt: GRADED, staleHost: false } as const;
+    expect(stampSaidFreshWhenGraded.staleHost).toBe(false);
+    expect(compareGenerationFreshness(stampSaidFreshWhenGraded.hostStartedAt, Date.parse(AFTER_RESTART)).status).toBe(
+      'stale',
+    );
   });
 });

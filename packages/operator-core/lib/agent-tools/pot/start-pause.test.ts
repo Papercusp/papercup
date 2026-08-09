@@ -16,6 +16,14 @@ vi.mock('../../pot/started', () => ({
   setPotStarted: (...a: unknown[]) => setPotStarted(...a),
   setPotPlacementStarted: (...a: unknown[]) => setPotPlacementStarted(...a),
   anyPotPlacementStarted: (...a: unknown[]) => anyPotPlacementStarted(...a),
+  // TIER ENABLED for this suite (retire-mug-kettle-su-only-2026-08-09 P-010 /
+  // D-017): pot:start now opens with a retirement gate, so without this the
+  // whole file would assert the REFUSAL instead of the start behaviour it is
+  // about. The gate itself is covered by ../mug-kettle-tool-gate.test.ts —
+  // that separation is deliberate, so this suite keeps testing pot:start and
+  // exactly one file tests the gate. `case: 'cutover'` means the tier stays
+  // testable with the flag ON, which is what this mock expresses.
+  mugKettleSystemEnabled: async () => true,
 }));
 
 const isWorkspaceCoordinationOn = vi.fn();

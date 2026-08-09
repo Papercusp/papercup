@@ -29,6 +29,7 @@ import {
 } from '../../overwatch/control-state';
 import { requestOverwatchWake } from '../../overwatch/wake-bridge';
 import { softText, clampText, LIMITS } from '../limits';
+import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';
 
 export default defineTool({
   name: 'kettle:start',
@@ -64,6 +65,18 @@ export default defineTool({
     kickoff: softText(LIMITS.ANNOTATION).optional().describe('Kickoff context for the immediate wake. Auto-truncated to 2000 chars if longer.'),
   }),
   async handler(args, ctx) {
+    // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017).
+    // This tool already consults FLAGS.OVERWATCH — but a SECOND flag is not THIS
+    // flag: OVERWATCH gates whether the supervisor runs, MUG_KETTLE_SYSTEM gates
+    // whether the tier exists at all, and the retirement flag must be the
+    // authority. Note the existing OVERWATCH branch still PERSISTS started +
+    // cadence ("pre-armed") when that flag is off, so relying on it would leave
+    // a retired Kettle armed to launch the moment someone flipped OVERWATCH on.
+    const retired = await refuseIfMugKettleRetired(
+      'start the Kettle',
+      'System-health supervision now runs as plain `system:` routines (P-035/D-015).',
+    );
+    if (retired) return retired;
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     // `resolvePotHomeSlug` is ENV-ONLY, and PAPERCUSP_POT_HOME_SLUG is unset on the
     // dev/green operators. That made this the owner-visible half of the 2026-07-25

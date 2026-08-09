@@ -17,6 +17,7 @@ import {
   resolvePotHomeSlug,
 } from '../../pot/wake';
 import { getPotStarted } from '../../pot/started';
+import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';
 import { getOrgPg } from '@papercusp/db-org';
 import { softText, clampText, LIMITS } from '../limits';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
@@ -93,6 +94,18 @@ export default defineTool({
         ],
       };
     }
+
+    // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017).
+    // Deliberately ABOVE the pause check below, and deliberately NOT limited to
+    // `source === 'event'`: that carve-out lets an explicit user/manual wake
+    // through because "pot:start is the full resume". Under RETIREMENT there is
+    // no resume — a manual wake is exactly the hand-restart P-010 exists to
+    // stop — so this gate covers EVERY source.
+    const retired = await refuseIfMugKettleRetired(
+      'wake the Mug',
+      'Drive the app with an su session (GOAL mode) instead.',
+    );
+    if (retired) return retired;
 
     // WI-2012 (owner directive 2026-07-03): event-wake subscriptions PERSIST across
     // pot:pause, so a reaction rule can fire long after the owner stopped the pot —

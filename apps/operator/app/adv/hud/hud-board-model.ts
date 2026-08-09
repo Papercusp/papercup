@@ -26,6 +26,10 @@ import type { Liveness } from '@papercusp/operator-core/lib/liveness';
 // own — safe in the SPA bundle) so the five official modes are explained here
 // without this file keeping its own copy of what each one means.
 import { modeChipLabel, modeChipTitle } from '@papercusp/operator-core/lib/modes/registry';
+// The ONE derivation of "is this session a goal's agent" (D-007/P-020) — pure,
+// SPA-safe, and shared with the Goals tab so the two boards cannot disagree
+// about which sessions this one hides.
+import { isGoalSessionModes } from '@papercusp/operator-core/lib/modes/goal-session';
 
 /**
  * Sentinel for the "all fleets" chip. Not a real slug (slugs are kebab and never
@@ -68,6 +72,12 @@ export interface HudMode {
   mode: string;
   ownerDirected?: boolean;
   since?: string | null;
+  /** What the mode is about (adv-roster's AdvRosterMode.subject). For GOAL it is
+   *  the goal id this session runs, which is how this board knows to hide it
+   *  (D-007/P-020). Optional: a payload from an older operator, or the tolerated
+   *  bare-string mode form, simply carries no subject — read as "not a goal
+   *  session", which keeps the session VISIBLE rather than vanishing it. */
+  subject?: string | null;
 }
 
 /** Normalize the tolerated bare-string form to the object form. */
@@ -1309,6 +1319,22 @@ export function buildHudBoard(
 
   let entries =
     options.suOnly === false ? roster : roster.filter((e) => isSuSession(e) || exempt(e.ownerId));
+
+  /* P-020 [owner 2026-08-09: "the goal sessions shouldnt show in the normal
+     sessions pane. goals are just sessions but a special type"]. A goal's agent
+     renders as a card on the GOALS tab, so showing it here too is the same
+     duplication the rail deletion was meant to end.
+
+     Two properties this filter must keep, both of which fail SILENTLY if lost:
+       - it hides only a session that HAS a goal to appear under. A session in
+         GOAL mode whose goal is not yet filed carries no subject and stays
+         visible — see goalIdFromModes. Hiding on "is in goal mode" instead
+         would remove it from BOTH boards at once.
+       - `exempt` still wins, exactly as it does for suOnly/fleets above
+         (WI-37204). A session the user navigated to BY ID must render, and a
+         goal's agent is precisely the kind of session a deep link points at. */
+  entries = entries.filter((e) => !isGoalSessionModes(e.modes) || exempt(e.ownerId));
+
   if (options.fleets && options.fleets.length > 0) {
     const want = new Set(options.fleets);
     entries = entries.filter((e) => want.has(e.fleetSlug) || exempt(e.ownerId));

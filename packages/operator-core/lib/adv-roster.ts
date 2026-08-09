@@ -126,6 +126,19 @@ export interface AdvRosterMode {
   ownerDirected: boolean;
   /** When it was set (agent_modes.set_at) — the "in this mode for how long" clock. */
   since: string | null;
+  /**
+   * WHAT the mode is about (agent_modes.subject) — mode-defined, usually null.
+   * For GOAL it is the `harness_shared.goals.id` this session is running, which
+   * makes it THE marker distinguishing a goal session from an ordinary one
+   * (goals-tab-improvement-2026-08-09 D-007/P-020). The read already paid for
+   * this column; it was simply dropped here, which is why the HUD could see
+   * THAT an agent was in goal mode but never WHICH goal.
+   *
+   * Carried for every mode, not special-cased to GOAL: DRAIN's scope and
+   * GRADE's rubric ref occupy the same slot, and a GOAL-only field would have
+   * to be widened the first time either of them needs to render.
+   */
+  subject: string | null;
 }
 
 export interface RosterEntry {
@@ -462,6 +475,9 @@ async function agentModesByOwner(
                 // Date parser on the client is required to accept. Every other
                 // timestamp on this payload is ISO; this one has to match.
                 since: toIsoOrNull(r.setAt),
+                // The GOAL marker (D-007/P-020). `toRow` already normalizes ''
+                // to null, so an empty subject cannot masquerade as a goal id.
+                subject: r.subject ?? null,
               })),
             );
           }

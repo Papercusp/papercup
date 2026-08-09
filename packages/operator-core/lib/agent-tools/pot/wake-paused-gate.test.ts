@@ -18,6 +18,8 @@ vi.mock('../../pot/started', () => ({
   setPotStarted: vi.fn(),
   setPotPlacementStarted: vi.fn(),
   anyPotPlacementStarted: vi.fn(),
+  // TIER ENABLED (P-010 / D-017) — see the note on the getFlag mock below.
+  mugKettleSystemEnabled: async () => true,
 }));
 
 const declarePotTimeWake = vi.fn();
@@ -44,7 +46,15 @@ vi.mock('../../blueprint/launch-blueprint', () => ({
 }));
 
 // Frontier guard OFF for these tests — the gate under test runs before it anyway.
-vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => false }));
+// The mug-kettle retirement flag is the ONE exception to the blanket `false`
+// (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017): its polarity is INVERTED
+// (OFF = retired), so a blanket false retires the tier and pot:wake refuses
+// before it ever reaches the PAUSED gate this file exists to test. Answering it
+// `true` keeps this suite pointed at its own subject; the retirement gate is
+// covered by ../mug-kettle-tool-gate.test.ts.
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: async (key: string) => key === 'papercusp-mug-kettle-system',
+}));
 vi.mock('../../pot/wake-frontier-guard', () => ({
   evaluateWakeFrontierGuard: () => null,
   listUnplacedPotFrontier: async () => [],

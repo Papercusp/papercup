@@ -28,13 +28,19 @@
  * 2.0G payload). A skip must never read as a pass — the skip reason says so.
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeManifest } from '@papercusp/seed-bundle';
 import { resolveSeedDir, SEED_MANIFEST_FILE } from './restore-hive-seed';
 import { createBundledEpochKeyProvider } from './bundled-epoch-key-provider';
 import { resolveSeedDecryptionKey } from './deferred-git-restore';
+// The SAME predicate the cutter's walk uses, imported rather than re-spelled so the
+// two populations cannot drift apart again (this file's whole size-drift red came
+// from a local re-implementation that omitted it). Free: restore-hive-seed already
+// imports this module, so nothing extra is loaded.
+import { isRocksInfoLog } from './seed-provider-corestore';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** packages/operator-core/lib/sync/hyperbee → repo root */
@@ -46,8 +52,29 @@ const SEED_DIR = process.env.PAPERCUSP_TEST_SEED_DIR ?? join(REPO_ROOT, 'papercu
 
 const seedPresent = existsSync(join(SEED_DIR, SEED_MANIFEST_FILE));
 
-/** Total bytes + file count of a payload dir (mirrors how the manifest's
- *  sizeBytes is cut: regular files only, recursive). */
+/**
+ * Total bytes + file count of a payload dir, measuring the SAME population the
+ * manifest's `sizeBytes` describes: regular files only, recursive, MINUS RocksDB's
+ * info LOG.
+ *
+ * That last clause is load-bearing and was missing (WI-37577). The cutter's walk
+ * skips `LOG` / `LOG.old*` (seed-provider-corestore.ts `isRocksInfoLog`, mirrored in
+ * seed-cutter.ts) because RocksDB rewrites that file on EVERY store open — it is
+ * non-deterministic, hash-excluded (EI-12881) and scrubbed from the shipped seed
+ * (WI-4736). This helper's comment claimed it mirrored the cut but counted the LOG
+ * anyway, so it compared a different population against the manifest and reported the
+ * difference as a "drifted" payload.
+ *
+ * MEASURED 2026-08-09 on the real seed: all-files 6,031,427,350 − db/LOG 1,529,554 =
+ * 6,029,897,796 = exactly the manifest's declared corestore sizeBytes. The red was the
+ * LOG, byte for byte, and nothing else.
+ *
+ * ⚠ This does NOT weaken the truncated-ship assertion — it is what makes it MEANINGFUL.
+ * Every data byte is still compared exactly; only a file the manifest never counted is
+ * excluded. Counting it made the check unpassable on any box whose store had been opened
+ * (i.e. every dev box), which is a false red, not a stricter test. In particular the
+ * numbered `<NNN>.log` WALs are DATA and still participate — see the controls below.
+ */
 function measure(dir: string): { files: number; bytes: number } {
   let files = 0;
   let bytes = 0;
@@ -56,6 +83,7 @@ function measure(dir: string): { files: number; bytes: number } {
       const p = join(d, e.name);
       if (e.isDirectory()) walk(p);
       else if (e.isFile()) {
+        if (isRocksInfoLog(e.name)) continue;
         files++;
         bytes += statSync(p).size;
       }
@@ -193,5 +221,79 @@ describe.skipIf(seedPresent)('shipped seed artifact', () => {
   it('SKIPPED — no bundled seed in this checkout (a skip is NOT a pass)', () => {
     // Present so the absence is visible in the report rather than silent.
     expect(seedPresent).toBe(false);
+  });
+});
+
+/**
+ * Controls for `measure()` itself (WI-37577).
+ *
+ * These run EVERYWHERE — no bundled seed required — deliberately: the integrity block
+ * above skips on every checkout without a 6G seed, so without these the measuring rule
+ * would be unguarded on exactly the boxes (CI, the green-checkpoint clone) where a
+ * regression would land unnoticed. They build fixtures in a tmpdir; the shared tree is
+ * never mutated (a sweep can commit an in-tree mutation mid-probe).
+ */
+describe('measure() counts the same population the manifest declares', () => {
+  const mkFixture = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'wi37577-measure-'));
+    mkdirSync(join(dir, 'db'), { recursive: true });
+    writeFileSync(join(dir, 'db', 'data.bin'), Buffer.alloc(1000));
+    writeFileSync(join(dir, 'db', '000123.log'), Buffer.alloc(300)); // a WAL: DATA
+    writeFileSync(join(dir, 'oplog'), Buffer.alloc(700));
+    return dir;
+  };
+
+  it('counts ordinary payload files (calibration — the exclusion must not eat data)', () => {
+    const dir = mkFixture();
+    try {
+      // 1000 + 300 + 700. If this ever drops to 1700 the WAL stopped counting.
+      expect(measure(dir)).toEqual({ files: 3, bytes: 2000 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('EXCLUDES RocksDB LOG / LOG.old* — and would have over-counted under the pre-fix rule', () => {
+    const dir = mkFixture();
+    try {
+      const clean = measure(dir);
+      writeFileSync(join(dir, 'db', 'LOG'), Buffer.alloc(1_529_554)); // the real red, to scale
+      writeFileSync(join(dir, 'db', 'LOG.old.1754769600'), Buffer.alloc(4096));
+      const withLogs = measure(dir);
+
+      // The property: adding a LOG must not move the measurement at all.
+      expect(withLogs).toEqual(clean);
+
+      // Falsifiability of THIS control: the pre-fix rule (count every regular file)
+      // demonstrably WOULD have moved, by exactly the LOG bytes. Without this the
+      // assertion above also passes if the fixture never wrote the LOGs.
+      const naiveAllFiles = (d: string): number => {
+        let b = 0;
+        for (const e of readdirSync(d, { withFileTypes: true })) {
+          const p = join(d, e.name);
+          if (e.isDirectory()) b += naiveAllFiles(p);
+          else if (e.isFile()) b += statSync(p).size;
+        }
+        return b;
+      };
+      expect(naiveAllFiles(dir)).toBe(clean.bytes + 1_529_554 + 4096);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('STILL catches a truncated/partial ship — the assertion keeps its whole point', () => {
+    const dir = mkFixture();
+    try {
+      const full = measure(dir);
+      // Simulate the failure this file exists to catch: a payload file arrives short.
+      writeFileSync(join(dir, 'db', 'data.bin'), Buffer.alloc(400));
+      expect(measure(dir).bytes).toBe(full.bytes - 600);
+      // And an outright dropped file still moves both counters.
+      rmSync(join(dir, 'oplog'));
+      expect(measure(dir)).toEqual({ files: 2, bytes: full.bytes - 600 - 700 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
