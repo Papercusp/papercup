@@ -213,6 +213,14 @@ export interface GreenStallWatchdogResult {
   alarmed: string[];
   /** install slugs whose prior stall recovered this pass. */
   recovered: string[];
+  /**
+   * P-016: install slugs this pass DECLINED TO JUDGE because the root routine
+   * engine is stale — muted, not healthy, and deliberately absent from both
+   * `alarmed` and `recovered`. Reported so a mute is OBSERVABLE: previously a
+   * suppressed pass was indistinguishable from a recovery in this result, which
+   * is the same conflation the `suppressed` verdict field exists to end.
+   */
+  suppressed: string[];
 }
 
 /**
@@ -225,7 +233,7 @@ export async function checkGreenStall(
   sql: Sql,
   opts: GreenStallThresholds = {},
 ): Promise<GreenStallWatchdogResult> {
-  const out: GreenStallWatchdogResult = { alarmed: [], recovered: [] };
+  const out: GreenStallWatchdogResult = { alarmed: [], recovered: [], suppressed: [] };
   try {
     const rows = await sql<
       {
@@ -320,9 +328,25 @@ export async function checkGreenStall(
         }
         out.alarmed.push(row.install_slug);
         console.warn(`[green-stall-watchdog] ALARM ${row.install_slug}: ${verdict.reason}`);
+      } else if (verdict.suppressed) {
+        // P-016: DECLINED TO JUDGE — not healthy. The root routine engine is stale,
+        // so infra-liveness owns the root-cause alarm and this symptom-level one is
+        // muted (EI-2994). Muting must be SILENT: falling through to the recovery
+        // branch would clear `watchdogAlerted`, wipe a still-valid escalation row,
+        // and broadcast "the gate is producing verdicts again" — an all-clear issued
+        // by the one code path that deliberately did not look at whether the gate is
+        // producing verdicts. Engine staleness flickers around its own threshold on a
+        // loaded box, so that false all-clear fired on every flicker and produced the
+        // observed STALLED/RECOVERED alternation within a single window on oddsmith.
+        // Leaving the alarm state UNTOUCHED is what makes the mute a pause rather
+        // than a retraction: if the gate really was stalled, the alarm is still up
+        // when the engine steadies and we re-evaluate.
+        out.suppressed.push(row.install_slug);
+        continue;
       } else {
-        // Healthy. Clear the watchdog flag (a green verdict already wipes gate_health,
-        // so this is belt-and-suspenders) and the escalation row, both idempotently.
+        // Healthy — and we actually looked. Clear the watchdog flag (a green verdict
+        // already wipes gate_health, so this is belt-and-suspenders) and the
+        // escalation row, both idempotently.
         if (watchdogAlerted) {
           await sql`
             UPDATE harness_shared.routines

@@ -125,7 +125,7 @@ export interface EpisodicEscalatorConfig<E, R, Sev extends IssueSeverity> {
  * topic edge, AND 4 tagged rows did NOT match the detector's title prefix — so a
  * prefix-only read would lose rows a tag-only read keeps.
  */
-async function unionPopulation<T extends { id: string }>(
+export async function unionPopulation<T extends { id: string }>(
   read: (filter: { topic?: string; titlePrefix?: string }) => Promise<T[]>,
   topic: string,
   titlePrefix: string | undefined,

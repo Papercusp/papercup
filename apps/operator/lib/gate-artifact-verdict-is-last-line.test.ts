@@ -55,9 +55,16 @@ const SCRIPT = resolve(
 export function lastEmittedLineOnFailPath(src: string): string | null {
   const start = src.indexOf('replication-liveness soak FAIL');
   if (start < 0) return null;
-  const end = src.indexOf('return "$rc"', start);
-  if (end < 0) return null;
-  const region = src.slice(start, end);
+  // Anchor the end on the `return "$rc"` STATEMENT (line-start), not on the first
+  // textual occurrence: the script's own comments quote `return "$rc"` in prose, and
+  // an indexOf() would end the region there — silently excluding the very lines this
+  // guard exists to inspect. (That is not hypothetical: it is exactly how this guard
+  // failed on its first run, reporting the ✗ branch as the final emitted line while
+  // the unconditional verdict sat just past the truncation point.)
+  const rest = src.slice(start);
+  const endMatch = /^[ \t]*return "\$rc"/m.exec(rest);
+  if (!endMatch) return null;
+  const region = rest.slice(0, endMatch.index);
   const echoes = [...region.matchAll(/^[ \t]*echo "([^"]*)"/gm)].map((m) => m[1]);
   return echoes.length > 0 ? echoes[echoes.length - 1]! : null;
 }
@@ -119,9 +126,16 @@ describe('EI-19940993365684927 — a gate artifact must not tail as a pass when 
     expect(src).toContain('DETECTOR REGRESSION');
   });
 
-  it('CONTROL: the checker REJECTS the pre-fix shape (reassuring ✓ as the final line)', () => {
+  it('CONTROL: the checker REJECTS the pre-fix shape (no unconditional verdict after the ✓/✗ branch)', () => {
     expect(tailIsVerdictNotReassurance(WRONG_REASSURING_TAIL)).toBe(false);
-    expect(lastEmittedLineOnFailPath(WRONG_REASSURING_TAIL)).toMatch(/✓/);
+    // NOTE the subtlety, because it is easy to assert the wrong thing here (I did,
+    // on the first draft): in the pre-fix shape the textually-last echo is the ✗
+    // branch, not the ✓. The bug is not "a ✓ is literally last in the file" — it is
+    // that the final emitted line is decided by WHICH BRANCH FIRES, so on a run
+    // where the detector pin passes, the tail is the ✓. The property that actually
+    // holds on every path is therefore: an UNCONDITIONAL verdict must follow the
+    // branch. That is what this control checks is missing.
+    expect(lastEmittedLineOnFailPath(WRONG_REASSURING_TAIL)).not.toMatch(/^OVERALL:/);
   });
 
   it('CONTROL: the checker REJECTS a conditionally-replayed verdict that can print nothing', () => {

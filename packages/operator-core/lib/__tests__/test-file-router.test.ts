@@ -607,7 +607,8 @@ describe('collectionAttributionMarker — the RUNTIME-crash sibling of transform
   });
 
   it('returns null for a missing perFile — caller keeps today’s undifferentiated output', () => {
-    // @ts-expect-error — exercising the defensive `!perFile` branch deliberately.
+    // The whole module is imported under a blanket @ts-expect-error (no .d.ts for this plain-Node
+    // .mjs CLI), so `perFile` types as implicit `any` here — no directive needed on this call.
     expect(collectionAttributionMarker({ ...args })).toBeNull();
   });
 

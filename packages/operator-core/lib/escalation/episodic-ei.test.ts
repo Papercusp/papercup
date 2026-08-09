@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   collapseDuplicateOpenEis,
   createEpisodicEscalator,
+  unionPopulation,
   type CollapsibleOpenEi,
   type DuplicateCollapseDeps,
   type EpisodicEiDeps,
@@ -328,5 +329,59 @@ describe('collapseDuplicateOpenEis (WI-6986)', () => {
       collapsedIds: [],
       skippedUnmutable: 0,
     });
+  });
+});
+
+/**
+ * WI-37499 — `unionPopulation` is the primitive that stops a detector's sweeps
+ * from being blinded by a missing topic tag. Both legs are load-bearing:
+ * measured on the live store 2026-08-09, 60 open `[replication-liveness]` rows
+ * matched the title prefix with NO topic edge, and 4 tagged rows did NOT match
+ * the prefix — so either leg alone silently under-selects.
+ */
+describe('unionPopulation (WI-37499)', () => {
+  type Row = { id: string; title: string };
+  /** A fake store: a topic read answers `tagged`, a prefix read answers `prefixed`. */
+  function reader(tagged: Row[], prefixed: Row[]) {
+    const calls: Array<{ topic?: string; titlePrefix?: string }> = [];
+    return {
+      calls,
+      read: async (f: { topic?: string; titlePrefix?: string }) => {
+        calls.push(f);
+        return f.topic ? tagged : prefixed;
+      },
+    };
+  }
+
+  it('returns the topic leg UNCHANGED — and never issues a second read — with no prefix', async () => {
+    const { read, calls } = reader([{ id: 'a', title: 'A' }], [{ id: 'zzz', title: 'Z' }]);
+    const rows = await unionPopulation(read, 'demo', undefined);
+    expect(rows.map((r) => r.id)).toEqual(['a']);
+    // Every OTHER escalator must stay byte-identical: exactly one read, topic-only.
+    expect(calls).toEqual([{ topic: 'demo' }]);
+  });
+
+  it('adds title-prefixed rows the topic tag misses (the blind spot this closes)', async () => {
+    const { read } = reader([{ id: 'tagged-1', title: 'A' }], [{ id: 'untagged-1', title: 'B' }]);
+    const rows = await unionPopulation(read, 'demo', '[demo] ');
+    expect(rows.map((r) => r.id).sort()).toEqual(['tagged-1', 'untagged-1']);
+  });
+
+  it('keeps tagged rows that do NOT match the prefix (a prefix-only read would lose them)', async () => {
+    const { read } = reader([{ id: 'odd-title', title: 'does not match prefix' }], []);
+    const rows = await unionPopulation(read, 'demo', '[demo] ');
+    expect(rows.map((r) => r.id)).toEqual(['odd-title']);
+  });
+
+  it('dedupes by id so a correctly-tagged row is never returned (or resolved) twice', async () => {
+    const { read } = reader(
+      [{ id: 'same', title: 'A' }],
+      [
+        { id: 'same', title: 'A' },
+        { id: 'extra', title: 'B' },
+      ],
+    );
+    const rows = await unionPopulation(read, 'demo', '[demo] ');
+    expect(rows.map((r) => r.id)).toEqual(['same', 'extra']);
   });
 });

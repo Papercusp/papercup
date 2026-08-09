@@ -14,6 +14,10 @@ import {
   ORPHAN_SWEEP_OWNER,
   type OrphanSweepDeps,
 } from '../replication-stall-orphan-sweep';
+import {
+  REPLICATION_STALL_EI_TITLE_PREFIX,
+  replicationStallEiTitle,
+} from '../replication-stall-ei';
 
 function bodyFor(workspaceId: string, harnessSlug: string, kind = 'no_replicator'): string {
   return (
@@ -152,6 +156,116 @@ describe('runReplicationStallOrphanSweepOnce', () => {
 
   it('returns an inert, zero-op result under VITEST with no deps (never touches real PG)', async () => {
     const result = await runReplicationStallOrphanSweepOnce();
-    expect(result).toEqual({ checked: 0, orphanedTargets: [], resolvedIds: [], errors: 0 });
+    expect(result).toEqual({
+      checked: 0,
+      orphanedTargets: [],
+      resolvedIds: [],
+      errors: 0,
+      skipped: { unparseableTarget: 0, targetExists: 0 },
+    });
+  });
+});
+
+/**
+ * WI-37499 — the sweep must not identify its own population by a DERIVED tag.
+ *
+ * Measured 2026-08-09: selecting candidates by the `replication-liveness` topic
+ * tag hid 100% of this sweep's genuine targets (6 orphans, oldest 34.8 days),
+ * because the untagged rows are exactly the rows that also escape dedup. These
+ * guards pin the two properties that make that class of blindness impossible to
+ * reintroduce silently.
+ */
+describe('WI-37499: title-prefix selector contract', () => {
+  it('every episode kind mints a title carrying the prefix the sweeps select on', () => {
+    // If a future edit reshapes the title, this fails HERE rather than silently
+    // orphaning the title-prefix leg of the sweep's candidate read.
+    const kinds = [
+      'no_replicator',
+      'frozen',
+      'connected_never_replicated',
+      'expected_never_admitted',
+      'drain_stalled',
+      'drain_backlog_stalled',
+      'drain_backlog_aged',
+      'drain_orphan_tail',
+      'drain_row_quarantined',
+    ] as const;
+    for (const kind of kinds) {
+      const title = replicationStallEiTitle({
+        harnessSlug: 'papercusp',
+        logKeyHex: 'abc123def456789',
+        kind: kind as Parameters<typeof replicationStallEiTitle>[0]['kind'],
+      });
+      expect(title.startsWith(REPLICATION_STALL_EI_TITLE_PREFIX)).toBe(true);
+    }
+  });
+
+  it('the prefix is a strict prefix of a real title, never the whole of it', () => {
+    // Guards the degenerate fix where the prefix is widened to match everything.
+    const title = replicationStallEiTitle({
+      harnessSlug: 'papercusp',
+      logKeyHex: 'abc123def456789',
+      kind: 'no_replicator',
+    });
+    expect(title.length).toBeGreaterThan(REPLICATION_STALL_EI_TITLE_PREFIX.length);
+    expect(REPLICATION_STALL_EI_TITLE_PREFIX).not.toBe('');
+  });
+});
+
+/**
+ * WI-37499 — a pass that saw NOTHING must be distinguishable from one that
+ * correctly found no orphan. Before this, the tick logged only when it resolved
+ * something, so the sweep ran daily for weeks while structurally blind and
+ * emitted output identical to a healthy no-op.
+ */
+describe('WI-37499: skip census makes a blind pass distinguishable', () => {
+  function censusDeps(open: Array<{ id: string; body: string }>, existing: Set<string>): OrphanSweepDeps {
+    return {
+      listOpenReplicationStallEis: async () => open,
+      harnessExists: async (w, h) => existing.has(`${w}::${h}`),
+      resolve: async () => {},
+    };
+  }
+
+  it('reports checked=0 with an all-zero census when it saw no candidates at all', async () => {
+    const result = await runReplicationStallOrphanSweepOnce(censusDeps([], new Set()));
+    expect(result.checked).toBe(0);
+    expect(result.skipped).toEqual({ unparseableTarget: 0, targetExists: 0 });
+  });
+
+  it('attributes a still-existing target to targetExists, not to an empty pass', async () => {
+    const result = await runReplicationStallOrphanSweepOnce(
+      censusDeps(
+        [{ id: 'EI-a', body: bodyFor('papercusp-workspace', 'papercusp') }],
+        new Set(['papercusp-workspace::papercusp']),
+      ),
+    );
+    // Same resolvedIds as the blind case above — ONLY the census separates them.
+    expect(result.resolvedIds).toEqual([]);
+    expect(result.checked).toBe(1);
+    expect(result.skipped.targetExists).toBe(1);
+  });
+
+  it('attributes an unparseable body to its own bucket', async () => {
+    const result = await runReplicationStallOrphanSweepOnce(
+      censusDeps([{ id: 'EI-b', body: 'no target stamp' }], new Set()),
+    );
+    expect(result.skipped).toEqual({ unparseableTarget: 1, targetExists: 0 });
+  });
+
+  it('counts a fail-closed existence error as a target-exists skip (never a resolve)', async () => {
+    const result = await runReplicationStallOrphanSweepOnce({
+      listOpenReplicationStallEis: async () => [
+        { id: 'EI-c', body: bodyFor('generic-test', 'flaky') },
+      ],
+      harnessExists: async () => {
+        throw new Error('db hiccup');
+      },
+      resolve: async () => {
+        throw new Error('must never be called');
+      },
+    });
+    expect(result.resolvedIds).toEqual([]);
+    expect(result.skipped.targetExists).toBe(1);
   });
 });

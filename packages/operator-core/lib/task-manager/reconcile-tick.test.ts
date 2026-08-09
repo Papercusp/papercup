@@ -173,6 +173,43 @@ describe('reconcileTick — happy path', () => {
     expect(sent[0]!.summary).toMatch(/unaccounted cgroup/);
   });
 
+  it('distinguishes a never-registered process from a scope that OUTLIVED its row (WI-37509)', async () => {
+    // These are two different faults needing two different investigations. Reporting
+    // both as "no managedSpawn registered" sent every reader off to audit spawn sites
+    // for an un-enrolled call, which is not where the survivors came from — and is why
+    // a permanently-firing fleet alarm went undiagnosed. A `pc-<taskId>.scope` name can
+    // only have been minted BY managedSpawn, so the scope unit is a free discriminator.
+    const sent: { summary: string }[] = [];
+    await reconcileTick({
+      listLive: async () => [],
+      scan: () =>
+        scanResult([
+          // Genuinely un-enrolled: nothing of ours ever named this cgroup.
+          proc({
+            pid: 99,
+            cgroupPath: `${OURS}/papercusp-bash-job.slice`,
+            processIdentity: 'linux:b:99',
+            cmdline: 'rogue',
+          }),
+          // Registered by managedSpawn, then its row was closed underneath it.
+          proc({
+            pid: 100,
+            cgroupPath: `${OURS}/pc-ddd444.scope`,
+            processIdentity: 'linux:b:100',
+            cmdline: 'fleet spawner sidecar',
+          }),
+        ]),
+      fs: memFs({}),
+      notify: async (msg: { summary: string }) => {
+        sent.push(msg);
+      },
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.summary).toMatch(/1 that no managedSpawn registered/);
+    expect(sent[0]!.summary).toMatch(/1 whose scope OUTLIVED its ledger row/);
+  });
+
   it('keeps a closed scope attached to its ORIGINAL task id rather than forking a phantom', async () => {
     await reconcileTick({
       listLive: async () => [],

@@ -78,6 +78,52 @@ describe('evaluateGreenStall', () => {
     expect(v.stalled).toBe(false);
   });
 
+  /**
+   * P-016 — "muted" and "healthy" are different answers.
+   *
+   * Both render `stalled: false`, and collapsing them is what made the watchdog
+   * broadcast `green-checkpoint RECOVERED — the gate is producing verdicts
+   * again` from the branch that deliberately declined to check. Engine staleness
+   * flickers on a loaded box, so that false all-clear fired on every flicker —
+   * the observed STALLED/RECOVERED alternation inside one window on oddsmith.
+   */
+  describe('suppressed is not healthy (P-016)', () => {
+    /** A gate that IS genuinely stalled — 4h since a fire, 4h since a green. */
+    const STALLED = { lastFiredMs: NOW - 4 * H, lastGreenAt: NOW - 4 * H, watchdogAlerted: false };
+
+    it('a stalled gate under a STALE root engine reports suppressed, not healthy', () => {
+      const v = evaluateGreenStall({ ...STALLED, routineEngineStale: true }, NOW);
+      expect(v.suppressed).toBe(true);
+      expect(v.stalled).toBe(false); // muted — infra-liveness owns the root alarm
+    });
+
+    it('CONTROL: the SAME snapshot with a live engine is a real stall, not suppressed', () => {
+      // The discriminator is the engine reading alone — proving `suppressed`
+      // tracks "did we look", not "is the gate fine".
+      const v = evaluateGreenStall({ ...STALLED, routineEngineStale: false }, NOW);
+      expect(v.suppressed).toBe(false);
+      expect(v.stalled).toBe(true);
+    });
+
+    it('CONTROL: a genuinely healthy gate is NOT suppressed — it was judged, and judged fine', () => {
+      const v = evaluateGreenStall(
+        { lastFiredMs: NOW - 20 * 60 * 1000, lastGreenAt: NOW - 20 * 60 * 1000, watchdogAlerted: false },
+        NOW,
+      );
+      expect(v.suppressed).toBe(false);
+      expect(v.stalled).toBe(false);
+      // Healthy and suppressed are now distinguishable from the verdict alone —
+      // which is the property the recovery branch depends on.
+      expect(v.stalled === false && v.suppressed === false).toBe(true);
+    });
+
+    it('unknown engine liveness fails OPEN (undefined is not stale) — a real stall still alarms', () => {
+      const v = evaluateGreenStall({ ...STALLED }, NOW);
+      expect(v.suppressed).toBe(false);
+      expect(v.stalled).toBe(true);
+    });
+  });
+
   it('FIRE-STALE: an active routine that stopped firing (>3h) alarms — the EI-455 wedge signature', () => {
     // The in-routine detector is blind to this (it only runs when the routine fires).
     const v = evaluateGreenStall(

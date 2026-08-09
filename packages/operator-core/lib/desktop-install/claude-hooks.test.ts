@@ -59,7 +59,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
 
     // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge +
     // required-field-strand nudge (EI-19374535041074908) + ts-parse nudge
-    // (EI-19457231269012320) + migration-fixture-drift nudge (EI-19359711978838614) +
+    // (EI-19457231269012320) + no-proc-path-fixture nudge (EI-19968483416347685) +
+    // migration-fixture-drift nudge (EI-19359711978838614) +
     // migration-forward-compat nudge (EI-19462877357083817) + tool-prompt-weight nudge
     // (EI-19459260956682226) + mock-cast-escape nudge (WI-37497) + ask-gate-mirror (in
     // install order). The separate coord-inbox entry is retired — merged into activity.
@@ -69,6 +70,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/workitem-verify-nudge.sh`,
       `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
       `${DEST}/posttooluse-ts-parse-nudge.mjs`,
+      `${DEST}/posttooluse-no-proc-path-fixture-nudge.mjs`,
       `${DEST}/posttooluse-migration-fixture-drift-nudge.mjs`,
       `${DEST}/posttooluse-migration-forward-compat-nudge.mjs`,
       `${DEST}/posttooluse-tool-prompt-weight-nudge.mjs`,
@@ -78,11 +80,12 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
     expect(cfg.hooks.PostToolUse[3].matcher).toBe('Edit|Write|MultiEdit'); // strand nudge
     expect(cfg.hooks.PostToolUse[4].matcher).toBe('Edit|Write|MultiEdit'); // ts-parse nudge
-    expect(cfg.hooks.PostToolUse[5].matcher).toBe('Edit|Write|MultiEdit'); // migration-fixture-drift nudge
-    expect(cfg.hooks.PostToolUse[6].matcher).toBe('Edit|Write|MultiEdit'); // migration-forward-compat nudge
-    expect(cfg.hooks.PostToolUse[7].matcher).toBe('Edit|Write|MultiEdit'); // tool-prompt-weight nudge
-    expect(cfg.hooks.PostToolUse[8].matcher).toBe('Edit|Write|MultiEdit'); // mock-cast-escape nudge
-    expect(cfg.hooks.PostToolUse[9].matcher).toBe('AskUserQuestion|ExitPlanMode');
+    expect(cfg.hooks.PostToolUse[5].matcher).toBe('Edit|Write|MultiEdit'); // no-proc-path-fixture nudge
+    expect(cfg.hooks.PostToolUse[6].matcher).toBe('Edit|Write|MultiEdit'); // migration-fixture-drift nudge
+    expect(cfg.hooks.PostToolUse[7].matcher).toBe('Edit|Write|MultiEdit'); // migration-forward-compat nudge
+    expect(cfg.hooks.PostToolUse[8].matcher).toBe('Edit|Write|MultiEdit'); // tool-prompt-weight nudge
+    expect(cfg.hooks.PostToolUse[9].matcher).toBe('Edit|Write|MultiEdit'); // mock-cast-escape nudge
+    expect(cfg.hooks.PostToolUse[10].matcher).toBe('AskUserQuestion|ExitPlanMode');
 
     // Session events + Stop.
     expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);
