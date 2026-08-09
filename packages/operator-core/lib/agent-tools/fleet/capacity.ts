@@ -52,6 +52,17 @@ async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | 
     const rows = (await accountStatus(ws)).filter((r) => r.provider === BEE_PROVIDER);
     if (rows.length === 0) return undefined;
 
+    // EI-19932168784507536: raw pool-health (accountStatus above) is blind to the owner's
+    // session-account-override (allow-list/exclude-list) — the SAME override spawn admission
+    // (spawn-env.ts resolveSpawnGatewayEnv) actually enforces and refuses a route for. Without
+    // this, an account pool-health calls healthy/usable was counted here even though every real
+    // spawn into it would be rejected outright, so this cross-check reported an abundant pool
+    // while admission refused every route into the excluded slice.
+    const { getAccountOverride, applyAccountOverride } = await import('../../deployment/account-session-override');
+    const override = await getAccountOverride(ws);
+    const allowedIds = new Set(applyAccountOverride(rows.map((r) => r.id), override));
+    const overrideExcludedCount = rows.length - allowedIds.size;
+
     // EI-18683773458136367: derive the shared-egress / re-arm evidence that gates whether the
     // "down egress proxy, escalate to the owner" claim is actually supportable (see capacity-dispatch.ts).
     const snapshotPrefix = `${ws ?? ''}::`;
