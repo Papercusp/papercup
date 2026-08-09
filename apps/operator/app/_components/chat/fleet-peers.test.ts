@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { deriveFleetPeers } from './fleet-peers';
+import { deriveFleetPeers, isUnknownSession } from './fleet-peers';
 import { HUD_DEFAULT_THRESHOLDS, type HudRosterEntry } from '../../adv/hud/hud-board-model';
 
 const NOW = Date.parse('2026-08-09T12:00:00.000Z');
@@ -89,6 +89,26 @@ describe('deriveFleetPeers — when there is no rail to render', () => {
     expect(model!.total).toBe(1);
     expect(model!.leader).toBeNull();
     expect(model!.warning).toContain('no leader');
+  });
+});
+
+describe('isUnknownSession (EI-19968489971947616)', () => {
+  it('is false when no agent is open (null ownerId)', () => {
+    expect(isUnknownSession([entry()], null)).toBe(false);
+  });
+  it('is false for a genuinely solo agent that IS in the roster', () => {
+    expect(isUnknownSession([entry({ fleetSlug: null, fleetColor: null, fleetRole: null })], SELF)).toBe(false);
+  });
+  it('is false when the agent is in the roster and in a fleet', () => {
+    expect(isUnknownSession([entry()], SELF)).toBe(false);
+  });
+  it('is TRUE when the ownerId does not match any roster entry at all', () => {
+    // e.g. a truncated `hudsession=su-b8422496` id.
+    expect(isUnknownSession([entry()], 'su-b8422496')).toBe(true);
+  });
+  it('is false for an empty roster + null ownerId, TRUE for a non-null one', () => {
+    expect(isUnknownSession([], null)).toBe(false);
+    expect(isUnknownSession([], SELF)).toBe(true);
   });
 });
 

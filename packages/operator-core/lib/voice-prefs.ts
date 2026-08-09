@@ -315,7 +315,7 @@ export interface VoicePrefs {
    *                requires openai_api_key in /settings/api-keys)
    *   'local'    — force @huggingface/transformers BGE-small (free,
    *                ~400MB RAM, ~120MB disk; works offline)
-   *   'gemma'    — EmbeddingGemma-300m (local, MRL-384; lighter than
+   *   'gemma'    — EmbeddingGemma-300m (local, native 768; lighter than
    *                harrier: ~4× faster embeds, ~2.4GB less RAM)
    *   'harrier'  — harrier-oss-0.6b @ native-1024 (local; best recall
    *                on the P-006 gold set)

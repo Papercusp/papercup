@@ -1421,10 +1421,6 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // holder for any role this chokepoint spawns other than plain 'cup'.
   extraEnv.PAPERCUSP_AGENT_ROLE = canonicalCoordRole(role);
   if (input.parentSpawnId) extraEnv.PAPERCUSP_PARENT_SPAWN_ID = input.parentSpawnId;
-  // Per-plan token attribution (B-TOK-2): stamp the plan this run serves so the
-  // subprocess usage sample (invoke.ts → recordUsageSamplePg) records plan_id and
-  // the Tokens dashboard can sum spend per-plan. Only when the spawn is plan-driven.
-  if (input.planSlug) extraEnv.PAPERCUSP_PLAN_SLUG = input.planSlug;
   // Per-turn trigger attribution (B-TOK-4): stamp WHY this run was spawned so the
   // subprocess usage sample (invoke.ts → recordUsageSamplePg) records turn_trigger
   // and the Tokens dashboard can sum coordination-driven spend. Only when supplied.

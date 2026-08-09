@@ -1111,9 +1111,28 @@ export default function AgentDossier({
             <div className="pc-dossier__empty-line">Couldn’t load pushed context: {pushed.error}</div>
           ) : (
             <>
-              {pushed.refsByPort.length > 0 ? (
-                <div className="pc-dossier__empty-line" data-testid="dossier-pushed-refs">
-                  {pushed.refsByPort.map((r) => `${r.port} ${r.refs}`).join(' · ')} refs surfaced
+              {/* Split by KIND, never merged into one list: both ledgers use the
+                  same port labels, so `mid-turn 30` from each would render as
+                  one indistinguishable row (all 6 corpus ports collide). */}
+              {(['memory', 'corpus'] as const).map((kind) => {
+                const rows = pushed.refsByPort.filter((r) => r.kind === kind);
+                if (rows.length === 0) return null;
+                return (
+                  <div
+                    key={kind}
+                    className="pc-dossier__empty-line"
+                    data-testid={`dossier-pushed-refs-${kind}`}
+                  >
+                    {kind === 'memory' ? 'memories' : 'pointers'}{' '}
+                    {rows.map((r) => `${r.port} ${r.refs}`).join(' · ')} surfaced
+                  </div>
+                );
+              })}
+              {pushed.unavailable && pushed.unavailable.length > 0 ? (
+                /* An unreadable ledger is NOT a ledger that surfaced zero —
+                   say so rather than letting it read as an absence. */
+                <div className="pc-dossier__empty-line" data-testid="dossier-pushed-unavailable">
+                  couldn’t read: {pushed.unavailable.join(' · ')}
                 </div>
               ) : null}
               <CappedRows

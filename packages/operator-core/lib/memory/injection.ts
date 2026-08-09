@@ -461,7 +461,7 @@ export async function buildMemoryContextBlock(
     //
     // It is composed at the END rather than merged into the mem0 ranking on
     // purpose. The corpora sit in incompatible vector spaces (memory =
-    // harrier@1024, prose surfaces = gemma@384), so their scores can never
+    // harrier@1024, prose surfaces = gemma@768), so their scores can never
     // join the one comparable ranking F-C/D-011 built — merging them could
     // only be done by a fixed priority, which D-011 names "a quota under
     // another name". See ./corpus-recall.

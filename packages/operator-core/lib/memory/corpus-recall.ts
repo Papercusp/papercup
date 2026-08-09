@@ -13,7 +13,8 @@
  *   1. NOT a fourth pool in the mem0 ranked list. The memory store embeds with
  *      harrier-oss @ native 1024 (`memory_vec_harrier`, 100% of
  *      `memory_canonical`); every prose surface — session_turns, work_items,
- *      docs, plans — stays in gemma@384 (see `proseSurfacePreference` in
+ *      docs, plans — stays in gemma@768 (its NATIVE width, per migration 727 /
+ *      `PROSE_VECTOR_DIMS`; see `proseSurfacePreference` in
  *      ./configure). One query vector cannot score both, so these hits can
  *      never join the single comparable ranking F-C/D-011 built. Merging them
  *      anyway could only be done by a fixed priority, which D-011 names "a

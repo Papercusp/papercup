@@ -68,6 +68,14 @@ describe('stateColor', () => {
   it('distinguishes foreign (not ours) from running (ours)', () => {
     expect(stateColor('foreign')).not.toBe(stateColor('running'));
   });
+
+  it('does NOT alarm on ended_unobserved — a routine shutdown nobody watched, not an escape (D-018)', () => {
+    // ended_unobserved is systemd-confirmed clean; sharing `--bad`/`--warn` with
+    // stranded (the escape/anomaly class) would re-create the exact noise D-018
+    // exists to eliminate.
+    expect(stateColor('ended_unobserved')).not.toBe(stateColor('unaccounted'));
+    expect(stateColor('ended_unobserved')).not.toBe(stateColor('stranded'));
+  });
 });
 
 describe('fmtArmed (P-019)', () => {

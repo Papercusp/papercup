@@ -159,10 +159,16 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       FOR EACH ROW EXECUTE FUNCTION harness_shared.ot_tsv();
   `);
 
-  // ── engineer_issues (131 baseline: GENERATED _search, no embedding column) ──
+  // ── engineer_issues (131 baseline: GENERATED _search) ──────────────────────
   // EI-6984: the `work_item` search source. Mirrors production's generated
   // tsvector expression exactly (title weight A / body weight B) so this test
   // exercises the real ranking behavior, not an approximation.
+  //
+  // P-005 / migration 776: `embedding` is on this relation now. In production
+  // `engineer_issues` is a VIEW over `harness_shared.work_items` and the column
+  // was always on the base table — 776 only made the view SELECT it. This fixture
+  // is a flat table, so it carries the column directly; what it has to reproduce
+  // faithfully is the SHAPE the source reads, which is the view's.
   await s.unsafe(`
     CREATE TABLE harness_shared.engineer_issues (
       workspace_id TEXT NOT NULL DEFAULT 'default',
@@ -173,6 +179,8 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       kind TEXT NOT NULL DEFAULT 'bug',
       severity TEXT NOT NULL DEFAULT 'minor',
       state TEXT NOT NULL DEFAULT 'open',
+      embedding public.vector(384),
+      embedding_mode TEXT,
       _search tsvector GENERATED ALWAYS AS (
         (setweight(to_tsvector('english', coalesce(title, '')), 'A')
          || setweight(to_tsvector('english', coalesce(body, '')), 'B'))
@@ -271,12 +279,28 @@ async function seed(s: postgres.Sql): Promise<{ convA: string; convB: string }> 
           VALUES (${convB}, 0, 'user', 'kubernetes secret discussion in another workspace', ${vecLit(0.04)}::vector)`;
 
   // engineer_issues (EI-6984's work_item source): A (two harness scopes) + B decoy.
+  //
+  // P-005 vector layout. Query is v(0), so sim = cos θ and a SMALLER θ is nearer:
+  //   EI-3  θ=0.05  nearest — and its text contains NO query term, so the LEXICAL
+  //                 leg cannot return it at all. That is the falsifiable control:
+  //                 an "embedding" leg that quietly ranked by text could never put
+  //                 EI-3 first, and could never return it.
+  //   EI-2  θ=0.10
+  //   EI-1  θ=0.90  farthest of the workspace-A rows
+  //   EI-4  NULL    embedded-less row; must be absent from the embedding leg while
+  //                 still reachable lexically.
+  //   EI-9  θ=0.02  workspace B — nearer than EVERY A row, so a workspace leak
+  //                 surfaces as the FIRST hit rather than a subtle one.
+  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity, embedding, embedding_mode)
+          VALUES (${WS_A}, 'EI-1', 'harness:sheets', 'kubernetes scaling bug', 'pods do not autoscale', 'bug', 'open', 'major', ${vecLit(0.9)}::vector, 'gemma')`;
+  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity, embedding, embedding_mode)
+          VALUES (${WS_A}, 'EI-2', 'harness:docs', 'kubernetes networking change', 'wants a service mesh', 'change', 'resolved', 'minor', ${vecLit(0.1)}::vector, 'gemma')`;
+  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity, embedding, embedding_mode)
+          VALUES (${WS_A}, 'EI-3', 'harness:sheets', 'container orchestration retry storm', 'no query term appears here', 'bug', 'open', 'minor', ${vecLit(0.05)}::vector, 'gemma')`;
   await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity)
-          VALUES (${WS_A}, 'EI-1', 'harness:sheets', 'kubernetes scaling bug', 'pods do not autoscale', 'bug', 'open', 'major')`;
-  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity)
-          VALUES (${WS_A}, 'EI-2', 'harness:docs', 'kubernetes networking change', 'wants a service mesh', 'change', 'resolved', 'minor')`;
-  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity)
-          VALUES (${WS_B}, 'EI-9', 'harness:decoy', 'kubernetes secret issue from another workspace', 'leak', 'bug', 'open', 'critical')`;
+          VALUES (${WS_A}, 'EI-4', 'harness:sheets', 'cluster upgrade never embedded', 'lexically reachable, no vector', 'task', 'open', 'minor')`;
+  await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity, embedding, embedding_mode)
+          VALUES (${WS_B}, 'EI-9', 'harness:decoy', 'kubernetes secret issue from another workspace', 'leak', 'bug', 'open', 'critical', ${vecLit(0.02)}::vector, 'gemma')`;
 
   return { convA, convB };
 }
@@ -542,8 +566,8 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
     expect(out.some((r) => r.row.excerpt.includes('another workspace'))).toBe(false);
   });
 
-  // EI-6984: the work_item source — no embedding method (engineer_issues has no
-  // embedding column yet), so only bm25 is exercised here.
+  // EI-6984: the work_item source. Its embedding leg (P-005) has its own describe
+  // block below; these cover the lexical leg.
   it('SECURITY — work_item.lexical: only workspace A; source_id=issue_id, scope=the harness:<slug> scope column, excerpt prefixed [kind/state/severity]', async () => {
     const out = await byName('work_item').lexical(params());
     const ids = out.map((r) => r.row.source_id).sort();
@@ -567,6 +591,86 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
   it('a B-scoped work_item.lexical returns ONLY the B decoy, never the A issues', async () => {
     const out = await byName('work_item').lexical(params({ workspaceId: WS_B }));
     expect(out.map((r) => r.row.source_id)).toEqual(['EI-9']);
+  });
+});
+
+/**
+ * P-005 / D-078 — the work_item source's embedding leg.
+ *
+ * WHAT THE FIXTURE MAKES FALSIFIABLE. EI-3 is the nearest vector (θ=0.05) AND
+ * contains none of the query's terms, so the lexical leg cannot return it at all.
+ * Every assertion about ordering therefore fails if the leg is silently text-ranked
+ * — which is the way a "wired up" leg most plausibly goes wrong, since a
+ * text-ranked result set looks entirely reasonable from the outside.
+ *
+ * The vector column reaches production through migration 776, which appends it to
+ * the `engineer_issues` VIEW; it lived on `harness_shared.work_items` all along.
+ */
+describe('P-005 — work_item.embedding (the semantic leg D-078 was missing)', () => {
+  const idsOf = (out: Awaited<ReturnType<EmbeddingFn>>): string[] =>
+    out.map((r) => r.row.source_id);
+
+  it('the source registers an embedding ranker at all', () => {
+    expect(byName('work_item').embedding).toBeTypeOf('function');
+  });
+
+  it('ranks by VECTOR distance, not by text — the lexically-unmatchable EI-3 comes FIRST', async () => {
+    const out = await embeddingOf('work_item')({ ...params(), qVec: QVEC });
+    expect(idsOf(out)).toEqual(['EI-3', 'EI-2', 'EI-1']);
+
+    // ... and the control: that same row is invisible to the lexical leg, so this
+    // ordering cannot have been produced by ts_rank_cd under another name.
+    const lex = await byName('work_item').lexical(params());
+    expect(lex.map((r) => r.row.source_id)).not.toContain('EI-3');
+  });
+
+  it('scores each hit as cosine similarity (1 - distance), matching the fixture angles', async () => {
+    const out = await embeddingOf('work_item')({ ...params(), qVec: QVEC });
+    const byId = new Map(out.map((r) => [r.row.source_id, r.score]));
+    expect(byId.get('EI-3')).toBeCloseTo(Math.cos(0.05), 3);
+    expect(byId.get('EI-2')).toBeCloseTo(Math.cos(0.1), 3);
+    expect(byId.get('EI-1')).toBeCloseTo(Math.cos(0.9), 3);
+  });
+
+  it('omits rows with no embedding rather than scoring them as distant', async () => {
+    const out = await embeddingOf('work_item')({ ...params(), qVec: QVEC });
+    expect(idsOf(out)).not.toContain('EI-4');
+    // EI-4 is a real, reachable row — it is absent from THIS leg only.
+    const lex = await byName('work_item').lexical(params({ query: 'upgrade' }));
+    expect(lex.map((r) => r.row.source_id)).toContain('EI-4');
+  });
+
+  it('SECURITY — never leaks workspace B, even though the B decoy is the nearest vector of all', async () => {
+    const out = await embeddingOf('work_item')({ ...params(), qVec: QVEC });
+    expect(idsOf(out)).not.toContain('EI-9');
+
+    const b = await embeddingOf('work_item')({ ...params({ workspaceId: WS_B }), qVec: QVEC });
+    expect(idsOf(b)).toEqual(['EI-9']);
+  });
+
+  it('honours scopeFilter with the same harness:<slug> semantics as the lexical leg', async () => {
+    const out = await embeddingOf('work_item')({ ...params({ scopeFilter: 'sheets' }), qVec: QVEC });
+    // EI-2 is harness:docs and drops out; EI-4 has no vector.
+    expect(idsOf(out)).toEqual(['EI-3', 'EI-1']);
+  });
+
+  it('maps rows to the SAME identity + shape as the lexical leg, so RRF fuses instead of duplicating', async () => {
+    const emb = await embeddingOf('work_item')({ ...params(), qVec: QVEC });
+    const lex = await byName('work_item').lexical(params());
+    const e1 = emb.find((r) => r.row.source_id === 'EI-1')!;
+    const l1 = lex.find((r) => r.row.source_id === 'EI-1')!;
+
+    expect(e1.key).toBe(l1.key); // 'work_item:EI-1' — the fusion key
+    expect(e1.row.source).toBe('work_item');
+    expect(e1.row.scope).toBe(l1.row.scope);
+    expect(e1.row.excerpt).toBe(l1.row.excerpt);
+    expect(e1.row.rankers).toEqual(['embeddings']);
+    expect(l1.row.rankers).toEqual(['lexical']);
+  });
+
+  it('respects the limit', async () => {
+    const out = await embeddingOf('work_item')({ ...params({ limit: 2 }), qVec: QVEC });
+    expect(idsOf(out)).toEqual(['EI-3', 'EI-2']);
   });
 });
 

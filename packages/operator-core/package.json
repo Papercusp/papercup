@@ -22,6 +22,7 @@
     "lint:okf-conformance": "tsx ../../scripts/check-okf-conformance.mjs",
     "lint:drop-database-force": "node ../../scripts/check-drop-database-force.mjs",
     "lint:no-retired-resurrection": "node ../../scripts/check-retired-resurrection.mjs",
+    "lint:vimock-export-strands": "node ../../scripts/check-vimock-export-strands.mjs",
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {

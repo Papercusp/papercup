@@ -318,12 +318,15 @@ export function reconcile(
     if (ageMs(row, now) < graceMs) {
       tooYoung.push(row.taskId);
     } else {
-      stranded.push({
-        taskId: row.taskId,
-        reason: row.scopeUnit
+      pushAbsent(
+        row,
+        row.scopeUnit
           ? `scope ${row.scopeUnit} holds no processes`
           : 'no scope, identity or pid match in the kernel scan',
-      });
+        opts.releasedScopes,
+        stranded,
+        endedUnobserved,
+      );
     }
   }
 
@@ -351,6 +354,7 @@ export function reconcile(
   return {
     alive,
     stranded,
+    endedUnobserved,
     unaccounted: groupResidue(unaccountedProcs),
     abandonedWindow: groupResidue(abandonedWindowProcs),
     foreign: groupResidue(foreignProcs),
@@ -371,6 +375,10 @@ function pushOverdue(row: TaskRow, now: number, out: OverdueVerdict[]): void {
 export function summarizeReconcile(r: ReconcileResult): {
   alive: number;
   stranded: number;
+  /** D-018: unobserved-but-systemd-confirmed-clean endings. Counted separately
+   *  from `stranded` so the escape/anomaly count is never inflated by routine
+   *  shutdowns nobody happened to observe. */
+  endedUnobserved: number;
   unaccounted: number;
   unaccountedPids: number;
   /** Dead-window scopes + the processes they still hold (P-008 / D-018). Counted
@@ -384,6 +392,7 @@ export function summarizeReconcile(r: ReconcileResult): {
   return {
     alive: r.alive.length,
     stranded: r.stranded.length,
+    endedUnobserved: r.endedUnobserved.length,
     unaccounted: r.unaccounted.length,
     unaccountedPids: r.unaccounted.reduce((n, g) => n + g.pids.length, 0),
     abandonedWindow: r.abandonedWindow.length,

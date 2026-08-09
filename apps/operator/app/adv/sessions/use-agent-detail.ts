@@ -241,9 +241,15 @@ export interface PushedContextEvent {
   lexicalRan: boolean | null;
 }
 
+/** `memory` = mem0 memories, `corpus` = corpus handles (WI-6512). REQUIRED:
+ *  the two ledgers record the SAME `port` labels on purpose, so a port alone
+ *  never identifies a row — see the server DTO for the measurement. */
+export type PushedContextRefKind = 'memory' | 'corpus';
+
 export interface PushedContextPortRefs {
   port: string;
   refs: number;
+  kind: PushedContextRefKind;
 }
 
 export interface AgentPushedContext {
@@ -251,6 +257,9 @@ export interface AgentPushedContext {
   events: PushedContextEvent[];
   count: number;
   refsByPort: PushedContextPortRefs[];
+  /** Ledgers that could not be read while the others succeeded — render it,
+   *  never drop it: an unreadable ledger is not a ledger that surfaced zero. */
+  unavailable?: string[];
   error?: string;
 }
 

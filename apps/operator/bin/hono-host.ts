@@ -52,6 +52,7 @@ import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host'
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
 import { startConditionStalenessAlarm } from '@papercusp/operator-core/lib/system-health/condition-staleness-alarm';
 import { startEscalationAgingAlarm } from '@papercusp/operator-core/lib/overwatch/escalation-aging-alarm';
+import { startRoutineFireCancellationAlarm } from '@papercusp/operator-core/lib/dbos/routine-fire-cancellation-alarm';
 import { startLagSelfRestart } from '@papercusp/operator-core/lib/system-health/lag-self-restart';
 import {
   startWorkerHeartbeat,
@@ -511,6 +512,13 @@ function startRequestServers(): void {
   startInfraLivenessAlarm();
   startConditionStalenessAlarm();
   startEscalationAgingAlarm();
+  //  • routine-fire-cancellation alarm (WI-35534): DBOS's own max-recovery-attempts
+  //    cancellation can silently kill a still-ENQUEUED routineFire (empty error,
+  //    catchup:'skip-old', no retry) while last_fired_at keeps advancing — invisible
+  //    everywhere except dbos.workflow_status. Read-only visibility signal; does not
+  //    touch the workflow or the routine (distinct from dbos-executor-reaper, which
+  //    requeues a different DBOS state — started-but-no-output).
+  startRoutineFireCancellationAlarm();
   startSinglePrimaryGuard();
   // P-002 (mcp-reliability-hardening-2026-07-11): recycle GRACEFULLY. The seam's
   // default is a bare process.exit(75), which severs every in-flight request on

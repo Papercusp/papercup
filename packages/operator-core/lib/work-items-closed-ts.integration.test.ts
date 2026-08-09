@@ -27,8 +27,47 @@
  *      failed placements (see ANY_FAMILY_TERMINAL_STATES' header).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../test/_pg-helpers';
+import {
+  createFreshPgDb,
+  applyMigrationsForTest,
+  type FreshPgDb,
+  type KnownInapplicableMigration,
+} from '../test/_pg-helpers';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+
+/**
+ * WI-35535 — later migrations the stale-migration-list audit (EI-18808675015292160)
+ * correctly finds post-date 698 and touch ONLY `work_items`, but each is
+ * structurally inapplicable to THIS fixture's deliberately-minimal DDL (see the
+ * BASE_DDL comment below): they depend on columns (`payload`, `harness_slug`)
+ * this fixture never builds, or replace a view with an incompatible column set.
+ * Turning this fixture into a near-full schema replica to satisfy them would
+ * defeat its stated design. Acknowledged here, per file, with why — see
+ * `KnownInapplicableMigration` in _pg-helpers.ts for what this does and does
+ * not suppress (every OTHER later migration is still audited).
+ */
+const KNOWN_INAPPLICABLE: KnownInapplicableMigration[] = [
+  {
+    file: '721-work-items-lane-generated-column.sql',
+    reason:
+      "ADD COLUMN lane GENERATED ALWAYS AS (payload ->> 'lane') and a CREATE OR REPLACE VIEW " +
+      'engineer_issues with a full-width column set both depend on `payload`, which this ' +
+      'fixture does not build (Postgres also refuses CREATE OR REPLACE VIEW when the column ' +
+      'set changes, which this migration structurally does against the minimal view here).',
+  },
+  {
+    file: '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
+    reason:
+      'The CHECK constraint and the partial expression index both reference `payload`, which ' +
+      'this fixture does not build.',
+  },
+  {
+    file: '741-work-items-condition-key-singleton.sql',
+    reason:
+      'The new condition_key column and its unique index are scoped by `harness_slug`, which ' +
+      'this fixture does not build.',
+  },
+];
 
 const WS = 'ws-closed-ts';
 
@@ -89,6 +128,7 @@ describe('work_items.closed_ts (migration 698)', () => {
     await sql.unsafe(BASE_DDL);
     await applyMigrationsForTest(sql, ['698-work-items-closed-ts.sql'], {
       label: 'work-items-closed-ts',
+      knownInapplicable: KNOWN_INAPPLICABLE,
     });
   }, 120_000);
 
@@ -240,7 +280,10 @@ describe('work_items.closed_ts (migration 698)', () => {
   });
 
   it('is idempotent — re-applying 698 changes nothing and does not double-append', async () => {
-    await applyMigrationsForTest(sql, ['698-work-items-closed-ts.sql'], { label: 're-apply' });
+    await applyMigrationsForTest(sql, ['698-work-items-closed-ts.sql'], {
+      label: 're-apply',
+      knownInapplicable: KNOWN_INAPPLICABLE,
+    });
 
     for (const view of ['engineer_issues', 'harness_features_consolidated']) {
       const [{ n }] = await sql<{ n: number }[]>`

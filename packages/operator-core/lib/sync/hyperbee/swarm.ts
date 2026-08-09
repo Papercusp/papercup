@@ -3242,6 +3242,37 @@ export async function joinHarnessSwarm(
 
 let _sharedSwarm: HyperswarmLike | null = null;
 
+/** WI-37465: the IN-FLIGHT construction, memoized so concurrent callers share
+ *  ONE build instead of each starting their own.
+ *
+ *  `_sharedSwarm` alone cannot serialize this: it is assigned only at the END
+ *  of construction, and `buildSharedSwarm()` awaits three times before it gets
+ *  there (`import('hyperswarm')`, `loadOrGenerateSwarmSeed()`,
+ *  `import('hyperdht')`). A `if (_sharedSwarm) return` guard followed by an
+ *  await is a classic check-then-act race: every caller entering during those
+ *  awaits sees `null`, passes the guard, and constructs its own Hyperswarm.
+ *  There are ≥6 callers and several run concurrently at boot
+ *  (hive-directory-boot, cross-hive-boundary-boot, substrate-wake-wiring).
+ *
+ *  Measured 2026-08-09 on the rig (172.31.44.2, pid 24727): THREE swarms
+ *  constructed at 04:00:13.412/.413/.414 — 2ms apart — holding three UDP
+ *  sockets (49737/49738/49739). The tower's process built exactly one.
+ *
+ *  That is not merely wasteful. `identity/swarm-keypair.ts` scopes the seed to
+ *  `machineFingerprint()` — PER MACHINE — so every instance loads the SAME
+ *  seed and therefore the SAME public key, and all of them join the SAME DHT
+ *  announcing the same topics. swarm-keypair.ts's own header reasons that a
+ *  duplicated identity is harmless only because the two processes it considered
+ *  sit on different DHTs ("an identical keypair on each never actually collides
+ *  on the wire"); N instances inside ONE process are the case that reasoning
+ *  excluded. It also silently multiplies the peer dedup, the maxPeers /
+ *  maxClientConnections budget, and the WI-6063 per-topic fairness — each
+ *  becomes per-INSTANCE rather than per-process.
+ *
+ *  Cleared on failure so a construction error is retryable rather than
+ *  poisoning the process with a permanently-rejected promise. */
+let _sharedSwarmPromise: Promise<HyperswarmLike> | null = null;
+
 /** FLOOR for the total-connection ceiling, and the fallback when the host's
  *  resource profile can't be read. Hyperswarm's own default is unlimited; this
  *  bounds a connection-flood DoS regardless of the data layer. 256 so a single
@@ -3583,8 +3614,26 @@ export function swarmConstructorOpts(args?: {
  *
  * Tests override via `_setSharedSwarmForTests` so they never touch
  * the real module.
+ *
+ * WI-37465: this is the PROMISE-MEMOIZING entry point. The actual construction
+ * lives in `buildSharedSwarm()` below; the memo is assigned SYNCHRONOUSLY here,
+ * with no await between the check and the set, so N concurrent callers share
+ * one build. Do NOT reintroduce an `await` before `_sharedSwarmPromise = …`.
  */
-export async function getSharedSwarm(): Promise<HyperswarmLike> {
+export function getSharedSwarm(): Promise<HyperswarmLike> {
+  // A test override (or a completed build) short-circuits without touching the memo.
+  if (_sharedSwarm) return Promise.resolve(_sharedSwarm);
+  if (_sharedSwarmPromise) return _sharedSwarmPromise;
+  // Assigned synchronously — this is the line that closes the race.
+  _sharedSwarmPromise = buildSharedSwarm().catch((err: unknown) => {
+    // Let the next caller retry rather than inheriting a rejected memo.
+    _sharedSwarmPromise = null;
+    throw err;
+  });
+  return _sharedSwarmPromise;
+}
+
+async function buildSharedSwarm(): Promise<HyperswarmLike> {
   if (_sharedSwarm) return _sharedSwarm;
   const mod = await import('hyperswarm');
   const Swarm = (
@@ -3706,6 +3755,10 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
 
 export function _setSharedSwarmForTests(s: HyperswarmLike | null): void {
   _sharedSwarm = s;
+  // WI-37465: the in-flight memo must be dropped in lockstep. Without this a
+  // test that resets to null would still be handed the PREVIOUS build's
+  // promise by getSharedSwarm(), so the override would silently not take.
+  _sharedSwarmPromise = null;
 }
 
 export function _peekSharedSwarmForTests(): HyperswarmLike | null {

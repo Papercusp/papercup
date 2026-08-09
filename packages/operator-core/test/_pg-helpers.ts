@@ -89,6 +89,20 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
  *    touches agent_facts plus 3 unrelated tables) cannot be applied by a fixture
  *    that only builds agent_facts, so demanding it would be an error nobody can
  *    fix. Those are reported separately as advisory context, never as a failure.
+ *
+ * A third case the table-overlap heuristic cannot see at all (EI found via
+ * WI-35535): a migration can touch ONLY the fixture's declared table by name
+ * and still be structurally inapplicable, because it depends on a COLUMN the
+ * fixture's deliberately-minimal DDL never built (e.g. an
+ * `ADD COLUMN ... GENERATED ALWAYS AS (payload ->> 'x')` when the fixture has
+ * no `payload`), or because it `CREATE OR REPLACE`s a view with a column set
+ * incompatible with the fixture's own minimal view (Postgres refuses that
+ * outright). Turning such a fixture into a near-full schema replica to satisfy
+ * the prescription would dilute the narrow guard it exists to provide — so
+ * `applyMigrationsForTest` accepts an explicit, per-file, JUSTIFIED opt-out
+ * (`knownInapplicable`) instead. Unlike disabling the audit wholesale
+ * (`audit: false`), this keeps the audit live for every OTHER migration: a
+ * genuinely-missed, actually-applicable gap still throws.
  */
 
 /** PURE — strip SQL comments so a table named only in prose never counts. */
@@ -201,6 +215,16 @@ function readAllMigrations(): [string, string][] {
     .map((f) => [f, readFileSync(resolve(SQL_DIR, f), 'utf8')] as [string, string]);
 }
 
+/** One migration a fixture cannot absorb, with a REQUIRED reason (never a bare
+ *  filename) — the reason is what makes this an acknowledged, reviewable
+ *  narrowing instead of a silent suppression. See the header block above. */
+export interface KnownInapplicableMigration {
+  file: string;
+  /** WHY this fixture cannot apply it — the column/view shape it depends on
+   *  that the fixture's deliberately-minimal DDL does not build. */
+  reason: string;
+}
+
 /**
  * Apply a fixture's declared migration list in the given order, after proving
  * the list has not fallen behind the migrations that actually exist.
@@ -208,16 +232,29 @@ function readAllMigrations(): [string, string][] {
  * Drop-in for the `for (const m of [...]) await applyMigrationForTest(...)` loop
  * every fixture hand-rolled. Set `auditOnly:false` to skip the check (there is
  * no good reason; it exists so a fixture mid-repair can still run).
+ *
+ * `knownInapplicable` acknowledges specific later migrations the audit would
+ * otherwise demand, that this fixture structurally cannot apply (see the
+ * header block above) — each entry is subtracted from the audit's `missing`
+ * set before it decides whether to throw. This is narrower than `audit:
+ * false`: every OTHER migration the audit finds is still enforced, so a
+ * genuinely-missed, actually-applicable gap still fails loudly. Prefer this
+ * over widening the fixture's DDL to satisfy an inapplicable prescription —
+ * doing that dilutes the narrow guard the fixture exists to provide.
  */
 export async function applyMigrationsForTest(
   sql: postgres.Sql,
   declared: string[],
-  opts: { label?: string; audit?: boolean } = {},
+  opts: { label?: string; audit?: boolean; knownInapplicable?: KnownInapplicableMigration[] } = {},
 ): Promise<void> {
   if (opts.audit !== false) {
     const audit = auditMigrationList(declared, readAllMigrations());
-    if (audit.missing.length) {
-      throw new Error(formatStaleMigrationList(audit, opts.label ?? 'applyMigrationsForTest'));
+    const acknowledged = new Set((opts.knownInapplicable ?? []).map((k) => k.file));
+    const stillMissing = audit.missing.filter((m) => !acknowledged.has(m.file));
+    if (stillMissing.length) {
+      throw new Error(
+        formatStaleMigrationList({ ...audit, missing: stillMissing }, opts.label ?? 'applyMigrationsForTest'),
+      );
     }
   }
   for (const file of declared) {

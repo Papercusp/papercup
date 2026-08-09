@@ -883,6 +883,77 @@ export function computeSpecStarvedFleetAlert(input: {
 }
 
 /**
+ * fleet-lead-instrumentation-audit-2026-08-09 P-005: the SPEC-AUTHORSHIP alert — a fleet's
+ * claim spec can be rewritten by another automated actor with nothing failing loudly.
+ *
+ * Observed live on this fleet: cup `s-1786236383559` took the spec to rev4, widening `kind`
+ * from `[bug]` to `[bug,change]` against an owner-directed BUG scope and pulling ~907 mostly
+ * nit/minor items into the lane. It was caught only because the leader happened to re-read
+ * the spec by hand that wake — and nothing else COULD have caught it. Every write-time guard
+ * in scheduler:set_claim_spec measures the spec's SHAPE (validity, fixed-cohort
+ * admissibility, pool COLLAPSE), and a widening passes all of them by construction: the
+ * collapse guard exists to catch a lane shrinking to nothing, so a lane growing past its
+ * mandate is precisely the direction it is blind to.
+ *
+ * The signal costs nothing to emit. The brief ALREADY reads this record for the spec-starved
+ * preview below and was discarding `updatedBy`/`revision` — so this is not a new probe, it is
+ * metadata the existing read already had in hand.
+ *
+ * Fires when a fleet-level spec exists and its last write is NOT attributable to the agent
+ * reading the brief — including an UNATTRIBUTED write (`updatedBy` unset), which is no more
+ * verifiable than a foreign one. Stays silent when the reader itself is unresolvable: an
+ * unattributable READER cannot be a wronged author, and firing on every unscoped read is how
+ * an alert gets trained away. Self-clearing by design — the remedy (re-set the spec, which
+ * ratifies the scope under your own authorship) is the same act that silences it.
+ * PURE: exported for direct unit-testing.
+ */
+export function computeSpecAuthorshipAlert(input: {
+  readerId: string | null;
+  updatedBy: string | null;
+  revision: number | null;
+  updatedAt: string | null;
+  harness?: string | null;
+  fleet?: string | null;
+}): { reason: string; falsifier: AlertFalsifier } | undefined {
+  if (!input.readerId) return undefined;
+  if (input.updatedBy && input.updatedBy === input.readerId) return undefined;
+  const who = input.updatedBy
+    ? `\`${input.updatedBy}\``
+    : 'an UNATTRIBUTED writer (the row carries no updated_by)';
+  const when = input.updatedAt ? ` on ${input.updatedAt}` : '';
+  return {
+    falsifier: {
+      tool: 'work_items:claimable',
+      check: renderFalsifierCall('work_items:claimable', {
+        harness: input.harness,
+        spec: input.fleet,
+        breakdownOnly: true,
+        sampleExcluded: 3,
+      }),
+      // This alert fires on the cup_claim_specs row's AUTHORSHIP columns. The claim oracle
+      // reports what the lane now ADMITS — a different question against a different table,
+      // so it can contradict the alert instead of restating it.
+      measurement:
+        'what the lane ACTUALLY admits under the current spec, from the live claim oracle — ' +
+        'the alert fired on the spec row\'s updated_by/revision, which say who wrote it and ' +
+        'never what it now selects',
+      kills:
+        'the admitted set matches the scope you intended → the rewrite was an honest merge, ' +
+        'not a breach. Ratify it with scheduler:set_claim_spec so the lane carries your ' +
+        'authorship again, which also clears this line — do not re-narrow a lane that is correct.',
+    },
+    reason:
+      `this fleet's claim spec was last written by ${who}${when}, at revision ` +
+      `${input.revision ?? 'unknown'} — not by you. A third-party rewrite is invisible by ` +
+      'construction: set_claim_spec validates the spec\'s SHAPE and refuses a lane that ' +
+      'COLLAPSES, so a WIDENING passes every write-time guard (the observed breach took ' +
+      '`kind` from [bug] to [bug,change], ~907 extra items against a bug-only mandate). Read ' +
+      'the live filter with scheduler:get_claim_spec { fleet } and confirm the scope is the ' +
+      'one you intended before trusting what your members are pulling.',
+  };
+}
+
+/**
  * EI-18681259560385029: the IDLE-WITH-CLAIMABLE alert — the summary-level half of the
  * benchSuggestion wording fix above, and the third distinct hole in this family.
  *
@@ -2194,22 +2265,49 @@ export default defineTool({
     let specFilter: unknown;
     let harnessWidePool: number | undefined;
     let specMatched: number | undefined;
+    // P-005: the spec row's own authorship, surfaced beside the filter it describes. A
+    // leader reading `specFilter` alone cannot tell their own lane from one an automated
+    // peer rewrote under them.
+    let specRevision: number | undefined;
+    let specUpdatedBy: string | null | undefined;
+    let specUpdatedAt: string | null | undefined;
+    let specAuthorshipAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
     try {
       const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
-      const { previewSpecPoolEffect } = await import('../../scheduler/spec-pool-preview');
       const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleet), workspaceId });
       if (rec.source !== 'default') {
-        const effect = await previewSpecPoolEffect(rec.spec, { workspaceId, harness: args.harness ?? null });
-        specStarvedAlert = computeSpecStarvedFleetAlert({
-          totalLoad,
-          specMatched: effect.matched,
-          poolSize: effect.pool,
+        specFilter = rec.spec.view?.filter ?? null;
+        specRevision = rec.revision ?? undefined;
+        specUpdatedBy = rec.updatedBy;
+        specUpdatedAt = rec.updatedAt;
+        // P-005: computed from the record ALONE, and deliberately BEFORE the pool preview
+        // below — the preview is the fragile half (it compiles the filter and counts the
+        // pool), and coupling a drift signal to it would mean a preview outage silently
+        // takes the drift check with it. That is the same class of blindness this alert
+        // exists to report, one level up.
+        specAuthorshipAlert = computeSpecAuthorshipAlert({
+          readerId: ownerId ?? null,
+          updatedBy: rec.updatedBy,
+          revision: rec.revision,
+          updatedAt: rec.updatedAt,
           harness: args.harness ?? null,
           fleet,
         });
-        specFilter = rec.spec.view?.filter ?? null;
-        harnessWidePool = effect.pool;
-        specMatched = effect.matched;
+        try {
+          const { previewSpecPoolEffect } = await import('../../scheduler/spec-pool-preview');
+          const effect = await previewSpecPoolEffect(rec.spec, { workspaceId, harness: args.harness ?? null });
+          specStarvedAlert = computeSpecStarvedFleetAlert({
+            totalLoad,
+            specMatched: effect.matched,
+            poolSize: effect.pool,
+            harness: args.harness ?? null,
+            fleet,
+          });
+          harnessWidePool = effect.pool;
+          specMatched = effect.matched;
+        } catch {
+          /* best-effort — a pool-effect failure must not cost the authorship read above */
+        }
       }
     } catch {
       /* best-effort — never block the brief on a spec-effect preview failure */
@@ -2256,6 +2354,10 @@ export default defineTool({
           ...summary,
           strandedFleetAlert: strandedFleetAlert != null,
           specStarvedAlert: specStarvedAlert != null,
+          // P-005: unlike its siblings this one is not about SUPPLY — it says the lane you
+          // are reading was authored by someone else, so every other spec figure here
+          // describes a scope you have not ratified.
+          specAuthorshipAlert: specAuthorshipAlert != null,
           idleWithClaimableAlert: idleWithClaimableAlert != null,
           floorStarvedAlert: floorStarvedAlert != null,
           ...(customInvariants ? { customInvariantAlert: customInvariantAlert != null } : {}),
@@ -2305,6 +2407,12 @@ export default defineTool({
               specStarvedAlertFalsifier: specStarvedAlert.falsifier,
             }
           : {}),
+        ...(specAuthorshipAlert
+          ? {
+              specAuthorshipAlertReason: specAuthorshipAlert.reason,
+              specAuthorshipAlertFalsifier: specAuthorshipAlert.falsifier,
+            }
+          : {}),
         ...(idleWithClaimableAlert
           ? {
               idleWithClaimableAlertReason: idleWithClaimableAlert.reason,
@@ -2333,6 +2441,13 @@ export default defineTool({
         // spec-scoped matched) side by side, so a leader never has to compare member prose
         // against a summary count without the two authoritative reads one call away.
         ...(specFilter !== undefined ? { specFilter } : {}),
+        // P-005: the filter's PROVENANCE, emitted whenever the filter itself is — a
+        // revision the leader can diff wake-to-wake, and the identity that last moved it.
+        // Present-but-null updatedBy is meaningful (an unattributed write), so these ride
+        // the same presence test as specFilter rather than being dropped when null.
+        ...(specRevision !== undefined ? { specRevision } : {}),
+        ...(specUpdatedBy !== undefined ? { specUpdatedBy } : {}),
+        ...(specUpdatedAt !== undefined ? { specUpdatedAt } : {}),
         ...(harnessWidePool !== undefined ? { harnessWidePool } : {}),
         ...(specMatched !== undefined ? { specMatched } : {}),
       },

@@ -125,10 +125,22 @@ export interface LiveHeadSnapshotFailed {
   readonly retry?: HeadSnapshotRetryLog;
 }
 
-/** How many attempts a retrying request burned, and how long it spent waiting between them. */
+/**
+ * How many attempts a retrying request burned, and how long it took.
+ *
+ * `waitedMs` is the SUM OF THE DELIBERATE SLEEPS between attempts — it excludes the time
+ * spent actually IN each attempt (discovery + the real POST, which can itself run for
+ * minutes; see DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS). `elapsedMs` is true wall-clock from the
+ * first attempt to now and is always >= waitedMs. A caller narrating "how hard did we
+ * try" wants `elapsedMs` — WI-37467 found `waitedMs` rendered as if it were elapsed and
+ * reported "~15s of waiting" for a run that took 616s, because that run's time was spent
+ * inside the attempts (a holder that answered slowly), not in the one 15s sleep between
+ * them.
+ */
 export interface HeadSnapshotRetryLog {
   readonly attempts: number;
   readonly waitedMs: number;
+  readonly elapsedMs: number;
 }
 
 export type LiveHeadSnapshotOutcome =
@@ -389,7 +401,9 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
     // Only a restart-shaped failure is worth waiting out; a refusal is a real answer.
     const retryable = outcome.kind === 'no-holder' || (outcome.kind === 'failed' && outcome.transport);
     if (!retryable) {
-      return attempts > 1 ? withRetryLog(outcome, { attempts, waitedMs }) : outcome;
+      return attempts > 1
+        ? withRetryLog(outcome, { attempts, waitedMs, elapsedMs: now() - startedAt })
+        : outcome;
     }
     last = outcome;
 
@@ -401,7 +415,9 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
         `[head-snapshot] giving up after ${attempts} attempt(s) over ${now() - startedAt}ms — ` +
           `the holder never came back within the ${budgetMs}ms retry budget.`,
       );
-      return attempts > 1 ? withRetryLog(last, { attempts, waitedMs }) : last;
+      return attempts > 1
+        ? withRetryLog(last, { attempts, waitedMs, elapsedMs: now() - startedAt })
+        : last;
     }
 
     inp.warn?.(

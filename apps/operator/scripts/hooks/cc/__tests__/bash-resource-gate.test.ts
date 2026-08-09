@@ -1658,6 +1658,69 @@ describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
 });
 
 /**
+ * ripgrep `-r`-consumes-cluster advisory (EI-19962592202828420). `rg`'s `-r`
+ * is `--replace <REPLACEMENT>` and takes an argument, so a clustered short
+ * flag like `-rn` parses as `-r n` — a silent, markerless rewrite of every
+ * match to the literal replacement text "n". SOFT by design: this only ever
+ * advises, never denies.
+ */
+describe('ripgrep `-r`-consumes-cluster advisory (EI-19962592202828420)', () => {
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectRgAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain("rg `-r`-consumes-cluster advisory");
+  };
+
+  it.each([
+    ['-rn (the reported repro — line numbers eaten as the replacement)', "rg -rn 'SearchLegStats' -g '*.ts'"],
+    ['-rl (files-with-matches eaten)', "rg -rl 'TODO'"],
+    ['-ri (case-insensitive eaten)', "rg -ri 'todo'"],
+  ])('fires on %s', (_label, command) => {
+    expectRgAdvisory(runGate(bashWithInput({ command })));
+  });
+
+  it('fires when reached via a leading path', () => {
+    expectRgAdvisory(runGate(bashWithInput({ command: "/usr/bin/rg -rn 'foo'" })));
+  });
+
+  it('fires after a `&&` chain', () => {
+    expectRgAdvisory(runGate(bashWithInput({ command: "cd apps/operator && rg -rn 'foo'" })));
+  });
+
+  it('silent for the correct grep-style form (`-n` alone, no `-r`)', () => {
+    expectAllow(runGate(bashWithInput({ command: "rg -n 'SearchLegStats' -g '*.ts'" })));
+  });
+
+  it('silent for GNU `grep -rn` — grep`s `-r` is boolean recursive, a different flag entirely', () => {
+    expectAllow(runGate(bashWithInput({ command: "grep -rn 'foo' ." })));
+  });
+
+  it('silent for an explicit `--replace` (long form, unambiguous)', () => {
+    expectAllow(runGate(bashWithInput({ command: "rg --replace n 'foo'" })));
+  });
+
+  it('silent for `-r` as a separate, unclustered argument', () => {
+    expectAllow(runGate(bashWithInput({ command: "rg -r n 'foo'" })));
+  });
+
+  it('silent when `-rn` only appears as prose inside quotes, not at command position', () => {
+    expectAllow(runGate(bashWithInput({ command: 'echo "remember: rg -rn is a trap"' })));
+  });
+
+  it('a deny gate still WINS over the rg advisory', () => {
+    const out = runGate(bashWithInput({ command: "crontab -e; rg -rn 'foo'" }), AGENT);
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
+/**
  * WI-6944 — the `;`-chain half of the same exit-code trap. The advisory above
  * only matches a PIPE; a `;`-chain masks identically but through a separate
  * TRAILING command:

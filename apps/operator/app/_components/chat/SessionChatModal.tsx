@@ -58,7 +58,7 @@ import AgentDossier from '../../adv/sessions/AgentDossier';
 // The rail is presentational; every rule about what counts as a fleet, how peers
 // group and how they sort lives in the unit-tested module beside it.
 import FleetPeersRail from './FleetPeersRail';
-import { deriveFleetPeers } from './fleet-peers';
+import { deriveFleetPeers, isUnknownSession } from './fleet-peers';
 import { useChatClock } from './message-timestamp';
 // P-015: the ORDERS panel — what the agent was TOLD (mission/authority,
 // modes + who set them, owner directives, standing facts, walls, carry brief).
@@ -1368,6 +1368,20 @@ export default function SessionChatModal({
     if (!payload) return null;
     return deriveFleetPeers(payload.active ?? [], sessionOwnerId, { nowMs });
   }, [actionRoster.data, sessionOwnerId, nowMs]);
+  /* EI-19968489971947616: `fleetPeers === null` collapses two different
+     situations — a genuinely solo agent (no rail, correctly) and an open
+     `hudsession=` id that matches NOTHING in the roster (e.g. truncated),
+     which used to vanish identically. Distinguish the second so the rail can
+     render an explicit "not in the roster" placeholder instead of silently
+     showing nothing. Only meaningful once the roster payload has actually
+     loaded — before that, `fleetPeers` being null just means "not fetched
+     yet", not "unknown session". */
+  const fleetUnknownSession = useMemo(() => {
+    if (fleetPeers != null) return false;
+    const payload = actionRoster.data?.[0];
+    if (!payload) return false;
+    return isUnknownSession(payload.active ?? [], sessionOwnerId);
+  }, [fleetPeers, actionRoster.data, sessionOwnerId]);
 
   /* Room-aware default, following the NEWER of the two precedents in this file
      (Orders' D-009, not the dossier's flat withDefault(true)) — and it matters
@@ -1386,10 +1400,11 @@ export default function SessionChatModal({
   const [fleetParam, setFleetOpen] = useQueryState('chatFleet', parseAsBoolean);
   const isPeersNarrow = useIsNarrowViewport(PEERS_NARROW_MEDIA_QUERY);
   const fleetOpen = fleetParam ?? !isPeersNarrow;
-  /* The rail is only ever on screen for an agent that IS in a fleet — a solo
-     agent gets no rail AND no toggle, rather than a toggle that opens an empty
-     column explaining it is empty. */
-  const peersVisible = open && fleetOpen && fleetPeers != null;
+  /* The rail is only ever on screen for an agent that IS in a fleet, OR one
+     whose id is unrecognized (EI-19968489971947616 — that gets an explicit
+     placeholder, not silence). A solo agent still gets no rail AND no toggle,
+     rather than a toggle that opens an empty column explaining it is empty. */
+  const peersVisible = open && fleetOpen && (fleetPeers != null || fleetUnknownSession);
 
   /* P-015: the Orders panel's own toggle, nuqs like every other bit of this
      popup's state. Defaults OPEN, same as the dossier
@@ -1934,7 +1949,7 @@ export default function SessionChatModal({
                 Same grammar as Activity beside it — constant label, chevron
                 carrying the verb, `aria-pressed` + `aria-label` spelling the
                 action out for a reader who cannot see a chevron point. */}
-            {fleetPeers ? (
+            {fleetPeers || fleetUnknownSession ? (
               <button
                 type="button"
                 className="pc-button"
@@ -2176,11 +2191,34 @@ export default function SessionChatModal({
             data-testid="session-chat-peers-rail"
             style={isPeersNarrow ? PEERS_RAIL_OVERLAY_STYLE : PEERS_RAIL_SIDE_STYLE}
           >
-            <FleetPeersRail
-              model={fleetPeers!}
-              onSelectPeer={onSelectPeer}
-              onClose={() => void setFleetOpen(false)}
-            />
+            {fleetPeers ? (
+              <FleetPeersRail
+                model={fleetPeers}
+                onSelectPeer={onSelectPeer}
+                onClose={() => void setFleetOpen(false)}
+              />
+            ) : (
+              /* EI-19968489971947616: the id in view matches nothing in the
+                 roster (e.g. a truncated `hudsession=`) — say so explicitly
+                 rather than rendering an empty column with no explanation. */
+              <div className="pc-peers pc-peers--unknown" data-testid="fleet-peers-unknown-session">
+                <header className="pc-zone-title">
+                  <span>Fleet</span>
+                  <button
+                    type="button"
+                    className="pc-zone-title__close"
+                    onClick={() => void setFleetOpen(false)}
+                    aria-label="Hide fleet peers"
+                  >
+                    ✕
+                  </button>
+                </header>
+                <div className="pc-peers__empty" role="status">
+                  This session isn’t in the current roster — its id may be truncated or stale, so
+                  fleet peers can’t be shown.
+                </div>
+              </div>
+            )}
           </div>
         ) : null}
       </div>

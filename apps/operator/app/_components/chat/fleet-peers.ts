@@ -139,6 +139,23 @@ function toPeer(s: HudSession, currentOwnerId: string | null, e: HudRosterEntry)
  * entirely: the append-only coord stream, via `coord:catch-up { audience:
  * '@fleet:<slug>' }`. Do not try to answer it from this payload.
  */
+/**
+ * EI-19968489971947616: distinguishes deriveFleetPeers' two `null`-returning
+ * cases so a caller can render an explicit "this session isn't in the
+ * roster" placeholder instead of silently showing no rail at all (which reads
+ * identically to "you are a solo agent, there is nothing to show").
+ *
+ * True only when `ownerId` is non-null AND does not appear in `entries` at
+ * all — e.g. a `hudsession=` query param carrying a truncated/stale id.
+ * False for the genuinely-uninteresting cases: no agent open, or the agent IS
+ * in the roster but has no `fleetSlug` (a real solo agent — correct to render
+ * nothing).
+ */
+export function isUnknownSession(entries: HudRosterEntry[], ownerId: string | null): boolean {
+  if (!ownerId) return false;
+  return !entries.some((e) => e.ownerId === ownerId);
+}
+
 export function deriveFleetPeers(
   entries: HudRosterEntry[],
   currentOwnerId: string | null,

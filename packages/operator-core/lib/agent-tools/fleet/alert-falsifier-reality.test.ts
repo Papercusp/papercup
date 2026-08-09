@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path';
 import {
   computeStrandedFleetAlert,
   computeSpecStarvedFleetAlert,
+  computeSpecAuthorshipAlert,
   computeIdleWithClaimableAlert,
   computeFloorStarvedFleetAlert,
   renderFalsifierCall,
@@ -53,6 +54,20 @@ const FIRING: { name: string; fired: { reason: string; falsifier: AlertFalsifier
       totalLoad: 0,
       specMatched: 0,
       poolSize: 40,
+      harness: 'papercusp',
+      fleet: 'my-fleet',
+    }),
+  },
+  {
+    // P-005: the only alert in the family that is not about SUPPLY — it fires on the spec
+    // row's AUTHORSHIP, so its falsifier has to reach a different table than the one it
+    // read, which is exactly what this fixture set exists to police.
+    name: 'specAuthorship',
+    fired: computeSpecAuthorshipAlert({
+      readerId: 'su-b8422496',
+      updatedBy: 's-1786236383559',
+      revision: 4,
+      updatedAt: '2026-08-09T01:12:00.000Z',
       harness: 'papercusp',
       fleet: 'my-fleet',
     }),

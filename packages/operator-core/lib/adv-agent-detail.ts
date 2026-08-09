@@ -423,10 +423,27 @@ export interface PushedContextEvent {
   lexicalRan: boolean | null;
 }
 
-/** Distinct memory refs surfaced to this session, per injection port. */
+/**
+ * Which ledger a ref count came from. REQUIRED, and the reason is measured:
+ * the two ledgers deliberately record the SAME `port` labels (see
+ * `memory/corpus-surfaced-ledger.ts`'s header), and on 2026-08-09 all 6 corpus
+ * ports — mid-turn, turn-start, claim, initialize, create, compact — also
+ * existed as memory ports. So a port label alone never identifies a row, and
+ * summing the two would report two different KINDS of thing as one number
+ * 100% of the time rather than in some edge case.
+ *
+ * `memory` = mem0 memories (`memory_session_surfaced`, keyed `memory_id uuid`).
+ * `corpus` = corpus handles like `WI-6512` (`corpus_session_surfaced`, keyed
+ * `ref text`). A pointer the agent chose not to resolve is not a fact it was
+ * given, which is exactly why these must stay countable apart.
+ */
+export type PushedContextRefKind = 'memory' | 'corpus';
+
+/** Distinct refs surfaced to this session, per injection port AND kind. */
 export interface PushedContextPortRefs {
   port: string;
   refs: number;
+  kind: PushedContextRefKind;
 }
 
 export interface AgentPushedContext {
@@ -436,8 +453,18 @@ export interface AgentPushedContext {
    *  the Coord section's lesson [owner 2026-07-28: "it says 38 unread, but I
    *  only see 2 messages"]: a count must never name rows the list cannot show. */
   count: number;
-  /** From the per-session surfaced ledger — the refs, never the bodies. */
+  /** From the per-session surfaced ledgers — the refs, never the bodies.
+   *  Carries BOTH kinds; read `kind`, never `port` alone, to tell them apart. */
   refsByPort: PushedContextPortRefs[];
+  /** Sources that could not be read while the OTHERS succeeded — e.g. the
+   *  corpus ledger on a box where migration 712 has not been applied.
+   *
+   *  This is the partial-failure half of the `error` rule below, and it needs
+   *  its own channel precisely because it must NOT replace the data: reporting
+   *  it through `error` would hide the sources that did answer, while dropping
+   *  it would render "we could not ask this ledger" as "this ledger surfaced
+   *  nothing" — the exact conflation this DTO exists to prevent. */
+  unavailable?: string[];
   /** Set when the read FAILED. Never collapse a failure into an empty list:
    *  "nothing was pushed to this agent" and "we could not ask" are opposite
    *  conclusions (same rule as `getAgentSignals` / `getAgentSubscriptions`). */
@@ -1295,8 +1322,12 @@ export async function getAgentSubscriptions(owner: string): Promise<AgentSubscri
 // Backed ENTIRELY by ledgers that already exist (D-004: no new write path):
 //   - harness_shared.memory_recall_stats     — one row per recall, carrying the
 //     per-leg provenance (`legs`, landed by P-002) and the admission funnel.
-//   - harness_shared.memory_session_surfaced — which refs were surfaced, per port.
-// Both key `session_id` on the coord ownerId, which is what the dossier is
+//   - harness_shared.memory_session_surfaced — which mem0 refs were surfaced.
+//   - harness_shared.corpus_session_surfaced — which CORPUS handles were
+//     surfaced (P-012's third source). A separate table, not a separate column,
+//     because its key is `ref text` (`WI-6512`) where the sibling's is
+//     `memory_id uuid` — see migration 712 / `memory/corpus-surfaced-ledger.ts`.
+// All three key `session_id` on the coord ownerId, which is what the dossier is
 // keyed by — so this needs no owner→session mapping (verified live 2026-08-09).
 
 /** How far back the section looks. */
@@ -1339,11 +1370,19 @@ export interface PushedContextRow {
   admission: JsonBlob;
 }
 
+/** A per-port ref count as the ledgers hand it over, before shaping. */
+export interface PushedContextRefRow {
+  port: string;
+  refs: number | string;
+  kind: PushedContextRefKind;
+}
+
 /** Pure shaping — unit-tested without PG, per this module's contract. */
 export function derivePushedContext(
   rows: PushedContextRow[],
-  refRows: { port: string; refs: number | string }[],
+  refRows: PushedContextRefRow[],
   total: number,
+  unavailable: string[] = [],
 ): AgentPushedContext {
   const events: PushedContextEvent[] = rows.map((r) => {
     const admission = blob(r.admission);
@@ -1357,13 +1396,20 @@ export function derivePushedContext(
       lexicalRan: legRan(r.legs, 'lexical'),
     };
   });
+  const refsByPort = refRows
+    .map((r) => ({ port: r.port, refs: Number(r.refs) || 0, kind: r.kind }))
+    .filter((r) => r.refs > 0)
+    // The two ledgers arrive as separate result sets, each already sorted
+    // within itself; merging needs a TOTAL order or the row sequence would
+    // depend on which query resolved first. Ties break on kind then port so
+    // the dossier is stable between reads.
+    .sort((a, b) => b.refs - a.refs || a.kind.localeCompare(b.kind) || a.port.localeCompare(b.port));
   return {
     events,
     // Never let the carried slice masquerade as the total.
     count: Math.max(total, events.length),
-    refsByPort: refRows
-      .map((r) => ({ port: r.port, refs: Number(r.refs) || 0 }))
-      .filter((r) => r.refs > 0),
+    refsByPort,
+    ...(unavailable.length > 0 ? { unavailable } : {}),
   };
 }
 
@@ -1383,7 +1429,7 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
     const ws = activeWorkspaceId();
     const { withWorkspace } = await import('@papercusp/db-org');
     return await withWorkspace(ws, async (tx) => {
-      const [rows, totals, refRows] = await Promise.all([
+      const [rows, totals, memRefs] = await Promise.all([
         tx<PushedContextRow[]>`
           SELECT created_at, surface, legs, admission
             FROM harness_shared.memory_recall_stats
@@ -1393,14 +1439,17 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
            ORDER BY created_at DESC
            LIMIT ${PUSHED_CONTEXT_MAX_EVENTS}
         `,
-        tx<{ total: string }[]>`
-          SELECT count(*)::text AS total
+        // `corpus_relation` rides along here rather than as its own round trip:
+        // see the guard below for why it must be asked BEFORE the corpus read.
+        tx<{ total: string; corpus_relation: string | null }[]>`
+          SELECT count(*)::text AS total,
+                 to_regclass('harness_shared.corpus_session_surfaced')::text AS corpus_relation
             FROM harness_shared.memory_recall_stats
            WHERE session_id = ${owner}
              AND (workspace_id = ${ws} OR workspace_id IS NULL)
              AND created_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
         `,
-        // The surfaced ledger has no workspace_id column at all — session_id
+        // Neither surfaced ledger has a workspace_id column at all — session_id
         // carries the scope. Refs, never bodies.
         tx<{ port: string; refs: string }[]>`
           SELECT port, count(DISTINCT memory_id)::text AS refs
@@ -1411,10 +1460,44 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
            ORDER BY count(DISTINCT memory_id) DESC
         `,
       ]);
+
+      // The corpus ledger is the one source that may legitimately not exist:
+      // `memory/corpus-surfaced-ledger.ts` latches a process-wide no-op for
+      // exactly this case ("migration 712 not applied on this box yet").
+      //
+      // It CANNOT simply join the Promise.all above. `withWorkspace` runs its
+      // callback inside a TRANSACTION, so a missing-relation error would abort
+      // that transaction and take the three queries above down with it —
+      // turning one absent ledger into a section-wide "we could not ask".
+      // Asking `to_regclass` first is the cheap way to keep the failure local:
+      // it returns NULL instead of raising, and rode along on the query above.
+      const totalRow = (totals as unknown as { total: string; corpus_relation: string | null }[])[0];
+      const unavailable: string[] = [];
+      let corpusRefs: { port: string; refs: string }[] = [];
+      if (totalRow?.corpus_relation) {
+        corpusRefs = (await tx<{ port: string; refs: string }[]>`
+          SELECT port, count(DISTINCT ref)::text AS refs
+            FROM harness_shared.corpus_session_surfaced
+           WHERE session_id = ${owner}
+             AND surfaced_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
+           GROUP BY port
+           ORDER BY count(DISTINCT ref) DESC
+        `) as unknown as { port: string; refs: string }[];
+      } else {
+        unavailable.push('corpus-surfaced-refs');
+      }
+
       return derivePushedContext(
         rows as unknown as PushedContextRow[],
-        refRows as unknown as { port: string; refs: string }[],
-        Number((totals as unknown as { total: string }[])[0]?.total ?? 0) || 0,
+        [
+          ...(memRefs as unknown as { port: string; refs: string }[]).map((r) => ({
+            ...r,
+            kind: 'memory' as const,
+          })),
+          ...corpusRefs.map((r) => ({ ...r, kind: 'corpus' as const })),
+        ],
+        Number(totalRow?.total ?? 0) || 0,
+        unavailable,
       );
     });
   } catch (err) {

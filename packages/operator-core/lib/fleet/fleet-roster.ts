@@ -747,9 +747,15 @@ export async function liveFleetMemberIdsDiagnosed(
 ): Promise<DiagnosedFleetMembers> {
   const { sql } = getOrgPg();
   const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
-  const rows = await sql<
-    { owner_id: string; agent_role: string | null; heartbeat_at: string; stale: boolean }[]
-  >`
+  // Named so the partition below can be typed as an ARRAY OF ROWS. `typeof rows` is a
+  // postgres.js RowList (it carries count/command/columns), which no `[]` literal satisfies.
+  type PresenceRow = {
+    owner_id: string;
+    agent_role: string | null;
+    heartbeat_at: string;
+    stale: boolean;
+  };
+  const rows = await sql<PresenceRow[]>`
     SELECT owner_id,
            agent_role,
            heartbeat_at,
@@ -760,7 +766,7 @@ export async function liveFleetMemberIdsDiagnosed(
   `;
 
   const omitted: FleetMemberOmission[] = [];
-  const candidates: typeof rows = [];
+  const candidates: PresenceRow[] = [];
   for (const r of rows) {
     if (r.stale) {
       omitted.push({ ownerId: r.owner_id, reason: 'stale-heartbeat', heartbeatAt: r.heartbeat_at });

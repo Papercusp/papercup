@@ -6,7 +6,7 @@
  * RETRIEVAL IS REUSED, NOT REBUILT — this is P-010's reuse-first check,
  * discharged. `@papercusp/search` + `SEARCH_SOURCES` already own the SQL for
  * both corpora this item wants: `session_turn` (BM25 over `text_tsv` +
- * gemma@384 cosine over `text_embedding`, with the full filter bag) and
+ * gemma@768 cosine over `text_embedding`, with the full filter bag) and
  * `work_item` (BM25 over `engineer_issues._search`). `runHybridSearch` already
  * supplies RRF fusion, a bounded query-embed, abort threading and
  * degrade-to-BM25 on a missing embedder. Hand-writing pgvector SQL here would
@@ -23,7 +23,7 @@
  *
  *   • It uses the PROSE-surface embedder (`buildQueryEmbedder` already applies
  *     `proseSurfacePreference`, mapping a harrier preference → gemma), because
- *     these corpora store gemma@384 vectors. That is the same fact that makes
+ *     these corpora store gemma@768 vectors. That is the same fact that makes
  *     this a separate leg rather than a fourth mem0 pool — see D-037.
  */
 

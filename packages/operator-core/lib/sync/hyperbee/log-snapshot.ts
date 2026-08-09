@@ -146,19 +146,59 @@ export function buildSnapshotRows(
   ops: readonly PeerLogOp[],
   opts?: { now?: number; tombstoneHorizonMs?: number },
 ): SnapshotRow[] {
-  // key → its current-state row (live put OR a `deleted` tombstone).
-  const latest = new Map<string, SnapshotRow>();
-  for (const op of ops) {
+  const folder = new SnapshotRowFolder();
+  folder.addAll(ops);
+  return folder.finish(opts);
+}
+
+/**
+ * P-014 — the INCREMENTAL form of `buildSnapshotRows`. Same fold, same output, but
+ * it consumes ops one window at a time so the caller never has to hold the whole
+ * history in memory.
+ *
+ * WHY THIS EXISTS. `produceLogSnapshot` used to materialize every decoded op of the
+ * own log into one `ops: PeerLogOp[]` and hand that array to the builder. The fold's
+ * OUTPUT is bounded by the LIVE KEY COUNT (latest live op per key), but its INPUT was
+ * bounded by the OP COUNT — and on this box's real corpus that is 461,475 ops of
+ * accumulated history. Measured 2026-08-09: the holder reached `20.1G memory peak` and
+ * died of heap exhaustion (SIGABRT status=134, V8 stack in `String::NewFromOneByte`)
+ * ~110s into the read. Folding as each window arrives makes peak retention
+ * (live keys + ONE read window) instead of (whole history).
+ *
+ * ⚠ That memory wall was ALWAYS there — it was MASKED by the serial-read latency bug
+ * (see `SNAPSHOT_READ_CONCURRENCY`): the read was so slow the holder got recycled on
+ * its ~8.5-min watchdog cadence before the heap could fill. Fixing the latency let
+ * execution actually reach the ceiling. Two bugs, one symptom.
+ *
+ * ORDER IS THE CONTRACT. The own log is single-writer, so the LATEST op per key wins
+ * BY POSITION — callers MUST `add` ops in ascending log-index order, exactly as the
+ * array form iterates. `buildSnapshotRows` is implemented on top of this class, so
+ * the property suite (`log-snapshot.property.test.ts`, PREFIX-REPLACEMENT FAITHFULNESS)
+ * exercises this fold rather than a parallel copy of it — the two cannot drift.
+ */
+export class SnapshotRowFolder {
+  /** key → its current-state row (live put OR a `deleted` tombstone). */
+  private readonly latest = new Map<string, SnapshotRow>();
+
+  /** Number of distinct keys folded so far — the real bound on peak retention. */
+  get keyCount(): number {
+    return this.latest.size;
+  }
+
+  /** Fold ONE op. Must be called in ascending log-index order (see the class note). */
+  add(op: PeerLogOp): void {
     if (isSnapshotOp(op)) {
+      // A PRIOR snapshot expands: its rows (live AND tombstone) fold in as if they
+      // were the ops they summarize, so re-snapshotting is correct + idempotent.
       const payload = op.value as SnapshotPayload | undefined;
       if (payload && Array.isArray(payload.rows)) {
-        for (const r of payload.rows) latest.set(`${r.table}::${r.hbKey}`, r);
+        for (const r of payload.rows) this.latest.set(`${r.table}::${r.hbKey}`, r);
       }
-      continue;
+      return;
     }
     const key = `${op.table}::${op.hbKey}`;
     if (op.type === 'put') {
-      latest.set(key, {
+      this.latest.set(key, {
         table: op.table,
         hbKey: op.hbKey,
         value: op.value,
@@ -178,7 +218,7 @@ export function buildSnapshotRows(
     } else if (op.type === 'del') {
       // EI-1688: reconstitute the delete as a tombstone (carry the del's ts/hlc),
       // NOT omitted — so the reader's winner-fold knows the key was deleted.
-      latest.set(key, {
+      this.latest.set(key, {
         table: op.table,
         hbKey: op.hbKey,
         value: null,
@@ -189,19 +229,31 @@ export function buildSnapshotRows(
       });
     }
   }
-  // GC tombstones older than the horizon (revert them to omitted). `now` undefined
-  // ⇒ no GC (carry all tombstones — safe; only a snapshot producer supplies `now`).
-  const now = opts?.now;
-  const horizon = opts?.tombstoneHorizonMs ?? SNAPSHOT_TOMBSTONE_HORIZON_MS;
-  const rows: SnapshotRow[] = [];
-  for (const r of latest.values()) {
-    if (r.deleted && now != null && r.ts < now - horizon) continue; // GC'd tombstone
-    rows.push(r);
+
+  /** Fold a batch, in order. */
+  addAll(ops: Iterable<PeerLogOp>): void {
+    for (const op of ops) this.add(op);
   }
-  rows.sort((a, b) =>
-    a.table === b.table ? cmpStr(a.hbKey, b.hbKey) : cmpStr(a.table, b.table),
-  );
-  return rows;
+
+  /**
+   * Emit the minimal current-state set: GC tombstones past the horizon, then sort
+   * (table, then hbKey) for deterministic, testable bytes. Does not reset the folder.
+   */
+  finish(opts?: { now?: number; tombstoneHorizonMs?: number }): SnapshotRow[] {
+    // GC tombstones older than the horizon (revert them to omitted). `now` undefined
+    // ⇒ no GC (carry all tombstones — safe; only a snapshot producer supplies `now`).
+    const now = opts?.now;
+    const horizon = opts?.tombstoneHorizonMs ?? SNAPSHOT_TOMBSTONE_HORIZON_MS;
+    const rows: SnapshotRow[] = [];
+    for (const r of this.latest.values()) {
+      if (r.deleted && now != null && r.ts < now - horizon) continue; // GC'd tombstone
+      rows.push(r);
+    }
+    rows.sort((a, b) =>
+      a.table === b.table ? cmpStr(a.hbKey, b.hbKey) : cmpStr(a.table, b.table),
+    );
+    return rows;
+  }
 }
 
 function cmpStr(a: string, b: string): number {
@@ -333,7 +385,26 @@ export function buildSnapshotOps(opts: {
 }): PeerLogOp[] {
   // EI-1688: pass `now` (= the snapshot ts) so old tombstones GC out at production.
   const rows = buildSnapshotRows(opts.ops, { now: opts.ts });
-  const chunks = chunkSnapshotRows(rows, opts.maxChunkBytes ?? SNAPSHOT_MAX_CHUNK_BYTES);
+  return buildSnapshotOpsFromRows({ ...opts, rows });
+}
+
+/**
+ * P-014 — the second half of `buildSnapshotOps`, taking rows that are ALREADY folded.
+ * Chunk + wrap only; the tombstone GC has already happened inside the fold, so callers
+ * MUST have passed `now` to `SnapshotRowFolder.finish` (as `produceLogSnapshot` does).
+ *
+ * Exists so the streaming producer can hand over a `SnapshotRowFolder`'s output without
+ * round-tripping through an `ops` array it deliberately never built. Pure.
+ */
+export function buildSnapshotOpsFromRows(opts: {
+  rows: readonly SnapshotRow[];
+  coversUpTo: number;
+  author_pubkey: string;
+  ts: number;
+  schema_version: number;
+  maxChunkBytes?: number;
+}): PeerLogOp[] {
+  const chunks = chunkSnapshotRows(opts.rows, opts.maxChunkBytes ?? SNAPSHOT_MAX_CHUNK_BYTES);
   const chunkCount = chunks.length;
   return chunks.map((chunkRows, chunkIdx) =>
     buildSnapshotChunkOp({
@@ -367,8 +438,13 @@ export const SNAPSHOT_COMPACT_EVERY_OPS = 1000;
  * (P-014, 2026-08-09).
  *
  * Sized to be well clear of latency-bound without holding an unreasonable number of
- * decoded blocks in flight; the whole folded history is already accumulated in `ops`,
- * so the window is not what bounds peak memory here.
+ * decoded blocks in flight.
+ *
+ * ⚠ This window IS now a term in peak memory. It was not when this constant landed —
+ * the producer accumulated the whole decoded history, which dwarfed any window — but
+ * that accumulation is exactly what the incremental fold removed (`SnapshotRowFolder`),
+ * so peak retention is now (live keys + ONE window of this many decoded blocks). Raising
+ * it trades heap for fewer round-trips; it is still not a constant of correctness.
  */
 export const SNAPSHOT_READ_CONCURRENCY = 256;
 
@@ -444,18 +520,28 @@ export async function produceLogSnapshot(
   // the own-log read never got the equivalent treatment.
   //
   // Order is preserved: `Promise.all` resolves positionally and the windows advance
-  // sequentially, so `ops` lands in exactly the index order the serial loop produced —
+  // sequentially, so ops are folded in exactly the index order the serial loop produced —
   // which the fold depends on (last-writer-wins per key).
-  const ops: PeerLogOp[] = [];
+  //
+  // And each window is FOLDED THEN DROPPED rather than accumulated (P-014, half 2). The
+  // fold's output is bounded by the LIVE KEY COUNT; only its input was ever bounded by the
+  // OP COUNT, and materializing all 461,475 decoded ops first is what put the holder at a
+  // `20.1G memory peak` and killed it with SIGABRT ~110s in. Peak retention is now
+  // (live keys + one window of SNAPSHOT_READ_CONCURRENCY blocks). See `SnapshotRowFolder`.
+  const folder = new SnapshotRowFolder();
   for (let start = 0; start < coversUpTo; start += SNAPSHOT_READ_CONCURRENCY) {
     const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, coversUpTo);
     const window = await Promise.all(
       Array.from({ length: end - start }, (_, k) => ownLog.get(start + k)),
     );
-    for (const op of window) if (op) ops.push(op);
+    for (const op of window) if (op) folder.add(op);
+    // `window` falls out of scope here — the decoded blocks it held are collectable.
   }
-  const snapshotOps = buildSnapshotOps({
-    ops,
+  // EI-1688: `now` (= the snapshot ts) GCs tombstones past the horizon at production —
+  // the same argument `buildSnapshotOps` passes for the non-streaming path.
+  const rows = folder.finish({ now: opts.now });
+  const snapshotOps = buildSnapshotOpsFromRows({
+    rows,
     coversUpTo,
     author_pubkey: ownLog.keyHex,
     ts: opts.now,

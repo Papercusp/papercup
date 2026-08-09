@@ -83,6 +83,10 @@ const escalator = createEpisodicEscalator<SupervisionGiveUpEpisode, RecoveredSup
   createdBy: 'system:supervision-reconciler',
   foundDuring: 'supervision-reconcile',
   recoveryOwner: RECOVERY_OWNER,
+  // The factory's own default (`['federation']`) is tailored to its first caller
+  // (replication-stall-ei.ts) and does not fit a systemd supervision give-up — override it,
+  // same as precision-alert-ei.ts's ['memory', 'observability'].
+  extraTopics: ['supervision'],
 });
 
 /** Test seam. */

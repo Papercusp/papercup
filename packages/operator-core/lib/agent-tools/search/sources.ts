@@ -454,11 +454,30 @@ const decisions: SearchSource = {
 /**
  * EI-6984: `search:fulltext` had no work-item scope at all, so an agent filing a new
  * tracker (EI-*) had no cheap existence check before creating a likely duplicate —
- * `work_items:list` doesn't scale past ~500 rows and has no text search. Bm25-only
- * (`harness_shared.engineer_issues` has no embedding column yet, so this source is
- * absent from search:semantic's hybrid fusion — see SearchSource.embedding being
- * optional). Reuses the table's EXISTING generated `_search` tsvector (title
- * weight A / body weight B) + its GIN index — no migration needed.
+ * `work_items:list` doesn't scale past ~500 rows and has no text search. Reuses the
+ * relation's EXISTING generated `_search` tsvector (title weight A / body weight B)
+ * + its GIN index.
+ *
+ * P-005 (context-injection-retrieval-reach-and-visibility-2026-08-03) / P-012
+ * (semantic-search-fingerprint-coverage-2026-08-03) — THE EMBEDDING LEG. This
+ * source was lexical-only, which is the whole of D-078: "injection's semantic reach
+ * is ONE SOURCE WIDE". The reason recorded here used to be "engineer_issues has no
+ * embedding column yet", and that sentence was true of the VIEW and false of the
+ * data. Measured 2026-08-09: `harness_shared.work_items` carries
+ * `embedding vector(768)` on 36,302 of 36,304 rows (99.99%, mode 'gemma') behind
+ * `work_items_embedding_hnsw_idx`. The vectors, the index and the backfill were all
+ * already there — the view just did not SELECT the column, and the view is what this
+ * source queries. Migration 776 appends `embedding` / `embedding_mode` to it.
+ *
+ * Both legs deliberately query the SAME relation (the view) rather than the leg
+ * reaching past it to `work_items`: the scope derivation, the `severity` COALESCE
+ * and the `item_kind IN (bug,change,task)` row set are defined exactly once there.
+ * A leg on the base table would have to restate all three, which is how the
+ * documented `payload->'_ei'` severity trap happened in the first place.
+ *
+ * ⚠ Never `SELECT *` from `harness_shared.engineer_issues` — since 776 that ships a
+ * 768-dim vector per row, on what is the single largest DB consumer here (WI-6993).
+ * Name your columns, as both legs below do.
  */
 const workItem: SearchSource = {
   name: 'work_item',
@@ -505,6 +524,61 @@ const workItem: SearchSource = {
           highlight: r.highlight,
           score: r.rank,
           rankers: ['lexical'],
+        },
+      };
+    });
+  },
+  /**
+   * Mirrors `lexical` above column-for-column so a hit fuses on the same identity
+   * (`key`) whichever leg produced it — that is what lets RRF see one document with
+   * two rankers instead of two documents.
+   *
+   * No `embedding_mode` predicate, matching every other source here: the mode is a
+   * property of the embedder that WROTE the row, and `SearchSourceParams` carries no
+   * mode for the leg to compare against, so a filter would have to hardcode one.
+   * Today the column is single-valued ('gemma' on 100% of embedded rows). If a
+   * second mode is ever written into this table, every source in this file needs the
+   * predicate, not just this one — it is a registry-wide decision, not a local one.
+   */
+  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
+    const rows = (await sql`
+      SELECT issue_id, scope, title, body, kind, state, severity,
+             1 - (embedding <=> ${qVec}::vector) AS sim,
+             ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
+               plainto_tsquery('english', ${query}),
+               ${HEADLINE_OPTS}) AS highlight
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${workspaceId}
+         -- same scope semantics as the lexical leg: the column stores
+         -- 'operator' | 'harness:<slug>', so a bare slug maps to the latter.
+         AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
+         AND embedding IS NOT NULL
+    ORDER BY embedding <=> ${qVec}::vector
+       LIMIT ${limit}
+    `) as unknown as Array<{
+      issue_id: string;
+      scope: string;
+      title: string;
+      body: string;
+      kind: string;
+      state: string;
+      severity: string;
+      sim: number;
+      highlight: string;
+    }>;
+    return rows.map((r) => {
+      const body = `${r.title}\n${r.body}`.trim();
+      return {
+        key: `work_item:${r.issue_id}`,
+        score: r.sim,
+        row: {
+          source: 'work_item',
+          source_id: r.issue_id,
+          scope: r.scope,
+          excerpt: `[${r.kind}/${r.state}/${r.severity}] ${trunc(body)}`,
+          highlight: r.highlight,
+          score: r.sim,
+          rankers: ['embeddings'],
         },
       };
     });

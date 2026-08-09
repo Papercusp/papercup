@@ -75,7 +75,6 @@ const COLS = [
   'rl_tokens_remaining',
   'rl_reset_at',
   'session_id',
-  'plan_id',
   'tool_name',
   'turn_trigger',
   'account_id',
@@ -253,7 +252,7 @@ describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
     expect(costFromTokens).not.toHaveBeenCalled();
   });
 
-  it('persists session_id / plan_id / tool_name / turn_trigger / account_id attribution, null-safe when absent', async () => {
+  it('persists session_id / tool_name / turn_trigger / account_id attribution, null-safe when absent', async () => {
     await recordUsageSample({
       bucketKey: 'b',
       provider: 'anthropic',
@@ -261,14 +260,12 @@ describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
       source: 'jsonl',
       costUsd: 1,
       sessionId: 'sess-1',
-      planId: 'plan-x-2026-06-20',
       toolName: 'gateway:set-aimd',
       turnTrigger: 'coord-wake',
       accountId: 'acct-claude-a',
     });
     const row = lastInsert();
     expect(row.session_id).toBe('sess-1');
-    expect(row.plan_id).toBe('plan-x-2026-06-20');
     expect(row.tool_name).toBe('gateway:set-aimd');
     expect(row.turn_trigger).toBe('coord-wake');
     expect(row.account_id).toBe('acct-claude-a');
@@ -277,7 +274,6 @@ describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
     await recordUsageSample({ bucketKey: 'b', provider: 'anthropic', modelClass: 'opus', source: 'headers', inputTokens: 5 });
     const bare = lastInsert();
     expect(bare.session_id).toBeNull();
-    expect(bare.plan_id).toBeNull();
     expect(bare.tool_name).toBeNull();
     expect(bare.turn_trigger).toBeNull();
     expect(bare.account_id).toBeNull();

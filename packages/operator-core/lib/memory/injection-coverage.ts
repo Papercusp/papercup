@@ -33,7 +33,7 @@
  * The corpus leg reads exactly two registered sources (`CORPUS_SOURCE_NAMES` in
  * corpus-recall-io.ts): `session_turn` and `work_item`.
  *
- *   • `session_turn` has BM25 + a gemma@384 cosine leg, itself a P-034 union over
+ *   • `session_turn` has BM25 + a gemma@768 cosine leg, itself a P-034 union over
  *     two surfaces (`session_turns.text_embedding` and `session_turn_chunks.embedding`).
  *   • `work_item` is BM25-ONLY. Its search source exposes `bm25()` and no `embedding()`.
  *

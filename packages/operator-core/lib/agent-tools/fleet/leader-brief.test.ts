@@ -13,6 +13,7 @@ import {
   computeFloorStarvedFleetAlert,
   computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
+  computeSpecAuthorshipAlert,
   computeSpinningAlert,
   computeStrandedFleetAlert,
   decorateComposedParkedOn,
@@ -1062,6 +1063,59 @@ describe('computeSpecStarvedFleetAlert (EI-18655873409999215 — the spec-matche
 
   it('does NOT fire when the spec matches at least one row — this is not the starved-spec shape', () => {
     expect(computeSpecStarvedFleetAlert({ totalLoad: 0, specMatched: 3, poolSize: 1224 })).toBeUndefined();
+  });
+});
+
+describe('computeSpecAuthorshipAlert (P-005 — a fleet spec rewritten under the leader, silently)', () => {
+  /** The wake-8 incident on nonp2p-bug-drain, verbatim: a cup took the spec to rev4. */
+  const INCIDENT = {
+    readerId: 'su-b8422496',
+    updatedBy: 's-1786236383559',
+    revision: 4,
+    updatedAt: '2026-08-09T01:12:00.000Z',
+    harness: 'papercusp',
+    fleet: 'nonp2p-bug-drain',
+  };
+
+  it('fires on the exact incident shape: the last write belongs to another actor', () => {
+    const alert = computeSpecAuthorshipAlert(INCIDENT);
+    expect(alert).toBeDefined();
+    // The three facts a leader needs to act: who, which revision, and that it was not them.
+    expect(alert?.reason).toMatch(/s-1786236383559/);
+    expect(alert?.reason).toMatch(/revision 4/);
+    expect(alert?.reason).toMatch(/not by you/);
+  });
+
+  it('does NOT fire when the reader authored the spec themselves — the silent case is the common one', () => {
+    expect(
+      computeSpecAuthorshipAlert({ ...INCIDENT, updatedBy: INCIDENT.readerId }),
+    ).toBeUndefined();
+  });
+
+  it('fires on an UNATTRIBUTED write — a row with no author is no more verified than a foreign one', () => {
+    const alert = computeSpecAuthorshipAlert({ ...INCIDENT, updatedBy: null });
+    expect(alert).toBeDefined();
+    expect(alert?.reason).toMatch(/UNATTRIBUTED/);
+  });
+
+  it('stays SILENT when the reader is unresolvable — an unattributable reader cannot be a wronged author', () => {
+    // The cry-wolf guard. An su session whose identity does not resolve reads this brief
+    // routinely; firing there would train the alert away before it ever caught a real one.
+    expect(computeSpecAuthorshipAlert({ ...INCIDENT, readerId: null })).toBeUndefined();
+  });
+
+  it('degrades to a still-runnable falsifier when fleet/harness are unresolved', () => {
+    // Same fail-soft contract the rest of the family holds: never paste `harness: null`
+    // into a leader's terminal.
+    const alert = computeSpecAuthorshipAlert({ ...INCIDENT, harness: null, fleet: null });
+    expect(alert?.falsifier.check).not.toContain('null');
+    expect(alert?.falsifier.check).toContain('work_items:claimable');
+  });
+
+  it('renders a missing revision without leaking a literal null into the reason', () => {
+    const alert = computeSpecAuthorshipAlert({ ...INCIDENT, revision: null, updatedAt: null });
+    expect(alert?.reason).toMatch(/revision unknown/);
+    expect(alert?.reason).not.toContain('null');
   });
 });
 

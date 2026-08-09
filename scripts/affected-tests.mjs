@@ -572,6 +572,24 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // whose whole purpose is that nobody knows in advance which file gets un-retired.
     appliesTo: () => true,
   },
+  {
+    // WI-37445 — and the point of this one is that it is the D-034 shape's MIRROR IMAGE.
+    // The other entries are guards whose VIOLATIONS escape workspace selection. This guard
+    // exists because a whole failure CLASS does: adding a runtime export strands every test
+    // that mocks the module with an enumerating `vi.mock` factory, and `test:affected`
+    // cannot select those tests even in principle — the diff touches the source module while
+    // the file that breaks names it only inside a string literal. So the guard that reports
+    // the gap must not be selected by the same mechanism that has the gap.
+    workspace: '@papercusp/operator-core',
+    // ~440ms typical, ~605ms worst case (3 runs measured; the worst case is the one that
+    // actually walks the test corpus, which only happens when an export was added).
+    // Cheaper than lint:chunk-safe and lint:okf-conformance, both accepted here at ~1.0s.
+    script: 'lint:vimock-export-strands',
+    // ADVISORY — it always exits 0, so it can never red the gate; being registered here is
+    // what makes it SPEAK, printing the trigger into the run of whoever added the export.
+    // TS-family only: nothing else can declare a runtime export for a factory to omit.
+    appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
+  },
 ];
 
 const workspaces = [

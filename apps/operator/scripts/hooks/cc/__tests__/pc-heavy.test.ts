@@ -1273,6 +1273,68 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
       expect(r.stderr).not.toContain('REFUSING');
     });
 
+    // EI-19970072096315178 — the admission-time check above is necessary but NOT
+    // sufficient, and the gap leaks in the one direction that matters.
+    //
+    // `suite` is not refused, only clamped — and `suite` is the run's multi-hour
+    // bulk, with `isolating`/`delivering` following it. A sweep therefore tends to
+    // be ADMITTED under the permissive phase, then sit in the slot queue (waits of
+    // 60-90s were routine on this box while a gate ran, and PC_HEAVY_TIMEOUT_SEC
+    // allows up to 900s), and begin executing under the classifier phase — exactly
+    // where contention flips a VERDICT instead of merely costing time. The guard
+    // above cannot see that: it ran before the wait.
+    //
+    // Timing here is anchored to the script's OWN stderr landmarks ("slot
+    // acquired", "queued") rather than sleeps, so the test does not become the
+    // load-sensitive flake it exists to prevent.
+    it('RE-CHECKS the phase after the slot wait — a sweep admitted under `suite` is refused once the gate advances to `isolating` while it queues', async () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'suite', at: at(), phaseProtocol: 2 });
+
+      const gateEnv = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0' };
+      const untilStderr = (p: ReturnType<typeof spawn>, needle: string, ms = 30_000) =>
+        new Promise<void>((res, rej) => {
+          let seen = '';
+          const timer = setTimeout(
+            () => rej(new Error(`timed out waiting for ${JSON.stringify(needle)}; stderr so far: ${seen}`)),
+            ms,
+          );
+          p.stderr!.on('data', (d) => {
+            seen += String(d);
+            if (seen.includes(needle)) { clearTimeout(timer); res(); }
+          });
+        });
+
+      // Occupy the single slot so the sweep is forced to QUEUE rather than start.
+      const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], { env: baseEnv(gateEnv), cwd: dir });
+      try {
+        await untilStderr(holder, 'slot acquired');
+
+        const sweepProc = spawn('bash', [PC_HEAVY, 'true', 'scripts/affected-tests.mjs'], {
+          env: baseEnv(gateEnv),
+          cwd: dir,
+        });
+        let sweepErr = '';
+        sweepProc.stderr!.on('data', (d) => { sweepErr += String(d); });
+        const exited = new Promise<number>((res) => sweepProc.on('exit', (c) => res(c ?? -1)));
+
+        // Confirm it is genuinely WAITING before the phase moves — otherwise this
+        // would silently degrade into a re-test of the admission-time check.
+        await untilStderr(sweepProc, 'queued for a heavy slot');
+        expect(sweepErr).not.toContain('REFUSING');
+
+        // The gate advances into its classifier phase while the sweep is queued.
+        plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
+        holder.kill('SIGKILL'); // frees the slot; the sweep now proceeds
+
+        expect(await exited).toBe(75);
+        expect(sweepErr).toContain('REFUSING test:affected');
+        expect(sweepErr).toContain('isolating');
+      } finally {
+        holder.kill('SIGKILL');
+      }
+    });
+
     // THE one that would wedge the fleet for hours if it regressed: protocol 1
     // folds isolation INSIDE `suite`, so `isolating` never appears and refusing on
     // `suite` there would block every sweep for the run's whole ~2.7h lifetime.

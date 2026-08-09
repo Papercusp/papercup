@@ -6,6 +6,7 @@ import type { ScannedProcess } from './reconcile';
 const store = vi.hoisted(() => ({
   touched: [] as unknown[],
   stranded: [] as { taskId: string; reason: string }[],
+  endedUnobserved: [] as { taskId: string; reason: string }[],
   upserted: [] as { taskId: string }[],
   cleared: [] as string[][],
 }));
@@ -18,6 +19,10 @@ vi.mock('./store', () => ({
   },
   markStranded: async (v: { taskId: string; reason: string }[]) => {
     store.stranded.push(...v);
+    return v.length;
+  },
+  markEndedUnobserved: async (v: { taskId: string; reason: string }[]) => {
+    store.endedUnobserved.push(...v);
     return v.length;
   },
   upsertUnaccounted: async (g: { taskId: string }[]) => {
@@ -95,6 +100,7 @@ const memFs = (files: Record<string, string>) => ({
 beforeEach(() => {
   store.touched.length = 0;
   store.stranded.length = 0;
+  store.endedUnobserved.length = 0;
   store.upserted.length = 0;
   store.cleared.length = 0;
   resetNotifyDebounce();
@@ -129,6 +135,15 @@ describe('reconcileTick — happy path', () => {
       listLive: async () => [row({ taskId: 'bbb222' })],
       scan: () => scanResult([]),
       fs: memFs({}),
+      // D-018: an absent row's scope is a stranding CANDIDATE, so reconcileTick
+      // asks checkScopesReleased before deciding stranded vs endedUnobserved.
+      // Without an injected fake it falls back to the REAL systemctl-backed
+      // probe — which, run for real against a scope that was never created,
+      // reports the unit `inactive` (systemd's answer for anything it has
+      // never heard of) and would non-deterministically reclassify this row
+      // as endedUnobserved. Inject "confirms nothing" to keep this test about
+      // stranding, not about this host's live systemd state.
+      checkScopesReleased: async () => new Set<string>(),
     });
     expect(out.strandedCount).toBe(1);
     expect(store.stranded[0]!.taskId).toBe('bbb222');
@@ -176,6 +191,90 @@ describe('reconcileTick — happy path', () => {
   });
 });
 
+describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
+  it('marks endedUnobserved (not stranded) when checkScopesReleased confirms the candidate scope', async () => {
+    const checkScopesReleased = vi.fn(async (units: readonly string[]) => new Set(units));
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'ttt111' })],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      checkScopesReleased,
+    });
+    expect(checkScopesReleased).toHaveBeenCalledWith(['pc-ttt111.scope']);
+    expect(out.strandedCount).toBe(0);
+    expect(out.endedUnobservedCount).toBe(1);
+    expect(store.stranded).toHaveLength(0);
+    expect(store.endedUnobserved).toEqual([
+      expect.objectContaining({ taskId: 'ttt111' }),
+    ]);
+  });
+
+  it('still strands when checkScopesReleased confirms nothing', async () => {
+    const checkScopesReleased = vi.fn(async () => new Set<string>());
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'uuu222' })],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      checkScopesReleased,
+    });
+    expect(out.strandedCount).toBe(1);
+    expect(out.endedUnobservedCount).toBe(0);
+    expect(store.endedUnobserved).toHaveLength(0);
+  });
+
+  it('only queries candidate units — rows whose scope IS visible in the scan are never asked about', async () => {
+    const dir = `${OURS}/pc-vvv333.scope`;
+    const checkScopesReleased = vi.fn(async () => new Set<string>());
+    await reconcileTick({
+      listLive: async () => [row({ taskId: 'vvv333' }), row({ taskId: 'www444' })],
+      scan: () => scanResult([proc({ pid: 1, cgroupPath: dir, processIdentity: 'linux:b:1', cmdline: 'x' })]),
+      fs: memFs({}),
+      checkScopesReleased,
+    });
+    // vvv333 is alive (its scope is in the scan) — only www444's scope is a candidate.
+    expect(checkScopesReleased).toHaveBeenCalledWith(['pc-www444.scope']);
+  });
+
+  it('skips checkScopesReleased entirely when there are no candidates', async () => {
+    const dir = `${OURS}/pc-xxx555.scope`;
+    const checkScopesReleased = vi.fn(async () => new Set<string>());
+    await reconcileTick({
+      listLive: async () => [row({ taskId: 'xxx555' })],
+      scan: () => scanResult([proc({ pid: 1, cgroupPath: dir, processIdentity: 'linux:b:1', cmdline: 'x' })]),
+      fs: memFs({}),
+      checkScopesReleased,
+    });
+    expect(checkScopesReleased).not.toHaveBeenCalled();
+  });
+
+  it('a degraded scan skips BOTH markStranded and markEndedUnobserved', async () => {
+    const checkScopesReleased = vi.fn(async (units: readonly string[]) => new Set(units));
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'yyy666' })],
+      scan: () => scanResult([], { ownedRootExists: false }),
+      fs: memFs({}),
+      checkScopesReleased,
+    });
+    expect(out.degraded).toBe(true);
+    expect(out.strandedCount).toBe(0);
+    expect(out.endedUnobservedCount).toBe(0);
+    expect(store.stranded).toHaveLength(0);
+    expect(store.endedUnobserved).toHaveLength(0);
+  });
+
+  it('defaults to the real systemctl-backed checkScopesReleased when none is injected (fails soft off-Linux/CI)', async () => {
+    // No checkScopesReleased dep passed — reconcileTick falls back to the real
+    // module import, which fails soft to an empty set on any error. This just
+    // proves the tick does not throw and still produces a verdict.
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'zzz777' })],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+    });
+    expect(out.summary.stranded + out.summary.endedUnobserved).toBe(1);
+  });
+});
+
 describe('reconcileTick — refusing to act on a bad scan', () => {
   it('does NOT mass-strand when our cgroup root does not exist', async () => {
     // A missing root is a SCAN fault. Row-by-row it is indistinguishable from an
@@ -212,6 +311,7 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
       listLive: async () => [row({ taskId: 'fff667' })],
       scan: () => scanResult([], { foreignTruncated: true }),
       fs: memFs({}),
+      checkScopesReleased: async () => new Set<string>(), // hermetic — see 'strands a row the kernel no longer has'
     });
     expect(out.degraded).toBe(false);
     expect(out.strandedCount).toBe(1);
@@ -265,6 +365,7 @@ describe('reconcileTick — dryRun', () => {
       scan: () => scanResult([]),
       fs: memFs({}),
       dryRun: true,
+      checkScopesReleased: async () => new Set<string>(), // hermetic — see 'strands a row the kernel no longer has'
     });
     expect(out.summary.stranded).toBe(1);
     expect(store.stranded).toHaveLength(0);

@@ -271,7 +271,11 @@ export function nextEmbedBackoffMs(
   return Math.min(wait, remaining);
 }
 
-/** OpenAI text-embedding-3-small, truncated to 384 dims via the API.
+/** OpenAI text-embedding-3-small, reduced to 768 dims via the API's
+ * `dimensions` parameter (was 384 — raised to track the prose column width so
+ * this mode stays PROSE-ELIGIBLE alongside gemma; see `EMBEDDER_DIM_SPECS.openai`).
+ * The reduction is server-side trained MRL + renormalization, not a hand-rolled
+ * prefix, so any width is genuinely supported here.
  *
  * Resilient: a TRANSIENT failure (429 rate-limit, 5xx, network/fetch error) is
  * retried with HEADER-AWARE, jittered exponential backoff before giving up. A
@@ -500,7 +504,9 @@ async function buildEmbedderForMode(mode: 'openai' | 'local' | 'gemma' | 'harrie
     return buildOpenAiEmbedder(key);
   }
   if (mode === 'gemma') {
-    // EmbeddingGemma-300m @ MRL-384. Storage / the re-embed pass use the
+    // EmbeddingGemma-300m @ NATIVE 768 (no MRL truncation at all — D-005
+    // removed it; the former 384 cut was untrained and cost ~19-21% prose MRR).
+    // Storage / the re-embed pass use the
     // document prompt (search's query embedder uses the query prompt).
     // Sidecar-first (P-004): shared warm model when the host runs the embed
     // sidecar; bit-identical in-process fallback otherwise (D-002/D-003).
@@ -529,7 +535,7 @@ export interface ResolveEmbedderDeps {
   localInstalled: () => Promise<boolean>;
   buildOpenAi: (key: string) => EmbedFn;
   buildLocal: () => Promise<EmbedFn>;
-  /** EmbeddingGemma-300m @ MRL-384 (the default local embedder). Gated by the
+  /** EmbeddingGemma-300m @ native 768 (the default local embedder). Gated by the
    *  same `localInstalled` (shares the @huggingface/transformers package). */
   buildGemma: () => Promise<EmbedFn>;
   /** harrier-oss-0.6b @ native-1024 (P-014, selectable only — never the

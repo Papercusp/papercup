@@ -304,8 +304,20 @@ by live orchestrator files), `libs/papercusp-shared/**/*View.tsx`, the legacy
 orchestrator run-loop + orchestrator-spawn plugin
 (`libs/papercusp/_retired/…`), the harness-snapshot system
 (`_retired/snapshot-system/`), the legacy web chats
-(`_retired/legacy-web-chats/` — OracleDock/OperatorChatSidebar; the pui chat
-pane is the only chat surface), the legacy per-slug harness dashboard
+(`_retired/legacy-web-chats/` — OracleDock + TutorialButton **only**. ⚠ This entry
+used to also name `OperatorChatSidebar` and to state "the pui chat pane is the only
+chat surface". BOTH claims were FALSE, and this is the expensive direction for a
+retired-list error: a live surface listed as retired tells every agent not to test
+it, not to wire to it, and not to "revive" it without an ask — i.e. the doc
+suppresses real work on shipping code. `OperatorChatSidebar` was REVIVED under
+`operator-chat-sidebar-revival-2026-07-13` and is LIVE at
+`apps/operator/app/_components/OperatorChatSidebar.tsx` — imported and rendered by
+`ChromeShell.tsx` (L44/L352) behind `FLAGS.OPERATOR_CHAT_SIDEBAR`, which derives
+**default-ON** because it is absent from `KNOWN_DARK_FLAGS` (`production-defaults.test.ts`
+makes "every default-OFF flag has a vetted reason" true by construction). It has live
+tests (`ChromeShell.test.tsx`, `OperatorChatSidebar.component.test.tsx`). Treat it as
+live product surface: extend it, test it, fix it. OracleDock is genuinely retired —
+it exists nowhere but `_retired/legacy-web-chats/`), the legacy per-slug harness dashboard
 (`_retired/harness-dashboard/` — `/harness/$slug` shell/pages/Real-panels; the
 design-system primitives AND the dock engine in `apps/operator/app/harness/`
 stay LIVE — `/adv`+`/workbench` are built on them), and the chat sidebar's

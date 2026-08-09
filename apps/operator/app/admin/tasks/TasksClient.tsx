@@ -208,6 +208,11 @@ export const stateColor = (state: string): string => {
     case 'stranded':
     case 'timed_out':
       return 'var(--warn)';
+    case 'ended_unobserved':
+      // Routine shutdown nobody watched, but systemd confirmed the scope was
+      // released cleanly (D-018) — NOT an escape/anomaly, so it does not share
+      // 'stranded''s warn colour. Muted, like 'foreign': informational, not alarming.
+      return 'var(--muted, #888)';
     case 'foreign':
       return 'var(--muted, #888)';
     default:
@@ -582,7 +587,16 @@ export default function TasksClient(): ReactElement {
             onChange={(v) => void setStateFilter(v || null)}
             options={[
               { value: '', label: 'all' },
-              ...['pending', 'running', 'exited', 'killed', 'timed_out', 'stranded', 'unaccounted'].map((s) => ({
+              ...[
+                'pending',
+                'running',
+                'exited',
+                'killed',
+                'timed_out',
+                'stranded',
+                'ended_unobserved',
+                'unaccounted',
+              ].map((s) => ({
                 value: s,
                 label: s,
               })),

@@ -22,15 +22,17 @@
 import { absCgroupDir, nodeCgroupFs, sampleCgroup, type CgroupFs } from './cgroup-read';
 import { reconcile, summarizeReconcile, scopeUnitOf, type ReconcileResult, type ScannedProcess } from './reconcile';
 import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
+import { checkScopesReleased } from './scope-terminal-state';
 import {
   clearVanishedUnaccounted,
   listLiveTasks,
+  markEndedUnobserved,
   markStranded,
   residueTaskId,
   touchAlive,
   upsertUnaccounted,
 } from './store';
-import { taskIdFromScopeUnit, type TaskRow } from './types';
+import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow, type TaskState } from './types';
 
 export interface ReconcileTickDeps {
   scan?: (opts: ScanOptions) => ScanResult;
@@ -44,6 +46,9 @@ export interface ReconcileTickDeps {
   /** Persist nothing — used by the `processes:list { live: true }` read path, which
    *  wants a fresh verdict without a write on a read. */
   dryRun?: boolean;
+  /** D-018 — confirm which of a candidate set of scope units systemd has
+   *  released. Injected for tests; defaults to the real systemctl-backed probe. */
+  checkScopesReleased?: (units: readonly string[]) => Promise<ReadonlySet<string>>;
 }
 
 export interface ReconcileTickResult {
@@ -76,6 +81,7 @@ export interface ReconcileTickResult {
   degradedReason?: string;
   touched: number;
   strandedCount: number;
+  endedUnobservedCount: number;
   unaccountedPersisted: number;
   residueCleared: number;
 }
@@ -88,7 +94,28 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
 
   const scan = scanFn({ fs, ...(deps.scanOptions ?? {}) });
   const live = await listLive(deps.workspaceId);
-  const result = reconcile(live, scan.processes, { now: now(), graceMs: deps.graceMs });
+
+  // D-018: for a live row whose scope is NOT visible in this scan — i.e. about to
+  // strand — ask systemd whether that scope has actually been released before
+  // `reconcile` decides between `stranded` (escape/anomaly) and
+  // `endedUnobserved` (a routine end nobody happened to observe). Only query the
+  // candidates that need it, never every live row.
+  const seenScopes = new Set<string>();
+  for (const p of scan.processes) {
+    const unit = scopeUnitOf(p);
+    if (unit) seenScopes.add(unit);
+  }
+  const candidateUnits = [
+    ...new Set(
+      live
+        .filter((r) => isLiveOwnedState(r.state as TaskState) && r.scopeUnit && !seenScopes.has(r.scopeUnit))
+        .map((r) => r.scopeUnit as string),
+    ),
+  ];
+  const checkReleased = deps.checkScopesReleased ?? checkScopesReleased;
+  const releasedScopes = candidateUnits.length ? await checkReleased(candidateUnits) : new Set<string>();
+
+  const result = reconcile(live, scan.processes, { now: now(), graceMs: deps.graceMs, releasedScopes });
   const summary = summarizeReconcile(result);
 
   // ── is this scan trustworthy enough to CLOSE rows? ───────────────────────
@@ -121,6 +148,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       degradedReason,
       touched: 0,
       strandedCount: 0,
+      endedUnobservedCount: 0,
       unaccountedPersisted: 0,
       residueCleared: 0,
     };
@@ -157,10 +185,12 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
 
   // ── destructive writes only on a trustworthy scan ────────────────────────
   let strandedCount = 0;
+  let endedUnobservedCount = 0;
   let unaccountedPersisted = 0;
   let residueCleared = 0;
   if (!degraded) {
     strandedCount = await markStranded(result.stranded);
+    endedUnobservedCount = await markEndedUnobserved(result.endedUnobserved);
 
     const groups = result.unaccounted.map((g) => ({
       // A scope of OURS whose row already closed keeps its own id, so the history
@@ -193,6 +223,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     degradedReason,
     touched,
     strandedCount,
+    endedUnobservedCount,
     unaccountedPersisted,
     residueCleared,
   };

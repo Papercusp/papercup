@@ -227,6 +227,7 @@
     "lint:mock-cast-escape:update": "node scripts/check-mock-cast-escape.mjs --update",
     "lint:required-field-strands": "node scripts/check-required-field-strands.mjs",
     "lint:required-field-strands:typecheck": "node scripts/check-required-field-strands.mjs --typecheck",
+    "lint:vimock-export-strands": "node scripts/check-vimock-export-strands.mjs",
     "lint:optional-seam-strands": "node scripts/check-optional-seam-strands.mjs",
     "lint:optional-seam-strands:fail": "node scripts/check-optional-seam-strands.mjs --fail",
     "lint:migration-fixture-drift": "node scripts/check-migration-fixture-drift.mjs --base HEAD",

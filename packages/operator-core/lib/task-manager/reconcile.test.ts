@@ -289,6 +289,61 @@ describe('reconcile — residue (the no-escape signal)', () => {
   });
 });
 
+describe('reconcile — endedUnobserved (D-018)', () => {
+  it('routes an absent row to endedUnobserved when systemd confirms its scope was released', () => {
+    const r = reconcile(
+      [row({ taskId: 'nnn444', scopeUnit: 'pc-nnn444.scope' })],
+      [],
+      { now: NOW, releasedScopes: new Set(['pc-nnn444.scope']) },
+    );
+    expect(r.stranded).toHaveLength(0);
+    expect(r.endedUnobserved).toHaveLength(1);
+    expect(r.endedUnobserved[0]).toMatchObject({ taskId: 'nnn444' });
+    expect(r.endedUnobserved[0]!.reason).toMatch(/systemd confirms scope pc-nnn444\.scope was released/);
+  });
+
+  it('still strands when the scope is absent and NOT in releasedScopes (regression)', () => {
+    const r = reconcile(
+      [row({ taskId: 'ooo555', scopeUnit: 'pc-ooo555.scope' })],
+      [],
+      { now: NOW, releasedScopes: new Set(['pc-someone-else.scope']) },
+    );
+    expect(r.endedUnobserved).toHaveLength(0);
+    expect(r.stranded).toEqual([{ taskId: 'ooo555', reason: 'scope pc-ooo555.scope holds no processes' }]);
+  });
+
+  it('strands as before when releasedScopes is omitted entirely (additive, never a new way to lose an escape)', () => {
+    const r = reconcile([row({ taskId: 'ppp666', scopeUnit: 'pc-ppp666.scope' })], [], { now: NOW });
+    expect(r.endedUnobserved).toHaveLength(0);
+    expect(r.stranded).toHaveLength(1);
+  });
+
+  it('a row with no scopeUnit at all always strands — releasedScopes cannot apply to it', () => {
+    const r = reconcile(
+      [row({ taskId: 'qqq777', confined: false, scopeUnit: null, processIdentity: null, pid: 88 })],
+      [],
+      // A scope-keyed set can never match a row that has no scope unit, so even a
+      // maximally-generous releasedScopes must not divert it.
+      { now: NOW, releasedScopes: new Set(['pc-qqq777.scope']) },
+    );
+    expect(r.endedUnobserved).toHaveLength(0);
+    expect(r.stranded).toHaveLength(1);
+    expect(r.stranded[0]!.taskId).toBe('qqq777');
+  });
+
+  it('summarizeReconcile counts endedUnobserved separately from stranded', () => {
+    const r = reconcile(
+      [
+        row({ taskId: 'rrr888', scopeUnit: 'pc-rrr888.scope' }),
+        row({ taskId: 'sss999', scopeUnit: 'pc-sss999.scope' }),
+      ],
+      [],
+      { now: NOW, releasedScopes: new Set(['pc-rrr888.scope']) },
+    );
+    expect(summarizeReconcile(r)).toMatchObject({ stranded: 1, endedUnobserved: 1 });
+  });
+});
+
 describe('reconcile — deadlines', () => {
   it('reports a live row past its deadline', () => {
     const r = reconcile(

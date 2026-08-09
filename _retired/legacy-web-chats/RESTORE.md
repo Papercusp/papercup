@@ -1,4 +1,47 @@
-# legacy-web-chats — retired 2026-07-09
+# legacy-web-chats — retired 2026-07-09, **PARTIALLY RESTORED since**
+
+> ## ⚠ STATUS 2026-08-09: this retirement was PARTIALLY REVERSED. Read this box first.
+>
+> Everything below documents the state as of **2026-07-09** and is preserved as the
+> restore runbook for what is *still* retired. It is NOT a description of the tree today.
+> `OperatorChatSidebar` was revived under `operator-chat-sidebar-revival-2026-07-13`, and
+> the P-010 backfill files came back with it. A RESTORE.md that outlives its own restore
+> is a trap: the whole point of this file is to be trusted by someone deciding whether a
+> surface is dead, and for a month it said "dead" about shipping code.
+>
+> | file | status today | where |
+> |---|---|---|
+> | `OracleDock.tsx` (+ test) | **STILL RETIRED** | here |
+> | `TutorialButton.tsx` (+ test) | **STILL RETIRED** | here |
+> | `OperatorChatSidebar.tsx` (+ `__tests__/`) | **LIVE** | `apps/operator/app/_components/` |
+> | `OperatorChat.tsx` | **LIVE** | `apps/operator/app/_components/` |
+> | `ChatConversation.tsx` | **LIVE** | `apps/operator/app/_components/chat/` |
+> | `PendingCardsBar.tsx` | **LIVE** | `apps/operator/app/_components/chat/` |
+> | `LocalCardHost.tsx` | **LIVE** | `apps/operator/app/_components/chat/` |
+>
+> So the "Moved here from `apps/operator/app/_components/`" table below is accurate only
+> for the two OracleDock/TutorialButton rows; the rest have moved back.
+>
+> **The revived sidebar is live product surface, not a preserved artifact.** It is rendered
+> by `ChromeShell.tsx` (L44 import, L352 mount) behind `FLAGS.OPERATOR_CHAT_SIDEBAR`, which
+> derives **default-ON** (absent from `KNOWN_DARK_FLAGS`, so `production-defaults.test.ts`
+> makes default-ON true by construction). Extend it, test it, fix it.
+>
+> **Point 9 below is SUPERSEDED — see the correction inline.** Verified 2026-08-09:
+> `--op-chat-w` is live again, written at `OperatorChatSidebar.tsx:202` (removed at :227 on
+> unmount), re-added to `RUNTIME_TOKENS` (`app/_lints/css-tokens.test.ts:65`), still
+> documented in `design/gotchas.mdx`, and consumed by `DogfoodBootstrapBanner.tsx`
+> (L80/83/87, guarded by the WI-4729 test).
+>
+> Points 1–8 and the P-010 notes are untouched and still describe real un-wiring — but
+> re-check each against the tree before acting, since the restore re-applied an unrecorded
+> subset of them.
+>
+> *(Corrected under EI-19485603307368652, which was filed because the matching CLAUDE.md
+> retired-list entry had the same staleness. Note the asymmetry that let both survive a
+> month: a doc that wrongly says "live" gets corrected the moment someone greps for the
+> code, but a doc that wrongly says "retired" produces no error at all — it silently
+> diverts work away, and nobody files a bug about work they decided not to do.)*
 
 **What:** the legacy in-webview chat surfaces, retired per owner decision
 (design-simplification-2026-07-09, D1): *"The Papercup chat in the zellij
@@ -82,7 +125,17 @@ and `lib/chat-cards/AskChoiceCardEntry.tsx`, and **none of them uses an
    were **renamed, not deleted** — `op-chat-option-sheen` →
    `ask-choice-option-sheen`, `op-chat-card-pick` → `ask-choice-card-pick`.
    Restoring the components means restoring their CSS from this commit's parent.
-9. `--op-chat-w` is **gone**, not merely unused. `OperatorChatSidebar` was the
+9. ⚠ **SUPERSEDED 2026-08-09 — `--op-chat-w` IS LIVE AGAIN.** The paragraph below
+   was true on 2026-07-09 and is false now; it is kept for the restore history.
+   Measured today: the variable is written at `OperatorChatSidebar.tsx:202`
+   (`setProperty`) and removed at :227 on unmount, it is back in the
+   `RUNTIME_TOKENS` allowlist at `app/_lints/css-tokens.test.ts:65`, it is still
+   documented in `design/gotchas.mdx`, and `DogfoodBootstrapBanner.tsx` consumes it
+   at L80/83/87 (`left: var(--op-chat-w, 0px)`) under a WI-4729 regression test.
+   So "gone, not merely unused" must NOT be relied on — the writer came back with
+   the sidebar. Historical text follows:
+
+   ~~`--op-chat-w` is **gone**, not merely unused.~~ `OperatorChatSidebar` was the
    only writer, so once it retired the variable could never resolve — the
    left-sidebar / dev-admin rails read it with a `0px` fallback, i.e. always 0.
    Removed from `left-sidebar.styles.ts`, `LeftSidebar.tsx` (its `leftOffset()`

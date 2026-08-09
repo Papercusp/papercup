@@ -1300,6 +1300,50 @@ try:
 except Exception:
     pass  # advisory must never wedge a command
 
+# ── ripgrep `-r<flag>` clustered-flag advisory (EI-19962592202828420) ──────
+# ripgrep's `-r` is `--replace <REPLACEMENT>` and TAKES AN ARGUMENT, so it
+# consumes the REST of a clustered short-flag group as that replacement text:
+# `rg -rn 'X'` parses as `-r n` (replacement "n"), not `-r` + `-n`. Every
+# match is silently rewritten to the replacement with NO warning, exit code,
+# or marker — the output is well-formed, plausible source (real paths, real
+# surrounding syntax), so the natural reading is "this codebase has
+# minified/mangled identifiers": a confident, specific, WRONG finding about
+# someone else's code. ripgrep is recursive BY DEFAULT (needs no `-r` at all),
+# so the grep muscle-memory that produces `-rn`/`-rl`/`-ri` is exactly the
+# habit most likely to fire. SOFT by design: the suspect-letter set below is a
+# heuristic (a genuine one-letter replacement string is vanishingly rare next
+# to a mistyped flag), so this only ever advises, never denies.
+try:
+    _RG_INVOKE_RE = re.compile(r'(?:^|[;&|\n(])\s*(?:[\w./-]*/)?rg\b([^;&|\n)]*)')
+    _RG_CLUSTER_RE = re.compile(r'(?:^|\s)(-[A-Za-z]*r[A-Za-z]{1,2})(?=\s|$)')
+    _RG_SUSPECT_LETTERS = frozenset('nlivwcxos')
+    if not ADVISORY:
+        for _rgm in _RG_INVOKE_RE.finditer(_scannable()):
+            _rg_hit = None
+            for _fm in _RG_CLUSTER_RE.finditer(_rgm.group(1)):
+                _rg_flag = _fm.group(1)
+                _rg_suffix = re.search(r'r([A-Za-z]{1,2})$', _rg_flag).group(1)
+                if all(c in _RG_SUSPECT_LETTERS for c in _rg_suffix):
+                    _rg_hit = (_rg_flag, _rg_suffix)
+                    break
+            if _rg_hit:
+                _rg_flag, _rg_suffix = _rg_hit
+                ADVISORY = (
+                    "rg `-r`-consumes-cluster advisory (EI-19962592202828420): `%s` "
+                    "parses as `-r %s` — ripgrep's `-r`/`--replace` TAKES AN ARGUMENT "
+                    "and swallows the rest of the flag cluster as that REPLACEMENT "
+                    "text, silently rewriting every match to `%s` with no warning, "
+                    "exit code, or marker (the output still reads like real, if "
+                    "oddly mangled, source). ripgrep is recursive by default and "
+                    "needs no `-r` at all — for grep-style flags, drop the `-r` "
+                    "(e.g. plain `-n` for line numbers). If the replacement was "
+                    "genuinely intended, this is a false alarm. Advisory only; "
+                    "this command is proceeding as issued."
+                    % (_rg_flag, _rg_suffix, _rg_suffix)
+                )
+except Exception:
+    pass  # advisory must never wedge a command
+
 # ── Background `;`-chain TRAILING-REPORTER exit-code advisory (WI-6944) ────
 # The other half of the trap above. That guard matches only a PIPE (`cmd |
 # tee`); this one matches the `;`-chain, where the masking stage is a separate
