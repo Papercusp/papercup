@@ -295,13 +295,17 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
       unmeasurable: number;
       lexicalEmpty: number;
       lexicalFloored: number;
+      /** WI-37582/D-059: queries where the cascade's stage 2 appended >=1 row. */
+      stage2Fired: number;
+      /** Total rows stage 2 appended across the cell (pre-floor). */
+      stage2Added: number;
       reasons: Set<string>;
     };
     const cells = new Map<string, Cell>();
     const cellOf = (k: string) => {
       let c = cells.get(k);
       if (!c) {
-        c = { lexical: [], fresh: [], lexIdentical: 0, callsWeighted: 0, callsTotal: 0, unmeasurable: 0, lexicalEmpty: 0, lexicalFloored: 0, reasons: new Set() };
+        c = { lexical: [], fresh: [], lexIdentical: 0, callsWeighted: 0, callsTotal: 0, unmeasurable: 0, lexicalEmpty: 0, lexicalFloored: 0, stage2Fired: 0, stage2Added: 0, reasons: new Set() };
         cells.set(k, c);
       }
       return c;
@@ -357,6 +361,23 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
         cell.lexicalEmpty += 1;
         if (lexLeg.floored > 0) cell.lexicalFloored += 1;
       }
+      // WI-37582 / D-059. ⚠ WHAT `lexicalEmpty` MEANS CHANGED UNDER THIS RUN.
+      // Before the two-stage cascade landed (513b9d3, 2026-08-09T23:06:35Z) it
+      // meant "the AND query returned nothing" — that is what D-056's
+      // 30/50/70/90% baseline measured. The cascade is now the engine default,
+      // so `candidates` folds in stage 2 and the SAME counter now means
+      // "NEITHER stage returned anything". Comparing this run's rate against
+      // D-056 is therefore the World A / World B test, and `stage2Added`
+      // attributes the difference instead of leaving it inferred:
+      //   rate DROPS + stage2Fired > 0  => the widening is real (World A-ish)
+      //   rate FLAT  + stage2Added == 0 => coverage-graded does not reach these
+      //                                    queries either => World B, and the
+      //                                    case for a different lexical engine
+      //                                    is STRENGTHENED, not weakened.
+      if (lexLeg && lexLeg.stage2Added > 0) {
+        cell.stage2Fired += 1;
+        cell.stage2Added += lexLeg.stage2Added;
+      }
 
       const [p, nf, se] = [idsOf(prod.results), idsOf(noFresh.results), idsOf(semantic.results)];
       const lexicalChurn = minus(nf, se).length; // one knob: the lexical leg
@@ -380,6 +401,8 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
           `      BM25 RETURNED NOTHING for ${c.lexicalEmpty}/${lex.n} queries (${zeroRate.toFixed(0)}%)` +
           ` — counted as churn 0, NOT excluded` +
           `${c.lexicalFloored ? ` [${c.lexicalFloored} of them had candidates the SCORE FLOOR removed — a tuning knob, not an absent leg]` : ''}\n` +
+          `      CASCADE stage 2 fired for ${c.stage2Fired}/${lex.n} queries, appending ${c.stage2Added} rows total` +
+          ` — vs D-056's PRE-cascade baseline, this cell's zero-rate was 30/50/70/90% (short/mid/long)\n` +
           `      LEXICAL leg churn   median ${lex.median} (${asPct(lex.median)})  ` +
           `p25 ${lex.p25} / p75 ${lex.p75}  mean ${lex.mean.toFixed(1)}  ` +
           `| ${c.lexIdentical}/${lex.n} pages IDENTICAL without it\n` +

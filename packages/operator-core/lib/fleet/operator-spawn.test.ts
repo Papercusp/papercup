@@ -200,8 +200,18 @@ beforeEach(() => {
   // real-getFlag fallback. Overwatch defaults OFF, so the gate rejects it unless a
   // test overrides this. Other callers (WEDGE_AUTO_REAP/SPAWN_HANDOFF_HYDRATION) keep
   // their default-true behavior.
-  vi.mocked(getFlag).mockImplementation(
-    async (key: string) => FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false,
+  // TIER ENABLED (retire-mug-kettle-su-only-2026-08-09 P-008 / D-018) — the ONE
+  // deliberate departure from "each flag's real default". MUG_KETTLE_SYSTEM has
+  // INVERTED polarity: its real default is OFF, meaning the mug/kettle/cup tier
+  // is RETIRED, and this file's fixtures spawn role="cup"/"bee"/"kettle". Taking
+  // the real default here would make ~50 cases assert the retirement refusal
+  // instead of the spawn-engine behaviour they are about. The gate itself is
+  // covered by ../pot/retired-tier-roles.test.ts; `case: 'cutover'` exists
+  // precisely so the tier stays spawnable for tests with the flag ON.
+  vi.mocked(getFlag).mockImplementation(async (key: string) =>
+    key === 'papercusp-mug-kettle-system'
+      ? true
+      : (FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false),
   );
 });
 afterEach(() => {
@@ -497,8 +507,16 @@ describe('spawnAgentInHarness — overwatch flag gate (overwatch-role-2026-06-15
     // OVERWATCH graduated to default-ON (flip-dark-flags-default-on-2026-06-23); getFlag is mocked
     // here, so this off-path test forces the flag OFF via the mock (mirrors the flag-ON sibling
     // below) instead of relying on FLAG_DEFAULTS. The gate is unchanged: OFF ⇒ not activatable.
+    // MUG_KETTLE_SYSTEM stays ON here (P-008 / D-018): the retirement gate sits
+    // ABOVE this one and would otherwise refuse role="kettle" first, so the
+    // assertion below ("rejected for papercusp-overwatch specifically") would
+    // pass for the WRONG reason — a green test measuring a different gate.
     vi.mocked(getFlag).mockImplementation(async (key: string) =>
-      key === FLAGS.OVERWATCH ? false : (FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false),
+      key === FLAGS.OVERWATCH
+        ? false
+        : key === 'papercusp-mug-kettle-system'
+          ? true
+          : (FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false),
     );
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'kettle' });
     expect(res.ok).toBe(false);
@@ -510,8 +528,12 @@ describe('spawnAgentInHarness — overwatch flag gate (overwatch-role-2026-06-15
   });
 
   it('lets role="kettle" past the gate when the flag is ON', async () => {
+    // Both gates ON — see the sibling above for why the retirement flag is named
+    // explicitly rather than left to its (inverted, OFF) real default.
     vi.mocked(getFlag).mockImplementation(async (key: string) =>
-      key === FLAGS.OVERWATCH ? true : (FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false),
+      key === FLAGS.OVERWATCH || key === 'papercusp-mug-kettle-system'
+        ? true
+        : (FLAG_DEFAULTS[key as keyof typeof FLAG_DEFAULTS] ?? false),
     );
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'kettle' });
     await flush();

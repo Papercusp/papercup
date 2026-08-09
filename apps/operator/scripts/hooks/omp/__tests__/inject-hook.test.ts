@@ -22,16 +22,20 @@
  * a NON-null result; if it ever fails, treat every null assertion in this file
  * as vacuous until it passes again.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // @ts-ignore — pure JS adapter, no .d.ts; the dispatcher's frozen CLI contract is the seam.
 import adapter, { portForEvent, parse, render } from '../../inject/adapters/omp.mjs';
 import {
+  MISS_LOG_BASENAME,
+  MISS_LOG_MAX_BYTES,
   PORT_TIMEOUT_MS,
   SUBPROCESS_KILL_MARGIN_MS,
+  noteInjectionMiss,
+  papercuspHomeDir,
   resolveDispatcherPath,
   runDispatcher,
   shouldSkip,
@@ -519,5 +523,121 @@ describe('inject-hook — runDispatcher', () => {
       env: envWith(echoDispatcher),
       execPath: join(dir, 'no-such-runtime'),
     })).toBeNull();
+  });
+});
+
+// ── the injection-miss record (EI-20006285243973245) ────────────────────────
+//
+// The gap this closes: fail-silent + zero logging made "injection is broken"
+// and "no memories were relevant" indistinguishable from every vantage point,
+// including forensically — a real outage resolved cause-UNDETERMINED because
+// nothing recorded that the hook ran and found nothing.
+//
+// ⚠ These assertions are mostly "a file was NOT written", which is exactly what
+// a noteInjectionMiss that was deleted or stubbed to `return` would also
+// produce. The CALIBRATION test below asserts a miss IS written; if it fails,
+// treat every negative in this block as vacuous until it passes again.
+
+describe('inject-hook — injection-miss record', () => {
+  let missSeq = 0;
+  /** A fresh, never-shared home per case, so one case cannot see another's log. */
+  const freshHome = () => join(dir, `miss-home-${missSeq++}`);
+  const missLogIn = (home: string) => join(home, MISS_LOG_BASENAME);
+  const readMisses = (home: string) =>
+    readFileSync(missLogIn(home), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l));
+
+  it('CALIBRATION (must pass or every negative below is vacuous): a SID session with no dispatcher records a miss', async () => {
+    const home = freshHome();
+    expect(await runDispatcher('turn-start', 'before_agent_start', { prompt: 'hi' }, {
+      env: { ...SID_ENV, PAPERCUSP_HOME: home },
+    })).toBeNull();
+    expect(existsSync(missLogIn(home))).toBe(true);
+    expect(readMisses(home)).toHaveLength(1);
+  });
+
+  it('records the SID, the port and the candidates it tried', async () => {
+    // The candidate list is the fact no other surface can reconstruct: it is what
+    // separates a half-install (dispatcher absent beside a present hook) from a
+    // session pinned at the wrong home.
+    const home = freshHome();
+    await runDispatcher('mid-turn', 'turn_end', { toolResults: [] }, {
+      env: { ...SID_ENV, PAPERCUSP_HOME: home },
+      selfDir: '/opt/papercusp/hooks/omp',
+    });
+    const [rec] = readMisses(home);
+    expect(rec.sid).toBe('su-test-0001');
+    expect(rec.port).toBe('mid-turn');
+    expect(rec.reason).toBe('dispatcher-missing');
+    expect(rec.triedCandidates).toContain('/opt/papercusp/hooks/inject/index.mjs');
+    expect(rec.triedCandidates).toContain(join(home, 'hooks', 'inject', 'index.mjs'));
+  });
+
+  it('writes NOTHING when there is no PAPERCUSP_SID — nothing was owed, so a miss would be noise', async () => {
+    const home = freshHome();
+    await runDispatcher('turn-start', 'before_agent_start', { prompt: 'hi' }, {
+      env: { NODE_ENV: 'test', PAPERCUSP_HOME: home },
+    });
+    expect(existsSync(missLogIn(home))).toBe(false);
+  });
+
+  it('writes NOTHING on the happy path — a healthy box never touches this file', async () => {
+    const home = freshHome();
+    expect(await runDispatcher('turn-start', 'before_agent_start', { prompt: 'hi' }, {
+      env: { ...SID_ENV, PAPERCUSP_HOME: home, PAPERCUSP_INJECT_DISPATCHER: echoDispatcher },
+    })).toBe('INJECTED CONTEXT');
+    expect(existsSync(missLogIn(home))).toBe(false);
+  });
+
+  it('NEVER writes to stdout — stdout IS the injection payload the caller reads back', () => {
+    // A single stray byte here would corrupt injected context rather than fail loudly.
+    const home = freshHome();
+    const spy = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    try {
+      noteInjectionMiss('turn-start', 'dispatcher-missing', {
+        env: { NODE_ENV: 'test', PAPERCUSP_SID: 'su-test-0001', PAPERCUSP_HOME: home },
+      });
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(existsSync(missLogIn(home))).toBe(true); // control: it did run
+  });
+
+  it('NEVER throws when the home cannot be created — a diagnostic must not cost a turn', () => {
+    // echoDispatcher is a FILE, so mkdir of a path beneath it fails ENOTDIR.
+    expect(() =>
+      noteInjectionMiss('turn-start', 'dispatcher-missing', {
+        env: { NODE_ENV: 'test', PAPERCUSP_SID: 'su-test-0001', PAPERCUSP_HOME: join(echoDispatcher, 'sub') },
+      }),
+    ).not.toThrow();
+  });
+
+  it('restarts past MISS_LOG_MAX_BYTES instead of growing without bound', () => {
+    // A permanently-broken install misses on EVERY turn, so an unbounded log
+    // would itself become the next thing someone has to diagnose.
+    const home = freshHome();
+    mkdirSync(home, { recursive: true });
+    writeFileSync(missLogIn(home), 'x'.repeat(MISS_LOG_MAX_BYTES + 1));
+    noteInjectionMiss('turn-start', 'dispatcher-missing', {
+      env: { NODE_ENV: 'test', PAPERCUSP_SID: 'su-test-0001', PAPERCUSP_HOME: home },
+    });
+    const after = readFileSync(missLogIn(home), 'utf8');
+    expect(after.length).toBeLessThan(MISS_LOG_MAX_BYTES);
+    expect(JSON.parse(after.trim()).reason).toBe('dispatcher-missing');
+  });
+
+  it('stays inside a pinned PAPERCUSP_HOME — the same isolation rule as resolution', () => {
+    // The miss log must not become the thing that escapes the pin that
+    // resolveDispatcherPath is so careful to respect (EI-20001110634702380).
+    const home = freshHome();
+    noteInjectionMiss('turn-start', 'dispatcher-missing', {
+      env: { NODE_ENV: 'test', PAPERCUSP_SID: 'su-test-0001', PAPERCUSP_HOME: home },
+    });
+    expect(papercuspHomeDir({ NODE_ENV: 'test', PAPERCUSP_HOME: home })).toBe(home);
+    expect(existsSync(missLogIn(home))).toBe(true);
+    expect(existsSync(join(homedir(), '.papercusp', MISS_LOG_BASENAME))).toBe(false);
   });
 });

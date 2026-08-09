@@ -230,7 +230,20 @@ type ToolQuerySpec = {
  *     bash 181 (command), edit 168, search 116, write 68, ast_grep 14, glob 4;
  *     field names confirmed against the shipped schemas in
  *     @oh-my-pi/pi-coding-agent/src/{tools,commands}.
- *   • claude — unchanged, and deliberately byte-identical in behaviour.
+ *   • claude — Bash/Grep/Glob/Read were byte-identical across the D-003 seam
+ *     cut-over. WIDENED 2026-08-09 (WI-37587) with Edit/Write/ToolSearch/
+ *     WebSearch/WebFetch, every field name read off the live tool schemas.
+ *     Measured from context_injection_coverage on the day: 957 claude NATIVE
+ *     calls/day were deriving nothing — Edit 581, ToolSearch 256, Write 69,
+ *     AskUserQuestion 24, WebSearch 9, Artifact 5, WebFetch 3, TaskCreate 3,
+ *     Monitor 3, TaskUpdate 2, Skill 1, TaskStop 1.
+ *     ⚠ THE LESSON THAT FOUND THIS: the drift detector had only ever been
+ *     pointed at codex. Pointed at EVERY client it reported claude — ~100% of
+ *     traffic — as the biggest gap by three orders of magnitude (3,381
+ *     unknown-tool calls vs codex's 3). An alarm whose output is ~100% noise
+ *     is functionally OFF: the real codex signal (n=2) was findable only by
+ *     filtering to client='codex'. Query the detector across ALL clients
+ *     before concluding a client is fine.
  *
  * ── DELIBERATE OMISSIONS (absence here is a decision, not an oversight) ──
  *   • codex `write_stdin` (539 calls): `chars` is raw stdin typed at an
@@ -240,6 +253,13 @@ type ToolQuerySpec = {
  *     signal. `detectPossibleSecrets` guards the text table but not the embed.
  *   • codex `wait` / `list_mcp_resources`, omp `yield` / `submit_result` /
  *     `report_finding` / `irc`: no investigation signal to carry.
+ *   • claude `Edit` / `Write` map `file_path` ONLY. `old_string`, `new_string`
+ *     and `content` are FILE BODIES — unbounded, and credential-bearing on the
+ *     same argument as `write_stdin` above. `file_path` alone mirrors `Read`.
+ *   • claude `AskUserQuestion` / `Artifact` / `Skill` / `Monitor` /
+ *     `TaskCreate` / `TaskUpdate` / `TaskStop`: considered and judged to carry
+ *     no INVESTIGATION signal — they address the human or manage bookkeeping
+ *     rather than interrogating the codebase.
  *   • codex `get_goal`: a pure read that takes NO arguments at all.
  *   • codex `update_goal`: its ONLY argument is `status`, a closed enum whose
  *     admissible values are "complete" and "blocked". Embedding the word
@@ -255,13 +275,39 @@ type ToolQuerySpec = {
  * than 'unknown-tool' — the alarm must not read a deliberate omission as drift.
  */
 export const TOOL_QUERY_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
-  // ── claude (PascalCase) — behaviour frozen by D-003's equivalence proof ──
+  // ── claude (PascalCase) ──
   // The description is the agent's own words for what it is doing — often a
   // better recall signal than the command's flags.
+  //
+  // ⚠ These four were frozen during the seam cut-over by D-003's equivalence
+  // proof — a METHODOLOGICAL freeze ("prove claude UNCHANGED before any new
+  // client lands"), NOT a standing ban on widening. That migration shipped, so
+  // the entries below it are a deliberate, measured widening (WI-37587).
   Bash: { fields: ['command', 'description'], join: ' — ' },
   Grep: { fields: ['pattern', 'path', 'glob'] },
   Glob: { fields: ['pattern', 'path'] },
   Read: { fields: ['file_path'] },
+  // Edit/Write carry the SAME `file_path` signal as Read and were simply never
+  // added. Measured 957 claude native calls/day deriving nothing, of which
+  // Edit alone was 581 — see WI-37587.
+  // ⚠ `old_string` / `new_string` / `content` are DELIBERATELY excluded: they
+  // are FILE BODIES — unbounded, and credential-bearing on exactly the
+  // `write_stdin` precedent below (the derived query is EMBEDDED, and
+  // detectPossibleSecrets guards the text table but not the embed).
+  Edit: { fields: ['file_path'] },
+  Write: { fields: ['file_path'] },
+  // A literal search query the agent typed — the strongest signal class here.
+  ToolSearch: { fields: ['query'] },
+  WebSearch: { fields: ['query'] },
+  WebFetch: { fields: ['url', 'prompt'], join: ' — ' },
+  // Known-and-considered, no investigation signal; see DELIBERATE OMISSIONS.
+  AskUserQuestion: { fields: [] },
+  Artifact: { fields: [] },
+  Skill: { fields: [] },
+  Monitor: { fields: [] },
+  TaskCreate: { fields: [] },
+  TaskUpdate: { fields: [] },
+  TaskStop: { fields: [] },
 
   // ── codex (snake_case) ──
   exec_command: { fields: ['cmd', 'workdir', 'justification'], join: ' — ' },
