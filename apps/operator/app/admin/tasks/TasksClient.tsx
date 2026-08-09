@@ -12,6 +12,8 @@ import type { TaskResourceTotals } from '@papercusp/operator-core/lib/task-manag
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { Table, type TableColumn } from '@/app/harness/Table';
+// The SHARED kill control — the same component the dropdown mounts (P-023/P-024).
+import KillTaskControl from './KillTaskControl';
 
 /**
  * /admin/tasks — the Task Manager pane
@@ -20,8 +22,15 @@ import { Table, type TableColumn } from '@/app/harness/Table';
  * Deliberately modelled on /admin/schedules, because they are the same idea one
  * axis apart: that page is the inventory of everything RECURRING, this is the
  * inventory of everything RUNNING. Same posture too — nuqs-backed filters so agents
- * and deep links work, and READ-ONLY. The kill/freeze/limit verbs are capability-
- * gated MCP tools; a dashboard read must not be able to end someone's work.
+ * and deep links work.
+ *
+ * ⚠ NO LONGER READ-ONLY (owner ask 2026-08-08, P-023/P-024): each row carries a kill
+ * control. This file used to argue "a dashboard read must not be able to end someone's
+ * work" — but a pane that shows a runaway and cannot stop it sends the reader to a
+ * shell, and the shell is where `pkill -f` lives. `KillTaskControl` is the safe form of
+ * the same capability, SHARED with the dropdown so the two cannot diverge: it posts a
+ * taskId only, confirms before firing, and shows the server's refusal verbatim.
+ * freeze/limit stay tool-only for now.
  *
  * Data comes from the `taskManager.inventory` SYNC query, not a bare fetch — see the
  * comment on the hook below (WI-6475). Rendered from BOTH trees: apps/operator's own
@@ -221,6 +230,16 @@ const TASK_COLUMNS: TableColumn<Row>[] = [
     render: (r) => <span style={{ opacity: r.confined ? 1 : 0.5 }}>{r.confined ? 'cgroup' : 'pid'}</span>,
     cellStyle: cell,
   },
+  {
+    // LAST column on purpose: a destructive control does not belong under the pointer
+    // on the way to reading a row, and the eye reaches it only after the provenance
+    // that justifies pressing it.
+    key: 'act',
+    header: '',
+    headerStyle: head,
+    render: (r) => <KillTaskControl row={r} />,
+    cellStyle: cell,
+  },
 ];
 
 const PROC_COLUMNS: TableColumn<LiveProcess>[] = [
@@ -328,8 +347,8 @@ export default function TasksClient(): ReactElement {
       <h1 style={{ fontSize: 18, marginBottom: 4 }}>Task Manager</h1>
       <p style={{ opacity: 0.7, marginBottom: 12, maxWidth: 780 }}>
         Every task this operator launched, with the provenance a process table cannot give: who started it, for which
-        work-item, under what budget, and what it costs. Read-only — kill / freeze / limit are the{' '}
-        <code>processes:*</code> tools.
+        work-item, under what budget, and what it costs. <strong>kill</strong> ends the whole cgroup subtree, so no
+        grandchild is orphaned — freeze / limit are still the <code>processes:*</code> tools.
       </p>
 
       {/* WI-7371 — live totals across the RUNNING tracked set. Deliberately above the
@@ -431,8 +450,8 @@ export default function TasksClient(): ReactElement {
       </div>
 
       {/* The empty state renders OUTSIDE the horizontally-scrolling table wrapper,
-          and that placement is the whole point. The table carries minWidth:1100 so its
-          11 columns stay legible; inside it, a prose empty-state is laid out against
+          and that placement is the whole point. The table carries a minWidth so its
+          columns stay legible; inside it, a prose empty-state is laid out against
           1100px and CLIPPED in the ~365px left rail — the reader sees "Nothing enrolled
           is running right now — 115 proce" and nothing more, with the rest only
           reachable by horizontal scroll nobody thinks to try. Caught by screenshotting
@@ -461,7 +480,7 @@ export default function TasksClient(): ReactElement {
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <Table
-            style={{ minWidth: 1100, ...mono }}
+            style={{ minWidth: 1180, ...mono }}
             columns={TASK_COLUMNS}
             rows={data?.rows ?? []}
             getRowKey={(r) => r.taskId}

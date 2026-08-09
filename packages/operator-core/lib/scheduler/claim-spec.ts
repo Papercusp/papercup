@@ -583,6 +583,68 @@ function detectBroadKindDisjunctFootgun(node: unknown, path: string, warnings: s
 }
 
 /**
+ * WI-36743: a spec-authoring footgun sibling to the broad-kind-disjunct one above — a
+ * spec that scopes to issue-family kinds (bug/change/task) but never adds a
+ * `severity_rank` rank term. `severity_rank` (EI-19286355119013384) is what makes the
+ * DEFAULT spec severity-aware; it is opt-IN per spec, so any custom spec authored before
+ * (or without knowledge of) that fix silently reproduces the exact starvation it was
+ * built to close. Measured live 2026-08-08: the `nonp2p-bug-drain` fleet spec (rank:
+ * `[priority asc, age desc]`, no severity_rank) served a 279-item claimable queue whose
+ * top-200 contained ZERO critical-severity items — WI-5601 (critical, fully spec-matched)
+ * was structurally unreachable for the life of the drain.
+ *
+ * Advisory only (like the footgun above): a spec author may have a deliberate reason to
+ * ignore severity (e.g. a lane scoped to a single severity already via `view.filter`, or
+ * to a fixed id-pinned wave — see `isIdOnlySelector`). Detects the SHAPE only: any
+ * positive (`=`/`in`) `kind` selector reaching an issue-family kind, with `rank.terms`
+ * carrying no `severity_rank` head anywhere.
+ */
+const ISSUE_FAMILY_KINDS = new Set<string>(['bug', 'change', 'task']);
+
+/** Collect every value asserted by a POSITIVE (`=`/`in`) leaf on `field`, anywhere in the
+ *  tree. Skips the `not` branch entirely — a negated leaf excludes rather than selects,
+ *  so it cannot be used to infer the spec targets that kind. `any`/`all` both recurse:
+ *  a value reachable through either combinator is a value the spec CAN select. */
+function collectPositiveFieldValues(node: unknown, field: string, acc: Set<string>): void {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
+  const obj = node as Record<string, unknown>;
+  if (obj.field === field && (obj.op === '=' || obj.op === 'in')) {
+    const raw = Array.isArray(obj.value) ? obj.value : [obj.value];
+    raw.forEach((v) => acc.add(String(v)));
+    return;
+  }
+  if (Array.isArray(obj.all)) {
+    obj.all.forEach((n) => collectPositiveFieldValues(n, field, acc));
+    return;
+  }
+  if (Array.isArray(obj.any)) {
+    obj.any.forEach((n) => collectPositiveFieldValues(n, field, acc));
+    return;
+  }
+  // Deliberately no `not` recursion — see the doc comment above.
+}
+
+function detectMissingSeverityRankForIssueFamily(spec: z.infer<typeof claimSpecSchema>, warnings: string[]): void {
+  const filter = spec.view.filter;
+  if (!filter) return; // no filter = mixed pool (features included) — too ambiguous to advise
+  const kindValues = new Set<string>();
+  collectPositiveFieldValues(filter, 'kind', kindValues);
+  if (kindValues.size === 0) return; // no positive kind selector — can't tell what family this targets
+  const targetsIssueFamily = [...kindValues].some((k) => ISSUE_FAMILY_KINDS.has(k));
+  if (!targetsIssueFamily) return;
+  const hasSeverityRank = spec.rank.terms.some((t) => rankExprHead(t.expr) === 'severity_rank');
+  if (hasSeverityRank) return;
+  warnings.push(
+    'rank.terms: view.filter selects issue-family kind(s) (bug/change/task) but no rank term is ' +
+      '"severity_rank" — severity is not considered when ordering (WI-36743). Without it, a deep claimable ' +
+      'queue can leave critical-severity items structurally unreachable behind endless major/minor/nit ' +
+      'inflow, however that inflow is ordered. Add { expr:"severity_rank", dir:"desc" } to rank.terms ' +
+      '(typically ranked ahead of priority/age, same slot as the DEFAULT spec) unless this lane ' +
+      'deliberately ignores severity.',
+  );
+}
+
+/**
  * Validate a claim spec, returning `{ ok, errors, warnings, spec }`. Never throws
  * (an authoring agent wants the issues back, not an exception — same contract as
  * `blueprint:validate`). Checks, in order:
@@ -682,6 +744,13 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
       warnings.push(`rank.terms[${i}]: "weight" is ignored in mode "lexicographic"`);
     }
   });
+
+  // (5) WI-36743: advise when an issue-family-scoped spec has no severity_rank term.
+  // Only meaningful once the filter tree is structurally sound (mirrors the footgun
+  // advisory above) — an already-broken filter doesn't need a second, noisier complaint.
+  if (errors.length === 0) {
+    detectMissingSeverityRankForIssueFamily(spec, warnings);
+  }
 
   // The semantic walk above guarantees `view.filter` (when present) is a valid
   // `FilterNode` once there are no errors; surface the narrowed `ClaimSpec` type.

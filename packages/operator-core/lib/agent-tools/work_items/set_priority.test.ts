@@ -20,18 +20,20 @@ vi.mock('../../work-items', () => ({
   getWorkItemPriority: vi.fn(),
   setWorkItemPriority: vi.fn(),
   bumpWorkItemPriority: vi.fn(),
+  explainIssueClaimFloors: vi.fn(),
 }));
 vi.mock('./arm-reversible-work-item', () => ({
   planWorkItemArm: vi.fn(),
   commitWorkItemArm: vi.fn(),
 }));
 
-import { getWorkItemPriority, setWorkItemPriority, bumpWorkItemPriority } from '../../work-items';
+import { getWorkItemPriority, setWorkItemPriority, bumpWorkItemPriority, explainIssueClaimFloors } from '../../work-items';
 import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 
 const getM = vi.mocked(getWorkItemPriority);
 const setM = vi.mocked(setWorkItemPriority);
 const bumpM = vi.mocked(bumpWorkItemPriority);
+const floorsM = vi.mocked(explainIssueClaimFloors);
 const planArmM = vi.mocked(planWorkItemArm);
 const commitArmM = vi.mocked(commitWorkItemArm);
 
@@ -166,5 +168,63 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
     expect(out.results.every((r: { written?: boolean; proposed?: boolean }) => r.written === false && r.proposed === true)).toBe(true);
     // No proposal committed the auto-revert arm (nothing was written to revert).
     expect(commitArmM).not.toHaveBeenCalled();
+  });
+
+  // EI-19919820196426791: a backlog-priority write that actually lands (written:true)
+  // used to report a plain ok:true even when the item sits in a lane the claim path
+  // structurally never serves (observation lane / needs-human) — reordering the
+  // backlog does nothing there, and nothing flagged the conflict.
+  describe('structural claimability warning (EI-19919820196426791)', () => {
+    it('set mode: a committed write on an observation-lane item surfaces claimabilityWarning', async () => {
+      setM.mockResolvedValue({ id: 'EI-1', harness: 'papercusp', priority: 5, applicable: true } as never);
+      floorsM.mockResolvedValue([
+        { id: 'EI-1', admissible: false, refusedBy: 'observation-lane', detail: 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)' },
+      ] as never);
+      const r = await one({ workItem: 'EI-1', priority: 5 });
+      expect(floorsM).toHaveBeenCalledWith('papercusp', ['EI-1']);
+      expect(r).toMatchObject({ ok: true, written: true });
+      expect(r.claimabilityWarning).toMatch(/structurally UNCLAIMABLE/);
+      expect(r.claimabilityWarning).toMatch(/observation/);
+    });
+
+    it('bump mode: a committed bump on a needs-human item surfaces claimabilityWarning', async () => {
+      bumpM.mockResolvedValue({ id: 'WI-1', harness: 'papercusp', priority: 0, applicable: true } as never);
+      floorsM.mockResolvedValue([
+        { id: 'WI-1', admissible: false, refusedBy: 'needs-human', detail: 'payload.needsHuman = true — routed to a human for ratification (EI-7776)' },
+      ] as never);
+      const r = await one({ workItem: 'WI-1', position: 'top' });
+      expect(floorsM).toHaveBeenCalledWith('papercusp', ['WI-1']);
+      expect(r.claimabilityWarning).toMatch(/needs a human|needs-human|human/i);
+    });
+
+    it('clearing (priority:null) never checks claim floors — nothing to warn about', async () => {
+      setM.mockResolvedValue({ id: 'EI-1', harness: 'papercusp', priority: null, applicable: true } as never);
+      const r = await one({ workItem: 'EI-1', priority: null });
+      expect(floorsM).not.toHaveBeenCalled();
+      expect(r.claimabilityWarning).toBeUndefined();
+    });
+
+    it('an otherwise-admissible item adds no warning', async () => {
+      setM.mockResolvedValue({ id: 'EI-3', harness: 'papercusp', priority: 1, applicable: true } as never);
+      floorsM.mockResolvedValue([{ id: 'EI-3', admissible: true, refusedBy: null, detail: null }] as never);
+      const r = await one({ workItem: 'EI-3', priority: 1 });
+      expect(r.claimabilityWarning).toBeUndefined();
+    });
+
+    it('an uncommitted write (proposed / inapplicable) never checks claim floors', async () => {
+      setM.mockResolvedValue({ id: 'EI-1', harness: 'papercusp', priority: 2, applicable: true, proposed: true, steeringHolder: 'queen-A' } as never);
+      const r = await one({ workItem: 'EI-1', priority: 2 });
+      expect(r.written).toBe(false);
+      expect(floorsM).not.toHaveBeenCalled();
+      expect(r.claimabilityWarning).toBeUndefined();
+    });
+
+    it('a floor lookup failure never fails the underlying priority write', async () => {
+      setM.mockResolvedValue({ id: 'EI-4', harness: 'papercusp', priority: 7, applicable: true } as never);
+      floorsM.mockRejectedValue(new Error('db down'));
+      const r = await one({ workItem: 'EI-4', priority: 7 });
+      expect(r).toMatchObject({ ok: true, workItem: 'EI-4', written: true });
+      expect(r.claimabilityWarning).toBeUndefined();
+    });
   });
 });

@@ -94,6 +94,26 @@ const BEE_FRESH_MS = 15 * 60_000;
  * `bees.working` is ADDITIVE (bees.running keeps its existing meaning for
  * back-compat) so a caller that wants the honest "confirmed active" count can
  * read the narrower one.
+ *
+ * WI-36765: `last_output_at` alone is a FALSE ZERO for a headless cup — a cup
+ * makes MCP tool calls (which never touch `spawned_agents.last_output_at`,
+ * only captured child STDOUT does) but can go many minutes without printing
+ * a stdout line, so a cup mid-turn on tool calls reads as "not working"
+ * forever. Widen `working` with an OR EXISTS against a fresh
+ * `harness_shared.tool_invocations` row for the same spawn — a real MCP call
+ * is exactly as strong a "working" signal as fresh stdout. This is safe to
+ * correlate on `spawn_id` here specifically because the outer join only ever
+ * reaches NURSERY spawns (rows in `spawned_agents`), and for that spawn kind
+ * `tool_invocations.spawn_id` genuinely is a stable per-session boundary —
+ * unlike interactive/su sessions, which mint a fresh spawn_id per call (see
+ * the `tool_invocations spawn_id is not a session boundary` measurement
+ * note); verified live 2026-08-09 against the cup that motivated this bug
+ * (35 tool_invocations rows spanning 25+ minutes under one spawn_id).
+ * `ti.workspace_id = spawned_agents.workspace_id` is included so the
+ * correlated lookup can use the existing `tool_invocations_spawn_id_ws_idx`
+ * (workspace_id, spawn_id) index rather than an unindexed spawn_id-only scan
+ * of a 7M+-row table — the subquery only ever executes for the small set of
+ * already-fresh-heartbeat rows the outer WHERE has already narrowed to.
  */
 const BEE_WORKING_FRESH_MS = BEE_FRESH_MS;
 
@@ -173,6 +193,12 @@ export default defineTool({
           count(*)::int AS n,
           count(*) FILTER (
             WHERE last_output_at > now() - make_interval(secs => ${BEE_WORKING_FRESH_MS / 1000})
+               OR EXISTS (
+                 SELECT 1 FROM harness_shared.tool_invocations ti
+                 WHERE ti.workspace_id = spawned_agents.workspace_id
+                   AND ti.spawn_id = spawned_agents.spawn_id
+                   AND ti.invoked_at > now() - make_interval(secs => ${BEE_WORKING_FRESH_MS / 1000})
+               )
           )::int AS working
         FROM harness_shared.spawned_agents
         WHERE status IN ('running', 'restarting')

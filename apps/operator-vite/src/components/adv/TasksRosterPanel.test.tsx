@@ -20,12 +20,20 @@ import { cleanup, render, screen } from '@testing-library/react';
 const H = vi.hoisted(() => ({
   payload: null as unknown,
   lastArgs: undefined as unknown,
+  killed: [] as unknown[],
 }));
 
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { args?: unknown }) => {
     H.lastArgs = opts.args;
     return { data: H.payload == null ? undefined : [H.payload] };
+  },
+  // P-023: ledger rows now mount the shared KillTaskControl, which is a WRITER. This
+  // mock had only the reader — a module mock is exhaustive, so the panel would have
+  // crashed on `useSyncMutate is not a function` the moment the control landed.
+  useSyncMutate: () => async (args: unknown) => {
+    H.killed.push(args);
+    return { ok: true };
   },
 }));
 

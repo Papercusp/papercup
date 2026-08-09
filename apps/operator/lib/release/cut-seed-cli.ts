@@ -93,6 +93,7 @@ import {
   type CorestoreCutSpec,
 } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
 import { decodeManifest, encodeManifest, type SeedManifest, type SeedStoreEntry } from '@papercusp/seed-bundle';
+import { assertSeedNotDegraded } from './seed-degradation-guard.js';
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { backfillLocalState, type BackfillResult } from '@papercusp/operator-core/lib/sync/hyperbee/backfill-local-state';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
@@ -998,16 +999,23 @@ async function main(): Promise<void> {
     const res = await cutHiveSeed({ potId: hive, cutAtEpoch, cutHlc, cutTs, outDir, git, corestore });
 
     // WI-3232: graft the reused corestore back in + merge its manifest entry.
+    let finalManifest = res.manifest;
     if (reuseCorestoreDir && reused) {
       const dst = join(outDir, CORESTORE_SUBDIR);
       if (stashDir) await moveDir(stashDir, dst);
       else await cp(join(reuseCorestoreDir, CORESTORE_SUBDIR), dst, { recursive: true });
-      const grafted = graftCorestoreEntry(res.manifest, reused.entry);
-      await writeFile(res.manifestPath, encodeManifest(grafted));
+      finalManifest = graftCorestoreEntry(res.manifest, reused.entry);
+      await writeFile(res.manifestPath, encodeManifest(finalManifest));
       console.warn(
         `[cut-seed] reused corestore from ${reuseCorestoreDir} (${formatBytes(reused.entry.sizeBytes)}, no live-store snapshot).`,
       );
     }
+
+    // P-015 (D-009 recurrence guard). Judge the FINAL manifest — the bytes on disk, after any
+    // graft — never `res.manifest`, which on the reuse path carries no corestore at all and so
+    // can never see the degradation (D-023: the reuse branch is the one that actually ships).
+    // This single call therefore covers both branches by construction.
+    assertSeedNotDegraded(finalManifest, { origin: reuseCorestoreDir ? 'reuse' : 'fresh' });
 
     // RocksDB's info log (exactly `LOG`, rotated `LOG.old.<ts>`) records the build
     // box's hostname and absolute paths on EVERY store open — it redded the 0.0.11
@@ -1045,7 +1053,11 @@ async function main(): Promise<void> {
     }
 
     if (asJson) {
-      console.log(JSON.stringify({ manifest: res.manifest, sizeReport: res.sizeReport, manifestPath: res.manifestPath }, null, 2));
+      // `finalManifest`, not `res.manifest`: on the reuse path the latter has no corestore
+      // entry, so `--json` used to report a manifest with no coreSparseFrom while the manifest
+      // ON DISK carried the degraded one — a measurement of the reuse path read as "no sparse
+      // data at all" rather than as the defect it is.
+      console.log(JSON.stringify({ manifest: finalManifest, sizeReport: res.sizeReport, manifestPath: res.manifestPath }, null, 2));
     } else {
       console.log(`\n=== Hive seed cut → ${outDir} ===`);
       console.log(`hive=${hive} epoch=${cutAtEpoch} hlc=${cutHlc} ts=${cutTs}`);

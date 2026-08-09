@@ -372,7 +372,10 @@ button.pc-tasks-roster__group-head:focus-visible { outline: 1px solid #3d6ea5; o
 
 .pc-tasks-roster__row {
   display: grid;
-  grid-template-columns: 34px minmax(84px, max-content) minmax(0, 1fr) 56px 34px;
+  /* 6 tracks; the last is the kill control (P-023). Scanned/exempt rows render only
+     five children and the sixth track collapses to 0 for them — deliberate, because a
+     scanned row has no ledger identity and must never offer a kill. */
+  grid-template-columns: 34px minmax(84px, max-content) minmax(0, 1fr) 56px 34px max-content;
   align-items: center;
   gap: 8px;
   padding: 3px 10px;
@@ -425,6 +428,44 @@ button.pc-tasks-roster__group-head:focus-visible { outline: 1px solid #3d6ea5; o
   text-align: right;
   color: #8497ad;
 }
+
+/* ── the kill control (P-023/P-025) ──────────────────────────────────────────
+   The idle button is deliberately quiet: it appears on hover/focus-within only, so a
+   620px popover people open to READ does not present a row of destructive buttons.
+   It stays visible once armed or once it has something to say, and it is never hidden
+   from the keyboard — `:focus-within` keeps a tabbed-to control on screen. */
+.pc-tasks-roster__act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+}
+.pc-tasks-roster__row:hover .pc-tasks-roster__act,
+.pc-tasks-roster__row:focus-within .pc-tasks-roster__act,
+.pc-tasks-roster__act:has(.is-armed),
+.pc-tasks-roster__act:has(.is-refused),
+.pc-tasks-roster__act:has(.is-done) {
+  opacity: 1;
+}
+
+/* A refusal is prose, not a chip — it names the pid and both identities, which is
+   what makes it checkable. Let it span the whole row on its own line rather than
+   truncating the one thing the reader needs (P-025). */
+.pc-tasks-roster__act:has(.is-refused) { grid-column: 1 / -1; }
+.pc-task-kill.is-refused {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #f8b4b8;
+  white-space: normal;
+}
+.pc-task-kill__detail {
+  font-family: ui-monospace, monospace;
+  color: #8497ad;
+}
+.pc-task-kill.is-done { font-size: 10.5px; color: #6ee7b7; }
+.pc-task-kill__ask { font-size: 10.5px; color: #8497ad; }
 
 .pc-tasks-roster__foot {
   border-top: 1px solid #22364f;

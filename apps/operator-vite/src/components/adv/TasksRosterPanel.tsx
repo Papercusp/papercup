@@ -22,9 +22,14 @@
  * them makes "every Papercusp process is visible here" true today, while keeping
  * "we know who started this" honest.
  *
- * READ-ONLY, like the page it mirrors: kill / freeze / limit are the capability-
- * gated `processes:*` tools, and a dashboard must not be able to end someone's
- * work. The footer links out for anything actionable.
+ * ── Killing from here (P-023, owner ask 2026-08-08) ──
+ * Ledger rows carry a kill control; SCANNED rows do not, and that asymmetry is the
+ * design rather than an omission. A scanned row is a pid we can see but did not enrol —
+ * we have no ledger identity for it, so the only way to signal it would be by pid or by
+ * name, which is the exact move that has twice killed the owner's live desktop here.
+ * `KillTaskControl` is the SAME component the full page mounts (`@/app/admin/tasks/…`),
+ * so the two surfaces cannot drift into different refusal semantics. freeze / limit are
+ * still the capability-gated `processes:*` tools; the footer links out for those.
  */
 import { useMemo } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
@@ -41,6 +46,9 @@ import {
   resourceTitle,
   useResourceTotals,
 } from '@/app/admin/tasks/use-resource-totals';
+// P-023/P-024 — the SHARED kill control, imported across trees for the same reason
+// use-resource-totals is: one definition of what is killable and what a refusal says.
+import KillTaskControl from '@/app/admin/tasks/KillTaskControl';
 
 /** `live` is `unknown` on TaskInventory — the scan's own shape, narrowed here. */
 type LiveScan = {
@@ -376,6 +384,9 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
                 </span>
                 <span className="pc-tasks-roster__num">{fmtBytes(r.rssBytes)}</span>
                 <span className="pc-tasks-roster__num">{r.pids ?? '—'}</span>
+                <span className="pc-tasks-roster__act">
+                  <KillTaskControl row={r} />
+                </span>
               </div>
             ))}
           </section>
