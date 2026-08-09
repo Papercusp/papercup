@@ -7,7 +7,7 @@
  * first offer whose delegated seat count covers the request.
  *
  * Pure unit coverage of the extracted picker; the full handler also needs
- * getFleet/resolveWorkspaceHiveScope/listWorkOffers/publishSpawnRequest wired
+ * getFleet/resolveWorkspaceHiveScope/listOffers/publishSpawnRequest wired
  * through PG-backed integration coverage (out of scope here — the picker is
  * the load-bearing, easy-to-get-wrong logic: a regression here silently picks
  * a different/wrong host, or fails to pick when it should).

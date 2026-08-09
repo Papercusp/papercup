@@ -1,7 +1,7 @@
 /**
  * work-intake-tick.test.ts — P-406 (D-004) minimal intake loop, unit-level.
  *
- * Every real IO edge (listWorkOffers, resolvePublisherSet,
+ * Every real IO edge (listOffers, resolvePublisherSet,
  * resolveAttestedGithubUserId, currentGrantorEpoch, hostAvailability,
  * pullAndExecute, emitReceipt) is injected — this proves the TICK'S OWN
  * orchestration (offer→input assembly, the v1 designation:null boundary,
@@ -109,7 +109,7 @@ function baseDeps(overOffers: StoredWorkOffer[] = [storedOffer()]) {
       overrideLayer: null,
       effective: mergeP2pLayers(bakedP2pDefaults()),
     })),
-    listWorkOffers: vi.fn(async () => overOffers),
+    listOffers: vi.fn(async () => overOffers),
     resolvePublisherSet: vi.fn(async () => OK_PUBLISHER_SET),
     resolveAttestedGithubUserId: vi.fn(async () => 5),
     currentGrantorEpoch: vi.fn(async () => 4),

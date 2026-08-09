@@ -70,7 +70,7 @@ import {
   resolveSharedHiveDisambiguation,
   type WorkspaceHiveScope,
 } from '../coordination/federation-scope';
-import { listWorkOffers } from '../../p2p/offer-store';
+import { listOffers } from '../../p2p/offer-store';
 import { publishSpawnRequest } from '../../p2p/spawn-request-publish';
 import { listFederatedFleetMembers } from '../../sync/hyperbee/session-presence-store';
 import { resolveUsageActor } from '../../harness/usage-actor';
@@ -1527,7 +1527,7 @@ export default defineTool({
       }
       let seatOffers;
       try {
-        seatOffers = await listWorkOffers(workspaceId, hiveHomeSlug, {
+        seatOffers = await listOffers(workspaceId, hiveHomeSlug, {
           fleetSlug,
           kind: 'seat',
           status: 'open',
@@ -1549,7 +1549,7 @@ export default defineTool({
       let potSeatOffers: typeof seatOffers = [];
       if (potSlug) {
         try {
-          potSeatOffers = await listWorkOffers(workspaceId, hiveHomeSlug, {
+          potSeatOffers = await listOffers(workspaceId, hiveHomeSlug, {
             potSlug,
             kind: 'seat',
             status: 'open',

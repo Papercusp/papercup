@@ -6,7 +6,7 @@
  * ticked `pullAndExecuteOffer` (WI-3629) until this file.
  *
  * SCOPE (D-004 ruling, p2p-public-release-remaining-lanes-2026-07-16 P-406):
- * existing seams only — offer-store (listWorkOffers) → evaluatePull gate
+ * existing seams only — offer-store (listOffers) → evaluatePull gate
  * order → pullAndExecuteOffer — armed solely by the existing admission stack
  * (kill-switch → per-fleet opt-in → window, all inside evaluatePull/
  * resolveForeignWorkAdmission), so it ships LIVE-BUT-CONSENT-GATED: it does
@@ -49,7 +49,7 @@
 import type { Sql } from 'postgres';
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
-import { listWorkOffers, type StoredWorkOffer } from './offer-store';
+import { listOffers, type StoredWorkOffer } from './offer-store';
 import { pullAndExecuteOffer, type PullAndExecuteContext, type PullAndExecuteResult } from './offer-pull-and-execute';
 import type { PullEvaluationInput } from './standing-puller';
 import type { P2pEffectiveTier } from './rollout-tiers';
@@ -142,7 +142,7 @@ export interface RunWorkIntakeTickOpts {
   /** Injection seams (tests) — every real IO edge this tick touches is
    *  overridable, mirroring runForeignGitSyncTick's convention, so the
    *  decision logic is unit-testable without a live PG. */
-  listWorkOffers?: typeof listWorkOffers;
+  listOffers?: typeof listOffers;
   emitReceipt?: (args: Parameters<typeof emitP2pReceipt>[0]) => Promise<EmitP2pReceiptResult>;
   pullAndExecute?: (
     input: PullEvaluationInput,
@@ -191,7 +191,7 @@ export async function runWorkIntakeTick(
   opts: RunWorkIntakeTickOpts,
 ): Promise<WorkIntakeTickResult> {
   const log = opts.log ?? ((m: string) => console.log(`[p2p-work-intake] ${m}`));
-  const list = opts.listWorkOffers ?? listWorkOffers;
+  const list = opts.listOffers ?? listOffers;
   const emitReceipt = opts.emitReceipt ?? emitP2pReceipt;
   const pullExec = opts.pullAndExecute ?? pullAndExecuteOffer;
   const sql = opts.sql ?? getOrgPg().sql;

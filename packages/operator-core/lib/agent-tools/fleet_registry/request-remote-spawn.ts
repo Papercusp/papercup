@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
-import { listWorkOffers, type StoredWorkOffer } from '../../p2p/offer-store';
+import { listOffers, type StoredWorkOffer } from '../../p2p/offer-store';
 import { publishSpawnRequest } from '../../p2p/spawn-request-publish';
 import { resolvePlanHarnessSlug } from '../plans/source';
 import { resolveRemotePlacementHive } from './launch-on-plan';
@@ -140,7 +140,7 @@ export default defineTool({
     // into publishSpawnRequest for an explicitly-named pot-scoped target.
     const potSlug = await resolvePlanHarnessSlug(workspaceId, args.plan);
 
-    const seatOffers = await listWorkOffers(workspaceId, hiveHomeSlug, {
+    const seatOffers = await listOffers(workspaceId, hiveHomeSlug, {
       fleetSlug: args.fleet,
       kind: 'seat',
       status: 'open',
@@ -172,7 +172,7 @@ export default defineTool({
         // (fleetSlug=null, potSlug=this plan's harness) when the plan resolves
         // to a known pot.
         potOffers = potSlug
-          ? await listWorkOffers(workspaceId, hiveHomeSlug, { potSlug, kind: 'seat', status: 'open' })
+          ? await listOffers(workspaceId, hiveHomeSlug, { potSlug, kind: 'seat', status: 'open' })
           : [];
         const picked = pickPotSeatOffer(potOffers, args.count);
         if (!picked) {

@@ -10,12 +10,12 @@
  * exporting no `list*`/`read*`. That premise is FALSE — it looked at the
  * projection (the receive/apply leg) rather than at `offer-store.ts`, which is
  * the local read/authoring path and exports both `getWorkOffer` (an exact
- * primary-key point read) and `listWorkOffers` (server-side filtered). Both
+ * primary-key point read) and `listOffers` (server-side filtered). Both
  * already parse `record_json` through the same closed-schema validator and
  * already expose `signerDevicePubkey`. So this module writes no SQL at all.
  *
  * The two reads map exactly onto the two questions:
- *   - `listWorkOffers({ kind:'spawn_request' })` — this request AND its
+ *   - `listOffers({ kind:'spawn_request' })` — this request AND its
  *     concurrent siblings in one read, which is what attribution needs anyway;
  *   - `getWorkOffer(ws, pot, targetPublisherGithubUserId, targetOfferId)` — the
  *     targeted seat, by full PK. The request payload carries BOTH halves of that
@@ -42,7 +42,7 @@
  * feeds: absence of member rows is uninformative for a remote honor, and
  * dressing it up as a verdict is worse than silence.
  */
-import { getWorkOffer, listWorkOffers, type StoredWorkOffer } from './offer-store';
+import { getWorkOffer, listOffers as listOffersDefault, type StoredWorkOffer } from './offer-store';
 import { listP2pReceipts, type P2pReceipt } from './receipts';
 import {
   spawnRequestFactsFromRow,
@@ -76,7 +76,7 @@ export interface DelegatedSpawnOutcomeResolution {
 
 /** IO seams — every one is injectable so the composition unit-tests without PG. */
 export interface ResolveDelegatedSpawnOutcomeDeps {
-  listOffers?: typeof listWorkOffers;
+  listOffers?: typeof listOffers;
   getOffer?: typeof getWorkOffer;
   listReceipts?: typeof listP2pReceipts;
   /** This machine's device pubkey for a github user id (null = unknowable). */
@@ -185,7 +185,7 @@ export async function resolveDelegatedSpawnOutcome(
   args: { workspaceId: string; potSlug: string; offerId: string },
   deps: ResolveDelegatedSpawnOutcomeDeps = {},
 ): Promise<DelegatedSpawnOutcomeResolution | null> {
-  const listOffers = deps.listOffers ?? listWorkOffers;
+  const listOffers = deps.listOffers ?? listOffers;
   const getOffer = deps.getOffer ?? getWorkOffer;
   const listReceipts = deps.listReceipts ?? listP2pReceipts;
   const selfDevicePubkey = deps.selfDevicePubkey ?? defaultSelfDevicePubkey;

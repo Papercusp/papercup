@@ -183,7 +183,17 @@ function useNow(enabled: boolean, intervalMs = 1000): number {
 export default function AccountsTab({ active }: { active: boolean }) {
   const now = useNow(active);
   const { data: accounts, loading } = useSyncQuery<PoolAccount>({ queryName: 'accounts.pool', enabled: active });
-  const { overrideBusy, forced, excluded, overrideActive, toggleForce, toggleExclude, clearOverride } = useAccountOverride();
+  const {
+    overrideBusy,
+    forced,
+    excluded,
+    overrideActive,
+    toggleForce,
+    toggleExclude,
+    clearOverride,
+    defaultAccountId,
+    setDefaultAccount,
+  } = useAccountOverride();
   // Which card is expanded (accordion). URL state so it's agent-driveable + survives reload.
   const [expanded, setExpanded] = useQueryState('acct', parseAsString);
   const [resetBusyId, setResetBusyId] = useState<string | null>(null);
@@ -272,6 +282,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
             const provider = accountProvider(a);
             const isForced = forced.has(a.id);
             const isExcluded = excluded.has(a.id);
+            const isDefault = defaultAccountId === a.id;
             const isOpen = expanded === a.id;
             const paused = a.rate.pausedUntil > now;
             const statusKind = paused ? 'paused' : a.available ? 'ok' : 'off';
@@ -302,6 +313,29 @@ export default function AccountsTab({ active }: { active: boolean }) {
                     </Collapsible.Trigger>
                     <span className={`pclsb-acct__statuspill pclsb-acct__statuspill--${statusKind}`} aria-label={statusLabel}>{statusShort}</span>
                     <div className="pclsb-acct__btns">
+                      {/* Claude-only: the default stands in for the machine's CLAUDE login, so
+                          a Codex row has no default to set (the server rejects it too). */}
+                      {accountProvider(a) === 'claude' && (
+                        <button
+                          type="button"
+                          className={`pclsb-acct__b${isDefault ? ' is-default' : ''}`}
+                          disabled={overrideBusy}
+                          aria-pressed={isDefault}
+                          aria-label={
+                            isDefault
+                              ? `Clear ${a.id} as the default account`
+                              : `Make ${a.id} the default account`
+                          }
+                          title={
+                            isDefault
+                              ? "Default — stands in for this machine's own Claude login. Click to clear."
+                              : 'Make this the account everything on this machine uses by default.'
+                          }
+                          onClick={() => setDefaultAccount(isDefault ? null : a.id)}
+                        >
+                          {isDefault ? '★ Default' : '☆ Default'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         className={`pclsb-acct__b${isForced ? ' is-force' : ''}`}

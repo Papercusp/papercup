@@ -885,6 +885,48 @@ describe('computeIdleWithClaimableAlert (EI-18681259560385029 — the summary-le
     expect(computeIdleWithClaimableAlert({ claimableCount: null, idleMemberCount: 5 })).toBeUndefined();
   });
 
+  // WI-37161 — the summary-level twin of the per-member fix: a leader reading only the
+  // summary alert must not be told to wake a fleet that is actually inference-queued.
+  describe('a CONGESTED shared inference pool inverts the remedy (WI-37161)', () => {
+    const degradedPool = { poolExhausted: false, degraded: true, factor: 0, queueDepth: 28, usableAccounts: 1, availableAccounts: 2 };
+
+    it('still fires (the lane is not drained) but does NOT tell the leader to wake them', () => {
+      const alert = computeIdleWithClaimableAlert({
+        claimableCount: 2,
+        idleMemberCount: 6,
+        poolCapacity: degradedPool,
+      });
+      expect(alert).toBeDefined();
+      expect(alert?.reason).toMatch(/QUEUED FOR INFERENCE/);
+      expect(alert?.reason).not.toMatch(/coord:send \{ wake: "required" \} those members so they re-run/);
+      expect(alert?.reason).toMatch(/DO NOT wake/);
+    });
+
+    it('falsifier calls fleet:capacity, not the member-holdings check', () => {
+      const alert = computeIdleWithClaimableAlert({
+        claimableCount: 2,
+        idleMemberCount: 6,
+        poolCapacity: degradedPool,
+      });
+      expect(alert?.falsifier.tool).toBe('fleet:capacity');
+    });
+
+    it('falls back to the ordinary wake-them remedy once the pool read is healthy', () => {
+      const alert = computeIdleWithClaimableAlert({
+        claimableCount: 2,
+        idleMemberCount: 6,
+        poolCapacity: { poolExhausted: false, degraded: false, factor: 1, queueDepth: 0, usableAccounts: 4, availableAccounts: 4 },
+      });
+      expect(alert?.reason).toMatch(/wake/i);
+      expect(alert?.falsifier.tool).toBe('work_items:list');
+    });
+
+    it('an unread pool state (undefined) never changes the existing remedy', () => {
+      const alert = computeIdleWithClaimableAlert({ claimableCount: 2, idleMemberCount: 6 });
+      expect(alert?.falsifier.tool).toBe('work_items:list');
+    });
+  });
+
   it('fires even while OTHER members are busy — partial starvation is still starvation', () => {
     // Deliberately unlike computeStrandedFleetAlert/computeSpecStarvedFleetAlert, which both
     // require fleet-wide zero wip and so miss a fleet that is half-working, half-starving.

@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { Tooltip } from '@/app/harness/Tooltip';
-import { KeyRound, Plus, Trash2 } from 'lucide-react';
+import { KeyRound, Plus, Star, Trash2 } from 'lucide-react';
 import {
   formatResetIn,
   isActiveAccount,
@@ -66,6 +66,11 @@ export default function DeployAccountsPage() {
   const [headroom, setHeadroom] = useState<PoolHeadroom | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(true);
+  // undefined = not read yet, null = no default (this box's own ~/.claude login), string = an
+  // account id. The three states are distinct on purpose: rendering "using the local login"
+  // before the read lands would state the opposite of the truth for a moment.
+  const [defaultAccountId, setDefaultAccountId] = useState<string | null | undefined>(undefined);
+  const [defaultBusy, setDefaultBusy] = useState<string | null>(null);
 
   const [addOpen, setAddOpen] = useQueryState('add', parseAsBoolean.withDefault(false));
   const [accountId, setAccountId] = useQueryState('id', parseAsString.withDefault(''));
@@ -113,7 +118,48 @@ export default function DeployAccountsPage() {
     } catch {
       setHeadroom(null);
     }
+    // Which account (if any) stands in for this box's ~/.claude login. Best-effort for the
+    // same reason as headroom: failing to read the steer must not blank the account list.
+    // null is a real value here ("no default — the local login"), so the unknown case is
+    // deliberately left as-is rather than being coerced to null.
+    try {
+      const r = await fetch('/api/admin/deploy-accounts/session-override');
+      const j = await r.json();
+      if (j?.ok) setDefaultAccountId(j.override?.defaultAccountId ?? null);
+    } catch {
+      /* leave the last known value */
+    }
   }, []);
+
+  /**
+   * Nominate (or, with null, clear) the default account. The server validates against the
+   * pool and 400s a bad pick, so the error surfaced here is the server's own reason rather
+   * than a guess. Refreshes rather than patching state locally: the write can change more
+   * than this one field (clearing a default is also what the override-reset concern does).
+   */
+  const setDefault = useCallback(
+    async (id: string | null) => {
+      setDefaultBusy(id ?? '__clear__');
+      try {
+        const r = await fetch('/api/admin/deploy-accounts/session-override', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ defaultAccountId: id }),
+        });
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'failed to set the default account');
+        setDefaultAccountId(j.override?.defaultAccountId ?? null);
+        toast.success(
+          id ? `${id} is now the default account` : "Default cleared — using this machine's own Claude login",
+        );
+      } catch (e) {
+        toast.error((e as Error).message);
+      } finally {
+        setDefaultBusy(null);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     void refresh();
@@ -571,6 +617,38 @@ export default function DeployAccountsPage() {
         </div>
       )}
 
+      {/* State the account that is actually in force, always — the commonest question this
+          page has to answer is "which one is being used right now", and before the default
+          existed the honest answer ("this box's own login") was nowhere on the page. */}
+      {defaultAccountId !== undefined && (
+        <div className="pc-da__default-banner" role="status">
+          <Star size={13} aria-hidden="true" fill={defaultAccountId ? 'currentColor' : 'none'} />
+          {defaultAccountId ? (
+            <span>
+              Default account: <strong className="pc-da__mono">{defaultAccountId}</strong> — agents,
+              the operator brain, judges and summarisers start here and fail over to the rest of the
+              pool.
+            </span>
+          ) : (
+            <span>
+              No default account — everything falls back to this machine&rsquo;s own Claude login
+              (<code className="pc-da__mono">~/.claude</code>). Set one below to use a pool account
+              instead.
+            </span>
+          )}
+          {defaultAccountId && (
+            <button
+              type="button"
+              className="pc-da__btn pc-da__btn--ghost"
+              disabled={defaultBusy !== null}
+              onClick={() => setDefault(null)}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="pc-da__list">
         {loadingList && <p className="pc-da__muted">Loading…</p>}
         {listError && <p className="pc-da__error">⚠ {listError}</p>}
@@ -585,7 +663,7 @@ export default function DeployAccountsPage() {
             <div className="pc-da__grid-shell">
               <div className="pc-da__grid" style={{ height: gridHeight }}>
                 <RichGrid<AccountRow>
-                  columns={accountColumns(headroom, remove)}
+                  columns={accountColumns(headroom, remove, defaultAccountId, defaultBusy, setDefault)}
                   rows={accounts}
                   getRowId={(a) => a.id}
                   rowMinHeight={46}
@@ -600,6 +678,9 @@ export default function DeployAccountsPage() {
                   account={account}
                   headroom={headroom}
                   remove={remove}
+                  defaultAccountId={defaultAccountId}
+                  defaultBusy={defaultBusy}
+                  setDefault={setDefault}
                 />
               ))}
             </div>
@@ -611,6 +692,11 @@ export default function DeployAccountsPage() {
         .pc-da { container-type: inline-size; display: grid; gap: 6px; min-width: 0; color: var(--fg); }
         .pc-da__hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding-bottom: 7px; border-bottom: 1px solid color-mix(in srgb, var(--border), white 8%); }
         .pc-da__hero-copy { display: grid; gap: 4px; min-width: 0; }
+        .pc-da__default-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--border), white 6%); border-radius: 8px; background: color-mix(in srgb, var(--bg-2), transparent 20%); color: var(--fg-mute); font-size: 11.5px; line-height: 1.35; }
+        .pc-da__default-banner strong { color: var(--fg); font-weight: 600; }
+        .pc-da__default-banner > button { margin-left: auto; }
+        .pc-da__btn--default-on { color: var(--accent-ink, var(--fg)); background: color-mix(in srgb, var(--accent), transparent 72%); border-color: color-mix(in srgb, var(--accent), transparent 40%); }
+        .pc-da__default-na { color: var(--fg-mute); opacity: 0.6; }
         .pc-da h1 { margin: 0; font-size: clamp(21px, 2.6vw, 29px); line-height: 1; letter-spacing: 0; text-shadow: none; }
         .pc-da__meta-line { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; color: var(--fg-mute); font-size: 11px; line-height: 1.2; }
         .pc-da__meta-line span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -696,7 +782,13 @@ export default function DeployAccountsPage() {
   );
 }
 
-function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => void): ColumnDef<AccountRow>[] {
+function accountColumns(
+  headroom: PoolHeadroom | null,
+  remove: (id: string) => void,
+  defaultAccountId: string | null | undefined,
+  defaultBusy: string | null,
+  setDefault: (id: string | null) => void,
+): ColumnDef<AccountRow>[] {
   return [
     {
       key: 'id',
@@ -741,6 +833,20 @@ function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => v
       render: ({ row }) => <span className="pc-da__mono pc-da__cred">{row.credentialRef}</span>,
     },
     {
+      key: 'default',
+      header: 'Default',
+      width: '92px',
+      toCopyText: (a) => (a.id === defaultAccountId ? 'default' : ''),
+      render: ({ row }) => (
+        <DefaultToggle
+          row={row}
+          defaultAccountId={defaultAccountId}
+          busy={defaultBusy}
+          setDefault={setDefault}
+        />
+      ),
+    },
+    {
       key: 'actions',
       header: '',
       width: '88px',
@@ -752,6 +858,53 @@ function accountColumns(headroom: PoolHeadroom | null, remove: (id: string) => v
       ),
     },
   ];
+}
+
+/**
+ * Per-row "make this the default" control. Radio-like (picking one implicitly unpicks the
+ * others) rather than a checkbox, because exactly one account can hold the role.
+ *
+ * Codex rows render a disabled marker instead of being hidden: the default stands in for the
+ * machine's CLAUDE login, and a silently absent control reads as a bug, whereas a disabled one
+ * with a reason answers the question the owner is actually asking.
+ */
+function DefaultToggle({
+  row,
+  defaultAccountId,
+  busy,
+  setDefault,
+}: {
+  row: AccountRow;
+  defaultAccountId: string | null | undefined;
+  busy: string | null;
+  setDefault: (id: string | null) => void;
+}) {
+  if (accountProvider(row) !== 'claude') {
+    return (
+      <span className="pc-da__default-na" title="Only a Claude account can be the default — it stands in for this machine's Claude login.">
+        —
+      </span>
+    );
+  }
+  const isDefault = defaultAccountId === row.id;
+  const pending = busy !== null;
+  return (
+    <button
+      type="button"
+      className={`pc-da__btn ${isDefault ? 'pc-da__btn--default-on' : 'pc-da__btn--ghost'}`}
+      disabled={pending}
+      aria-pressed={isDefault}
+      title={
+        isDefault
+          ? "This account stands in for the machine's own Claude login. Click to clear it."
+          : 'Make this the account everything on this machine uses by default.'
+      }
+      onClick={() => setDefault(isDefault ? null : row.id)}
+    >
+      <Star size={13} aria-hidden="true" fill={isDefault ? 'currentColor' : 'none'} />
+      {isDefault ? 'Default' : 'Set'}
+    </button>
+  );
 }
 
 function AccountIdentity({ row, headroom }: { row: AccountRow; headroom: PoolHeadroom | null }) {
@@ -787,10 +940,16 @@ function AccountCard({
   account,
   headroom,
   remove,
+  defaultAccountId,
+  defaultBusy,
+  setDefault,
 }: {
   account: AccountRow;
   headroom: PoolHeadroom | null;
   remove: (id: string) => void;
+  defaultAccountId: string | null | undefined;
+  defaultBusy: string | null;
+  setDefault: (id: string | null) => void;
 }) {
   const boundText = account.boundTo.length ? account.boundTo.join(', ') : '—';
   return (
@@ -799,6 +958,12 @@ function AccountCard({
       <div className="pc-da__card-badges">
         {accountStatus(account)}
         <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(account))}</span>
+        <DefaultToggle
+          row={account}
+          defaultAccountId={defaultAccountId}
+          busy={defaultBusy}
+          setDefault={setDefault}
+        />
       </div>
       <div className="pc-da__card-usage">
         <UsageCell row={account} headroom={headroom} />

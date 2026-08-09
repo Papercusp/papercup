@@ -467,6 +467,19 @@ async function readBgHostJournal(windowHours: number): Promise<BgHostJournalMetr
   }
 }
 
+/**
+ * EI-19937931088042507: journalctl on this box has been measured taking 20-26s
+ * even UNIT-SCOPED on a large/near-full journal, and `execFile` has NO default
+ * timeout — an unresponsive/slow journal (disk pressure, journal rotation
+ * stall) hangs this call indefinitely. That hang is invisible to the caller's
+ * `.catch()` (a hang neither resolves nor rejects), so it silently blocks
+ * whatever awaits `readPotSoakReport` — measured hanging `pot:status` past its
+ * 55s tool ceiling with pot_placements/agent_activity both cheap and fast.
+ * Bound the child process explicitly so a slow journal degrades to the
+ * existing `journalError` reporting path instead of hanging the caller.
+ */
+const JOURNALCTL_TIMEOUT_MS = 8_000;
+
 export async function readBgHostJournalUncached(windowHours: number): Promise<BgHostJournalMetrics> {
   const since = `${windowHours} hours ago`;
   // --grep server-side so only candidate lines cross the pipe (~3KB, not ~400MB).
@@ -485,7 +498,7 @@ export async function readBgHostJournalUncached(windowHours: number): Promise<Bg
             '|',
           ),
         ],
-        { maxBuffer },
+        { maxBuffer, timeout: JOURNALCTL_TIMEOUT_MS },
       ),
       // MUST stay unit-scoped. Without `-u` this walks EVERY unit in the user
       // journal: measured 25.97s to return 17 bytes on a 1.2GB journal, versus
@@ -495,7 +508,7 @@ export async function readBgHostJournalUncached(windowHours: number): Promise<Bg
       execFileAsync(
         'journalctl',
         [...base, '-u', 'papercup-bg-host.service', '--grep', BG_HOST_OOM_PATTERN],
-        { maxBuffer },
+        { maxBuffer, timeout: JOURNALCTL_TIMEOUT_MS },
       ),
     ]);
     const parsed = parseBgHostUnitJournal(unit.stdout);
@@ -507,7 +520,21 @@ export async function readBgHostJournalUncached(windowHours: number): Promise<Bg
     // journalctl exits 1 when --grep matches nothing: that is a genuinely clean
     // window, not a failed read. Anything else (missing binary, no user journal,
     // maxBuffer) leaves the counts UNKNOWN, and journalError makes the gate say so.
-    const e = err as { code?: unknown; stdout?: unknown; stderr?: unknown };
+    const e = err as { code?: unknown; stdout?: unknown; stderr?: unknown; killed?: unknown; signal?: unknown };
+    // A `timeout`-triggered kill has no meaningful exit code (code is null/undefined,
+    // killed:true) and its default Node error message doesn't say "timeout" — label
+    // it explicitly so journalError reads as a bounded degradation, not a mystery.
+    if (e.killed) {
+      return {
+        oomKillCount: 0,
+        restartCount: 0,
+        failureCount: 0,
+        peakMemoryMb: null,
+        highMemoryPeakCount: 0,
+        journalError: `journalctl read timed out after ${JOURNALCTL_TIMEOUT_MS}ms (signal ${String(e.signal ?? '?')}) — journal likely slow/large; counts below are UNKNOWN, not clean`,
+        journalAvailable: true,
+      };
+    }
     if (e.code === 1 && !String(e.stderr ?? '').trim()) {
       return {
         oomKillCount: 0,

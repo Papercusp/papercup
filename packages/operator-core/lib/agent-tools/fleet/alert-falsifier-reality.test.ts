@@ -77,6 +77,19 @@ const FIRING: { name: string; fired: { reason: string; falsifier: AlertFalsifier
       fleet: 'my-fleet',
     }),
   },
+  {
+    // WI-37161: the pool-congested variant of idleWithClaimable — a DIFFERENT falsifier
+    // (fleet:capacity, not work_items:list) than the sibling fixture above, so it needs its
+    // own row rather than relying on the un-parameterized one to cover it.
+    name: 'idleWithClaimablePoolCongested',
+    fired: computeIdleWithClaimableAlert({
+      claimableCount: 12,
+      idleMemberCount: 2,
+      harness: 'papercusp',
+      idleMemberIds: ['su-abc123', 'su-def456'],
+      poolCapacity: { poolExhausted: false, degraded: true, factor: 0, queueDepth: 28, usableAccounts: 1, availableAccounts: 2 },
+    }),
+  },
 ];
 
 describe('alert falsifier reality (EI-19313376980892266 item C)', () => {

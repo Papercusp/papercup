@@ -23,16 +23,16 @@ vi.mock('../coordination/federation-scope', async () => {
   return { ...actual, resolveWorkspaceHiveScope: vi.fn() };
 });
 vi.mock('../../p2p/offer-store', () => ({
-  listWorkOffers: vi.fn(async () => []),
+  listOffers: vi.fn(async () => []),
 }));
 
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
-import { listWorkOffers } from '../../p2p/offer-store';
+import { listOffers } from '../../p2p/offer-store';
 
 const identM = vi.mocked(resolveAgentIdentity);
 const scopeM = vi.mocked(resolveWorkspaceHiveScope);
-const listM = vi.mocked(listWorkOffers);
+const listM = vi.mocked(listOffers);
 
 const mod = await import('./offers');
 const { toSummaryRow } = mod;

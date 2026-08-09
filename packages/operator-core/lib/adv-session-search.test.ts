@@ -5,14 +5,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildActiveEntryMatchFilter,
+  buildIdMatchResults,
   classifySessionGroups,
   DEFAULT_FRESH_WINDOW_H,
   DEFAULT_HALF_LIFE_H,
   DEFAULT_WEIGHT,
   groupHitsBySession,
   matchActiveEntry,
+  matchSessionIdField,
   matchSessionRow,
+  mergeIdMatches,
   parseRecencyParams,
+  parseSessionIdQuery,
+  sessionIdCandidateMatches,
+  transcriptIdentity,
+  type ClassifiedSessionHits,
   type TranscriptTurnHit,
 } from './adv-session-search';
 import type { RosterEntry } from './adv-roster';
@@ -307,5 +314,210 @@ describe('parseRecencyParams (WI-5097)', () => {
     expect(parse('q=x&recencyFreshWindowH=-1')).toMatchObject({
       freshWindowMs: DEFAULT_FRESH_WINDOW_H * 3_600_000,
     });
+  });
+});
+
+// ── ID search (WI-37204) ────────────────────────────────────────────────────
+
+describe('parseSessionIdQuery (WI-37204)', () => {
+  it('accepts the three id shapes this system hands a human', () => {
+    // Full coord owner id, and the SHORT HANDLE the roster/HUD actually render.
+    expect(parseSessionIdQuery('su-bc38a419-8dc6-4040-a63e-2dc0515e42be')).toBe(
+      'su-bc38a419-8dc6-4040-a63e-2dc0515e42be',
+    );
+    expect(parseSessionIdQuery('su-bc38a419')).toBe('su-bc38a419');
+    // Native claude session uuid + the 8-hex head an ended-session card shows.
+    expect(parseSessionIdQuery('073c5a1e-d280-4c37-866c-fedcaf096c9e')).toBe(
+      '073c5a1e-d280-4c37-866c-fedcaf096c9e',
+    );
+    expect(parseSessionIdQuery('073c5a1e')).toBe('073c5a1e');
+    // Spawn/presence owner id (fleet-spawn + omp-hook-session rows).
+    expect(parseSessionIdQuery('s-1786227863758-271597fd')).toBe('s-1786227863758-271597fd');
+  });
+
+  it('lowercases, so a pasted upper-case uuid still resolves', () => {
+    expect(parseSessionIdQuery('073C5A1E-D280-4C37-866C-FEDCAF096C9E')).toBe(
+      '073c5a1e-d280-4c37-866c-fedcaf096c9e',
+    );
+  });
+
+  it('rejects prose — an id leg firing on ordinary queries would inject unrelated sessions at the top of every search', () => {
+    expect(parseSessionIdQuery('escalation')).toBeNull();
+    expect(parseSessionIdQuery('why did the gate go red')).toBeNull();
+    // A phrase CONTAINING an id is prose: the human is describing, not addressing.
+    expect(parseSessionIdQuery('su-bc38a419 crashed')).toBeNull();
+    expect(parseSessionIdQuery('green-checkpoint')).toBeNull();
+  });
+
+  it('rejects tokens below the short-handle floor, where hex collides with words', () => {
+    // `shortHandle` never renders fewer than 6 hex, so nothing shorter is a
+    // handle a human was given — and these are all real English words.
+    expect(parseSessionIdQuery('added')).toBeNull();
+    expect(parseSessionIdQuery('beef')).toBeNull();
+    expect(parseSessionIdQuery('decade')).toBe('decade'); // 6 hex: accepted by shape…
+    // …and harmless, because it resolves against ids, not text: nothing starts
+    // with it, so the id leg contributes nothing and the text leg still runs.
+    expect(buildIdMatchResults('decade', [roster({ ownerId: 'su-bc38a419' })], [])).toEqual([]);
+  });
+});
+
+describe('sessionIdCandidateMatches / matchSessionIdField (WI-37204)', () => {
+  it('matches on PREFIX, never mid-string', () => {
+    expect(sessionIdCandidateMatches('su-bc38a419-8dc6-4040', 'su-bc38a419')).toBe(true);
+    expect(sessionIdCandidateMatches('su-bc38a419-8dc6-4040', 'su-bc38a419-8dc6-4040')).toBe(true);
+    // The TAIL of an id is not a handle anyone is given; matching it would let
+    // one uuid pull in unrelated sessions that merely share a run of hex.
+    expect(sessionIdCandidateMatches('su-bc38a419-8dc6-4040', '8dc6-4040')).toBe(false);
+    expect(sessionIdCandidateMatches(null, 'su-bc38a419')).toBe(false);
+    expect(sessionIdCandidateMatches(undefined, 'su-bc38a419')).toBe(false);
+  });
+
+  it('names WHICH id matched, and prefers the owner id', () => {
+    const e = {
+      ownerId: 'su-bc38a419-8dc6',
+      sessionId: '073c5a1e-d280',
+      ompThreadId: 'omp-77aa11bb',
+    };
+    expect(matchSessionIdField(e, 'su-bc38a4')).toBe('ownerId');
+    expect(matchSessionIdField(e, '073c5a1e')).toBe('sessionId');
+    expect(matchSessionIdField(e, 'omp-77aa11')).toBe('ompThreadId');
+    expect(matchSessionIdField(e, 'ffffffff')).toBeNull();
+  });
+
+  it('reads an adv row’s coordOwnerId as its owner id', () => {
+    expect(matchSessionIdField({ coordOwnerId: 'su-bc38a419-8dc6' }, 'su-bc38a419')).toBe('ownerId');
+  });
+});
+
+describe('transcriptIdentity (WI-37204)', () => {
+  it('keys claude by native session id and omp by thread id', () => {
+    expect(transcriptIdentity({ ownerId: 'su-a', sessionId: 'sid-1' })).toEqual({
+      sourceKind: 'claude',
+      sessionId: 'sid-1',
+    });
+    expect(transcriptIdentity({ ownerId: 'su-a', ompThreadId: 'thr-1' })).toEqual({
+      sourceKind: 'omp',
+      sessionId: 'thr-1',
+    });
+  });
+
+  it('falls back to a synthetic key that NAMES the backend rather than claiming claude', () => {
+    expect(transcriptIdentity({ ownerId: 'su-a', agent: 'codex' })).toEqual({
+      sourceKind: 'codex',
+      sessionId: 'su-a',
+    });
+    expect(transcriptIdentity({ coordOwnerId: null, agent: null, id: 42 })).toEqual({
+      sourceKind: 'session',
+      sessionId: 'adv-42',
+    });
+  });
+});
+
+describe('buildIdMatchResults (WI-37204)', () => {
+  const live = roster({ ownerId: 'su-bc38a419-8dc6', sessionId: 'sid-live' });
+  const liveRow = advRow({
+    id: 7,
+    coordOwnerId: 'su-bc38a419-8dc6',
+    sessionId: 'sid-live',
+    ompThreadId: null,
+  });
+  const endedRow = advRow({
+    id: 8,
+    coordOwnerId: 'su-bc38a419-9999',
+    sessionId: 'sid-ended',
+    ompThreadId: null,
+    endedAt: '2026-08-01T00:00:00Z',
+  });
+
+  it('resolves a live agent by its su id, with hits EMPTY and idMatch stamped', () => {
+    const out = buildIdMatchResults('su-bc38a419-8dc6', [live], []);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      sourceKind: 'claude',
+      sessionId: 'sid-live',
+      hits: [],
+      idMatch: 'ownerId',
+    });
+    expect(out[0].active).toBe(live);
+  });
+
+  it('resolves an ENDED session by id — the case the live roster can never answer', () => {
+    const out = buildIdMatchResults('sid-ended', [], [endedRow]);
+    expect(out).toHaveLength(1);
+    expect(out[0].active).toBeNull();
+    expect(out[0].session).toBe(endedRow);
+    expect(out[0].idMatch).toBe('sessionId');
+  });
+
+  it('puts live entries first and pairs each with its recorded row', () => {
+    const out = buildIdMatchResults('su-bc38a419', [live], [endedRow, liveRow]);
+    expect(out.map((r) => r.sessionId)).toEqual(['sid-live', 'sid-ended']);
+    expect(out[0].active).toBe(live);
+    expect(out[0].session).toBe(liveRow); // paired, not left null
+  });
+
+  it('does not emit the same agent twice when its roster entry and its row both match', () => {
+    // The exact shape that produces a duplicate if only the transcript key is
+    // deduped: the roster entry has not recorded a native session id yet, so it
+    // keys synthetically while its row keys as claude.
+    const noHandle = roster({ ownerId: 'su-bc38a419-8dc6' });
+    const out = buildIdMatchResults('su-bc38a419-8dc6', [noHandle], [liveRow]);
+    expect(out).toHaveLength(1);
+    expect(out[0].active).toBe(noHandle);
+  });
+
+  it('caps the result count so a short prefix cannot flood the popover', () => {
+    const many = Array.from({ length: 40 }, (_, i) =>
+      roster({ ownerId: `su-abcdef${String(i).padStart(2, '0')}`, sessionId: `sid-${i}` }),
+    );
+    expect(buildIdMatchResults('su-abcdef', many, [])).toHaveLength(20);
+    expect(buildIdMatchResults('su-abcdef', many, [], { limit: 3 })).toHaveLength(3);
+  });
+});
+
+describe('mergeIdMatches (WI-37204)', () => {
+  const res = (over: Partial<ClassifiedSessionHits>): ClassifiedSessionHits => ({
+    sourceKind: 'claude',
+    sessionId: 'sid',
+    topScore: 0,
+    hits: [],
+    active: null,
+    session: null,
+    ...over,
+  });
+
+  it('is a no-op when the query is not an id', () => {
+    const text = [res({ sessionId: 'a' }), res({ sessionId: 'b' })];
+    expect(mergeIdMatches([], text)).toEqual(text);
+  });
+
+  it('KEEPS the text hits of a session that is also an id match', () => {
+    // The reason this merges rather than replaces: ids appear in transcript
+    // prose, and those hits are often exactly why someone searched the id.
+    const textHits = [hit({ sessionId: 'a', excerpt: 'waking su-bc38a419' })];
+    const merged = mergeIdMatches(
+      [res({ sessionId: 'a', idMatch: 'ownerId' })],
+      [res({ sessionId: 'a', hits: textHits, topScore: 9 })],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].hits).toBe(textHits);
+    expect(merged[0].topScore).toBe(9);
+    expect(merged[0].idMatch).toBe('ownerId');
+  });
+
+  it('hoists id matches above pure text results, and never duplicates one', () => {
+    const merged = mergeIdMatches(
+      [res({ sessionId: 'b', idMatch: 'sessionId' })],
+      [res({ sessionId: 'a' }), res({ sessionId: 'b' }), res({ sessionId: 'c' })],
+    );
+    expect(merged.map((r) => r.sessionId)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('keys on sourceKind AND sessionId — two backends may share an id string', () => {
+    const merged = mergeIdMatches(
+      [res({ sourceKind: 'claude', sessionId: 'x', idMatch: 'sessionId' })],
+      [res({ sourceKind: 'omp', sessionId: 'x' })],
+    );
+    expect(merged).toHaveLength(2);
   });
 });

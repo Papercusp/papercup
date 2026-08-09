@@ -174,6 +174,21 @@ const DEFAULTS = {
   maxCohortSample: 20,
 } as const;
 
+/**
+ * Length-normalized lift: the mean per-TRANSITION log10 lift.
+ *
+ * Raw lift multiplies one marginal per symbol, so it compounds with length and
+ * a longer pattern almost always outranks a shorter one on it — which makes a
+ * lift-sorted list a length-sorted list wearing a disguise. Dividing the log by
+ * the number of TRANSITIONS (length - 1, the count of adjacencies the pattern
+ * actually asserts) puts every length on one scale. A 1-symbol "pattern"
+ * asserts no adjacency and scores 0.
+ */
+export function strengthOf(lift: number, length: number): number {
+  if (length < 2 || !Number.isFinite(lift) || lift <= 0) return 0;
+  return Math.log10(lift) / (length - 1);
+}
+
 /** Join symbols into a collision-free key (NUL cannot appear in a symbol). */
 const keyOf = (symbols: readonly string[]): string => symbols.join('\x00');
 
@@ -373,11 +388,13 @@ export function minePatterns(bursts: readonly Burst[], policy: PatternPolicy = {
     patterns = kept;
   }
 
-  // Rank: lift first (interestingness), cohort breadth then occurrences as the
-  // tiebreakers, and finally the key so the order is total and reproducible.
+  // Rank by STRENGTH (length-normalized lift), not raw lift: raw lift compounds
+  // with length, so sorting on it returns the longest patterns rather than the
+  // most surprising ones. Cohort breadth then occurrences break ties, and the
+  // key makes the order total and reproducible.
   patterns.sort(
     (a, b) =>
-      b.lift - a.lift ||
+      b.strength - a.strength ||
       b.cohorts - a.cohorts ||
       b.occurrences - a.occurrences ||
       keyOf(a.symbols).localeCompare(keyOf(b.symbols)),

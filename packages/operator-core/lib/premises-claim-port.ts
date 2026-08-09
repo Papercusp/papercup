@@ -15,7 +15,7 @@
  * Root incident (WI-7042, the item this plan was filed from): the body asserted
  * "there is no exported read helper for `harness_shared.p2p_work_offers`" and
  * prescribed writing a new PG read module on it. FALSE — `offer-store.ts`
- * exports `getWorkOffer` + `listWorkOffers`. The premise came from grepping
+ * exports `getWorkOffer` + `listOffers`. The premise came from grepping
  * `projections/work-offers.ts`, the receive/apply leg. The error was SCOPE OF
  * INFERENCE, not method: a real search, over the wrong scope, reported as an
  * absolute absence. Catching it deleted the prescribed module before it was

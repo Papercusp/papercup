@@ -16,6 +16,8 @@ import {
   endedSessionStreamUrl,
   headlineToSafeHtml,
   hitMatchLabel,
+  idMatchLabel,
+  idMatchStreamUrl,
   searchFailureMessage,
   searchHitStreamUrl,
   searchResultFocusTarget,
@@ -695,5 +697,215 @@ describe('SessionSearchResults renders the match label (P-004 wiring)', () => {
     await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
     expect(screen.getByTestId('hit-provenance').textContent).toBe('no highlight');
     expect(screen.getByTestId('hit-sid-old-0').getAttribute('data-matched-by')).toBeNull();
+  });
+});
+
+/* ── ID search (WI-37204, owner ask 2026-08-08) ─────────────────────────────
+   "fix the search in both the agents running dropdown and the hud sessions
+   search to support searching both by the su id and the session id".
+
+   The dropdown REPLACES the roster with these results at >=2 chars, and the
+   engine behind them searches turn TEXT — so an id query answered nothing at
+   all. Measured on the live operator before the fix:
+   `?q=su-bc38a419` → `{ totalHits: 0, sessions: [] }`. */
+
+describe('idMatchLabel (pure)', () => {
+  it('names WHICH id matched, so a card with no excerpts explains itself', () => {
+    expect(idMatchLabel('ownerId')).toBe('matched su id');
+    expect(idMatchLabel('sessionId')).toBe('matched session id');
+    expect(idMatchLabel('ompThreadId')).toBe('matched thread id');
+  });
+});
+
+describe('idMatchStreamUrl (pure)', () => {
+  const agent = (over: Partial<RosterAgent> = {}) =>
+    ({ ownerId: 'su-bc38a419-8dc6', label: 'su · bc38a419', ...over }) as RosterAgent;
+
+  it('opens a LIVE claude session at the head, with no find term', () => {
+    const url = idMatchStreamUrl({
+      sourceKind: 'claude',
+      sessionId: 'sid-1',
+      active: agent(),
+      session: null,
+    });
+    expect(url).toContain('sessionId=sid-1');
+    expect(url).toContain('owner=su-bc38a419-8dc6');
+    /* No `find=`: an id search means "show me THIS session", not "show me where
+       it says its own name". Anchoring on the id would scroll the viewer to
+       whatever turn happens to mention it — usually none — so the pane would
+       look like it failed to find the thing you just successfully found. */
+    expect(url).not.toContain('find=');
+    expect(url).not.toContain('anchorTs=');
+    // A live agent's transcript is on disk; `ended=1` would make the thinking
+    // route rematerialize-from-archive/terminate and cut the live stream.
+    expect(url).not.toContain('ended=1');
+  });
+
+  it('opens a live omp session by its thread id', () => {
+    expect(
+      idMatchStreamUrl({ sourceKind: 'omp', sessionId: 'thr-1', active: agent(), session: null }),
+    ).toContain('ompThreadId=thr-1');
+  });
+
+  it('falls back to the recorded row for an ENDED session, marking it ended', () => {
+    const url = idMatchStreamUrl({
+      sourceKind: 'claude',
+      sessionId: 'sid-2',
+      active: null,
+      session: {
+        id: 9, planSlug: null, agent: 'claude', role: null, feature: null, label: null,
+        coordOwnerId: 'su-dead0000', sessionId: 'sid-2', ompThreadId: null,
+        startedAt: '2026-08-01T00:00:00Z', endedAt: '2026-08-01T01:00:00Z', exitCode: 0,
+      } satisfies EndedSessionRow,
+    });
+    expect(url).toContain('sessionId=sid-2');
+    expect(url).toContain('ended=1');
+  });
+
+  it('routes a CODEX row through the recorded-row path, which is the only one that can open it', () => {
+    // searchHitStreamUrl keys codex by ROLLOUT id; the ended-row path keys it by
+    // the adv row id (its per-session CODEX_HOME). Only the latter is derivable
+    // from an id match, which is why this prefers `session` over a hit URL.
+    const url = idMatchStreamUrl({
+      sourceKind: 'codex',
+      sessionId: 'su-abc12345',
+      active: null,
+      session: {
+        id: 11, planSlug: null, agent: 'codex', role: null, feature: null, label: null,
+        coordOwnerId: 'su-abc12345', sessionId: null, ompThreadId: null,
+        startedAt: '2026-08-01T00:00:00Z', endedAt: null, exitCode: null,
+      } satisfies EndedSessionRow,
+    });
+    expect(url).toContain('codexSessionKey=11');
+  });
+
+  it('returns null when nothing knows how to open it — never a dead click', () => {
+    expect(
+      idMatchStreamUrl({ sourceKind: 'session', sessionId: 'su-x', active: null, session: null }),
+    ).toBeNull();
+  });
+});
+
+describe('SessionSearchResults — id matches (WI-37204)', () => {
+  const NOW = Date.parse('2026-08-08T12:00:00Z');
+  const agent = (over: Partial<RosterAgent> = {}) =>
+    ({
+      ownerId: 'su-bc38a419-8dc6-4040-a63e-2dc0515e42be',
+      label: 'su · bc38a419',
+      agent: 'claude',
+      role: null,
+      intent: 'greening the gate',
+      feature: null,
+      currentPlanSlug: null,
+      liveness: 'live',
+      heartbeatAt: '2026-08-08T11:59:59Z',
+      lastActiveAt: '2026-08-08T11:59:59Z',
+      sessionId: '073c5a1e-d280-4c37-866c-fedcaf096c9e',
+      ...over,
+    }) as RosterAgent;
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const respondWith = (sessions: SearchSessionResult[], idToken?: string) =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, sessions, idToken }) })),
+    );
+
+  const instant = (over: Partial<SearchSessionResult> = {}): SearchSessionResult => ({
+    sourceKind: 'claude',
+    sessionId: '073c5a1e-d280-4c37-866c-fedcaf096c9e',
+    topScore: 0,
+    hits: [],
+    active: agent(),
+    session: null,
+    idMatch: 'ownerId',
+    ...over,
+  });
+
+  it('renders the caller’s instant id match IMMEDIATELY, before the server answers', async () => {
+    // A never-resolving fetch: whatever renders here owes nothing to the server.
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    render(
+      <SessionSearchResults query="su-bc38a419" nowMs={NOW} instantIdMatches={[instant()]} />,
+    );
+    expect(screen.getByTestId('search-pending')).toBeTruthy();
+    expect(screen.getByTestId('id-match-chip').textContent).toBe('matched su id');
+  });
+
+  it('makes a hit-less id match OPENABLE — the whole point of searching an id', async () => {
+    respondWith([]);
+    render(<SessionSearchResults query="su-bc38a419" nowMs={NOW} instantIdMatches={[instant()]} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    const head = screen
+      .getByTestId('session-hit-claude-073c5a1e-d280-4c37-866c-fedcaf096c9e')
+      .querySelector('.pc-agents-sessions__result-head') as HTMLElement;
+    // Before this, a result with no hits fell into the dead
+    // "No transcript viewer for this source" state and could not be clicked.
+    expect(head.getAttribute('role')).toBe('button');
+    expect(head.className).not.toContain('is-unopenable');
+    expect(head.getAttribute('title')).toBe('Open this session');
+  });
+
+  it('does NOT double-render a session the server also returns as an id match', async () => {
+    respondWith([instant({ idMatch: 'ownerId' })], 'su-bc38a419');
+    render(<SessionSearchResults query="su-bc38a419" nowMs={NOW} instantIdMatches={[instant()]} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    expect(screen.getAllByTestId('id-match-chip')).toHaveLength(1);
+  });
+
+  it('keeps a transcript hit for a session that ALSO matched by id', async () => {
+    // Ids DO appear in transcript prose, and that hit is often exactly why the
+    // id was searched — the union must not drop it.
+    respondWith([
+      instant({
+        hits: [{
+          turnIdx: 3,
+          ts: '2026-08-08T11:00:00Z',
+          owner: 'su-bc38a419-8dc6-4040-a63e-2dc0515e42be',
+          excerpt: 'waking su-bc38a419',
+          highlight: 'waking <mark>su-bc38a419</mark>',
+          score: 2,
+          matchedBy: 'lexical',
+        }],
+      }),
+    ]);
+    render(<SessionSearchResults query="su-bc38a419" nowMs={NOW} instantIdMatches={[instant()]} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    expect(screen.getByTestId('id-match-chip')).toBeTruthy();
+    expect(screen.getByTestId('hit-073c5a1e-d280-4c37-866c-fedcaf096c9e-3').textContent)
+      .toContain('waking');
+  });
+
+  it('says NO SESSION HAS THAT ID rather than the generic no-matches copy', async () => {
+    respondWith([], 'su-ffffffff');
+    render(<SessionSearchResults query="su-ffffffff" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    // "No matches in any session" reads as a broken search when you just pasted
+    // an id you know is real; this reads as an answer.
+    expect(screen.getByTestId('search-empty').textContent).toContain('su-ffffffff');
+    expect(screen.getByTestId('search-empty').textContent).toContain('No session has an id');
+  });
+
+  it('keeps the generic copy for a prose query that found nothing', async () => {
+    respondWith([]); // no idToken — the server judged this prose
+    render(<SessionSearchResults query="theory of mind" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    expect(screen.getByTestId('search-empty').textContent).toBe('No matches in any session.');
+  });
+
+  it('leaves an ordinary text result unchipped', async () => {
+    respondWith([
+      {
+        sourceKind: 'claude', sessionId: 'sid-text', topScore: 1, active: null, session: null,
+        hits: [{ turnIdx: 0, ts: null, owner: null, excerpt: 'a <mark>deploy</mark> ran', highlight: 'a <mark>deploy</mark> ran', score: 1, matchedBy: 'lexical' }],
+      },
+    ]);
+    render(<SessionSearchResults query="deploy" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    expect(screen.queryByTestId('id-match-chip')).toBeNull();
   });
 });

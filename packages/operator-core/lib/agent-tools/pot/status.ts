@@ -22,6 +22,12 @@ import { summarizeOpenPlacements } from '../../pot/placement-watchdog';
 import { readPotSoakReport } from '../../pot/soak-report';
 import { UNVERIFIED_NOTE_STAMP } from '../../pot/owner-claim-guard';
 
+/** EI-19937931088042507: the outer bound on the soak-report fan-out (see the
+ *  Promise.race in the handler) — independent of soak-report.ts's own internal
+ *  journalctl timeout, so pot:status degrades to a partial answer instead of
+ *  hanging even if some future soak-report dependency grows an unbounded call. */
+const POT_STATUS_SOAK_REPORT_TIMEOUT_MS = 10_000;
+
 export default defineTool({
   name: 'pot:status',
   profile: 'engineer',
@@ -72,7 +78,26 @@ export default defineTool({
     // B-09 P-020/P-023: the open placements the Mug must drive to terminal —
     // recovering (re-place now), cursed (escalated), stranded (blocker stuck).
     const placements = installSlug ? await summarizeOpenPlacements(workspaceId, installSlug) : null;
-    const soakReport = installSlug ? await readPotSoakReport(installSlug).catch(() => null) : null;
+    // EI-19937931088042507: readPotSoakReport fans out to `journalctl` (now bounded to
+    // JOURNALCTL_TIMEOUT_MS internally, see soak-report.ts), but this outer race is a
+    // second, independent bound — the detector-gap half of the fix. `.catch(() => null)`
+    // alone only guards a REJECTION; it does nothing against a genuine hang (a promise
+    // that never settles), which is exactly how this tool was observed exceeding its
+    // 55s ceiling while every other field it reads (pot_placements, agent_activity) was
+    // measured answering in milliseconds. A slow/unavailable soak report degrades this
+    // field to `null` + `soakReportTimedOut:true` instead of hanging the whole call.
+    let soakReportTimedOut = false;
+    const soakReport = installSlug
+      ? await Promise.race([
+          readPotSoakReport(installSlug).catch(() => null),
+          new Promise<null>((resolve) =>
+            setTimeout(() => {
+              soakReportTimedOut = true;
+              resolve(null);
+            }, POT_STATUS_SOAK_REPORT_TIMEOUT_MS).unref?.(),
+          ),
+        ])
+      : null;
 
     return {
       content: [
@@ -92,6 +117,10 @@ export default defineTool({
               staleSec: watchdogStaleSec(),
             },
             soakReport,
+            // true only when the outer POT_STATUS_SOAK_REPORT_TIMEOUT_MS race fired —
+            // soakReport is then null NOT because the report is clean, but because it
+            // could not be read in time. Never conflate the two (EI-19937931088042507).
+            soakReportTimedOut,
             time: time
               ? {
                   active: time.active,

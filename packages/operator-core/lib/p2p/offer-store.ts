@@ -146,7 +146,7 @@ export interface ListWorkOffersFilter {
 }
 
 /** List offers in a Hive, filtered server-side (the fleet board / puller scan). */
-export async function listWorkOffers(
+export async function listOffers(
   workspaceId: string,
   potHomeSlug: string,
   filter?: ListWorkOffersFilter,

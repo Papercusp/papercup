@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../coordination/federation-scope';
-import { listWorkOffers, type StoredWorkOffer } from '../../p2p/offer-store';
+import { listOffers, type StoredWorkOffer } from '../../p2p/offer-store';
 
 export interface SeatOfferSummaryRow {
   offerId: string;
@@ -87,7 +87,7 @@ export default defineTool({
         },
       };
     }
-    const rows = await listWorkOffers(ident.workspaceId, picked.homeSlug, {
+    const rows = await listOffers(ident.workspaceId, picked.homeSlug, {
       kind: 'seat',
       status: 'open',
       ...(args.fleetSlug ? { fleetSlug: args.fleetSlug } : {}),

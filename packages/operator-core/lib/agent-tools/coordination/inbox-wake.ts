@@ -434,7 +434,7 @@ export async function reportIdleRecipients(
   const concrete = [...new Set(recipients)].filter(
     (r) => !isSelectorOrWildcard(r) && !NON_WAKEABLE.has(r),
   );
-  if (concrete.length === 0) return { idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false };
+  if (concrete.length === 0) return { idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false, aliveNotWakeable: [] };
 
   // The local roster — the membership truth for "is this recipient federated?".
   // A read hiccup DEGRADES the whole probe (invariant c): we cannot tell idle

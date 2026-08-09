@@ -15,6 +15,14 @@ import { useSyncQuery } from '@papercusp/sync';
 export interface AccountOverride {
   forcedAccounts: string[];
   excludeAccounts: string[];
+  /**
+   * The Claude pool account standing in for this machine's own ~/.claude login
+   * (default-deploy-account-2026-08-08 P-006). Absent ⇒ the local login.
+   *
+   * A different AXIS from the two lists: they restrict what may be selected, this only
+   * replaces the implicit fallback — which is why `overrideActive` below still ignores it.
+   */
+  defaultAccountId?: string;
 }
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -40,7 +48,13 @@ export function useAccountOverride() {
   // query still refreshes the cards over SSE when the server invalidates.
   const patchOverride = useCallback(
     async (
-      patch: { forcedAccounts?: string[]; excludeAccounts?: string[]; clear?: boolean },
+      patch: {
+        forcedAccounts?: string[];
+        excludeAccounts?: string[];
+        /** null CLEARS the default; omitted leaves it untouched. */
+        defaultAccountId?: string | null;
+        clear?: boolean;
+      },
       optimistic?: AccountOverride,
     ) => {
       const prev = override;
@@ -93,5 +107,30 @@ export function useAccountOverride() {
     [patchOverride],
   );
 
-  return { override, overrideBusy, forced, excluded, overrideActive, toggleForce, toggleExclude, clearOverride, patchOverride };
+  const defaultAccountId = override?.defaultAccountId;
+  /**
+   * Nominate (or clear, with null) the default account. Not optimistic, unlike the two
+   * levers above: the server VALIDATES this against the pool and can legitimately reject it
+   * (unknown id, Codex account), so flipping the star instantly would show a state the server
+   * is about to refuse. The force/exclude toggles are free to be optimistic precisely because
+   * they cannot fail that way.
+   */
+  const setDefaultAccount = useCallback(
+    (id: string | null) => void patchOverride({ defaultAccountId: id }),
+    [patchOverride],
+  );
+
+  return {
+    override,
+    overrideBusy,
+    forced,
+    excluded,
+    overrideActive,
+    toggleForce,
+    toggleExclude,
+    clearOverride,
+    patchOverride,
+    defaultAccountId,
+    setDefaultAccount,
+  };
 }

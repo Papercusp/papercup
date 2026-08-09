@@ -10,7 +10,7 @@
  * Hive (resolveWorkspaceHiveScope kind==='one') — none/many never guesses.
  * "Seat-offers exist" reads harness_shared.p2p_work_offers pot-wide (kind
  * 'seat', status 'open') via the offer-store read (offer-store.ts
- * listWorkOffers), then keeps only the rows with a non-null `potSlug` (P-001)
+ * listOffers), then keeps only the rows with a non-null `potSlug` (P-001)
  * — a TRUE pot-scoped standing offer, spendable by ANY fleet in the pot. A
  * fleet-SCOPED offer (fleetSlug set, potSlug null) is donated to one already-
  * EXISTING fleet and is not spendable by the not-yet-created fleet this
@@ -24,14 +24,14 @@
  */
 
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
-import { listWorkOffers } from '../../p2p/offer-store';
+import { listOffers as listOffersDefault } from '../../p2p/offer-store';
 import type { RemoteSeatSummary } from './launch-prompt';
 
 /** DI seam (federation-scope / offer-store-publish discipline) so unit tests
  *  run without PG. */
 export interface RemoteSeatInventoryDeps {
   resolveScope?: typeof resolveWorkspaceHiveScope;
-  listOffers?: typeof listWorkOffers;
+  listOffers?: typeof listOffersDefault;
 }
 
 const EMPTY_SUMMARY: RemoteSeatSummary = {
@@ -52,7 +52,7 @@ export async function resolveRemoteSeatInventory(
 ): Promise<RemoteSeatSummary> {
   if (!workspaceId) return EMPTY_SUMMARY;
   const resolveScope = deps.resolveScope ?? resolveWorkspaceHiveScope;
-  const listOffers = deps.listOffers ?? listWorkOffers;
+  const listOffers = deps.listOffers ?? listOffersDefault;
   try {
     const scope = await resolveScope(workspaceId);
     if (scope.kind !== 'one') return EMPTY_SUMMARY;

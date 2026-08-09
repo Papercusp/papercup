@@ -22,6 +22,12 @@ vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 // consults. Default: no loop for anyone (every idle candidate stays plain idle,
 // preserving pre-WI-5994 behavior) unless a test opts a recipient in.
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatuses: vi.fn().mockResolvedValue(new Map()) }));
+// EI-19937974676482462: the shared liveness-oracle cross-check the remaining
+// idle→aliveNotWakeable reclassification consults (dynamically imported inside
+// reportIdleRecipients — see its own header comment on why it must be lazy).
+// Default: no verdict for anyone (every idle candidate stays plain idle,
+// preserving pre-fix behavior) unless a test opts a recipient in.
+vi.mock('./liveness-oracle', () => ({ resolveSessionStates: vi.fn().mockResolvedValue(new Map()) }));
 
 import {
   classifyRecipientLiveness,
@@ -34,6 +40,8 @@ import { listActiveAwaitsForKey } from '../../events/await/store';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { getLoopStatuses } from '../../harness/routines/loop';
 import type { LoopStatus } from '../../harness/routines/loop';
+import { resolveSessionStates } from './liveness-oracle';
+import type { LivenessVerdict } from './liveness-oracle';
 
 /** A minimal LoopStatus fixture — only the fields classifyDormantSchedule reads matter. */
 function loopStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
@@ -143,7 +151,7 @@ describe('reportIdleRecipients (host probe — report-only, fail-soft)', () => {
 
   it('skips non-wakeable targets ("*"/"human"/empty) and audience selectors (invariant b)', async () => {
     const r = await reportIdleRecipients(['*', 'human', '', '@plan:x', '@role:bee'], {});
-    expect(r).toMatchObject({ idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false });
+    expect(r).toMatchObject({ idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false, aliveNotWakeable: [] });
     expect(listActiveAwaitsForKey).not.toHaveBeenCalled();
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
   });
@@ -184,8 +192,68 @@ describe('reportIdleRecipients (host probe — report-only, fail-soft)', () => {
 
   it('returns a clean empty (NOT degraded) report when there are no concrete recipients', async () => {
     const r = await reportIdleRecipients(['*', 'human'], {});
-    expect(r).toEqual({ idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false });
+    expect(r).toEqual({ idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false, aliveNotWakeable: [] });
     expect(listPresence).not.toHaveBeenCalled();
+  });
+});
+
+describe('reportIdleRecipients — EI-19937974676482462 aliveNotWakeable reclassification', () => {
+  beforeEach(() => {
+    vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(0));
+    vi.mocked(getLoopStatuses).mockResolvedValue(new Map());
+  });
+  afterEach(() => vi.clearAllMocks());
+
+  const verdict = (sessionState: LivenessVerdict['sessionState']): LivenessVerdict => ({
+    ownerId: 'su-cup-1',
+    sessionState,
+    wakeable: false,
+    liveTurn: sessionState === 'live',
+    confirmLiveness: null,
+    heartbeatFresh: true,
+  });
+
+  it('the exact repro: zero wake-watchers but the oracle confirms `recorded` (session-log alive) → aliveNotWakeable, NOT idle/dead', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-cup-1'));
+    vi.mocked(resolveSessionStates).mockResolvedValue(new Map([['su-cup-1', verdict('recorded')]]));
+    const r = await reportIdleRecipients(['su-cup-1'], {});
+    expect(r.idle).toEqual([]);
+    expect(r.aliveNotWakeable).toEqual(['su-cup-1']);
+  });
+
+  it('a `live` verdict (mid-turn, EI-12699) also reclassifies out of idle', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-cup-1'));
+    vi.mocked(resolveSessionStates).mockResolvedValue(new Map([['su-cup-1', verdict('live')]]));
+    const r = await reportIdleRecipients(['su-cup-1'], {});
+    expect(r.idle).toEqual([]);
+    expect(r.aliveNotWakeable).toEqual(['su-cup-1']);
+  });
+
+  it('a genuinely `ended` verdict stays idle (real dead, not reclassified)', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-cup-1'));
+    vi.mocked(resolveSessionStates).mockResolvedValue(new Map([['su-cup-1', verdict('ended')]]));
+    const r = await reportIdleRecipients(['su-cup-1'], {});
+    expect(r.idle).toEqual(['su-cup-1']);
+    expect(r.aliveNotWakeable).toEqual([]);
+  });
+
+  it('an oracle hiccup degrades to plain idle (never invents a false alive verdict)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listPresence).mockResolvedValue(presence('su-cup-1'));
+    vi.mocked(resolveSessionStates).mockRejectedValue(new Error('oracle down'));
+    const r = await reportIdleRecipients(['su-cup-1'], {});
+    expect(r.idle).toEqual(['su-cup-1']);
+    expect(r.aliveNotWakeable).toEqual([]);
+    expect(r.degraded).toBe(false); // the OVERALL probe still succeeded — only the oracle enrichment degraded
+    warn.mockRestore();
+  });
+
+  it('never consults the oracle when there are no idle candidates (all live watchers)', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-live'));
+    vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(1));
+    const r = await reportIdleRecipients(['su-live'], {});
+    expect(r.live).toEqual(['su-live']);
+    expect(resolveSessionStates).not.toHaveBeenCalled();
   });
 });
 
@@ -223,6 +291,10 @@ describe('classifyDormantSchedule (pure core — WI-5994)', () => {
 describe('reportIdleRecipients — WI-5994 dormant-scheduled reclassification', () => {
   beforeEach(() => {
     vi.mocked(listActiveAwaitsForKey).mockResolvedValue(watchers(0));
+    // Reset to the no-verdict default — an earlier describe block's oracle
+    // mock IMPLEMENTATION survives `clearAllMocks` (it only clears calls/results),
+    // so without this a later block can inherit a prior test's rejection.
+    vi.mocked(resolveSessionStates).mockResolvedValue(new Map());
   });
   afterEach(() => vi.clearAllMocks());
 

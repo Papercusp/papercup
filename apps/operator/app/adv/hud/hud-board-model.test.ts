@@ -742,6 +742,58 @@ describe('buildHudBoard', () => {
     expect(buildHudBoard(roster, [], { nowMs: NOW, plans: [] }).total).toBe(2);
   });
 
+  /* WI-37204 — `exemptOwners`: a session ADDRESSED by its unique id must not be
+     filtered off the board by controls the human set while BROWSING. Before
+     this, an exact id search could resolve one session and still show an empty
+     board (the agent was a non-su cup, or sat in a fleet filtered away an hour
+     earlier) — indistinguishable from the search being broken, which is the
+     complaint this came from. */
+  describe('exemptOwners (WI-37204)', () => {
+    const cup = entry({ ownerId: 's-1700-cup', agentPaneKind: 'cup' });
+    const other = entry({ ownerId: 'su-cccccccc-3', fleetSlug: 'borealis', currentPlanSlug: 'beta' });
+
+    it('keeps an id-addressed NON-SU session on the board', () => {
+      expect(buildHudBoard([cup], [], { nowMs: NOW }).total).toBe(0);
+      expect(
+        buildHudBoard([cup], [], { nowMs: NOW, exemptOwners: new Set(['s-1700-cup']) }).total,
+      ).toBe(1);
+    });
+
+    it('keeps an id-addressed session that the fleet filter would drop', () => {
+      const opts = { nowMs: NOW, fleets: ['atlas'] };
+      expect(buildHudBoard([other], [], opts).total).toBe(0);
+      expect(
+        buildHudBoard([other], [], { ...opts, exemptOwners: new Set(['su-cccccccc-3']) }).total,
+      ).toBe(1);
+    });
+
+    it('keeps an id-addressed session that the plan filter would drop', () => {
+      const opts = { nowMs: NOW, plans: ['alpha'] };
+      expect(buildHudBoard([other], [], opts).total).toBe(0);
+      expect(
+        buildHudBoard([other], [], { ...opts, exemptOwners: new Set(['su-cccccccc-3']) }).total,
+      ).toBe(1);
+    });
+
+    it('exempts ONLY the named owners — it is not a filter kill-switch', () => {
+      // A text query stays subject to the filters; blowing past su-only for
+      // every search would rebuild the ~85-agent firehose the board replaces.
+      const board = buildHudBoard(
+        [cup, entry({ ownerId: 's-1701-cup2', agentPaneKind: 'cup' })],
+        [],
+        { nowMs: NOW, exemptOwners: new Set(['s-1700-cup']) },
+      );
+      expect(board.total).toBe(1);
+    });
+
+    it('an empty or absent set changes nothing', () => {
+      const roster = [entry({ ownerId: 'su-aaaaaaaa-1' }), cup];
+      const base = buildHudBoard(roster, [], { nowMs: NOW }).total;
+      expect(buildHudBoard(roster, [], { nowMs: NOW, exemptOwners: new Set() }).total).toBe(base);
+      expect(buildHudBoard(roster, [], { nowMs: NOW, exemptOwners: undefined }).total).toBe(base);
+    });
+  });
+
   // P-004's "driven by the fleets currently in view", as an assertion: the plan
   // options are derived from the FLEET-filtered set, so selecting a fleet
   // narrows what the plan picker offers.
@@ -925,6 +977,38 @@ describe('matchesSessionText', () => {
     const e = entry({ claims: [{ id: 'WI-7159', planSlug: 'hud-search-2026-08-02' }] });
     expect(matchesSessionText(e, 'WI-7159')).toBe(true);
     expect(matchesSessionText(e, 'wi-7159')).toBe(true);
+  });
+
+  /* WI-37204 (owner ask 2026-08-08 — "search by the su id and the session id").
+     The su id already worked via `ownerId`; the NATIVE session id matched
+     nothing, because the roster payload carried it but `HudRosterEntry` never
+     typed it. These are the two handles a human actually holds for a session
+     when it comes out of a log, a `--resume` line, or a work-item body. */
+  it('finds a session by its native claude session id', () => {
+    const e = entry({
+      ownerId: 'su-abcd1234-0000-0000-0000-000000000000',
+      sessionId: '073c5a1e-d280-4c37-866c-fedcaf096c9e',
+    });
+    expect(matchesSessionText(e, '073c5a1e-d280-4c37-866c-fedcaf096c9e')).toBe(true);
+    // The 8-hex head, which is the form a truncated card renders.
+    expect(matchesSessionText(e, '073c5a1e')).toBe(true);
+    expect(matchesSessionText(e, '073C5A1E')).toBe(true);
+  });
+
+  it('finds an omp session by its thread id', () => {
+    const e = entry({ ompThreadId: 'ef982cad-72df-4e56-b75a-07c30ed03518' });
+    expect(matchesSessionText(e, 'ef982cad')).toBe(true);
+  });
+
+  it('still finds a session by its full su id and short handle', () => {
+    const e = entry({ ownerId: 'su-bc38a419-8dc6-4040-a63e-2dc0515e42be' });
+    expect(matchesSessionText(e, 'su-bc38a419-8dc6-4040-a63e-2dc0515e42be')).toBe(true);
+    expect(matchesSessionText(e, 'su-bc38a419')).toBe(true);
+  });
+
+  it('does not throw when an entry carries neither id (a pending/starting launch)', () => {
+    const e = entry({ sessionId: null, ompThreadId: null });
+    expect(matchesSessionText(e, '073c5a1e')).toBe(false);
   });
 });
 
