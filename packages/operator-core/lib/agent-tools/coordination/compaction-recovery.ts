@@ -1,3 +1,5 @@
+import { capPreservingOperative } from '../../operative-clause';
+
 /**
  * Post-compaction recovery fold for coord:orient
  * (compaction-context-loss-2026-07-05 P-002 / D-002).
@@ -141,7 +143,15 @@ export async function buildCompactionRecovery(
         id: h.id,
         ...(h.title ? { title: h.title.slice(0, 120) } : {}),
         ...(h.body ? { body: h.body.slice(0, BODY_CAP) } : {}),
-        checkpoint: h.checkpoint ? h.checkpoint.slice(0, CHECKPOINT_CAP) : null,
+        // EI-19952485326105760: a plain head-only slice here reproduces the SAME
+        // defect the carry-brief held-item render already fixed — append-style
+        // checkpoints write the newest, most-operative content LAST, so a bare
+        // cut discards a superseding owner directive first. This IS that surface
+        // (payload.paths named this file's directory) and was left unpatched when
+        // the carry-brief fix landed. Share the same preservation helper so the
+        // post-compaction recovery fold and the cold carry-brief render can never
+        // diverge on this again.
+        checkpoint: h.checkpoint ? capPreservingOperative(h.checkpoint, CHECKPOINT_CAP) : null,
       }));
     }
   } catch { /* best-effort */ }

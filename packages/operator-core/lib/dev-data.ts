@@ -871,7 +871,7 @@ export interface ToolCooccurrenceInput {
  */
 export async function toolCooccurrence(
   input: ToolCooccurrenceInput,
-): Promise<{ totalSpawns: number; entries: CooccurrenceEntry[] }> {
+): Promise<{ totalTurns: number; entries: CooccurrenceEntry[] }> {
   const hours = Math.max(1, Math.min(168, input.hours ?? 24));
   const minSupport = Math.max(1, Math.min(100000, input.minSupport ?? 3));
   const limit = Math.max(1, Math.min(500, input.limit ?? 100));
@@ -890,50 +890,67 @@ export async function toolCooccurrence(
         ? sql`ORDER BY confidence DESC, support DESC`
         : sql`ORDER BY support DESC, lift DESC`;
 
-  const totalRows = (await sql`
-    SELECT count(*)::int AS n
-    FROM (
-      SELECT spawn_id
+  // One agent TURN = a run of that agent's own (transport='mcp') calls with no
+  // idle gap longer than `gapSec`. Classic gap-and-island: mark each row that
+  // opens a new burst, then running-sum those marks per agent.
+  const turnTools = sql`
+    WITH ev AS (
+      SELECT coord_owner_id AS agent, tool_name, invoked_at
       FROM harness_shared.tool_invocations
       WHERE invoked_at > ${sinceIso}::timestamptz
         AND transport = 'mcp'
-        AND spawn_id IS NOT NULL
+        AND coord_owner_id IS NOT NULL
         AND tool_name IS NOT NULL
         ${wsFrag}
-      GROUP BY spawn_id
-    ) s
+    ),
+    marked AS (
+      SELECT agent, tool_name, invoked_at,
+        CASE
+          WHEN lag(invoked_at) OVER w IS NULL
+            OR invoked_at - lag(invoked_at) OVER w > ${`${gapSec} seconds`}::interval
+          THEN 1 ELSE 0
+        END AS is_new
+      FROM ev
+      WINDOW w AS (PARTITION BY agent ORDER BY invoked_at)
+    ),
+    bursts AS (
+      SELECT agent, tool_name,
+        sum(is_new) OVER (
+          PARTITION BY agent ORDER BY invoked_at ROWS UNBOUNDED PRECEDING
+        ) AS burst_no
+      FROM marked
+    )
+    SELECT agent, burst_no, array_agg(DISTINCT tool_name) AS tools
+    FROM bursts
+    GROUP BY agent, burst_no
+  `;
+
+  const totalRows = (await sql`
+    WITH turn_tools AS (${turnTools})
+    SELECT count(*)::int AS n FROM turn_tools
   `) as unknown as { n: number }[];
-  const totalSpawns = totalRows[0]?.n ?? 0;
+  const totalTurns = totalRows[0]?.n ?? 0;
 
   type Row = {
     tool_a: string;
     tool_b: string;
     support: number;
-    spawns_a: number;
-    spawns_b: number;
+    turns_a: number;
+    turns_b: number;
     confidence: number;
     lift: number;
   };
   const rows = (await sql`
-    WITH spawn_tools AS (
-      SELECT spawn_id, array_agg(DISTINCT tool_name) AS tools
-      FROM harness_shared.tool_invocations
-      WHERE invoked_at > ${sinceIso}::timestamptz
-        AND transport = 'mcp'
-        AND spawn_id IS NOT NULL
-        AND tool_name IS NOT NULL
-        ${wsFrag}
-      GROUP BY spawn_id
-    ),
-    tot AS (SELECT count(*)::numeric AS n FROM spawn_tools),
+    WITH turn_tools AS (${turnTools}),
+    tot AS (SELECT count(*)::numeric AS n FROM turn_tools),
     marg AS (
-      SELECT tname, count(*)::int AS spawns
-      FROM spawn_tools CROSS JOIN LATERAL unnest(tools) AS tname
+      SELECT tname, count(*)::int AS turns
+      FROM turn_tools CROSS JOIN LATERAL unnest(tools) AS tname
       GROUP BY tname
     ),
     pairs AS (
       SELECT LEAST(a, b) AS tool_a, GREATEST(a, b) AS tool_b, count(*)::int AS support
-      FROM spawn_tools
+      FROM turn_tools
       CROSS JOIN LATERAL unnest(tools) AS a
       CROSS JOIN LATERAL unnest(tools) AS b
       WHERE a < b
@@ -944,10 +961,10 @@ export async function toolCooccurrence(
       p.tool_a,
       p.tool_b,
       p.support,
-      ma.spawns AS spawns_a,
-      mb.spawns AS spawns_b,
-      ROUND((p.support::numeric / NULLIF(LEAST(ma.spawns, mb.spawns), 0)), 3)::float8 AS confidence,
-      ROUND((p.support::numeric * tot.n) / NULLIF((ma.spawns::numeric * mb.spawns), 0), 3)::float8 AS lift
+      ma.turns AS turns_a,
+      mb.turns AS turns_b,
+      ROUND((p.support::numeric / NULLIF(LEAST(ma.turns, mb.turns), 0)), 3)::float8 AS confidence,
+      ROUND((p.support::numeric * tot.n) / NULLIF((ma.turns::numeric * mb.turns), 0), 3)::float8 AS lift
     FROM pairs p
     JOIN marg ma ON ma.tname = p.tool_a
     JOIN marg mb ON mb.tname = p.tool_b
@@ -956,7 +973,7 @@ export async function toolCooccurrence(
     LIMIT ${limit}
   `) as unknown as Row[];
 
-  return { totalSpawns, entries: rows };
+  return { totalTurns, entries: rows };
 }
 
 // ── Activity feed: most-recent tool invocations across workspaces ──

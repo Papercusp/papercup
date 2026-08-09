@@ -33,7 +33,7 @@ export default defineTool({
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
     hours: z.number().int().positive().max(168).optional(),
-    /** Noise floor: drop pairs seen in fewer than this many spawns. Default 3. */
+    /** Noise floor: drop pairs seen in fewer than this many turns. Default 3. */
     minSupport: z.number().int().positive().max(100000).optional(),
     limit: z.number().int().positive().max(500).optional(),
     orderBy: z.enum(['support', 'lift', 'confidence']).optional(),
@@ -52,7 +52,7 @@ export default defineTool({
           type: 'text',
           text: JSON.stringify({
             count: result.entries.length,
-            total_spawns: result.totalSpawns,
+            total_turns: result.totalTurns,
             entries: result.entries,
           }),
         },

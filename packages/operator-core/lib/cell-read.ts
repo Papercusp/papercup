@@ -55,7 +55,15 @@
  */
 
 import { cellUnknown, type CellUnknown } from './cell-contract';
-import { getCell, type CellHeadlineSource, type CellReader, type CellSpec } from './cell-registry';
+import {
+  canReadCell,
+  getCell,
+  getCellUnchecked,
+  type CellHeadlineSource,
+  type CellPointer,
+  type CellReader,
+  type CellSpec,
+} from './cell-registry';
 import {
   dispatchReadOnlyTool,
   isAccessDenialCode,
@@ -142,8 +150,30 @@ export type CellRead =
        * known one, which is the shape of the defect D-039 exists to surface.
        */
       unknownHoist?: CellHoist;
+      /** P-006 — see `CellPointerRead`. Present exactly when the spec declares pointers. */
+      pointers?: CellPointerRead[];
     }
-  | { status: 'unknown'; cell: string; unknown: CellUnknown }
+  | {
+      status: 'unknown';
+      cell: string;
+      unknown: CellUnknown;
+      /**
+       * P-006 — CARRIED ON AN UNKNOWN TOO, which is the case that most needs it rather
+       * than an afterthought. A pointer is a property of the SPEC, not of the payload,
+       * so it survives a resolver that produced nothing — and the cell it names has its
+       * OWN resolver. A reader whose `gate.greenCheckpoint.verdict` read just failed can
+       * still learn who owns the incident, because `readGateOwnership()` is a different
+       * apparatus that has not necessarily failed with it.
+       */
+      pointers?: CellPointerRead[];
+    }
+  /**
+   * ⚠ NO `pointers` HERE, deliberately. `absent` means "unregistered OR outside your
+   * audience", held indistinguishable by P-019 so a refusal cannot be probed as an
+   * oracle. Attaching this cell's pointers to that refusal would name its neighbours
+   * to a reader who may not see the cell itself — turning the one result that is
+   * carefully uninformative into an enumeration surface.
+   */
   | { status: 'absent'; cell: string };
 
 /**
@@ -166,6 +196,38 @@ export type CellRead =
  *     field (the hoist was declared on six cells, enforced at registration, and
  *     emitted by nothing), so it is reported LOUDLY rather than omitted.
  */
+/**
+ * P-006 — a resolved pointer to the cell that answers the reader's NEXT question.
+ * See `CellSpec.pointers` for the declaration side.
+ *
+ * `when`/`answers` are carried straight from the spec (never re-derived), for the same
+ * reason `CellFalsifierRead` carries `kills`: a reader should not have to go read the
+ * registry to know whether following the pointer is worth a dispatch.
+ *
+ * THE TWO QUIET CASES ARE SEPARATED, because they demand opposite responses and are
+ * indistinguishable if merged — the lesson `CellHoist.drifted` records, applied here:
+ *
+ *   • `drifted: true` — the target is in NO registry. A declaration defect (a renamed
+ *     or never-registered cell); following it is impossible for anyone.
+ *   • `hidden: true`  — the target EXISTS but is outside THIS reader's audience.
+ *     Nothing is broken; the answer is real and someone else can fetch it.
+ *
+ * Collapsing those into one flag would tell an agent to give up on a question a peer
+ * could answer in one call, or send them to file a bug against a perfectly good cell.
+ */
+export interface CellPointerRead {
+  /** The cell id to read next. */
+  cell: string;
+  /** The CONDITION under which to follow it (`CellPointer.when`). */
+  when: string;
+  /** WHAT is answered over there (`CellPointer.answers`). */
+  answers: string;
+  /** True ⇒ the target resolves in no registry at all: a declaration defect. */
+  drifted?: true;
+  /** True ⇒ the target is registered but outside YOUR audience — ask someone who holds it. */
+  hidden?: true;
+}
+
 /**
  * WI-36259 — the projected per-read provenance of a cell's headline.
  * See `CellSpec.headlineSource` for the declaration side.
@@ -340,6 +402,48 @@ export const CELL_READ_TIMEOUT_MS = Number(process.env.PAPERCUSP_CELL_READ_TIMEO
  *   against `reader`, so passing a subject can never widen what you may see.
  */
 export async function readCell(
+  cell: string,
+  reader: CellReader,
+  env: CellReadEnv,
+  subject?: string,
+): Promise<CellRead> {
+  const read = await readCellValue(cell, reader, env, subject);
+
+  /**
+   * P-006 — ATTACH POINTERS IN EXACTLY ONE PLACE.
+   *
+   * `readCellValue` has eight return sites across three status shapes; decorating each
+   * would make "does this path carry pointers" a per-branch accident, and the branch
+   * most likely to be forgotten is the rarest one — a resolver failure — which is
+   * precisely where the pointer is worth most. Wrapping means a new return site inside
+   * inherits this rather than opting into it.
+   *
+   * `absent` is skipped by the union's own shape (see its doc comment): pointers must
+   * not turn a deliberately-uninformative refusal into an enumeration surface.
+   */
+  if (read.status === 'absent') return read;
+  const spec = getCellUnchecked(cell);
+  const pointers = spec?.pointers;
+  if (!pointers?.length) return read;
+  return { ...read, pointers: pointers.map((p) => resolvePointer(p, reader)) };
+}
+
+/**
+ * P-006 — resolve one declared pointer AGAINST THIS READER.
+ *
+ * Reads the registry only; never dispatches. The pointer says where to go, and the
+ * caller decides whether to pay for the hop — resolving the target's VALUE here would
+ * turn one read into an unbounded fan-out and re-derive a cell this one does not own.
+ */
+function resolvePointer(p: CellPointer, reader: CellReader): CellPointerRead {
+  const base = { cell: p.cell, when: p.when, answers: p.answers };
+  const target = getCellUnchecked(p.cell);
+  if (!target) return { ...base, drifted: true };
+  if (!canReadCell(target, reader)) return { ...base, hidden: true };
+  return base;
+}
+
+async function readCellValue(
   cell: string,
   reader: CellReader,
   env: CellReadEnv,
