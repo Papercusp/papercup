@@ -936,6 +936,22 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       detectors: o.contentDetectors,
       log: o.log,
     });
+    // EI-19932544083689229 quarantine-import guard (remedy #1 — ATOMICITY): a file
+    // quarantined above (oversized, or excluded by a content detector — i.e. a file
+    // that will have ZERO history in HEAD this tick) must not be committed WITHOUT
+    // also holding back any OTHER dirty file — e.g. its own `*.test.*` sibling — that
+    // imports it. Otherwise the importer commits alone and HEAD carries an
+    // unresolvable relative import forever (an isolated checkout, e.g.
+    // green-checkpoint's candidate build, gets the importer without its subject and
+    // fails deterministically on every run). Quarantine the PAIR, never just the
+    // broken half. Runs to a fixed point (a chain of dirty importers is caught too).
+    //
+    // Deliberately computed BEFORE the deletion guard below (not merged with its
+    // output): a deletion-guard offender is a DIFFERENT shape — it excludes the
+    // DELETION, so the file stays PRESENT in HEAD with its prior content, and a
+    // dirty file importing it resolves FINE. Folding deletion offenders into this
+    // guard's "infectious" set would falsely quarantine an unrelated clean importer.
+    const preDeletionQuarantined = [...new Set([...oversized.map((f) => f.path), ...contentErrors.map((c) => c.file)])];
     // EI-17: a dirty DELETION whose module a surviving file still (relatively)
     // imports is excluded exactly like a content offender — see
     // deletion-import-guard.ts for why this can't be folded into the per-file
@@ -950,16 +966,8 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       });
       if (deletionErrors.length > 0) contentErrors = [...contentErrors, ...deletionErrors];
     }
-    // EI-19932544083689229 quarantine-import guard (remedy #1 — ATOMICITY): a file
-    // quarantined above (oversized, or excluded by content-guard/deletion-guard) must
-    // not be committed WITHOUT also holding back any OTHER dirty file — e.g. its own
-    // `*.test.*` sibling — that imports it. Otherwise the importer commits alone and
-    // HEAD carries an unresolvable relative import forever (an isolated checkout, e.g.
-    // green-checkpoint's candidate build, gets the importer without its subject and
-    // fails deterministically on every run). Quarantine the PAIR, never just the
-    // broken half. Runs to a fixed point (a chain of dirty importers is caught too).
     {
-      const priorQuarantined = [...new Set([...oversized.map((f) => f.path), ...contentErrors.map((c) => c.file)])];
+      const priorQuarantined = preDeletionQuarantined;
       if (priorQuarantined.length > 0) {
         const dirtyForScan = await dirtyFiles(runGit, repoPath);
         const importerErrors = await detectQuarantineImporters({

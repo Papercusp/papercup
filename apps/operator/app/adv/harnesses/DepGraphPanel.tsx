@@ -881,6 +881,11 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
       <div className="pc-depgraph__canvas" ref={canvasRef}>
         {positioned && (
           <svg
+            // The pane now renders SEVERAL <svg> elements — this canvas plus one small
+            // swatch per legend row — so "the svg" is no longer an identifying query.
+            // Named explicitly rather than left to DOM order, which would silently make
+            // any selector depend on whether the key happens to be open.
+            className="pc-depgraph__svg"
             width={Math.max(positioned.width, 1)}
             height={Math.max(positioned.height, 1)}
             role="img"

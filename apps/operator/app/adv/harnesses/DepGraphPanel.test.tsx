@@ -117,10 +117,19 @@ function renderPanel(searchParams = '') {
   return render(<DepGraphPanel {...panelProps()} />, { wrapper: adapter(searchParams) });
 }
 
-/** The SVG only exists once the (async) layout effect has resolved. */
+/**
+ * The SVG only exists once the (async) layout effect has resolved.
+ *
+ * ⚠ Selects `.pc-depgraph__svg`, NOT a bare `svg`. Since the KEY landed
+ * (dep-graph-design-pass-2 P-005) the pane renders one small <svg> swatch per legend
+ * row BEFORE the canvas, so `document.querySelector('svg')` returns a legend swatch —
+ * which has no edges and no nodes, so every assertion below fails against a perfectly
+ * healthy canvas. The assertions themselves are unchanged; only the query got specific
+ * enough to name what it always meant.
+ */
 async function waitForCanvas(): Promise<SVGSVGElement> {
   return waitFor(() => {
-    const svg = document.querySelector('svg');
+    const svg = document.querySelector('.pc-depgraph__svg');
     if (!svg) throw new Error('canvas not laid out yet');
     return svg as SVGSVGElement;
   });
