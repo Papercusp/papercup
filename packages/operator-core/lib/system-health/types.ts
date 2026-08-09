@@ -632,7 +632,18 @@ export interface InfraHealth {
   /** Disk pressure (health-tab-v2 P-011, mirrors the fedplane script's 90% warn):
    *  used% per watched mount (~/.papercusp + the repo volume, deduped by device).
    *  OPTIONAL + null when statfs is unavailable — never fabricated. */
-  disk?: Array<{ path: string; usedPct: number }> | null;
+  /** `freeGb` = free space in whole GB (rounded down), when statfs reports it — used to
+   *  scale the crit summary's wording by real headroom, not just the raw %. `band` =
+   *  this VOLUME's hysteresis-classified status (EI-19944041837110102 / disk-alarm-flap),
+   *  computed by the collector from `diskBandWithHysteresis` against the PREVIOUS tick's
+   *  band for the same path; optional so hand-built fixtures without it fall back to a
+   *  plain (no-hysteresis) threshold check in `infraStatus`/`infraSummary`. */
+  disk?: Array<{
+    path: string;
+    usedPct: number;
+    freeGb?: number;
+    band?: Extract<PanelStatus, 'ok' | 'warn' | 'crit'>;
+  }> | null;
   /** Backup freshness (P-011): newest SUCCESSFUL kopia snapshot. null = tables
    *  unreadable/absent this tick (greyed leg). */
   backup?: { lastOkAtMs: number | null; ageMs: number | null; lastStatus: string | null } | null;

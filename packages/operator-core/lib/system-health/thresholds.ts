@@ -46,6 +46,69 @@ export const ESCALATION_AGING_MS = 6 * 60 * 60_000;
 /** Disk used% thresholds (health-tab-v2 P-011 — mirrors the fedplane disk script). */
 export const DISK_USED_WARN_PCT = 90;
 export const DISK_USED_CRIT_PCT = 95;
+/** EI-19944041837110102 (disk-alarm-flap): hysteresis buffer, in percentage points, applied
+ *  when a previous-tick band is available. Without it, usage oscillating within a couple of
+ *  points of DISK_USED_CRIT_PCT/WARN_PCT (ordinary filesystem noise — log rotation, a
+ *  git-sync sweep, a temp file) flips the band on every tick, firing + auto-resolving a
+ *  `panel:infra` escalation within the same minute. Standard two-threshold ("Schmitt
+ *  trigger") hysteresis: once a band is entered, usage must fall the buffer BELOW that
+ *  band's own entry threshold to leave it — merely dropping back under the threshold is
+ *  not enough. See `diskBandWithHysteresis` below. */
+export const DISK_HYSTERESIS_BUFFER_PCT = 3;
+/** Above this, or below DISK_CRIT_LOW_FREE_GB free, the crit summary keeps the urgent
+ *  "writes are about to fail" wording; below it (but still >= DISK_USED_CRIT_PCT) the
+ *  summary reads as "critically low" instead — 94-95% used with 100+G still free is a real
+ *  warning, not an imminent-write-failure, and the message overstating it is itself part
+ *  of EI-19944041837110102. */
+export const DISK_CRIT_URGENT_PCT = 98;
+/** See DISK_CRIT_URGENT_PCT — small absolute headroom is urgent regardless of %, e.g. a
+ *  tiny partition sitting at 96% with 2G free really is about to fail writes. */
+export const DISK_CRIT_URGENT_LOW_FREE_GB = 5;
+
+/**
+ * Classify a disk-used% reading against DISK_USED_WARN_PCT/DISK_USED_CRIT_PCT WITH
+ * hysteresis: once a band is entered, usage must drop DISK_HYSTERESIS_BUFFER_PCT points
+ * below that band's own entry threshold to leave it, rather than merely crossing back over
+ * the raw threshold. Escalating to a WORSE band still happens immediately at the raw
+ * threshold (only de-escalation is buffered) — a genuine fast fill must still page without
+ * delay.
+ *
+ * `prevBand` is the SAME classification from the previous tick for this exact path (null =
+ * no prior reading — cold start / a path just appeared — which falls back to a plain
+ * threshold check, since there is nothing to be stable relative to yet).
+ *
+ * Pure + stateless itself (no IO, holds nothing): the caller (compute.ts's collectInfra)
+ * supplies `prevBand` from whatever cross-tick memory it has, keeping this trivially
+ * unit-testable and keeping `infraStatus` itself a pure function of InfraHealth alone.
+ */
+export function diskBandWithHysteresis(
+  usedPct: number,
+  prevBand: Extract<PanelStatus, 'ok' | 'warn' | 'crit'> | null,
+): Extract<PanelStatus, 'ok' | 'warn' | 'crit'> {
+  if (prevBand === 'crit' && usedPct >= DISK_USED_CRIT_PCT - DISK_HYSTERESIS_BUFFER_PCT) return 'crit';
+  if (prevBand === 'warn' && usedPct >= DISK_USED_CRIT_PCT) return 'crit';
+  if (prevBand === 'warn' && usedPct >= DISK_USED_WARN_PCT - DISK_HYSTERESIS_BUFFER_PCT) return 'warn';
+  if (usedPct >= DISK_USED_CRIT_PCT) return 'crit';
+  if (usedPct >= DISK_USED_WARN_PCT) return 'warn';
+  return 'ok';
+}
+
+/** Worst disk `band` across every watched volume, honoring each volume's own
+ *  hysteresis-classified `band` when the collector supplied one, else falling back to a
+ *  plain (no-hysteresis) threshold check against that volume's raw `usedPct` — so a
+ *  hand-built InfraHealth fixture that never set `band` behaves exactly as before. Shared
+ *  by `infraStatus` and `infraSummary` so the two can never disagree on which volume/band
+ *  is worst. */
+function worstDiskBand(disk: InfraHealth['disk']): Extract<PanelStatus, 'ok' | 'warn' | 'crit'> | null {
+  if (!disk || disk.length === 0) return null;
+  const rank: Record<Extract<PanelStatus, 'ok' | 'warn' | 'crit'>, number> = { ok: 0, warn: 1, crit: 2 };
+  let worst: Extract<PanelStatus, 'ok' | 'warn' | 'crit'> = 'ok';
+  for (const v of disk) {
+    const band = v.band ?? (v.usedPct >= DISK_USED_CRIT_PCT ? 'crit' : v.usedPct >= DISK_USED_WARN_PCT ? 'warn' : 'ok');
+    if (rank[band] > rank[worst]) worst = band;
+  }
+  return worst;
+}
 /** No successful backup snapshot in this long = warn (P-011). */
 export const BACKUP_STALE_MS = 48 * 60 * 60_000;
 /** An unanswered DIRECTED message older than this warns the Coordination panel
@@ -382,16 +445,17 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   // This is the signal that was missing when facts:assert failed fleet-wide for ~3h.
   if (d.toolFailures?.rating === 'broken') return 'crit';
   // Disk pressure (health-tab-v2 P-011, thresholds mirror the fedplane script):
-  // >=95% used on any watched volume is a crit (writes are about to fail).
-  const worstDiskPct = d.disk && d.disk.length > 0 ? Math.max(...d.disk.map((v) => v.usedPct)) : null;
-  if (worstDiskPct !== null && worstDiskPct >= DISK_USED_CRIT_PCT) return 'crit';
+  // >=95% used on any watched volume is a crit (writes are about to fail), WITH
+  // hysteresis against boundary noise (EI-19944041837110102) via `worstDiskBand`.
+  const diskBand = worstDiskBand(d.disk);
+  if (diskBand === 'crit') return 'crit';
   if (d.pg === null) return 'unknown';
   if (d.gatewayReachable === false) return 'crit';
   if (d.perf?.status === 'warn') return 'warn';
   if ((d.mcpProxy?.hardFailures ?? 0) > 0) return 'warn';
   // A partial/ramping handler failure — visible, sub-page (EI-18798264517111160).
   if (d.toolFailures?.rating === 'degraded') return 'warn';
-  if (worstDiskPct !== null && worstDiskPct >= DISK_USED_WARN_PCT) return 'warn';
+  if (diskBand === 'warn') return 'warn';
   // Unapplied migrations = every deploy is one restart away from surprise DDL (P-011).
   if ((d.migrationDrift?.unapplied ?? 0) > 0) return 'warn';
   // Backup staleness: no successful snapshot in 48h (cadence is ~hours) (P-011).
@@ -432,7 +496,7 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
   const perfCrit = d.perf?.status === 'crit';
   const worstDiskVol = d.disk && d.disk.length > 0 ? d.disk.reduce((a, b) => (b.usedPct > a.usedPct ? b : a)) : null;
   const worstDisk = worstDiskVol?.usedPct ?? null;
-  const diskCrit = worstDisk !== null && worstDisk >= DISK_USED_CRIT_PCT;
+  const diskCrit = worstDiskBand(d.disk) === 'crit';
   const poolNote = d.pool?.band === 'critical' ? ', POOL STARVATION' : d.pool?.band === 'elevated' ? ', pool elevated' : '';
   // A disk WARN has no branch of its own (the panel is only `warn` overall), but it
   // still belongs in the line — it is the leading indicator of the crit above.
@@ -444,7 +508,16 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
   }
   if (mcpCrit) return `MCP PROXY FAILING: ${mcpHard} hard tool-call failure(s)/1h (transient-is-normal regression — pages)`;
   if (perfCrit) return `PER-THREAD WEDGE: ${d.perf!.reasons[0] ?? 'operator degraded'}`;
-  if (diskCrit) return `DISK ${worstDisk}% used on ${worstDiskVol!.path} — writes are about to fail`;
+  if (diskCrit) {
+    // EI-19944041837110102: "writes are about to fail" overstates 94-95% used with a real
+    // 100+G buffer still free — scale the wording by actual headroom (both the % and, when
+    // known, the absolute free space), not just the raw threshold crossing.
+    const freeGb = worstDiskVol!.freeGb;
+    const freeNote = freeGb !== undefined ? ` (${freeGb}G free)` : '';
+    const urgent = worstDisk! >= DISK_CRIT_URGENT_PCT || (freeGb !== undefined && freeGb < DISK_CRIT_URGENT_LOW_FREE_GB);
+    const verdict = urgent ? 'writes are about to fail' : 'critically low — reclaim space soon';
+    return `DISK ${worstDisk}% used on ${worstDiskVol!.path}${freeNote} — ${verdict}`;
+  }
   if (!d.pg) return 'PG unreadable';
   const gatewayNote = gatewayEnabled ? `, gateway ${d.gatewayReachable ? 'up' : 'down'}` : '';
   const mcpNote = mcpWarn ? `, MCP proxy ${mcpHard} fail/1h` : '';

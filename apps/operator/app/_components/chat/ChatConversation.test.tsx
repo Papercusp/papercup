@@ -10,7 +10,7 @@
  * layout, so the real virtualizer would render nothing).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 // jsdom lacks both — the scroll-to-bottom effect and the load-earlier
 // IntersectionObserver effect call them on render.
@@ -88,6 +88,90 @@ describe('ChatConversation', () => {
     expect(screen.getByText('Hello')).toBeTruthy();
     expect(screen.getByText('Hi there')).toBeTruthy();
     expect(screen.getByText('You')).toBeTruthy();
+  });
+
+  /* session-chat-popup-timestamps-and-modes-2026-08-09 P-001 — the per-message
+     stamp. formatMessageStamp's own suite covers the formatting; these cover the
+     two properties that only exist once it is mounted in a row. */
+  describe('message timestamp (P-001)', () => {
+    it('renders both halves, with the full instant on the time element', () => {
+      const at = new Date(2026, 7, 9, 23, 14, 7);
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(at.getTime() + 4 * 60_000));
+      try {
+        renderChat({ messages: [{ role: 'user', content: 'go', ts: at.toISOString() }] });
+        const el = screen.getByTestId('chat-message-time');
+        expect(el.textContent).toBe('23:14 · 4m ago');
+        expect(el.getAttribute('dateTime') ?? el.getAttribute('datetime')).toBe(at.toISOString());
+        expect(el.getAttribute('title')).toBe(at.toISOString());
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('renders NO stamp for a message with no ts — every non-transcript surface stays byte-identical', () => {
+      // The guarantee that let this ship without a per-caller opt-in flag: the
+      // operator sidebar, the card surfaces and every existing test feed set no
+      // `ts`, so they must render exactly as before rather than gaining an
+      // invented or placeholder time.
+      renderChat({ messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: 'ok' }] });
+      expect(screen.queryByTestId('chat-message-time')).toBeNull();
+    });
+
+    it('an unparseable ts renders no stamp rather than "Invalid Date"', () => {
+      renderChat({ messages: [{ role: 'user', content: 'go', ts: 'not-a-date' }] });
+      expect(screen.queryByTestId('chat-message-time')).toBeNull();
+    });
+
+    it('THE MEMO PROPERTY: a clock tick repaints the age WITHOUT re-rendering the row body', () => {
+      /* This is plan D-001's constraint, and it is the reason the stamp is a
+         separate leaf component subscribing to a shared clock instead of a
+         `nowMs` prop on the row.
+
+         ChatMessageRow is the WI-6502 typing-lag memo boundary. A ticking PROP
+         would re-render every visible row's full body — avatar, markdown, and
+         one renderToolChip per tool, each eagerly JSON.stringifying its payload
+         for a hover tooltip — every 15 seconds, silently undoing that fix. The
+         chip renderer is the cheapest observable proxy for "the row body
+         re-rendered": it is called during the row's render and nowhere else.
+
+         Both directions are asserted deliberately. A test that only checked the
+         chip count would pass if the stamp were frozen; one that only checked
+         the text would pass if the whole row re-rendered. */
+      const at = new Date(2026, 7, 9, 23, 14, 7);
+      vi.useFakeTimers();
+      vi.setSystemTime(at);
+      try {
+        const renderToolChip = vi.fn((t: { name: string }, i: number) => (
+          <span key={i} data-testid="chip">{t.name}</span>
+        ));
+        renderChat({
+          messages: [
+            {
+              role: 'assistant',
+              content: 'working',
+              ts: at.toISOString(),
+              tools: [{ name: 'Bash', input: { command: 'npm test' } }],
+            },
+          ],
+          renderToolChip,
+        });
+        expect(screen.getByTestId('chat-message-time').textContent).toBe('23:14 · 0s ago');
+        const rowRendersBefore = renderToolChip.mock.calls.length;
+        expect(rowRendersBefore).toBeGreaterThan(0);
+
+        act(() => {
+          vi.advanceTimersByTime(15_000);
+        });
+
+        // The age MOVED...
+        expect(screen.getByTestId('chat-message-time').textContent).toBe('23:14 · 15s ago');
+        // ...and the row body did NOT re-render to make that happen.
+        expect(renderToolChip.mock.calls.length).toBe(rowRendersBefore);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('renders markdown (bold, links, line breaks) instead of literal asterisks (gui-chat-session-controls-2026-07-25 P-009)', () => {

@@ -88,6 +88,20 @@ export interface MappedSessionTranscript {
 }
 
 /**
+ * The `ts` field for one mapped message — OMITTED entirely when the source entry
+ * carried no timestamp, rather than set to `undefined`/null.
+ *
+ * Omission is the honest encoding: `ChatMessage.ts` means "the source told us
+ * when this happened", and a transcript record without a timestamp did not. The
+ * renderer's no-stamp branch is then reached by the field being absent, not by a
+ * sentinel every reader has to remember to test. Same shape as `planSlugField`
+ * below it, for the same reason.
+ */
+function tsField(ts: string | undefined): { ts?: string } {
+  return ts ? { ts } : {};
+}
+
+/**
  * The full mapping. `sessionTimelineToChatMessages` is the messages-only
  * wrapper every existing caller keeps using unchanged.
  */
@@ -117,7 +131,15 @@ export function mapSessionTimeline(
     if (turn.prompt) {
       const promptText = (turn.prompt.text ?? '').trim();
       if (promptText) {
-        messages.push({ role: 'user', content: promptText, id: `prompt-${turn.seq}`, ...planSlugField });
+        messages.push({
+          role: 'user',
+          content: promptText,
+          id: `prompt-${turn.seq}`,
+          // The prompt entry's OWN instant — when this message arrived, which is
+          // exactly what a user-side stamp should say.
+          ...tsField(turn.prompt.ts),
+          ...planSlugField,
+        });
         bind(turn.prompt, messages.length - 1);
       }
     }
@@ -125,19 +147,49 @@ export function mapSessionTimeline(
     const textParts: string[] = [];
     const tools: ChatToolCall[] = [];
     let resultText = '';
+    /* WHEN the rendered content was produced. Tracked as the LAST timestamped
+       entry that actually CONTRIBUTED content (text, or the result fallback) —
+       not the turn's first entry and not `endTs`.
+
+       The difference is not cosmetic on this surface. An assistant message here
+       is a whole COLLAPSED TURN, which routinely spans minutes of tool calls, so
+       the three candidates can be far apart:
+         - the turn's START would date the reply to when the agent began working,
+           which for a long turn reads as an answer that arrived before it did;
+         - `endTs` is the last entry of ANY kind, including the dropped
+           tool_result/status noise — so a turn that answered and then kept
+           logging would be stamped after its own answer.
+       The last content-bearing entry is the instant the reader is actually
+       asking about: when this text appeared. */
+    let lastTextTs: string | undefined;
+    let resultTs: string | undefined;
     for (const e of turn.entries) {
       if (e.kind === 'text') {
-        if (e.text) textParts.push(e.text);
+        if (e.text) {
+          textParts.push(e.text);
+          if (e.ts) lastTextTs = e.ts;
+        }
       } else if (e.kind === 'tool_use') {
         tools.push({ name: e.toolName ?? 'tool', input: e.toolInput });
       } else if (e.kind === 'result') {
-        if (e.text) resultText = e.text;
+        if (e.text) {
+          resultText = e.text;
+          if (e.ts) resultTs = e.ts;
+        }
       }
       // tool_result / status: intentionally dropped — the tool-noise filter.
     }
 
     const joinedText = textParts.join('\n\n').trim();
     const content = joinedText || resultText.trim();
+    /* Follow the SAME branch the content did. A turn routinely has both a `text`
+       stream and a trailing `result` record, and `text` wins the content — so
+       tracking one shared "last content entry" would stamp the streamed answer
+       with the RESULT's instant, dating the visible text to a record whose own
+       text was discarded. Small, but it is the difference between a timestamp
+       that describes what you are reading and one that describes something
+       else. */
+    const contentTs = joinedText ? lastTextTs : resultTs;
 
     if (content || tools.length > 0) {
       messages.push({
@@ -145,6 +197,11 @@ export function mapSessionTimeline(
         content,
         ...(tools.length > 0 ? { tools } : {}),
         id: `turn-${turn.seq}`,
+        /* Fall back through the turn's own bounds for a TOOL-ONLY turn (content
+           empty, chips present): it has no content-bearing entry to date, but it
+           did happen, and `endTs` is the closest honest answer. `startTs` is the
+           last resort — a prompt-led turn always has one. */
+        ...tsField(contentTs ?? turn.endTs ?? turn.startTs),
         ...planSlugField,
       });
       // Every entry of the turn, INCLUDING the dropped tool_result/status ones

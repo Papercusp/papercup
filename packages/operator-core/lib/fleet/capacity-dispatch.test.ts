@@ -324,6 +324,49 @@ test('EI-18683773458136367 — DISTINCT-egress edge-throttle ALSO re-arming ⇒ 
   assert.match(r.advice, /do not escalate/i, 'must explicitly say NOT to escalate, not merely omit the word');
 });
 
+test('WI-36943 — poolExhausted does NOT escalate an egress fault when traffic is actually flowing and an account holds real budget (rate-governor saturation, not a dead proxy)', () => {
+  // The real incident this regression pins: fleet:capacity asserted "DOMINANT CAUSE: 3/3 edge-throttled
+  // → egress path broken → escalate (OWNER-GATED)" while accounts:status measured only 1/3 edge-throttled
+  // (aviynw) and 2/3 (aviynw3, aviynw10) neither edge-throttled nor usage-walled, with inFlight climbing
+  // 1→3 in the same window — real traffic was passing, and the accounts were being re-paused by the LOCAL
+  // rate governor (self-clearing), not blocked by a down/shared egress proxy.
+  const hr = {
+    reachable: true, utilization: 0.9, utilizationPct: 90, paused: false, rejected: false, queueDepth: 1, inFlight: 3,
+    priorityTiers: { healthyAccounts: 1, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 3, queued: 1 }] },
+  };
+  const accountAvailability = {
+    provider: 'claude', total: 3, available: 0, usable: 0,
+    edgeThrottledCount: 1, usageWalledCount: 1, // 1/3 edge-throttled, 1/3 usage-walled → 1/3 (aviynw10) is neither
+    sustainedlyLimitedCount: 3,
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.poolExhausted, true, 'the technical exhaustion flag is still real — HOLD placements');
+  assert.match(r.advice, /EXHAUSTED/);
+  assert.match(r.advice, /1\/3 edge-throttled/, 'names the ACTUAL count, never a stale/inflated one');
+  assert.doesNotMatch(r.advice, /DOMINANT CAUSE/, 'must not assert edge-throttle is the dominant/confident cause here');
+  assert.doesNotMatch(r.advice, /OWNER-GATED/, 'must not manufacture an owner-gated infra escalation while traffic is flowing');
+  assert.doesNotMatch(r.advice, /escalate rather than waiting/i);
+  assert.match(r.advice, /IN FLIGHT right now/);
+  assert.match(r.advice, /Do NOT escalate on this alone/i);
+});
+
+test('WI-36943 — recurrence guard: edge-throttle count alone (edge+wall === total, no inFlight evidence) still escalates as before', () => {
+  // Companion negative case: when the counts DO account for the whole pool (no account is provably
+  // "neither"), or no traffic is flowing, the suppression must NOT fire — same shape as the pre-existing
+  // EI-18664933641195210 dominant-cause test, pinned again here under the new guard's name.
+  const hr = {
+    reachable: true, utilization: 0.97, utilizationPct: 97, paused: true, queueDepth: 2, inFlight: 0,
+    priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 0, queued: 2 }] },
+  };
+  const accountAvailability = {
+    provider: 'claude', total: 3, available: 0, usable: 0,
+    edgeThrottledCount: 2, usageWalledCount: 1, // edge(2) + wall(1) === total(3) → no account provably "neither"
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.match(r.advice, /DOMINANT CAUSE/);
+  assert.match(r.advice, /OWNER-GATED/);
+});
+
 test('EI-18683773458136367 — shared-egress evidence UNKNOWN (not supplied) ⇒ unchanged legacy phrasing (fail-safe-omit)', () => {
   // Regression guard for backward compat: omitting the new fields must reproduce byte-for-byte the
   // same OWNER-GATED escalate language as before this fix (the EI-18664933641195210 test above).

@@ -38,6 +38,29 @@ export const DEFAULT_HEAD_SNAPSHOT_PROBE_TIMEOUT_MS = 1_500;
  */
 export const DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
 
+/**
+ * How long to keep RE-attempting after a holder fails to answer, before giving up.
+ *
+ * Sized from measurement, not taste (P-014, 2026-08-09). `papercup-bg-host` — the
+ * process that holds this box's corestore — self-recycles on a cadence measured at
+ * 8.5m, 8.5m, 15.7m, 26.8m, 8.5m, 8.5m, while the pre-cut drain this call sits behind
+ * takes ~17.4 min. So the holder's TYPICAL lifetime is HALF the uninterrupted lifetime
+ * a cut needs, and a recycle landing on this call is the expected case rather than bad
+ * luck: cut attempt 2 died at 02:34:41Z with `fetch failed`, and bg-host logged
+ * `Started` at 02:34:41Z — the same second, after a 17-minute drain had already
+ * succeeded.
+ *
+ * A recycle returns in seconds, so the budget only has to outlast one. 10 minutes
+ * spans a full recycle plus hive boot with room to spare, and still terminates.
+ */
+export const DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS = 10 * 60_000;
+
+/**
+ * Gap between attempts. The failure being waited out is a process restart, so polling
+ * faster buys nothing and just hammers a booting operator.
+ */
+export const DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS = 15_000;
+
 export interface LiveHeadSnapshotProduced {
   readonly kind: 'produced';
   readonly port: number;
@@ -84,6 +107,22 @@ export interface LiveHeadSnapshotFailed {
   readonly kind: 'failed';
   readonly port: number;
   readonly error: string;
+  /**
+   * TRUE when the holder never answered (socket died, timed out, non-2xx) — i.e. the
+   * request did not reach a working operator. FALSE when the operator ANSWERED and
+   * refused (`ok:false`).
+   *
+   * The split exists because only one of them is worth retrying, and conflating them
+   * costs a whole cut: a recycling holder must be waited out, whereas "this harness
+   * engine is stopped/closing" is a real answer that will not change by asking again.
+   */
+  readonly transport: boolean;
+}
+
+/** How many attempts a retrying request burned, and how long it spent waiting between them. */
+export interface HeadSnapshotRetryLog {
+  readonly attempts: number;
+  readonly waitedMs: number;
 }
 
 export type LiveHeadSnapshotOutcome =

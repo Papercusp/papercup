@@ -640,6 +640,30 @@ export function buildCapacityReport(
               `accounts, not divergent per-account throttling). Investigate the per-account throttle cause ` +
               `before escalating; do NOT assume a down egress proxy from this count alone.`;
       }
+      // WI-36943: real incident — `fleet:capacity` asserted "DOMINANT CAUSE: 3/3 edge-throttled →
+      // egress path broken → escalate (OWNER-GATED)" while `accounts:status` measured only 1/3
+      // edge-throttled and 2/3 holding real weekly budget; `inFlight` climbed 1→3 in the same window
+      // (traffic WAS flowing). The pool was saturated by the LOCAL rate governor re-pausing accounts
+      // (self-clearing in seconds), not a dead egress proxy. `edge + wall < total` is a PROVABLE lower
+      // bound (independent of any overlap between the two counts) that at least one account is neither
+      // edge-throttled nor usage-walled — i.e. the marginal counts alone cannot explain why it is
+      // unusable, so something else (a rate-governor pause) must be the real driver. Combined with
+      // `inFlight > 0` (the gateway IS passing traffic right now — a dead/unreachable forward-proxy
+      // cannot be doing that), this directly disproves "the egress path itself is broken" — do not
+      // instruct an owner-gated escalation off the edge-throttle count alone. `poolExhausted` stays
+      // real (HOLD placements); only the causal/escalation claim is suppressed.
+      if ((hr.inFlight ?? 0) > 0 && edge + wall < acct!.total) {
+        const neither = acct!.total - edge - wall;
+        return (
+          ` — ${edge}/${acct!.total} edge-throttled (a live per-IP/Cloudflare bare-429 cooldown), but ` +
+          `${hr.inFlight} request(s) are IN FLIGHT right now and at least ${neither}/${acct!.total} ` +
+          `account(s) are neither edge-throttled nor usage-walled — the egress path IS passing traffic, ` +
+          `so this reads as a transient/self-clearing cooldown or local rate-governor pause, NOT a dead/` +
+          `unreachable forward-proxy. Do NOT escalate on this alone; re-read shortly. Only treat this as ` +
+          `an owner-gated egress fault if usableAccounts stays at 0 while inFlight also drops to 0 (no ` +
+          `traffic passing at all).`
+        );
+      }
       return (
         ` — DOMINANT CAUSE: ${edge}/${acct!.total} edge-throttled (a live per-IP/Cloudflare bare-429 ` +
         `cooldown, NOT account quota). This usually means the egress path itself is broken (a down/` +

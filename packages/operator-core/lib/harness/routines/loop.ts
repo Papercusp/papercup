@@ -577,6 +577,29 @@ export interface LoopStatus {
   /** Same caveat as `lastDeliveryOutcome` — the failure-streak counter only resets on the
    *  fire path (a successful delivery), never on a re-arm. */
   consecutiveErrors: number;
+  /** WI-36792 — ISO of the last time the FIRE GATE denied this loop's claim
+   *  (`autoloop_state.last_withheld_at`, written by loop-fire.ts's pre-`wake()` withhold path,
+   *  EI-14483). Null when the gate has never withheld a fire — the normal case for most loops.
+   *
+   *  READ IT AGAINST `lastFiredAt`: the claim stamps `routines.last_fired_at` and the gate is
+   *  consulted immediately after, so `lastWithheldAt >= lastFiredAt` means THE MOST RECENT
+   *  fire never went out at all. That distinguishes "the agent was asked and did not answer"
+   *  from "the agent was never asked", which every fire-history field here otherwise conflates:
+   *  a withhold deliberately does NOT touch `lastFiredAt`/`consecutiveErrors` (so as not to
+   *  reset the backoff clock it is enforcing), and it creates NO `event_wake_deliveries` row,
+   *  so `lastWakeAt` stays frozen while `lastFiredAt` advances — byte-identical to a wake that
+   *  black-holed on a dead session.
+   *
+   *  ⚠ These columns existed for three weeks with ZERO readers (EI-14483 built them as a
+   *  durable trail; nothing consumed it), including `stalled-loops-guard`, which was deciding
+   *  a PERMANENT disarm on exactly the distinction they carry. Surfacing it here is what lets
+   *  that guard tell the two apart — see its withheld-fire veto.
+   *
+   *  OPTIONAL on semantics, not to dodge stranded fixtures (CLAUDE.md warns against the latter,
+   *  and WI-36070/WI-6957 both stranded suites by adding a REQUIRED field to this ~38-referrer
+   *  interface): most rows genuinely have `last_withheld_at IS NULL`, so a required field would
+   *  force every construction site to assert a value that does not exist. */
+  lastWithheldAt?: string | null;
   /** EI-16210: the most recent `event_wake_deliveries` row recorded for THIS loop's own
    *  wake (`source = 'loop:<routineId>'`) — the actual delivery-ladder outcome behind a
    *  generic `lastDeliveryOutcome:'loop-stuck-backstop'`. Distinguishes "the wake was
@@ -917,6 +940,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     stalledSinceMs: stall.stalledSinceMs,
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
     consecutiveErrors: r.consecutive_errors == null ? 0 : Number(r.consecutive_errors),
+    lastWithheldAt: r.last_withheld_at ? new Date(r.last_withheld_at).toISOString() : null,
     lastWakeChannel: r.last_wake_channel ?? null,
     lastWakeStatus: r.last_wake_status ?? null,
     lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
@@ -965,6 +989,10 @@ export async function getLoopStatuses(
                 ELSE (EXTRACT(EPOCH FROM (now() - r.last_fired_at)) * 1000)::bigint END AS parked_ms,
            a.last_status         AS last_delivery_outcome,
            a.consecutive_errors  AS consecutive_errors,
+           -- WI-36792: the fire-gate's own DENIAL stamp (EI-14483 wrote it; nothing has ever
+           -- read it). Selected here because it is the ONLY signal that separates "the fire went
+           -- out and reached nobody" from "the fire never went out" — see LoopStatus.lastWithheldAt.
+           a.last_withheld_at    AS last_withheld_at,
            (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
              WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
                AND ag.summary = ${SESSION_END_MARKER} AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,

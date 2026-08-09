@@ -82,28 +82,58 @@ const itemSpec = z.object({
 type Spec = z.infer<typeof itemSpec>;
 
 /**
- * EI-19919820196426791: an explicit priority write is a silent no-op on claimability when
- * the item sits in a lane the claim path structurally never serves (payload.lane=
- * 'observation') or is routed to a human (payload.needsHuman=true) — the write reports
- * ok:true/written:true exactly like a real steer, with nothing flagging the conflict.
+ * EI-19919820196426791 / EI-19932455002723461: an explicit priority write is a silent no-op
+ * on claimability when the item sits behind ANY of the claim path's structural floors, not
+ * just the original two (payload.lane='observation' / payload.needsHuman=true) — the write
+ * reports ok:true/written:true exactly like a real steer, with nothing flagging the conflict.
+ *
+ * EI-19932455002723461 (MEASURED 2026-08-09): the original two-floor check missed the far
+ * more common structural exclusions on this harness — `claim-hold` (61 open items),
+ * `federation-detector` (98), `cross-machine-rig` (6) — so a priority set on any of THOSE
+ * items reported success with zero warning, reproducing the exact "silently ineffective
+ * steering lever" symptom the reporter measured. `explainIssueClaimFloors` already reports
+ * ALL of these (plus `plan-lane-reserved` / `loop-noise` / `already-completed` /
+ * `external-blocker` / `not-claimable-status`) via the SAME floor oracle the real claim path
+ * reads — this just stops discarding everything but two of its verdicts.
+ *
+ * `already-taken` and `not-found` are deliberately EXCLUDED from the warning: a currently-held
+ * item is a TRANSIENT state (priority steering IS effective the moment it's released — this is
+ * not the "structurally invisible regardless of reordering" failure this warns about), and
+ * `not-found`/`null` can't reach here (the caller already returned/skipped on those).
+ *
  * Best-effort only: uses the SAME floor oracle the real claim path reads (so it can't drift),
  * and a lookup failure (or a feature-family id, which the oracle doesn't cover) silently
  * yields no warning rather than failing the priority write itself.
  */
+const STRUCTURALLY_UNCLAIMABLE_FLOORS = new Set([
+  'not-claimable-status',
+  'observation-lane',
+  'needs-human',
+  'external-blocker',
+  'claim-hold',
+  'plan-lane-reserved',
+  'federation-detector',
+  'loop-noise',
+  'already-completed',
+  'cross-machine-rig',
+]);
+
 async function structuralClaimabilityWarning(harness: string | null, id: string): Promise<string | undefined> {
   if (!harness) return undefined;
   try {
     const [floor] = await explainIssueClaimFloors(harness, [id]);
-    if (floor && (floor.refusedBy === 'observation-lane' || floor.refusedBy === 'needs-human')) {
-      return (
-        `⚠ backlog priority was set, but this item is structurally UNCLAIMABLE and will stay ` +
-        `invisible to scheduler:get_next / claim_next regardless: ${floor.detail}. Reordering the ` +
-        `backlog does not change this. If it should actually be worked, clear the blocking flag first ` +
-        `— work_items:update { id, needsHuman:false } for a needs-human routing, or re-file/relocate it ` +
-        `out of the observation lane (it was captured via improvements:capture { lane:'observation' }, ` +
-        `which by design never enters the work queue).`
-      );
-    }
+    if (!floor || !floor.refusedBy || !STRUCTURALLY_UNCLAIMABLE_FLOORS.has(floor.refusedBy)) return undefined;
+    const remediation =
+      floor.refusedBy === 'needs-human'
+        ? ' Clear it with work_items:update { id, needsHuman:false } if it should actually be worked.'
+        : floor.refusedBy === 'observation-lane'
+          ? ' It was captured via improvements:capture { lane:\'observation\' }, which by design never enters the work queue — re-file/relocate it out of that lane if it should actually be worked.'
+          : '';
+    return (
+      `⚠ backlog priority was set, but this item is structurally UNCLAIMABLE and will stay ` +
+      `invisible to scheduler:get_next / claim_next regardless: ${floor.detail}. Reordering the ` +
+      `backlog does not change this.${remediation}`
+    );
   } catch {
     // best-effort signal only
   }

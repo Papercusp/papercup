@@ -87,6 +87,7 @@ import {
   improvementsStatus,
   infraStatus,
   infraSummary,
+  diskBandWithHysteresis,
   overwatchStatus,
   worstStatus,
   deriveQueenAlive,
@@ -1700,7 +1701,27 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
     // in-process): used% on ~/.papercusp + the working tree, deduped by device.
     let disk: InfraHealth['disk'] = null;
     try {
-      disk = await readDiskPressure();
+      const raw = await readDiskPressure();
+      if (raw) {
+        // EI-19944041837110102 (disk-alarm-flap): classify each volume's band WITH
+        // hysteresis against ITS OWN band from the previous tick (matched by path — a
+        // path can drop out/appear between ticks, e.g. the working-tree cwd, so this is
+        // a lookup, not a positional zip). `cache` (declared below in this file) is the
+        // SAME in-process previous-snapshot store `runSystemHealthTickUncached` already
+        // reads as `prev` for its own edge-detection (see the infra-crit incident-capture
+        // trigger a few lines below in that function) — reusing it here keeps this at the
+        // same level of cross-tick rigor already trusted elsewhere in this file, with no
+        // new migration/table. It is per-PROCESS (imperfect across a `:3070` cluster's N
+        // workers, same caveat as that existing edge-detector), which is an acceptable
+        // approximation for hysteresis: a worker with no prior reading just falls back to
+        // a plain threshold check (see `diskBandWithHysteresis`'s `prevBand: null` case)
+        // rather than mis-classifying.
+        const prevDisk = cache.get(ctx.ws)?.panels?.infra?.data?.disk ?? null;
+        disk = raw.map((v) => {
+          const prevBand = prevDisk?.find((p) => p.path === v.path)?.band ?? null;
+          return { ...v, band: diskBandWithHysteresis(v.usedPct, prevBand) };
+        });
+      }
     } catch { /* statfs unavailable — leave null */ }
     // Backup freshness (P-011): newest successful kopia snapshot + last outcome.
     let backup: InfraHealth['backup'] = null;
@@ -1803,12 +1824,12 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
 
 /** health-tab-v2 P-011: used% per watched volume (~/.papercusp + the working
  *  tree), deduped by filesystem identity. null when statfs is unavailable. */
-async function readDiskPressure(): Promise<Array<{ path: string; usedPct: number }> | null> {
+async function readDiskPressure(): Promise<Array<{ path: string; usedPct: number; freeGb: number }> | null> {
   const { statfs } = await import('node:fs/promises');
   const { homedir } = await import('node:os');
   const paths = [`${homedir()}/.papercusp`, process.cwd()];
   const seen = new Set<string>();
-  const out: Array<{ path: string; usedPct: number }> = [];
+  const out: Array<{ path: string; usedPct: number; freeGb: number }> = [];
   for (const p of paths) {
     try {
       const s = await statfs(p);
@@ -1818,7 +1839,9 @@ async function readDiskPressure(): Promise<Array<{ path: string; usedPct: number
       const fsKey = `${s.type}:${s.blocks}:${s.bfree}`; // same-device dedupe (coarse but effective)
       if (seen.has(fsKey)) continue;
       seen.add(fsKey);
-      out.push({ path: p, usedPct: Math.round((1 - free / total) * 100) });
+      // freeGb: rounded DOWN (Math.floor) so the crit-summary's absolute-headroom check
+      // (EI-19944041837110102) never rounds a near-empty disk up into looking safer.
+      out.push({ path: p, usedPct: Math.round((1 - free / total) * 100), freeGb: Math.floor(free / 1024 ** 3) });
     } catch { /* path missing — skip */ }
   }
   return out.length > 0 ? out : null;

@@ -21,6 +21,12 @@ import { StringDecoder } from 'node:string_decoder';
 import { resolveSubstrateSocketPath, SUBSTRATE_SOCKET_ENV } from './substrate-socket-path';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import {
+  beginSyncEnrolment,
+  completeSyncEnrolment,
+  finishSyncEnrolment,
+} from '../../task-manager/enroll-sync';
+import type { TaskSpec } from '../../task-manager/types';
+import {
   resolveSidecarSpawnPlan,
   respawnBackoffMs,
   pruneRespawnWindow,
@@ -265,9 +271,40 @@ export async function spawnSubstrateSidecar(
     const cmd = plan.cmd;
     const args = plan.args;
     const launchedAt = Date.now();
-    const [spawnCommand, ...spawnArgs] = useScope
-      ? buildIsolatedScopeArgv([cmd, ...args], substrateSidecarScopeMemoryMaxG())
-      : [cmd, ...args];
+
+    // P-009 (task-manager-no-escape-2026-07-27): enrol this sidecar in the task
+    // ledger. CONFINEMENT was never the gap here — buildIsolatedScopeArgv already
+    // caps memory — but it builds an UNNAMED transient scope (`run-rNNNN.scope`),
+    // and a row the ledger cannot join to by unit name is a row the reconciler
+    // reads as `unaccounted`. That is why this was the one site the detached-spawn
+    // guard still allowlists as a P-009 follow-up.
+    //
+    // `enrolment.wrap` emits the SAME systemd-run scope with a NAMED unit
+    // (`pc-<taskId>.scope`) under the sidecar slice, and buildTaskScopeArgv emits
+    // MemoryMax AND MemorySwapMax=0 whenever memoryMaxBytes > 0 — so the WI-1504
+    // swap-thrash guarantee ("synthetic 10G allocation -> sidecar killed, bg-host
+    // untouched") is preserved byte-for-byte, not merely approximated.
+    //
+    // `confine: useScope` keeps the scope-launch-failure fallback intact: that
+    // path re-enters with useScope=false, and an unconfined enrolment leaves argv
+    // untouched, so the retry is byte-identical to its pre-P-009 behaviour. Same
+    // for task-manager flag-OFF, which falls back to the unnamed isolated scope.
+    const taskSpec: TaskSpec = {
+      class: 'sidecar',
+      title: 'substrate sidecar',
+      argv: [cmd, ...args],
+      launchedBy: 'system:substrate-sidecar',
+      memoryMaxBytes: substrateSidecarScopeMemoryMaxG() * 1024 ** 3,
+      detail: { socketPath: resolvedSocket },
+    };
+    const enrolment = beginSyncEnrolment(taskSpec, { confine: useScope });
+    const wrapped = enrolment.confined ? enrolment.wrap(cmd, args) : null;
+
+    const [spawnCommand, ...spawnArgs] = wrapped
+      ? [wrapped.binary, ...wrapped.argv]
+      : useScope
+        ? buildIsolatedScopeArgv([cmd, ...args], substrateSidecarScopeMemoryMaxG())
+        : [cmd, ...args];
     let stderr = '';
     let settled = false;
 
@@ -283,6 +320,18 @@ export async function spawnSubstrateSidecar(
       detached: true,
     });
     const child = sidecarProcess;
+    // Fire-and-forget by contract — never awaited by the spawn path and never
+    // allowed to reject into it. A lost enrolment degrades to an `unaccounted`
+    // row on the next reconcile, which is the alarm that classification exists
+    // to raise, rather than a failed sidecar boot.
+    completeSyncEnrolment(enrolment, taskSpec, child.pid ?? null);
+
+    // Guards the exit handler against double-closing the ledger row. The row is
+    // per-SPAWN, not per-sidecar: scheduleRespawn() re-enters spawnSubstrateSidecar
+    // and mints a fresh enrolment, so a respawn must close this row and open a new
+    // one. Holding one row across a respawn is exactly the non-exit strand leak
+    // already filed as WI-7249.
+    let enrolmentClosed = false;
 
     const cleanup = () => {
       clearTimeout(timeout);
@@ -357,6 +406,19 @@ export async function spawnSubstrateSidecar(
     child.on('exit', (code) => {
       cleanup();
       const msg = code !== null ? `exit code ${code}` : 'killed';
+      // Close the ledger row for THIS spawn. `code === null` means the process was
+      // signalled rather than exiting on its own, which is the ledger's 'killed';
+      // a deliberateStop is still a clean 'exited'. Without this the row survives
+      // its process and the reconciler has to strand it, which is the 88-rows-in-24h
+      // shape D-015 measured.
+      if (!enrolmentClosed) {
+        enrolmentClosed = true;
+        finishSyncEnrolment(enrolment, {
+          state: code === null && !deliberateStop ? 'killed' : 'exited',
+          exitCode: code,
+          exitReason: deliberateStop ? 'deliberate stop' : `substrate sidecar ${msg}`,
+        });
+      }
       // A deliberate stopSubstrateSidecar() is a graceful shutdown, not a
       // crash — warning "died" here is misleading noise (and trips
       // vitest-fail-on-console). Only warn for an UNEXPECTED exit.

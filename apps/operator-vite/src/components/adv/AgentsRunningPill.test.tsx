@@ -735,3 +735,62 @@ describe('AgentsRoster — multi-select + bulk actions', () => {
     expect(screen.queryByTestId('agents-bulk-bar')).toBeNull();
   });
 });
+
+/* ── Instant id matches (WI-37204, owner ask 2026-08-08) ────────────────────
+   At >=2 chars this popover REPLACES the roster with the server's transcript
+   search, which searches turn TEXT — so an id query used to answer NOTHING
+   (measured live pre-fix: `?q=su-bc38a419` → totalHits 0, sessions []). The
+   answer for a LIVE agent is already in this component's roster payload, so it
+   is resolved here on the keystroke and the server's pass (which additionally
+   reaches ENDED sessions) merges in behind it. */
+describe('instant id matches (WI-37204)', () => {
+  const SU = 'su-bc38a419-8dc6-4040-a63e-2dc0515e42be';
+  const SID = '073c5a1e-d280-4c37-866c-fedcaf096c9e';
+
+  const openWithQuery = (q: string) => {
+    nuqs.open = true;
+    nuqsOther.state.agentsQ = q;
+    // The server leg is irrelevant to these assertions — a never-settling fetch
+    // proves what renders came from the ROSTER, not from a round-trip.
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    render(<Pill />);
+  };
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('resolves a live agent by its full su id with no round-trip', async () => {
+    H.active = [agent({ ownerId: SU, agent: 'su', role: 'engineer', sessionId: SID })];
+    openWithQuery(SU);
+    expect((await screen.findByTestId('id-match-chip')).textContent).toBe('matched su id');
+  });
+
+  it('resolves it by the SHORT HANDLE the roster actually renders', async () => {
+    H.active = [agent({ ownerId: SU, agent: 'su', role: 'engineer', sessionId: SID })];
+    openWithQuery('su-bc38a419');
+    expect(await screen.findByTestId('id-match-chip')).toBeTruthy();
+  });
+
+  it('resolves a live agent by its NATIVE session id', async () => {
+    H.active = [agent({ ownerId: SU, agent: 'su', role: 'engineer', sessionId: SID })];
+    openWithQuery(SID);
+    expect((await screen.findByTestId('id-match-chip')).textContent).toBe('matched session id');
+  });
+
+  it('matches a STALE agent too — addressing a session by id is not browsing', async () => {
+    // `running` drops stale entries, which is right for browsing the roster and
+    // wrong here: a human holding an id wants that session in any state.
+    H.active = [
+      agent({ ownerId: 'q1', agent: 'queen', role: 'queen' }), // keeps the pill rendered
+      agent({ ownerId: SU, agent: 'su', role: 'engineer', sessionId: SID, liveness: 'stale' }),
+    ];
+    openWithQuery(SU);
+    expect(await screen.findByTestId('id-match-chip')).toBeTruthy();
+  });
+
+  it('stays out of the way for a PROSE query — no id chip, just the text search', async () => {
+    H.active = [agent({ ownerId: SU, agent: 'su', role: 'engineer', sessionId: SID })];
+    openWithQuery('escalation');
+    await screen.findByTestId('search-pending');
+    expect(screen.queryByTestId('id-match-chip')).toBeNull();
+  });
+});

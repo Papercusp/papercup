@@ -318,6 +318,39 @@ describe('applyResultProjection — safety contracts', () => {
     expect(bodyText(out)).toBe('');
     expect(reportOf(out)).toMatchObject({ linesIn: 0, linesOut: 0 });
   });
+
+  // EI-19944567995100280: a grep-shaped projection against an ERROR envelope used
+  // to run normally, reducing a real `invalid_input` failure to 0 lines / 0 chars
+  // — reported by the door footer as "(100% saved)", indistinguishable from a
+  // successful filter that matched nothing. The caller read the empty body as
+  // "no results" three times before discovering the call had failed all along.
+  it('BYPASSES projection entirely on an isError result — the error text survives untouched', () => {
+    const errorResult = {
+      isError: true,
+      content: [
+        { type: 'text' as const, text: 'invalid_input: invalid_args: order: Invalid option: expected one of "updated"|"created"|"slug"' },
+      ],
+    };
+    const out = applyResultProjection(
+      errorResult,
+      spec({ pipe: [{ op: 'grep', pattern: 'gate|ownership|red|condition' }, { op: 'head', n: 25 }] }),
+    );
+    // Untouched: no footer appended, no lines dropped, the original error text intact.
+    expect(out.content).toEqual(errorResult.content);
+    expect(bodyText(out)).toContain('invalid_input');
+    expect(reportOf(out)).toMatchObject({ applied: false, linesIn: 0, linesOut: 0 });
+    expect(reportOf(out).notes.join(' ')).toMatch(/error/i);
+  });
+
+  it('still bypasses on isError even when a `pick` would have matched nothing (not just non-JSON text)', () => {
+    const errorResult = {
+      isError: true,
+      content: [{ type: 'text' as const, text: '{"error":"not_found","id":"WI-1"}' }],
+    };
+    const out = applyResultProjection(errorResult, spec({ pick: ['results[].id'] }));
+    expect(out.content).toEqual(errorResult.content);
+    expect(reportOf(out).applied).toBe(false);
+  });
 });
 
 /**

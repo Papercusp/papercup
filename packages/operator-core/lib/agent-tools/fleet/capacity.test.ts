@@ -1,8 +1,17 @@
 /** Tests for fleet:capacity's pure report builder (queen-capacity-aware-dispatch-2026-06-22 P-003). */
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { buildCapacityReport } from './capacity';
 import type { GatewayHeadroom } from '../../inference-gateway/observability';
+import type { AccountStatusRow } from '../../deployment/account-pool-store';
+
+const { mockAccountStatus } = vi.hoisted(() => ({ mockAccountStatus: vi.fn() }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
+vi.mock('../../deployment/account-session-override', () => ({
+  getAccountOverride: async () => ({ forcedAccounts: [], excludeAccounts: [] }),
+  applyAccountOverride: (ids: readonly string[]) => [...ids],
+}));
+vi.mock('../../deployment/account-pool-store', () => ({ accountStatus: mockAccountStatus }));
 
 const tieredHr = (over: Partial<GatewayHeadroom> = {}): GatewayHeadroom => ({
   reachable: true,
@@ -122,4 +131,56 @@ test('no headroom arg ⇒ recommendedHeadroom null (report only)', () => {
   const r = buildCapacityReport(tieredHr(), { clampArmed: true });
   assert.equal(r.recommendedHeadroom, null);
   assert.equal(r.throttled, null);
+});
+
+const acctRow = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatusRow => ({
+  id,
+  provider: 'claude',
+  credentialRef: `token:~/.papercusp/${id}`,
+  boundTo: [],
+  available: true,
+  usageWalled: false,
+  sustainedlyLimited: false,
+  edgeThrottleKnown: true,
+  edgeThrottled: false,
+  edgeThrottleCooledIps: 0,
+  edgeThrottleBare429Streak: 0,
+  rate: { pausedUntil: 0, penaltyCount: 0, lastPenaltyAt: 0, windowStartedAt: 0 },
+  liveBuckets: [],
+  readingStatus: 'fresh',
+  ...over,
+});
+
+test('EI-19944752041493781: sustainedlyLimitedCount is scoped to the USABLE set — an unavailable ' +
+  '(usage-walled) sustainedlyLimited account must NOT count against a DIFFERENT, actually-usable account', async () => {
+  const { readBeeProviderAvailability } = await import('./capacity');
+  // Reproduces the exact measured incident: 4 claude accounts — one usage-walled AND
+  // sustainedlyLimited (unavailable, so NOT usable), two edge-throttled (available but not
+  // usable), and one genuinely healthy + usable account that is NOT sustainedlyLimited at all.
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('aviynw', { available: false, usageWalled: true, sustainedlyLimited: true, edgeThrottled: true }),
+    acctRow('aviynw3', { edgeThrottled: true }),
+    acctRow('aviynw10', { edgeThrottled: true }),
+    acctRow('avi_storewolf.com', { edgeThrottled: false, sustainedlyLimited: false }),
+  ]);
+  const acct = await readBeeProviderAvailability();
+  assert.ok(acct, 'expected an availability read');
+  assert.equal(acct!.usable, 1, 'only avi_storewolf.com is available AND not edge-throttled');
+  assert.equal(
+    acct!.sustainedlyLimitedCount,
+    0,
+    'the walled aviynw account (not usable) must not be counted — the one usable account is fine',
+  );
+});
+
+test('EI-19944752041493781: sustainedlyLimitedCount DOES count a sustainedlyLimited account that IS usable', async () => {
+  const { readBeeProviderAvailability } = await import('./capacity');
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('a', { sustainedlyLimited: true }), // available, not edge-throttled ⇒ usable AND sustainedlyLimited
+    acctRow('b', { sustainedlyLimited: false }),
+  ]);
+  const acct = await readBeeProviderAvailability();
+  assert.ok(acct);
+  assert.equal(acct!.usable, 2);
+  assert.equal(acct!.sustainedlyLimitedCount, 1, 'exactly the one usable, sustainedlyLimited account counts');
 });

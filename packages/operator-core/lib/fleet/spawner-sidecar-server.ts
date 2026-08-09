@@ -282,7 +282,10 @@ function armOrphanWatchdog(socketPath: string, shutdown: (reason: string) => voi
       );
       shutdown('owner-gone');
     },
-    { category: 'watchdog' },
+    // D-004: 'must-sample'. `pidAlive` is D-004's own worked example of a source with
+    // no publisher — the kernel emits no event when a NON-CHILD pid dies, so the only
+    // way to learn the owner is gone is to look.
+    { category: 'watchdog', classification: 'must-sample' },
   );
 }
 

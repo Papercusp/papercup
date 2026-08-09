@@ -24212,6 +24212,30 @@ body:has(.operator-panel) {
    present, which is the whole point: it used to render as literally nothing. */
 .oracle-msg-empty { color: var(--fg-mute, var(--muted, #888)); }
 
+/* session-chat-popup-timestamps-and-modes-2026-08-09 P-001 — the per-message
+   time stamp, under the bubble.
+
+   Deliberately the quietest thing in the row: it appears on EVERY message, so
+   at content weight it would out-shout the conversation it annotates. Small,
+   muted, tabular-figure (so a column of times does not jitter as the digits
+   change), and it inherits the stack's edge alignment rather than setting its
+   own — left under an agent bubble, right under yours. */
+.oracle-msg-time {
+  font-size: 10px;
+  line-height: 1.4;
+  margin-top: 3px;
+  color: var(--fg-mute, var(--muted, #888));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* The relative half is the softer of the two: the absolute time is the one you
+   correlate against a log, the age is orientation. Fading it keeps the pair
+   readable as "time, then how long ago" rather than as two competing numbers. */
+.oracle-msg-time__rel { opacity: 0.72; }
+
 /* gui-chat-session-controls-2026-07-25 P-009: message content renders as
    markdown (bold/links/lists) — reset block-element defaults so it reads
    like plain chat text, not a document. `:where` keeps 0 specificity so the

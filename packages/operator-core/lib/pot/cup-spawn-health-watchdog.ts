@@ -280,5 +280,17 @@ export function startCupSpawnHealthWatchdog(
 
   run(); // boot check
   if (watchdogTimer) watchdogTimer.stop();
-  watchdogTimer = managedSetInterval('cup-spawn-health-watchdog', intervalMs, run, { category: 'watchdog' });
+  // D-004: 'violation', declared HONESTLY and retained DELIBERATELY. By the letter of
+  // D-004 this recomputes a derived verdict from `harness_shared.spawned_agents`, a store
+  // that already emits a change event on every terminal spawn — so the streak could be
+  // evaluated invalidate-on-write instead of on a clock. It stays a timer for the reason
+  // in this file's header: the alarm must keep firing when the ROUTINE/EVENT ENGINE
+  // ITSELF is what is wedged, and a subscription would go silent in exactly that case.
+  // Classifying it 'must-sample' to make it look clean would be the self-serving
+  // reclassification that empties the register of meaning; D-004 forbids only OMITTING
+  // the classification, not declaring a justified violation.
+  watchdogTimer = managedSetInterval('cup-spawn-health-watchdog', intervalMs, run, {
+    category: 'watchdog',
+    classification: 'violation',
+  });
 }

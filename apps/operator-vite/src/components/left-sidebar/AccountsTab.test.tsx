@@ -11,9 +11,12 @@ const H = vi.hoisted(() => ({
   setExpanded: vi.fn(),
   forced: new Set<string>(),
   excluded: new Set<string>(),
+  overrideBusy: false,
   toggleForce: vi.fn(),
   toggleExclude: vi.fn(),
   clearOverride: vi.fn(),
+  defaultAccountId: undefined as string | undefined,
+  setDefaultAccount: vi.fn(),
 }));
 
 vi.mock('@papercusp/sync', () => ({
@@ -33,13 +36,17 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('../adv/use-account-override', () => ({
   useAccountOverride: () => ({
-    overrideBusy: false,
+    overrideBusy: H.overrideBusy,
     forced: H.forced,
     excluded: H.excluded,
+    // The default is a SEPARATE axis and deliberately does NOT count as "steering active":
+    // it does not restrict the pool (default-deploy-account-2026-08-08 D-003).
     overrideActive: H.forced.size > 0 || H.excluded.size > 0,
     toggleForce: H.toggleForce,
     toggleExclude: H.toggleExclude,
     clearOverride: H.clearOverride,
+    defaultAccountId: H.defaultAccountId,
+    setDefaultAccount: H.setDefaultAccount,
   }),
 }));
 
@@ -105,9 +112,12 @@ beforeEach(() => {
   });
   H.forced = new Set();
   H.excluded = new Set();
+  H.overrideBusy = false;
   H.toggleForce = vi.fn();
   H.toggleExclude = vi.fn();
   H.clearOverride = vi.fn();
+  H.defaultAccountId = undefined;
+  H.setDefaultAccount = vi.fn();
 });
 
 afterEach(() => {
@@ -165,5 +175,82 @@ describe('AccountsTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop forcing acct-opus-1' }));
     expect(H.toggleForce).toHaveBeenCalledWith('acct-opus-1');
+  });
+});
+
+describe('AccountsTab — the default account (default-deploy-account-2026-08-08 P-006)', () => {
+  it('with NO default set, says so and names what is being used instead', () => {
+    // "No default" is a real, deliberate state (the box's own login), not an empty placeholder —
+    // so the summary has to answer "what am I on right now?", not just stay blank.
+    render(<AccountsTab active />);
+    expect(screen.getByText(/No default/)).toBeTruthy();
+    expect(screen.getByText(/~\/\.claude/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Make acct-opus-1 the default account' })).toBeTruthy();
+  });
+
+  it('marking a default sends the account id', () => {
+    render(<AccountsTab active />);
+    fireEvent.click(screen.getByRole('button', { name: 'Make acct-opus-1 the default account' }));
+    expect(H.setDefaultAccount).toHaveBeenCalledWith('acct-opus-1');
+  });
+
+  it('the star is a TOGGLE — clicking the current default clears it with null', () => {
+    // null, not '' or the id again: clearing is the D-002 escape hatch back to ~/.claude, and
+    // the store treats null (clear) and omission (keep) as different things.
+    H.defaultAccountId = 'acct-opus-1';
+    render(<AccountsTab active />);
+    const star = screen.getByRole('button', { name: 'Clear acct-opus-1 as the default account' });
+    expect(star.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(star);
+    expect(H.setDefaultAccount).toHaveBeenCalledWith(null);
+  });
+
+  it('summarises WHICH account is default and that traffic still fails over past it', () => {
+    H.defaultAccountId = 'acct-opus-1';
+    render(<AccountsTab active />);
+    expect(screen.getByText('★ acct-opus-1')).toBeTruthy();
+    expect(screen.getByText(/starts here, then fails over/)).toBeTruthy();
+  });
+
+  it('is NOT optimistic — the button reflects the server value, not the click', () => {
+    // The write is a patch + sync invalidate, so the row must stay unpressed until the server
+    // round-trip lands. An optimistic flip here would show a default that may not have been
+    // accepted (setDefaultAccount rejects an unknown/Codex id at the write).
+    render(<AccountsTab active />);
+    const star = screen.getByRole('button', { name: 'Make acct-opus-1 the default account' });
+    fireEvent.click(star);
+    expect(H.setDefaultAccount).toHaveBeenCalledTimes(1);
+    expect(star.getAttribute('aria-pressed')).toBe('false');
+    expect(star.textContent).toContain('☆');
+    expect(screen.getByText(/No default/)).toBeTruthy();
+  });
+
+  it('a CODEX row has no default control at all (Claude-only)', () => {
+    // The server rejects a Codex default by name; the UI simply never offers it, so the two
+    // layers agree instead of the owner discovering the rule via an error toast.
+    H.accounts = [CODEX_ACCOUNT];
+    render(<AccountsTab active />);
+    expect(screen.queryByRole('button', { name: /default account/i })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Exclude codex-main' })).toBeTruthy();
+  });
+
+  it('offers the control only on the Claude row of a mixed pool', () => {
+    H.accounts = [ACCOUNT, CODEX_ACCOUNT];
+    render(<AccountsTab active />);
+    expect(screen.getAllByRole('button', { name: /default account/i }).map((b) => b.getAttribute('aria-label'))).toEqual(
+      ['Make acct-opus-1 the default account'],
+    );
+  });
+
+  it('disables the control while an override write is in flight', () => {
+    H.overrideBusy = true;
+    render(<AccountsTab active />);
+    expect(screen.getByRole('button', { name: 'Make acct-opus-1 the default account' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('a default alone does not read as "session steering active" (it restricts nothing)', () => {
+    H.defaultAccountId = 'acct-opus-1';
+    render(<AccountsTab active />);
+    expect(screen.queryByText('Session steering active')).toBeNull();
   });
 });

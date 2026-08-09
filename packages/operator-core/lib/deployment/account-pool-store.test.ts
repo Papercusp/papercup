@@ -5,17 +5,45 @@
  * account-keyed governor pause through the shared registry.
  * Run: cd packages/operator-core && npx vitest run account-pool-store
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Frame } from '@papercusp/deployment-driver';
-import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
+import { getGovernor, resetGovernorRegistry, DEFAULT_ACCOUNT_ACTIVE_ENV } from '@papercusp/papercusp-shared/agent';
+
+/**
+ * default-deploy-account-2026-08-08 P-002/P-005: setDefaultAccount is the one function here
+ * whose IO is NOT injectable — it validates against the real pool and persists through the
+ * override row. Both of those go through operator-state-pg, so ONE seam at that boundary
+ * covers the whole path, and getAccountOverride/setAccountOverride keep running for real.
+ *
+ * Deliberately a PARTIAL mock (`importOriginal` + spread) rather than an object factory: a
+ * factory enumerates the module's exports, so it strands the moment anyone adds one — the
+ * exact trap that left two suites in this workspace red (EI-19945223710397201). Spreading the
+ * original cannot fail that way. Every pre-existing test in this file injects its own IO and
+ * never reaches this seam.
+ */
+const stateStore = new Map<string, unknown>();
+const stateKey = (table: string, ws?: string) => `${table}::${ws ?? 'default'}`;
+vi.mock('../operator-state-pg', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../operator-state-pg')>()),
+  readOperatorState: vi.fn(async (table: string, ws?: string) => stateStore.get(stateKey(table, ws)) ?? null),
+  writeOperatorState: vi.fn(async (table: string, payload: unknown, ws?: string) => {
+    stateStore.set(stateKey(table, ws), payload);
+  }),
+}));
+
 import {
   selectAccountForDeploy,
   handleAccountExhausted,
   initAccountScaleObserver,
   _resetAccountScaleObserver,
   projectLiveEdgeThrottle,
+  setDefaultAccount,
+  readDefaultAccountId,
+  syncDefaultAccountEnv,
   type ScaleOutResult,
 } from './account-pool-store';
+import { AccountPoolError } from './account-pool';
+import { readOperatorState } from '../operator-state-pg';
 import {
   emptyPool,
   registerAccount,
@@ -293,5 +321,115 @@ describe('initAccountScaleObserver (P-019/P-021 bridge)', () => {
     await flush();
     expect(updated).toBe(false);
     expect(scaleCalls).toEqual([]);
+  });
+});
+
+describe('setDefaultAccount (default-deploy-account-2026-08-08 P-002)', () => {
+  const WS = 'ws-default';
+  const seedPool = (...accounts: { id: string; provider?: 'claude' | 'codex' }[]) =>
+    stateStore.set(`operator_account_pool::${WS}`, {
+      accounts: accounts.map((a) => ({ ...a, credentialRef: `token:~/.papercusp/${a.id}` })),
+    });
+
+  beforeEach(() => {
+    stateStore.clear();
+    delete process.env[DEFAULT_ACCOUNT_ACTIVE_ENV];
+  });
+  afterEach(() => {
+    delete process.env[DEFAULT_ACCOUNT_ACTIVE_ENV];
+  });
+
+  it('persists a valid claude account as the default', async () => {
+    seedPool({ id: 'aviynw6' }, { id: 'aviynw2' });
+    const out = await setDefaultAccount('aviynw2', WS);
+    expect(out.defaultAccountId).toBe('aviynw2');
+    expect(await readDefaultAccountId(WS)).toBe('aviynw2');
+  });
+
+  it('leaves the allow/exclude axes untouched (a default is a different axis)', async () => {
+    seedPool({ id: 'aviynw6' });
+    stateStore.set(`operator_account_override::${WS}`, { forcedAccounts: ['aviynw6'], excludeAccounts: ['other'] });
+    const out = await setDefaultAccount('aviynw6', WS);
+    expect(out).toEqual({ forcedAccounts: ['aviynw6'], excludeAccounts: ['other'], defaultAccountId: 'aviynw6' });
+  });
+
+  // ── validation happens at the WRITE, so a bad value can never reach resolve time ──
+
+  it('REJECTS an unknown id with an AccountPoolError naming the known accounts', async () => {
+    // The message has to name them: the caller is a settings UI, and "no such account" alone
+    // gives the owner nothing to act on.
+    seedPool({ id: 'aviynw6' }, { id: 'aviynw2' });
+    await expect(setDefaultAccount('nope', WS)).rejects.toThrow(AccountPoolError);
+    await expect(setDefaultAccount('nope', WS)).rejects.toThrow(
+      /no such account 'nope'[\s\S]*Known accounts: aviynw6, aviynw2/,
+    );
+  });
+
+  it('says "(pool is empty)" rather than a bare empty list when nothing is registered', async () => {
+    seedPool();
+    await expect(setDefaultAccount('nope', WS)).rejects.toThrow(/\(pool is empty\)/);
+  });
+
+  it('REJECTS a Codex account BY NAME instead of silently filtering it away', async () => {
+    // Filtering would leave the owner staring at a Settings control that appears to do nothing.
+    // The default stands in for the machine's CLAUDE login, so a Codex id is a user error worth
+    // reporting, not a value to quietly drop.
+    seedPool({ id: 'claude-a' }, { id: 'codex-main', provider: 'codex' });
+    await expect(setDefaultAccount('codex-main', WS)).rejects.toThrow(AccountPoolError);
+    await expect(setDefaultAccount('codex-main', WS)).rejects.toThrow(
+      /'codex-main' is a Codex account[\s\S]*Claude login/,
+    );
+  });
+
+  it('a REJECTED write leaves an existing default intact (validate before persist)', async () => {
+    seedPool({ id: 'aviynw6' }, { id: 'codex-main', provider: 'codex' });
+    await setDefaultAccount('aviynw6', WS);
+    await expect(setDefaultAccount('codex-main', WS)).rejects.toThrow(/Codex account/);
+    expect(await readDefaultAccountId(WS)).toBe('aviynw6'); // not clobbered by the failed write
+    expect(process.env[DEFAULT_ACCOUNT_ACTIVE_ENV]).toBe('1'); // and the marker still reflects reality
+  });
+
+  // ── clearing: the way back to the ~/.claude login (D-002) ──
+
+  it.each([null, undefined, '', '   '])('%p CLEARS the default without consulting the pool', async (id) => {
+    // Notably it does NOT validate: clearing must work even when the pool is unreadable or the
+    // named account is already gone, because this is the recovery path.
+    seedPool({ id: 'aviynw6' });
+    await setDefaultAccount('aviynw6', WS);
+    const out = await setDefaultAccount(id, WS);
+    expect(out.defaultAccountId).toBeUndefined();
+    expect(await readDefaultAccountId(WS)).toBeUndefined();
+  });
+
+  // ── the in-process transport marker (D-004) ──
+
+  it('publishes the env marker on set and REMOVES it on clear', async () => {
+    // chooseStatelessTransport (papercusp-shared) reads this to send the in-process
+    // anthropic-direct family through the gateway. It is a boolean, not an account id, on
+    // purpose — see the known per-process staleness gap (EI-19944784972017743).
+    seedPool({ id: 'aviynw6' });
+    await setDefaultAccount('aviynw6', WS);
+    expect(process.env[DEFAULT_ACCOUNT_ACTIVE_ENV]).toBe('1');
+    await setDefaultAccount(null, WS);
+    expect(DEFAULT_ACCOUNT_ACTIVE_ENV in process.env).toBe(false); // deleted, not set to ''
+  });
+
+  it('syncDefaultAccountEnv reconciles a process that booted before the default was set', async () => {
+    seedPool({ id: 'aviynw6' });
+    await setDefaultAccount('aviynw6', WS);
+    delete process.env[DEFAULT_ACCOUNT_ACTIVE_ENV]; // a sibling host that never saw the write
+    expect(await syncDefaultAccountEnv(WS)).toBe(true);
+    expect(process.env[DEFAULT_ACCOUNT_ACTIVE_ENV]).toBe('1');
+  });
+
+  it('syncDefaultAccountEnv is FAIL-SOFT on a read error — it keeps the previous marker', async () => {
+    // Deliberately unlike readDefaultAccountId's other callers, which fail closed. This one is a
+    // best-effort refresher, so flipping every in-process call onto a different transport over a
+    // transient blip would be strictly worse than leaving the marker alone.
+    seedPool({ id: 'aviynw6' });
+    await setDefaultAccount('aviynw6', WS);
+    vi.mocked(readOperatorState).mockRejectedValueOnce(new Error('pg blip'));
+    expect(await syncDefaultAccountEnv(WS)).toBeUndefined();
+    expect(process.env[DEFAULT_ACCOUNT_ACTIVE_ENV]).toBe('1'); // unchanged, not cleared
   });
 });

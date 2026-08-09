@@ -1,9 +1,40 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// EI-19937931088042507 / EI-19938311427988534: readBgHostJournalUncached shells out to
+// `journalctl` via execFile with NO default timeout — an unresponsive/slow journal (disk
+// pressure, journal rotation stall) hung it INDEFINITELY, and status.ts's `.catch(() =>
+// null)` around readPotSoakReport only guards a rejection, never a hang, so pot:status
+// never returned (measured >55s, 3/3 reproductions). Stub `node:child_process`'s `execFile`
+// to reproduce Node's own timeout-kill contract (callback invoked with `killed:true`) WITHOUT
+// waiting out the real JOURNALCTL_TIMEOUT_MS, so this test both runs fast and proves the
+// bound actually degrades to a reported `journalError` instead of hanging the caller.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    execFile: vi.fn(
+      (
+        _file: string,
+        _args: readonly string[],
+        _options: unknown,
+        callback: (error: Error & { killed?: boolean; signal?: string }, stdout: string, stderr: string) => void,
+      ) => {
+        setImmediate(() => {
+          const err = Object.assign(new Error('journalctl killed'), { killed: true, signal: 'SIGTERM' });
+          callback(err, '', '');
+        });
+        return { kill: vi.fn() };
+      },
+    ),
+  };
+});
+
 import {
   WAKE_MEAN_CHAR_BUDGET,
   computeSoakReport,
   parseBgHostGlobalJournal,
   parseBgHostUnitJournal,
+  readBgHostJournalUncached,
 } from './soak-report';
 
 describe('parseBgHostUnitJournal', () => {

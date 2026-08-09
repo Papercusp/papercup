@@ -80,6 +80,24 @@ export interface ChatMessage {
    */
   seq?: number;
   /**
+   * WHEN this message happened — an ISO instant, rendered by the surface as the
+   * per-message stamp (session-chat-popup-timestamps-and-modes-2026-08-09 P-001,
+   * [owner 2026-08-09] "add timestamp to the user and agent messages in the
+   * gui").
+   *
+   * OPTIONAL, and deliberately so: only a feed that genuinely KNOWS the instant
+   * sets it. Today that is the session-transcript mapper, whose source entries
+   * carry a `ts` stamped by every backend parser (claude/codex/omp). The
+   * operator's own conversation store does not set it yet, so those surfaces are
+   * unchanged — a message with no `ts` renders no stamp rather than an invented
+   * one. Never default this to "now" at render time: a backfilled transcript
+   * would then claim every historical turn happened at page load.
+   *
+   * NOT validated here. The renderer parses it and declines on an unparseable
+   * value, which keeps this type a plain carrier of what the source said.
+   */
+  ts?: string | null;
+  /**
    * The plan this message's content is about, when known
    * (chat-ref-pills-2026-07-26 P-006/P-004). A `P-NNN` plan-item ref is
    * unique only WITHIN a plan, so resolving/hydrating one requires the

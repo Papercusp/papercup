@@ -134,6 +134,41 @@ export function makeRepoBasenameResolver(
 }
 
 /**
+ * Compose the three ways a cited path can legitimately resolve, in one place.
+ *
+ * The third leg is the one that is easy to miss (EI-16474). A path can be
+ * GITIGNORED **and** absent from disk and still be a perfectly live citation —
+ * a runtime artifact the runbook teaches you to read while diagnosing a
+ * failure. `apps/operator-vite/.vite-build-failure.json` is the case that
+ * exposed it: it is dropped beside `dist/` only by a FAILED build, so it is
+ * never tracked and is absent exactly when the tree is healthy.
+ *
+ * That makes the tracked-or-on-disk test structurally unable to settle the
+ * question: the condition under which the file would exist is the condition the
+ * runbook exists to help you escape, so the signal re-files forever and no
+ * amount of resolving it sticks. The on-disk fallback was already reaching for
+ * this class ("gitignored-but-present files … e.g. `apps/operator/.env.local`")
+ * but only catches it when the file happens to be materialised.
+ *
+ * An ignore RULE, unlike the file's momentary presence, is a stable statement
+ * that the path is generated rather than source — so a path matching one is
+ * never evidence that a runbook has gone stale.
+ */
+export function makeCitationResolver(opts: {
+  /** `git ls-files` output, or null when git is unavailable (packaged build). */
+  trackedFiles?: readonly string[] | null;
+  /** Paths matching a .gitignore rule — generated, so absence proves nothing. */
+  ignoredPaths?: readonly string[];
+  /** On-disk existence check (repo-relative). */
+  existsOnDisk?: (repoRelPath: string) => boolean;
+}): (repoRelPath: string) => boolean {
+  const trackedResolver = opts.trackedFiles ? makeRepoPathResolver(opts.trackedFiles) : null;
+  const ignored = new Set(opts.ignoredPaths ?? []);
+  const existsOnDisk = opts.existsOnDisk ?? (() => false);
+  return (p) => (trackedResolver ? trackedResolver(p) : false) || ignored.has(p) || existsOnDisk(p);
+}
+
+/**
  * Resolution cooldown for insight-staleness signals (EI-441 / EI-427). After an
  * insight-staleness item is resolved, the fix lands on the source-of-truth tree
  * (staging) but the live operator scans the release/green checkout, which lags
@@ -262,6 +297,47 @@ async function listTrackedFiles(root: string): Promise<string[] | null> {
   }
 }
 
+/**
+ * Which of `candidates` match a .gitignore rule at `root`.
+ *
+ * `git check-ignore` consults the ignore RULES, not the filesystem, so it
+ * answers for a path that does not exist — which is the whole point here
+ * (EI-16474): the runtime artifacts this guards are absent precisely when the
+ * tree is healthy. Fails OPEN (empty set) when git is unavailable, so the
+ * caller degrades to the previous tracked-or-on-disk behaviour rather than
+ * silently suppressing real staleness.
+ */
+async function listIgnoredPaths(
+  root: string,
+  candidates: readonly string[],
+): Promise<Set<string>> {
+  const ignored = new Set<string>();
+  if (candidates.length === 0) return ignored;
+  try {
+    const { execFile } = await import('node:child_process');
+    const stdout = await new Promise<string>((resolve) => {
+      const child = execFile(
+        'git',
+        ['-C', root, 'check-ignore', '--stdin'],
+        { maxBuffer: 8 * 1024 * 1024 },
+        (err, so) => {
+          // exit 1 = "none of them are ignored" — a normal answer, not a failure.
+          if (err && (err as { code?: unknown }).code !== 1) return resolve('');
+          resolve(so ?? '');
+        },
+      );
+      child.stdin?.end(`${candidates.join('\n')}\n`);
+    });
+    for (const line of stdout.split('\n')) {
+      const p = line.trim();
+      if (p) ignored.add(p);
+    }
+  } catch {
+    /* git unavailable → no ignore data; existence falls back to tracked/on-disk */
+  }
+  return ignored;
+}
+
 /** Thin fs glue — reads the agent-insights dir + checks cited paths against the repo tree. */
 export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]> {
   // Lazy-import so the pure scan stays import-cheap for tests.
@@ -293,14 +369,20 @@ export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]
   // files so a dropped-prefix shorthand isn't a false "stale". Fall back to an exact
   // existsSync at REPO_ROOT when git is unavailable (packaged build).
   const tracked = await listTrackedFiles(REPO_ROOT);
-  const trackedResolver = tracked ? makeRepoPathResolver(tracked) : null;
-  // A cited path resolves if it's tracked (exact/suffix shorthand) OR present on disk.
-  // The on-disk fallback (EI-510) catches gitignored-but-present files that `git ls-files`
-  // omits — e.g. `apps/operator/.env.local`, a file-based plan doc under docs/plans/ —
-  // which would otherwise read as a perpetual false "stale". "Missing" now means
-  // not-tracked AND not-on-disk = genuinely gone.
-  const existsFn = (p: string) =>
-    (trackedResolver ? trackedResolver(p) : false) || fs.existsSync(path.join(REPO_ROOT, p));
+  // A cited path resolves if it's tracked (exact/suffix shorthand), matches a
+  // .gitignore rule (generated — absence proves nothing, EI-16474), OR is present
+  // on disk. The on-disk leg (EI-510) catches gitignored-but-present files that
+  // `git ls-files` omits — e.g. `apps/operator/.env.local`; the ignore-rule leg
+  // catches the same class when the artifact is legitimately ABSENT, which is the
+  // steady state for a failure-only artifact. "Missing" now means not-tracked AND
+  // not-ignored AND not-on-disk = genuinely gone.
+  const cited = [...new Set(insights.flatMap((i) => extractCitedPaths(i.raw)))];
+  const ignoredPaths = [...(await listIgnoredPaths(REPO_ROOT, cited))];
+  const existsFn = makeCitationResolver({
+    trackedFiles: tracked,
+    ignoredPaths,
+    existsOnDisk: (p) => fs.existsSync(path.join(REPO_ROOT, p)),
+  });
   // Class-2 apoptosis guard (EI-510): only available with the tracked-file list; the
   // packaged-build fallback can't enumerate basenames, so apoptosis stays strict there.
   const basenameExistsFn = tracked ? makeRepoBasenameResolver(tracked) : undefined;

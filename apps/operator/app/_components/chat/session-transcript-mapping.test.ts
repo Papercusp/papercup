@@ -10,7 +10,7 @@ describe('sessionTimelineToChatMessages', () => {
   it('maps a prompt into a user message', () => {
     const entries: TimelineEntry[] = [{ kind: 'prompt', text: 'do the thing', ts: 't1' }];
     expect(sessionTimelineToChatMessages(entries)).toEqual([
-      { role: 'user', content: 'do the thing', id: 'prompt-0' },
+      { role: 'user', content: 'do the thing', id: 'prompt-0', ts: 't1' },
     ]);
   });
 
@@ -27,8 +27,10 @@ describe('sessionTimelineToChatMessages', () => {
     ];
     const out = sessionTimelineToChatMessages(entries);
     expect(out).toEqual([
-      { role: 'user', content: 'hi', id: 'prompt-0' },
-      { role: 'assistant', content: 'Hello\n\nthere.', id: 'turn-0' },
+      { role: 'user', content: 'hi', id: 'prompt-0', ts: 't1' },
+      // t3, not t2: the stamp follows the LAST text entry that contributed, so a
+      // multi-chunk reply is dated when it finished arriving.
+      { role: 'assistant', content: 'Hello\n\nthere.', id: 'turn-0', ts: 't3' },
     ]);
   });
 
@@ -45,7 +47,7 @@ describe('sessionTimelineToChatMessages', () => {
     ];
     const out = sessionTimelineToChatMessages(entries);
     expect(out).toEqual([
-      { role: 'user', content: 'fix the bug', id: 'prompt-0' },
+      { role: 'user', content: 'fix the bug', id: 'prompt-0', ts: 't0' },
       {
         role: 'assistant',
         content: 'Fixed it.',
@@ -54,6 +56,10 @@ describe('sessionTimelineToChatMessages', () => {
           { name: 'Edit', input: { file_path: '/a.ts', old: 'x', new: 'y' } },
         ],
         id: 'turn-0',
+        // t7 (the text), NOT t0 (the turn's start). This is the case the stamp
+        // exists for: a turn spanning several tool calls is dated when its
+        // ANSWER appeared, not when the agent started working on it.
+        ts: 't7',
       },
     ]);
     // The 50KB tool_result never reaches the mapped output — the whole point
@@ -71,8 +77,16 @@ describe('sessionTimelineToChatMessages', () => {
     ];
     const out = sessionTimelineToChatMessages(entries);
     expect(out).toEqual([
-      { role: 'user', content: 'run the tests', id: 'prompt-0' },
-      { role: 'assistant', content: '', tools: [{ name: 'Bash', input: { command: 'npm test' } }], id: 'turn-0' },
+      { role: 'user', content: 'run the tests', id: 'prompt-0', ts: 't0' },
+      {
+        role: 'assistant',
+        content: '',
+        tools: [{ name: 'Bash', input: { command: 'npm test' } }],
+        id: 'turn-0',
+        // Nothing content-bearing to date, so the turn's own end wins: t2, the
+        // dropped tool_result. The turn HAPPENED even though its text did not.
+        ts: 't2',
+      },
     ]);
   });
 
@@ -82,7 +96,7 @@ describe('sessionTimelineToChatMessages', () => {
       { kind: 'status', text: '[thinking] …', ts: 't1' },
     ];
     expect(sessionTimelineToChatMessages(entries)).toEqual([
-      { role: 'user', content: 'ping', id: 'prompt-0' },
+      { role: 'user', content: 'ping', id: 'prompt-0', ts: 't0' },
     ]);
   });
 
@@ -93,12 +107,14 @@ describe('sessionTimelineToChatMessages', () => {
       { kind: 'result', text: 'Final answer from result.', costUsd: 0.01, ts: 't2' },
     ];
     expect(sessionTimelineToChatMessages(withResultOnly)).toEqual([
-      { role: 'user', content: 'summarize', id: 'prompt-0' },
+      { role: 'user', content: 'summarize', id: 'prompt-0', ts: 't0' },
       {
         role: 'assistant',
         content: 'Final answer from result.',
         tools: [{ name: 'search', input: {} }],
         id: 'turn-0',
+        // The content came from the `result` entry, so the stamp does too.
+        ts: 't2',
       },
     ]);
 
@@ -109,8 +125,11 @@ describe('sessionTimelineToChatMessages', () => {
     ];
     // `text` wins over `result` when both are present — no duplicated content.
     expect(sessionTimelineToChatMessages(withBothTextAndResult)).toEqual([
-      { role: 'user', content: 'summarize', id: 'prompt-0' },
-      { role: 'assistant', content: 'Streamed answer.', id: 'turn-0' },
+      { role: 'user', content: 'summarize', id: 'prompt-0', ts: 't0' },
+      // ...and the STAMP follows the same branch: t1 (the text that is actually
+      // rendered), never t2 (the result record whose text was discarded). A
+      // shared "last content entry" cursor would get this one wrong.
+      { role: 'assistant', content: 'Streamed answer.', id: 'turn-0', ts: 't1' },
     ]);
   });
 
@@ -125,17 +144,84 @@ describe('sessionTimelineToChatMessages', () => {
     ];
     const out = sessionTimelineToChatMessages(entries);
     expect(out).toEqual([
-      { role: 'assistant', content: 'leftover from before this window', id: 'turn-0' },
-      { role: 'user', content: 'first', id: 'prompt-1' },
-      { role: 'assistant', content: 'first reply', id: 'turn-1' },
-      { role: 'user', content: 'second', id: 'prompt-2' },
+      { role: 'assistant', content: 'leftover from before this window', id: 'turn-0', ts: 't0' },
+      { role: 'user', content: 'first', id: 'prompt-1', ts: 't1' },
+      { role: 'assistant', content: 'first reply', id: 'turn-1', ts: 't2' },
+      { role: 'user', content: 'second', id: 'prompt-2', ts: 't3' },
       {
         role: 'assistant',
         content: 'second reply',
         tools: [{ name: 'Grep', input: { pattern: 'x' } }],
         id: 'turn-2',
+        ts: 't5',
       },
     ]);
+    // The stamps ASCEND across the whole transcript — the property a reader
+    // actually relies on, and the one a per-turn bug would break invisibly.
+    expect(out.map((m) => m.ts)).toEqual(['t0', 't1', 't2', 't3', 't5']);
+  });
+
+  /* session-chat-popup-timestamps-and-modes-2026-08-09 P-001 — the per-message
+     `ts`. The cases above already pin the happy paths inline; these pin the
+     edges, where the mapper has to CHOOSE a timestamp rather than copy one. */
+  describe('ts (P-001)', () => {
+    it('OMITS the field entirely when the source entry carried no timestamp — never undefined, never a sentinel', () => {
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: 'hi' },
+        { kind: 'text', text: 'Hello' },
+      ];
+      const out = sessionTimelineToChatMessages(entries);
+      // `toEqual` would pass against `{ ts: undefined }`, so assert on the KEY.
+      // The renderer's no-stamp branch is reached by absence, and a message that
+      // silently carried an undefined `ts` would look stamped to any `in` check.
+      expect(out).toHaveLength(2);
+      expect(out.every((m) => !('ts' in m))).toBe(true);
+    });
+
+    it('a turn whose entries are PARTIALLY stamped still dates the message from the stamped one', () => {
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: 'go', ts: 't0' },
+        { kind: 'text', text: 'working' },
+        { kind: 'text', text: 'done', ts: 't9' },
+      ];
+      expect(sessionTimelineToChatMessages(entries)[1].ts).toBe('t9');
+    });
+
+    it('an UNSTAMPED text entry after a stamped one does not blank the message stamp', () => {
+      // The mapper only ever ADVANCES the cursor on a real ts, so a trailing
+      // unstamped chunk cannot erase what an earlier one established. Assigning
+      // `e.ts` unconditionally would regress exactly this to undefined.
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: 'go', ts: 't0' },
+        { kind: 'text', text: 'first', ts: 't1' },
+        { kind: 'text', text: 'trailing chunk with no ts' },
+      ];
+      expect(sessionTimelineToChatMessages(entries)[1].ts).toBe('t1');
+    });
+
+    it('a tool-only turn falls back to the turn END, and a turn with neither to its START', () => {
+      const toolOnly: TimelineEntry[] = [
+        { kind: 'prompt', text: 'run', ts: 't0' },
+        { kind: 'tool_use', toolName: 'Bash', toolInput: {}, ts: 't1' },
+        { kind: 'tool_result', text: 'ok', ts: 't2' },
+      ];
+      expect(sessionTimelineToChatMessages(toolOnly)[1].ts).toBe('t2');
+
+      // Only the prompt is stamped: the turn's start is the sole honest answer.
+      const startOnly: TimelineEntry[] = [
+        { kind: 'prompt', text: 'run', ts: 't0' },
+        { kind: 'tool_use', toolName: 'Bash', toolInput: {} },
+      ];
+      expect(sessionTimelineToChatMessages(startOnly)[1].ts).toBe('t0');
+    });
+
+    it('is carried by the messages-only wrapper and the full mapper identically', () => {
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: 'hi', ts: 't1' },
+        { kind: 'text', text: 'Hello', ts: 't2' },
+      ];
+      expect(mapSessionTimeline(entries).messages.map((m) => m.ts)).toEqual(['t1', 't2']);
+    });
   });
 
   // WI-5997 (chat-ref-pills-2026-07-26 P-007 residual): a P-NNN ref pill's
@@ -159,15 +245,15 @@ describe('sessionTimelineToChatMessages', () => {
       ];
       const out = sessionTimelineToChatMessages(entries, 'my-plan-2026-07-26');
       expect(out).toEqual([
-        { role: 'user', content: 'hi', id: 'prompt-0', planSlug: 'my-plan-2026-07-26' },
-        { role: 'assistant', content: 'Hello', id: 'turn-0', planSlug: 'my-plan-2026-07-26' },
+        { role: 'user', content: 'hi', id: 'prompt-0', ts: 't1', planSlug: 'my-plan-2026-07-26' },
+        { role: 'assistant', content: 'Hello', id: 'turn-0', ts: 't2', planSlug: 'my-plan-2026-07-26' },
       ]);
     });
 
     it('stamps an explicit null (no active plan) rather than omitting the field, distinct from the undefined default', () => {
       const entries: TimelineEntry[] = [{ kind: 'prompt', text: 'hi', ts: 't1' }];
       const out = sessionTimelineToChatMessages(entries, null);
-      expect(out).toEqual([{ role: 'user', content: 'hi', id: 'prompt-0', planSlug: null }]);
+      expect(out).toEqual([{ role: 'user', content: 'hi', id: 'prompt-0', ts: 't1', planSlug: null }]);
     });
 
     it('a tool-only assistant message is also stamped', () => {
@@ -177,12 +263,13 @@ describe('sessionTimelineToChatMessages', () => {
       ];
       const out = sessionTimelineToChatMessages(entries, 'p');
       expect(out).toEqual([
-        { role: 'user', content: 'run the tests', id: 'prompt-0', planSlug: 'p' },
+        { role: 'user', content: 'run the tests', id: 'prompt-0', ts: 't0', planSlug: 'p' },
         {
           role: 'assistant',
           content: '',
           tools: [{ name: 'Bash', input: { command: 'npm test' } }],
           id: 'turn-0',
+          ts: 't1',
           planSlug: 'p',
         },
       ]);

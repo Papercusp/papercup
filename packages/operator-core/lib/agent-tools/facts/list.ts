@@ -15,7 +15,63 @@ export const FACTS_LIST_DEFAULT_LIMIT = 25;
 /** Excerpt width — enough to identify a fact + decide whether to retract it. */
 export const FACTS_LIST_EXCERPT_CHARS = 180;
 export const FACTS_LIST_EXCERPT_NOTE =
-  'Bodies are EXCERPTED (see body_truncated / body_full_chars). Pass full:true — ideally with a tighter limit — for verbatim bodies.';
+  'Bodies are EXCERPTED (see body_truncated / body_full_chars) — but any OPERATIVE clause (ALWAYS/NEVER/MUST/DO NOT…) found past the cut is preserved verbatim after the ⚠ OPERATIVE marker. Pass full:true — ideally with a tighter limit — for whole bodies.';
+
+/**
+ * P-002 (knowledge-at-symptom-time-2026-08-09): how much of the budget the preserved operative
+ * clauses may take, on top of the excerpt head. Deliberately small — EI-10948 shrank this response
+ * for a real reason, and the fix must not quietly undo it. Only facts that actually carry an
+ * imperative past the cut pay anything at all.
+ */
+export const FACTS_LIST_OPERATIVE_CHARS = 220;
+export const FACTS_LIST_OPERATIVE_MAX_CLAUSES = 2;
+
+/**
+ * Words this corpus SHOUTS when a fact is telling you to do something. Case-sensitive on purpose:
+ * authors upper-case these deliberately, and matching case-insensitively would drag in ordinary prose
+ * ("we must have missed it") and spend the whole budget on narration.
+ */
+const OPERATIVE_MARKERS = /\b(ALWAYS|NEVER|MUST|DO NOT|DON'T|REQUIRED|RULE:)/;
+
+/**
+ * P-002: pull the imperative clauses out of a fact body — PURE and exported so the behaviour is
+ * directly testable.
+ *
+ * The incident: two standing facts that would have prevented a wrong owner-facing diagnosis were
+ * folded into an agent's second tool call of the session and BOTH were cut mid-instruction — one
+ * rendered literally as "... is NOT self-validating. ALWAYS cross-read acco…", severing the verb
+ * inside the word "accounts:status". The excerpt kept the fact's EVIDENCE (which the reader can
+ * re-derive) and discarded its INSTRUCTION (which is the only part that changes behaviour). A
+ * head-only slice optimises for identifying a fact; a reader needs to know what it tells them to do.
+ *
+ * Returns clauses that begin at the marker and run to the end of their sentence, skipping any already
+ * visible in `head` (no point spending budget repeating what the reader can see), bounded by both a
+ * clause count and a total char budget so a pathological body cannot blow the response.
+ */
+export function extractOperativeClauses(body: string, head: string): string[] {
+  const out: string[] = [];
+  let spent = 0;
+  // Split on sentence ends AND newlines — these bodies are frequently bulleted, where a "sentence"
+  // never terminates in punctuation at all.
+  for (const rawSentence of body.split(/(?<=[.!?])\s+|\n+/)) {
+    if (out.length >= FACTS_LIST_OPERATIVE_MAX_CLAUSES || spent >= FACTS_LIST_OPERATIVE_CHARS) break;
+    const sentence = rawSentence.trim();
+    if (!sentence) continue;
+    const m = OPERATIVE_MARKERS.exec(sentence);
+    if (!m) continue;
+    // Start AT the imperative, not at the sentence start — the lead-in is usually the evidence the
+    // head already carried.
+    const clause = sentence.slice(m.index).trim();
+    // Already legible in the excerpt head ⇒ spend nothing on it.
+    if (head.includes(clause)) continue;
+    const room = FACTS_LIST_OPERATIVE_CHARS - spent;
+    const kept = clause.length > room ? `${clause.slice(0, Math.max(0, room - 1))}…` : clause;
+    if (!kept || kept === '…') break;
+    out.push(kept);
+    spent += kept.length;
+  }
+  return out;
+}
 
 /**
  * Project one fact for the list response: excerpt the body (and drop the bounded
@@ -55,10 +111,19 @@ export function projectFact(
   if (full) return { ...base, body: f.body, sourceProvenance: f.sourceProvenance };
   const body = f.body ?? '';
   const cut = body.length > FACTS_LIST_EXCERPT_CHARS;
+  if (!cut) return { ...base, body };
+  const head = body.slice(0, FACTS_LIST_EXCERPT_CHARS);
+  // P-002: truncate the EVIDENCE, never the INSTRUCTION. A fact's imperative is the only part that
+  // changes a reader's behaviour, and it is routinely written last — so a head-only slice discards
+  // precisely the payload while keeping the narration.
+  const operative = extractOperativeClauses(body, head);
   return {
     ...base,
-    body: cut ? `${body.slice(0, FACTS_LIST_EXCERPT_CHARS)}…` : body,
-    ...(cut ? { body_truncated: true, body_full_chars: body.length } : {}),
+    body: operative.length ? `${head}… ⚠ OPERATIVE: ${operative.join(' ')}` : `${head}…`,
+    body_truncated: true,
+    body_full_chars: body.length,
+    // Explicit flag so a caller can MEASURE how often the head alone would have lost the instruction.
+    ...(operative.length ? { body_operative_preserved: true } : {}),
   };
 }
 

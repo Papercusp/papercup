@@ -34,6 +34,7 @@ import remarkGfm from 'remark-gfm';
 import type { ChatMessage, ChatToolCall } from './chat-types';
 import { remarkWorkRefs } from './remark-work-refs';
 import { HydratedWorkRefPill } from './HydratedWorkRefPill';
+import { MessageTimestamp } from './message-timestamp';
 import type { WorkRefKind } from './parse-work-refs';
 
 // ChatMessage / ChatToolCall were lifted to ./chat-types.ts while this
@@ -665,6 +666,20 @@ const ChatMessageRow = memo(function ChatMessageRow({
               </em>
             </div>
           )}
+        {/* session-chat-popup-timestamps-and-modes-2026-08-09 P-001 — the
+            per-message time, under the bubble and inheriting the stack's own
+            edge alignment (left for the agent, right for you).
+
+            Self-gating: it renders nothing unless THIS message carries a `ts`,
+            so a feed that does not stamp its messages (the operator's own
+            conversation store, every card surface) is unchanged with no
+            per-caller opt-in flag to thread.
+
+            ⚠ It subscribes to the shared chat clock INTERNALLY. Do not "simplify"
+            that into a prop on this row — see message-timestamp.tsx's header:
+            this row is the WI-6502 typing-lag memo boundary, and a ticking prop
+            would re-render every visible row's full body every 15s. */}
+        <MessageTimestamp ts={m.ts} />
       </div>
     </div>
   );

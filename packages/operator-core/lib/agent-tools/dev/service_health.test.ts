@@ -8,7 +8,20 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../service-health", () => ({ probeAll: vi.fn(), supervisedProcesses: vi.fn(() => []) }));
+vi.mock("../../service-health", () => ({
+  probeAll: vi.fn(),
+  supervisedProcesses: vi.fn(() => []),
+  // reconcileBgHostTicker (EI-19934795546523351) reads this literal — mirror the
+  // real service-health.ts constant rather than importOriginal (avoids pulling in
+  // that module's own DB/coord-transitive imports at test time).
+  PORTLESS_PROBE_NAMES: {
+    desktop: "desktop",
+    bgHostTicker: "bg-host-ticker",
+    bgHostCode: "bg-host-code",
+    substrateSidecar: "substrate-sidecar",
+    embedSidecar: "embed-sidecar",
+  },
+}));
 // EI-13221: probeServiceStart shells out to `systemctl`/`ps` — stub it so the
 // handler tests never touch the real OS; default "not determinable" (ok:false)
 // means the new restart-recency overlay is a no-op unless a test opts in.
@@ -45,7 +58,14 @@ import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
-import { buildMcpProxyTransportBlock, buildServiceHealthDiagnostic, overlayNodeChildSupervision, overlaySystemdRestartRecency } from "./service_health";
+import {
+  buildMcpProxyTransportBlock,
+  buildServiceHealthDiagnostic,
+  overlayNodeChildSupervision,
+  overlaySystemdRestartRecency,
+  reconcileBgHostTicker,
+  BG_HOST_BOOT_GRACE_SEC,
+} from "./service_health";
 
 /** Fixed clock for the transport-block tests — the summarizer windows on it. */
 const NOW_MS = Date.parse("2026-08-02T12:00:00.000Z");
@@ -224,6 +244,60 @@ describe("buildServiceHealthDiagnostic", () => {
     );
     expect(out.nextVerb).toBe('dev:restart { target:"staging" }');
     expect(out.effective).toMatchObject({ down: 1, wedged: 0 });
+  });
+});
+
+describe("reconcileBgHostTicker (EI-19934795546523351, pure)", () => {
+  const downTicker = (note = "⚠ no routine has fired in 17m — looks FROZEN") =>
+    [{ name: "bg-host-ticker", up: false, status: null, latencyMs: 2, note }];
+
+  it("REPRODUCES THE BUG unfixed: leaves a down ticker alone when there is no supervision entry to reconcile against", () => {
+    // Negative control — proves the function does nothing without evidence, rather
+    // than always forcing tickerUp:true (which would just be a different lie).
+    expect(reconcileBgHostTicker(downTicker(), [])).toEqual(downTicker());
+  });
+
+  it("suppresses a DOWN verdict when bg-host restarted inside the boot grace", () => {
+    const out = reconcileBgHostTicker(downTicker(), [
+      { name: "bg-host", layer: "systemd-user", secondsSinceStart: 7 } as never,
+    ]);
+    expect(out[0]?.up).toBe(true);
+    expect(out[0]?.present).toBe(false); // liveness UNKNOWN, not a fabricated healthy answer
+    expect(out[0]?.note).toMatch(/restarted 7s ago/);
+    expect(out[0]?.note).toMatch(/booting/i);
+  });
+
+  it("does NOT suppress once the restart is older than the boot grace — a real freeze stays reported", () => {
+    const out = reconcileBgHostTicker(downTicker(), [
+      { name: "bg-host", layer: "systemd-user", secondsSinceStart: BG_HOST_BOOT_GRACE_SEC } as never,
+    ]);
+    expect(out[0]?.up).toBe(false);
+    expect(out[0]?.note).toBe(downTicker()[0]?.note);
+  });
+
+  it("is a no-op when the ticker already reports up — nothing to reconcile", () => {
+    const upTicker = [{ name: "bg-host-ticker", up: true, status: null, latencyMs: 1 }];
+    expect(
+      reconcileBgHostTicker(upTicker, [{ name: "bg-host", layer: "systemd-user", secondsSinceStart: 3 } as never]),
+    ).toBe(upTicker); // same reference — genuinely untouched
+  });
+
+  it("is a no-op when the supervision entry has no secondsSinceStart (probe couldn't determine it)", () => {
+    const input = downTicker();
+    expect(reconcileBgHostTicker(input, [{ name: "bg-host", layer: "systemd-user" } as never])).toEqual(input);
+  });
+
+  // ── THE LIVE INCIDENT, END TO END ─────────────────────────────────────────────
+  // The exact contradictory payload measured 2026-08-09 00:50-00:52Z: reconciling
+  // must ALSO fix buildServiceHealthDiagnostic's rootCause/nextVerb, since those are
+  // computed from the (now-reconciled) services array, not recomputed separately.
+  it("once reconciled, buildServiceHealthDiagnostic no longer recommends dev:restart for a booting bg-host", () => {
+    const supervision = [{ name: "bg-host", layer: "systemd-user", secondsSinceStart: 7, flapState: "ok" } as never];
+    const services = reconcileBgHostTicker(downTicker(), supervision);
+    const out = buildServiceHealthDiagnostic(services, supervision);
+    expect(out.rootCause).toBeNull();
+    expect(out.nextVerb).toBeNull();
+    expect(out.effective.down).toBe(0);
   });
 });
 

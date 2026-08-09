@@ -76,7 +76,7 @@ export interface DelegatedSpawnOutcomeResolution {
 
 /** IO seams — every one is injectable so the composition unit-tests without PG. */
 export interface ResolveDelegatedSpawnOutcomeDeps {
-  listOffers?: typeof listOffers;
+  listOffers?: typeof listOffersDefault;
   getOffer?: typeof getWorkOffer;
   listReceipts?: typeof listP2pReceipts;
   /** This machine's device pubkey for a github user id (null = unknowable). */
@@ -185,7 +185,7 @@ export async function resolveDelegatedSpawnOutcome(
   args: { workspaceId: string; potSlug: string; offerId: string },
   deps: ResolveDelegatedSpawnOutcomeDeps = {},
 ): Promise<DelegatedSpawnOutcomeResolution | null> {
-  const listOffers = deps.listOffers ?? listOffers;
+  const listOffers = deps.listOffers ?? listOffersDefault;
   const getOffer = deps.getOffer ?? getWorkOffer;
   const listReceipts = deps.listReceipts ?? listP2pReceipts;
   const selfDevicePubkey = deps.selfDevicePubkey ?? defaultSelfDevicePubkey;

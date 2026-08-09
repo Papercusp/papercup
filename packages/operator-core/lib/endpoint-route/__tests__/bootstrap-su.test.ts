@@ -209,8 +209,15 @@ const loadAccountPoolMock = vi.fn(
     accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }],
   }),
 );
+// default-deploy-account-2026-08-08: resolveAccountPin reads the owner's default from THIS
+// module (a dynamic import inside its try/catch). Omitting the export here does not merely
+// leave it unstubbed — the import itself throws, the catch reads that as "the default is
+// unreadable", and every implied-default claude call fail-closes with `env: {}`. Default to
+// `undefined` = "no default set", which is the pre-feature behaviour the older tests assert.
+const readDefaultAccountIdMock = vi.fn(async (_ws?: string): Promise<string | undefined> => undefined);
 vi.mock('../../deployment/account-pool-store', () => ({
   loadAccountPool: (...a: unknown[]) => loadAccountPoolMock(...(a as [string])),
+  readDefaultAccountId: (...a: unknown[]) => readDefaultAccountIdMock(...(a as [string])),
 }));
 const getAccountOverrideMock = vi.fn(async (_ws: string) => ({
   forcedAccounts: [] as string[],
@@ -780,6 +787,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     getFlagMock.mockResolvedValue(false);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] });
     getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
+    readDefaultAccountIdMock.mockResolvedValue(undefined);
   });
   const pin = async (requested: string | null, agent: 'claude' | 'omp' | 'codex' = 'claude') =>
     (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountPin('default', requested, agent);
@@ -881,6 +889,119 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.accountId).toBeNull();
     expect(r.env.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
     expect(r.notice).toMatch(/auto/i);
+  });
+
+  // ── the owner's default account (default-deploy-account-2026-08-08 P-004) ──
+  // The two tests directly above are the CONTROL for this block: with no default set,
+  // ''/'default' skip the gateway entirely. Everything below is what changes once the
+  // owner nominates one — and, just as importantly, what must NOT change.
+
+  describe('with a default account set', () => {
+    beforeEach(() => {
+      getFlagMock.mockResolvedValue(true);
+      readDefaultAccountIdMock.mockResolvedValue('aviynw2');
+    });
+
+    it.each([null, '', '   ', 'default', 'DEFAULT'])(
+      'account %p routes through the gateway on the AUTO path, never as a pin (D-003)',
+      async (requested) => {
+        // Reusing the `auto` path IS the mechanism: the gateway's resolveAccountPool already
+        // returns the default first with the rest behind it, so this gets default-first
+        // ordering AND failover for free. A pin would strand the session with no fallback the
+        // moment that one account hit its rate window — which is why the assertions below are
+        // about the ABSENCE of a pin, not the presence of the account id.
+        const r = await pin(requested);
+        expect(r.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+        expect(r.env.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
+        expect(r.env.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('account');
+        expect(r.env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+        expect(r.accountId).toBeNull();
+        expect(r.provider).toBe('claude');
+        expect(r.error).toBeUndefined();
+      },
+    );
+
+    it('says WHICH account it starts on, and that it still fails over', async () => {
+      // The notice is the only place the owner learns the default took effect — the env
+      // deliberately looks identical to plain `auto`, so without this they cannot tell.
+      const r = await pin(null);
+      expect(r.notice).toMatch(/default account 'aviynw2'/i);
+      expect(r.notice).toMatch(/fails over/i);
+    });
+
+    it.each(['none', 'system', 'NONE', ' System '])(
+      "'%s' still reaches the machine's own login — the D-002 escape hatch is never overridden",
+      async (kw) => {
+        // Without this there is no way back to ~/.claude once a default exists, and no
+        // recovery path at all if the default account's credential goes bad.
+        const r = await pin(kw);
+        expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' });
+        expect(r.accountId).toBeNull();
+        expect(r.notice).toMatch(/default system account.*inference gateway skipped/i);
+      },
+    );
+
+    it('an explicit account pin still outranks the default (unchanged hard-pin behaviour)', async () => {
+      const r = await pin('aviynw6');
+      expect(r.env.PAPERCUSP_ACCOUNT_ID).toBe('aviynw6');
+      expect(r.accountId).toBe('aviynw6');
+      expect(r.notice).toMatch(/pinned to account aviynw6/i);
+    });
+
+    it('an explicit auto is unchanged — it does NOT start advertising the default', async () => {
+      const r = await pin('auto');
+      expect(r.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+      expect(r.notice).toMatch(/selects an available pool account/i);
+      expect(r.notice).not.toMatch(/default account/i);
+    });
+
+    it('a CODEX agent never consults the default (it stands in for the CLAUDE login)', async () => {
+      loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
+      const r = await pin(null, 'codex');
+      expect(r.env).toEqual({});
+      expect(readDefaultAccountIdMock).not.toHaveBeenCalled();
+    });
+
+    it('OMP DOES consult it — it egresses anthropic, so it resolves a claude account', async () => {
+      const r = await pin(null, 'omp');
+      expect(readDefaultAccountIdMock).toHaveBeenCalledWith('default');
+      expect(r.error).toBeUndefined();
+    });
+
+    it('gateway OFF → fails closed rather than quietly serving the system login', async () => {
+      // Without a default, gateway-off + no account is a legitimate system-login launch. WITH
+      // one, the owner has asked for a specific account, so degrading silently would egress on
+      // a credential they did not choose while looking like a perfectly normal launch.
+      getFlagMock.mockResolvedValue(false);
+      const r = await pin(null);
+      expect(r.env).toEqual({});
+      expect(r.error).toMatch(/gateway is off/i);
+      expect(r.error).toMatch(/refusing to fall back/i);
+    });
+  });
+
+  it('a FAILED default read fails CLOSED — never a silent system-login launch', async () => {
+    // The unreadable-row case is distinct from "no default set" (undefined), and conflating
+    // them is the exact silent-misroute this feature exists to prevent: the session would
+    // launch happily on the box's own credential with the owner's choice dropped on the floor.
+    getFlagMock.mockResolvedValue(true);
+    readDefaultAccountIdMock.mockRejectedValue(new Error('pg down'));
+    const r = await pin(null);
+    expect(r.env).toEqual({});
+    expect(r.accountId).toBeNull();
+    expect(r.error).toMatch(/could not read the default account/i);
+    expect(r.error).toMatch(/pg down/);
+    expect(r.error).toMatch(/refusing to fall back/i);
+  });
+
+  it("a failed default read does NOT block the 'system' escape hatch", async () => {
+    // The recovery path must survive the failure mode it exists to recover from — otherwise a
+    // bad override row locks the owner out of their own machine's login entirely.
+    getFlagMock.mockResolvedValue(true);
+    readDefaultAccountIdMock.mockRejectedValue(new Error('pg down'));
+    const r = await pin('system');
+    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' });
+    expect(r.error).toBeUndefined();
   });
 
   it("'auto' + gateway OFF → fails closed instead of using the default credential", async () => {

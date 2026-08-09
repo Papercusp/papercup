@@ -283,7 +283,7 @@ export function startEventLoopSentinel(
     // liveness here is only observable by emitting a beat and watching it stop,
     // the same shape as D-004's PID-liveness example. A subscription cannot
     // express it: a blocked loop would also fail to deliver the event.
-    { category: 'watchdog' },
+    { category: 'watchdog', classification: 'must-sample' },
   );
 
   log('[event-loop-sentinel] armed', {

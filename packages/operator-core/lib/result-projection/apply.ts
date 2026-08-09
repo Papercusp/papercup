@@ -296,6 +296,41 @@ export function applyResultProjection<T extends ProjectableResult>(
 ): T {
   if (!spec) return result;
   try {
+    // EI-19944567995100280: an ERROR envelope is not a result being reduced —
+    // there is nothing in it the caller wants filtered, and a `pipe`/`pick`
+    // spec authored for the SUCCESS shape routinely matches nothing against an
+    // error body (a one-line `invalid_input: ...` string, or JSON with a
+    // completely different shape). Running it anyway silently deletes the
+    // reason for the failure — measured live: a `grep` spec against a 94-char
+    // `invalid_input` error reduced it to 0 lines / 0 chars, and the footer's
+    // own "(100% saved)" wording read as a successful, empty filter rather than
+    // a swallowed error. The caller retried three times believing the result
+    // set was genuinely empty. Bypass entirely and pass the error through
+    // UNTOUCHED — never partially reduced, never even the footer appended, so
+    // an agent that greps the reply for the failing arg name still finds it.
+    if (result.isError) {
+      return {
+        ...result,
+        _meta: {
+          ...result._meta,
+          resultProjection: {
+            applied: false,
+            spec,
+            linesIn: 0,
+            linesOut: 0,
+            charsIn: 0,
+            charsOut: 0,
+            notes: [
+              'projection SKIPPED: this result is an ERROR envelope — reducing an error body ' +
+                'risks deleting the reason for the failure, so it is always passed through ' +
+                'unfiltered. Fix the call per the error text below, then re-add `projection` once ' +
+                'it succeeds.',
+            ],
+          } satisfies ProjectionReport,
+        },
+      };
+    }
+
     const items = result.content;
     if (!Array.isArray(items)) return result;
 

@@ -4,6 +4,7 @@ import {
   minePatterns,
   minePatternsFromEvents,
   containsRun,
+  strengthOf,
   type SequenceEvent,
   type Burst,
 } from './index';
@@ -215,6 +216,79 @@ describe('minePatterns — support and cohort floors are applied BEFORE lift ran
     const keys = res.patterns.map((p) => p.symbols.join(' '));
     expect(keys).not.toContain('rare1 rare2 rare3');
     expect(keys[0]).toBe('a b c');
+  });
+});
+
+describe('minePatterns — strength makes lengths comparable', () => {
+  /**
+   * Found by running the miner on live data: raw lift multiplies one marginal
+   * per symbol, so it compounds with length and a 5-symbol pattern scored 4.7e11
+   * against 2.4e5 for a 3-symbol pattern that was the better finding. Sorting on
+   * raw lift therefore returns the LONGEST patterns wearing the disguise of the
+   * most interesting ones.
+   */
+  const mixedLengthCorpus = (): Burst[] => {
+    const bursts: Burst[] = [];
+    // A tight, highly-surprising 2-step dance performed by many cohorts.
+    for (const c of ['c1', 'c2', 'c3', 'c4', 'c5', 'c6']) bursts.push(burst(c, ['tight', 'pair']));
+    // A long but LOOSE run built from symbols that are everywhere anyway.
+    for (const c of ['c1', 'c2', 'c3']) {
+      bursts.push(burst(c, ['w', 'x', 'y', 'z', 'w', 'x', 'y', 'z', 'w', 'x', 'y', 'z']));
+    }
+    return bursts;
+  };
+
+  it('CONTROL: ranking by RAW lift puts the long loose run first', () => {
+    const res = minePatterns(mixedLengthCorpus(), {
+      minLength: 2,
+      maxLength: 5,
+      minOccurrences: 3,
+      minCohorts: 2,
+      minLift: 0,
+      maximalOnly: false,
+    });
+    const byRawLift = [...res.patterns].sort((a, b) => b.lift - a.lift);
+    expect(byRawLift[0]!.symbols.length).toBeGreaterThan(2);
+  });
+
+  it('the real ranking puts the tight pair first', () => {
+    const res = minePatterns(mixedLengthCorpus(), {
+      minLength: 2,
+      maxLength: 5,
+      minOccurrences: 3,
+      minCohorts: 2,
+      minLift: 0,
+      maximalOnly: false,
+    });
+    expect(res.patterns[0]!.symbols.join(' ')).toBe('tight pair');
+  });
+
+  it('strength is the mean per-transition log10 lift, and 0 below length 2', () => {
+    expect(strengthOf(100, 3)).toBeCloseTo(1, 6); // log10(100)=2, over 2 transitions
+    expect(strengthOf(1000, 4)).toBeCloseTo(1, 6); // log10(1000)=3, over 3 transitions
+    expect(strengthOf(1, 2)).toBe(0); // lift 1 ⇒ no surprise at all
+    expect(strengthOf(1e9, 1)).toBe(0); // asserts no adjacency
+    expect(strengthOf(Infinity, 3)).toBe(0); // degenerate, never ranks first
+  });
+
+  it('a longer pattern still wins when it is genuinely more surprising per step', () => {
+    // Guards against over-correcting: normalization must not simply invert the
+    // bias and always prefer short patterns.
+    const bursts: Burst[] = [];
+    for (const c of ['c1', 'c2', 'c3', 'c4']) bursts.push(burst(c, ['a', 'b', 'c', 'd']));
+    for (const c of ['c1', 'c2', 'c3', 'c4']) bursts.push(burst(c, ['a', 'q']));
+    for (const c of ['c1', 'c2', 'c3', 'c4']) bursts.push(burst(c, ['a', 'r']));
+    const res = minePatterns(bursts, {
+      minLength: 2,
+      maxLength: 4,
+      minOccurrences: 3,
+      minCohorts: 2,
+      minLift: 0,
+      maximalOnly: false,
+    });
+    // `a b c d` is a perfectly reliable 4-run; `a q` shares its head with two
+    // other continuations, so each of its transitions is less surprising.
+    expect(res.patterns[0]!.symbols.join(' ')).toBe('a b c d');
   });
 });
 

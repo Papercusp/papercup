@@ -36,6 +36,7 @@ import {
   MCP_PROXY_HARD_FAIL_CRIT,
   DISK_USED_WARN_PCT,
   DISK_USED_CRIT_PCT,
+  diskBandWithHysteresis,
   BACKUP_STALE_MS,
   UNANSWERED_DIRECTED_WARN_MS,
 } from './thresholds';
@@ -699,6 +700,65 @@ describe('infraStatus — disk / migration-drift / backup legs (health-tab-v2 P-
     expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: BACKUP_STALE_MS + 1, lastStatus: 'ok' } }))).toBe('warn');
     expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: 60_000, lastStatus: 'ok' } }))).toBe('ok');
     expect(infraStatus(infra({ backup: null }))).toBe('ok'); // leg unreadable — fail-soft
+  });
+});
+
+describe('diskBandWithHysteresis — EI-19944041837110102 (disk-alarm-flap)', () => {
+  it('cold start (prevBand null) is a plain threshold check — no hysteresis to be stable against yet', () => {
+    expect(diskBandWithHysteresis(96, null)).toBe('crit');
+    expect(diskBandWithHysteresis(91, null)).toBe('warn');
+    expect(diskBandWithHysteresis(50, null)).toBe('ok');
+  });
+  it('THE BUG: boundary noise around DISK_USED_CRIT_PCT (95) no longer flaps crit<->ok once crit is entered', () => {
+    // measured live: 94-95% oscillation with a 118G buffer, firing + auto-resolving within
+    // the same minute. A raw threshold check re-derives crit/not-crit from scratch every
+    // tick and flaps on this exact input; hysteresis must not.
+    expect(diskBandWithHysteresis(95, null)).toBe('crit'); // enters crit
+    expect(diskBandWithHysteresis(94, 'crit')).toBe('crit'); // dips just under 95 — HOLDS crit
+    expect(diskBandWithHysteresis(93, 'crit')).toBe('crit'); // still within the 3pt buffer — HOLDS
+    expect(diskBandWithHysteresis(95, 'crit')).toBe('crit'); // back up — still crit, unsurprising
+  });
+  it('leaving crit requires dropping the full hysteresis buffer below DISK_USED_CRIT_PCT, not merely under it', () => {
+    expect(diskBandWithHysteresis(92, 'crit')).toBe('crit'); // exactly at the buffer edge — still crit
+    expect(diskBandWithHysteresis(91, 'crit')).toBe('warn'); // genuinely below the buffer — clears to warn
+  });
+  it('escalating to a WORSE band is immediate at the raw threshold — never buffered (a real fast fill must page without delay)', () => {
+    expect(diskBandWithHysteresis(95, 'warn')).toBe('crit');
+    expect(diskBandWithHysteresis(90, 'ok')).toBe('warn');
+  });
+  it('the WARN boundary (90) gets the same hysteresis treatment as CRIT', () => {
+    expect(diskBandWithHysteresis(88, 'warn')).toBe('warn'); // within the buffer — holds warn
+    expect(diskBandWithHysteresis(86, 'warn')).toBe('ok'); // below the buffer — clears to ok
+  });
+});
+
+describe('infraStatus/infraSummary — disk hysteresis wiring (per-volume `band`, EI-19944041837110102)', () => {
+  it('a volume`s own hysteresis `band` overrides a raw-threshold recompute of its usedPct', () => {
+    // usedPct alone (93) is below DISK_USED_CRIT_PCT, but the collector already classified
+    // this tick as still-crit (within the hysteresis buffer) — infraStatus must defer to it.
+    expect(infraStatus(infra({ disk: [{ path: '/', usedPct: 93, band: 'crit' }] }))).toBe('crit');
+  });
+  it('no `band` supplied (a hand-built fixture) falls back to the plain threshold — unchanged behavior', () => {
+    expect(infraStatus(infra({ disk: [{ path: '/', usedPct: 72 }] }))).toBe('ok');
+    expect(infraStatus(infra({ disk: [{ path: '/', usedPct: 93 }] }))).toBe('warn'); // >= WARN_PCT, no band to say otherwise
+  });
+  it('worst band wins across multiple volumes, independent of which has the higher raw %', () => {
+    expect(
+      infraStatus(infra({ disk: [{ path: '/a', usedPct: 99, band: 'warn' }, { path: '/b', usedPct: 10, band: 'crit' }] })),
+    ).toBe('crit');
+  });
+  it('crit summary scales wording by real headroom instead of a flat "writes are about to fail"', () => {
+    const scary = infraSummary(infra({ disk: [{ path: '/x', usedPct: 95, freeGb: 118, band: 'crit' }] }), false);
+    expect(scary).not.toMatch(/about to fail/);
+    expect(scary).toMatch(/critically low/);
+    expect(scary).toContain('118G free');
+    const urgent = infraSummary(infra({ disk: [{ path: '/x', usedPct: 99, freeGb: 118, band: 'crit' }] }), false);
+    expect(urgent).toMatch(/about to fail/); // >= DISK_CRIT_URGENT_PCT regardless of free space
+    const tinyDisk = infraSummary(infra({ disk: [{ path: '/x', usedPct: 95, freeGb: 2, band: 'crit' }] }), false);
+    expect(tinyDisk).toMatch(/about to fail/); // low absolute headroom is urgent even at a modest %
+  });
+  it('no freeGb (hand-built fixture) omits the free-space note without throwing', () => {
+    expect(infraSummary(infra({ disk: [{ path: '/x', usedPct: 96, band: 'crit' }] }), false)).toMatch(/^DISK 96% used on \/x — /);
   });
 });
 

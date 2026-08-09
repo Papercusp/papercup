@@ -248,7 +248,24 @@ export default function AccountsTab({ active }: { active: boolean }) {
       </header>
 
       <div className="pclsb-acct__rule" role="note">
-        <strong>Force</strong> allow-lists · <strong>Excl</strong> skips · none uses the whole pool
+        <strong>★ Default</strong> starts here · <strong>Force</strong> allow-lists ·{' '}
+        <strong>Excl</strong> skips · none uses the whole pool
+      </div>
+
+      {/* Always shown — "which account is actually in force" is the question this pane exists
+          to answer, and the no-default answer (the box's own login) is a real state, not the
+          absence of one. */}
+      <div className="pclsb-acct__dflt" role="status">
+        {defaultAccountId ? (
+          <>
+            <span className="pclsb-acct__chip is-default">★ {defaultAccountId}</span>
+            <span>is the default — everything starts here, then fails over.</span>
+          </>
+        ) : (
+          <span>
+            No default — using this machine&rsquo;s own Claude login (<code>~/.claude</code>).
+          </span>
+        )}
       </div>
 
       {overrideActive && (

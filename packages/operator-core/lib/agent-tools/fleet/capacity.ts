@@ -111,7 +111,21 @@ export async function readBeeProviderAvailability(): Promise<AccountPoolAvailabi
       // EI-18791793869559327: a sustainedlyLimited account is still `available`/not-edge-throttled (it
       // counts toward `usable` above), so without this the DEGRADED tier in buildCapacityReport can never
       // fire from a live read — the capacity advisor stayed blind to the pool's own scale-out signal.
-      sustainedlyLimitedCount: rows.filter((r) => r.sustainedlyLimited).length,
+      //
+      // EI-19944752041493781: this MUST use the exact same predicate as `usable` above (line 102), not a
+      // bare `rows.filter`. `AccountPoolAvailability.sustainedlyLimitedCount`'s own doc comment says "how
+      // many of the `usable` accounts are sustainedlyLimited" and `degraded` in capacity-dispatch.ts compares
+      // it directly against `acct.usable` — but a bare filter counts sustainedlyLimited across ALL accounts,
+      // including ones that are unavailable/edge-throttled/override-excluded and therefore NOT in `usable`
+      // at all. That mismatch let an unavailable (usage-walled) account's sustainedlyLimited flag get
+      // counted against a DIFFERENT, actually-usable account — collapsing `degraded` to true (and the
+      // advice to "all N/M usable accounts are sustainedly rate-limited") even when every truly-usable
+      // account was fine. Measured live: usable=1 (avi_storewolf, sustainedlyLimited:false), yet the bare
+      // filter reported sustainedlyLimitedCount=1 because aviynw (walled, NOT usable) was sustainedlyLimited
+      // — a false "DEGRADED" verdict that was relayed to the owner and had to be retracted.
+      sustainedlyLimitedCount: rows.filter(
+        (r) => r.available && !r.edgeThrottled && allowedIds.has(r.id) && r.sustainedlyLimited,
+      ).length,
       edgeThrottledSharedEgress: sharedEgress,
       edgeThrottledRearming: rearming,
       // EI-19281217347369076: `lastProbeFailedAt` is set the moment an accounts:probe-capacity attempt

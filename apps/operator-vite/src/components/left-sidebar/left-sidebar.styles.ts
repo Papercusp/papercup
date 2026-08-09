@@ -1225,6 +1225,13 @@ body.has-left-sidebar .pc-header {
   background: var(--bg-3, rgba(255, 255, 255, 0.06)); color: var(--fg-mute, #c2c2c9); border: 1px solid var(--border, rgba(255, 255, 255, 0.1)); }
 .pclsb-acct__chip.is-force { color: var(--accent, #8b5cf6); border-color: color-mix(in srgb, var(--accent, #8b5cf6) 45%, transparent); background: color-mix(in srgb, var(--accent, #8b5cf6) 12%, transparent); }
 .pclsb-acct__chip.is-excl { color: var(--warn, #fbbf24); border-color: color-mix(in srgb, var(--warn, #fbbf24) 45%, transparent); background: color-mix(in srgb, var(--warn, #fbbf24) 12%, transparent); }
+/* default-deploy-account-2026-08-08 P-006 — the account standing in for ~/.claude. Uses --ok
+   rather than --accent so it reads as distinct from Force (allow-list), which is a different
+   axis and sits in the same button row. */
+.pclsb-acct__chip.is-default { color: var(--ok, #34d399); border-color: color-mix(in srgb, var(--ok, #34d399) 45%, transparent); background: color-mix(in srgb, var(--ok, #34d399) 12%, transparent); }
+.pclsb-acct__b.is-default { color: var(--ok, #34d399); border-color: var(--ok, #34d399); background: color-mix(in srgb, var(--ok, #34d399) 12%, transparent); }
+.pclsb-acct__dflt { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 3px 7px; font-size: 10px; line-height: 1.35; color: var(--fg-mute, #c2c2c9); }
+.pclsb-acct__dflt code { font-size: 9.5px; }
 .pclsb-acct__detail { display: flex; flex-direction: column; gap: 6px; padding-top: 5px; border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); }
 .pclsb-acct__status { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--fg-mute, #c2c2c9); }
 .pclsb-acct__status--ok { color: var(--good, #34d399); }

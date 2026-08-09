@@ -467,7 +467,7 @@ function SearchResultRow({
   return (
     <div className="pc-agents-sessions__result" data-testid={`session-hit-${result.sourceKind}-${result.sessionId}`}>
       <div
-        className={`pc-agents-roster__row pc-agents-roster__row--nocheck pc-agents-sessions__result-head${openable ? '' : ' is-unopenable'}`}
+        className={`pc-agents-roster__row pc-agents-roster__row--nocheck pc-agents-sessions__result-head${openable ? '' : ' is-unopenable'}${result.idMatch ? ' pc-agents-sessions__result-head--idmatch' : ''}`}
         role={openable ? 'button' : undefined}
         tabIndex={openable ? 0 : undefined}
         title={
@@ -1192,9 +1192,22 @@ function SessionsStyles() {
       /* WI-37204 — "matched su id" / "matched session id" on the head row.
          Accented rather than muted like the provenance chip above: it is the
          ONLY thing explaining why a card carrying no excerpts is on screen, so
-         it has to be findable at a glance, not read as chrome. */
+         it has to be findable at a glance, not read as chrome.
+
+         WARNING: the head row is a GRID (the --nocheck modifier: 4 explicit
+         tracks for age/glyph/name/doing), NOT a flex row — so this chip is a
+         FIFTH child and needs its own explicit track, exactly as --nocheck
+         itself exists because a mismatched track count shifted every cell left
+         by one and truncated the name to a single letter (owner-hit 2026-07-11
+         r3). A margin-left:auto — the flex idiom — would be inert here; the
+         chip sits at the right edge because the doing track ahead of it is
+         minmax(0, 1fr) and absorbs the slack. The modifier is applied ONLY when
+         the chip renders, so an ordinary text result keeps the 4-track template
+         unchanged. */
+      .pc-agents-roster__row--nocheck.pc-agents-sessions__result-head--idmatch {
+        grid-template-columns: max-content 16px minmax(40px, max-content) minmax(0, 1fr) max-content;
+      }
       .pc-agents-sessions__idmatch {
-        margin-left: auto; flex: none;
         font-size: 9px; font-family: ui-monospace, monospace; white-space: nowrap;
         color: var(--accent, #7cc4ff);
         border: 1px solid currentColor; border-radius: 3px;

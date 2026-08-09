@@ -118,6 +118,11 @@ export interface ToolSequenceCandidate {
   bursts: number;
   /** observed / expected-under-independence. ~1 = ambient; >>1 = a real dance. */
   lift: number;
+  /**
+   * The RANKING key: mean per-transition log10 lift, so a 5-call dance and a
+   * 2-call one are comparable. Raw `lift` is not — it compounds with length.
+   */
+  strength: number;
   /** Human-readable rendering, for a work-item body or a log line. */
   label: string;
 }
@@ -208,6 +213,7 @@ function toCandidate(p: MinedPattern): ToolSequenceCandidate {
     agentSample: p.cohortSample,
     bursts: p.bursts,
     lift: Math.round(p.lift * 10) / 10,
+    strength: Math.round(p.strength * 100) / 100,
     label: p.symbols.join(' → '),
   };
 }

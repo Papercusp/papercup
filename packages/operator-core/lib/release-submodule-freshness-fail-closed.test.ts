@@ -46,7 +46,6 @@ const SCRIPT = readFileSync(join(ROOT, 'papercusp-desktop', 'bin', 'release-loca
 
 // Extract the helper verbatim: `_wi3047_unverified() {` through its closing brace at column 0.
 const HELPER_RE = /_wi3047_unverified\(\)\s*\{[\s\S]*?\n\}\n/;
-const helperMatch = SCRIPT.match(HELPER_RE);
 
 /**
  * The helper's CHANNEL-POLICY DEPENDENCY, extracted the same verbatim way.
@@ -70,36 +69,83 @@ const helperMatch = SCRIPT.match(HELPER_RE);
  * here would assert against a channel policy of the test's own invention, so a real
  * change to which channels are strict would not be caught.
  */
-const CHANNEL_LIB = readFileSync(join(ROOT, 'papercusp-desktop', 'bin', 'lib', 'gen-latest-manifest.sh'), 'utf8');
 const CHANNEL_FN_RE = /desktop_channel_is_strict\(\)\s*\{[\s\S]*?\n\}\n/;
-const channelFnMatch = CHANNEL_LIB.match(CHANNEL_FN_RE);
+const CHANNEL_LIB_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'lib', 'gen-latest-manifest.sh');
+
+/**
+ * EI-19933289145316787 (2026-08-09): on this shared, git-sync'd tree, a checkpoint/CI
+ * worktree's files can be mid-`git checkout` (submodule update, sweep-commit) at the exact
+ * moment this file reads them. A read landing in that window can see a truncated/partial
+ * gen-latest-manifest.sh whose regex-extracted `desktop_channel_is_strict` text doesn't
+ * form valid bash — with NO exception thrown (the regex still "matches" something), so
+ * `runHelper` silently synthesizes a script where the function fails to define. That
+ * produced the EXACT can-falsely-pass signature this file exists to catch, one level up:
+ * `bash: line N: desktop_channel_is_strict: command not found` -> exit 127 -> lenient
+ * branch -> "BLOCKS a stable cut" asserts `expect(status).toBe(1)` and gets 0. Confirmed
+ * via harness_shared.test_runs + checkpoint-log archaeology: the source is BYTE-IDENTICAL
+ * between the failing commits and a passing HEAD run minutes later, so this was never a
+ * code regression — it was this test's OWN single-read-at-import-time technique losing a
+ * race with a concurrent checkout on the tree it reads from.
+ *
+ * Fix: read + extract FRESH on every `runHelper` call (never cache at module scope) and
+ * retry a fresh read/extract when the synthesized run itself reports the tell-tale
+ * "command not found" signature — a transient torn read self-heals on a re-read moments
+ * later. A real, persistent breakage (the function genuinely removed/renamed) still fails,
+ * because it survives every retry identically.
+ */
+function readChannelFn(): RegExpMatchArray | null {
+  return readFileSync(CHANNEL_LIB_PATH, 'utf8').match(CHANNEL_FN_RE);
+}
+
+const TORN_READ_SIGNATURE = /desktop_channel_is_strict: command not found/;
+const MAX_TORN_READ_RETRIES = 3;
 
 /** Eval the REAL helper under bash with the given channel/override and report its exit code. */
 function runHelper(opts: { channel: string; override?: string }): { status: number | null; out: string } {
+  const helperMatch = SCRIPT.match(HELPER_RE);
   expect(helperMatch, 'could not locate _wi3047_unverified() in release-local.sh').toBeTruthy();
-  // Not optional bookkeeping: without this the helper's strictness check is an undefined
-  // command (127), which reads as "not strict" and quietly turns every case below lenient.
-  expect(
-    channelFnMatch,
-    'could not locate desktop_channel_is_strict() in bin/lib/gen-latest-manifest.sh — ' +
-      'the helper depends on it, and a MISSING definition degrades to the LENIENT branch ' +
-      'rather than erroring, so this must fail loudly here instead',
-  ).toBeTruthy();
+
   const env = opts.override === undefined ? '' : `PAPERCUSP_ALLOW_UNVERIFIED_SUBMODULE=${JSON.stringify(opts.override)}\n`;
-  // `set -euo pipefail` mirrors the real script: a helper that trips set -e under an empty
-  // var or a false test would abort the cut, which this must catch too.
-  const script = [
-    'set -euo pipefail',
-    `CHANNEL=${JSON.stringify(opts.channel)}`,
-    env,
-    // Sourced by release-local.sh in production; must be defined BEFORE the helper here.
-    channelFnMatch![0],
-    helperMatch![0],
-    '_wi3047_unverified "could not fetch libs/papercusp origin/main (offline / network / auth?)"',
-    'echo REACHED_END',
-  ].join('\n');
-  const res = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
-  return { status: res.status, out: res.stdout + res.stderr };
+
+  let last: { status: number | null; out: string } | undefined;
+  for (let attempt = 1; attempt <= MAX_TORN_READ_RETRIES; attempt++) {
+    // Fresh read + extraction EVERY attempt (not just every test) — a torn read is a
+    // property of a single readFileSync call, not of the test process's lifetime.
+    const channelFnMatch = readChannelFn();
+    // Not optional bookkeeping: without this the helper's strictness check is an undefined
+    // command (127), which reads as "not strict" and quietly turns every case below lenient.
+    expect(
+      channelFnMatch,
+      'could not locate desktop_channel_is_strict() in bin/lib/gen-latest-manifest.sh — ' +
+        'the helper depends on it, and a MISSING definition degrades to the LENIENT branch ' +
+        'rather than erroring, so this must fail loudly here instead',
+    ).toBeTruthy();
+    // `set -euo pipefail` mirrors the real script: a helper that trips set -e under an empty
+    // var or a false test would abort the cut, which this must catch too.
+    const script = [
+      'set -euo pipefail',
+      `CHANNEL=${JSON.stringify(opts.channel)}`,
+      env,
+      // Sourced by release-local.sh in production; must be defined BEFORE the helper here.
+      channelFnMatch![0],
+      helperMatch![0],
+      '_wi3047_unverified "could not fetch libs/papercusp origin/main (offline / network / auth?)"',
+      'echo REACHED_END',
+    ].join('\n');
+    const res = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+    const out = res.stdout + res.stderr;
+    last = { status: res.status, out };
+    if (!TORN_READ_SIGNATURE.test(out)) return last;
+    // Torn read detected — sleep briefly (synchronously; this is a test helper) so a
+    // concurrent checkout has a moment to finish, then retry with a fresh read.
+    spawnSync('sleep', ['0.2']);
+  }
+  // Every retry reproduced the same "command not found" signature — this is no longer
+  // explicable as a torn read; surface it plainly instead of the bare status mismatch.
+  throw new Error(
+    `desktop_channel_is_strict was undefined across ${MAX_TORN_READ_RETRIES} fresh reads of ` +
+      `${CHANNEL_LIB_PATH} — this looks like a REAL removal/rename, not a torn read. Last output:\n${last!.out}`,
+  );
 }
 
 describe('P-412/WI-3047: an UNVERIFIABLE submodule freshness check must not pass a shipping cut', () => {

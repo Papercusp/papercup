@@ -587,9 +587,45 @@ export function mergeKindIntoClaimSpec(existing: ClaimSpec, kinds: readonly stri
   type ClaimFilter = NonNullable<ClaimSpec['view']['filter']>;
   const flattenAll = (filter: ClaimFilter): ClaimFilter[] =>
     'all' in filter ? filter.all.flatMap(flattenAll) : [filter];
+
+  // The merge is APPLIED REPEATEDLY to the same spec — every relaunch/top-up of a fleet whose leader
+  // authored a spec runs it again — so appending unconditionally makes the conjunction grow without
+  // bound. Caught on the live `nonp2p-bug-drain` spec 2026-08-09: two launch-on-plan calls carrying
+  // claimKinds:['bug'] left rev7 holding the IDENTICAL {field:'kind',op:'in',value:['bug']} leaf THREE
+  // times. An AND of identical predicates is semantically idempotent, so nothing misbehaves today —
+  // which is exactly why it would have gone on accreting silently until the spec was a wall of
+  // duplicates, unreadable by the humans and agents who audit these lanes for scope drift.
+  //
+  // Structural dedupe on a key with sorted object keys (arrays keep their order — two `in` lists that
+  // differ only by ordering are left alone rather than assumed equivalent, which is the conservative
+  // direction: a missed dedupe costs one duplicate clause, a wrong one silently widens a lane).
+  const stableKey = (v: unknown): string => {
+    if (Array.isArray(v)) return `[${v.map(stableKey).join(',')}]`;
+    if (v && typeof v === 'object') {
+      return `{${Object.keys(v as Record<string, unknown>)
+        .sort()
+        .map((k) => `${JSON.stringify(k)}:${stableKey((v as Record<string, unknown>)[k])}`)
+        .join(',')}}`;
+    }
+    return JSON.stringify(v) ?? 'null';
+  };
+  const dedupe = (clauses: ClaimFilter[]): ClaimFilter[] => {
+    const seen = new Set<string>();
+    return clauses.filter((c) => {
+      const k = stableKey(c);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+
+  // Shape is preserved exactly as before (a non-empty existing filter still yields `{ all: [...] }`
+  // even when dedupe leaves one clause) — the positiveIdCohortIds extractor above only recognizes
+  // positive ID leaves as direct members of a top-level `all`, so collapsing to a bare leaf here
+  // would reintroduce the false windDown this function's comment already warns about.
   const filter =
     existingFilter && Object.keys(existingFilter).length > 0
-      ? { all: [...flattenAll(existingFilter), kindLeaf] }
+      ? { all: dedupe([...flattenAll(existingFilter), kindLeaf]) }
       : kindLeaf;
   // P-010: if the leader-authored spec never pinned `states`, derive it from the merged-in
   // issue-family kinds so the merge doesn't leave the lane at the starving ['todo'] default.

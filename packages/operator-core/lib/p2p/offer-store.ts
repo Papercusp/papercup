@@ -145,7 +145,22 @@ export interface ListWorkOffersFilter {
   includeLocallyDisposed?: boolean;
 }
 
-/** List offers in a Hive, filtered server-side (the fleet board / puller scan). */
+/**
+ * List offers in a Hive, filtered server-side (the fleet board / puller scan).
+ *
+ * ⚠ GENERIC over `filter.kind` — this lists offers of ANY kind (`work` | `seat` |
+ * `spawn_request`), not work-offers. It was called `listWorkOffers` until
+ * 2026-08-09, and that name cost a real misdiagnosis: a reader saw
+ * `listWorkOffers(..., { kind:'work' })` in work-intake-tick.ts, took the NAME as
+ * evidence that tick was THE pull leg, and concluded from "nothing authors
+ * kind:'work'" that the pull leg was unreachable — filed critical and
+ * release-blocking. It is not: the pull leg runs on SEATS
+ * (`request-remote-spawn.ts:175` calls this with `kind:'seat'`). Renamed under
+ * `p2p-public-release-remaining-lanes-2026-07-16#D-023`.
+ *
+ * Two call sites had already aliased the import to `listOffers` locally to make
+ * their own code read correctly — independent evidence the old name was wrong.
+ */
 export async function listOffers(
   workspaceId: string,
   potHomeSlug: string,

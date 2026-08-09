@@ -80,8 +80,22 @@ export const ALLOWLIST = new Map([
   ['packages/operator-core/lib/harness/env-operator-launcher.ts', 'boots an operator; enrolling it in a ledger the operator itself owns would be circular'],
   ['apps/operator/bin/host-bootstrap.ts', 'runs BEFORE the operator (and therefore the ledger) exists'],
 
-  // ── sidecars: supervised by SUPERVISED_PROCESSES, P-009 follow-up ────────
-  ['packages/operator-core/lib/sync/hyperbee/substrate-sidecar-spawn.ts', 'sidecar with its own respawn/circuit-breaker supervision; ledger enrolment is a P-009 follow-up'],
+  // ── sidecars ─────────────────────────────────────────────────────────────
+  // substrate-sidecar-spawn.ts USED to sit here as "ledger enrolment is a P-009
+  // follow-up". P-009 landed (task-manager-no-escape-2026-07-27): it now calls
+  // beginSyncEnrolment/completeSyncEnrolment/finishSyncEnrolment, so the guard
+  // clears it on the import and the entry is gone rather than kept as dead
+  // documentation. Deliberately NOT left in place: a stale exemption whose stated
+  // reason has become false would silently re-cover the file if the enrolment were
+  // ever removed — the D-012 lesson (an allowlist entry is scoped to the lifetime
+  // semantics it actually describes, and a reviewer should read a no-longer-true
+  // reason as a smell).
+  //
+  // The other three sidecars need no entry: spawner-sidecar goes through
+  // managedSpawn, embed-sidecar spawns with detached:false (so it dies with the
+  // operator and is cgroup-inherited per D-001, and this guard's predicate never
+  // fires on it), and the inference gateway is a systemd-user unit the operator
+  // does not spawn at all.
 
   // ── gym / bench harnesses: throwaway rigs, torn down by their own runner ──
   ['packages/operator-core/lib/gym/ab-run.ts', 'gym A/B rig: bounded, torn down by its own runner at the end of the cycle, never outlives it'],

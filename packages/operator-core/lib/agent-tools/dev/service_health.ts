@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
-import { probeAll, supervisedProcesses, type ProbeResult } from "../../service-health";
+import { probeAll, supervisedProcesses, PORTLESS_PROBE_NAMES, type ProbeResult } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot, isActiveStateDown, type SupervisionStatusEntry, type SupervisionFlapState } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
@@ -179,6 +179,66 @@ export async function overlaySystemdRestartRecency(
       return withRecency;
     }),
   );
+}
+
+/**
+ * EI-19934795546523351: the bg-host-ticker probe (`probeBgHostTicker`, in
+ * ../../service-health) can see ONLY the newest routine `last_fired_at` — it has no
+ * visibility into whether the process just restarted. During the ~50s a fresh
+ * `papercup-bg-host` takes to boot (swarm joins, epoch gates, wire-presence), no
+ * routine has fired yet, so the ticker probe reads FROZEN even though the process is
+ * healthy and mid-boot. The `supervision[]` block computed in the SAME response
+ * already carries the ground truth (systemd `secondsSinceStart` for the `bg-host`
+ * entry, via `overlaySystemdRestartRecency`) — reconcile with it BEFORE reporting a
+ * rootCause/nextVerb that the response's own supervision block contradicts.
+ *
+ * Measured live 2026-08-09 00:50-00:52Z: a payload simultaneously said
+ * `services[bg-host-ticker].up:false` + `nextVerb:'dev:restart{target:"bg-host"}'`
+ * while `supervision[bg-host].secondsSinceStart:7` — i.e. the process was 7s into a
+ * healthy boot and the recommended action was to kill that boot and re-freeze the
+ * ticker for another ~50s, reproducing the identical false reading. A restart storm
+ * with a stable false justification.
+ */
+export const BG_HOST_BOOT_GRACE_SEC = 90;
+
+/**
+ * Reconcile the bg-host-ticker `ProbeResult` against the bg-host supervision entry's
+ * `secondsSinceStart`. PURE — no I/O, both inputs already computed by the caller.
+ * A no-op unless the ticker is currently reporting DOWN and the supervision entry
+ * shows a restart younger than `BG_HOST_BOOT_GRACE_SEC` — the exact contradiction
+ * above. When it fires, the ticker entry is rewritten to `up:true, present:false`
+ * (liveness UNKNOWN/booting, matching the `lastFiredMs == null` convention
+ * `evaluateBgHostTicker` already uses elsewhere) so it can never again drive a
+ * `dev:restart` nextVerb or count toward `effective.down`.
+ */
+export function reconcileBgHostTicker(
+  services: ProbeResult[],
+  supervision: SupervisionStatusEntryWithRecency[],
+): ProbeResult[] {
+  const tickerIdx = services.findIndex((s) => s.name === PORTLESS_PROBE_NAMES.bgHostTicker);
+  if (tickerIdx === -1) return services;
+  const ticker = services[tickerIdx]!;
+  if (ticker.up) return services; // nothing to reconcile — already healthy
+  // Supervision names the process 'bg-host' (SUPERVISED_PROCESSES); the ticker
+  // probe names itself 'bg-host-ticker' — the two are deliberately different
+  // identifiers for the same underlying `papercup-bg-host` service, so join by
+  // the registry-declared name rather than assuming they match.
+  const bgHost = supervision.find((s) => s.name === "bg-host");
+  if (!bgHost || bgHost.secondsSinceStart === undefined) return services; // no ground truth to reconcile against
+  if (bgHost.secondsSinceStart >= BG_HOST_BOOT_GRACE_SEC) return services; // restart is old enough that a freeze reading is trustworthy
+  const reconciled: ProbeResult = {
+    ...ticker,
+    up: true,
+    present: false,
+    note:
+      `bg-host restarted ${bgHost.secondsSinceStart}s ago (within the ${BG_HOST_BOOT_GRACE_SEC}s boot grace) — ` +
+      `ticker liveness UNKNOWN/booting, NOT frozen: no routine has fired yet because the process just ` +
+      `started, not because it stalled. Do not dev:restart on this signal alone; re-probe after the ` +
+      `boot grace if it is still stale. (raw ticker probe: ${ticker.note ?? "no note"})`,
+  };
+  const next = services.slice();
+  next[tickerIdx] = reconciled;
+  return next;
 }
 
 type ServiceRootCause = { component: string; reason: string };
@@ -369,7 +429,7 @@ export default defineTool({
     // same breath and a second round-trip for the other half is the cost this
     // whole plan exists to remove.
     const unitStates = units?.length ? await probeUnitStates(units, scope ?? "user") : null;
-    const services = await probeAll();
+    const rawServices = await probeAll();
     const supervision = await overlaySystemdRestartRecency(
       overlayNodeChildSupervision(
         supervisionSnapshot(),
@@ -377,6 +437,10 @@ export default defineTool({
         spawnerSidecarSupervisionStatus(),
       ),
     );
+    // EI-19934795546523351: reconcile the bg-host-ticker verdict against this SAME
+    // response's supervision block BEFORE it can drive a contradictory rootCause/
+    // nextVerb — see reconcileBgHostTicker's doc comment.
+    const services = reconcileBgHostTicker(rawServices, supervision);
     return {
       content: [
         {

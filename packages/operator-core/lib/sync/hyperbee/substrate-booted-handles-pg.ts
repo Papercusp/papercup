@@ -82,8 +82,14 @@ export function startBootedHandlesPgPublisher(opts: {
     });
   };
   beat();
+  // D-004: 'must-sample' — the PRODUCER half of a liveness probe. Publishing only on
+  // change is unsound here because ROW AGE is the signal: readers treat a row older than
+  // DEFAULT_PG_SNAPSHOT_MAX_AGE_MS (3x this cadence) as "owner not reached", so an
+  // unchanged-but-alive owner must keep re-stamping or it reads as dead. There is no
+  // change event that carries "still alive, nothing changed".
   const timer = managedSetInterval('booted-handles-pg-publish', intervalMs, beat, {
     category: 'watchdog',
+    classification: 'must-sample',
   });
   return {
     stop() {

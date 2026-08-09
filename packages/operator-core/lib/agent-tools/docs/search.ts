@@ -40,6 +40,40 @@ import '../../search/configure-search-defaults';
 const MIN_CANDIDATES = 30;
 
 /**
+ * P-004: how many hits the cross-surface probe returns when the semantic leg found nothing on the
+ * caller's own surface. Small on purpose — the probe exists to NAME the right corpus, not to rank it;
+ * the caller gets an explicit `harness:'engineering'` re-run for the full hybrid ranking.
+ */
+const CROSS_SURFACE_PROBE_LIMIT = 5;
+
+/**
+ * P-004: should this response probe the sibling 'engineering' surface on the caller's behalf?
+ *
+ * Exported and PURE so the discrimination that makes the probe safe is directly testable — the
+ * handler around it is just plumbing, and the property worth guarding is which `legs.semantic.status`
+ * values earn a second corpus read.
+ *
+ * TRUE only when the semantic leg RAN and matched nothing. That is evidence about the CORPUS: not one
+ * section cleared the similarity floor, so the ranking degraded to lexical noise and the answer, if it
+ * exists, is somewhere else. A 'blocked'/'not-run' leg is evidence about the EMBEDDER instead — it
+ * degrades every query identically, so probing a second corpus with the same broken leg would double
+ * every docs:search on this box while buying nothing.
+ */
+export function shouldProbeSiblingSurface(input: {
+  surface: 'harness' | 'engineering' | 'project';
+  isSuperuser: boolean;
+  semanticLeg: { status?: string; candidates?: number } | undefined;
+}): boolean {
+  // The engineering surface IS the sibling — probing it from itself is a self-query.
+  if (input.surface === 'engineering') return false;
+  // resolveAdapter gates the engineering corpus to papercusp-su (D-005 / P-016); the probe must not
+  // become a side door around that gate.
+  if (!input.isSuperuser) return false;
+  if (input.semanticLeg?.status !== 'ran') return false;
+  return (input.semanticLeg.candidates ?? 0) === 0;
+}
+
+/**
  * The engine takes a PG handle and threads it to every source — but NEITHER of
  * this surface's legs consumes it: the lexical leg reads a filesystem adapter,
  * and the semantic leg resolves its own handle inside `querySections` (the
@@ -144,6 +178,8 @@ export default defineTool({
       'You do not know what to search for — call docs:outline first. For PG-stored prose (chats, escalations) use search:fulltext. To search another harness from outside, use cross_harness:docs_search.',
     chaining:
       'docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading). A hit carrying `trust` is telling you something about its RELIABILITY (OKF v0.2): `stale:true` = past its author-set stale_after, so re-check its claims against the code before acting; `tier` = unverified/machine-verified/human-verified. NO `trust` field means unverified and not stale — the state of nearly every doc today, not an error.',
+    returns:
+      "{ hits, hitCount, surface, legs, applied, scopeNote?, crossSurface? }. READ `crossSurface` WHENEVER IT IS PRESENT: it means the semantic leg RAN against your surface and matched nothing above the similarity floor, so the `hits` above are lexical-only and may be entirely off-topic even when there are dozens of them. Rather than only advising a retry, the sibling 'engineering' surface (agent-insights/ + the Papercusp framework reference) was searched FOR you; `crossSurface.hits` are keyword hits from there. Re-run `docs:search { harness: 'engineering' }` for that corpus's full hybrid ranking. Absent when your surface matched something topical, on the engineering surface itself, for non-superusers, or when the embedder was blocked/not-run (a broken embedder says nothing about which corpus holds the answer).",
     seeAlso: [
       'docs:outline (browse the full section tree when the term is unknown)',
       'docs:get (read a matched page)',
@@ -326,6 +362,62 @@ export default defineTool({
       },
     );
 
+    // P-004 (knowledge-at-symptom-time-2026-08-09): ADVISING a retry is not the same as RUNNING one.
+    // EI-18804433041289369 added the `scopeNote` below, and it was still not enough — measured
+    // 2026-08-09, an su searching this surface for an agent-insights page got 37 confident, entirely
+    // irrelevant hits, read the note as boilerplate, and re-derived from scratch a diagnosis that was
+    // sitting in `agent-insights/inference-gateway-three-rate-signals-not-one` the whole time. The
+    // response already CONTAINED the evidence that it had failed: `legs.semantic.status === 'ran'`
+    // with `candidates: 0`, i.e. not one section in this corpus cleared the similarity floor, so the
+    // ranking degraded to pure lexical noise. When a search knows it found nothing topical, it should
+    // look where the answer actually lives rather than hand the caller a footnote.
+    //
+    // Deliberately narrow, because a broad version would double every docs:search:
+    //   - `status === 'ran'` (NOT 'blocked'/'not-run') — a dead embedder degrades EVERY query the same
+    //     way, and probing a second corpus with the same broken leg buys nothing. Only a leg that ran
+    //     and genuinely matched nothing is evidence about the CORPUS rather than about the embedder.
+    //   - superuser only — `resolveAdapter` gates the engineering surface to papercusp-su (D-005/P-016);
+    //     probing it for a non-SU caller would leak a corpus they cannot otherwise reach.
+    //   - LEXICAL-only and small — the point is to name the right corpus, not to rank it perfectly. A
+    //     hybrid probe would need a second embed round-trip on a path taken precisely when the embedder
+    //     just told us it had nothing to say. A lexical hit on the RIGHT corpus beats a hybrid hit on
+    //     the wrong one; the caller gets the exact `harness:'engineering'` call for the full ranking.
+    //   - fail-soft — any probe failure leaves the response byte-identical to before this change.
+    const legsAny = legs as { semantic?: { status?: string; candidates?: number } } | undefined;
+    let crossSurface: Record<string, unknown> | undefined;
+    if (
+      shouldProbeSiblingSurface({
+        surface: resolved.surface,
+        isSuperuser: Boolean(ctxAny.isSuperuser),
+        semanticLeg: legsAny?.semantic,
+      })
+    ) {
+      try {
+        const probe = await searchDocs(
+          engineeringAdapter,
+          { ...args, limit: Math.min(limit, CROSS_SURFACE_PROBE_LIMIT) },
+          { ...(ctxAny.signal && { signal: ctxAny.signal }) },
+        );
+        if (probe.hits.length > 0) {
+          crossSurface = {
+            surface: 'engineering',
+            mode: 'lexical-only',
+            why: `The semantic leg RAN against '${resolved.surface}' and matched nothing above the similarity floor, so the hits above are lexical-only and may be off-topic. These are keyword hits from the 'engineering' surface (agent-insights/ + the Papercusp framework reference), which this surface does not contain.`,
+            rerunFor: "docs:search { harness: 'engineering', query: <same query> } — for the full hybrid ranking of this corpus.",
+            hits: probe.hits.map((h) => ({
+              slug: h.slug,
+              url: h.url,
+              title: h.title,
+              score: h.score,
+              excerpt: h.excerpt,
+            })),
+          };
+        }
+      } catch {
+        /* fail-soft: a failed probe must never degrade the primary result */
+      }
+    }
+
     // EI-18804433041289369: `surface` alone is easy to skim past — a caller who names their OWN
     // harness (the natural, seemingly-correct thing to pass) gets a scoped project-docs/harness-docs
     // corpus that does NOT include agent-insights/ or the framework reference, and a plausible-looking
@@ -335,7 +427,9 @@ export default defineTool({
     const scopeNote =
       resolved.surface === 'engineering'
         ? undefined
-        : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference — those live on the separate 'engineering' surface. A weak or zero-looking result here does not mean no such page exists; retry with harness:'engineering' before concluding that (harness:'all' reaches the same corpus but is REJECTED with harness_forbidden on a workspace-scoped session — EI-18894866320087268).`;
+        : crossSurface
+          ? `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference. The semantic leg matched NOTHING here, so that retry was run FOR you — see \`crossSurface\` for keyword hits from the 'engineering' surface. Do not read the hits above as "no such page exists".`
+          : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference — those live on the separate 'engineering' surface. A weak or zero-looking result here does not mean no such page exists; retry with harness:'engineering' before concluding that (harness:'all' reaches the same corpus but is REJECTED with harness_forbidden on a workspace-scoped session — EI-18894866320087268).`;
 
     const payload: Record<string, unknown> = {
       ...(lexicalResponse ?? { query: args.query, tokenCount: 0, hitCount: 0 }),
@@ -352,6 +446,7 @@ export default defineTool({
       // indistinguishable from a healthy search that found less.
       legs,
       applied,
+      ...(crossSurface ? { crossSurface } : {}),
       ...(scopeNote ? { scopeNote } : {}),
     };
     ctxAny.metadata?.({
@@ -361,6 +456,8 @@ export default defineTool({
       returned: finalHits.length - semanticHitCount,
       ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
       ...(legs.degraded ? { legsDegraded: true, legsWarning: legs.warning } : {}),
+      // P-004: measurable adoption — how often the probe fires, and whether it found anything.
+      ...(crossSurface ? { crossSurfaceProbed: 'engineering', crossSurfaceHits: (crossSurface.hits as unknown[]).length } : {}),
     });
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
