@@ -193,8 +193,8 @@ turn carries the payload. Use it for anything a source or peer announces
 key you're awaiting; emit the key a peer told you they await. A rate-limit
 `retryAfterMs` is a wake-at-reset (`event: 'rate-limit:reset:<scope>',
 timeout_sec: ceil(ms/1000)`). **notify ≠ wake — the axis that picks your verb.**
-The follow verbs split cleanly: `topics:subscribe`, `work_items:subscribe`, and
-a standing event-key watch (`watch { wake:false }`) are **inject-only** — their
+The follow verbs split cleanly: `work_items:subscribe` and any standing
+`watch:create { wake:false }` (topic or event key) are **inject-only** — their
 updates land in your context at your NEXT turn and NEVER re-invoke you, so an
 idle session never hears them. `events:await` is the ONLY verb that WAKES you,
 and it is one-shot by construction — it fires once then it's gone (re-await to
@@ -889,7 +889,8 @@ mug-memory-hybrid L1b).
 A live **subscribe→inject** substrate routes work across agents by **topic**:
 
 - **Subscribe your areas once at start.** `topics:list` (the taxonomy) →
-  `topics:subscribe { topic, mode }` (`digest` for high-churn, `mention` for
+  `watch:create { pattern: topic, targetKind: "topic", wake: false, mode }`
+  (`digest` for high-churn, `mention` for
   the quiet floor, `full` only where you're actively working; subscribe
   `new_topic` to learn of new ones). `topics:feed { topic }` reads everything
   tagged an area.

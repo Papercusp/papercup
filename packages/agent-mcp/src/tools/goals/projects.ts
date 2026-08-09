@@ -42,13 +42,18 @@ async function resolveWorkspace(ctx: {
   return gucRow?.ws || (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : null);
 }
 
-const NO_WORKSPACE = {
+/**
+ * Built fresh per call rather than shared as a frozen constant: `as const`
+ * would widen `degradedReasons` to a readonly tuple, which does not satisfy the
+ * mutable `string[]` the tool result declares.
+ */
+const noWorkspace = (): { data: null; degraded: boolean; degradedReasons: string[] } => ({
   data: null,
   degraded: true,
   degradedReasons: [
     'no concrete workspace in scope (neither the app.workspace_id GUC nor ctx.workspaceId resolved)',
   ],
-} as const;
+});
 
 export const attachProject = defineTool({
   name: 'goals:attach-project',
@@ -76,11 +81,18 @@ export const attachProject = defineTool({
       .describe(
         '"owner" = this goal is what the project primarily exists for (at most ONE goal per project — promoting demotes the incumbent to contributing). "contributing" = a real but secondary claim.',
       ),
+    killCriterion: z
+      .string()
+      .max(2000)
+      .optional()
+      .describe(
+        'what would make this goal STOP pursuing this project (GOAL contract clause 4). Recorded on the link, not the harness, because a shared project can warrant a different answer per goal.',
+      ),
     note: z.string().max(1000).optional().describe('why this project serves this goal'),
   }),
   async handler(args, ctx) {
     const workspaceId = await resolveWorkspace(ctx as never);
-    if (!workspaceId) return NO_WORKSPACE;
+    if (!workspaceId) return noWorkspace();
     const link = await linkProject(ctx.tx as Sql, {
       workspaceId,
       goalId: args.goalId,
@@ -88,6 +100,7 @@ export const attachProject = defineTool({
       role: args.role,
       by: ctx.uiClientId ?? null,
       note: args.note ?? null,
+      killCriterion: args.killCriterion ?? null,
     });
     // How many goals this project now serves — the number behind the "shared
     // with N goals" badge, returned here so the caller learns about a shared
@@ -123,7 +136,7 @@ export const detachProject = defineTool({
   args: z.object({ goalId: z.string().min(1), harnessSlug: z.string().min(1) }),
   async handler(args, ctx) {
     const workspaceId = await resolveWorkspace(ctx as never);
-    if (!workspaceId) return NO_WORKSPACE;
+    if (!workspaceId) return noWorkspace();
     const removed = await unlinkProject(ctx.tx as Sql, {
       workspaceId,
       goalId: args.goalId,
@@ -166,7 +179,7 @@ export const listGoalProjects = defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = await resolveWorkspace(ctx as never);
-    if (!workspaceId) return NO_WORKSPACE;
+    if (!workspaceId) return noWorkspace();
     const projects = await projectsForGoal(ctx.tx as Sql, { workspaceId, goalId: args.goalId });
     const shared = await Promise.all(
       projects.map(async (p) => ({

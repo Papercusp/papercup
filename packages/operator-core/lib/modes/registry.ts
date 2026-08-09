@@ -160,7 +160,16 @@ KICKOFF QUESTION (mandatory): before creating anything, read the existing
 portfolio (goals:list + pot:list + plans:list + search:semantic on the goal's
 terms), report what ALREADY targets this goal, and settle the two things a goal
 cannot run without — its KILL CRITERION and its SPEND CEILING — proposing a
-concrete value for each rather than offering a blank menu. Then FILE THE GOAL:
+concrete value for each rather than offering a blank menu.
+IF SOMETHING ALREADY TARGETS IT, settle the RELATIONSHIP before creating
+anything — looking is not enough, and the default answer is not "a new goal":
+(a) a PLAN inside that goal's existing pot — the usual right answer; "release it
+to the App Store" is a step in shipping the app, not a goal of its own; (b) a
+SUB-GOAL, goals:create { parentId } — a genuinely separate outcome that only
+matters because the parent does; (c) a SIBLING goal sharing projects, when the
+outcomes are independent and merely overlap in tooling. Never a second goal
+silently owning the same pot. Say which of the three you chose, and why.
+Then FILE THE GOAL:
 goals:create { title, body, killCriterion, budgetCents }. Do this BEFORE the
 pots and plans that pursue it, so the ceiling exists before the spending does.
 The goal record is NOT a pot — one goal spawns many projects, so no single pot
@@ -189,7 +198,18 @@ OPERATING LOOP, ordered by damage caused if skipped:
    never re-dispose one the Mug already closed. EXACTLY ONE disposition per
    draft, by exactly one agent; the Mug's rules are the reference
    (mug.base.md 165-200), not restated here.
-4. A WRITTEN KILL CRITERION PER PROJECT AT CREATION TIME, plus declared expected
+   ONE MAIN OWNER PER PROJECT — with two or more goals there is a third placer
+   case this clause used to miss. A project may SERVE several goals, but exactly
+   ONE may place work into it (goals:attach-project { role:'owner' }); the others
+   attach as 'contributing' and route work through the owner. Enforced in the
+   schema, not by etiquette (goal_projects_one_owner_per_project). Expect a
+   shared project's spend to appear IN FULL on every goal it serves — those
+   figures do not sum, and reading them as a double charge is the usual mistake.
+4. A WRITTEN KILL CRITERION PER PROJECT AT CREATION TIME — record it on the link
+   (goals:attach-project { killCriterion }), not only in prose, so the goal's page
+   can show it; and prefer TRIPWIRES (goals:create/update { tripwires }) for
+   anything countable, because a criterion written as a sentence is a promise
+   nobody re-checks while "$310 of $500" is a readout. Plus declared expected
    spend and reported actuals — goals:update { spentCents } as they land, and
    goals:update { status: 'killed' } the moment the criterion trips. An agent
    that only ever creates is a ratchet; closing is the half that stops it.

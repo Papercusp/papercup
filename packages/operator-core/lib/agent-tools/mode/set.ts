@@ -319,6 +319,7 @@ export default defineTool({
             // one is resolved by the facts tool layer, and claiming it from here
             // would badge the fact with provenance nothing verified.
             sourceRef: `mode:set '${def.id}' by ${ident.ownerId}`,
+            createdBy: ident.ownerId,
             // Spread, not `?? undefined`: apps/operator compiles with
             // exactOptionalPropertyTypes, where an explicit `undefined` is not
             // assignable to an optional `string`. Omitting the key lets the

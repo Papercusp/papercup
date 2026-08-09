@@ -467,6 +467,33 @@ button.pc-tasks-roster__group-head:focus-visible { outline: 1px solid #3d6ea5; o
 .pc-task-kill.is-done { font-size: 10.5px; color: #6ee7b7; }
 .pc-task-kill__ask { font-size: 10.5px; color: #8497ad; }
 
+/* The pane-level outcome notice. It exists because a kill unmounts its own row (and with
+   it the in-row chip), so this is frequently the ONLY surviving answer to "did that fire,
+   and what did the server say" — it is deliberately louder than the inline chip. */
+.pc-task-kill-notice {
+  margin: 6px 10px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  border: 1px solid #22364f;
+}
+.pc-task-kill-notice.is-refused {
+  color: #f8b4b8;
+  border-color: #6b2b31;
+  background: #2a1418;
+}
+.pc-task-kill-notice.is-done {
+  color: #6ee7b7;
+  border-color: #1f5145;
+  background: #10231f;
+}
+.pc-task-kill-notice__id {
+  font-family: ui-monospace, monospace;
+  color: #8497ad;
+}
+
 .pc-tasks-roster__foot {
   border-top: 1px solid #22364f;
   padding: 6px 10px;

@@ -377,7 +377,28 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // a write routed through a view's INSTEAD-OF trigger still lands on work_items and fires
   // THIS event). The view keys are kept for documentation + are COVERAGE_EXEMPT in
   // cache-tag-trigger-coverage.integration.test.ts.
+  /* GOAL mode (goal-mode-2026-08-07 P-017). Three tables feed the goal surfaces
+     and each moves for a different reason, so all three are bridged:
+       - `goals` — the record itself (status, kill criterion, tripwire `current`
+         values, which advance via goals:update as evidence lands);
+       - `goal_projects` — attach/detach/promote, which changes BOTH the project
+         grid AND every spend figure, since spend is summed over the linked set;
+       - `agent_usage_samples` — the spend meters themselves.
+     Full-bust rather than row-keyed: the queries are keyed by workspace/goal
+     rather than by these tables' PKs. */
+  'harness_shared.goals': ['goals.list', 'goals.detail'],
+  'harness_shared.goal_projects': ['goals.list', 'goals.detail'],
+  /* NOTE: the goal SPEND meters also go stale on `agent_usage_samples` writes,
+     but that table already has an entry further down — the goal queries are
+     added THERE rather than here. A second key for the same table in this object
+     literal would not merge: the later one silently wins, so the goal queries
+     would never be bridged at all and the meters would look simply broken. */
+
   'harness_shared.work_items': [
+    // Goal surfaces count OPEN and needs-human items per goal, so a state flip
+    // or a new goal-stamped item moves both the rail glance and the detail page.
+    'goals.list',
+    'goals.detail',
     // WI-6961: agentOrders.byOwner renders the agent's HELD work-items via
     // buildCarryBrief, so a state/claim write is exactly when the Orders panel
     // is wrong. Coarse (any work_items write invalidates it), but the query is
@@ -531,7 +552,14 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // usage.spend (overview-tab-expansion P-003): the Overview Spend tile's 1h/24h
   // headline rides the same append-heavy sweep as benchRunLive — synthesized
   // `.changed` per tick, never per-row notify on this high-write telemetry log.
-  'harness_shared.agent_usage_samples': ['evals.benchRunLive', 'usage.spend'],
+  'harness_shared.agent_usage_samples': [
+    'evals.benchRunLive',
+    'usage.spend',
+    // GOAL mode's spend meters sum this table over each goal's linked projects
+    // (goal-mode-2026-08-07 P-017), so a usage write is exactly when they are wrong.
+    'goals.list',
+    'goals.detail',
+  ],
   'harness_shared.bench_runs': ['evals.benchRuns', 'evals.benchRun', 'evals.benchRunLive'],
   'harness_shared.bench_run_tasks': ['evals.benchRun', 'evals.benchRunLive'],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the

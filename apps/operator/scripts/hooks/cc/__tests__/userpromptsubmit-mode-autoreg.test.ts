@@ -29,7 +29,12 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
-const HOOK = join(__dirname, '..', 'userpromptsubmit-provenance.sh');
+/** Defaults to the real hook. `PROBE_HOOK` points the suite at a COPY outside the
+ *  tree so a mutant can be proven to FAIL these guards without ever mutating the
+ *  shared checkout (CLAUDE.md "Proving a guard is falsifiable", tier 2 — a
+ *  git-sync sweep lands every few minutes, so an in-tree mutation window is a
+ *  real commit hazard, not a theoretical one). */
+const HOOK = process.env.PROBE_HOOK ?? join(__dirname, '..', 'userpromptsubmit-provenance.sh');
 
 let home: string;
 let server: Server | null = null;
@@ -174,6 +179,75 @@ describe('owner-granted mode auto-registration', () => {
       expect(modeCalls(), `phrase: ${phrase}`).toHaveLength(0);
       expect(r.context).toContain('OWNER (interactive)');
       expect(r.context).not.toContain('⟦mode⟧');
+    }
+  });
+
+  // WI-37384. Every phrase below MENTIONS a mode without COMMANDING it. Before
+  // the fix each one armed an ownerDirected mode, because ENTER matched bare
+  // noun phrases while EXIT required an imperative verb. The first entry is the
+  // owner's verbatim prompt from 2026-08-09 that exposed it.
+  it('WI-37384: a report or question ABOUT a mode is not a grant OF it', async () => {
+    for (const phrase of [
+      'I got this error trying to set drain mode via the gui "de:set(drain) → 400: invalid_args"',
+      'drain mode throws a 400',
+      'the auto mode pill is broken',
+      'what does ideate mode do?',
+      'should I use drain mode here?',
+      'why did you just keep going?',
+      'when I turn on auto mode the session dies',
+      'auto mode did not stick after the restart',
+      'the drain mode scope card is misaligned',
+      'here is the log: ```go into auto mode``` — why did that fire?',
+    ]) {
+      bodies = [];
+      fs.rmSync(join(home, '.papercusp', 'mode-autoreg'), { recursive: true, force: true });
+      const r = await submit(phrase);
+      expect(modeCalls(), `must NOT grant: ${phrase}`).toHaveLength(0);
+      expect(r.context).toContain('OWNER (interactive)');
+      expect(r.context, `must NOT grant: ${phrase}`).not.toContain('⟦mode⟧');
+    }
+  });
+
+  // The positive control for the tightening above. Without this, a future
+  // narrowing of the ENTER patterns could silently disarm real grants and every
+  // negative case would still pass.
+  it('WI-37384: still registers a real imperative grant, for every mode', async () => {
+    for (const [phrase, mode] of [
+      ['go into drain mode', 'drain'],
+      ['drain mode', 'drain'],
+      ['drain the backlog', 'drain'],
+      ['switch to ideate mode', 'ideate'],
+      ['go ideate', 'ideate'],
+      ['put yourself in auto mode', 'auto'],
+      ['stay in auto mode and keep working', 'auto'],
+      ['can you go into auto mode', 'auto'],
+      ['go into auto mode and fix the errors', 'auto'],
+      ['auto mode please', 'auto'],
+    ] as const) {
+      bodies = [];
+      fs.rmSync(join(home, '.papercusp', 'mode-autoreg'), { recursive: true, force: true });
+      await submit(phrase);
+      expect(modeCalls(), `must grant: ${phrase}`).toHaveLength(1);
+      expect(modeCalls()[0].arguments, `must grant: ${phrase}`).toMatchObject({
+        mode,
+        enabled: true,
+        ownerDirected: true,
+      });
+    }
+  });
+
+  // Turning a mode OFF on a false positive is safe; failing to turn one off is
+  // not. So the report/question suppressors must NOT reach the exit branch.
+  it('WI-37384: suppressors do not weaken EXIT — a hedged exit still de-registers', async () => {
+    for (const phrase of [
+      'I got an error, please exit auto mode',
+      'why is this failing? turn off drain mode',
+    ]) {
+      bodies = [];
+      fs.rmSync(join(home, '.papercusp', 'mode-autoreg'), { recursive: true, force: true });
+      await submit(phrase);
+      expect(modeCalls(), `must still exit: ${phrase}`).toHaveLength(1);
+      expect(modeCalls()[0].arguments).toMatchObject({ enabled: false });
     }
   });
 

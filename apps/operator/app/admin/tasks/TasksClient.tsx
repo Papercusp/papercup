@@ -161,6 +161,32 @@ export const fmtAge = (iso: string): string => {
   return `${Math.floor(s / 86400)}d`;
 };
 
+/**
+ * A recurring row's fire-state, as three outcomes rather than two (P-019).
+ *
+ * ⚠ `armed` is `true | false | null` and the null is NOT a synonym for off — it means
+ * NOT APPLICABLE OR UNREACHABLE. Collapsing it with `armed !== false` is a filed defect
+ * (WI-6447): it renders a timer whose state could not be read as a confidently armed
+ * one. On this pane that is the expensive direction, because the reader's next move
+ * after "armed" is to stop looking.
+ *
+ * `federated` carries the same distinction one level up, per the repo convention that
+ * it must be read BEFORE trusting a row's fire-state: an unfederated row's armed flag
+ * came from a static manifest, not from asking the process that owns the timer. So a
+ * `true` there is a DECLARATION, and is labelled as one.
+ */
+export const fmtArmed = (armed: boolean | null, federated: boolean): string => {
+  if (armed === null) return 'unknown';
+  if (!armed) return 'disarmed';
+  return federated ? 'armed' : 'armed (declared)';
+};
+
+/** Colour for the three fire-states. `unknown` is deliberately NOT the good colour. */
+export const armedColor = (armed: boolean | null): string => {
+  if (armed === null) return 'var(--muted, #888)';
+  return armed ? 'var(--good, #4ade80)' : 'var(--warn)';
+};
+
 export const stateColor = (state: string): string => {
   switch (state) {
     case 'running':
@@ -298,11 +324,94 @@ const PROC_COLUMNS: TableColumn<LiveProcess>[] = [
   },
 ];
 
+/** P-019 — the RECURRING kind's columns. No kill control: you disarm a schedule, you
+ *  do not kill it, and the disarm surface is /admin/schedules + `routines:set`. */
+const SCHEDULE_COLUMNS: TableColumn<ScheduleTaskRow>[] = [
+  {
+    key: 'armed',
+    header: '',
+    headerStyle: head,
+    render: (s) => (
+      <span title={fmtArmed(s.armed, s.federated)} style={{ color: armedColor(s.armed) }}>
+        {s.armed === null ? '○' : s.armed ? '●' : '◍'}
+      </span>
+    ),
+    cellStyle: cell,
+  },
+  {
+    key: 'name',
+    header: 'schedule',
+    headerStyle: head,
+    render: (s) => (
+      <span title={s.installSlug ? `${s.name} · ${s.installSlug}` : s.name}>{s.name}</span>
+    ),
+    cellStyle: cell,
+  },
+  {
+    key: 'source',
+    header: 'source',
+    headerStyle: head,
+    // The provenance column, and the reason this pane is worth reading over a bare
+    // timer list: WHICH mechanism owns this — DBOS, the routines table, an in-process
+    // interval, or another process entirely.
+    render: (s) => (
+      <span title={`${s.category} · ${s.scope}`}>
+        {s.source}
+        {s.process ? <span style={{ opacity: 0.6 }}> · {s.process}</span> : null}
+      </span>
+    ),
+    cellStyle: cell,
+  },
+  {
+    key: 'tier',
+    header: 'tier',
+    headerStyle: head,
+    render: (s) => <span style={{ opacity: 0.75 }}>{s.tier}</span>,
+    cellStyle: cell,
+  },
+  { key: 'cadence', header: 'cadence', headerStyle: head, render: (s) => s.cadence, cellStyle: cell },
+  {
+    key: 'last',
+    header: 'last fire',
+    headerStyle: head,
+    // An em-dash, never "never" — a row we could not reach has no last-fire to report,
+    // and "never" is a claim about the timer rather than about our reach.
+    render: (s) => (s.lastFire ? <span title={s.lastFire}>{fmtAge(s.lastFire)} ago</span> : '—'),
+    cellStyle: cell,
+  },
+  {
+    key: 'next',
+    header: 'next fire',
+    headerStyle: head,
+    render: (s) => (s.nextFire ? <span title={s.nextFire}>{s.nextFire.slice(11, 19)}Z</span> : '—'),
+    cellStyle: cell,
+  },
+  {
+    key: 'err',
+    header: 'last error',
+    headerStyle: head,
+    render: (s) =>
+      s.lastError ? (
+        <span title={s.lastError} style={{ color: 'var(--bad)' }}>
+          {s.lastError.slice(0, 40)}
+        </span>
+      ) : (
+        <span style={{ opacity: 0.4 }}>—</span>
+      ),
+    cellStyle: cell,
+  },
+];
+
 export default function TasksClient(): ReactElement {
   const [stateFilter, setStateFilter] = useQueryState('state', parseAsString);
   const [classFilter, setClassFilter] = useQueryState('class', parseAsString);
   const [includeEnded, setIncludeEnded] = useQueryState('ended', parseAsBoolean.withDefault(false));
   const [liveView, setLiveView] = useQueryState('live', parseAsBoolean.withDefault(true));
+  // P-019. `parseAsStringEnum` per the repo's nuqs preference order, so a hand-typed
+  // ?kind=nonsense falls back to the default instead of blanking both sections.
+  const [kind, setKind] = useQueryState('kind', parseAsStringEnum<TaskKind>([...TASK_KINDS]).withDefault('all'));
+  const showRunning = kind !== 'recurring';
+  const showRecurring = kind !== 'running';
 
   // Reads through the sync layer, NOT a bare fetch (WI-6475). Two reasons, and the
   // first is a hard bug rather than a style point: a native webview fetch does not
@@ -323,6 +432,12 @@ export default function TasksClient(): ReactElement {
       ...(classFilter ? { cls: classFilter } : {}),
       ...(includeEnded ? { includeEnded: true } : {}),
       ...(liveView ? { live: true } : {}),
+      // P-019 — asked for only when the reader is actually looking at the recurring
+      // kind. The server memoises this arm on its OWN 30s TTL (schedules are a
+      // REGISTRY: they change on deploy and arm/disarm, not second to second), so the
+      // 5s process cadence below does not drag two DB reads and a sibling probe along
+      // with it however many panes are open.
+      ...(showRecurring ? { includeSchedules: true } : {}),
     },
     staleTime: 5_000,
   });

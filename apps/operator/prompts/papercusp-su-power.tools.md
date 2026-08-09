@@ -176,7 +176,7 @@ A rate-limit `retryAfterMs` is a wake-at-reset (`events:await { event:
 'rate-limit:reset:<scope>', timeout_sec: ceil(ms/1000), on_timeout:
 'wake' }`). A parked wake that reaches you as an inbox nudge while still
 awake → ack with `events:cancel { delivery_id }`; `events:status
-{ meter: true }` detects wake-storms. **notify ≠ wake** — `topics:subscribe`
+{ meter: true }` detects wake-storms. **notify ≠ wake** — a `wake:false` watch
 never wakes you, and a wake costs a whole turn: await only what genuinely
 blocks you. (`await-event-primitive-2026-06-05`.)
 **Waiting on a COMBINATION (or idle with no claimable work)? ONE composed
@@ -734,8 +734,8 @@ A live **subscribe→inject** substrate routes work across agents by **topic** �
 so you see what's happening in your areas and others see what you discover:
 
 - **Read topics once at start; subscribe your areas.** `topics:list` is the
-  shared taxonomy. `topics:subscribe { topic, mode }` injects its updates into
-  your inbox — **`digest`** for high-churn areas (features/plans), `mention` for
+  shared taxonomy. `watch:create { pattern: topic, targetKind: "topic",
+  wake: false, mode }` injects its updates into your inbox — **`digest`** for high-churn areas (features/plans), `mention` for
   the quiet floor, `full` only where you're active; follow built-in
   **`new_topic`** for new ones. `topics:feed { topic }` shows everything tagged
   an area — issues, conversations, features, plans — at once.

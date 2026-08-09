@@ -675,7 +675,18 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('include child/chunk rows in the census'),
-    limit: z.number().int().positive().max(2000).optional(),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .max(2000)
+      .optional()
+      .describe(
+        'WI-37381: bounds ONLY the returned inFlight/parked/unclaimed row arrays. ' +
+          'terminal.*/counts.*/deltaBy.* are always computed over the full census ' +
+          '(up to WORK_ITEMS_MAX_LIMIT) regardless of this value — a small limit can ' +
+          'no longer zero out the aggregate. Ignored when `ids` is passed.',
+      ),
     ids: z
       .array(z.string().min(1).max(120))
       .min(1)

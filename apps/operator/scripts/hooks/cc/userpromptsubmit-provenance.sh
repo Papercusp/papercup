@@ -143,18 +143,102 @@ MODE_EXIT_RE = re.compile(
     r"|\bstop\s+(?:being\s+|working\s+)?autonomous(?:ly)?\b",
     re.I,
 )
+# ENTER requires an IMPERATIVE frame — a MENTION is not a GRANT (WI-37384).
+#
+# This used to match bare noun phrases (`\bdrain\s+mode\b`), so any prompt that
+# merely NAMED a mode armed it. Measured live 2026-08-09: the owner typed the
+# pure bug report "I got this error trying to set drain mode via the gui" and
+# it registered ownerDirected DRAIN — suspending the ask-first gate and, per
+# the drain contract, directing the agent at a 1,376-item backlog nobody had
+# asked it to touch.
+#
+# Note the EXIT side never had this defect: every one of its alternatives is
+# anchored to an imperative verb, and its header above records the care taken
+# that "exit auto mode" not be read as a grant. Turning a mode OFF required a
+# verb; turning one ON required only a noun. That asymmetry, pointing the wrong
+# way, WAS the bug.
+#
+# THE ASYMMETRY BELOW IS DELIBERATE AND MUST STAY. A false ENTER escalates
+# authority the owner never granted: it writes a durable ownerDirected row that
+# is sticky against peer override (WI-5889) and survives compaction. A false
+# MISS merely leaves the safe ask-first default standing and costs one more
+# sentence. So this is tuned to MISS rather than over-fire — when a rule here
+# is ambiguous, prefer the reading that does NOT grant.
+#
+# The same asymmetry is why the suppressors below are NOT applied to the exit
+# branch: failing to turn a mode ON is safe, failing to turn one OFF is not.
+MODE_GRANT_VERB = (
+    r"(?:go\s+(?:in|into)|get\s+(?:in|into)|enter|switch\s+(?:to|into)|turn\s+on|"
+    r"start|begin|stay\s+(?:in|on)|remain\s+(?:in|on)|keep\s+(?:yourself\s+)?(?:in|on)|"
+    r"put\s+(?:yourself\s+)?(?:in|into|on)|be\s+(?:in|on)|use|activate|engage|set|"
+    r"run\s+in|work\s+in|operate\s+in)"
+)
+
+
+def _grant_frame(phrase):
+    """A mode noun counts as a grant only when the sentence is imperative:
+    either the WHOLE prompt is the bare command ("drain mode"), or a grant verb
+    governs the phrase ("go into drain mode"). A phrase merely appearing in a
+    sentence — "drain mode throws a 400" — is a mention and matches neither."""
+    return (
+        r"\A[\s>*_-]*(?:please\s+)?" + phrase + r"(?:\s+(?:please|now|on))?\s*[.!]*\s*\Z"
+        r"|\b" + MODE_GRANT_VERB + r"\s+(?:the\s+)?" + phrase
+    )
+
+
+# Idioms that are ALREADY imperative on their own — no grant frame needed.
+_AUTO_IMPERATIVE = (
+    r"\b(?:run|work|go|be|operate|keep\s+working)\s+(?:fully\s+)?autonomous(?:ly)?\b"
+    r"|\bfully\s+autonomous\b"
+    r"|\bdon'?t\s+ask\b|\bno\s+need\s+to\s+ask\b|\bstop\s+asking\b|\bwithout\s+asking\b"
+    r"|\buse\s+your\s+(?:own\s+|best\s+)*judge?ment\b"
+    r"|\bdo\s+whatever\s+you\s+think\s+is\s+best\b"
+    r"|\bjust\s+keep\s+going\b"
+)
+
 MODE_ENTER_RES = (
     ('auto', re.compile(
-        r"\bauto\s*[-\s]?\s*mode\b"
-        r"|\b(?:run|work|go|be|operate|keep\s+working)\s+(?:fully\s+)?autonomous(?:ly)?\b"
-        r"|\bfully\s+autonomous\b"
-        r"|\bdon'?t\s+ask\b|\bno\s+need\s+to\s+ask\b|\bstop\s+asking\b|\bwithout\s+asking\b"
-        r"|\buse\s+your\s+(?:own\s+|best\s+)*judge?ment\b"
-        r"|\bdo\s+whatever\s+you\s+think\s+is\s+best\b"
-        r"|\bjust\s+keep\s+going\b", re.I)),
-    ('ideate', re.compile(r"\bideate\s+mode\b|\bgo\s+ideate\b|\bstart\s+ideating\b", re.I)),
-    ('drain', re.compile(r"\bdrain\s+mode\b|\bdrain\s+the\s+(?:queue|backlog)\b", re.I)),
+        _AUTO_IMPERATIVE + r"|" + _grant_frame(r"auto\s*[-\s]?\s*mode\b"), re.I)),
+    ('ideate', re.compile(
+        r"\bgo\s+ideate\b|\bstart\s+ideating\b|" + _grant_frame(r"ideate\s+mode\b"), re.I)),
+    ('drain', re.compile(
+        r"\bdrain\s+the\s+(?:queue|backlog)\b|" + _grant_frame(r"drain\s+mode\b"), re.I)),
 )
+
+# A REPORT frame sitting BEFORE the phrase means the owner is describing a mode,
+# not commanding one. Deliberately checked only on the PREFIX: a grant followed
+# by the work to do ("go into auto mode and fix the errors") must still count,
+# while an attempt/trouble frame introducing the mention ("I got this error
+# trying to set drain mode") must not.
+MODE_REPORT_PREFIX_RE = re.compile(
+    r"\b(?:i|we)\s+(?:just\s+)?(?:tried|attempted|got|get|see|saw|hit|noticed|had)\b"
+    r"|\b(?:i|we)\s*(?:'m|'ve|am|was|were|have|had)\s+(?:just\s+)?"
+    r"(?:trying|attempting|getting|seeing|hitting|having)\b"
+    r"|\b(?:when|after|while)\s+(?:i|we|you)\b"
+    r"|\b(?:error|failed|failing|broken|crashe[sd]|throws?|rejected|refused)\b"
+    r"|\b[45]\d{2}\b",
+    re.I,
+)
+
+# A genuine interrogative opener. Two exclusions, both load-bearing:
+#   - `can|could|would|will you ...` is a polite REQUEST ("can you go into auto
+#     mode"), i.e. a real grant, not a question about one.
+#   - bare leading `do` is IMPERATIVE far more often than interrogative here
+#     ("do whatever you think is best" is documented grant vocabulary), so the
+#     question reading requires a following pronoun. Listing bare `do` broke
+#     that existing positive control the first time this was written.
+MODE_QUESTION_RE = re.compile(
+    r"\A[\s>*_-]*(?:what|why|how|should|does|did|is|are|was|were|which|who)\b"
+    r"|\A[\s>*_-]*do\s+(?:you|we|i|they|it)\b",
+    re.I,
+)
+
+
+def _strip_code(text):
+    """Drop fenced blocks and backtick spans so a PASTED log or error that
+    happens to contain the words cannot arm a mode."""
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    return re.sub(r"`[^`]*`", " ", text)
 
 
 def _detect_mode_directive(text):
@@ -164,8 +248,12 @@ def _detect_mode_directive(text):
             if re.search(r'\b' + mode_id + r'\b', text, re.I):
                 return (mode_id, False)
         return ('auto', False)
+    scan = _strip_code(text)
+    if MODE_QUESTION_RE.search(scan):
+        return None
     for mode_id, rx in MODE_ENTER_RES:
-        if rx.search(text):
+        m = rx.search(scan)
+        if m and not MODE_REPORT_PREFIX_RE.search(scan[:m.start()]):
             return (mode_id, True)
     return None
 

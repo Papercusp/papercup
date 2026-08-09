@@ -23,31 +23,40 @@
  * `planHygieneSweep` is pure; `runHygieneSweep` is thin PG glue (injectable
  * deps; `dryRun` plans without writing).
  *
- * ── Observation-lane retention (turn-end-reflection-observations-2026-06-14 P-045)
- * The above sweep governs the WORK lane (`papercusp-improvement`). The observation
- * lane (`papercusp-observation`) is a SEPARATE topic that SKIPS capture-time dedup
- * (recurrence IS the signal Scout clusters on — capture-core.ts), so it grows
- * UNBOUNDED once the fleet reflects at turn-end at volume. `planObservationRetention`
- * + `runObservationRetention` bound that growth: keep a rolling window (30d) AND a
- * hard cap (~1000 newest), and HARD-DELETE observations that are BOTH older than the
- * window AND beyond the cap. Observations are disposable signals (Scout has had its
- * clustering window by then), so deletion — not the lifecycle close — is the right
- * tool: it bounds ROW growth across engineer_issues + the coupled coord_* edges.
- * This NEVER touches the improvement lane (a different topic; asserted in a test).
+ * ── There is deliberately NO observation retention here — do not re-add one
+ * This file used to carry `planObservationRetention` / `runObservationRetention`
+ * (turn-end-reflection-observations-2026-06-14 P-045), which HARD-DELETED
+ * observation-lane rows that were both older than a 30d window and beyond a
+ * ~1000-row cap. It was retired 2026-08-09 by owner directive — plan
+ * `learning-loop-identity-and-consumption-2026-08-08` D-001, verbatim: "I dont
+ * think we should have the 1k or 30 day limit. why would we ever want to throw out
+ * observations?" — and D-005: observations are a TIME SERIES, never bulk-closed or
+ * purged. The premise it rested on ("observations are disposable signals; Scout has
+ * had its clustering window") is what the owner rejected.
+ *
+ * Two things a future reader should know before reaching for a bound again:
+ *   - The cap never bound anything. Pruning required `beyondCap AND olderThanWindow`,
+ *     and at fleet volume (~15k live rows) every ageing row is thousands of positions
+ *     beyond a 1000-row cap, so the AND degenerated to a plain 30-day TTL.
+ *   - It had destroyed nothing when it was removed (689 rows older than the window
+ *     were still alive, measured), but it was ~30 minutes from its first permanent
+ *     deletion — inert only because a coord-link partition swing hid the old rows
+ *     from its scoped read. Inert is not safe; see D-029 for the full measurement.
+ *
+ * If a storage bound is ever genuinely needed it must be ARCHIVE/ROLLUP over rows
+ * already marked CONSUMED (see `observation-consumption.ts`), never a DELETE, and
+ * never over unconsumed rows. That is an owner-level decision, not a local one.
  */
 
 import {
   setIssueState,
   commentIssue,
   mergeIssuePayload,
-  deleteIssues,
-  listIssueAgesByTopic,
   type EngineerIssue,
-  type IssueAgeRow,
 } from '../../issues-engineer';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import type { ImprovementCandidate, ImprovementSeverity } from './policy';
-import { readImprovementItems, OBSERVATION_TOPIC } from './read-items';
+import { readImprovementItems } from './read-items';
 import { findLikelyDuplicates, signatureRecurrence, dedupSignature } from './digest';
 import { initializeIdeaLifecycle, updateIdeaLifecycle } from './lifecycle';
 

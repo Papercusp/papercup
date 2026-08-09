@@ -178,11 +178,12 @@ export default defineTool({
           RETURNING owner_id
         `;
         modeSubjectStamped = stamped.length > 0;
-      } catch (err) {
-        ctx.log?.('warn', 'goals:create could not stamp agent_modes.subject', {
-          goalId: id,
-          error: err instanceof Error ? err.message : String(err),
-        });
+      } catch {
+        // Swallowed on purpose, and NOT silently: `mode_subject_stamped:false`
+        // in the result is the signal, and it is the one the caller can act on
+        // (enter GOAL mode, then re-assert). Failing the create here would
+        // trade a missing decoration for a lost goal.
+        modeSubjectStamped = false;
       }
     }
 

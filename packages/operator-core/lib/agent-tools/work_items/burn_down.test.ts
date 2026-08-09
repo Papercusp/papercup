@@ -16,7 +16,7 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
   PRESENCE_STALE_MS: 60_000,
 }));
 
-import { getWorkItem, listWorkItems } from '../../work-items';
+import { getWorkItem, listWorkItems, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
 import { listPresence } from '../coordination/presence';
 import {
   buildBurnDownResult,
@@ -386,6 +386,78 @@ describe('work_items:burn_down', () => {
       harness: 'papercusp',
       counts: { total: 1, terminal: 0, inFlight: 1, parked: 0, unclaimed: 0 },
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // WI-37381 — the recurrence guard for the defect this fix ends: `limit` used to
+  // bound the FETCH that terminal.*/counts.* were computed from, so a small `limit`
+  // (e.g. 5) could report terminal.total 0 / deltaBy.fleet 0 for a queue with 1693
+  // real terminal rows. `limit` must bound only the returned row lists.
+  // ---------------------------------------------------------------------------
+  it('WI-37381: `limit` never bounds the aggregate fetch — the census always uses WORK_ITEMS_MAX_LIMIT', async () => {
+    const items = [
+      ...Array.from({ length: 6 }, (_, i) => item({ id: `WI-done-${i}`, state: 'done' })),
+      ...Array.from({ length: 4 }, (_, i) => item({ id: `WI-live-${i}`, assignee: `su-${i}` })),
+    ];
+    mockListWorkItems.mockResolvedValue(items);
+    mockListPresence.mockResolvedValue([]);
+
+    const res = await callTool({ harness: 'papercusp', limit: 2 });
+
+    // The underlying fetch is NEVER bounded by the caller's `limit` — always the hard cap.
+    expect(mockListWorkItems).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: WORK_ITEMS_MAX_LIMIT }),
+    );
+
+    const data = res.data as {
+      terminal: { total: number; truncatedByLimit: boolean; censusLimit: number };
+      counts: { total: number; terminal: number; inFlight: number };
+      inFlight: unknown[];
+    };
+    // Aggregate counts reflect the TRUE bucket sizes — a limit:2 request must not zero
+    // (or otherwise shrink) terminal.total / counts.*, the exact bug this guards.
+    expect(data.terminal.total).toBe(6);
+    expect(data.counts).toMatchObject({ total: 10, terminal: 6, inFlight: 4 });
+    expect(data.terminal.truncatedByLimit).toBe(false);
+    expect(data.terminal.censusLimit).toBe(WORK_ITEMS_MAX_LIMIT);
+    // `limit` DOES bound the returned row list (display only).
+    expect(data.inFlight).toHaveLength(2);
+  });
+
+  it('WI-37381: buildBurnDownResult — rowLimit caps only inFlight/parked/unclaimed row arrays, never their counts', () => {
+    const result = buildBurnDownResult(
+      [
+        item({ id: 'WI-1', assignee: 'su-1' }),
+        item({ id: 'WI-2', assignee: 'su-2' }),
+        item({ id: 'WI-3', assignee: 'su-3' }),
+      ],
+      new Set(),
+      { harness: 'papercusp', rowLimit: 1 },
+    );
+    expect(result.inFlight).toHaveLength(1);
+    expect(result.counts.inFlight).toBe(3);
+  });
+
+  it('WI-37381: buildBurnDownResult — censusLimit/truncatedByLimit are decoupled from rowLimit and reflect the real fetch size', () => {
+    const untruncated = buildBurnDownResult([item({ id: 'WI-done', state: 'done' })], new Set(), {
+      harness: 'papercusp',
+      censusLimit: 2000,
+    });
+    expect(untruncated.terminal).toMatchObject({ censusLimit: 2000, truncatedByLimit: false });
+
+    // items.length (1) >= censusLimit (1) — the fetch itself hit its cap, so the
+    // aggregate may still be an undercount even though the caller passed no `limit`.
+    const truncated = buildBurnDownResult([item({ id: 'WI-done', state: 'done' })], new Set(), {
+      harness: 'papercusp',
+      censusLimit: 1,
+    });
+    expect(truncated.terminal).toMatchObject({ censusLimit: 1, truncatedByLimit: true });
+
+    // No censusLimit passed (the fixed `ids`-cohort path) — never reported as truncated.
+    const cohort = buildBurnDownResult([item({ id: 'WI-done', state: 'done' })], new Set(), {
+      harness: 'papercusp',
+    });
+    expect(cohort.terminal.truncatedByLimit).toBe(false);
   });
 
   it('loads an exact ID cohort and returns one audit row per requested ID', async () => {

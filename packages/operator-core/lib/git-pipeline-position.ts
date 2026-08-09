@@ -1618,7 +1618,7 @@ export interface ChangeInCandidate {
    * one named the ABANDONED candidate. CLAUDE.md meanwhile told agents the cell's sha was
    * "already marker-preferred per WI-7035"; WI-7035 only ever fixed `checkpointRunInFlight`.
    */
-  judgingShaSource?: 'retriage-marker' | 'run-probe';
+  judgingShaSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe';
   /** Does that candidate carry this path's WORKING-TREE content? null = not comparable. */
   judgingContainsPath: boolean | null;
   /** The commit a checkpoint fired right now would judge (post quiet-cut). */
@@ -1693,7 +1693,7 @@ export interface GateCandidates {
    * about — the trap CLAUDE.md's `lint:required-field-strands` exists for. A probe-only
    * resolver that omits it is read as `'run-probe'` by `reconcileGateCandidates`.
    */
-  judgingShaSource?: 'retriage-marker' | 'run-probe';
+  judgingShaSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe';
 }
 
 /**
