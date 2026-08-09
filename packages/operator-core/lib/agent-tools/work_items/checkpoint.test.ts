@@ -12,6 +12,10 @@
  * the top level.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+// EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
+// the cap re-tunes the test instead of breaking it — the guard is about the note being
+// truthful at the boundary, not about the boundary sitting at any particular number.
+import { CARRY_NOTE_MAX_CHECKS } from '../../carry-note';
 
 const setWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
@@ -1131,6 +1135,69 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(stored).toContain('B holds');
           expect(r.checks).toBe(2);
           expect(r.checksDropped).toBeUndefined();
+        });
+
+        /**
+         * EI-20004424625703051 — the union is NOT the whole story, and the gap between
+         * those two facts destroyed 16 peer-authored claims on a `critical` item.
+         *
+         * `append` unions supplied-first, then `normalizeCheckEntries` breaks at
+         * CARRY_NOTE_MAX_CHECKS. So on an item already AT the cap — precisely the
+         * long-lived, multi-agent items whose history is worth most — an additive write
+         * silently evicts the carried tail and still returns `ok: true`.
+         *
+         * The reported cause is what makes it expensive rather than merely lossy. The
+         * note used to emit the REPLACE text here, so a caller who had correctly passed
+         * `append: true`, observed rows vanish, and read the tool's own explanation was
+         * led to exactly one conclusion: the union is broken. It was not. That caller
+         * filed a bug against a working code path and published the wrong root cause,
+         * while the real mechanism — the cap — went unnamed. Its remedy compounded it:
+         * "re-send the FULL set" is unachievable at the cap, because the full set is by
+         * definition larger than `.max(CARRY_NOTE_MAX_CHECKS)` and the call is rejected.
+         *
+         * This guard therefore pins the DIAGNOSIS, not just the drop: a note that
+         * reintroduces the replace framing (or the impossible remedy) on an append fails
+         * here, even though the eviction it describes is unchanged and deliberate.
+         */
+        it('at the cap, append EVICTS the carried tail and says CAP EVICTION — never the replace text', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe ${i + 1}`,
+          }));
+          await seed(atCap);
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'my fresh finding',
+            append: true,
+            checks: [
+              { claim: 'MINE-A holds', verified: 'measured' },
+              { claim: 'MINE-B holds', verified: 'measured' },
+            ],
+          })) as { ok: boolean; checks: number; checksDropped?: string[]; checksDroppedNote?: string };
+
+          // The write still succeeds and the set stays bounded.
+          expect(r.ok).toBe(true);
+          expect(r.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+
+          // Supplied rows are kept; the OLDEST carried rows are the ones evicted.
+          const stored = await lastStored();
+          expect(stored).toContain('MINE-A holds');
+          expect(stored).toContain('MINE-B holds');
+          expect(r.checksDropped).toHaveLength(2);
+          expect(r.checksDropped).toEqual([
+            `PEER-${String(CARRY_NOTE_MAX_CHECKS - 1).padStart(2, '0')} holds`,
+            `PEER-${String(CARRY_NOTE_MAX_CHECKS).padStart(2, '0')} holds`,
+          ]);
+
+          // The DIAGNOSIS is the point of this test.
+          expect(r.checksDroppedNote).toContain('CAP EVICTION');
+          // Never the replace framing — that cause did not occur on this path.
+          expect(r.checksDroppedNote).not.toContain('REPLACES the stored set');
+          // Never the unachievable remedy: re-sending the full set is over the cap.
+          expect(r.checksDroppedNote).not.toMatch(/Re-send the FULL set/i);
+          // It must point at the remedy that actually works.
+          expect(r.checksDroppedNote).toMatch(/RETIRE/);
         });
 
         it('PLAIN (non-append) replace is UNCHANGED — retiring a stale check still works', async () => {

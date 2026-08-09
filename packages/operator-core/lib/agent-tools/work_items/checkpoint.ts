@@ -268,8 +268,9 @@ function checksSpec() {
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
         'plain rewrite never silently drops them) and [] clears them. With `append: true` a supplied list is ' +
-        'UNIONED onto the carried set (supplied wins on matching claim text), so an additive write can never ' +
-        'drop a row. WITHOUT append a supplied list REPLACES the set: send the FULL set you want stored, ' +
+        `UNIONED onto the carried set (supplied wins on matching claim text) — but the union is capped at ` +
+        `${CARRY_NOTE_MAX_CHECKS} and an overflow EVICTS THE CARRIED TAIL, so an additive write CAN still drop ` +
+        'rows. WITHOUT append a supplied list REPLACES the set: send the FULL set you want stored, ' +
         'because any stored claim you leave out is DROPPED — that is how you RETIRE a stale check. A supplied ' +
         'row whose claim text matches a stored one inherits that row\'s recheck/verified/sinceMs when you omit ' +
         'them, so re-sending a claim never loses its evidence. Rows dropped come back as `checksDropped`.',
@@ -741,6 +742,11 @@ export default defineTool({
            * EI-19460631385508515: note this is NOT evidence of a union — a supplied list
            * REPLACES the set, so this can legitimately come back LOWER than the count you
            * had stored. `checksDropped` below names what went missing.
+           *
+           * EI-20004424625703051: it can come back lower on an APPEND too, for the other
+           * reason — the union overflowed the CARRY_NOTE_MAX_CHECKS cap and the carried
+           * tail was evicted. So a count below what you stored does not by itself tell
+           * you which of the two happened; read `checksDroppedNote`, which now says.
            */
           checks: stored !== null ? splitCarryNoteChecks(stored).checks.length : 0,
           /**
@@ -750,15 +756,34 @@ export default defineTool({
            * write SUCCEEDS either way; this reports a loss, never a refusal. Claims are
            * truncated for the reply — they identify WHICH row went, they are not a
            * restore payload.
+           *
+           * EI-20004424625703051: there are TWO distinct causes and they need DIFFERENT
+           * remedies, so the note branches. A plain write drops because a supplied list
+           * REPLACES. An APPEND write unioned correctly and then overflowed the
+           * CARRY_NOTE_MAX_CHECKS cap, which evicts the CARRIED tail (supplied rows are
+           * ordered first in `effectiveChecks`). Emitting the replace text on an append
+           * is not a cosmetic slip: it names a cause that did not occur, and its remedy
+           * ("re-send the FULL set") is UNACHIEVABLE there, because the full set is by
+           * definition over the cap and `checks` is `.max(CARRY_NOTE_MAX_CHECKS)` — the
+           * call is rejected as invalid_input. Measured: a caller followed that text to
+           * the conclusion that append-union was broken and filed it as a union bug,
+           * when the union had worked and the cap was the whole mechanism.
            */
           ...(droppedCheckClaims.length
             ? {
                 checksDropped: droppedCheckClaims.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
-                checksDroppedNote:
-                  `a supplied \`checks\` list REPLACES the stored set — ${droppedCheckClaims.length} stored ` +
-                  `claim(s) were not in this write and are now gone. Re-send the FULL set you want carried ` +
-                  `(a re-sent claim inherits its prior recheck/verified), or pass no \`checks\` at all to leave ` +
-                  `the stored rows untouched.`,
+                checksDroppedNote: wantsAppend
+                  ? `CAP EVICTION, not a replace: \`append\` UNIONED your ${suppliedChecks?.length ?? 0} row(s) onto ` +
+                    `the stored set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
+                    `${droppedCheckClaims.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
+                    `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
+                    `rejected as invalid_input. To keep them: RETIRE rows you no longer need in a separate plain ` +
+                    `write (no \`append\`, send only the survivors), then append; or pass no \`checks\` at all to ` +
+                    `leave the stored rows untouched.`
+                  : `a supplied \`checks\` list REPLACES the stored set — ${droppedCheckClaims.length} stored ` +
+                    `claim(s) were not in this write and are now gone. Re-send the FULL set you want carried ` +
+                    `(a re-sent claim inherits its prior recheck/verified), or pass no \`checks\` at all to leave ` +
+                    `the stored rows untouched.`,
               }
             : {}),
           /**
