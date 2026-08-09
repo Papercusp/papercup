@@ -1728,6 +1728,30 @@ def _is_agent_or_fleet_session():
 # deleted (EI-9937's `grep -E "at|batch"` exemption survives intact) while the
 # EXECUTED payloads of `bash -c "crontab -e"` / `$(echo crontab) -e` are appended
 # as their own lines and caught.
+#
+# ⚠ KNOWN, ACCEPTED LIMITATION (EI-19485881710808774, the 4th confirmed instance
+# of the "keyed on the token, not the operation" pattern — see also
+# EI-19483245448673321 for lint:no-unenrolled-spawn's cgroup-lifetime sibling
+# case). This is a STATIC TEXT scan of the literal Bash command string. It has
+# no way to see that a `node script.mjs` / `python3 script.py` this command
+# launches will, at RUNTIME, call `spawn('systemd-run', …)` / `subprocess.run([
+# 'systemd-run', …])` internally — the token never appears at a shell
+# command-boundary position in the Bash string this hook actually scans, so it
+# is invisible here by construction, not by a fixable regex gap. Widening the
+# match to catch the token anywhere (e.g. inside a quoted arg string) was
+# deliberately rejected: quote-stripping exists BECAUSE unstripped scanning
+# false-positived on legitimate uses of these words as plain data (EI-10444's
+# SQL column named `at`, EI-19409663266787780's Python variable named `batch`)
+# — a scanner cannot distinguish "this text names a process to spawn" from
+# "this text is a string literal" without parsing the embedded language's
+# semantics, which is out of scope for a shell-level PreToolUse hook. Do NOT
+# read a green run of this guard as "no systemd-run/crontab/at/batch call is
+# possible from this session" — it only means none was spelled out literally
+# in Bash syntax. A real boundary (if ever required) has to live at a lower
+# layer (systemd/kernel privilege separation on the invoking uid/cgroup), not
+# here. This guard remains valuable as a deterrent for the common, naive case
+# and is kept for that reason — it is not, and was never meant to be, a hard
+# security boundary against a determined bypass.
 if _is_agent_or_fleet_session() and re.search(
         r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|batch|systemd-run)\b'
         r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',

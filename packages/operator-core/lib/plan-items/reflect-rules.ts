@@ -121,6 +121,12 @@ function setStatusArgs(e: ToolInvocationEvent, status: string, why: string): Rec
     item: stamp.item_id,
     status,
     note: `← ${wi.id ?? 'work_item'} ${why}`,
+    // EI-19972048649686949: an AUTOMATED cascade to `dropped` must not de-queue a
+    // plan item another non-terminal work-item still covers (the classic case:
+    // dropping a hand-filed duplicate of an already-claimed implementer). No effect
+    // on any other status — a genuine `done`/reopen/park flip is unaffected, and
+    // set-status.ts's guard is a no-op unless `status === 'dropped'`.
+    ...(status === 'dropped' ? { onlyIfNoOtherOpenCoverage: true } : {}),
   };
 }
 

@@ -86,6 +86,7 @@ const {
   legRan,
 } = await import('./adv-agent-detail');
 type PushedContextRow = import('./adv-agent-detail').PushedContextRow;
+type PushedContextRefDetailRow = import('./adv-agent-detail').PushedContextRefDetailRow;
 // The shared cursor rule, asserted alongside the counter it now feeds so the
 // two cannot drift (unread-count-truthfulness-2026-07-27 P-002/P-003).
 const { pickUnreadCursor } = await import('./agent-tools/coordination/watermarks');
@@ -1162,12 +1163,120 @@ describe('derivePushedContext', () => {
   });
 
   it('omits `unavailable` entirely when every ledger answered', () => {
-    const out = derivePushedContext([], [{ port: 'mid-turn', refs: 1, kind: 'corpus' }], 0);
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [{ port: 'mid-turn', refs: 1, kind: 'corpus' }],
+      total: 0,
+    });
     expect(out.unavailable).toBeUndefined();
   });
 
   it('normalises a Date created_at to ISO', () => {
-    const out = derivePushedContext([row({ created_at: new Date(0) })], [], 1);
+    const out = derivePushedContext({ rows: [row({ created_at: new Date(0) })], refRows: [], total: 1 });
     expect(out.events[0].at).toBe('1970-01-01T00:00:00.000Z');
+  });
+
+  // ── P-013: the per-ref rows ───────────────────────────────────────────────
+  const refRow = (
+    over: Partial<PushedContextRefDetailRow> = {},
+  ): PushedContextRefDetailRow => ({
+    ref: 'WI-6512',
+    port: 'mid-turn',
+    epoch: 3,
+    surfaced_at: '2026-08-09T09:20:27.665Z',
+    kind: 'corpus',
+    ...over,
+  });
+
+  it('carries the HANDLE per row, with its port, epoch and moment', () => {
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [],
+      total: 0,
+      refDetail: [refRow({ surfaced_at: new Date(0) })],
+    });
+    expect(out.refs).toEqual([
+      {
+        ref: 'WI-6512',
+        kind: 'corpus',
+        port: 'mid-turn',
+        at: '1970-01-01T00:00:00.000Z',
+        epoch: 3,
+      },
+    ]);
+  });
+
+  it('orders merged ref rows totally, newest first', () => {
+    // Same argument as refsByPort: two independently-sorted result sets. A
+    // partial order would make the list depend on which query resolved first.
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [],
+      total: 0,
+      refDetail: [
+        refRow({ ref: 'WI-2', surfaced_at: '2026-08-09T09:00:00.000Z' }),
+        refRow({ ref: 'b', kind: 'memory', surfaced_at: '2026-08-09T10:00:00.000Z' }),
+        refRow({ ref: 'WI-1', surfaced_at: '2026-08-09T10:00:00.000Z' }),
+      ],
+    });
+    // Newest first; the tie breaks on kind ('corpus' < 'memory') then ref.
+    expect(out.refs.map((r) => r.ref)).toEqual(['WI-1', 'b', 'WI-2']);
+  });
+
+  it('caps the carried refs while `refsTotal` still names the true total', () => {
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [{ port: 'mid-turn', refs: 200, rows: 200, kind: 'corpus' }],
+      total: 0,
+      refDetail: Array.from({ length: 60 }, (_, i) => refRow({ ref: `WI-${i}` })),
+    });
+    expect(out.refs).toHaveLength(40);
+    expect(out.refsTotal).toBe(200);
+  });
+
+  it('sums `refsTotal` from RAW rows, never from the distinct-per-port counts', () => {
+    // A ref surfaced at two ports is one DISTINCT ref in each group, so adding
+    // the per-port distinct counts double-counts it. The raw row count is the
+    // only summable one — this is the guard that keeps them from being swapped.
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [
+        { port: 'mid-turn', refs: 9, rows: 11, kind: 'memory' },
+        { port: 'turn-start', refs: 9, rows: 12, kind: 'memory' },
+      ],
+      total: 0,
+    });
+    expect(out.refsTotal).toBe(23);
+  });
+
+  it('never lets `refsTotal` under-report the refs it is handed', () => {
+    // Same floor rule as `count` above: "showing 2 of 0" is not a thing.
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [],
+      total: 0,
+      refDetail: [refRow({ ref: 'WI-1' }), refRow({ ref: 'WI-2' })],
+    });
+    expect(out.refsTotal).toBe(2);
+  });
+
+  it('renders an UNRECORDED port as such, never as a port named "null"', () => {
+    // corpus_session_surfaced.port is nullable. Measured 2026-08-09: 0 of
+    // 33,485 rows in 24h were NULL — but the column permits it, and "we did not
+    // record where this arrived" must not read as a real port label.
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [{ port: null, refs: 2, rows: 2, kind: 'corpus' }],
+      total: 0,
+      refDetail: [refRow({ port: null })],
+    });
+    expect(out.refs[0].port).toBe('(unrecorded)');
+    expect(out.refsByPort[0].port).toBe('(unrecorded)');
+  });
+
+  it('leaves `refs` empty — never fabricated — when the ledgers hand over nothing', () => {
+    const out = derivePushedContext({ rows: [row()], refRows: [], total: 1 });
+    expect(out.refs).toEqual([]);
+    expect(out.refsTotal).toBe(0);
   });
 });

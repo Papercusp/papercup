@@ -162,11 +162,7 @@ type SetStatusValue =
   /** `onlyIfNotTerminal` tripped: the item is already done/dropped and the caller
    *  asked for a non-destructive flip. Carries the CURRENT status so the caller can
    *  report what it left alone. Not an error — see the `terminal_guard` branch below. */
-  | { ok: false; code: 'terminal_guard'; currentStatus: string | null }
-  /** `onlyIfNoOtherOpenCoverage` tripped: another non-terminal work-item still covers
-   *  this plan item, so the →dropped flip was skipped. Not an error — see the
-   *  `coverage_guard` branch below. */
-  | { ok: false; code: 'coverage_guard'; coveredBy: string[] };
+  | { ok: false; code: 'terminal_guard'; currentStatus: string | null };
 
 /**
  * Extract one item's `importance` from the plan body, glyph-agnostically,
@@ -1059,7 +1055,7 @@ export default defineTool({
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
           onlyIfNotTerminal: it.onlyIfNotTerminal ?? args.onlyIfNotTerminal,
-          onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
+          onlyIfNoOtherOpenCoverage: it.onlyIfNoOtherOpenCoverage ?? args.onlyIfNoOtherOpenCoverage,
         }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({
@@ -1070,6 +1066,7 @@ export default defineTool({
             harness: args.harness,
             rationale: args.rationale,
             onlyIfNotTerminal: args.onlyIfNotTerminal,
+            onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
           }))
         : [
             {
@@ -1080,6 +1077,7 @@ export default defineTool({
               harness: args.harness,
               rationale: args.rationale,
               onlyIfNotTerminal: args.onlyIfNotTerminal,
+              onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
             },
           ];
     const env = await runBulk(list, (it) => setStatusOne(it, ctx), {

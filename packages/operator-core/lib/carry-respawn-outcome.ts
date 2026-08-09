@@ -48,6 +48,12 @@ export interface PriorRespawn {
   ts?: string;
   /** How long ago that row was written, ms (null when the row carried no ts). */
   ageMs?: number | null;
+  /** The re-poll budget the host stamped on the deciding row (`capMs`), when it
+   *  recorded one — the window after which a `pending` attempt CANNOT still be
+   *  legitimately in flight. Read from the row rather than assumed, so the
+   *  orphan verdict tracks the host's own configured cap instead of a copy of
+   *  it that can silently drift. */
+  capMs?: number | null;
 }
 
 /**
@@ -74,11 +80,13 @@ export function deriveLastRespawnOutcome(
     if (!outcome) continue;
     const ts = typeof row.ts === 'string' ? row.ts : undefined;
     const parsed = ts ? Date.parse(ts) : NaN;
+    const capMs = typeof row.capMs === 'number' && Number.isFinite(row.capMs) ? row.capMs : null;
     return {
       outcome,
       ...(row.reason ? { reason: String(row.reason) } : {}),
       ...(ts ? { ts } : {}),
       ageMs: Number.isFinite(parsed) ? now - parsed : null,
+      capMs,
     };
   }
   return { outcome: 'none' };
@@ -100,11 +108,58 @@ export async function readPriorRespawnOutcome(
 }
 
 /**
- * A dropped carry-respawn older than this is history, not news. The agent has
+ * A lost carry-respawn older than this is history, not news. The agent has
  * demonstrably kept taking turns since, so repeating the warning every turn
  * would be noise — and a warning that is always on is one nobody reads.
  */
-export const DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+export const LOST_RESPAWN_AMBIENT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The host's re-poll budget for a busy-gate-deferred respawn, used ONLY when the
+ * deciding row carried no `capMs` of its own. Measured from a real host log
+ * (su-b8422496, 2026-08-09T01:46:12Z): the first attempt caps at 180000ms and
+ * the single deferred re-arm at 360000ms, so 360000 is the longest a `pending`
+ * attempt can legitimately still be alive.
+ */
+export const PENDING_RESPAWN_DEFAULT_CAP_MS = 360_000;
+
+/**
+ * Slack added to the cap before a `pending` attempt is called ORPHANED. The cap
+ * is a wait budget, not a deadline the host promises to write a row at, so a
+ * verdict row can trail it by a clock skew / a flush. Two minutes is far larger
+ * than any observed trailing gap and still an order of magnitude below the
+ * multi-hour silences this exists to catch.
+ */
+export const PENDING_RESPAWN_ORPHAN_GRACE_MS = 120_000;
+
+/**
+ * PURE: is this `pending` attempt provably ORPHANED — i.e. past the window in
+ * which it could still fire, with no terminal row ever written?
+ *
+ * WHY THIS IS DECIDABLE AT ALL, and why it is the P-009 signal. While a respawn
+ * is genuinely pending the host DEFERS the agent's wakes
+ * (`wake-turn-deferred-for-pending-respawn`), so a live agent reading this is
+ * already evidence the attempt is not holding its slot. The cap turns that into
+ * proof rather than a hunch: past `capMs + grace` the re-poll loop is over, and
+ * a respawn that neither delivered nor dropped inside it is one nobody is
+ * waiting for. The failure mode it names (P-009) is a `session:request-compaction`
+ * ACKED with `respawn:true` whose cut was then pre-empted — an internal claude
+ * re-exec, a host restart — leaving the attempt pending forever. `dropped` at
+ * least got a verdict row; this one gets silence, which is why it needed its own
+ * predicate rather than more prose on the drop path.
+ *
+ * An unknown age is NOT orphaned: the same evidence-only rule the ambient line
+ * follows everywhere else.
+ */
+export function isOrphanedPendingRespawn(prior: PriorRespawn | null | undefined): boolean {
+  if (!prior || prior.outcome !== 'pending') return false;
+  if (prior.ageMs == null || !Number.isFinite(prior.ageMs)) return false;
+  const cap =
+    typeof prior.capMs === 'number' && Number.isFinite(prior.capMs) && prior.capMs > 0
+      ? prior.capMs
+      : PENDING_RESPAWN_DEFAULT_CAP_MS;
+  return prior.ageMs > cap + PENDING_RESPAWN_ORPHAN_GRACE_MS;
+}
 
 /**
  * The AMBIENT warning line, for the per-turn coord injection block
