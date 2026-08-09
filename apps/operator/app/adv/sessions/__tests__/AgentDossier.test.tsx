@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent, within } from '@testing-library/react';
-import AgentDossier, { type AgentDetail } from '../AgentDossier';
+import AgentDossier, { type AgentDetail, pushedEventDetail } from '../AgentDossier';
 import type { RosterEntry } from '../SessionsRosterView';
 
 const syncState = vi.hoisted(() => ({
@@ -1148,6 +1148,124 @@ describe('AgentDossier', () => {
       expect(container.querySelectorAll('[data-testid="dossier-pushed-ref-row"]').length).toBe(0);
       // The injection rows — the OTHER half of the section — still render.
       expect(container.querySelectorAll('[data-testid="dossier-pushed-row"]').length).toBe(1);
+    });
+
+    // ── WI-37549 [owner 2026-08-09]: the refs tooltips "look good but what
+    //    about adding them in the same way to the [injection] section". ──
+    it('anchors a hover panel on the injection row, like the refs rows', async () => {
+      syncState.detail = { ...DETAIL, pushedContext: PUSHED } satisfies AgentDetail;
+      const { container, findByText } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Dynamically pushed context');
+      const row = container.querySelector('[data-testid="dossier-pushed-row"]')!;
+      const anchor = row.querySelector('[data-testid="dossier-pushed-detail"]');
+      expect(anchor).toBeTruthy();
+      expect(anchor?.getAttribute('aria-haspopup')).toBe('dialog');
+      // The row still READS the same — the panel adds meaning, it does not
+      // replace the summary the operator already scans for.
+      expect(row.textContent).toContain('1 of 12 admitted');
+      expect(row.textContent).toContain('truncated');
+    });
+  });
+
+  describe('pushedEventDetail — the injection row explains itself (WI-37549)', () => {
+    // The shape measured live 2026-08-09 on a real mid-turn row: exactly what
+    // the dossier renders as "1 of 12 admitted · truncated · sem ✓ lex ✓".
+    const event = () => ({
+      at: '2026-08-09T09:20:27.665Z',
+      surface: 'mid-turn',
+      returned: 12,
+      admitted: 1,
+      truncated: true,
+      semanticRan: true as boolean | null,
+      lexicalRan: true as boolean | null,
+      detail: {
+        dropped: [
+          { stage: 'dedup', count: 3, why: 'already surfaced in this session-epoch' },
+          { stage: 'budget', count: 8, why: 'did not fit the char budget, cut after ranking' },
+        ],
+        spent: 1009,
+        budgetChars: 350,
+        byLeg: { both: 0, cosineOnly: 1, lexicalOnly: 0 },
+        mode: 'cosine-gated',
+        fused: 25,
+        cosine: { candidates: 25, qualifying: 25, depth: 12 },
+        lexical: { candidates: 108, qualifying: 0, depth: 36 },
+      },
+    });
+
+    it('says WHERE the missing rows went, in words rather than counts', () => {
+      // "1 of 12 admitted" says eleven vanished without saying where. The panel
+      // must name each filter that took them.
+      const text = pushedEventDetail(event());
+      expect(text).toContain('3 — already surfaced in this session-epoch');
+      expect(text).toContain('8 — did not fit the char budget');
+    });
+
+    it('reads spent > cap as the one-row exemption, not as an overrun', () => {
+      // recall-stats.ts's THIRD reading of `spent`: the always-emit-one-row rule
+      // admits a single oversized entry whatever its length, so the budget never
+      // applied. This is what actually explains an admitted count of 1.
+      const text = pushedEventDetail(event());
+      expect(text).toContain('1009 chars spent against a 350-char cap');
+      expect(text).toMatch(/always-emit-one-row/);
+      expect(text).not.toMatch(/budget-bound/i);
+    });
+
+    it('calls a genuinely exhausted budget budget-bound', () => {
+      const e = event();
+      const text = pushedEventDetail({ ...e, detail: { ...e.detail, spent: 340 } });
+      expect(text).toContain('Budget-bound');
+      expect(text).not.toMatch(/always-emit-one-row/);
+    });
+
+    it('calls an unexhausted budget clamp-bound, pointing at the entry clamp', () => {
+      const e = event();
+      const text = pushedEventDetail({ ...e, detail: { ...e.detail, spent: 40 } });
+      expect(text).toContain('Clamp-bound');
+      expect(text).toContain('per-entry clamp');
+    });
+
+    it('says a leg that RAN qualified nothing — and that this is not a defect', () => {
+      // The bare "lex ✓" is the misleading part: the leg ran, supplied 108
+      // candidates, and landed none. Both halves must be said — the fact, AND
+      // the design intent, because this exact zero has been filed as a bug
+      // before (recall-admission.ts / D-074).
+      const text = pushedEventDetail(event());
+      expect(text).toContain('108 candidates, 0 qualifying');
+      expect(text).toContain('Not a defect');
+      expect(text).toMatch(/exact-identifier recall/);
+    });
+
+    it('explains a STRUCTURALLY zero lexical-only rather than leaving a bare 0', () => {
+      const text = pushedEventDetail(event());
+      expect(text).toContain('0 lexical-only');
+      expect(text).toMatch(/structurally zero/i);
+    });
+
+    it('distinguishes "not recorded" from "did not run"', () => {
+      // The tri-state the glyphs compress, and the whole reason P-013 exists —
+      // it currently lives only in a code comment no UI reader can see.
+      const e = event();
+      const notRecorded = pushedEventDetail({ ...e, lexicalRan: null, detail: undefined });
+      expect(notRecorded).toContain('not recorded');
+      expect(notRecorded).toMatch(/is not "did not run"/);
+
+      const didNotRun = pushedEventDetail({ ...e, lexicalRan: false, detail: undefined });
+      expect(didNotRun).toContain('did NOT run');
+      expect(didNotRun).toMatch(/recorded observation/);
+      expect(didNotRun).not.toMatch(/predates per-leg provenance/);
+    });
+
+    it('still explains a LEGACY row that carries no detail block', () => {
+      // The wire-skew / pre-P-002 case. It must degrade to the summary in
+      // words, never to an empty panel or a wall of invented zeros.
+      const text = pushedEventDetail({ ...event(), detail: undefined });
+      expect(text).toContain('12 returned by the index · 1 reached the agent');
+      expect(text).not.toMatch(/\b0 — /); // no fabricated drop stages
+      expect(text).toContain('Truncated');
+      expect(text).toMatch(/cannot be told from here/);
     });
   });
 });

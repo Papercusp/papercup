@@ -911,11 +911,35 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
  * stops a genuinely broken loop from flapping between this write and the disarm forever. The
  * caller refuses to revive past its own ceiling by reading this same counter.
  *
- * Clears `pause` and `loop_paused_reason` because they are now false — a row that is `active`
- * with a live pause reason reads as a stale/unexplained pause to `readStalePausedRoutines`
- * (system-health/compute.ts), which is the exact misclassification EI-19479519679704136 fixed
- * in the other direction. `loop_revived_from_pause_reason` keeps the disarm's own words, so the
- * history a human needs is preserved rather than overwritten.
+ * ⚠⚠ PURELY ADDITIVE ON METADATA — IT MUST NOT DELETE `loop_paused_reason`, AND THAT IS A
+ * CORRECTNESS CONSTRAINT, NOT TIDINESS. This function's first draft cleared `pause` and
+ * `loop_paused_reason` on the reasoning that they had become false. Both premises were wrong,
+ * and the second one was expensive:
+ *
+ *   1. It bought nothing. `readStalePausedRoutines` (system-health/compute.ts:849) selects
+ *      `WHERE r.active = false`, so a revived row is out of that reader's scope by construction
+ *      whatever metadata it carries. Corroborated on live data the same day: 5 of the 26 rows
+ *      stamped with a pause reason that day were already `active:true` and still carrying it,
+ *      i.e. a stale pause reason on an active row is the system's normal, tolerated state.
+ *   2. It would have BLINDED THE MEASUREMENT THAT JUDGES THIS VERY FIX. The census behind
+ *      WI-37546 — and the Falsifier that item stakes itself on — selects
+ *      `metadata->>'loop_paused_reason' ILIKE '%stalled-loops-guard%'`. Deleting that key drops
+ *      every rescued row out of the population, so "the veto is working" and "the guard stopped
+ *      disarming anybody" become the same shrinking number. Caught by a peer review before it
+ *      could fire (su-145fd394, WI-37546 thread post 56734).
+ *
+ * That is WI-36792's lesson arriving through the MEASUREMENT rather than through the reaper: a
+ * blunted guard still reports `checked: N`, and here a blinded census would still report a
+ * plausible count. GENERALISE: when a fix writes to the same record its own falsifier reads,
+ * check what the falsifier's predicate keys on BEFORE deciding what to clean up — a repair that
+ * erases the evidence of the fault it repaired cannot be audited afterwards.
+ *
+ * Keeping both keys makes the census strictly RICHER than before: a row now carries the disarm
+ * AND its reversal, so "disarmed and still down" and "disarmed then revived" are finally
+ * distinguishable (`loop_revived_at` / `loop_revived_count`) where previously only the first
+ * existed. `loop_revived_from_pause_reason` is retained as well — redundant while the original
+ * survives, but it pins the words to THIS revival even after a later disarm overwrites
+ * `loop_paused_reason` with a fresh one.
  *
  * Guarded `AND active = FALSE` so it is a no-op against a loop that is already running — this
  * write must never disturb the cadence of a healthy loop, and a concurrent `loop:arm` by the
@@ -926,12 +950,13 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
     UPDATE harness_shared.routines
        SET active = TRUE,
            next_fire_at = now(),
-           metadata = (COALESCE(metadata, '{}'::jsonb) - 'pause' - 'loop_paused_reason')
+           metadata = COALESCE(metadata, '{}'::jsonb)
                     || jsonb_build_object(
                          'loop_revived_reason', ${reason}::text,
                          'loop_revived_at', now()::text,
-                         -- The disarm's own words, preserved rather than dropped: a human
-                         -- reading this row later needs to know what it was accused of.
+                         -- The disarm's own words, pinned to THIS revival. The original
+                         -- loop_paused_reason is deliberately LEFT IN PLACE beside it (see the
+                         -- doc above); this copy survives a later disarm overwriting it.
                          'loop_revived_from_pause_reason', COALESCE(metadata->'loop_paused_reason', 'null'::jsonb),
                          -- RATCHET. Never reset by this write; the caller's ceiling reads it.
                          'loop_revived_count', to_jsonb(COALESCE((metadata->>'loop_revived_count')::int, 0) + 1)

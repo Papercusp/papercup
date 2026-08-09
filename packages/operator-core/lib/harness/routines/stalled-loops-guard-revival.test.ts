@@ -16,7 +16,7 @@
  * (it still reports `checked: N`). A veto with no falsifying test is indistinguishable from a
  * disabled guard.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   sweepStalledLoops,
   isProgressingToolActivity,
@@ -27,7 +27,7 @@ import {
   type StalledLoopsSweepDeps,
   type OwnerToolActivity,
 } from './stalled-loops-guard';
-import { type LoopStatus } from './loop';
+import { reviveDisarmedLoop, type LoopStatus } from './loop';
 
 // Bound to the REAL dep signatures for the reason the sibling file documents at length: a bare
 // `vi.fn(async () => {})` records a ZERO-arg call tuple, so every `.mock.calls[0][1]` read below
@@ -112,6 +112,21 @@ const RETRY_STORM = activity({ calls: 4000, distinctTools: 1, okCalls: 0, lastCa
 
 const noActivity = () => vi.fn<ReadActivityFn>(async () => new Map<string, OwnerToolActivity>());
 const noRevivable = () => vi.fn<ReadRevivableFn>(async () => []);
+
+// These suites are fail-on-console and EVERY branch under test logs its reasoning by design —
+// that logging is the operator-visible half of both fixes (a veto nobody can see in the routine
+// log is indistinguishable from a disabled guard). Silenced rather than asserted-on here; the
+// dispositions are asserted through the result and the write mocks.
+let warnSpy: ReturnType<typeof vi.spyOn>;
+let logSpy: ReturnType<typeof vi.spyOn>;
+beforeEach(() => {
+  warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+});
+afterEach(() => {
+  warnSpy.mockRestore();
+  logSpy.mockRestore();
+});
 
 describe('isProgressingToolActivity (WI-37546 — progress, not volume)', () => {
   it('absent or empty activity is not progress', () => {
@@ -443,6 +458,41 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
     expect(broadcast).toHaveBeenCalledTimes(1);
     expect(broadcast.mock.calls[0][0].summary).toContain('RE-ARMED');
     expect(broadcast.mock.calls[0][0].body).toContain('su-b8422496');
+  });
+});
+
+describe('reviveDisarmedLoop must not blind the census that judges it (WI-37546, peer review 56734)', () => {
+  /**
+   * The first draft of this write cleared `pause` and `loop_paused_reason` as "no longer true".
+   * `loop_paused_reason` is the key WI-37546's OWN census — and the Falsifier that item stakes
+   * itself on — selects with (`ILIKE '%stalled-loops-guard%'`). Deleting it drops every rescued
+   * row out of the population, so "the veto works" and "the guard stopped disarming anyone"
+   * collapse into the same shrinking number.
+   *
+   * ⚠ WHAT THIS TEST CAN AND CANNOT PROVE. It inspects the STATEMENT, not a database: it proves
+   * the write does not ask Postgres to remove those keys, which is exactly the regression to
+   * guard (someone re-adding the `- 'loop_paused_reason'` cleanup). It does NOT prove the census
+   * still matches end-to-end — only a run against a real row does that.
+   */
+  it('leaves the disarm record intact and only ADDS the revival keys', async () => {
+    const statements: string[] = [];
+    const captureSql = ((strings: TemplateStringsArray) => {
+      statements.push(strings.join(' ? '));
+      return Promise.resolve([]);
+    }) as never;
+
+    await reviveDisarmedLoop(captureSql, 'rt-dead', 'revived because the owner is working');
+
+    expect(statements).toHaveLength(1);
+    const sql = statements[0];
+    // The census key, and the canonical pause shape, must survive the revive.
+    expect(sql).not.toContain(`- 'loop_paused_reason'`);
+    expect(sql).not.toContain(`- 'pause'`);
+    // The revival is recorded additively, including the ratchet that bounds the flap.
+    expect(sql).toContain('loop_revived_at');
+    expect(sql).toContain('loop_revived_count');
+    // And it only ever crosses back over a genuinely disarmed row.
+    expect(sql).toContain('active = FALSE');
   });
 });
 

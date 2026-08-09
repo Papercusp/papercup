@@ -90,6 +90,11 @@ const {
   resolvePushedRefTitles,
   stripTurnEnvelope,
 } = await import('./adv-agent-detail');
+
+// The funnel's OWN stage vocabulary. Asserting the shaper's `why` against this
+// rather than against literal prose is the point: a gloss re-typed in the test
+// would pass while the shipped text drifted from the write path's meaning.
+const { ADMISSION_STAGE_SHORT_WHY } = await import('./memory/recall-stats');
 type PushedContextRow = import('./adv-agent-detail').PushedContextRow;
 type PushedContextRefDetailRow = import('./adv-agent-detail').PushedContextRefDetailRow;
 type PushedContextRef = import('./adv-agent-detail').PushedContextRef;
@@ -1096,6 +1101,111 @@ describe('derivePushedContext', () => {
   it('treats a missing admission blob as zeros rather than throwing', () => {
     const out = derivePushedContext({ rows: [row({ admission: null })], refRows: [], total: 1 });
     expect(out.events[0]).toMatchObject({ returned: 0, admitted: 0, truncated: false });
+  });
+
+  describe('detail block (WI-37549 — the funnel behind the summary counts)', () => {
+    // The shape measured live 2026-08-09 on a real mid-turn row: this is the
+    // row the dossier renders as "1 of 12 admitted · truncated · sem ✓ lex ✓".
+    const rich = () =>
+      row({
+        admission: {
+          returned: 12,
+          admitted: 1,
+          truncated: true,
+          spent: 1009,
+          budgetChars: 350,
+          dropped: { dedup: 3, budget: 8, pack: 0, feedback: 0, workspace: 0, nearDuplicate: 0 },
+          byLeg: { both: 0, cosineOnly: 1, lexicalOnly: 0 },
+        },
+        legs: {
+          mode: 'cosine-gated',
+          fused: 25,
+          cosine: { ran: true, depth: 12, candidates: 25, qualifying: 25 },
+          lexical: { ran: true, depth: 36, candidates: 108, qualifying: 0 },
+        },
+      });
+
+    it('emits ONLY the stages that dropped something, in funnel order', () => {
+      // A real row is four zeros and two numbers. Rendering all six buries the
+      // two that explain where the rows went behind four that say nothing
+      // happened — so the zeros never reach the wire.
+      const out = derivePushedContext({ rows: [rich()], refRows: [], total: 1 });
+      expect(out.events[0].detail?.dropped).toEqual([
+        { stage: 'dedup', count: 3, why: ADMISSION_STAGE_SHORT_WHY.dedup },
+        { stage: 'budget', count: 8, why: ADMISSION_STAGE_SHORT_WHY.budget },
+      ]);
+    });
+
+    it('resolves each stage `why` from the funnel vocabulary, never a re-typed gloss', () => {
+      const out = derivePushedContext({ rows: [rich()], refRows: [], total: 1 });
+      for (const s of out.events[0].detail?.dropped ?? []) {
+        expect(s.why).toBe(ADMISSION_STAGE_SHORT_WHY[s.stage as keyof typeof ADMISSION_STAGE_SHORT_WHY]);
+        expect(s.why.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('carries the budget pair and per-leg counts the summary fields cannot say', () => {
+      const out = derivePushedContext({ rows: [rich()], refRows: [], total: 1 });
+      expect(out.events[0].detail).toMatchObject({
+        spent: 1009,
+        budgetChars: 350,
+        mode: 'cosine-gated',
+        fused: 25,
+        byLeg: { both: 0, cosineOnly: 1, lexicalOnly: 0 },
+        cosine: { candidates: 25, qualifying: 25, depth: 12 },
+        lexical: { candidates: 108, qualifying: 0, depth: 36 },
+      });
+    });
+
+    it('keeps a qualifying:0 leg as a REAL zero rather than dropping the key', () => {
+      // The lexical leg ran, supplied 108 candidates and qualified none. That
+      // zero is the whole reason the row's bare "lex ✓" misleads, so it must
+      // survive to the UI — `optNumAt` must not treat 0 as absent.
+      const out = derivePushedContext({ rows: [rich()], refRows: [], total: 1 });
+      expect(out.events[0].detail?.lexical?.qualifying).toBe(0);
+      expect(out.events[0].detail?.byLeg?.lexicalOnly).toBe(0);
+    });
+
+    it('gives a LEGACY row no detail block at all — never a block of zeros', () => {
+      // The emission rule. A pre-P-002 row never measured the funnel, and
+      // rendering "0 dropped by dedup, 0 by budget" would present a measurement
+      // we never took as a measurement of nothing — the same conflation the
+      // null-vs-false leg tri-state exists to prevent.
+      const out = derivePushedContext({
+        rows: [row({ admission: null, legs: null })],
+        refRows: [],
+        total: 1,
+      });
+      expect(out.events[0].detail).toBeUndefined();
+      expect('detail' in out.events[0]).toBe(false);
+    });
+
+    it('gives a row carrying ONLY `ran` flags no detail block either', () => {
+      // `semanticRan`/`lexicalRan` already say this. A block here would be pure
+      // duplication on the wire and an empty panel in the UI.
+      const out = derivePushedContext({ rows: [row()], refRows: [], total: 1 });
+      expect(out.events[0].detail).toBeUndefined();
+    });
+
+    it('emits a block when the funnel recorded a REAL zero spend', () => {
+      // `spent: 0` ("nothing was spent") and an absent `spent` ("we never
+      // measured it") are different claims — the first must reach the panel.
+      const out = derivePushedContext({
+        rows: [row({ admission: { returned: 0, admitted: 0, spent: 0, budgetChars: 350 } })],
+        refRows: [],
+        total: 1,
+      });
+      expect(out.events[0].detail).toMatchObject({ spent: 0, budgetChars: 350 });
+    });
+
+    it('ignores a malformed dropped blob rather than throwing', () => {
+      const out = derivePushedContext({
+        rows: [row({ admission: { returned: 1, admitted: 1, dropped: 'nope' } })],
+        refRows: [],
+        total: 1,
+      });
+      expect(out.events[0].detail?.dropped).toBeUndefined();
+    });
   });
 
   it('carries per-port ref COUNTS and drops empty ports', () => {

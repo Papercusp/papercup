@@ -769,7 +769,9 @@ export async function sweepStalledLoops(
   // stall floor, which is the same window `turnsStalled` itself judged over.
   const stalledCandidates = [...routineIdByOwner.keys()].filter((o) => statuses.get(o)?.turnsStalled === true);
   const nowMsForProbe = Date.now();
-  const toolActivity = await readOwnerToolActivity(
+  const toolActivity = stalledCandidates.length === 0
+    ? new Map<string, OwnerToolActivity>()
+    : await readOwnerToolActivity(
     stalledCandidates.map((ownerId) => {
       const s = statuses.get(ownerId);
       const firedMs = s?.lastFiredAt ? Date.parse(s.lastFiredAt) : NaN;
