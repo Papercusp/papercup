@@ -25,12 +25,22 @@ import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { registerOverrideConcern, type OverrideEntry } from '../config-overrides/registry';
 
-/** The decoded override. Both empty ⇒ no restriction (today's behaviour). */
+/** The decoded override. Both lists empty + no default ⇒ no steer at all (today's behaviour). */
 export interface AccountSessionOverride {
   /** Allow-list — the fleet may use ONLY these account ids. Empty ⇒ no restriction. */
   forcedAccounts: string[];
   /** Skip these account ids (e.g. a flaky / rate-limited account). Empty ⇒ skip none. */
   excludeAccounts: string[];
+  /**
+   * The pool account that stands in for this box's own `~/.claude` login
+   * (default-deploy-account-2026-08-08 D-001). Unset ⇒ the local login, exactly as before.
+   *
+   * This is a DIFFERENT AXIS from the two lists above: they RESTRICT what may be selected,
+   * this one only replaces the implicit fallback when nothing else pinned a choice. A
+   * default therefore never narrows the pool and never defeats failover — see D-003, and
+   * note `isOverrideEmpty` below deliberately ignores it.
+   */
+  defaultAccountId?: string;
 }
 
 export const DEFAULT_ACCOUNT_OVERRIDE: AccountSessionOverride = { forcedAccounts: [], excludeAccounts: [] };
@@ -41,7 +51,16 @@ function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
 }
 
-/** True when the override imposes no restriction at all (the common, no-op case). */
+/**
+ * True when the override imposes no RESTRICTION at all (the common, no-op case).
+ *
+ * ⚠ Deliberately ignores `defaultAccountId`. This gates the candidate-narrowing path in
+ * account-pool-store (`isOverrideEmpty(override) ? wholePool : applyAccountOverride(...)`),
+ * and a default is a FALLBACK preference, not a restriction — folding it in here would make
+ * the selectors treat "I picked a default" as "narrow the pool", silently killing failover.
+ * If you need "has the owner steered accounts at all", ask for that explicitly rather than
+ * widening this predicate.
+ */
 export function isOverrideEmpty(o: AccountSessionOverride): boolean {
   return o.forcedAccounts.length === 0 && o.excludeAccounts.length === 0;
 }
@@ -68,16 +87,31 @@ export function applyAccountOverride(accountIds: readonly string[], o: AccountSe
 export interface AccountSessionOverridePatch {
   forcedAccounts?: string[];
   excludeAccounts?: string[];
-  /** Wipe both axes back to no-restriction. */
+  /**
+   * Set (non-empty string) or CLEAR (`null`) the default account. Omitted ⇒ untouched.
+   * `null` is meaningful and distinct from omission, which is why this is `?: string | null`
+   * rather than `?: string` — there must be a way to say "go back to the ~/.claude login".
+   */
+  defaultAccountId?: string | null;
+  /** Wipe every axis — both lists AND the default — back to no steer. */
   clear?: boolean;
 }
 
-/** Read the workspace's account override (no hive needed; missing row ⇒ no restriction). */
+/** Trim to a usable account id, or undefined. Empty/whitespace ⇒ undefined (= unset). */
+function asAccountId(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+}
+
+/** Read the workspace's account override (no hive needed; missing row ⇒ no steer). */
 export async function getAccountOverride(workspaceId: string): Promise<AccountSessionOverride> {
   const raw = await readOperatorState<Partial<AccountSessionOverride>>(OVERRIDE_STATE_TABLE, workspaceId);
+  const defaultAccountId = asAccountId(raw?.defaultAccountId);
   return {
     forcedAccounts: asStringArray(raw?.forcedAccounts),
     excludeAccounts: asStringArray(raw?.excludeAccounts),
+    // Omit the key entirely when unset so the shape matches DEFAULT_ACCOUNT_OVERRIDE and
+    // `toEqual` comparisons in existing callers/tests keep passing.
+    ...(defaultAccountId ? { defaultAccountId } : {}),
   };
 }
 
@@ -95,9 +129,13 @@ export async function setAccountOverride(
     return DEFAULT_ACCOUNT_OVERRIDE;
   }
   const cur = await getAccountOverride(workspaceId);
+  // null ⇒ clear; a string ⇒ set; omitted ⇒ keep. `?? undefined` collapses null to unset.
+  const nextDefault =
+    patch.defaultAccountId !== undefined ? asAccountId(patch.defaultAccountId) : cur.defaultAccountId;
   const next: AccountSessionOverride = {
     forcedAccounts: patch.forcedAccounts !== undefined ? asStringArray(patch.forcedAccounts) : cur.forcedAccounts,
     excludeAccounts: patch.excludeAccounts !== undefined ? asStringArray(patch.excludeAccounts) : cur.excludeAccounts,
+    ...(nextDefault ? { defaultAccountId: nextDefault } : {}),
   };
   await writeOperatorState(OVERRIDE_STATE_TABLE, next, workspaceId);
   return next;
@@ -110,19 +148,29 @@ export async function setAccountOverride(
 // readback shows exactly which steer is active.
 registerOverrideConcern({
   name: 'account-session-override',
-  description: "owner's session-now account steer (forcedAccounts allow-list / excludeAccounts)",
+  description:
+    "owner's account steer (forcedAccounts allow-list / excludeAccounts / defaultAccountId)",
   auditAction: 'accounts:set-session-override',
   diff: async () => {
     const o = await getAccountOverride(activeWorkspaceId());
     const entries: OverrideEntry[] = [];
     if (o.forcedAccounts.length > 0) entries.push({ key: 'forcedAccounts', effective: o.forcedAccounts, default: [], layer: 'pg-settings' });
     if (o.excludeAccounts.length > 0) entries.push({ key: 'excludeAccounts', effective: o.excludeAccounts, default: [], layer: 'pg-settings' });
+    // The default's DEFAULT is the box's own ~/.claude login, which has no account id —
+    // hence null, not '' (an empty string would read as "an account named ''").
+    if (o.defaultAccountId) entries.push({ key: 'defaultAccountId', effective: o.defaultAccountId, default: null, layer: 'pg-settings' });
     return entries;
   },
   capture: () => getAccountOverride(activeWorkspaceId()),
   reset: () => setAccountOverride(activeWorkspaceId(), { clear: true }),
   restore: async (snap) => {
     const o = snap as AccountSessionOverride;
-    await setAccountOverride(activeWorkspaceId(), { forcedAccounts: o.forcedAccounts, excludeAccounts: o.excludeAccounts });
+    await setAccountOverride(activeWorkspaceId(), {
+      forcedAccounts: o.forcedAccounts,
+      excludeAccounts: o.excludeAccounts,
+      // Explicit null (not undefined) so restoring a snapshot taken with NO default
+      // actually CLEARS a default set since — otherwise restore silently keeps it.
+      defaultAccountId: o.defaultAccountId ?? null,
+    });
   },
 });

@@ -126,6 +126,104 @@ export interface TranscriptTurnHit {
   owner?: string | null;
 }
 
+// ── ID search (WI-37204) ────────────────────────────────────────────────────
+
+/**
+ * The minimum token length that may be treated as an ID SEARCH.
+ *
+ * 6 is `shortHandle`'s own floor (`/^([a-z]+)-([0-9a-f]{6,8})/` in
+ * hud-board-model) — i.e. exactly the shortest id fragment this UI ever RENDERS
+ * to a human, which is the fragment they will copy back into the box. Shorter
+ * than that and a hex-looking word ("added", "decade", "beef") starts colliding
+ * with prose, and an id leg that fires on prose queries would inject unrelated
+ * sessions at the TOP of every text search.
+ */
+export const SESSION_ID_TOKEN_MIN_LEN = 6;
+
+/**
+ * Whether `q` should ALSO be resolved as a session/agent identifier.
+ *
+ * The three id shapes this system actually hands a human, all of which turn up
+ * in logs, work-items and coord messages and get pasted straight into a search
+ * box:
+ *
+ *   · coord owner id — `su-bc38a419-8dc6-4040-a63e-2dc0515e42be`, and the
+ *     `su-bc38a419` SHORT HANDLE the roster/HUD render in place of it;
+ *   · native session id — a bare claude uuid, or its 8-hex head (which is what
+ *     an ended-session card shows: `${sessionId.slice(0, 8)}…`);
+ *   · spawn/presence owner id — `s-1786227863758-271597fd` (fleet-spawn and
+ *     omp-hook-session rows both use this shape).
+ *
+ * Returns the LOWERCASED token to match with, or null when the query is prose.
+ * A prefix is deliberately enough: nobody types 39 characters to find a
+ * session, and the short handle is the form the UI itself displays.
+ *
+ * ⚠ This is a WIDENING, never a narrowing: a query that parses as an id is
+ * still run through the text engine as well, because ids DO appear in
+ * transcript prose ("waking su-bc38a419") and those hits are often the reason
+ * someone is searching. See the route's id leg — it MERGES, it does not
+ * replace. Pure — unit-tested without PG.
+ */
+export function parseSessionIdQuery(q: string): string | null {
+  const token = q.trim().toLowerCase();
+  if (token.length < SESSION_ID_TOKEN_MIN_LEN) return null;
+  // Whitespace ⇒ a phrase, not an identifier. Checked before the shape tests so
+  // "su-bc38a419 crashed" reads as prose rather than as an id with a suffix.
+  if (/\s/.test(token)) return null;
+  // `su-<hex…>` / `s-<digits>-<hex>` / any `<word>-<hex…>` handle, a bare uuid
+  // (or uuid prefix), or a bare hex run. The trailing-dot form is NOT accepted:
+  // a copied "…" ellipsis from a truncated card is stripped by the caller, not
+  // silently tolerated here (a token containing '…' would never match anything
+  // and reads as a no-result bug rather than a paste artifact).
+  if (/^[a-z]+-[0-9a-f]{4,}(-[0-9a-f]+)*$/.test(token)) return token; // su-…, s-…
+  if (/^[0-9a-f]{6,}(-[0-9a-f]{4,})*$/.test(token)) return token; // uuid / hex head
+  return null;
+}
+
+/** Does `candidate` (an ownerId / sessionId / ompThreadId) answer to `token`?
+ *  PREFIX match, case-insensitive — `su-bc38a419` finds
+ *  `su-bc38a419-8dc6-…`, and the full id finds itself. Never a substring
+ *  match: an id's tail is not a handle anyone is given, and matching mid-string
+ *  would make one uuid pull in unrelated sessions that merely share a run of
+ *  hex. Pure. */
+export function sessionIdCandidateMatches(
+  candidate: string | null | undefined,
+  token: string,
+): boolean {
+  if (!candidate) return false;
+  return candidate.toLowerCase().startsWith(token);
+}
+
+/** The id-bearing fields of anything session-shaped, in the order a match is
+ *  attributed. Kept as one list so the roster leg, the adv_sessions leg and the
+ *  two client surfaces cannot drift on WHICH ids are searchable. */
+export type SessionIdBearing = {
+  ownerId?: string | null;
+  coordOwnerId?: string | null;
+  sessionId?: string | null;
+  ompThreadId?: string | null;
+};
+
+/** Which id field matched, or null. The field NAME rides to the UI so a card
+ *  can say "matched su id" vs "matched session id" instead of leaving the human
+ *  to guess why a hit-less row is on screen. Pure. */
+export function matchSessionIdField(
+  e: SessionIdBearing,
+  token: string,
+): 'ownerId' | 'sessionId' | 'ompThreadId' | null {
+  if (sessionIdCandidateMatches(e.ownerId ?? e.coordOwnerId, token)) return 'ownerId';
+  if (sessionIdCandidateMatches(e.sessionId, token)) return 'sessionId';
+  if (sessionIdCandidateMatches(e.ompThreadId, token)) return 'ompThreadId';
+  return null;
+}
+
+/** Human label for {@link matchSessionIdField}'s verdict. Pure. */
+export function sessionIdMatchLabel(field: 'ownerId' | 'sessionId' | 'ompThreadId'): string {
+  if (field === 'ownerId') return 'su id';
+  if (field === 'sessionId') return 'session id';
+  return 'thread id';
+}
+
 /** Turn hits rolled up to their owning session, best score first. */
 export interface SessionHitGroup {
   sourceKind: string;
@@ -146,6 +244,122 @@ export interface ClassifiedSessionHits {
   hits: TranscriptTurnHit[];
   active: RosterEntry | null;
   session: AdvSessionRow | null;
+  /**
+   * WI-37204 — this result is here because the query IS one of its ids, not
+   * because its transcript said anything. `hits` may legitimately be EMPTY for
+   * such a result, which is the one case where an empty `hits` is not a bug:
+   * the card renders from the roster/adv metadata and opens at the head of the
+   * transcript rather than at a match. Absent/null ⇒ an ordinary text hit.
+   */
+  idMatch?: 'ownerId' | 'sessionId' | 'ompThreadId' | null;
+}
+
+/** The transcript identity a session-shaped row opens under: claude by native
+ *  session uuid, omp by thread id. Neither ⇒ a SYNTHETIC key so the row still
+ *  has a stable React key and a distinguishable card, with `sourceKind` naming
+ *  the backend so the chip stays honest instead of claiming 'claude'. Pure. */
+export function transcriptIdentity(
+  e: SessionIdBearing & { agent?: string | null; id?: number | null },
+): { sourceKind: string; sessionId: string } {
+  if (e.sessionId) return { sourceKind: 'claude', sessionId: e.sessionId };
+  if (e.ompThreadId) return { sourceKind: 'omp', sessionId: e.ompThreadId };
+  const fallbackId = e.ownerId ?? e.coordOwnerId ?? (e.id != null ? `adv-${e.id}` : '');
+  return { sourceKind: e.agent ?? 'session', sessionId: fallbackId };
+}
+
+/** How many id matches a single query may surface. A 6-char prefix can match
+ *  many sessions; past a couple of dozen the human should type more of the id
+ *  rather than scroll. Active entries are taken first (see buildIdMatchResults). */
+export const ID_MATCH_LIMIT = 20;
+
+/**
+ * Resolve an id token against the live roster and recorded sessions, as
+ * hit-less {@link ClassifiedSessionHits}. Live entries come first (an agent you
+ * can still open beats its historical row), then recorded rows in the order the
+ * caller supplied (the lookup returns newest-started first).
+ *
+ * Deduped on BOTH the transcript identity and the owner id: the same agent
+ * routinely appears as a roster entry AND an adv_sessions row, and a roster
+ * entry that has not yet recorded a native session id would otherwise pair with
+ * its own row as two separate cards. Pure — unit-tested without PG.
+ */
+export function buildIdMatchResults(
+  token: string,
+  active: readonly RosterEntry[],
+  rows: readonly AdvSessionRow[],
+  opts: { limit?: number } = {},
+): ClassifiedSessionHits[] {
+  const limit = opts.limit ?? ID_MATCH_LIMIT;
+  const out: ClassifiedSessionHits[] = [];
+  const seenKeys = new Set<string>();
+  const seenOwners = new Set<string>();
+
+  const take = (
+    idMatch: 'ownerId' | 'sessionId' | 'ompThreadId',
+    identity: { sourceKind: string; sessionId: string },
+    owner: string | null,
+    entry: RosterEntry | null,
+    row: AdvSessionRow | null,
+  ): boolean => {
+    const key = `${identity.sourceKind}:${identity.sessionId}`;
+    if (seenKeys.has(key)) return false;
+    if (owner && seenOwners.has(owner)) return false;
+    seenKeys.add(key);
+    if (owner) seenOwners.add(owner);
+    out.push({ ...identity, topScore: 0, hits: [], active: entry, session: row, idMatch });
+    return true;
+  };
+
+  for (const a of active) {
+    if (out.length >= limit) break;
+    const e = a as unknown as SessionIdBearing;
+    const field = matchSessionIdField(e, token);
+    if (!field) continue;
+    // Pair the live entry with its recorded row when we already have it — that
+    // is what carries `endedAt`/`feature`/the codex open-key into the card.
+    const row =
+      rows.find(
+        (r) =>
+          (e.sessionId && r.sessionId === e.sessionId) ||
+          (e.ompThreadId && r.ompThreadId === e.ompThreadId) ||
+          (e.ownerId && r.coordOwnerId === e.ownerId),
+      ) ?? null;
+    take(field, transcriptIdentity(e), e.ownerId ?? null, a, row);
+  }
+
+  for (const r of rows) {
+    if (out.length >= limit) break;
+    const field = matchSessionIdField(r, token);
+    if (!field) continue;
+    take(field, transcriptIdentity(r), r.coordOwnerId ?? null, null, r);
+  }
+
+  return out;
+}
+
+/**
+ * Fold id matches into the text results: an id match that ALSO has transcript
+ * hits keeps them (and is stamped `idMatch`), and every id match is hoisted
+ * ahead of the pure text results.
+ *
+ * MERGE, not replace — deliberately. Ids appear in transcript prose ("waking
+ * su-bc38a419", a pasted uuid in a stack trace) and those hits are frequently
+ * the reason someone is searching an id at all; dropping them would trade one
+ * missing-result complaint for another. Pure.
+ */
+export function mergeIdMatches(
+  idResults: readonly ClassifiedSessionHits[],
+  textResults: readonly ClassifiedSessionHits[],
+): ClassifiedSessionHits[] {
+  if (idResults.length === 0) return [...textResults];
+  const keyOf = (r: ClassifiedSessionHits) => `${r.sourceKind}:${r.sessionId}`;
+  const byKey = new Map(textResults.map((r) => [keyOf(r), r] as const));
+  const merged = idResults.map((r) => {
+    const text = byKey.get(keyOf(r));
+    return text ? { ...text, idMatch: r.idMatch } : r;
+  });
+  const claimed = new Set(merged.map(keyOf));
+  return [...merged, ...textResults.filter((r) => !claimed.has(keyOf(r)))];
 }
 
 /**

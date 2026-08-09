@@ -88,16 +88,89 @@ registerSystemAction(WORK_INTAKE_ROUTINE_NAME, async (ctx: SystemActionCtx) => {
   const { potHomeSlugForHarness } = await import('../../hive-federation');
   const potHomeSlug = (await potHomeSlugForHarness(ctx.workspaceId, ctx.installSlug)) ?? ctx.installSlug;
 
-  const result = await runWorkIntakeTick(ctx.workspaceId, potHomeSlug, { host });
-  if (result.offers.length) {
-    const executed = result.offers.filter((o) => o.outcome === 'executed').length;
-    const skipped = result.offers.filter((o) => o.outcome === 'skip').length;
-    const unresolvable = result.offers.filter((o) => o.outcome === 'unresolvable').length;
-    console.log(
-      `[p2p-work-intake] ${result.offers.length} open offer(s): ${executed} executed, ${skipped} skipped, ${unresolvable} unresolvable`,
-    );
+  // WI-37205: record the tick's OUTCOME durably, on every path. `last_fired_at` is
+  // stamped by claim.ts at DISPATCH time (before this handler runs), so without an
+  // outcome record a completed idle scan, a body that threw, and a body that never
+  // ran are indistinguishable from outside. That ambiguity is why the P-205 pull
+  // leg could not be shown healthy-and-idle for weeks.
+  try {
+    const result = await runWorkIntakeTick(ctx.workspaceId, potHomeSlug, { host });
+    if (result.offers.length) {
+      const executed = result.offers.filter((o) => o.outcome === 'executed').length;
+      const skipped = result.offers.filter((o) => o.outcome === 'skip').length;
+      const unresolvable = result.offers.filter((o) => o.outcome === 'unresolvable').length;
+      console.log(
+        `[p2p-work-intake] ${result.offers.length} open offer(s): ${executed} executed, ${skipped} skipped, ${unresolvable} unresolvable`,
+      );
+    }
+    await recordWorkIntakeHealth(ctx, { scanned: result.scanned, error: null });
+  } catch (err) {
+    // Loud + durable, then rethrow: swallowing here would recreate the very
+    // silence this instrument exists to remove.
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(`[p2p-work-intake] tick FAILED: ${message}`);
+    await recordWorkIntakeHealth(ctx, { scanned: null, error: message });
+    throw err;
   }
 });
+
+/**
+ * Merge this tick's outcome into the routine's own `metadata->'intake_health'`.
+ *
+ * Reuses the established routine-metadata convention (`metadata = COALESCE(metadata,
+ * '{}') || jsonb_build_object(...)` — loop-dead-man.ts, loop-cost-cap.ts,
+ * release-actions.ts's `gate_health`) rather than adding a table, a log line per
+ * tick (the cron is every 30s — that would be ~2,880 lines/day of noise), or a
+ * second parallel health surface.
+ *
+ * Reading it back — the three states this separates:
+ *   · healthy idle    → `last_scan_at` fresh, `last_scanned_count` 0, `last_error` null
+ *   · body threw      → `last_error` non-null
+ *   · never completed → `last_scan_at` STALE (or absent) while `last_fired_at` is fresh
+ *
+ * `last_offer_seen_at` is the one field that answers "has this puller EVER had
+ * anything to pull", which no counter of scans can.
+ *
+ * Never throws: this is an instrument on a scheduled path and must not convert an
+ * observability write into a routine failure.
+ */
+export async function recordWorkIntakeHealth(
+  ctx: Pick<SystemActionCtx, 'workspaceId' | 'installSlug'>,
+  outcome: { scanned: number | null; error: string | null },
+  sql: Sql = getOrgPg().sql,
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const scanned = outcome.scanned ?? 0;
+  try {
+    // Scope on BOTH workspace_id AND install_slug: harness_shared.routines is
+    // multi-tenant and a name-only filter can hit another tenant's row.
+    await sql`
+      UPDATE harness_shared.routines
+         SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'intake_health',
+               COALESCE(metadata->'intake_health', '{}'::jsonb) || jsonb_build_object(
+                 'last_scan_at',       ${outcome.error === null ? nowIso : null}::text,
+                 'last_scanned_count', ${outcome.error === null ? scanned : null}::int,
+                 'last_outcome',       ${outcome.error === null ? 'ok' : 'error'}::text,
+                 'last_error',         ${outcome.error}::text,
+                 'last_attempt_at',    ${nowIso}::text,
+                 'total_scans',        COALESCE((metadata->'intake_health'->>'total_scans')::int, 0) + 1,
+                 'total_offers_seen',  COALESCE((metadata->'intake_health'->>'total_offers_seen')::int, 0) + ${scanned}::int
+               )
+               || CASE WHEN ${scanned}::int > 0
+                       THEN jsonb_build_object('last_offer_seen_at', ${nowIso}::text)
+                       ELSE '{}'::jsonb END
+             ),
+             updated_at = now()
+       WHERE workspace_id = ${ctx.workspaceId}
+         AND install_slug = ${ctx.installSlug}
+         AND name = ${WORK_INTAKE_ROUTINE_NAME}`;
+  } catch (err) {
+    console.log(
+      `[p2p-work-intake] intake_health write failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
 /**
  * Idempotent upsert of the workspace's work-intake routine (active). The

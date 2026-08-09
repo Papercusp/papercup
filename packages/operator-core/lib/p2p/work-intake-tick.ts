@@ -118,6 +118,17 @@ export interface WorkIntakeHostIdentity {
 }
 
 export interface WorkIntakeTickResult {
+  /**
+   * How many open `kind:'work'` offers this tick actually scanned — ALWAYS set,
+   * INCLUDING the zero case, which is the entire point (WI-37205).
+   *
+   * Without it a completed idle scan and a body that never ran both serialize to
+   * `{ offers: [] }`, and `routines.last_fired_at` cannot separate them either
+   * because claim.ts stamps that at DISPATCH time, before this function is
+   * called. `scanned` is the field that makes "healthy and idle" provable rather
+   * than merely asserted.
+   */
+  scanned: number;
   offers: Array<{
     offerId: string;
     outcome: 'executed' | 'skip' | 'unresolvable';
@@ -187,9 +198,12 @@ export async function runWorkIntakeTick(
   const nowMs = opts.nowMs ?? Date.now();
   const { host } = opts;
 
-  const result: WorkIntakeTickResult = { offers: [] };
+  const result: WorkIntakeTickResult = { scanned: 0, offers: [] };
 
   const offers = await list(workspaceId, potHomeSlug, { kind: 'work', status: 'open' }, sql);
+  // Record the scan BEFORE the early return, so an idle tick is evidence of a
+  // COMPLETED scan rather than an absence of evidence (WI-37205).
+  result.scanned = offers.length;
   if (!offers.length) return result;
 
   const readSettings = opts.readP2pSettings ?? readP2pSettings;

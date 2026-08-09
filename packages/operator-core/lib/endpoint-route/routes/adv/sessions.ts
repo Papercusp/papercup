@@ -27,6 +27,7 @@ import {
   listPendingWorkbenchLaunches,
   listResumableSessions,
   listStartingTerminalLaunches,
+  advSessionsByIdToken,
   markAdvSessionLaunched,
   setAdvSessionOmpThreadId,
   setAdvSessionWindowId,
@@ -40,9 +41,16 @@ import {
   startingLaunchesToRosterEntries,
   dedupeStartingAgainstActive,
 } from '../../../adv-roster';
-// Pure recency-param parsing (WI-5097; the rest of adv-session-search stays
-// dynamically imported inside the handler with the other search-only deps).
-import { parseRecencyParams } from '../../../adv-session-search';
+// Pure recency-param parsing (WI-5097) + the pure id-search half (WI-37204 —
+// `parseSessionIdQuery` has to run BEFORE the search so the id lookup can start
+// concurrently with it). The rest of adv-session-search stays dynamically
+// imported inside the handler with the other search-only deps.
+import {
+  parseRecencyParams,
+  parseSessionIdQuery,
+  buildIdMatchResults,
+  mergeIdMatches,
+} from '../../../adv-session-search';
 import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
 import { setOnDesktopWindowsCache, type WindowsDesktopWindow } from '../../../windows-desktop-windows';
 import { readOmpConfig } from '../../../omp-config';
@@ -731,6 +739,22 @@ const searchTranscripts = defineTool({
     //    Number(null)=0 parse silently disabled the whole re-rank (WI-5097).
     const recency: RecencyRank | undefined = parseRecencyParams(url.searchParams);
 
+    /* ── ID leg (WI-37204, owner ask 2026-08-08) ────────────────────────────
+       "search by the su id and the session id". The engine above searches turn
+       TEXT, so an id query returned NOTHING even for a session sitting in the
+       roster — measured on the live operator before this landed:
+       `?q=su-bc38a419` → `{ totalHits: 0, sessions: [] }`.
+
+       An id resolves against two stores, and BOTH are needed: the live roster
+       (a running agent, which is what the HUD board and the pill's roster show)
+       and adv_sessions (an ENDED session — the common case when the id came out
+       of a log or a work-item, and the one the client roster can never answer).
+
+       This MERGES with the text results rather than replacing them: ids do
+       appear in transcript prose, and those hits are often exactly what the
+       searcher wants. See `mergeIdMatches`. */
+    const idToken = parseSessionIdQuery(q);
+
     // Per-stage timing breakdown (WI-3924 follow-up C): the endpoint's cold
     // baseline was ~3.3s even with a BM25-only (no-embed) hit, and the cost
     // was suspected to live OUTSIDE runHybridSearch (roster merge / session
@@ -770,6 +794,14 @@ const searchTranscripts = defineTool({
     // unmatched entry is never surfaced by this endpoint).
     const rosterP = mergeRosterWithAssignments({ workspaceId: null, thinkingFor: () => false });
     rosterP.catch(() => {}); // re-awaited below; never an unhandled rejection
+    /* Fired NOW, alongside the roster and the search, for the same reason the
+       roster merge was hoisted in WI-4734: it depends on nothing the engine
+       produces, so serializing it behind the search would be a pure latency
+       tax. Fail-soft — a broken id lookup degrades to the text results rather
+       than failing the whole search. */
+    const idRowsP = idToken
+      ? advSessionsByIdToken(idToken).catch(() => [] as Awaited<ReturnType<typeof advSessionsByIdToken>>)
+      : Promise.resolve([] as Awaited<ReturnType<typeof advSessionsByIdToken>>);
     // Interactive-search embed budget — a HUMAN is typing in the desktop pill,
     // so a slow/cold query-embedder must not block the result. The budget covers
     // BOTH the embedder ACQUISITION (buildQueryEmbedder → the resolveEmbedder
@@ -912,28 +944,61 @@ const searchTranscripts = defineTool({
     const groups = groupHitsBySession(turnHits);
     // Await the t0-started roster (usually already settled — it ran concurrent
     // with the search) + the hit-dependent session-row hydration.
-    const [{ active }, sessionRows] = await Promise.all([
+    const [{ active }, sessionRows, idRows] = await Promise.all([
       rosterP,
       advSessionsByTranscriptHandles({
         sessionIds: groups.filter((g) => g.sourceKind === 'claude').map((g) => g.sessionId),
         ompThreadIds: groups.filter((g) => g.sourceKind === 'omp').map((g) => g.sessionId),
       }),
+      idRowsP,
     ]);
     mark('rosterAndSessionRows');
+    /* Resolved BEFORE the thinking gate below so an id-matched live entry gets
+       its liveness resolved too — otherwise a session found by its own id would
+       render with a false/idle dot, which is precisely the state a human
+       searching for that agent is checking. `?plan=` scoping applies here as
+       well: the plan popup must not surface a session outside its plan just
+       because the id happened to match. */
+    const idMatches = idToken
+      ? buildIdMatchResults(
+          idToken,
+          planOwners
+            ? active.filter((a) => planOwners!.includes((a as { ownerId?: string }).ownerId ?? ''))
+            : active,
+          planOwners ? idRows.filter((r) => r.coordOwnerId && planOwners!.includes(r.coordOwnerId)) : idRows,
+        )
+      : [];
+    mark('idMatches');
     // WI-3924 (now post-hoc, WI-4734): only the entries a search hit could
     // actually resolve to (via matchActiveEntry downstream) need the expensive
     // per-agent "thinking" resolution — the roster merge above skipped ALL of
     // it so it could start before the hit set existed. buildActiveEntryMatchFilter
     // mirrors matchActiveEntry's exact match rules, so this is a pure perf
     // gate, not a behavior change.
-    const thinkingFor = buildActiveEntryMatchFilter(groups);
+    const textThinkingFor = buildActiveEntryMatchFilter(groups);
+    const idMatchedOwners = new Set(
+      idMatches.map((m) => (m.active as { ownerId?: string } | null)?.ownerId).filter(Boolean) as string[],
+    );
+    const thinkingFor = (e: Parameters<typeof textThinkingFor>[0]) =>
+      textThinkingFor(e) || (!!e.ownerId && idMatchedOwners.has(e.ownerId));
     signal.throwIfAborted();
     await resolveThinkingForEntries(active.filter(thinkingFor));
     mark('thinking');
-    const sessions = classifySessionGroups(groups, active, sessionRows);
+    const sessions = mergeIdMatches(idMatches, classifySessionGroups(groups, active, sessionRows));
     mark('classify');
     return new Response(
-      JSON.stringify({ ok: true, query: q, plan: planScope || undefined, totalHits: turnHits.length, sessions, _stageTimingsMs: stageTimingsMs }),
+      JSON.stringify({
+        ok: true,
+        query: q,
+        plan: planScope || undefined,
+        // The id the query resolved AS, when it did. Lets a client say "no
+        // session has that id" instead of the generic "no matches in any
+        // session", which reads as a search failure rather than an answer.
+        idToken: idToken ?? undefined,
+        totalHits: turnHits.length,
+        sessions,
+        _stageTimingsMs: stageTimingsMs,
+      }),
       { status: 200, headers: JSON_HEADERS },
     );
   },

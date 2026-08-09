@@ -477,6 +477,33 @@
 }
 
 /*
+ * ZOOM CONTROLS (P-008). A tight group so the four chips read as ONE control
+ * rather than four unrelated ones in an already-dense bar — the same crowding
+ * risk the layout notes in DepGraphPanel.tsx. `gap:2px` against the bar's own
+ * wider gap is what does the grouping; no box or divider is needed for it.
+ */
+.pc-depgraph__zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* The stepper ends are single glyphs — keep them square-ish and stop the "%"
+ * readout jittering the group's width as the number changes 50% → 100% → 125%. */
+.pc-depgraph__zoom button {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Disabled at the ends of the ladder: dimmed rather than removed, so the group
+ * does not change shape (a control that vanishes at the extremes reads as a
+ * rendering fault, and re-flows the chips beside it). */
+.pc-depgraph__zoom button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/*
  * ACCESSIBILITY EQUIVALENT (P-006). D-001 recorded that a node-edge SVG is the
  * least accessible of the five treatments and that the weakness is STRUCTURAL.
  * This list carries the same depth/lineage data and drives the same selection,

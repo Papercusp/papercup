@@ -109,6 +109,39 @@ export const COMPACTION_MARKER = '<!-- PAPERCUSP-SU:COMPACTION -->';
 export const RESULT_DOOR_MARKER = '<!-- PAPERCUSP-SU:RESULT-DOOR -->';
 
 /**
+ * Marker for the SHARED BASE NOTES bundle (`injectSharedBaseNotes` in papercusp-files.ts):
+ * the deploy-pipeline, wait-loop, peer-wake, COUPLING and state-plane clauses that are
+ * authored once in code and projected into every prompt base so they cannot desync.
+ *
+ * ⚠ WHY THIS MARKER EXISTS — a silent total-drop that ran for 12+ days (2026-08-09).
+ * The bundle used to anchor on {@link PROJECT_GUIDE_MARKER}, which doubled as its "is this a
+ * real su playbook?" test. That test was sound only while the LEGACY base
+ * (`apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`) was live — it carries that
+ * marker. When `SU_BLUEPRINT_PERSONA` made the BLUEPRINT base
+ * (`libs/papercusp/packages/harness/blueprints/base/prompts/su.md`) the live one, the anchor
+ * vanished with it: the blueprint base carries AUTO-MODE / WIRE-SCHEMAS / COORD-LEGEND /
+ * RESULT-DOOR but has never carried PROJECT-GUIDE. `injectSharedBaseNotes` therefore hit its
+ * `return text` no-op branch and dropped ALL FIVE notes, silently, on every interactive
+ * render. Measured: the coupling clause reached 6 of 5211 rendered launch contexts, and the
+ * 6 were a ten-second burst on the day it shipped.
+ *
+ * Two properties this fixes, deliberately kept separate:
+ *   · POSITION — where the bundle goes is now stated IN the base, not inferred from an
+ *     unrelated section's marker that may or may not be there.
+ *   · ELIGIBILITY — "should this base get the notes at all?" is answered by the base
+ *     carrying this marker, so a minimal/test base still gets nothing (the no-append
+ *     contract every other section here honours) without that answer riding on a marker
+ *     whose real job is something else.
+ *
+ * The general trap, since it will recur: an anchor borrowed from another feature is a
+ * dependency you did not declare, and it breaks silently — the splice contract's
+ * "absent marker ⇒ leave the section out" is correct for an OPTIONAL section and
+ * catastrophic for a MANDATORY one. PROJECT_GUIDE_MARKER remains a fallback anchor so
+ * the legacy bases keep their existing placement with no edit.
+ */
+export const SHARED_BASE_NOTES_MARKER = '<!-- PAPERCUSP-SU:SHARED-BASE-NOTES -->';
+
+/**
  * Marker in papercusp-compaction.base.md where the per-client compaction overlay
  * (papercusp-compaction.<client>.md) splices — the SUMMARIZER-instruction analog of
  * CLIENT_TOOLING_OVERLAY_MARKER. Consumed by renderCompactionStrategy (the Claude

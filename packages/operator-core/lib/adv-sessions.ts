@@ -1672,3 +1672,70 @@ export async function advSessionsByTranscriptHandles(
   }
 }
 
+/**
+ * WI-37204 — recorded sessions whose coord owner id, native session id, or omp
+ * thread id STARTS WITH `token`. Backs the id leg of
+ * GET /api/adv/sessions/search-transcripts, which is what makes an ENDED
+ * session findable by an id pasted out of a log or a work-item (the live roster
+ * only answers for sessions that are still running).
+ *
+ * Prefix, not substring: `su-bc38a419` must find `su-bc38a419-8dc6-…` (the
+ * short handle IS what the UI renders), while an id's tail is not a handle
+ * anyone is given and a mid-string match would pull in unrelated sessions that
+ * merely share a run of hex. `token` is lowercased by the caller
+ * (`parseSessionIdQuery`); the columns hold lowercase uuids, so the comparison
+ * is done on `lower(col)` to stay correct for any row that ever stored one
+ * mixed-case.
+ *
+ * `like_escape` guards the two LIKE metacharacters: an id token is
+ * caller-supplied text, and an unescaped `%` would turn a typo into a
+ * whole-table scan that matches everything.
+ */
+export async function advSessionsByIdToken(
+  token: string,
+  opts: { limit?: number } = {},
+): Promise<AdvSessionRow[]> {
+  const t = token.trim().toLowerCase();
+  if (!t) return [];
+  const limit = Math.min(200, Math.max(1, opts.limit ?? 50));
+  const pattern = `${t.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<
+      Array<{
+        id: number;
+        workspace_id: string;
+        plan_slug: string | null;
+        agent: string | null;
+        role: string | null;
+        feature: string | null;
+        mode: 'omp' | 'console';
+        terminal_bin: string | null;
+        pid: number | null;
+        window_id: string | null;
+        omp_thread_id: string | null;
+        label: string | null;
+        cwd: string | null;
+        coord_owner_id: string | null;
+        session_id: string | null;
+        started_at: string | Date;
+        ended_at: string | Date | null;
+        exit_code: number | null;
+      }>
+    >`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+        FROM harness_shared.adv_sessions
+       WHERE lower(coord_owner_id) LIKE ${pattern}
+          OR lower(session_id)     LIKE ${pattern}
+          OR lower(omp_thread_id)  LIKE ${pattern}
+       ORDER BY started_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map(mapAdvSessionRow);
+  } catch (e) {
+    warnUnlessMissingTable(e, 'advSessionsByIdToken');
+    return [];
+  }
+}
+

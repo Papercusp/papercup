@@ -776,7 +776,44 @@ interface PriorBootstrapMeta {
   shallow?: boolean | null;
   deepenNext?: number | null;
   namespaceCount?: number;
+  // WI-37226: the RUN-LENGTH of consecutive dial misses, and when the current run
+  // started. The miss warning below has always ended "persistent misses across many
+  // ticks are the real signal" — and nothing counted them, so the one signal the log
+  // names as real was the one thing it could not show. A single miss is noise (a
+  // churning hello channel de-registers between ticks); a sustained run is not.
+  consecutiveMisses?: number;
+  firstMissAt?: number | null;
 }
+
+/** Read the `bootstrap` record a PRIOR tick wrote for this install.
+ *
+ *  Split out of the dial writer (WI-37226) because the no-topic-stub writer needs the
+ *  same read: `patchRoutineMetadata` replaces the WHOLE `bootstrap` key, so any writer
+ *  that omits a field DELETES it. That is not hypothetical here — it is the documented
+ *  hazard at the stub writer (WI-6284) and the tick-to-tick field erasure of
+ *  EI-18799556647570956. A miss-run counter is exactly the kind of field that would be
+ *  silently zeroed by the other writer and read as "the run ended".
+ */
+async function readPriorBootstrapMeta(slug: string, workspaceId: string): Promise<PriorBootstrapMeta | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ bootstrap: PriorBootstrapMeta | null }[]>`
+    SELECT metadata->'bootstrap' AS bootstrap
+      FROM harness_shared.routines
+     WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
+     LIMIT 1
+  `;
+  return rows[0]?.bootstrap ?? null;
+}
+
+/** Consecutive dial misses before the miss warning ESCALATES.
+ *
+ *  Deliberately not 1: the miss log itself documents that one miss proves nothing about
+ *  reachability. At the observed ~10-minute git-sync cadence this is ~an hour of an
+ *  install making zero progress, which is no longer explicable as hello-channel churn.
+ *  The escalation reports WALL-CLOCK duration alongside the count, so the message stays
+ *  meaningful if the cadence ever changes and the count stops standing in for time.
+ */
+const BOOTSTRAP_PERSISTENT_MISS_THRESHOLD = 6;
 
 /** Merge a partial metadata patch onto the git-sync routine's JSONB.
  *
@@ -2299,15 +2336,13 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // dialed (a real `outcome`) gets to report a fresh disk read.
     let priorBootstrap: PriorBootstrapMeta | null = null;
     if (!outcome) {
-      const { sql } = getOrgPg();
-      const priorRows = await sql<{ bootstrap: PriorBootstrapMeta | null }[]>`
-        SELECT metadata->'bootstrap' AS bootstrap
-          FROM harness_shared.routines
-         WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
-         LIMIT 1
-      `;
-      priorBootstrap = priorRows[0]?.bootstrap ?? null;
+      priorBootstrap = await readPriorBootstrapMeta(slug, workspaceId);
     }
+    // WI-37226: run-length of consecutive dial misses. A real dial (any `outcome`,
+    // including one that errored — it PROVED a live path existed) ends the run; only a
+    // tick that never got a dial at all extends it.
+    const missRunLength = outcome ? 0 : (priorBootstrap?.consecutiveMisses ?? 0) + 1;
+    const missRunStartedAt = outcome ? null : (priorBootstrap?.firstMissAt ?? Date.now());
     await patchRoutineMetadata(slug, workspaceId, {
       bootstrap: {
         at: Date.now(),
@@ -2329,6 +2364,11 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         quarantineRefs: outcome?.quarantineRefs ?? priorBootstrap?.quarantineRefs ?? 0,
         shallow: outcome?.shallow ?? priorBootstrap?.shallow ?? null,
         deepenNext: outcome?.deepenNext ?? priorBootstrap?.deepenNext ?? null,
+        // WI-37226: the promised "persistent misses" signal, made readable WITHOUT a
+        // cross-machine log read — the same reason the WI-6189 ladder telemetry above
+        // is persisted rather than only logged.
+        consecutiveMisses: missRunLength,
+        firstMissAt: missRunStartedAt,
         // EI-18799556647570956: see the stub writer above — same writer stamp, same
         // rationale (two processes CAN race this leg for one install; the stamp makes
         // a stale-process overwrite self-evident instead of reading as a regression).

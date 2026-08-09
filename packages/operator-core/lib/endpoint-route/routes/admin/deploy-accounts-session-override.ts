@@ -1,15 +1,24 @@
 /**
- * GET/POST /api/admin/deploy-accounts/session-override — the owner's session-now account
- * override (accounts-pool-tab-2026-06-15 P-004): which pool accounts the fleet may
- * spawn/deploy on. GET reads { forcedAccounts, excludeAccounts }; POST writes
- * { forcedAccounts?, excludeAccounts?, clear? }. hive_settings-backed (no migration),
- * fail-soft, applied BEFORE the headroom/drain selectors. The Accounts tab's override UI.
+ * GET/POST /api/admin/deploy-accounts/session-override — the owner's account steer
+ * (accounts-pool-tab-2026-06-15 P-004; default account added by
+ * default-deploy-account-2026-08-08 P-002). GET reads
+ * { forcedAccounts, excludeAccounts, defaultAccountId? }; POST writes
+ * { forcedAccounts?, excludeAccounts?, defaultAccountId?, clear? }. Backed by the
+ * operator_account_override row, fail-soft. Serves both the Accounts tab and
+ * Settings → Deploy accounts.
+ *
+ * The two lists RESTRICT which accounts may be selected and are applied before the
+ * headroom/drain selectors. `defaultAccountId` is a different axis: it replaces the
+ * implicit `~/.claude` local-login fallback, so it never narrows the pool. It is written
+ * through the pool-VALIDATING setter, so a bad id 400s here rather than degrading silently
+ * to the local login at resolution time.
  */
 import {
   getAccountOverride,
   setAccountOverride,
   type AccountSessionOverridePatch,
 } from '../../../deployment/account-session-override';
+import { AccountPoolError } from '../../../deployment/account-pool';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
@@ -35,7 +44,7 @@ const postRoute = defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { forcedAccounts?: unknown; excludeAccounts?: unknown; clear?: unknown };
+    let body: { forcedAccounts?: unknown; excludeAccounts?: unknown; defaultAccountId?: unknown; clear?: unknown };
     try {
       body = await req.json();
     } catch {
@@ -45,13 +54,30 @@ const postRoute = defineTool({
     if (Array.isArray(body?.forcedAccounts)) patch.forcedAccounts = body.forcedAccounts.filter((x): x is string => typeof x === 'string');
     if (Array.isArray(body?.excludeAccounts)) patch.excludeAccounts = body.excludeAccounts.filter((x): x is string => typeof x === 'string');
     if (typeof body?.clear === 'boolean') patch.clear = body.clear;
+    // `null` clears the default and is meaningful — only an ABSENT key means "leave it alone",
+    // so this cannot collapse to a truthiness check.
+    const wantsDefault = body?.defaultAccountId !== undefined;
+    const nextDefault =
+      typeof body?.defaultAccountId === 'string' ? body.defaultAccountId : null;
     try {
       // Workspace-level — no home hive required (D-015).
-      const override = await setAccountOverride(activeWorkspaceId(), patch);
+      const ws = activeWorkspaceId();
+      if (wantsDefault) {
+        const { setDefaultAccount } = await import('../../../deployment/account-pool-store');
+        if (Object.keys(patch).length > 0) await setAccountOverride(ws, patch);
+        const override = await setDefaultAccount(nextDefault, ws);
+        void notifySyncInvalidate('accounts.pool', {}).catch(() => {});
+        return Response.json({ ok: true, override });
+      }
+      const override = await setAccountOverride(ws, patch);
       void notifySyncInvalidate('accounts.pool', {}).catch(() => {});
       return Response.json({ ok: true, override });
     } catch (e) {
-      return Response.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+      const msg = e instanceof Error ? e.message : String(e);
+      // A rejected default is a CALLER mistake (unknown id / Codex account), not a server
+      // fault — 400 so the UI shows the reason instead of a generic failure toast.
+      const status = e instanceof AccountPoolError ? 400 : 500;
+      return Response.json({ ok: false, error: msg }, { status });
     }
   },
 });

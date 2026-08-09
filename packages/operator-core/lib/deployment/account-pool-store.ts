@@ -29,6 +29,7 @@ import {
   type AccountProvider,
   type ScalePolicy,
   type SpawnSelection,
+  AccountPoolError,
   accountFull,
   accountProvider,
   accountsForProvider,
@@ -54,6 +55,7 @@ import {
 } from './account-pool';
 import {
   getAccountOverride,
+  setAccountOverride,
   applyAccountOverride,
   isOverrideEmpty,
   DEFAULT_ACCOUNT_OVERRIDE,
@@ -99,6 +101,59 @@ export async function loadAccountPoolForProvider(provider: AccountProvider, ws?:
 
 export async function saveAccountPool(pool: AccountPool, ws?: string): Promise<void> {
   await writeOperatorState('operator_account_pool', { accounts: pool.accounts }, ws);
+}
+
+// ── The DEFAULT account (default-deploy-account-2026-08-08 P-002) ─────────────
+
+/**
+ * Set (or, with `null`, clear) the pool account that stands in for this box's own
+ * `~/.claude` login. VALIDATED against the live pool — this is the one write that must not
+ * be able to name a nonexistent or wrong-provider account, because the resolvers treat the
+ * default as the answer when nothing else pinned a choice, and a bad id there degrades
+ * silently to the local login (D-003) rather than erroring where the mistake was made.
+ *
+ * Lives HERE rather than in account-session-override.ts on purpose: validation needs the
+ * pool, and account-pool-store already imports the override module — the reverse import
+ * would be a cycle.
+ *
+ * Claude-only: the default substitutes for the Claude local login, and a Codex credential
+ * cannot serve an Anthropic-format request at all. A Codex row is rejected by NAME rather
+ * than filtered out of existence, so picking one reports why instead of "no such account".
+ */
+export async function setDefaultAccount(
+  id: string | null | undefined,
+  ws?: string,
+): Promise<AccountSessionOverride> {
+  const workspace = ws ?? activeWorkspaceId();
+  const wanted = typeof id === 'string' ? id.trim() : '';
+  if (!wanted) return setAccountOverride(workspace, { defaultAccountId: null });
+
+  const pool = await loadAccountPool(workspace);
+  const acct = getAccount(pool, wanted);
+  if (!acct) {
+    const known = pool.accounts.map((a) => a.id).join(', ') || '(pool is empty)';
+    throw new AccountPoolError(`no such account '${wanted}' in the pool. Known accounts: ${known}`);
+  }
+  if (accountProvider(acct) !== 'claude') {
+    throw new AccountPoolError(
+      `account '${wanted}' is a Codex account. The default account stands in for the machine's ` +
+        `Claude login, so it must be a Claude account.`,
+    );
+  }
+  return setAccountOverride(workspace, { defaultAccountId: acct.id });
+}
+
+/**
+ * The default account id, or undefined when the box's own `~/.claude` login is in force.
+ * FAIL-SOFT (mirrors readAccountOverride): a read error yields undefined — i.e. the
+ * pre-existing local-login behaviour — so a bad row can never wedge account resolution.
+ */
+export async function readDefaultAccountId(ws?: string): Promise<string | undefined> {
+  try {
+    return (await getAccountOverride(ws ?? activeWorkspaceId())).defaultAccountId;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

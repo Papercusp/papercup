@@ -61,8 +61,11 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     label: 'Keys & OAuth',
     links: [
-      { href: '/settings/api-keys', label: 'Keys & OAuth', keywords: ['credentials', 'keys', 'oauth', 'login', 'sign in', 'claude', 'chatgpt', 'anthropic', 'openai', 'github', 'google', 'elevenlabs', 'cartesia', 'deepgram', 'picovoice'] },
-      { href: '/settings/deploy-accounts', label: 'Deploy accounts', keywords: ['deploy', 'deployment', 'accounts', 'credentials', 'claude', 'oauth', 'setup-token', 'remote frame', 'per-machine', 'pool', 'rate limit'] },
+      { href: '/settings/api-keys', label: 'API keys', keywords: ['credentials', 'keys', 'api key', 'anthropic', 'openai', 'github', 'google', 'zeroentropy', 'elevenlabs', 'cartesia', 'deepgram', 'picovoice'] },
+      // 'login' / 'sign in' / 'chatgpt' / 'codex' live HERE, not on api-keys: the account
+      // sign-in cards were removed from that page (default-deploy-account-2026-08-08 P-001),
+      // so a settings search for "sign in" must land on the pool that actually holds logins.
+      { href: '/settings/deploy-accounts', label: 'Deploy accounts', keywords: ['deploy', 'deployment', 'accounts', 'credentials', 'claude', 'chatgpt', 'codex', 'oauth', 'login', 'sign in', 'default account', 'setup-token', 'remote frame', 'per-machine', 'pool', 'rate limit'] },
     ],
   },
   {
