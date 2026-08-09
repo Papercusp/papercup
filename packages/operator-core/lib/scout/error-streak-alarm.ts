@@ -108,10 +108,16 @@ export async function checkAndFireErrorStreakAlarm(opts: {
     if (threshold <= 0) return; // kill switch
     const ws = opts.workspaceId ?? activeWorkspaceId();
     const { sql } = getOrgPg();
+    // The window is the newest `threshold` ATTEMPTED cycles — gated ticks are
+    // filtered HERE rather than after the fetch, because a LIMIT applied before
+    // the filter would return a short window (and silently no-streak) exactly
+    // when the circuit gate is busiest. Predicate derived from ATTEMPT_STATUSES
+    // so it cannot drift from isAttemptTick.
     const rows = await sql<Array<{ status: string; detail: unknown }>>`
       SELECT status, detail
         FROM harness_shared.scout_ticks
        WHERE workspace_id = ${ws} AND origin = 'scout'
+         AND status = ANY(${ATTEMPT_STATUSES as readonly string[]})
        ORDER BY tick_at DESC
        LIMIT ${threshold}`;
     if (!isErrorStreak(rows.map((r) => r.status), threshold)) return;
@@ -145,7 +151,7 @@ export async function checkAndFireErrorStreakAlarm(opts: {
     if (!claimed) return;
 
     const summary =
-      `Scout cycle ERROR STREAK: the last ${threshold} cycles ALL failed — ideation is down ` +
+      `Scout cycle ERROR STREAK: the last ${threshold} ATTEMPTED cycles ALL failed — ideation is down ` +
       `and the circuit gate is only backing off, not fixing it. Distinct errors: ` +
       (errors.length > 0 ? errors.join(' | ') : '(no error detail recorded)') +
       `. Investigate the transport (gateway pool saturation / account limits / ideator timeouts); ` +

@@ -234,6 +234,30 @@ export interface CheckpointDeps {
    * they sweep.
    */
   cancelStaleAwaits?(fromCandidate: string): Promise<void>;
+  /**
+   * WI-37490 — record a COMPLETED PASS's own verdict durably, immediately, rather than
+   * waiting for the whole (possibly-recursive) `runGreenCheckpoint` call to settle.
+   *
+   * `runGreenCheckpoint` recurses IN-PROCESS on a stale-candidate auto-refire (same pid,
+   * same run-lock — see `recordInFlightRetriage` above). The CLI entrypoint's own verdict
+   * recorder (WI-4494's `recordOwnVerdict`) fires exactly ONCE, on the OUTERMOST promise's
+   * final resolution — so a run that completes pass 1 (a full ~55min suite), decides to
+   * refire, and then DIES partway through pass 2 (OOM, lost supervising parent, a stop
+   * signal) never reaches that final `.then()` at all. Pass 1's fully-computed verdict is
+   * silently discarded even though it ran to completion and has its own persisted log —
+   * `gate_health` then freezes on whatever it last held, for however long it takes a human
+   * to notice (measured: ~5.5h, 2026-08-09, WI-37490).
+   *
+   * Called by `runGreenCheckpoint` for a pass that is about to be SUPERSEDED by an
+   * in-process auto-refire (right before it recurses onto `tip`), using the exact same
+   * `CheckpointResult` shape the terminal/non-refiring path returns — so a refire that dies
+   * leaves the last COMPLETED pass's real verdict recorded instead of nothing. Optional /
+   * best-effort (existing test stubs need not provide it); a failure here must never block
+   * the refire it runs ahead of. realCheckpointDeps wires this to the SAME
+   * gateVerdictTargetFromEnv + recordCheckpointVerdict path the CLI's own final recorder
+   * uses, so the two can never diverge in what they consider "recordable".
+   */
+  recordVerdict?(r: CheckpointResult): Promise<boolean>;
   /** Age of the deployed release pin + how far it trails tip, for the staleness alarm.
    *  Optional: absent ⇒ alarm never fires. */
   deployStaleness?(): Promise<{ pinAgeMs: number; commitsBehind: number } | null>;
@@ -5663,6 +5687,26 @@ export function realCheckpointDeps(
         await cancelStaleCheckpointAwaits(cfg.integrationRoot, fromCandidate);
       } catch {
         /* best-effort — never let this break the auto-refire it runs ahead of */
+      }
+    },
+    // WI-37490: real wiring for a SUPERSEDED pass's own verdict — the exact same
+    // gateVerdictTargetFromEnv + recordCheckpointVerdict path the CLI entrypoint's own
+    // final-resolution recorder (recordOwnVerdict, below) uses, so a pass recorded here
+    // via an in-process auto-refire and the LAST pass recorded there can never disagree on
+    // what counts as "recordable" or how a verdict is written. Same fail-safe contract as
+    // every other record* wiring above: an un-stamped run (old-CLI/new-routine skew, or a
+    // manual run with no target) silently no-ops, and any failure here degrades to "not
+    // recorded" rather than breaking the refire it runs ahead of.
+    async recordVerdict(r) {
+      try {
+        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return false; // not the record-target-designated run — nothing to record.
+        const { recordCheckpointVerdict } = await import('@papercusp/operator-core/lib/harness/routines/release-actions');
+        return await recordCheckpointVerdict(target, r);
+      } catch (e) {
+        console.error(`[green-checkpoint] superseded-pass verdict record failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+        return false;
       }
     },
     async setupTree(ref) {

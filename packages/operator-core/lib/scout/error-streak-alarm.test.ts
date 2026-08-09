@@ -3,17 +3,36 @@
  * WI-4274). Pure tests for the streak decider + env tunables; IO deps mocked so
  * importing the module has no load-time side effects (watchdog-family idiom).
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
+const h = vi.hoisted(() => ({
+  calls: [] as Array<{ text: string; values: unknown[] }>,
+  rows: [] as Array<{ status: string; detail: unknown }>,
+}));
+
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
+      h.calls.push({ text: strings.join('?'), values });
+      return Promise.resolve(h.rows);
+    },
+  }),
+}));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 
 import {
   isErrorStreak,
+  isAttemptTick,
+  ATTEMPT_STATUSES,
   scoutErrorStreakThreshold,
   scoutErrorStreakDebounceHours,
   checkAndFireErrorStreakAlarm,
 } from './error-streak-alarm';
+
+beforeEach(() => {
+  h.calls.length = 0;
+  h.rows = [];
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -45,6 +64,46 @@ describe('isErrorStreak — the pure streak decider', () => {
   it('kill switch: threshold <= 0 never streaks', () => {
     expect(isErrorStreak(['error', 'error', 'error'], 0)).toBe(false);
     expect(isErrorStreak(['error'], -1)).toBe(false);
+  });
+});
+
+describe('the streak window contains ATTEMPTS only (P-010 — the circuit-gate inversion)', () => {
+  it('classifies ran/error as attempts and every gated tick as a non-attempt', () => {
+    expect(ATTEMPT_STATUSES).toEqual(['ran', 'error']);
+    expect(isAttemptTick('ran')).toBe(true);
+    expect(isAttemptTick('error')).toBe(true);
+    expect(isAttemptTick('gated')).toBe(false);
+  });
+
+  it('REGRESSION: a circuit-gated tick BETWEEN two failures must not break the streak', () => {
+    // The real ledger shape from the 2026-08-02→08-09 outage: the circuit gate
+    // writes its turnaways to the same table the alarm reads, interleaving them
+    // with the failures. 37 of that outage's 63 error ticks were immediately
+    // preceded by a gated tick.
+    const ledgerNewestFirst = ['error', 'gated', 'error', 'gated', 'error'];
+
+    // CONTROL — this is exactly what the pre-fix rule saw, and why a 6-day
+    // outage paged only 3 times. Kept as an executable record of the defect:
+    // if this ever flips to true the decider has silently changed meaning.
+    expect(isErrorStreak(ledgerNewestFirst, 3)).toBe(false);
+
+    // The fix: the window is drawn over attempted cycles, so the outage is visible.
+    expect(isErrorStreak(ledgerNewestFirst.filter(isAttemptTick), 3)).toBe(true);
+  });
+
+  it('a genuine RECOVERY still breaks the streak once an attempt succeeds', () => {
+    // The discriminator that keeps the fix honest: filtering must not turn
+    // "the pool recovered" into a permanent alarm.
+    const recovered = ['ran', 'gated', 'error', 'error', 'error'];
+    expect(isErrorStreak(recovered.filter(isAttemptTick), 3)).toBe(false);
+  });
+
+  it('the ledger query filters to ATTEMPT_STATUSES, not every tick', async () => {
+    // Pins the SQL predicate itself: a window that re-admits gated ticks would
+    // silently restore the inversion, and no pure test above would notice.
+    await checkAndFireErrorStreakAlarm({ workspaceId: 'w' });
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]?.values).toContainEqual(ATTEMPT_STATUSES);
   });
 });
 
