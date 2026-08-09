@@ -154,7 +154,7 @@ function stampMatchFragment(sql: ReturnType<typeof getOrgPg>['sql'], planSlug: s
  * (harness, id). No harness filter needed — a plan item's ref ('<plan>#<item>')
  * is already the join key on both truth sources.
  */
-async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise<LinkedWorkItem[]> {
+export async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise<LinkedWorkItem[]> {
   const { sql } = getOrgPg();
   const found = new Map<string, LinkedWorkItem>();
   // `viaImplementsEdge` is STICKY-TRUE: an item found by BOTH truth sources is

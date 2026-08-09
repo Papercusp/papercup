@@ -576,6 +576,54 @@ describe('evaluateProgramSuccess — lens diversity (D-004, WI-4482)', () => {
     const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 1 })], [...recentCollapsed, ...staleDiverse]));
     expect(bar(r, 'lens-diversity').status).toBe('fail');
   });
+
+  /** A tick carrying EI-13119's per-ideator-slot detail, live regardless of routing outcome. */
+  const ideatorTick = (lenses: string[], over: Partial<ScoutTickRecord> = {}): ScoutTickRecord =>
+    ranTick({
+      detail: {
+        cycleId: `c-${Math.random()}`,
+        ideators: lenses.map((lens) => ({ lens, ok: true, raw: 1, produced: 1 })),
+      },
+      ...over,
+    });
+
+  it('EI-19899928839197448: sources diversity from LIVE tick detail — routing going silent must not let STALE routed rows mask a live roster collapse', () => {
+    // The ledger still holds a diverse 20-row sample from BEFORE routing stopped (routing
+    // itself is dead, so these rows never age out of the newest-20 read). Meanwhile the
+    // ideators actually running right now have collapsed to a single lens. A sample drawn
+    // only from routed rows reports a healthy "4 distinct lenses" here — the live bug.
+    const staleDiverseIdeas = [
+      scoutIdea('analogical', 1),
+      scoutIdea('reframing', 2),
+      scoutIdea('first-principles', 3),
+      scoutIdea('constraint-removal', 4),
+    ];
+    const liveCollapsedTicks = [...Array(3)].map(() => ideatorTick(['analogical']));
+    const r = evaluateProgramSuccess(inputs(liveCollapsedTicks, staleDiverseIdeas));
+    const b = bar(r, 'lens-diversity');
+    expect(b.status).toBe('fail');
+    expect(b.observed).toContain('ROSTER COLLAPSED');
+    // Proves it did NOT fall back to the stale idea sample: no "4 distinct" in the message.
+    expect(b.observed).not.toContain('4 distinct');
+    expect(b.observed).toContain('live per-ideator tick detail');
+  });
+
+  it('the live-tick source still PASSES when the ideators themselves are diverse, even with zero routed ideas this window', () => {
+    // Routing produced nothing (every idea got filtered before persisting), but the
+    // ideators that actually fired this window span >=2 lenses — that is real, current
+    // evidence of health the routed-idea sample alone cannot see.
+    const r = evaluateProgramSuccess(inputs([ideatorTick(['analogical', 'reframing'])], []));
+    const b = bar(r, 'lens-diversity');
+    expect(b.status).toBe('pass');
+    expect(b.observed).toContain('live per-ideator tick detail');
+  });
+
+  it('EI-19899928839197448: with ZERO routed ideas AND no live tick detail to fall back on, FAILS (not unknown) — a silent pipeline is a broken one', () => {
+    const r = evaluateProgramSuccess(inputs([ranTick({ ideasRouted: 0, detail: { cycleId: 'c1' } })], []));
+    const b = bar(r, 'lens-diversity');
+    expect(b.status).toBe('fail');
+    expect(b.observed).toContain('no live per-ideator');
+  });
 });
 
 describe('evaluateProgramSuccess — verdict roll-up', () => {

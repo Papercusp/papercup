@@ -252,11 +252,35 @@ export interface PushedContextPortRefs {
   kind: PushedContextRefKind;
 }
 
+/** One surfaced ref — mirror of adv-agent-detail.ts's PushedContextRef. */
+export interface PushedContextRef {
+  /** The handle (a corpus pointer like `WI-6512`, or a mem0 memory id). */
+  ref: string;
+  /** Also the LEG OF ORIGIN — each ledger has exactly one writer. */
+  kind: PushedContextRefKind;
+  port: string;
+  at: string;
+  epoch: number;
+}
+
 export interface AgentPushedContext {
   /** Newest first, capped — `count` carries the true window total. */
   events: PushedContextEvent[];
   count: number;
   refsByPort: PushedContextPortRefs[];
+  /** The handles themselves, newest first, capped.
+   *
+   *  OPTIONAL here while REQUIRED on the server DTO, and the asymmetry is the
+   *  wire contract rather than a dodge: the producer always populates it, but
+   *  the SPA rebuilds on the vite hot path while the sidecar only rebuilds on
+   *  restart, so a fresh bundle can genuinely be handed an older payload with
+   *  no `refs` at all. Reading `.length` off such a field is what took down the
+   *  whole HUD tab once (see `subscriptions`/`unread` below) — so read it
+   *  through `?? []`, never bare. */
+  refs?: PushedContextRef[];
+  /** True window total behind the capped `refs` above. Optional for the same
+   *  wire reason; read it as `?? 0`. */
+  refsTotal?: number;
   /** Ledgers that could not be read while the others succeeded — render it,
    *  never drop it: an unreadable ledger is not a ledger that surfaced zero. */
   unavailable?: string[];

@@ -100,6 +100,17 @@ function legMark(label: string, ran: boolean | null): string {
   return `${label} ${ran === true ? '✓' : ran === false ? '✗' : '?'}`;
 }
 
+/**
+ * A surfaced handle, shortened to fit the rail — with a VISIBLE ellipsis, so a
+ * shortened value can never be mistaken for the handle itself. Corpus refs
+ * (`WI-6512`) are already short and pass through untouched; mem0 refs are
+ * 36-char uuids. The full value always rides in the row's `title`, so the
+ * shortening costs display only, never the lookup.
+ */
+function shortRef(ref: string): string {
+  return ref.length > 12 ? `${ref.slice(0, 8)}…` : ref;
+}
+
 /** Build MetaRows from label/value pairs, DROPPING the ones that would render
  *  nothing. MetaRow itself returns null for an empty value, so handing a capped
  *  list the unfiltered set would make it promise "Show 6 more" and then reveal

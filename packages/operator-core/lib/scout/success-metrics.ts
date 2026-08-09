@@ -306,8 +306,11 @@ export function evaluateProgramSuccess(
   // having had the opportunity to write and having written nothing, for the entire
   // window. That is itself evidence of breakage, so both bars below must be able to go
   // FAIL on it rather than reporting the mildest verdict available ('unknown'/'pass').
+  // Gated on `!opts.ledgerTruncated`: a truncated read cannot support a CONFIDENT "zero"
+  // claim (the read simply didn't fetch far enough) — the same reason ledger-reconciles
+  // already reports truncation as unknown rather than manufacturing drift.
   const scoutRoutedTotal = inputs.cadence.routedIdeas.length;
-  const ranWithNoRoutedOutput = ranTicks.length > 0 && scoutRoutedTotal === 0;
+  const ranWithNoRoutedOutput = ranTicks.length > 0 && scoutRoutedTotal === 0 && !opts.ledgerTruncated;
 
   // ── 1. rubric-grounded routed ideas > 0 ─────────────────────────────────────
   // The program's founding defect: the rubric digest lane produced ZERO grounded ideas for

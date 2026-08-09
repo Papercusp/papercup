@@ -134,6 +134,22 @@ export async function upsertPushToken(opts: {
   });
 }
 
+/**
+ * Delete ONE push token (used by the dispatcher when the provider reports it permanently
+ * invalid — FCM `UNREGISTERED`). Scoped through `withWorkspace` like every other write here,
+ * so a token can only ever be reaped from the workspace that dispatched to it.
+ *
+ * Deleting the TOKEN row and not the DEVICE row is the deliberate choice: an unregistered
+ * token means the app can no longer be reached at that address, not that the pairing was
+ * revoked. The device keeps its identity (and its JWT) and simply re-registers a fresh token
+ * on next launch via `upsertPushToken`, which is the normal recovery path.
+ */
+export async function deletePushToken(workspaceId: string, token: string): Promise<void> {
+  await withWorkspace(workspaceId, async (tx) => {
+    await tx`DELETE FROM harness_shared.mobile_push_tokens WHERE token = ${token}`;
+  });
+}
+
 /** Push targets for everyone in a workspace (used by the dispatcher). */
 export async function pushTargetsForWorkspace(
   workspaceId: string,

@@ -106,6 +106,27 @@ export function isFcmTokenPermanentlyInvalid(status: number | 'skipped' | 'error
   return /"errorCode"\s*:\s*"UNREGISTERED"/.test(body) || /"message"\s*:\s*"NotRegistered"/.test(body);
 }
 
+/**
+ * PURE: which targets should be REAPED, given the results of dispatching to them?
+ *
+ * Kept pure and exported because it authorises an irreversible DELETE, so it deserves to be
+ * falsifiable on its own — the safety property ("a transient failure is never reaped") is a
+ * statement about this function, not about the network path that happens to call it.
+ *
+ * Index correspondence is the contract it relies on: `dispatchPush` maps EVERY branch through
+ * `settled.map((s, i) => …)`, including the rejected one, so `results[i]` always describes
+ * `targets[i]`. A defensive length check makes a future divergence fail closed (reap nothing)
+ * rather than reap by a shifted index — deleting the WRONG live device's token would be a
+ * strictly worse outcome than leaving a dead one registered.
+ */
+export function tokensToReap(
+  targets: readonly DeviceTarget[],
+  results: readonly PushSendResult[],
+): DeviceTarget[] {
+  if (results.length !== targets.length) return [];
+  return targets.filter((_, i) => results[i]?.unregistered === true);
+}
+
 export async function dispatchPush(
   targets: DeviceTarget[],
   payload: PushPayload,
@@ -338,15 +359,14 @@ export function pushEnabled(): { fcm: boolean; apns: boolean } {
 export async function notifyWorkspace(
   workspaceId: string,
   payload: PushPayload,
+  deps?: { dispatch?: (t: DeviceTarget[], p: PushPayload) => Promise<PushSendResult[]> },
 ): Promise<PushSendResult[]> {
   const { pushTargetsForWorkspace } = await import('./device-store');
   const targets = await pushTargetsForWorkspace(workspaceId);
   if (targets.length === 0) return [];
-  const results = await dispatchPush(targets, payload);
+  const results = await (deps?.dispatch ?? dispatchPush)(targets, payload);
 
-  const dead = results
-    .map((r, i) => (r.unregistered ? targets[i] : null))
-    .filter((t): t is DeviceTarget => t != null);
+  const dead = tokensToReap(targets, results);
   if (dead.length > 0) {
     try {
       const { deletePushToken } = await import('./device-store');

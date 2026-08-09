@@ -446,6 +446,37 @@ export interface PushedContextPortRefs {
   kind: PushedContextRefKind;
 }
 
+/**
+ * ONE ref actually surfaced to this session — the handle, never the body
+ * (D-004: the ledgers store pointers, and resolving them here would invent the
+ * write path that decision forbids).
+ *
+ * `kind` doubles as the LEG OF ORIGIN, and it is the ONLY leg attribution that
+ * exists per ref: each ledger has exactly one writer, so a `corpus` row came
+ * from the corpus pointer leg and a `memory` row from the mem0 recall leg, by
+ * construction (`memory/injection.ts` → `stampSurfacedRefs`). The finer
+ * cosine-vs-lexical attribution is NOT recorded per ref anywhere — recall_stats'
+ * `admission.byLeg` carries COUNTS (`{cosineOnly, lexicalOnly, both}`), never a
+ * per-ref label, and no column ties a surfaced row back to a recall row. That
+ * gap is measured and recorded as plan decision D-078, not papered over here.
+ */
+export interface PushedContextRef {
+  /** The handle: a corpus pointer (`WI-6512`) or a mem0 memory id (uuid). */
+  ref: string;
+  kind: PushedContextRefKind;
+  /** The injection port it arrived at. `(unrecorded)` when the ledger row
+   *  carries none — `corpus_session_surfaced.port` is nullable, so an absent
+   *  label must read as absent rather than as a port named "null". */
+  port: string;
+  /** ISO — when it was FIRST surfaced under `epoch`. Both ledgers key on
+   *  (session_id, epoch, ref) and stamp once, so a ref repeated inside an epoch
+   *  is SUPPRESSED rather than re-stamped: this is when the agent was first
+   *  given it, not the only turn it was in context. */
+  at: string;
+  /** Compaction epoch it was surfaced under — the dedup scope above. */
+  epoch: number;
+}
+
 export interface AgentPushedContext {
   /** Newest first, CAPPED (see `count` for the true total in the window). */
   events: PushedContextEvent[];
@@ -456,6 +487,14 @@ export interface AgentPushedContext {
   /** From the per-session surfaced ledgers — the refs, never the bodies.
    *  Carries BOTH kinds; read `kind`, never `port` alone, to tell them apart. */
   refsByPort: PushedContextPortRefs[];
+  /** The handles themselves, newest first, CAPPED — this is P-013's "what was
+   *  pushed", one row per ref instead of a per-port tally. */
+  refs: PushedContextRef[];
+  /** Ledger rows in the window across the ledgers that ANSWERED, so the carried
+   *  slice above can never masquerade as the total (the same honesty rule as
+   *  `count`). Read it WITH `unavailable`: a ledger that could not be read
+   *  contributes 0, which is not a ledger that surfaced nothing. */
+  refsTotal: number;
   /** Sources that could not be read while the OTHERS succeeded — e.g. the
    *  corpus ledger on a box where migration 712 has not been applied.
    *
@@ -1372,18 +1411,53 @@ export interface PushedContextRow {
 
 /** A per-port ref count as the ledgers hand it over, before shaping. */
 export interface PushedContextRefRow {
-  port: string;
+  port: string | null;
   refs: number | string;
+  kind: PushedContextRefKind;
+  /** Raw LEDGER ROWS behind `refs`, which is a DISTINCT count. Kept apart
+   *  because the two answer different questions and only this one is summable:
+   *  a ref surfaced at two ports is one distinct ref in each group, so adding
+   *  the distinct counts across ports double-counts it. */
+  rows?: number | string;
+}
+
+/** One surfaced-ledger row as PG hands it over, before shaping. */
+export interface PushedContextRefDetailRow {
+  ref: string;
+  port: string | null;
+  epoch: number | string;
+  surfaced_at: Date | string;
   kind: PushedContextRefKind;
 }
 
+/** Everything the pure shaper needs. An object rather than five positional
+ *  arguments because three of them are lists and a swapped pair would type-check
+ *  cleanly while silently reporting one ledger as the other. */
+export interface DerivePushedContextInput {
+  rows: PushedContextRow[];
+  refRows: PushedContextRefRow[];
+  /** Window total for `rows` — the recall-stats count, not the ref count. */
+  total: number;
+  refDetail?: PushedContextRefDetailRow[];
+  unavailable?: string[];
+}
+
+/** A ledger row that recorded no port. Rendered, never coalesced to a real port
+ *  label: `corpus_session_surfaced.port` is nullable, and "we did not record
+ *  where this arrived" must not read as "it arrived at `injection`". */
+const UNRECORDED_PORT = '(unrecorded)';
+
+/** Rows carried on the wire. `refsTotal` still reports the true window total. */
+const PUSHED_CONTEXT_MAX_REFS = 40;
+
 /** Pure shaping — unit-tested without PG, per this module's contract. */
-export function derivePushedContext(
-  rows: PushedContextRow[],
-  refRows: PushedContextRefRow[],
-  total: number,
-  unavailable: string[] = [],
-): AgentPushedContext {
+export function derivePushedContext({
+  rows,
+  refRows,
+  total,
+  refDetail = [],
+  unavailable = [],
+}: DerivePushedContextInput): AgentPushedContext {
   const events: PushedContextEvent[] = rows.map((r) => {
     const admission = blob(r.admission);
     return {
@@ -1397,18 +1471,41 @@ export function derivePushedContext(
     };
   });
   const refsByPort = refRows
-    .map((r) => ({ port: r.port, refs: Number(r.refs) || 0, kind: r.kind }))
+    .map((r) => ({ port: r.port ?? UNRECORDED_PORT, refs: Number(r.refs) || 0, kind: r.kind }))
     .filter((r) => r.refs > 0)
     // The two ledgers arrive as separate result sets, each already sorted
     // within itself; merging needs a TOTAL order or the row sequence would
     // depend on which query resolved first. Ties break on kind then port so
     // the dossier is stable between reads.
     .sort((a, b) => b.refs - a.refs || a.kind.localeCompare(b.kind) || a.port.localeCompare(b.port));
+  // Summed from the RAW row counts, never from `refsByPort` above: those are
+  // DISTINCT-per-port, so a ref surfaced at two ports would be counted twice.
+  // A ledger that predates the `rows` column contributes its distinct count as
+  // the closest available floor rather than 0 — an undercount is survivable
+  // here, a total lower than the rows we are showing is not (guarded below).
+  const refsTotal = refRows.reduce(
+    (n, r) => n + (Number(r.rows ?? r.refs) || 0),
+    0,
+  );
+  const refs: PushedContextRef[] = refDetail
+    .map((r) => ({
+      ref: r.ref,
+      kind: r.kind,
+      port: r.port ?? UNRECORDED_PORT,
+      at: iso(r.surfaced_at),
+      epoch: Number(r.epoch) || 0,
+    }))
+    // Same total-order argument as refsByPort: two independently-sorted result
+    // sets merged into one list. Newest first; ties break on kind then ref.
+    .sort((a, b) => b.at.localeCompare(a.at) || a.kind.localeCompare(b.kind) || a.ref.localeCompare(b.ref))
+    .slice(0, PUSHED_CONTEXT_MAX_REFS);
   return {
     events,
     // Never let the carried slice masquerade as the total.
     count: Math.max(total, events.length),
     refsByPort,
+    refs,
+    refsTotal: Math.max(refsTotal, refs.length),
     ...(unavailable.length > 0 ? { unavailable } : {}),
   };
 }
@@ -1429,7 +1526,7 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
     const ws = activeWorkspaceId();
     const { withWorkspace } = await import('@papercusp/db-org');
     return await withWorkspace(ws, async (tx) => {
-      const [rows, totals, memRefs] = await Promise.all([
+      const [rows, totals, memRefs, memRefDetail] = await Promise.all([
         tx<PushedContextRow[]>`
           SELECT created_at, surface, legs, admission
             FROM harness_shared.memory_recall_stats
@@ -1451,13 +1548,24 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
         `,
         // Neither surfaced ledger has a workspace_id column at all — session_id
         // carries the scope. Refs, never bodies.
-        tx<{ port: string; refs: string }[]>`
-          SELECT port, count(DISTINCT memory_id)::text AS refs
+        tx<{ port: string; refs: string; rows: string }[]>`
+          SELECT port, count(DISTINCT memory_id)::text AS refs, count(*)::text AS rows
             FROM harness_shared.memory_session_surfaced
            WHERE session_id = ${owner}
              AND surfaced_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
            GROUP BY port
            ORDER BY count(DISTINCT memory_id) DESC
+        `,
+        // P-013's "what was pushed": the handles themselves, one row each.
+        // Capped in SQL — merging two capped DESC lists and re-cutting to the
+        // same cap yields the true newest N, so the cap costs no correctness.
+        tx<{ ref: string; port: string; epoch: number; surfaced_at: Date }[]>`
+          SELECT memory_id::text AS ref, port, epoch, surfaced_at
+            FROM harness_shared.memory_session_surfaced
+           WHERE session_id = ${owner}
+             AND surfaced_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
+           ORDER BY surfaced_at DESC
+           LIMIT ${PUSHED_CONTEXT_MAX_REFS}
         `,
       ]);
 
@@ -1473,32 +1581,52 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
       // it returns NULL instead of raising, and rode along on the query above.
       const totalRow = (totals as unknown as { total: string; corpus_relation: string | null }[])[0];
       const unavailable: string[] = [];
-      let corpusRefs: { port: string; refs: string }[] = [];
+      type PortCount = { port: string | null; refs: string; rows: string };
+      type RefDetail = { ref: string; port: string | null; epoch: number; surfaced_at: Date };
+      let corpusRefs: PortCount[] = [];
+      let corpusRefDetail: RefDetail[] = [];
       if (totalRow?.corpus_relation) {
-        corpusRefs = (await tx<{ port: string; refs: string }[]>`
-          SELECT port, count(DISTINCT ref)::text AS refs
-            FROM harness_shared.corpus_session_surfaced
-           WHERE session_id = ${owner}
-             AND surfaced_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
-           GROUP BY port
-           ORDER BY count(DISTINCT ref) DESC
-        `) as unknown as { port: string; refs: string }[];
+        [corpusRefs, corpusRefDetail] = await Promise.all([
+          tx<PortCount[]>`
+            SELECT port, count(DISTINCT ref)::text AS refs, count(*)::text AS rows
+              FROM harness_shared.corpus_session_surfaced
+             WHERE session_id = ${owner}
+               AND surfaced_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
+             GROUP BY port
+             ORDER BY count(DISTINCT ref) DESC
+          `,
+          tx<RefDetail[]>`
+            SELECT ref, port, epoch, surfaced_at
+              FROM harness_shared.corpus_session_surfaced
+             WHERE session_id = ${owner}
+               AND surfaced_at > now() - make_interval(hours => ${PUSHED_CONTEXT_WINDOW_HOURS})
+             ORDER BY surfaced_at DESC
+             LIMIT ${PUSHED_CONTEXT_MAX_REFS}
+          `,
+        ]) as unknown as [PortCount[], RefDetail[]];
       } else {
         unavailable.push('corpus-surfaced-refs');
       }
 
-      return derivePushedContext(
-        rows as unknown as PushedContextRow[],
-        [
-          ...(memRefs as unknown as { port: string; refs: string }[]).map((r) => ({
+      return derivePushedContext({
+        rows: rows as unknown as PushedContextRow[],
+        refRows: [
+          ...(memRefs as unknown as PortCount[]).map((r) => ({
             ...r,
             kind: 'memory' as const,
           })),
           ...corpusRefs.map((r) => ({ ...r, kind: 'corpus' as const })),
         ],
-        Number(totalRow?.total ?? 0) || 0,
+        refDetail: [
+          ...(memRefDetail as unknown as RefDetail[]).map((r) => ({
+            ...r,
+            kind: 'memory' as const,
+          })),
+          ...corpusRefDetail.map((r) => ({ ...r, kind: 'corpus' as const })),
+        ],
+        total: Number(totalRow?.total ?? 0) || 0,
         unavailable,
-      );
+      });
     });
   } catch (err) {
     console.warn(`[adv-agent-detail] getAgentPushedContext(${owner}) threw:`, err);
@@ -1506,6 +1634,8 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
       events: [],
       count: 0,
       refsByPort: [],
+      refs: [],
+      refsTotal: 0,
       error: err instanceof Error ? err.message : String(err),
     };
   }
