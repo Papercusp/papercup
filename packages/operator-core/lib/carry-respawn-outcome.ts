@@ -179,25 +179,41 @@ export function isOrphanedPendingRespawn(prior: PriorRespawn | null | undefined)
  * because the failure is otherwise indistinguishable from a successful respawn
  * whose successor simply looks like you.
  *
- * PURE. Returns null unless the last respawn terminally DROPPED within
- * {@link DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS}; `pending`, `delivered` and `none`
- * are all silent, as is a drop of unknown age (a warning is only ever emitted on
- * evidence — the same rule {@link priorRespawnNote} follows).
+ * PURE. Returns null unless the last respawn was LOST within
+ * {@link LOST_RESPAWN_AMBIENT_MAX_AGE_MS} — either terminally DROPPED, or
+ * ORPHANED while pending ({@link isOrphanedPendingRespawn}, the P-009 case).
+ * `delivered`, `none`, a still-live `pending`, and a loss of unknown age are all
+ * silent (a warning is only ever emitted on evidence — the same rule
+ * {@link priorRespawnNote} follows).
  */
-export function droppedRespawnAmbientLine(
+export function lostRespawnAmbientLine(
   prior: PriorRespawn | null | undefined,
   opts: { maxAgeMs?: number } = {},
 ): string | null {
-  if (!prior || prior.outcome !== 'dropped') return null;
-  const maxAge = opts.maxAgeMs ?? DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS;
+  if (!prior) return null;
+  const orphaned = isOrphanedPendingRespawn(prior);
+  if (prior.outcome !== 'dropped' && !orphaned) return null;
+  const maxAge = opts.maxAgeMs ?? LOST_RESPAWN_AMBIENT_MAX_AGE_MS;
   // An unknown age is NOT treated as recent: `ageMs` is null when the host row
   // carried no parseable timestamp, and guessing "recent" there would nag
   // forever on exactly the rows we know least about.
   if (prior.ageMs == null || !Number.isFinite(prior.ageMs) || prior.ageMs > maxAge) return null;
+  // The two losses differ in what the host KNOWS, so they must not read alike: a
+  // drop has a verdict you can quote back, an orphan has none — and telling an
+  // agent the host "recorded" something it never recorded is the manufactured
+  // certainty this whole module exists to remove.
+  const head = orphaned
+    ? `⚠ carry-respawn ORPHANED ${humanAge(prior.ageMs)}` +
+      ` — your last session:request-compaction was acknowledged and the host queued a re-poll` +
+      `${prior.reason ? ` (${prior.reason})` : ''}, then NEVER recorded an outcome. That re-poll window` +
+      ` (${Math.round((prior.capMs ?? PENDING_RESPAWN_DEFAULT_CAP_MS) / 1000)}s) has long expired, so the` +
+      ` cut is not coming — it was pre-empted (an internal claude re-exec, a host restart) rather than` +
+      ` refused.`
+    : `⚠ carry-respawn DROPPED ${humanAge(prior.ageMs)}` +
+      `${prior.reason ? ` (reason: ${prior.reason})` : ''} — your last session:request-compaction was` +
+      ` acknowledged but NEVER CUT, and no successor was spawned.`;
   return (
-    `⚠ carry-respawn DROPPED ${humanAge(prior.ageMs)}` +
-    `${prior.reason ? ` (reason: ${prior.reason})` : ''} — your last session:request-compaction was` +
-    ` acknowledged but NEVER CUT, and no successor was spawned. You are still the same session, still` +
+    `${head} You are still the same session, still` +
     ` carrying the full transcript. Do not wait for a compaction that is not coming: flush durable state` +
     ` (work_items:checkpoint / loop:checkpoint / facts:assert), then call session:request-compaction` +
     ` again at a clean stopping point — and note the cut only lands once your pty goes quiet, so an` +
@@ -235,6 +251,19 @@ export function priorRespawnNote(prior: PriorRespawn | null | undefined): string
     );
   }
   if (prior.outcome === 'pending') {
+    // An orphaned attempt is NOT "still re-polling", and saying so would tell the
+    // caller their new request is being adopted by a loop that no longer exists.
+    if (isOrphanedPendingRespawn(prior)) {
+      return (
+        ` ⚠ prior-respawn-ORPHANED: an earlier carry-respawn on this session was queued` +
+        ` ${humanAge(prior.ageMs)} (host recorded \`${prior.reason ? `${prior.reason}` : 'respawn-rearm-queued'}\`)` +
+        ` and NEVER produced an outcome — no delivered row, no dropped row. Its re-poll window` +
+        ` (${Math.round((prior.capMs ?? PENDING_RESPAWN_DEFAULT_CAP_MS) / 1000)}s) expired long ago, so that` +
+        ` attempt was pre-empted rather than refused (an internal claude re-exec or a host restart drops the` +
+        ` pending cut with no verdict). This request does NOT inherit it — it is a fresh attempt, and the` +
+        ` same pre-emption can take this one too, so keep flushing state durably rather than relying on the carry.`
+      );
+    }
     return (
       ` ⚠ prior-respawn-STILL-PENDING: an earlier carry-respawn on this session is still re-polling for` +
       ` an idle window (host recorded \`${prior.reason ? `${prior.reason}` : 'respawn-rearm-queued'}\`` +

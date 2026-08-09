@@ -116,6 +116,10 @@ export interface ColdBootDrillHostEvent {
   nativeId?: string | null;
   launchContextPath?: string | null;
   reason?: string;
+  /** Wait budget the host stamped on a busy-gate / re-arm row, ms. Read by
+   *  carry-respawn-outcome to decide when a `pending` attempt is past the window
+   *  in which it could still fire (see isOrphanedPendingRespawn). */
+  capMs?: number | null;
 }
 
 export function coldBootDrillLedgerPath(dir: string = PSU_PTY_DIR): string {

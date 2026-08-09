@@ -127,6 +127,16 @@ describe('plan-item-reflect:complete', () => {
     expect(renderArgs(rule, deprecated)).toMatchObject({ item: 'P-007', status: 'dropped' });
   });
 
+  it('EI-19972048649686949: a → dropped completion renders onlyIfNoOtherOpenCoverage so it never cascades onto a plan item still covered by a sibling work-item', () => {
+    const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
+    const closed = evt('work_items:complete', stamped('closed', { completion: { summary: 's' } }));
+    expect(renderArgs(rule, closed)).toMatchObject({ status: 'dropped', onlyIfNoOtherOpenCoverage: true });
+
+    // A → done completion is UNAFFECTED — the guard is scoped to `dropped` only.
+    const done = evt('work_items:complete', stamped('resolved', { completion: { summary: 's' } }));
+    expect(renderArgs(rule, done)).not.toHaveProperty('onlyIfNoOtherOpenCoverage');
+  });
+
   it('does NOT fire without a completion record, without a stamp, or when the resulting state is non-terminal', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
     expect(fires(rule, evt('work_items:complete', stamped('open')))).toBe(false); // no completion

@@ -536,6 +536,31 @@ export async function produceLogSnapshot(
     );
     for (const op of window) if (op) folder.add(op);
     // `window` falls out of scope here — the decoded blocks it held are collectable.
+
+    // Yield to the MACROTASK queue between windows (P-014, half 3).
+    //
+    // `await` alone does NOT do this. It yields to the MICROTASK queue, and a block
+    // already resident in the store resolves within the same tick — so a loop of awaits
+    // over a warm local log drains microtasks forever and the event loop NEVER reaches
+    // its timer phase. Every `setInterval` in the process is starved for the whole read:
+    // the DBOS routines ticker, git-sync, and wake delivery all stop.
+    //
+    // Measured on this box 2026-08-09 against the live 461,475-block own log: a
+    // head-snapshot POST ran 455s and `harness_shared.routines` recorded ZERO fires for
+    // the entire window (last fire 11:45, next 11:55) — a 9-minute hole. `bghost-watchdog`
+    // reads exactly that signal (`MAX(last_fired_at)` stale > 240s while the unit is
+    // active) and CORRECTLY concluded the ticker was frozen, so it restarted the unit and
+    // killed the snapshot at 455s. That is the whole of WI-36770's "recycles every ~8.5
+    // min": the holder is healthy for 41 min at a stretch with no snapshot in flight, and
+    // recycles on that cadence only while one is running. So the snapshot was killing its
+    // own host — and no timeout budget could fix it, because the process that had to
+    // survive the operation was being restarted BECAUSE of the operation.
+    //
+    // `setImmediate` runs in the check phase, which the loop reaches only after giving
+    // timers their turn — so one per window is enough to keep the ticker alive. At
+    // SNAPSHOT_READ_CONCURRENCY=256 that is ~1.8k turns for this corpus: negligible
+    // against the read itself, and it does not change what is folded or in what order.
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
   // EI-1688: `now` (= the snapshot ts) GCs tombstones past the horizon at production —
   // the same argument `buildSnapshotOps` passes for the non-streaming path.
