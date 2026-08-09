@@ -1057,7 +1057,7 @@ describe('AgentDossier', () => {
       refsTotal: 61,
     };
 
-    it('renders one row per HANDLE, tagged with the ledger it came from', async () => {
+    it('renders one row per HANDLE, falling back to the ledger tag when unresolved', async () => {
       syncState.detail = { ...DETAIL, pushedContext: PUSHED } satisfies AgentDetail;
       const { container, findByText } = render(
         <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
@@ -1065,17 +1065,46 @@ describe('AgentDossier', () => {
       await findByText('Dynamically pushed context');
       const rows = container.querySelectorAll('[data-testid="dossier-pushed-ref-row"]');
       expect(rows.length).toBe(2);
-      // A corpus pointer is short enough to render whole; the `ptr`/`mem` tag is
-      // the LEG OF ORIGIN (D-085), which is why it is rendered and not implied.
+      // These fixtures carry no `title`, so the row falls back to the handle —
+      // and the `ptr`/`mem` tag is the LEG OF ORIGIN (D-085), which is the only
+      // thing left to say about a pointer we could not resolve.
       expect(rows[0].textContent).toContain('ptr');
       expect(rows[0].textContent).toContain('WI-6512');
       expect(rows[0].textContent).toContain('mid-turn');
       expect(rows[1].textContent).toContain('mem');
     });
 
-    it('shortens a uuid handle VISIBLY and keeps the full value reachable', async () => {
+    it('shows the resolved TITLE in the row, not the id [owner 2026-08-09]', async () => {
+      // "the user doesn't care about the ids, it should show a title". The id is
+      // not lost — it heads the hover panel — but it must not BE the row.
+      const titled = {
+        ...PUSHED,
+        refs: [
+          { ...PUSHED.refs[0], title: 'Gate red: classify-tree skip-guard uses existsSync', detail: 'WI-6512 [bug · open] — Gate red…', titleState: 'ok' as const },
+          { ...PUSHED.refs[1], title: 'Papercusp host→tree→env map (MEASURED from systemd)', titleState: 'ok' as const },
+        ],
+      };
+      syncState.detail = { ...DETAIL, pushedContext: titled } satisfies AgentDetail;
+      const { container, findByText } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Dynamically pushed context');
+      const rows = container.querySelectorAll('[data-testid="dossier-pushed-ref-row"]');
+      expect(rows[0].textContent).toContain('Gate red: classify-tree skip-guard');
+      expect(rows[1].textContent).toContain('Papercusp host→tree→env map');
+      // The uuid is GONE from the row (the whole point), and so is the shortened
+      // form of it — asserting only the full uuid's absence would pass against a
+      // row still reading `mem 0f8c1d2e…`.
+      expect(rows[1].textContent).not.toContain('0f8c1d2e');
+      // …and the native title= tooltip is gone with it: it carried only ids, and
+      // a browser tooltip would race the hover panel to paint.
+      expect(rows[1].getAttribute('title')).toBeNull();
+    });
+
+    it('keeps the full handle reachable when the title cannot be resolved', async () => {
       // A truncated handle you cannot look up would be worse than no handle at
-      // all — the ellipsis says it is cut, and `title` carries the whole thing.
+      // all — the ellipsis says it is cut, and the hover panel carries the whole
+      // thing (asserted against the panel in HoverDetail's own suite).
       syncState.detail = { ...DETAIL, pushedContext: PUSHED } satisfies AgentDetail;
       const { container, findByText } = render(
         <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
@@ -1083,8 +1112,9 @@ describe('AgentDossier', () => {
       await findByText('Dynamically pushed context');
       const rows = container.querySelectorAll('[data-testid="dossier-pushed-ref-row"]');
       expect(rows[1].textContent).toContain('0f8c1d2e…');
-      expect(rows[1].getAttribute('title')).toContain('0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f');
-      expect(rows[1].getAttribute('title')).toContain('epoch 3');
+      const anchor = rows[1].querySelector('[data-testid="dossier-pushed-ref-detail"]');
+      expect(anchor).toBeTruthy();
+      expect(anchor?.getAttribute('aria-haspopup')).toBe('dialog');
     });
 
     it('says how many refs it is NOT showing, rather than letting 2 read as all 61', async () => {

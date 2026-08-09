@@ -4727,3 +4727,51 @@ describe("post-suite legs get their own heap (WI-37510: fork cap OOM'd lint:tsc,
     }
   });
 });
+
+describe('WI-37527: the typecheck banner must not out-claim its evidence', () => {
+  // typecheckFailureBanner() has its own unit tests in gate-artifact-verdict-tail.
+  // These assert the WIRING instead: that the banner the GATE actually emits comes from
+  // that helper. WI-37503 is the reason the distinction matters — a correct, committed,
+  // fully-tested fix sat INERT because nothing checked it reached the path the gate runs.
+  const runLintTsc = async (code: number, stdout: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'green-tsc-banner-'));
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { 'lint:tsc': 'node scripts/lint-tsc.mjs' } }),
+      );
+      const exec = (async (_cmd: string, args: string[]) =>
+        args.includes('lint:tsc')
+          ? { code, stdout, stderr: '' }
+          : { code: 0, stdout: '', stderr: '' }) as unknown as Parameters<typeof runPostSuiteLegs>[2];
+      return await runPostSuiteLegs(dir, { NODE_ENV: 'test' }, exec, 'apps/operator');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('a lint:tsc failure carrying NO type diagnostics must not announce type regressions', async () => {
+    // The literal WI-37503 shape: non-zero exit, zero `error TS\d+`.
+    const oom = 'FATAL ERROR: Ineffective mark-compacts near heap limit — JavaScript heap out of memory\n';
+    const res = await runLintTsc(134, oom);
+
+    // Preconditions: the leg really failed and its output really reached the verdict, so
+    // the assertions below cannot pass merely because no banner was ever emitted.
+    expect(res.typecheck.status).toBe('failed');
+    expect(res.output).toContain(oom);
+
+    expect(res.output).not.toContain('type regressions block the release');
+    expect(res.output).toContain('NO type diagnostics');
+    expect(res.output).toContain('exit=134');
+  });
+
+  it('a REAL type regression still gets the regression banner', async () => {
+    // Calibration: without this, the assertions above would also pass if the banner were
+    // deleted outright, or if the helper were wired to always emit the honest wording.
+    const res = await runLintTsc(1, "foo.ts(12,3): error TS2322: Type 'a' is not assignable.\n");
+
+    expect(res.typecheck.status).toBe('failed');
+    expect(res.output).toContain('type regressions block the release');
+    expect(res.output).not.toContain('NO type diagnostics');
+  });
+});
