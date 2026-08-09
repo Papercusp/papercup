@@ -254,9 +254,15 @@ describe('decideGitnexusHealthUpdate', () => {
   });
 
   it('alerts on EXACTLY the tick that crosses the threshold, not before and not again after', () => {
-    const belowThreshold: GitnexusHealth = { consecutiveFailures: 1, alerted: false, lastFailureAt: NOW - 3600_000, lastSuccessAt: null };
-    const atCrossing = decideGitnexusHealthUpdate(belowThreshold, false, GITNEXUS_FAILURE_ALERT_THRESHOLD, NOW);
-    expect(atCrossing.next.consecutiveFailures).toBe(GITNEXUS_FAILURE_ALERT_THRESHOLD - 1 + 1);
+    // One failure short of the threshold — the NEXT failure is the one that crosses it.
+    const oneShortOfThreshold: GitnexusHealth = {
+      consecutiveFailures: GITNEXUS_FAILURE_ALERT_THRESHOLD - 1,
+      alerted: false,
+      lastFailureAt: NOW - 3600_000,
+      lastSuccessAt: null,
+    };
+    const atCrossing = decideGitnexusHealthUpdate(oneShortOfThreshold, false, GITNEXUS_FAILURE_ALERT_THRESHOLD, NOW);
+    expect(atCrossing.next.consecutiveFailures).toBe(GITNEXUS_FAILURE_ALERT_THRESHOLD);
     expect(atCrossing.shouldAlert).toBe(true);
     expect(atCrossing.next.alerted).toBe(true);
 

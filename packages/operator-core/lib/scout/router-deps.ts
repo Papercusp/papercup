@@ -100,6 +100,11 @@ export function buildCapturePort(
       scope: opts.scope ?? 'operator',
       sourceRole: opts.sourceRole ?? 'Scout',
       foundDuring: opts.foundDuring ?? 'scout-loop',
+      // D-033: soft-band hits decline HERE (machine ideation) though they stay
+      // advisory for agent filings. Owner constraint D-004 holds by construction —
+      // this is Scout's port; the agent-facing improvements:capture tool never
+      // passes this and keeps the 'hard' default.
+      semanticBlockBand: opts.semanticBlockBand ?? 'soft',
       ...(opts.origin ? { origin: opts.origin } : {}),
     });
     if (res.created && res.issue) {
