@@ -31,6 +31,19 @@ const killTask = vi.fn(async (taskId: string) => ({
 const enabled = vi.fn(async () => true);
 const notify = vi.fn(async () => {});
 
+// A trust-gated route resolves a principal before the handler runs; the mocked
+// trusted one stands in for the real gate, exactly as admin.test.ts does. The CSRF
+// backstop under test runs INSIDE the handler and is unaffected by it.
+vi.mock('../../auth/require-principal', () => ({
+  requirePrincipal: vi.fn(async () => ({
+    kind: 'system', slug: 'system:operator', workspaceId: 'ws',
+    authMethod: 'superuser-bearer', trust: 'trusted',
+    capabilities: new Set(['*']), label: 'su',
+  })),
+  PrincipalCheckError: class PrincipalCheckError extends Error {
+    constructor(public status: number, public reason: string) { super(reason); }
+  },
+}));
 vi.mock('../../task-manager/control', () => ({ killTask: (...a: unknown[]) => killTask(...(a as [string])) }));
 vi.mock('../../task-manager/enabled', () => ({ isTaskManagerEnabled: () => enabled() }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: (...a: unknown[]) => notify(...(a as [])) }));
@@ -48,10 +61,10 @@ import taskManagerRoutes from '../routes/admin/task-manager';
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 const [inventory, kill] = taskManagerRoutes as unknown as AnyRoute[];
 
-function post(url: string, body?: unknown, headers: Record<string, string> = {}): Promise<Response> {
+async function post(url: string, body?: unknown, headers: Record<string, string> = {}): Promise<Response> {
   const app = new Hono();
   registerRoute(app, kill);
-  return app.request(url, {
+  return await app.request(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),

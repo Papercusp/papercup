@@ -384,6 +384,135 @@ describe('buildDepSubgraph — window vs filter: WHY an endpoint is missing deci
   });
 
   /**
+   * `filteredIds` — WI-36045's defect class, reached through the PLAN FILTER instead.
+   * (This plan's D-001/D-002.)
+   *
+   * WI-36045 widened the graph's node corpus beyond the list's 500-row window by making
+   * every edge carry its endpoints. The filter path never learned that: it tested the
+   * drop rule against `items`, i.e. the window. So the pane drew from one corpus and
+   * filtered by a smaller one, and the gap between them was not marginal.
+   *
+   * MEASURED LIVE on `papercusp`, 2026-08-09 (isolated shell, slug pinned, filter driven
+   * through the `wif` URL param):
+   *   • 129 nodes / 84 edges unfiltered, spanning 12 plans — but only 14 nodes and 5
+   *     plans inside the window, so 9 of 12 plans were not even OFFERED as filter values.
+   *   • filtering to `agent-context-firewall-and-output-spill-2026-08-02` (11 nodes,
+   *     8 edges genuinely present) rendered `0 nodes · 0 edges`, `84 edges hidden by
+   *     filters`, and the empty state "No work items match the active filters".
+   *   • exactly ONE plan filtered correctly: the most recently touched one, wholly inside
+   *     the window. That is the shape that let this survive testing — you check the plan
+   *     you just worked on, and it works.
+   */
+  describe('filteredIds — the filter must judge the GRAPH\'s corpus, not the list\'s window', () => {
+    /** The live shape: a plan whose items are ALL outside the list's window. */
+    const outOfWindowPlanEdges = [
+      hydratableEdge('P1', 'P2', {
+        blockedPlanSlug: 'my-plan',
+        blockerPlanSlug: 'my-plan',
+      }),
+      hydratableEdge('P3', 'OTHER', { blockedPlanSlug: 'my-plan' }),
+    ];
+
+    it('draws the plan\'s subgraph when NONE of its items are in the list window', () => {
+      const g = buildDepSubgraph({
+        // `items` is the window narrowed by the filter — EMPTY, because not one of this
+        // plan's rows was recent enough to be in the 500-row page.
+        items: [],
+        edges: outOfWindowPlanEdges,
+        filterActive: true,
+        // …but the caller filtered over the WHOLE corpus and states what survived.
+        filteredIds: new Set(['P1', 'P2', 'P3']),
+      });
+      expect(g.edges).toHaveLength(2);
+      expect(g.nodes.map((n) => n.id).sort()).toEqual(['OTHER', 'P1', 'P2', 'P3']);
+      expect(g.filteredEdgeCount).toBe(0);
+      // Every node here came from an edge payload, and the pane says so on screen. The
+      // fix must not buy correctness by disabling that disclosure.
+      expect(g.hydratedNodeCount).toBe(4);
+    });
+
+    it('still DROPS an edge that genuinely fell outside the filter, and counts it', () => {
+      // The complement, and the reason this is not just "keep everything": `filteredIds`
+      // must scope as hard as `byId` did — only over the right corpus.
+      const g = buildDepSubgraph({
+        items: [],
+        edges: [...outOfWindowPlanEdges, hydratableEdge('UNRELATED-A', 'UNRELATED-B')],
+        filterActive: true,
+        filteredIds: new Set(['P1', 'P2', 'P3']),
+      });
+      expect(g.edges).toHaveLength(2);
+      expect(g.filteredEdgeCount).toBe(1);
+      expect(g.nodes.map((n) => n.id)).not.toContain('UNRELATED-A');
+    });
+
+    it('keeps an edge with ONE endpoint in the filtered set — "this plan and what gates it"', () => {
+      const g = buildDepSubgraph({
+        items: [],
+        edges: [hydratableEdge('P3', 'BLOCKER-ELSEWHERE')],
+        filterActive: true,
+        filteredIds: new Set(['P3']),
+      });
+      expect(g.edges).toHaveLength(1);
+      expect(g.nodes.map((n) => n.id).sort()).toEqual(['BLOCKER-ELSEWHERE', 'P3']);
+    });
+
+    it('falls back to `items` membership when the caller supplies no filteredIds', () => {
+      // The documented fallback: pre-fix behaviour, so an un-migrated caller type-checks
+      // AND behaves predictably. It is not safe — it is merely unchanged.
+      const g = buildDepSubgraph({
+        items: [],
+        edges: outOfWindowPlanEdges,
+        filterActive: true,
+      });
+      expect(g.edges).toEqual([]);
+      expect(g.filteredEdgeCount).toBe(2);
+    });
+
+    it('ignores filteredIds when no filter is active — the window is not a filter', () => {
+      // `filteredIds` must never become a second, silent scoping axis: with no filter
+      // active every edge is drawn regardless of what the set happens to contain.
+      const g = buildDepSubgraph({
+        items: [],
+        edges: outOfWindowPlanEdges,
+        filterActive: false,
+        filteredIds: new Set(['P1']),
+      });
+      expect(g.edges).toHaveLength(2);
+      expect(g.filteredEdgeCount).toBe(0);
+    });
+
+    /**
+     * FALSIFIABILITY CONTROL (CLAUDE.md § "Proving a guard is falsifiable", tier 1 —
+     * a deliberately-wrong reimplementation kept permanently in the test file, so no
+     * production file is ever mutated to prove the guard bites).
+     *
+     * The tests above pass. That alone is not evidence they would have CAUGHT the
+     * defect, because the pre-fix code also passed every test it had. This states the
+     * OLD predicate explicitly and asserts the two rules disagree on the live-measured
+     * shape — and pairs it with a calibration assertion, without which "they differ"
+     * could be satisfied by both being broken.
+     */
+    it('CONTROL: the old `items`-membership predicate empties this exact graph', () => {
+      const oldPredicateDropped = outOfWindowPlanEdges.filter(
+        // Verbatim shape of the pre-D-002 rule: endpoints tested against `items`, which
+        // for this fixture is empty.
+        (e) => ![].some((i) => i === e.blockedId) && ![].some((i) => i === e.blockerId),
+      );
+      expect(oldPredicateDropped).toHaveLength(2); // old rule: drops BOTH → empty pane
+
+      // CALIBRATION — the real subject, same input, must draw them. If this ever fails,
+      // the control above is passing for the wrong reason and proves nothing.
+      const g = buildDepSubgraph({
+        items: [],
+        edges: outOfWindowPlanEdges,
+        filterActive: true,
+        filteredIds: new Set(['P1', 'P2', 'P3']),
+      });
+      expect(g.edges).toHaveLength(2);
+    });
+  });
+
+  /**
    * PERMANENT FALSIFIABILITY CONTROL (CLAUDE.md § "Proving a guard is falsifiable", tier 1).
    *
    * The tests above are the ones that were MISSING when the pane shipped broken, so "they pass

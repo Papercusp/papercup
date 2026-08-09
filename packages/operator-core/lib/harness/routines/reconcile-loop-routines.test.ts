@@ -9,7 +9,7 @@
  * tests used a direct, type-parsing connection (Date columns) and so never reproduced it — a
  * real test gap this closes by driving reconcileLoopRoutines with STRING-typed rows.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
 import { parseUsageResetMs } from '@papercusp/papercusp-shared/agent';
 import { reconcileLoopRoutines, classifyLoopLifecycleTurn, defaultEscalateLifecycleDeath } from './reconcile-loop-routines';
@@ -1595,5 +1595,144 @@ describe('reconcileLoopRoutines — a usage-limit re-arm may push next_fire_at L
     expect(res.rearmed).toBe(1);
     expect(armStmt).toContain('LEAST');
     expect(armStmt).not.toContain('GREATEST');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WI-36792 — the gate-backoff re-arm leg.
+//
+// The defect these pin: a PURE LOOP is parked at next_fire_at='infinity' by
+// claimDueRoutine at CLAIM time, before the fire runs. If the fire-gate then
+// WITHHOLDS, no wake is sent, so no turn happens, so no completion-rebase ever
+// re-arms it — and reconcile used to `continue` here on the premise that "the
+// fire-gate owns its cadence". The gate cannot cause a claim, so for a parked
+// loop nobody owns it: the loop is dead until a human re-arms it. Measured on a
+// live session 2026-08-08: a 2h44m silent halt.
+//
+// FALSIFIABILITY (mutation-probe tier 1 — the subject is an imported module, so
+// the controls live here permanently instead of mutating the shared tree): the
+// two CONTROL cases below drive the same fixture through an ALLOWING gate and
+// through a NON-parked row. If the production branch ever stops reading the gate
+// verdict or the parked flag and re-arms unconditionally, those two red — while
+// the positive cases stay green. A positive-only suite would pass against a
+// branch that fired on every quiet-parked loop, which is the regression most
+// worth catching here.
+describe('reconcileLoopRoutines — gate-backoff re-arm for a parked loop (WI-36792)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  /** The quiet-parked fixture: fired, no completion marker, no post-fire activity —
+   *  i.e. exactly the shape a withheld fire leaves behind. */
+  const parkedRow = (over: Record<string, unknown> = {}) => ({
+    id: 'rt-gate',
+    target_owner_id: 'su-gated',
+    interval_sec: 60,
+    parked: true,
+    install_slug: 'papercusp',
+    name: 'loop-su-gated',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    lifecycle_completed_at: null,
+    presence_last_active_at: null,
+    ...over,
+  });
+
+  /** The incident's real fire-state: 4 consecutive errors — BELOW circuitThreshold (8), so the
+   *  circuit is not open; this is plain backoff.
+   *  NOTE the two clocks are DIFFERENT columns in production — routines.last_fired_at (the park)
+   *  vs autoloop_state.last_fired_at (the backoff clock, which a withhold deliberately does NOT
+   *  advance). They sat 9s apart in the real incident. The fix consults the gate's own verdict
+   *  rather than recomputing from the park time, which is why that skew is harmless; the fixture
+   *  collapses them only for legibility. */
+  const WITHHELD_STATE = vi.fn(async () => ({ lastFiredAt: new Date(T0), consecutiveErrors: 4 }));
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('re-arms a parked loop the REAL fire-gate is withholding, to the exact moment the backoff expires', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    // 26s after the park. Deliberately drives the REAL evaluateFireGate rather than a stub: this
+    // is the calibration case that proves the wiring, so the number asserted below is the
+    // production formula's own output, not a fixture asserting what it wishes were true.
+    const res = await reconcile({
+      sql: fakeSql([parkedRow()], updates),
+      nowMs: T0 + 26_000,
+      recordFire,
+      readFireState: WITHHELD_STATE,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('gate-backoff');
+    // backoff = base 60s * 2^(4-1) = 480s from the gate's clock; elapsed 26s ⇒ 454s remaining —
+    // the exact `retry in ~454s` the live autoloop_state row recorded on 2026-08-08.
+    expect(res.loops[0].nextFireAt).toBe(T0 + 480_000);
+  });
+
+  it("records NO fire outcome — an 'ok' would ERASE the streak the backoff is computed from", async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    await reconcile({
+      sql: fakeSql([parkedRow()], updates),
+      nowMs: T0 + 26_000,
+      recordFire,
+      readFireState: WITHHELD_STATE,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    // The asymmetry is load-bearing, not an oversight: this re-arm observed nothing about the
+    // turn. 'ok' would reset consecutive_errors (the loop re-fires at once and reads as healthy);
+    // 'error' would double-count a failure the fire path already recorded.
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL — an ALLOWING gate re-arms nothing on this leg (proves the branch reads the verdict)', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([parkedRow()], updates),
+      nowMs: T0 + 26_000,
+      recordFire,
+      // A clean streak ⇒ the real gate ALLOWS ⇒ nothing is being withheld ⇒ nothing to rescue.
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL — a NON-parked row (cron+loop with a live schedule) is never pulled sooner by this leg', async () => {
+    const updates: unknown[][] = [];
+    const res = await reconcile({
+      sql: fakeSql([parkedRow({ parked: false })], updates),
+      nowMs: T0 + 26_000,
+      recordFire: async () => {},
+      readFireState: WITHHELD_STATE,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    // A routine with a real future next_fire_at keeps being CLAIMED on schedule, so the gate
+    // genuinely IS re-consulted for it — the premise that is false only for a parked loop.
+    expect(res.loops.find((l) => l.via === 'gate-backoff')).toBeUndefined();
+  });
+
+  it('INCIDENT ANCHOR (2026-08-08) — the rescue lands BEFORE the stalled-loops-guard disarm that followed', async () => {
+    const updates: unknown[][] = [];
+    // Real timeline: park 21:54:31Z; gate withheld 21:54:40Z (consecutive_errors=4,
+    // "retry in ~454s"); stalled-loops-guard disarmed the loop 22:07:36Z; owner re-armed by
+    // hand at 23:05Z. Today's code re-armed at none of those points.
+    const park = Date.parse('2026-08-08T21:54:31.403Z');
+    const disarm = Date.parse('2026-08-08T22:07:36.000Z');
+    const res = await reconcile({
+      sql: fakeSql([parkedRow({ last_fired_at: pgString(park) })], updates),
+      nowMs: park + 26_000,
+      recordFire: async () => {},
+      readFireState: vi.fn(async () => ({ lastFiredAt: new Date(park), consecutiveErrors: 4 })),
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.loops[0].via).toBe('gate-backoff');
+    // ~22:02:31Z — five minutes of margin. The loop wakes, produces a turn, and the ordinary
+    // completion-rebase takes over, so the disarm never has a stalled loop to act on.
+    expect(res.loops[0].nextFireAt).toBeLessThan(disarm);
   });
 });

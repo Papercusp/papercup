@@ -23,6 +23,7 @@ import {
   type ComposedParkEntry,
   type DecoratedAgent,
 } from './leader-brief';
+import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 
@@ -106,6 +107,43 @@ describe('projectMember (pure)', () => {
     const agent = baseAgent({ lastToolCallAt: null });
     const m = projectMember(agent, NOW);
     expect(m.lastToolCallAgeMs).toBeNull();
+  });
+
+  // EI-19931924184335892 (recurrence guard): a leader force-released a LIVE claim
+  // on the basis of a leader-brief row reading sessionState:'recorded' + stalled:true
+  // beside a lastToolCallAgeMs of ~53s — the holder closed the item, with a
+  // committed evidenced fix, 8 minutes later. `stalled` is a claim-progress-checkpoint
+  // signal (no last_progress_at/taken_at movement in >10min), NOT a liveness signal,
+  // and must never read `true` beside a lastToolCallAgeMs that itself proves the
+  // member is speaking right now.
+  it('never reports stalled:true when lastToolCallAgeMs proves the member is speaking now (EI-19931924184335892)', () => {
+    const agent = baseAgent({
+      sessionState: 'recorded',
+      stalled: true,
+      lastToolCallAt: new Date(NOW - 53_000).toISOString(),
+    });
+    const m = projectMember(agent, NOW);
+    expect(m.lastToolCallAgeMs).toBe(53_000);
+    expect(m.stalled).toBe(false);
+  });
+
+  it('still reports stalled:true when the member is NOT demonstrably speaking (no fresh tool call)', () => {
+    const agent = baseAgent({
+      sessionState: 'recorded',
+      stalled: true,
+      lastToolCallAt: new Date(NOW - VERDICT_SPEAKING_FRESH_MS - 1_000).toISOString(),
+    });
+    const m = projectMember(agent, NOW);
+    expect(m.stalled).toBe(true);
+  });
+
+  it('leaves stalled:false untouched when the member is speaking and not actually claim-stalled', () => {
+    const agent = baseAgent({
+      stalled: false,
+      lastToolCallAt: new Date(NOW - 1_000).toISOString(),
+    });
+    const m = projectMember(agent, NOW);
+    expect(m.stalled).toBe(false);
   });
 
   it('collapses claims to queuedCount/load and bounded work-item ids, never the full claim records', () => {

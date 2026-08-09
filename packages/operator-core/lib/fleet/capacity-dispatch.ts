@@ -99,6 +99,18 @@ export interface AccountPoolAvailability {
    */
   edgeThrottledRearming?: boolean;
   /**
+   * EI-19932168784507536: how many of `total` are excluded from actual routing by the owner's
+   * session-account-override allow-list/exclude-list (account-session-override.ts), even though
+   * they read `available`/`usable` by pool-health alone. The spawn admission path (spawn-env.ts
+   * resolveSpawnGatewayEnv) enforces this SAME override and refuses these accounts outright — a
+   * refusal that lands in 4-5ms with exit_code:null, before any real work starts. Without this,
+   * `usable`/`available` silently overcounted an account that pool-health calls healthy but that
+   * every real spawn into it would be rejected for, so the capacity oracle reported an abundant
+   * pool while admission refused every route into the excluded slice. Optional, same
+   * fail-safe-omit contract as the other optional fields here.
+   */
+  overrideExcludedCount?: number;
+  /**
    * EI-19281217347369076 / EI-19928050541357086: how many of `total` accounts have an UNRELIABLE
    * reading feeding their `available`/`usageWalled`/`utilization` verdict — EITHER a recent,
    * UNRESOLVED `accounts:probe-capacity` 'no-reading' failure (`lastProbeFailedAt` set — the probe
@@ -425,6 +437,15 @@ export interface CapacityReport {
   /** Real available accounts (`available`, ignoring edge-throttle) from the account-pool projection, when
    *  supplied. null when no cross-check was passed. */
   availableAccounts: number | null;
+  /**
+   * EI-19932168784507536: how many provider accounts are excluded from routing by the owner's
+   * session-account-override (allow-list/exclude-list) — already subtracted OUT of `usableAccounts`/
+   * `availableAccounts` above, so this is visibility, not a further adjustment. A nonzero value here
+   * while `poolExhausted`/`degraded` look surprising is the tell that the pool is smaller than raw
+   * pool-health would suggest because the owner has steered spawns away from part of it. null when no
+   * cross-check was passed or the accountAvailability omitted the count.
+   */
+  overrideExcludedAccounts: number | null;
   /** LOUD contradiction flag (EI-12282): the gateway reports spare bee slots (dispatchBudget > 0) while the
    *  real account pool has ZERO usable accounts for the provider — a fresh spawn will die on its first call.
    *  When true, `factor` is forced to 0, `recommendedHeadroom` to the floor, and `advice` is the loud hold. */
@@ -510,6 +531,7 @@ export function buildCapacityReport(
       dispatchBudget: null,
       usableAccounts: opts.accountAvailability?.usable ?? null,
       availableAccounts: opts.accountAvailability?.available ?? null,
+      overrideExcludedAccounts: opts.accountAvailability?.overrideExcludedCount ?? null,
       poolExhausted: false,
       sustainedlyLimitedAccounts: opts.accountAvailability?.sustainedlyLimitedCount ?? null,
       degraded: false,
@@ -677,6 +699,7 @@ export function buildCapacityReport(
     dispatchBudget,
     usableAccounts: acct?.usable ?? null,
     availableAccounts: acct?.available ?? null,
+    overrideExcludedAccounts: acct?.overrideExcludedCount ?? null,
     poolExhausted,
     sustainedlyLimitedAccounts: acct?.sustainedlyLimitedCount ?? null,
     degraded,

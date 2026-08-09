@@ -204,12 +204,17 @@ async function buildMissDiagnosis(args: {
     // Mirror getNextForBee's own check order: this guard fires before concurrency.
     if (rec?.source === 'default' && rec.fleetSlug) {
       return {
+        // EI-19931420102632438: this is a PRE-LANE refusal — the claim lane was never
+        // evaluated — so the headline must not claim anything about lane contents (the
+        // old `${STATIC}. Diagnosis: …` prefix read as "the lane is empty", which is a
+        // statement about a different subsystem than the one that actually refused).
         error:
-          `${STATIC}. Diagnosis: you are mid-fleet-transition — your latest membership fact names ` +
+          `blocked: you are mid-fleet-transition — your latest membership fact names ` +
           `fleet '${rec.fleetSlug}' but no valid per-bee or inherited fleet claim spec exists, so ` +
-          `self-select fails CLOSED (WI-4770) regardless of pool size. Escape: have the leader install ` +
-          `the fleet sentinel (scheduler:set_claim_spec { fleet }), set your own per-bee spec, or ` +
-          `fleet:leave to settle to solo default pulls.`,
+          `self-select fails CLOSED (WI-4770) regardless of pool size. (The claim lane itself was ` +
+          `NOT evaluated — this is not a statement about lane contents.) Escape: have the leader ` +
+          `install the fleet sentinel (scheduler:set_claim_spec { fleet }), set your own per-bee ` +
+          `spec, or fleet:leave to settle to solo default pulls.`,
         diagnosis: { fleetTransitionBlocked: true, fleetSlug: rec.fleetSlug },
       };
     }
@@ -238,10 +243,17 @@ async function buildMissDiagnosis(args: {
     }).catch(() => null);
     if (concurrency?.blocked) {
       return {
+        // EI-19931420102632438: same pre-lane-refusal fix as the fleet-transition branch
+        // above — lead with the CAP, never with the lane-empty STATIC phrase. A caller
+        // refused on its own concurrency cap had the lane never consulted at all, and the
+        // old `${STATIC}. Diagnosis: …` prefix produced a confident, plausible, WRONG claim
+        // about lane contents (measured: it manufactured a fleet-wide false starvation
+        // alarm — the member quoted the headline verbatim, the lane was healthy).
         error:
-          `${STATIC}. Diagnosis: you already hold ${concurrency.activeClaims}/${concurrency.maxConcurrentClaims} ` +
+          `claim cap reached: you already hold ${concurrency.activeClaims}/${concurrency.maxConcurrentClaims} ` +
           `concurrent claim(s) — release or complete one before claiming another; ` +
-          `held: ${concurrency.heldIds.join(', ')}.`,
+          `held: ${concurrency.heldIds.join(', ')}. (The claim lane itself was NOT evaluated — this is ` +
+          `not a statement about lane contents.)`,
         diagnosis: {
           concurrencyBlocked: true,
           activeClaims: concurrency.activeClaims,

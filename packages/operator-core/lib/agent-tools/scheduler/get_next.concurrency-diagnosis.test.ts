@@ -99,7 +99,7 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
     const b = await callMiss();
 
     expect(b.ok).toBe(false);
-    expect(b.error).toMatch(/you already hold 1\/1 concurrent claim\(s\)/);
+    expect(b.error).toMatch(/claim cap reached: you already hold 1\/1 concurrent claim\(s\)/);
     expect(b.error).toMatch(/held: EI-10058/);
     expect(b.diagnosis).toMatchObject({
       concurrencyBlocked: true,
@@ -111,6 +111,31 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
     // pool/floor admissibility stats that misled the live incident this closes.
     expect(diagnoseM).not.toHaveBeenCalled();
     expect(explainFloorsM).not.toHaveBeenCalled();
+  });
+
+  it('EI-19931420102632438: never leads a concurrency-blocked refusal with the lane-empty STATIC phrase', async () => {
+    // The refusal is PRE-LANE — the claim lane was never consulted — so the headline must
+    // never read as a statement about lane contents. This is the exact false-alarm shape a
+    // fleet leader hit live: the member quoted the old headline verbatim as "282 claimable,
+    // 0 returned", a healthy 9-agent lane included, because the string LOOKED like a lane
+    // verdict even though only the caller's own concurrency cap was ever evaluated.
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup',
+      spec: { specId: 'x', revision: 1, limits: { maxConcurrentClaims: 1 } },
+      revision: 1,
+      updatedBy: null,
+      updatedAt: null,
+    });
+    readClaimConcurrencyM.mockResolvedValue(
+      evaluateClaimConcurrency({ activeClaims: [{ id: 'EI-10058' }], maxConcurrentClaims: 1 }),
+    );
+
+    const b = await callMiss();
+
+    expect(b.error).not.toMatch(/no claimable work-item matched your spec within the floors/);
+    // The fix must be additive, not merely different wording: the cap facts stay present.
+    expect(b.error).toMatch(/1\/1/);
+    expect(b.error).toMatch(/EI-10058/);
   });
 
   it('names EVERY held id when a spec authorizes more than one concurrent claim', async () => {

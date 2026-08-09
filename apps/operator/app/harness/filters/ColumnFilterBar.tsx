@@ -332,6 +332,7 @@ export function ColumnFilterBar<TRow>({
   clearAll,
   layout = 'compact',
   inlineMax = 8,
+  promote,
 }: {
   controller: ColumnFilterController<TRow>;
   activeChips: { colKey: string; label: string; clear: () => void }[];
@@ -350,6 +351,22 @@ export function ColumnFilterBar<TRow>({
   /** In 'facets' layout, the max enum options rendered inline before a column
    *  collapses to a picker-chip (default 8, mirroring ENUM_SEARCH_THRESHOLD). */
   inlineMax?: number;
+  /**
+   * Column keys ALWAYS shown in 'compact' layout as a visible, labelled picker-chip,
+   * even when inactive — i.e. promoted out of the `+Add filter…` dropdown into a
+   * first-class axis, without paying for the full 'facets' bar.
+   *
+   * WHY THIS EXISTS rather than "just use layout='facets'" (dep-graph-design-pass-2
+   * P-002): facets renders EVERY filterable column as a group. On the dependency-graph
+   * pane that is ten groups competing with the pane's own six status chips, and the one
+   * column that actually needed promoting — Plan — has more options than `inlineMax`,
+   * so facets would collapse it to a picker-chip anyway. The bar would get materially
+   * busier and the target axis would look exactly the same. Promotion is the smaller,
+   * more precise instrument: one axis becomes visible, the rest stay in the dropdown.
+   *
+   * Ignored in 'facets' layout, where every column is visible by construction.
+   */
+  promote?: readonly string[];
 }) {
   // Gate the WHOLE bar behind the flag — when off, render nothing (the panel
   // still lists unfiltered rows). Hook order is stable: useFlag + useState run
@@ -488,17 +505,53 @@ export function ColumnFilterBar<TRow>({
     );
   }
 
+  // Promoted-but-inactive columns get their own visible chip below, so they must NOT
+  // also appear in the Add-filter dropdown — one axis, one control. An ACTIVE promoted
+  // column is already rendered by `activeChips`, so it is excluded from both.
+  const promotedKeys = new Set(promote ?? []);
+  const promotedInactive = controller.filterableColumns.filter(
+    (c) => promotedKeys.has(c.key) && !activeKeys.has(c.key),
+  );
+  const promotedInactiveKeys = new Set(promotedInactive.map((c) => c.key));
+
   const addOptions = [
     { value: ADD_FILTER, label: 'Add filter…', disabled: true },
-    ...addable.map((c) => ({
-      value: c.key,
-      label: headerText(c as FilterableColumn<unknown>),
-    })),
+    ...addable
+      .filter((c) => !promotedInactiveKeys.has(c.key))
+      .map((c) => ({
+        value: c.key,
+        label: headerText(c as FilterableColumn<unknown>),
+      })),
   ];
 
   return (
     <div className="pc-advpanel__filterbar">
       <ListFilter size={13} aria-hidden style={{ color: 'var(--fg-mute, #7f9bb4)', flexShrink: 0 }} />
+
+      {/*
+        PROMOTED AXES (dep-graph-design-pass-2 P-002) — rendered FIRST, before the active
+        chips, so a promoted axis holds a stable position instead of jumping as other
+        filters come and go. Same picker-chip and same shared editor popover the facets
+        layout uses for a high-cardinality column; the only difference is that this one
+        is visible while inactive, which is the entire point — an axis nobody knows is
+        filterable is not a filter.
+      */}
+      {promotedInactive.map((col) => {
+        const label = headerText(col as FilterableColumn<unknown>);
+        return (
+          <Tooltip key={col.key} label={`Filter by ${label}`}>
+            <button
+              type="button"
+              className="pc-advpanel__chip"
+              aria-pressed={false}
+              onClick={() => openEditor(col.key)}
+            >
+              {label}
+              <ChevronDown size={11} aria-hidden />
+            </button>
+          </Tooltip>
+        );
+      })}
 
       {activeChips.map((chip) => (
         <Tooltip key={chip.colKey} label="Edit filter"><button

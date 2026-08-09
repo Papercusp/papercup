@@ -307,6 +307,32 @@ export function buildDepSubgraph(opts: {
    * behaviour, so the caller must state it.
    */
   filterActive?: boolean;
+  /**
+   * The ids that SURVIVED the caller's filter — the whole filtered node set, INCLUDING
+   * endpoints that exist only in the edge payload. Ignored unless `filterActive`.
+   *
+   * ⚠ WHY THIS IS NOT INFERRABLE FROM `items`, AND WHY GETTING IT WRONG EMPTIES THE PANE.
+   * `items` is the list's 500-row `updated_ts DESC` window; the GRAPH's node corpus is
+   * strictly larger, because WI-36045 made every edge carry its endpoints so an
+   * out-of-window node is still drawable. Testing the drop rule against `items` therefore
+   * filters the graph by a corpus it does not draw from — and the two disagree by an
+   * order of magnitude in practice. Measured live on `papercusp` 2026-08-09: 129 nodes,
+   * of which only **14** were in the window. Filtering to a plan whose items all fall
+   * outside it dropped **84 of 84** edges and rendered "No work items match the active
+   * filters" — for a plan with 11 nodes and 8 edges genuinely present in the graph. Eight
+   * of the harness's twelve plans behaved that way; the one that worked was simply the
+   * most recently touched.
+   *
+   * The caller is the ONLY party that can compute this: it alone knows the filter specs,
+   * and it alone can synthesise a filterable row for an edge-carried endpoint. So it is
+   * stated, not guessed — the same contract, and for the same reason, as `filterActive`
+   * directly above.
+   *
+   * Omitted ⇒ falls back to `items` membership, i.e. the pre-fix behaviour. That fallback
+   * exists so a caller that has not opted in still type-checks, NOT because it is safe:
+   * any caller whose edges hydrate endpoints must pass this.
+   */
+  filteredIds?: ReadonlySet<string>;
 }): DepSubgraph {
   const budget = opts.budget ?? DEP_GRAPH_NODE_BUDGET;
   const byId = new Map(opts.items.map((i) => [i.id, i]));
@@ -336,6 +362,9 @@ export function buildDepSubgraph(opts: {
   /** An item row by id, from the list's page first, then the edge-carried fallback. */
   const itemFor = (id: string): DepGraphItem | undefined => byId.get(id) ?? hydrated.get(id);
 
+  /** Membership oracle for the edge-drop rule below. See `filteredIds`. */
+  const survivors: { has: (id: string) => boolean } = opts.filteredIds ?? byId;
+
   // Edges first: they define which nodes are interesting. A dangling blocker becomes a
   // PLACEHOLDER node so the break is visible in the picture rather than an edge to nowhere.
   const allEdges: DepGraphEdge[] = [];
@@ -347,7 +376,11 @@ export function buildDepSubgraph(opts: {
     // A filter is the ONE legitimate reason to drop an edge: keep it when either endpoint
     // survived the user's filter, so a filtered view still shows what blocks the rows it
     // selected (a dependency view that hides the blockers is not a dependency view).
-    if (opts.filterActive && !byId.has(e.blockedId) && !byId.has(sourceId)) {
+    //
+    // `survivors` is the caller's stated filtered set when it supplied one, and `byId`
+    // (the list's window) only as the documented fallback — see `filteredIds`. Both a Set
+    // and a Map answer `.has(id)`, so the two shapes unify with no copying.
+    if (opts.filterActive && !survivors.has(e.blockedId) && !survivors.has(sourceId)) {
       filteredEdgeCount++;
       continue;
     }

@@ -42,7 +42,7 @@
  * able to tell "nothing to show" from "too much to show".
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
@@ -80,6 +80,29 @@ const NODE_W = 210;
 const NODE_H = 46;
 
 /**
+ * Filter columns promoted to a visible axis on this pane's bar (P-002).
+ *
+ * Only Plan. On a dependency graph "which plan is this" is the organising question, and
+ * the owner asked for a plan filter against a pane that already had one — which is what a
+ * control reachable only by opening a `+Add filter…` dropdown earns. Promoting more would
+ * re-create the crowded bar that `layout='facets'` was rejected for.
+ */
+const PROMOTED_FILTERS = ['plan'] as const;
+
+/**
+ * The row fields an EDGE carries for its endpoints (WI-36045), and therefore the only
+ * columns a filter can judge for a node outside the list's 500-row page.
+ *
+ * Everything else on a synthesised row is null, so a filter on it would exclude every
+ * out-of-page node — silently, and on the basis of a field that was never fetched rather
+ * than a value that failed to match. The pane counts the active filters in that position
+ * and SAYS SO instead (see `filterScopeGap`): this is the one place the filter's corpus is
+ * still narrower than the graph's, and the last bug here cost a week precisely because a
+ * scope mismatch had no counter to make it visible.
+ */
+const EDGE_CARRIED_FILTER_KEYS = new Set(['id', 'title', 'kind', 'state', 'plan']);
+
+/**
  * How many title characters fit on one node line, at the node's width and the 11px
  * title size. Deliberately DERIVED from NODE_W rather than a second hardcoded number
  * (the pair went out of sync at 190px/28ch, which is why titles truncated so hard —
@@ -105,6 +128,93 @@ function stateBucket(state: string): 'done' | 'bad' | 'active' | 'open' {
   if (STATE_BAD.has(state)) return 'bad';
   if (STATE_ACTIVE.has(state)) return 'active';
   return 'open';
+}
+
+/**
+ * THE LEGEND (P-005) — the key for the pane's six visual encodings.
+ *
+ * The previous pass ADDED two of these marks (arrowheads, state dots) and made a third
+ * legible again (satisfied edges) without adding a key for any of them. Encodings without
+ * a key is a legibility regression dressed as an improvement, and is the leading candidate
+ * for the owner's "still looks glitchy": a reader who cannot decode a mark does not
+ * conclude "I lack the key", they conclude the picture is broken.
+ *
+ * ⚠ EVERY SWATCH REUSES THE REAL MARK'S OWN CLASS — never a hardcoded colour or a
+ * look-alike shape. A legend that restates the encoding in its own styling is a SECOND
+ * source of truth for it, and the two drift the first time a token moves; then the legend
+ * is not merely stale but actively lying, which is worse than having none. Drawing the
+ * real classes at small size makes drift structurally impossible, and it satisfies
+ * `lint:design-primitives` / the css-tokens test for free.
+ */
+function LegendSwatch({ children }: { children: React.ReactNode }) {
+  return (
+    <svg width={26} height={12} aria-hidden className="pc-depgraph__legendswatch">
+      {children}
+    </svg>
+  );
+}
+
+function DepGraphLegend() {
+  /**
+   * One edge swatch: the stroke in its real class, plus the arrowhead drawn INLINE in its
+   * real class.
+   *
+   * The arrowhead is drawn rather than referenced through `markerEnd`. The live markers
+   * live in the canvas SVG's own `<defs>` under pane-scoped ids, and a cross-`<svg>`
+   * `url(#…)` reference is exactly the kind of thing WebKit resolves unevenly — the same
+   * reasoning that made the canvas use three explicit markers instead of one SVG2
+   * `context-stroke` marker. An arrowhead that silently fails to render in the KEY would
+   * be self-defeating. Same classes either way, so the swatch still cannot drift.
+   */
+  const edge = (variant: 'default' | 'satisfied' | 'dangling') => (
+    <LegendSwatch>
+      <path
+        d="M 1 6 L 17 6"
+        className={variant === 'default' ? 'pc-depgraph__edge' : `pc-depgraph__edge pc-depgraph__edge--${variant}`}
+      />
+      <path
+        d="M 17 3 L 23 6 L 17 9 z"
+        className={`pc-depgraph__arrowhead pc-depgraph__arrowhead--${variant}`}
+      />
+    </LegendSwatch>
+  );
+  return (
+    <ul className="pc-depgraph__legend" aria-label="Key to the dependency graph's marks">
+      <li>
+        {edge('default')}
+        <span>blocks (arrow points to the blocked item)</span>
+      </li>
+      <li>
+        {edge('satisfied')}
+        <span>blocker already done — gates nothing</span>
+      </li>
+      <li>
+        {edge('dangling')}
+        <span>broken — blocker resolves to no item</span>
+      </li>
+      <li>
+        <LegendSwatch>
+          <rect x={1} y={1} width={24} height={10} rx={3} className="pc-depgraph__node pc-depgraph__node--dangling" />
+        </LegendSwatch>
+        <span>placeholder for that missing blocker</span>
+      </li>
+      <li>
+        <LegendSwatch>
+          <rect x={1} y={1} width={24} height={10} rx={3} className="pc-depgraph__node" />
+          <rect x={1} y={1} width={3} height={10} rx={1.5} className="pc-depgraph__node-planmark" />
+        </LegendSwatch>
+        <span>came from a plan</span>
+      </li>
+      <li>
+        <LegendSwatch>
+          {(['done', 'active', 'bad', 'open'] as const).map((b, i) => (
+            <circle key={b} cx={4 + i * 6} cy={6} r={2.5} className={`pc-depgraph__node-state pc-depgraph__node-state--${b}`} />
+          ))}
+        </LegendSwatch>
+        <span>item state: done · active · blocked · open</span>
+      </li>
+    </ul>
+  );
 }
 
 interface Positioned {
@@ -160,6 +270,16 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   );
   const healthOnly = health === 'issues';
 
+  // LEGEND VISIBILITY (P-005). nuqs, not useState: it is user-meaningful (it changes what
+  // the pane shows), so it must be linkable and readable by `ui:get_state` like every
+  // other axis here. Default ON — a key the reader has to discover and open explains
+  // nothing, and "the marks are unexplained" is the complaint this item exists to answer.
+  const [legend, setLegend] = useQueryState(
+    'dgk',
+    parseAsStringEnum(['on', 'off']).withDefault('on'),
+  );
+  const legendOpen = legend === 'on';
+
   // SAME queryName + SAME limit as WorkItemsPanel ⇒ one shared subscription (see header).
   const itemsQuery = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
@@ -186,12 +306,102 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   //
   // Declared BEFORE the early returns below — hooks must run unconditionally.
   const filterColumns = useMemo(() => workItemFilterColumns(), []);
-  const cf = useColumnFilters(filterColumns, items ?? [], { ns: WORK_ITEM_FILTER_NS });
+
+  // ── THE FILTER'S CORPUS MUST BE THE GRAPH'S CORPUS, NOT THE LIST'S WINDOW ──────────
+  // This plan's D-001/D-002. `items` is the list's 500-row `updated_ts DESC` page; the
+  // graph draws a strictly LARGER set, because WI-36045 made every edge carry its
+  // endpoints so an out-of-window node is still drawable. Filtering — and, just as badly,
+  // DERIVING THE FILTER'S OPTIONS — from `items` alone therefore judges the graph by a
+  // corpus it does not draw from.
+  //
+  // Measured live on `papercusp` 2026-08-09, and this is not a rounding error: 129 graph
+  // nodes spanning 12 plans, of which only **14** nodes and **5** plans were inside the
+  // window. So 9 of 12 plans were absent from the Plan dropdown ENTIRELY — not buried in
+  // it — and filtering to any of the 8 plans with no in-window item dropped 84 of 84
+  // edges and rendered "No work items match the active filters" for a plan with 11 nodes
+  // and 8 edges genuinely on screen a moment earlier. The one plan that worked was simply
+  // the most recently touched, which is exactly the shape that lets a defect survive
+  // casual testing: you check the plan you just worked on, and it is fine.
+  //
+  // The fix is to filter over `items` ∪ the endpoint rows the edges already carry. It
+  // costs no fetch (that payload is loaded), needs no resolver change, and keeps ONE
+  // shared `wif` param — the list pane and this pane still read and write the same
+  // filters; this pane just applies them to everything it actually draws.
+  const listIds = useMemo(() => new Set((items ?? []).map((i) => i.id)), [items]);
+  const filterCorpus = useMemo<WorkItemRow[]>(() => {
+    if (!items) return [];
+    if (!edgeRows) return items;
+    // Only the fields an edge carries are populated; the rest are null. That is the
+    // honest shape — see the `filterScopeGap` note below, which SAYS SO in the pane
+    // rather than letting a filter on an unpopulated column silently exclude nodes.
+    const extra = new Map<string, WorkItemRow>();
+    const add = (
+      id: string | null,
+      kind: string | null | undefined,
+      title: string | null | undefined,
+      state: string | null | undefined,
+      planSlug: string | null | undefined,
+    ) => {
+      if (!id || listIds.has(id) || extra.has(id)) return;
+      extra.set(id, {
+        id,
+        kind: kind ?? 'unknown',
+        family: '',
+        title: title ?? id,
+        summary: null,
+        state: state ?? 'unknown',
+        assignee: null,
+        assignedBy: null,
+        severity: null,
+        priority: null,
+        rank: null,
+        planSlug: planSlug ?? null,
+        spineRole: null,
+        spineStatus: null,
+        updatedAt: '',
+        origin: null,
+        auditVerdict: null,
+        verifiedAuthorGithubUserId: null,
+      });
+    };
+    for (const e of edgeRows) {
+      add(e.blockedId, e.blockedKind, e.blockedTitle, e.blockedStatus, e.blockedPlanSlug);
+      add(e.blockerId, e.blockerKind, e.blockerTitle, e.blockerStatus, e.blockerPlanSlug);
+    }
+    return extra.size === 0 ? items : [...items, ...extra.values()];
+  }, [items, edgeRows, listIds]);
+
+  const cf = useColumnFilters(filterColumns, filterCorpus, { ns: WORK_ITEM_FILTER_NS });
+
+  /**
+   * Every id that survived the filter, across the WHOLE graph corpus — what the model
+   * tests its edge-drop rule against (`filteredIds`). Distinct from `visibleItems`
+   * below, and deliberately so.
+   */
+  const filteredIds = useMemo(() => new Set(cf.rows.map((r) => r.id)), [cf.rows]);
+
+  /**
+   * How many ACTIVE filters sit on a column an edge-carried row cannot populate — i.e.
+   * how many of the user's filters are currently unable to judge an out-of-page node.
+   * Zero in the common case (Plan, State, Kind are all carried); non-zero is disclosed
+   * on the bar rather than silently narrowing the graph.
+   */
+  const filterScopeGap = useMemo(
+    () => cf.activeChips.filter((c) => !EDGE_CARRIED_FILTER_KEYS.has(c.colKey)).length,
+    [cf.activeChips],
+  );
 
   // The graph is built from the FILTERED rows, so a filter genuinely shrinks the
   // node set the budget is measured against — filtering is the primary way a reader
   // gets a clipped graph back under budget (see the truncation chip below).
-  const visibleItems = items == null ? null : cf.rows;
+  //
+  // ⚠ Narrowed back to rows the LIST actually returned, on purpose. Handing the model the
+  // widened corpus would work — and would silently disable its endpoint-hydration path,
+  // collapsing `hydratedNodeCount` to 0 and taking the honest "N outside the list's
+  // current page" chip off screen with it. That chip is how a reader learns why a node
+  // they can see is not in the list beside it; deleting the disclosure that made the last
+  // bug findable, in the course of fixing that same bug, is not a trade worth making.
+  const visibleItems = items == null ? null : cf.rows.filter((r) => listIds.has(r.id));
 
   const graph = useMemo(() => {
     if (!visibleItems || !edgeRows) return null;
@@ -210,8 +420,16 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
       // WI-36045: the model must not guess why `items` is a subset of the corpus. Only the
       // caller knows whether the user filtered, or whether this is just the list's window.
       filterActive: cf.hasActive,
+      // …and only the caller can say WHICH nodes survived that filter, because only it can
+      // build a filterable row for an edge-carried endpoint (see `filterCorpus` above).
+      filteredIds,
     });
-  }, [visibleItems, edgeRows, selectedId, healthOnly, cf.hasActive]);
+  }, [visibleItems, edgeRows, selectedId, healthOnly, cf.hasActive, filteredIds]);
+
+  // FOCUS (P-006). Hover is render-only, transient, and not user-meaningful state, so it
+  // is the documented `useState` case rather than nuqs — unlike `sel`, nobody wants to
+  // link someone to "the node I was hovering". Selection is still the URL's job.
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   const [positioned, setPositioned] = useState<Positioned | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -325,6 +543,80 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [selectedId, clearSelection]);
 
+  /**
+   * P-007 — SCROLL THE SELECTION INTO VIEW when `sel` changes from OUTSIDE this pane.
+   *
+   * Clicking a row in the list pane writes `sel`, which re-scopes this graph to that
+   * item's connected component. But the canvas is far wider than the viewport, so if the
+   * node lands off-screen the visible region does not change at all — and the honest
+   * reading of an unchanged view is "nothing happened". The pane was working; it just had
+   * no way to say so.
+   *
+   * Runs off `positioned` as well as `selectedId` because the coordinates do not exist
+   * until ELK resolves: on a selection that triggers a re-layout, the effect fires once
+   * with no position and again with one. `block/inline: 'center'` rather than 'nearest'
+   * so the node arrives with its neighbours around it — the point is the lineage, not the
+   * card. Guarded by `scrollWidth > clientWidth` so it can never steal scroll on a canvas
+   * that already fits.
+   */
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!selectedId || !positioned) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (canvas.scrollWidth <= canvas.clientWidth && canvas.scrollHeight <= canvas.clientHeight) {
+      return;
+    }
+    const node = canvas.querySelector(`[data-node-id="${CSS.escape(selectedId)}"]`);
+    node?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+  }, [selectedId, positioned]);
+
+  /**
+   * FOCUS SETS (P-006) — the node under focus, its immediate neighbours, and the edges
+   * incident to it. Everything else is de-emphasised in CSS.
+   *
+   * At 84 edges crossing a 129-node layered DAG, tracing one item's lineage by eye is the
+   * pane's hardest task and the biggest reason it reads as a grid of cards rather than a
+   * graph. Hover leads selection: hovering is a question ("what does THIS touch?") and
+   * answering it must not require committing to a click that also re-scopes the graph and
+   * drives two other panes.
+   *
+   * ⚠ Emphasis is bought with CONTRAST and OPACITY only — never stroke weight. That is
+   * the predecessor plan's D-001, from the owner's "the edges are much too big"; a focus
+   * mode that thickens the focused edges would re-introduce the exact complaint that
+   * decision settled, one interaction later.
+   */
+  const focusId = hoveredId ?? (selectedId || null);
+  const focus = useMemo(() => {
+    if (!focusId || !positioned) return null;
+    const neighbours = new Set<string>([focusId]);
+    const edgeIds = new Set<string>();
+    for (const e of positioned.edges) {
+      if (e.source === focusId) {
+        neighbours.add(e.target);
+        edgeIds.add(e.id);
+      } else if (e.target === focusId) {
+        neighbours.add(e.source);
+        edgeIds.add(e.id);
+      }
+    }
+    // A node with no edges at all would dim the ENTIRE graph to highlight one card —
+    // strictly worse than not focusing. Only engage when there is a relationship to show.
+    if (edgeIds.size === 0) return null;
+    return { neighbours, edgeIds };
+  }, [focusId, positioned]);
+
+  /**
+   * The deepest blocker chain on screen (P-009). The model documents depth as "the signal
+   * this pane exists to surface" — a seven-deep chain served as claimable was the
+   * subsystem's worst escape (EI-9108) — yet nothing on screen has ever STATED it, so the
+   * one number the pane was built to reveal had to be counted by eye off the layout.
+   */
+  const maxDepth = useMemo(
+    () => (positioned?.nodes ?? []).reduce((m, n) => Math.max(m, n.depth), 0),
+    [positioned],
+  );
+
   /** Unique per mounted pane — two panes in one dock must not share arrowhead marker ids. */
   const rawUid = useId();
   const uid = rawUid.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -401,6 +693,17 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
           filters
         </span>
       )}
+      {maxDepth > 0 && (
+        // P-009 — STATE THE DEPTH. This is the number the pane exists to surface, and
+        // until now the only way to get it was to count layers by eye across a canvas
+        // wider than the viewport. It is deliberately a WORDED chip, not a seventh visual
+        // encoding on the node: the pane's legibility problem is already six unexplained
+        // marks (P-005), and adding a mark to fix "depth is invisible" would trade one
+        // instance of that problem for another.
+        <span className="pc-advpanel__chip">
+          deepest chain: {maxDepth} blocker{maxDepth === 1 ? '' : 's'}
+        </span>
+      )}
       {graph.hydratedNodeCount > 0 && (
         // Not a warning: these are real rows, drawn from the same work_items rows the list
         // reads, that simply fall outside its recency window. Stated so a reader is never
@@ -443,13 +746,53 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
       >
         Issues only
       </button>
-      {/* Same control, same `wif` param, same columns as the list pane (P-010). */}
+      <button
+        type="button"
+        className="pc-advpanel__chip"
+        aria-pressed={legendOpen}
+        aria-label={
+          legendOpen
+            ? 'Key — showing what each line and mark in the graph means. Activate to hide it.'
+            : 'Key — show what each line and mark in the graph means.'
+        }
+        onClick={() => void setLegend(legendOpen ? 'off' : 'on')}
+      >
+        Key
+      </button>
+      {/* Same control, same `wif` param, same columns as the list pane (P-010).
+          `promote={['plan']}` (P-002) lifts Plan out of the `+Add filter…` dropdown into a
+          visible labelled axis — the owner asked for "a plan filter" against a pane that
+          already had one, which is what an invisible control earns. Only Plan is promoted:
+          on a dependency graph, "which plan is this" is the question the pane is for. */}
       <ColumnFilterBar
         controller={cf.controller}
         activeChips={cf.activeChips}
         hasActive={cf.hasActive}
         clearAll={cf.clearAll}
+        promote={PROMOTED_FILTERS}
       />
+      {cf.hasActive && (
+        // P-004 — SAY WHAT THE FILTER DID, the way the corpus rule is stated above.
+        // With a filter active an edge survives if EITHER endpoint matches, so filtering
+        // to a plan shows that plan's items PLUS whatever gates them from outside it.
+        // That is the right semantic for a dependency view — "this plan, and what blocks
+        // it" — but it is not guessable from the picture, and a reader who assumes strict
+        // membership will read those extra nodes as a bug.
+        <span className="pc-depgraph__note">
+          Showing matching items and whatever blocks them
+        </span>
+      )}
+      {filterScopeGap && (
+        // The ONE place the filter's corpus is still narrower than the graph's, stated
+        // rather than left to be discovered (D-002). Edge-carried rows have only
+        // title/kind/state/plan, so filtering on a column they lack cannot judge them —
+        // and silently excluding a node because a field was never fetched is precisely
+        // the "absence rendered as zero" failure this pane is built to avoid.
+        <span className="pc-advpanel__chip pc-depgraph__chip--warn" role="status">
+          {filterScopeGap} filter{filterScopeGap === 1 ? '' : 's'} cannot judge items outside
+          the list&rsquo;s page — those are excluded
+        </span>
+      )}
     </div>
   );
 
@@ -468,8 +811,14 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
           // it is the EDGE set that came up empty. Name the empty thing, because the two
           // cases need different next actions: widen the filter vs. there is no dependency
           // story here to tell.
-          visibleItems && visibleItems.length > 0
-          ? `None of the ${visibleItems.length.toLocaleString()} items matching the active filters have dependencies.`
+          // ⚠ COUNT OVER `cf.rows`, NOT `visibleItems`. `visibleItems` is narrowed to rows
+          // the LIST returned, so before D-002 this branch reported "No work items match"
+          // whenever the matches all fell outside the list's 500-row window — measured
+          // live: a plan with 11 nodes and 8 edges on screen produced exactly that
+          // sentence. It is the WRONG diagnosis, not merely an unhelpful one: it sends the
+          // reader to widen a filter that was never too narrow.
+          cf.rows.length > 0
+          ? `None of the ${cf.rows.length.toLocaleString()} items matching the active filters have dependencies.`
           : 'No work items match the active filters.'
         : items && items.length === 0
           ? 'No work items for this harness.'
@@ -490,6 +839,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   return (
     <div className="pc-advpanel pc-depgraph">
       {bar}
+      {legendOpen && <DepGraphLegend />}
 
       {layoutError && <div className="pc-advpanel__empty">Layout failed: {layoutError}</div>}
 
@@ -516,7 +866,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
         ))}
       </ul>
 
-      <div className="pc-depgraph__canvas">
+      <div className="pc-depgraph__canvas" ref={canvasRef}>
         {positioned && (
           <svg
             width={Math.max(positioned.width, 1)}
@@ -572,15 +922,22 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                 const y2 = b.y + NODE_H / 2;
                 const mid = (x1 + x2) / 2;
                 const variant = e.dangling ? 'dangling' : e.satisfied ? 'satisfied' : 'default';
+                // P-006: emphasis by CONTRAST, never weight (D-001). The focused edges
+                // keep their hairline stroke and gain opacity; the rest recede.
+                const focusClass = !focus
+                  ? ''
+                  : focus.edgeIds.has(e.id)
+                    ? ' pc-depgraph__edge--focus'
+                    : ' pc-depgraph__edge--dim';
                 return (
                   <path
                     key={e.id}
                     d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
                     markerEnd={`url(#pc-dg-arrow-${variant}-${uid})`}
                     className={
-                      variant === 'default'
+                      (variant === 'default'
                         ? 'pc-depgraph__edge'
-                        : `pc-depgraph__edge pc-depgraph__edge--${variant}`
+                        : `pc-depgraph__edge pc-depgraph__edge--${variant}`) + focusClass
                     }
                   />
                 );
@@ -590,11 +947,26 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
               {positioned.nodes.map((n) => (
                 <g
                   key={n.id}
+                  // P-007's scroll target. A data attribute rather than an `id`: two panes
+                  // can hold the same node in one dock, and duplicate DOM ids would make
+                  // the query resolve into whichever pane happened to mount first.
+                  data-node-id={n.id}
                   transform={`translate(${n.x}, ${n.y})`}
                   className={`pc-depgraph__node${n.dangling ? ' pc-depgraph__node--dangling' : ''}${
                     n.planSlug ? ' pc-depgraph__node--plan' : ''
-                  }${n.id === selectedId ? ' pc-depgraph__node--selected' : ''}`}
+                  }${n.id === selectedId ? ' pc-depgraph__node--selected' : ''}${
+                    // P-006 — a node is emphasised when it is the focus or a neighbour of
+                    // it, and receded otherwise. No class at all when nothing is focused,
+                    // so the default picture is untouched.
+                    !focus
+                      ? ''
+                      : focus.neighbours.has(n.id)
+                        ? ' pc-depgraph__node--focus'
+                        : ' pc-depgraph__node--dim'
+                  }`}
                   onClick={() => void setSelectedId(n.id)}
+                  onMouseEnter={() => setHoveredId(n.id)}
+                  onMouseLeave={() => setHoveredId((cur) => (cur === n.id ? null : cur))}
                 >
                   {/* The full title, unabridged, for the truncated card below. An SVG <title>
                       CHILD is not the `title=` ATTRIBUTE the design-primitives lint blocks on

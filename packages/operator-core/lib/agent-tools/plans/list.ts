@@ -460,6 +460,17 @@ export default defineTool({
     const compact =
       args.compact === true ||
       (aggregateOnly && !(groupBy && GROUP_KEYS_NEEDING_ITEMS.has(groupBy)));
+    // EI-19932192274787948: `status` (and `includeLegacy:false`) are filtered
+    // in JS AFTER the SQL fetch (below — the `draft` status must also match a
+    // NULL column for legacy plans, which the SQL `status = $1` filter used by
+    // listPlanIndexRows cannot express). Pushing `limit` into the SQL fetch
+    // while a JS-side post-filter is active bounds the PRE-filter row window
+    // (all statuses), so the post-filter can silently whittle a full `limit`
+    // window down to far fewer rows than actually match — a caller reads a
+    // well-formed, plausible, WRONG "complete" answer. Skip the limit pushdown
+    // whenever a JS-side post-filter could still drop rows; `limited` below
+    // (computed AFTER the JS filters run) re-applies the cap correctly.
+    const hasJsPostFilter = Boolean(args.status) || !includeLegacy;
     // Server-side recency/order/limit (pushed into the SQL, not post-filtered).
     // With `groupBy`, `limit` is NOT pushed down: the aggregate must see every
     // matched row, so the cap applies to the returned rows only (below).
@@ -471,7 +482,9 @@ export default defineTool({
         ? { updatedSince: resolveSince(args.updatedSince) }
         : {}),
       ...(args.order ? { order: args.order } : {}),
-      ...(args.limit && args.limit > 0 && !groupBy ? { limit: args.limit } : {}),
+      ...(args.limit && args.limit > 0 && !groupBy && !hasJsPostFilter
+        ? { limit: args.limit }
+        : {}),
     };
 
     // P-029: build the list of harness slugs to read.
@@ -525,7 +538,7 @@ export default defineTool({
       harnesses: [...perHarness].sort(),
     };
 
-    const { plans, groups, harnessCount, batchUnknown } = await cachedRead(
+    const { plans, groups, harnessCount, batchUnknown, truncated } = await cachedRead(
       ctx as CachedReadCtx,
       {
         tool: "plans:list",
@@ -787,12 +800,21 @@ export default defineTool({
         // so `augmentedRows` really is the full matched set.)
         const groups = groupBy ? buildGroups(augmentedRows, groupBy) : null;
 
+        // EI-19932192274787948 fix option 3: `augmentedRows` here is always the FULL
+        // matched-and-JS-filtered set (limit is never pushed into the SQL fetch when a
+        // JS post-filter is active — see hasJsPostFilter above — and the multi-harness
+        // fan-out re-slices globally after combining every harness's own capped batch).
+        // So comparing its length against `args.limit` reliably tells a caller whether
+        // the returned window is a true cap, rather than leaving that silently implicit.
+        const truncated = Boolean(
+          args.limit && args.limit > 0 && augmentedRows.length > args.limit,
+        );
         const limited =
           args.limit && args.limit > 0
             ? augmentedRows.slice(0, args.limit)
             : augmentedRows;
         const plans = aggregateOnly ? [] : limited;
-        return { plans, groups, harnessCount: batches.length, batchUnknown };
+        return { plans, groups, harnessCount: batches.length, batchUnknown, truncated };
       },
     );
 
@@ -807,6 +829,7 @@ export default defineTool({
       harnessCount,
       ...(groupBy && { groupBy, groupCount: groups?.length ?? 0 }),
       ...(allUnknown.length > 0 && { unknownHarnesses: allUnknown }),
+      ...(truncated && { truncated }),
     });
 
     // {data} envelope (not a hand-rolled ToolResult) so the payload-tier shapers
@@ -814,6 +837,10 @@ export default defineTool({
     // `groups` rides alongside only when asked for — the shapers spread the data
     // object, so the aggregate survives every payload tier untrimmed (it is small
     // and IS the answer when groupBy was passed).
-    return { data: { plans, ...(groups ? { groups } : {}) } };
+    // EI-19932192274787948: `truncated:true` means MORE plans matched than were
+    // returned (limit capped the window) — never silently omitted, so a caller
+    // that relied on a bare `limit` to mean "no more than N, but I got them all"
+    // can tell the two apart instead of mistaking a capped window for complete.
+    return { data: { plans, ...(groups ? { groups } : {}), ...(truncated ? { truncated } : {}) } };
   },
 });

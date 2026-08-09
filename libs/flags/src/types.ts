@@ -2231,6 +2231,25 @@ export const FLAGS = {
   // safe. OFF = the clean kill-switch: nothing is gated and the sweep files
   // nothing.
   SPEC_TRIAD_REQUIRED: "papercusp-spec-triad-required",
+  // guidance-overlap-contradiction-scan-2026-08-08 (P-004): the CONTRADICTION
+  // leg of the guidance-corpus scan. The deterministic leg (P-003) finds pairs
+  // that OVERLAP; this flag gates the second, LLM-backed leg that asks the one
+  // narrow question — do these two passages instruct OPPOSITE actions in the
+  // same situation? — of the few pairs that clear a stricter judge threshold.
+  //
+  // DEFAULT ON. It is cheap by construction (a second threshold plus a hard
+  // per-run cap, so the call count is bounded before any credential is
+  // resolved) and it is read-only — the leg REPORTS contradictions; P-005 owns
+  // acting on them. OFF is the clean kill-switch that stops all LLM egress from
+  // this scan.
+  //
+  // ⚠ OFF is NOT "the corpus is clean". The leg reports a non-null
+  // `inconclusive` when it is disabled, exactly as it does when no judge
+  // credential resolves — because the two states this repo has already shipped
+  // twice (EI-18746586784230719, EI-18747066020546067) both render an inert
+  // judge's empty output as byte-identical to a healthy "nothing contradicts",
+  // which is not merely wrong but REASSURING.
+  GUIDANCE_CONTRADICTION_SCAN: "papercusp-guidance-contradiction-scan",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

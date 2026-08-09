@@ -68,6 +68,7 @@ import {
   decorateUnansweredDirected,
   decorateDirectiveActuation,
   decorateCoordDeafness,
+  VERDICT_SPEAKING_FRESH_MS,
   type MemberVerdict,
   type MonitorState,
 } from './assignments';
@@ -94,6 +95,13 @@ export interface LeaderBriefMember {
   agentId: string;
   label: string | null;
   fleetRole: string | null;
+  /** EI-19931924184335892: `'recorded'` is a LIVE verdict (session ended_at IS NULL) —
+   *  it means "not coord-wakeable" (no live inbox-wake await registered), NEVER
+   *  "not-live"/dead. Do not read it as evidence to reclaim a claim; cross-check
+   *  `lastToolCallAgeMs`/`verdict` before treating any non-`'live'`-looking
+   *  sessionState as a reason to act — a session can be `recorded` and actively
+   *  making tool calls at the same time. Only `'ended'`/`'suspect'`/`'draining'`
+   *  are genuine not-live-or-going-away verdicts. */
   sessionState: SessionState | null;
   verdict: MemberVerdict | null;
   wakeMode: WakeMode | null;
@@ -122,6 +130,12 @@ export interface LeaderBriefMember {
   workItemIds: string[];
   queuedCount: number;
   load: number;
+  /** A held claim has no last_progress_at/taken_at progress in >10min (claim-progress
+   *  signal, not liveness). EI-19931924184335892: forced to `false` whenever
+   *  `lastToolCallAgeMs` proves the member is speaking right now (within
+   *  VERDICT_SPEAKING_FRESH_MS) — a fresh real tool call outranks the checkpoint
+   *  heuristic, so this can never read `true` beside a lastToolCallAgeMs that itself
+   *  disproves it. */
   stalled: boolean;
   contextPressure: ContextPressureBucket | null;
   /** coord-delivery-residual-gaps P-001: this LIVE member has not read its
@@ -1250,6 +1264,22 @@ export function projectMember(
   const prodMs = a.productiveToolCallAt ? Date.parse(a.productiveToolCallAt) : NaN;
   const lastToolCallAgeMs = Number.isFinite(lastMs) ? Math.max(0, nowMs - lastMs) : null;
   const productiveToolCallAgeMs = Number.isFinite(prodMs) ? Math.max(0, nowMs - prodMs) : null;
+  // EI-19931924184335892: `a.stalled` is the raw per-CLAIM rollup (any held claim
+  // with no last_progress_at/taken_at progress in >10min — see the fleet_assignment
+  // view) — a claim-progress-checkpoint signal, NOT a liveness signal. It is already
+  // suppressed by decorateLoopMonitorStates when the member's engine loop reports
+  // itself healthy, but that suppression is contingent on the LOOP's own (separately
+  // flaky — WI-6639) self-assessment, so it can miss. A fresh real tool call
+  // (`lastToolCallAgeMs` within the same VERDICT_SPEAKING_FRESH_MS window this file
+  // already uses everywhere else to mean "really working right now" — see
+  // deriveMemberVerdict's `speaking` leg) is a STRONGER, more direct liveness proof
+  // than either signal, so it overrides the same way here: a leader reading this row
+  // must never see `stalled:true` beside a lastToolCallAgeMs that itself proves the
+  // opposite. Live incident: sessionState:'recorded' (a LIVE-but-not-wake-dispatchable
+  // state, not a "not-live" verdict as it was misread) + stalled:true +
+  // lastToolCallAgeMs:~53000 led a leader to force-release a claim the holder closed,
+  // with a committed evidenced fix, 8 minutes later.
+  const speakingNow = lastToolCallAgeMs != null && lastToolCallAgeMs <= VERDICT_SPEAKING_FRESH_MS;
   return {
     agentId: a.agentId,
     label: a.label,
@@ -1269,7 +1299,7 @@ export function projectMember(
       .map((claim) => claim.id as string),
     queuedCount: a.queued.length,
     load: a.load,
-    stalled: a.stalled === true,
+    stalled: a.stalled === true && !speakingNow,
     contextPressure: a.contextPressure ?? null,
     ...(a.coordHook ? { coordHook: a.coordHook } : {}),
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),

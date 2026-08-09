@@ -189,11 +189,29 @@ export const FACT_PROVISIONAL_DEFAULT_TTL_SEC = 24 * 3600;
  *  still; it should be gone from the fold well before anyone could mistake it
  *  for settled fact. */
 export const FACT_SUSPECTED_DEFAULT_TTL_SEC = 6 * 3600;
-/** Per-(scope,ref) live-fact cap. Past this the SOONEST-EXPIRING incumbent is
- *  evicted (ranking: confidence, then `expires_at DESC`, `updated_at DESC` only
- *  as tiebreak — see the ORDER BY around L1221). NOT oldest-updated: that was
- *  the pre-WI-7292 policy and this line still claimed it until 2026-08-04. */
-export const FACTS_PER_SCOPE_CAP = 50;
+/** Per-(scope,ref) live-fact cap. Past this the LOWEST-RANKED incumbent is
+ *  evicted (ranking: confidence, then remaining TTL FRACTION `DESC`,
+ *  `updated_at DESC` only as tiebreak — see the ORDER BY around L1221). NOT
+ *  oldest-updated, and NOT soonest-expiring: both were the pre-WI-7292 /
+ *  pre-EI-19483432832662150 policies.
+ *
+ * EI-19931982603802383: raised 50 -> 200. Measured 2026-08-09 on the two
+ * busiest scopes on this box (`workspace` global, `harness:papercusp`): the
+ * non-exempt (ranked) population sat pinned at EXACTLY 50/50 continuously —
+ * i.e. permanently AT cap, not merely spiking there. With ~20 concurrently
+ * live fleet agents each periodically asserting into those two shared
+ * scopes, that means every single assert by ANY agent evicts the
+ * worst-ranked incumbent, so a scope's effective "survival window" for any
+ * one fact is however long it takes the REST of the fleet to produce ~50
+ * more writes — reported as low as ~20 minutes twice in a row for the SAME
+ * fact (once at workspace scope, once at harness scope after re-asserting
+ * there). This is not a ranking defect (the ranking chose correctly among a
+ * saturated 50) — it is the cap being sized for a much lower write-volume
+ * regime than a 20+-agent fleet actually produces in a shared scope. Raising
+ * it does not change the fold budget (`FACTS_FOLD_LIMIT`, unchanged at 12)
+ * — it only lengthens how long a fact survives BEFORE eviction competition,
+ * without inflating what gets injected into any one orient/context. */
+export const FACTS_PER_SCOPE_CAP = 200;
 /** Fold budget: max facts per scope-selector in one fold read. */
 export const FACTS_FOLD_LIMIT = 12;
 
