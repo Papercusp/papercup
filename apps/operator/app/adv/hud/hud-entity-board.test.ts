@@ -21,6 +21,8 @@ import {
   buildWorkItemBoard,
   goalColumn,
   goalSpendLabel,
+  GOAL_START_CARD_ID,
+  GOAL_START_COLUMN,
   GOAL_TERMINAL_STATUSES,
   HUD_DEFAULT_TAB,
   HUD_ENTITY_COLUMNS,
@@ -770,5 +772,65 @@ describe('true per-column totals (P-004)', () => {
     // silently stops loading cards.
     const reached = new Set(HUD_WORK_ITEM_FETCH_STATES.map((s) => workItemColumn(s)));
     for (const id of HUD_ENTITY_COLUMNS) expect(reached.has(id)).toBe(true);
+  });
+});
+
+/**
+ * The "+ Start a goal" card (goals-tab-improvement-2026-08-09 P-015).
+ *
+ * It is the product's ONLY path to starting a goal, so what is pinned here is
+ * that it is reachable in the state that matters most (an empty board) and that
+ * it does not corrupt the board's counts on the way.
+ */
+describe('buildGoalBoard — the "+ Start a goal" card', () => {
+  const NOW = Date.parse('2026-08-09T00:00:00.000Z');
+  const startCardOf = (board: ReturnType<typeof buildGoalBoard>) =>
+    board.columns.flatMap((c) => c.cards).find((c) => c.id === GOAL_START_CARD_ID) ?? null;
+
+  it('is the FIRST card in the leftmost lane', () => {
+    const board = buildGoalBoard(
+      [{ id: 'g1', title: 'Ship', status: 'active', killCriterion: 'day 30' }],
+      { nowMs: NOW },
+    );
+    const lane = board.columns.find((c) => c.id === GOAL_START_COLUMN)!;
+    expect(lane.cards[0]?.id).toBe(GOAL_START_CARD_ID);
+  });
+
+  it('is present on an EMPTY board — the case it exists for', () => {
+    const board = buildGoalBoard([], { nowMs: NOW });
+    expect(startCardOf(board)).toBeTruthy();
+    // ...and it says what the empty board would have said, since it is the only
+    // thing on screen.
+    expect(startCardOf(board)!.reason).toContain('No goals yet');
+  });
+
+  it('is NOT counted as a goal', () => {
+    // The whole failure this guards: a board reporting "1" with zero goals on
+    // it. `total`/`counts` describe the goal population; the action card is not
+    // part of it.
+    const board = buildGoalBoard([], { nowMs: NOW });
+    expect(board.total).toBe(0);
+    expect(board.counts[GOAL_START_COLUMN]).toBe(0);
+    // Which means a column can hold a card while the count reads zero — the
+    // reason HudEntityColumns gates its empty state on cards, not on the count.
+    expect(board.columns.find((c) => c.id === GOAL_START_COLUMN)!.cards).toHaveLength(1);
+  });
+
+  it('is withheld while a search is active, so "no matches" stays truthful', () => {
+    const board = buildGoalBoard(
+      [{ id: 'g1', title: 'Ship', status: 'active' }],
+      { nowMs: NOW, query: 'nothing-matches-this' },
+    );
+    expect(startCardOf(board)).toBeNull();
+    expect(board.total).toBe(0);
+    // Nothing left on the board at all ⇒ the "No goals match …" message renders.
+    expect(board.columns.every((c) => c.cards.length === 0)).toBe(true);
+  });
+
+  it('declares its intent as an ACTION rather than a destination', () => {
+    // WI-6742: a click handler that re-derives intent from an id is one
+    // unmatched string away from a dead button, and this card has no entity id.
+    const board = buildGoalBoard([], { nowMs: NOW });
+    expect(startCardOf(board)!.open).toEqual({ kind: 'start-goal' });
   });
 });

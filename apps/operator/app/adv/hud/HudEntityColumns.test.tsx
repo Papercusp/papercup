@@ -248,3 +248,74 @@ describe('HudEntityColumns rendering', () => {
     });
   });
 });
+
+/**
+ * The empty-state gate (goals-tab-improvement-2026-08-09 P-015).
+ *
+ * `board.total` counts ENTITIES; the columns hold CARDS, and the two can
+ * honestly disagree — the Goals board prepends an uncounted "+ Start a goal"
+ * action card precisely so an empty board does not report "1 goal". Gated on
+ * the COUNT, that card rendered nowhere in the empty-board case it exists for.
+ *
+ * Both directions are asserted, because a test that only checks the card
+ * appears would also pass against a version that simply always renders the
+ * columns and never shows an empty state at all.
+ */
+describe('empty state is gated on CARDS, not on the count', () => {
+  const emptyBoard = () => buildWorkItemBoard([], [], { nowMs: NOW });
+
+  it('renders a column card whose board reports total 0', () => {
+    const board = emptyBoard();
+    const lane = board.columns.find((c) => c.id === 'needs-you')!;
+    lane.cards = [
+      {
+        id: 'goal:start',
+        ref: '+',
+        title: 'Start a goal',
+        column: 'needs-you',
+        reason: 'No goals yet',
+        context: null,
+        badges: [],
+        sinceSec: null,
+        sortKey: 0,
+        open: { kind: 'start-goal' },
+      },
+    ];
+    expect(board.total).toBe(0);
+
+    render(
+      <HudEntityColumns
+        board={board}
+        focusColumn={null}
+        onFocusColumn={() => {}}
+        query=""
+        onQuery={() => {}}
+        loading={false}
+        error={null}
+        emptyLabel="No goals yet."
+        noun="goals"
+        onOpenCard={() => {}}
+      />,
+    );
+    expect(screen.getByText('Start a goal')).toBeTruthy();
+    expect(screen.queryByText('No goals yet.')).toBeNull();
+  });
+
+  it('still shows the empty label when there are genuinely no cards', () => {
+    render(
+      <HudEntityColumns
+        board={emptyBoard()}
+        focusColumn={null}
+        onFocusColumn={() => {}}
+        query=""
+        onQuery={() => {}}
+        loading={false}
+        error={null}
+        emptyLabel="No goals yet."
+        noun="goals"
+        onOpenCard={() => {}}
+      />,
+    );
+    expect(screen.getByText('No goals yet.')).toBeTruthy();
+  });
+});

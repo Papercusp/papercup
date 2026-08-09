@@ -515,6 +515,44 @@ describe('docs:search handler', () => {
     expect(searchDocs).toHaveBeenCalled();
   });
 
+  // ⛔ RECURRENCE GUARD — the query-COUNT invariant, given a home of its own.
+  //
+  // The two tests above deliberately stopped asserting an exact count (they are
+  // handler-pipeline tests and the count is engine business). That is a fair
+  // call for THEM, but it left the count unguarded, and the count is a real
+  // contract for this source — so it gets its own test rather than riding along
+  // as someone else's side-assertion.
+  //
+  // WHAT BROKE (green-checkpoint red, candidate 4c379d2a): the leg rename
+  // bm25 -> lexical (f9ed5eb4f3) reconnected this source to the engine's lexical
+  // leg and thereby opted it into `lexicalWithCascade`, which re-queries with
+  // `lexicalMode: 'coverage-graded'` whenever stage 1 under-fills. For a source
+  // that IMPLEMENTS the mode (the PG-backed agent-tools/search/sources.ts) that
+  // second query is a genuine widening. This source does not: `lexical()`
+  // destructures only `limit`, and the docs-engine has no `lexicalMode` concept
+  // at all — so stage 2 re-issues a request byte-identical to stage 1, every row
+  // comes back already in the engine's `seen` set, and `stage2Added` is 0 BY
+  // CONSTRUCTION. Net effect: every under-filled docs:search paid two identical
+  // filesystem searches for zero extra rows. `search.ts` opts out with
+  // `lexicalCascade: false`; this test is what fails if that opt-out is dropped.
+  it('issues exactly ONE engine query even when stage 1 under-fills (cascade opted out)', async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+    const tool = (await import('../search')).default;
+    await tool.handler({ query: 'auth flow', limit: 8 } as never, { harnessSlug: 'sheets' } as never);
+
+    // CALIBRATION FIRST — without this the assertion below can pass for the
+    // wrong reason. The cascade only arms when stage 1 returns FEWER rows than
+    // the candidate limit it was asked for; a future mock that returns enough
+    // hits to fill that limit would leave the cascade dormant anyway, and this
+    // test would then be guarding nothing while still reporting green.
+    const calls = vi.mocked(searchDocs).mock.calls as unknown as Array<[unknown, { limit: number }]>;
+    const requestedLimit = calls[0][1].limit;
+    const stage1 = (await vi.mocked(searchDocs).mock.results[0].value) as { hits: unknown[] };
+    expect(stage1.hits.length).toBeLessThan(requestedLimit);
+
+    expect(searchDocs).toHaveBeenCalledTimes(1);
+  });
+
   it('args schema enforces query min length 2', async () => {
     const mod = await import('../search');
     expect(mod.default.args.safeParse({ query: 'a' }).success).toBe(false);

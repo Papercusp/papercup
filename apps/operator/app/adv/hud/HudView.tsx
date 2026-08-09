@@ -859,7 +859,13 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         onQuery={(q) => void setEntityQuery(q)}
         loading={goalsQuery.loading}
         error={goalsQuery.error ? String(goalsQuery.error) : null}
-        emptyLabel="No goals yet — ask an agent to start one and it will propose the kill criterion and the ceiling."
+        /* P-015 made this near-unreachable: the "+ Start a goal" card is always
+           in the leftmost lane when no query is active, so the board is never
+           card-less for the no-query case this text serves — the CARD is the
+           empty state now, and says so in its own reason line. Kept accurate
+           rather than deleted (the prop is required, and the loading/error
+           branches can still fall through here). */
+        emptyLabel="No goals yet."
         /* Name the selected goal on screen. A selection the owner cannot see
            is a selection they cannot clear — and since clicking the same card
            toggles it off, the notice is also the only thing that explains why

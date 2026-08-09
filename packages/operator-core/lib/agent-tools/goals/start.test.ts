@@ -49,7 +49,11 @@ const order: string[] = [];
 
 // Typed against the REAL SpawnConsoleResult so these mocks cannot drift from the
 // spawn contract (the WI-4488 lesson: inferred-shape mocks went stale silently).
-const okSpawn = (): SpawnConsoleResult => ({
+// Pinned to the `ok` VARIANT, not the whole union: spreading a union-typed value
+// distributes over BOTH members, so `{ ...okSpawn(), … }` also produced a
+// status:'error' branch carrying ok-only fields, which is assignable to neither.
+type OkSpawn = Extract<SpawnConsoleResult, { status: 'ok' }>;
+const okSpawn = (): OkSpawn => ({
   status: 'ok',
   pid: 4242,
   terminal: 'xterm',
