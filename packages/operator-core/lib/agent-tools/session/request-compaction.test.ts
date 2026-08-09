@@ -481,6 +481,53 @@ describe('session:request-compaction — memory epoch boundary (WI-36074)', () =
 });
 
 /**
+ * EI-19326331501849713 — the ack must state a QUEUED INTENT, never an outcome.
+ *
+ * `respawn: true` only ever meant "the socket write was accepted": the host still
+ * has to win the busy gate (pty quiet) and can terminally DROP the carry. Reported
+ * as a BOOLEAN it read as "a cut happened", so an agent told `true` stopped
+ * managing its own context and waited for a successor that never arrived — the
+ * exact failure this ticket was filed for.
+ *
+ * The note is pinned alongside the field because the note is the half an agent
+ * actually acts on: a truthful field under wording that says "it resumes
+ * automatically" would still produce the original bug.
+ */
+describe('session:request-compaction ack states a queued intent, not an outcome (EI-19326331501849713)', () => {
+  it("reports respawn:'queued' — NOT true — when the inject is accepted", async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(true);
+    const b = body(await call({ focus: 'x' }));
+    expect(b.respawn).toBe('queued');
+    expect(b.respawn).not.toBe(true);
+    // Truthiness is the compatibility contract: every existing `if (res.respawn)`
+    // must keep working, which is what makes this safe as a non-breaking change.
+    expect(Boolean(b.respawn)).toBe(true);
+  });
+
+  it('still reports respawn:false when the inject fails', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(false);
+    const b = body(await call({ focus: 'x' }));
+    expect(b.respawn).toBe(false);
+  });
+
+  it('the note names the precondition and the falsifier, and never asserts the cut happened', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(true);
+    const note = String(body(await call({ focus: 'x' })).note ?? '');
+    expect(note).toContain('QUEUED');
+    expect(note).toMatch(/not performed yet/i);
+    expect(note).toMatch(/quiet/i); // the precondition the cut waits on
+    expect(note).toMatch(/still here/i); // the falsifier the agent can check itself
+    expect(note).toMatch(/flush/i); // do not rely on the cut to preserve state
+    // The retired wording asserted the outcome outright; if it ever returns, the
+    // field being honest would not save the agent from acting on the prose.
+    expect(note).not.toContain('it resumes automatically');
+  });
+});
+
+/**
  * EI-7032 — session:request-compaction failed 40% of calls (130/321 in 24h), and
  * EVERY failure was the SAME thing: `focus: Too big <=600 chars`. That reject lands
  * at the worst moment (the agent is AT its context limit, which is WHY it called

@@ -451,7 +451,16 @@ export default defineTool({
           text: JSON.stringify({
             ok,
             requested: ok,
-            respawn: ok,
+            // EI-19326331501849713: 'queued', NOT `true`. This field only ever
+            // meant "the socket write was accepted" (see the comment at the
+            // readPriorRespawnOutcome call above) — the host still has to win the
+            // busy gate and can terminally DROP the carry. A BOOLEAN here read as
+            // a statement about an OUTCOME, which is exactly what let a dropped
+            // respawn pass for a successful one: told `true`, the agent stops
+            // managing its own context and waits for a successor that never comes.
+            // A string states the intent honestly. It stays TRUTHY, so any existing
+            // `if (res.respawn)` is unaffected.
+            respawn: ok ? 'queued' : false,
             budgetChars: spec.budgetChars,
             firstPromptSource: spec.firstPrompt ? 'open-owner-message' : 'continuation-note',
             staleCheckpoints,
@@ -474,7 +483,14 @@ export default defineTool({
                   'follow-up #2) — it never restarts on its own (only its child CLI does via ' +
                   'carry-respawn), so a genuinely stale host requires ending this session and ' +
                   'relaunching to pick up a current one.'
-                : 'Carry-respawn queued — when this turn ends the host cuts this process at the clean boundary and respawns your successor with the deterministic carry document as launch context; it resumes automatically. Wrap up now and stop.') +
+                : // EI-19326331501849713: state the QUEUE, never the outcome. The old
+                  // wording ("the host cuts this process ... it resumes automatically")
+                  // described a cut that had not happened yet as though it had, and
+                  // told the agent to stop — so a carry that was then DROPPED left it
+                  // waiting for a successor that did not exist, still holding unflushed
+                  // state. Name the precondition (pty quiet) and the falsifier (you are
+                  // still here) so the failure is self-diagnosing from the agent's side.
+                  'Carry-respawn QUEUED — not performed yet. The host cuts this process only once your pty goes QUIET at a clean boundary, then respawns your successor on the deterministic carry document. It re-polls for a few minutes and can terminally DROP the carry — an interactive back-and-forth, or steady output, can supersede it indefinitely. So: wrap up and go quiet now, but FLUSH durable state first (work_items:checkpoint / loop:checkpoint / facts:assert) rather than relying on the cut. If you are still here on your next turn, it did not happen — re-request at the next clean stopping point instead of waiting.') +
               staleNote +
               openQuestionNote +
               // EI-19480099650947832: only ever emitted on evidence from the

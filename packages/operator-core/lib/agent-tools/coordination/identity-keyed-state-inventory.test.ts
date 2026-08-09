@@ -139,6 +139,14 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: "the session's own carry-brief snapshot, written by and read back by the SAME id at each of its own turns — a rebind moves the loop carry-note (a separate surface) which is what a cold successor actually reads.",
   },
+  // Migration 779 (fleet-lead-instrumentation-audit-2026-08-09 D-011), classified as the
+  // EXEMPT twin of session_briefs.owner_id directly above — same class: an agent's own
+  // snapshot, written and read back by the SAME id at each of its own wakes.
+  'fleet_brief_snapshots.owner_id': {
+    status: 'exempt',
+    reason:
+      "the LEADER's own wake-boundary snapshot behind fleet:leader-brief's delta block — keyed per-leader by design (D-011 §4) precisely so two readers of one fleet cannot consume each other's baseline. A rebind strands the row, so the next read simply finds no baseline for the new id — which the brief reports as `available:false`, NEVER as a zero delta (the migration's own stated contract). So a stranded row costs delta CONTINUITY across a respawn and can never produce a WRONG delta: it fails safe and announces itself, unlike the coord_read_cursors/coord_watermarks entries above, where a stranded row silently mis-delivers. Upgrade to covered if leader-brief continuity across a rebind is later judged worth the re-key.",
+  },
   'session_respawn_expected.owner_id': {
     status: 'exempt',
     reason:
