@@ -45,6 +45,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -61,14 +62,14 @@ export const isExcluded = (f) =>
   /\.(test|spec)\.[cm]?[tj]sx?$/.test(f) ||
   !/\.(ts|mjs|cjs)$/.test(f);
 
-/** Strip block + line comments so a prose mention isn't flagged. */
-export function stripComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
+// Comment + string-literal stripping lives in ./lib/strip-comments-and-strings.mjs — ONE
+// shared implementation (EI-19991116787260658). The local comments-only copy this replaced
+// left string literals intact, so `promisify(execFile)` quoted in PROSE inside a string
+// read as a real module-scope call and minted a phantom offender.
 
 /** The tell: a column-0 (module-scope) `const`/`let` assigned from `promisify(execFile...)`. */
 export function usesEagerExecFilePromisify(text) {
-  return /^(export\s+)?(const|let)\s+\w+\s*=\s*promisify\(\s*execFile\w*\s*\)/m.test(stripComments(text));
+  return /^(export\s+)?(const|let)\s+\w+\s*=\s*promisify\(\s*execFile\w*\s*\)/m.test(stripCommentsAndStrings(text));
 }
 
 // BASELINE seeded 2026-07-18 (EI-10161) — 61 files. Do NOT add new entries; each

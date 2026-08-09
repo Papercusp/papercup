@@ -91,6 +91,34 @@ export function stripShellComments(src: string): string {
  *   null            — the region could not be located; the caller must FAIL,
  *                     never pass, on a shape this cannot read.
  */
+/**
+ * The banner green-checkpoint prints when its `lint:tsc` leg exits non-zero.
+ *
+ * Same class, third instance. The banner was a hardcoded string asserting
+ * "operator-core type regressions block the release" — printed on ANY non-zero
+ * exit, including the one where tsc CRASHED on V8's default heap and produced
+ * zero diagnostics (WI-37503). Agents read the banner, went hunting for type
+ * errors that did not exist, and the real cause (an OOM) was in the output they
+ * had been told was a list of type regressions.
+ *
+ * Fixing the OOM was a mitigation: the banner still lies for the NEXT cause that
+ * makes tsc exit non-zero without diagnostics (a config fault, a zero-file run).
+ * So the banner is derived from what the run actually PRODUCED, never assumed.
+ */
+export function typecheckFailureBanner(exitCode: number, output: string): string {
+  // tsc's own diagnostic format. If the leg failed while emitting none of these,
+  // it did not identify a type regression — whatever else it did.
+  if (/error TS\d+/.test(output)) {
+    return '\n\n=== TYPECHECK FAILED (npm run lint:tsc) — operator-core type regressions block the release ===\n';
+  }
+  return (
+    `\n\n=== TYPECHECK LEG FAILED (npm run lint:tsc, exit=${exitCode}) — the run reported NO type diagnostics, ` +
+    'so this is NOT a known type regression. A crash (V8 heap OOM — WI-37503), a config fault, or a run that ' +
+    'checked zero files all produce this exact shape. Read the output below before hunting for type errors ' +
+    'that may not exist. ===\n'
+  );
+}
+
 export function failRowMessageSource(src: string): 'last-line' | 'failure-lines' | null {
   const body = stripShellComments(src);
   const start = body.indexOf('SCN_RC[$id]=$rc');

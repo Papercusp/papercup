@@ -69,6 +69,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -85,10 +86,9 @@ export const isExcluded = (f) =>
   /\.(test|spec)\.[cm]?[tj]sx?$/.test(f) ||
   !/\.(ts|mjs|cjs)$/.test(f);
 
-/** Strip block + line comments so a prose mention isn't flagged. */
-export function stripComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
+// Comment + string-literal stripping lives in ./lib/strip-comments-and-strings.mjs — ONE
+// shared implementation (EI-19991116787260658). The local comments-only copy left string
+// literals intact, so `onFlagChange(` quoted in prose read as a module-scope subscription.
 
 /**
  * The tell: a column-0 (module-scope) `onFlagChange(...)` subscription, or a

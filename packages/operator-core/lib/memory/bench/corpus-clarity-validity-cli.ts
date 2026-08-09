@@ -478,14 +478,22 @@ async function main(): Promise<void> {
       `|---:|---:|---:|---:|---:|---:|\n` +
       `| ${n} | ${pct(okSamples.length, n)} | ${timedOut} | ${failed} | ${pct(embedderRate, n)} | ${elapsedS}s |`,
   );
+  // ⚠ The arm must be judged over the rows that actually RAN, not over every
+  // sample. A timed-out leg never reaches fusion, so it reports
+  // `embedderAvailable: false` for a reason that has nothing to do with the
+  // embedder — scoring those in the denominator reported a clean 100%-hybrid
+  // run as "MIXED … treat every association as confounded", which is a false
+  // alarm that invites re-running a sound measurement.
+  const okEmbedder = okSamples.filter((s) => s.embedder).length;
   console.log(
-    embedderRate === n
-      ? `\nARM: **hybrid** (BM25 + vector) — the production shape.`
-      : embedderRate === 0
+    okEmbedder === okSamples.length
+      ? `\nARM: **hybrid** (BM25 + vector) — the production shape, on all ${okSamples.length} completed queries.`
+      : okEmbedder === 0
         ? `\n⚠ ARM: **BM25-only** — the embedder never warmed in this process, so this measures the ` +
           `leg's DEGRADED path, not the production hybrid one. Every number below is scoped to that arm.`
-        : `\n⚠ ARM: **MIXED** — ${pct(embedderRate, n)} of queries ran hybrid and the rest BM25-only, so ` +
-          `the sample spans two retrieval systems. Treat every association as confounded and re-run.`,
+        : `\n⚠ ARM: **MIXED** — ${pct(okEmbedder, okSamples.length)} of COMPLETED queries ran hybrid and ` +
+          `the rest BM25-only, so the sample spans two retrieval systems. Treat every association as ` +
+          `confounded and re-run.`,
   );
   if (timedOut + failed > 0) {
     console.log(
@@ -567,6 +575,42 @@ async function main(): Promise<void> {
         `${nul ? `${nul.lo.toFixed(3)} … ${nul.hi.toFixed(3)}` : '—'} | ${nul ? nul.p.toFixed(3) : '—'} |`,
     );
   }
+  // ── WITHIN-SURFACE control. ──
+  // `SCS = avgIdf − log2(n)` and the clamp width sets how many terms the
+  // selector has to choose from, so the SURFACE moves both sides of every
+  // pairing above. An association that exists only ACROSS surfaces is a
+  // statement about clamp widths wearing a predictor's clothes. If the sign and
+  // rough magnitude survive within each surface, it is not that artifact.
+  console.log(`\n## Within-surface control — is this a clarity effect or a clamp-width effect?\n`);
+  console.log(`| surface | clamp | n | ρ(SCS → admitted) | ρ(SCS → post-clarity) |`);
+  console.log(`|---|---:|---:|---:|---:|`);
+  for (const m of mix) {
+    const bucket = scored.filter((r) => r.surface === m.surface);
+    if (bucket.length < 30) continue;
+    const post = bucket.filter((r): r is Sample & { scs: number; postBits: number } => r.postBits !== null);
+    const a = spearman(bucket.map((r) => r.scs), bucket.map((r) => r.admitted));
+    const b = spearman(post.map((r) => r.scs), post.map((r) => r.postBits));
+    console.log(
+      `| ${m.surface} | ${m.clampChars}ch | ${bucket.length} | ${a === null ? '—' : a.toFixed(3)} | ` +
+        `${b === null ? '—' : b.toFixed(3)} |`,
+    );
+  }
+
+  // ── What the escalation trigger would actually BUY. ──
+  const wouldEscalate = rows.filter((r) => r.escalates);
+  const escFails = wouldEscalate.filter((r) => r.admitted === 0).length;
+  const allFails = rows.filter((r) => r.admitted === 0).length;
+  const escNeverEmpty = wouldEscalate.filter((r) => r.admitted >= CORPUS_MAX_ITEMS).length;
+  console.log(`\n## Where the escalation budget would go\n`);
+  console.log(
+    `| escalated | of traffic | that return NOTHING | that fill ALL ${CORPUS_MAX_ITEMS} slots | ` +
+      `share of ALL empty results captured |\n|---:|---:|---:|---:|---:|\n` +
+      `| ${wouldEscalate.length} | ${pct(wouldEscalate.length, rows.length)} | ` +
+      `${escFails} (${pct(escFails, wouldEscalate.length)}) | ` +
+      `${escNeverEmpty} (${pct(escNeverEmpty, wouldEscalate.length)}) | ` +
+      `${pct(escFails, allFails)} |`,
+  );
+
   console.log(
     `\nThe null mean must be ≈0 and the observed ρ must sit OUTSIDE the 95% band to mean anything. ` +
       `A ρ inside the band is chance — report it as "no association measured", never as a weak one. ` +

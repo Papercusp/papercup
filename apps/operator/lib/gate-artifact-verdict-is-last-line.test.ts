@@ -50,6 +50,7 @@ const SCRIPT = resolve(
 // guard), and so the other instances of this class can reuse it.
 import {
   failRowMessageSource,
+  typecheckFailureBanner,
   lastEmittedLineOnFailPath,
   tailIsVerdictNotReassurance,
 } from './gate-artifact-verdict-tail';
@@ -173,5 +174,36 @@ describe('EI-19940993365684927 — a FAIL row must say what failed', () => {
 
   it('an unreadable shape returns null so the caller fails rather than passes blind', () => {
     expect(failRowMessageSource('nothing resembling the matrix loop')).toBeNull();
+  });
+});
+
+/**
+ * Third instance: green-checkpoint's typecheck banner. WI-37503 fixed the OOM that
+ * exposed it, which is a mitigation — the banner still asserts "type regressions"
+ * for the NEXT cause that exits non-zero without diagnostics.
+ *
+ * NOT YET WIRED into green-checkpoint.ts: that file is under active gate-freeze
+ * surgery by a peer (WI-37518) whose own uncommitted fix is release-blocking, so
+ * adding an unrelated edit to the same file and the same git-sync sweep was the
+ * wrong trade. The helper is proven here so the wiring is a one-line, low-risk
+ * change once the freeze lifts.
+ */
+describe('EI-19940993365684927 — a failure banner must not out-claim its evidence', () => {
+  it('names type regressions ONLY when tsc actually emitted diagnostics', () => {
+    const banner = typecheckFailureBanner(1, "foo.ts(12,3): error TS2322: Type 'a' is not assignable.");
+    expect(banner).toContain('type regressions block the release');
+  });
+
+  it('does NOT claim type regressions when the run crashed with zero diagnostics', () => {
+    // The WI-37503 shape: V8 heap OOM, non-zero exit, no diagnostics at all.
+    const oom = 'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory';
+    const banner = typecheckFailureBanner(134, oom);
+    expect(banner).not.toContain('type regressions block the release');
+    expect(banner).toContain('NO type diagnostics');
+    expect(banner).toContain('exit=134');
+  });
+
+  it('CONTROL: an empty output cannot yield the reassuring-but-wrong regression banner', () => {
+    expect(typecheckFailureBanner(1, '')).not.toContain('type regressions block the release');
   });
 });

@@ -30,6 +30,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -64,9 +65,9 @@ export const isExcluded = (f) =>
  * the sibling guard (check-no-raw-setinterval.mjs) already strips comments for
  * the identical reason; this guard should have from the start.
  */
-export function stripComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
+// Implementation moved to ./lib/strip-comments-and-strings.mjs — ONE shared stripper
+// (EI-19991116787260658). It also strips STRING LITERALS, which the local copy did not:
+// `buildInvokeOnce(` quoted in prose inside a string read as a real call site.
 
 /**
  * The tell of an agent-CLI spawn bypass: a CALL to `buildInvokeOnce(...)` outside
@@ -83,7 +84,7 @@ export function stripComments(text) {
  * masquerade as a call. Pure (text → boolean) so it's unit-testable.
  */
 export function isRawAgentSpawnBypass(text) {
-  return /\bbuildInvokeOnce\s*\(/.test(stripComments(text));
+  return /\bbuildInvokeOnce\s*\(/.test(stripCommentsAndStrings(text));
 }
 
 /**
