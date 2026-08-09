@@ -60,6 +60,12 @@ describe('buildCapturePort', () => {
 
     expect(res).toEqual({ id: 'EI-42', created: true });
     const input = fake.mock.calls[0][0];
+    // D-033 (learning-loop-identity-and-consumption-2026-08-08 P-008): Scout's port
+    // declines on the SOFT band, unlike the agent-facing default. Measured: 407 of
+    // 507 open Scout-minted items had a soft-band open sibling. Owner constraint
+    // D-004 holds by construction — only THIS port opts in; if that stops being
+    // true, the guard below fails.
+    expect(input.semanticBlockBand).toBe('soft');
     expect(input.sourceRole).toBe('Scout'); // artifact-side provenance stamp (improvement-source:Scout); the Queen still gates (D-010)
     expect(input.kind).toBe('change');
     expect(input.scope).toBe('operator');

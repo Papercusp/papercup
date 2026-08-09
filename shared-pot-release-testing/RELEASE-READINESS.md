@@ -156,7 +156,7 @@ logs are from the green run `m1785117063`.
 | 4 | Concurrent-write convergence (LWW, byte-identical winner) | 🟢 | `scn.concurrent_lww-220032.log` — no loss on distinct keys; deterministic identical winner on the same key |
 | 5 | Restart durability + settle barrier honesty | 🟢 | `scn.restart_durability-220032.log` (cold sidecar restart lost nothing, re-emitted nothing) + `scn.restart_settle_barrier-220032.log`. The barrier itself was fixed under P-415/WI-5772 — it previously reported a false PASS ("order 80 didn't run") when restart_durability had run and FAILED |
 | 6 | Reconnect / catch-up after offline window | 🟢 | `scn.reconnect_catchup-220032.log` — offline member caught up on content + plan-part + coord, no loss/dup, roster intact |
-| 7 | Revocation READ cut-off (epoch K-cut) applies live | 🔴 | **FALSIFIED 2026-08-09 (`WI-37195`) — this row was 🟢 on evidence that only ever covered ONE path.** The original green still holds *where it was measured*: `scn.revocation_kcut-220032.log` (local-matrix, `revoke.live=true`) passes, and passed again on the 2026-08-09 gate run. But the **from-repo-witness** path reproduces a **C-001 BREACH** on a demonstrably quiet box (host load 20/128, gate build pinned to cores 0-99 off the frames): `K2 REVOKE (A revokes B, epoch advanced 0→0): FAIL` → no re-key → `K4b CONTENT CUT: FAIL — B READ post-revoke content`. AK-ban, AK-unban-teeth, K0 join-keys and the K4a pre-revoke content control all PASS, which isolates it to **the epoch advance on revoke** — not encryption, not write-plane policy, not key wrapping. Path-specific, confirmed from two directions (revocation_kcut PASS + banked `rekey_boundary_applied … newEpoch=1` on that path, vs 0→0 here). Regression window: 2026-08-01T15:01Z green → 2026-08-05T09:39:58Z first red. Owner decision `0e2696ce` makes read-plane re-key the critical path to public release in terms, so this is **unshippable — not a known-limitation candidate**. ⚠ The standing gate was dark from 2026-08-07T04:35Z (`WI-37144`), so this breach was live and silent for ~2 days. ⚠ Do NOT repeat the earlier gloss that it was "disabled 57s after the 5th consecutive red of this leg" — CORRECTED 2026-08-09: the owner ordered the stop mid-run over CPU churn, not in response to the red (see the VERDICT block, §3 B). The breach's 2-day invisibility is real; the concealment implication is not. |
+| 7 | Revocation READ cut-off (epoch K-cut) applies live | 🔴→🟡 | **⚠ READ §3 A FIRST — UPDATED 2026-08-09T11:01Z: the breach NO LONGER REPRODUCES** after su-9228f's owner-gate fix (`revoke ok:true`, epoch `0→1`, `K4b CONTENT CUT: PASS`). It is NOT 🟢: that is one standalone witness run, not a gate run, and one leg (`K3 CUT`) is still red on its non-vacuity control. The 🔴 history below stands as the record of what was measured, and the "target resolution" narrowing in it is FALSIFIED — the revoke was being rejected at the OWNER GATE, before `loadTargetPubkeys` is reached. ⟨historical record follows⟩ **FALSIFIED 2026-08-09 (`WI-37195`) — this row was 🟢 on evidence that only ever covered ONE path.** The original green still holds *where it was measured*: `scn.revocation_kcut-220032.log` (local-matrix, `revoke.live=true`) passes, and passed again on the 2026-08-09 gate run. But the **from-repo-witness** path reproduces a **C-001 BREACH** on a demonstrably quiet box (host load 20/128, gate build pinned to cores 0-99 off the frames): `K2 REVOKE (A revokes B, epoch advanced 0→0): FAIL` → no re-key → `K4b CONTENT CUT: FAIL — B READ post-revoke content`. AK-ban, AK-unban-teeth, K0 join-keys and the K4a pre-revoke content control all PASS, which isolates it to **the epoch advance on revoke** — not encryption, not write-plane policy, not key wrapping. Path-specific, confirmed from two directions (revocation_kcut PASS + banked `rekey_boundary_applied … newEpoch=1` on that path, vs 0→0 here). Regression window: 2026-08-01T15:01Z green → 2026-08-05T09:39:58Z first red. Owner decision `0e2696ce` makes read-plane re-key the critical path to public release in terms, so this is **unshippable — not a known-limitation candidate**. ⚠ The standing gate was dark from 2026-08-07T04:35Z (`WI-37144`), so this breach was live and silent for ~2 days. ⚠ Do NOT repeat the earlier gloss that it was "disabled 57s after the 5th consecutive red of this leg" — CORRECTED 2026-08-09: the owner ordered the stop mid-run over CPU churn, not in response to the red (see the VERDICT block, §3 B). The breach's 2-day invisibility is real; the concealment implication is not. |
 | 8 | Replication liveness detector + restart soak | 🟡 | **NOT CURRENT as of 2026-08-09 — downgraded from 🟢 ⚠.** The green quoted `scn.replication_soak-220032.log` ("OVERALL: PASS — 5 kill/restart cycles … detector quiet"); **that file is no longer on disk** (rotated out of `~/.papercusp/live-fed-gate/triage`), so the row's own evidence can no longer be re-read. The **newest banked run** (`scn.replication_soak-232013.log`) reads `OVERALL: INCOMPLETE — replication-liveness soak had failures`. This is a downgrade to 🟡 (unproven at HEAD), **not** a claim the detector regressed: the soak is genuinely flaky-or-broken and nobody has separated those yet. ⚠⚠ **Reading hazard when you check this yourself (`EI-19940993365684927`):** this scenario's log writes a trailing `✓ detector fire-path pin …` sub-assertion BELOW its verdict, so its LAST line reads as a pass on a FAILED run — a peer already concluded "all green" from it. Read the `OVERALL:` line, never the tail. Still carries the D-008 residual risk, §6. |
 | 9 | Work-item federation completeness (WI-1964: 673 vs 2229 divergence) | 🟢 | P-101/WI-5060 — `hive_slug`-first fix verified twice: gate run 20260716-222552 content-matrix (all 10 content types, both directions) + rig-level exact convergence tower 6886 = VM 6886 |
 | 10 | Data completeness at table AND column grain (incl. `p2p_memories`) | 🟢 | P-103/WI-5062 — `federated-column-completeness` extended; every column carried / PROVENANCE / reasoned NOT_FEDERATED |
@@ -216,12 +216,38 @@ logs are from the green run `m1785117063`.
 **A. C-001 — consent withdrawal does not cut on the from-repo path (`WI-37195`).** The single
    hardest blocker on this document. `from-repo-witness` reds with `epoch advanced 0→0`; a removed
    contributor is not actually cut off. **Confirmed real on a quiet box**, so the earlier
-   `SKIPPED-STARVATION` reading is dead. Narrowed to **target resolution on one path** —
+   `SKIPPED-STARVATION` reading is dead. ~~Narrowed to **target resolution on one path**~~ —
    `revocation_kcut` passed the same run with the epoch advancing `0→1`, proving the re-key
    machinery itself is sound. Owner: su-9228f under D-022. Flip condition: `from-repo-witness`
-   green on a gate run with the epoch advancing, plus a recurrence guard on the target-resolution
-   path. ⚠ This row directly contradicts §5's "no longer a skip — covered and green (2026-08-01)"
-   entry for the same leg; §5 records a real green that has since REGRESSED — read both.
+   green on a gate run with the epoch advancing, plus a recurrence guard. ⚠ This row directly
+   contradicts §5's "no longer a skip — covered and green (2026-08-01)" entry for the same leg;
+   §5 records a real green that has since REGRESSED — read both.
+
+   ⚠ **UPDATE 2026-08-09T11:01Z (su-c2f97, WI-37144) — THE BREACH NO LONGER REPRODUCES, and the
+   "target resolution" narrowing above is FALSIFIED.** Instrumenting the gate's own K2 call (which
+   had been discarding its result to `>/dev/null` for four days) caught the revoke being **rejected
+   at the OWNER GATE**: `revoke_contributor → {"ok":false,"code":"not_owner"}`, returning before
+   `loadTargetPubkeys` is ever called. So `:194 no_target` was never on the path — do not resume
+   that hunt. After su-9228f's tri-state gate (`ac5a457eba`) and a **sidecar rebuild**, the same
+   script/args now measure: `revoke_contributor → ok:true`, `K2 REVOKE … epoch advanced 0→1: PASS`,
+   boot event `rekey_boundary_applied … newEpoch=1 distributed=1`, and — the breach itself —
+   `K4b CONTENT CUT … PASS (B-read=no, A-has=1)`.
+
+   ⚠ **This is NOT a flip to 🟢, and must not be quoted as one.** It is ONE standalone witness run,
+   not a gate run; the flip condition above is unchanged and still requires a green gate leg plus a
+   recurrence guard — and the gate that would produce that verdict is itself blocker B. One
+   residual leg is still red: `K3 CUT FAIL (B_DEV-new=0 remaining-on-B=0 A-new=1)`. Its security
+   half HOLDS (B has no epoch-1 key); what fails is the **non-vacuity control** asserting the
+   remaining members' epoch-1 rows still crossed to B. Undecidable on a 2-member hive — the only
+   "remaining member" is A, the re-key's own origin — so it needs a 3-frame run to separate "stale
+   control" from "key distribution regressed". Unsettled, referred to su-9228f as C-001's owner.
+
+   ⚠ **Method note worth keeping:** the first re-run was WORTHLESS and looked authoritative. The
+   smoke script asserts only that `serve.mjs` EXISTS, never that it is CURRENT, so it silently
+   measured a bundle built ~7h before the fix and printed a well-formed `not_owner` about a gate
+   that no longer existed. **Any probe whose subject is a BUILT ARTIFACT must assert a marker from
+   the fix under test** — a static staleness guard keyed on `owner_key_unreadable` now refuses a
+   pre-fix bundle, proven falsifiable by tier-2 copy-out.
 
 **B. The standing live-federation gate is DARK (`WI-37144`).** Timer stopped 2026-08-07T04:35:31Z,
    disabled 04:36:29Z; the reds were all real. This is the detector failure that let C-001 run

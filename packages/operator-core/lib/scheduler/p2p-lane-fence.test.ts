@@ -86,6 +86,14 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     // "Federated" — this is the actual title that leaked into fleet
     // nonp2p-bug-drain-0801's lane before 'federated' was added as its own term.
     'Federated issue ID collision replaced a newly captured local improvement with an unrelated remote issue',
+    // EI-19928699840338901 / P-008: the substrate terms. WI-6076 is the real open item
+    // that leaked — genuine wire work (replicate()/protomux core pairing) that NO
+    // transport term above matched. Asserting these here is what proves the newly
+    // added terms actually fence, rather than merely sitting in the array.
+    'Shared peer socket + per-harness Corestores: the 2nd store\'s replicate() clobbers the 1st\'s protomux hypercore/alpha pairing, making its COLD cores permanently unservable',
+    'hyperblobs range read returns a short buffer past the snapshot boundary',
+    'hyperdrive mirror stalls when the source core is sparse',
+    'autobase linearization diverges after a writer is removed',
   ];
 
   it.each(fenced)('excludes: %s', (title) => {
@@ -151,6 +159,14 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     'pot-git',
     'ref-announce',
     'duplex',
+    // EI-19928699840338901 / P-008 — the substrate family. `hypercore` is the sibling
+    // of hyperbee/hyperswarm/hyperdht above; the other three have zero live matches
+    // and land on the `duplex` precedent so the family is CLOSED rather than met one
+    // term at a time (the mistake the federat- stem made twice).
+    'hypercore',
+    'hyperblobs',
+    'hyperdrive',
+    'autobase',
   ] as const;
 
   it.each(BASELINE_TERMS_MUST_REMAIN)(

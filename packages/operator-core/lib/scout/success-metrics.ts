@@ -583,28 +583,70 @@ export function evaluateProgramSuccess(
   // (SU_IDEATION_LENSES), so mixing them would let su lens variety mask a dead scout roster.
   // Reuses the shipped D-004 predicate (invariants.hasForcedDiversity) rather than
   // re-deriving "diverse" — one notion, every consumer.
+  //
+  // EI-19899928839197448: a sample drawn ONLY from ROUTED rows goes stale the moment routing
+  // output slows or stops — the ledger can keep holding OLD pre-regression rows, so a LIVE
+  // roster collapse reads as a healthy "N distinct lenses" from history that no longer
+  // reflects what is actually running (measured: 4 stale lenses reported while the live
+  // ideators had narrowed to 2 on each of the last 4 cycles). `detail.ideators[]` (EI-13119)
+  // is written by every 'ran' tick regardless of whether anything was ultimately routed, so
+  // it is LIVE even during a routing outage — prefer it whenever the recent tick window
+  // actually carries it, and fall back to the routed-idea sample only when it doesn't
+  // (pre-EI-13119 ticks, or a window with no ran ticks at all).
   const recentScoutIdeas = inputs.cadence.routedIdeas.slice(0, LENS_DIVERSITY_SAMPLE);
-  const lensesSeen = [...new Set(recentScoutIdeas.map((i) => i.lens))].sort();
+  const recentRanTicksForLenses = ranTicks.slice(0, LENS_DIVERSITY_SAMPLE);
+  const liveIdeatorLenses: CreativeLens[] = recentRanTicksForLenses.flatMap((t) => {
+    const slots = t.detail?.ideators;
+    if (!Array.isArray(slots)) return [];
+    return slots
+      .map((slot) =>
+        slot && typeof slot === 'object' && typeof (slot as { lens?: unknown }).lens === 'string'
+          ? ((slot as { lens: string }).lens as CreativeLens)
+          : null,
+      )
+      .filter((lens): lens is CreativeLens => lens !== null);
+  });
+  const usingLiveTickSample = liveIdeatorLenses.length > 0;
+  const diversitySample: readonly { lens: CreativeLens }[] = usingLiveTickSample
+    ? liveIdeatorLenses.map((lens) => ({ lens }))
+    : recentScoutIdeas.map((i) => ({ lens: i.lens }));
+  const diversityLensesSeen = [...new Set(diversitySample.map((i) => i.lens))].sort();
+  const diversitySourceNote = usingLiveTickSample
+    ? `live per-ideator tick detail across the newest ${recentRanTicksForLenses.length} ran cycle(s) (${recentScoutIdeas.length} routed idea(s) in the same window)`
+    : `the newest ${diversitySample.length} scout-routed ideas`;
   criteria.push({
     key: 'lens-diversity',
-    bar: `scout roster spans >=2 lenses (D-004 forced diversity, newest ${LENS_DIVERSITY_SAMPLE} routed ideas)`,
-    // A sample of 0-1 ideas CANNOT certify diversity. hasForcedDiversity() deliberately
+    bar: `scout roster spans >=2 lenses (D-004 forced diversity, newest ${LENS_DIVERSITY_SAMPLE} routed ideas or ran cycles)`,
+    // A sample of 0-1 slots CANNOT certify diversity. hasForcedDiversity() deliberately
     // returns true for <=1 idea ("a single idea cannot collapse") — correct as an invariant,
     // but as a health bar that is a FALSE PASS: it would green exactly when a roster so
-    // broken it emits one idea per window is at its worst. Empty denominators are unknown.
-    ...(recentScoutIdeas.length < 2
-      ? {
-          status: 'unknown' as const,
-          observed: `only ${recentScoutIdeas.length} scout-routed idea(s) in the recent sample — too few to judge diversity`,
-          unknownReason:
-            'a sample of <2 ideas cannot distinguish a diverse roster from a collapsed one (and must not be allowed to certify either)',
-        }
+    // broken it emits one idea per window is at its worst. Empty denominators are unknown —
+    // UNLESS cycles ran and produced this literal emptiness with no live-tick fallback
+    // either, in which case the shared liveness precondition above makes it a FAIL, not an
+    // unknown: a silent pipeline with no live signal to fall back on is a broken one.
+    ...(diversitySample.length < 2
+      ? ranWithNoRoutedOutput
+        ? {
+            status: 'fail' as const,
+            observed:
+              `${ranTicks.length} cycle(s) ran in the window but produced ZERO routed ideas AND no live per-ideator ` +
+              `tick detail to judge roster diversity from instead — cannot verify the roster is still diverse, so ` +
+              'this is treated as a broken pipeline, not an unknown one',
+          }
+        : {
+            status: 'unknown' as const,
+            observed:
+              `only ${diversitySample.length} scout ideator sample(s) in the recent window ` +
+              `(${usingLiveTickSample ? 'live tick detail' : 'routed ideas'}) — too few to judge diversity`,
+            unknownReason:
+              'a sample of <2 cannot distinguish a diverse roster from a collapsed one (and must not be allowed to certify either)',
+          }
       : {
-          status: (hasForcedDiversity(recentScoutIdeas, 2) ? 'pass' : 'fail') as SuccessStatus,
+          status: (hasForcedDiversity(diversitySample, 2) ? 'pass' : 'fail') as SuccessStatus,
           observed:
-            lensesSeen.length >= 2
-              ? `${lensesSeen.length} distinct lenses across the newest ${recentScoutIdeas.length} scout-routed ideas: ${lensesSeen.join(', ')}`
-              : `ROSTER COLLAPSED — all ${recentScoutIdeas.length} of the newest scout-routed ideas are a SINGLE lens (${lensesSeen[0]}). The per-lens learning subsystem has nothing to learn from. Check the scout routine's budget.maxIdeators (1 ⇒ first lens only; see WI-4482).`,
+            diversityLensesSeen.length >= 2
+              ? `${diversityLensesSeen.length} distinct lenses across ${diversitySourceNote}: ${diversityLensesSeen.join(', ')}`
+              : `ROSTER COLLAPSED — all ${diversitySample.length} sampled ideator slot(s) (${diversitySourceNote}) are a SINGLE lens (${diversityLensesSeen[0]}). The per-lens learning subsystem has nothing to learn from. Check the scout routine's budget.maxIdeators (1 ⇒ first lens only; see WI-4482).`,
         }),
   });
 
