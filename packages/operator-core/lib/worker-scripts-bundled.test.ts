@@ -32,7 +32,10 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
-const BUNDLE_SCRIPT = join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh');
+/** Overridable so falsifiability can be proven against a COPY outside the tree
+ *  (`scripts/mutation-probe.sh`) instead of mutating the shared checkout, where
+ *  git-sync would commit the mutant mid-probe. */
+const BUNDLE_SCRIPT = process.env.PROBE_BUNDLE_SCRIPT ?? join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh');
 
 /** Directories that hold BUILD OUTPUT or vendored code, where a `*.script.mjs`
  *  is a COPY produced by the very step under test — counting those would make
@@ -85,14 +88,20 @@ describe('worker scripts are bundled beside the host entry', () => {
     // scan actually found the known population first.
     expect(scripts.length).toBeGreaterThanOrEqual(3);
 
+    // Anchor on the PROPERTY that defines compliance — an actual
+    // `cp … "$OUTDIR/<name>"` — not on the basename merely APPEARING in the
+    // file. A bare `includes(basename)` is satisfied by a comment mentioning
+    // the worker, so it would pass for a script that is documented but never
+    // copied: the precise form-blind failure this repo has paid for twice.
+    // (Verified: under mutation-probe, deleting the rerank `cp` left the
+    // basename in its own comment and a bare-mention check did NOT go red.)
+    const copiedToOutdir = new Set(
+      [...bundleSh.matchAll(/cp\s+"[^"]+"\s+"\$OUTDIR\/([^"]+\.script\.mjs)"/g)].map((m) => m[1]),
+    );
+
     const missing = scripts
       .map((s) => relative(REPO_ROOT, s))
-      .filter((rel) => {
-        const basename = rel.slice(rel.lastIndexOf('/') + 1);
-        // The copy must name the file on BOTH sides: a source path to read from
-        // and a destination beside the bundle entry.
-        return !bundleSh.includes(basename);
-      });
+      .filter((rel) => !copiedToOutdir.has(rel.slice(rel.lastIndexOf('/') + 1)));
 
     expect(
       missing,
