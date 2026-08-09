@@ -263,6 +263,25 @@ export function nextDebounceMs(baseMs, consecutiveRestartsArg, multiplier = BACK
   return Math.min(scaled, capMs);
 }
 
+/** Pure (WI-37501): has the ticker been healthy for LONG ENOUGH to treat a restart storm as genuinely
+ *  over, vs. one lucky poll mid-freeze? `healthyStreak` is the count of consecutive healthy polls right
+ *  now (0 after any stale observation). Only once it reaches `sustainedPolls` do we clear the
+ *  consecutive-restart strike count — see the file-header WI-37501 note for the observed failure this
+ *  replaces (a single healthy poll cleared the strike, so BACKOFF_MULTIPLIER escalation never engaged). */
+export function shouldClearStrikes(healthyStreak, sustainedPolls = SUSTAINED_HEALTHY_POLLS) {
+  return healthyStreak >= sustainedPolls;
+}
+
+/** Pure (WI-37501): the theoretical MAXIMUM restarts/hr this watchdog's OWN cadence can ever produce. A
+ *  storm cannot restart faster than once every (bootGraceMs + pollMs): the freeze judgment is suppressed
+ *  for the whole boot-grace window and only re-evaluated on the next poll after it lapses. If
+ *  MAX_RESTARTS_PER_HR is set >= this, the circuit breaker can NEVER trip against a boot-grace-floored
+ *  storm — exactly the WI-37501 defect (8 vs. a reachable 7.06 at the old defaults). */
+export function maxReachableRestartsPerHr(bootGraceMs = BOOT_GRACE_MS, pollMs = POLL_MS) {
+  const floorMs = bootGraceMs + pollMs;
+  return floorMs > 0 ? 3_600_000 / floorMs : Infinity;
+}
+
 /** Pure alert-threshold verdict (WI-3630): true once consecutive restarts reach `alertAfter` — fired well
  *  before the hard MAX_RESTARTS_PER_HR circuit breaker so a developing storm is visible early.
  *  ⚠ This answers "is a STORM developing?", NOT "did this restart destroy anything?" — see
@@ -574,6 +593,8 @@ async function poll() {
     return;
   }
   if (isFrozen(idleSec)) {
+    // WI-37501: ANY stale-idleSec observation breaks a healthy streak in progress — see shouldClearStrikes.
+    healthyStreak = 0;
     // BOOT GRACE (EI-8901): the staleness signal SPANS restarts (it's the last tick's age, from PG) — a
     // freshly-restarted unit that hasn't ticked yet still reads as frozen. Check this FIRST, before the
     // saturation corroboration below, because right after a restart BOTH signals (routine fires AND the
@@ -612,11 +633,14 @@ async function poll() {
     );
     return;
   }
-  // Healthy. WI-3630: a genuinely fresh fire means any prior storm is OVER — reset the consecutive-strike
-  // counter so a LATER, unrelated freeze starts its backoff from the base debounce, not wherever a past
-  // storm left off.
-  if (consecutiveRestarts > 0) {
-    log(`ticker recovered (fired ${idleSec}s ago) — clearing consecutive-restart strike count (was ${consecutiveRestarts})`);
+  // Healthy. WI-37501: a SINGLE healthy poll is not proof the storm is over — a stalled process can fire
+  // exactly one routine early in boot and then stall again (the observed failure this replaces). Only
+  // once the ticker has been healthy for SUSTAINED_HEALTHY_POLLS polls IN A ROW do we reset the
+  // consecutive-strike counter, so a LATER, unrelated freeze starts its backoff from the base debounce —
+  // not wherever a past storm left off, and not before the past storm is actually confirmed over.
+  healthyStreak += 1;
+  if (consecutiveRestarts > 0 && shouldClearStrikes(healthyStreak)) {
+    log(`ticker sustained-healthy (${healthyStreak} consecutive polls, fired ${idleSec}s ago) — clearing consecutive-restart strike count (was ${consecutiveRestarts})`);
     consecutiveRestarts = 0;
   }
   // Emit a throttled heartbeat so the durable log shows the watchdog is actively monitoring.
@@ -670,9 +694,20 @@ async function reportVintage(unit) {
 function start() {
   log(
     `up — unit ${UNIT}, poll ${POLL_MS}ms, freeze-silence ${FREEZE_SILENCE_S}s, debounce ${DEBOUNCE_MS}ms (backoff x${BACKOFF_MULTIPLIER}, cap ${MAX_DEBOUNCE_MS}ms), ` +
-      `boot-grace ${BOOT_GRACE_MS}ms, alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, circuit cap ${MAX_RESTARTS_PER_HR}/hr; ` +
+      `boot-grace ${BOOT_GRACE_MS}ms, alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr; ` +
       `signal=PG-routine-freshness (journald-independent); durable log ${LOG_FILE}`,
   );
+  // WI-37501: a recurrence guard, not just a fix — if POLL_MS/BOOT_GRACE_MS/MAX_RESTARTS_HR are ever
+  // retuned in a way that makes the circuit breaker arithmetically unreachable again, say so loudly at
+  // boot instead of silently shipping an unreachable safety valve a second time.
+  const reachableCap = maxReachableRestartsPerHr();
+  if (MAX_RESTARTS_PER_HR >= reachableCap) {
+    log(
+      `⚠⚠ MISCONFIGURED: MAX_RESTARTS_PER_HR=${MAX_RESTARTS_PER_HR} >= the reachable ceiling ${reachableCap.toFixed(2)}/hr ` +
+        `given BOOT_GRACE_MS=${BOOT_GRACE_MS}+POLL_MS=${POLL_MS} — the circuit breaker can NEVER trip against a ` +
+        `boot-grace-floored restart storm (WI-37501). Lower MAX_RESTARTS_PER_HR or the boot-grace/poll cadence.`,
+    );
+  }
   void reportVintage('bghost-watchdog');
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
 }

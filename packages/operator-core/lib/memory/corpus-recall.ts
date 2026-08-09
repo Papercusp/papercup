@@ -228,6 +228,28 @@ const ID_TOKEN_RE = /^(?:[a-z]{1,3}-\d{2,}|\d{3,})$/;
 const ID_PREFIXED_TOKEN_RE = /^[a-z]{1,3}-\d{2,}$/;
 
 /**
+ * The id-prefixed token this term pool short-circuits the query on, or `null`.
+ *
+ * Exported as a FUNCTION rather than exposing {@link ID_PREFIXED_TOKEN_RE},
+ * because the short-circuit is a RULE ("the first id-prefixed term in pool
+ * order wins outright"), not just a pattern — and a second caller that
+ * re-implements the rule around a shared regex agrees with `corpusQueryText`
+ * only by convention. `corpus-query-clarity.ts` needs exactly this question
+ * answered (a keyed query is retrievable by construction and must never be
+ * assessed as unfocused prose), so both read it here and cannot drift.
+ *
+ * That "identical by construction, not by agreement" property is the same
+ * lesson `corpus-term-df.ts` records for its tokenizer: it folds DF with
+ * `corpusTerms` itself precisely so a second tokenizer cannot silently disagree.
+ *
+ * Takes the POOL rather than the raw text so the caller that already ran
+ * `corpusTerms` does not tokenize twice. PURE.
+ */
+export function corpusQueryIdToken(terms: readonly string[]): string | null {
+  return terms.find((t) => ID_PREFIXED_TOKEN_RE.test(t)) ?? null;
+}
+
+/**
  * Extract the comparable terms from a piece of text. Lowercased, split on
  * non-alphanumeric-and-dash, stopwords removed, keeping tokens of ≥4 chars or
  * id-shaped tokens of any length. PURE.
@@ -394,7 +416,7 @@ export function corpusQueryText(
 ): string {
   const terms = corpusTerms(text);
   if (terms.length === 0) return '';
-  const id = terms.find((t) => ID_PREFIXED_TOKEN_RE.test(t));
+  const id = corpusQueryIdToken(terms);
   if (id) return id;
 
   const k = Math.max(1, maxTerms);

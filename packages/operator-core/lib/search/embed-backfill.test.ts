@@ -54,6 +54,11 @@ import {
   logMemoryVecOutcome,
   resetMemoryVecIdleLogState,
   MEMORY_VEC_IDLE_LOG_INTERVAL_MS,
+  stalePredicateSql,
+  recipeColOf,
+  activeRecipeVersion,
+  BASELINE_RECIPE_VERSION,
+  type BackfillTarget,
 } from './embed-backfill';
 // Import the width — the sweep writes into the prose columns, so a width change
 // must move this fixture automatically rather than stranding it (384→768).
@@ -471,6 +476,164 @@ describe('embedding-space discriminator (WI-3616)', () => {
     const update = unsafeCalls.find((c) => c.q.includes('UPDATE harness_shared.harness_escalations'))!;
     expect(update.q).toContain('body_embedding_mode = $2');
     expect(update.params![1]).toBe('openai'); // the mocked active mode
+  });
+});
+
+/**
+ * P-026 / D-087 — the TEXT-RECIPE discriminator (migration 777).
+ *
+ * `<embedCol>_mode` says which EMBEDDER made a vector and nothing about WHICH TEXT went
+ * in, so editing a `bodySql` used to mark nothing stale. These cover the second axis, and
+ * three of them exist because the feature's failure modes are all SILENT: introducing the
+ * column must re-embed NOTHING (a false positive costs ~28h of sidecar), the UPDATE guard
+ * must accept every row the SELECT calls stale (a false negative re-embeds one row
+ * forever), and coverage must bind the SAME version (or it reads 0% and blames the sweep).
+ */
+describe('text-recipe discriminator (P-026 / D-087)', () => {
+  const TARGET: BackfillTarget = {
+    table: 'harness_shared.operator_turns',
+    embedCol: 'text_embedding',
+    bodySql: 'text',
+    keyCols: ['id'],
+  };
+  const V2: BackfillTarget = { ...TARGET, recipeVersion: 2 };
+
+  function fakeSql(results: unknown[][]) {
+    const calls: Array<{ q: string; params?: unknown[] }> = [];
+    const sql = {
+      unsafe: async (q: string, params?: unknown[]) => {
+        calls.push({ q, params });
+        return results.shift() ?? [];
+      },
+    };
+    return { sql: sql as never, calls };
+  }
+  const embed = async (): Promise<number[]> => VEC;
+  const oneRow = (): unknown[][] => [[{ k0: 'row-1', body: 'x' }], [], []];
+
+  it('is SEPARATE from the mode column — a recipe bump must be invisible to query-time readers', () => {
+    // The whole of D-087. Four readers equality-match `<embedCol>_mode`
+    // (work-items.ts:1256/:1318, plans/semantic-leg.ts:77, doc-section-overlap.ts:179/:213),
+    // so folding a recipe token into it (`gemma#r2`) matches ZERO rows there — the semantic
+    // leg silently returns empty and the corpus leg degrades to lexical-only.
+    expect(recipeColOf(TARGET)).toBe('text_embedding_recipe');
+    expect(recipeColOf(TARGET)).not.toContain('_mode');
+  });
+
+  it('applies ONLY when the target declares a version AND the column exists', () => {
+    expect(activeRecipeVersion(V2, true)).toBe(2);
+    expect(activeRecipeVersion(V2, false)).toBeNull(); // migration 777 not run here
+    expect(activeRecipeVersion(TARGET, true)).toBeNull(); // surface has not opted in
+    expect(activeRecipeVersion(TARGET, false)).toBeNull();
+  });
+
+  it('INTRODUCING the discriminator re-embeds nothing: an undeclared target keeps the pre-777 predicate', async () => {
+    // The expensive false positive. If the column merely EXISTING made rows stale, deploying
+    // migration 777 would re-embed the whole corpus (~28h of sidecar) for no change in what
+    // is embedded. Same SQL and the same binds as before 777.
+    const { sql, calls } = fakeSql(oneRow());
+    await backfillTable(sql, TARGET, embed, 10, 'local', true, undefined, {
+      recipeColPresent: true,
+    });
+
+    const select = calls.find((c) => c.q.includes('SELECT'))!;
+    expect(select.q).not.toContain('_recipe');
+    expect(select.params).toEqual([10, 'local', 0]);
+    const update = calls.find((c) => c.q.includes('UPDATE'))!;
+    expect(update.q).not.toContain('_recipe');
+    expect(update.params![2]).toBe('row-1'); // PK still at $3
+  });
+
+  it('reads a NULL recipe as the baseline version, so pre-777 rows are not stale at v1', () => {
+    // A row embedded before the column existed is not of UNKNOWN recipe — it was made by
+    // the bodySql in force at the time, which IS recipe 1. Comparing raw (NULL IS DISTINCT
+    // FROM 1 → true) would mark the entire existing population stale at version 1, which is
+    // the same 28h false positive arriving through the predicate instead of the probe.
+    expect(BASELINE_RECIPE_VERSION).toBe(1);
+    const sql = stalePredicateSql(V2, true, '$2', '$3');
+    expect(sql).toContain(`coalesce(text_embedding_recipe, ${BASELINE_RECIPE_VERSION})`);
+    expect(sql).toContain('IS DISTINCT FROM $3');
+  });
+
+  it('a declared bump makes the existing population stale and stamps the new version', async () => {
+    const { sql, calls } = fakeSql(oneRow());
+    const stats = await backfillTable(sql, V2, embed, 10, 'local', true, undefined, {
+      recipeColPresent: true,
+    });
+    expect(stats.embedded).toBe(1);
+
+    const select = calls.find((c) => c.q.includes('SELECT'))!;
+    expect(select.q).toContain('coalesce(text_embedding_recipe, 1) IS DISTINCT FROM $3');
+    // $1 batch · $2 mode · $3 recipe · $4 failure offset — every one referenced.
+    expect(select.params).toEqual([10, 'local', 2, 0]);
+
+    const update = calls.find((c) => c.q.includes('UPDATE'))!;
+    expect(update.q).toContain('text_embedding_recipe = $3');
+    expect(update.params![2]).toBe(2);
+    expect(update.params![3]).toBe('row-1'); // PK shifted to $4
+  });
+
+  it('degrades to the pre-777 predicate when the column is absent, rather than throwing', async () => {
+    // Migration 777 is per-table on purpose, so "declared but absent" is an ordinary state
+    // (a surface that opted in, on a database where only other surfaces were migrated).
+    const { sql, calls } = fakeSql(oneRow());
+    await backfillTable(sql, V2, embed, 10, 'local', true, undefined, {
+      recipeColPresent: false,
+    });
+    const select = calls.find((c) => c.q.includes('SELECT'))!;
+    expect(select.q).not.toContain('_recipe');
+    expect(select.params).toEqual([10, 'local', 0]);
+  });
+
+  it('never binds a parameter the SQL does not use, in any combination of the two discriminators', async () => {
+    // Postgres derives the parameter COUNT from the highest $n referenced and rejects an
+    // unused bind. With TWO optional terms there are four layouts, and the two that only
+    // occur on a partially-migrated database are exactly the ones nothing else covers.
+    const { sql, calls } = fakeSql(oneRow());
+    await backfillTable(sql, V2, embed, 10, 'local', false, undefined, {
+      recipeColPresent: true,
+    });
+    const select = calls.find((c) => c.q.includes('SELECT'))!;
+    expect(select.q).not.toContain('_mode');
+    expect(select.q).toContain('coalesce(text_embedding_recipe, 1) IS DISTINCT FROM $2');
+    expect(select.params).toEqual([10, 2, 0]); // $1 batch · $2 recipe · $3 offset
+
+    const update = calls.find((c) => c.q.includes('UPDATE'))!;
+    expect(update.q).not.toContain('_mode');
+    expect(update.q).toContain('text_embedding_recipe = $2');
+    expect(update.params).toEqual([`[${VEC.join(',')}]`, 2, 'row-1']); // PK at $3
+  });
+
+  it("the UPDATE guard accepts every row the SELECT calls stale — the sweep's convergence invariant", async () => {
+    // THE failure this feature could introduce, and it is invisible: if the write guard is
+    // narrower than the selector, the row is selected as stale, the UPDATE matches nothing,
+    // the row stays stale, and every later pull re-selects and re-embeds it — burning tokens
+    // forever while `stats.embedded` cheerfully counts successes. Both predicates must be
+    // the SAME expression; only their placeholder positions differ.
+    const { sql, calls } = fakeSql(oneRow());
+    await backfillTable(sql, V2, embed, 10, 'local', true, undefined, {
+      recipeColPresent: true,
+    });
+    const norm = (s: string): string => s.replace(/\$\d+/g, '?').replace(/\s+/g, ' ').trim();
+    // Both statements bind mode at $2 and recipe at $3, so after normalising placeholders
+    // the predicate is literally the same string on both sides.
+    const expected = norm(stalePredicateSql(V2, true, '$2', '$3'));
+    const selectQ = norm(calls.find((c) => c.q.includes('SELECT'))!.q);
+    const updateQ = norm(calls.find((c) => c.q.includes('UPDATE'))!.q);
+
+    expect(selectQ).toContain(expected);
+    // ENDS WITH, not merely contains: the guard must be the WHOLE staleness predicate and
+    // the last thing in the statement. `toContain` is too weak to be worth writing here —
+    // the mode-only predicate is a SUB-expression of the recipe-aware one, so a guard that
+    // never learned about recipes would satisfy a containment check while still failing to
+    // match the very rows the SELECT hands it.
+    expect(updateQ.endsWith(expected)).toBe(true);
+
+    // FALSIFIABILITY CONTROL: the guard this replaced (mode-only, hand-restated) against the
+    // same assertion. It must FAIL — otherwise the check above proves nothing.
+    const narrower = norm(`(text_embedding IS NULL OR text_embedding_mode IS DISTINCT FROM $2)`);
+    expect(narrower).not.toBe(expected);
+    expect(updateQ.endsWith(narrower)).toBe(false);
   });
 });
 

@@ -10,6 +10,8 @@ let shouldRestart: (idleSec: number | null, schedSec: number | null, freezeSilen
 let withinBootGrace: (activeForSec: number | null | undefined, bootGraceMs?: number) => boolean;
 let nextDebounceMs: (baseMs: number, consecutiveRestarts: number, multiplier?: number, capMs?: number) => number;
 let shouldAlert: (consecutiveRestarts: number, alertAfter?: number) => boolean;
+let shouldClearStrikes: (healthyStreak: number, sustainedPolls?: number) => boolean;
+let maxReachableRestartsPerHr: (bootGraceMs?: number, pollMs?: number) => number;
 let alertFleet: (
   summary: string,
   deps?: {
@@ -51,6 +53,8 @@ beforeAll(async () => {
     withinBootGrace,
     nextDebounceMs,
     shouldAlert,
+    shouldClearStrikes,
+    maxReachableRestartsPerHr,
     alertFleet,
     circuitOpenMessage,
     parseCgroupProcs,
@@ -191,8 +195,45 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
       expect(shouldAlert(2, 2)).toBe(true);
       expect(shouldAlert(5, 2)).toBe(true);
     });
-    it('fires well before the hourly circuit-breaker cap (8) so a developing storm is caught early', () => {
-      expect(shouldAlert(2, 2)).toBe(true); // default ALERT_AFTER_RESTARTS=2 << default MAX_RESTARTS_PER_HR=8
+    it('fires well before the hourly circuit-breaker cap (6) so a developing storm is caught early', () => {
+      expect(shouldAlert(2, 2)).toBe(true); // default ALERT_AFTER_RESTARTS=2 << default MAX_RESTARTS_PER_HR=6
+    });
+  });
+
+  /**
+   * WI-37501: a restart-loop escalation bug found live 2026-08-09. A stalled bg-host fired exactly one
+   * routine early in boot, clearing the strike counter after a SINGLE healthy poll — so BACKOFF_MULTIPLIER
+   * escalation never engaged and every restart looked like a first offence, floored at
+   * BOOT_GRACE_MS+POLL_MS = 510s (7.06/hr), just under the OLD MAX_RESTARTS_PER_HR=8 cap.
+   */
+  describe('shouldClearStrikes — sustained health before clearing the strike counter (WI-37501)', () => {
+    it('under the sustained-polls threshold ⇒ do not clear yet (the exact live bug: one healthy poll)', () => {
+      expect(shouldClearStrikes(1, 3)).toBe(false);
+      expect(shouldClearStrikes(2, 3)).toBe(false);
+    });
+    it('at or over the sustained-polls threshold ⇒ clear', () => {
+      expect(shouldClearStrikes(3, 3)).toBe(true);
+      expect(shouldClearStrikes(5, 3)).toBe(true);
+    });
+    it('zero streak (no healthy poll yet) ⇒ never clear', () => {
+      expect(shouldClearStrikes(0, 3)).toBe(false);
+    });
+  });
+
+  describe('maxReachableRestartsPerHr — the circuit breaker must be arithmetically reachable (WI-37501)', () => {
+    it('at the (post-fix) defaults, 6/hr sits below the reachable ceiling', () => {
+      const ceiling = maxReachableRestartsPerHr(8 * 60_000, 30_000); // BOOT_GRACE_MS, POLL_MS defaults
+      expect(ceiling).toBeCloseTo(3_600_000 / (8 * 60_000 + 30_000), 5);
+      expect(6).toBeLessThan(ceiling); // the new default cap
+    });
+    it('reproduces the live defect: the OLD cap (8) sat AT/ABOVE the reachable ceiling', () => {
+      const ceiling = maxReachableRestartsPerHr(8 * 60_000, 30_000);
+      expect(ceiling).toBeLessThan(8); // 7.058... < 8 — the breaker could never trip
+    });
+    it('a tighter boot-grace/poll cadence raises the reachable ceiling', () => {
+      const looser = maxReachableRestartsPerHr(60_000, 5_000);
+      const tighter = maxReachableRestartsPerHr(8 * 60_000, 30_000);
+      expect(looser).toBeGreaterThan(tighter);
     });
   });
 

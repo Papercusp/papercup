@@ -146,9 +146,17 @@ describe('TSC_COMMAND (EI-487 regression guard)', () => {
 // the gate's correctness, not a perf tweak — pin it.
 describe('tsc child heap (WI-37503)', () => {
   it('raises the child V8 old-space ceiling above the ~4GB default that crashed the gate', () => {
-    expect(TSC_HEAP_MB).toBeGreaterThan(4096);
-    const env = tscChildEnv();
-    expect(env.NODE_OPTIONS).toContain(`--max-old-space-size=${TSC_HEAP_MB}`);
+    // NODE_OPTIONS must be cleared explicitly: this runner sets its own
+    // --max-old-space-size, so an uncontrolled read would exercise the DEFER branch
+    // below and silently never test the default at all (it did, first run).
+    const prev = process.env.NODE_OPTIONS;
+    delete process.env.NODE_OPTIONS;
+    try {
+      expect(TSC_HEAP_MB).toBeGreaterThan(4096);
+      expect(tscChildEnv().NODE_OPTIONS).toBe(`--max-old-space-size=${TSC_HEAP_MB}`);
+    } finally {
+      if (prev !== undefined) process.env.NODE_OPTIONS = prev;
+    }
   });
 
   it('DEFERS to a caller who already pinned a size — never appends a second copy', () => {

@@ -450,15 +450,34 @@ export function eligiblePredicateSql(target: BackfillTarget): string {
  *
  * `modeExpr` is the SQL expression holding the ACTIVE embedder mode — a bind placeholder
  * ('$2') on the sweep's parameterised path, or a quoted literal from `quoteModeLiteral`.
+ *
+ * `recipeExpr` (P-026 / D-087) is the same for the active TEXT RECIPE version, and null
+ * when the recipe term does not apply — see `activeRecipeVersion`. It is a SECOND,
+ * independent reason a row can be stale: same embedder space, different input text. NULL
+ * is read as `BASELINE_RECIPE_VERSION`, so a target at version 1 matches nothing extra and
+ * introducing the discriminator re-embeds nothing.
+ *
+ * ⚠ Any caller that ACTS on this predicate must re-assert THIS SAME expression in its
+ * write guard — see the UPDATE in `backfillTable`, which builds it from here rather than
+ * restating it. A guard narrower than the selector is not a cosmetic mismatch: the row is
+ * selected as stale, the UPDATE's WHERE matches nothing, the row stays stale, and the next
+ * pull re-selects and re-embeds it forever. That is the ctid bug of cost-audit-2026-06-29
+ * re-created through a different door, and it costs tokens silently.
  */
 export function stalePredicateSql(
   target: BackfillTarget,
   spaceAware: boolean,
   modeExpr: string,
+  recipeExpr: string | null = null,
 ): string {
-  return spaceAware
+  const spaceTerm = spaceAware
     ? `(${target.embedCol} IS NULL OR ${modeColOf(target)} IS DISTINCT FROM ${modeExpr})`
     : `${target.embedCol} IS NULL`;
+  if (recipeExpr === null) return spaceTerm;
+  return (
+    `(${spaceTerm} OR coalesce(${recipeColOf(target)}, ${BASELINE_RECIPE_VERSION})` +
+    ` IS DISTINCT FROM ${recipeExpr})`
+  );
 }
 
 /**
@@ -748,7 +767,16 @@ const MAX_ROWS_PER_TARGET_PER_SWEEP = BATCH_SIZE * 4;
  *  `mode` is the embedder that `embed` was built from. When the target carries a
  *  `<embedCol>_mode` column (migration 530), rows whose recorded space differs from
  *  `mode` are RE-EMBEDDED, not skipped — see the WI-3616 note on `spaceAware`.
- *  Pass `spaceAware: false` for a database where 530 hasn't been applied yet. */
+ *  Pass `spaceAware: false` for a database where 530 hasn't been applied yet.
+ *
+ *  `opts.recipeColPresent` (P-026 / D-087) is the analogous probe result for
+ *  migration 777's `<embedCol>_recipe`. It is the SCHEMA half only — the target's
+ *  own `recipeVersion` is the other half, and both must hold before the recipe
+ *  term applies (`activeRecipeVersion`). Defaults false, i.e. exactly the
+ *  pre-777 behaviour, so no existing caller changes meaning. An options object
+ *  rather than an eighth positional: this signature already carries six
+ *  positional knobs and the next one would be past the point where call sites
+ *  are readable. */
 export async function backfillTable(
   sql: Sql,
   target: BackfillTarget,
@@ -757,6 +785,7 @@ export async function backfillTable(
   mode: ResolvedMode = 'openai',
   spaceAware = true,
   embedMany?: EmbedManyFn,
+  opts: { recipeColPresent?: boolean } = {},
 ): Promise<BackfillStats> {
   const started = Date.now();
   const stats: BackfillStats = {
@@ -770,12 +799,49 @@ export async function backfillTable(
   // Select each PK column as k0, k1, … so the UPDATE can target the exact row by PK (not ctid).
   const keySelect = keyCols.map((c, i) => `${c} AS k${i}`).join(', ');
   const modeCol = modeColOf(target);
+  // P-026: the recipe version to enforce, or null when this target/database has no
+  // recipe discriminator. Resolved ONCE — the SELECT, the UPDATE's SET and the UPDATE's
+  // re-asserted guard must all agree on it or the sweep cannot converge.
+  const recipeVersion = activeRecipeVersion(target, opts.recipeColPresent === true);
+  const recipeAware = recipeVersion !== null;
+
   // Postgres derives a statement's parameter COUNT from the highest $n it references,
   // and rejects a Bind that supplies a parameter the statement never uses ("could not
-  // determine data type of parameter $n"). So the mode placeholder — and therefore the
-  // PK offset — exists only on the space-aware path. Never bind `mode` without using it.
-  const updateKeyOffset = spaceAware ? 3 : 2;
+  // determine data type of parameter $n"). So each optional discriminator's placeholder
+  // — and therefore the PK offset after them — exists only when that discriminator is
+  // live. Never bind a parameter without using it. Allocating positions here (rather
+  // than writing literals like `$3`) is what keeps the two optional terms independent:
+  // with two of them the fixed-offset form has four cases, and the two that appear only
+  // on an un-probed database are exactly the ones no test would cover.
+  //
+  // SELECT layout: $1 batch size · [mode] · [recipe] · failure offset.
+  let sn = 1;
+  const selModeExpr = spaceAware ? `$${++sn}` : 'NULL';
+  const selRecipeExpr = recipeAware ? `$${++sn}` : null;
+  const selOffsetExpr = `$${++sn}`;
+  // UPDATE layout: $1 vector · [mode] · [recipe] · PK columns.
+  let un = 1;
+  const updModeExpr = spaceAware ? `$${++un}` : 'NULL';
+  const updRecipeExpr = recipeAware ? `$${++un}` : null;
+  const updateKeyOffset = un + 1;
   const whereKeys = keyCols.map((c, i) => `${c} = $${i + updateKeyOffset}`).join(' AND ');
+  const setClauses = [`${target.embedCol} = $1::vector`];
+  if (spaceAware) setClauses.push(`${modeCol} = ${updModeExpr}`);
+  if (recipeAware) setClauses.push(`${recipeColOf(target)} = ${updRecipeExpr}`);
+  // The write guard is BUILT FROM the staleness predicate, never a hand-restated copy of
+  // it. A guard narrower than the selector silently un-converges the sweep: the row is
+  // selected as stale, the UPDATE matches no row, the row stays stale, and every
+  // subsequent pull re-selects and re-embeds it — burning tokens forever with nothing to
+  // show in the stats. Sharing the builder makes that class unrepresentable.
+  const updateSql =
+    `UPDATE ${target.table}` +
+    `\n   SET ${setClauses.join(', ')}` +
+    `\n WHERE ${whereKeys}` +
+    `\n   AND ${stalePredicateSql(target, spaceAware, updModeExpr, updRecipeExpr)}`;
+  const discriminatorParams = [
+    ...(spaceAware ? [mode] : []),
+    ...(recipeAware ? [recipeVersion] : []),
+  ];
 
   /**
    * WI-3616 — "which rows still need embedding?" is a question about the vector's
@@ -792,7 +858,7 @@ export async function backfillTable(
    * active space, then go quiet. `IS DISTINCT FROM` — not `<> ` — because `NULL <> 'local'`
    * is NULL, which would silently match nothing and reintroduce the original bug.
    */
-  const stale = stalePredicateSql(target, spaceAware, '$2');
+  const stale = stalePredicateSql(target, spaceAware, selModeExpr, selRecipeExpr);
 
   // Loop until nothing is stale — OR until a full batch makes ZERO progress (every row failed to
   // embed). Without the zero-progress break, a row whose embed PERSISTENTLY fails (e.g. every
@@ -822,8 +888,8 @@ export async function backfillTable(
          FROM ${target.table}
         WHERE ${stale}
           AND ${eligiblePredicateSql(target)}${orderBy}
-        LIMIT $1 OFFSET $${spaceAware ? 3 : 2}`,
-      spaceAware ? [wantRows, mode, failedSoFar] : [wantRows, failedSoFar],
+        LIMIT $1 OFFSET ${selOffsetExpr}`,
+      [wantRows, ...discriminatorParams, failedSoFar],
     );
     if (!batch.length) break;
 
@@ -901,22 +967,9 @@ export async function backfillTable(
         const keyVals = keyCols.map((_, i) => row[`k${i}`]);
         // Target by PRIMARY KEY + re-assert the staleness guard: a row a concurrent sweep
         // already brought into the active space is left alone, and we never clobber a row
-        // that changed underneath us. The vector and its space are written together, so a
-        // row can never claim a space it isn't in.
-        await sql.unsafe(
-          spaceAware
-            ? `UPDATE ${target.table}
-                  SET ${target.embedCol} = $1::vector, ${modeCol} = $2
-                WHERE ${whereKeys}
-                  AND (${target.embedCol} IS NULL OR ${modeCol} IS DISTINCT FROM $2)`
-            : `UPDATE ${target.table}
-                  SET ${target.embedCol} = $1::vector
-                WHERE ${whereKeys}
-                  AND ${target.embedCol} IS NULL`,
-          spaceAware
-            ? [`[${vec.join(',')}]`, mode, ...keyVals]
-            : [`[${vec.join(',')}]`, ...keyVals],
-        );
+        // that changed underneath us. The vector, its space and its text recipe are
+        // written together, so a row can never claim a space or a recipe it isn't in.
+        await sql.unsafe(updateSql, [`[${vec.join(',')}]`, ...discriminatorParams, ...keyVals]);
         stats.embedded += 1;
         embeddedThisBatch += 1;
       } catch {
@@ -1193,13 +1246,25 @@ export async function runBackfillSweep(
     // the draining, which is what forced the drain to be "one target to completion,
     // then the next" — the shape that let the first backlogged table in the order
     // consume the whole sweep.
-    const live: Array<{ target: BackfillTarget; spaceAware: boolean }> = [];
+    const live: Array<{
+      target: BackfillTarget;
+      spaceAware: boolean;
+      recipeColPresent: boolean;
+    }> = [];
     for (const target of rotated) {
       try {
         // Column existence probe; skip if migration 061 hasn't run. The same probe
         // reports whether migration 530's `<embedCol>_mode` discriminator exists —
         // without it the sweep must fall back to the legacy NULL-only predicate
-        // (an older DB still backfills; it just can't self-heal a space switch).
+        // (an older DB still backfills; it just can't self-heal a space switch) —
+        // and, since P-026, whether migration 777's `<embedCol>_recipe` does. 777 is
+        // deliberately per-table (only the surfaces that opted in have the column),
+        // so "absent" here is the ORDINARY case, not a mis-migrated database: it
+        // degrades that target to the pre-777 predicate rather than throwing.
+        //
+        // Widening this IN-list adds no round-trip. That matters more than it looks:
+        // the note below explains why a separate probe call would have been the wrong
+        // shape, and the same reasoning is why the recipe column rides along here.
         //
         // WI-7327: it ALSO returns each column's LIVE width (`pg_attribute.atttypmod`,
         // which for pgvector IS the dimension — no varchar-style +4). That is the
@@ -1216,8 +1281,8 @@ export async function runBackfillSweep(
                ON a.attrelid = pc.oid AND a.attname = col.column_name AND NOT a.attisdropped
             WHERE col.table_schema = split_part($1, '.', 1)
               AND col.table_name   = split_part($1, '.', 2)
-              AND col.column_name  IN ($2, $3)`,
-          [target.table, target.embedCol, modeColOf(target)],
+              AND col.column_name  IN ($2, $3, $4)`,
+          [target.table, target.embedCol, modeColOf(target), recipeColOf(target)],
         );
         const cols = new Set(c.map((r) => r.column_name));
         if (!cols.has(target.embedCol)) {
@@ -1256,7 +1321,11 @@ export async function runBackfillSweep(
           byTable.set(target.table, { table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0 });
           continue;
         }
-        live.push({ target, spaceAware: cols.has(modeColOf(target)) });
+        live.push({
+          target,
+          spaceAware: cols.has(modeColOf(target)),
+          recipeColPresent: cols.has(recipeColOf(target)),
+        });
         byTable.set(target.table, {
           table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0,
         });
@@ -1299,7 +1368,7 @@ export async function runBackfillSweep(
     let rounds = 0;
     while (live.length > drained.size && Date.now() < deadline) {
       rounds += 1;
-      for (const { target, spaceAware } of live) {
+      for (const { target, spaceAware, recipeColPresent } of live) {
         if (drained.has(target.table)) continue;
         if (Date.now() >= deadline) break;
         const used = consumed.get(target.table) ?? 0;
@@ -1316,6 +1385,7 @@ export async function runBackfillSweep(
             mode,
             spaceAware,
             embedMany ?? undefined,
+            { recipeColPresent },
           );
           consumed.set(target.table, used + s.scanned);
           const acc = byTable.get(target.table)!;

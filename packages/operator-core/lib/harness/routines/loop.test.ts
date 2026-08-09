@@ -14,7 +14,16 @@ const { upsertRoutineSpy, sqlStub } = vi.hoisted(() => ({
   upsertRoutineSpy: vi.fn(),
   sqlStub: (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),
 }));
-vi.mock('@papercusp/db-org', () => ({
+// EI-14928 root-cause class: a MINIMAL factory here (only getOrgPg/upsertRoutine)
+// crashes vitest COLLECTION whenever some OTHER db-org export is dereferenced at
+// module scope anywhere in this file's transitive import graph (e.g. autoloop.ts's
+// `generated.autoloopStateInHarnessShared`) — the composed graph varies by which
+// other test files share this worker, so the crash is run-order-dependent, not
+// deterministic per-commit. Spread importOriginal so every real export (including
+// `generated`, pure drizzle table defs) stays present; only override what this
+// file actually needs to stub.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlStub }),
   upsertRoutine: upsertRoutineSpy,
 }));

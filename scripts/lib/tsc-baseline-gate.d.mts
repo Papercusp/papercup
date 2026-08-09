@@ -451,23 +451,19 @@ export function formatLandingRaceCaveat({ recentCount, windowMin }: {
     windowMin?: number;
 }): string[];
 /**
- * EI-19341572300046923 — the repo-relative directory prefix a `tsc -p <dir>/tsconfig.json`
- * invocation actually COMPILES.
+ * The child env for a tsc spawn: `process.env` plus `extra`, with
+ * `--max-old-space-size` appended to NODE_OPTIONS.
  *
- * Every per-project CLI here is a thin wrapper whose `tscCommand` is a per-project constant
- * (`lint-tsc.mjs` → `packages/operator-core/`, `lint-tsc-operator-vite.mjs` →
- * `apps/operator-vite/`, …). `--files=` is a GATE-scoping flag that never reaches tsc, so
- * naming a file OUTSIDE that project does not widen the compile — it just scopes the verdict
- * to files this run never looked at. Deriving the prefix from the command itself (rather than
- * a hand-maintained roster) means a new per-project CLI inherits the guard below for free;
- * a roster would reproduce the very "gate exists, gates nothing" defect WI-6841 documents.
+ * An EXISTING `--max-old-space-size` in the caller's NODE_OPTIONS is left alone —
+ * an operator who pinned a value (or a constrained CI box that pinned a smaller
+ * one) must win over this default, and appending a second copy would silently
+ * take the LAST occurrence rather than erroring.
  *
- * @param {string} tscCommand
- * @returns {string | null} prefix with a trailing slash, `''` for a whole-repo project, or
- *   `null` when no `-p` operand is parseable (callers must then FAIL OPEN — an unparseable
- *   command is not evidence that a file is uncovered).
+ * @param {Record<string, string>} [extra]
+ * @returns {Record<string, string | undefined>}
  */
-export function projectPrefixFromTscCommand(tscCommand: string): string | null;
+export function tscChildEnv(extra?: Record<string, string>): Record<string, string | undefined>;
+export function projectPrefixFromTscCommand(tscCommand: any): string | null;
 /**
  * Split the caller's `--files=` set into the files this invocation can actually judge and the
  * ones it cannot.
@@ -775,6 +771,49 @@ export const REGRESSION_DIAGNOSTIC_MAX_PER_FILE: 10;
  * survives. It only ever adds a caveat — never removes one — so erring long is the safe direction.
  */
 export const LANDING_RACE_WINDOW_SEC: number;
+/**
+ * EI-19341572300046923 — the repo-relative directory prefix a `tsc -p <dir>/tsconfig.json`
+ * invocation actually COMPILES.
+ *
+ * Every per-project CLI here is a thin wrapper whose `tscCommand` is a per-project constant
+ * (`lint-tsc.mjs` → `packages/operator-core/`, `lint-tsc-operator-vite.mjs` →
+ * `apps/operator-vite/`, …). `--files=` is a GATE-scoping flag that never reaches tsc, so
+ * naming a file OUTSIDE that project does not widen the compile — it just scopes the verdict
+ * to files this run never looked at. Deriving the prefix from the command itself (rather than
+ * a hand-maintained roster) means a new per-project CLI inherits the guard below for free;
+ * a roster would reproduce the very "gate exists, gates nothing" defect WI-6841 documents.
+ *
+ * @param {string} tscCommand
+ * @returns {string | null} prefix with a trailing slash, `''` for a whole-repo project, or
+ *   `null` when no `-p` operand is parseable (callers must then FAIL OPEN — an unparseable
+ *   command is not evidence that a file is uncovered).
+ */
+/**
+ * V8 old-space ceiling (MB) for the `tsc` CHILD, applied by `tscChildEnv` below.
+ *
+ * WHY THIS EXISTS (WI-37503, measured 2026-08-09): every gate here shells out to
+ * `npx tsc … --incremental false`, which builds the WHOLE program in memory —
+ * 9013 files for operator-core. With no `--max-old-space-size` the child got
+ * node's DEFAULT old-space (~4GB) and OOM'd mid-compile:
+ *   FATAL ERROR: Ineffective mark-compacts near heap limit … heap out of memory
+ *   Mark-Compact (reduce) 4086.9 (4109.7) -> 4068.3 (4086.9) MB
+ * sitting exactly on the ceiling. This is a SIZE limit, not host pressure — the
+ * box had ~80GB free at the time — so it recurs and worsens as the tree grows.
+ *
+ * It is applied HERE, at the one place every gate actually spawns, rather than
+ * baked into each `TSC_COMMAND` string: there are four of those constants
+ * (operator-core / operator / operator-vite / orchestrator) and a fifth would be
+ * added without the number, which is precisely the drift this module's shared
+ * policy half already exists to prevent.
+ *
+ * ⚠ It is NOT free: concurrent agents each run their own compile (WI-7191
+ * measured 5 at once), so this is a per-process CEILING, not a reservation —
+ * raise it deliberately. pc-heavy's coalescing window is what keeps the
+ * concurrent count low enough for this to be safe.
+ *
+ * @type {number}
+ */
+export const TSC_HEAP_MB: number;
 /**
  * One diagnostic parsed out of tsc's output.
  */

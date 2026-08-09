@@ -378,7 +378,15 @@ export function applyResultProjection<T extends ProjectableResult>(
     if (textItems.length === 0) return result;
 
     const original = textItems.map((it) => it.text).join('\n\n');
-    const notes: string[] = [];
+    // P-015: a note now carries whether it DEGRADES trust in the body it rides
+    // on, because the footer's ordering depends on it (see `degraded` below).
+    // `degrades` defaults TRUE: a note nobody classified is far more likely to
+    // be a caveat than a courtesy, and the failure this fixes is a real caveat
+    // read as a footnote — so the unclassified case must fail loud, not quiet.
+    const noteRows: Array<{ text: string; degrades: boolean }> = [];
+    const note = (text: string, degrades = true): void => {
+      noteRows.push({ text, degrades });
+    };
     let working = original;
     let regexFlavor: 'js-regexp' | undefined;
 
@@ -394,25 +402,37 @@ export function applyResultProjection<T extends ProjectableResult>(
       // itemIndex >= 0 means it took that per-item fallback: say the advisory
       // items were dropped rather than dropping them quietly.
       if (json && json.itemIndex >= 0 && textItems.length > 1) {
-        notes.push(
+        // Not trust-degrading: `pick` did exactly what was asked and says what
+        // it set aside. The reader's selection is intact.
+        note(
           `pick applied to the JSON payload item; ${textItems.length - 1} advisory text item(s) ` +
             `(e.g. "See also" routing hints) were dropped — re-call without \`pick\` to keep them.`,
+          false,
         );
       }
       if (!json) {
-        notes.push(
+        note(
           'pick SKIPPED: this result body is not JSON, so there are no fields to select — ' +
             'the text was passed to `pipe` unchanged. Use `pipe` line operators for text results.',
         );
       } else {
         const { picked, unmatched } = applyPick(json.parsed, spec.pick);
         if (unmatched.length === spec.pick.length) {
-          notes.push(
+          note(
             `pick matched NOTHING (${unmatched.join(', ')}) — body left unprojected rather than ` +
               `returning an empty object. Check the real shape with a smaller path first.`,
           );
         } else {
-          if (unmatched.length > 0) notes.push(`pick path(s) matched nothing: ${unmatched.join(', ')}`);
+          if (unmatched.length > 0) {
+            // The PARTIAL miss is the dangerous one and the case P-015 names:
+            // the matched path shrinks the body dramatically, the footer reports
+            // a large saving, and the field the caller actually came for is
+            // silently absent. Loud, and — via `degraded` — ahead of the number.
+            note(
+              `pick path(s) matched nothing: ${unmatched.join(', ')} — those field(s) are ABSENT ` +
+                `from the body below, which is otherwise a normal-looking result.`,
+            );
+          }
           working = JSON.stringify(picked, null, 2);
         }
       }
@@ -433,9 +453,12 @@ export function applyResultProjection<T extends ProjectableResult>(
     // reads. (Getting this order wrong is how a "loud" fail-open goes quiet.)
     const dropStructured = result.structuredContent !== undefined;
     if (dropStructured) {
-      notes.push(
+      // Not trust-degrading: dropping it is the point of asking for less, and
+      // the text body the caller reads is complete on its own terms.
+      note(
         'structuredContent dropped: it would have carried the UNPROJECTED payload alongside the ' +
           'reduced text. Re-call without `projection` if you need the structured form.',
+        false,
       );
     }
 
@@ -467,7 +490,7 @@ export function applyResultProjection<T extends ProjectableResult>(
       const reCall = opts.toolName
         ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
         : `re-call the tool with payloadTier:'full' (or narrower args)`;
-      notes.push(
+      note(
         linesOut === 0
           ? `ZERO lines survived this projection, and the corpus it searched was ALREADY TRUNCATED ` +
               `before this stage ran (${scope}) — that omitted content was never serialized, so it was ` +
@@ -478,6 +501,8 @@ export function applyResultProjection<T extends ProjectableResult>(
               `is not evidence of absence. For an exhaustive answer, ${reCall}.`,
       );
     }
+
+    const notes = noteRows.map((n) => n.text);
 
     const report: ProjectionReport = {
       applied: true,
@@ -490,12 +515,47 @@ export function applyResultProjection<T extends ProjectableResult>(
       notes,
     };
 
-    const footer =
-      `\n[projection: ${describeProjection(spec)} → ${linesOut.toLocaleString()} of ` +
+    // P-015. The footer used to LEAD with a congratulatory savings statistic and
+    // relegate every caveat behind it, so the most important case — a `pick`
+    // that matched nothing, a corpus already truncated upstream — was headlined
+    // "(97% saved)". That reads as a filter that worked; the correction sat
+    // below it and was read, if at all, as a footnote to a success. A warning
+    // subordinate to a success metric is not a warning.
+    //
+    // Two changes, both about ORDER and FRAMING, not about the numbers:
+    //   1. When any note degrades trust in the body, the caveat goes FIRST and
+    //      the statistic follows it.
+    //   2. In that state the number stops being an achievement: "N% saved"
+    //      becomes "N% of the body removed". A projection that dropped the field
+    //      you asked for did not save you anything.
+    // An honest reduction — every path matched, nothing truncated upstream —
+    // renders exactly as before, so the ordinary case pays nothing for this.
+    const degraded = noteRows.some((n) => n.degrades);
+    const removed = pct(projectedText.length, original.length);
+    const stats =
+      `[projection: ${describeProjection(spec)} → ${linesOut.toLocaleString()} of ` +
       `${linesIn.toLocaleString()} lines, ${projectedText.length.toLocaleString()} of ` +
-      `${original.length.toLocaleString()} chars (${pct(projectedText.length, original.length)} saved)` +
-      (regexFlavor ? ' · grep pattern applied as a JavaScript RegExp, not GNU ERE' : '') +
-      (notes.length ? `\n⚠ ${notes.join('\n⚠ ')}` : '') +
+      `${original.length.toLocaleString()} chars ` +
+      (degraded ? `(${removed} of the body removed)` : `(${removed} saved)`) +
+      (regexFlavor ? ' · grep pattern applied as a JavaScript RegExp, not GNU ERE' : '');
+
+    // `linesOut === 0` earns its own headline: an empty body is the one result
+    // that is READ as an answer ("there are none") rather than as a filter
+    // artifact, and it is indistinguishable from a genuine empty set without it.
+    const emptyLead =
+      linesOut === 0 && linesIn > 0
+        ? `⚠ THIS PROJECTION REMOVED EVERYTHING — the body below is empty because the filter ` +
+          `matched nothing, NOT because the result was empty. Do not read it as an absence.`
+        : null;
+
+    const leadNotes = noteRows.filter((n) => n.degrades).map((n) => n.text);
+    const tailNotes = noteRows.filter((n) => !n.degrades).map((n) => n.text);
+    const footer =
+      '\n' +
+      (emptyLead ? `${emptyLead}\n` : '') +
+      (leadNotes.length ? `⚠ ${leadNotes.join('\n⚠ ')}\n` : '') +
+      stats +
+      (tailNotes.length ? `\n⚠ ${tailNotes.join('\n⚠ ')}` : '') +
       ']';
 
     const rebuilt: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];

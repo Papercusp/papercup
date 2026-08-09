@@ -1,0 +1,313 @@
+/**
+ * corpus-query-clarity — a PRE-RETRIEVAL query-performance predictor for the
+ * corpus leg (P-019).
+ *
+ * P-019 asks for a CHEAPEST-FIRST CASCADE rather than an always-on rewriter:
+ * run the statistical path always, and escalate to something more expensive
+ * only when a predictor says this particular query is not going to work. This
+ * module is the predictor half. It decides NOTHING and calls nothing — it turns
+ * a query into a verdict, and the cascade decides what to do with it.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * WHY A PREDICTOR AND NOT THE UNDER-FILL TRIGGER WE ALREADY HAVE
+ *
+ * The leg already cascades: stage 1 ANDs two terms, and stage 2 (coverage-
+ * graded) runs only when stage 1 under-fills `maxItems` (corpus-recall-io.ts).
+ * That is a POST-retrieval trigger — it costs a full retrieval round to learn
+ * that the query was hopeless, and it cannot distinguish "this query is
+ * unfocused prose" from "this query is fine, the corpus simply holds little on
+ * the topic". A pre-retrieval predictor answers before any query is issued and
+ * separates those cases, which is what makes a THIRD (expensive) tier
+ * decidable without paying for it on every turn.
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ * THE LOAD-BEARING RULE, INHERITED FROM `search/coverage-gate.ts`: absence of
+ * evidence is NOT focus. No DF signal ⇒ `unknown`, never `focused`. Defaulting
+ * the unmeasured case to "this query is fine" would silently disable the
+ * escalation tier exactly when the signal it depends on is broken — the same
+ * silent-confidence shape P-003 existed to remove.
+ *
+ * ⚠ RARITY IS A WEIGHT, NOT A SELECTOR — and this module is where that
+ * distinction finally pays. D-064/D-066 measured that CHOOSING query terms by
+ * rarity is strictly worse (known-item 2/7 → 0/7): maximal idf means hapax
+ * legomenon, which means noise, so rarity-as-selector picks the terms
+ * guaranteed to match nothing. That reverted the SELECTOR and deliberately KEPT
+ * the DF table and its refresh routine, with `corpus-recall-io.ts` recording
+ * why: "the redesign needs the signal, just not as a pure rarity ranker."
+ * Scoring a query that ALREADY EXISTS is the legitimate use — it weights, it
+ * does not choose — so nothing here re-opens D-066.
+ *
+ * PURE. The DF signal and the collection size are INJECTED, exactly as
+ * `corpusQueryText` injects them, so this is testable without a database.
+ */
+
+import { corpusTerms, corpusQueryIdToken, CORPUS_QUERY_MIN_DF } from './corpus-recall';
+
+/**
+ * What the statistical (cheap) path can be expected to do with this query.
+ *
+ * The four non-`unknown` values are deliberately NOT a severity ladder — they
+ * are different KINDS of query needing different responses, which is the whole
+ * point of a cascade. Collapsing them into one "difficulty" scalar is what
+ * makes an always-on rewriter look necessary.
+ */
+export type QueryClarityVerdict =
+  /**
+   * The query carries a resolvable record handle (WI-6512, EI-9748, D-037) and
+   * short-circuits to that id ALONE. Retrievable by construction — a near-unique
+   * key cannot be improved by rewriting, and ANDing anything beside it can only
+   * cost recall. NEVER escalate.
+   */
+  | 'keyed'
+  /** Attested terms with a clarity score at or above the threshold. The cheap
+   *  path is expected to work; do not spend anything more. */
+  | 'focused'
+  /** Attested terms, but the query looks like the corpus at large rather than
+   *  like any part of it. This is the ESCALATION CANDIDATE. */
+  | 'unfocused'
+  /**
+   * NO term in this query is attested by the corpus at least `minDf` times.
+   * Materially different from `unfocused`: widening, re-ranking and grading all
+   * operate on documents the query MATCHED, and this query matches nothing, so
+   * every cheap tier is provably a no-op. D-064 measured that a term the corpus
+   * attests fewer than twice cannot retrieve at all — under `plainto_tsquery`'s
+   * AND it empties the result set outright, and even in the graded cascade it
+   * contributes no coverage.
+   */
+  | 'unretrievable'
+  /** No usable DF signal (no table built yet, or an empty collection). NOT a
+   *  synonym for `focused` — see the load-bearing rule above. */
+  | 'unknown';
+
+export interface QueryClarityAssessment {
+  verdict: QueryClarityVerdict;
+  /**
+   * Simplified Clarity Score (He & Ounis 2004) in BITS — the pre-retrieval
+   * approximation of Cronen-Townsend et al. (2002) clarity that P-019 names.
+   * KL divergence of the query language model from the collection language
+   * model: high ⇒ the query looks unlike the corpus at large ⇒ its result
+   * distribution will be concentrated. `null` when it could not be computed.
+   */
+  scs: number | null;
+  /** Mean IDF (bits) over attested terms — the standard baseline predictor,
+   *  reported because it is cheaper to reason about than SCS and the two
+   *  disagreeing is itself informative. `null` when nothing was attested. */
+  avgIdf: number | null;
+  /** IDF (bits) of the single most discriminating attested term. A query can
+   *  have a poor mean and still be rescued by one strong term, which is exactly
+   *  what the leg's 2-term AND exploits. */
+  maxIdf: number | null;
+  /** Candidate terms `corpusTerms` extracted from the text. */
+  terms: number;
+  /** How many of those the corpus attests at least `minDf` times. */
+  attestedTerms: number;
+  /** attested / terms, 0..1. `null` when there were no terms at all. */
+  attestedRatio: number | null;
+  /** The id this query short-circuits on, when `verdict === 'keyed'`. */
+  idToken: string | null;
+  /** One line a human or an agent can act on. */
+  note: string;
+}
+
+export interface QueryClarityOptions {
+  /**
+   * Corpus DOCUMENT frequency of a raw `corpusTerms` token. MUST be built with
+   * `corpusTerms`, not `ts_stat` — see `corpus-term-df.ts` for why a stemming
+   * mismatch silently inverts every ranking built on it. Omit ⇒ `unknown`.
+   */
+  df?: (term: string) => number;
+  /** Corpus size: how many documents the DF table was folded over
+   *  (`corpus_term_df.ndocs`). Omit or ≤ 0 ⇒ `unknown`. */
+  ndocs?: number;
+  /** Terms attested fewer than this many times count as unattested. Defaults to
+   *  {@link CORPUS_QUERY_MIN_DF}, so this module and the query builder agree on
+   *  what "the corpus knows this word" means. */
+  minDf?: number;
+  /** SCS at or above this (bits) reads as `focused`. Defaults to
+   *  {@link CORPUS_CLARITY_FOCUSED_BITS}. */
+  focusedBits?: number;
+}
+
+/**
+ * SCS threshold separating `focused` from `unfocused`, in bits.
+ *
+ * ⚠ THIS NUMBER IS A PLACEHOLDER UNTIL THE DISTRIBUTION IS MEASURED, and it is
+ * exported (rather than inlined) so the measurement can move it in one place.
+ * Do NOT tune it by taste against a handful of example queries: the whole
+ * argument for a cascade is an empirical claim about what fraction of REAL
+ * traffic needs the expensive tier — the Coverage Illusion (2026-05-26)
+ * measured 27.8% against a synthetic estimate of >90%, i.e. a synthetic guess
+ * was wrong by more than 3x in the direction that justifies always-on spend.
+ * Picking this constant from intuition reproduces exactly that error.
+ */
+export const CORPUS_CLARITY_FOCUSED_BITS = 5;
+
+const log2 = (x: number): number => Math.log(x) / Math.LN2;
+
+/**
+ * Score one already-extracted term pool. PURE.
+ *
+ * Split from {@link assessCorpusQueryClarity} so a caller that has already run
+ * `corpusTerms` (the leg has) does not tokenize the same text twice.
+ *
+ * ⚠ SCS AND IDF ARE COMPUTED OVER ATTESTED TERMS ONLY, and that exclusion is
+ * load-bearing rather than a convenience. `P(t|C) = df/ndocs` is 0 for an
+ * unattested term, so its KL contribution is infinite — i.e. a query made
+ * entirely of hex digests and session nonces would score as MAXIMALLY clear,
+ * the precise inversion D-064 measured and reverted (a miss reads as df 0, i.e.
+ * maximal rarity, i.e. selected). Unattested terms are therefore counted in
+ * `attestedRatio` and excluded from the scores, and a query with none of them
+ * attested gets its own verdict instead of a flattering number.
+ *
+ * ⚠ `P(t|C)` uses DOCUMENT frequency where textbook SCS uses collection TERM
+ * frequency. DF is what `corpus_term_df` persists (deliberately — it also drops
+ * the hapax tail), so this is an approximation, not the exact statistic. It is
+ * monotone in the same direction and the threshold is calibrated against THIS
+ * definition, so the substitution is sound as long as nothing compares these
+ * bits against a published SCS value.
+ */
+export function scoreCorpusQueryClarity(
+  terms: readonly string[],
+  opts: QueryClarityOptions = {},
+): QueryClarityAssessment {
+  const minDf = opts.minDf ?? CORPUS_QUERY_MIN_DF;
+  const focusedBits = opts.focusedBits ?? CORPUS_CLARITY_FOCUSED_BITS;
+  const ndocs = opts.ndocs ?? 0;
+
+  const base = {
+    scs: null,
+    avgIdf: null,
+    maxIdf: null,
+    terms: terms.length,
+    attestedTerms: 0,
+    attestedRatio: terms.length > 0 ? 0 : null,
+    idToken: null,
+  } as const;
+
+  // Checked BEFORE the DF signal: a keyed query is retrievable by construction,
+  // so it is answerable even when the DF table is missing entirely. Ordering
+  // this after the `unknown` guard would report the leg's single most reliable
+  // case as unmeasurable.
+  const idToken = corpusQueryIdToken(terms);
+  if (idToken) {
+    return {
+      ...base,
+      verdict: 'keyed',
+      // NOT measured rather than measured-zero: the short-circuit happens before
+      // any attestation lookup, and this module's whole premise is that those
+      // two must never collapse into one number.
+      attestedRatio: null,
+      idToken,
+      note:
+        `query short-circuits to the record handle '${idToken}' and is used ALONE — ` +
+        `a near-unique retrieval key, so no rewrite or widening can improve it.`,
+    };
+  }
+
+  if (!opts.df || ndocs <= 0) {
+    return {
+      ...base,
+      verdict: 'unknown',
+      attestedRatio: null,
+      note:
+        `no corpus DF signal available (df=${opts.df ? 'given' : 'absent'}, ndocs=${ndocs}) — ` +
+        `query clarity is UNKNOWN, which is not the same as focused. ` +
+        `Build the corpus_term_df table (system:corpus-term-df) to get a real verdict.`,
+    };
+  }
+
+  if (terms.length === 0) {
+    return {
+      ...base,
+      verdict: 'unretrievable',
+      attestedRatio: null,
+      note: 'no candidate terms in this text — there is nothing to retrieve on.',
+    };
+  }
+
+  const attested: Array<{ term: string; df: number }> = [];
+  for (const term of terms) {
+    const df = opts.df(term);
+    if (df >= minDf) attested.push({ term, df });
+  }
+  const attestedRatio = attested.length / terms.length;
+
+  if (attested.length === 0) {
+    return {
+      ...base,
+      verdict: 'unretrievable',
+      attestedRatio: 0,
+      note:
+        `none of this query's ${terms.length} candidate term(s) are attested by the corpus ` +
+        `(df ≥ ${minDf}) — every cheap tier is a provable no-op here, because widening, ` +
+        `grading and re-ranking all operate on documents the query matched and this one ` +
+        `matches nothing.`,
+    };
+  }
+
+  // SCS = Σ P(t|Q)·log2(P(t|Q)/P(t|C)), with P(t|Q) uniform over the attested
+  // terms (corpusTerms de-duplicates, so every qtf is 1) and P(t|C) = df/ndocs.
+  const n = attested.length;
+  const idfs = attested.map((a) => log2(ndocs / a.df));
+  const scs = idfs.reduce((sum, idf) => sum + (idf - log2(n)) / n, 0);
+  const avgIdf = idfs.reduce((a, b) => a + b, 0) / n;
+  const maxIdf = idfs.reduce((a, b) => (b > a ? b : a));
+
+  const focused = scs >= focusedBits;
+  const bits = (v: number): string => v.toFixed(2);
+  const shortfall =
+    attested.length < terms.length
+      ? ` ${terms.length - attested.length} of ${terms.length} candidate term(s) are unattested ` +
+        `and contribute nothing to retrieval.`
+      : '';
+
+  return {
+    verdict: focused ? 'focused' : 'unfocused',
+    scs,
+    avgIdf,
+    maxIdf,
+    terms: terms.length,
+    attestedTerms: attested.length,
+    attestedRatio,
+    idToken: null,
+    note: focused
+      ? `clarity ${bits(scs)} bits (≥ ${bits(focusedBits)}) over ${n} attested term(s) — ` +
+        `this query looks unlike the corpus at large, so the cheap path should concentrate.` +
+        shortfall
+      : `clarity ${bits(scs)} bits (< ${bits(focusedBits)}) over ${n} attested term(s), ` +
+        `max term IDF ${bits(maxIdf)} — this query looks like the corpus at large, so its ` +
+        `result distribution will be diffuse and the cheap path is expected to under-perform.` +
+        shortfall,
+  };
+}
+
+/**
+ * Assess the raw injected text. Convenience wrapper over
+ * {@link scoreCorpusQueryClarity}.
+ *
+ * ⚠ Assesses the FULL candidate pool, not the two terms the leg actually
+ * issues. That is deliberate and it is the more useful question: the pool is
+ * the evidence available ABOUT the query, while the issued pair is one
+ * selection policy's guess at using it. A pool that is rich but scores diffuse
+ * is a query no 2-term selection can rescue — which is precisely the population
+ * an expensive tier would exist to serve.
+ */
+export function assessCorpusQueryClarity(
+  text: string,
+  opts: QueryClarityOptions = {},
+): QueryClarityAssessment {
+  return scoreCorpusQueryClarity(corpusTerms(text), opts);
+}
+
+/**
+ * Does this verdict warrant paying for a tier the cheap path does not include?
+ *
+ * Only `unfocused` and `unretrievable` do. `keyed` and `focused` are expected
+ * to work; `unknown` deliberately does NOT escalate — an escalation tier armed
+ * by a broken signal would fire on 100% of traffic exactly when nobody is
+ * measuring it, which is the failure mode a cascade exists to avoid. `unknown`
+ * is a reason to fix the DF table, not to spend money.
+ */
+export function clarityWarrantsEscalation(verdict: QueryClarityVerdict): boolean {
+  return verdict === 'unfocused' || verdict === 'unretrievable';
+}

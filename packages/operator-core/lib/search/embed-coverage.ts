@@ -53,6 +53,8 @@ import {
   TARGETS,
   eligiblePredicateSql,
   modeColOf,
+  recipeColOf,
+  activeRecipeVersion,
   recentPredicateSql,
   resolveBackfillEmbedder,
   settledPredicateSql,
@@ -256,6 +258,7 @@ export function buildCoverageQuery(
   spaceAware: boolean,
   mode: ResolvedMode,
   windowHours: number = RECENT_WINDOW_HOURS,
+  recipeColPresent = false,
 ): CoverageQuery {
   const params: Array<string | number> = [];
   const bind = (v: string | number): string => {
@@ -264,7 +267,18 @@ export function buildCoverageQuery(
   };
 
   const eligible = eligiblePredicateSql(target);
-  const stale = stalePredicateSql(target, spaceAware, spaceAware ? bind(mode) : 'NULL');
+  // P-026: coverage must BIND THE SAME recipe version the sweep enforces, not merely
+  // reuse the same predicate builder. Sharing the SQL is not enough when the bound VALUE
+  // can differ — and this surface fails in the direction that misattributes blame: bind
+  // nothing here while the sweep enforces recipe 2 and every re-embedded row still counts
+  // as stale, so coverage reads 0% for a sweep that is working perfectly.
+  const recipeVersion = activeRecipeVersion(target, recipeColPresent);
+  const stale = stalePredicateSql(
+    target,
+    spaceAware,
+    spaceAware ? bind(mode) : 'NULL',
+    recipeVersion === null ? null : bind(recipeVersion),
+  );
   const recent = target.recencyCol ? recentPredicateSql(target, bind(windowHours)) : null;
   const settled = target.recencyCol
     ? settledPredicateSql(target, bind(SETTLED_GRACE_MINUTES), bind(SETTLED_WINDOW_HOURS))
@@ -592,17 +606,21 @@ export interface CoverageDeps {
 async function probeSurface(
   sql: ReturnType<typeof getOrgPg>['sql'],
   target: BackfillTarget,
-): Promise<{ present: boolean; spaceAware: boolean }> {
+): Promise<{ present: boolean; spaceAware: boolean; recipeColPresent: boolean }> {
   const rows = await sql.unsafe<Array<{ column_name: string }>>(
     `SELECT column_name
        FROM information_schema.columns
       WHERE table_schema = split_part($1, '.', 1)
         AND table_name   = split_part($1, '.', 2)
-        AND column_name IN ($2, $3)`,
-    [target.table, target.embedCol, modeColOf(target)],
+        AND column_name IN ($2, $3, $4)`,
+    [target.table, target.embedCol, modeColOf(target), recipeColOf(target)],
   );
   const cols = new Set(rows.map((r) => r.column_name));
-  return { present: cols.has(target.embedCol), spaceAware: cols.has(modeColOf(target)) };
+  return {
+    present: cols.has(target.embedCol),
+    spaceAware: cols.has(modeColOf(target)),
+    recipeColPresent: cols.has(recipeColOf(target)),
+  };
 }
 
 /** Measure every surface against the live database. */
@@ -614,13 +632,13 @@ export async function measureCoverage(windowHours: number = RECENT_WINDOW_HOURS)
 
   for (const target of TARGETS) {
     try {
-      const { present, spaceAware } = await probeSurface(sql, target);
+      const { present, spaceAware, recipeColPresent } = await probeSurface(sql, target);
       // A surface whose embedding column does not exist yet (migration not run against
       // THIS database) is not at 0% coverage — it is unmeasurable. Omit it rather than
       // report a 0 that would alarm on a schema state, not a data state.
       if (!present) continue;
 
-      const q = buildCoverageQuery(target, spaceAware, mode, windowHours);
+      const q = buildCoverageQuery(target, spaceAware, mode, windowHours, recipeColPresent);
       const rows = await sql.unsafe<Array<Record<string, string | null>>>(q.sql, q.params);
       const r = rows[0];
       if (!r) continue;

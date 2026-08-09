@@ -21,6 +21,7 @@ import {
   buildSilentNullPathAdvisory,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
+  buildJsonbPathRedirect,
   describeReferencedTableColumns,
   describeRelation,
   listRelations,
@@ -214,6 +215,16 @@ export default defineTool({
         // The redirect names the real surface AND the fallback to avoid.
         const redirect = buildDerivedColumnRedirect(sql, info.message);
         if (redirect) payload.derivedColumn = redirect;
+        // P-015: the same failure one level down. `knownColumns` answers "what
+        // columns exist", which is the wrong answer when the name the caller
+        // guessed is a KEY inside a jsonb column rather than a column — the
+        // `work_items.payload._ei.severity` shape. Only probed when no derived
+        // redirect already claimed the name, so the two advisories never argue
+        // about the same column in one payload.
+        if (!redirect) {
+          const nested = await buildJsonbPathRedirect(sql, info.message).catch(() => null);
+          if (nested) payload.jsonbPath = nested;
+        }
       }
       return {
         isError: true,

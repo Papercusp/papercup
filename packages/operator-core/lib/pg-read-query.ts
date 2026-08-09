@@ -559,12 +559,7 @@ const DERIVED_COLUMN_REDIRECTS: Record<string, DerivedColumnRedirect> = {
  * never suppresses the underlying error, it rides alongside it.
  */
 export function buildDerivedColumnRedirect(rawSql: string, errorMessage: string): string | null {
-  // PG spells this two ways: `column "session_state" does not exist` (bare) and
-  // `column p.session_state does not exist` (qualified by alias — unquoted).
-  const m = /column\s+"?(?:([a-z_][a-z0-9_$]*)\.)?([a-z_][a-z0-9_$]*)"?\s+does not exist/i.exec(
-    errorMessage,
-  );
-  const column = m?.[2]?.toLowerCase();
+  const column = parseMissingColumnName(errorMessage);
   if (!column) return null;
 
   const referenced = extractReferencedTables(rawSql).map(bareTableName);
@@ -576,6 +571,146 @@ export function buildDerivedColumnRedirect(rawSql: string, errorMessage: string)
       (hit.notThese ? `⛔ Do NOT fall back to ${hit.notThese}. ` : '') +
       `→ Use ${hit.useInstead}. ` +
       '(agent-tools/coordination/liveness-oracle.ts · EI-18801042715296007)'
+    );
+  }
+  return null;
+}
+
+/**
+ * The failing column name out of a 42703. PG spells it two ways: `column
+ * "session_state" does not exist` (bare) and `column p.session_state does not
+ * exist` (qualified by alias — unquoted).
+ *
+ * Shared by every 42703 advisory on purpose. Two advisories with two copies of
+ * this regex can disagree about WHICH name failed and then contradict each
+ * other in the same error payload, which costs more than either one saves.
+ */
+export function parseMissingColumnName(errorMessage: string): string | null {
+  const m = /column\s+"?(?:([a-z_][a-z0-9_$]*)\.)?([a-z_][a-z0-9_$]*)"?\s+does not exist/i.exec(
+    errorMessage,
+  );
+  return m?.[2]?.toLowerCase() ?? null;
+}
+
+/** Rows sampled per jsonb column when probing for a nested key. Bounded because
+ *  this runs on an ERROR path — a hint is never worth a table scan. */
+const JSONB_PROBE_SAMPLE_ROWS = 200;
+/** Most (table, jsonb column) pairs probed for one failed query. */
+const JSONB_PROBE_MAX_COLUMNS = 3;
+
+/** Quote an identifier that came from `information_schema` (so it is real, and
+ *  the escape is belt-and-braces rather than the only defence). */
+function quoteIdent(id: string): string {
+  return `"${id.replace(/"/g, '""')}"`;
+}
+
+/**
+ * P-015: turn a 42703 whose name actually lives INSIDE a jsonb column into the
+ * accessor that reaches it, instead of a column list that cannot contain it.
+ *
+ * ## Why `knownColumns` alone is not enough here
+ *
+ * `knownColumns` answers "what columns exist", which is the right answer to a
+ * misspelling and the WRONG answer to a nesting mistake — and nesting is the
+ * common case on this schema, where the interesting fields are folded into a
+ * `payload` jsonb. `harness_shared.work_items` is the canonical instance: it has
+ * NO `severity` column (it lives at `payload->'_ei'->>'severity'`, migration
+ * 374's fold) and no `_completionEvidence` column either. An agent handed the
+ * column list sees `payload` among thirty names with nothing marking it as the
+ * place its field went, and the documented outcome is a rewritten query that
+ * returns NULL for every row WITHOUT erroring — a well-formed, plausible, wrong
+ * answer, which is strictly worse than the loud 42703 it replaced.
+ *
+ * ## Why this probes DATA and does not carry a registry
+ *
+ * The sibling advisory above (`DERIVED_COLUMN_REDIRECTS`) is hardcoded because
+ * its subject is a derivation that exists only in TypeScript — no query could
+ * find it. This one is the opposite: the answer is sitting in the rows. A
+ * registry of known nested keys would go stale the moment anyone folds a new
+ * field into a payload, and would be silent for exactly the fields nobody has
+ * documented yet. Anchoring to the PROPERTY (a jsonb value that has this key)
+ * rather than to a curated list of names is what makes it cover the fields we
+ * have not thought of — the same widening rule the module-pin lint had to learn.
+ *
+ * Best-effort throughout: any miss returns null and the underlying 42703 is
+ * reported unchanged. It never suppresses the real error, it rides alongside it.
+ */
+export async function buildJsonbPathRedirect(
+  rawSql: string,
+  errorMessage: string,
+  opts: { client?: OrgSql } = {},
+): Promise<string | null> {
+  const column = parseMissingColumnName(errorMessage);
+  if (!column) return null;
+
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.length) return null;
+  const byRef = await readReferencedColumns(tables, opts.client);
+
+  // If the name IS a real column on some referenced table, the query's problem
+  // is scope/aliasing, not nesting — say nothing rather than send the reader
+  // hunting through a payload for a column they already have.
+  for (const hit of byRef.values()) {
+    if (hit.columns.some((c) => c.toLowerCase() === column)) return null;
+  }
+
+  const candidates: Array<{ schema: string; table: string; column: string }> = [];
+  for (const ref of tables) {
+    const hit = byRef.get(ref);
+    if (!hit) continue;
+    const bare = ref.includes('.') ? ref.slice(ref.lastIndexOf('.') + 1) : ref;
+    for (const typed of hit.typedColumns) {
+      const at = typed.lastIndexOf(':');
+      if (at === -1) continue;
+      if (!/^\s*(jsonb|json)\s*$/i.test(typed.slice(at + 1))) continue;
+      candidates.push({ schema: hit.schema, table: bare, column: typed.slice(0, at).trim() });
+    }
+  }
+  if (!candidates.length) return null;
+
+  const sql = opts.client ?? getOrgPg().sql;
+  for (const c of candidates.slice(0, JSONB_PROBE_MAX_COLUMNS)) {
+    // Depth 1 (`payload -> key`) and depth 2 (`payload -> parent -> key`) in one
+    // statement. Two levels is where the real folds live (`payload._ei.severity`)
+    // and each extra level multiplies the sample cost for a sharply thinner
+    // return. `jsonb_exists(v, $1)` rather than the `?` operator: `?` is a
+    // placeholder character in several drivers, and this string is handed to
+    // `unsafe`, so the function form removes the question entirely.
+    const rel = `${quoteIdent(c.schema)}.${quoteIdent(c.table)}`;
+    const col = quoteIdent(c.column);
+    const probe =
+      `WITH s AS (SELECT ${col}::jsonb AS v FROM ${rel} ` +
+      `WHERE ${col} IS NOT NULL LIMIT ${JSONB_PROBE_SAMPLE_ROWS}) ` +
+      `(SELECT 1 AS depth, NULL::text AS parent FROM s ` +
+      `WHERE jsonb_typeof(s.v) = 'object' AND jsonb_exists(s.v, $1) LIMIT 1) ` +
+      `UNION ALL ` +
+      `(SELECT 2 AS depth, e.key AS parent FROM s, LATERAL jsonb_each(s.v) e ` +
+      `WHERE jsonb_typeof(s.v) = 'object' AND jsonb_typeof(e.value) = 'object' ` +
+      `AND jsonb_exists(e.value, $1) LIMIT 1) ` +
+      `ORDER BY depth LIMIT 1`;
+    const rows = (await sql.unsafe(probe, [column]).catch(() => [])) as unknown as Array<{
+      depth: number;
+      parent: string | null;
+    }>;
+    const found = Array.isArray(rows) ? rows[0] : undefined;
+    if (!found) continue;
+
+    const path =
+      found.depth === 2 && found.parent
+        ? `${c.column}->'${found.parent}'->>'${column}'`
+        : `${c.column}->>'${column}'`;
+    const existsPred =
+      found.depth === 2 && found.parent
+        ? `${c.column}->'${found.parent}' ? '${column}'`
+        : `${c.column} ? '${column}'`;
+    return (
+      `⚠ \`${column}\` is NOT a column on ${c.schema}.${c.table} — it is a key INSIDE the ` +
+      `\`${c.column}\` jsonb column (found by sampling ${JSONB_PROBE_SAMPLE_ROWS} rows). ` +
+      `→ Read it as \`${path}\`; test presence with \`${existsPred}\`. ` +
+      `⛔ Do NOT conclude from \`knownColumns\` that the field does not exist — that list is ` +
+      `columns only, so a nested key is invisible to it. ⚠ The accessor is bound to THIS ` +
+      `relation: the same field on a sibling VIEW may be exploded into a real column, and the ` +
+      `wrong accessor for a relation returns NULL for EVERY row without erroring.`
     );
   }
   return null;

@@ -1586,6 +1586,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
   describe('EI-19984789589075138 — evidence check downgrades a bounced-fire false alarm', () => {
     const noteAtMs = Date.parse('2026-08-09T13:51:00.000Z');
     const realTurnIso = '2026-08-09T14:06:00.000Z'; // ~15m after the note — clears the floor
+    const BANNER = 'UN-CHECKPOINTED WORK EXISTS';
 
     const coldRun = async (status: Record<string, unknown> | null, countAgentToolCallsFn?: unknown) => {
       const injectPsuHost = vi.fn(async () => true);
