@@ -951,6 +951,33 @@ export interface ListIssuesFilter {
    * harness/improvements/read-items.ts, not this general path.
    */
   excludeObservationLane?: boolean;
+  /**
+   * WI-37499: restrict to rows whose `title` starts with this literal prefix.
+   *
+   * Exists because a DETECTOR's population is identified by the stable title it
+   * mints, while `topic` selects on a DERIVED `coord_links` tag — and the two
+   * disagree whenever a tag write is missing. Measured 2026-08-09 on the
+   * `[replication-liveness]` detector: 60 of its 105 open rows carried no
+   * `replication-liveness` topic edge at all, and that missing-tag set contained
+   * 100% of the rows its orphan sweep exists to resolve (6, up to 34.8 days old)
+   * AND 100% of its duplicate rows (12) — so dedup, the duplicate-collapse pass,
+   * and the orphan sweep all went silently blind together, each reading the same
+   * tag. A tag is an index over the population, never the definition of it; a
+   * sweep that selects its own targets by index can under-select to ZERO and
+   * report a clean pass.
+   *
+   * `LIKE prefix || '%'` with the prefix escaped, so a `%`/`_` in a caller's
+   * literal prefix cannot widen the match. Intended to be UNIONed with the
+   * `topic` read rather than to replace it — the tag is still authoritative for
+   * the rows that carry it (measured: 4 tagged rows do NOT match the detector's
+   * title prefix, so a prefix-only read would lose them).
+   */
+  titlePrefix?: string;
+}
+
+/** WI-37499: `LIKE`-escape a literal prefix so `%`/`_`/`\` in it match literally. */
+function likePrefixPattern(prefix: string): string {
+  return `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
 // Issue-family terminal states for the P-005 audit are imported from the canonical
@@ -1131,6 +1158,8 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        -- floor into the general list read when the caller opts in (listWorkItems does,
        -- by default, via includeObservations).
        AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+       -- WI-37499: stable-title prefix (see ListIssuesFilter.titlePrefix).
+       AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
        -- P-006/D-031: positive lane selection — the canonical observation-population
        -- read. Same stored generated column the exclusion above keys on, so INCLUDE and
        -- EXCLUDE can never disagree about what "the observation lane" is.
@@ -1189,6 +1218,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
              : sql`TRUE`
          }
          AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.titlePrefix ? sql`ei.title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}`;
     return rows[0]?.n ?? 0;
   }
@@ -1220,6 +1250,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
            : sql`TRUE`
        }
        AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+       AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
        AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}`;
   return rows[0]?.n ?? 0;
 }
@@ -1282,6 +1313,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              : sql`TRUE`
          }
          AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.titlePrefix ? sql`ei.title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
        GROUP BY ei.state`
     : await sql<{ state: string | null; n: number }[]>`
@@ -1312,6 +1344,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              : sql`TRUE`
          }
          AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
        GROUP BY state`;
   const out: Record<string, number> = {};

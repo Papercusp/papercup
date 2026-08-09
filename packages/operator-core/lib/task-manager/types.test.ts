@@ -11,6 +11,9 @@ import {
   sliceForClass,
   isOwnedCgroupPath,
   TASK_ROOT_SLICE,
+  sliceCgroupPath,
+  scopeCgroupRelPath,
+  deriveUserManagerRoot,
 } from './types';
 
 describe('task id + scope unit naming', () => {
@@ -100,6 +103,43 @@ describe('slice naming', () => {
   it('falls back to the root slice rather than emitting a nameless one', () => {
     expect(sliceForClass('///')).toBe(TASK_ROOT_SLICE);
     expect(sliceForClass('')).toBe(TASK_ROOT_SLICE);
+  });
+});
+
+describe('scope cgroup path (WI-37509)', () => {
+  const MGR = '/user.slice/user-1000.slice/user@1000.service';
+
+  it('expands a slice NAME into the nested directories systemd actually creates', () => {
+    // `-` is a hierarchy separator to systemd, so this is three directories, not one.
+    expect(sliceCgroupPath('papercusp-agent-session.slice')).toBe(
+      'papercusp.slice/papercusp-agent.slice/papercusp-agent-session.slice',
+    );
+    expect(sliceCgroupPath('papercusp-sidecar.slice')).toBe('papercusp.slice/papercusp-sidecar.slice');
+    expect(sliceCgroupPath(TASK_ROOT_SLICE)).toBe('papercusp.slice');
+  });
+
+  it('derives the path a confined task will occupy, matching the live tree', () => {
+    // Verified byte-for-byte against a real survivor on this box, 2026-08-09.
+    expect(scopeCgroupRelPath(MGR, 'sidecar', 'pc-0msldixpfupa5t8454l.scope')).toBe(
+      `${MGR}/papercusp.slice/papercusp-sidecar.slice/pc-0msldixpfupa5t8454l.scope`,
+    );
+    expect(scopeCgroupRelPath(MGR, 'agent-session', 'pc-abc.scope')).toBe(
+      `${MGR}/papercusp.slice/papercusp-agent.slice/papercusp-agent-session.slice/pc-abc.scope`,
+    );
+  });
+
+  it('stays absolute when there is no user manager (a container / system slice)', () => {
+    expect(scopeCgroupRelPath(null, 'sidecar', 'pc-abc.scope')).toBe(
+      '/papercusp.slice/papercusp-sidecar.slice/pc-abc.scope',
+    );
+  });
+
+  it('round-trips with the manager root derived from a real operator cgroup path', () => {
+    const root = deriveUserManagerRoot(`${MGR}/papercup-dev-api.service`);
+    expect(root).toBe(MGR);
+    expect(scopeCgroupRelPath(root, 'bash-job', 'pc-xyz.scope')).toBe(
+      `${MGR}/papercusp.slice/papercusp-bash-job.slice/pc-xyz.scope`,
+    );
   });
 });
 

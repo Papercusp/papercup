@@ -10,7 +10,11 @@
  * synthetic strings that happen to be easy.
  */
 import { describe, it, expect } from 'vitest';
-import { extractReplicationSqlStatements } from './rubrics-replication-sql';
+import {
+  extractReplicationSqlStatements,
+  substituteBindPlaceholders,
+  summarizeReplicationSqlCheck,
+} from './rubrics-replication-sql';
 
 describe('extractReplicationSqlStatements', () => {
   it('returns [] for undefined/null/empty text', () => {
@@ -108,5 +112,138 @@ describe('extractReplicationSqlStatements', () => {
 
   it('is case-insensitive on the leading keyword', () => {
     expect(extractReplicationSqlStatements('select 1 as n;')).toEqual(['select 1 as n']);
+  });
+});
+
+/**
+ * EI-19988213173207009 — bind placeholders. These are the guard against the failure mode
+ * that made the fix necessary in the first place: substituting in the WRONG place would
+ * mangle valid SQL and manufacture fresh false findings, which is strictly worse than the
+ * 42601 noise being removed. Every "leaves … untouched" case below is a real SQL construct
+ * that contains a colon.
+ */
+describe('substituteBindPlaceholders', () => {
+  it('leaves a statement with no placeholders byte-identical', () => {
+    const sql = "SELECT count(*) FROM t WHERE a = 'x' AND b > 3";
+    expect(substituteBindPlaceholders(sql)).toEqual({ sql, placeholders: [] });
+  });
+
+  it('substitutes an untyped NULL for a :name placeholder and reports the token', () => {
+    expect(substituteBindPlaceholders('SELECT 1 FROM t WHERE ws = :ws')).toEqual({
+      sql: 'SELECT 1 FROM t WHERE ws = NULL',
+      placeholders: [':ws'],
+    });
+  });
+
+  it('reports several placeholders in order of first appearance, deduped', () => {
+    const r = substituteBindPlaceholders(
+      'SELECT 1 FROM t WHERE ws = :ws AND s = :subject AND ws2 = :ws AND ts > :run_start',
+    );
+    expect(r.placeholders).toEqual([':ws', ':subject', ':run_start']);
+    expect(r.sql).toBe(
+      'SELECT 1 FROM t WHERE ws = NULL AND s = NULL AND ws2 = NULL AND ts > NULL',
+    );
+  });
+
+  it('never touches the :: cast operator', () => {
+    const sql = 'SELECT 1 FROM t WHERE a = b::text AND c = d::int';
+    expect(substituteBindPlaceholders(sql)).toEqual({ sql, placeholders: [] });
+  });
+
+  it('substitutes a placeholder that is itself cast, keeping the cast', () => {
+    expect(substituteBindPlaceholders('SELECT 1 WHERE a = :ws::text')).toEqual({
+      sql: 'SELECT 1 WHERE a = NULL::text',
+      placeholders: [':ws'],
+    });
+  });
+
+  it('leaves a colon inside a single-quoted string literal untouched', () => {
+    const sql = "SELECT 1 FROM t WHERE label = '12:30 and :notaparam'";
+    expect(substituteBindPlaceholders(sql)).toEqual({ sql, placeholders: [] });
+  });
+
+  it("handles a doubled '' escape without losing string state", () => {
+    const sql = "SELECT 1 FROM t WHERE a = 'it''s :not a param' AND b = :real";
+    expect(substituteBindPlaceholders(sql)).toEqual({
+      sql: "SELECT 1 FROM t WHERE a = 'it''s :not a param' AND b = NULL",
+      placeholders: [':real'],
+    });
+  });
+
+  it('leaves a colon inside a double-quoted identifier untouched', () => {
+    const sql = 'SELECT "weird:col" FROM t';
+    expect(substituteBindPlaceholders(sql)).toEqual({ sql, placeholders: [] });
+  });
+
+  it('leaves an array slice (x[1:3]) untouched — a digit is not an identifier start', () => {
+    const sql = 'SELECT arr[1:3] FROM t';
+    expect(substituteBindPlaceholders(sql)).toEqual({ sql, placeholders: [] });
+  });
+
+  it('leaves a bare colon followed by whitespace untouched', () => {
+    const sql = 'SELECT 1 FROM t -- note: see the drill';
+    expect(substituteBindPlaceholders(sql)).toEqual({ sql, placeholders: [] });
+  });
+
+  it('leaves a colon-identifier inside a line comment untouched', () => {
+    const sql = 'SELECT 1 FROM t -- TODO:fixme later\nWHERE a = :ws';
+    expect(substituteBindPlaceholders(sql)).toEqual({
+      sql: 'SELECT 1 FROM t -- TODO:fixme later\nWHERE a = NULL',
+      placeholders: [':ws'],
+    });
+  });
+
+  it('leaves a colon-identifier inside a nested block comment untouched', () => {
+    const sql = 'SELECT 1 /* outer /* :inner */ :still */ FROM t WHERE a = :ws';
+    expect(substituteBindPlaceholders(sql)).toEqual({
+      sql: 'SELECT 1 /* outer /* :inner */ :still */ FROM t WHERE a = NULL',
+      placeholders: [':ws'],
+    });
+  });
+
+  it('leaves a colon-identifier inside a dollar-quoted body untouched', () => {
+    const sql = "SELECT $tag$ :notaparam $tag$ FROM t WHERE a = :ws";
+    expect(substituteBindPlaceholders(sql)).toEqual({
+      sql: 'SELECT $tag$ :notaparam $tag$ FROM t WHERE a = NULL',
+      placeholders: [':ws'],
+    });
+  });
+
+  it('never mistakes := for a placeholder', () => {
+    const sql = 'SELECT 1 FROM t WHERE a := 3';
+    expect(substituteBindPlaceholders(sql)).toEqual({ sql, placeholders: [] });
+  });
+
+  it('substitutes a placeholder at the very end of the statement', () => {
+    expect(substituteBindPlaceholders('SELECT 1 FROM t LIMIT :n')).toEqual({
+      sql: 'SELECT 1 FROM t LIMIT NULL',
+      placeholders: [':n'],
+    });
+  });
+});
+
+describe('summarizeReplicationSqlCheck', () => {
+  const base = { checked: 0, findings: [], undeterminable: [], placeholderOnly: 0, ok: true };
+
+  it('says so plainly when there was nothing to check', () => {
+    expect(summarizeReplicationSqlCheck(base)).toBe('no embedded drill SQL to check');
+  });
+
+  it('leads with the REAL count so a reviewer never re-derives the split', () => {
+    expect(summarizeReplicationSqlCheck({ ...base, checked: 19, placeholderOnly: 16 })).toBe(
+      '19 statement(s) checked · 0 real finding(s) · 16 parameterised drill(s) clean once bind placeholders were substituted',
+    );
+  });
+
+  it('names the undeterminable bucket when it is non-empty', () => {
+    const summary = summarizeReplicationSqlCheck({
+      ...base,
+      checked: 3,
+      undeterminable: [
+        { criterionKey: 'k', sql: 'SELECT 1', error: { message: 'x', code: '42725' } },
+      ],
+    });
+    expect(summary).toContain('1 undeterminable');
+    expect(summary).toContain('see undeterminable[]');
   });
 });

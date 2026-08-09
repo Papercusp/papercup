@@ -573,6 +573,31 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: () => true,
   },
   {
+    // EI-19971915610840229 — the SIBLING of the resurrection guard above, and it had
+    // the same gap for longer. CLAUDE.md's retired-surfaces section closed with the
+    // flat assertion "`lint:no-retired` guards re-imports", while NOTHING invoked the
+    // script: it sat on the acknowledged-unreachable list in
+    // check-lint-guard-reachability.mjs, doc-asserted and unenforced. A doc promising
+    // a guard that never runs is worse than no guard, because it is quoted as
+    // evidence — an agent re-importing a `_retired/` module reads that sentence and
+    // concludes the boundary is being watched.
+    //
+    // Verified clean at wiring time (`npm run lint:no-retired` → exit 0, "no live
+    // imports of _retired/ modules and no retired orchestrator-spawn fetch"), so
+    // registering it cannot red anyone's loop on pre-existing debt.
+    workspace: '@papercusp/operator-core',
+    // ~1.39s over 3 runs — the same order as lint:chunk-safe (~1.0s), already
+    // accepted here. It walks tracked sources via listTrackedFiles, which recurses
+    // into all submodules (WI-6730).
+    script: 'lint:no-retired',
+    // The TS/JS family the guard itself filters to (`/\.(ts|tsx|mjs|cjs|js)$/` in
+    // check-no-retired-imports.mjs). Matched to the scan rather than to a workspace:
+    // the guard reads the WHOLE tree including submodules, so enforcing it only when
+    // operator-core happens to be affected is exactly the D-034 partial-coverage
+    // shape the reachability checker flags.
+    appliesTo: (f) => /\.(?:tsx?|[cm]?js)$/.test(f),
+  },
+  {
     // WI-37445 — and the point of this one is that it is the D-034 shape's MIRROR IMAGE.
     // The other entries are guards whose VIOLATIONS escape workspace selection. This guard
     // exists because a whole failure CLASS does: adding a runtime export strands every test

@@ -41,7 +41,12 @@
  * `corpusQueryText` injects them, so this is testable without a database.
  */
 
-import { corpusTerms, corpusQueryIdToken, CORPUS_QUERY_MIN_DF } from './corpus-recall';
+import {
+  corpusTerms,
+  corpusQueryText,
+  corpusQueryIdToken,
+  CORPUS_QUERY_MIN_DF,
+} from './corpus-recall';
 
 /**
  * What the statistical (cheap) path can be expected to do with this query.
@@ -282,21 +287,55 @@ export function scoreCorpusQueryClarity(
 }
 
 /**
+ * Which terms to score.
+ *
+ * `issued` (DEFAULT) — the ≤`CORPUS_QUERY_MAX_TERMS` terms `corpusQueryText`
+ * actually sends to the engine. This is what retrieval sees, so it is what a
+ * prediction about retrieval must be about.
+ *
+ * `pool` — every candidate term `corpusTerms` extracted. Kept because it is the
+ * natural question to ask ("how good is the evidence available?") and because
+ * the CLI needs it as a control — NOT because it is a usable predictor. See the
+ * warning on {@link assessCorpusQueryClarity}.
+ */
+export type QueryClarityScope = 'issued' | 'pool';
+
+/**
  * Assess the raw injected text. Convenience wrapper over
  * {@link scoreCorpusQueryClarity}.
  *
- * ⚠ Assesses the FULL candidate pool, not the two terms the leg actually
- * issues. That is deliberate and it is the more useful question: the pool is
- * the evidence available ABOUT the query, while the issued pair is one
- * selection policy's guess at using it. A pool that is rich but scores diffuse
- * is a query no 2-term selection can rescue — which is precisely the population
- * an expensive tier would exist to serve.
+ * ⚠⚠ SCORES THE ISSUED QUERY, NOT THE CANDIDATE POOL — and this default is a
+ * MEASURED CORRECTION, not a preference. This function originally scored the
+ * pool, justified in this very docstring as "the more useful question". The
+ * P-019 probe falsified that: `SCS = avgIdf − log2(n)`, so a pool-scored query
+ * loses a bit of clarity for every DOUBLING of the candidate count — and the
+ * candidate count is set by the injecting SURFACE's clamp width, not by the
+ * query's content. Measured over 2,000 real prompts
+ * (`bench/corpus-query-clarity-cli.ts`), pool-scored median SCS falls
+ * MONOTONICALLY as the clamp widens — 82ch 2.73 → 116ch 1.91 → 153ch 1.79 →
+ * 300ch 0.95 → 979ch 0.26 bits — i.e. it ranks the LONGEST envelopes as the
+ * least clear, which is backwards: more evidence is not less confidence.
+ *
+ * Scoring the issued query holds `n` at ≈2, removing that term, and the
+ * ordering REVERSES to the sensible direction (5.41 → 6.39 → 6.44 → 7.11 →
+ * 7.83 bits): a longer envelope offers more headroom for term selection to find
+ * a discriminating pair. Against the same threshold the two scopes disagree on
+ * the verdict for most of the corpus, so this is not a refinement — the pool
+ * scope is simply the wrong instrument.
+ *
+ * ⚠ The issued query is derived with NO `df`, exactly as the leg derives it
+ * (`corpus-recall-io.ts`: `effectiveQuery = corpusQueryText(rawText)`). Passing
+ * this module's DF signal through would silently re-enable the BANDED selection
+ * D-066 measured as worse and reverted, so a "clarity" reading would then
+ * describe a query production never issues.
  */
 export function assessCorpusQueryClarity(
   text: string,
-  opts: QueryClarityOptions = {},
+  opts: QueryClarityOptions & { scope?: QueryClarityScope } = {},
 ): QueryClarityAssessment {
-  return scoreCorpusQueryClarity(corpusTerms(text), opts);
+  if (opts.scope === 'pool') return scoreCorpusQueryClarity(corpusTerms(text), opts);
+  const issued = corpusQueryText(text);
+  return scoreCorpusQueryClarity(issued ? issued.split(' ') : [], opts);
 }
 
 /**

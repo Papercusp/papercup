@@ -68,6 +68,20 @@ export interface OrphanSweepDeps {
 export interface OrphanSweepResult {
   /** Open replication-stall EIs inspected this pass. */
   checked: number;
+  /**
+   * WI-37499: per-reason census of everything inspected but NOT resolved, so a
+   * pass that saw NOTHING is distinguishable from one that correctly found no
+   * orphan. Without it the two were byte-identical from outside — the tick only
+   * logged when `resolvedIds.length > 0` — which is how this sweep ran daily for
+   * weeks while blind to 100% of its real targets. Same lesson its sibling
+   * (replication-liveness-staleness-sweep) recorded for itself.
+   */
+  skipped: {
+    /** No parseable `workspace=… harness=…` target in the body. */
+    unparseableTarget: number;
+    /** Target harness still exists (the deliberate conservative no-op). */
+    targetExists: number;
+  };
   /** Distinct "workspace::harness" targets confirmed no longer to exist. */
   orphanedTargets: string[];
   /** EI ids actually auto-resolved. */
@@ -76,8 +90,22 @@ export interface OrphanSweepResult {
   errors: number;
 }
 
+/** A pass that inspected nothing (a bail-out). Shaped like a real result so the
+ *  tick's census logging never has to special-case the failure paths. */
+const EMPTY_SWEEP_RESULT = (): OrphanSweepResult => ({
+  checked: 0,
+  orphanedTargets: [],
+  resolvedIds: [],
+  errors: 0,
+  skipped: { unparseableTarget: 0, targetExists: 0 },
+});
+
 async function defaultDeps(): Promise<OrphanSweepDeps> {
-  const [{ listIssues, setIssueState }, { harnessExistsInWorkspace }, { REPLICATION_LIVENESS_TOPIC }] =
+  const [
+    { listIssues, setIssueState },
+    { harnessExistsInWorkspace },
+    { REPLICATION_LIVENESS_TOPIC, REPLICATION_STALL_EI_TITLE_PREFIX },
+  ] =
     await Promise.all([
       import('../../issues-engineer'),
       import('../../device-harnesses'),
@@ -85,12 +113,31 @@ async function defaultDeps(): Promise<OrphanSweepDeps> {
     ]);
   return {
     listOpenReplicationStallEis: async () => {
-      const issues = await listIssues({
-        state: 'open',
-        topic: REPLICATION_LIVENESS_TOPIC,
-        limit: SWEEP_LIMIT,
-      });
-      return issues.map((i) => ({ id: i.id, body: i.body }));
+      // WI-37499: the topic tag is an INDEX over this detector's population, not
+      // its definition — and it is missing on most rows (measured 2026-08-09: 60
+      // of 105 open, holding ALL 6 genuine orphans this sweep exists to close,
+      // the oldest 34.8 days old). Select on the stable title too, and dedupe by
+      // id. `excludeObservationLane` on both legs: an agent-filed observation can
+      // carry a detector title verbatim and must never be auto-resolved (D-005).
+      const [tagged, byTitle] = await Promise.all([
+        listIssues({
+          state: 'open',
+          topic: REPLICATION_LIVENESS_TOPIC,
+          limit: SWEEP_LIMIT,
+          excludeObservationLane: true,
+        }),
+        listIssues({
+          state: 'open',
+          titlePrefix: REPLICATION_STALL_EI_TITLE_PREFIX,
+          limit: SWEEP_LIMIT,
+          excludeObservationLane: true,
+        }),
+      ]);
+      const seen = new Set(tagged.map((i) => i.id));
+      return [...tagged, ...byTitle.filter((i) => !seen.has(i.id))].map((i) => ({
+        id: i.id,
+        body: i.body,
+      }));
     },
     harnessExists: harnessExistsInWorkspace,
     // A distinct resolver identity (not replication-stall-ei.ts's RECOVERY_OWNER)
@@ -114,30 +161,34 @@ export async function runReplicationStallOrphanSweepOnce(
   deps?: OrphanSweepDeps,
 ): Promise<OrphanSweepResult> {
   if (process.env.VITEST && !deps) {
-    return { checked: 0, orphanedTargets: [], resolvedIds: [], errors: 0 };
+    return EMPTY_SWEEP_RESULT();
   }
   let d: OrphanSweepDeps;
   try {
     d = deps ?? (await defaultDeps());
   } catch {
-    return { checked: 0, orphanedTargets: [], resolvedIds: [], errors: 0 };
+    return EMPTY_SWEEP_RESULT();
   }
 
   let open: Array<{ id: string; body: string }>;
   try {
     open = await d.listOpenReplicationStallEis();
   } catch {
-    return { checked: 0, orphanedTargets: [], resolvedIds: [], errors: 0 };
+    return EMPTY_SWEEP_RESULT();
   }
 
   const existsCache = new Map<string, boolean>();
   const orphanedTargets = new Set<string>();
   const resolvedIds: string[] = [];
   let errors = 0;
+  const skipped = { unparseableTarget: 0, targetExists: 0 };
 
   for (const issue of open) {
     const target = parseStallEiTarget(issue.body);
-    if (!target) continue; // malformed/foreign body — never touched
+    if (!target) {
+      skipped.unparseableTarget += 1; // malformed/foreign body — never touched
+      continue;
+    }
 
     const cacheKey = `${target.workspaceId}::${target.harnessSlug}`;
     let exists = existsCache.get(cacheKey);
@@ -149,7 +200,10 @@ export async function runReplicationStallOrphanSweepOnce(
       }
       existsCache.set(cacheKey, exists);
     }
-    if (exists) continue;
+    if (exists) {
+      skipped.targetExists += 1;
+      continue;
+    }
 
     orphanedTargets.add(cacheKey);
     try {
@@ -167,5 +221,5 @@ export async function runReplicationStallOrphanSweepOnce(
     }
   }
 
-  return { checked: open.length, orphanedTargets: [...orphanedTargets], resolvedIds, errors };
+  return { checked: open.length, orphanedTargets: [...orphanedTargets], resolvedIds, errors, skipped };
 }

@@ -1,0 +1,212 @@
+/**
+ * managed-spawn-exit-recording.test.ts — WI-37509.
+ *
+ * THE PROPERTY: for a CONFINED task, the exit of the process we hold is EVIDENCE
+ * about the payload, never a verdict. A row may only go terminal when the task's
+ * own scope is not still holding processes.
+ *
+ * WHY: `buildTaskScopeArgv` wraps every confined task in `systemd-run --user
+ * --scope`, and systemd-run FORKS the payload into the new scope. The `ChildProcess`
+ * we hold is therefore the CLIENT. Normally it lives exactly as long as its payload,
+ * which is why watching it worked for so long — but the two can be separated (a
+ * signal delivered to the client, its spawner's cgroup torn down), and then the
+ * client's death says nothing at all about the work.
+ *
+ * Filed as terminal, the row stops being reapable (reapers act on live rows) and
+ * `upsertUnaccounted` deliberately preserves a terminal state, so the survivor never
+ * shows up in the pane either — it just re-enters the reconciler's `unaccounted` set
+ * every 30s, forever. Measured live 2026-08-09: two `fleet spawner sidecar` tasks
+ * recorded `killed / signal SIGTERM` 7s and 12s after launch, all six of their
+ * processes still alive 5.5h and 9.4h later, feeding a fleet-wide alarm that could
+ * never clear.
+ *
+ * THE ASYMMETRY IS THE DESIGN, and it is asserted in both directions below: only a
+ * scope we can POSITIVELY see is populated suppresses the close. Empty, missing and
+ * unreadable all still close, because failing the other way would invent rows that
+ * never close at all — a worse failure than the one being fixed.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process';
+
+const L = vi.hoisted(() => ({
+  closed: [] as { taskId: string; state: string; exitReason: string | null }[],
+  marked: [] as { cgroupPath: string | null; confined: boolean }[],
+}));
+
+vi.mock('./enabled', () => ({
+  isTaskManagerEnabled: async () => true,
+  taskManagerEnabledSync: () => true,
+  warmTaskManagerFlag: () => {},
+  setTaskManagerEnabledForTest: () => {},
+}));
+
+vi.mock('./store', () => ({
+  registerTask: async (_spec: unknown, opts: { taskId?: string }) => ({
+    taskId: opts?.taskId ?? 'task-test',
+    state: 'pending',
+  }),
+  markSpawned: async (_id: string, v: { cgroupPath: string | null; confined: boolean }) => {
+    L.marked.push(v);
+  },
+  closeTask: async (taskId: string, v: { state: string; exitReason: string | null }) => {
+    L.closed.push({ taskId, state: v.state, exitReason: v.exitReason });
+  },
+}));
+
+import { managedSpawn } from './managed-spawn';
+import { CGROUP_ROOT, type CgroupFs } from './cgroup-read';
+import { scopeCgroupRelPath, scopeUnitForTask, type TaskSpec } from './types';
+
+const MGR = '/user.slice/user-1000.slice/user@1000.service';
+const OWN_CGROUP = `0::${MGR}/papercup-dev-api.service\n`;
+
+const SIDECAR_SPEC: TaskSpec = {
+  class: 'sidecar',
+  title: 'fleet spawner sidecar',
+  argv: ['tsx', 'apps/operator/bin/spawner-sidecar.ts'],
+};
+
+function makeChild(pid = 4242): { emitter: EventEmitter; child: ChildProcess } {
+  const emitter = new EventEmitter();
+  Object.assign(emitter, { pid, kill: () => true });
+  return { emitter, child: emitter as unknown as ChildProcess };
+}
+
+/**
+ * The scope's contents, resolved lazily so the fs can be built BEFORE the task id
+ * (and therefore the scope path) exists.
+ *
+ * `procs: null` models a scope directory that is GONE — systemd collected it, the
+ * ordinary healthy ending — which is deliberately distinct from `[]`, a scope that
+ * still exists but has been emptied. Both must still close the row.
+ */
+interface ScopeState {
+  rel: string;
+  procs: number[] | null;
+  pidsCurrent?: number | null;
+}
+
+function makeFs(scope: ScopeState): CgroupFs {
+  return {
+    readFile(path: string): string | null {
+      // The operator's own cgroup — what the user-manager root is derived from.
+      if (path === `/proc/${process.pid}/cgroup`) return OWN_CGROUP;
+      if (!scope.rel) return null;
+      const abs = `${CGROUP_ROOT}${scope.rel}`;
+      if (path === `${abs}/cgroup.procs`) return scope.procs == null ? null : scope.procs.join('\n');
+      if (path === `${abs}/pids.current`) {
+        return scope.pidsCurrent == null ? null : String(scope.pidsCurrent);
+      }
+      return null;
+    },
+    readDir: () => [],
+    isDir: () => false,
+  };
+}
+
+async function flush(n = 12): Promise<void> {
+  for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+}
+
+/** Spawn one confined sidecar against a scope whose contents the caller controls. */
+async function spawnConfined(procs: number[] | null, pidsCurrent?: number | null) {
+  const { emitter, child } = makeChild();
+  const scope: ScopeState = { rel: '', procs, pidsCurrent };
+  const result = await managedSpawn('tsx', ['spawner-sidecar.ts'], SIDECAR_SPEC, {
+    scopeAvailable: true,
+    spawnFn: (() => child) as unknown as typeof nodeSpawn,
+    fs: makeFs(scope),
+  });
+  // The path is fully determined by task id + class, so it is knowable the moment
+  // managedSpawn returns — the same derivation the subject itself performs.
+  scope.rel = scopeCgroupRelPath(MGR, 'sidecar', result.scopeUnit!);
+  return { emitter, result, scopeRel: scope.rel };
+}
+
+describe('confined task exit recording (WI-37509)', () => {
+  beforeEach(() => {
+    L.closed.length = 0;
+    L.marked.length = 0;
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('does NOT close the row when the client dies but the scope still holds processes', async () => {
+    const { emitter, result, scopeRel } = await spawnConfined([3204532, 3204609, 3204726]);
+    expect(result.confined).toBe(true);
+    expect(scopeRel).toContain('/papercusp.slice/papercusp-sidecar.slice/');
+
+    // The exact shape measured live: client SIGTERMed, payload untouched.
+    emitter.emit('exit', null, 'SIGTERM');
+    await flush();
+
+    expect(L.closed).toEqual([]);
+  });
+
+  it('DOES close the row when the scope is gone — the ordinary healthy ending', async () => {
+    const { emitter } = await spawnConfined(null);
+
+    emitter.emit('exit', 0, null);
+    await flush();
+
+    expect(L.closed).toHaveLength(1);
+    expect(L.closed[0]!.state).toBe('exited');
+  });
+
+  it('DOES close the row when the scope exists but has been emptied', async () => {
+    const { emitter } = await spawnConfined([]);
+
+    emitter.emit('exit', null, 'SIGKILL');
+    await flush();
+
+    expect(L.closed).toHaveLength(1);
+    expect(L.closed[0]!.state).toBe('killed');
+    expect(L.closed[0]!.exitReason).toBe('signal SIGKILL');
+  });
+
+  it('counts a payload that made its own sub-cgroups, via recursive pids.current', async () => {
+    // `cgroup.procs` is flat, so a payload sitting only in a CHILD cgroup reads as
+    // empty there; `pids.current` is recursive in cgroup v2 and still sees it.
+    const { emitter } = await spawnConfined([], 3);
+
+    emitter.emit('exit', null, 'SIGTERM');
+    await flush();
+
+    expect(L.closed).toEqual([]);
+  });
+
+  it("records the SCOPE cgroup, never the spawner's own cgroup", async () => {
+    // The live bug: `readProcessCgroupPath(child.pid)` right after spawn returns the
+    // SPAWNER's cgroup, because systemd-run has not moved into the scope yet. Two
+    // real rows recorded `app.slice/papercup-dev-api.service` and a GNOME Terminal
+    // `vte-spawn-*.scope` as the task's own cgroup.
+    const { result } = await spawnConfined([]);
+
+    expect(L.marked).toHaveLength(1);
+    expect(L.marked[0]!.cgroupPath).toBe(scopeCgroupRelPath(MGR, 'sidecar', result.scopeUnit!));
+    expect(L.marked[0]!.cgroupPath).not.toContain('papercup-dev-api.service');
+    expect(L.marked[0]!.cgroupPath).not.toContain('vte-spawn');
+  });
+
+  it('CONTROL: the pre-fix rule closes the row in every one of these cases', () => {
+    // The permanent falsifiability control — the old implementation, verbatim in
+    // spirit: "the child exited, therefore the task ended". Kept here so the new
+    // predicate is proven DISCRIMINATING on every run, without ever mutating the
+    // shared tree (CLAUDE.md § proving a guard is falsifiable).
+    const legacyWouldClose = (_scopeProcs: number[] | null): boolean => true;
+
+    expect(legacyWouldClose([3204532, 3204609])).toBe(true); // ← the survivor case it got wrong
+    expect(legacyWouldClose(null)).toBe(true);
+    expect(legacyWouldClose([])).toBe(true);
+  });
+});
+
+describe('scope unit naming is the shared authority', () => {
+  it('derives the same scope unit the argv builder uses', () => {
+    const unit = scopeUnitForTask('0msldixpfupa5t8454l');
+    expect(unit).toBe('pc-0msldixpfupa5t8454l.scope');
+    expect(scopeCgroupRelPath(MGR, 'sidecar', unit)).toBe(
+      `${MGR}/papercusp.slice/papercusp-sidecar.slice/pc-0msldixpfupa5t8454l.scope`,
+    );
+  });
+});

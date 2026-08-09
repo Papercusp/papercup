@@ -116,8 +116,6 @@ const CLASSIFICATION: Record<string, SurfaceClaim> = {
   'agent-tools/coordination/messages.ts': 'live',
   // the guards the section names as the real enforcement — a doc claiming a guard
   // that no longer exists is the defect one level up (the `lint:no-retired` case)
-  'scripts/check-no-retired-imports.mjs': 'live',
-  'scripts/check-lint-guard-reachability.mjs': 'live',
   'scripts/affected-tests.mjs': 'live',
   'packages/operator-core/lib/doc-claims/retired-surfaces.test.ts': 'live',
   '_retired/': 'retired',

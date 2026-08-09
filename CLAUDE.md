@@ -340,13 +340,17 @@ retired-but-kept; it was **deleted** in zero-decommission-2026-06-20, so there i
 nothing preserved and nothing to migrate off — measured 2026-08-09, it is absent
 from disk, from the git index and from `.gitmodules`.)
 
-⚠ **`lint:no-retired` exists (`scripts/check-no-retired-imports.mjs`) but NOTHING RUNS
-IT** — it is on the acknowledged-unreachable list in `scripts/check-lint-guard-reachability.mjs`,
-so the re-import guarantee this section used to assert is not currently enforced. What IS
-enforced: `lint:no-retired-resurrection` (wired as a repo-wide invariant guard in
-`scripts/affected-tests.mjs`), and the claims in THIS section, by
-`packages/operator-core/lib/doc-claims/retired-surfaces.test.ts` — every path it names must
-resolve, and a surface listed as living in a `_retired/` directory must actually be there.
+**What enforces this section.** `lint:no-retired` guards re-imports of `_retired/`
+modules — and as of EI-19971915610840229 that is finally TRUE rather than aspirational:
+the script existed but NOTHING invoked it for months, so the guarantee this section
+asserted was never actually checked. It is now a repo-wide invariant guard
+(`scripts/affected-tests.mjs`), running on every changed TS/JS path, alongside
+`lint:no-retired-resurrection`. The CLAIMS IN THIS SECTION are themselves guarded by
+`packages/operator-core/lib/doc-claims/retired-surfaces.test.ts`: every path named here
+must resolve, and a surface listed as living in a `_retired/` directory must actually be
+there. That guard exists because the failure is silent in one direction — a doc that
+wrongly says LIVE self-corrects the first time someone greps, while one that wrongly says
+RETIRED just quietly diverts work away from shipping code.
 
 Full table with restore points + the retiring-a-surface convention:
 [repo-conventions § retired surfaces](/internal/docs/system/repo-conventions).

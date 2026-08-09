@@ -36,7 +36,7 @@ import {
   walkCgroupTree,
   type CgroupFs,
 } from './cgroup-read';
-import { TASK_ROOT_SLICE } from './types';
+import { TASK_ROOT_SLICE, deriveUserManagerRoot } from './types';
 import { classifyScope, isTerminalWindowScope } from './scope-class';
 import { readTerminalAppPids, terminalWindowAlive } from './terminal-window';
 import type { ScannedProcess } from './reconcile';
@@ -97,14 +97,12 @@ const DEFAULT_MAX_FOREIGN = 4000;
  * prefix through `user@1000.service`. Returns null when the shape is unrecognised
  * (a container, a system-slice deployment) — the caller then scans only our slice,
  * which is the honest degradation: we lose the foreign VIEW, never the ownership.
+ *
+ * Now implemented in `types` (WI-37509) so the spawn chokepoint can derive a scope's
+ * cgroup path without importing this module's kernel-walk graph. Re-exported here
+ * because this is where every existing caller and its tests look for it.
  */
-export function deriveUserManagerRoot(ownCgroupPath: string | null): string | null {
-  if (!ownCgroupPath) return null;
-  const segs = ownCgroupPath.split('/').filter(Boolean);
-  const idx = segs.findIndex((s) => /^user@\d+\.service$/.test(s));
-  if (idx < 0) return null;
-  return `/${segs.slice(0, idx + 1).join('/')}`;
-}
+export { deriveUserManagerRoot };
 
 function readIdentity(pid: number, bootId: string | null, fs: CgroupFs): string | null {
   if (!bootId) return null;

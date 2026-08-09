@@ -112,7 +112,7 @@ describe('killTask — confined path', () => {
     // holds processes after the re-probe window must never be reported as a bare
     // success — that silent false ok:true is the bug this fixes.
     expect(out).toMatchObject({ ok: false, error: 'incomplete' });
-    expect((out as { detail: string }).detail).toMatch(/999.*process|process.*alive/i);
+    expect((out as { detail: string }).detail).toMatch(/1 process\(es\) still alive/);
   });
 
   it('EI-19478780721557822 recurrence guard: never reports ok:true while the subtree survives, and leaves the row LIVE for a retry', async () => {

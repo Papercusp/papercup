@@ -50,6 +50,54 @@ const OWNER_QUESTION_RES: RegExp[] = [
   /\bowner\s+(?:to\s+)?(?:decide|confirm|answer|approve|weigh in|choose)\b/i,
 ];
 
+/**
+ * A negation/absence token that, appearing shortly BEFORE a trigger match
+ * within the same clause, flips the trigger's polarity — "no need to ask the
+ * owner", "not blocked on the owner", "blocked on nothing owner-related".
+ * Kept to a nearby word-window (not the whole clause) so a negation in an
+ * unrelated earlier part of the same clause can't mask a real question
+ * later in it (EI-19988500685566622 case 2).
+ */
+const NEGATION_RE = /\b(?:no|not|n't|never|nothing|none|nobody|without)\b/i;
+const NEGATION_WINDOW_CHARS = 28;
+
+/**
+ * An agent identifier (su-/claude- + hex) appearing as the line's subject
+ * BEFORE a trigger match means the OWNER-WAIT belongs to that named THIRD
+ * PARTY, not to the writer — a grader/monitor describing a graded subject's
+ * state has no question of its own to route (EI-19988500685566622 case 1).
+ * Scanned over the whole clause, not just the narrow negation window, since
+ * a subject can sit well before its predicate.
+ */
+const AGENT_SUBJECT_RE = /\b(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
+
+/** Clause delimiters bounding how far back a suppression check looks — a
+ *  negation or subject in an earlier, unrelated clause must not mask a real
+ *  question in a later one on the same line. */
+const CLAUSE_DELIMITERS = ['.', ':', ';'];
+
+function clauseStartBefore(line: string, index: number): number {
+  let start = 0;
+  for (const d of CLAUSE_DELIMITERS) {
+    const at = line.lastIndexOf(d, index - 1);
+    if (at + 1 > start) start = at + 1;
+  }
+  return start;
+}
+
+/** True when a trigger match at `matchIndex` on `line` should be suppressed —
+ *  negated, or the grammatical subject is a named other agent — and so is
+ *  not the writer's own unrouted question. */
+function isSuppressedMatch(line: string, matchIndex: number): boolean {
+  const clauseStart = clauseStartBefore(line, matchIndex);
+  const clauseBefore = line.slice(clauseStart, matchIndex);
+  if (AGENT_SUBJECT_RE.test(clauseBefore)) return true;
+  const negationWindowStart = Math.max(clauseStart, matchIndex - NEGATION_WINDOW_CHARS);
+  const negationWindow = line.slice(negationWindowStart, matchIndex);
+  if (NEGATION_RE.test(negationWindow)) return true;
+  return false;
+}
+
 export interface TypedSlotLintMatch {
   /** The offending line, trimmed and capped for display. */
   line: string;
@@ -69,6 +117,11 @@ const MATCH_LINE_CAP = 200;
  * ref (and no wall marker) on that same line. Line-scoped for the same reason
  * the provenance lint is: an ask ref elsewhere in a long checkpoint must not
  * mask a different, never-asked question. Pure, synchronous, side-effect-free.
+ *
+ * A trigger match is further suppressed when it is NEGATED ("no need to ask
+ * the owner") or its clause's subject is a named OTHER AGENT ("subject
+ * su-6e9985dd... was waiting on the owner") — neither is the writer's own
+ * unrouted question (EI-19988500685566622).
  */
 export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSlotLintResult {
   if (!text) return { flagged: false, matches: [] };
@@ -79,7 +132,12 @@ export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSl
     if (!line) continue;
     if (ASK_REF_RE.test(line)) continue; // the question IS a typed record
     if (WALL_MARKER_RE.test(line)) continue; // the walls slot is the typed form
-    if (OWNER_QUESTION_RES.some((re) => re.test(line))) {
+    const hasUnsuppressedMatch = OWNER_QUESTION_RES.some((re) => {
+      const m = re.exec(line); // none of these patterns carry the /g flag, so exec is stateless here
+      if (!m) return false;
+      return !isSuppressedMatch(line, m.index);
+    });
+    if (hasUnsuppressedMatch) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-question-prose' });
     }
   }

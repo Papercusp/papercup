@@ -68,9 +68,27 @@ const HIT_LIMIT = 30;
  *
  * `theory` recall@30 stands at 2/9 ≈ 0.222 and that is a REAL, OPEN BUG, not a
  * target: 8 of the 9 sessions are retrieved by depth 300 but rank 65–170, so
- * the top-30 cut misses them. The floor exists to stop it getting WORSE while
- * P-014 (length normalisation) and P-011 (phrase-awareness) — the actual fixes,
- * raised to high by D-031 — are outstanding.
+ * the top-30 cut misses them. Note what that shape means: the sessions are
+ * ALREADY ADMITTED and merely ordered too low, so a fix must REORDER what is
+ * retrieved. Narrowing the candidate set cannot help.
+ *
+ * ⚠ THE TWO FIXES THIS COMMENT USED TO NAME ARE BOTH DEAD. Do not pursue
+ * either, and do not re-open them by citing D-031 (which raised both to high
+ * on a premise since refuted):
+ *   • P-014 (length normalisation) — DROPPED BY MEASUREMENT (D-032). Every
+ *     `ts_rank_cd` call site omits the normalisation argument, so there is no
+ *     document-length term to tune in the first place.
+ *   • P-011 (phrase-awareness) — a STRUCTURAL NO-OP for this report (D-040),
+ *     proven rather than measured: the query below is the SINGLE WORD `theory`,
+ *     and `phraseto_tsquery('english','theory')` is byte-identical to
+ *     `plainto_tsquery('english','theory')` — both emit `'theori'`. Identical
+ *     tsquery ⇒ identical candidates ⇒ identical scores ⇒ identical fusion. A
+ *     one-word query has no phrase structure to exploit, so no amount of
+ *     tuning can rescue it here.
+ *
+ * The one live route is true term-frequency-aware (BM25) scoring, which PG
+ * cannot supply natively — P-035, an owner-gated packaging decision. This floor
+ * exists to stop the bug getting WORSE until that ruling lands.
  */
 const THEORY_RECALL_FLOOR = 2 / 9;
 /** Report 2's fix: pollution is at ZERO and must stay there. */
@@ -186,8 +204,13 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
         `recall@${HIT_LIMIT}=${out.recallAtK?.toFixed(3)} over ${tomSessions.length} pinned sessions. ` +
           `${verdict.failures.join(' | ')}\n` +
           'This floor is SHRINK-ONLY. A red here means first-stage ranking got WORSE — ' +
-          'see D-031: the sessions ARE retrieved (8/9 by depth 300) but rank 65-170, so ' +
-          'the fix is P-014 (length normalisation) / P-011 (phrase-awareness), NOT more reranking.',
+          'see D-031: the sessions ARE retrieved (8/9 by depth 300) but rank 65-170, so the ' +
+          'fix must REORDER what is already admitted; more reranking depth will not help.\n' +
+          'Do NOT reach for P-014 or P-011 — both are dead ends and both were once named here: ' +
+          'P-014 (length normalisation) is dropped by measurement (D-032, no normalisation arg ' +
+          'is passed to ts_rank_cd anywhere), and P-011 (phrase-awareness) is a proven no-op for ' +
+          'this query (D-040 — "theory" is one word, so phraseto_tsquery and plainto_tsquery ' +
+          'both emit \'theori\'). The only live route is BM25 via a PG extension: P-035, owner-gated.',
       ).toBe(true);
     },
     120_000,

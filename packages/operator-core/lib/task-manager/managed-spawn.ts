@@ -24,10 +24,25 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { readProcessIdentity } from '../process-identity';
 import { buildTaskScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../systemd-scope';
-import { nodeCgroupFs, readProcessCgroupPath, type CgroupFs } from './cgroup-read';
+import {
+  absCgroupDir,
+  nodeCgroupFs,
+  readCgroupProcs,
+  readProcessCgroupPath,
+  sampleCgroup,
+  type CgroupFs,
+} from './cgroup-read';
 import { isTaskManagerEnabled } from './enabled';
 import { closeTask, markSpawned, registerTask } from './store';
-import { newTaskId, scopeUnitForTask, sliceForClass, type TaskRow, type TaskSpec } from './types';
+import {
+  deriveUserManagerRoot,
+  newTaskId,
+  scopeCgroupRelPath,
+  scopeUnitForTask,
+  sliceForClass,
+  type TaskRow,
+  type TaskSpec,
+} from './types';
 
 export interface ManagedSpawnOptions {
   /** Anything `child_process.spawn` takes. `detached` is honoured — a detached
@@ -278,6 +293,17 @@ export async function managedSpawn(
   }
 
   const pid = child.pid ?? null;
+  // WI-37509: for a CONFINED task the scope's cgroup is DERIVED, never read off the
+  // child pid. `systemd-run --scope` forks the payload, so `child` is the client and
+  // reading its `/proc/<pid>/cgroup` this early returns the SPAWNER's cgroup — which
+  // is how a sidecar came to be recorded as living inside `papercup-dev-api.service`,
+  // and another inside a GNOME Terminal window scope. Unconfined tasks keep the /proc
+  // read, where it is correct: the child really does live in our cgroup.
+  const scopeCgroupPath =
+    scopeOk && scopeUnit
+      ? scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid, fs)), spec.class, scopeUnit)
+      : null;
+
   // The child is ALREADY RUNNING by here, so a throw out of `markSpawned` would
   // be the worst of both worlds: the caller sees a failed spawn and abandons a
   // live process nobody is holding. Record what we can, degrade to unaccounted.
@@ -287,7 +313,7 @@ export async function managedSpawn(
         pid,
         processIdentity: pid ? readProcessIdentity(pid) : null,
         scopeUnit,
-        cgroupPath: pid ? readProcessCgroupPath(pid, fs) : null,
+        cgroupPath: scopeCgroupPath ?? (pid ? readProcessCgroupPath(pid, fs) : null),
         confined: scopeOk,
       });
     } catch (e) {
@@ -298,7 +324,7 @@ export async function managedSpawn(
     }
   }
 
-  wireExit(child, taskId, scopeOk);
+  wireExit(child, taskId, scopeOk, scopeCgroupPath, fs);
 
   return {
     taskId,
@@ -341,8 +367,37 @@ function unledgeredRow(taskId: string, spec: TaskSpec, workspaceId: string | und
  * Close the row on exit — and distinguish the ways a process can end, because a
  * pane that reports every ending as "exited" is a pane that cannot tell you your
  * build was OOM-killed.
+ *
+ * ── WHY THE CHILD'S EXIT IS EVIDENCE, NOT A VERDICT (WI-37509) ───────────────
+ *
+ * For a CONFINED task, `child` is the `systemd-run --scope` CLIENT, not the payload.
+ * systemd-run forks the real work into the new scope; normally the client then lives
+ * exactly as long as its payload, which is why watching it worked for so long. But
+ * the two can be separated — a signal delivered to the client, its spawner's own
+ * cgroup being torn down — and then the client's death says nothing whatsoever about
+ * the payload.
+ *
+ * Filed that way the row goes TERMINAL while the work runs on. Nothing reaps it
+ * afterwards (reapers act on live rows), and `upsertUnaccounted` deliberately
+ * preserves a terminal state, so the survivor never reappears in the pane either —
+ * it just re-enters the reconciler's `unaccounted` set every 30s forever. Measured
+ * on this box: two `fleet spawner sidecar` tasks recorded `killed / signal SIGTERM`
+ * 7s and 12s after launch, all six processes still alive 5.5h and 9.4h later, and a
+ * fleet-wide "N unaccounted cgroup(s)" alarm that could never clear.
+ *
+ * So: only a scope we can POSITIVELY see is still populated suppresses the close.
+ * Empty, missing, or unreadable all fall through to closing exactly as before —
+ * the asymmetry matters, because failing the other way would invent rows that never
+ * close at all. When we do suppress it, the reconciler issues the terminal verdict
+ * from the real cgroup tree, which is D-018's rule applied to the close path.
  */
-function wireExit(child: ChildProcess, taskId: string, confined: boolean): void {
+function wireExit(
+  child: ChildProcess,
+  taskId: string,
+  confined: boolean,
+  scopeCgroupPath: string | null,
+  fs: CgroupFs,
+): void {
   let closed = false;
   const close = (state: 'exited' | 'killed', code: number | null, reason: string | null): void => {
     if (closed) return;
@@ -354,7 +409,25 @@ function wireExit(child: ChildProcess, taskId: string, confined: boolean): void 
     });
   };
 
+  /** Does the task's own scope still hold processes? Only a positive answer counts. */
+  const payloadOutlivedClient = (): boolean => {
+    if (!confined || !scopeCgroupPath) return false;
+    const abs = absCgroupDir(scopeCgroupPath);
+    if (readCgroupProcs(abs, fs).length > 0) return true;
+    // `pids.current` is recursive in cgroup v2, so a payload that made its own
+    // sub-cgroups is still counted where the flat read above sees nothing.
+    const pidsCurrent = sampleCgroup(abs, fs).pidsCurrent;
+    return pidsCurrent != null && pidsCurrent > 0;
+  };
+
   child.on('exit', (code, signal) => {
+    if (payloadOutlivedClient()) {
+      console.warn(
+        `[managed-spawn] task ${taskId}: the systemd-run client exited (${signal ? `signal ${signal}` : `code ${code}`}) ` +
+          'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).',
+      );
+      return;
+    }
     if (signal) {
       close('killed', code, `signal ${signal}`);
     } else {

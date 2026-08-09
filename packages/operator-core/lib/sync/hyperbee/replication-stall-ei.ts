@@ -71,6 +71,16 @@ export type StallEiEpisode = Omit<ReplicationStallEpisode, 'kind'> & {
     | 'drain_row_quarantined';
 };
 
+/**
+ * WI-37499: the literal prefix EVERY title `replicationStallEiTitle` mints starts
+ * with — this detector's population identity, independent of the `coord_links`
+ * topic tag that a read may or may not find. `replicationStallEiTitle` BUILDS from
+ * this constant (rather than repeating the literal), and replication-stall-ei's
+ * unit suite asserts every episode kind's title starts with it — so a future edit
+ * to the title shape cannot silently orphan the sweeps that select on it.
+ */
+export const REPLICATION_STALL_EI_TITLE_PREFIX = '[replication-liveness] ';
+
 /** Stable, dedup-able title for one (harness, log, kind). */
 export function replicationStallEiTitle(episode: {
   harnessSlug: string;
@@ -80,7 +90,7 @@ export function replicationStallEiTitle(episode: {
   kind: StallEiEpisode['kind'];
 }): string {
   return (
-    `[replication-liveness] ${episode.kind}: harness=${episode.harnessSlug} ` +
+    `${REPLICATION_STALL_EI_TITLE_PREFIX}${episode.kind}: harness=${episode.harnessSlug} ` +
     `log=${episode.logKeyHex.slice(0, 12)}… (WI-183 class)`
   );
 }
@@ -191,6 +201,12 @@ const escalator = createEpisodicEscalator<StallEiEpisode, RecoveredStallEpisode,
   foundDuring: 'replication-liveness-detector',
   recoveryOwner: RECOVERY_OWNER,
   standingCooldownMs: REPLICATION_STALL_EI_STANDING_COOLDOWN_MS,
+  // WI-37499: this detector's rows are frequently minted WITHOUT the
+  // `replication-liveness` topic edge (measured 2026-08-09: 60 of 105 open rows),
+  // which silently blinded dedup, the duplicate-collapse pass and the orphan
+  // sweep at once. Selecting on the stable title too makes every population read
+  // independent of that derived tag.
+  titlePrefix: REPLICATION_STALL_EI_TITLE_PREFIX,
 });
 
 /** Test seam. */

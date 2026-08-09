@@ -157,35 +157,56 @@ async function main(): Promise<void> {
     );
   }
 
-  console.log(`\n## Clarity verdict by surface\n`);
-  console.log(`| surface | clamp | ${VERDICTS.join(' | ')} | ESCALATES |`);
-  console.log(`|---|---:|${VERDICTS.map(() => '---:').join('|')}|---:|`);
+  console.log(`\n## Clarity verdict by surface — scored on the ISSUED query (≤2 terms)\n`);
+  console.log(`| surface | clamp | ${VERDICTS.join(' | ')} | ESCALATES | (pool-scored, control) |`);
+  console.log(`|---|---:|${VERDICTS.map(() => '---:').join('|')}|---:|---:|`);
 
   let weightedEscalate = 0;
+  let weightedPoolEscalate = 0;
   let weightedKeyed = 0;
   let weightShare = 0;
   const perSurfaceScs = new Map<string, number[]>();
+  const perSurfaceIssuedScs = new Map<string, number[]>();
 
   for (const m of mix) {
     const counts = new Map<QueryClarityVerdict, number>(VERDICTS.map((v) => [v, 0]));
     const scs: number[] = [];
+    const issuedCounts = new Map<QueryClarityVerdict, number>(VERDICTS.map((v) => [v, 0]));
+    const issuedScs: number[] = [];
     for (const t of turns) {
-      const a = assessCorpusQueryClarity(t.text.slice(0, m.clampChars), { df, ndocs });
+      const clamped = t.text.slice(0, m.clampChars);
+
+      // CONTROL ARM — the full candidate pool. Kept only to demonstrate the
+      // length contamination: SCS = avgIdf − log2(n), so a pool-scored query
+      // loses a bit of clarity for every doubling of the candidate count, and
+      // the pool size is a property of the SURFACE's clamp, not of the content.
+      const a = assessCorpusQueryClarity(clamped, { df, ndocs, scope: 'pool' });
       counts.set(a.verdict, (counts.get(a.verdict) ?? 0) + 1);
       if (a.scs !== null) scs.push(a.scs);
+
+      // SUBJECT ARM — the query production ACTUALLY ISSUES (≤2 terms, derived
+      // with no `df` exactly as the leg derives it). This is what retrieval
+      // sees, so it is the only arm a claim about retrieval may rest on.
+      const b = assessCorpusQueryClarity(clamped, { df, ndocs });
+      issuedCounts.set(b.verdict, (issuedCounts.get(b.verdict) ?? 0) + 1);
+      if (b.scs !== null) issuedScs.push(b.scs);
     }
     scs.sort((a, b) => a - b);
+    issuedScs.sort((a, b) => a - b);
     perSurfaceScs.set(m.surface, scs);
+    perSurfaceIssuedScs.set(m.surface, issuedScs);
 
-    const escalate = (counts.get('unfocused') ?? 0) + (counts.get('unretrievable') ?? 0);
+    const escalate = (issuedCounts.get('unfocused') ?? 0) + (issuedCounts.get('unretrievable') ?? 0);
+    const poolEscalate = (counts.get('unfocused') ?? 0) + (counts.get('unretrievable') ?? 0);
     weightedEscalate += m.share * (escalate / turns.length);
-    weightedKeyed += m.share * ((counts.get('keyed') ?? 0) / turns.length);
+    weightedPoolEscalate += m.share * (poolEscalate / turns.length);
+    weightedKeyed += m.share * ((issuedCounts.get('keyed') ?? 0) / turns.length);
     weightShare += m.share;
 
     console.log(
       `| ${m.surface} | ${m.clampChars} | ` +
-        VERDICTS.map((v) => pct(counts.get(v) ?? 0, turns.length)).join(' | ') +
-        ` | **${pct(escalate, turns.length)}** |`,
+        VERDICTS.map((v) => pct(issuedCounts.get(v) ?? 0, turns.length)).join(' | ') +
+        ` | **${pct(escalate, turns.length)}** | ${pct(poolEscalate, turns.length)} |`,
     );
   }
 
@@ -201,13 +222,37 @@ async function main(): Promise<void> {
     console.log(`| ${m.surface} | ${q(0.1)} | ${q(0.25)} | ${q(0.5)} | ${q(0.75)} | ${q(0.9)} | ${s.length} |`);
   }
 
+  console.log(`\n## SCS of the ISSUED query (≤2 terms — the control for length contamination)\n`);
+  console.log(`| surface | clamp | p10 | p25 | p50 | p75 | p90 | n scored |`);
+  console.log(`|---|---:|---:|---:|---:|---:|---:|---:|`);
+  for (const m of mix) {
+    const s = perSurfaceIssuedScs.get(m.surface) ?? [];
+    const q = (v: number): string => {
+      const x = quantile(s, v);
+      return x === null ? 'n/a' : x.toFixed(2);
+    };
+    console.log(
+      `| ${m.surface} | ${m.clampChars} | ${q(0.1)} | ${q(0.25)} | ${q(0.5)} | ${q(0.75)} | ${q(0.9)} | ${s.length} |`,
+    );
+  }
+  console.log(
+    `\n> Read the two SCS tables TOGETHER. If pool-scored SCS falls monotonically with the clamp ` +
+      `width while issued-scored SCS does not, the pool-scored predictor is largely reporting how ` +
+      `long the envelope was — a property of the SURFACE, already known for free.`,
+  );
+
   // Renormalised over the surfaces that cleared the floor, so the headline is a
   // share OF MEASURED TRAFFIC rather than a number silently diluted by the tail.
   const norm = weightShare > 0 ? weightShare : 1;
   console.log(`\n## Headline\n`);
   console.log(
     `- **Traffic-weighted escalation rate: ${((weightedEscalate / norm) * 100).toFixed(1)}%** ` +
-      `(unfocused + unretrievable), over ${(norm * 100).toFixed(1)}% of recalls.`,
+      `(unfocused + unretrievable, scored on the ISSUED query), over ${(norm * 100).toFixed(1)}% of recalls.`,
+  );
+  console.log(
+    `- Same threshold, POOL-scored (the wrong instrument, kept as a control): ` +
+      `${((weightedPoolEscalate / norm) * 100).toFixed(1)}% — the gap between these two numbers is ` +
+      `entirely an artifact of \`−log2(n)\`, not a fact about the queries.`,
   );
   console.log(
     `- Keyed (retrievable by construction, never escalate): ${((weightedKeyed / norm) * 100).toFixed(1)}%.`,

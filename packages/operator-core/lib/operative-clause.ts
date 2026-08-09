@@ -46,17 +46,22 @@ export const OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT = 2;
  * the thing most likely to revoke an earlier plan sitting earlier in the
  * same body.
  *
- * ⚠ The owner-tag alternative is DELIBERATELY WIDER than `OWNER_TAG_RE`, which
- * matches `[owner:` only. Measured 2026-08-09 over the population that actually
- * feeds this function — `harness_shared.work_items.payload`, where checkpoints
- * live — 43 of 50 tag-bearing rows use `[owner:` but 6 use a SPACE
- * (`[owner 2026-08-09]`). Colon-only therefore drops ~12% of real owner tags
- * past a cut, which is precisely the class EI-19952485326105760 is about: the
- * heading matches on `⛔` and survives, while the line carrying the owner's
- * actual WORDS does not, so the reader is told a directive exists and never
- * told what it says. Widening only ever preserves MORE, so it cannot cause the
- * inverse failure. (`OWNER_TAG_RE` itself still has this gap — filed
- * separately; it is a lint-detection question, not a preservation one.)
+ * ⚠ The owner-tag alternative here is `[owner[:\s][^\]]*\]` — space or colon,
+ * matched independently of `carry-surface-provenance-lint.ts`'s own detector.
+ * Measured 2026-08-09 over the population that actually feeds this function —
+ * `harness_shared.work_items.payload`, where checkpoints live — 43 of 50
+ * tag-bearing rows use `[owner:` but 6 use a SPACE (`[owner 2026-08-09]`).
+ * Colon-only would drop ~12% of real owner tags past a cut, which is
+ * precisely the class EI-19952485326105760 is about: the heading matches on
+ * `⛔` and survives, while the line carrying the owner's actual WORDS does
+ * not, so the reader is told a directive exists and never told what it says.
+ * Widening only ever preserves MORE, so it cannot cause the inverse failure.
+ * (`OWNER_TAG_RE`'s own colon-only gap — same root cause, the lint-detection
+ * side of it rather than this preservation side — is fixed as of
+ * EI-19988211953593959: it, and every sibling detector in that module, now
+ * accepts colon/space/`=`/`-` separators via a shared `OWNER_TAG_SEP`
+ * fragment, so this module's independent widening and that module's
+ * detection no longer disagree on which shapes count as an owner tag.)
  * Note a source-tree grep suggests the opposite ratio (89 space / 81 colon) —
  * that corpus is comments and prompts, NOT checkpoints. Measure the population
  * the code actually reads.

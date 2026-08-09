@@ -1050,13 +1050,18 @@ async function replicationStallOrphanSweepTick(): Promise<void> {
     try {
       const { runReplicationStallOrphanSweepOnce } = await import('../sync/hyperbee/replication-stall-orphan-sweep');
       const r = await runReplicationStallOrphanSweepOnce();
-      if (r.resolvedIds.length > 0) {
-        console.log(
-          `[replication-stall-orphan-sweep] resolved ${r.resolvedIds.length} orphaned stall EI(s) ` +
-            `across ${r.orphanedTargets.length} no-longer-existing target(s) (checked ${r.checked}` +
-            `${r.errors > 0 ? `, ${r.errors} resolve error(s)` : ''})`,
-        );
-      }
+      // WI-37499: log UNCONDITIONALLY with the skip census. This used to log only
+      // when it resolved something, so "ran, saw 45 rows, none orphaned" and "saw
+      // nothing because its selector was blind" were byte-identical from outside —
+      // and the sweep ran daily for weeks in the second state. A checked=0 line is
+      // the signal that matters most here, so it must not be the silent case.
+      console.log(
+        `[replication-stall-orphan-sweep] checked ${r.checked} open stall EI(s): ` +
+          `resolved ${r.resolvedIds.length} across ${r.orphanedTargets.length} no-longer-existing target(s), ` +
+          `skipped ${r.skipped.targetExists} (target still exists) + ` +
+          `${r.skipped.unparseableTarget} (unparseable target)` +
+          `${r.errors > 0 ? `, ${r.errors} resolve error(s)` : ''}`,
+      );
     } catch (err) {
       console.warn(`[replication-stall-orphan-sweep] run skipped (non-fatal): ${(err as Error).message}`);
     }

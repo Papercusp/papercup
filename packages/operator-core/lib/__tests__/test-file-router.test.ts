@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
+  collectionAttributionMarker,
   discoverVitestRoute,
   evaluateMatch,
   groupRoutes,
@@ -594,5 +595,86 @@ describe('transformFailureMarker — the attribution (EI-19462803905923939)', ()
     });
     expect(marker).toContain('you NAMED');
     expect(marker).not.toContain('are FINE');
+  });
+});
+
+describe('collectionAttributionMarker — the RUNTIME-crash sibling of transformFailureMarker (EI-19467022057492490)', () => {
+  const cwd = join(REPO_ROOT, 'packages/operator-core');
+  const args = { cwd, groupRequested: 3, groupMatched: 0 };
+
+  it('returns null for an empty perFile list — nothing to attribute', () => {
+    expect(collectionAttributionMarker({ ...args, perFile: [] })).toBeNull();
+  });
+
+  it('returns null for a missing perFile — caller keeps today’s undifferentiated output', () => {
+    // @ts-expect-error — exercising the defensive `!perFile` branch deliberately.
+    expect(collectionAttributionMarker({ ...args })).toBeNull();
+  });
+
+  it('returns null when every file collects alone — the whole-group crash has no per-file cause to add', () => {
+    const marker = collectionAttributionMarker({
+      ...args,
+      perFile: [
+        { requested: 'a.test.ts', ok: true },
+        { requested: 'b.test.ts', ok: true },
+      ],
+    });
+    expect(marker).toBeNull();
+  });
+
+  it('an ALL-BROKEN batch names every file BROKEN and omits the "not the cause" hint entirely', () => {
+    const marker = collectionAttributionMarker({
+      ...args,
+      perFile: [
+        { requested: 'a.test.ts', ok: false },
+        { requested: 'b.test.ts', ok: false },
+      ],
+    });
+    expect(marker).toContain('TEST_FILE_COLLECTION_ATTRIBUTION');
+    expect(marker).toContain('requested=3 matched=0');
+    expect(marker).toContain('✗ BROKEN  a.test.ts');
+    expect(marker).toContain('✗ BROKEN  b.test.ts');
+    expect(marker).not.toContain('✓ ok');
+    // With zero healthy files there is nothing to wrongly re-blame, so the caller doesn't need
+    // the "treat only the broken ones as suspect" caveat — it would be noise here.
+    expect(marker).not.toContain('Treat only the BROKEN');
+  });
+
+  // THE control this function exists for (mirrors the transformFailureMarker "never described as
+  // fine" control above): a MIXED batch must name the broken file(s) as suspect and clear the
+  // healthy one(s) by name, rather than letting the batch's matched=0 tar all of them equally —
+  // the exact misattribution EI-19467022057492490 reproduced live.
+  it('a MIXED batch names the broken file(s) and clears the healthy one(s) by name', () => {
+    const marker = collectionAttributionMarker({
+      ...args,
+      perFile: [
+        { requested: 'packages/operator-core/lib/memory/corpus-recall-io.test.ts', ok: true },
+        { requested: 'packages/operator-core/lib/agent-tools/__tests__/search-tools.test.ts', ok: true },
+        { requested: 'packages/operator-core/lib/agent-tools/sessions/search.test.ts', ok: false },
+      ],
+    });
+    expect(marker).toContain('✗ BROKEN  packages/operator-core/lib/agent-tools/sessions/search.test.ts');
+    expect(marker).toContain('✓ ok      packages/operator-core/lib/memory/corpus-recall-io.test.ts');
+    expect(marker).toContain('✓ ok      packages/operator-core/lib/agent-tools/__tests__/search-tools.test.ts');
+    expect(marker).toContain('NOT the cause');
+    expect(marker).toContain('Treat only the BROKEN file(s) as suspect');
+    // The healthy files must not be told they're "still red" — that's the exact inversion this
+    // marker exists to prevent.
+    expect(marker).not.toContain('still red');
+  });
+
+  it('labels the group cwd relative to the repo root, falling back to "." at the root itself', () => {
+    const marker = collectionAttributionMarker({
+      ...args,
+      perFile: [{ requested: 'x.test.ts', ok: false }],
+    });
+    expect(marker).toContain('group cwd=packages/operator-core');
+
+    const rootMarker = collectionAttributionMarker({
+      ...args,
+      cwd: REPO_ROOT,
+      perFile: [{ requested: 'x.test.ts', ok: false }],
+    });
+    expect(rootMarker).toContain('group cwd=.');
   });
 });

@@ -109,6 +109,23 @@ export interface GreenStallVerdict {
   fireStale: boolean;
   /** no green verdict in noGreenMs (the deep backstop). */
   verdictStale: boolean;
+  /**
+   * P-016: this pass DECLINED TO JUDGE — the root routine engine is stale, so
+   * infra-liveness owns the root-cause alarm and this symptom-level one is
+   * deliberately muted (EI-2994).
+   *
+   * ⚠ `suppressed` is NOT `!stalled`, and collapsing the two is the defect this
+   * field exists to end. Both render `stalled: false`, but they mean opposite
+   * things: healthy means "I looked and the gate is fine", suppressed means "I
+   * did not look". Treating suppressed as healthy makes the watchdog broadcast
+   * `green-checkpoint RECOVERED — the gate is producing verdicts again` off a
+   * code path that explicitly refused to evaluate whether the gate is producing
+   * verdicts. It is a false all-clear, and because engine staleness flickers
+   * around its own threshold on a loaded box it emits one on every flicker —
+   * which is how STALLED/RECOVERED alternated several times inside one window
+   * on oddsmith. Read this field before taking the recovery branch.
+   */
+  suppressed: boolean;
   /** human reason for the alarm body, or null when not stalled. */
   reason: string | null;
 }

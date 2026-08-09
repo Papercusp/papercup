@@ -262,9 +262,22 @@ async function maybeNotify(
   const parts: string[] = [];
   if (ctx.degraded) parts.push(`scan DEGRADED — ${ctx.degradedReason}`);
   if (ctx.summary.unaccounted > 0) {
+    // WI-37509: these are two different faults with two different investigations, and
+    // reporting both as "no managedSpawn registered" sent every reader to audit spawn
+    // sites for an un-enrolled call — which is not where the survivors came from. A
+    // `pc-<taskId>.scope` name can ONLY have been minted by managedSpawn, so the scope
+    // unit is a free, local discriminator: it parses ⇒ the task WAS registered and its
+    // row was closed while the payload kept running.
+    const orphanedScopes = ctx.result.unaccounted.filter(
+      (g) => g.scopeUnit && taskIdFromScopeUnit(g.scopeUnit),
+    ).length;
+    const neverRegistered = ctx.summary.unaccounted - orphanedScopes;
+    const why: string[] = [];
+    if (neverRegistered > 0) why.push(`${neverRegistered} that no managedSpawn registered`);
+    if (orphanedScopes > 0) why.push(`${orphanedScopes} whose scope OUTLIVED its ledger row`);
     parts.push(
       `${ctx.summary.unaccounted} unaccounted cgroup(s) holding ${ctx.summary.unaccountedPids} process(es) — ` +
-        `something is running inside our slice that no managedSpawn registered`,
+        `${why.join('; ')}`,
     );
   }
   if (ctx.summary.overdue > 0) parts.push(`${ctx.summary.overdue} task(s) past deadline`);

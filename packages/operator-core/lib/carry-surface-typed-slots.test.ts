@@ -65,6 +65,49 @@ describe('lintOwnerQuestionSlots', () => {
   });
 });
 
+describe('EI-19988500685566622: negation and third-party-subject suppression', () => {
+  it('does NOT flag a DENIAL of an owner-gated item ("no need to ask the owner")', () => {
+    expect(
+      lintOwnerQuestionSlots(
+        'ONE item, blocked on nothing human or peer: no need to ask the owner here, this closes on its own.',
+      ).flagged,
+    ).toBe(false);
+    expect(lintOwnerQuestionSlots('not blocked on the owner at all, just waiting on CI.').flagged).toBe(false);
+    expect(lintOwnerQuestionSlots("there's no question for the owner in this one.").flagged).toBe(false);
+  });
+
+  it('does NOT flag a grader/monitor describing a THIRD PARTY\'s owner-wait', () => {
+    expect(
+      lintOwnerQuestionSlots(
+        "Subject su-6e9985dd-1234-4a11-9f01-abc123456789 was waiting on the owner's answer, not ended.",
+      ).flagged,
+    ).toBe(false);
+    expect(
+      lintOwnerQuestionSlots('peer claude-8f31ab2c-1111-4a11-9f01-abcdef012345 needs the owner\'s approval next.')
+        .flagged,
+    ).toBe(false);
+  });
+
+  it('calibration: the SAME trigger phrase, undenied and about the writer, still flags', () => {
+    expect(lintOwnerQuestionSlots('blocked on the owner: no idea when this unblocks.').flagged).toBe(true);
+    expect(lintOwnerQuestionSlots('need to ask the owner here, this closes on its own.').flagged).toBe(true);
+  });
+
+  it('a negation in an EARLIER, unrelated clause does not mask a real question later in the line', () => {
+    const r = lintOwnerQuestionSlots(
+      'nothing else to report this wake; separately, need to ask the owner about the cutover date.',
+    );
+    expect(r.flagged).toBe(true);
+  });
+
+  it('a third-party subject in an EARLIER, unrelated clause does not mask the writer\'s own question', () => {
+    const r = lintOwnerQuestionSlots(
+      'su-6e9985dd-1234-4a11-9f01-abc123456789 finished its item; separately, need to ask the owner about scope.',
+    );
+    expect(r.flagged).toBe(true);
+  });
+});
+
 describe('ownerQuestionSlotField', () => {
   it('undefined on clean; { flagged, note, matches } when flagged', () => {
     expect(ownerQuestionSlotField('routine note')).toBeUndefined();

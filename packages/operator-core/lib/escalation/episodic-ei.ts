@@ -95,6 +95,46 @@ export interface EpisodicEscalatorConfig<E, R, Sev extends IssueSeverity> {
    * every OTHER escalator instance stays byte-identical.
    */
   standingCooldownMs?: number;
+  /**
+   * WI-37499: the literal prefix EVERY title this escalator mints starts with
+   * (e.g. `'[replication-liveness] '`). When set, every population read below
+   * becomes `topic-tagged ∪ title-prefixed` instead of topic-tagged alone.
+   *
+   * WHY THIS EXISTS. `topic` selects on a DERIVED `coord_links` tag written
+   * alongside the row; the escalator's IDENTITY is the stable title. When a tag
+   * write is missing the two silently disagree, and because `file`'s dedup,
+   * `resolve`, `hasOpen`, the standing-cooldown gate, `collapseDuplicateOpenEis`
+   * and the orphan sweep ALL read by that one tag, they go blind TOGETHER — each
+   * reporting a clean pass over a population it cannot see.
+   *
+   * Measured 2026-08-09 on `[replication-liveness]`: 60 of 105 open rows carried
+   * no topic edge, and that set held 100% of the orphan sweep's real targets (6,
+   * to 34.8 days old) and 100% of the duplicate rows (12) — i.e. the blind spot
+   * was perfectly anti-correlated with the work. Omit to keep an escalator's
+   * behaviour byte-identical (every other instance is unchanged).
+   */
+  titlePrefix?: string;
+}
+
+/**
+ * WI-37499: one detector population read = topic-tagged ∪ title-prefixed, deduped
+ * by id (the legs overlap for every correctly-tagged row).
+ *
+ * The union is NOT redundant in either direction, which is why neither leg alone
+ * is correct: measured 2026-08-09, 60 open rows matched the title prefix with no
+ * topic edge, AND 4 tagged rows did NOT match the detector's title prefix — so a
+ * prefix-only read would lose rows a tag-only read keeps.
+ */
+async function unionPopulation<T extends { id: string }>(
+  read: (filter: { topic?: string; titlePrefix?: string }) => Promise<T[]>,
+  topic: string,
+  titlePrefix: string | undefined,
+): Promise<T[]> {
+  const tagged = await read({ topic });
+  if (!titlePrefix) return tagged;
+  const byPrefix = await read({ titlePrefix });
+  const seen = new Set(tagged.map((r) => r.id));
+  return [...tagged, ...byPrefix.filter((r) => !seen.has(r.id))];
 }
 
 export interface EpisodicEscalator<E, R, Sev extends IssueSeverity = IssueSeverity> {
@@ -191,6 +231,10 @@ export async function collapseDuplicateOpenEis(
   topic: string,
   dropNote: string,
   deps?: DuplicateCollapseDeps,
+  /** WI-37499: see `EpisodicEscalatorConfig.titlePrefix` — when the detector
+   *  supplies its stable-title prefix, the pass sees `topic ∪ prefix` instead of
+   *  the topic tag alone. Omitted ⇒ unchanged (topic-only) behaviour. */
+  opts?: { titlePrefix?: string },
 ): Promise<DuplicateCollapseResult> {
   const empty: DuplicateCollapseResult = {
     checked: 0,
@@ -204,7 +248,7 @@ export async function collapseDuplicateOpenEis(
 
   let d: DuplicateCollapseDeps;
   try {
-    d = deps ?? (await defaultCollapseDeps());
+    d = deps ?? (await defaultCollapseDeps(opts?.titlePrefix));
   } catch {
     return empty;
   }
@@ -253,13 +297,20 @@ export async function collapseDuplicateOpenEis(
 }
 
 /** Lazy-imported production deps for `collapseDuplicateOpenEis`. */
-async function defaultCollapseDeps(): Promise<DuplicateCollapseDeps> {
+async function defaultCollapseDeps(titlePrefix?: string): Promise<DuplicateCollapseDeps> {
   const m = await import('../issues-engineer');
   return {
     listOpenByTopic: async (topic) => {
       // Bounded like the orphan sweep: a single pass covers the current
       // backlog; any overflow simply converges over the next few runs.
-      const rows = await m.listIssues({ state: 'open', topic, limit: 1000 });
+      // WI-37499: topic ∪ title-prefix, observation lane excluded on both legs —
+      // this pass DROPS rows, and an agent-filed observation can carry a
+      // detector's exact title (see the escalator's listOpenByTopic note).
+      const rows = await unionPopulation(
+        (f) => m.listIssues({ state: 'open', limit: 1000, excludeObservationLane: true, ...f }),
+        topic,
+        titlePrefix,
+      );
       return rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.createdAt }));
     },
     drop: async (id, note) => {
@@ -285,7 +336,22 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
   async function defaultDeps(): Promise<EpisodicEiDeps<Sev>> {
     const m = await import('../issues-engineer');
     return {
-      listOpenByTopic: (topic) => m.listIssues({ state: 'open', topic, limit: 100 }),
+      // WI-37499: topic-tagged ∪ title-prefixed. `excludeObservationLane` is
+      // applied to BOTH legs on purpose. An agent-filed observation can share a
+      // detector's stable title verbatim (measured: all 6 observation-lane
+      // `[replication-liveness]` rows sat inside duplicate groups), and this list
+      // feeds `resolve()` and the duplicate-collapse pass — both of which RETIRE
+      // rows. Widening the read without this would let automated machinery close
+      // an agent's observation as if it were the detector's own duplicate, which
+      // D-005/D-035 forbid. Today it is a no-op on the topic leg (no tagged
+      // observation row exists); it is stated so the property is structural
+      // rather than accidental.
+      listOpenByTopic: (topic) =>
+        unionPopulation(
+          (f) => m.listIssues({ state: 'open', limit: 100, excludeObservationLane: true, ...f }),
+          topic,
+          config.titlePrefix,
+        ),
       create: (input) => m.createIssue(input),
       resolve: async (id, note) => {
         await m.setIssueState(id, 'resolved', recoveryOwner, note);
@@ -295,7 +361,14 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
       // dedup misses. `listIssues` orders created_at DESC; 100 is ample for
       // one narrow topic's episodic churn.
       listRecentByTopic: async (topic) => {
-        const rows = await m.listIssues({ topic, limit: 100 });
+        // WI-37499: same union as the open read. Widening here makes the cooldown
+        // STRICTER (it can now see a recently-filed untagged row it used to miss),
+        // which is the direction the gate exists to move in.
+        const rows = await unionPopulation(
+          (f) => m.listIssues({ limit: 100, excludeObservationLane: true, ...f }),
+          topic,
+          config.titlePrefix,
+        );
         return rows.map((r) => ({ title: r.title, createdAt: r.createdAt }));
       },
     };

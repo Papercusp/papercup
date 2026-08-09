@@ -139,17 +139,61 @@ describe('absence of evidence is not focus', () => {
 });
 
 describe('assessCorpusQueryClarity (text wrapper)', () => {
-  it('tokenizes with corpusTerms — stopwords and short tokens do not count as terms', () => {
-    const a = assessCorpusQueryClarity('why did the pgbouncer holepunch fail', opts({ pgbouncer: 6, holepunch: 4, fail: 300 }));
+  const wide = 'pgbouncer holepunch transport failure deployment';
+  const wideTable = {
+    pgbouncer: 6,
+    holepunch: 4,
+    transport: 200,
+    failure: 300,
+    deployment: 50,
+  };
+
+  it('scores the ISSUED query by default, NOT the candidate pool', () => {
+    // A MEASURED correction, locked so it cannot silently revert to the
+    // instrument the P-019 probe rejected. SCS = avgIdf − log2(n): pool scoring
+    // subtracts a bit of "clarity" for every doubling of the candidate count,
+    // so it ranks longer envelopes as less clear regardless of their content.
+    // Measured over 2,000 real prompts, pool-scored median SCS fell
+    // monotonically as the clamp widened (2.73 → 0.26 bits) while issued-scored
+    // rose (5.41 → 7.83), and the traffic-weighted escalation rate differed
+    // 19.7% vs 87.7% on the SAME queries and the SAME threshold.
+    const issued = assessCorpusQueryClarity(wide, opts(wideTable));
+    const pool = assessCorpusQueryClarity(wide, { ...opts(wideTable), scope: 'pool' });
+
+    expect(issued.terms).toBeLessThanOrEqual(2);
+    expect(pool.terms).toBeGreaterThan(issued.terms);
+    expect(issued.scs).not.toBeNull();
+    expect(pool.scs).not.toBeNull();
+    // The contamination, asserted in the direction that matters: the same text
+    // reads as LESS clear purely because more candidates were in scope.
+    expect(pool.scs!).toBeLessThan(issued.scs!);
+  });
+
+  it('derives the issued query WITHOUT the DF signal, exactly as the leg does', () => {
+    // Passing df through would re-enable the BANDED selection D-066 measured as
+    // worse and reverted, so the assessment would describe a query production
+    // never issues. Supplying df must not change WHICH terms are scored.
+    const withDf = assessCorpusQueryClarity(wide, opts(wideTable));
+    const noDf = assessCorpusQueryClarity(wide, { ndocs: NDOCS, df: () => 5 });
+    expect(withDf.terms).toBe(noDf.terms);
+  });
+
+  it('scores the whole pool under scope:"pool" — stopwords and short tokens still excluded', () => {
+    const a = assessCorpusQueryClarity('why did the pgbouncer holepunch fail', {
+      ...opts({ pgbouncer: 6, holepunch: 4, fail: 300 }),
+      scope: 'pool',
+    });
     // 'why'/'did'/'the' are stopwords or under the 4-char floor.
     expect(a.terms).toBe(3);
     expect(a.attestedTerms).toBe(3);
   });
 
   it('reports unretrievable for text with no candidate terms at all', () => {
-    const a = assessCorpusQueryClarity('a of the', opts({}));
-    expect(a.terms).toBe(0);
-    expect(a.verdict).toBe('unretrievable');
+    for (const scope of ['issued', 'pool'] as const) {
+      const a = assessCorpusQueryClarity('a of the', { ...opts({}), scope });
+      expect(a.terms).toBe(0);
+      expect(a.verdict).toBe('unretrievable');
+    }
   });
 });
 

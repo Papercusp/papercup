@@ -697,9 +697,16 @@ export function main(argv = process.argv.slice(2)) {
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
   // verdict is decided only after every group has had its chance to run.
   const groupResults = [];
-  // EI-19462803905923939: collected per-group so the attribution can be RESTATED after the
-  // aggregate refusal below — see the comment there for why the group-level print is not enough.
-  const transformMarkers = [];
+  // EI-19462803905923939 / EI-19467022057492490: collected per-group so the attribution can be
+  // RESTATED after the aggregate refusal below — see the comment there for why the group-level
+  // print is not enough. Holds BOTH attribution shapes (esbuild transform failures and runtime
+  // collection crashes) — they are mutually exclusive per group, so a flat list is fine.
+  const attributionMarkers = [];
+  // EI-19467022057492490: cap the per-file re-list fallback so a pathologically large batch (a
+  // huge GATE_HELD_BY set) cannot turn one route error into dozens of extra `vitest list` spawns.
+  // Above this, the caller gets today's plain (undifferentiated) route error and re-runs files
+  // individually by hand — exactly the documented fallback, just not auto-attributed.
+  const MULTI_FILE_ATTRIBUTION_CAP = 25;
   for (const [groupIndex, group] of groups.entries()) {
     const cwdLabel = relative(REPO_ROOT, group.cwd) || '.';
     // EI-18822211427354845: each group writes its OWN report file when the run spans
@@ -758,7 +765,32 @@ export function main(argv = process.argv.slice(2)) {
       });
       if (transformMarker) {
         console.error(transformMarker);
-        transformMarkers.push(transformMarker);
+        attributionMarkers.push(transformMarker);
+      } else if (group.routes.length > 1 && group.routes.length <= MULTI_FILE_ATTRIBUTION_CAP) {
+        // EI-19467022057492490: no esbuild culprit found, but a multi-file group's whole `vitest
+        // list` still failed — re-list each requested file ALONE so a lone runtime collection
+        // crash (e.g. a vi.mock factory throw) doesn't misattribute every OTHER healthy file in
+        // the batch as broken. Deliberately only for multi-file groups: a single-file group's
+        // error already IS about the one file the caller named — no ambiguity to resolve.
+        const perFile = group.routes.map((route) => {
+          const singleListed = run('npx', ['vitest', 'list', ...configArgs, route.requested], {
+            cwd: group.cwd,
+            env: process.env,
+          });
+          const singleOutput = `${singleListed.stdout ?? ''}\n${singleListed.stderr ?? ''}`;
+          const singleMatched = listedFiles(singleOutput, group.cwd);
+          return { requested: route.requested, ok: singleListed.status === 0 && singleMatched.includes(route.absolute) };
+        });
+        const attributionMarker = collectionAttributionMarker({
+          perFile,
+          cwd: group.cwd,
+          groupRequested: verdict.requested,
+          groupMatched: verdict.matched,
+        });
+        if (attributionMarker) {
+          console.error(attributionMarker);
+          attributionMarkers.push(attributionMarker);
+        }
       }
       groupResults.push({
         requested: verdict.requested,
@@ -865,11 +897,12 @@ export function main(argv = process.argv.slice(2)) {
     console.error(
       `TEST_FILE_ROUTE_ERROR requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
     );
-    // EI-19462803905923939: this aggregate line is the LAST thing a `| tail -N` reads — the very
-    // idiom CLAUDE.md prescribes throughout — so the attribution has to be restated HERE. Printing
-    // it only at the group level (where it also belongs, next to the evidence) still leaves the
-    // misleading routing claim as the terminal line, which is the entire defect.
-    for (const marker of transformMarkers) console.error(marker);
+    // EI-19462803905923939 / EI-19467022057492490: this aggregate line is the LAST thing a
+    // `| tail -N` reads — the very idiom CLAUDE.md prescribes throughout — so the attribution has
+    // to be restated HERE. Printing it only at the group level (where it also belongs, next to the
+    // evidence) still leaves the misleading routing claim as the terminal line, which is the
+    // entire defect.
+    for (const marker of attributionMarkers) console.error(marker);
     return 1;
   }
 
