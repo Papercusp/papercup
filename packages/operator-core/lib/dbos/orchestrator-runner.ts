@@ -27,6 +27,7 @@ import {
   postArchiveEvent,
   captureDebuggerOutput,
   materializeFeatureDebugNote,
+  healSandboxZeroByteManifest,
 } from '@papercusp/orchestrator';
 import { emitPipelineEvent } from '../events/pipeline-events';
 import { firePluginLifecycle } from '../plugin-host-runtime';

@@ -36,12 +36,35 @@ export function goalId(title: string): string {
 
 export const GOAL_STATUSES = ['active', 'achieved', 'killed', 'paused'] as const;
 
+/**
+ * A TRIPWIRE turns the kill criterion from prose into a readout.
+ *
+ * A criterion written as a sentence ("kill this if we pass $500 or 30 days
+ * without a shipped build") is a promise nobody re-checks; the same thing as
+ * `{ metric, threshold, current }` renders as a bar the owner can act on at a
+ * glance (goal-mode-2026-08-07 P-021). Deliberately OPTIONAL and unconstrained
+ * as to metric name: a goal whose criterion is genuinely unquantifiable must
+ * still be creatable, and the detail view renders the prose with no bars when
+ * this is null. `current` is a snapshot the agent refreshes via goals:update —
+ * it is NOT computed here, because most metrics (revenue, users, shipped
+ * builds) live outside this database entirely.
+ */
+export const TripwireSchema = z.object({
+  metric: z.string().min(1).max(60).describe('machine key, e.g. "days_elapsed" / "spend_usd"'),
+  label: z.string().min(1).max(120).describe('how it reads to the owner, e.g. "Day 12 of 30"'),
+  threshold: z.number().describe('the value at which the criterion trips'),
+  current: z.number().optional().describe('latest observed value; omit until first measured'),
+  unit: z.string().max(20).optional().describe('"usd" / "days" / "users" — display only'),
+});
+export type Tripwire = z.infer<typeof TripwireSchema>;
+
 export default defineTool({
   name: 'goals:create',
   description:
     'Open a durable GOAL record (harness_shared.goals) — the weeks-long outcome a GOAL-mode agent owns, above the pot/plan/work-item stack. ' +
-    '{ title, body?, killCriterion?, budgetCents?, parentId?, status? }. Returns the allocated id. ' +
-    'A goal is NOT a pot: one goal spawns many projects, so the kill criterion and spend ceiling live HERE, not on any one pot.',
+    '{ title, body?, killCriterion?, tripwires?, budgetCents?, parentId?, status? }. Returns the allocated id. ' +
+    'A goal is NOT a pot: one goal spawns many projects, so the kill criterion and spend ceiling live HERE, not on any one pot. ' +
+    'Side effect: stamps your GOAL mode with this id, so everything you create next carries its provenance without you passing it.',
   capability: 'goals:write',
   guidance: {
     when:
@@ -67,6 +90,13 @@ export default defineTool({
       .optional()
       .describe('declared spend ceiling in cents — the number actuals are reported against'),
     parentId: z.string().min(1).optional().describe('parent goal id, for a sub-goal'),
+    tripwires: z
+      .array(TripwireSchema)
+      .max(12)
+      .optional()
+      .describe(
+        'structured form of the kill criterion — renders as live bars ("day 12 of 30", "$310 of $500") instead of prose nobody re-checks. Optional: a free-text criterion works with no tripwires.',
+      ),
     status: z.enum(GOAL_STATUSES).default('active'),
     metadata: z.record(z.string(), z.unknown()).optional(),
   }),
@@ -100,18 +130,62 @@ export default defineTool({
     }
 
     const id = goalId(args.title);
-    const metadata = {
-      ...(args.metadata ?? {}),
-      ...(args.killCriterion ? { killCriterion: args.killCriterion } : {}),
-    };
+    // The kill criterion is a first-class COLUMN (migration 765), not a
+    // metadata key. It used to be folded into `metadata` because the column did
+    // not exist — but the whole GUI reads it (the detail view's "THIS GOAL ENDS
+    // WHEN" headline, the rail's glance), and a jsonb key cannot be indexed,
+    // constrained, or joined the way the read path needs.
+    const metadata = { ...(args.metadata ?? {}) };
     await ctx.tx`
       INSERT INTO harness_shared.goals
-        (id, install_slug, workspace_id, title, body, parent_id, budget_cents, status, metadata)
+        (id, install_slug, workspace_id, title, body, parent_id, budget_cents, status,
+         kill_criterion, tripwires, metadata)
       VALUES
         (${id}, ${installSlug}, ${workspaceId}, ${args.title}, ${args.body ?? null},
          ${args.parentId ?? null}, ${args.budgetCents ?? null}, ${args.status},
+         ${args.killCriterion ?? null},
+         ${args.tripwires?.length ? JSON.stringify(args.tripwires) : null}::jsonb,
          ${Object.keys(metadata).length ? JSON.stringify(metadata) : null}::jsonb)
     `;
+
+    // ── Stamp the caller's GOAL mode with the goal it is now running ─────
+    // This side effect IS the provenance mechanism (P-016). Everything the
+    // agent creates from here on — work-items, and later pots/plans — reads
+    // `agent_modes.subject` from SESSION CONTEXT and stamps `goal_id` with it,
+    // so "what belongs to this goal?" is answerable without asking any agent to
+    // remember to pass an id. Agent self-report was the alternative and it does
+    // not survive a compaction.
+    //
+    // `ctx.uiClientId` is the same value `resolveAgentIdentity` returns as
+    // `ownerId` for every population that can run GOAL mode (su sessions and
+    // signed fleet spawns). This package cannot import that resolver —
+    // agent-mcp does not depend on operator-core — so the narrow UPDATE is
+    // written here rather than routed through `setMode`.
+    //
+    // It DEGRADES, never fails: a goal creation must not be lost because the
+    // caller happens not to be in GOAL mode (the common case for a human-driven
+    // or scripted create), or because the transport carried no session id.
+    let modeSubjectStamped = false;
+    const callerOwnerId = ctx.uiClientId ?? null;
+    if (callerOwnerId) {
+      try {
+        const stamped = await ctx.tx<Array<{ owner_id: string }>>`
+          UPDATE harness_shared.agent_modes
+             SET subject = ${id}
+           WHERE workspace_id = ${workspaceId}
+             AND owner_id = ${callerOwnerId}
+             AND mode = 'goal'
+          RETURNING owner_id
+        `;
+        modeSubjectStamped = stamped.length > 0;
+      } catch (err) {
+        ctx.log?.('warn', 'goals:create could not stamp agent_modes.subject', {
+          goalId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     return {
       data: {
         id,
@@ -120,8 +194,14 @@ export default defineTool({
         parent_id: args.parentId ?? null,
         budget_cents: args.budgetCents ?? null,
         kill_criterion: args.killCriterion ?? null,
+        tripwires: args.tripwires ?? null,
         workspace_id: workspaceId,
         install_slug: installSlug,
+        // Told plainly so the agent knows whether later creations will carry
+        // provenance. false ⇒ you are not in GOAL mode on this session; enter
+        // it (mode:set { mode:'goal' }) before creating the projects, or the
+        // work will not be attributable to this goal.
+        mode_subject_stamped: modeSubjectStamped,
       },
     };
   },

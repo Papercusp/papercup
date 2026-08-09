@@ -444,3 +444,58 @@ describe('readBgHostJournalUncached — bounded against a hung journalctl (EI-19
     });
   });
 });
+
+// EI-19934273886988915: readPotSoakReport's DB fan-out is entirely read-only, but
+// bypassed withWorkspace's connect-retry protection by calling getOrgPg().sql
+// directly — so a PgBouncer idle-reap CONNECTION_CLOSED on the pooled connection's
+// first query (EI-9279) failed the whole tool with no retry. Regresses the fix:
+// a fake `sql` that fails CONNECTION_CLOSED exactly once must not fail the call.
+vi.mock('./survey', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./survey')>();
+  return {
+    ...actual,
+    resolvePotMembership: vi.fn(async () => ({ scope: 'workspace' as const, surveySlugs: ['test-pot'] })),
+    countPlaceableFrontier: vi.fn(async () => 0),
+    countQuarantinedFrontier: vi.fn(async () => 0),
+  };
+});
+
+describe('readPotSoakReport — retries a transient PgBouncer CONNECTION_CLOSED (EI-19934273886988915)', () => {
+  it('does not fail the whole report when the pooled connection drops exactly once', async () => {
+    const { readPotSoakReport } = await import('./soak-report');
+    let calls = 0;
+    const fakeSql = ((..._args: unknown[]) => {
+      calls += 1;
+      if (calls === 1) {
+        const e = Object.assign(new Error('write CONNECTION_CLOSED 127.0.0.1:6432'), {
+          code: 'CONNECTION_CLOSED',
+        });
+        return Promise.reject(e);
+      }
+      return Promise.resolve([]);
+    }) as unknown as import('postgres').Sql;
+    (fakeSql as unknown as { array: (v: unknown) => unknown }).array = (v: unknown) => v;
+
+    const report = await readPotSoakReport('test-pot', { windowHours: 24, sql: fakeSql });
+
+    expect(report.potSlug).toBe('test-pot');
+    // Proves the retry actually re-ran the batch: more than the single batch's
+    // worth of sql-tag calls happened (first attempt fired + failed, second succeeded).
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  it('still throws when every attempt hits CONNECTION_CLOSED (a genuinely dead pool, not a blip)', async () => {
+    const { readPotSoakReport } = await import('./soak-report');
+    const fakeSql = ((..._args: unknown[]) => {
+      const e = Object.assign(new Error('write CONNECTION_CLOSED 127.0.0.1:6432'), {
+        code: 'CONNECTION_CLOSED',
+      });
+      return Promise.reject(e);
+    }) as unknown as import('postgres').Sql;
+    (fakeSql as unknown as { array: (v: unknown) => unknown }).array = (v: unknown) => v;
+
+    await expect(readPotSoakReport('test-pot', { windowHours: 24, sql: fakeSql })).rejects.toThrow(
+      /CONNECTION_CLOSED/,
+    );
+  });
+});

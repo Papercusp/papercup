@@ -2,19 +2,46 @@
 
 **Question:** can we confidently ship the shared-pot (P2P federated) feature to public production?
 
-**VERDICT — updated 2026-08-01T19:15Z (originally 2026-07-27T06:05Z): NO-GO for unconditional
-public ship. CONDITIONAL-GO on three named rows** (was four). The substrate is release-grade and
-now has an EARNED green gate that no longer skips legs; what is missing is end-to-end live proof
-of the work-distribution lifecycle, live proof of the hive-git plane, and one owner-supplied
-input. Nothing below is waiting on a decision — every open row has a named owner and a concrete
-flip condition.
+**VERDICT — updated 2026-08-09T05:05Z (prior: 2026-08-01T19:15Z; originally 2026-07-27T06:05Z):
+NO-GO for unconditional public ship.** The substrate is release-grade, but the conditional-go set
+is **no longer the three rows the 08-01 verdict named** — a security regression was confirmed on
+2026-08-09 and the standing gate that would have caught it is switched off. Nothing below is
+waiting on a decision; every open row has a named owner and a concrete flip condition.
 
-> **The gate-coverage condition is CLOSED (2026-08-01).** All three formerly-skipped legs now have
-> real verdicts: `from-repo` and `from-repo-witness` ran and PASSED on gate run `20260801-143855`
+> ### ⚠ Two rows added 2026-08-09 — read these before quoting any 🟢 in this document
+>
+> **C-001 — consent withdrawal does not cut on the from-repo path (WI-37195). RELEASE BLOCKER.**
+> `from-repo-witness` fails with `epoch advanced 0→0`: the re-key that enforces a revocation never
+> fires, so a removed contributor is not actually cut off. **Confirmed REAL**, reproduced on a
+> deliberately quiet box (host load ~20/128, gate build core-pinned so the frames were untouched) —
+> it is *not* the frame-starvation artifact the `SKIPPED-STARVATION` label implied. Usefully
+> narrowed: on the SAME run `revocation_kcut` passed completely with the epoch advancing `0→1` and
+> `WI-560 K-CUT VERIFIED`, so the re-key machinery is **sound** and this is **target resolution on
+> one path**, not a universal revocation defect (corroborates the `no_target` lead at
+> `hive-revoke-contributor.ts:99-111`).
+>
+> **The standing live-federation gate is DARK (WI-37144). RELEASE BLOCKER.** Its timer was disabled
+> 2026-08-07T00:35Z, 57 seconds after a 5th consecutive RED, with no recorded decision. Those five
+> reds have since been shown to be **real**. A dark gate is precisely how C-001 survived unnoticed;
+> re-arming will be noisy until `replication_soak` (WI-5481, now 5/5 runs) and `restart_durability`
+> (new) are fixed, and that trade is the substance of WI-37144.
+>
+> ⚠ **Therefore the 08-01 "CONDITIONAL-GO on three named rows" headline is SUPERSEDED, not merely
+> aged.** Any summary — including prose elsewhere in this file, and any agent checkpoint quoting it
+> — that still reports three conditional rows predates the C-001 confirmation and must not be
+> repeated as current. Re-signed by su-690098a1 (WI-37110), correcting the headline only; the C-001
+> row itself belongs to su-9228f under D-022.
+
+> **The gate-coverage condition CLOSED 2026-08-01 — and that remains true, but it is no longer
+> sufficient.** All three formerly-skipped legs got real verdicts: `from-repo` and
+> `from-repo-witness` ran and PASSED on gate run `20260801-143855`
 > (`GATE: GREEN — content-matrix=PASS from-repo=PASS from-repo-witness=PASS local-matrix=SKIPPED
 > build=OK`, 2026-08-01T15:01:14Z), and `membership_churn` **executed for the first time in its
 > history and passed** on a 3-frame rig. Details + scope caveats in §5. Closed by su-e02f5c3d
 > under the standing owner instruction to drive the remaining p2p lanes to release-ready.
+> ⚠ **Coverage existing is not the gate RUNNING**: `from-repo-witness` has since gone RED (C-001,
+> above) and the timer that produces these verdicts is disabled. A closed coverage condition and a
+> live gate are two different claims — this row asserts only the first.
 
 Signed: su-e3b21216 (leader, fleet `p2p-release`), plan
 `p2p-public-release-remaining-lanes-2026-07-16` P-405 / WI-5139.
@@ -131,6 +158,27 @@ logs are from the green run `m1785117063`.
 
 ## 3. Release blockers, in order
 
+> **ADDED 2026-08-09 — these two outrank everything numbered below.** They are listed ahead of the
+> original list rather than renumbered into it, so the pre-existing numbering stays quotable.
+
+**A. C-001 — consent withdrawal does not cut on the from-repo path (`WI-37195`).** The single
+   hardest blocker on this document. `from-repo-witness` reds with `epoch advanced 0→0`; a removed
+   contributor is not actually cut off. **Confirmed real on a quiet box**, so the earlier
+   `SKIPPED-STARVATION` reading is dead. Narrowed to **target resolution on one path** —
+   `revocation_kcut` passed the same run with the epoch advancing `0→1`, proving the re-key
+   machinery itself is sound. Owner: su-9228f under D-022. Flip condition: `from-repo-witness`
+   green on a gate run with the epoch advancing, plus a recurrence guard on the target-resolution
+   path. ⚠ This row directly contradicts §5's "no longer a skip — covered and green (2026-08-01)"
+   entry for the same leg; §5 records a real green that has since REGRESSED — read both.
+
+**B. The standing live-federation gate is DARK (`WI-37144`).** Timer disabled 2026-08-07T00:35Z,
+   57s after a 5th consecutive RED, with no recorded decision; the reds were all real. This is the
+   detector failure that let C-001 run unnoticed, so it is a blocker in its own right and not
+   merely operational hygiene. Flip condition: timer re-armed and producing verdicts — gated in
+   practice on `replication_soak` (`WI-5481`, 5/5 runs, load hypothesis falsified by frame PSI
+   `avg10=0.00` against host loadavg 42-51) and `restart_durability` (new, untriaged) so that a
+   re-armed gate is readable rather than permanently noisy.
+
 1. **~~LIVE-2 acceptance drill (row 22, P-205)~~ → RE-SCOPED 2026-08-01 to a named bug:
    `WI-6680` (the packaged host never ticks the executor).** The drill HAS now been executed
    (row 22): the revocation half of the lifecycle is proven, including **federated** reap
@@ -190,8 +238,11 @@ logs are from the green run `m1785117063`.
    and push-nudge stays deferred (row 23).
 2. **hive-git live legs (row 34).** Owned by `p2p-git-live-activation-2026-07-09`; do not
    duplicate its diagnosis.
-3. **Gate coverage gaps (§5).** ~~Two of three~~ **RESOLVED 2026-08-01 for the from-repo pair:**
-   both legs were enabled by D-016 and are now **covered and GREEN** on a real gate window
+3. **Gate coverage gaps (§5).** ~~Two of three~~ **RESOLVED 2026-08-01 for the from-repo pair —
+   ⚠ but COVERAGE ONLY; `from-repo-witness` has since REGRESSED to RED (blocker A above, C-001,
+   2026-08-09) and the gate producing these verdicts is now DARK (blocker B).** Read this row as
+   "the legs are wired and were once green", never as "these legs are green now":
+   both legs were enabled by D-016 and were **covered and GREEN** on a real gate window
    (run `20260801-143855`, `from-repo=PASS from-repo-witness=PASS`). `membership_churn`:
    **the substantive question is now ANSWERED — it PASSES on a real 3-frame rig.** The manual
    run landed 2026-08-01 15:14 and is banked at
@@ -239,7 +290,7 @@ GO/NO-GO prep. Everything else proceeds to ready in the meantime.
 | Leg | Why it did not run | Flip condition |
 |---|---|---|
 | `from-repo` | Gate ran with `SKIP_FROMREPO=1`, a standing skip-by-default | 🟢 **NO LONGER A SKIP — COVERED AND GREEN (2026-08-01)**. D-016 flipped the default 1→0; gate run `20260801-143855` then actually EXERCISED it: `GATE: GREEN — content-matrix=PASS from-repo=PASS from-repo-witness=PASS local-matrix=SKIPPED build=OK` (2026-08-01T15:01:14Z, service journal). `from-repo.out` closes `OVERALL: PASS — create-from-repo → discover → join → BIDIRECTIONAL + continuous hive federation proven end-to-end (sidecar mode)` |
-| `from-repo-witness` | Same | 🟢 **NO LONGER A SKIP — COVERED AND GREEN (2026-08-01)**, same run. `WITNESS OVERALL: PASS` proves on the packaged binary: owner-enforcement (`AK ban (B's op DROPPED on A, EN-4): PASS` + unban teeth PASS), the C-001 re-key cut at device granularity (K1 held the pre-revoke epoch key → K3 `B_DEV new-keys=0, remaining-on-B=1, A-new=1`), and the content-level cut (K4b `B-read=no, A-has=1`). First live green since its blocker WI-5783 was fixed (root cause: two concurrent boot/merge passes on the owner's instance, pot/home slug vs the owner's member sub-harness slug). ⚠ Two `from-repo-witness` REDs fired 2026-07-31 (23:00Z, 00:02Z); their logs are gone from `/tmp` and the run banked no frame `serve.log`, so they remain **unattributed** — "transient" is the likely reading, not a proven one. Treat any recurrence as a real regression: it is no longer an expected red |
+| `from-repo-witness` | Same | 🔴 **REGRESSED 2026-08-09 — C-001, `WI-37195` (release blocker A, §3).** The green below is REAL but HISTORICAL; do not quote this row as current status. The recurrence this row itself warned about has happened, and it is confirmed real rather than transient: reproduced on a quiet box with `epoch advanced 0→0`, while `revocation_kcut` passed the same run with the epoch advancing `0→1`. ⟨historical record follows⟩ 🟢 **NO LONGER A SKIP — COVERED AND GREEN (2026-08-01)**, same run. `WITNESS OVERALL: PASS` proves on the packaged binary: owner-enforcement (`AK ban (B's op DROPPED on A, EN-4): PASS` + unban teeth PASS), the C-001 re-key cut at device granularity (K1 held the pre-revoke epoch key → K3 `B_DEV new-keys=0, remaining-on-B=1, A-new=1`), and the content-level cut (K4b `B-read=no, A-has=1`). First live green since its blocker WI-5783 was fixed (root cause: two concurrent boot/merge passes on the owner's instance, pot/home slug vs the owner's member sub-harness slug). ⚠ Two `from-repo-witness` REDs fired 2026-07-31 (23:00Z, 00:02Z); their logs are gone from `/tmp` and the run banked no frame `serve.log`, so they remain **unattributed** — "transient" is the likely reading, not a proven one. Treat any recurrence as a real regression: it is no longer an expected red. **✅ That instruction was correct and has now been exercised — the 2026-08-09 recurrence WAS a real regression (C-001 / `WI-37195`), confirmed on a quiet box. The two unattributed 07-31 REDs should be re-read in that light: "transient" was the convenient reading, not the proven one, and the same leg has now failed for a real cause.** |
 | `membership_churn` (order 35) | Needs a third frame; the gate ran `FRAMES=2`, so it had **never executed** in the gate's history (D-007). Until 2026-07-25 this exclusion was silent; it is now a declared SKIP with a stated reason and is covered by the roll-call invariant | 🟢 **FIRST-EVER EXECUTION — AND IT PASSES (2026-08-01).** The P-425 flip (`--frames="${MATRIX_FRAMES:-3}"`) had landed but the gate's local-matrix leg is TTL-deferred, so the leg still had no verdict of its own. Produced one directly with a 3-frame run on the freshly-repacked gate artifact: `✓ PASS membership_churn — membership_churn OK (roster a=2 b=2 c=2; backfill=hello-world\|remote; C→A='hello-world' C→B='hello-world')` — i.e. 3-node roster convergence, a **non-vacuous** backfill leg, and full mesh from the late-joining frame c. Run: `local-matrix.sh --frames=3 --only=content_bidir,membership_churn`, exclusive cores a=120-127 b=112-119 c=104-111, banked triage stamp `151402`. `content_bidir` was included deliberately — without it `membership_churn` finds no `F-A2B` row and silently downgrades its backfill leg to "verified vacuous". ⚠ **SCOPE: this proves the leg, NOT full-matrix coverage** — the run's own verdict says `all 2 EXECUTED scenarios green, but 16 of 18 registered were SKIPPED: this is NOT full-matrix coverage`, and it did **not** write the gate's `last-matrix-verdict`. The standing 18-scenario verdict still lands on the gate's own next window |
 
 ---

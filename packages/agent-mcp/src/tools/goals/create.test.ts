@@ -17,6 +17,10 @@ import tool, { goalId, GOAL_STATUSES } from './create';
 type Call = { sql: string; params: unknown[] };
 let calls: Call[] = [];
 let gucWorkspace: string | null = null;
+/** Whether the caller has a GOAL-mode row for the subject UPDATE to hit. */
+let callerInGoalMode = false;
+/** Forces the subject stamp to throw, proving the goal still gets created. */
+let modeUpdateThrows = false;
 
 /** A postgres-js-shaped tagged-template `tx` that records what it was asked. */
 function makeTx() {
@@ -24,6 +28,10 @@ function makeTx() {
     const sql = strings.join('?');
     calls.push({ sql, params });
     if (/current_setting/.test(sql)) return Promise.resolve([{ ws: gucWorkspace }]);
+    if (/UPDATE harness_shared\.agent_modes/.test(sql)) {
+      if (modeUpdateThrows) return Promise.reject(new Error('agent_modes is on fire'));
+      return Promise.resolve(callerInGoalMode ? [{ owner_id: 'su-test' }] : []);
+    }
     return Promise.resolve([]);
   };
 }
@@ -32,6 +40,8 @@ const CTX = (over: Record<string, unknown> = {}) => ({
   tx: makeTx() as never,
   workspaceId: 'papercusp-workspace',
   harnessSlug: 'papercusp',
+  uiClientId: 'su-test',
+  log: () => {},
   ...over,
 });
 
@@ -51,6 +61,8 @@ const call = async (args: unknown, ctx: unknown): Promise<Res> =>
 beforeEach(() => {
   calls = [];
   gucWorkspace = null;
+  callerInGoalMode = false;
+  modeUpdateThrows = false;
 });
 
 describe('goals:create — workspace resolution', () => {
@@ -111,6 +123,91 @@ describe('goals:create — what the row must carry', () => {
   it('supports a sub-goal via parentId (the table\'s self-referencing lineage edge)', async () => {
     const res = await call(ARGS({ parentId: 'parent-abc123' }), CTX());
     expect((res.data as { parent_id: string }).parent_id).toBe('parent-abc123');
+  });
+});
+
+describe('goals:create — the kill criterion is a COLUMN, not a metadata key', () => {
+  /**
+   * It lived in `metadata` only because the column did not exist. The whole GUI
+   * reads it — the detail view's "THIS GOAL ENDS WHEN" headline is the single
+   * most load-bearing string in goal mode — and a jsonb key cannot be indexed
+   * or joined the way the read path needs. If this regresses, the criterion
+   * still *round-trips through the tool* (so a handler test alone would pass)
+   * while rendering blank everywhere the owner actually looks.
+   */
+  it('sends the criterion to the kill_criterion column and NOT into metadata', async () => {
+    await call(ARGS({ killCriterion: 'no paying user after 2 weeks' }), CTX());
+    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
+    expect(insert.sql).toMatch(/kill_criterion/);
+    // The metadata parameter must be null — the criterion is not hiding in it.
+    const jsonParams = insert.params.filter((p): p is string => typeof p === 'string' && p.startsWith('{'));
+    expect(jsonParams.join(' ')).not.toContain('no paying user');
+  });
+
+  it('persists tripwires as jsonb so the criterion renders as bars, not prose', async () => {
+    const tripwires = [
+      { metric: 'spend_usd', label: '$310 of $500', threshold: 500, current: 310, unit: 'usd' },
+    ];
+    const res = await call(ARGS({ killCriterion: 'stop at $500', tripwires }), CTX());
+    expect((res.data as { tripwires: unknown }).tripwires).toEqual(tripwires);
+    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
+    expect(insert.sql).toMatch(/tripwires/);
+    expect(JSON.stringify(insert.params)).toContain('spend_usd');
+  });
+
+  it('leaves tripwires null when none are given — a prose-only criterion is valid', async () => {
+    await call(ARGS({ killCriterion: 'gut feel' }), CTX());
+    const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
+    expect(JSON.stringify(insert.params)).not.toContain('[]');
+  });
+});
+
+describe('goals:create — stamping the caller\'s GOAL mode (the provenance mechanism)', () => {
+  /**
+   * P-016. Everything created after this reads `agent_modes.subject` from
+   * session context to fill `goal_id`, which is why "what belongs to this
+   * goal?" is answerable at all. The alternative — asking the agent to
+   * remember to pass the id — does not survive a compaction.
+   */
+  it('points the caller\'s GOAL mode at the new goal', async () => {
+    callerInGoalMode = true;
+    const res = await call(ARGS(), CTX());
+    const id = (res.data as { id: string }).id;
+    const upd = calls.find((c) => /UPDATE harness_shared\.agent_modes/.test(c.sql))!;
+    expect(upd).toBeDefined();
+    expect(upd.params).toContain(id);
+    expect(upd.params).toContain('su-test');
+    expect((res.data as { mode_subject_stamped: boolean }).mode_subject_stamped).toBe(true);
+  });
+
+  it('scopes the stamp to the caller AND the workspace, never a blanket update', async () => {
+    callerInGoalMode = true;
+    await call(ARGS(), CTX());
+    const upd = calls.find((c) => /UPDATE harness_shared\.agent_modes/.test(c.sql))!;
+    expect(upd.sql).toMatch(/workspace_id\s*=/);
+    expect(upd.sql).toMatch(/owner_id\s*=/);
+    expect(upd.sql).toMatch(/mode\s*=\s*'goal'/);
+  });
+
+  it('reports stamped:false — not an error — when the caller is not in GOAL mode', async () => {
+    callerInGoalMode = false;
+    const res = await call(ARGS(), CTX());
+    expect(res.data).not.toBeNull();
+    expect((res.data as { mode_subject_stamped: boolean }).mode_subject_stamped).toBe(false);
+  });
+
+  it('does not attempt the stamp at all when the transport carried no session id', async () => {
+    const res = await call(ARGS(), CTX({ uiClientId: null }));
+    expect(res.data).not.toBeNull();
+    expect(calls.some((c) => /agent_modes/.test(c.sql))).toBe(false);
+  });
+
+  it('still creates the goal when the stamp throws — a decoration must never fail the write', async () => {
+    modeUpdateThrows = true;
+    const res = await call(ARGS(), CTX());
+    expect(res.data).not.toBeNull();
+    expect((res.data as { mode_subject_stamped: boolean }).mode_subject_stamped).toBe(false);
+    expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(true);
   });
 });
 

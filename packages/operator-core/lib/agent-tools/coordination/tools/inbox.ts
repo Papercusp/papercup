@@ -907,10 +907,31 @@ export default defineTool({
           flushLine = null;
         }
       }
+      // EI-19326331501849713 (owner-directed 2026-08-09): a carry-respawn that was
+      // ACKNOWLEDGED but never cut is otherwise invisible — the host writes
+      // `respawn-carry-dropped` to its per-owner event log and the only surface that
+      // reads it is the NEXT session:request-compaction reply, which a settled agent
+      // has no reason to call. Surfacing it here reaches the agent on its next TURN.
+      //
+      // Gated on the same quiet band as the gauge, for cost AND correctness: a dropped
+      // respawn means the session is at/over its soft limit by construction, so a
+      // low-% turn cannot have an actionable one — and low-% turns keep paying nothing
+      // extra, the discipline the flush-gate read above already follows.
+      if (pct != null && pct >= CONTEXT_GAUGE_QUIET_PCT) {
+        try {
+          respawnLine = droppedRespawnAmbientLine(await readPriorRespawnOutcome(identity.ownerId));
+        } catch {
+          respawnLine = null;
+        }
+      }
     } catch {
       usageLine = null;
     }
-    const injection = [usageLine, flushLine, rebootstrap, coordInjection].filter(Boolean).join('\n');
+    // respawnLine leads: "the compaction you are waiting for is not coming" reframes
+    // every line below it, including the usage percent it explains.
+    const injection = [respawnLine, usageLine, flushLine, rebootstrap, coordInjection]
+      .filter(Boolean)
+      .join('\n');
 
     // EI-1752: bound each entry's large content fields so an inbox read can't overflow
     // the agent result cap. The `max_body_chars` schema arg existed but was NEVER

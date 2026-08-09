@@ -99,6 +99,57 @@ export async function readPriorRespawnOutcome(
   }
 }
 
+/**
+ * A dropped carry-respawn older than this is history, not news. The agent has
+ * demonstrably kept taking turns since, so repeating the warning every turn
+ * would be noise — and a warning that is always on is one nobody reads.
+ */
+export const DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The AMBIENT warning line, for the per-turn coord injection block
+ * (EI-19326331501849713, owner-directed 2026-08-09).
+ *
+ * WHY THIS IS SEPARATE FROM {@link priorRespawnNote}. That note rides the
+ * `session:request-compaction` REPLY, so it is only ever read by an agent that
+ * calls the tool AGAIN — and the whole failure mode is that a dropped respawn
+ * gives you no reason to call again. You are told "queued", you correctly settle,
+ * and you learn nothing. Measured on session bd819348 (2026-08-09): the owner
+ * experienced this as "the successor got an error", when in fact no successor
+ * existed and no error was ever raised.
+ *
+ * So this line answers the question the reply cannot: it reaches the agent on the
+ * next TURN rather than the next REQUEST. Wording is deliberately concrete about
+ * the observable — if your transcript is still intact, the cut did not happen —
+ * because the failure is otherwise indistinguishable from a successful respawn
+ * whose successor simply looks like you.
+ *
+ * PURE. Returns null unless the last respawn terminally DROPPED within
+ * {@link DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS}; `pending`, `delivered` and `none`
+ * are all silent, as is a drop of unknown age (a warning is only ever emitted on
+ * evidence — the same rule {@link priorRespawnNote} follows).
+ */
+export function droppedRespawnAmbientLine(
+  prior: PriorRespawn | null | undefined,
+  opts: { maxAgeMs?: number } = {},
+): string | null {
+  if (!prior || prior.outcome !== 'dropped') return null;
+  const maxAge = opts.maxAgeMs ?? DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS;
+  // An unknown age is NOT treated as recent: `ageMs` is null when the host row
+  // carried no parseable timestamp, and guessing "recent" there would nag
+  // forever on exactly the rows we know least about.
+  if (prior.ageMs == null || !Number.isFinite(prior.ageMs) || prior.ageMs > maxAge) return null;
+  return (
+    `⚠ carry-respawn DROPPED ${humanAge(prior.ageMs)}` +
+    `${prior.reason ? ` (reason: ${prior.reason})` : ''} — your last session:request-compaction was` +
+    ` acknowledged but NEVER CUT, and no successor was spawned. You are still the same session, still` +
+    ` carrying the full transcript. Do not wait for a compaction that is not coming: flush durable state` +
+    ` (work_items:checkpoint / loop:checkpoint / facts:assert), then call session:request-compaction` +
+    ` again at a clean stopping point — and note the cut only lands once your pty goes quiet, so an` +
+    ` interactive back-and-forth can supersede it indefinitely.`
+  );
+}
+
 function humanAge(ageMs: number | null | undefined): string {
   if (ageMs == null || !Number.isFinite(ageMs)) return 'unknown age';
   // Sub-minute is decided on the raw value, not a rounded one: Math.round would

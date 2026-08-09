@@ -44,6 +44,15 @@ const writtenMetadata = (): Record<string, unknown> => {
   return jsonParam ? JSON.parse(jsonParam) : {};
 };
 
+/**
+ * The kill criterion is a COLUMN now (migration 765), so it is a plain string
+ * param rather than a key inside the metadata JSON. Positional because the
+ * UPDATE's template order is fixed: title, body, status, budget, parent,
+ * kill_criterion, tripwires, metadata.
+ */
+const KILL_CRITERION_PARAM = 5;
+const writtenCriterion = (): unknown => updateCall().params[KILL_CRITERION_PARAM];
+
 beforeEach(() => {
   calls = [];
   existingRow = {
@@ -52,29 +61,80 @@ beforeEach(() => {
     status: 'active',
     parent_id: null,
     budget_cents: '50000',
-    metadata: { killCriterion: 'no paying user after 2 weeks' },
+    kill_criterion: 'no paying user after 2 weeks',
+    tripwires: null,
+    metadata: {},
   };
 });
 
 describe('goals:update — partial writes preserve untouched state', () => {
   it('reporting spend does NOT clear the kill criterion', async () => {
     await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
-    expect(writtenMetadata()).toEqual({
-      killCriterion: 'no paying user after 2 weeks',
-      spentCents: 1234,
-    });
+    expect(writtenCriterion()).toBe('no paying user after 2 weeks');
+    expect(writtenMetadata()).toEqual({ spentCents: 1234 });
   });
 
   it('revising the kill criterion does NOT clear previously reported spend', async () => {
-    existingRow!.metadata = { killCriterion: 'old', spentCents: 999 };
+    existingRow!.kill_criterion = 'old';
+    existingRow!.metadata = { spentCents: 999 };
     await tool.handler(tool.args.parse({ id: 'g1', killCriterion: 'new' }) as never, CTX() as never);
-    expect(writtenMetadata()).toEqual({ killCriterion: 'new', spentCents: 999 });
+    expect(writtenCriterion()).toBe('new');
+    expect(writtenMetadata()).toEqual({ spentCents: 999 });
   });
 
   it('leaves unrelated metadata keys alone (merge, not replace)', async () => {
-    existingRow!.metadata = { killCriterion: 'k', ownerNote: 'keep me' };
+    existingRow!.metadata = { ownerNote: 'keep me' };
     await tool.handler(tool.args.parse({ id: 'g1', spentCents: 7 }) as never, CTX() as never);
-    expect(writtenMetadata()).toEqual({ killCriterion: 'k', ownerNote: 'keep me', spentCents: 7 });
+    expect(writtenMetadata()).toEqual({ ownerNote: 'keep me', spentCents: 7 });
+  });
+
+  /**
+   * Goals written before migration 765 carry the criterion at
+   * `metadata.killCriterion`. Reading only the column would blank the single
+   * most load-bearing string in goal mode on every legacy row — and blank it
+   * SILENTLY, on the next unrelated update.
+   */
+  it('migrates a legacy metadata.killCriterion into the column, and drops the stale copy', async () => {
+    existingRow!.kill_criterion = null;
+    existingRow!.metadata = { killCriterion: 'legacy prose', spentCents: 12 };
+    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 13 }) as never, CTX() as never);
+    expect(writtenCriterion()).toBe('legacy prose');
+    // Exactly one source of truth afterwards — the stale key is gone.
+    expect(writtenMetadata()).toEqual({ spentCents: 13 });
+  });
+
+  it('an explicit criterion beats the legacy metadata copy', async () => {
+    existingRow!.kill_criterion = null;
+    existingRow!.metadata = { killCriterion: 'legacy prose' };
+    await tool.handler(
+      tool.args.parse({ id: 'g1', killCriterion: 'the real one' }) as never,
+      CTX() as never,
+    );
+    expect(writtenCriterion()).toBe('the real one');
+  });
+});
+
+describe('goals:update — tripwires', () => {
+  const TRIPWIRES = [{ metric: 'spend_usd', label: '$310 of $500', threshold: 500, current: 310 }];
+
+  it('advances a tripwire\'s current value — this is how the bars move', async () => {
+    await tool.handler(
+      tool.args.parse({ id: 'g1', tripwires: TRIPWIRES }) as never,
+      CTX() as never,
+    );
+    expect(JSON.stringify(updateCall().params)).toContain('spend_usd');
+  });
+
+  it('leaves existing tripwires untouched when the arg is omitted', async () => {
+    existingRow!.tripwires = TRIPWIRES;
+    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 5 }) as never, CTX() as never);
+    expect(JSON.stringify(updateCall().params)).toContain('spend_usd');
+  });
+
+  it('drops back to prose-only on an explicit null', async () => {
+    existingRow!.tripwires = TRIPWIRES;
+    await tool.handler(tool.args.parse({ id: 'g1', tripwires: null }) as never, CTX() as never);
+    expect(JSON.stringify(updateCall().params)).not.toContain('spend_usd');
   });
 
   it('an omitted field is written back as its previous value, never as null', async () => {

@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SU_WRITE_ROLES } from '../../role-config';
-import { GOAL_STATUSES } from './create';
+import { GOAL_STATUSES, TripwireSchema } from './create';
 
 export default defineTool({
   name: 'goals:update',
@@ -38,6 +38,14 @@ export default defineTool({
     title: z.string().min(1).max(500).optional(),
     body: z.string().max(20000).optional(),
     killCriterion: z.string().max(2000).optional(),
+    tripwires: z
+      .array(TripwireSchema)
+      .max(12)
+      .nullable()
+      .optional()
+      .describe(
+        'refresh the structured kill criterion — this is how a tripwire\'s `current` advances ("$310 of $500"). Pass null to drop them back to prose-only. Omit to leave untouched.',
+      ),
     budgetCents: z.number().int().nonnegative().optional().describe('revise the declared ceiling'),
     spentCents: z.number().int().nonnegative().optional().describe('actuals to date, recorded in metadata alongside the ceiling'),
     parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
@@ -50,10 +58,12 @@ export default defineTool({
         status: string;
         parent_id: string | null;
         budget_cents: string | null;
+        kill_criterion: string | null;
+        tripwires: unknown;
         metadata: Record<string, unknown> | null;
       }>
     >`
-      SELECT title, body, status, parent_id, budget_cents, metadata
+      SELECT title, body, status, parent_id, budget_cents, kill_criterion, tripwires, metadata
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
     if (!existing.length) {
@@ -63,9 +73,20 @@ export default defineTool({
 
     // Merge rather than replace: reporting spend must not clear the kill
     // criterion recorded at creation, and vice versa.
+    //
+    // The kill criterion and its tripwires are COLUMNS now (migration 765), not
+    // metadata keys — the GUI's headline reads them directly. A goal written
+    // before that migration still carries `metadata.killCriterion`, so fall
+    // back to it when the column is empty rather than silently blanking the one
+    // field the owner most needs to see.
     const metadata: Record<string, unknown> = { ...(prev.metadata ?? {}) };
-    if (args.killCriterion !== undefined) metadata.killCriterion = args.killCriterion;
     if (args.spentCents !== undefined) metadata.spentCents = args.spentCents;
+    const legacyCriterion =
+      typeof metadata.killCriterion === 'string' ? (metadata.killCriterion as string) : null;
+    // Having migrated it into the column, drop the metadata copy: two sources
+    // of truth for the one field that decides whether a goal ends is how a
+    // reader ends up showing the stale one.
+    delete metadata.killCriterion;
 
     // Resolve every column in JS so "omitted" and "explicitly null" stay
     // distinguishable — a COALESCE in SQL cannot express detaching a parent,
@@ -76,18 +97,29 @@ export default defineTool({
       status: args.status ?? prev.status,
       budgetCents: args.budgetCents ?? (prev.budget_cents === null ? null : Number(prev.budget_cents)),
       parentId: args.parentId === undefined ? prev.parent_id : args.parentId,
+      killCriterion: args.killCriterion ?? prev.kill_criterion ?? legacyCriterion,
+      tripwires:
+        args.tripwires === undefined
+          ? prev.tripwires === null || prev.tripwires === undefined
+            ? null
+            : JSON.stringify(prev.tripwires)
+          : args.tripwires === null || args.tripwires.length === 0
+            ? null
+            : JSON.stringify(args.tripwires),
       metadata: Object.keys(metadata).length ? JSON.stringify(metadata) : null,
     };
 
     await ctx.tx`
       UPDATE harness_shared.goals
-         SET title        = ${next.title},
-             body         = ${next.body},
-             status       = ${next.status},
-             budget_cents = ${next.budgetCents},
-             parent_id    = ${next.parentId},
-             metadata     = ${next.metadata}::jsonb,
-             updated_at   = now()
+         SET title          = ${next.title},
+             body           = ${next.body},
+             status         = ${next.status},
+             budget_cents   = ${next.budgetCents},
+             parent_id      = ${next.parentId},
+             kill_criterion = ${next.killCriterion},
+             tripwires      = ${next.tripwires}::jsonb,
+             metadata       = ${next.metadata}::jsonb,
+             updated_at     = now()
        WHERE id = ${args.id}
     `;
 
@@ -98,10 +130,12 @@ export default defineTool({
         status: string;
         parent_id: string | null;
         budget_cents: string | null;
+        kill_criterion: string | null;
+        tripwires: unknown;
         metadata: Record<string, unknown> | null;
       }>
     >`
-      SELECT id, title, status, parent_id, budget_cents, metadata
+      SELECT id, title, status, parent_id, budget_cents, kill_criterion, tripwires, metadata
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
     return { data: row ?? null };

@@ -244,6 +244,25 @@ export interface GitPipelineSnapshot {
      *  marker is missing/abandoned. */
     inFlightRetriage?: StoredInFlightRetriage | null;
     /**
+     * EI-19931692050586322: the run's OWN published answer to "which sha am I judging RIGHT
+     * NOW" (`gate_health.inFlightCandidate`, already freshness-checked by
+     * `parseInFlightCandidate`). Written on EVERY invocation — including a run's FIRST
+     * candidate, which is the case `inFlightRetriage` structurally cannot cover, because that
+     * marker only exists once a refire has happened (the uncommon case).
+     *
+     * Why it had to be threaded here: the producer was wired (green-checkpoint.ts:3512) but NO
+     * reader ever consulted it, so `gitPipelinePosition()` could only ever answer
+     * `candidateSource: 'run-probe'` — a value the tool itself labels NOT authoritative — while
+     * the authoritative sha sat one key away in the routines row it had already loaded.
+     *
+     * ⚠ NULL IS NOT "no run in flight". The write is explicitly best-effort and swallows its
+     * own errors, so a live run can legitimately publish nothing (measured 2026-08-09: present
+     * for the 23:52Z run, absent for the 00:13Z one, both active). Consult
+     * `checkpointRunInFlight.active` for liveness; this field answers only "did the run tell us
+     * its candidate".
+     */
+    inFlightCandidate?: StoredInFlightCandidate | null;
+    /**
      * EI-19325520469216548: how stale the JUDGED CANDIDATE was at verdict time, in ms — the
      * SAME `evaluateGateVerdictFreshness` measurement that already decides `verdictStale`'s
      * `'candidate-fossil'` reason, but hoisted here so a reader can see the number even when

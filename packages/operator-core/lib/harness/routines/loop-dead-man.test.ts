@@ -267,6 +267,10 @@ const modeRow = (mode: string) => ({
   setBy: 'owner',
   ownerDirected: true,
   setAt: '2026-08-08T00:00:00.000Z',
+  // Mode-defined parameter (migration 767); null for the autonomy axis, which
+  // has nothing to be "about". Present because ModeRow requires it — a partial
+  // row here would compile only until the next field is added.
+  subject: null,
 });
 
 /** A routines row that carries the owner/workspace the page needs. */
