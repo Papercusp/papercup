@@ -38,12 +38,14 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true), on
 vi.mock('../../scheduler/claim-spec-store', () => ({
   getNextForBee: vi.fn(async () => null),
   resolveClaimSpecWorkspace: (w: unknown) => w ?? 'default',
-  // get_next.ts:606 reads the caller's claim-spec record on the MISS path this
-  // test drives (the capacity-diagnosis leg). Absent from the mock, the miss
-  // throws "No getClaimSpecRecord export is defined" before reaching the idle
-  // recipe advice this file pins. Null = "no spec record", which is the shape
-  // that leg already handles for an unspecced caller.
+  // get_next.ts's capacity-diagnosis leg (~606) runs on the MISS path this test
+  // drives and reads BOTH of these. Absent from the mock, the miss throws
+  // "No <name> export is defined" before reaching the idle-recipe advice this
+  // file pins. Mocked to the "nothing configured" shape that leg already handles
+  // for an unspecced caller. Kept in step with get_next.ts's import list from
+  // '../../scheduler/claim-spec-store' — adding a call there needs an entry here.
   getClaimSpecRecord: vi.fn(async () => null),
+  readClaimConcurrency: vi.fn(async () => null),
 }));
 vi.mock('../../work-items', () => ({ CLAIM_STATES_ALLOWLIST: ['open', 'failing'] }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));

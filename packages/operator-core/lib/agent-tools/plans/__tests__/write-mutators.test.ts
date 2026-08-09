@@ -283,6 +283,48 @@ body
     expect(allocateNextDecisionId(doc)).toBe('D-002');
   });
 
+  it('EI-19989843927675996: a CITATION inside a decision body does not inflate the next id', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Decisions
+
+### D-001 — first
+Date: 2026-05-20
+This defers to D-054, the owner's same-fleet veto, and to **D-087** (the
+typed-discriminant ruling) — both from unified-agent-state-plane-2026-07-27.
+`;
+    // Citing another plan's decision is the documented good practice
+    // (CLAUDE.md tells agents to name a ruling as `<planSlug>#D-NNN`), so it
+    // must never permanently inflate THIS plan's numbering.
+    expect(allocateNextDecisionId(doc)).toBe('D-002');
+  });
+
+  it('EI-19989843927675996: a slug-qualified `<plan>#D-NNN` citation is never a declaration, even at line start', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Decisions
+
+### D-001 — first
+Date: 2026-05-20
+Supersedes:
+
+- **unified-agent-state-plane-2026-07-27#D-087** — the typed-discriminant ruling.
+`;
+    expect(allocateNextDecisionId(doc)).toBe('D-002');
+  });
+
   it('appends a new decision at end of Decisions section', () => {
     const out = appendDecisionToBody(BASE, 'D-002', 'Second decision', 'Body of decision.', '2026-05-20', ['P-001']);
     expect(out).toContain('### D-002 — Second decision');

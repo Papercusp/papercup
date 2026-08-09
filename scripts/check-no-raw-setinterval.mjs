@@ -38,6 +38,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -180,9 +181,11 @@ export const isExcluded = (f) =>
   !/\.(ts|mjs|cjs)$/.test(f);
 
 /** Strip block (/* *​/, incl. JSDoc) + line (//) comments so a prose mention of setInterval() isn't flagged. */
-export function stripComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
+// Implementation moved to ./lib/strip-comments-and-strings.mjs — ONE shared stripper
+// (EI-19991116787260658). It also strips STRING LITERALS, which the local copy did not:
+// `setInterval(` quoted in prose inside a string read as a real call site. This guard's
+// own comment above already reasoned about the code-vs-prose distinction; the shared
+// stripper is what finally makes that reasoning true for strings as well as comments.
 
 /**
  * The tell: a CALL to `setInterval(...)`. Case-sensitive lowercase `setInterval`
@@ -192,7 +195,7 @@ export function stripComments(text) {
  * (text → boolean) so it's unit-testable.
  */
 export function usesRawSetInterval(text) {
-  return /\bsetInterval\s*\(/.test(stripComments(text));
+  return /\bsetInterval\s*\(/.test(stripCommentsAndStrings(text));
 }
 
 /**

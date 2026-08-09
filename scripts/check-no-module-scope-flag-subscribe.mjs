@@ -69,7 +69,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
-import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
+import { stripCommentsAndStrings, stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -97,7 +97,7 @@ export const isExcluded = (f) =>
  * form of either is fine and is not flagged.
  */
 export function usesModuleScopeFlagSubscribe(text) {
-  const src = stripComments(text);
+  const src = stripCommentsAndStrings(text);
   if (/^(void\s+)?onFlagChange\s*\(/m.test(src)) return true;
   if (/^(export\s+)?(const|let)\s+\w+\s*=\s*FLAG_DEFAULTS\s*\[/m.test(src)) return true;
   return false;
@@ -132,7 +132,14 @@ const MIN_JUSTIFICATION_CHARS = 60;
  * not scanned as a call site.
  */
 export function extractLazyFlagRefreshCalls(text) {
-  const src = stripComments(text);
+  // COMMENTS ONLY here, deliberately — NOT stripCommentsAndStrings. The extracted call text is
+  // handed to checkUnpopulatedDeclaration, which reads string VALUES out of it
+  // (/kind\s*:\s*['"]([a-z-]+)['"]/ and the `keys: [...]` list). Emptying string contents turns
+  // every correct `kind: 'seeded-from-flag-default'` into `kind: ''`, so the guard would report
+  // "no `unpopulated.kind` declared" against perfectly correct code. Measured, not theorised
+  // (EI-19991116787260658). The detector above is the opposite case and DOES strip strings:
+  // the A/B split is per CALL SITE, not per guard.
+  const src = stripCommentsOnly(text);
   const needle = 'lazyFlagRefresh(';
   const calls = [];
   let i = 0;

@@ -128,6 +128,32 @@ export function stripCommentsAndStrings(text) {
 }
 
 /**
+ * Comments ONLY — string literals are left intact.
+ *
+ * ⚠ USE THIS ONLY when your downstream analysis has to READ STRING VALUES. Reach for
+ * `stripCommentsAndStrings` by default; this one leaves you exposed to the phantom-offender
+ * class documented above, and that exposure is a deliberate trade, not an oversight.
+ *
+ * THE CASE THAT FORCED THIS TO EXIST (EI-19991116787260658, measured 2026-08-09): a single guard can
+ * need BOTH strippers at DIFFERENT call sites. `check-no-module-scope-flag-subscribe` detects the
+ * CODE token `onFlagChange(` (wants strings stripped) but then hands the matched call's text to
+ * `checkUnpopulatedDeclaration`, which reads the string VALUE out of
+ * `kind: 'seeded-from-flag-default'` via /kind\s*:\s*['"]([a-z-]+)['"]/. Strip the strings there
+ * and the value becomes `kind: ''`, the regex stops matching, and EVERY call site reports
+ * "no `unpopulated.kind` declared" — a guard that fails loudly on correct code.
+ *
+ * So the A/B split is PER CALL SITE, not per guard. Ask what the regex downstream of the strip
+ * actually reads: a KEY or a call token (code) -> stripCommentsAndStrings; a VALUE inside quotes
+ * -> this function.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripCommentsOnly(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
  * The shared RECURRENCE GUARD for the phantom-offender class.
  *
  * Feed a guard's own exported detector a source in which its detection token appears ONLY
