@@ -1122,4 +1122,150 @@ describe('runBootstrapLeg', () => {
     await runBootstrapLeg(SLUG, WS);
     expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * WI-37226 — the PERSISTENT-miss signal.
+   *
+   * The miss warning has always ended "persistent misses across many ticks are the
+   * real signal", and nothing counted them: every miss logged identically, so a churn
+   * blip and a dead federation were indistinguishable in the log. Measured cost
+   * (EI-18808621019872598): "418/418 ticks failed over 2h17m across 39 repos, zero
+   * advanced" was only establishable by hand-counting journal lines after the fact.
+   *
+   * These tests pin the run-length arithmetic AND — deliberately — that the escalation
+   * asserts NO CAUSE. Upgrading a long run to a diagnosis ("the peer is dark") is the
+   * exact move that cost EI-18740968796318403 and the WI-6299 drill a wrong root cause.
+   */
+  describe('WI-37226: persistent-miss run-length', () => {
+    /** A tick where every candidate is a registry miss → `outcome` stays null. */
+    async function missTick(prior: Record<string, unknown> | null): Promise<Record<string, unknown>> {
+      unsafeMock.mockClear();
+      getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+      listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+      openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(true));
+      sqlTagMock.mockResolvedValue(prior ? [{ bootstrap: prior }] : []);
+      await runBootstrapLeg(SLUG, WS);
+      return routinePatchBody(routinesPatch().params).bootstrap as Record<string, unknown>;
+    }
+
+    it('counts CONSECUTIVE misses across ticks and stamps when the run started', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const first = await missTick(null);
+        expect(first.consecutiveMisses).toBe(1);
+        expect(typeof first.firstMissAt).toBe('number');
+
+        // A second miss extends the run and PRESERVES the original start stamp —
+        // duration is what makes the escalation meaningful if the cadence changes.
+        const second = await missTick({ consecutiveMisses: 1, firstMissAt: 1_000 });
+        expect(second.consecutiveMisses).toBe(2);
+        expect(second.firstMissAt).toBe(1_000);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('a real dial ENDS the run — including one that errored (it proved a live path existed)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        unsafeMock.mockClear();
+        getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+        listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
+        openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false)); // live dial
+        bootstrapFromPeerMock.mockImplementation(
+          bootstrapOutcome({ ok: false, namespaces: [], skippedExisting: [], skippedSelf: null, stderr: 'fetch-failed' }),
+        );
+        sqlTagMock.mockResolvedValue([{ bootstrap: { consecutiveMisses: 9, firstMissAt: 1_000 } }]);
+
+        await runBootstrapLeg(SLUG, WS);
+
+        const patch = routinePatchBody(routinesPatch().params).bootstrap as Record<string, unknown>;
+        expect(patch.consecutiveMisses).toBe(0);
+        expect(patch.firstMissAt).toBeNull();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('ESCALATES at the threshold, reporting run length + duration', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        // 5 prior misses + this one = 6 = BOOTSTRAP_PERSISTENT_MISS_THRESHOLD.
+        await missTick({ consecutiveMisses: 5, firstMissAt: Date.now() - 62 * 60_000 });
+        const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'));
+        expect(warnMsg).toContain('PERSISTENT-MISS ESCALATION');
+        expect(warnMsg).toContain('6 consecutive ticks');
+        expect(warnMsg).toMatch(/~6[12]m/); // wall-clock duration, not just a count
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    /**
+     * FALSIFIABILITY CONTROL — keep this. It encodes the pre-fix behaviour boundary:
+     * if the escalation branch is ever made unconditional (or the threshold dropped to
+     * 1), a single churn miss starts shouting and this test is what catches it. The
+     * escalation is only worth anything because the ordinary case stays quiet.
+     */
+    it('does NOT escalate below the threshold — a single miss stays the quiet case', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await missTick(null); // run length 1
+        const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'));
+        expect(warnMsg).toBeTruthy();
+        expect(warnMsg).not.toContain('PERSISTENT-MISS ESCALATION');
+        // Still says what a miss means, and now shows progress toward escalation.
+        expect(warnMsg).toContain('registry miss at sample time');
+        expect(warnMsg).toContain('1/6 before escalation');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    /**
+     * The escalation must raise CONFIDENCE THAT SOMETHING IS WRONG without inventing a
+     * cause. This tree has twice paid for the opposite (EI-18740968796318403, WI-6299):
+     * a miss reads like "the peer is unreachable" and is not. So: it offers the rig
+     * preflight as a CHECK TO RUN, and says in as many words that it names no cause.
+     */
+    it('escalation names CHECKS TO RUN, never a diagnosis', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await missTick({ consecutiveMisses: 5, firstMissAt: Date.now() - 60 * 60_000 });
+        const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'))!;
+        expect(warnMsg).toContain('This log names NO cause');
+        // the kcpassword/loginwindow class is offered as a discriminating PROBE…
+        expect(warnMsg).toContain('preflight-login.sh');
+        // …and never asserted as the conclusion.
+        expect(warnMsg).not.toMatch(/kcpassword (drift )?detected|the peer is (dark|down|at the loginwindow)/i);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    /**
+     * The no-topic-stub writer replaces the WHOLE `bootstrap` key, so omitting these
+     * fields DELETES them — and a deleted run reads as "the run ended", silently
+     * clearing a live escalation. That writer attempts no dial, so it can neither
+     * extend a run nor end one. (Same accidental-erasure class as WI-6284 /
+     * EI-18799556647570956, with a field where the erasure would actually mislead.)
+     */
+    it('the no-topic-stub writer CARRIES the run forward instead of zeroing it', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        unsafeMock.mockClear();
+        getBootedHarnessMock.mockReturnValue({ swarm: {} }); // no topicHex → stub path
+        sqlTagMock.mockResolvedValue([{ bootstrap: { consecutiveMisses: 7, firstMissAt: 1_000 } }]);
+
+        await runBootstrapLeg(SLUG, WS);
+
+        const patch = routinePatchBody(routinesPatch().params).bootstrap as Record<string, unknown>;
+        expect(patch.path).toBe('no-topic-stub');
+        expect(patch.consecutiveMisses).toBe(7);
+        expect(patch.firstMissAt).toBe(1_000);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
 });

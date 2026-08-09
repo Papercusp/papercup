@@ -131,6 +131,35 @@ describe('runWorkIntakeTick (P-406/D-004 minimal intake loop)', () => {
     expect(pullAndExecute).not.toHaveBeenCalled();
   });
 
+  /**
+   * WI-37205 recurrence guard. The defect was NOT that the idle path did the wrong
+   * thing — it did exactly the right thing, silently. `{ offers: [] }` was returned
+   * before any log and with no counter, so a COMPLETED idle scan and a body that
+   * never ran produced byte-identical evidence, and `routines.last_fired_at` could
+   * not separate them either (claim.ts stamps it at DISPATCH, before the body runs).
+   *
+   * The property under test is therefore *evidence-bearing-ness*, not behavior:
+   * an idle tick must return proof that a scan HAPPENED. Asserting `offers` is empty
+   * cannot express that — `scanned` is the field that can.
+   */
+  it('reports a COMPLETED idle scan distinguishably (scanned:0, not merely an empty offers[])', async () => {
+    const deps = baseDeps([]);
+    const result = await runWorkIntakeTick('ws-1', 'papercusp', { ...deps, pullAndExecute: vi.fn() });
+
+    expect(result.scanned).toBe(0);
+    // The whole point: `scanned` is PRESENT on the idle path. A body that never ran
+    // could not have set it, so `undefined` here is the regression, not `0`.
+    expect(result.scanned).not.toBeUndefined();
+    expect(Object.hasOwn(result, 'scanned')).toBe(true);
+  });
+
+  it('reports how many offers a non-idle tick actually scanned', async () => {
+    const deps = baseDeps([storedOffer({ record: null }), storedOffer({ record: null })]);
+    const result = await runWorkIntakeTick('ws-1', 'papercusp', { ...deps, pullAndExecute: vi.fn() });
+
+    expect(result.scanned).toBe(2);
+  });
+
   it('marks a pre-schema/junk or non-work record UNRESOLVABLE without touching the pull seam', async () => {
     const deps = baseDeps([storedOffer({ record: null })]);
     const pullAndExecute = vi.fn();

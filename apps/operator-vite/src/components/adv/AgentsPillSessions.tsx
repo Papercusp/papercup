@@ -92,6 +92,58 @@ export interface SearchSessionResult {
   hits: SearchTurnHit[];
   active: RosterAgent | null;
   session: EndedSessionRow | null;
+  /**
+   * WI-37204 — this session is here because the query IS one of its ids, not
+   * because its transcript said anything. `hits` is then legitimately EMPTY,
+   * which is the ONE case where an empty `hits` is a result rather than a bug:
+   * the card renders off the roster/adv metadata and opens at the head of the
+   * transcript instead of at a match. Absent ⇒ an ordinary text hit (and an
+   * older server sends nothing here, which reads correctly as "no claim").
+   */
+  idMatch?: 'ownerId' | 'sessionId' | 'ompThreadId' | null;
+}
+
+/** Card label for an id match — mirrors the server's `sessionIdMatchLabel`
+ *  wording. Pure — exported for tests. */
+export function idMatchLabel(field: NonNullable<SearchSessionResult['idMatch']>): string {
+  if (field === 'ownerId') return 'matched su id';
+  if (field === 'sessionId') return 'matched session id';
+  return 'matched thread id';
+}
+
+/**
+ * The transcript URL for a session matched by ID, which has no hit to anchor
+ * to — so it opens at the HEAD of the transcript with no `find` term.
+ *
+ * Deliberately NOT `searchHitStreamUrl(result, {}, query)`: that would pass the
+ * id itself as `find=`, and the viewer would then scroll to whatever turn
+ * happens to mention the id (often none), leaving the pane looking like it
+ * failed to find the thing you just successfully found. An id search means
+ * "show me THIS session", not "show me where this session says its own name".
+ *
+ * Prefers the recorded row when there is one — `endedSessionStreamUrl` is the
+ * only path that knows how to open a codex session (by its per-session
+ * CODEX_HOME, keyed on the adv row id), which the hit-anchored URL cannot do.
+ * Pure — exported for tests.
+ */
+export function idMatchStreamUrl(
+  s: Pick<SearchSessionResult, 'sourceKind' | 'sessionId' | 'active' | 'session'>,
+): string | null {
+  // An ACTIVE session's transcript is live on disk — no `ended=1` (the flag
+  // makes the thinking route rematerialize from archive / terminate, which for
+  // a running agent would cut the stream it should be following).
+  if (s.active) {
+    const owner = s.active.ownerId ?? null;
+    if (s.sourceKind === 'claude') {
+      return `/api/adv/session/thinking?sessionId=${encodeURIComponent(s.sessionId)}${owner ? `&owner=${encodeURIComponent(owner)}` : ''}`;
+    }
+    if (s.sourceKind === 'omp') {
+      return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(s.sessionId)}`;
+    }
+    // No transcript handle (a presence-only row): fall through to the recorded
+    // row, which may still know how to open it.
+  }
+  return s.session ? endedSessionStreamUrl(s.session) : null;
 }
 
 /**
@@ -377,15 +429,20 @@ function SearchResultRow({
   livenessTitle?: string;
   onInspect: (t: InspectTarget) => void;
 }) {
-  const openHit = (hit: SearchTurnHit) => {
-    const url = searchHitStreamUrl(result, hit, query);
+  /* `hit === null` = open the session itself, at the head, with no highlight
+     term — the WI-37204 id-match case, where the query named the session rather
+     than anything it said. Everything else about the modal (resume, fork,
+     focus-window) is identical, which is the point: reaching a session by its
+     id must not be a second-class way to arrive at it. */
+  const openHit = (hit: SearchTurnHit | null) => {
+    const url = hit ? searchHitStreamUrl(result, hit, query) : idMatchStreamUrl(result);
     if (!url) return;
     const resumeTarget = searchResultResumeTarget(result);
     onInspect({
       streamUrl: url,
       runId: result.sessionId,
       role: title,
-      highlightTerm: query,
+      highlightTerm: hit ? query : undefined,
       resumeSessionId: resumeTarget?.sessionId ?? null,
       resumeLive: resumeTarget?.live ?? false,
       resumeCanFork: resumeTarget?.canFork ?? false,
@@ -393,8 +450,14 @@ function SearchResultRow({
       focusTarget: searchResultFocusTarget(result) ?? undefined,
     });
   };
-  const top = result.hits[0];
-  const openable = top ? searchHitStreamUrl(result, top, query) !== null : false;
+  const top = result.hits[0] ?? null;
+  /* An id match with no hits is still openable — via the head-of-transcript URL
+     — so the head row must not fall back to the "no transcript viewer" dead
+     state that a hit-less result used to get. */
+  const openTarget: SearchTurnHit | null = top ?? (result.idMatch ? null : undefined) ?? null;
+  const openable = top
+    ? searchHitStreamUrl(result, top, query) !== null
+    : Boolean(result.idMatch) && idMatchStreamUrl(result) !== null;
   return (
     <div className="pc-agents-sessions__result" data-testid={`session-hit-${result.sourceKind}-${result.sessionId}`}>
       <div

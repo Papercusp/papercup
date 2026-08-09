@@ -2147,6 +2147,13 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       stub.on('error', () => {});
       stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
       const outcome = await bootstrapFromPeer(repoPath, stub, { selfDevicePubkey });
+      // WI-37226: this writer replaces the WHOLE `bootstrap` key, so omitting the
+      // miss-run fields DELETES them — and a deleted run reads as "the run ended",
+      // i.e. it would silently CLEAR a real persistent-miss escalation. This path
+      // attempts no dial at all, so it can neither advance a run nor end one: carry
+      // the counter through untouched. (Precisely the accidental-erasure hazard the
+      // WI-6284 comment below warns about, now with a field that would actually hurt.)
+      const priorStubBootstrap = await readPriorBootstrapMeta(slug, workspaceId);
       await patchRoutineMetadata(slug, workspaceId, {
         bootstrap: {
           at: Date.now(),
@@ -2165,6 +2172,9 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
           converged: convergence?.converged ?? null,
           namespaceCount: outcome.namespaces.length,
           skippedExisting: outcome.skippedExisting.length,
+          // WI-37226: carried, not recomputed — see the note above the prior read.
+          consecutiveMisses: priorStubBootstrap?.consecutiveMisses ?? 0,
+          firstMissAt: priorStubBootstrap?.firstMissAt ?? null,
           // EI-18799556647570956: two host processes CAN run this leg concurrently
           // for the same install (nothing here takes a per-install lease), and each
           // `patchRoutineMetadata` call replaces the WHOLE `bootstrap` key — so a
@@ -2388,12 +2398,38 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // connected and exchanging data one second either side. That misreading
       // cost two separate investigations a wrong root cause (this item, and the
       // WI-6299 cold-join drill), so the log now carries the distinction.
-      console.warn(
+      const missBase =
         `[git-sync] ${slug}: bootstrap-tick: no candidate member device was registered in the pot-git dial registry at this instant ` +
-          `(topic ${topicHex.slice(0, 12)}…, dialed: ${dialLog.join(', ')}). ` +
-          `NOTE: "no-path" = registry miss at sample time, NOT proof the peer is unreachable — a churning hello channel ` +
-          `de-registers between ticks. Retried next tick; persistent misses across many ticks are the real signal.`,
-      );
+        `(topic ${topicHex.slice(0, 12)}…, dialed: ${dialLog.join(', ')})`;
+      if (missRunLength >= BOOTSTRAP_PERSISTENT_MISS_THRESHOLD) {
+        // WI-37226: this is the branch the old wording PROMISED and never had. Note what
+        // it does NOT say: it names no cause. The single-miss text below is right that a
+        // miss is not proof of unreachability, and the temptation on a long run is to
+        // upgrade it to a diagnosis ("the peer is dark / the rig is at loginwindow").
+        // That exact upgrade already cost TWO investigations a wrong root cause
+        // (EI-18740968796318403 and the WI-6299 cold-join drill), so what escalates here
+        // is the CONFIDENCE THAT SOMETHING IS WRONG plus the checks that discriminate —
+        // never a verdict this code has no evidence for.
+        const runMin = missRunStartedAt ? Math.max(1, Math.round((Date.now() - missRunStartedAt) / 60_000)) : 0;
+        console.warn(
+          `${missBase}. ⚠ PERSISTENT-MISS ESCALATION: ${missRunLength} consecutive ticks over ~${runMin}m with ZERO dials ` +
+            `for this install. That is past the point hello-channel churn explains — this run is a REAL signal, unlike any ` +
+            `single miss. This log names NO cause; run these to discriminate: ` +
+            `(1) is the peer PROCESS even up? on the macOS rig, bin/vm-rig/preflight-login.sh exits 2 on the kcpassword/` +
+            `loginwindow silent-death class (WI-4070/EI-13010), which presents EXACTLY as a swarm wedge with no error; ` +
+            `(2) is any swarm connection present at all (peer_connected / open channel counts) — if yes, the peers are ` +
+            `talking and this is a registry/topic problem, not reachability; ` +
+            `(3) does the dial topic match the hello channel's topic (the divergence the topicHex above exists to expose). ` +
+            `Run-length + start are persisted at routines.metadata->'bootstrap'.{consecutiveMisses,firstMissAt}.`,
+        );
+      } else {
+        console.warn(
+          `${missBase}. ` +
+            `NOTE: "no-path" = registry miss at sample time, NOT proof the peer is unreachable — a churning hello channel ` +
+            `de-registers between ticks. Retried next tick; persistent misses across many ticks are the real signal ` +
+            `(this run: ${missRunLength}/${BOOTSTRAP_PERSISTENT_MISS_THRESHOLD} before escalation).`,
+        );
+      }
     } else if (outcome.progressed && !outcome.ok) {
       // WI-6189: in-progress, not broken. Logged at info so a converging
       // multi-tick cold-join reads as burn-down rather than a repeating error.

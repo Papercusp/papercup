@@ -145,15 +145,18 @@ export async function setDefaultAccount(
 
 /**
  * The default account id, or undefined when the box's own `~/.claude` login is in force.
- * FAIL-SOFT (mirrors readAccountOverride): a read error yields undefined — i.e. the
- * pre-existing local-login behaviour — so a bad row can never wedge account resolution.
+ *
+ * ⚠ Deliberately does NOT swallow a read error, unlike its `readAccountOverride` sibling.
+ * That one is fail-soft because losing an allow/exclude list only widens the candidate set —
+ * a safe direction. Losing the DEFAULT is not safe in the same way: it silently reroutes
+ * every unpinned call to a DIFFERENT credential (the box's local login) while looking
+ * perfectly healthy, which is precisely the silent-`local`-fallback fault that
+ * `loadPoolOrThrow` in account-resolver was written to eliminate. So "no default is set"
+ * (undefined) and "I could not find out" (throw) stay distinguishable, and each caller
+ * decides — none of them may treat the second as the first.
  */
 export async function readDefaultAccountId(ws?: string): Promise<string | undefined> {
-  try {
-    return (await getAccountOverride(ws ?? activeWorkspaceId())).defaultAccountId;
-  } catch {
-    return undefined;
-  }
+  return (await getAccountOverride(ws ?? activeWorkspaceId())).defaultAccountId;
 }
 
 /**

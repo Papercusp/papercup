@@ -59,6 +59,17 @@ import {
   type HudSearchHit,
   fetchTranscriptSearch,
 } from './hud-board-model';
+/* WI-37204 — the SAME id parser + field matcher the server's id leg runs
+   (GET /adv/sessions/search-transcripts). Importing it rather than re-spelling
+   the shapes here is what keeps "is this query an id?" from drifting between
+   the instant client pass and the server pass, which would show up as the board
+   and the transcript results disagreeing about whether an id matched anything.
+   Safe in a browser bundle: adv-session-search's only imports are type-only, so
+   it erases to a pure module. */
+import {
+  matchSessionIdField,
+  parseSessionIdQuery,
+} from '@papercusp/operator-core/lib/adv-session-search';
 import {
   buildPlanBoard,
   buildWorkItemBoard,
@@ -353,6 +364,24 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     return out;
   }, [entries, rawSessionQuery]);
 
+  /* WI-37204 — sessions the query ADDRESSES by id rather than describes.
+     They are exempt from the board's own narrowing filters (see
+     HudBuildOptions.exemptOwners): naming a session by its unique su id or
+     session id and getting an empty board because the agent is a non-su cup, or
+     sits in a fleet you filtered away earlier, is indistinguishable from the
+     search being broken.
+
+     Computed over the FULL roster, not `searchedEntries` — an entry that
+     matched by id is in `localOwners` anyway (matchesSessionText covers both id
+     fields), so this only ever names sessions that survive the search filter. */
+  const idExemptOwners = useMemo(() => {
+    const token = parseSessionIdQuery(rawSessionQuery);
+    if (!token) return undefined;
+    const out = new Set<string>();
+    for (const e of entries) if (matchSessionIdField(e, token)) out.add(e.ownerId);
+    return out.size > 0 ? out : undefined;
+  }, [entries, rawSessionQuery]);
+
   useEffect(() => {
     const q = sessionQuery.trim();
     // <2 chars is "not searching yet", NOT "no matches" — it must clear the
@@ -462,11 +491,12 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       fleets: selectedFleets,
       plans: selectedPlans,
       searchHits: searchHits ?? undefined,
+      exemptOwners: idExemptOwners,
     });
     const reconciled = reconcileBoardIdentity(prevBoardRef.current, built);
     prevBoardRef.current = reconciled;
     return reconciled;
-  }, [searchedEntries, asks, nowMs, allAgents, selectedFleets, selectedPlans, searchHits]);
+  }, [searchedEntries, asks, nowMs, allAgents, selectedFleets, selectedPlans, searchHits, idExemptOwners]);
 
   const onToggleFleet = useCallback(
     (slug: string | null) => {

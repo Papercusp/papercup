@@ -44,8 +44,11 @@ const lastEdgeThrottleSnapshot = new Map<string, EdgeThrottleSnapshotEntry>();
  * Best-effort snapshot of REAL account-pool availability for the bee provider (accounts:status), used to
  * cross-check the gateway's queue-slot dispatchBudget. Returns undefined on any read failure (fail-safe —
  * a missing cross-check leaves the report byte-identical to before this fix).
+ *
+ * Exported (WI-37161) so `fleet:leader-brief` can build the SAME `CapacityReport` this tool reports —
+ * reuse-first: the alternative was leader-brief forking its own account-pool-availability read.
  */
-async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | undefined> {
+export async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | undefined> {
   try {
     const ws = activeWorkspaceId();
     const { accountStatus } = await import('../../deployment/account-pool-store');

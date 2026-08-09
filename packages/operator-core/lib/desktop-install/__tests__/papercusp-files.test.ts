@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { installPapercuspFiles, resolveInstallPaths, renderSuPlaybook } from '../papercusp-files';
 
 const execFileAsync = promisify(execFile);
@@ -863,5 +864,72 @@ describe('renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002)', 
     });
     expect(r.text).not.toContain('Should NOT appear');
     expect(r.projectGuideSource).toBe('');
+  });
+});
+
+/**
+ * SHARED BASE NOTES reach the LIVE base — the recurrence guard for a 12-day silent drop.
+ *
+ * WHAT BROKE (2026-08-09). `injectSharedBaseNotes` bundles five clauses authored once in code
+ * — deploy-pipeline, wait-loop, peer-wake, COUPLING and state-plane — and anchored them on
+ * PROJECT_GUIDE_MARKER, which doubled as its "is this a real su playbook?" test. The LEGACY
+ * `.tools.md` bases carry that marker; the BLUEPRINT base does not, and never did. When
+ * SU_BLUEPRINT_PERSONA made the blueprint base live, the injector hit its `return text` no-op
+ * and shipped NONE of the five, silently, on every interactive render. Measured before the
+ * fix: the coupling clause appeared in 6 of 5211 rendered launch contexts.
+ *
+ * ⚠ WHY THIS TEST RENDERS THE REAL FILE. Every sibling test above builds a synthetic base in
+ * a tmp dir, and not one of them could have caught this — a hand-built fixture cannot tell
+ * you whether the marker exists in the base that actually ships. Only a check against the
+ * PRODUCER can, which is the same lesson `deriveCouplingsFromRoster` records about
+ * `current_files` being a real field that is always empty. So this reads the blueprint su.md
+ * from the repo, exactly as `buildSuLaunchSpec` resolves it when SU_BLUEPRINT_PERSONA is ON.
+ *
+ * ⚠ AND WHY IT PASSES `baseSource` EXPLICITLY. `renderSuPlaybook({})` renders the LEGACY base
+ * (EI-7075) — which carries PROJECT_GUIDE_MARKER, so the notes land and the test would go
+ * green while the live path stayed broken. That false negative is the exact trap this guard
+ * exists to close; do not "simplify" it by dropping the argument.
+ */
+describe('shared base notes reach the LIVE blueprint base (recurrence guard)', () => {
+  const blueprintBase = new URL(
+    '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
+    import.meta.url,
+  );
+
+  it('the blueprint base carries the bundle anchor', async () => {
+    const base = await fs.readFile(blueprintBase, 'utf8');
+    // If this fails the anchor was removed from the base and every note below is about to
+    // vanish silently — which is precisely how the original bug shipped.
+    expect(base).toContain('<!-- PAPERCUSP-SU:SHARED-BASE-NOTES -->');
+  });
+
+  it('renders all five shared notes, and leaks no marker', async () => {
+    const { text } = await renderSuPlaybook({
+      agent: 'claude',
+      baseSource: fileURLToPath(blueprintBase),
+    });
+    // One assertion per note, named, so a future drop says WHICH clause went missing rather
+    // than "the bundle changed".
+    expect(text, 'coupling note (D-061/D-062: owner said ALL agents)').toContain('## Coupling');
+    expect(text, 'coupling note must teach the declaration verb').toContain('coord:couple');
+    expect(text, 'coupling note must teach the DECOUPLE trigger (D-062)').toContain('coord:decouple');
+    expect(text, 'peer-wake note').toMatch(/wake/i);
+    expect(text, 'state-plane note').toContain('state:read');
+    // No internal marker may ever reach a rendered prompt (psu-prompt-isolation).
+    expect(text).not.toContain('PAPERCUSP-SU:SHARED-BASE-NOTES');
+  });
+
+  /**
+   * THE CONTROL. Without it this suite passes even if `injectSharedBaseNotes` were changed to
+   * append unconditionally — which would push the notes into minimal/test bases that are
+   * meant to stay bare, breaking the no-append contract every other section here honours.
+   * A guard with no control tells you the notes are SOMEWHERE, not that the anchoring works.
+   */
+  it('a base carrying NEITHER anchor is still returned untouched', async () => {
+    const bare = path.join(tmpAppRoot, 'prompts', 'papercusp-su-bare.tools.md');
+    await fs.writeFile(bare, '# Bare base\n\nnothing here.\n');
+    const { text } = await renderSuPlaybook({ agent: 'claude', baseSource: bare });
+    expect(text).not.toContain('## Coupling');
+    expect(text).not.toContain('coord:couple');
   });
 });

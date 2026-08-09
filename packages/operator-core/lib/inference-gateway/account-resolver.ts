@@ -3,8 +3,13 @@
  *
  * Resolution order (first match wins):
  *   1. `PAPERCUSP_ACCOUNT_ID` names a registered pool account → use its credentialRef.
- *   2. The pool has exactly one account → use it (the common single-account case, Q1).
- *   3. Fall back to the box's own login bundle (`~/.claude/.credentials.json`) as account
+ *   2. The owner has marked a pool account DEFAULT → use it
+ *      (default-deploy-account-2026-08-08 P-003). This sits ABOVE the sole-pool-account
+ *      shortcut so an explicit choice still reads as `default-account` in /healthz + logs,
+ *      and a default naming an account that has since been removed falls through rather
+ *      than erroring — a stale default must degrade, never wedge routing.
+ *   3. The pool has exactly one account → use it (the common single-account case, Q1).
+ *   4. Fall back to the box's own login bundle (`~/.claude/.credentials.json`) as account
  *      `local` — so the gateway is runnable on a dev box with no pool account registered yet.
  *
  * The gateway holds the resolved account for its lifetime (one machine = one bound account at a
@@ -14,7 +19,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { CLAUDE_KEYCHAIN_SERVICES } from '../agent-auth-detect';
-import { loadAccountPool } from '../deployment/account-pool-store';
+import { loadAccountPool, readDefaultAccountId } from '../deployment/account-pool-store';
 import {
   accountByCredentialRef,
   type AccountEgress,
@@ -26,9 +31,10 @@ export interface ResolvedAccount {
   accountId: string;
   credentialRef: string;
   /** How it was resolved (for /healthz + logs). `pool` = one entry of a multi-account pool;
+   *  `default-account` = the account the owner marked default in Settings → Deploy accounts;
    *  `sole-pool-account` = the single registered account; `env` = the PAPERCUSP_ACCOUNT_ID pin;
-   *  `local-fallback` = the box's own login (no accounts registered). */
-  source: 'env' | 'pool' | 'sole-pool-account' | 'local-fallback';
+   *  `local-fallback` = the box's own login (no default, no accounts registered). */
+  source: 'env' | 'pool' | 'default-account' | 'sole-pool-account' | 'local-fallback';
   /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress.
    *  Singular/legacy — superseded by a non-empty `egressPool`. */
   egress?: AccountEgress;
@@ -72,8 +78,54 @@ async function loadPoolOrThrow(ws?: string): Promise<AccountPool> {
   );
 }
 
+/**
+ * The owner's default account id, with the SAME retry-then-throw discipline as
+ * `loadPoolOrThrow` above, and for the same reason (default-deploy-account-2026-08-08 P-003).
+ *
+ * Swallowing this read would resurrect the exact fault that function exists to prevent, just
+ * through a different door: an unreadable override row would silently drop the owner's chosen
+ * account and route every unpinned call to the box's `local` credential — healthy-looking,
+ * wrong, and persistent for the gateway's whole lifetime.
+ *
+ * The availability cost of failing closed here is near zero in practice: the override row and
+ * the pool row live in the same Postgres, so a read failure severe enough to exhaust these
+ * retries would already have thrown in `loadPoolOrThrow` a moment earlier. What this must
+ * NOT do is conflate the two outcomes — `undefined` means "the owner set no default", which
+ * is the overwhelmingly common case and proceeds normally.
+ */
+async function loadDefaultAccountIdOrThrow(ws?: string): Promise<string | undefined> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= POOL_LOAD_ATTEMPTS; attempt++) {
+    try {
+      return await readDefaultAccountId(ws);
+    } catch (e) {
+      lastErr = e;
+      if (attempt < POOL_LOAD_ATTEMPTS) {
+        await new Promise<void>((r) => setTimeout(r, POOL_LOAD_BACKOFF_MS * attempt));
+      }
+    }
+  }
+  throw new Error(
+    `inference-gateway: default-account read failed after ${POOL_LOAD_ATTEMPTS} attempts ` +
+      `(${(lastErr as Error)?.message ?? String(lastErr)}); failing closed rather than silently ` +
+      `falling back to this box's local login and ignoring the owner's chosen default account`,
+  );
+}
+
 function accountsFor(pool: AccountPool, provider: AccountProvider) {
   return pool.accounts.filter((a) => (a.provider === 'codex' ? 'codex' : 'claude') === provider);
+}
+
+/**
+ * The pool account the owner marked default, if it is still present and Claude-shaped.
+ * Returns undefined for "no default set" AND for "the default names an account that is gone"
+ * — both mean the caller should carry on down its normal resolution order (D-003).
+ */
+function defaultAccountFrom(
+  accounts: ReturnType<typeof accountsFor>,
+  defaultId: string | undefined,
+) {
+  return defaultId ? accounts.find((a) => a.id === defaultId) : undefined;
 }
 
 /**
@@ -104,12 +156,27 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
     if (acct) return { accountId: acct.id, credentialRef: acct.credentialRef, egress: acct.egress, egressPool: acct.egressPool, source: 'env' };
     throw new Error(`inference-gateway: PAPERCUSP_ACCOUNT_ID='${wanted}' not in the account pool`);
   }
+  // The owner's default outranks the sole-pool shortcut: with one account they agree, but an
+  // explicit choice should still REPORT as `default-account` in /healthz and logs, so "why is
+  // it on this account" is answerable from the source alone.
+  const defaultId = await loadDefaultAccountIdOrThrow(ws);
+  const preferred = defaultAccountFrom(accounts, defaultId);
+  if (preferred) {
+    return {
+      accountId: preferred.id,
+      credentialRef: preferred.credentialRef,
+      egress: preferred.egress,
+      egressPool: preferred.egressPool,
+      source: 'default-account',
+    };
+  }
   if (accounts.length === 1) {
     const a = accounts[0];
     return { accountId: a.id, credentialRef: a.credentialRef, egress: a.egress, egressPool: a.egressPool, source: 'sole-pool-account' };
   }
-  // No env pin and 0 or >1 pool accounts → the box's own login. (>1 with no pin is ambiguous;
-  // the local login is the safe, explicit default rather than guessing which pool account.)
+  // No env pin, no usable default, and 0 or >1 pool accounts → the box's own login. (>1 with no
+  // pin is ambiguous; the local login is the safe, explicit choice rather than guessing which
+  // pool account — which is exactly the ambiguity marking a default resolves.)
   return { accountId: 'local', credentialRef: localLoginCredentialRef(), source: 'local-fallback' };
 }
 
@@ -143,6 +210,26 @@ export async function resolveAccountPool(ws?: string, provider: AccountProvider 
     if (idx < 0) throw new Error(`inference-gateway: PAPERCUSP_ACCOUNT_ID='${wanted}' not in the account pool`);
     const [primary] = all.splice(idx, 1);
     return [{ ...primary, source: 'env' }, ...all];
+  }
+  // The owner's default becomes the failover PRIMARY — reordered to the front, never filtered
+  // to a single entry. That distinction is the whole point (D-003): a default expresses "start
+  // here", so every other account must remain behind it as failover. Narrowing the list would
+  // turn a preference into a hard pin and leave in-process traffic with nothing to fall back
+  // on when that one account hits its rate window.
+  // Claude-only: the default stands in for the Claude local login, so it can never name a
+  // Codex account (setDefaultAccount rejects that). Skipping the read for codex keeps this
+  // path from failing closed on a value that could not have applied to it anyway.
+  const defaultId = provider === 'claude' ? await loadDefaultAccountIdOrThrow(ws) : undefined;
+  if (defaultId) {
+    const idx = all.findIndex((a) => a.accountId === defaultId);
+    // A default naming an account that has since been removed is a stale preference, not an
+    // error: fall through to plain pool order rather than throwing the way the env pin does.
+    // The env pin is set by an operator for one process and should fail loudly if wrong; the
+    // default is persisted config that outlives the account it names.
+    if (idx >= 0) {
+      const [primary] = all.splice(idx, 1);
+      return [{ ...primary, source: 'default-account' }, ...all];
+    }
   }
   return all;
 }

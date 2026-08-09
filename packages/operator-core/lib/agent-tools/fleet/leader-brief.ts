@@ -90,6 +90,9 @@ import type { InvariantEvaluation } from './invariants';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import type { TimeoutBehavior } from '../../events/await/types';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
+import { buildCapacityReport } from '../../fleet/capacity-dispatch';
+import { readBeeProviderAvailability } from './capacity';
 
 export interface LeaderBriefMember {
   agentId: string;

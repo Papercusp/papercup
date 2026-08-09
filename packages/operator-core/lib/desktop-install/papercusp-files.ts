@@ -20,7 +20,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
-import { spliceAtMarker, spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER, COMPACTION_CLIENT_OVERLAY_MARKER, RESULT_DOOR_MARKER } from './splice-tooling-overlay';
+import { spliceAtMarker, spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER, COMPACTION_CLIENT_OVERLAY_MARKER, RESULT_DOOR_MARKER, SHARED_BASE_NOTES_MARKER } from './splice-tooling-overlay';
 import { renderResultDoorSection } from '../result-door-prompt';
 import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
@@ -378,11 +378,25 @@ async function resolveProjectGuideText(
  * not buried under the 600-line guide.
  */
 function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean } = {}): string {
-  // Anchor on the project-guide marker: it is the one marker still un-spliced at this point AND a
-  // reliable "this is a real su playbook" signal (engineer/power carry it; minimal/test bases do
-  // not). Insert the notes just BEFORE it; NEVER append, so a marker-less base is returned untouched
-  // (mirrors spliceGeneratedSection's no-append contract).
-  if (!text.includes(PROJECT_GUIDE_MARKER)) return text;
+  // TWO anchors, in priority order — see SHARED_BASE_NOTES_MARKER's doc-comment for the
+  // 12-day silent drop that made the second one necessary.
+  //
+  //  1. SHARED_BASE_NOTES_MARKER — the bundle's OWN marker. The blueprint base
+  //     (libs/papercusp/.../blueprints/base/prompts/su.md) carries this; it is what the live
+  //     interactive render uses under SU_BLUEPRINT_PERSONA.
+  //  2. PROJECT_GUIDE_MARKER — the legacy anchor, kept so the .tools.md bases keep their
+  //     existing placement (notes just BEFORE the project guide) with no edit.
+  //
+  // A base carrying NEITHER is returned untouched, which preserves the no-append contract for
+  // minimal/test bases. That branch used to be reachable by the LIVE base, which is the bug:
+  // "absent marker ⇒ silently ship nothing" is right for an optional section and wrong for a
+  // mandatory one, so the notes now own an anchor instead of borrowing the project guide's.
+  const anchor = text.includes(SHARED_BASE_NOTES_MARKER)
+    ? SHARED_BASE_NOTES_MARKER
+    : text.includes(PROJECT_GUIDE_MARKER)
+      ? PROJECT_GUIDE_MARKER
+      : '';
+  if (!anchor) return text;
   const { repoSpecific = true } = opts;
   const notes = [
     // REPO-SPECIFIC: the deploy-pipeline note names :3070, the green gate and this repo's
@@ -407,8 +421,17 @@ function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean } = 
     // tools, not repo tools, so a power-profile session needs this exactly as much.
     renderStatePlaneNote(),
   ].filter((n) => n && n.trim());
+  const body = notes.join('\n\n');
+  if (anchor === SHARED_BASE_NOTES_MARKER) {
+    // The bundle's own marker is CONSUMED — replaced by the notes, or removed outright when
+    // there are none, so an internal marker can never leak into a rendered prompt
+    // (psu-prompt-isolation). Same contract as spliceGeneratedSection.
+    return text.split(SHARED_BASE_NOTES_MARKER).join(body);
+  }
+  // Legacy anchor: insert BEFORE the project guide and LEAVE the marker in place — the guide
+  // splice that runs after us still needs it.
   if (notes.length === 0) return text;
-  return text.split(PROJECT_GUIDE_MARKER).join(`${notes.join('\n\n')}\n\n${PROJECT_GUIDE_MARKER}`);
+  return text.split(PROJECT_GUIDE_MARKER).join(`${body}\n\n${PROJECT_GUIDE_MARKER}`);
 }
 
 /**

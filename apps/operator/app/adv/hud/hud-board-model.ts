@@ -155,6 +155,19 @@ export interface HudRosterEntry {
   /** When the session (or its launch record) started. Optional for the same
    *  reason as `display`. */
   startedAt?: string | null;
+  /**
+   * The agent's NATIVE session id (the claude uuid) and, for omp, its thread
+   * id. Both have always ridden on the roster payload (adv-roster's
+   * `RosterEntry.sessionId` / `.ompThreadId`); they were simply never TYPED
+   * here, which is why `matchesSessionText` could not search them and pasting a
+   * session id into the board's search box matched nothing (WI-37204).
+   *
+   * Optional for the same reason as `display`: a presence-derived row, a
+   * pending launch, and a payload from an older operator all legitimately carry
+   * neither.
+   */
+  sessionId?: string | null;
+  ompThreadId?: string | null;
 }
 
 /** How long a terminal-spawned launch may sit un-registered before the board
@@ -703,6 +716,25 @@ export interface HudBuildOptions {
    *  transcript, which is a real and different state — hence a map rather than
    *  a field on the roster entry. */
   searchHits?: ReadonlyMap<string, HudSearchHit>;
+  /**
+   * Owners the board's own narrowing filters (`suOnly`, `fleets`, `plans`) must
+   * NOT drop (WI-37204).
+   *
+   * These filters run AFTER the search filter, so before this existed a search
+   * could resolve a session exactly — by its full su id or session id — and the
+   * board would still show nothing, because the matched agent happened to be a
+   * non-su cup, or to sit in a fleet the human had filtered away an hour
+   * earlier. The filters read as "narrow what I'm browsing"; naming a session
+   * by its unique id is not browsing, it is addressing, and an address that
+   * silently resolves to an empty board is indistinguishable from a broken
+   * search — which is exactly the complaint this work item came from.
+   *
+   * Deliberately scoped to ID matches only, not to every search hit: a text
+   * query is browsing, so it stays subject to the filters (otherwise typing a
+   * common word would blow past the su-only toggle and rebuild the ~85-agent
+   * firehose the board exists to replace).
+   */
+  exemptOwners?: ReadonlySet<string>;
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -804,6 +836,15 @@ export function matchesSessionText(e: HudRosterEntry, q: string): boolean {
     e.fleetRole,
     e.currentPlanSlug,
     e.harnessSlug,
+    // WI-37204 (owner ask 2026-08-08 — "search by the su id and the session
+    // id"). `ownerId` above already answered the su id; these are the OTHER
+    // handle a human holds for a session, and the one that turns up in logs,
+    // `--resume` lines and work-item bodies. Not visible on the card, so they
+    // are a deliberate exception to the see-it-on-the-card rule in this
+    // function's header: an id is not something you'd match by accident, and a
+    // human who types one is naming exactly one session.
+    e.sessionId,
+    e.ompThreadId,
     ...e.claims.flatMap((c) => [c.id, c.planSlug]),
   ];
   for (const v of hay) {
@@ -1260,10 +1301,17 @@ export function buildHudBoard(
   const nowMs = options.nowMs;
   const byOwner = asksByOwner(asks);
 
-  let entries = options.suOnly === false ? roster : roster.filter(isSuSession);
+  /* WI-37204: an id-addressed session is exempt from the narrowing filters
+     below — see `exemptOwners`. An empty/absent set makes every `exempt(…)`
+     call false, i.e. the pre-existing behaviour exactly. */
+  const exemptOwners = options.exemptOwners;
+  const exempt = (ownerId: string) => Boolean(exemptOwners?.has(ownerId));
+
+  let entries =
+    options.suOnly === false ? roster : roster.filter((e) => isSuSession(e) || exempt(e.ownerId));
   if (options.fleets && options.fleets.length > 0) {
     const want = new Set(options.fleets);
-    entries = entries.filter((e) => want.has(e.fleetSlug));
+    entries = entries.filter((e) => want.has(e.fleetSlug) || exempt(e.ownerId));
   }
 
   const inView = entries.map((e) =>
@@ -1292,7 +1340,7 @@ export function buildHudBoard(
   let sessions = inView;
   if (options.plans && options.plans.length > 0) {
     const wantPlans = new Set(options.plans);
-    sessions = inView.filter((s) => wantPlans.has(s.planSlug));
+    sessions = inView.filter((s) => wantPlans.has(s.planSlug) || exempt(s.ownerId));
   }
 
   const counts: Record<HudColumnId, number> = {

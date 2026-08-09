@@ -8,6 +8,7 @@ import {
   type JudgeCandidate,
   type JudgeSection,
   type ContradictionCensus,
+  type ContradictionJudgeFn,
 } from './doc-contradiction-judge';
 
 const candidate = (a: string, b: string, similarity: number): JudgeCandidate => ({
@@ -177,7 +178,10 @@ describe('judgeContradictions — judging', () => {
   });
 
   it('the cap asks the HIGHEST-similarity pairs and counts the rest as unasked', async () => {
-    const judge = vi.fn(async () => ({ contradicts: false, reason: '' }));
+    const judge = vi.fn(async (_pair: Parameters<ContradictionJudgeFn>[0]) => ({
+      contradicts: false,
+      reason: '',
+    }));
     const report = await judgeContradictions({
       ...baseOpts,
       maxJudged: 1,

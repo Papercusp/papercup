@@ -32,6 +32,7 @@ vi.mock('../../p2p/work-intake-tick', () => ({
 
 import {
   ensureWorkIntakeRoutineInactive,
+  recordWorkIntakeHealth,
   WORK_INTAKE_ROUTINE_NAME,
   type PartialWorkIntakeHostIdentity,
 } from './work-intake-action';
@@ -99,5 +100,73 @@ describe('ensureWorkIntakeRoutineInactive (WI-6680 D3)', () => {
     // No upsert at all — this is what stops a boot hook from clobbering an
     // owner's activation and their supplied sourceRepoPath on every restart.
     expect(upsertRoutineMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-37205 — the tick's OUTCOME must be recorded durably, on EVERY path.
+ *
+ * `routines.last_fired_at` is stamped by claim.ts at DISPATCH time, before this
+ * handler runs, so it proves the routine was dispatched and nothing more. Without
+ * an outcome record these three states are indistinguishable from outside:
+ * healthy-idle, body-threw, and body-never-completed. That ambiguity is why the
+ * P-205 pull leg could not be shown healthy-and-idle for weeks.
+ */
+describe('recordWorkIntakeHealth (WI-37205 — a healthy idle scan must be PROVABLE)', () => {
+  /** Tagged-template stand-in that captures the SQL text and its bound values. */
+  function capturingSql() {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      return Promise.resolve([] as unknown[]);
+    };
+    return { sql: fn as unknown as Parameters<typeof recordWorkIntakeHealth>[2], calls };
+  }
+
+  it('writes an intake_health record even when the scan found NOTHING', async () => {
+    const { sql, calls } = capturingSql();
+
+    await recordWorkIntakeHealth({ workspaceId: 'ws-1', installSlug: 'papercusp' }, { scanned: 0, error: null }, sql);
+
+    // The regression this pins: an idle tick that writes nothing is the original bug.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain('intake_health');
+    expect(calls[0]!.values).toContain('ok');
+    // A zero scan must still stamp last_scan_at — that timestamp going STALE while
+    // last_fired_at stays fresh is the ONLY external signal of a body that never ran.
+    expect(calls[0]!.text).toContain('last_scan_at');
+  });
+
+  it('scopes the write on BOTH workspace_id and install_slug (routines is multi-tenant)', async () => {
+    const { sql, calls } = capturingSql();
+
+    await recordWorkIntakeHealth({ workspaceId: 'ws-1', installSlug: 'papercusp' }, { scanned: 0, error: null }, sql);
+
+    const { text, values } = calls[0]!;
+    // A name-only filter would silently update ANOTHER tenant's routine row.
+    expect(text).toContain('workspace_id');
+    expect(text).toContain('install_slug');
+    expect(values).toContain('ws-1');
+    expect(values).toContain('papercusp');
+    expect(values).toContain(WORK_INTAKE_ROUTINE_NAME);
+  });
+
+  it('records a FAILED tick as error rather than as a silent gap', async () => {
+    const { sql, calls } = capturingSql();
+
+    await recordWorkIntakeHealth({ workspaceId: 'ws-1', installSlug: 'papercusp' }, { scanned: null, error: 'boom' }, sql);
+
+    expect(calls[0]!.values).toContain('error');
+    expect(calls[0]!.values).toContain('boom');
+  });
+
+  it('never throws when the health write itself fails (an instrument must not break the routine)', async () => {
+    const exploding = (() => Promise.reject(new Error('pg down'))) as unknown as Parameters<
+      typeof recordWorkIntakeHealth
+    >[2];
+
+    await expect(
+      recordWorkIntakeHealth({ workspaceId: 'ws-1', installSlug: 'papercusp' }, { scanned: 0, error: null }, exploding),
+    ).resolves.toBeUndefined();
   });
 });
