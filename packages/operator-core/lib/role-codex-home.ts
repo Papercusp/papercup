@@ -987,6 +987,7 @@ export function writeSuCodexHome(opts: {
     coordSid: opts.sid,
     activitySid: opts.sid,
     objectiveSid: opts.sid,
+    injectSid: opts.sid,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: opts.sid, hooksConfigured: hooksInstalled });
   const agentsText = codexAgentsPrompt(opts.promptText, lockRuntime);

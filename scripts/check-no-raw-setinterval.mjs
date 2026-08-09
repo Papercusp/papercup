@@ -54,6 +54,51 @@ export const ALLOWLIST_DIRS = [
   'libs/testing-shell/', // test-shell RUNNER processes (stagehand-runner) — own process per run, no host registry
 ];
 
+/**
+ * BROWSER/CLIENT `.ts` — run in the webview, not the host; cannot reach the server-side
+ * registry (verified client-side: window./document./useEffect/MediaRecorder).
+ *
+ * SPLIT OUT AS ITS OWN EXPORT DELIBERATELY (P-026): these files are exempt HERE only
+ * because they are HANDED OFF to `check-timer-classification.mjs`, whose CLIENT scan
+ * classifies them instead — this guard asks "is it visible in schedule:inventory?", a
+ * question a renderer timer structurally cannot answer. A file that leaves this guard
+ * without arriving at that one is checked by NEITHER, which is a silent hole rather than
+ * a loud failure.
+ *
+ * The handoff is therefore an INVARIANT, asserted by `client-timer-classification.test.ts`:
+ * every entry here must also be in that guard's CLIENT_TS_FILES. Membership is a named
+ * SET rather than a comment section because the previous arrangement encoded "is this
+ * browser/client?" as *comment placement* — two of these entries already sit under the
+ * "Separate processes" heading with their own inline `// browser ...` note, so any check
+ * that read the section header would have mis-partitioned them. Anchor the property to a
+ * declaration, never to how a comment happens to be spelled (CLAUDE.md § shared-lib
+ * singletons documents three population corrections caused by exactly that mistake).
+ */
+export const BROWSER_CLIENT_ALLOWLIST = new Set([
+  'apps/operator/app/_components/SetupWizard/useWizardStatuses.ts',
+  'apps/operator/app/_components/voice/voice-leader.ts',
+  'apps/operator/app/admin/plans/plans-api.ts',
+  'apps/operator/app/admin/testing/_lib/vitals-recorder.ts',
+  'apps/operator/lib/ui/use-ui-presence.ts',
+  'apps/operator-vite/src/lib/video/camera-capture.ts',
+  'packages/operator-core/lib/voice-engines/deepgram.ts', // browser STT adapter — window.setInterval + MediaRecorder, runs in the webview not the host
+  'apps/operator/app/_components/useWslGateBlocking.ts', // browser hook -- window.setInterval polling wsl_status in the webview, not the host
+  'packages/operator-core/lib/operator-window-sync.ts', // browser cross-window localStorage sync (lease heartbeat) -- window/StorageEvent, only imported by OperatorConversationProvider.tsx; not a host timer
+]);
+
+/**
+ * Separate processes that don't share the operator registry. NOT handed off to the
+ * client scan — these are host-SHAPED, just in another process, so no other guard
+ * covers them and none should.
+ */
+export const SEPARATE_PROCESS_ALLOWLIST = new Set([
+  'packages/operator-core/lib/deployment/cross-hive-frame.ts', // cross-hive e2e spike child process
+  'packages/operator-core/lib/inference-gateway/gateway.ts', // runs INSIDE the :8788 inference-gateway process
+  'packages/operator-core/lib/inference-gateway/launch.ts', // :8788 gateway process bootstrap
+  'packages/operator-core/lib/inference-gateway/watchdog.mjs', // standalone systemd watchdog for the gateway
+  'apps/operator/lib/mcp-proxy/watchdog.mjs', // standalone systemd watchdog for mcp-proxy -- plain node, no TS imports (deliberately dependency-free, same class as inference-gateway/watchdog.mjs)
+]);
+
 /** Permanently-allowed individual files (rare; prefer ALLOWLIST_DIRS). */
 export const ALLOWLIST = new Set([
   // This guard itself: its console messages + the detection regex literally contain
@@ -71,23 +116,8 @@ export const ALLOWLIST = new Set([
   // dependency to the one component whose whole job is to keep running when the main
   // thread cannot. Same rationale as the ALLOWLIST_DIRS "separate procs" entries.
   'packages/operator-core/lib/event-loop-sentinel.worker.ts',
-  // Browser/client .ts — run in the webview, not the host; cannot reach the server-side
-  // registry (verified client-side: window./document./useEffect/MediaRecorder).
-  'apps/operator/app/_components/SetupWizard/useWizardStatuses.ts',
-  'apps/operator/app/_components/voice/voice-leader.ts',
-  'apps/operator/app/admin/plans/plans-api.ts',
-  'apps/operator/app/admin/testing/_lib/vitals-recorder.ts',
-  'apps/operator/lib/ui/use-ui-presence.ts',
-  'apps/operator-vite/src/lib/video/camera-capture.ts',
-  'packages/operator-core/lib/voice-engines/deepgram.ts', // browser STT adapter — window.setInterval + MediaRecorder, runs in the webview not the host
-  // Separate processes that don't share the operator registry.
-  'packages/operator-core/lib/deployment/cross-hive-frame.ts', // cross-hive e2e spike child process
-  'packages/operator-core/lib/inference-gateway/gateway.ts', // runs INSIDE the :8788 inference-gateway process
-  'packages/operator-core/lib/inference-gateway/launch.ts', // :8788 gateway process bootstrap
-  'packages/operator-core/lib/inference-gateway/watchdog.mjs', // standalone systemd watchdog for the gateway
-  'apps/operator/lib/mcp-proxy/watchdog.mjs', // standalone systemd watchdog for mcp-proxy -- plain node, no TS imports (deliberately dependency-free, same class as inference-gateway/watchdog.mjs)
-  'apps/operator/app/_components/useWslGateBlocking.ts', // browser hook -- window.setInterval polling wsl_status in the webview, not the host
-  'packages/operator-core/lib/operator-window-sync.ts', // browser cross-window localStorage sync (lease heartbeat) -- window/StorageEvent, only imported by OperatorConversationProvider.tsx; not a host timer
+  ...BROWSER_CLIENT_ALLOWLIST,
+  ...SEPARATE_PROCESS_ALLOWLIST,
 ]);
 
 /**
