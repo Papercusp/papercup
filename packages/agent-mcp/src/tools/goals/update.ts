@@ -161,7 +161,14 @@ export default defineTool({
     if (args.status !== undefined && isStoppingStatus(args.status)) {
       const executor = getGoalStopExecutor();
       if (executor) {
-        const workspaceId = await resolveGoalWorkspace(ctx);
+        // UnifiedToolContext carries NO top-level workspaceId — only
+        // principal.workspaceId (EI-18884122799901600) — so pass the two fields
+        // explicitly rather than the whole ctx. The GUC still wins inside the
+        // resolver; this is only the fallback leg.
+        const workspaceId = await resolveGoalWorkspace({
+          tx: ctx.tx,
+          workspaceId: ctx.principal?.workspaceId,
+        });
         if (!workspaceId) {
           // Refuse rather than fan out against the wrong tenant: gating placement
           // in a workspace the goal does not live in would stop unrelated work.
@@ -172,7 +179,7 @@ export default defineTool({
               goalId: args.id,
               workspaceId,
               status: args.status,
-              actor: ctx.principal?.ownerId ?? null,
+              actor: ctx.principal?.slug ?? null,
             });
           } catch (e) {
             // The status write STANDS even when the stop fails: the owner's intent

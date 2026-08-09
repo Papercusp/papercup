@@ -235,3 +235,79 @@ describe('leaderBrief survives the result-door for a fleet leader under a large 
     expect('leaderBrief' in notALeader).toBe(false);
   });
 });
+
+/** EI-20013545515660920: `laneClaim` says whether the caller actually HOLDS the
+ *  `planItems` lane it just asked for. It is the same class of defect as
+ *  leaderBrief above: losing it to the door leaves `intentDeclared: true` as the
+ *  only visible signal, and an agent then believes it holds a lane it does not
+ *  hold — surfacing later as a double-placement, far from the call site.
+ *
+ *  Placement is the whole fix. The field is useless in `resultRest` (tier 4,
+ *  beside `intentDeclared`), which is exactly the mistake WI-6749 recorded for
+ *  leaderBrief: the fold was enabled and the key still never arrived. */
+describe('laneClaim survives the result-door under a large preamble', () => {
+  const LANE_WARNING_MARKER = 'LANE-CLAIM-WARNING-CANARY';
+
+  function laneResult() {
+    return {
+      ok: true,
+      me: ME_MARKER,
+      claimable: [],
+      inbox: { summary: {}, recent: [] },
+      intentDeclared: true,
+      laneClaim: {
+        requested: ['P-005', 'P-046'],
+        claimed: [],
+        alreadyHeld: [],
+        released: [],
+        conflicts: [],
+        unknown: ['P-005', 'P-046'],
+        warning: LANE_WARNING_MARKER,
+      },
+      memory: { hits: ['DISCRETIONARY-TAIL-SHOULD-SPILL'.repeat(200)] },
+    };
+  }
+
+  it('is present in the KEPT text, not only the spill', () => {
+    const out = assembleOrientOutput({
+      self: { ownerId: 'su-test' },
+      result: laneResult(),
+      ...bigPreamble('preamble'),
+    });
+
+    const doored = doorify(out);
+    expect(doored.content).toHaveLength(2); // truncation DID occur — the door was exercised
+    const kept = (doored.content[0] as { text: string }).text;
+    expect(kept).toContain(LANE_WARNING_MARKER);
+  });
+
+  it('regression guard: left in the result tail (the pre-fix shape), the warning is lost to the spill', () => {
+    // Proves this suite discriminates the bug rather than passing vacuously — a
+    // laneClaim nobody can read is the silent no-op wearing a new field name.
+    const preamble = bigPreamble('preamble');
+    const preFixOrder = {
+      self: { ownerId: 'su-test' },
+      ok: true,
+      me: ME_MARKER,
+      claimable: [],
+      inbox: { summary: {}, recent: [] },
+      ownerDirectives: preamble.ownerDirectives,
+      instructionPrecedence: preamble.instructionPrecedence,
+      taskToolSchemaPack: preamble.taskToolSchemaPack,
+      // <- pre-fix: laneClaim would ride `resultRest`, after every preamble leg.
+      laneClaim: { requested: ['P-005'], claimed: [], warning: LANE_WARNING_MARKER },
+    };
+
+    const doored = doorify(preFixOrder);
+    const kept = (doored.content[0] as { text: string }).text;
+    expect(kept).not.toContain(LANE_WARNING_MARKER);
+  });
+
+  it('the key is absent when no planItems were requested (never a silent empty report)', () => {
+    const noLane = assembleOrientOutput({
+      self: { ownerId: 'su-test' },
+      result: { ok: true, me: ME_MARKER, intentDeclared: true },
+    });
+    expect('laneClaim' in noLane).toBe(false);
+  });
+});

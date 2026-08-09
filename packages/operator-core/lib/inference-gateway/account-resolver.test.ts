@@ -196,9 +196,12 @@ describe('resolveBoundAccount', () => {
   });
 
   it('a default naming a CODEX account never matches the Claude pool (it degrades instead)', async () => {
-    // setDefaultAccount rejects a Codex id at the write, so this is defence in depth for a row
-    // written before that validation existed — it must degrade, not egress Claude traffic on a
-    // Codex credential.
+    // ⚠ This is now a FIRST-CLASS supported state, not defence in depth. Until
+    // inference-rename-and-provider-agnostic-default-2026-08-09 P-003, setDefaultAccount rejected
+    // a Codex id at the write, so this test guarded a row that "should not exist"; a Codex
+    // default is now a normal thing an owner can set from the UI. Do not delete this as
+    // unreachable — it is the guard that Claude traffic never egresses on a Codex credential,
+    // and it is exercised every time someone sets a Codex default.
     mockedLoad.mockResolvedValue({
       accounts: [acct('claude-a', 'ref:claude-a'), acct('codex-a', 'ref:codex-a', { provider: 'codex' })],
     });

@@ -43,7 +43,7 @@ import os from 'node:os';
  *
  * The `event` column is plain `text` with NO check constraint, so widening this union needs
  * no migration — but the column COMMENT is the schema's own documentation of the vocabulary,
- * so a new member belongs in both (see migration 786 for `revived`).
+ * so a new member belongs in both (see migration 780 for `revived`).
  */
 export type LoopTransitionEvent = 'parked' | 'rearmed' | 'disarmed' | 'revived';
 

@@ -4,6 +4,7 @@ import {
   orientServedDelta,
   orientRoleFolds,
   assembleOrientOutput,
+  summarizeLaneClaim,
   ORIENT_MEMORY_NOTE,
   ORIENT_DEEP_WORK_NOTE,
 } from './orient';

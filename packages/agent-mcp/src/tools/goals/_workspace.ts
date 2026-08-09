@@ -13,7 +13,11 @@ import type { Sql } from 'postgres';
 
 export async function resolveGoalWorkspace(ctx: {
   tx: unknown;
-  workspaceId?: string;
+  // Widened to `null` as well as `undefined`: the goals tools are reached through
+  // two different context types (the tooldef ctx and UnifiedToolContext) and only
+  // one of them declares this optional. Accepting both keeps one resolver for all
+  // of them rather than forking the rule per call site.
+  workspaceId?: string | null;
 }): Promise<string | null> {
   const tx = ctx.tx as Sql;
   const [gucRow] = await tx<Array<{ ws: string | null }>>`
