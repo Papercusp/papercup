@@ -63,6 +63,45 @@ function argInt(name: string, fallback: number): number {
 /** The ref grammar the v2 bodySql uses — {2,20}, NOT ref-expand.ts's {2,5}. */
 const REF_TOKEN = /\b(?:WI|EI|F|D)-\d{2,20}\b/g;
 
+const STOPWORDS = new Set([
+  'that', 'this', 'with', 'from', 'into', 'when', 'then', 'than', 'they', 'them', 'their', 'have',
+  'has', 'had', 'was', 'were', 'been', 'being', 'does', 'not', 'never', 'always', 'only', 'also',
+  'because', 'which', 'what', 'while', 'would', 'could', 'should', 'about', 'after', 'before',
+  'every', 'some', 'more', 'most', 'less', 'over', 'under', 'each', 'both', 'same', 'such', 'like',
+]);
+
+/** Deterministic 32-bit hash — makes the keyword subset reproducible across runs. */
+function hash32(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/**
+ * A DEGRADED query: roughly half the title's content words, in title order.
+ *
+ * The verbatim-title arm is a ceiling because the query IS the injected string.
+ * This arm approximates a user who remembers only part of what they are after,
+ * which breaks the exact-substring advantage while staying derived from real
+ * text. It is NOT a paraphrase — no synonym substitution happens — so it
+ * brackets the true effect from below-ish rather than estimating it exactly.
+ */
+function degradedQuery(title: string, seed: string): string {
+  const words = title.split(/\s+/).filter((w) => w.length >= 4 && !STOPWORDS.has(w.toLowerCase()));
+  if (words.length < 4) return '';
+  const keep = Math.max(3, Math.ceil(words.length / 2));
+  // Rank words by a seeded hash, keep the top `keep`, then restore title order.
+  const ranked = words
+    .map((w, i) => ({ w, i, r: hash32(`${seed}:${w}:${i}`) }))
+    .sort((a, b) => a.r - b.r)
+    .slice(0, keep)
+    .sort((a, b) => a.i - b.i);
+  return ranked.map((x) => x.w).join(' ');
+}
+
 interface PoolDoc {
   id: string;
   v1Text: string;
@@ -240,9 +279,9 @@ async function main(): Promise<void> {
   const candidateQueries = [...referencedBy.entries()]
     .map(([ref, docIds]) => {
       const text = (refTitle.get(ref) ?? '').replace(REF_TOKEN, ' ').replace(/\s+/g, ' ').trim();
-      return { ref, text, relevantIds: [...new Set(docIds)] };
+      return { ref, text, degraded: degradedQuery(text, ref), relevantIds: [...new Set(docIds)] };
     })
-    .filter((q) => q.text.length >= 20)
+    .filter((q) => q.text.length >= 20 && q.degraded.length > 0)
     .sort((a, b) => b.relevantIds.length - a.relevantIds.length)
     .slice(0, queriesWanted);
 

@@ -218,6 +218,10 @@ async function setup() {
     override: {
       recency?: { halfLifeMs: number; weight: number; freshWindowMs: number } | false;
       groupBy?: (hit: SearchHit) => string | null;
+      // 'embeddings' runs ONLY the vector ranker (hybrid.ts:277-284). Read the
+      // caveat on the semantic-only variant below before adding a row that uses
+      // it: it is not a one-knob change.
+      mode?: 'embeddings' | 'hybrid';
     } = {},
   ) => {
     const { results, legs, totalGroups } = await runHybridSearch(sources, {
@@ -226,7 +230,7 @@ async function setup() {
       workspaceId: activeWorkspaceId(),
       scopeFilter: null,
       limit: HIT_LIMIT,
-      mode: 'hybrid',
+      mode: override.mode ?? 'hybrid',
       embedder,
       embedTimeoutMs: 30_000,
       // Measure what the owner actually experiences, not a cleaner
@@ -354,18 +358,60 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
         // cannot earn that leg's vote at all, so it is the one knob that can
         // deny a candidate points rather than merely reweight it.
         ['no fresh-window leg', { recency: { ...PROD_RECENCY, freshWindowMs: 0 } }],
+        // SEMANTIC LEG ALONE — does the vector ranker retrieve these sessions at
+        // all? That is the question that separates a FUSION failure (the legs
+        // find them; the fusion buries them) from a RETRIEVAL failure (nothing
+        // finds them), and the two have opposite fixes: EI-20004037141980473's
+        // fresh-leg double-vote versus P-035's BM25 extension.
+        //
+        // ⚠ mode:'embeddings' drops the BM25 legs, but it ALSO drops the
+        // fresh-window leg — hybrid.ts:392 gates that on mode === 'hybrid'. So
+        // against the production control it is TWO knobs, and one-knob-per-row
+        // is this diagnostic's whole discipline. Pairing it with freshWindowMs:0
+        // makes it a clean ONE-knob delta against the row ABOVE instead, and
+        // that delta is exactly the lexical leg's contribution.
+        //
+        // The floor is NOT a third knob: mode reaches the host minScore policy
+        // (hybrid.ts:294), but that policy branches only on mode === 'fulltext'
+        // (configure-search-defaults.ts:51-58), so 'hybrid' and 'embeddings'
+        // resolve an identical floor. Verified by reading the policy.
+        [
+          'semantic alone (vs row above)',
+          { mode: 'embeddings', recency: { ...PROD_RECENCY, freshWindowMs: 0 } },
+        ],
         ['no recency at all', { recency: false }],
         ['+ session dedup', { groupBy: bySession }],
         ['no recency + session dedup', { recency: false, groupBy: bySession }],
       ];
 
       const rows: string[] = [];
+      const controlLabel = variants[0][0];
       for (const [label, override] of variants) {
         const { results, legs, totalGroups } = await search('theory', override);
-        if (skipIfDegraded(legs, t)) return;
+        // A degraded CONTROL is uncertifiable: it is the baseline every other
+        // row is read against, so the whole report goes — that is the D-031
+        // discipline skipIfDegraded exists for. A degraded VARIANT costs only
+        // its own row.
+        //
+        // This loop previously returned on ANY degrade, while the rows are
+        // console.logged only AFTER it — so one flaky embed silently discarded
+        // every measurement already taken. The embed runs on a budget that does
+        // time out on this corpus, and the semantic-only row above depends on
+        // it entirely, which is what makes that pre-existing edge likely rather
+        // than theoretical.
+        if (legs?.degraded) {
+          if (label === controlLabel) {
+            skipIfDegraded(legs, t);
+            return;
+          }
+          rows.push(
+            `  ${label.padEnd(29)} SKIPPED — ${legs.warning ?? 'a ranker leg did not run'}`,
+          );
+          continue;
+        }
         const distinct = new Set(results.map(sessionOf)).size;
         rows.push(
-          `  ${label.padEnd(28)} recall ${found(results)}/${tomSessions.length}` +
+          `  ${label.padEnd(29)} recall ${found(results)}/${tomSessions.length}` +
             `  page ${results.length} rows / ${distinct} distinct sessions` +
             (totalGroups === undefined ? '' : ` (pool held ${totalGroups})`),
         );

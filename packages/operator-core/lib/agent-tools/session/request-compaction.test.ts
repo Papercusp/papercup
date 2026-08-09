@@ -264,7 +264,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(b).toMatchObject({
       ok: true,
       requested: true,
-      respawn: true,
+      respawn: 'queued',
       budgetChars: 24_000,
       firstPromptSource: 'continuation-note',
     });
@@ -313,7 +313,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     findLiveHost.mockReturnValue(carryHost);
     const b = body(await call({ focus: 'x', autoContinue: false }));
     expect(injected().mode).toBe('carry-respawn');
-    expect(b).toMatchObject({ ok: true, respawn: true });
+    expect(b).toMatchObject({ ok: true, respawn: 'queued' });
   });
 
   it('no live psu-pty host → clean no_live_pty_host error, nothing injected', async () => {
@@ -330,7 +330,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     const msg = injected();
     expect(msg.mode).toBe('carry-respawn');
     expect(msg.data.length).toBeGreaterThan(0); // DEFAULT_FOCUS folded into the note
-    expect(b).toMatchObject({ ok: true, respawn: true });
+    expect(b).toMatchObject({ ok: true, respawn: 'queued' });
   });
 
   it('a failed socket write (injectIntoHost=false) surfaces requested:false, respawn:false', async () => {
