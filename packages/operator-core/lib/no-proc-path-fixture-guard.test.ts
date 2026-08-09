@@ -15,7 +15,8 @@
  */
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
+// @ts-ignore — imported for its predicates. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
+// ⚠ This comment used to say "pure JS guard script, no .d.ts". That is FALSE and it cost real time (WI-37450): scripts/check-no-proc-path-fixture.d.mts is a TRACKED, GENERATED declaration (tsconfig.declarations.json + `npm run gen:declarations`) and it is what TypeScript actually reads here — the .mjs is never consulted for types. So a signature fix applied to the .mjs alone changes NOTHING for this file and reads as "my fix didn't work": the declaration must be REGENERATED. That is exactly how `findOffenders(cwd)` stayed a TS2554 here while red-pinning the fleet gate.
 import { findProcFixtureOffenders, classifyProcSegment, stripComments, KNOWN_PROCFS_ENTRIES, ALLOWLIST, findOffenders } from '../../../scripts/check-no-proc-path-fixture.mjs';
 
 import { UNWRITABLE_PATH_FIXTURE, UNWRITABLE_PATH_ROOT, unwritablePath } from './testing/unwritable-path';

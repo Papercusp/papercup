@@ -23,7 +23,7 @@ export function findProcFixtureOffenders(text: any): {
     segment: string;
     literal: string;
 }[];
-export function findOffenders(cwd: any): {
+export function findOffenders(cwd?: string): {
     offenders: {
         segment: string;
         literal: string;
