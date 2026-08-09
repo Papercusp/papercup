@@ -182,11 +182,19 @@ export const PRESENCE_LIVENESS_FIELDS = [
  * heartbeatAt/lastActiveAt churn every read and would break byte-stability;
  * capabilityTags (WI-1546) is a DG-3 shard-scheduling detail — irrelevant to
  * a coord:presence roster viewer and not worth its bytes on the lean row.
+ * `tty` follows the capabilityTags precedent: a device path like /dev/pts/5 is
+ * meaningful ONLY on the machine that owns it, so it is bytes no remote roster
+ * viewer can act on. Its one consumer (tools/mark-terminal.ts) reads the
+ * presence ROW from the store directly and never goes through this partition,
+ * so dropping it here costs that path nothing. Deliberately NOT in IDENTITY:
+ * IDENTITY ∪ STATE is the delta-eligible set, and a local device path has no
+ * business riding every peer's [coord+N] delta.
  */
 export const PRESENCE_DROPPED_FIELDS = [
   'heartbeatAt',
   'lastActiveAt',
   'capabilityTags',
+  'tty',
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /** The delta-eligible field set (D-005 lane 1) = IDENTITY ∪ STATE. A change in

@@ -436,6 +436,26 @@ describe('evaluateProgramSuccess — ledger reconciliation', () => {
     expect(r.failed).toBe(0);
     expect(r.window.ledgerTruncated).toBe(true);
   });
+
+  it('EI-19899928839197448: FAILS (not unknown) when cycles ran but the ledger holds ZERO scout-routed ideas at all — a dead pipeline, not "nothing to reconcile"', () => {
+    // Every cycle claims 0 routed and the ledger has 0 rows — the 0=0 "trivially consistent"
+    // shape a totally dead routing pipeline produces for 6 days straight (the live incident).
+    const r = evaluateProgramSuccess(
+      inputs(
+        [...Array(5)].map((_, i) => ranTick({ ideasRouted: 0, detail: { cycleId: `c-${i}` } })),
+        [],
+      ),
+    );
+    const b = bar(r, 'ledger-reconciles');
+    expect(b.status).toBe('fail');
+    expect(b.observed).toContain('5 cycle(s) ran');
+    expect(b.observed).toContain('ZERO scout-routed ideas');
+  });
+
+  it('a genuinely EMPTY window (no cycles ran either) stays UNKNOWN — the liveness override only fires once cycles had a chance to route', () => {
+    const r = evaluateProgramSuccess(inputs([], []));
+    expect(bar(r, 'ledger-reconciles').status).toBe('unknown');
+  });
 });
 
 describe('evaluateProgramSuccess — grader feedback revised', () => {

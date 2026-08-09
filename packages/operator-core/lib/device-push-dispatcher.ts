@@ -323,7 +323,18 @@ export function pushEnabled(): { fcm: boolean; apns: boolean } {
   return { fcm, apns };
 }
 
-/** Convenience: load registered tokens for a workspace + dispatch a push. */
+/** Convenience: load registered tokens for a workspace + dispatch a push.
+ *
+ *  Also REAPS tokens the provider has declared permanently invalid. This is the only place
+ *  that can: `dispatchPush` is deliberately store-free (it takes targets and returns results,
+ *  which is what makes it unit-testable without a database), while this function already
+ *  holds both the workspace and the target list. `dispatchPush` preserves index
+ *  correspondence with `targets` — every branch maps through `settled.map((s, i) => …)` — so
+ *  zipping result[i] back to targets[i] is sound, not incidental.
+ *
+ *  Reaping is best-effort and swallowed: this helper sits under `notifyAttention`, whose
+ *  entire contract is that a delivery problem must never propagate into the producer's write
+ *  path. A prune that fails just means the dead token is retried next time — the status quo. */
 export async function notifyWorkspace(
   workspaceId: string,
   payload: PushPayload,
@@ -331,5 +342,25 @@ export async function notifyWorkspace(
   const { pushTargetsForWorkspace } = await import('./device-store');
   const targets = await pushTargetsForWorkspace(workspaceId);
   if (targets.length === 0) return [];
-  return await dispatchPush(targets, payload);
+  const results = await dispatchPush(targets, payload);
+
+  const dead = results
+    .map((r, i) => (r.unregistered ? targets[i] : null))
+    .filter((t): t is DeviceTarget => t != null);
+  if (dead.length > 0) {
+    try {
+      const { deletePushToken } = await import('./device-store');
+      for (const t of dead) {
+        await deletePushToken(workspaceId, t.token);
+        console.warn(
+          `[push] reaped ${t.platform} token …${t.token.slice(-8)} in ${workspaceId} — the provider ` +
+            `reports it UNREGISTERED (app uninstalled / data cleared / token rotated), so it can never ` +
+            `succeed again. The device must re-register to receive pushes.`,
+        );
+      }
+    } catch (e) {
+      console.warn(`[push] token reap failed (${dead.length} dead): ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  return results;
 }
