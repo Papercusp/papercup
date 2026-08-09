@@ -94,6 +94,7 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { buildCapacityReport } from '../../fleet/capacity-dispatch';
 import { readBeeProviderAvailability } from './capacity';
+import type { FleetBriefDelta } from '../../fleet-brief-delta';
 
 export interface LeaderBriefMember {
   agentId: string;
@@ -1899,6 +1900,13 @@ export default defineTool({
       .max(1440)
       .optional()
       .describe('Minutes an orphaned in-flight item must sit before it surfaces here. Default 0.'),
+    since: z
+      .string()
+      .max(40)
+      .optional()
+      .describe(
+        "P-022: measure `delta` from this ISO timestamp instead of your last wake. The snapshot-only axes (pool factor, prior spec revision) have no history to re-read at an arbitrary time and stay unavailable — they are never back-filled from a boundary they did not observe.",
+      ),
   }),
   async handler(args, ctx) {
     let actorWorkspace: string | null = null;
@@ -2360,6 +2368,48 @@ export default defineTool({
     } catch {
       /* best-effort — never block the brief on the custom-invariant registry */
     }
+    // P-022 / D-011: the wake-to-wake delta. Every field above this line is point-in-time,
+    // which is what made "what changed since my last wake" a hand-reconstruction from
+    // checkpoint prose. Boundary is REPORTED, never implied, and an axis with no baseline
+    // reports available:false rather than a zero — a "nothing changed" that actually means
+    // "I have no baseline" is the exact bug class this plan exists to catalogue.
+    // Best-effort like its neighbours: a delta failure must not cost the leader the brief.
+    let delta: FleetBriefDelta | undefined;
+    let deltaSummary: string | undefined;
+    if (ownerId) {
+      try {
+        const { resolveFleetBriefDelta } = await import('../../fleet-brief-delta-store');
+        const resolved = await resolveFleetBriefDelta({
+          key: { workspaceId, fleetSlug: fleet, ownerId },
+          harnessSlug: args.harness ?? null,
+          observation: {
+            at: new Date().toISOString(),
+            // The ROSTER, not the shown list: a member going stale-idle drops out of
+            // `members` but has not left the fleet, and reading that as a departure is
+            // precisely the visibility-for-membership confusion P-010 documented.
+            rosterSize: memberCensus.candidates ?? null,
+            countedMembers: members.length,
+            specRevision: specRevision ?? null,
+            poolFactor: poolCapacity?.factor ?? null,
+          },
+          fireCount: await (async () => {
+            try {
+              const { getLoopStatus } = await import('../../harness/routines/loop');
+              return (await getLoopStatus(ownerId))?.fireCount ?? null;
+            } catch {
+              return null;
+            }
+          })(),
+          since: args.since ?? null,
+        });
+        if (resolved) {
+          delta = resolved.delta;
+          deltaSummary = resolved.summary;
+        }
+      } catch {
+        /* best-effort — an absent delta block reads as absent, never as a set of zeroes */
+      }
+    }
     return {
       data: {
         ok: true,
@@ -2386,6 +2436,11 @@ export default defineTool({
           floorStarvedAlert: floorStarvedAlert != null,
           ...(customInvariants ? { customInvariantAlert: customInvariantAlert != null } : {}),
         },
+        // P-022: placed directly under the summary it differences. `deltaSummary` is the
+        // one-line "since your last wake — members ±N, closes +N, spec rev X→Y, pool factor
+        // A→B" a monitor tick actually reads; `delta` carries the per-axis availability so a
+        // reader can tell an unmeasured axis from a quiet one.
+        ...(delta ? { delta, deltaSummary } : {}),
         members: markedMembers,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
         ...(unownedCriticalsFederated.length > 0
