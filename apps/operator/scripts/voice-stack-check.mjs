@@ -37,9 +37,18 @@ function pass(name, detail = '') { checks.push({ status: 'PASS', name, detail })
 function warn(name, detail = '') { checks.push({ status: 'WARN', name, detail }); }
 function fail(name, detail = '') { checks.push({ status: 'FAIL', name, detail }); }
 
+// Honor PAPERCUSP_WORKSPACES_ROOT before falling back to homedir() — a bare
+// homedir() here resolves to a NESTED registry when this script runs with
+// HOME remapped to a per-workspace dir (P-051 spawned-child case). See
+// agent-insights/workspaces-root-vs-remapped-home and the same env-first
+// resolver in @papercusp/operator-core's workspace-registry.ts /
+// @papercusp/plugin-loader's workspacesRootDir().
+const workspacesRoot = (process.env.PAPERCUSP_WORKSPACES_ROOT?.trim())
+  || path.join(homedir(), '.papercusp-workspaces');
+
 const credsPath = path.join(homedir(), '.papercusp', 'credentials.json');
 const prefsPath = path.join(
-  homedir(), '.papercusp-workspaces',
+  workspacesRoot,
   process.env.PAPERCUSP_WORKSPACE ?? 'default',
   '.papercusp', 'system', 'operator', 'voice-prefs.json',
 );

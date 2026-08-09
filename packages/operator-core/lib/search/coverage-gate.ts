@@ -214,6 +214,32 @@ function isQueryable(sql: unknown): sql is CoverageSqlHandle {
   return typeof (sql as CoverageSqlHandle | null)?.unsafe === 'function';
 }
 
+/**
+ * Errors that are EXPECTED for this fail-open read and so must never warn
+ * (vitest-fail-on-console would then red any rig test that merely touches the
+ * claim/injection path — this gate sits on it via `assessCorpusGate`):
+ * `harness_shared.embed_coverage_samples` absent, i.e. a partial test schema or
+ * a deploy that has not yet run migration 746 (→ "… does not exist"), or the
+ * query outliving the pool it ran on (a rig tearing down mid-read → postgres.js
+ * CONNECTION_ENDED/CONNECTION_DESTROYED).
+ *
+ * Suppressing the LOG loses nothing: each of these already resolves to the
+ * honest `unknown` verdict, which the pointer section surfaces as degraded, so
+ * the line would only restate what the verdict already carries. Anything else
+ * is a real surprise and still warns. Mirrors `session-compacted-events.ts`'s
+ * `failSoft`, which classifies the same two shapes for the same reason.
+ */
+function isExpectedReadFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/does not exist/.test(msg)) return true;
+  const code = (err as { code?: unknown } | null)?.code;
+  return (
+    code === 'CONNECTION_ENDED' ||
+    code === 'CONNECTION_DESTROYED' ||
+    /CONNECTION_ENDED|CONNECTION_DESTROYED|Connection ended/i.test(msg)
+  );
+}
+
 /** TTL-memoised {@link loadCoverageSnapshot}. Fail-open: any failure yields an
  *  EMPTY snapshot, which assesses as `unknown` — never as healthy, and never
  *  an exception on the search path. */
@@ -235,7 +261,7 @@ export async function loadCoverageSnapshotCached(
     // (and logs) on EVERY query, turning a degraded signal into a log flood on
     // the hottest path in the tool.
     memo = { at: now.getTime(), workspaceId, snapshot: new Map() };
-    if (now.getTime() - lastWarnAt >= COVERAGE_WARN_THROTTLE_MS) {
+    if (!isExpectedReadFailure(err) && now.getTime() - lastWarnAt >= COVERAGE_WARN_THROTTLE_MS) {
       lastWarnAt = now.getTime();
       console.warn(
         `[coverage-gate] snapshot read failed (degrading to unknown, non-fatal): ${

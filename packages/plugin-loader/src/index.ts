@@ -33,9 +33,30 @@ import { statSync } from 'node:fs';
 interface __RootCache { mtime: number; content: string | null; env: string | undefined; value: string }
 let __rootCache: __RootCache | null = null;
 
+/**
+ * Resolve the workspaces root (`~/.papercusp-workspaces`), honoring
+ * `PAPERCUSP_WORKSPACES_ROOT` before falling back to `homedir()`.
+ *
+ * Spawned CLI children can run with `HOME` remapped to a per-workspace dir
+ * (P-051); a bare `homedir()` there resolves to a NESTED registry
+ * (`~/.papercusp-workspaces/<current>/.papercusp-workspaces/registry.json`)
+ * that disagrees with the real one — the documented "switch failed:
+ * workspace dir ... missing" trap (agent-insights/workspaces-root-vs-remapped-home).
+ * `homedir()` alone is correct only in dev, where HOME is not remapped.
+ *
+ * Mirrors `workspacesRoot()` in `@papercusp/operator-core`'s
+ * `workspace-registry.ts`, kept local rather than imported to avoid pulling
+ * operator-core's server-oriented module graph into the plugin loader.
+ */
+function workspacesRootDir(): string {
+  const env = process.env.PAPERCUSP_WORKSPACES_ROOT;
+  if (env && env.trim()) return env;
+  return join(homedir(), '.papercusp-workspaces');
+}
+
 function papercuspRootResolved(): string {
   // Build the current cache key.
-  const wsIndex = join(homedir(), '.papercusp-workspaces', 'registry.json');
+  const wsIndex = join(workspacesRootDir(), 'registry.json');
   let mtime = 0;
   let content: string | null = null;
   try {
@@ -59,7 +80,7 @@ function papercuspRootResolved(): string {
     try {
       const parsed = JSON.parse(content) as { current?: string };
       if (parsed.current) {
-        const cand = join(homedir(), '.papercusp-workspaces', parsed.current, '.papercusp');
+        const cand = join(workspacesRootDir(), parsed.current, '.papercusp');
         if (existsSync(cand)) {
           value = cand;
         } else {
@@ -80,7 +101,7 @@ function papercuspRootResolved(): string {
 }
 
 function fallbackRoot(): string {
-  const def = join(homedir(), '.papercusp-workspaces', 'default', '.papercusp');
+  const def = join(workspacesRootDir(), 'default', '.papercusp');
   if (existsSync(def)) return def;
   return join(homedir(), '.papercusp');
 }

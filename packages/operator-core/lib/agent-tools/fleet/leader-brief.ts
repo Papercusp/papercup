@@ -1684,16 +1684,33 @@ export async function decorateComposedParkedOn<T extends { agentId: string } & P
  * fleet:status. Keeping this projection separate makes the membership parity
  * contract explicit: a live presence member is never dropped merely because
  * its assignment leg has no claim row yet.
+ *
+ * P-010: returns the CENSUS beside the rows. The membership filter here is
+ * two-stage and only the second stage is discretionary — `fleetSlug === fleet`
+ * decides who is on the roster at all, while the stale-idle cut decides who this
+ * RESPONSE shows. Only the second is counted as `withheld`, because a member of
+ * another fleet was never a candidate for this number; folding them in would make
+ * `withheld` grow with unrelated fleets and read as mass concealment.
  */
 export function selectLeaderBriefMembers(
   entries: readonly DecoratedAgent[],
   fleet: string,
   includeStale = false,
-): DecoratedAgent[] {
-  return entries.filter(
-    (entry) =>
-      entry.fleetSlug === fleet &&
-      (includeStale || entry.claims.length > 0 || entry.alive),
+): { rows: DecoratedAgent[]; census: FleetPopulationCensus } {
+  const ofThisFleet = entries.filter((entry) => entry.fleetSlug === fleet);
+  return selectFleetPopulation(
+    ofThisFleet,
+    (entry) => includeStale || entry.claims.length > 0 || entry.alive,
+    {
+      population: `member(s) of fleet '${fleet}'`,
+      basis:
+        'A row is on the roster if presence records it in this fleet; it is shown here if it holds ' +
+        'a claim or is alive (heartbeat-fresh), or unconditionally under include_stale.',
+      withheldReason:
+        'idle AND not heartbeat-fresh (stale-idle) — note this hides members precisely when they ' +
+        'are dying, which is when the count matters most',
+      reveal: 'include_stale: true',
+    },
   );
 }
 
@@ -1962,7 +1979,7 @@ export default defineTool({
     } catch {
       /* best-effort: leadership bookkeeping must NEVER fail the health brief */
     }
-    const grouped = selectLeaderBriefMembers(
+    const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(
       rosterEntries,
       fleet,
       args.include_stale,

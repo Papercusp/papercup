@@ -47,6 +47,7 @@ import { writeSync } from 'node:fs';
 import {
   decideLoopSentinelAction,
   initialLoopSentinelState,
+  SENTINEL_SAB_IDX,
   type LoopSentinelState,
   type LoopSentinelThresholds,
 } from './event-loop-sentinel';
@@ -79,6 +80,30 @@ function emit(line: string, detail: Record<string, string | number | boolean>): 
 const data = workerData as SentinelWorkerData;
 const view = new Int32Array(data.sab);
 const { thresholds, observeIntervalMs, mode, pid } = data;
+
+/**
+ * EI-19484853609145439: the loop-lag monitor (`event-loop-lag-monitor.ts`)
+ * publishes its last-read percentiles into this SAME SharedArrayBuffer, at the
+ * indices `SENTINEL_SAB_IDX` reserves for it — a plain `Atomics.store` from the
+ * main thread's own timer, no reply needed, so it survives a block exactly
+ * like the heartbeat counter does. Reading it here turns a silent wedge into
+ * "last observed p95 lag Xms" instead of nothing: the lag monitor's own reader
+ * shares fate with the loop and never gets to report this value itself once a
+ * real block starts, but the LAST value it read before the block began is
+ * still sitting in shared memory for us to read off-thread.
+ *
+ * The SAB is zero-initialized, so a process where the lag monitor was never
+ * wired to publish here (or hasn't ticked yet) reads all-zero — reported as-is
+ * rather than hidden, since it is best-effort diagnostics, not a boolean gate.
+ */
+function lastKnownLag(): Record<string, number> {
+  return {
+    lastLagP50Ms: Atomics.load(view, SENTINEL_SAB_IDX.LAG_P50_MS),
+    lastLagP95Ms: Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS),
+    lastLagP99Ms: Atomics.load(view, SENTINEL_SAB_IDX.LAG_P99_MS),
+    lastLagMaxMs: Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS),
+  };
+}
 
 let state: LoopSentinelState = initialLoopSentinelState(
   Date.now(),

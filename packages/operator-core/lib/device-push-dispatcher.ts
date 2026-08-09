@@ -157,7 +157,7 @@ let _fcm: FcmCreds | null | undefined; // undefined = not resolved yet; null = u
 /**
  * WHY `_fcm` is null. `null` used to mean only "unconfigured", and every caller rendered it as
  * `status: 'skipped'` — a benign, expected no-op. That conflation hid a total outage for the
- * whole audited window (WI-37479): **91 of 141 mobile pushes reported `fcm:skipped` while the
+ * whole audited window (WI-37482): **91 of 141 mobile pushes reported `fcm:skipped` while the
  * service account was present and perfectly valid**, because `resolveFcmCreds` threw
  * `require is not defined` and the catch below flattened a hard failure into the same `null`
  * that "no push configured on this host" produces.
@@ -254,7 +254,7 @@ export function buildFcmMessage(deviceToken: string, payload: PushPayload) {
 async function sendFcm(deviceToken: string, payload: PushPayload): Promise<PushSendResult> {
   const creds = resolveFcmCreds();
   if (!creds) {
-    // A configured-but-broken provider is an ERROR, not a skip (WI-37479).
+    // A configured-but-broken provider is an ERROR, not a skip (WI-37482).
     return _fcmFailure
       ? { platform: 'fcm', ok: false, status: 'error', detail: _fcmFailure }
       : { platform: 'fcm', ok: false, status: 'skipped' };
@@ -310,7 +310,7 @@ async function resolveApnsJwt(): Promise<string | null> {
   const p8 = readFileSync(keyPath, 'utf8');
   // Lazy require so jose only loads when APNs is actually configured.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  // Same ESM fault as the FCM leg (WI-37479) — a bare `require` is not defined in the hosts
+  // Same ESM fault as the FCM leg (WI-37482) — a bare `require` is not defined in the hosts
   // that serve pushes. Dormant today (APNs waits on Apple enrollment), which is exactly why it
   // would otherwise have shipped broken and only surfaced when iOS was switched on.
   const { SignJWT, importPKCS8 } = requireCjs('jose') as typeof import('jose');

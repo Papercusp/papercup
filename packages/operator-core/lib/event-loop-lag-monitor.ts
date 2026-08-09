@@ -178,6 +178,46 @@ let _liveRead: (() => { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: numb
 // repeat call returns the already-running handle instead of spawning a 2nd histogram.
 let _runningHandle: LagMonitorHandle | null = null;
 
+// EI-19484853609145439: the reader above is honest about WHY it goes silent on
+// a real wedge — it is a JS timer on the very loop it watches, and nothing on
+// this thread can fix that. But `event-loop-sentinel.worker.ts` runs on a
+// SEPARATE thread and keeps ticking through the block, so the LAST value read
+// here (before the block began) is still recoverable if it is published
+// somewhere the sentinel can read WITHOUT the main thread's cooperation. A
+// `SharedArrayBuffer` + `Atomics.store` is push, not the postMessage round-trip
+// `event-loop-sentinel.worker.ts`'s header rules out for exactly this reason.
+//
+// Late-bound (a setter, not a `startEventLoopLagMonitor` option) because the
+// two subsystems are started independently and in whichever order the host
+// prefers — `event-loop-sentinel-host.ts`'s own doc requires it be armed AFTER
+// the port is bound, which is deliberately later than the lag monitor's boot
+// call. Reading `_publishLagSab` fresh on every tick (rather than capturing it
+// at start time) means the two can wire up in either order, and a caller with
+// no sentinel (e.g. host-bootstrap.ts's bg-host boot, which never starts one)
+// simply never sets it — the tick below is then a no-op check, unchanged from
+// today's behavior.
+let _publishLagSab: SharedArrayBuffer | null = null;
+let _publishLagView: Int32Array | null = null;
+
+/**
+ * Wire (or clear, with `null`) the SharedArrayBuffer the lag monitor should
+ * publish its last-read percentiles into, laid out per `SENTINEL_SAB_IDX`.
+ * Typically called with `startEventLoopSentinel()`'s returned `.sab` once both
+ * subsystems are up. Safe to call before, after, or never — the monitor's own
+ * tick reads this lazily and degrades to "publish nothing" otherwise.
+ */
+export function setLagPublishTarget(sab: SharedArrayBuffer | null): void {
+  if (sab && sab.byteLength < SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT) {
+    // Defensive: a mismatched/foreign SAB must never throw inside the tick.
+    // Degrade to "not publishing" rather than risk an out-of-bounds Atomics call.
+    _publishLagSab = null;
+    _publishLagView = null;
+    return;
+  }
+  _publishLagSab = sab;
+  _publishLagView = sab ? new Int32Array(sab) : null;
+}
+
 /** p95 loop-delay (ms) thresholds for the pressure bands. Env-tunable so a small
  *  host can be stricter. elevated ⇒ start widening cadences; critical ⇒ shed. */
 const ELEVATED_P95_MS = Math.max(1, Number(process.env.PAPERCUSP_LOOP_ELEVATED_MS) || 120);
@@ -364,6 +404,16 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
 
   const timer = managedSetInterval('event-loop-lag-monitor', intervalMs, () => {
     const s = read();
+    // EI-19484853609145439: push the LAST-READ percentiles to the sentinel's
+    // shared memory (if wired) BEFORE anything else this tick — so even a
+    // block starting mid-tick (after `read()`, before the warn log below)
+    // still leaves the sentinel with the freshest possible last-known values.
+    if (_publishLagView) {
+      Atomics.store(_publishLagView, SENTINEL_SAB_IDX.LAG_P50_MS, Math.round(s.p50Ms));
+      Atomics.store(_publishLagView, SENTINEL_SAB_IDX.LAG_P95_MS, Math.round(s.p95Ms));
+      Atomics.store(_publishLagView, SENTINEL_SAB_IDX.LAG_P99_MS, Math.round(s.p99Ms));
+      Atomics.store(_publishLagView, SENTINEL_SAB_IDX.LAG_MAX_MS, Math.round(s.maxMs));
+    }
     if (s.p95Ms >= warnP95Ms) {
       log('[event-loop-lag] high loop delay — host is CPU-bound on the main thread', {
         p50Ms: s.p50Ms,

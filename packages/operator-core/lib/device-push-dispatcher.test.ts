@@ -147,7 +147,7 @@ describe('device-push-dispatcher', () => {
 });
 
 /**
- * WI-37479 — a CONFIGURED-BUT-BROKEN provider must not report as an unconfigured host.
+ * WI-37482 — a CONFIGURED-BUT-BROKEN provider must not report as an unconfigured host.
  *
  * ⚠ Note what this suite can and cannot do. The original fault was a bare CJS `require()` in an
  * ESM module, and it is INVISIBLE to vitest: the module runner defines `require`, so the
@@ -157,7 +157,7 @@ describe('device-push-dispatcher', () => {
  * exists under the host's module semantics — so the require itself is locked by a SOURCE
  * assertion, and the runtime tests below lock the reporting that let it hide.
  */
-describe('FCM credential faults report as faults, not skips (WI-37479)', () => {
+describe('FCM credential faults report as faults, not skips (WI-37482)', () => {
   it('source carries no bare require() — it is not defined in the ESM hosts that serve pushes', () => {
     const src = readFileSync(fileURLToPath(new URL('./device-push-dispatcher.ts', import.meta.url)), 'utf8');
     // `requireCjs(` (createRequire) is correct; a bare `require(` is the bug.
