@@ -453,8 +453,11 @@ export interface PushedContextPortRefs {
  * are pointer stores, and stamping a title INTO them would invent the write
  * path that decision forbids). `title`/`detail` below do not touch that: they
  * are resolved at READ time from the canonical row the pointer already names,
- * and nothing is persisted. Recorded as plan decision D-088 so the next reader
- * does not have to re-derive that a read-side join is not a write path.
+ * and nothing is persisted. Recorded as
+ * context-injection-retrieval-reach-and-visibility-2026-08-03#D-092 so the next
+ * reader does not have to re-derive that a read-side join is not a write path —
+ * this very comment used to assert the opposite, and that over-reading is why
+ * the section shipped rendering handles nobody could act on.
  *
  * [owner 2026-08-09] "the user doesn't care about the ids, it should show a
  * title" — a dossier row reading `mem 89f230d3…` names a fact the operator

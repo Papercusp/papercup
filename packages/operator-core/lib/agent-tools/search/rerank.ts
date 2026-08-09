@@ -257,17 +257,43 @@ export async function rerankRows<T>(
      * the corpus leg for a tighter one).
      */
     rerankTimeoutMs: number;
+    /**
+     * Observe whether the stage ran. Called EXACTLY ONCE per invocation, before
+     * returning, on every path including the failure paths.
+     *
+     * EXISTS FOR MEASUREMENT INTEGRITY, not for telemetry. This function is
+     * fail-soft by contract: when no engine resolves it returns the input order
+     * untouched — which is byte-identical to what a rerank-disabled control arm
+     * produces. So an A/B whose treatment silently lost its engine reports a
+     * clean, confident NULL that is indistinguishable from "reranking does not
+     * help", and the natural next action is to abandon the feature. A benchmark
+     * must be able to VOID such a run rather than publish it.
+     *
+     * ⚠ `attempted: true` means an engine resolved and `rankWithReranker`
+     * returned without throwing. It does NOT prove every pair was scored — the
+     * library's own per-pair fail-safe can degrade to retrieval order inside a
+     * successful call, and that is invisible from here. Treat it as necessary,
+     * not sufficient: a caller that needs certainty should ALSO check that the
+     * order actually moved somewhere across its sample.
+     */
+    onOutcome?: (outcome: { attempted: boolean; reason?: string }) => void;
   },
 ): Promise<T[]> {
   // Nothing to reorder → no engine resolution, no rerank import.
-  if (rows.length <= 1) return rows.slice(0, opts.limit);
+  if (rows.length <= 1) {
+    opts.onOutcome?.({ attempted: false, reason: 'nothing-to-reorder' });
+    return rows.slice(0, opts.limit);
+  }
 
   try {
     const resolved = await resolveProseRerankEngine();
     // Local engine flagged off and no hosted key → the pre-P-007 dark seam.
-    if (!resolved) return rows.slice(0, opts.limit);
+    if (!resolved) {
+      opts.onOutcome?.({ attempted: false, reason: 'no-engine' });
+      return rows.slice(0, opts.limit);
+    }
     const { rankWithReranker } = await import('@papercusp/search-core');
-    return await rankWithReranker<T>(
+    const ordered = await rankWithReranker<T>(
       query,
       rows.map((row) => ({
         id: opts.id(row),
@@ -286,9 +312,15 @@ export async function rerankRows<T>(
         ...(opts.qualityScore ? { qualityScore: opts.qualityScore } : {}),
       },
     );
-  } catch {
+    opts.onOutcome?.({ attempted: true, reason: resolved.engine });
+    return ordered;
+  } catch (err) {
     // Engine unresolvable, lib/dep unavailable, or a throw that got past the
     // lib's own fail-safe seam → retrieval passthrough. Never breaks a caller.
+    opts.onOutcome?.({
+      attempted: false,
+      reason: `threw:${err instanceof Error ? err.name : 'unknown'}`,
+    });
     return rows.slice(0, opts.limit);
   }
 }

@@ -84,9 +84,15 @@ const {
   deriveAnnouncedGates,
   derivePushedContext,
   legRan,
+  classifyPushedRef,
+  applyPushedRefTitles,
+  resolutionFromBody,
+  resolvePushedRefTitles,
 } = await import('./adv-agent-detail');
 type PushedContextRow = import('./adv-agent-detail').PushedContextRow;
 type PushedContextRefDetailRow = import('./adv-agent-detail').PushedContextRefDetailRow;
+type PushedContextRef = import('./adv-agent-detail').PushedContextRef;
+type PushedRefSqlTag = import('./adv-agent-detail').PushedRefSqlTag;
 // The shared cursor rule, asserted alongside the counter it now feeds so the
 // two cannot drift (unread-count-truthfulness-2026-07-27 P-002/P-003).
 const { pickUnreadCursor } = await import('./agent-tools/coordination/watermarks');
@@ -1313,5 +1319,160 @@ describe('derivePushedContext', () => {
     const out = derivePushedContext({ rows: [row()], refRows: [], total: 1 });
     expect(out.refs).toEqual([]);
     expect(out.refsTotal).toBe(0);
+  });
+});
+
+// ── Ref → title resolution ────────────────────────────────────────────────────
+// [owner 2026-08-09] "the user doesn't care about the ids, it should show a
+// title". The ledgers store handles, so titles resolve at READ time — these
+// cover the pure halves plus the batched query's shape against a fake tag.
+
+describe('classifyPushedRef', () => {
+  it('trusts the LEDGER over the ref shape for memory rows', () => {
+    // The ledger of origin is authoritative: a memory row is a memory even if
+    // its key somehow looked like something else. Only corpus refs are free-form.
+    expect(classifyPushedRef('0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f', 'memory')).toBe('memory');
+    expect(classifyPushedRef('WI-6512', 'memory')).toBe('unknown');
+  });
+
+  it('recognises the work-item and session shapes the corpus ledger actually holds', () => {
+    // Measured against harness_shared.corpus_session_surfaced 2026-08-09: both
+    // the short and the 17-digit id families are live, and a fixed prefix list
+    // would have to be edited every time a new one appears.
+    expect(classifyPushedRef('WI-7005', 'corpus')).toBe('work-item');
+    expect(classifyPushedRef('EI-19310032174584195', 'corpus')).toBe('work-item');
+    expect(classifyPushedRef('claude:addaa2ae-bf06-4aeb-9e9f-8a8b30d1cebc', 'corpus')).toBe('session');
+    expect(classifyPushedRef('codex:019f4520-8093-7e42-bfbf-638bf154dbdf', 'corpus')).toBe('session');
+  });
+
+  it('answers `unknown` rather than guessing, so an unrecognised ref still renders', () => {
+    expect(classifyPushedRef('a bare sentence', 'corpus')).toBe('unknown');
+    expect(classifyPushedRef('', 'corpus')).toBe('unknown');
+  });
+});
+
+describe('applyPushedRefTitles', () => {
+  const ref = (over: Partial<PushedContextRef> = {}): PushedContextRef => ({
+    ref: 'WI-1',
+    kind: 'corpus',
+    port: 'mid-turn',
+    at: '2026-08-09T00:00:00.000Z',
+    epoch: 0,
+    ...over,
+  });
+
+  it('leaves titleState UNDEFINED when resolution never ran', () => {
+    // Distinct from "we looked and found nothing" — the pure-shaper path and any
+    // pre-field payload must not report a finding they never measured.
+    const out = applyPushedRefTitles([ref()], new Map(), { ran: false });
+    expect(out[0].titleState).toBeUndefined();
+    expect(out[0].title).toBeUndefined();
+  });
+
+  it('marks a ref UNRESOLVED when the lookup ran and matched nothing', () => {
+    const out = applyPushedRefTitles([ref()], new Map(), { ran: true });
+    expect(out[0].titleState).toBe('unresolved');
+  });
+
+  it('marks every ref UNAVAILABLE when the lookup itself failed', () => {
+    // The two must not collapse: `unresolved` is a finding about the pointer,
+    // `unavailable` is a gap in our own read and says nothing about the row.
+    const out = applyPushedRefTitles([ref()], new Map(), { ran: true, failed: true });
+    expect(out[0].titleState).toBe('unavailable');
+    expect(out[0].title).toBeUndefined();
+  });
+
+  it('keys on kind+ref, so the two ledgers cannot answer for each other', () => {
+    const resolved = new Map([['corpus:WI-1', { title: 'the corpus one' }]]);
+    const out = applyPushedRefTitles([ref(), ref({ kind: 'memory' })], resolved, { ran: true });
+    expect(out[0].title).toBe('the corpus one');
+    expect(out[1].titleState).toBe('unresolved');
+  });
+});
+
+describe('resolutionFromBody', () => {
+  it('takes the first NON-EMPTY line as the title', () => {
+    const res = resolutionFromBody('\n\nThe real first line\nand more below');
+    expect(res?.title).toBe('The real first line');
+    expect(res?.detail).toContain('and more below');
+  });
+
+  it('clamps with a VISIBLE ellipsis so a cut value cannot read as complete', () => {
+    const res = resolutionFromBody('x'.repeat(400));
+    expect(res?.title.endsWith('…')).toBe(true);
+    expect(res?.title.length).toBeLessThanOrEqual(110);
+  });
+
+  it('returns null for an empty body rather than an empty title', () => {
+    expect(resolutionFromBody('   \n  ')).toBeNull();
+  });
+});
+
+describe('resolvePushedRefTitles', () => {
+  /** A fake postgres tag that answers by which table the query names, so the
+   *  test asserts the ROUTING (which store each ref class is asked of) without
+   *  a database. */
+  function fakeTag(answers: Record<string, unknown[]>) {
+    const seen: string[] = [];
+    const tag = (async (strings: TemplateStringsArray) => {
+      const sql = strings.join(' ');
+      seen.push(sql);
+      for (const [table, rows] of Object.entries(answers)) {
+        if (sql.includes(table)) return rows;
+      }
+      return [];
+    }) as unknown as PushedRefSqlTag;
+    return { tag, seen };
+  }
+
+  const refs: PushedContextRef[] = [
+    { ref: 'WI-7005', kind: 'corpus', port: 'turn-start', at: 'a', epoch: 0 },
+    { ref: 'claude:abc12345-0000-0000-0000-000000000000', kind: 'corpus', port: 'mid-turn', at: 'b', epoch: 1 },
+    { ref: '0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f', kind: 'memory', port: 'mid-turn', at: 'c', epoch: 1 },
+  ];
+
+  it('resolves all three ref classes from their own stores', async () => {
+    const { tag } = fakeTag({
+      work_items: [{ feature_id: 'WI-7005', title: 'Gate red: skip-guard', kind: 'bug', state: 'open', summary: 'body' }],
+      session_turns: [{ session_id: 'abc12345-0000-0000-0000-000000000000', text: 'For our public release I want…' }],
+      memory_canonical: [{ id: '0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f', body: 'Papercusp host map\nmore', kind: 'reference' }],
+    });
+    const out = await resolvePushedRefTitles(tag, refs);
+    expect(out.get('corpus:WI-7005')?.title).toBe('Gate red: skip-guard');
+    // The work-item DETAIL carries the id + kind/state badge the row no longer
+    // shows, which is what makes hiding it from the row safe.
+    expect(out.get('corpus:WI-7005')?.detail).toContain('WI-7005');
+    expect(out.get('corpus:WI-7005')?.detail).toContain('bug · open');
+    expect(out.get('corpus:claude:abc12345-0000-0000-0000-000000000000')?.title).toContain('For our public release');
+    expect(out.get('memory:0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f')?.title).toBe('Papercusp host map');
+  });
+
+  it('asks NOTHING when there is nothing of that class to ask about', async () => {
+    // A batch of 40 memory refs must not fire an empty work-item query — and an
+    // `= ANY('{}')` is not free on a table this size.
+    const { tag, seen } = fakeTag({});
+    await resolvePushedRefTitles(tag, [refs[2]]);
+    expect(seen.some((s) => s.includes('work_items'))).toBe(false);
+    expect(seen.some((s) => s.includes('session_turns'))).toBe(false);
+    expect(seen.some((s) => s.includes('memory_canonical'))).toBe(true);
+  });
+
+  it('skips a row whose body is NULL instead of emitting an empty title', async () => {
+    const { tag } = fakeTag({
+      memory_canonical: [{ id: '0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f', body: null, kind: null }],
+    });
+    const out = await resolvePushedRefTitles(tag, [refs[2]]);
+    // Absent from the map → `applyPushedRefTitles` marks it `unresolved`, which
+    // is the honest reading: the row exists but carries nothing to show.
+    expect(out.size).toBe(0);
+  });
+
+  it('does not resolve a ref shape it does not recognise', async () => {
+    const { tag, seen } = fakeTag({});
+    const out = await resolvePushedRefTitles(tag, [
+      { ref: 'not a handle', kind: 'corpus', port: 'p', at: 'a', epoch: 0 },
+    ]);
+    expect(out.size).toBe(0);
+    expect(seen.length).toBe(0);
   });
 });

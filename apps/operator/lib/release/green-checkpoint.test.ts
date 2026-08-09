@@ -4774,4 +4774,27 @@ describe('WI-37527: the typecheck banner must not out-claim its evidence', () =>
     expect(res.output).toContain('type regressions block the release');
     expect(res.output).not.toContain('NO type diagnostics');
   });
+
+  it('CONTROL — the pre-fix hardcoded banner FAILS the property above (so the guard is falsifiable)', () => {
+    // A guard that has never failed is a guard nobody has tested. Proving it here rather
+    // than by mutating green-checkpoint.ts: this tree is edited concurrently by the whole
+    // fleet and git-sync commits it every few minutes, so an in-tree mutation can be swept
+    // into a real candidate mid-probe (that is a measured incident, not a hypothetical).
+    //
+    // This is the exact string the leg pushed before the wiring landed. It is a CONSTANT,
+    // so it announces "type regressions" no matter what the run actually produced.
+    const preFixBanner =
+      '\n\n=== TYPECHECK FAILED (npm run lint:tsc) — operator-core type regressions block the release ===\n';
+    const oom = 'FATAL ERROR: Ineffective mark-compacts near heap limit — JavaScript heap out of memory\n';
+    const preFixOutput = preFixBanner + oom;
+
+    // The OOM case: the pre-fix output violates both halves of the property, so a revert
+    // of the wiring reds the first test deterministically rather than silently passing.
+    expect(preFixOutput).toContain('type regressions block the release');
+    expect(preFixOutput).not.toContain('NO type diagnostics');
+
+    // And the reason it is wrong is not the wording but the INDIFFERENCE to evidence:
+    // the same constant is emitted for output carrying no tsc diagnostic at all.
+    expect(/error TS\d+/.test(oom)).toBe(false);
+  });
 });

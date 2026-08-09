@@ -227,6 +227,19 @@ export interface CorpusRecallResult {
    *  concluding anything from an empty `lines`. */
   outcome: CorpusRecallOutcome;
   /**
+   * P-008 — did the stage-1 cross-encoder rerank actually run?
+   *
+   * ⚠ REQUIRED READING FOR ANY A/B ON THIS LEG. The rerank is fail-soft: with no
+   * engine it returns the RRF order untouched, which is BYTE-IDENTICAL to what a
+   * `rerank: false` control arm produces. So a treatment arm that quietly lost
+   * its engine yields a clean, confident NULL that reads as "reranking does not
+   * help" — and the natural response to that null is to abandon the feature.
+   * Assert `'reranked'` on the treatment arm before believing any comparison,
+   * exactly as this leg's benches already assert `embedderAvailable` before
+   * believing a BM25-vs-hybrid one.
+   */
+  rerank: CorpusRerankOutcome;
+  /**
    * P-003 — the engine's per-leg execution report for the search that produced
    * `lines`, or null when the leg never reached fusion.
    *
@@ -433,12 +446,13 @@ async function rerankStage1(
   hits: CorpusHit[],
   queryUsed: string,
   override: boolean | undefined,
-): Promise<CorpusHit[]> {
+): Promise<{ hits: CorpusHit[]; outcome: CorpusRerankOutcome }> {
   // Nothing to reorder → no flag read, no engine resolution, no import.
-  if (hits.length <= 1) return hits;
+  if (hits.length <= 1) return { hits, outcome: 'nothing-to-reorder' };
   const on = override ?? (await corpusRerankEnabled());
-  if (!on) return hits;
-  return await rerankRows<CorpusHit>(queryUsed, hits, {
+  if (!on) return { hits, outcome: 'off' };
+  let outcome: CorpusRerankOutcome = 'failed';
+  const ordered = await rerankRows<CorpusHit>(queryUsed, hits, {
     // Reorder the whole pool; the cut belongs to `selectCorpusLines`.
     limit: hits.length,
     id: (h) => `${h.source}:${h.sourceId}`,
@@ -446,7 +460,11 @@ async function rerankStage1(
     // Within a rerank-score bucket, keep the higher fused hit first.
     qualityScore: (h) => h.score,
     rerankTimeoutMs: corpusRerankTimeoutMs(),
+    onOutcome: (o) => {
+      outcome = o.attempted ? 'reranked' : o.reason === 'no-engine' ? 'no-engine' : 'failed';
+    },
   });
+  return { hits: ordered, outcome };
 }
 
 /**
@@ -658,7 +676,13 @@ export async function recallCorpusContext(
 
       // ── Stage 1: today's AND query, unchanged. ──
       const andFused = await search('and', effectiveQuery);
-      const andHits = await rerankStage1(toCorpusHits(andFused), effectiveQuery, input.rerank);
+      const stage1Rerank = await rerankStage1(
+        toCorpusHits(andFused),
+        effectiveQuery,
+        input.rerank,
+      );
+      const andHits = stage1Rerank.hits;
+      rerankOutcome = stage1Rerank.outcome;
       const known = input.knownRefs ?? new Set<string>();
       const stage1 = await select(andHits, effectiveQuery, { maxItems, budgetChars, knownRefs: known });
 

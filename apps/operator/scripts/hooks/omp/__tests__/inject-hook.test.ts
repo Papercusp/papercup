@@ -49,7 +49,20 @@ let crashDispatcher: string;
 let hangDispatcher: string;
 let whitespaceDispatcher: string;
 
-const SID_ENV = { PAPERCUSP_SID: 'su-test-0001', PAPERCUSP_WORKSPACE: 'ws', PAPERCUSP_HARNESS_SLUG: 'papercusp' };
+// NODE_ENV is REQUIRED on NodeJS.ProcessEnv in this tsconfig — not by @types/node
+// (whose ProcessEnv is a bare `extends Dict<string>`) but by next/types/global.d.ts,
+// which is still in apps/operator's ambient type graph even though the standalone
+// Next webapp is retired. Without it every `env:` literal below is TS2741
+// ("Property 'NODE_ENV' is missing"), which is the same systemic class already
+// sitting in the tsc baseline for ~100 pre-existing sites. Typing the fixture here
+// keeps all of them satisfied from ONE place; the code under test reads only
+// PAPERCUSP_* keys, so the added value is inert.
+const SID_ENV: NodeJS.ProcessEnv = {
+  NODE_ENV: 'test',
+  PAPERCUSP_SID: 'su-test-0001',
+  PAPERCUSP_WORKSPACE: 'ws',
+  PAPERCUSP_HARNESS_SLUG: 'papercusp',
+};
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'omp-inject-hook-'));
@@ -310,7 +323,9 @@ describe('inject-hook — resolveDispatcherPath', () => {
 
 describe('inject-hook — shouldSkip', () => {
   it('skips without PAPERCUSP_SID (invariant 3)', () => {
-    expect(shouldSkip('turn-start', {})).toBe(true);
+    // NODE_ENV only satisfies ProcessEnv's required key (see SID_ENV above); the
+    // point of this case is the ABSENCE of PAPERCUSP_SID, which is preserved.
+    expect(shouldSkip('turn-start', { NODE_ENV: 'test' })).toBe(true);
   });
 
   it('suppresses mid-turn when PAPERCUSP_MID_TURN_CONTEXT=off (recall-only port)', () => {
