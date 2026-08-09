@@ -94,24 +94,28 @@ export const RERANK_MAX_CANDIDATES = 24;
  * on someone's first search. It does not arise in the intended deployment,
  * where the sidecar holds the model warm across processes.
  *
- * ⚠⚠ CORRECTION (context-injection-retrieval-reach-and-visibility-2026-08-03#D-093,
- * measured 2026-08-09; bug EI-20005411672741677): the paragraph above overstates the
- * guarantee, and so did this constant's opening line. This bound is enforced by
- * `Promise.race` + `setTimeout` inside `@papercusp/rerank`, and a timer CANNOT
- * preempt a stage that blocks the event loop. WITH A SIDECAR the stage is an HTTP
- * call, genuinely async, and the bound works exactly as described. WITHOUT one the
- * cross-encoder runs in-process on the main thread, so neither the cold start NOR
- * a slow steady-state query "returns RRF order" on expiry — both run to completion
- * and the caller waits, with no degrade available.
- *
+ * ⚠ HISTORY, and the current limit (bug EI-20005411672741677, fixed 2026-08-09;
+ * measured as D-093 in context-injection-retrieval-reach-and-visibility-2026-08-03).
+ * This bound is enforced by `Promise.race` + `setTimeout` inside `@papercusp/rerank`,
+ * and a timer CANNOT preempt a stage that blocks the event loop. WITH A SIDECAR the
+ * stage is an HTTP call, genuinely async, and the bound always worked as described.
+ * WITHOUT one the cross-encoder runs in-process on the main thread — and until the
+ * fix that meant NEITHER the cold start NOR a slow query "returned RRF order" on
+ * expiry: both ran to completion while the caller waited, with no degrade available.
  * Measured on the sibling corpus path, which uses the same seam: a 2,000ms bound
- * was overrun to 2,473ms with the call still reporting success, which is only
- * possible if the timer fired late. Nothing here is a reason to remove the bound —
- * it is correct and load-bearing in the deployed (sidecar) shape. It is a reason
- * not to claim protection on hosts that have no sidecar, which per the local
- * engine's whole rationale (no credential, no network) is exactly the desktop
- * install. Making it real needs a worker thread or a yield-per-pair inside the
- * scorer, not a bigger number here.
+ * overrun to 2,473ms with the call still reporting success.
+ *
+ * `scoreCrossEncoder` now yields to the event loop between batches and re-checks a
+ * deadline there, so the timer CAN fire and the stage does degrade. The residual
+ * limit is GRANULARITY, not correctness: a single forward pass still holds the
+ * thread, so the caller's wait is bounded to this value plus at most one batch
+ * (default 16 pairs ≈ 720ms on this box). Comfortable inside 4s; size any tighter
+ * bound — the corpus leg's 2,000ms — with that one-batch overrun in mind.
+ *
+ * Making the bound EXACT needs the model on a worker thread, as the local embedder
+ * already does (`local-embedder-worker.ts`); that is tracked separately and is the
+ * only remaining reason this says "bounded" rather than "precise". Still not a
+ * constant to tune: a bigger number here never bought enforcement.
  */
 export const PROSE_RERANK_TIMEOUT_MS = 4_000;
 

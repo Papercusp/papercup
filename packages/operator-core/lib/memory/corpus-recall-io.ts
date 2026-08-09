@@ -136,20 +136,31 @@ export function corpusEmbedBudgetMs(): number {
  * while still reserving 500ms for search, selection and stage 2. That 1.7% tail
  * is precisely what this converts from "no pointer section" into "RRF order".
  *
- * ⚠⚠ THIS BOUND — AND THE LEG'S OWN — CANNOT FIRE AGAINST THE IN-PROCESS ENGINE.
- * Both are `Promise.race` + `setTimeout`, and a timer cannot preempt a stage that
- * blocks the event loop. On a host with NO embed sidecar the cross-encoder runs
- * in-process and does exactly that, so the "degrade to RRF order" contract above
- * is INOPERATIVE there and the rerank runs to completion however long it takes.
+ * ⚠ THIS BOUND ONCE COULD NOT FIRE AGAINST THE IN-PROCESS ENGINE (bug
+ * EI-20005411672741677, fixed 2026-08-09). Both this and the leg's own bound are
+ * `Promise.race` + `setTimeout`, and a timer cannot preempt a stage that blocks
+ * the event loop. On a host with NO embed sidecar the cross-encoder runs
+ * in-process and did exactly that, so the "degrade to RRF order" contract above
+ * was INOPERATIVE there and the rerank ran to completion however long it took.
  *
  * MEASURED, not inferred (D-093): with no sidecar configured, `recallCorpusContext`
  * returned `outcome: 'ok'` after 2,473ms, 2,455ms and 2,302ms — through a 2,000ms
  * `withBound`. Had the timer fired, those would have been `'timed-out'` at ~2,000ms.
  *
+ * `scoreCrossEncoder` now yields between batches and honours a deadline derived
+ * from this value, so the degrade works in-process too. What remains is
+ * GRANULARITY: one forward pass still holds the thread, so the real ceiling is
+ * this bound plus at most one batch. That matters MORE here than on the
+ * interactive path, because the leg's own 2,000ms `withBound` sits only 500ms
+ * above this 1,500ms — a one-batch overrun can still push the LEG past its bound
+ * and yield no pointer section. Sizing this pair is therefore still a real
+ * trade-off, not a solved problem; the exact fix is the worker thread, tracked
+ * separately.
+ *
  * Out-of-process (sidecar configured — every operator unit on the dev box) the
- * stage is an HTTP call, genuinely async, and both bounds work as documented.
- * So this is a DEPLOYMENT-SHAPED hazard, not a universal one — and it lands on
- * the desktop install, which is the shipping target and the case with no sidecar.
+ * stage is an HTTP call, genuinely async, and both bounds always worked as
+ * documented. The residual granularity is DEPLOYMENT-SHAPED, landing on the
+ * desktop install, which is the shipping target and the case with no sidecar.
  */
 export function corpusRerankTimeoutMs(): number {
   const raw = Number(process.env.PAPERCUSP_MEMORY_CORPUS_RERANK_TIMEOUT_MS);
