@@ -815,6 +815,12 @@ describe('spawnConsole displayOverride (demo-stage) — WI-4272', () => {
       envelope,
       displayOverride: ':123',
       desktopEnvProbes: FAKE_DESKTOP_PROBES, // socket "exists"
+      // WI-37476 (EI-9748 Route B): this test is about display-override env
+      // handling, not the cgroup-escape wrapper — isolate it the same way the
+      // Route-A tests isolate the headless spawn, so it doesn't flake between
+      // "xterm" and "systemd-run" depending on whether THIS box happens to have
+      // systemd-run on PATH.
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
     });
     expect(r.status).toBe('ok');
     const ok = r as Extract<typeof r, { status: 'ok' }>;

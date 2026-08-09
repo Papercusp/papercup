@@ -1,7 +1,7 @@
 /**
  * coord:inbox — EI-19326331501849713 dropped-carry-respawn ambient line WIRING.
  *
- * The pure renderer (`droppedRespawnAmbientLine`) and its file reader are pinned
+ * The pure renderer (`lostRespawnAmbientLine`) and its file reader are pinned
  * by `lib/carry-respawn-outcome.test.ts`. THIS file pins the thing that file
  * cannot: that the renderer is actually WIRED into the per-turn coord injection
  * — the handler reads the outcome, gates it on the quiet band, and places the
@@ -14,7 +14,7 @@
  * leaves every pure test green while the agent is never told its respawn died.
  *
  * Deliberately mocks ONLY `readPriorRespawnOutcome` (the IO leg) and keeps the
- * REAL `droppedRespawnAmbientLine`, so the asserted text is the genuine
+ * REAL `lostRespawnAmbientLine`, so the asserted text is the genuine
  * production string rather than a fixture's idea of it.
  *
  * Same mocked-deps seam as the sibling inbox-*.test.ts files in this dir.

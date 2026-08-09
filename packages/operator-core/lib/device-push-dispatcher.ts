@@ -310,7 +310,10 @@ async function resolveApnsJwt(): Promise<string | null> {
   const p8 = readFileSync(keyPath, 'utf8');
   // Lazy require so jose only loads when APNs is actually configured.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { SignJWT, importPKCS8 } = require('jose') as typeof import('jose');
+  // Same ESM fault as the FCM leg (WI-37479) — a bare `require` is not defined in the hosts
+  // that serve pushes. Dormant today (APNs waits on Apple enrollment), which is exactly why it
+  // would otherwise have shipped broken and only surfaced when iOS was switched on.
+  const { SignJWT, importPKCS8 } = requireCjs('jose') as typeof import('jose');
   const key = await importPKCS8(p8, 'ES256');
   const jwt = await new SignJWT({})
     .setProtectedHeader({ alg: 'ES256', kid: keyId })

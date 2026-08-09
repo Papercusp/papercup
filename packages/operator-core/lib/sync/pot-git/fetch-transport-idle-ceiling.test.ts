@@ -415,8 +415,10 @@ describe('serveUploadPack — abandoned requester (EI-18802033487678337)', () =>
 
     const res = await p;
     expect(Date.now() - startedAt).toBeLessThan(4_000);
-    expect(res.timedOut).toBe(true);
     expect(res.stderr).toContain('superseded');
+    // EI-18808621019872598: a caller-driven stand-down is an abandonment, not a
+    // ceiling firing.
+    expect(res.timedOut).toBe(false);
   });
 
   /** An already-aborted signal must not be ignored — otherwise a serve raced
@@ -430,7 +432,10 @@ describe('serveUploadPack — abandoned requester (EI-18802033487678337)', () =>
       allowOutsideRoot: true,
       signal: AbortSignal.abort('stale'),
     });
-    expect(res.timedOut).toBe(true);
+    // The stand-down must be HONOURED — witnessed by the reason killChild wrote,
+    // not by `timedOut`, which this path must NOT set (EI-18808621019872598).
+    expect(res.stderr).toContain('aborted: stale');
+    expect(res.timedOut).toBe(false);
   });
 
   /**

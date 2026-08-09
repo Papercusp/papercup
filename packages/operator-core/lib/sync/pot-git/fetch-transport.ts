@@ -100,7 +100,16 @@ export interface TransportResult {
   code: number;
   /** Captured stderr (diagnostics; never surfaced to a peer). */
   stderr: string;
-  /** True when the timeout fired (the process was killed). */
+  /**
+   * True when a CEILING fired — the idle timeout or the absolute ceiling.
+   *
+   * NOT "the process was killed": a serve is also killed when the requester's
+   * duplex goes away or the caller aborts, and neither is a timeout. Conflating
+   * them (EI-18808621019872598) logged 169ms serves as `timedOut=true` against a
+   * 120000ms ceiling, which reads as "raise the timeout" for what is really a
+   * connection teardown. The kill itself is witnessed by `stderr`, which always
+   * carries the reason killChild recorded.
+   */
   timedOut: boolean;
 }
 

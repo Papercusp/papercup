@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
@@ -158,7 +159,7 @@ describe('device-push-dispatcher', () => {
  */
 describe('FCM credential faults report as faults, not skips (WI-37479)', () => {
   it('source carries no bare require() — it is not defined in the ESM hosts that serve pushes', () => {
-    const src = readFileSync(join(__dirname, 'device-push-dispatcher.ts'), 'utf8');
+    const src = readFileSync(fileURLToPath(new URL('./device-push-dispatcher.ts', import.meta.url)), 'utf8');
     // `requireCjs(` (createRequire) is correct; a bare `require(` is the bug.
     expect(src).not.toMatch(/[^a-zA-Z.]require\s*\(/);
     expect(src).toContain('createRequire(import.meta.url)');

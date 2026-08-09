@@ -1021,4 +1021,103 @@ describe('AgentDossier', () => {
       expect(title.textContent).toContain('what they’re doing');
     });
   });
+
+  // ── Dynamically pushed context: the per-ref rows (P-013) ──────────────────
+  describe('pushed context refs', () => {
+    const PUSHED = {
+      events: [
+        {
+          at: new Date(Date.now() - 60_000).toISOString(),
+          surface: 'mid-turn',
+          returned: 12,
+          admitted: 1,
+          truncated: true,
+          semanticRan: true,
+          lexicalRan: null,
+        },
+      ],
+      count: 4,
+      refsByPort: [{ port: 'mid-turn', refs: 2, kind: 'corpus' as const }],
+      refs: [
+        {
+          ref: 'WI-6512',
+          kind: 'corpus' as const,
+          port: 'mid-turn',
+          at: new Date(Date.now() - 60_000).toISOString(),
+          epoch: 3,
+        },
+        {
+          ref: '0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f',
+          kind: 'memory' as const,
+          port: 'turn-start',
+          at: new Date(Date.now() - 120_000).toISOString(),
+          epoch: 3,
+        },
+      ],
+      refsTotal: 61,
+    };
+
+    it('renders one row per HANDLE, tagged with the ledger it came from', async () => {
+      syncState.detail = { ...DETAIL, pushedContext: PUSHED } satisfies AgentDetail;
+      const { container, findByText } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Dynamically pushed context');
+      const rows = container.querySelectorAll('[data-testid="dossier-pushed-ref-row"]');
+      expect(rows.length).toBe(2);
+      // A corpus pointer is short enough to render whole; the `ptr`/`mem` tag is
+      // the LEG OF ORIGIN (D-085), which is why it is rendered and not implied.
+      expect(rows[0].textContent).toContain('ptr');
+      expect(rows[0].textContent).toContain('WI-6512');
+      expect(rows[0].textContent).toContain('mid-turn');
+      expect(rows[1].textContent).toContain('mem');
+    });
+
+    it('shortens a uuid handle VISIBLY and keeps the full value reachable', async () => {
+      // A truncated handle you cannot look up would be worse than no handle at
+      // all — the ellipsis says it is cut, and `title` carries the whole thing.
+      syncState.detail = { ...DETAIL, pushedContext: PUSHED } satisfies AgentDetail;
+      const { container, findByText } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Dynamically pushed context');
+      const rows = container.querySelectorAll('[data-testid="dossier-pushed-ref-row"]');
+      expect(rows[1].textContent).toContain('0f8c1d2e…');
+      expect(rows[1].getAttribute('title')).toContain('0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f');
+      expect(rows[1].getAttribute('title')).toContain('epoch 3');
+    });
+
+    it('says how many refs it is NOT showing, rather than letting 2 read as all 61', async () => {
+      // The Coord lesson [owner 2026-07-28, verbatim]: "it says 38 unread, but I
+      // only see 2 messages". A capped list must name what it cannot show.
+      syncState.detail = { ...DETAIL, pushedContext: PUSHED } satisfies AgentDetail;
+      const { container, findByText } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Dynamically pushed context');
+      const list = container.querySelector('[data-testid="dossier-pushed-refs-list"]')!;
+      // The IMMEDIATE sibling, not a querySelector under the parent: the section
+      // holds two capped lists (refs and injections) and a loose selector would
+      // be free to answer about the wrong one's control.
+      const drill = list.nextElementSibling;
+      expect(drill?.className).toContain('pc-dossier__drillin');
+      expect(drill?.textContent).toContain('61');
+    });
+
+    it('survives an operator payload that predates `refs` instead of crashing the HUD', async () => {
+      // The sidecar only rebuilds on restart while the SPA rebuilds on the vite
+      // hot path, so a fresh bundle can genuinely be served a payload with no
+      // `refs`/`refsTotal`. Reading `.length` off an absent list is what took
+      // the whole hud tab down once — hence `?? []` at the read site.
+      const { refs: _r, refsTotal: _t, ...older } = PUSHED;
+      syncState.detail = { ...DETAIL, pushedContext: older } satisfies AgentDetail;
+      const { container, findByText } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Dynamically pushed context');
+      expect(container.querySelectorAll('[data-testid="dossier-pushed-ref-row"]').length).toBe(0);
+      // The injection rows — the OTHER half of the section — still render.
+      expect(container.querySelectorAll('[data-testid="dossier-pushed-row"]').length).toBe(1);
+    });
+  });
 });
