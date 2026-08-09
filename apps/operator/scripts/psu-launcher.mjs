@@ -1966,8 +1966,33 @@ export function ompCoreToolNames(env = process.env) {
  *  PreToolUse lock-block hook fires ONLY in Claude sessions and its refusal names
  *  locks:acquire {wake_on_grant:true} as the sanctioned queue+sleep path, yet Claude's
  *  native ToolSearch indexes ONLY the advertised subset — an unseeded name reads as
- *  "doesn't exist" (the EI-9011 poll-degradation). Exported for tests. */
-export const CLAUDE_SEED_EXTRA_TOOL_NAMES = ['locks:acquire', 'locks:release', 'locks:list'];
+ *  "doesn't exist" (the EI-9011 poll-degradation). Exported for tests.
+ *
+ *  WI-37534 (owner-reported 2026-08-09) extends the same principle from the lock hook to
+ *  the rest of the CLAUDE-ONLY mandates. These live here rather than in the shared spine
+ *  on purpose: a weak local OMP model has no use for a state plane or a background-job
+ *  runner, and the drift guard asserts this list stays DISJOINT from OMP_CORE.
+ *  Demand evidence (tool_invocations, tools:invoke fallback reaches / distinct callers,
+ *  14d, papercusp-workspace) against the list's own admit precedent — search:fulltext was
+ *  admitted at 22/11, coord:ask CUT at 16 and events:emit at 29:
+ *    state:read              68 / 31   root CLAUDE.md mandates RE-READING any volatile
+ *                                      value (gate verdict, deploy sha, queue depth)
+ *                                      instead of transcribing it; unreachable, so the
+ *                                      transcribe-a-stale-number bug it exists to kill
+ *                                      stayed alive.
+ *    capability:bash        111 / 29   the long-jobs rule routes every >1-2min job here
+ *                                      (recoverable log + real child exit code).
+ *    capability:bash_output 119 / 34   its INSEPARABLE pair — seeding the launcher
+ *                                      without the reader strands every background job,
+ *                                      which is why its reach count is the HIGHER of the
+ *                                      two (agents got a bash_id they could not read).
+ *  Previously filed independently and left unfixed: EI-19500729376783421 (capability:bash
+ *  unreachable, so agents fall back to native backgrounding — whose completion
+ *  notification root CLAUDE.md separately calls untrustworthy). */
+export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
+  'locks:acquire', 'locks:release', 'locks:list',
+  'state:read', 'capability:bash', 'capability:bash_output',
+];
 export function claudeSeedToolNames(env = process.env) {
   const seen = new Set();
   return [...ompCoreToolNames(env), ...CLAUDE_SEED_EXTRA_TOOL_NAMES]

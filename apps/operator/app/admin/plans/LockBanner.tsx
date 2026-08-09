@@ -6,8 +6,12 @@
  * Renders a slim amber banner above the plan editor when the open
  * plan's file is held by an active lock — naming the holder, intent,
  * and remaining TTL. The banner re-computes the "expires in Ns"
- * countdown every second; the underlying poll happens in usePlanLock
- * on a 30s timer + focus + visibility change (D-008).
+ * countdown every second; the lock STATE itself is pushed, not polled —
+ * usePlanLock subscribes to `planLock.byPath` and the lock writers emit on
+ * acquire/release (P-025 of semantic-search-fingerprint-coverage-2026-08-03,
+ * which retired the 30s timer this comment used to describe). The focus /
+ * visibility-change re-fetch survives as the backstop for a dropped
+ * fire-and-forget notify.
  *
  * Caller's responsibility: forcing read mode while `lock` is non-null.
  * PlanDetail does that — passing `readOnly` to PlanEditor anyway today

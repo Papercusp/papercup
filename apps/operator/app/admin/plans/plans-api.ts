@@ -1917,7 +1917,9 @@ export function usePlanLock(
 
   return {
     // The resolver returns a 0- or 1-row array (at most one holder per path).
-    data: rows.data[0] ?? null,
+    // `AsyncResult.data` is nullable, so this reads through it the same way
+    // usePlanViewerEmail does rather than indexing a possibly-null array.
+    data: rows.data?.[0] ?? null,
     loading: rows.loading,
     error: rows.error,
     refresh: rows.refresh,

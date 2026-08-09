@@ -1041,8 +1041,31 @@ describe('claudeSeedToolNames (EI-9011 — CC lock-hook verbs advertised to Clau
     expect(new Set(seed).size).toBe(seed.length);
   });
 
-  it('locks:* stay OUT of the weak-model OMP spine (the 2026-07-05 misuse cut holds)', () => {
+  it('every Claude-only extra stays OUT of the weak-model OMP spine', () => {
+    // Covers the 2026-07-05 locks:* misuse cut AND the WI-37534 additions: a small local
+    // model should not be handed a state plane or a background-job runner.
     for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES) expect(ompCoreToolNames({})).not.toContain(n);
+  });
+
+  it('seeds the CLAUDE-only prompt-mandated verbs (WI-37534)', () => {
+    // Regression guard. Each of these is REQUIRED by documentation the agent must follow
+    // (root CLAUDE.md's volatile-value re-read rule and its long-jobs rule), while Claude's
+    // native ToolSearch indexes ONLY the advertised subset — so an unseeded name answers
+    // "No matching deferred tools found", which reads as "this tool does not exist".
+    // Measured before the fix: 68/111/119 tools:invoke fallback reaches per 14d.
+    const seed = claudeSeedToolNames({});
+    for (const n of ['state:read', 'capability:bash', 'capability:bash_output']) {
+      expect(seed).toContain(n);
+    }
+  });
+
+  it('never seeds capability:bash without its reader (a bash_id nobody can read)', () => {
+    // These two are inseparable: the long-jobs rule says launch with
+    // capability:bash { run_in_background: true } and read with capability:bash_output.
+    // Seeding only the launcher strands every background job, which is exactly why
+    // bash_output out-reached bash (119 vs 111) before the fix.
+    const seed = claudeSeedToolNames({});
+    expect(seed.includes('capability:bash')).toBe(seed.includes('capability:bash_output'));
   });
 
   it('honors the spine exclude escape hatch without touching the lock extras', () => {
