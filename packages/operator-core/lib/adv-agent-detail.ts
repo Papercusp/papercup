@@ -487,6 +487,30 @@ export interface PushedContextRef {
   at: string;
   /** Compaction epoch it was surfaced under — the dedup scope above. */
   epoch: number;
+  /** Human label for the row, resolved at read time. Absent whenever
+   *  `titleState` is not `'ok'` — read the two together, never `title` alone. */
+  title?: string;
+  /** The fuller body behind `title`, for the hover detail. Capped
+   *  (`PUSHED_REF_DETAIL_MAX_CHARS`) — the dossier is a rail, not a reader. */
+  detail?: string;
+  /**
+   * TRI-STATE, and the reason is the same one the `semanticRan` glyphs above
+   * exist for: the three cases are operationally different and collapsing them
+   * loses the only interesting one.
+   *
+   *   `undefined`    — resolution was never ATTEMPTED (the pure-shaper path,
+   *                    and any older payload from before this field existed).
+   *   `'ok'`         — resolved; `title` is set.
+   *   `'unresolved'` — we looked and the canonical row is NOT there. A real
+   *                    finding: the agent was handed a pointer to something
+   *                    that has since been deleted or was never fetchable.
+   *   `'unavailable'`— the lookup ITSELF failed. Says nothing about the row.
+   *
+   * Rendering `'unresolved'` and `'unavailable'` the same way would report "we
+   * could not ask" as "there is nothing there", which is the exact conflation
+   * `unavailable` on the parent DTO already exists to prevent.
+   */
+  titleState?: 'ok' | 'unresolved' | 'unavailable';
 }
 
 export interface AgentPushedContext {
@@ -1545,6 +1569,231 @@ export function derivePushedContext({
   };
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * Ref → title resolution (read-side only; see PushedContextRef's header).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Which canonical store a surfaced ref points AT. `unknown` is a real outcome,
+ *  not a parse failure to swallow: a ref shape we do not recognise must render
+ *  as its raw handle rather than be silently dropped from the list. */
+export type PushedRefClass = 'memory' | 'work-item' | 'session' | 'unknown';
+
+/** A work-item / issue handle: `WI-7005`, `EI-19310032174584195`, `F-12`.
+ *  Deliberately `{1,4}`+`\d+` and NOT a fixed prefix list — the id families in
+ *  this ledger already span WI/EI/F and a new one must degrade to `unknown`
+ *  only if it is genuinely differently SHAPED, not merely newer. */
+const WORK_ITEM_REF_RE = /^[A-Z]{1,4}-\d+$/i;
+
+/** A session pointer: `claude:<uuid>` / `codex:<uuid>` / `omp:<uuid>` — the
+ *  `<source_kind>:<session_id>` form `corpus-recall.ts` emits. */
+const SESSION_REF_RE = /^([a-z][a-z0-9_-]{1,15}):([0-9a-f][0-9a-f-]{7,})$/i;
+
+/** A bare mem0 uuid (the memory ledger's key). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * PURE. `kind` leads because it is the ledger of origin and therefore
+ * authoritative — a memory ledger row is a memory even if its uuid somehow
+ * matched another shape. Only the corpus ledger's `ref` is free-form.
+ */
+export function classifyPushedRef(ref: string, kind: PushedContextRefKind): PushedRefClass {
+  if (kind === 'memory') return UUID_RE.test(ref) ? 'memory' : 'unknown';
+  if (WORK_ITEM_REF_RE.test(ref)) return 'work-item';
+  if (SESSION_REF_RE.test(ref)) return 'session';
+  return 'unknown';
+}
+
+/** Split a session ref into its source kind and session id, or null. */
+export function parseSessionRef(ref: string): { source: string; sessionId: string } | null {
+  const m = SESSION_REF_RE.exec(ref);
+  return m ? { source: m[1].toLowerCase(), sessionId: m[2] } : null;
+}
+
+/** One resolved row. `title` is always a single line; `detail` may wrap. */
+export interface PushedRefResolution {
+  title: string;
+  detail?: string;
+}
+
+/** Title: one line, short enough to sit in a rail row. */
+const PUSHED_REF_TITLE_MAX_CHARS = 110;
+/** Detail: enough to be worth selecting, bounded so 40 refs cannot bloat the
+ *  sync payload (40 × 800 ≈ 32KB worst case). */
+export const PUSHED_REF_DETAIL_MAX_CHARS = 800;
+
+/** Collapse whitespace and cut to `max`, appending an ellipsis only when the cut
+ *  actually removed something. PURE. */
+export function oneLineClamp(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** Build a `{title, detail}` from a raw body: first line as the title, the
+ *  clamped body as the detail. PURE — shared by all three resolvers so the
+ *  three stores cannot drift in how they present themselves. */
+export function resolutionFromBody(body: string, prefix?: string): PushedRefResolution | null {
+  const flat = body.trim();
+  if (!flat) return null;
+  const firstLine = flat.split('\n').find((l) => l.trim().length > 0) ?? flat;
+  const title = oneLineClamp(prefix ? `${prefix} ${firstLine}` : firstLine, PUSHED_REF_TITLE_MAX_CHARS);
+  const detail = flat.length > PUSHED_REF_DETAIL_MAX_CHARS
+    ? `${flat.slice(0, PUSHED_REF_DETAIL_MAX_CHARS - 1).trimEnd()}…`
+    : flat;
+  return { title, detail };
+}
+
+/**
+ * PURE. Stamp resolutions onto refs and set the tri-state.
+ *
+ * `attempted` is a separate argument from "the map is non-empty" on purpose: a
+ * lookup that ran and legitimately matched NOTHING must mark every row
+ * `'unresolved'` (a finding), while a lookup that never ran must leave
+ * `titleState` undefined (not a finding). Those two collapse into the same
+ * empty map, so the distinction cannot be recovered from the map alone — which
+ * is exactly how "we could not ask" would come to render as "there is nothing
+ * there".
+ */
+export function applyPushedRefTitles(
+  refs: readonly PushedContextRef[],
+  resolved: ReadonlyMap<string, PushedRefResolution>,
+  attempted: { ran: boolean; failed?: boolean } = { ran: true },
+): PushedContextRef[] {
+  if (!attempted.ran) return refs.map((r) => ({ ...r }));
+  return refs.map((r) => {
+    if (attempted.failed) return { ...r, titleState: 'unavailable' as const };
+    const hit = resolved.get(pushedRefKey(r));
+    if (!hit) return { ...r, titleState: 'unresolved' as const };
+    return {
+      ...r,
+      title: hit.title,
+      ...(hit.detail ? { detail: hit.detail } : {}),
+      titleState: 'ok' as const,
+    };
+  });
+}
+
+/** The postgres.js template tag `withWorkspace` hands its callback. Declared
+ *  STRUCTURALLY rather than importing the driver's `Sql` type, so this module
+ *  keeps its existing "no direct driver dependency" shape (`withWorkspace` is
+ *  itself a dynamic import here) and the resolver stays unit-testable against a
+ *  hand-rolled fake tag. */
+export type PushedRefSqlTag = <T>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
+
+/** The resolution map's key. Kind-qualified because the two ledgers share a
+ *  namespace only by accident — a corpus ref and a memory uuid are different
+ *  rows even in the (impossible today, cheap to exclude) case they collide. */
+export function pushedRefKey(r: Pick<PushedContextRef, 'ref' | 'kind'>): string {
+  return `${r.kind}:${r.ref}`;
+}
+
+/**
+ * IO half: resolve every ref in one batched round-trip per store.
+ *
+ * SCOPING — deliberately NOT filtered by workspace/harness, which is the
+ * opposite of the usual rule for these tables, so here is the reason MEASURED
+ * (2026-08-09) rather than assumed:
+ *   - the ref set is already bounded by THIS session's own ledger rows, so
+ *     there is no cross-tenant fan-in to guard against; the ids come from the
+ *     agent's own history, not from a user-supplied filter.
+ *   - `memory_canonical` legitimately holds these rows under TWO workspace ids
+ *     (`default` and the active workspace — 2 distinct values across a 40-row
+ *     sample), so a workspace predicate would drop real rows and report them as
+ *     `'unresolved'`, i.e. manufacture a finding out of a scoping bug.
+ *   - `session_turns.workspace_id` is ALWAYS the literal `default` — a corpus
+ *     namespace, never a tenant — so scoping it is meaningless by construction.
+ * `work_items` is keyed (harness_slug, feature_id), so that one CAN fan out
+ * across harnesses; `DISTINCT ON` picks the most recently updated row rather
+ * than letting the join multiply the list.
+ */
+export async function resolvePushedRefTitles(
+  tx: PushedRefSqlTag,
+  refs: readonly PushedContextRef[],
+): Promise<Map<string, PushedRefResolution>> {
+  const out = new Map<string, PushedRefResolution>();
+  const workItemIds: string[] = [];
+  const sessionIds: string[] = [];
+  const memoryIds: string[] = [];
+  const sessionRefBySessionId = new Map<string, string>();
+  for (const r of refs) {
+    switch (classifyPushedRef(r.ref, r.kind)) {
+      case 'work-item':
+        workItemIds.push(r.ref);
+        break;
+      case 'session': {
+        const parsed = parseSessionRef(r.ref);
+        if (parsed) {
+          sessionIds.push(parsed.sessionId);
+          sessionRefBySessionId.set(parsed.sessionId, r.ref);
+        }
+        break;
+      }
+      case 'memory':
+        memoryIds.push(r.ref);
+        break;
+      default:
+        break;
+    }
+  }
+
+  const [wiRows, memRows, sessRows] = await Promise.all([
+    workItemIds.length > 0
+      ? tx<{ feature_id: string; title: string | null; kind: string | null; state: string | null; summary: string | null }[]>`
+          SELECT DISTINCT ON (feature_id)
+                 feature_id, title, kind, state, summary
+            FROM harness_shared.work_items
+           WHERE feature_id = ANY(${workItemIds}::text[])
+           ORDER BY feature_id, updated_at DESC NULLS LAST
+        `
+      : Promise.resolve([] as never[]),
+    memoryIds.length > 0
+      ? tx<{ id: string; body: string | null; kind: string | null }[]>`
+          SELECT id::text AS id,
+                 payload->>'data' AS body,
+                 payload->>'kind' AS kind
+            FROM harness_shared.memory_canonical
+           WHERE id = ANY(${memoryIds}::uuid[])
+        `
+      : Promise.resolve([] as never[]),
+    sessionIds.length > 0
+      ? tx<{ session_id: string; text: string | null }[]>`
+          SELECT DISTINCT ON (session_id) session_id, text
+            FROM harness_shared.session_turns
+           WHERE session_id = ANY(${sessionIds}::text[])
+             AND speaker = 'user'
+           ORDER BY session_id, turn_idx ASC
+        `
+      : Promise.resolve([] as never[]),
+  ]);
+
+  for (const w of wiRows as unknown as { feature_id: string; title: string | null; kind: string | null; state: string | null; summary: string | null }[]) {
+    if (!w.title) continue;
+    const badge = [w.kind, w.state].filter(Boolean).join(' · ');
+    out.set(`corpus:${w.feature_id}`, {
+      title: oneLineClamp(w.title, PUSHED_REF_TITLE_MAX_CHARS),
+      detail: oneLineClamp(
+        `${w.feature_id}${badge ? ` [${badge}]` : ''} — ${w.title}${w.summary ? `\n\n${w.summary}` : ''}`,
+        PUSHED_REF_DETAIL_MAX_CHARS,
+      ),
+    });
+  }
+  for (const m of memRows as unknown as { id: string; body: string | null; kind: string | null }[]) {
+    if (!m.body) continue;
+    const res = resolutionFromBody(m.body);
+    if (res) out.set(`memory:${m.id}`, res);
+  }
+  for (const s of sessRows as unknown as { session_id: string; text: string | null }[]) {
+    const ref = sessionRefBySessionId.get(s.session_id);
+    if (!ref || !s.text) continue;
+    // The session's FIRST user turn is the closest thing a transcript has to a
+    // title — it is what the human actually asked for. Not the matched turn:
+    // the ledger records the ref, never which turn matched (D-085's per-ref
+    // attribution limit), so claiming otherwise would be an invented precision.
+    const res = resolutionFromBody(s.text, '↳');
+    if (res) out.set(`corpus:${ref}`, res);
+  }
+  return out;
+}
+
 /**
  * Read what context was PUSHED to this agent, and whether retrieval was healthy
  * when it happened.
@@ -1560,7 +1809,7 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
   try {
     const ws = activeWorkspaceId();
     const { withWorkspace } = await import('@papercusp/db-org');
-    return await withWorkspace(ws, async (tx) => {
+    const base = await withWorkspace(ws, async (tx) => {
       const [rows, totals, memRefs, memRefDetail] = await Promise.all([
         tx<PushedContextRow[]>`
           SELECT created_at, surface, legs, admission
@@ -1643,7 +1892,7 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
         unavailable.push('corpus-surfaced-refs');
       }
 
-      return derivePushedContext({
+      const shaped = derivePushedContext({
         rows: rows as unknown as PushedContextRow[],
         refRows: [
           ...(memRefs as unknown as PortCount[]).map((r) => ({
@@ -1662,7 +1911,34 @@ export async function getAgentPushedContext(owner: string): Promise<AgentPushedC
         total: Number(totalRow?.total ?? 0) || 0,
         unavailable,
       });
+      return shaped;
     });
+
+    // Titles resolve in their OWN transaction, deliberately — the same reason
+    // the corpus-ledger read above is fenced behind `to_regclass` rather than
+    // joining the `Promise.all`: `withWorkspace` runs its callback inside a
+    // TRANSACTION, so ANY error in here (a missing relation, a cast, a
+    // statement timeout) would abort the surrounding one and take the whole
+    // ledger read down with it — turning "we could not read three titles" into
+    // a section-wide "we could not ask". A second round-trip is the cheap price
+    // of keeping the failure local.
+    //
+    // Titles are also a SEPARATE failure DOMAIN: a dossier that lost its ref
+    // list is broken; one that lost its titles is merely less readable, and it
+    // degrades to `titleState: 'unavailable'` (rendered as the raw handle plus
+    // a note), never to an empty list.
+    if (base.refs.length === 0) return base;
+    let resolved = new Map<string, PushedRefResolution>();
+    let failed = false;
+    try {
+      resolved = await withWorkspace(ws, async (tx) =>
+        resolvePushedRefTitles(tx as unknown as PushedRefSqlTag, base.refs),
+      );
+    } catch (titleErr) {
+      failed = true;
+      console.warn(`[adv-agent-detail] resolvePushedRefTitles(${owner}) threw:`, titleErr);
+    }
+    return { ...base, refs: applyPushedRefTitles(base.refs, resolved, { ran: true, failed }) };
   } catch (err) {
     console.warn(`[adv-agent-detail] getAgentPushedContext(${owner}) threw:`, err);
     return {

@@ -45,8 +45,9 @@ import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { contextPct } from '../hud/hud-board-model';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
-import { useAgentDetail, type AgentDetail } from './use-agent-detail';
+import { useAgentDetail, type AgentDetail, type PushedContextRef } from './use-agent-detail';
 import { RailCluster, RailQuiet, RailSectionHead, useRailCollapse } from './rail-sections';
+import { HoverDetail } from '@/app/harness/HoverDetail';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the DTO + the `agentDetail.byOwner`
 // fetch hook now live in use-agent-detail.ts so the chat footer's "N locks / M
 // unread" summary chip can share the SAME useSyncQuery cache entry (no new
@@ -104,11 +105,48 @@ function legMark(label: string, ran: boolean | null): string {
  * A surfaced handle, shortened to fit the rail — with a VISIBLE ellipsis, so a
  * shortened value can never be mistaken for the handle itself. Corpus refs
  * (`WI-6512`) are already short and pass through untouched; mem0 refs are
- * 36-char uuids. The full value always rides in the row's `title`, so the
- * shortening costs display only, never the lookup.
+ * 36-char uuids. The full value always rides in the hover panel's header, so
+ * the shortening costs display only, never the lookup.
  */
 function shortRef(ref: string): string {
   return ref.length > 12 ? `${ref.slice(0, 8)}…` : ref;
+}
+
+/**
+ * What a pushed-context row SAYS: the resolved title, or the raw handle when
+ * there is none.
+ *
+ * The fallback is the HANDLE and not a placeholder like "(untitled)", because
+ * an unresolvable pointer is still the only identifier the operator has — the
+ * row must stay actionable when the lookup could not help. It is prefixed
+ * `mem`/`ptr` only in that fallback, where the kind is the only thing left to
+ * say about it; a resolved title speaks for itself and the kind is in the panel
+ * header.
+ */
+function pushedRefLabel(r: PushedContextRef): string {
+  if (r.title) return r.title;
+  return `${r.kind === 'memory' ? 'mem' : 'ptr'} ${shortRef(r.ref)}`;
+}
+
+/**
+ * The hover panel's body.
+ *
+ * The two failure states get DIFFERENT prose, not one shrug, for the same
+ * reason `legMark` above has three glyphs: `unresolved` is a finding about the
+ * pointer (the agent was handed a handle to something that is no longer there),
+ * while `unavailable` is a gap in our own read and says nothing about the row.
+ * Collapsing them would report our outage as the system's data loss.
+ */
+function pushedRefDetail(r: PushedContextRef): string {
+  if (r.detail) return r.detail;
+  const noun = r.kind === 'memory' ? 'memory' : 'pointer';
+  if (r.titleState === 'unresolved') {
+    return `${r.ref}\n\nNo ${noun} row found for this handle. It was surfaced to the agent, so it existed then — it has most likely been deleted or superseded since.`;
+  }
+  if (r.titleState === 'unavailable') {
+    return `${r.ref}\n\nThe title lookup failed, so this says nothing about whether the ${noun} still exists. The handle above is unaffected.`;
+  }
+  return r.ref;
 }
 
 /** Build MetaRows from label/value pairs, DROPPING the ones that would render
@@ -1166,11 +1204,26 @@ export default function AgentDossier({
                     key={`ref:${r.kind}:${r.epoch}:${r.ref}`}
                     className="pc-dossier__coord-line"
                     data-testid="dossier-pushed-ref-row"
-                    title={`${r.ref} · ${r.kind} · epoch ${r.epoch}`}
                   >
                     <span className="pc-dossier__dir">{r.port}</span>
                     <span className="pc-dossier__coord-text">
-                      {r.kind === 'memory' ? 'mem' : 'ptr'} {shortRef(r.ref)}
+                      {/* The row says WHAT was pushed, not which id it was filed
+                          under [owner 2026-08-09: "the user doesn't care about
+                          the ids"]. The handle is not hidden — it heads the
+                          hover panel, where it is selectable — but it no longer
+                          IS the row. The old native `title=` attribute is gone
+                          on purpose: it carried more ids, could not be selected,
+                          and would now race this panel to paint. */}
+                      <HoverDetail
+                        ariaLabel={`Detail for pushed ${r.kind === 'memory' ? 'memory' : 'pointer'} ${r.ref}`}
+                        testId="dossier-pushed-ref-detail"
+                        side="left"
+                        align="start"
+                        header={`${r.kind === 'memory' ? 'memory' : 'pointer'} · ${r.ref} · ${r.port} · epoch ${r.epoch}`}
+                        detail={pushedRefDetail(r)}
+                      >
+                        {pushedRefLabel(r)}
+                      </HoverDetail>
                     </span>
                     <span className="pc-dossier__coord-ts">{formatRelativeUpdated(r.at)}</span>
                   </div>

@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch, type SearchHit, type SearchLegs } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 import { buildQueryEmbedder } from '../agent-tools/search/embedder';
+import { rerankRows } from '../agent-tools/search/rerank';
 import {
   CORPUS_BUDGET_CHARS,
   CORPUS_MAX_ITEMS,
@@ -112,6 +113,35 @@ export function corpusEmbedBudgetMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 1_200;
 }
 
+/**
+ * Wall-clock bound for the STAGE-1 rerank alone (P-008).
+ *
+ * ⚠ MUST stay STRICTLY BELOW `corpusRecallTimeoutMs()` (2s). The two bounds fail
+ * in completely different directions and conflating them is the whole reason
+ * this constant exists rather than reusing the prose surfaces' 4s default:
+ *
+ *   • THIS bound expiring → the reranker's own fail-safe returns the RRF order
+ *     and the leg proceeds normally. Cost: a slightly worse ORDER.
+ *   • The LEG bound expiring → `recallCorpusContext` returns `empty('timed-out')`
+ *     and the turn gets NO pointer section at all. Cost: the whole feature.
+ *
+ * So the rerank must always lose its race first. `rerankProseHits`'s 4s default
+ * is TWICE the leg's entire budget and would guarantee the second outcome — that
+ * is why the `rerankTimeoutMs` override was added for this caller.
+ *
+ * SIZED FROM THE MEASUREMENT (bench/corpus-rerank-reach-cli.ts, 120 queries,
+ * post-P-024): stage-1 rerank p50 ≈ 1,185ms against a leg whose own p50 is
+ * ≈ 105ms, and one stage breaches the 2s leg bound on 2/120 (1.7%). 1,500ms sits
+ * above the p50 — so a healthy rerank completes and is not needlessly discarded —
+ * while still reserving 500ms for search, selection and stage 2. That 1.7% tail
+ * is precisely what this converts from "no pointer section" into "RRF order".
+ */
+export function corpusRerankTimeoutMs(): number {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_CORPUS_RERANK_TIMEOUT_MS);
+  if (Number.isFinite(raw)) return raw > 0 ? raw : Number.POSITIVE_INFINITY;
+  return 1_500;
+}
+
 export interface CorpusRecallInput {
   /** The retrieval query — the same effective text the mem0 leg searched with. */
   queryText: string;
@@ -146,6 +176,19 @@ export interface CorpusRecallInput {
    *  selects the pre-WI-9273 single-rarest-lexeme anchor — the bench's control
    *  arm. Absent ⇒ the search source's default. */
   anchorDfBudget?: number;
+  /**
+   * P-008: run the stage-1 cross-encoder rerank. Absent ⇒ the flag decides.
+   *
+   * `false` is the bench's CONTROL arm. Exposed for the same reason
+   * `gradedMaxTerms` is: the corpus is written continuously by the fleet, so two
+   * runs minutes apart are not a paired comparison, and P-018 shipped once on a
+   * real-but-unrelated gain measured exactly that way.
+   *
+   * ⚠ A rerank is a REORDER, so it CANNOT change how many lines are admitted —
+   * an acceptance measured on line counts produces a confident null (D-066).
+   * Both arms must be answer-bearing.
+   */
+  rerank?: boolean;
 }
 
 /**
@@ -325,6 +368,85 @@ function toCorpusHits(fused: { results: readonly SearchHit[] }): CorpusHit[] {
     ts: r.ts ?? null,
     rankers: r.rankers,
   }));
+}
+
+/**
+ * Is the stage-1 rerank enabled? Default ON — same rule as the leg itself.
+ * OFF restores the exact pre-P-008 RRF order, which is the clean kill-switch.
+ */
+async function corpusRerankEnabled(): Promise<boolean> {
+  try {
+    const { FLAGS } = await import('@papercusp/flags');
+    const { getFlag } = await import('@papercusp/flags/server');
+    return await getFlag(FLAGS.MEMORY_CORPUS_RERANK, 'memory-corpus-rerank');
+  } catch {
+    // A flags hiccup must not silently disable a default-ON feature.
+    return true;
+  }
+}
+
+/**
+ * The text the cross-encoder scores against the query.
+ *
+ * Mirrors `rerankText` for `SearchHit` and for the same reason: `excerpt` is
+ * `trunc(body)` — the document's first 200 chars — while the MATCH-CENTRED text
+ * is in `highlight`. Scoring the excerpt asks "is this document's OPENING about
+ * the query?", which silently demotes exactly the long documents a reranker is
+ * most useful for. Both fields are already on every `CorpusHit`, so this costs
+ * no extra retrieval.
+ */
+function corpusRerankText(hit: CorpusHit): string {
+  const highlight = (hit.highlight ?? '').replace(/<\/?mark>/g, '').trim();
+  const excerpt = (hit.excerpt ?? '').trim();
+  if (!highlight) return excerpt;
+  if (!excerpt || highlight.includes(excerpt) || excerpt.includes(highlight)) return highlight;
+  return `${highlight} … ${excerpt}`;
+}
+
+/**
+ * P-008 — stage-1 cross-encoder rerank of the over-fetched candidate pool.
+ *
+ * WHY IT SITS HERE, before `selectCorpusLines` rather than after: selection
+ * takes a hard cut at `maxItems` (6) over a pool of `retrievalDepth` (24). An
+ * interactive searcher scans a page and picks; this leg picks FOR the agent, so
+ * the order handed to `select` IS what survives the budget. Measured
+ * (bench/corpus-rerank-reach-cli.ts, post-P-024): on the 48/120 multi-tier
+ * queries an upstream reorder moves the admitted top-1 65.0% of the time, null
+ * control 0/120 — so the reranker genuinely reaches the page rather than being
+ * absorbed by the scale-free agreement key (D-091 §1, which RETRACTED the
+ * standing reach-ceiling objection).
+ *
+ * ⚠⚠ IT REORDERS ALL `hits` AND CUTS NOTHING — `limit: hits.length`, not
+ * `maxItems`. Slicing to the page here would defeat the entire point twice
+ * over: the reranker could no longer pull a buried hit INTO the page, AND
+ * `selectCorpusLines` would be starved. Selection drops self-session echoes,
+ * out-of-scope work-items, no-overlap hits and duplicate refs BEFORE its cap,
+ * which is exactly why `retrievalDepth` over-fetches 4× (see :372). Handing it 6
+ * pre-cut rows would routinely admit FEWER than 6 lines — a reorder that
+ * silently becomes a truncation.
+ *
+ * Fail-soft in the leg's own idiom: any failure returns the input order
+ * untouched. Bounded by `corpusRerankTimeoutMs()`, which is strictly below the
+ * leg's own bound so a slow rerank costs the ORDER and never the section.
+ */
+async function rerankStage1(
+  hits: CorpusHit[],
+  queryUsed: string,
+  override: boolean | undefined,
+): Promise<CorpusHit[]> {
+  // Nothing to reorder → no flag read, no engine resolution, no import.
+  if (hits.length <= 1) return hits;
+  const on = override ?? (await corpusRerankEnabled());
+  if (!on) return hits;
+  return await rerankRows<CorpusHit>(queryUsed, hits, {
+    // Reorder the whole pool; the cut belongs to `selectCorpusLines`.
+    limit: hits.length,
+    id: (h) => `${h.source}:${h.sourceId}`,
+    text: corpusRerankText,
+    // Within a rerank-score bucket, keep the higher fused hit first.
+    qualityScore: (h) => h.score,
+    rerankTimeoutMs: corpusRerankTimeoutMs(),
+  });
 }
 
 /**
@@ -536,7 +658,7 @@ export async function recallCorpusContext(
 
       // ── Stage 1: today's AND query, unchanged. ──
       const andFused = await search('and', effectiveQuery);
-      const andHits = toCorpusHits(andFused);
+      const andHits = await rerankStage1(toCorpusHits(andFused), effectiveQuery, input.rerank);
       const known = input.knownRefs ?? new Set<string>();
       const stage1 = await select(andHits, effectiveQuery, { maxItems, budgetChars, knownRefs: known });
 

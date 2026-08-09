@@ -261,6 +261,18 @@ export interface PushedContextRef {
   port: string;
   at: string;
   epoch: number;
+  /** Human label resolved server-side at read time. Optional on the wire for
+   *  the same reason `refs` is: the SPA rebuilds on the vite hot path while the
+   *  sidecar rebuilds only on restart, so a fresh bundle can be handed a payload
+   *  from before this field existed. Render the raw handle when it is absent. */
+  title?: string;
+  /** Fuller body behind `title`, for the hover panel. */
+  detail?: string;
+  /** TRI-STATE — see the server DTO. `undefined` = this payload predates
+   *  resolution (or it was never attempted), `'unresolved'` = the row is GONE,
+   *  `'unavailable'` = the lookup failed. The last two must not render alike:
+   *  one is a finding about the pointer, the other is a gap in our own read. */
+  titleState?: 'ok' | 'unresolved' | 'unavailable';
 }
 
 export interface AgentPushedContext {

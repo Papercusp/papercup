@@ -13,7 +13,7 @@
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS gate script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { CENSUS_KEY, FAILING_VERDICTS, FIRING_VERDICTS, RELATIONS_SOURCE, RULINGS, formatReport, isPastReview, judgeSignalFiring, parseDeclaredRelations, rollupFirings } from '../../../scripts/check-derived-signal-firings.mjs';
+import { CENSUS_KEY, FAILING_VERDICTS, FIRING_VERDICTS, MIN_CENSUS_ROWS_TO_FAIL, RELATIONS_SOURCE, RULINGS, formatReport, isPastReview, judgeSignalFiring, parseDeclaredRelations, rollupFirings } from '../../../scripts/check-derived-signal-firings.mjs';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { DERIVED_COUPLING_RELATIONS } from './coord/couplings';
@@ -192,6 +192,41 @@ describe('rollupFirings — review dates and rulings', () => {
     const roll = rollupFirings([row({ verdict: 'starved', reviewBy: '2026-08-01' })], now);
     expect(roll.failing).toHaveLength(0);
     expect(roll.starved).toBe(1);
+  });
+
+  /**
+   * THE STATISTICAL-POWER FLOOR. This plan's own D-090 parked P-006 because a 12×
+   * rate jump on n=3 is noise at the null rate; a review DATE alone would repeat
+   * that mistake here, since the census writes ~11 rows a fortnight and the date
+   * could arrive with three. Too few samples is an unfinished measurement, not a
+   * verdict — so it is neither a pass nor a failure.
+   */
+  it('refuses to fail a past-review relation on too few census rows', () => {
+    const roll = rollupFirings([row({ reviewBy: '2026-08-01' })], now, MIN_CENSUS_ROWS_TO_FAIL - 1);
+    expect(roll.failing).toHaveLength(0);
+    expect(roll.underpowered).toHaveLength(1);
+    expect(roll.censusRows).toBe(MIN_CENSUS_ROWS_TO_FAIL - 1);
+  });
+
+  it('fails once the evidence floor IS met', () => {
+    const roll = rollupFirings([row({ reviewBy: '2026-08-01' })], now, MIN_CENSUS_ROWS_TO_FAIL);
+    expect(roll.failing).toHaveLength(1);
+    expect(roll.underpowered).toHaveLength(0);
+  });
+
+  /** The floor must not resurrect a relation whose review date has NOT arrived. */
+  it('keeps a not-yet-due relation in pending, not underpowered, regardless of evidence', () => {
+    const roll = rollupFirings([row({})], now, 1);
+    expect(roll.pending).toHaveLength(1);
+    expect(roll.underpowered).toHaveLength(0);
+    expect(roll.failing).toHaveLength(0);
+  });
+
+  it('says UNFINISHED MEASUREMENT rather than silently passing when underpowered', () => {
+    const rows = [row({ reviewBy: '2026-08-01' })];
+    const out = formatReport(rows, rollupFirings(rows, now, 2), now, { censusRows: 2 });
+    expect(out).toContain('UNFINISHED');
+    expect(out).not.toContain('✓ every derived relation');
   });
 
   it('isPastReview refuses to fail on an unparseable date', () => {

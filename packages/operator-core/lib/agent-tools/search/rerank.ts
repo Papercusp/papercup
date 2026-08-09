@@ -218,6 +218,82 @@ async function resolveProseRerankEngine(): Promise<ResolvedRerankEngine | null> 
 }
 
 /**
+ * Rerank ANY row shape with the cross-encoder, returning the new relevance
+ * order sliced to `limit`. Degrades to the input (retrieval) order sliced to
+ * `limit` whenever the engine can't score.
+ *
+ * This is the row-shape-agnostic core: {@link rerankProseHits} is this function
+ * bound to `SearchHit`, and the corpus leg of context injection (P-008) binds it
+ * to its own `CorpusHit`. Engine resolution and the fail-safe seam live HERE and
+ * nowhere else, so a new engine — or a fix to the degrade path — reaches every
+ * caller at once. Adding a second copy of this try/catch for a new row type is
+ * the thing this exists to prevent.
+ *
+ * ⚠ `rows` should be an OVER-FETCHED candidate pool, not an already-cut page:
+ * a reranker can only reorder what retrieval handed it. Size the retrieval call
+ * with {@link rerankCandidateCount}.
+ *
+ * ⚠ `limit` is a SLICE, and a caller that has its own downstream filtering
+ * should pass `rows.length` rather than its page size — see the corpus leg,
+ * where slicing to the page here would starve the filters the over-fetch exists
+ * to feed.
+ */
+export async function rerankRows<T>(
+  query: string,
+  rows: readonly T[],
+  opts: {
+    /** How many rows to return. Pass `rows.length` to reorder without cutting. */
+    limit: number;
+    /** Stable identity for the pair cache / dedup inside the reranker. */
+    id: (row: T) => string;
+    /** The text scored against the query — prefer MATCH-CENTRED text. */
+    text: (row: T) => string;
+    /** Tiebreak within a rerank-score bucket (typically the fused score). */
+    qualityScore?: (row: T) => number;
+    /**
+     * Wall-clock bound for the stage. REQUIRED — there is no safe default across
+     * callers, because the right value is a function of the caller's own budget
+     * (see {@link PROSE_RERANK_TIMEOUT_MS} for the interactive-surface value and
+     * the corpus leg for a tighter one).
+     */
+    rerankTimeoutMs: number;
+  },
+): Promise<T[]> {
+  // Nothing to reorder → no engine resolution, no rerank import.
+  if (rows.length <= 1) return rows.slice(0, opts.limit);
+
+  try {
+    const resolved = await resolveProseRerankEngine();
+    // Local engine flagged off and no hosted key → the pre-P-007 dark seam.
+    if (!resolved) return rows.slice(0, opts.limit);
+    const { rankWithReranker } = await import('@papercusp/search-core');
+    return await rankWithReranker<T>(
+      query,
+      rows.map((row) => ({
+        id: opts.id(row),
+        text: opts.text(row),
+        row, // carried through untouched
+      })),
+      {
+        limit: opts.limit,
+        // Bound the stage so a sick engine degrades the page instead of
+        // stalling it (the lib's 20s backstop is a hang guard, not a UX budget).
+        rerankTimeoutMs: opts.rerankTimeoutMs,
+        ...(resolved.engine === 'zeroentropy'
+          ? { rerankApiKey: resolved.apiKey }
+          : { engine: 'local' as const, scorer: resolved.scorer }),
+        // Generic relevance rerank: no e-commerce instruction / LLM pass.
+        ...(opts.qualityScore ? { qualityScore: opts.qualityScore } : {}),
+      },
+    );
+  } catch {
+    // Engine unresolvable, lib/dep unavailable, or a throw that got past the
+    // lib's own fail-safe seam → retrieval passthrough. Never breaks a caller.
+    return rows.slice(0, opts.limit);
+  }
+}
+
+/**
  * Rerank fused prose hits with the cross-encoder, returning them in the new
  * relevance order, sliced to `limit`. Degrades to the RRF order (sliced to
  * `limit`) whenever the engine can't score.
@@ -251,39 +327,14 @@ export async function rerankProseHits(
     rerankTimeoutMs?: number;
   },
 ): Promise<SearchHit[]> {
-  // Nothing to reorder → no engine resolution, no rerank import.
-  if (hits.length <= 1) return hits.slice(0, limit);
-
-  try {
-    const resolved = await resolveProseRerankEngine();
-    // Local engine flagged off and no hosted key → the pre-P-007 dark seam.
-    if (!resolved) return hits.slice(0, limit);
-    const { rankWithReranker } = await import('@papercusp/search-core');
-    return await rankWithReranker<SearchHit>(
-      query,
-      hits.map((hit) => ({
-        id: `${hit.source}:${hit.source_id}`,
-        text: rerankText(hit), // match-centred text, NOT the head-of-doc excerpt
-        row: hit, // carried through untouched
-      })),
-      {
-        limit,
-        // Bound the stage so a sick engine degrades the page instead of
-        // stalling it (the lib's 20s backstop is a hang guard, not a UX budget).
-        rerankTimeoutMs: opts?.rerankTimeoutMs ?? PROSE_RERANK_TIMEOUT_MS,
-        ...(resolved.engine === 'zeroentropy'
-          ? { rerankApiKey: resolved.apiKey }
-          : { engine: 'local' as const, scorer: resolved.scorer }),
-        // Generic relevance rerank: no e-commerce instruction / LLM pass.
-        // Within a rerank-score bucket, keep the higher RRF/BM25 hit first.
-        qualityScore: (hit) => hit.score,
-      },
-    );
-  } catch {
-    // Engine unresolvable, lib/dep unavailable, or a throw that got past the
-    // lib's own fail-safe seam → RRF passthrough. Search never breaks here.
-    return hits.slice(0, limit);
-  }
+  return await rerankRows<SearchHit>(query, hits, {
+    limit,
+    id: (hit) => `${hit.source}:${hit.source_id}`,
+    text: rerankText, // match-centred text, NOT the head-of-doc excerpt
+    // Within a rerank-score bucket, keep the higher RRF/BM25 hit first.
+    qualityScore: (hit) => hit.score,
+    rerankTimeoutMs: opts?.rerankTimeoutMs ?? PROSE_RERANK_TIMEOUT_MS,
+  });
 }
 
 /**

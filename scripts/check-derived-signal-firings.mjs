@@ -115,6 +115,23 @@ export const FIRING_VERDICTS = ['firing', 'armed-silent', 'starved', 'never-arme
 /** Verdicts that are CODE defects with no benign reading, hence the only failing ones. */
 export const FAILING_VERDICTS = ['never-armed', 'unobserved'];
 
+/**
+ * Census rows the window must contain before a bad verdict may FAIL the gate.
+ *
+ * ⚠ THIS IS A STATISTICAL-POWER FLOOR, NOT A TUNING KNOB, and it is this plan's own
+ * precedent applied to itself: D-090 parked P-006 until 2026-08-16 because a 12×
+ * rate jump on n=3 is indistinguishable from noise at the null rate. A review DATE
+ * alone would make exactly that mistake here — the census writes only on the opt-in
+ * `include_coupling` branch (~11 calls per fortnight), so 2026-09-13 could arrive
+ * with three census rows and red-pin the fleet on three samples.
+ *
+ * `no-data` already refuses to interpret an EMPTY window; this refuses to CONDEMN a
+ * nearly-empty one. It also absorbs the version-skew case for free: a relation added
+ * upstream but not yet deployed reads `unobserved` while the census is still warming
+ * up, and must not fail on that.
+ */
+export const MIN_CENSUS_ROWS_TO_FAIL = 5;
+
 const int = (v) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : 0);
 
 /**
@@ -173,9 +190,14 @@ export function parseDeclaredRelations(source) {
   return out;
 }
 
-export function rollupFirings(rows, now) {
+export function rollupFirings(rows, now, censusRows = Infinity) {
   const bad = (r) => FAILING_VERDICTS.includes(r.verdict) && !r.ruling;
+  // Evidence floor BEFORE the date check: too few samples is not a pass and not a
+  // failure, it is an unfinished measurement. See MIN_CENSUS_ROWS_TO_FAIL.
+  const enoughEvidence = Number.isFinite(censusRows) ? censusRows >= MIN_CENSUS_ROWS_TO_FAIL : true;
   return {
+    censusRows,
+    underpowered: rows.filter((r) => bad(r) && isPastReview(r.reviewBy, now) && !enoughEvidence),
     firing: rows.filter((r) => r.verdict === 'firing').length,
     armedSilent: rows.filter((r) => r.verdict === 'armed-silent').length,
     starved: rows.filter((r) => r.verdict === 'starved').length,
@@ -183,7 +205,7 @@ export function rollupFirings(rows, now) {
     unobserved: rows.filter((r) => r.verdict === 'unobserved').length,
     noData: rows.filter((r) => r.verdict === 'no-data').length,
     ruled: rows.filter((r) => r.ruling).length,
-    failing: rows.filter((r) => bad(r) && isPastReview(r.reviewBy, now)),
+    failing: rows.filter((r) => bad(r) && isPastReview(r.reviewBy, now) && enoughEvidence),
     pending: rows.filter((r) => bad(r) && !isPastReview(r.reviewBy, now)),
   };
 }
@@ -228,6 +250,13 @@ export function formatReport(rows, roll, now, ctx = {}) {
       '✗ a derived signal is DEAD and its review date has passed. This is not a number to nudge — the remedy is\n' +
         '  a decision recorded on the plan: wire the leg, cut the relation, or record a `ruling` in this file:\n' +
         roll.failing.map((r) => `    · ${r.relation} — ${MEANING[r.verdict]}`).join('\n'),
+    );
+  } else if (roll.underpowered?.length > 0) {
+    out.push(
+      `⚠ ${roll.underpowered.length} relation(s) look dead and their review date HAS passed, but the window holds only\n` +
+        `  ${roll.censusRows} census row(s) — below the ${MIN_CENSUS_ROWS_TO_FAIL}-row floor, so this is an UNFINISHED measurement, not a verdict.\n` +
+        '  Condemning a signal on this little evidence is the n=3 mistake D-090 parked P-006 to avoid. Reported, not failing:\n' +
+        roll.underpowered.map((r) => `    · ${String(r.relation).padEnd(18)} ${r.verdict}`).join('\n'),
     );
   } else if (roll.pending.length > 0) {
     out.push(
@@ -322,7 +351,7 @@ async function main() {
     };
   });
 
-  const roll = rollupFirings(rows, now);
+  const roll = rollupFirings(rows, now, censusRows);
   console.log(formatReport(rows, roll, now, { censusRows }));
   if (roll.failing.length > 0) process.exitCode = 1;
 }

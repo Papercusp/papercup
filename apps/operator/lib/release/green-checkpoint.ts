@@ -53,6 +53,7 @@ import { runPerfGate, perfGatePolicyFromFlags } from './perf-gate';
 import { runDesktopPerfGate, desktopPerfGatePolicyFromFlags } from './desktop-perf-gate';
 import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
 import { heldGateAlert } from './held-gate-alarm';
+import { typecheckFailureBanner } from '../gate-artifact-verdict-tail';
 // WI-6441 — the ONE seam that parses vitest's output. Reaching across into `scripts/`
 // (rather than the reverse) mirrors `operator-core/lib/content-lint/conflict-markers.ts`
 // and for the same reason: those scripts are invoked by bare `node`, with no TS/tsx, so
@@ -4815,8 +4816,13 @@ export async function runPostSuiteLegs(
     if (typecheck.code !== 0) {
       haltedBy = 'lint:tsc failed';
       failingSignatures.push('lint:tsc');
+      // WI-37527: the banner must not out-claim its evidence. `lint:tsc` exits non-zero for
+      // causes that produce NO `error TS\d+` at all — a V8 heap OOM (WI-37503), a config
+      // fault, a run that checked zero files — and the old hardcoded wording announced
+      // "type regressions" for every one of them, sending readers hunting for type errors
+      // that did not exist while the real cause sat in the output beneath it.
       outputs.push(
-        '\n\n=== TYPECHECK FAILED (npm run lint:tsc) — operator-core type regressions block the release ===\n' +
+        typecheckFailureBanner(typecheck.code, typecheck.stdout + typecheck.stderr) +
           typecheck.stdout +
           typecheck.stderr,
       );

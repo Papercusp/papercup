@@ -1945,10 +1945,17 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // (right before the discovery pair). search:semantic stays OUT here too — lower
   // demand-evidence (7 reaches/7 callers/14d), reachable via tools:find/invoke.
   'search:fulltext',
-  // (psu-seed-prompt-mandate-alignment-2026-08-09 P-003 tried to add plans:add-decision,
-  // mode:set and work_items:claimable HERE and reverted — this spine is capped at <=43 by
-  // invoke.test.ts and sits at 42. They live in CLAUDE_SEED_EXTRA_TOOL_NAMES instead; see
-  // the matching comment in the canonical orchestrator list and plan D-003.)
+  // MIRROR of the canonical orchestrator CORE_MCP_TOOL_NAMES addition (same position, same
+  // order — the lockstep drift guard in psu-launcher.test.ts compares the arrays EXACTLY).
+  // Admitted by P-006 (D-006) and raising NO cap: the array measured 42 against a <=43
+  // ratchet, so the slot already existed. 622 fallback-reaches/65 callers @4,250 B =
+  // 149.9 reaches/KB, the highest demand in the ledger, and the verb root CLAUDE.md
+  // MANDATES for recording a cross-lane ruling. Full rationale lives beside the canonical
+  // list in libs/papercusp/packages/orchestrator/src/invoke.ts.
+  'plans:add-decision',
+  // mode:set and work_items:claimable stay Claude-only in CLAUDE_SEED_EXTRA_TOOL_NAMES
+  // below — the array is now EXACTLY 43 = the ratchet, so admitting either would raise a
+  // cap in the change that fills it. See plan D-006.
   'tools:find', 'tools:invoke',
 ];
 
@@ -2023,23 +2030,21 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   'state:read', 'capability:bash', 'capability:bash_output',
   'dev:pipeline_position', 'testing:run', 'dev:restart',
   'sessions:search', 'build:typecheck', 'coord:presence',
-  // P-003, rehomed here from the shared spine (plan D-003). Genuinely CROSS-ROLE, so the
-  // shared OMP spine was the right home on the merits — but that list is capped at <=43
-  // (invoke.test.ts) and sits at 42, and raising a cap in the change that fills it is the
-  // DARK_FLAGS-watermark anti-pattern. Seeding them Claude-only delivers the measured
-  // demand (which is overwhelmingly su/psu traffic) at zero cost to anyone's budget:
-  //   plans:add-decision   622 reaches/65 callers, 4,250 B, 149.9 reach/KB — the loudest
-  //     unmet need in the whole fallback ledger; recording a cross-lane ruling is
-  //     MANDATORY per root CLAUDE.md, so the verb discharging a standing obligation was
-  //     reachable only by a discovery round-trip.
-  //   mode:set             124/56, 1,732 B, 73.3 — an unregistered mode is invisible
-  //     session state that a compaction silently drops.
+  // Cross-role verbs whose measured demand is overwhelmingly su/psu traffic. P-003 first
+  // rehomed all THREE here after overshooting the shared spine's ratchet; P-006 (D-006)
+  // then promoted plans:add-decision into the shared spine proper — it is therefore NOT
+  // listed here any more, and OMP/codex now reach it directly too. These two remain:
+  //   mode:set             124 reaches/56 callers, 1,732 B, 73.3 reach/KB — an
+  //     unregistered mode is invisible session state that a compaction silently drops.
   //   work_items:claimable 135/55, 2,198 B, 62.9 — the SSOT claim floors; the documented
   //     alternative (raw status='open') overcounts ~13x, so unreachability here actively
   //     pushed callers onto a WRONG answer.
-  // KNOWN GAP: OMP/codex still cannot reach these three directly. Closing that needs the
-  // spine-budget decision in plan D-003, not another quiet append.
-  'plans:add-decision', 'mode:set', 'work_items:claimable',
+  // NARROWED GAP: OMP/codex still cannot reach these TWO directly. The shared spine is now
+  // exactly at its <=43 ratchet, so admitting either means raising a cap in the change that
+  // fills it — the DARK_FLAGS-watermark anti-pattern. That needs a deliberate budget
+  // decision priced in WIRE BYTES per D-001, not another quiet append. Both stay reachable
+  // everywhere via tools:find/invoke.
+  'mode:set', 'work_items:claimable',
 ];
 export function claudeSeedToolNames(env = process.env) {
   const seen = new Set();
