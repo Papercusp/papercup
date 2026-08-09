@@ -19,6 +19,11 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
+import {
+  classifyUnknownRecipients,
+  lookupEndedSessions,
+  roleAddressingGuidance,
+} from '../dead-session-recipient-guidance';
 import { fetchPresenceFleet } from '../presence-fleet';
 import { scopeBroadcastAudience, ALLHIVE_BROADCAST_FIELD } from '../scope-broadcast';
 import { resolveSenderCueAuthority } from '../cue-authority-resolve';
@@ -587,6 +592,21 @@ async function sendOne(
         // say so explicitly whenever the list carried >1 addressee, so the
         // sender knows to re-notify the valid ones (or re-split via items[]).
         const otherValidCount = r.resolved.length + goneRepliedTo.length;
+        // knowledge-at-symptom-time-2026-08-09 P-005: when the bad address is
+        // session-SHAPED, the existing advice ("use the handle / look it up in
+        // coord:presence") answers the wrong question — no live session will
+        // ever hold that id again, so there is nothing to look up. Route the
+        // caller to `@role:<slot>`, which cannot hard-refuse. Fail-soft: any
+        // error inside leaves the refusal exactly as it was.
+        let roleHint = '';
+        try {
+          const classified = await classifyUnknownRecipients(trulyUnknown, (ids) =>
+            lookupEndedSessions(ids, identity.workspaceId),
+          );
+          roleHint = roleAddressingGuidance(classified) ?? '';
+        } catch {
+          roleHint = '';
+        }
         return {
           ok: false,
           to: msg.to,
@@ -606,7 +626,8 @@ async function sendOne(
                 'message, one atomic delivery). If they need this now, resend to just the valid ' +
                 'ids, or use `items:[{ to, summary, … }]` to address recipients independently so ' +
                 "one bad id can't block the rest."
-              : ''),
+              : '') +
+            roleHint,
           ...(trulyUnknown.length ? { unknown_recipients: trulyUnknown } : {}),
           ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
         };

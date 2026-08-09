@@ -391,6 +391,50 @@ function finiteScores(entries: readonly MemoryEntry[]): number[] {
     .filter((s): s is number => typeof s === 'number' && Number.isFinite(s));
 }
 
+/**
+ * The PRE-FUSION COSINE similarity of each entry — the number the relevance
+ * floor is actually applied to, on a single scale (0..1), for every path
+ * (migration 771 / WI-37403).
+ *
+ * ⚠ THIS IS NOT `finiteScores`, and the difference is the whole point.
+ * `entries[].score` means different things on different paths: on a fused push
+ * recall it is a post-fusion RRF value computed from RANKS, bounded above by
+ * 2/61 = 0.0328 and carrying NO information about how similar anything was; on
+ * an unfused cosine recall it IS the similarity. Pooling those into one column
+ * is what already produced a false "99.9% of injections are below the 0.58
+ * floor" report (2026-07-28) — the floor was fine, the scales were not.
+ *
+ * Two sources, in priority order, both yielding a genuine cosine similarity:
+ *   1. `retrieval.cosineScore` — stamped by `fuse()` at the last moment before
+ *      it overwrites `score` with the RRF sum. Present on every fused hit the
+ *      cosine leg returned; ABSENT on a lexical-only admit, which has no cosine
+ *      score to report and must not contribute one.
+ *   2. `entry.score` when the caller declares `scoreScale === 'cosine'` — the
+ *      unfused paths (mem0's backend, and any single-leg cosine backend), where
+ *      the native score already IS the similarity.
+ *
+ * Anything else contributes NOTHING rather than a guess: a lexical/RRF scale
+ * score is not a cosine, and inferring one from its VALUE is the same
+ * classify-by-magnitude mistake `classifyLegacyScoreScale` is confined to.
+ */
+export function cosineScoresOf(
+  entries: readonly MemoryEntry[],
+  scoreScale: ScoreScale | null | undefined,
+): number[] {
+  const out: number[] = [];
+  for (const e of entries) {
+    const stamped = (e.retrieval as { cosineScore?: unknown } | undefined)?.cosineScore;
+    if (typeof stamped === 'number' && Number.isFinite(stamped)) {
+      out.push(stamped);
+      continue;
+    }
+    if (scoreScale === 'cosine' && typeof e.score === 'number' && Number.isFinite(e.score)) {
+      out.push(e.score);
+    }
+  }
+  return out;
+}
+
 /** The `pools` jsonb payload: per pool, what it returned against what it was allowed. */
 function poolsPayload(
   pools: Readonly<Record<string, RecallPoolStats>>,
@@ -430,10 +474,17 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
     // records NULLs and is excluded from query-quality reads, rather than
     // contributing a zero-length row that would read as a real empty query.
     const q = typeof input.query === 'string' ? describeRecallQuery(input.query) : null;
-    await sql`
+    // Migration 771 / WI-37403: the PRE-FUSION cosine, in its OWN columns.
+    // NULL (not 0, not []) when this recall produced no cosine similarity at
+    // all — a lexical-only fallback, or a backend with no cosine leg. An empty
+    // ARRAY means "measured, and there were none", which is a different fact.
+    const cosineScores = cosineScoresOf(entries, input.scoreScale);
+    const topCosine = cosineScores.length > 0 ? Math.max(...cosineScores) : null;
+    const rows = await sql`
       INSERT INTO harness_shared.memory_recall_stats
         (surface, hit_count, top_score, scores, fragment_count, pools, workspace_id, pot_slug, score_scale,
-         query_chars, query_sha256, query_origin, session_id, legs, admission, client)
+         query_chars, query_sha256, query_origin, session_id, legs, admission, client,
+         top_cosine_score, cosine_scores)
       VALUES (
         ${input.surface},
         ${entries.length},
@@ -450,9 +501,23 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
         ${input.sessionId ?? null},
         ${legs}::text::jsonb,
         ${admission}::text::jsonb,
-        ${input.client ?? null}
+        ${input.client ?? null},
+        ${topCosine},
+        ${cosineScores.length > 0 ? JSON.stringify(cosineScores) : null}::text::jsonb
       )
+      RETURNING id
     `;
+    // The query TEXT, on a bounded window, as a SEPARATE statement (migration
+    // 771). Deliberately not part of the INSERT above and deliberately not
+    // inside its try: this write is the one that can be refused (flag off,
+    // credential-shaped text) and the one touching the newest table, and the
+    // stats row must never be collateral. That is not hypothetical caution —
+    // this table already black-holed every write for hours once when a stale
+    // CHECK rejected them (583-drop-memory-recall-stats-surface-check.sql).
+    const statsId = rows?.[0]?.id;
+    if (statsId !== undefined && typeof input.query === 'string') {
+      await recordRecallQueryText(sql, statsId as string | number, input.query);
+    }
   } catch (err) {
     _suppressedSinceWarn += 1;
     const now = Date.now();

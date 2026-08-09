@@ -168,9 +168,15 @@ async function stubApis(page: Page) {
   });
 }
 
-/** Drives to the harnesses ("Working") dock and reports whether it mounted. */
+/**
+ * Drives to the harnesses ("Working") dock and reports whether it mounted.
+ * `welcome=0` suppresses the no-work HarnessWelcome overlay (default-on,
+ * gated on useHarnessHasNoWork) — with the empty features/issues stubs above
+ * it otherwise covers the dock and intercepts every click (mirrors the same
+ * fix in adv-dep-graph-interlock.spec.ts's dockMounts).
+ */
 async function dockMounts(page: Page): Promise<boolean> {
-  await page.goto(`${baseURL}/adv?tab=harnesses&slug=${SLUG}&scope=self`, {
+  await page.goto(`${baseURL}/adv?tab=harnesses&slug=${SLUG}&scope=self&welcome=0`, {
     waitUntil: 'domcontentloaded',
   });
   return page

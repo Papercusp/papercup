@@ -20,6 +20,14 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
+import { filterInstallSources, describeRefusals } from './install-source-guard';
+import {
+  readInstallStamp,
+  writeInstallStamp,
+  classifyDowngrade,
+  resolveSourceGitProvenance,
+  gcStrandedInstallTmp,
+} from './install-provenance';
 import { spliceAtMarker, spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER, COMPACTION_CLIENT_OVERLAY_MARKER, RESULT_DOOR_MARKER, SHARED_BASE_NOTES_MARKER } from './splice-tooling-overlay';
 import { renderResultDoorSection } from '../result-door-prompt';
 import { renderModesPolicy } from '../operating-modes-policy';
@@ -1850,6 +1858,32 @@ async function installClaudeHooks(
 ): Promise<{ installed: string[]; settingsMerged: boolean }> {
   const destDir = path.join(home, '.papercusp', 'hooks', 'cc');
   await fs.mkdir(destDir, { recursive: true, mode: 0o755 });
+
+  // WI-37405 #2 — never silently downgrade. The scratch guard stops sandbox trees; this
+  // stops one CANONICAL tree quietly reverting another's newer hooks (a release checkout
+  // booting after staging installed a fix). Best-effort and fail-open: no git, no stamp,
+  // or unknown dates all fall through to a normal install.
+  const incomingProvenance = await resolveSourceGitProvenance(srcDir);
+  const existingStamp = await readInstallStamp(destDir);
+  const verdict = classifyDowngrade(existingStamp, incomingProvenance);
+  if (verdict.downgrade) {
+    const days = Math.floor(verdict.olderByMs / 86_400_000);
+    console.error(
+      `[desktop-install] cc hooks: REFUSING downgrade — source ${srcDir} is ${days}d older ` +
+        `(${verdict.incomingAt}) than what is installed (${verdict.installedAt}, from ` +
+        `${existingStamp?.sourceDir}). Leaving the newer hooks in place.`,
+    );
+    return { installed: [], settingsMerged: false };
+  }
+
+  // WI-37405 #3 — clear temp files a killed install stranded here. Age-gated, not
+  // pid-gated: PIDs wrap ~daily under fleet load, so a liveness probe can match an
+  // unrelated recycled process.
+  const gcd = await gcStrandedInstallTmp(destDir);
+  if (gcd.length > 0) {
+    console.warn(`[desktop-install] cc hooks: removed ${gcd.length} stranded temp file(s) from an interrupted install`);
+  }
+
   const installed: string[] = [];
   for (const name of CC_HOOK_FILES) {
     try {
@@ -1876,6 +1910,20 @@ async function installClaudeHooks(
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     }
   }
+  // WI-37405 #3 — record WHERE these came from, so "which build are my hooks?" is one
+  // read instead of hashing every file against four checkouts (what EI-19956921121874213
+  // actually cost). Written after the copies so it always describes what is on disk.
+  if (installed.length > 0) {
+    await writeInstallStamp(destDir, {
+      sourceDir: srcDir,
+      ...incomingProvenance,
+      installedAt: new Date().toISOString(),
+      pid: process.pid,
+      installedBy: process.argv[1] ? path.basename(process.argv[1]) : undefined,
+      files: installed,
+    });
+  }
+
   // Gate the settings merge on the primary lock hook landing (parity with the bash `[ -x $CC_PRE_HOOK ]`).
   if (!installed.includes('pretooluse-locks-acquire.sh')) return { installed, settingsMerged: false };
 
@@ -1979,19 +2027,56 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const explicitRoot = !!opts.operatorAppRoot;
   const operatorAppRoot = opts.operatorAppRoot ?? resolveOperatorAppRoot();
 
+  /**
+   * Resolve an install SOURCE, refusing scratch/sandbox trees (WI-37405).
+   *
+   * Every source resolved in this function is copied into the single SHARED
+   * `~/.papercusp/**` dest that every agent on the box reads, so a source from a
+   * throwaway checkout poisons the whole fleet — measured live, 19 agent hooks
+   * (file-locking, secrets, NUL-byte guards) served for days from an 8-day-old
+   * sandbox (EI-19956921121874213).
+   *
+   * Fail-safe by construction: this only ever REMOVES poisoned candidates, letting
+   * resolution fall through to the next legitimate one. If nothing legitimate
+   * remains it returns null and the caller installs NOTHING, leaving whatever is
+   * already on disk untouched — always safer than overwriting it with sandbox code.
+   */
+  const resolveSource = async (what: string, candidates: string[]): Promise<string | null> => {
+    const filtered = filterInstallSources(candidates, {
+      dest: home,
+      allowScratch: process.env.PAPERCUSP_ALLOW_SCRATCH_INSTALL_SOURCE === '1',
+    });
+    const line = describeRefusals(what, filtered);
+    if (line) console.warn(line);
+    const chosen = await firstExisting(filtered.accepted);
+    if (!chosen && filtered.refused.length > 0) {
+      console.error(
+        `[desktop-install] ${what}: every candidate source was a scratch tree — installing NOTHING. ` +
+          `Existing files left untouched. Boot the operator from the canonical checkout, or set ` +
+          `PAPERCUSP_ALLOW_SCRATCH_INSTALL_SOURCE=1 if this is a deliberate sandbox install.`,
+      );
+    }
+    return chosen;
+  };
+
   const playbookSource =
-    opts.playbookSource ?? (await firstExisting(playbookCandidates(operatorAppRoot, explicitRoot)));
+    opts.playbookSource ??
+    (await resolveSource('su playbook', playbookCandidates(operatorAppRoot, explicitRoot)));
   const extensionSource =
-    opts.extensionSource ?? (await firstExisting(extensionCandidates(operatorAppRoot, explicitRoot)));
+    opts.extensionSource ??
+    (await resolveSource('coord extension', extensionCandidates(operatorAppRoot, explicitRoot)));
   // psu/ptool launchers — bundled (psu.mjs/ptool.mjs) first, dev source second.
-  const psuLauncherSource = await firstExisting(
+  const psuLauncherSource = await resolveSource(
+    'psu launcher',
     cliLauncherCandidates(operatorAppRoot, explicitRoot, ['psu.mjs', 'psu-launcher.mjs']),
   );
-  const ptoolLauncherSource = await firstExisting(
+  const ptoolLauncherSource = await resolveSource(
+    'ptool launcher',
     cliLauncherCandidates(operatorAppRoot, explicitRoot, ['ptool.mjs']),
   );
   // Onboarding concierge — bundled (onboard.mjs) first, dev source second (P-014).
-  const onboardLauncherSource = await firstExisting(
+  const onboardLauncherSource = await resolveSource(
+    'onboard launcher',
     cliLauncherCandidates(operatorAppRoot, explicitRoot, ['onboard.mjs', 'onboard-launcher.mjs']),
   );
 
@@ -2013,7 +2098,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // Mac/Windows apps shipped neither, so Claude rendered a blank statusline + lock/coord
   // enforcement was silently off. Cross-platform (Node native on macOS / WSL distro on
   // Windows). Best-effort: sources not shipped ⇒ nothing installed, settings untouched.
-  const ccHookSrcDir = await firstExisting(ccHookDirCandidates(operatorAppRoot, explicitRoot));
+  const ccHookSrcDir = await resolveSource(
+    'cc hooks',
+    ccHookDirCandidates(operatorAppRoot, explicitRoot),
+  );
   const claudeHooks = ccHookSrcDir
     ? await installClaudeHooks(home, ccHookSrcDir)
     : { installed: [] as string[], settingsMerged: false };
@@ -2022,7 +2110,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // Same shipping gap EI-8191 fixed for the CC hooks: esbuild cannot trace these
   // fs-read files, so build-desktop-sidecar.sh copies them and this installs them.
   // Without it the packaged app's omp sessions get NO turn-start/mid-turn context.
-  const injectHookSrcDir = await firstExisting(hookDirCandidates(operatorAppRoot, explicitRoot, 'inject'));
+  const injectHookSrcDir = await resolveSource(
+    'injection hooks',
+    hookDirCandidates(operatorAppRoot, explicitRoot, 'inject'),
+  );
   const injectionHooks = injectHookSrcDir ? await installInjectionHooks(home, injectHookSrcDir) : [];
 
   // Codex status line (parallel to the Claude statusLine merge above): a plain `codex` reads the
