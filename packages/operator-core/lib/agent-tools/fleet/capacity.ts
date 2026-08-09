@@ -91,9 +91,15 @@ async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | 
     return {
       provider: BEE_PROVIDER,
       total: rows.length,
-      available: rows.filter((r) => r.available).length,
-      // A truly-usable account can serve AND is not in an edge-throttle cooldown (a bare-429/IP wall).
-      usable: rows.filter((r) => r.available && !r.edgeThrottled).length,
+      // Excludes accounts the owner's session override forbids routing to — an account can be
+      // pool-healthy AND forbidden, and admission (spawn-env.ts) refuses that route regardless.
+      available: rows.filter((r) => r.available && allowedIds.has(r.id)).length,
+      // A truly-usable account can serve, is not in an edge-throttle cooldown (a bare-429/IP wall),
+      // AND is not excluded by the session override.
+      usable: rows.filter((r) => r.available && !r.edgeThrottled && allowedIds.has(r.id)).length,
+      // How many accounts the override excluded from the counts above — lets a caller distinguish
+      // "genuinely no capacity" from "capacity exists but is fenced off by the owner's override".
+      overrideExcludedCount,
       // EI-18664933641195210: break out WHY unusable accounts are unusable, so a poolExhausted advice
       // can name egress-throttle (owner-infra) vs usage-wall (just wait) instead of lumping both into
       // one vague "walled/rate-paused/edge-throttled" phrase that reads as generic quota exhaustion.

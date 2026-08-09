@@ -106,9 +106,21 @@ describe('minePatterns — lift demotes ambient sequences', () => {
    */
   const ambientCorpus = (): Burst[] => {
     const bursts: Burst[] = [];
+    // Ambient emitters interleave in ARBITRARY order, not a fixed cycle. That
+    // distinction is load-bearing: a perfectly alternating `beat,poll,beat,poll`
+    // is genuinely twice as predictable as independence and legitimately scores
+    // lift ~2, so a periodic fixture would manufacture the very signal this
+    // module uses to reject ambient traffic — and the test would then pass for
+    // the wrong reason. A deterministic LCG (no Math.random, so the suite stays
+    // reproducible) reproduces the shape measured on real telemetry: lift ~1.
+    const AMBIENT = ['beat', 'poll', 'probe'];
+    let seed = 12345;
+    const nextAmbient = (): string => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return AMBIENT[seed % AMBIENT.length]!;
+    };
     for (const cohort of ['c1', 'c2', 'c3', 'c4', 'c5']) {
-      // 30 ambient events per cohort.
-      bursts.push(burst(cohort, Array.from({ length: 15 }, () => ['beat', 'poll']).flat()));
+      bursts.push(burst(cohort, Array.from({ length: 60 }, nextAmbient)));
     }
     for (const cohort of ['c1', 'c2', 'c3', 'c4']) {
       bursts.push(burst(cohort, ['survey', 'capacity', 'assign']));
@@ -165,8 +177,10 @@ describe('minePatterns — lift demotes ambient sequences', () => {
     });
     const ambient = res.patterns.find((p) => p.symbols.join(' ') === 'beat poll')!;
     expect(ambient).toBeDefined();
-    expect(ambient.lift).toBeGreaterThan(1.2);
-    expect(ambient.lift).toBeLessThan(2.5);
+    // The whole design rests on this number sitting at ~1 — assert a tight band,
+    // not merely "below the threshold", so a drift in the null model is caught.
+    expect(ambient.lift).toBeGreaterThan(0.6);
+    expect(ambient.lift).toBeLessThan(1.6);
 
     const genuine = res.patterns.find((p) => p.symbols.join(' ') === 'survey capacity')!;
     expect(genuine.lift).toBeGreaterThan(ambient.lift * 10);

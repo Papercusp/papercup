@@ -56,6 +56,7 @@
     "@papercusp/scheduled-registry": "*",
     "@papercusp/search-core": "*",
     "@papercusp/seed-bundle": "*",
+    "@papercusp/sequence-patterns": "*",
     "@papercusp/step-program": "*",
     "@papercusp/structured-concurrency": "*",
     "esbuild": "^0.27.3",
