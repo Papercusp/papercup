@@ -77,6 +77,14 @@ const channelFnMatch = CHANNEL_LIB.match(CHANNEL_FN_RE);
 /** Eval the REAL helper under bash with the given channel/override and report its exit code. */
 function runHelper(opts: { channel: string; override?: string }): { status: number | null; out: string } {
   expect(helperMatch, 'could not locate _wi3047_unverified() in release-local.sh').toBeTruthy();
+  // Not optional bookkeeping: without this the helper's strictness check is an undefined
+  // command (127), which reads as "not strict" and quietly turns every case below lenient.
+  expect(
+    channelFnMatch,
+    'could not locate desktop_channel_is_strict() in bin/lib/gen-latest-manifest.sh — ' +
+      'the helper depends on it, and a MISSING definition degrades to the LENIENT branch ' +
+      'rather than erroring, so this must fail loudly here instead',
+  ).toBeTruthy();
   const env = opts.override === undefined ? '' : `PAPERCUSP_ALLOW_UNVERIFIED_SUBMODULE=${JSON.stringify(opts.override)}\n`;
   // `set -euo pipefail` mirrors the real script: a helper that trips set -e under an empty
   // var or a false test would abort the cut, which this must catch too.
@@ -84,6 +92,8 @@ function runHelper(opts: { channel: string; override?: string }): { status: numb
     'set -euo pipefail',
     `CHANNEL=${JSON.stringify(opts.channel)}`,
     env,
+    // Sourced by release-local.sh in production; must be defined BEFORE the helper here.
+    channelFnMatch![0],
     helperMatch![0],
     '_wi3047_unverified "could not fetch libs/papercusp origin/main (offline / network / auth?)"',
     'echo REACHED_END',
