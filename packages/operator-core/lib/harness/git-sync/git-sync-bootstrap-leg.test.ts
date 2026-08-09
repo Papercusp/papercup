@@ -1276,11 +1276,12 @@ describe('runBootstrapLeg', () => {
       try {
         await missTick({ consecutiveMisses: 5, firstMissAt: Date.now() - 60 * 60_000 });
         const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'))!;
-        // the measurement itself, scoped to THIS topic
-        expect(warnMsg).toContain('contentPeers=0');
-        // "never received an announce on this topic" is the high-value half: it
-        // separates never-paired from paired-recently-but-not-now, which no count can.
-        expect(warnMsg).toContain('lastAnnounceRecv=never');
+        // The measurement, scoped to THIS topic. Anchored to the "at this instant:"
+        // slot on purpose — the static Reading: clause after it legitimately contains
+        // the literal strings "contentPeers=0" and "lastAnnounceRecv=never" as prose,
+        // so an unanchored toContain would pass on the explanation alone and measure
+        // nothing.
+        expect(warnMsg).toMatch(/at this instant: contentPeers=0 lastAnnounceRecv=never/);
         // and it is read as EVIDENCE, still naming no cause
         expect(warnMsg).toContain('This log names NO cause');
         expect(warnMsg).not.toMatch(/the peer is (dark|down|at the loginwindow)/i);
@@ -1303,9 +1304,10 @@ describe('runBootstrapLeg', () => {
       try {
         await missTick({ consecutiveMisses: 5, firstMissAt: Date.now() - 60 * 60_000 });
         const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'))!;
-        expect(warnMsg).toContain('contentPeers=3');
-        expect(warnMsg).not.toContain('lastAnnounceRecv=never');
-        expect(warnMsg).toMatch(/lastAnnounceRecv=~?4m ago/);
+        expect(warnMsg).toMatch(/at this instant: contentPeers=3 lastAnnounceRecv=~?4m ago/);
+        // the measured slot must NOT read "never" here (the prose Reading: clause
+        // still mentions it, hence the anchor)
+        expect(warnMsg).not.toMatch(/at this instant: contentPeers=\d+ lastAnnounceRecv=never/);
         // the accessors are scoped to the topic under investigation, not process-global
         expect(contentPeerCountForTopicMock).toHaveBeenCalledWith('deadbeef');
       } finally {
@@ -1331,8 +1333,10 @@ describe('runBootstrapLeg', () => {
         await missTick({ consecutiveMisses: 5, firstMissAt: Date.now() - 60 * 60_000 });
         const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'))!;
         expect(warnMsg).toContain('PERSISTENT-MISS ESCALATION'); // the tick survived
-        expect(warnMsg).toContain('contentPeers=UNKNOWN');
-        expect(warnMsg).not.toContain('contentPeers=0');
+        expect(warnMsg).toMatch(/at this instant: contentPeers=UNKNOWN/);
+        // the fabricated-zero regression this case exists to catch (anchored, since
+        // the prose Reading: clause legitimately says "contentPeers=0")
+        expect(warnMsg).not.toMatch(/at this instant: contentPeers=0/);
       } finally {
         contentPeerCountForTopicMock.mockReset();
         contentPeerCountForTopicMock.mockReturnValue(0);

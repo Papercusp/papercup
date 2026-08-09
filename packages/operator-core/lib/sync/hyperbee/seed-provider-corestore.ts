@@ -50,9 +50,24 @@ import type {
   VerifyResult,
 } from '@papercusp/seed-bundle';
 import type { PeerLogOp } from './peer-log';
-import { findLatestCompleteSnapshot, type AdmittedLog } from './read-merge';
+import {
+  findLatestCompleteSnapshotDetailed,
+  SNAPSHOT_SCAN_LOOKBACK,
+  type AdmittedLog,
+  type SnapshotScanOutcome,
+} from './read-merge';
 
 export const CORESTORE_SEED_KIND = 'corestore';
+
+/** WI-37553 — escalating read budgets for the CUTTER's snapshot scan.
+ *
+ *  read-merge's 5s default is tuned for a reader on a settled core. The cutter reads a
+ *  LIVE corestore the operator is actively appending to, and there a single slow get used
+ *  to collapse the entire sparse cut into shipping FULL history — measured: a 5.62 GB seed
+ *  from a core whose snapshot sat 48 blocks from the tail, which the seed-degradation guard
+ *  then (correctly) refused, failing a release cut 52 minutes in. Spend more patience before
+ *  concluding the snapshot is not there; the retry is cheap next to a re-cut. */
+const CUTTER_SNAPSHOT_SCAN_TIMEOUTS_MS: readonly number[] = [5_000, 20_000, 60_000];
 
 /** `.replicate()` is typed loosely upstream; it returns a duplex stream. */
 type Pipeable = { pipe<T extends Pipeable>(dest: T): T; destroy(): void };
@@ -202,8 +217,52 @@ async function computeSparseFrom(store: Corestore, keyHex: string): Promise<numb
   const core = store.get({ key: Buffer.from(keyHex, 'hex'), valueEncoding: 'json' }) as unknown as ReadableCore;
   await core.ready();
   await core.update({ wait: true });
-  const seed = await findLatestCompleteSnapshot(coreAsAdmittedLog(core, keyHex));
-  return seed && seed.seedIndex > 0 ? seed.seedIndex : 0;
+  const log = coreAsAdmittedLog(core, keyHex);
+  const short = `${keyHex.slice(0, 12)}…`;
+  const budgets = CUTTER_SNAPSHOT_SCAN_TIMEOUTS_MS;
+
+  let last: SnapshotScanOutcome | undefined;
+  for (let attempt = 0; attempt < budgets.length; attempt++) {
+    const timeoutMs = budgets[attempt]!;
+    const r = await findLatestCompleteSnapshotDetailed(log, SNAPSHOT_SCAN_LOOKBACK, timeoutMs);
+    last = r;
+    if (r.kind === 'found') {
+      if (attempt > 0) {
+        console.warn(
+          `[seed:corestore] snapshot scan for ${short} succeeded on attempt ${attempt + 1} at a ` +
+            `${timeoutMs}ms read budget — the earlier miss was SLOWNESS, not a missing snapshot.`,
+        );
+      }
+      return r.seed.seedIndex > 0 ? r.seed.seedIndex : 0;
+    }
+    // `none-in-window` is a real answer: every block was read and none held a snapshot.
+    // More patience cannot change it, so don't burn the remaining budgets.
+    if (r.kind === 'none-in-window') break;
+    console.warn(
+      `[seed:corestore] snapshot scan for ${short} could not READ block ${r.atIndex} (${r.cause}) at a ` +
+        `${timeoutMs}ms budget (attempt ${attempt + 1}/${budgets.length})` +
+        (attempt + 1 < budgets.length ? ' — retrying with a longer budget.' : '.'),
+    );
+  }
+
+  // Only now is FULL history the honest answer — and name WHICH cause it is. The old
+  // single message always blamed the scan WINDOW, which sent readers off to "append a
+  // fresh snapshot" that already existed (WI-37553). The two causes have opposite fixes.
+  if (last?.kind === 'unreadable') {
+    console.warn(
+      `[seed:corestore] sparse cut: could NOT READ the tail of ${short} (${last.cause} at block ` +
+        `${last.atIndex}) after ${budgets.length} attempts → shipping FULL history for this core. ` +
+        'This is a READ/liveness problem, NOT a missing snapshot — appending another snapshot will ' +
+        'not help. Re-cut when the source corestore is quieter.',
+    );
+  } else {
+    console.warn(
+      `[seed:corestore] sparse cut: no complete snapshot within the reader scan window ` +
+        `for ${short} → shipping FULL history for this core (append a fresh ` +
+        `head snapshot via produceLogSnapshot after the pre-cut drain to trim it).`,
+    );
+  }
+  return 0;
 }
 
 function pipeReplicate(a: Corestore, b: Corestore): { streams: Pipeable[]; teardown: () => void } {
@@ -233,15 +292,11 @@ export function createCorestoreSeedProvider(): SeedProvider {
       const coreSparseFrom: Record<string, number> = {};
       if (sparse) {
         for (const keyHex of coreKeys) {
+          // computeSparseFrom does its own reporting now — it is the only place that can
+          // tell an UNREADABLE tail from a genuinely absent snapshot (WI-37553), and those
+          // two have opposite remedies.
           const from = await computeSparseFrom(sourceStore, keyHex);
           coreSparseFrom[keyHex] = from;
-          if (from === 0) {
-            console.warn(
-              `[seed:corestore] sparse cut: no complete snapshot within the reader scan window ` +
-                `for ${keyHex.slice(0, 12)}… → shipping FULL history for this core (append a fresh ` +
-                `head snapshot via produceLogSnapshot after the pre-cut drain to trim it).`,
-            );
-          }
         }
       }
       const replica = new Corestore(stagingDir);
