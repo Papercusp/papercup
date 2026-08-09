@@ -869,6 +869,39 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       );
     }
   }
+  // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-008 / D-018). The
+  // mug/kettle/cup tier is retired (D-001), and THIS is the chokepoint the
+  // comment below already identifies as the one "cup:spawn + every agent-driven
+  // launch funnel through" — so one gate here covers the role family across
+  // cup:spawn, fleet:place_batch, chat `<spawn>`, the supervision relaunch, the
+  // wake-executor's fresh-context spawn and the p2p offer executor, instead of
+  // five hand-placed copies free to drift apart.
+  //
+  // ⚠ CANONICALIZED ON PURPOSE. The pot-rename left live ALIASES —
+  // bee→cup, queen→mug, overwatch→kettle (coordination/roles.ts
+  // POT_RENAME_ROLE_MAP) — and callers still pass the old spellings (this very
+  // file's neighbours hand-roll `role === 'queen' || role === 'mug'`). Matching
+  // the raw string would leave three open doors under their old names, which is
+  // the "anchor to the property, not the spelling" failure this plan keeps
+  // hitting. `scout` also maps (→ blender) and is deliberately NOT in this set:
+  // D-001 keeps Scout/Blender INTACT.
+  const canonicalSpawnRole = canonicalCoordRole(role);
+  if (
+    canonicalSpawnRole === 'mug' ||
+    canonicalSpawnRole === 'kettle' ||
+    canonicalSpawnRole === 'cup'
+  ) {
+    const { mugKettleSystemEnabled } = await import('../pot/started');
+    if (!(await mugKettleSystemEnabled())) {
+      return fail(
+        `spawn rejected: role="${role}" belongs to the Mug/Kettle/Cup tier, which is RETIRED ` +
+          `(flag papercusp-mug-kettle-system is OFF, which is the delivered state). ` +
+          `Launch an su fleet instead — fleet:launch-on-plan. ` +
+          `To re-enable the tier for testing, flip the flag ON in /admin/features.`,
+      );
+    }
+  }
+
   // overwatch-role-2026-06-15 (B-10 / D-009): the OVERWATCH role ships DARK behind
   // papercusp-overwatch (default OFF) until B-12's live staging proof. The role is
   // statically REGISTERED (so the BuiltinAgentRole union + ROLE_ENVELOPES stay stable)
