@@ -31,8 +31,17 @@ const DRY_RUN = process.argv.includes('--dry-run') || process.env.DRY_RUN === '1
 const credPath = path.join(homedir(), '.papercusp', 'credentials.json');
 // voice-prefs lives under the active workspace dir, not directly under
 // ~/.papercusp. Default workspace is `default`.
+//
+// Honor PAPERCUSP_WORKSPACES_ROOT before falling back to homedir() — a bare
+// homedir() here resolves to a NESTED registry when this script runs with
+// HOME remapped to a per-workspace dir (P-051 spawned-child case). See
+// agent-insights/workspaces-root-vs-remapped-home and the same env-first
+// resolver in @papercusp/operator-core's workspace-registry.ts and this
+// script's sibling, voice-stack-check.mjs.
+const workspacesRoot = (process.env.PAPERCUSP_WORKSPACES_ROOT?.trim())
+  || path.join(homedir(), '.papercusp-workspaces');
 const workspaceId = process.env.PAPERCUSP_WORKSPACE ?? 'default';
-const prefsPath = path.join(homedir(), '.papercusp-workspaces', workspaceId, '.papercusp', 'system', 'operator', 'voice-prefs.json');
+const prefsPath = path.join(workspacesRoot, workspaceId, '.papercusp', 'system', 'operator', 'voice-prefs.json');
 
 // Pre-flight: collect every gate failure into one report rather than
 // bailing on the first error. The user gets a single actionable list

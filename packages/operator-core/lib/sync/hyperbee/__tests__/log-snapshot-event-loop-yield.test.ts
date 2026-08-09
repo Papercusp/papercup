@@ -69,6 +69,16 @@ function corpus(n: number): PeerLogOp[] {
 const OP_COUNT = SNAPSHOT_READ_CONCURRENCY * 3;
 
 /**
+ * How long the CONTROL below keeps yielding for. Must comfortably exceed Node's 1ms floor on
+ * `setTimeout(…, 0)` so the armed probe lands regardless of host load; small enough that the
+ * case stays fast. Not a timeout — the loop exits as soon as the budget elapses either way.
+ */
+const CONTROL_YIELD_BUDGET_MS = 5;
+
+/** Hard bound on that loop, so a broken instrument fails fast instead of spinning. */
+const CONTROL_YIELD_SPIN_CAP = 10_000;
+
+/**
  * Arms a timer-phase probe, runs `op`, and reports whether the timer got a turn WHILE `op`
  * was still running. `'during'` = the operation yielded; `'after'` = it starved the loop.
  */
@@ -118,13 +128,26 @@ describe('event-loop yield (P-014 half 3)', () => {
     // Calibration for the calibration: proves `observeYield` reports 'during' when a yield
     // genuinely happens, so its 'after' above is a real observation and not a stuck value.
     //
-    // Note it takes MORE THAN ONE yield, and that is a property of the loop rather than of
-    // this test: `setImmediate` runs in the CHECK phase, which the current iteration reaches
+    // It takes MORE THAN ONE yield, and that is a property of the loop rather than of this
+    // test: `setImmediate` runs in the CHECK phase, which the current iteration reaches
     // WITHOUT having passed back through the timers phase — so a single yield can resolve
-    // before the armed timer ever gets a turn. (Measured: a one-shot version of this case
-    // reported 'after'.) The real subject yields once per read window, so this mirrors it.
+    // before the armed timer ever gets a turn.
+    //
+    // ⚠ Yield until the armed timer has CERTAINLY had its turn, never a fixed count.
+    // `observeYield` arms `setTimeout(…, 0)`, which Node clamps to 1ms, so "how many
+    // yields before the timer lands" is a WALL-CLOCK RACE, not a constant: a few CHECK-phase
+    // turns take microseconds on a quiet box and milliseconds on a busy one. The previous
+    // hardcoded 3 was tuned empirically and won a race it could also lose — measured
+    // 2026-08-09 at load average 25 it reported 'after' on 2 of 3 consecutive runs and
+    // red-pinned the fleet's release gate on a file nothing had changed.
+    //
+    // This does NOT weaken the control. Every iteration is still a real yield, so if
+    // `observeYield` ever goes stuck-at-'after' the assertion below still fails — which is
+    // the property this case exists to police. The spin cap keeps a BROKEN instrument
+    // failing fast instead of hanging.
     const verdict = await observeYield(async () => {
-      for (let i = 0; i < 3; i += 1) {
+      const deadline = Date.now() + CONTROL_YIELD_BUDGET_MS;
+      for (let spins = 0; spins < CONTROL_YIELD_SPIN_CAP && Date.now() < deadline; spins += 1) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
     });

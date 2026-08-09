@@ -792,18 +792,20 @@ describe('setLagPublishTarget (EI-19484853609145439: sentinel-readable last-know
   it('is late-bindable: wiring the target AFTER the monitor already started still publishes', async () => {
     const sab = new SharedArrayBuffer(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
     const view = new Int32Array(sab);
+    // Sentinel value: proves the tick actually writes, rather than the slot
+    // coincidentally already reading whatever a real tick would produce.
+    Atomics.store(view, SENTINEL_SAB_IDX.LAG_P95_MS, -1);
     handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
-    // No target wired yet — must not throw, must not write anywhere.
+    // No target wired yet — must not throw, and (checked below) must not write.
     await new Promise((r) => setTimeout(r, 60));
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS)).toBe(-1);
     setLagPublishTarget(sab);
-    // Manufacture real, measurable lag (an idle loop can legitimately read
-    // exactly 0ms on every percentile, which would make this assertion flaky
-    // on a fast/idle box).
-    blockFor(30);
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 60));
+    // A real tick ran and overwrote the sentinel — consistent with whatever
+    // sample() reads right now (no artificial load required: this proves
+    // late-binding WORKS, not that lag was elevated).
     const sample = handle.sample();
-    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)).toBe(Math.round(sample.maxMs));
-    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)).toBeGreaterThan(0);
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS)).toBe(Math.round(sample.p95Ms));
   });
 
   it('null clears the target — no throw, and no further writes', async () => {

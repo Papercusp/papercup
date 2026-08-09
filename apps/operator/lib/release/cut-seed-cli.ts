@@ -430,6 +430,37 @@ export function isCorestoreLockedError(e: unknown): boolean {
 }
 
 /**
+ * WI-37488: the "the store moved under us mid-open" signature — TRANSIENT, not broken.
+ *
+ * A `readOnly` open is a RocksDB `OpenForReadOnly`: it reads CURRENT → MANIFEST and then
+ * stats the files that manifest references. The live primary retires WAL/SST files
+ * continuously, so a file retired between the manifest read and the stat surfaces as
+ *   IO error: While stat a file for size: <store>/db/002519.log: No such file or directory
+ * — an ENOENT for a file that legitimately no longer exists.
+ *
+ * This is not a rare edge: the cut CAUSES the churn it then races. `openSourceStoreForCut`
+ * opens read-only immediately after forcing a full outbox drain + a head-snapshot append,
+ * which is the hardest the primary ever rewrites its WAL. Measured 2026-08-09: a cut died
+ * here at 13:20:50Z after a 1,090s drain (nothing cut, whole drain wasted), and five
+ * identical read-only opens ~30s later all succeeded in 8-58ms.
+ *
+ * Deliberately narrow: ENOENT only. A corrupt manifest, a permissions failure or the
+ * corestore lock itself must NOT be swallowed as retryable — those never self-clear, and
+ * retrying them just delays a real diagnosis.
+ */
+export function isTransientStoreOpenError(e: unknown): boolean {
+  if (isCorestoreLockedError(e)) return false;
+  const code = (e as { code?: unknown } | null | undefined)?.code;
+  if (code === 'ENOENT') return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  return /no such file or directory/i.test(msg);
+}
+
+/** How hard to retry a read-only open that lost a race with the live primary (WI-37488). */
+export const RO_OPEN_RETRY_ATTEMPTS = 10;
+export const RO_OPEN_RETRY_DELAY_MS = 1000;
+
+/**
  * WI-4487: wait until the LIVE operator has drained this hive's outbox into its own
  * log, so a read-only cut ships CURRENT state rather than a stale snapshot.
  *
@@ -494,6 +525,8 @@ export async function openSourceStoreForCut(inp: {
    * anywhere a fast refusal beats a correct one).
    */
   readonly holderWaitMs?: number;
+  /** WI-37488 seam — the backoff between read-only open retries (tests pass a no-op). */
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly warn?: (msg: string) => void;
 }): Promise<{ store: Corestore; sourceWritable: boolean }> {
   const warn = inp.warn ?? ((m: string) => console.warn(m));
@@ -730,14 +763,65 @@ export async function openSourceStoreForCut(inp: {
     // re-arms the very DeviceFile lock readOnly is here to avoid, and it fails with an
     // error identical to the one we just caught. Pin it explicitly so this cannot regress
     // silently if a default changes upstream.
-    store = openStore(inp.storeDir, { readOnly: true, wait: false });
-    try {
-      await store.ready();
-    } catch (roErr) {
+    // WI-37488: RETRY the read-only open on a transient ENOENT.
+    //
+    // We arrive here having just forced the heaviest write burst this store ever sees (a
+    // full outbox drain + a head-snapshot append, both above), and a readOnly open stats
+    // every file the MANIFEST references. Racing a WAL the primary retires in that window
+    // is therefore the EXPECTED failure, not an exotic one — and it lands at the most
+    // expensive possible moment, after the entire drain, with nothing cut.
+    //
+    // Each attempt gets a FRESH Corestore: a failed ready() leaves the instance unusable,
+    // so retrying on the same object just re-throws. See isTransientStoreOpenError.
+    const sleep = inp.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    let roErr: unknown;
+    let roAttempts = 0;
+    for (let attempt = 1; attempt <= RO_OPEN_RETRY_ATTEMPTS; attempt++) {
+      roAttempts = attempt;
+      const candidate = openStore(inp.storeDir, { readOnly: true, wait: false });
+      try {
+        await candidate.ready();
+        store = candidate;
+        roErr = undefined;
+        break;
+      } catch (e) {
+        roErr = e;
+        await candidate.close?.().catch(() => {});
+        // Only an ENOENT-shaped failure self-clears. Anything else (corrupt manifest,
+        // permissions) is reported immediately rather than after a pointless budget.
+        if (!isTransientStoreOpenError(e)) break;
+        if (attempt < RO_OPEN_RETRY_ATTEMPTS) {
+          warn(
+            `[cut-seed] read-only open lost a race with the live operator's WAL churn ` +
+              `(attempt ${attempt}/${RO_OPEN_RETRY_ATTEMPTS}) — retrying in ${RO_OPEN_RETRY_DELAY_MS}ms. See WI-37488.`,
+          );
+          await sleep(RO_OPEN_RETRY_DELAY_MS);
+        }
+      }
+    }
+
+    if (roErr !== undefined) {
       // The read-only fallback is the no-outage path; if even it cannot open, the store is
       // not merely operator-locked. Surface the real diagnosis + remedies rather than a
       // raw hyperbee error minutes into a cut.
+      //
+      // The two cases need DIFFERENT advice, and conflating them is its own defect: the
+      // remedies below all degrade the seed (or take an outage), so recommending them for a
+      // transient race makes a reader ship a worse seed to dodge a condition that clears on
+      // its own. Only a NON-transient failure earns that list.
       const msg = roErr instanceof Error ? roErr.message : String(roErr);
+      if (isTransientStoreOpenError(roErr)) {
+        throw new Error(
+          `[cut-seed] cannot open the hive corestore at ${inp.storeDir} read-only: it kept moving under us for ` +
+            `all ${roAttempts} attempts over ~${Math.round((roAttempts * RO_OPEN_RETRY_DELAY_MS) / 1000)}s. ` +
+            'This is a TRANSIENT race with the live operator retiring WAL/SST files, NOT a lock conflict and NOT a ' +
+            'broken store — so do NOT reach for --no-corestore / --reuse-corestore / an outage, which all ship a ' +
+            'worse seed to dodge a condition that clears by itself. The drain and head snapshot this run already ' +
+            'completed are PERSISTED, so re-running the cut now is cheap (it will not re-pay the full drain). If it ' +
+            'persists, something is writing to this hive far harder than a normal operator would.\n' +
+            `See WI-37488. (underlying error: ${msg})`,
+        );
+      }
       throw new Error(
         `[cut-seed] cannot open the hive corestore at ${inp.storeDir} — it is locked by the running operator AND ` +
           'the read-only fallback failed, so this is not a plain lock conflict. Use a no-outage path instead:\n' +

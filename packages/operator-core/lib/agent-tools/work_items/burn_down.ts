@@ -23,6 +23,34 @@ import { countsTowardBurnDown } from '../../work-item-completion-authority';
 import { classifyTerminalOwner } from '../../completion-audit';
 import { resolveSelfRef } from '../coordination/self-marker';
 
+/**
+ * P-011 (fleet-lead-instrumentation-audit-2026-08-09) — what a lane fence removed
+ * from this census, reported so a lane-scoped burn-down never looks like a
+ * harness-wide one.
+ *
+ * WHY THE FENCE LIVES HERE AT ALL. The real burn-down metric is terminal
+ * transitions, which this tool computes — but a DRAIN fleet's mission is a LANE,
+ * and this tool had no way to express one. So the leader hand-rolled the same
+ * measurement in SQL with a hand-maintained p2p title regex re-typed into every
+ * query: the exact per-query hand-typing the fence macro exists to end, and a
+ * silent divergence between what the fleet may CLAIM and what its progress is
+ * MEASURED over. `fence: 'p2p-lane'` applies the SAME `buildP2pLaneFence()`
+ * FilterNode through the SAME evaluator the claim path uses
+ * (`matchesClaimSpecFilter`), so the two cannot drift by construction.
+ */
+export interface BurnDownFenceReport {
+  /** The lane macro applied. */
+  lane: 'p2p-lane';
+  /** Rows fetched before the fence ran. */
+  candidates: number;
+  /** Rows the fence kept — the population every count in this response describes. */
+  counted: number;
+  /** candidates - counted. */
+  excluded: number;
+  /** Stated so a reader can check the scope rather than infer it. */
+  note: string;
+}
+
 /** How the fleet behind `terminal.deltaBy.fleet` was determined. Reported verbatim so a
  *  reader never has to guess whether they are looking at their OWN fleet's output or a
  *  fleet named in the call — the ambiguity fix B exists to remove. */
@@ -185,6 +213,8 @@ export interface BurnDownResult {
   openedSince?: { rows: BurnDownDeltaRow[]; total: number; truncated: boolean };
   /** P-024: exact one-row-per-requested-ID completion-integrity audit. */
   cohortAudit?: CohortAuditResult;
+  /** P-011 — present only when `fence` was passed. See {@link BurnDownFenceReport}. */
+  fence?: BurnDownFenceReport;
 }
 
 export type CohortBucket = 'terminal' | 'parked' | 'in-flight' | 'unclaimed' | 'missing';
@@ -701,6 +731,12 @@ export default defineTool({
       .describe(
         "Attribute terminal.delta to this fleet's EVER-members (terminal.deltaBy.fleet). Defaults to YOUR own fleet when you are in one; omit and pass no fleet to get an unattributed harness-wide delta.",
       ),
+    fence: z
+      .enum(['p2p-lane'])
+      .optional()
+      .describe(
+        'Scope the WHOLE census to a lane macro before counting — the same fence a claim spec composes, so a drain fleet measures burn-down over exactly the lane it may claim from. Never hand-roll a title regex for this.',
+      ),
   }),
   result: z.object({
     ok: z.literal(true),
@@ -858,7 +894,15 @@ export default defineTool({
         return null;
       }
     })();
-    const result = buildBurnDownResult(items, liveOwnersFromPresence(presence), {
+    // P-011: apply the lane fence BEFORE the census is built, so every count in the
+    // response (terminal.*/counts.*/deltaBy.*) describes the same population — a
+    // fence applied to the row lists alone would leave the aggregates harness-wide
+    // while looking lane-scoped, which is worse than not offering the arg.
+    const fenced = args.fence
+      ? applyLaneFence(items, args.fence)
+      : null;
+    const censusItems = fenced ? fenced.rows : items;
+    const result = buildBurnDownResult(censusItems, liveOwnersFromPresence(presence), {
       harness: args.harness,
       since: args.since ?? null,
       fleet: fleetScope,

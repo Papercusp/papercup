@@ -20,6 +20,8 @@ import {
   isCorestoreLockedError,
   waitForOperatorDrain,
   openSourceStoreForCut,
+  isTransientStoreOpenError,
+  RO_OPEN_RETRY_ATTEMPTS,
   CUT_SEED_DRAIN_STALL_MS,
 } from './cut-seed-cli';
 import { DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
@@ -556,6 +558,136 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
     const boom = new Error('corrupt manifest');
     const openStore = () => ({ ready: async () => { throw boom; }, close: async () => {} }) as never;
     await expect(openSourceStoreForCut({ ...base, openStore })).rejects.toThrow(/corrupt manifest/);
+  });
+
+  // ── WI-37488: the read-only open races the WAL churn the cut itself caused ─────────
+  //
+  // openSourceStoreForCut opens read-only immediately after forcing a full outbox drain +
+  // a head-snapshot append. A readOnly open stats every file the MANIFEST references, so a
+  // WAL the primary retires in that window throws ENOENT. Measured 2026-08-09: this killed
+  // a cut AFTER a 1,090s drain, and five identical opens 30s later succeeded in 8-58ms.
+  describe('read-only open retry (WI-37488 — a transient ENOENT must not waste the whole drain)', () => {
+    /** The real RocksDB text, verbatim from the cut that died at 13:20:50Z. */
+    const ENOENT_MSG =
+      'While stat a file for size: /home/x/.papercusp/papercusp/hyperbee/db/002519.log: ' +
+      'No such file or directory';
+
+    /**
+     * A store that is locked writable (as the live operator makes it) and whose read-only
+     * open throws a TRANSIENT ENOENT for its first `flakyOpens` attempts, then succeeds.
+     */
+    function flakyRoHarness(flakyOpens: number) {
+      const calls: string[] = [];
+      let roOpens = 0;
+      const openStore = (_dir: string, o?: { readOnly?: boolean; wait?: boolean }) => {
+        const readOnly = o?.readOnly === true;
+        if (!readOnly) {
+          calls.push('open:rw');
+          return { ready: async () => { throw LOCKED; }, close: async () => {} } as never;
+        }
+        roOpens += 1;
+        const mine = roOpens;
+        calls.push(`open:ro#${mine}`);
+        return {
+          ready: async () => {
+            if (mine <= flakyOpens) throw new Error(ENOENT_MSG);
+          },
+          close: async () => { calls.push(`close:ro#${mine}`); },
+        } as never;
+      };
+      return { calls, openStore, roOpens: () => roOpens };
+    }
+
+    const noSleep = async () => {};
+
+    it('retries a transient ENOENT and completes the cut instead of throwing away the drain', async () => {
+      const { calls, openStore, roOpens } = flakyRoHarness(3);
+      const res = await openSourceStoreForCut({
+        ...base,
+        wantRefresh: false,
+        openStore,
+        sleep: noSleep,
+      });
+      expect(res.sourceWritable).toBe(false);
+      // 3 losses then a win — the cut proceeds rather than dying after the full drain.
+      expect(roOpens()).toBe(4);
+      expect(calls).toContain('open:ro#4');
+    });
+
+    it('opens a FRESH store per attempt — a failed ready() leaves the instance unusable', async () => {
+      const { calls, openStore } = flakyRoHarness(2);
+      await openSourceStoreForCut({ ...base, wantRefresh: false, openStore, sleep: noSleep });
+      // Each failed attempt is closed and a NEW one opened. Retrying on the same object
+      // would just re-throw, so this ordering is the fix, not an implementation detail.
+      expect(calls).toContain('close:ro#1');
+      expect(calls).toContain('close:ro#2');
+      expect(calls.indexOf('open:ro#2')).toBeGreaterThan(calls.indexOf('close:ro#1'));
+    });
+
+    /**
+     * CONTROL (repo falsifiability discipline, tier 1): a permanently-resident model of the
+     * PRE-FIX behaviour — one attempt, no retry — run against the SAME flaky harness. It
+     * must FAIL. Without it, the passing tests above are consistent with a fake that never
+     * actually throws, i.e. a guard that measures nothing.
+     */
+    it('CONTROL: the pre-fix single-attempt open fails against this same harness', async () => {
+      const { openStore } = flakyRoHarness(3);
+      const openOnceNoRetry = async () => {
+        const store = openStore('/tmp/store', { readOnly: true, wait: false }) as unknown as {
+          ready: () => Promise<void>;
+        };
+        await store.ready();
+      };
+      await expect(openOnceNoRetry()).rejects.toThrow(/No such file or directory/);
+    });
+
+    it('does NOT retry a non-transient failure — a corrupt manifest never self-clears', async () => {
+      let roOpens = 0;
+      const openStore = (_dir: string, o?: { readOnly?: boolean; wait?: boolean }) => {
+        if (o?.readOnly !== true) {
+          return { ready: async () => { throw LOCKED; }, close: async () => {} } as never;
+        }
+        roOpens += 1;
+        return {
+          ready: async () => { throw new Error('corrupt manifest'); },
+          close: async () => {},
+        } as never;
+      };
+      await expect(
+        openSourceStoreForCut({ ...base, wantRefresh: false, openStore, sleep: noSleep }),
+      ).rejects.toThrow(/corrupt manifest/);
+      expect(roOpens).toBe(1);
+    });
+
+    it('an exhausted budget reports a TRANSIENT race, never the seed-degrading lock remedies', async () => {
+      // The expensive half of the bug: the old message sent readers to --no-corestore /
+      // --reuse-corestore / an outage, all of which ship a WORSE seed to dodge a condition
+      // that clears by itself.
+      const { openStore } = flakyRoHarness(Number.MAX_SAFE_INTEGER);
+      const err = await openSourceStoreForCut({
+        ...base,
+        wantRefresh: false,
+        openStore,
+        sleep: noSleep,
+      }).catch((e: unknown) => e as Error);
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/TRANSIENT race/);
+      expect(err.message).toMatch(new RegExp(`all ${RO_OPEN_RETRY_ATTEMPTS} attempts`));
+      // It must NOT recommend the remedies that degrade the seed.
+      expect(err.message).not.toMatch(/PAPERCUSP_SKIP_SEED_CUT=1 \(release-local/);
+      expect(err.message).not.toMatch(/this is not a plain lock conflict/);
+    });
+
+    it('classifies ENOENT as transient but a lock / corrupt manifest as not', () => {
+      expect(isTransientStoreOpenError(new Error(ENOENT_MSG))).toBe(true);
+      expect(isTransientStoreOpenError(Object.assign(new Error('nope'), { code: 'ENOENT' }))).toBe(true);
+      // The corestore lock has its own handling and never self-clears — swallowing it here
+      // would turn a correct fast diagnosis into a silent 10s stall.
+      expect(isTransientStoreOpenError(LOCKED)).toBe(false);
+      expect(isTransientStoreOpenError(new Error('corrupt manifest'))).toBe(false);
+      expect(isTransientStoreOpenError(new Error('EACCES: permission denied'))).toBe(false);
+    });
   });
 
   // ── P-014 (D-012): --sparse REQUIRES a fresh head snapshot ────────────────────────

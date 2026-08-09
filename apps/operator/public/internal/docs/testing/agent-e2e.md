@@ -107,6 +107,24 @@ read) whenever the DOM can express the assertion — see **§1.3**'s
 font rendering) the DOM can't express, and even then open the image before citing
 it.
 
+⚠ **Two more traps in `check`, both bitten live on 2026-08-09 (EI-19968305204816665) — one
+in each direction, so neither a plain FAIL nor a plain PASS is safe to trust blind:**
+
+1. **Never click and assert in the SAME `--eval` — it races React's commit and reports a
+   FALSE FAIL on a working interaction.** A single `--eval` string is one synchronous
+   expression; a state update from `.click()` inside it is not committed until the current
+   task yields, so anything read later in that *same* expression still sees the pre-click
+   DOM. `check --eval "(()=>{el.click(); return /new text/.test(el2.textContent);})()"` can
+   FAIL even though the click genuinely worked. Splitting the click and the assertion across
+   **two separate `--eval` flags** (or a `click` + `check --eval`) fixes it — each bridge
+   round-trip yields, which is exactly what lets the commit land. This fails in the expensive
+   direction: it invites "fixing" code that was already correct, or downgrading a true claim.
+2. **For any control that can change or unmount itself on use, assert the TRANSITION
+   (click → assert new state → click back → assert old state), never mere PRESENCE.**
+   `check --selector '[data-testid=x]'` passes happily against a toggle that breaks or
+   unmounts itself the first time it's clicked — presence is satisfied by a control that
+   works exactly once and then disappears. Only driving the interaction end-to-end catches it.
+
 Other tools and when:
 
 * **`verdict`** — only for **arbitrary public web pages** (docs site

@@ -21,6 +21,15 @@ import { z } from 'zod';
 import { truncateHint } from './request-compaction';
 import { __resetRefusalMarkers } from '../../enforcement-gate-io';
 import { __resetRespawnExpectedMarkers, consumeRespawnExpected } from '../../carry-respawn-marker';
+// P-009 split `pending` into still-racing vs ORPHANED on an age threshold, so the
+// ages below are load-bearing. Derive them from the real budget rather than
+// hardcoding minutes: a fixture that names its own magic number silently changes
+// MEANING when the cap moves, which is exactly how this suite went red (the
+// original 19m fixture was written when any pending age meant "still pending").
+import {
+  PENDING_RESPAWN_DEFAULT_CAP_MS,
+  PENDING_RESPAWN_ORPHAN_GRACE_MS,
+} from '../../carry-respawn-outcome';
 
 // The marker is PG-backed (migration 716 — the operator is clustered, so an
 // in-memory Map was invisible to the sibling worker handling the SessionEnd).
@@ -175,12 +184,32 @@ describe('session:request-compaction — reports what happened to the PREVIOUS r
     expect(b.note).toContain('An acknowledged request is NOT a landed cut');
   });
 
-  it('says a still-pending re-poll is SUPERSEDED by this request rather than racing it', async () => {
+  it('says a still-pending re-poll STILL INSIDE its window is SUPERSEDED by this request rather than racing it', async () => {
     findLiveHost.mockReturnValue(carryHost);
-    readPriorRespawnOutcome.mockResolvedValue({ outcome: 'pending', ageMs: 19 * 60_000 });
+    readPriorRespawnOutcome.mockResolvedValue({
+      outcome: 'pending',
+      ageMs: PENDING_RESPAWN_DEFAULT_CAP_MS / 4, // deliberately well inside the re-poll window
+    });
     const b = body(await call({ focus: 'anything' }));
     expect(b.priorRespawn.outcome).toBe('pending');
     expect(b.note).toContain('prior-respawn-STILL-PENDING');
+  });
+
+  // The branch above has a twin the tool path never covered, which is why the
+  // fixture could drift across the P-009 threshold and go on asserting a
+  // scenario its own name no longer described. Both `pending` verdicts reach the
+  // caller as outcome:'pending' — only the NOTE distinguishes them — so the note
+  // is the only thing that can carry "nobody is waiting on that attempt".
+  it('calls a pending re-poll past its window ORPHANED, and does not claim this request inherits it', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    readPriorRespawnOutcome.mockResolvedValue({
+      outcome: 'pending',
+      ageMs: PENDING_RESPAWN_DEFAULT_CAP_MS + PENDING_RESPAWN_ORPHAN_GRACE_MS + 60_000,
+    });
+    const b = body(await call({ focus: 'anything' }));
+    expect(b.priorRespawn.outcome).toBe('pending');
+    expect(b.note).toContain('prior-respawn-ORPHANED');
+    expect(b.note).not.toContain('prior-respawn-STILL-PENDING');
   });
 
   // A warning that fires when nothing is wrong trains agents to ignore it.
