@@ -48,6 +48,32 @@ const SCRIPT = readFileSync(join(ROOT, 'papercusp-desktop', 'bin', 'release-loca
 const HELPER_RE = /_wi3047_unverified\(\)\s*\{[\s\S]*?\n\}\n/;
 const helperMatch = SCRIPT.match(HELPER_RE);
 
+/**
+ * The helper's CHANNEL-POLICY DEPENDENCY, extracted the same verbatim way.
+ *
+ * `_wi3047_unverified` branches on `desktop_channel_is_strict "$CHANNEL"`, which
+ * release-local.sh gets from `lib/gen-latest-manifest.sh` (sourced at its line ~167).
+ * Eval'ing the helper ALONE leaves that undefined — and the way bash fails there is
+ * silent and wrong-way:
+ *
+ *   undefined command -> exit 127 -> `if ! desktop_channel_is_strict ...` is TRUE
+ *   -> the helper takes the LENIENT branch -> WARNs and returns 0 on EVERY channel.
+ *
+ * `set -e` does not save us: the call sits in an `if` condition, which is an exempt
+ * context. So every fail-closed assertion in this file silently began exercising the
+ * lenient path the moment that check was refactored out of the helper — the guard read
+ * as "the shipping gate regressed to fail-open" when the shipping gate was fine and the
+ * HARNESS was the thing that had gone permissive. That is the can-falsely-pass class
+ * this file exists to prevent, reproduced one level up in the test itself.
+ *
+ * Extracted rather than stubbed on purpose: a hand-written `desktop_channel_is_strict`
+ * here would assert against a channel policy of the test's own invention, so a real
+ * change to which channels are strict would not be caught.
+ */
+const CHANNEL_LIB = readFileSync(join(ROOT, 'papercusp-desktop', 'bin', 'lib', 'gen-latest-manifest.sh'), 'utf8');
+const CHANNEL_FN_RE = /desktop_channel_is_strict\(\)\s*\{[\s\S]*?\n\}\n/;
+const channelFnMatch = CHANNEL_LIB.match(CHANNEL_FN_RE);
+
 /** Eval the REAL helper under bash with the given channel/override and report its exit code. */
 function runHelper(opts: { channel: string; override?: string }): { status: number | null; out: string } {
   expect(helperMatch, 'could not locate _wi3047_unverified() in release-local.sh').toBeTruthy();
