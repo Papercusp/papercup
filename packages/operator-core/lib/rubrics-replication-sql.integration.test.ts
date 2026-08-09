@@ -1,9 +1,13 @@
 /**
  * rubrics-replication-sql.integration.test.ts — validateRubricReplicationSql against a
- * real migrated Postgres (Docker-gated). Pure extraction is covered unit-only in
- * rubrics-replication-sql.test.ts; this proves the EXPLAIN leg actually catches the
- * EI-10514 repro shape (a drill written against a renamed/nonexistent table or column)
- * and stays clean/non-blocking on a genuinely-runnable drill.
+ * real migrated Postgres (Docker-gated). Pure extraction + placeholder substitution are
+ * covered unit-only in rubrics-replication-sql.test.ts; this proves the EXPLAIN leg
+ * actually catches the EI-10514 repro shape (a drill written against a renamed/nonexistent
+ * table or column) and stays clean/non-blocking on a genuinely-runnable drill.
+ *
+ * EI-19988213173207009 added the bind-placeholder cases. They can ONLY be proven here: the
+ * whole defect was that a parameterised drill never reached name resolution, so a unit test
+ * with a stubbed EXPLAIN would assert the fix while the real SQLSTATE went unobserved.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
@@ -40,7 +44,14 @@ describe('validateRubricReplicationSql (real PG)', () => {
       },
       { key: 'no-sql-here', replication: 'fleet:assignments { harness } -> read summary.coverage_collisions.' },
     ]);
-    expect(result).toEqual({ checked: 1, findings: [], ok: true });
+    expect(result).toEqual({
+      checked: 1,
+      findings: [],
+      undeterminable: [],
+      placeholderOnly: 0,
+      ok: true,
+      summary: '1 statement(s) checked · 0 real finding(s)',
+    });
   });
 
   it('surfaces the EI-10514 repro: a drill referencing a renamed column, keyed by criterion', async () => {
@@ -57,6 +68,8 @@ describe('validateRubricReplicationSql (real PG)', () => {
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].criterionKey).toBe('ideation-quality');
     expect(result.findings[0].error.code).toBe('42703');
+    // No placeholders were involved, so the one-pass path must not claim a substitution.
+    expect(result.findings[0].afterPlaceholderSubstitution).toBeUndefined();
   });
 
   it('surfaces a renamed-table repro (routed_ideas → harness_shared.scout_routed_ideas)', async () => {
@@ -80,6 +93,92 @@ describe('validateRubricReplicationSql (real PG)', () => {
     const result = await validateRubricReplicationSql([
       { key: 'a', replication: 'work_items:get on 3 recently-placed items; compare the brief text.' },
     ]);
-    expect(result).toEqual({ checked: 0, findings: [], ok: true });
+    expect(result).toEqual({
+      checked: 0,
+      findings: [],
+      undeterminable: [],
+      placeholderOnly: 0,
+      ok: true,
+      summary: 'no embedded drill SQL to check',
+    });
+  });
+
+  // ── EI-19988213173207009: bind placeholders ────────────────────────────────────────
+
+  it('reports NO finding for a parameterised drill that is otherwise clean (the reported bug)', async () => {
+    const result = await validateRubricReplicationSql([
+      {
+        key: 'goal-spend',
+        replication:
+          'SELECT tick_at, ideas_generated FROM harness_shared.scout_ticks ' +
+          'WHERE workspace_id = :ws AND tick_at > :run_start ORDER BY tick_at DESC LIMIT 5;',
+      },
+    ]);
+    // Pre-fix this was `findings: [1x 42601 syntax error at or near ":"]`, i.e. pure noise.
+    expect(result.findings).toEqual([]);
+    expect(result.undeterminable).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.checked).toBe(1);
+    expect(result.placeholderOnly).toBe(1);
+    expect(result.summary).toContain('0 real finding(s)');
+    expect(result.summary).toContain('1 parameterised drill(s) clean');
+  });
+
+  it('CATCHES a real bad column inside a parameterised drill — coverage the 42601 used to mask', async () => {
+    const result = await validateRubricReplicationSql([
+      {
+        key: 'ideation-quality',
+        replication: 'SELECT ideas_count FROM harness_shared.scout_ticks WHERE workspace_id = :ws;',
+      },
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].error.code).toBe('42703');
+    expect(result.findings[0].criterionKey).toBe('ideation-quality');
+    expect(result.findings[0].afterPlaceholderSubstitution).toBe(true);
+    expect(result.findings[0].placeholders).toEqual([':ws']);
+    // The reported SQL stays the drill AS AUTHORED, not our rewritten probe.
+    expect(result.findings[0].sql).toContain(':ws');
+    expect(result.findings[0].sql).not.toContain('NULL');
+  });
+
+  it('buckets an overload failure our own dummy literal could have caused as undeterminable', async () => {
+    const result = await validateRubricReplicationSql([
+      {
+        key: 'run-window',
+        // date_trunc(unknown, unknown) is ambiguous — the drill's parameter type is unknowable here.
+        replication: "SELECT date_trunc('day', :run_start) FROM harness_shared.scout_ticks;",
+      },
+    ]);
+    expect(result.findings).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.undeterminable).toHaveLength(1);
+    expect(result.undeterminable[0].error.code).toBe('42725');
+    expect(result.undeterminable[0].afterPlaceholderSubstitution).toBe(true);
+    expect(result.undeterminable[0].undeterminableReason).toContain('ambiguous function');
+    expect(result.summary).toContain('1 undeterminable');
+  });
+
+  it('separates real defects from placeholder noise in one mixed rubric (the goal-mode-e2e shape)', async () => {
+    const result = await validateRubricReplicationSql([
+      {
+        key: 'parameterised-1',
+        replication: 'SELECT tick_at FROM harness_shared.scout_ticks WHERE workspace_id = :ws;',
+      },
+      {
+        key: 'parameterised-2',
+        replication: 'SELECT ideas_generated FROM harness_shared.scout_ticks WHERE workspace_id = :subject;',
+      },
+      {
+        key: 'real-defect',
+        replication: 'SELECT * FROM harness_shared.nope_not_a_table WHERE a = :ws;',
+      },
+    ]);
+    expect(result.checked).toBe(3);
+    expect(result.placeholderOnly).toBe(2);
+    // The reviewer reads ONE real finding instead of hand-separating three.
+    expect(result.findings.map((f) => f.criterionKey)).toEqual(['real-defect']);
+    expect(result.findings[0].error.code).toBe('42P01');
+    expect(result.ok).toBe(false);
   });
 });

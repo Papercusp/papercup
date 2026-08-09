@@ -37,6 +37,32 @@
  * boot again; that needs a human/agent to positively verify current liveness
  * per item (see the per-episode manual resolutions this sweep's discovery
  * prompted), not a blanket time-based sweep.
+ *
+ * ⚠⚠ THE SELECTOR WAS THE BUG, AND IT MADE THIS SWEEP A STRUCTURAL NO-OP FOR
+ * WEEKS (WI-37499, fixed 2026-08-09). It listed its candidates by the
+ * `replication-liveness` TOPIC TAG. That tag is an INDEX over the detector's
+ * population, written alongside each row; the population's real identity is the
+ * stable TITLE the detector mints. The two diverge whenever a tag write is
+ * missing — measured 2026-08-09 on the live store: 60 of 105 open rows carried no
+ * topic edge at all, and the missing-tag set contained **100% of this sweep's
+ * genuine targets** (6 orphans, the oldest 34.8 days old) while the 45 rows it
+ * COULD see contained **zero**. Verified by running the sweep read-only with a
+ * no-op resolver: `checked 45, orphanedTargets [], resolved 0`.
+ *
+ * That anti-correlation is not a coincidence to be explained away — an untagged
+ * row is exactly the row that also escapes dedup (`listOpenByTopic`) and the
+ * duplicate-collapse pass, so the neglected population accumulates in the one
+ * place none of the three consumers can see. All three read that single tag, so
+ * they went blind TOGETHER while each reported a clean pass.
+ *
+ * Two transferable rules, both earned here:
+ *   1. Select a population by the property that DEFINES membership (the title
+ *      this detector owns), never by a derived index over it. Where the index is
+ *      still useful, UNION the two — neither leg is a superset (measured: 60 rows
+ *      match the prefix but carry no tag; 4 tagged rows do not match the prefix).
+ *   2. A sweep that can under-select to ZERO must SAY so. The tick logged only
+ *      when it resolved something, so a blind pass and a correct no-op were
+ *      byte-identical — see `OrphanSweepResult.skipped`.
  */
 
 const TARGET_RE = /workspace=(\S+)\s+harness=(\S+)/;

@@ -658,9 +658,9 @@ describe('collectionAttributionMarker — the RUNTIME-crash sibling of transform
     expect(marker).toContain('✓ ok      packages/operator-core/lib/agent-tools/__tests__/search-tools.test.ts');
     expect(marker).toContain('NOT the cause');
     expect(marker).toContain('Treat only the BROKEN file(s) as suspect');
-    // The healthy files must not be told they're "still red" — that's the exact inversion this
-    // marker exists to prevent.
-    expect(marker).not.toContain('still red');
+    // The marker explicitly tells the reader the healthy files are NOT "still red" — the exact
+    // inversion this attribution exists to prevent — rather than leaving that unsaid.
+    expect(marker).toContain('not "still red"');
   });
 
   it('labels the group cwd relative to the repo root, falling back to "." at the root itself', () => {

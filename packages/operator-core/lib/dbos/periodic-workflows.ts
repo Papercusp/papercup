@@ -1074,11 +1074,18 @@ async function replicationStallOrphanSweepTick(): Promise<void> {
     // file() race that no pre-read can win (see collapseDuplicateOpenEis).
     try {
       const { collapseDuplicateOpenEis } = await import('../escalation/episodic-ei');
-      const { REPLICATION_LIVENESS_TOPIC } = await import('../sync/hyperbee/replication-stall-ei');
+      const { REPLICATION_LIVENESS_TOPIC, REPLICATION_STALL_EI_TITLE_PREFIX } = await import(
+        '../sync/hyperbee/replication-stall-ei'
+      );
       const c = await collapseDuplicateOpenEis(
         REPLICATION_LIVENESS_TOPIC,
         'duplicate open EI for an identical stable title — collapsed to the oldest row for this ' +
           'condition (WI-6986). No signal lost: the condition itself is still represented by the survivor.',
+        undefined,
+        // WI-37499: see the sweep above — the duplicates were concentrated in the
+        // rows the topic tag misses (measured: all 12 rows in duplicate groups
+        // were untagged), so a topic-only read could not collapse any of them.
+        { titlePrefix: REPLICATION_STALL_EI_TITLE_PREFIX },
       );
       if (c.collapsedIds.length > 0 || c.skippedUnmutable > 0) {
         console.log(

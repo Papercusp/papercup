@@ -179,7 +179,7 @@ export function evaluateGreenStall(
       reason += `. Failing verdict test(s): ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}`;
     }
   }
-  return { stalled, fireStale, verdictStale, reason };
+  return { stalled, fireStale, verdictStale, suppressed: rootEngineStale, reason };
 }
 
 /** Pure: the `harness_escalations` body for a watchdog-detected stall (testable). */

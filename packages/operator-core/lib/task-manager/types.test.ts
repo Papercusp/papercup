@@ -137,8 +137,11 @@ describe('scope cgroup path (WI-37509)', () => {
   it('round-trips with the manager root derived from a real operator cgroup path', () => {
     const root = deriveUserManagerRoot(`${MGR}/papercup-dev-api.service`);
     expect(root).toBe(MGR);
+    // Note the INTERMEDIATE `papercusp-bash.slice`: a two-token class expands to two
+    // levels. Verified against the live tree 2026-08-09, which holds exactly
+    // `papercusp-bash.slice/papercusp-bash-job.slice/pc-0mslx760o13menyxs2f.scope`.
     expect(scopeCgroupRelPath(root, 'bash-job', 'pc-xyz.scope')).toBe(
-      `${MGR}/papercusp.slice/papercusp-bash-job.slice/pc-xyz.scope`,
+      `${MGR}/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/pc-xyz.scope`,
     );
   });
 });

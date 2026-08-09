@@ -143,13 +143,51 @@ export async function fetchPlanBlockingEdges(
 }
 
 /**
+ * Which `coord:presence` reads need the lock COORDINATION DOMAIN resolved.
+ *
+ * ⚠ THIS PREDICATE IS THE FIX FOR A SIGNAL THAT NEVER FIRED ONCE IN PRODUCTION.
+ * The domain used to be resolved under `include_detail` ALONE, because detail's
+ * held-files lane was its first consumer. `include_coupling` then became a second,
+ * INDEPENDENT consumer (the `holds-a-lock-on` derivation) and inherited detail's
+ * gate by accident — so the lock signal required the INTERSECTION of two unrelated
+ * opt-ins. Measured 2026-08-09 over the full retained history of
+ * `tool_invocations` (workspace papercusp-workspace, 2026-07-26 → 2026-08-09):
+ * 243 `coord:presence` calls passed neither flag, 11 passed `include_coupling`
+ * alone, 9 passed `include_detail` alone, and **the both-flags row does not
+ * exist**. Zero. The one AUTOMATIC "this agent is on this file" signal was dead on
+ * arrival, exactly like the `current_files` field it was introduced to replace
+ * (119 live rows, zero populated — EI-18772330418885814).
+ *
+ * The general shape, because it is what makes this invisible: a gate that is
+ * correct for its first consumer becomes a silent AND-condition the moment a
+ * second consumer reuses it. Nothing errors, every test over injected fixtures
+ * passes, and the signal simply never fires. Give each consumer its own reason to
+ * need the input — hence a named predicate rather than `if (args.include_detail)`.
+ */
+export function presenceNeedsCoordinationDomain(args: {
+  include_detail?: boolean | undefined;
+  include_coupling?: boolean | undefined;
+}): boolean {
+  return !!args.include_detail || !!args.include_coupling;
+}
+
+/**
  * Build the injected source set for one `coord:presence` read.
  *
  * `rosterOwnerIds` bounds the lock read to the agents this caller is already
- * being shown. `coordinationDomain` is absent unless the caller asked for detail
- * — in that case the lock-hold signal is simply unavailable and degrades to
- * nothing, which is correct: it must never become a reason to open a second DB
- * connection on the default presence path (P-003 keeps that path org-PG-only).
+ * being shown. `coordinationDomain` absent ⇒ the lock-hold signal degrades to
+ * nothing rather than failing — correct, but it must be the caller's DELIBERATE
+ * choice: see {@link presenceNeedsCoordinationDomain} for the 12 days this
+ * degraded silently on every `include_coupling` read.
+ *
+ * ON COST, since that was the original objection: this never opens a connection
+ * the process does not already hold. `getTxPool()` is a memoized module-level
+ * singleton behind ~29 call sites (every `locks:*` verb), so it is warm in any
+ * operator serving lock traffic. The real cost is its `max: 10` cap on a pool
+ * that has saturated before (2026-07-26: 34 idle `su-lock-tx` connections, the
+ * second-largest consumer of a 343/512 `max_connections`), and the read is paid
+ * ONLY on the opt-in coupling branch — 11 calls in the whole retained window, not
+ * the 243-call default path. Bounded to `rosterOwnerIds` and fail-soft per leg.
  */
 export function couplingSourcesFor(opts: {
   selfOwnerId: string;

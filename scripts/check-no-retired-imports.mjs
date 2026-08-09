@@ -21,16 +21,27 @@
  * companion "no NEW raw agent-CLI spawn" guard lives with the spawn
  * chokepoint work (unify-agent-spawn-chokepoint-2026-06-06 P-008).
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-// WI-6730: enumerate via the shared helper, which recurses into submodules. A bare
-// `git ls-files` does not — it emits one gitlink entry per submodule — so this
-// retirement guard never checked inside any of the 39, including libs/papercusp,
-// which is precisely where the legacy orchestrator run-loop it polices lives.
-const { files: tracked, unscanned } = listTrackedFiles(ROOT);
+/**
+ * True only when this file is the process entrypoint — so a test can IMPORT the
+ * predicate below without the whole guard running (and calling process.exit) on
+ * import. Same idiom, for the same reason, as the sibling
+ * `check-retired-resurrection.mjs`: realpath both sides, because `import.meta.url`
+ * resolves symlinks while `process.argv[1]` keeps the path as typed.
+ */
+function isDirectRun() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
 
 const isExcluded = (f) =>
   f.startsWith('_retired/') ||
@@ -49,18 +60,15 @@ const RETIRED_IMPORT =
 // A fetch() to the dead orchestrator-spawn plugin endpoint (404; use fleet:spawn).
 const DEAD_SPAWN_FETCH = /fetch\s*\(\s*['"`][^'"`]*plugins\/orchestrator\/spawn/;
 
-const offenders = [];
-for (const f of tracked) {
-  if (isExcluded(f)) continue;
-  if (!/\.(ts|tsx|mjs|cjs|js)$/.test(f)) continue;
-  let text;
-  try {
-    text = readFileSync(new URL(f, `file://${ROOT}`), 'utf8');
-  } catch {
-    continue;
-  }
+/**
+ * The per-file scan, exported so a test can prove this guard can still FAIL without
+ * duplicating the two regexes above — a second copy in a test would drift from these,
+ * and a guard whose test checks a stale copy of its own rule is worse than untested.
+ */
+export function findOffendersInText(f, text) {
+  const offenders = [];
   if (!text.includes('_retired/') && !text.includes('plugins/orchestrator/spawn')) {
-    continue;
+    return offenders;
   }
   text.split('\n').forEach((line, i) => {
     // WI-6730: skip comment lines. `RETIRED_IMPORT` keys on the word `from`, so
@@ -79,18 +87,53 @@ for (const f of tracked) {
       offenders.push(`${f}:${i + 1}  [retired /api/plugins/orchestrator/spawn fetch]  ${line.trim().slice(0, 100)}`);
     }
   });
+  return offenders;
 }
 
-if (offenders.length === 0) {
-  console.log(
-    `✓ no live imports of _retired/ modules and no retired orchestrator-spawn fetch.${describeUnscanned(unscanned)}`,
-  );
-  process.exit(0);
+/**
+ * Enumerate + scan. Exported so a test can assert the scan actually REACHED the tree
+ * — "0 offenders, exit 0" is equally the output of a guard that examined nothing, so
+ * the count of files scanned is part of the verdict, not decoration.
+ */
+export function scanTree() {
+  // WI-6730: enumerate via the shared helper, which recurses into submodules. A bare
+  // `git ls-files` does not — it emits one gitlink entry per submodule — so this
+  // retirement guard never checked inside any of the 39, including libs/papercusp,
+  // which is precisely where the legacy orchestrator run-loop it polices lives.
+  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
+  const offenders = [];
+  let scanned = 0;
+  for (const f of tracked) {
+    if (isExcluded(f)) continue;
+    if (!/\.(ts|tsx|mjs|cjs|js)$/.test(f)) continue;
+    let text;
+    try {
+      text = readFileSync(new URL(f, `file://${ROOT}`), 'utf8');
+    } catch {
+      continue;
+    }
+    scanned += 1;
+    offenders.push(...findOffendersInText(f, text));
+  }
+  return { offenders, scanned, unscanned };
 }
 
-console.error('✗ live code is reaching into RETIRED surfaces:');
-console.error('  - Importing a `_retired/` module: restore it properly (git mv back + re-wire per its RESTORE.md), do not import across the boundary.');
-console.error('  - `POST /api/plugins/orchestrator/spawn` is dead (404); spawn via `fleet:spawn` / spawnAgentInHarness instead.\n');
-for (const o of offenders) console.error('    ' + o);
-console.error(`\n  ${offenders.length} offender(s). See plan archive-legacy-orchestrator-deadcode-2026-06-06 (P-013).`);
-process.exit(1);
+export function main() {
+  const { offenders, unscanned } = scanTree();
+
+  if (offenders.length === 0) {
+    console.log(
+      `✓ no live imports of _retired/ modules and no retired orchestrator-spawn fetch.${describeUnscanned(unscanned)}`,
+    );
+    return 0;
+  }
+
+  console.error('✗ live code is reaching into RETIRED surfaces:');
+  console.error('  - Importing a `_retired/` module: restore it properly (git mv back + re-wire per its RESTORE.md), do not import across the boundary.');
+  console.error('  - `POST /api/plugins/orchestrator/spawn` is dead (404); spawn via `fleet:spawn` / spawnAgentInHarness instead.\n');
+  for (const o of offenders) console.error('    ' + o);
+  console.error(`\n  ${offenders.length} offender(s). See plan archive-legacy-orchestrator-deadcode-2026-06-06 (P-013).`);
+  return 1;
+}
+
+if (isDirectRun()) process.exit(main());

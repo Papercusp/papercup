@@ -31,7 +31,7 @@ import { overlayPresenceCursors } from '../presence-cursor-overlay';
 import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings';
 import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
 import { deriveCouplings } from '../../../coord/coupling-derivation';
-import { couplingSourcesFor } from '../coupling-sources';
+import { couplingSourcesFor, presenceNeedsCoordinationDomain } from '../coupling-sources';
 import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle';
 
 export default defineTool({
@@ -147,17 +147,34 @@ export default defineTool({
       // still found instead of reading as "no such agent".
       targetedOwner: !!args.owner,
     });
-    // P-011: include_detail adds the cross-DB held-files lane. The lock store is
-    // keyed by coordinationDomain (the repo root, not workspaceId) — resolve it
-    // defensively so an anonymous caller never breaks the lean read.
-    let detail: { coordinationDomain: string } | undefined;
-    if (args.include_detail) {
+    // The lock store is keyed by coordinationDomain (the repo root, not
+    // workspaceId) — resolved defensively so an anonymous caller never breaks the
+    // lean read.
+    //
+    // ⚠ TWO INDEPENDENT CONSUMERS NEED IT, and conflating them cost the
+    // `holds-a-lock-on` signal every firing it ever had:
+    //   · include_detail — P-011's held-files lane, which puts `heldFiles` on the
+    //     roster rows themselves;
+    //   · include_coupling — P-013's lock-hold DERIVATION, which never touches a
+    //     roster row and only feeds the appended expanded[] block.
+    // Resolving under `include_detail` alone made the second silently require the
+    // first. Measured 2026-08-09 over the full retained history: ZERO
+    // `coord:presence` calls have ever passed both flags, so the one automatic
+    // "this agent is on this file" signal never fired in production. See
+    // `presenceNeedsCoordinationDomain`, which owns this rule and its evidence.
+    let coordinationDomain: string | undefined;
+    if (presenceNeedsCoordinationDomain(args)) {
       try {
-        detail = { coordinationDomain: readIdentity(ctx).coordinationDomain };
+        coordinationDomain = readIdentity(ctx).coordinationDomain;
       } catch {
-        detail = undefined;
+        coordinationDomain = undefined;
       }
     }
+    // `detail` still gates the ROSTER lane on include_detail — widening the lock
+    // read must not widen the base rows (D-053: the base roster is byte-identical
+    // whether coupling is on or off).
+    const detail =
+      args.include_detail && coordinationDomain ? { coordinationDomain } : undefined;
     const snapshot = await assemblePresenceSnapshot(resolved, {
       ...(args.owner ? { owner: args.owner } : {}),
       ...(detail ? { detail } : {}),
@@ -227,7 +244,8 @@ export default defineTool({
             rosterOwnerIds: snapshot.active
               .map((r) => (r as { ownerId?: unknown }).ownerId)
               .filter((v): v is string => typeof v === 'string' && v.length > 0),
-            ...(detail ? { coordinationDomain: detail.coordinationDomain } : {}),
+            // NOT `detail?.coordinationDomain` — that is the bug this replaced.
+            ...(coordinationDomain ? { coordinationDomain } : {}),
             ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
             ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
           }),

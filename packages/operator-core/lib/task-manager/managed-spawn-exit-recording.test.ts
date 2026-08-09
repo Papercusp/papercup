@@ -132,6 +132,7 @@ describe('confined task exit recording (WI-37509)', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('does NOT close the row when the client dies but the scope still holds processes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitter, result, scopeRel } = await spawnConfined([3204532, 3204609, 3204726]);
     expect(result.confined).toBe(true);
     expect(scopeRel).toContain('/papercusp.slice/papercusp-sidecar.slice/');
@@ -141,6 +142,10 @@ describe('confined task exit recording (WI-37509)', () => {
     await flush();
 
     expect(L.closed).toEqual([]);
+    // The suppression must be AUDIBLE. A row silently left open looks identical to
+    // one nobody ever wired, which is how this class hid for so long in the first place.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toMatch(/scope still holds processes/);
   });
 
   it('DOES close the row when the scope is gone — the ordinary healthy ending', async () => {
@@ -167,12 +172,14 @@ describe('confined task exit recording (WI-37509)', () => {
   it('counts a payload that made its own sub-cgroups, via recursive pids.current', async () => {
     // `cgroup.procs` is flat, so a payload sitting only in a CHILD cgroup reads as
     // empty there; `pids.current` is recursive in cgroup v2 and still sees it.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitter } = await spawnConfined([], 3);
 
     emitter.emit('exit', null, 'SIGTERM');
     await flush();
 
     expect(L.closed).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("records the SCOPE cgroup, never the spawner's own cgroup", async () => {
@@ -188,16 +195,29 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(L.marked[0]!.cgroupPath).not.toContain('vte-spawn');
   });
 
-  it('CONTROL: the pre-fix rule closes the row in every one of these cases', () => {
-    // The permanent falsifiability control — the old implementation, verbatim in
-    // spirit: "the child exited, therefore the task ended". Kept here so the new
-    // predicate is proven DISCRIMINATING on every run, without ever mutating the
-    // shared tree (CLAUDE.md § proving a guard is falsifiable).
-    const legacyWouldClose = (_scopeProcs: number[] | null): boolean => true;
+  it('CALIBRATION: identical exit, opposite verdicts — the scope is what decides', async () => {
+    // The falsifiability check, run against the REAL code path rather than a stub.
+    // Both halves emit the SAME exit event on the SAME implementation; the only
+    // difference is what the scope holds. The pre-fix rule ("the child exited,
+    // therefore the task ended") cannot produce this split — it closes both — so a
+    // regression to it turns this test red rather than leaving it vacuously green.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    expect(legacyWouldClose([3204532, 3204609])).toBe(true); // ← the survivor case it got wrong
-    expect(legacyWouldClose(null)).toBe(true);
-    expect(legacyWouldClose([])).toBe(true);
+    const populated = await spawnConfined([3204532, 3204609, 3204726]);
+    populated.emitter.emit('exit', null, 'SIGTERM');
+    await flush();
+    const closedWhilePopulated = L.closed.length;
+
+    L.closed.length = 0;
+    const drained = await spawnConfined([]);
+    drained.emitter.emit('exit', null, 'SIGTERM');
+    await flush();
+    const closedWhenDrained = L.closed.length;
+
+    expect(closedWhilePopulated).toBe(0);
+    expect(closedWhenDrained).toBe(1);
+    expect(closedWhilePopulated).not.toBe(closedWhenDrained);
+    warn.mockRestore();
   });
 });
 
