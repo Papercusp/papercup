@@ -1362,3 +1362,92 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     }
   });
 });
+
+/**
+ * context-injection-retrieval-reach-and-visibility-2026-08-03 P-003 —
+ * COVERAGE-GATED DEGRADATION reaches the rendered block.
+ *
+ * `corpus-coverage-gate.test.ts` proves the DECISION in isolation. These cases
+ * prove the WIRING, which is the half a pure test cannot reach and the half that
+ * actually shipped broken before: the gate can be perfectly correct and still be
+ * invisible if injection never consults it, never renders its notice, or
+ * (measurably worse) suppresses when it should not.
+ *
+ * The fail-open case is asserted FIRST and deliberately: an unreadable gate must
+ * leave the block byte-identical to the pre-P-003 output. A coverage feature
+ * whose failure mode is "silently delete the pointer section" would be a worse
+ * defect than the silent confidence it was built to remove.
+ */
+describe('coverage-gated degradation reaches the block (P-003)', () => {
+  const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
+    block: null,
+    lines: [{ line: '- [work-item WI-6512] a pointer', handle: { ref: 'work-item:WI-6512' } }],
+    dropped: [],
+    embedderAvailable: true,
+    candidateCount: 4,
+    legs: legsWith(12),
+    retrievalDepth: 24,
+    ...over,
+  });
+
+  const run = async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    return await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why did the corpus leg return that',
+    });
+  };
+
+  it('renders unchanged when the gate cannot be evaluated (FAIL-OPEN)', async () => {
+    corpusIoResult = oneLine();
+    coverageReport = null; // ⇒ the stub throws ⇒ the gate lands in its catch
+    const block = await run();
+    expect(block).toContain('- [work-item WI-6512] a pointer');
+    expect(block).not.toContain('DEGRADED');
+  });
+
+  it('renders unchanged when coverage is healthy', async () => {
+    corpusIoResult = oneLine();
+    coverageReport = coverageOf('healthy');
+    const block = await run();
+    expect(block).toContain('- [work-item WI-6512] a pointer');
+    expect(block).not.toContain('DEGRADED');
+  });
+
+  it('marks the section — ABOVE the pointers — when coverage is degraded', async () => {
+    corpusIoResult = oneLine();
+    coverageReport = coverageOf('degraded', { coverage: 0.41, embeddedRows: 41_000 });
+    const block = await run();
+    expect(block).toContain('- [work-item WI-6512] a pointer');
+    expect(block).toContain('DEGRADED');
+    expect(block).toContain('41.0%');
+    // Order matters: this section sits at the END of the injected block and is
+    // the first thing a char budget truncates, so a trailing caveat can be cut
+    // away from the pointers it qualifies — leaving them reading as confident.
+    expect(block!.indexOf('DEGRADED')).toBeLessThan(block!.indexOf('WI-6512'));
+  });
+
+  it('SUPPRESSES the section when the index is unselective and lexical found nothing', async () => {
+    corpusIoResult = oneLine({ legs: legsWith(0) });
+    coverageReport = coverageOf('degraded', { coverage: 0.01, embeddedRows: 9 });
+    const block = await run();
+    // The pointers are gone AND so is the heading — a heading over an empty
+    // section would be its own small dishonesty.
+    expect(block).not.toContain('WI-6512');
+    expect(block).not.toContain(CORPUS_BLOCK_HEADING);
+    // The mem0 block is untouched: the gate governs the pointer section only.
+    expect(block).toContain('alpha');
+  });
+
+  it('does NOT suppress the same unselective index when lexical contributed', async () => {
+    // The control that makes the previous case meaningful. Identical coverage;
+    // only the lexical leg differs. A gate keyed on coverage alone would delete
+    // these pointers, which are sound BM25 matches.
+    corpusIoResult = oneLine({ legs: legsWith(7) });
+    coverageReport = coverageOf('degraded', { coverage: 0.01, embeddedRows: 9 });
+    const block = await run();
+    expect(block).toContain('- [work-item WI-6512] a pointer');
+    expect(block).toContain('DEGRADED');
+  });
+});

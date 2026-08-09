@@ -129,3 +129,33 @@ describe('getClaimTimePlanDecisions (agent-trap-guards-2026-07-26 P-003b)', () =
     expect(r).toBeNull();
   });
 });
+
+// EI-19963837641363759: plan_items:claim already knows the plan slug from its own
+// { plan, item } args — no work-item back-pointer to derive it from (a bare-lease
+// claim mints no work_item at all). This pins the direct `planSlug` path the fix added.
+describe('getClaimTimePlanDecisions — direct `planSlug` (EI-19963837641363759)', () => {
+  it('resolves decisions from `planSlug` alone, with no `workItem` at all', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({ content: PLAN_WITH_DECISIONS });
+    const r = await getClaimTimePlanDecisions({ planSlug: 'agent-trap-guards-2026-07-26' });
+    expect(r).not.toBeNull();
+    expect(r?.planSlug).toBe('agent-trap-guards-2026-07-26');
+    expect(r?.decisions.map((d) => d.id)).toEqual(['D-001', 'D-002']);
+    expect(mockGetPlanRow).toHaveBeenCalledWith('agent-trap-guards-2026-07-26', {});
+  });
+
+  it('returns null when `planSlug` is null/undefined and no `workItem` is given either', async () => {
+    mockGetPlanRow.mockClear();
+    const r1 = await getClaimTimePlanDecisions({ planSlug: null });
+    const r2 = await getClaimTimePlanDecisions({});
+    expect(r1).toBeNull();
+    expect(r2).toBeNull();
+    expect(mockGetPlanRow).not.toHaveBeenCalled();
+  });
+
+  it('`planSlug` wins over a `workItem` back-pointer when both are given', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({ content: PLAN_WITH_DECISIONS });
+    const r = await getClaimTimePlanDecisions({ planSlug: 'explicit-plan', workItem: workItemWithPlan('back-pointer-plan') });
+    expect(r?.planSlug).toBe('explicit-plan');
+    expect(mockGetPlanRow).toHaveBeenCalledWith('explicit-plan', {});
+  });
+});

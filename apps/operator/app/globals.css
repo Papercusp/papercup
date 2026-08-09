@@ -22822,7 +22822,20 @@ body:has(.operator-panel) {
   /* No letter-spacing — see .goal-proposal-label above. */
 }
 
-.goal-proposal-body summary {
+/* .goal-proposal-body-summary is the LazyDetails (Radix Collapsible)
+   trigger — a <button> by default, unlike the native <summary> it replaced
+   (perf-anti-patterns A6: <details> wrapping a component defers nothing,
+   it only hides via CSS — LazyDetails defers the mount). Reset the button
+   chrome the global `button` baseline (color/cursor/font only) leaves in
+   place, so it reads the same as the old <summary> did. */
+.goal-proposal-body-summary {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
   color: rgba(238,247,255,0.6);
   cursor: pointer;
   font-size: 11px;

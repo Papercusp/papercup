@@ -31,6 +31,7 @@ import { holderContextReader, resolveHolderAdvisory } from '../coordination/hold
 import { planItemRef } from '../../agent-goal-ref';
 import type { CellReader } from '../../cell-registry';
 import type { LivenessMode } from '../../plan-items/claims';
+import { getClaimTimePlanDecisions, renderPlanDecisionsNote } from '../../plan-decisions-claim-port';
 
 /**
  * P-027 / D-055 A5 — attach the blocking holder's goal to a plan-item claim
@@ -75,6 +76,30 @@ async function planItemConflictAdvisory(
   return holderContext ? { holderContext } : {};
 }
 
+/**
+ * EI-19963837641363759: `plan_items:claim` is the natural verb for claiming a
+ * PLAN ITEM — and the one an su reaches for right after `coord:orient
+ * { planItems }` fails to claim — yet it was the one claim surface the
+ * agent-trap-guards-2026-07-26 P-003b decisions brief never reached (it was
+ * wired at scheduler:get_next / work_items:claim / work_items:claim_next
+ * only). Unlike those three, we already KNOW the plan slug from the call
+ * args — no work-item back-pointer to derive it from, and none needed.
+ * Fail-soft (never throws): decoration on a successful claim, never a new way
+ * for the claim to fail.
+ */
+async function claimTimePlanDecisions(
+  planSlug: string,
+  harness: string | undefined,
+  workspaceId: string,
+): Promise<{ planDecisions?: unknown; planDecisionsNote?: string }> {
+  try {
+    const brief = await getClaimTimePlanDecisions({ planSlug, harness: harness ?? null, workspaceId });
+    return brief ? { planDecisions: brief.decisions, planDecisionsNote: renderPlanDecisionsNote(brief) } : {};
+  } catch {
+    return {};
+  }
+}
+
 interface ClaimSpecItem {
   plan: string;
   item: string;
@@ -96,7 +121,7 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'plan_items:claim',
   description:
-    'Take the live, heartbeat-leased grip on one OR many plan items — what you call when you actually START them. Refused per item if it is assigned to a different agent-name, or unassigned in a plan whose work-group you have not joined. Single: { plan, item }. Many same plan: { plan, itemIds:[…] }. Many heterogeneous: items:[{ plan, item, intent?, mode?, ttl_sec?, harness? }]. Returns { ok, results:[{ ok, plan, item, result (claim with claim_id + lease expiry), convertStatus?, workItem? }], counts } — correlate by { plan, item }; a refused/conflicted claim is that item\'s ok:false without failing the rest. Keep a claim alive with plan_items:heartbeat, drop it with plan_items:release.',
+    'Take the live, heartbeat-leased grip on one OR many plan items — what you call when you actually START them. Refused per item if it is assigned to a different agent-name, or unassigned in a plan whose work-group you have not joined. Single: { plan, item }. Many same plan: { plan, itemIds:[…] }. Many heterogeneous: items:[{ plan, item, intent?, mode?, ttl_sec?, harness? }]. Returns { ok, results:[{ ok, plan, item, result (claim with claim_id + lease expiry), convertStatus?, workItem?, planDecisions?, planDecisionsNote? }], counts } — correlate by { plan, item }; a refused/conflicted claim is that item\'s ok:false without failing the rest. A successful claim inlines the plan\'s current governing Decisions (planDecisions) — read them before building. Keep a claim alive with plan_items:heartbeat, drop it with plan_items:release.',
   guidance: {
     when: 'You are about to begin work on item(s) (yours via assignment, or pulled from the pool). Claim several at once via itemIds:[…] or items:[…].',
     notWhen: 'You only want to mark intent for later without starting — that is assignment, not a claim. Renewing an existing claim — that is plan_items:heartbeat.',
@@ -214,6 +239,7 @@ export default defineTool({
               result: { status: 'claimed', claim: conv.claim, mode: conv.mode, viaAssignment: conv.viaAssignment },
               convertStatus: conv.status,
               workItem: { id: conv.workItem.id, kind: conv.workItem.kind, harness: conv.workItem.harness ?? null },
+              ...(await claimTimePlanDecisions(it.plan, it.harness ?? args.harness, workspaceId)),
             };
           }
           return {
@@ -244,6 +270,7 @@ export default defineTool({
           item: it.item,
           result,
           ...(await planItemConflictAdvisory(result, it.plan, it.item, reader)),
+          ...(result.status === 'claimed' ? await claimTimePlanDecisions(it.plan, it.harness ?? args.harness, workspaceId) : {}),
         };
       },
       { keyOf: (it) => ({ plan: it.plan, item: it.item }) },

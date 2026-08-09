@@ -148,41 +148,167 @@ function str(value: unknown): string {
 }
 
 /**
- * Derive the recall query from the tool call. The tools worth reading are the
- * ones that signal INVESTIGATION — a command, a search pattern, a path — because
- * those are the moments where an agent is about to re-derive something it may
- * already know. A tool we have no sensible reading for yields '' and the call is
- * dropped before any embed (see the handler), which is why an unknown tool costs
- * nothing rather than embedding a blob of JSON.
+ * Why a derive can miss, and which of the two kinds it was. The distinction is
+ * the whole point (plan `codex-context-injection-parity-2026-08-09`, D-005 §3b):
+ * a caller that only learns "no query" cannot tell a vocabulary gap from a tool
+ * that genuinely carried no signal, and those need opposite responses.
  */
-export function deriveQuery(tool: string, input: unknown): string {
+export type DeriveMiss = 'unknown-tool' | 'no-signal';
+
+export interface DerivedQuery {
+  /** The recall query. Empty exactly when `miss` is non-null. */
+  query: string;
+  /** null = a real signal was derived. */
+  miss: DeriveMiss | null;
+}
+
+type ToolQuerySpec = {
+  /** Argument field names, in the order they contribute to the query. */
+  readonly fields: readonly string[];
+  /**
+   * Separator between field values. ⚠ PER-TOOL CONTRACT, NOT STYLE. Claude's
+   * `Bash` has always joined command+description with an em-dash and the
+   * pattern/path tools with a space; those strings are embedded, so changing a
+   * separator changes retrieval. D-003 proved claude equivalence across the
+   * seam cut-over — these preserve it exactly.
+   */
+  readonly join?: string;
+  /**
+   * `tool_input` is a raw non-JSON string rather than a JSON object. Codex's
+   * `apply_patch` / `exec` arrive as `custom_tool_call` with a freeform `input`
+   * (a patch body beginning `*** Begin Patch\n*** Update File: <path>`), which
+   * is dense recall signal but will never parse as JSON.
+   */
+  readonly freeform?: boolean;
+};
+
+/**
+ * THE SHARED TOOL VOCABULARY — ONE registry, every client, no per-client fork.
+ *
+ * D-001 invariant 6: this endpoint is client-agnostic BY CONTRACT. That is why
+ * this is a flat tool→fields map and NOT a switch on `client`: tool names are
+ * globally distinct across the three TUIs, so one lookup serves all of them and
+ * there is no client branch to drift.
+ *
+ * ── WHY THIS EXISTS (D-005) ──
+ * This map used to be a `switch` over Claude's four PascalCase tool names with
+ * `default: return ''`. Because the handler drops an empty derive BEFORE both
+ * the recall and the stats write, mid-turn context was not merely degraded for
+ * codex and omp — it was STRUCTURALLY IMPOSSIBLE, and not even recorded as a
+ * miss. Widening the vocabulary fixes today's clients; `DeriveMiss` (above) is
+ * what stops the next vocabulary drift from being silent again.
+ *
+ * ── PROVENANCE: MEASURED, NOT GUESSED ──
+ * Every name below was read off real sessions, never inferred from Claude's
+ * shape (the plan's standing rule — P-003 "no speculative event names").
+ *   • codex — 4,131 `function_call` / `custom_tool_call` records across 61
+ *     rollouts in ~/.codex/sessions: exec_command 3034 (cmd/workdir/
+ *     justification), write_stdin 539, apply_patch 336 (freeform), exec 145
+ *     (freeform), view_image 47 (path), wait 24, update_plan 3.
+ *   • omp — tool-call records in ~/.omp: read 1771, grep 443, find 402,
+ *     bash 181 (command), edit 168, search 116, write 68, ast_grep 14, glob 4;
+ *     field names confirmed against the shipped schemas in
+ *     @oh-my-pi/pi-coding-agent/src/{tools,commands}.
+ *   • claude — unchanged, and deliberately byte-identical in behaviour.
+ *
+ * ── DELIBERATE OMISSIONS (absence here is a decision, not an oversight) ──
+ *   • codex `write_stdin` (539 calls): `chars` is raw stdin typed at an
+ *     interactive process — routinely passwords and tokens. The derived query
+ *     is EMBEDDED and (flag permitting) persisted to memory_recall_query_text,
+ *     so admitting it would copy credentials into a second place for weak
+ *     signal. `detectPossibleSecrets` guards the text table but not the embed.
+ *   • codex `wait` / `list_mcp_resources`, omp `yield` / `submit_result` /
+ *     `report_finding` / `irc`: no investigation signal to carry.
+ * These are known tools with no fields, so they classify as 'no-signal' rather
+ * than 'unknown-tool' — the alarm must not read a deliberate omission as drift.
+ */
+export const TOOL_QUERY_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
+  // ── claude (PascalCase) — behaviour frozen by D-003's equivalence proof ──
+  // The description is the agent's own words for what it is doing — often a
+  // better recall signal than the command's flags.
+  Bash: { fields: ['command', 'description'], join: ' — ' },
+  Grep: { fields: ['pattern', 'path', 'glob'] },
+  Glob: { fields: ['pattern', 'path'] },
+  Read: { fields: ['file_path'] },
+
+  // ── codex (snake_case) ──
+  exec_command: { fields: ['cmd', 'workdir', 'justification'], join: ' — ' },
+  apply_patch: { fields: [], freeform: true },
+  exec: { fields: [], freeform: true },
+  view_image: { fields: ['path'] },
+  update_plan: { fields: ['plan'] },
+  wait: { fields: [] },
+  list_mcp_resources: { fields: [] },
+  write_stdin: { fields: [] }, // credential-shaped; see DELIBERATE OMISSIONS
+
+  // ── omp (lowercase) — `read`/`edit`/`write` key on `path`, not claude's
+  //    `file_path`, so both spellings are accepted rather than assumed ──
+  bash: { fields: ['command', 'description'], join: ' — ' },
+  read: { fields: ['path', 'file_path'] },
+  grep: { fields: ['pattern', 'path', 'glob'] },
+  glob: { fields: ['pattern', 'path'] },
+  find: { fields: ['pattern', 'path', 'glob'] },
+  search: { fields: ['pattern', 'path', 'query'] },
+  edit: { fields: ['path', 'file_path'] },
+  write: { fields: ['path', 'file_path'] },
+  ast_grep: { fields: ['pattern', 'path'] },
+  ast_edit: { fields: ['pattern', 'path'] },
+  yield: { fields: [] },
+  submit_result: { fields: [] },
+  report_finding: { fields: [] },
+};
+
+/**
+ * Derive the recall query from the tool call, and say WHY when there is none.
+ *
+ * The tools worth reading are the ones that signal INVESTIGATION — a command, a
+ * search pattern, a path — because those are the moments where an agent is
+ * about to re-derive something it may already know. A tool we have no sensible
+ * reading for yields '' and the call is dropped before any embed (see the
+ * handler), which is why an unknown tool costs nothing rather than embedding a
+ * blob of JSON.
+ */
+export function deriveQueryDetailed(tool: string, input: unknown): DerivedQuery {
+  const spec = TOOL_QUERY_VOCABULARY[tool];
+  // Not in the vocabulary at all. Either a client we have not mapped or a new
+  // tool on one we have — the case that must stay VISIBLE, because it is the
+  // one that silently zeroed codex and omp for the life of this endpoint.
+  if (!spec) return { query: '', miss: 'unknown-tool' };
+
+  const done = (text: string): DerivedQuery =>
+    text ? { query: text, miss: null } : { query: '', miss: 'no-signal' };
+
   // The hook clamps tool_input to a string before sending, so accept either the
   // structured object (unit tests, future callers) or that clamped JSON text.
   let io: Record<string, unknown>;
   if (typeof input === 'string') {
+    // A freeform tool never carries JSON; the raw body IS the signal.
+    if (spec.freeform) return done(input.trim());
     try {
       io = JSON.parse(input) as Record<string, unknown>;
     } catch {
-      // A clamped/truncated blob is still usable as raw query text.
-      return tool === 'Bash' || tool === 'Grep' || tool === 'Glob' || tool === 'Read' ? input.trim() : '';
+      // A clamped/truncated blob is still usable as raw query text — but only
+      // for a tool we recognise, so an unmapped tool cannot smuggle a JSON blob
+      // into the embedder.
+      return done(input.trim());
     }
   } else {
+    if (spec.freeform) return done(str(input));
     io = (input ?? {}) as Record<string, unknown>;
   }
-  switch (tool) {
-    case 'Bash':
-      // The description is the agent's own words for what it is doing — often a
-      // better recall signal than the command's flags.
-      return [str(io.command), str(io.description)].filter(Boolean).join(' — ');
-    case 'Grep':
-      return [str(io.pattern), str(io.path), str(io.glob)].filter(Boolean).join(' ');
-    case 'Glob':
-      return [str(io.pattern), str(io.path)].filter(Boolean).join(' ');
-    case 'Read':
-      return str(io.file_path);
-    default:
-      return '';
+
+  const parts: string[] = [];
+  for (const field of spec.fields) {
+    const value = str(io[field]);
+    if (value) parts.push(value);
   }
+  return done(parts.join(spec.join ?? ' '));
+}
+
+/** String-only view of {@link deriveQueryDetailed}, for callers that only need
+ *  the query. '' means "no signal", whatever the reason. */
+export function deriveQuery(tool: string, input: unknown): string {
+  return deriveQueryDetailed(tool, input).query;
 }
 
 /**
@@ -262,17 +388,39 @@ export interface BatchCall {
  *     better than any one of them alone.
  * Later calls come first: the batch's tail is the freshest intent.
  */
-export function deriveBatchQuery(calls: BatchCall[]): string {
+export interface DerivedBatch {
+  query: string;
+  /** Tool names absent from TOOL_QUERY_VOCABULARY — the drift signal. */
+  unknownTools: readonly string[];
+  /** Known tools that carried no signal — expected quiet, NOT drift. */
+  noSignalTools: readonly string[];
+}
+
+export function deriveBatchQueryDetailed(calls: BatchCall[]): DerivedBatch {
   const parts: string[] = [];
+  const unknown = new Set<string>();
+  const noSignal = new Set<string>();
   for (const call of [...calls].reverse()) {
-    const q = deriveQuery((call.tool ?? '').trim(), call.toolInput);
+    const tool = (call.tool ?? '').trim();
+    const { query: q, miss } = deriveQueryDetailed(tool, call.toolInput);
+    if (miss === 'unknown-tool') unknown.add(tool || '(empty)');
+    else if (miss === 'no-signal') noSignal.add(tool);
     if (!q) continue;
     const response = str(call.toolResponse);
     // An empty-looking result is signal, not noise — say so in the query.
     const barren = !response || /no matches|not found|no files found|^\s*$/i.test(response);
     parts.push(barren ? `${q} (no result)` : q);
   }
-  return parts.join(' · ');
+  return {
+    query: parts.join(' · '),
+    unknownTools: [...unknown],
+    noSignalTools: [...noSignal],
+  };
+}
+
+/** String-only view, for callers that only need the query. */
+export function deriveBatchQuery(calls: BatchCall[]): string {
+  return deriveBatchQueryDetailed(calls).query;
 }
 
 /**

@@ -163,9 +163,13 @@ vi.mock('@papercusp/sync', () => ({
 // OtherDetail is the Queue's own component (its behavior is covered by the
 // Queue's own suites) — stub it to a marker that echoes the hosted item id
 // and exposes the onResolved seam, mirroring InboxPane.test.tsx's stub.
+// The `.ask-choice-card` div is not decoration: DecisionCard measures THAT
+// element to decide whether the request text is clipped, so a stub without it
+// would silently exercise the "nothing overflows" branch forever.
 vi.mock('@/app/admin/plans/PlanOtherList', () => ({
   OtherDetail: ({ item, onResolved }: { item: { id: string }; onResolved: () => void }) => (
     <div data-testid="other-detail" data-item={item.id}>
+      <div className="ask-choice-card">request text</div>
       <button type="button" data-testid="stub-resolve" onClick={onResolved} />
     </div>
   ),
@@ -1025,6 +1029,64 @@ describe('SessionChatModal', () => {
       // Wrapper must CONTAIN the card, not sit beside it — a sibling would
       // leave the CSS matching nothing while this count still passed.
       for (const card of cards) expect(card.querySelector('[data-testid="other-detail"]')).toBeTruthy();
+    });
+
+    /* RECURRENCE GUARD for a bug this pass shipped and then caught by DRIVING
+       the control in the live shell rather than asserting it exists.
+
+       Expanding removes the clamp, so the next measurement legitimately reports
+       "fits" — which set `overflowing` false and UNMOUNTED the toggle, stranding
+       the card open with no way back. A live `check` asserting only that the
+       toggle EXISTS passed against a card in exactly that state, because the
+       toggle does exist... until you use it. jsdom has no layout, so scroll
+       geometry is stubbed here; what is under test is the state machine, which
+       is where the defect was. */
+    it('[owner 2026-08-09] the expand toggle survives its own click — expand must be reversible', async () => {
+      const proto = window.HTMLElement.prototype;
+      const scrollDesc = Object.getOwnPropertyDescriptor(proto, 'scrollHeight');
+      const clientDesc = Object.getOwnPropertyDescriptor(proto, 'clientHeight');
+      // Clipped only while COLLAPSED — exactly how the real CSS behaves, and the
+      // condition under which the bug appeared. Reporting a constant overflow
+      // would make this test pass against the broken code.
+      Object.defineProperty(proto, 'scrollHeight', {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.classList.contains('ask-choice-card') ? 500 : 0;
+        },
+      });
+      Object.defineProperty(proto, 'clientHeight', {
+        configurable: true,
+        get(this: HTMLElement) {
+          if (!this.classList.contains('ask-choice-card')) return 0;
+          return this.closest('.pc-chat-decisions__card')?.classList.contains('is-expanded')
+            ? 500
+            : 132;
+        },
+      });
+      try {
+        seedAttention([mkEscalation('esc-1')]);
+        mockFetchOnce(200, { sessions: [] });
+        render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+        await waitFor(() => expect(screen.getByTestId('decision-expand')).toBeTruthy());
+        expect(screen.getByTestId('decision-expand').textContent).toMatch(/show full request/i);
+
+        fireEvent.click(screen.getByTestId('decision-expand'));
+        // THE ASSERTION THAT FAILS ON THE BUG: still mounted, now offering the
+        // way back. Before the fix this query threw — the control vanished.
+        await waitFor(() =>
+          expect(screen.getByTestId('decision-expand').textContent).toMatch(/show less/i),
+        );
+        expect(screen.getByTestId('decision-expand').getAttribute('aria-expanded')).toBe('true');
+
+        fireEvent.click(screen.getByTestId('decision-expand'));
+        await waitFor(() =>
+          expect(screen.getByTestId('decision-expand').textContent).toMatch(/show full request/i),
+        );
+      } finally {
+        if (scrollDesc) Object.defineProperty(proto, 'scrollHeight', scrollDesc);
+        if (clientDesc) Object.defineProperty(proto, 'clientHeight', clientDesc);
+      }
     });
 
     it('answering the inline card (onResolved) refreshes the shared attention feed', async () => {

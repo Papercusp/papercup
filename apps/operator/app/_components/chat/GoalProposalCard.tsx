@@ -41,6 +41,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { AlertTriangle, Target } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
+import { LazyDetails } from '@/app/_components/LazyDetails';
 
 /** Mirrors `GOAL_RELATIONSHIP_KINDS` in agent-mcp's goals/propose tool. */
 export type GoalRelationshipKind =
@@ -384,8 +385,11 @@ export function GoalProposalCard({
       )}
 
       {body.trim() !== '' && (
-        <details className="goal-proposal-body">
-          <summary>What winning looks like</summary>
+        <LazyDetails
+          className="goal-proposal-body"
+          summaryClassName="goal-proposal-body-summary"
+          summary="What winning looks like"
+        >
           <textarea
             className="goal-proposal-input goal-proposal-textarea"
             data-testid="goal-proposal-body"
@@ -394,7 +398,7 @@ export function GoalProposalCard({
             rows={4}
             disabled={busy}
           />
-        </details>
+        </LazyDetails>
       )}
 
       {isNotAGoal ? (

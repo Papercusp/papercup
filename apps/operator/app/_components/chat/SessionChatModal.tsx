@@ -986,7 +986,15 @@ function DecisionCard({ item, onResolved }: { item: AttentionItem; onResolved: (
     // kept in JS: overflowing IS `scrollHeight > clientHeight`, so retuning the
     // `max-height` in chat-controls.css alone can never desync the toggle from
     // what is actually clipped.
+    //
+    // ⚠ MEASURE ONLY WHILE COLLAPSED. Expanding removes the clamp, so the very
+    // next measurement reports "fits" — which unmounted the toggle and stranded
+    // the card open with no way back. Caught by DRIVING the control live rather
+    // than asserting it exists: the `check` that only asserted presence passed
+    // against a card in exactly that broken state. `expanded` is therefore a
+    // real dependency, not an omission.
     const measure = () => {
+      if (expanded) return;
       const el = target();
       setOverflowing(!!el && el.scrollHeight > el.clientHeight + 4);
     };
@@ -998,7 +1006,7 @@ function DecisionCard({ item, onResolved }: { item: AttentionItem; onResolved: (
     const el = target();
     if (el) ro.observe(el);
     return () => ro.disconnect();
-  }, [item.id]);
+  }, [item.id, expanded]);
 
   return (
     <div className={`pc-chat-decisions__card${expanded ? ' is-expanded' : ''}`} ref={rootRef}>
@@ -1006,7 +1014,9 @@ function DecisionCard({ item, onResolved }: { item: AttentionItem; onResolved: (
           resets on selection change — same contract as OtherDetail's other
           hosts (the Queue's PlansClient, the HUD, PreviewPanel). */}
       <OtherDetail key={item.id} item={item} onResolved={onResolved} />
-      {overflowing ? (
+      {/* `expanded ||` is the other half of the strand fix above: once open, the
+          toggle is the ONLY way back, so it must survive its own success. */}
+      {expanded || overflowing ? (
         <button
           type="button"
           className="pc-chat-decisions__more"

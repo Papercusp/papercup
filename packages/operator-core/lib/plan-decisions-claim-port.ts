@@ -13,17 +13,22 @@
  * (./memory/claim-port), which attach at exactly the same seam for the same
  * reason.
  *
- * WIRED AT ALL THREE claim surfaces — `scheduler:get_next`,
- * `work_items:claim`, and `work_items:claim_next` (EI-19387745408924340, fixed
- * 2026-08-03). This header used to claim all three while the port was actually
- * wired at `scheduler:get_next` ONLY, which stayed false long enough to mislead
- * a plan written against it (false-premise-in-prescriptive-artifacts-2026-08-02
+ * WIRED AT FOUR claim surfaces — `scheduler:get_next`, `work_items:claim`,
+ * `work_items:claim_next`, and `plan_items:claim` (EI-19387745408924340, fixed
+ * 2026-08-03; `plan_items:claim` added EI-19963837641363759, fixed 2026-08-09).
+ * This header used to claim all three work-item surfaces while the port was
+ * actually wired at `scheduler:get_next` ONLY, which stayed false long enough
+ * to mislead a plan written against it (false-premise-in-prescriptive-artifacts-2026-08-02
  * P-001, whose item text asserted both surfaces inline the decisions brief).
- * The rendered `planDecisionsNote` text is shared verbatim across all three via
+ * `plan_items:claim` had the SAME gap for longer — it is the verb an su reaches
+ * for directly after `coord:orient { planItems }`, i.e. squarely on the path
+ * the persona recommends — and cost a real retracted finding (EI-19963837641363759).
+ * The rendered `planDecisionsNote` text is shared verbatim across all four via
  * `renderPlanDecisionsNote` below, so it cannot drift the way the WIRING itself
  * just had — see each call site for its own fail-soft join into that surface's
  * parallel hint batch (checkpoint / prior-work / lane-collision / premises for
- * `claim`; the memory recall port for `claim_next`).
+ * `claim`; the memory recall port for `claim_next`; nothing else for
+ * `plan_items:claim`, which has no equivalent hint batch).
  *
  * Fail-soft by contract, like those two ports: a lookup miss, an unresolved
  * plan slug, or a parse error degrades to `null` — this is decoration on a
@@ -93,23 +98,29 @@ const MAX_DECISIONS = 8;
 
 /**
  * Resolve the CURRENT structured Decisions (`### D-NNN` entries — see
- * `@papercusp/plan-parser`) for the plan the just-claimed work-item belongs
- * to. Returns `null` when: the item carries no plan_item back-pointer, the
- * plan slug doesn't resolve, or the plan has zero PARSED decisions (the
- * common case for most plans — must stay silent rather than noise every
- * claim). An informally-authored Decisions section (bare `- **D-NNN** ...`
- * bullets rather than the `### D-NNN` heading form) is NOT parsed here either
- * — same known limitation `plans:add-decision`'s id allocator already works
- * around for allocation; authoring decisions via `plans:add-decision` (rather
- * than hand-editing the plan body) keeps them in the structured, surfaced
- * form.
+ * `@papercusp/plan-parser`) for the plan the just-claimed work-item — or plan
+ * item — belongs to. Two ways to name the plan: pass `workItem` (the slug is
+ * derived from its plan_item back-pointer, as before) OR pass `planSlug`
+ * directly when the caller already knows it — e.g. `plan_items:claim`, whose
+ * args ARE `{ plan, item }`, so deriving it from a work-item would be a
+ * needless indirection through a record that may not even exist yet (a bare
+ * plan-item claim mints no work_item at all). `planSlug` wins when both are
+ * given. Returns `null` when: neither is resolvable, the plan slug doesn't
+ * resolve to a row, or the plan has zero PARSED decisions (the common case
+ * for most plans — must stay silent rather than noise every claim). An
+ * informally-authored Decisions section (bare `- **D-NNN** ...` bullets
+ * rather than the `### D-NNN` heading form) is NOT parsed here either — same
+ * known limitation `plans:add-decision`'s id allocator already works around
+ * for allocation; authoring decisions via `plans:add-decision` (rather than
+ * hand-editing the plan body) keeps them in the structured, surfaced form.
  */
 export async function getClaimTimePlanDecisions(opts: {
-  workItem: Pick<WorkItem, 'payload'>;
+  workItem?: Pick<WorkItem, 'payload'>;
+  planSlug?: string | null;
   harness?: string | null;
   workspaceId?: string | null;
 }): Promise<ClaimTimePlanDecisionsBrief | null> {
-  const planSlug = planSlugOfWorkItem(opts.workItem as WorkItem);
+  const planSlug = opts.planSlug ?? (opts.workItem ? planSlugOfWorkItem(opts.workItem as WorkItem) : null);
   if (!planSlug) return null;
   try {
     const row = await getPlanRow(planSlug, {

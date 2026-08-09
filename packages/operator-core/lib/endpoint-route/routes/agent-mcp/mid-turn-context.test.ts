@@ -36,6 +36,9 @@ vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u
 import routes, {
   deriveQuery,
   deriveBatchQuery,
+  deriveQueryDetailed,
+  deriveBatchQueryDetailed,
+  TOOL_QUERY_VOCABULARY,
   clampToBudget,
   splitLegQueries,
 } from './mid-turn-context';
@@ -467,5 +470,179 @@ describe('splitLegQueries — de-diluting the cosine query (P-044 / F-L, motivat
     expect(arg.queryContext.userText).not.toContain('apps/operator-vite/src');
     expect(arg.queryContext.userText).toContain('session history slow');
     expect(arg.queryContext.lexicalText).toContain('apps/operator-vite/src');
+  });
+});
+
+/**
+ * THE SHARED TOOL VOCABULARY (codex-context-injection-parity-2026-08-09, D-005).
+ *
+ * Before this, deriveQuery switched on Claude's four PascalCase names with
+ * `default: return ''`, and the handler drops an empty derive BEFORE both the
+ * recall and the stats write. So mid-turn context for codex and omp was not
+ * degraded — it was STRUCTURALLY IMPOSSIBLE, and not even recorded as a miss.
+ *
+ * Two properties are asserted here, and the second is the one that keeps this
+ * from silently rotting again:
+ *   1. every client's real vocabulary derives a query;
+ *   2. a miss says WHICH KIND it is — an unmapped tool (drift, actionable) vs a
+ *      known tool carrying no signal (expected quiet, not actionable).
+ *
+ * The tool names below are MEASURED, not invented: codex's from 4,131 tool-call
+ * records in ~/.codex/sessions, omp's from ~/.omp plus the shipped schemas in
+ * @oh-my-pi/pi-coding-agent. A test written against guessed names would pass
+ * against a guessed implementation and prove nothing.
+ */
+describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
+  describe('claude behaviour is unchanged (D-003 equivalence must survive)', () => {
+    // Claude is ~100% of current traffic, so a regression here is a net loss
+    // even if every new client works perfectly.
+    it('Bash still joins command and description with the em-dash separator', () => {
+      expect(deriveQuery('Bash', { command: 'rg foo', description: 'find foo' })).toBe(
+        'rg foo — find foo',
+      );
+    });
+    it('Grep/Glob/Read keep their exact field order and space separator', () => {
+      expect(deriveQuery('Grep', { pattern: 'p', path: 'a/b', glob: '*.ts' })).toBe('p a/b *.ts');
+      expect(deriveQuery('Glob', { pattern: 'p', path: 'a/b' })).toBe('p a/b');
+      expect(deriveQuery('Read', { file_path: '/x/y.ts' })).toBe('/x/y.ts');
+    });
+  });
+
+  describe('codex (snake_case)', () => {
+    it('derives from exec_command — the dominant codex tool (3034/4131 calls)', () => {
+      const q = deriveQuery('exec_command', {
+        cmd: "rg --files -g '*.prisma'",
+        workdir: '/home/x/Restart',
+      });
+      expect(q).toContain("rg --files -g '*.prisma'");
+      expect(q).toContain('/home/x/Restart');
+    });
+    it('derives from apply_patch, which arrives as a FREEFORM non-JSON string', () => {
+      // custom_tool_call: `input` is a raw patch body, never JSON. Under the old
+      // JSON-parse-then-whitelist path this returned '' twice over.
+      const patch = '*** Begin Patch\n*** Update File: /home/x/prisma/schema.prisma\n@@\n model Payment {';
+      const { query, miss } = deriveQueryDetailed('apply_patch', patch);
+      expect(miss).toBeNull();
+      expect(query).toContain('/home/x/prisma/schema.prisma');
+    });
+    it('derives from view_image path', () => {
+      expect(deriveQuery('view_image', { path: '/tmp/shot.png', detail: 'high' })).toBe(
+        '/tmp/shot.png',
+      );
+    });
+  });
+
+  describe('omp (lowercase)', () => {
+    it('derives from bash command', () => {
+      expect(deriveQuery('bash', { command: 'pwd && git status' })).toContain('pwd && git status');
+    });
+    it("accepts omp's `path` where claude's Read uses `file_path`", () => {
+      // Not an assumption: omp's read/edit/write key on `path`. Both spellings
+      // are accepted so neither client depends on the other's naming.
+      expect(deriveQuery('read', { path: '/a/b.ts' })).toBe('/a/b.ts');
+      expect(deriveQuery('read', { file_path: '/a/b.ts' })).toBe('/a/b.ts');
+    });
+    it('derives from grep pattern/path/glob', () => {
+      expect(deriveQuery('grep', { pattern: 'needle', path: 'src' })).toBe('needle src');
+    });
+  });
+
+  describe('a miss says WHICH KIND — the D-005 §3b observability requirement', () => {
+    it("classifies an unmapped tool as 'unknown-tool' (drift — actionable)", () => {
+      expect(deriveQueryDetailed('SomeFutureTool', { x: 1 }).miss).toBe('unknown-tool');
+      expect(deriveQueryDetailed('', {}).miss).toBe('unknown-tool');
+    });
+    it("classifies a known tool with no signal as 'no-signal' (expected quiet)", () => {
+      // `wait` is deliberately in the vocabulary WITH no fields, precisely so it
+      // reads as expected quiet rather than as vocabulary drift.
+      expect(deriveQueryDetailed('wait', { cell_id: '4' }).miss).toBe('no-signal');
+      expect(deriveQueryDetailed('Bash', { command: '' }).miss).toBe('no-signal');
+    });
+    it('never reports a miss and a query at the same time', () => {
+      for (const [tool, input] of [
+        ['Bash', { command: 'x' }],
+        ['exec_command', { cmd: 'y' }],
+        ['wait', {}],
+        ['NotATool', {}],
+      ] as const) {
+        const { query, miss } = deriveQueryDetailed(tool, input);
+        expect(Boolean(query)).toBe(miss === null);
+      }
+    });
+    it('an unmapped tool cannot smuggle a raw blob into the embedder', () => {
+      // The old parse-failure fallback was whitelisted to claude's four names.
+      // The widened one must stay whitelisted to the vocabulary, or any unknown
+      // tool's clamped JSON becomes an embedded query.
+      expect(deriveQuery('NotATool', 'a raw unparseable blob')).toBe('');
+    });
+  });
+
+  describe('deliberate omissions are decisions, not gaps', () => {
+    it('write_stdin derives nothing — its `chars` is raw typed stdin (credentials)', () => {
+      const { query, miss } = deriveQueryDetailed('write_stdin', {
+        chars: 'hunter2\n',
+        session_id: '26614',
+      });
+      expect(query).toBe('');
+      // Known-but-omitted, NOT unknown: the alarm must not read this as drift.
+      expect(miss).toBe('no-signal');
+    });
+  });
+
+  describe('batch derive reports both miss kinds', () => {
+    it('separates unknown tools from known-but-quiet ones', () => {
+      const { query, unknownTools, noSignalTools } = deriveBatchQueryDetailed([
+        { tool: 'exec_command', toolInput: { cmd: 'ls' }, toolResponse: 'a.ts' },
+        { tool: 'wait', toolInput: { cell_id: '1' }, toolResponse: '' },
+        { tool: 'MysteryTool', toolInput: {}, toolResponse: '' },
+      ]);
+      expect(query).toContain('ls');
+      expect(unknownTools).toEqual(['MysteryTool']);
+      expect(noSignalTools).toEqual(['wait']);
+    });
+    it('deriveBatchQuery stays a pure string view of the detailed form', () => {
+      const calls = [{ tool: 'bash', toolInput: { command: 'echo hi' }, toolResponse: 'hi' }];
+      expect(deriveBatchQuery(calls)).toBe(deriveBatchQueryDetailed(calls).query);
+    });
+  });
+
+  /**
+   * CONTROLS. These fail if the widening is reverted to the claude-only switch —
+   * without them the suite above could pass against an implementation that had
+   * quietly lost every non-claude client, which is exactly the failure that went
+   * unnoticed for the life of this endpoint.
+   */
+  describe('controls — these fail if the vocabulary narrows back to claude', () => {
+    it('carries entries for all THREE clients, not just claude', () => {
+      expect(TOOL_QUERY_VOCABULARY.Bash).toBeDefined(); // claude
+      expect(TOOL_QUERY_VOCABULARY.exec_command).toBeDefined(); // codex
+      expect(TOOL_QUERY_VOCABULARY.bash).toBeDefined(); // omp
+    });
+    it('every codex/omp signal tool actually derives a non-empty query', () => {
+      const cases: Array<[string, Record<string, unknown>]> = [
+        ['exec_command', { cmd: 'ls -la' }],
+        ['view_image', { path: '/tmp/a.png' }],
+        ['update_plan', { plan: 'step one' }],
+        ['bash', { command: 'ls' }],
+        ['read', { path: '/a.ts' }],
+        ['grep', { pattern: 'x' }],
+        ['glob', { pattern: '*.ts' }],
+        ['find', { pattern: 'x' }],
+        ['edit', { path: '/a.ts' }],
+        ['write', { path: '/a.ts' }],
+      ];
+      for (const [tool, input] of cases) {
+        expect(deriveQuery(tool, input), `${tool} must derive a query`).not.toBe('');
+      }
+    });
+    it('a claude-only vocabulary would fail this suite', () => {
+      // The explicit inverse of the pre-D-005 behaviour: each of these returned
+      // '' before the widening.
+      const preD005 = ['Bash', 'Grep', 'Glob', 'Read'];
+      for (const tool of ['exec_command', 'apply_patch', 'bash', 'read']) {
+        expect(preD005).not.toContain(tool);
+        expect(TOOL_QUERY_VOCABULARY[tool]).toBeDefined();
+      }
+    });
   });
 });

@@ -3183,11 +3183,12 @@ test('[EI-18791887279744938 defect B] the zero-reachable-egress-proxy condition 
 
   await pin('A');
   const midStats = (await (await ask('/stats')).json()) as {
-    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean };
+    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean; configured: boolean };
   };
   assert.equal(midStats.egressProxyHealth?.totalProxyEntries, 2, 'both accounts contribute a proxy entry');
   assert.equal(midStats.egressProxyHealth?.reachableProxyEntries, 1, 'B is still reachable — only A has failed so far');
   assert.equal(midStats.egressProxyHealth?.allDown, false, 'not every proxy is down yet');
+  assert.equal(midStats.egressProxyHealth?.configured, true, 'two real proxy entries exist — this pool IS configured');
   assert.ok(
     !logs.some((l) => l.msg.includes('EGRESS ALARM')),
     'no alarm yet — a single dead proxy with a healthy sibling is not the zero-reachable-proxy condition',
@@ -3195,12 +3196,49 @@ test('[EI-18791887279744938 defect B] the zero-reachable-egress-proxy condition 
 
   await pin('B');
   const finalStats = (await (await ask('/stats')).json()) as {
-    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean };
+    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean; configured: boolean };
   };
   assert.equal(finalStats.egressProxyHealth?.reachableProxyEntries, 0, 'both proxy entries are now cooled');
   assert.equal(finalStats.egressProxyHealth?.allDown, true, '/stats surfaces the zero-reachable-proxy condition');
+  assert.equal(finalStats.egressProxyHealth?.configured, true, 'still configured — the pool did not lose its entries, they are just down');
   const alarm = logs.find((l) => l.level === 'error' && l.msg.includes('EGRESS ALARM'));
   assert.ok(alarm, `expected an error-level EGRESS ALARM log once every proxy went down; got:\n${logs.map((l) => `${l.level}: ${l.msg}`).join('\n')}`);
+  resetGovernorRegistry();
+}, 20_000);
+
+test('[EI-19962845612125031] a zero-proxy-entry pool reports configured:false, not a healthy-looking allDown:false', async () => {
+  // No account in this pool has a proxyUrl at all — the "no proxy egress configured" condition, distinct
+  // from "every proxy entry is currently down". Pre-fix, both conditions rendered as bare allDown:false,
+  // making "no proxy path exists" indistinguishable from "the proxy path is healthy".
+  resetGovernorRegistry();
+  const fetchImpl = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+  const acctA: ActiveAccount = { accountId: 'A', token: async () => 'A-tok' }; // no `egress` at all
+  const pool: AccountPool = {
+    active: () => acctA,
+    onExhausted: () => null,
+    select: (id) => (id === 'A' ? acctA : null),
+    entries: () => [acctA],
+  };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    maxQueueWaitMs: 2000,
+    log: () => {},
+  });
+  port = await gw.listen(0);
+
+  const stats = (await (await ask('/stats')).json()) as {
+    egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean; configured: boolean };
+  };
+  assert.equal(stats.egressProxyHealth?.totalProxyEntries, 0, 'no account in this pool configures a proxy egress');
+  assert.equal(stats.egressProxyHealth?.allDown, false, 'allDown is vacuously false — there is no proxy PATH to be down');
+  assert.equal(
+    stats.egressProxyHealth?.configured,
+    false,
+    'configured must be false here — a bare allDown:false alone is indistinguishable from a healthy pool',
+  );
   resetGovernorRegistry();
 }, 20_000);
 

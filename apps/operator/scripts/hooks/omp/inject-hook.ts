@@ -205,9 +205,19 @@ export function runDispatcher(
       // delay omp's exit.
       killTimer.unref?.();
 
-      let out = '';
+      // Accumulate BYTES, decode once at the end. `out += String(chunk)` splits a
+      // multi-byte UTF-8 character across two 'data' events into replacement
+      // chars — silent corruption, no error. That is not hypothetical here: the
+      // payload this hook injects is dense with non-ASCII (⚠ ⛔ • → ⟦ ⟧), so a
+      // chunk boundary landing mid-character garbles injected context.
+      // Deliberately NOT routed through operator-core's collectChildOutput():
+      // this hook is loaded IN-PROCESS by omp under bun and imports node
+      // builtins only (see the header) — a cross-package import would trade a
+      // decoding bug for a hook that may not resolve at all. `chunks.push(...)`
+      // is byte-exact and is the shape child-output-scan.ts accepts by design.
+      const chunks: Buffer[] = [];
       child.stdout.on('data', chunk => {
-        out += String(chunk);
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       });
       child.stdout.on('error', () => finish(null));
       child.on('error', () => {
@@ -219,6 +229,7 @@ export function runDispatcher(
         // Non-zero is not an error worth surfacing — it is the dispatcher's own
         // fail-silent path reporting that it produced nothing.
         if (code !== 0) return finish(null);
+        const out = Buffer.concat(chunks).toString('utf8');
         finish(out.trim() ? out : null);
       });
 
