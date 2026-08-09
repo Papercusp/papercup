@@ -94,6 +94,7 @@ import {
 } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
 import { decodeManifest, encodeManifest, type SeedManifest, type SeedStoreEntry } from '@papercusp/seed-bundle';
 import { assertSeedNotDegraded } from './seed-degradation-guard.js';
+import { judgeHolderBootInvariant } from './seed-holder-boot-invariant.js';
 import { stampOpHlc } from '@papercusp/operator-core/lib/sync/hyperbee/hlc-stamp';
 import { backfillLocalState, type BackfillResult } from '@papercusp/operator-core/lib/sync/hyperbee/backfill-local-state';
 import { getHiveEpoch } from '@papercusp/operator-core/lib/sync/hyperbee/hive-epoch-state';
@@ -520,23 +521,27 @@ export async function openSourceStoreForCut(inp: {
         warn,
       });
       if (found.kind !== 'holder') {
-        blocked =
-          `this box's operator holds the corestore, so only IT can append the snapshot — but no ` +
-          `operator process here reports having booted ${inp.workspaceId}::${inp.hive} (probed ports ` +
-          `${found.probed.length ? found.probed.join(', ') : 'none found'}; answered ` +
-          `${found.answered.length ? found.answered.join(', ') : 'none'})`;
-        // A sibling that is SERVING but 404s this one path is running a build older than
-        // the route (the Hono host has no file-watch, so a long-lived holder keeps 404ing
-        // until it restarts). Say so explicitly: without this the holder is reported as a
-        // port that merely "did not answer", indistinguishable from a dead socket, and
-        // every remedy below is the wrong one. See LiveHeadSnapshotNoHolder.staleBuild
-        // for the measured incident (P-014 / WI-10773).
+        // P-015 / D-025. `sourceWritable === false` is set ONLY on a corestore-locked error, so
+        // the lock is PROVEN held here. Judge the invariant explicitly rather than describing the
+        // symptom: "no operator reports having booted it" reads as *nobody holds this hive*, which
+        // points at the quiesce remedy — a fleet-affecting outage — for what is usually an
+        // inconsistent in-process registry.
+        const invariant = judgeHolderBootInvariant({
+          storeLocked: true,
+          holderFound: false,
+          answered: found.answered,
+          probed: found.probed,
+          staleBuild: found.staleBuild,
+        });
+        blocked = `${invariant.message} (hive ${inp.workspaceId}::${inp.hive})`;
+        // A sibling that is SERVING but 404s this one path is running a build older than the
+        // route (the Hono host has no file-watch, so a long-lived holder keeps 404ing until it
+        // restarts) — the competing explanation for the same symptom, and the one whose remedy
+        // differs. judgeHolderBootInvariant already names staleBuild in both of its
+        // lock-held branches; this adds the specific route so the 404 is diagnosable.
+        // See LiveHeadSnapshotNoHolder.staleBuild for the measured incident (P-014 / WI-10773).
         if (found.staleBuild.length) {
-          blocked +=
-            `. ⚠ port(s) ${found.staleBuild.join(', ')} ARE alive and serving but returned 404 for ` +
-            `${HEAD_SNAPSHOT_PATH} — that build PREDATES this route, so such a process cannot answer ` +
-            `the probe even while it holds the hive. If one of them is the holder, RESTART it onto ` +
-            `current code and re-run; nothing else here will help`;
+          blocked += ` (the 404 is on ${HEAD_SNAPSHOT_PATH})`;
         }
       }
     }
@@ -616,11 +621,18 @@ export async function openSourceStoreForCut(inp: {
       // Refuse rather than degrade. P-014 established this direction and D-012 explains
       // why: a silently-full "sparse" cut is indistinguishable from a working one until
       // someone measures the shipped installer, which took three weeks last time.
+      // P-015 / D-025 again — same invariant, second site. We are inside `!sourceWritable`, so
+      // the lock is proven held here too, and a bare "nobody reports having booted it" would
+      // steer to the outage remedy for what is usually a registry inconsistency.
       const why =
         outcome.kind === 'no-holder'
-          ? `no operator process on this box reports having booted it (probed ports ${
-              outcome.probed.length ? outcome.probed.join(', ') : 'none found'
-            }; answered ${outcome.answered.length ? outcome.answered.join(', ') : 'none'})`
+          ? judgeHolderBootInvariant({
+              storeLocked: true,
+              holderFound: false,
+              answered: outcome.answered,
+              probed: outcome.probed,
+              staleBuild: outcome.staleBuild,
+            }).message
           : `the operator on port ${outcome.port} could not produce it: ${outcome.error}`;
       throw new Error(
         `[cut-seed] --sparse needs a fresh head snapshot at the own-log tail. This box's operator ` +

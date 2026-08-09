@@ -265,6 +265,32 @@ describe('<TasksRosterPanel>', () => {
     expect(screen.getByTestId('task-scanned-41208')).toBeTruthy();
   });
 
+  // P-023 — the kill control's placement is the seam property restated as an action.
+  // A LEDGER row has an identity we can address (`taskId` -> cgroup scope, or a pid
+  // re-verified against the identity the row recorded). A SCANNED row does not: the
+  // only handle it offers is a pid or a command NAME, and signalling by name is what
+  // has twice taken out the owner's live desktop on this box. So the control follows
+  // provenance, not visibility.
+  it('offers kill on enrolled rows and NEVER on a scanned-only process', () => {
+    H.payload = payload({
+      liveProcesses: [
+        { pid: 41208, cmdline: 'node /x/bg.ts', cgroupPath: '/c', owned: false },
+      ],
+    });
+    render(<TasksRosterPanel active />);
+    expect(screen.getByTestId('task-kill-t1')).toBeTruthy();
+    expect(screen.getByTestId('task-scanned-41208')).toBeTruthy();
+    expect(screen.queryByTestId('task-kill-41208')).toBeNull();
+  });
+
+  it('shows a DISABLED kill on a ledger row that is not ours to signal', () => {
+    H.payload = payload({ rows: [row({ taskId: 't9', state: 'stranded' })] });
+    render(<TasksRosterPanel active />);
+    const btn = screen.getByTestId('task-kill-disabled-t9') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toContain('stranded');
+  });
+
   it('raises the unaccounted alarm only when the scan reports groups', () => {
     render(<TasksRosterPanel active />);
     expect(screen.queryByTestId('tasks-unaccounted')).toBeNull();

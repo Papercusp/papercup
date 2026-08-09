@@ -661,9 +661,13 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
         (e: unknown) => e,
       )) as Error;
       expect(err.message).toMatch(/--sparse requires a fresh head snapshot/);
-      expect(err.message).toMatch(/no operator process here reports having booted/);
-      // Names the ports it looked at, so "nobody has it" is diagnosable rather than bare.
-      expect(err.message).toMatch(/probed ports 3070, 3170/);
+      // P-015 / D-025: the lock is PROVEN held here (openStore threw corestore-locked), so the
+      // refusal must name the inconsistency rather than report an absence of holders — the
+      // misreading that points at the quiesce-the-operator outage.
+      expect(err.message).toMatch(/D-025 INVARIANT VIOLATED — holder-without-boot/);
+      expect(err.message).toMatch(/do NOT quiesce the operator/i);
+      // Names the ports it looked at, so the verdict is diagnosable rather than bare.
+      expect(err.message).toMatch(/3070 of probed 3070, 3170/);
       expect(ran).toEqual([]);
     });
 

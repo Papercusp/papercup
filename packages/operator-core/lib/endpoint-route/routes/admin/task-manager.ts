@@ -3,6 +3,7 @@ import { isTaskManagerEnabled } from '../../../task-manager/enabled';
 import { getTaskInventory, disabledInventory } from '../../../task-manager/inventory';
 import { killTask } from '../../../task-manager/control';
 import { notifySyncInvalidate } from '../../../sync-sse';
+import { requireAllowedOriginOr403 } from '../../cors';
 
 /**
  * Admin task inventory — the NON-UI read surface for the Task Manager
@@ -60,14 +61,15 @@ const inventory = defineTool({
  * dropdown and the full page — call exactly this, through one shared component, so
  * there is a single set of refusal semantics rather than two that drift.
  *
- * `auth: 'loopback'` and not the VT gate above, deliberately and for two reasons.
- * (1) It is the posture every other destructive UI verb here already uses (harness
- * pause/stop, external-bench delete), because it rejects a non-loopback host at the
- * edge while requiring no principal token. (2) A bare `fetch` from the desktop webview
- * does not ride the sys:http IPC bridge that injects the loopback-superuser bearer, so
- * it resolves `unverified-loopback` — under the VT gate the button would 403 on the one
- * surface the owner asked for it on (EI-338, the same trap that moved the READ off this
- * route in WI-6475).
+ * AUTH is VTL + a CSRF backstop, NOT the VT gate its sibling GET uses, and not the
+ * bare `auth: 'loopback'` either. Same shape as every other desktop-callable admin
+ * write here (`/admin/coord/:verb`, `/admin/mode/:verb`, `/admin/coord-inbox-reply`),
+ * for the same two reasons: a bare `fetch` from the packaged desktop webview carries no
+ * cookie or bearer and resolves `unverified-loopback`, so under VT the button would 403
+ * on the one surface the owner asked for it (EI-338 — the trap that moved the READ off
+ * this route in WI-6475); and `requireAllowedOriginOr403` then refuses a cross-origin
+ * browser POST, which plain `auth: 'loopback'` would have admitted from any page on
+ * this box.
  *
  * The reply is `killTask`'s ControlOutcome VERBATIM, including `error` + `detail`, and
  * always with HTTP 200 for a well-formed request. A refusal is a RESULT here, not a
@@ -79,9 +81,16 @@ const inventory = defineTool({
 const kill = defineTool({
   method: 'POST',
   path: '/admin/tasks/kill',
-  auth: 'loopback',
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   timeoutSec: 30,
   async handler(req): Promise<Response> {
+    // Same CSRF backstop as admin/mode.ts: a browser cross-origin POST is refused; the
+    // desktop webview's allowed origins pass. This is what buys back the safety that
+    // widening past VT gives up — and it runs BEFORE the flag read, so a cross-origin
+    // caller cannot even probe whether the subsystem is on.
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
+
     if (!(await isTaskManagerEnabled('admin:task-manager:kill'))) {
       return Response.json({ ok: false, error: 'disabled', detail: 'task manager is switched off' }, { status: 409 });
     }

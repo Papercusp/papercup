@@ -198,6 +198,15 @@ const RULES: ReadonlyArray<{
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).
       { method: 'GET',  path: '/admin/inference-gateway/stats', auth: VTL },
+      // The Task Manager's kill control (task-manager-no-escape-2026-07-27
+      // P-023/P-024) — mounted in BOTH the AdvShell dropdown and the full page,
+      // both of which post from that same cookie-less loopback webview, so VT
+      // would 403 exactly where the owner asked for the control. It is a
+      // DESTRUCTIVE route, so it carries requireAllowedOriginOr403 like its
+      // /admin/mode/:verb sibling, and its payload is a `taskId` and nothing
+      // else — there is no pid, name or pattern form. See the doc-comment in
+      // admin/task-manager.ts.
+      { method: 'POST', path: '/admin/tasks/kill', auth: VTL },
       // WI-6486 — same EI-338 cookie-less desktop-webview path, found by driving
       // the HUD in the Tauri shell: the conversation pane 403-blanked because
       // `sessions:list` (the owner→session lookup behind ?hudsession=) proxies

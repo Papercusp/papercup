@@ -1160,6 +1160,47 @@ log "origin health confirmed: apiHealth=200 rootHtml=200 (pid=$BRIDGE_PID)"
 
 log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT display=$VERIFY_TAURI_DISPLAY"
 
+# EI-19930573774744721: every check above (bridge PID alive, origin health 200)
+# is silent about WHICH harness slug this instance actually booted into — and
+# it boots into whatever slug was last persisted (shared DB/workspace unless
+# VERIFY_TAURI_ISOLATED_DB=1), including a peer's disposable throwaway pot with
+# zero work items. A "verify at scale" run landing there looks identical to a
+# real one: DOM well-formed, health checks green, node/edge counts just happen
+# to be zero — only visible to an author who thought to add a floor assertion
+# downstream. Print the booted slug + its work-item count here so it is always
+# visible in this log instead. Best-effort diagnostic only — never fails the
+# boot (every step below is guarded / `|| true`'d).
+BOOTED_SLUG_JSON="$(tauri-agent-tools eval --pid "$BRIDGE_PID" "
+  (function () {
+    try {
+      var u = new URL(location.href);
+      return JSON.stringify({ slug: u.searchParams.get('slug') || '', ws: u.searchParams.get('ws') || '' });
+    } catch (e) {
+      return JSON.stringify({ slug: '', ws: '', error: String(e) });
+    }
+  })()
+" 2>/dev/null)" || BOOTED_SLUG_JSON=""
+BOOTED_SLUG="$(printf '%s' "$BOOTED_SLUG_JSON" | sed -n 's/.*"slug":"\([^"]*\)".*/\1/p')"
+BOOTED_WS="$(printf '%s' "$BOOTED_SLUG_JSON" | sed -n 's/.*"ws":"\([^"]*\)".*/\1/p')"
+if [ -n "$BOOTED_SLUG" ] && [[ "$BOOTED_SLUG" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  BOOTED_WI_COUNT="unknown"
+  if [ -n "${SIDECAR_ADMIN_URL:-}" ]; then
+    if [ -n "$BOOTED_WS" ] && [[ "$BOOTED_WS" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      BOOTED_WI_COUNT="$(psql "$SIDECAR_ADMIN_URL" -tAc \
+        "SELECT count(*) FROM harness_shared.work_items WHERE harness_slug = '${BOOTED_SLUG}' AND workspace_id = '${BOOTED_WS}'" \
+        2>/dev/null | tr -d '[:space:]')"
+    else
+      BOOTED_WI_COUNT="$(psql "$SIDECAR_ADMIN_URL" -tAc \
+        "SELECT count(*) FROM harness_shared.work_items WHERE harness_slug = '${BOOTED_SLUG}'" \
+        2>/dev/null | tr -d '[:space:]')"
+    fi
+    [ -n "$BOOTED_WI_COUNT" ] || BOOTED_WI_COUNT="unknown"
+  fi
+  log "booted slug=${BOOTED_SLUG}${BOOTED_WS:+ ws=$BOOTED_WS} work_items=${BOOTED_WI_COUNT} — if this is a \"verify at scale\" run, make sure your assertions have a floor (EI-19930573774744721)"
+else
+  log "booted slug=<undetermined from URL> — this instance may have landed on an arbitrary last-persisted pot; a \"verify at scale\" run should pin/check the slug explicitly (EI-19930573774744721)"
+fi
+
 # EI-10387: the DB/workspace warning is now CONDITIONAL — VERIFY_TAURI_ISOLATED_DB=1
 # genuinely isolates them (verified above against the sidecar's own /proc/<pid>/environ,
 # not just asserted here), so print an affirming line instead of the scary banner.

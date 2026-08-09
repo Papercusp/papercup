@@ -646,6 +646,90 @@ describe('validateClaimSpec — broad-kind-disjunct footgun advisory (EI-1869903
   });
 });
 
+describe('validateClaimSpec — missing severity_rank on an issue-family spec advisory (WI-36743)', () => {
+  const specWith = (filter: unknown, terms: { expr: string; dir: 'asc' | 'desc' }[]): unknown => ({
+    specVersion: '1.0',
+    specId: 'severity-rank-test',
+    revision: 1,
+    view: { filter },
+    rank: { mode: 'lexicographic', terms },
+  });
+
+  it('warns when a bug-scoped spec ranks only on priority/age (the live nonp2p-bug-drain shape)', () => {
+    const r = validateClaimSpec(
+      specWith({ field: 'kind', op: 'in', value: ['bug'] }, [
+        { expr: 'priority', dir: 'asc' },
+        { expr: 'age', dir: 'desc' },
+      ]),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('WI-36743'))).toBe(true);
+    expect(r.warnings.some((w) => w.includes('severity_rank'))).toBe(true);
+  });
+
+  it('does NOT warn once "severity_rank" is present anywhere in rank.terms', () => {
+    const r = validateClaimSpec(
+      specWith({ field: 'kind', op: 'in', value: ['bug', 'change', 'task'] }, [
+        { expr: 'severity_rank', dir: 'desc' },
+        { expr: 'priority', dir: 'asc' },
+        { expr: 'age', dir: 'desc' },
+      ]),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('WI-36743'))).toBe(false);
+  });
+
+  it('does NOT warn when the filter has no positive "kind" selector (ambiguous family)', () => {
+    const r = validateClaimSpec(specWith({ field: 'priority', op: '>=', value: 1 }, [{ expr: 'age', dir: 'asc' }]));
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('WI-36743'))).toBe(false);
+  });
+
+  it('does NOT warn when "kind" only targets the feature family (severity is structurally absent there)', () => {
+    const r = validateClaimSpec(
+      specWith({ field: 'kind', op: '=', value: 'feature' }, [{ expr: 'priority', dir: 'desc' }]),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('WI-36743'))).toBe(false);
+  });
+
+  it('does NOT warn when the filter has no filter at all (mixed pool, too ambiguous to advise)', () => {
+    const r = validateClaimSpec(specWith(undefined, [{ expr: 'age', dir: 'asc' }]));
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('WI-36743'))).toBe(false);
+  });
+
+  it('does NOT warn when "kind" is only excluded via "not" (a negated selector, not a positive one)', () => {
+    const r = validateClaimSpec(
+      specWith({ not: { field: 'kind', op: 'in', value: ['bug'] } }, [{ expr: 'age', dir: 'asc' }]),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('WI-36743'))).toBe(false);
+  });
+
+  it('finds "kind" nested inside "any"/"all" combinators, not just at the top level', () => {
+    const r = validateClaimSpec(
+      specWith(
+        {
+          all: [
+            { field: 'risk_tier', op: '<=', value: 2 },
+            { any: [{ field: 'kind', op: 'in', value: ['change'] }, { field: 'tags', op: 'contains', value: 'x' }] },
+          ],
+        },
+        [{ expr: 'priority', dir: 'asc' }],
+      ),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('WI-36743'))).toBe(true);
+  });
+
+  it('DEFAULT_CLAIM_SPEC itself does not trigger the advisory (no kind filter at all)', () => {
+    const r = validateClaimSpec(DEFAULT_CLAIM_SPEC);
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('WI-36743'))).toBe(false);
+  });
+});
+
 describe('fixedCohortIds — exact fixed-wave extraction', () => {
   const spec = (filter: unknown) => ({ view: { filter } });
 

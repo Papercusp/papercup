@@ -86,12 +86,33 @@ vi.mock('../agent-tools/coordination/log', async (importOriginal) => {
 // resolver would just throw and the bridge would fall back to the caller's slug
 // — i.e. the trap would be silently absent from the test. Emulate it for exactly
 // one slug: identity for everything else, so no other case changes meaning.
+// ⚠ THE MOCK MUST HONOR `workspaceId`, or it mocks away the very mechanism under
+// test (EI-19930875455827867). The real resolver SHORT-CIRCUITS before any pot
+// lookup when no workspace is supplied — `pot-membership.ts:125`,
+// `if (!ws || ws === '*') return args.rawSlug` — and that short-circuit, not the
+// pot logic, is what broke production: the only production caller
+// (`condition-staleness-alarm.ts`) passed `{}`, so a MEMBER harness came back
+// un-normalized, the ownership read looked under `oddsmith` while the row was
+// stored under `oddsmith-hive`, and the bridge minted-and-dropped ~150 rows/hour
+// for five days. A mock that ignores `workspaceId` returns `member-hive`
+// regardless, so the member-harness test below PASSES either way and cannot fail
+// on the live defect. Reproduce the guard, and the test becomes a real one.
 vi.mock('../pot-membership', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
-    resolveWorkItemPot: async ({ rawSlug }: { rawSlug?: string | null }) =>
-      rawSlug === 'member' ? 'member-hive' : (rawSlug ?? null),
+    resolveWorkItemPot: async ({
+      rawSlug,
+      workspaceId,
+    }: {
+      rawSlug?: string | null;
+      workspaceId?: string | null;
+    }) => {
+      // Mirror the real short-circuit: no concrete workspace => no normalization.
+      const ws = workspaceId?.trim();
+      if (!ws || ws === '*') return rawSlug ?? null;
+      return rawSlug === 'member' ? 'member-hive' : (rawSlug ?? null);
+    },
   };
 });
 
@@ -457,6 +478,70 @@ describe('the two-writes/one-read asymmetry (column vs link)', () => {
     const rel = await bridge.releaseConditionOwner(key, { harness: MEMBER, workspaceId: WS, settle: true });
     expect(rel).toMatchObject({ released: first.workItem, settled: true });
     expect(await holdersOf(key)).toEqual([]);
+  });
+
+  // FALSIFIER for the test above (EI-19930875455827867). The sibling passes a
+  // workspaceId, so it can only ever exercise the HAPPY path — which is exactly how
+  // it stayed green while production, whose only caller passed `{}`, minted ~150
+  // rows/hour for five days against the very condition it claims to cover.
+  //
+  // This pins the failure mode ITSELF, so the mechanism is measured rather than
+  // assumed: with NO workspaceId the normalizer short-circuits
+  // (`pot-membership.ts:125`), the member slug is NOT collapsed to its pot home, and
+  // the second tick therefore cannot adopt the first tick's row — it mints, loses the
+  // unique-index race to the incumbent, and stands down. One wasted work-item PER
+  // TICK.
+  //
+  // ⚠ WHEN P-002(c) LANDS (`acquireConditionOwner` refusing to mint when it cannot
+  // resolve a workspace), THIS TEST MUST BE INVERTED, not deleted: assert
+  // `skipped`/refused instead of the stand-down below. It failing at that point is
+  // the guard working — it is the only test that exercises the un-resolved path at
+  // all, and deleting it would restore the blind spot this whole exercise was about.
+  it('WITHOUT a workspaceId a member harness is NOT normalized, so the next tick cannot adopt (the live defect)', async () => {
+    const key = 'green-stall:member';
+    const MEMBER = 'member';
+
+    // Note the absent workspaceId — production's shape, not the happy path's.
+    const first = await bridge.acquireConditionOwner(key, {
+      title: 'stalled',
+      summary: 'evidence',
+      harness: MEMBER,
+      severity: 'critical' as const,
+    });
+    expect(first.created).toBe(true);
+
+    // The next tick asks identically and CANNOT adopt: the read looks under the raw
+    // member slug while the row was stored under the pot home.
+    const second = await bridge.acquireConditionOwner(key, {
+      title: 'stalled',
+      summary: 'evidence',
+      harness: MEMBER,
+      severity: 'critical' as const,
+    });
+    expect(second.created).toBe(false);
+    // It stood down rather than adopting — the signature of the churn loop: it had to
+    // mint a row first and then discard it.
+    expect(second.duplicateLeftOpen).toBeUndefined();
+
+    // ⚠ MEASURED, and WORSE than the churn itself: the stand-down reports
+    // `workItem: null` and no `lostRaceTo` — i.e. "nobody owns this condition" — at the
+    // exact moment the unique index proved somebody does. This test was originally
+    // written asserting `lostRaceTo ?? workItem === first.workItem` and FAILED with
+    // `expected null`, which is how the behavior was found.
+    //
+    // The header of `acquireConditionOwner` step 3 anticipates precisely this hazard
+    // and guards it by resolving the winner from the COLUMN before the link. That guard
+    // cannot help here: BOTH reads are scoped by the same wrong harness, so both miss.
+    // So on the un-normalized path the bridge does not merely waste a row — it hands
+    // its caller a positive "unowned" answer for an owned condition.
+    expect(second.workItem).toBeNull();
+    expect(second.lostRaceTo).toBeUndefined();
+
+    // Exactly one row still HOLDS the key (the index did its job) but a second row
+    // was created and dropped to get there — the waste this defect produced.
+    expect(await holdersOf(key)).toEqual([first.workItem]);
+    const total = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.work_items`;
+    expect(total[0].n).toBe(2);
   });
 
   it('a key held by an item with NO link is now ADOPTED — the column is the enforcement point', async () => {

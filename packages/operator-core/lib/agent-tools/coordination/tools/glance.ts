@@ -118,6 +118,34 @@ const BEE_FRESH_MS = 15 * 60_000;
 const BEE_WORKING_FRESH_MS = BEE_FRESH_MS;
 
 /**
+ * Exported so an integration test can exercise the real SQL against a real
+ * Postgres (the unit test mocks `getOrgPg().sql` entirely and so cannot
+ * validate this query's actual WHERE-clause semantics — see
+ * glance-bee-working.integration.test.ts, WI-36765).
+ */
+export async function getBeeCounts(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+): Promise<{ n: number; working: number }> {
+  const rows = await sql<Array<{ n: number; working: number }>>`
+    SELECT
+      count(*)::int AS n,
+      count(*) FILTER (
+        WHERE last_output_at > now() - make_interval(secs => ${BEE_WORKING_FRESH_MS / 1000})
+           OR EXISTS (
+             SELECT 1 FROM harness_shared.tool_invocations ti
+             WHERE ti.workspace_id = spawned_agents.workspace_id
+               AND ti.spawn_id = spawned_agents.spawn_id
+               AND ti.invoked_at > now() - make_interval(secs => ${BEE_WORKING_FRESH_MS / 1000})
+           )
+      )::int AS working
+    FROM harness_shared.spawned_agents
+    WHERE status IN ('running', 'restarting')
+      AND heartbeat_at > now() - make_interval(secs => ${BEE_FRESH_MS / 1000})
+  `;
+  return rows[0] ?? { n: 0, working: 0 };
+}
+
+/**
  * Coerce a candidate objective string to a non-empty trimmed value, or null.
  * The fallback chain (wip-title → presence intent → null) MUST treat a blank
  * value as "absent": `coord_presence.intent` is a NOT-NULL text column defaulting
@@ -185,25 +213,10 @@ export default defineTool({
     const activityLimit = args.activity_limit ?? tierActivityDefault;
     const { sql } = getOrgPg();
 
-    const [wakeDefault, stagedByOwner, beeRows, activity] = await Promise.all([
+    const [wakeDefault, stagedByOwner, beeCounts, activity] = await Promise.all([
       getDefaultWakeMode(),
       countAllPendingWakes(),
-      sql<Array<{ n: number; working: number }>>`
-        SELECT
-          count(*)::int AS n,
-          count(*) FILTER (
-            WHERE last_output_at > now() - make_interval(secs => ${BEE_WORKING_FRESH_MS / 1000})
-               OR EXISTS (
-                 SELECT 1 FROM harness_shared.tool_invocations ti
-                 WHERE ti.workspace_id = spawned_agents.workspace_id
-                   AND ti.spawn_id = spawned_agents.spawn_id
-                   AND ti.invoked_at > now() - make_interval(secs => ${BEE_WORKING_FRESH_MS / 1000})
-               )
-          )::int AS working
-        FROM harness_shared.spawned_agents
-        WHERE status IN ('running', 'restarting')
-          AND heartbeat_at > now() - make_interval(secs => ${BEE_FRESH_MS / 1000})
-      `,
+      getBeeCounts(sql),
       activityLimit > 0
         ? sql<Array<{ owner_id: string; summary: string | null; kind: string; created_at: string }>>`
             SELECT owner_id, summary, kind, created_at
@@ -217,8 +230,8 @@ export default defineTool({
     ]);
 
     const stagedTotal = [...stagedByOwner.values()].reduce((a, b) => a + b, 0);
-    const beesRunning = beeRows[0]?.n ?? 0;
-    const beesWorking = beeRows[0]?.working ?? 0;
+    const beesRunning = beeCounts.n;
+    const beesWorking = beeCounts.working;
     const now = Date.now();
     const governorPaused = snapshotGovernors()
       .filter((b) => b.state.pausedUntil > now)

@@ -164,6 +164,7 @@ import {
   recordFire as defaultRecordFire,
   readFireState as defaultReadFireState,
   circuitThreshold as defaultCircuitThreshold,
+  evaluateFireGate as defaultEvaluateFireGate,
   LOOP_TERMINAL_AUTO_PAUSE_STATUS,
 } from '../../autoloop';
 import { runWithWorkspace } from '../../workspace-als';
@@ -697,7 +698,18 @@ export async function reconcileLoopLifecycleDeathEscalations(
   return result;
 }
 
-export type RebaseVia = 'lifecycle' | 'turn-journal' | 'note-refresh' | 'presence-quiescence' | 'stuck-backstop';
+export type RebaseVia =
+  | 'lifecycle'
+  | 'turn-journal'
+  | 'note-refresh'
+  | 'presence-quiescence'
+  | 'stuck-backstop'
+  /** WI-36792: the loop is parked at 'infinity' and the FIRE-GATE is what is holding it —
+   *  re-arm to the moment the gate's own backoff expires. This via records NO fire outcome
+   *  (see the recordFire call site): it is a pure scheduling nudge that learns nothing new
+   *  about the turn's health, so feeding 'ok' would ERASE the very streak the backoff is
+   *  computed from, and feeding 'error' would double-count errors already recorded. */
+  | 'gate-backoff';
 
 export interface LoopRebaseResult {
   /** Loops re-armed this pass. */
@@ -898,6 +910,9 @@ export async function reconcileLoopRoutines(
     checkUnreachableTerminalGuard?: typeof defaultCheckUnreachableTerminalGuard;
     /** Injected for tests; defaults to the real fire-circuit threshold read (EI-7006). */
     circuitThreshold?: typeof defaultCircuitThreshold;
+    /** WI-36792: the pure fire-gate verdict, injected so a test can drive the gate-backoff
+     *  re-arm leg without constructing autoloop_state rows. */
+    evaluateFireGate?: typeof defaultEvaluateFireGate;
     /** WI-2339 (fix E): injected loud human-escalation for a confirmed durably-dead loop. Fires
      *  ONCE per dead loop (the breach auto-pauses it → never re-scanned). Default opens an advisory
      *  coord escalation. Fail-soft at the call site. */
@@ -918,6 +933,7 @@ export async function reconcileLoopRoutines(
   const readFireState = opts.readFireState ?? defaultReadFireState;
   const checkUnreachableTerminalGuard = opts.checkUnreachableTerminalGuard ?? defaultCheckUnreachableTerminalGuard;
   const circuitThreshold = opts.circuitThreshold ?? defaultCircuitThreshold;
+  const evaluateFireGate = opts.evaluateFireGate ?? defaultEvaluateFireGate;
   const escalateDeadLoop = opts.escalateDeadLoop ?? defaultEscalateDeadLoop;
   const cancelInboxWake = opts.cancelInboxWake ?? defaultCancelInboxWake;
   const escalateLifecycleDeath = opts.escalateLifecycleDeath ?? defaultEscalateLifecycleDeath;
@@ -1116,6 +1132,13 @@ export async function reconcileLoopRoutines(
       let completedAt: number;
       let via: RebaseVia;
       let quickRetry = false;
+      /** WI-36792: set only on the 'gate-backoff' via — the fire-gate's own remaining backoff,
+       *  in ms. Overrides the interval/lifecycle delay so the re-arm lands exactly when the
+       *  gate will next ALLOW, instead of hammering a gate that is still withholding. */
+      let gateRetryMs: number | null = null;
+      /** WI-36792: the withholding streak, captured for the 'gate-backoff' log line (the
+       *  streak itself is block-scoped to the quiet-parked path below). */
+      let gateBackoffErrors = 0;
       const signal = completionSignal(row, lastFiredMs, nowMs);
       // EI-13818: a 'lifecycle' signal means the Stop hook fired — the turn EXITED cleanly —
       // not that it SUCCEEDED. Re-classify its own text before trusting that as an 'ok'.
@@ -1242,15 +1265,43 @@ export async function reconcileLoopRoutines(
         // circuit-open-but-not-breached loop that has reached neither is left untouched — the
         // fire-gate owns its cadence; re-arming it here would only fight the circuit's backoff.
         if (!stuckParkElapsed && !quickRetryEligible) {
-          continue;
+          // WI-36792: this `continue` was a SILENT HALT for a parked pure loop, and the comment
+          // above states the false premise that made it look safe — "the fire-gate owns its
+          // cadence". That is true for a cron/interval routine, which keeps being CLAIMED on
+          // schedule so the gate is re-consulted until its backoff expires. It is false for a
+          // pure loop: claimDueRoutine parks it at next_fire_at='infinity' at CLAIM time, and
+          // the gate has no power to cause a claim. Nothing re-consults it, so the gate's own
+          // `retry in ~Ns` is a promise nothing can keep and the loop is simply dead.
+          //
+          // Measured 2026-08-08 (my own loop, 2h44m halt): three stuck-backstop rescues each
+          // fed 'error' into the SAME streak that gates them, so quickRetryEligible went false
+          // at consecutiveErrors=3; the 4th claim at 21:54:31 was then DENIED by the gate
+          // (consecutive_errors=4 ⇒ 60*2^3 = 480s backoff, recorded as `retry in ~454s`) and
+          // this branch declined to re-arm. Zero transition rows for the next 71 minutes,
+          // until the owner re-armed by hand.
+          //
+          // Fix: when the gate is the thing holding a PARKED loop, re-arm to the moment the
+          // backoff expires — honoring it rather than fighting it. `evaluateFireGate` is pure
+          // and `priorState` (a full FireState) is already read at the top of this path, so
+          // this adds no query and no new failure surface. Guarded on `row.parked` so a
+          // cron+loop with a live schedule is never pulled sooner by this leg.
+          const gate = evaluateFireGate(priorState, new Date(nowMs));
+          if (!row.parked || gate.allow || !gate.retryAfterSec || gate.retryAfterSec <= 0) {
+            continue;
+          }
+          completedAt = nowMs;
+          via = 'gate-backoff';
+          gateRetryMs = gate.retryAfterSec * 1000;
+          gateBackoffErrors = consecutiveErrors;
+        } else {
+          completedAt = lastFiredMs;
+          via = 'stuck-backstop';
+          if (quickRetryEligible && !stuckParkElapsed) quickRetry = true;
+          // EI-19295537569038753: reclassify here too, not just on the `if (signal)` vias above —
+          // see the comment block above this else/if for why this branch is exactly the one a
+          // wedged (no-signal) provider-wall death reaches, and why it was previously unread.
+          turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
         }
-        completedAt = lastFiredMs;
-        via = 'stuck-backstop';
-        if (quickRetryEligible && !stuckParkElapsed) quickRetry = true;
-        // EI-19295537569038753: reclassify here too, not just on the `if (signal)` vias above —
-        // see the comment block above this else/if for why this branch is exactly the one a
-        // wedged (no-signal) provider-wall death reaches, and why it was previously unread.
-        turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
       }
 
       // EI-13818: a reclassified lifecycle-death re-arms after `turnDeath.rearmDelayMs` (reset-
@@ -1262,7 +1313,10 @@ export async function reconcileLoopRoutines(
       // DISCARDED whenever a nearer next_fire_at was already set (WI-6852 — the comment that
       // used to sit here claimed the opposite and is exactly what hid the bug). Only the
       // `deferPastWall` branch can actually push the next fire out.
-      const rearmMs = turnDeath?.rearmDelayMs ?? intervalMs;
+      // WI-36792: a 'gate-backoff' re-arm targets the gate's own expiry, not the interval —
+      // and never sooner than one interval, so it can never out-pace the loop's own cadence.
+      const rearmMs =
+        gateRetryMs != null ? Math.max(gateRetryMs, intervalMs) : (turnDeath?.rearmDelayMs ?? intervalMs);
 
       // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's
       // pooled `prepare: false` connection rejects a Date bind param ("the string argument must
@@ -1362,15 +1416,26 @@ export async function reconcileLoopRoutines(
         // workspace so the (ws, install_slug, name) key matches the fire side exactly.
         // EI-13818: a reclassified lifecycle-death is ALSO an 'error' (a false 'ok' is exactly
         // the bug) — checked first since it overrides an otherwise-'ok' lifecycle via.
-        const outcome: 'ok' | 'error' = turnDeath || via === 'stuck-backstop' ? 'error' : 'ok';
-        const fireDetail = turnDeath ? `loop-lifecycle-death:${turnDeath.reason}` : `loop-${via}`;
-        await runWithWorkspace(row.routine_workspace_id, () =>
-          recordFire(row.install_slug, row.name, fireDetail, outcome),
-        ).catch((e) =>
-          console.warn(
-            `[loop-reconcile] recordFire('${outcome}') failed for '${row.id}': ${e instanceof Error ? e.message : e}`,
-          ),
-        );
+        // WI-36792: the 'gate-backoff' via records NO outcome at all, and this asymmetry is
+        // load-bearing rather than an oversight. That re-arm observed nothing about the turn —
+        // it only rescheduled a claim the gate had already refused. 'ok' would RESET
+        // consecutive_errors and erase the very streak the backoff is computed from (the loop
+        // would then re-fire immediately and read as healthy); 'error' would double-count a
+        // failure already recorded by the fire path. Leaving the streak untouched keeps the
+        // gate's own clock — autoloop_state.last_fired_at, which a withhold deliberately does
+        // not advance — the single authority on when the retry is due.
+        const outcome: 'ok' | 'error' | null =
+          via === 'gate-backoff' ? null : turnDeath || via === 'stuck-backstop' ? 'error' : 'ok';
+        if (outcome != null) {
+          const fireDetail = turnDeath ? `loop-lifecycle-death:${turnDeath.reason}` : `loop-${via}`;
+          await runWithWorkspace(row.routine_workspace_id, () =>
+            recordFire(row.install_slug, row.name, fireDetail, outcome),
+          ).catch((e) =>
+            console.warn(
+              `[loop-reconcile] recordFire('${outcome}') failed for '${row.id}': ${e instanceof Error ? e.message : e}`,
+            ),
+          );
+        }
         if (turnDeath) {
           console.warn(
             `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) turn completed CLEANLY but its ` +
@@ -1396,6 +1461,17 @@ export async function reconcileLoopRoutines(
             `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) parked ` +
               `${Math.round((nowMs - lastFiredMs) / 1000)}s with no completion signal — re-armed to retry ` +
               `(circuit fed 'error'${quickRetry ? ', WI-2714 quick-retry leg' : ''})`,
+          );
+        }
+        if (via === 'gate-backoff') {
+          // WI-36792: without this line the rescue is invisible — the failure it fixes produced
+          // NO log, no fire row and no transition row for 71 minutes, which is precisely why it
+          // took three sessions to find. Name the streak so a loop stuck behind a genuinely
+          // broken fire path is distinguishable from one riding a transient backoff.
+          console.warn(
+            `[loop-reconcile] loop '${row.id}' (owner ${row.target_owner_id}) was parked at 'infinity' ` +
+              `with the fire-gate withholding (consecutive_errors=${gateBackoffErrors}) — re-armed ` +
+              `+${Math.round(rearmMs / 1000)}s to the moment the backoff expires; circuit left UNTOUCHED`,
           );
         }
       }

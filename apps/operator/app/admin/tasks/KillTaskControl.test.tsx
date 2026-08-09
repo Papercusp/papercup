@@ -22,8 +22,8 @@
  * A mirrored constant that nothing checks is a divergence waiting to happen, so the
  * mirror is asserted against the real source's own text here.
  */
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
@@ -40,6 +40,19 @@ vi.mock('@papercusp/sync', () => ({
 }));
 
 import KillTaskControl, { killability, refusalHelp, type KillableRow } from './KillTaskControl';
+
+/** Resolve a repo-root-relative path by walking up from the run cwd. */
+function repoFile(rel: string): string {
+  let dir = process.cwd();
+  for (let i = 0; i < 8; i++) {
+    const p = join(dir, rel);
+    if (existsSync(p)) return p;
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  throw new Error(`could not locate ${rel} from ${process.cwd()}`);
+}
 
 const row = (over: Partial<KillableRow> = {}): KillableRow => ({
   taskId: 't1',
@@ -95,10 +108,11 @@ describe('the mirrored live-owned states stay in step with the server', () => {
   it('matches isLiveOwnedState in task-manager/types.ts', () => {
     // Read the SOURCE rather than importing it: importing that module is exactly the
     // client-graph leak the mirror exists to avoid, so the guard must not re-open it.
-    const src = readFileSync(
-      fileURLToPath(new URL('../../../../../packages/operator-core/lib/task-manager/types.ts', import.meta.url)),
-      'utf8',
-    );
+    // Walk UP from the run cwd rather than from `import.meta.url`: this suite runs under
+    // jsdom, where `import.meta.url` is not a `file:` URL and `fileURLToPath` throws.
+    // Throwing when the file is not found is deliberate — a guard that silently cannot
+    // find its subject passes forever while checking nothing.
+    const src = readFileSync(repoFile('packages/operator-core/lib/task-manager/types.ts'), 'utf8');
     const body = /export function isLiveOwnedState[\s\S]*?\n}/.exec(src)?.[0] ?? '';
     expect(body).toContain("state === 'pending'");
     expect(body).toContain("state === 'running'");
