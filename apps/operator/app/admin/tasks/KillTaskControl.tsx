@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState, type ReactElement } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState, type ReactElement, type ReactNode } from 'react';
 import { useSyncMutate } from '@papercusp/sync';
 
 // `@/app/...` (not a relative path): this component is rendered from BOTH trees —
@@ -123,6 +123,109 @@ export function refusalHelp(error: string | undefined): string {
   }
 }
 
+/** An outcome plus the row it belongs to, so a pane can render it after that row is gone. */
+export type HoistedKillOutcome = KillOutcome & { taskId: string };
+
+/**
+ * The seam that keeps a kill's ANSWER visible after its row disappears.
+ *
+ * ⚠ WHY THIS EXISTS — measured, not theoretical (2026-08-09, live in a Tauri webview).
+ * The in-row chip below can only render while its row is mounted, and a kill is precisely
+ * the event that unmounts it: the route invalidates `taskManager.inventory`, the task is
+ * no longer running, and the default view is running-only, so the row drops out. Driving a
+ * real refusal end-to-end (`not_live`, HTTP 200, verbatim detail from the server) produced
+ * NEITHER `task-kill-refused-…` NOR `task-kill-done-…` in the DOM — the row unmounted first.
+ *
+ * That is not a cosmetic gap. P-025's entire job is to surface the refusal REASON verbatim,
+ * and a refusal nobody can read is the same as swallowing it — the reader is left to guess
+ * whether a destructive action fired, which is exactly the state that invites clicking again.
+ *
+ * So the outcome is REPORTED upward and the pane renders it, keyed by taskId. A pane with no
+ * provider keeps the old behaviour (the default is a no-op), because the control must stay
+ * mountable anywhere.
+ */
+const KillOutcomeContext = createContext<{ report: (o: HoistedKillOutcome) => void }>({ report: () => {} });
+
+/** The refusal/success copy, in ONE place — rendered by the in-row chip AND the pane notice.
+ *  Duplicating these strings is how the two surfaces would drift apart (the same reason
+ *  there is one control and not two). */
+function OutcomeBody({ outcome }: { outcome: KillOutcome }): ReactElement {
+  if (outcome.ok) return <>signalled{outcome.detail ? ` · ${outcome.detail}` : ''}</>;
+  const help = refusalHelp(outcome.error);
+  return (
+    <>
+      <strong>refused: {outcome.error ?? 'unknown'}</strong>
+      {help && <span className="pc-task-kill__help"> {help}</span>}
+      {/* VERBATIM — the server's own words. It names the pid, the identity it found and
+          the one the row recorded, which is what makes the refusal checkable. */}
+      {outcome.detail && <span className="pc-task-kill__detail"> {outcome.detail}</span>}
+    </>
+  );
+}
+
+/**
+ * The pane-level outcome notice — what the reader actually sees once the row is gone.
+ * `role="alert"` for the refusal case so a screen reader announces a destructive action's
+ * refusal rather than leaving it as silently-rendered text.
+ */
+export function KillOutcomeNotice({
+  outcome,
+  onDismiss,
+}: {
+  outcome: HoistedKillOutcome;
+  onDismiss: () => void;
+}): ReactElement {
+  return (
+    <div
+      className={`pc-task-kill-notice ${outcome.ok ? 'is-done' : 'is-refused'}`}
+      data-testid={`task-kill-notice-${outcome.taskId}`}
+      role={outcome.ok ? 'status' : 'alert'}
+    >
+      {/* The row is gone, so the id is the only thing tying this back to a task — say it. */}
+      <code className="pc-task-kill-notice__id">{outcome.taskId}</code>{' '}
+      <OutcomeBody outcome={outcome} />{' '}
+      <Button size="mini" variant="ghost" onClick={onDismiss} data-testid={`task-kill-notice-dismiss-${outcome.taskId}`}>
+        dismiss
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * Wiring for a pane: hold the last outcome, and render the notice ONLY while the row that
+ * produced it is absent from `rows`.
+ *
+ * That condition is the whole design. While the row is still on screen the in-row chip is
+ * the better placement — it is next to the thing it describes — and a banner saying the same
+ * thing would read as two separate events. The moment the row leaves, the chip is gone and
+ * the banner is the only surviving answer. One visible outcome, always.
+ */
+export function useKillOutcomeHoist(rows: readonly { taskId: string }[]): {
+  outcomeContext: { report: (o: HoistedKillOutcome) => void };
+  notice: ReactElement | null;
+} {
+  const [outcome, setOutcome] = useState<HoistedKillOutcome | null>(null);
+  // Stable identity: the control reads this from context on every render, and a fresh object
+  // each time would re-render every row in a 500-row table for nothing.
+  const outcomeContext = useMemo(() => ({ report: setOutcome }), []);
+  const rowGone = outcome != null && !rows.some((r) => r.taskId === outcome.taskId);
+  return {
+    outcomeContext,
+    notice: rowGone && outcome ? <KillOutcomeNotice outcome={outcome} onDismiss={() => setOutcome(null)} /> : null,
+  };
+}
+
+/** Provider counterpart to `useKillOutcomeHoist` — panes wrap their rows in this. */
+export function KillOutcomeProvider({
+  value,
+  children,
+}: {
+  value: { report: (o: HoistedKillOutcome) => void };
+  children: ReactNode;
+}): ReactElement {
+  return <KillOutcomeContext.Provider value={value}>{children}</KillOutcomeContext.Provider>;
+}
+
 async function killTaskRest(args: { taskId: string }): Promise<KillOutcome> {
   const res = await fetch('/api/admin/tasks/kill', {
     method: 'POST',
@@ -155,6 +258,9 @@ export default function KillTaskControl({
 
   const mutate = useSyncMutate<{ taskId: string }, KillOutcome>('taskManager.kill', killTaskRest);
   const { killable, reason } = killability(row);
+  // Report upward as well as rendering inline: this row is about to unmount in the common
+  // case, and the pane outlives it. See KillOutcomeContext for the measured failure.
+  const { report } = useContext(KillOutcomeContext);
 
   const fire = useCallback(async () => {
     setPending(true);
@@ -162,24 +268,22 @@ export default function KillTaskControl({
     try {
       const res = await mutate({ taskId: row.taskId });
       setOutcome(res);
+      report({ ...res, taskId: row.taskId });
       if (res.ok) onKilled?.(row.taskId);
     } catch (e) {
-      setOutcome({ ok: false, error: 'command_failed', detail: String(e) });
+      const failed: KillOutcome = { ok: false, error: 'command_failed', detail: String(e) };
+      setOutcome(failed);
+      report({ ...failed, taskId: row.taskId });
     } finally {
       setPending(false);
       setArmed(false);
     }
-  }, [mutate, row.taskId, onKilled]);
+  }, [mutate, row.taskId, onKilled, report]);
 
   if (outcome && !outcome.ok) {
-    const help = refusalHelp(outcome.error);
     return (
       <span className="pc-task-kill is-refused" data-testid={`task-kill-refused-${row.taskId}`} role="alert">
-        <strong>refused: {outcome.error ?? 'unknown'}</strong>
-        {help && <span className="pc-task-kill__help"> {help}</span>}
-        {/* VERBATIM — the server's own words. It names the pid, the identity it found and
-            the one the row recorded, which is what makes the refusal checkable. */}
-        {outcome.detail && <span className="pc-task-kill__detail"> {outcome.detail}</span>}{' '}
+        <OutcomeBody outcome={outcome} />{' '}
         <Button size="mini" variant="ghost" onClick={() => setOutcome(null)} data-testid={`task-kill-dismiss-${row.taskId}`}>
           dismiss
         </Button>
@@ -190,7 +294,7 @@ export default function KillTaskControl({
   if (outcome?.ok) {
     return (
       <span className="pc-task-kill is-done" data-testid={`task-kill-done-${row.taskId}`}>
-        signalled{outcome.detail ? ` · ${outcome.detail}` : ''}
+        <OutcomeBody outcome={outcome} />
       </span>
     );
   }

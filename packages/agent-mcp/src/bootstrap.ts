@@ -22,6 +22,7 @@ import './tools/goals/list';
 import './tools/goals/get';
 import './tools/goals/create';
 import './tools/goals/update';
+import './tools/goals/projects';
 // issues:* fully RETIRED onto the unified work_items:* surface (coordination-unification-
 // 2026-06-23 P-015 / D-011). The engineer-issues STORE persists; work_items:* dispatches to it.
 // messages:inbox / messages:outbox RETIRED — work-item-mail-surface-retirement-2026-07-26

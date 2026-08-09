@@ -27,7 +27,13 @@ const bodyText = (r: { content: ReadonlyArray<{ type?: string; text?: string }> 
 const footerOf = (r: { content: ReadonlyArray<{ type?: string; text?: string }> }) =>
   (r.content[r.content.length - 1]?.text ?? '');
 const reportOf = (r: { content?: unknown; _meta?: Record<string, unknown> }) =>
-  r._meta?.resultProjection as { notes: string[]; linesIn: number; linesOut: number; regexFlavor?: string };
+  r._meta?.resultProjection as {
+    applied: boolean;
+    notes: string[];
+    linesIn: number;
+    linesOut: number;
+    regexFlavor?: string;
+  };
 
 describe('applyResultProjection — line operators', () => {
   const LINES = ['alpha 3', 'beta 1', 'ERROR here', 'gamma 2', 'error again', 'delta 10'].join('\n');

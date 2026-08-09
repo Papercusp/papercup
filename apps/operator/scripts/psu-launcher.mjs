@@ -4759,6 +4759,10 @@ export function startSupervisorBeat(
     operatorUrl = OPERATOR_URL,
     token = null,
     setIntervalImpl = setInterval,
+    // EI-19948333346987654: the terminal device path THIS launch owns (from
+    // resolveOwnedTtyPath() at spawn time — see the call site), reported on
+    // every beat exactly like pid/host below. null for a headless launch.
+    tty = null,
     // Injectables for tests; defaults are the real process behaviour.
     beatsToExit = TERMINAL_BEATS_TO_EXIT,
     minUptimeMs = MIN_UPTIME_BEFORE_SELF_EXIT_MS,
@@ -4784,7 +4788,7 @@ export function startSupervisorBeat(
           'content-type': 'application/json',
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
         },
-        body: JSON.stringify({ ownerId, pid: process.pid, host: hostname() }),
+        body: JSON.stringify({ ownerId, pid: process.pid, host: hostname(), ...(tty ? { tty } : {}) }),
       });
       // Any unreadable/absent body is NOT a terminal verdict — it resets the streak, like
       // any other beat that failed to produce an explicit answer.
@@ -5471,7 +5475,10 @@ function runWrapper({
     if (advSessionId) recordSessionOwner(`adv-${advSessionId}`, ownerId, { advSessionId });
   }
   // liveness-hardening P-004: supervisor beat covers BOTH launch paths below.
-  startSupervisorBeat(ownerId);
+  // EI-19948333346987654: thread the already-resolved owned-tty path (line
+  // ~5395 above) into the beat so coord_presence.tty answers "which terminal
+  // does this session own" without a /proc ancestry walk.
+  startSupervisorBeat(ownerId, { tty: ownedTty });
   if (ownerId && usePtyHost({ env })) {
     try {
       hostThroughPty({

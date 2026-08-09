@@ -14,6 +14,7 @@ import {
   listWorkItems,
   getWorkItem,
   readWorkItemClaimHoldProvenance,
+  WORK_ITEMS_MAX_LIMIT,
   type WorkItem,
   type WorkItemKind,
 } from '../../work-items';
@@ -114,6 +115,21 @@ export interface BurnDownResult {
      *  predates the close stamp" are distinguishable — reading updatedAt instead is
      *  what once reported 3,833 ancient rows as closed within one hour. */
     deltaClosedUndated: number;
+    /**
+     * WI-37381 — `true` when the aggregate below was computed over a HARD-CAPPED fetch
+     * (`censusLimit` rows) rather than the true full queue. This is the ONLY thing that
+     * can make `terminal.*` an undercount: the caller-supplied `limit` arg never bounds
+     * this fetch (see `censusLimit` — it is fixed at WORK_ITEMS_MAX_LIMIT regardless of
+     * what the caller asked for), so a small `limit` can no longer silently zero out the
+     * aggregate. A harness with more open+terminal rows than `censusLimit` can still hit
+     * this flag; when it does, `terminal.*`/`counts.*`/`deltaBy.*` are a FLOOR, not a
+     * total, and should be read as such (same shape as `deltaClosedUndated` above).
+     */
+    truncatedByLimit: boolean;
+    /** The fetch size that produced this census (always WORK_ITEMS_MAX_LIMIT for a
+     *  non-cohort call — see `truncatedByLimit`). Reported so "0 of 5" and "0 of 2000"
+     *  are distinguishable without cross-referencing the request. */
+    censusLimit: number;
     /** EI-19313376980892266 fix B — WHO produced `delta`. Present only with `since`.
      *  `delta` is harness-WIDE; without this split it reads as the caller's own fleet's
      *  output and over-reports by whatever the rest of the harness closed. */
@@ -370,6 +386,21 @@ export function buildBurnDownResult(
      *  than 0, because "this fleet closed nothing" and "no fleet was resolved" are
      *  different facts and 0 asserts the first one. */
     fleet?: { slug: string; members: Set<string>; source: FleetAttributionSource } | null;
+    /**
+     * WI-37381 — the fetch size `items` was drawn from (always WORK_ITEMS_MAX_LIMIT for
+     * a real census; irrelevant/absent for a fixed `ids` cohort). Recorded verbatim as
+     * `terminal.censusLimit`/`truncatedByLimit` — never re-derived from `items.length`
+     * alone, since a queue that happens to contain exactly that many rows is
+     * indistinguishable from one the fetch actually capped.
+     */
+    censusLimit?: number;
+    /**
+     * WI-37381 — bounds the RETURNED `inFlight`/`parked`/`unclaimed` row arrays only.
+     * `terminal.*`/`counts.*` are always computed from the full `items` array regardless
+     * of this value — that decoupling is the fix: a caller asking for a short row list
+     * must never zero out the aggregate census.
+     */
+    rowLimit?: number;
   },
 ): BurnDownResult {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
@@ -377,6 +408,12 @@ export function buildBurnDownResult(
   const deltaBy = { fleet: 0, otherAgents: 0, system: 0, unattributed: 0 };
   const sinceMs = opts.since ? Date.parse(opts.since) : NaN;
   const hasSince = Number.isFinite(sinceMs);
+  // WI-37381: `censusLimit` is the fetch size `items` was drawn from — NOT re-derived
+  // from `items.length`, because a queue that happens to hold exactly that many rows
+  // is indistinguishable from one the fetch capped. No `censusLimit` passed (the fixed
+  // `ids`-cohort path) means the fetch was exact, never truncated.
+  const censusLimit = opts.censusLimit ?? items.length;
+  const truncatedByLimit = opts.censusLimit != null && items.length >= opts.censusLimit;
   const terminal = {
     total: 0,
     done: 0,
@@ -393,6 +430,9 @@ export function buildBurnDownResult(
      *  tell "nothing closed in this window" apart from "this window predates the
      *  close stamp"; a nonzero value here means `delta` is a floor, not a total. */
     deltaClosedUndated: 0,
+    /** WI-37381: see BurnDownResult.terminal.truncatedByLimit / censusLimit docs. */
+    truncatedByLimit,
+    censusLimit,
     /** EI-19313376980892266 fix B: who produced `delta`. Only present with `since`. */
     deltaBy: undefined as BurnDownDeltaBy | undefined,
     /** True whenever `deltaBy` is present: its four counts sum to `delta` exactly. */
@@ -556,14 +596,20 @@ export function buildBurnDownResult(
     terminal.deltaByPartitions = true;
   }
 
+  // WI-37381: `counts.*` are always the FULL bucket sizes over `items` — never bounded
+  // by `rowLimit`. Only the returned row arrays are capped, and only for display; a
+  // caller wanting a short row list must never see that reflected in the aggregate.
+  const capRows = <T,>(rows: T[]): T[] =>
+    opts.rowLimit != null ? rows.slice(0, opts.rowLimit) : rows;
+
   return {
     ok: true,
     harness: opts.harness,
     generatedAt,
     terminal,
-    inFlight,
-    parked,
-    unclaimed,
+    inFlight: capRows(inFlight),
+    parked: capRows(parked),
+    unclaimed: capRows(unclaimed),
     counts: {
       total: items.length,
       terminal: terminal.total,

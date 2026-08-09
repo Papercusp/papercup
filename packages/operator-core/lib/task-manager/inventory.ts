@@ -37,6 +37,8 @@ import {
   foldResourceTotals,
   RESOURCE_TOTALS_FILTER,
   RESOURCE_TOTALS_LIMIT,
+  type ScheduleTaskRow,
+  type ScheduleTaskSummary,
   type TaskInventoryRow,
   type TaskResourceTotals,
 } from './inventory-shared';
@@ -48,7 +50,12 @@ export {
   RESOURCE_TOTALS_FILTER,
   RESOURCE_TOTALS_LIMIT,
 } from './inventory-shared';
-export type { TaskInventoryRow, TaskResourceTotals } from './inventory-shared';
+export type {
+  ScheduleTaskRow,
+  ScheduleTaskSummary,
+  TaskInventoryRow,
+  TaskResourceTotals,
+} from './inventory-shared';
 
 /**
  * A process the kernel scan SAW but the ledger does not own.
@@ -100,6 +107,28 @@ export type TaskInventory = {
    * busy box cannot ship an unbounded payload to a sidebar pane.
    */
   liveProcesses: LiveProcessRow[];
+  /**
+   * RECURRING tasks (P-019) — populated only when the caller passes `includeSchedules`.
+   *
+   * OPTIONAL on purpose, and the reason is not style: `TaskInventory` is a shared
+   * interface with fixtures across several suites, and adding a REQUIRED field to one
+   * strands every construction site in files this change never touches — the trap
+   * `lint:required-field-strands` exists for. It also matches how the pane already
+   * treats `resources`/`liveProcesses`: an older operator still serving `:3070` ships a
+   * payload without the key, and absent must render as "not asked for", never as zero.
+   */
+  schedules?: ScheduleTaskRow[];
+  scheduleSummary?: ScheduleTaskSummary;
+  /**
+   * Why the recurring set could not be read, when it could not be.
+   *
+   * Load-bearing, not decorative. `collectScheduleInventory` is fail-soft per source,
+   * so a total failure would otherwise surface as `schedules: []` — indistinguishable
+   * from "nothing recurring is registered", which is a false clean bill of health on a
+   * pane whose entire job is finding what the system is doing behind your back. The
+   * pane renders this instead of an empty table.
+   */
+  scheduleError?: string | null;
 };
 
 export type TaskInventoryOptions = {
@@ -113,6 +142,13 @@ export type TaskInventoryOptions = {
    */
   countsOnly?: boolean;
   live?: boolean;
+  /**
+   * Also inventory RECURRING tasks (P-019). OFF by default, and deliberately opt-in:
+   * `collectScheduleInventory()` reads DBOS + the routines table AND makes a bounded
+   * loopback probe to sibling processes, so it must never ride the pane's 5s process
+   * refresh. Callers that want it pace themselves accordingly.
+   */
+  includeSchedules?: boolean;
 };
 
 /** Just enough of a store row to fold; keeps the seam below narrow and injectable. */
@@ -196,6 +232,82 @@ type LiveScanResult = { live: unknown; liveProcesses: LiveProcessRow[] };
 /** Test seam — drop the memo so a test never reads another test's scan. */
 export function resetLiveScanMemoForTest(): void {
   liveScanMemo = null;
+}
+
+/**
+ * SHARED TTL memo for the recurring inventory (P-019), same shape and same reason as
+ * the live-scan memo above — in-flight callers share the PROMISE, not just the settled
+ * value, so N simultaneous mounts cannot stampede it.
+ *
+ * The TTL is much longer than the scan's 5s because the cost profile is different and
+ * so is the data: this reads DBOS + the routines table and probes sibling processes
+ * over loopback, while what it returns is a REGISTRY — the set of things scheduled to
+ * run. That set changes on deploys and arm/disarm, not second to second, so refreshing
+ * it at the process poll's cadence would buy nothing and put two DB reads plus a
+ * network probe behind every tick of a pane that is often just left open.
+ */
+const SCHEDULE_INVENTORY_TTL_MS = 30_000;
+let scheduleMemo: { at: number; promise: Promise<ScheduleScanResult> } | null = null;
+
+type ScheduleScanResult = {
+  schedules: ScheduleTaskRow[];
+  scheduleSummary: ScheduleTaskSummary;
+  scheduleError: string | null;
+};
+
+/** Test seam — drop the memo so a test never reads another test's inventory. */
+export function resetScheduleMemoForTest(): void {
+  scheduleMemo = null;
+}
+
+function scanSchedules(now: number): Promise<ScheduleScanResult> {
+  if (scheduleMemo && now - scheduleMemo.at < SCHEDULE_INVENTORY_TTL_MS) return scheduleMemo.promise;
+  const promise = runScheduleScan();
+  scheduleMemo = { at: now, promise };
+  void promise.catch(() => { scheduleMemo = null; });
+  return promise;
+}
+
+async function runScheduleScan(): Promise<ScheduleScanResult> {
+  try {
+    // Imported lazily for the same reason the pane's arm is opt-in: this module is on
+    // the header pill's path, and `schedule-inventory` drags the DBOS + federation
+    // graph behind it. A reader who never opens the recurring view never pays for it.
+    const { collectScheduleInventory, summarizeInventory } = await import('../schedule-inventory');
+    const rows = await collectScheduleInventory();
+    return {
+      schedules: rows.map((r) => ({
+        // `source:scope:name` — a name alone is NOT unique (the same sweep can appear
+        // as a local `managed` row and again as a federated `external-process` row from
+        // a sibling), and duplicate React keys are a filed perf anti-pattern here.
+        key: `${r.source}:${r.scope}:${r.name}`,
+        name: r.name,
+        source: r.source,
+        tier: r.tier,
+        category: r.category,
+        scope: r.scope,
+        installSlug: r.installSlug ?? null,
+        cadence: r.cadence,
+        armed: r.armed ?? null,
+        lastFire: r.lastFire ?? null,
+        nextFire: r.nextFire ?? null,
+        lastError: r.lastError ?? null,
+        federated: r.detail?.federated === true,
+        process: typeof r.detail?.process === 'string' ? r.detail.process : null,
+      })),
+      scheduleSummary: summarizeInventory(rows),
+      scheduleError: null,
+    };
+  } catch (e) {
+    // Same posture as the live scan: a fault degrades this section, never the pane —
+    // and it reports the fault rather than an empty set, because "no recurring tasks"
+    // is a materially different claim from "could not read them".
+    return {
+      schedules: [],
+      scheduleSummary: { total: 0, bySource: {}, byTier: {} },
+      scheduleError: (e as Error).message.slice(0, 300),
+    };
+  }
 }
 
 function scanLive(now: number): Promise<LiveScanResult> {
@@ -326,6 +438,10 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
   // authoritative. See RESOURCE_TOTALS_FILTER and its guard test.
   const resources = await computeResourceTotals(Date.now());
 
+  // P-019 — the RECURRING kind. Opt-in and separately memoised, so the process view's
+  // cadence and this one's stay independent (see SCHEDULE_INVENTORY_TTL_MS).
+  const scheduleScan = opts.includeSchedules ? await scanSchedules(Date.now()) : null;
+
   return {
     enabled: true,
     summary: {
@@ -337,5 +453,15 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
     live,
     liveProcesses,
     rows: mappedRows,
+    // Spread rather than always-present keys: a caller that did not ask for the
+    // recurring view gets NO `schedules` key at all, which is what lets the pane tell
+    // "not requested" apart from "requested, and there are none".
+    ...(scheduleScan
+      ? {
+          schedules: scheduleScan.schedules,
+          scheduleSummary: scheduleScan.scheduleSummary,
+          scheduleError: scheduleScan.scheduleError,
+        }
+      : {}),
   };
 }

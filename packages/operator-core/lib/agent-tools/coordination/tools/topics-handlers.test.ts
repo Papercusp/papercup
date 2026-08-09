@@ -1,12 +1,18 @@
 /**
  * topics-handlers.test.ts — handler-level projection tests for the topics:* tool
- * surfaces (topics:list / topics:subscribe / topics:merge). The PG-wired layer
+ * surfaces (topics:list / topics:merge). The PG-wired layer
  * (`../topics`) is mocked at the module seam; identity is faked; the handler +
  * its zod schema run REAL. Pins the projection logic each handler owns:
  *   • topics:list — `subscribed` Set keyed off the subscription target_ref,
  *     `merged_into` surfaced, includeMerged passed through to listTopics.
- *   • topics:subscribe — the returned SubscriptionRow's mode/expires projected.
  *   • topics:merge — `subscribers_moved` taken from the core result's `moved`.
+ *
+ * `topics:subscribe` was RETIRED 2026-08-09 (coordination-spec-adoption-2026-08-03
+ * D-102) — the named sugar for `watch:create { targetKind:'topic', wake:false }`,
+ * zero calls in 30 days despite being prescribed by name in seven role prompts.
+ * Its handler test moved with it to `_retired/topics-subscribe/`. The `../topics`
+ * `subscribeTopic` seam stays mocked here because `topics:list` reads the rows the
+ * hysteresis machine and `watch:create` still write.
  * (No handler test existed for these — BRIEF target T4.)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,7 +38,6 @@ vi.mock('../identity', () => ({
 
 // SUT imported AFTER the seams are wired.
 import topicsListTool from './topics-list';
-import topicsSubscribeTool from './topics-subscribe';
 import topicsMergeTool from './topics-merge';
 
 type Tool = {
@@ -40,12 +45,9 @@ type Tool = {
   handler: (a: unknown, c: unknown) => Promise<{ content?: Array<{ text: string }>; data?: unknown }>;
 };
 const listTool = topicsListTool as unknown as Tool;
-const subTool = topicsSubscribeTool as unknown as Tool;
 const mergeTool = topicsMergeTool as unknown as Tool;
 const ctx = {} as never;
 const parse = (t: Tool, x: unknown) => t.args.parse(x);
-// topics:subscribe is BULK → the canonical { data: envelope }.
-const out = (r: { data: any }): Record<string, unknown> => r.data;
 // topics:list / topics:merge are NOT bulk — they still return a raw { content } ToolResult.
 const raw = (r: { content?: Array<{ text: string }> }): Record<string, unknown> =>
   JSON.parse(r.content![0].text);
@@ -110,36 +112,6 @@ describe('topics:list handler projection', () => {
 
     await listTool.handler(parse(listTool, { includeMerged: true }), ctx);
     expect(listTopics).toHaveBeenLastCalledWith({ includeMerged: true });
-  });
-});
-
-describe('topics:subscribe handler projection (bulk envelope)', () => {
-  it('projects topic/mode/expires from the returned subscription row into an n=1 result', async () => {
-    subscribeTopic.mockResolvedValue(
-      sub('coord-dx', { delivery_mode: 'digest', expires_ts: '2027-06-04T00:00:00.000Z' }),
-    );
-    const res = out(
-      await subTool.handler(parse(subTool, { topic: 'coord-dx', mode: 'digest', ttl_sec: 3600 }), ctx),
-    );
-    expect(res.ok).toBe(true);
-    expect(res.counts).toEqual({ ok: 1, failed: 0 });
-    expect(res.results).toEqual([
-      {
-        ok: true,
-        topic: 'coord-dx',
-        subscription: { topic: 'coord-dx', mode: 'digest', expires_ts: '2027-06-04T00:00:00.000Z' },
-      },
-    ]);
-    // mode + ttl_sec are forwarded as the per-item opts arg.
-    expect(subscribeTopic).toHaveBeenCalledWith(
-      { ownerId: 'su-test', ownerLabel: 'su · test' },
-      'coord-dx',
-      { mode: 'digest', ttl_sec: 3600 },
-    );
-  });
-
-  it('rejects an invalid mode at the zod boundary (full|digest|mention only)', () => {
-    expect(() => parse(subTool, { topic: 'x', mode: 'loud' })).toThrow();
   });
 });
 

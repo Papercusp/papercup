@@ -38,6 +38,7 @@ interface CoordPresenceDbRow {
   current_files: unknown;
   host: string;
   pid: number | null;
+  tty: string | null;
   started_at: string;
   heartbeat_at: string;
   last_active_at: string | null;
@@ -88,6 +89,7 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
     currentFiles: files,
     host: r.host,
     pid: r.pid,
+    tty: r.tty,
     startedAt: r.started_at,
     heartbeatAt: r.heartbeat_at,
     lastActiveAt: r.last_active_at,
@@ -129,14 +131,14 @@ export class PgPresenceStore implements PresenceStore {
     await sql`
       INSERT INTO harness_shared.coord_presence
         (owner_id, owner_label, workspace_id, source, intent,
-         current_plan_slug, current_files, host, pid,
+         current_plan_slug, current_files, host, pid, tty,
          agent_role, pot_slug, capability_tags, heartbeat_at, last_active_at, intent_declared_at)
       VALUES (
         ${identity.ownerId}, ${identity.ownerLabel},
         ${identity.workspaceId ?? 'default'}, ${identity.source},
         ${input.intent ?? ''}, ${input.currentPlanSlug ?? null},
         COALESCE(${filesJson}::text::jsonb, '[]'::jsonb),
-        ${input.host ?? ''}, ${input.pid ?? null},
+        ${input.host ?? ''}, ${input.pid ?? null}, ${input.tty ?? null},
         ${input.agentRole ?? null}, ${input.potSlug ?? null},
         ${JSON.stringify(input.capabilityTags ?? [])}::text::jsonb,
         now(), now(), now()
@@ -153,6 +155,12 @@ export class PgPresenceStore implements PresenceStore {
         current_files     = COALESCE(${filesJson}::text::jsonb, harness_shared.coord_presence.current_files),
         host              = EXCLUDED.host,
         pid               = EXCLUDED.pid,
+        -- Same "always set from this write's resolved value" rule as host/pid
+        -- above — every current write() caller passes tty as undefined (only the
+        -- supervisor beat's touchHeartbeat call genuinely knows it), so this
+        -- resets to NULL here and the next beat (<=60s) repopulates it, exactly
+        -- like host/pid's existing reset-then-repopulate cadence.
+        tty               = EXCLUDED.tty,
         -- EI-19418749207847685: a carry-respawn REUSES the ownerId but starts a NEW
         -- process, so any cached context estimate describes a session that no longer
         -- exists. AGE alone cannot catch this — the estimate can be only minutes old
@@ -204,59 +212,51 @@ export class PgPresenceStore implements PresenceStore {
 
   async touchHeartbeat(
     ownerId: string,
-    liveness?: { pid?: number | null; host?: string | null },
+    liveness?: { pid?: number | null; host?: string | null; tty?: string | null },
   ): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // KEEPALIVE only — never bumps last_active_at (D-003): the 60s supervisor
     // beat keeps the process "alive" without implying activity.
     //
-    // WI-3898 P1: pid/host are set ONLY when the caller actually reported
-    // them this beat — an omitted field is left UNTOUCHED, never clobbered
-    // to null/''. (Unlike write()'s ON CONFLICT, which unconditionally
-    // EXCLUDED.host/EXCLUDED.pid — that's fine there because write() always
-    // carries a caller-resolved value; here a bare keepalive from a caller
-    // that doesn't know its own pid must not erase a value a prior liveness
+    // WI-3898 P1 (+ EI-19948333346987654 for tty): pid/host/tty are set ONLY
+    // when the caller actually reported them this beat — an omitted field is
+    // left UNTOUCHED, never clobbered to null/''. (Unlike write()'s ON
+    // CONFLICT, which unconditionally sets EXCLUDED.host/EXCLUDED.pid/
+    // EXCLUDED.tty — that's fine there because write() always carries a
+    // caller-resolved value; here a bare keepalive from a caller that
+    // doesn't know its own pid/tty must not erase a value a prior liveness
     // beat recorded.)
     const pid = liveness?.pid;
     const host = liveness?.host;
+    const tty = liveness?.tty;
     // EI-19418749207847685 — see write()'s ON CONFLICT for the full rationale. A
     // CHANGED pid means the cached context estimate belongs to a process that no
     // longer exists (a carry-respawn reuses the ownerId), so clear it rather than
     // let deriveContextPressure assert a DEAD session's bucket with full confidence
     // — its age-based staleness guard cannot see this, because the estimate is
-    // genuinely recent, just not about this process. Composed once and spliced into
-    // both pid-setting branches so the two cannot drift apart.
-    const invalidateEstimateOnPidChange = (newPid: number) => sql`,
+    // genuinely recent, just not about this process.
+    const invalidateEstimateOnPidChange = (newPid: number) => sql`
                context_tokens = CASE WHEN coord_presence.pid IS DISTINCT FROM ${newPid}
                                      THEN NULL ELSE coord_presence.context_tokens END,
                context_estimated_at = CASE WHEN coord_presence.pid IS DISTINCT FROM ${newPid}
                                      THEN NULL ELSE coord_presence.context_estimated_at END`;
-    if (pid != null && host != null) {
-      await sql`
-        UPDATE harness_shared.coord_presence
-           SET heartbeat_at = now(), pid = ${pid}, host = ${host}${invalidateEstimateOnPidChange(pid)}
-         WHERE owner_id = ${ownerId}
-      `;
-    } else if (pid != null) {
-      await sql`
-        UPDATE harness_shared.coord_presence
-           SET heartbeat_at = now(), pid = ${pid}${invalidateEstimateOnPidChange(pid)}
-         WHERE owner_id = ${ownerId}
-      `;
-    } else if (host != null) {
-      await sql`
-        UPDATE harness_shared.coord_presence
-           SET heartbeat_at = now(), host = ${host}
-         WHERE owner_id = ${ownerId}
-      `;
-    } else {
-      await sql`
-        UPDATE harness_shared.coord_presence
-           SET heartbeat_at = now()
-         WHERE owner_id = ${ownerId}
-      `;
-    }
+    // Build the SET clause from only the fields actually reported this beat —
+    // composed via postgres-js fragment nesting (already relied on above for
+    // invalidateEstimateOnPidChange) rather than a hand-enumerated branch per
+    // combination, which would need 8 arms once tty joins pid/host.
+    const assignments = [sql`heartbeat_at = now()`];
+    if (pid != null) assignments.push(sql`pid = ${pid}`);
+    if (host != null) assignments.push(sql`host = ${host}`);
+    if (tty != null) assignments.push(sql`tty = ${tty}`);
+    if (pid != null) assignments.push(invalidateEstimateOnPidChange(pid));
+    let setClause = assignments[0];
+    for (let i = 1; i < assignments.length; i++) setClause = sql`${setClause}, ${assignments[i]}`;
+    await sql`
+      UPDATE harness_shared.coord_presence
+         SET ${setClause}
+       WHERE owner_id = ${ownerId}
+    `;
   }
 
   async touchActivity(ownerId: string): Promise<void> {
@@ -338,7 +338,7 @@ export class PgPresenceStore implements PresenceStore {
     const rows = await sql<CoordPresenceDbRow[]>`
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
-             cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
+             cp.host, cp.pid, cp.tty, cp.started_at, cp.heartbeat_at,
              cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.capability_tags, cp.compaction_limit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
@@ -359,7 +359,7 @@ export class PgPresenceStore implements PresenceStore {
     const rows = await sql<CoordPresenceDbRow[]>`
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
-             cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
+             cp.host, cp.pid, cp.tty, cp.started_at, cp.heartbeat_at,
              cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.capability_tags, cp.compaction_limit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
@@ -415,6 +415,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       current_files     jsonb       NOT NULL DEFAULT '[]'::jsonb,
       host              text        NOT NULL DEFAULT '',
       pid               integer,
+      tty               text,
       started_at        timestamptz NOT NULL DEFAULT now(),
       heartbeat_at      timestamptz NOT NULL DEFAULT now(),
       last_active_at    timestamptz,
@@ -432,6 +433,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
   await sql`
     ALTER TABLE harness_shared.coord_presence
       ADD COLUMN IF NOT EXISTS last_active_at   timestamptz,
+      ADD COLUMN IF NOT EXISTS tty              text,
       ADD COLUMN IF NOT EXISTS agent_role       text,
       ADD COLUMN IF NOT EXISTS pot_slug         text,
       ADD COLUMN IF NOT EXISTS capability_tags  jsonb NOT NULL DEFAULT '[]'::jsonb,

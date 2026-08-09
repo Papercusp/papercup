@@ -17,7 +17,32 @@ import { getInProcessSubstrateStatus } from '../../sync/hyperbee/in-process-stat
 import { getCachedRemoteBootedHandles } from '../../sync/hyperbee/cluster-booted-handles-sync';
 import { getPgBootedHandlesSnapshotFallback } from '../../sync/hyperbee/substrate-booted-handles-pg';
 import { loadClaimAttemptStats } from '../../orchestrator/load-claim-attempts';
+import {
+  loadSubstrateDrainStats,
+  type SubstrateDrainStat,
+} from '../../sync/hyperbee/load-drain-stats';
 import { getOrgPg } from '@papercusp/db-org';
+
+/**
+ * WI-37387: the composer's `resolveDrainStats` seam DEFAULTS to zero-drain
+ * (`in-process-status.ts` ZERO_DRAIN) because that module is pure/PG-free, and
+ * this tool used to leave it defaulted at every call site. That is not a missing
+ * nicety — per the seam's own doc-comment it "is what flips a stuck
+ * (captured-but-not-federating) harness off 'healthy'", so omitting it made the
+ * drain leg of the verdict structurally unable to fire: every harness reported
+ * `undrainedCount: 0` and "no issues detected" regardless of the real backlog
+ * (measured live: papercusp at 34,491 undrained rows still rendered healthy).
+ *
+ * The HTTP route this tool's description claims to mirror
+ * (`build-federation-status.ts`) and `run-drain-reconcile.ts` both wire it, so
+ * agent callers were getting a strictly weaker verdict than HTTP callers.
+ *
+ * NB scope: the map is keyed `${workspace_id}::${harness_slug}` and BOTH parts
+ * matter — `substrate_outbox` is multi-tenant and the same slug exists under
+ * more than one workspace (papercusp is live under both `papercusp-workspace`
+ * and `default`), so a slug-only lookup would silently mix tenants.
+ */
+const ZERO_DRAIN: SubstrateDrainStat = { undrainedCount: 0, oldestUndrainedAgeMs: null };
 
 /**
  * EI-19327550671915579: when the cheap sync path (this process's own boot map,
@@ -54,9 +79,25 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const { sql } = getOrgPg();
+    const runQuery = async <T,>(
+      query: string,
+      paramsArr: unknown[],
+    ): Promise<T[]> => {
+      return (await sql.unsafe(query, paramsArr as never)) as unknown as T[];
+    };
+    // WI-37387: prefetch drain stats ONCE, before the first compose, so every
+    // call site below can resolve them synchronously. `loadSubstrateDrainStats`
+    // swallows a missing table into an empty map, so this degrades to honest
+    // zero-drain rather than throwing the diagnostic read.
+    const drainByKey = await loadSubstrateDrainStats({ runQuery }).catch(
+      () => new Map<string, SubstrateDrainStat>(),
+    );
+    const resolveDrainStats = (ws: string, slug: string): SubstrateDrainStat =>
+      drainByKey.get(`${ws}::${slug}`) ?? ZERO_DRAIN;
     let status = await Promise.resolve(
       getInProcessSubstrateStatus({
         resolveClaimStats: () => ({ total: 0, won: 0, lost: 0, error: 0 }),
+        resolveDrainStats,
         // EI-8816: on a request-only cluster worker, listBootedHandles() is always
         // empty (the substrate boots only on the primary) — fall back to the
         // primary's cached broadcast rather than silently reporting bootedCount:0.
@@ -66,18 +107,13 @@ export default defineTool({
     status = await withPgBootedHandlesFallback(status, (resolveRemoteBootedHandles) =>
       getInProcessSubstrateStatus({
         resolveClaimStats: () => ({ total: 0, won: 0, lost: 0, error: 0 }),
+        resolveDrainStats,
         resolveRemoteBootedHandles,
       }),
     );
     // Second pass: for any booted harness, refresh the stats with the
     // real PG numbers and re-derive the verdict. Done in a second pass
     // so the in-process composer stays sync + PG-free.
-    const runQuery = async <T,>(
-      query: string,
-      paramsArr: unknown[],
-    ): Promise<T[]> => {
-      return (await sql.unsafe(query, paramsArr as never)) as unknown as T[];
-    };
     if (status.harnesses.length > 0) {
       const realStats = await Promise.all(
         status.harnesses.map(async (h) => ({
@@ -98,6 +134,7 @@ export default defineTool({
             lost: 0,
             error: 0,
           },
+        resolveDrainStats,
         resolveRemoteBootedHandles: getCachedRemoteBootedHandles,
       });
       refreshed = await withPgBootedHandlesFallback(refreshed, (resolveRemoteBootedHandles) =>
@@ -109,6 +146,7 @@ export default defineTool({
               lost: 0,
               error: 0,
             },
+          resolveDrainStats,
           resolveRemoteBootedHandles,
         }),
       );

@@ -34,6 +34,17 @@ export interface PresenceInput {
   currentFiles?: string[];
   host?: string;
   pid?: number | null;
+  /** The terminal device path this session's launcher OWNS (e.g. `/dev/pts/21`),
+   *  self-reported by the psu supervisor beat — the same process that resolves
+   *  `PAPERCUSP_TTY` at launch (resolveOwnedTtyPath in psu-launcher.mjs). null/absent
+   *  for a headless launch (no terminal owned). Like `host`/`pid`, only the beat's
+   *  own call site can honestly report this (WI-3898 P1 sibling) — every other
+   *  caller must leave it unset rather than guess. EI-19948333346987654: this is
+   *  what makes "which terminal does session X own" a single presence read
+   *  instead of a /proc ancestry walk, and sidesteps the Wayland wmctrl/xdotool
+   *  blindness entirely (an OSC write to the device path needs no window-manager
+   *  query at all). */
+  tty?: string | null;
   /** Durable role (human/su/bee/principal/…), resolved host-side. Preserved on
    *  a later write that omits it (so it's a populate-once-then-keep field). */
   agentRole?: string | null;
@@ -58,6 +69,9 @@ export interface PresenceRecord {
   currentFiles: string[];
   host: string;
   pid: number | null;
+  /** The terminal device path this session owns (see PresenceInput.tty). null
+   *  when never reported (headless, or pre-tty-column rows). */
+  tty: string | null;
   startedAt: string;
   heartbeatAt: string;
   /** Last GENUINE-activity timestamp (tool dispatch / declare-intent / inbox) —
@@ -114,7 +128,7 @@ export interface PresenceStore {
    *  clobbered with null) — only pass what you can genuinely vouch for. */
   touchHeartbeat(
     ownerId: string,
-    liveness?: { pid?: number | null; host?: string | null },
+    liveness?: { pid?: number | null; host?: string | null; tty?: string | null },
   ): Promise<void>;
   /** Bump last_active_at AND heartbeat (no-op if the row does not exist) — the
    *  ACTIVITY path (e.g. tool dispatch). The genuine-activity counterpart of

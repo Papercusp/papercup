@@ -1662,6 +1662,16 @@ export async function spawnInvokeOnceWithFallback(
     onOutputActivity?: () => void;
   },
 ): Promise<SpawnInvokeOnceResult> {
+  // A PRIOR sandboxed agent in this cwd may have left a 0-byte package.json (claude's
+  // protected-file mask artifact). It is INVALID JSON, so the next Node-based agent
+  // aborts at boot with ERR_INVALID_PACKAGE_CONFIG — i.e. the FIRST spawn into a fresh
+  // app dir bricks it for every spawn after. invoke.ts heals its own spawns, but the
+  // OPERATOR path (operator-spawn.ts -> here) never reached that call, so cups placed
+  // into a template-materialized app died in ~5s, 100% of the time, with no signal
+  // pointing at the cause. Measured 2026-08-09 on the P-010 canary: a Mug ran first and
+  // left the artifact; the cup behind it failed instantly. Healing HERE covers both the
+  // sidecar and in-process branches below, and every caller of this seam.
+  healSandboxZeroByteManifest(projectDir, (m) => console.log(`[spawn-invoke] ${m}`));
   // v1 rollout control is a PER-HOST env opt-in (PAPERCUSP_SPAWNER_SIDECAR=1), NOT
   // the global papercusp-spawner-sidecar flag: post the 2026-06-29 flag-default
   // inversion that flag derives default-ON and is system-scope (global) + is not

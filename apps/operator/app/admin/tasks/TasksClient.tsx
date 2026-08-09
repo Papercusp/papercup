@@ -13,7 +13,7 @@ import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { Table, type TableColumn } from '@/app/harness/Table';
 // The SHARED kill control — the same component the dropdown mounts (P-023/P-024).
-import KillTaskControl from './KillTaskControl';
+import KillTaskControl, { KillOutcomeProvider, useKillOutcomeHoist } from './KillTaskControl';
 
 /**
  * /admin/tasks — the Task Manager pane
@@ -311,6 +311,9 @@ export default function TasksClient(): ReactElement {
   });
 
   const data = q.data[0] ?? null;
+  // A kill's answer has to outlive the row it was fired from — the row is exactly what
+  // disappears when the kill lands. `notice` renders only once that row is gone.
+  const { outcomeContext: killOutcomeContext, notice: killNotice } = useKillOutcomeHoist(data?.rows ?? []);
   // WI-7371 — same hook the popover uses, so the two surfaces cannot disagree (WI-6844).
   const resources = useResourceTotals(data?.summary?.resources);
   const error = q.error?.message ?? null;
@@ -478,15 +481,22 @@ export default function TasksClient(): ReactElement {
           <strong>System</strong> tab to check the <code>task-reconcile</code> routine is armed.
         </div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <Table
-            style={{ minWidth: 1180, ...mono }}
-            columns={TASK_COLUMNS}
-            rows={data?.rows ?? []}
-            getRowKey={(r) => r.taskId}
-          />
-        </div>
+        <KillOutcomeProvider value={killOutcomeContext}>
+          <div style={{ overflowX: 'auto' }}>
+            <Table
+              style={{ minWidth: 1180, ...mono }}
+              columns={TASK_COLUMNS}
+              rows={data?.rows ?? []}
+              getRowKey={(r) => r.taskId}
+            />
+          </div>
+        </KillOutcomeProvider>
       )}
+
+      {/* Renders only once the killed row has left the table — see `useKillOutcomeHoist`.
+          A successful kill drops the row out of the default running-only view, taking the
+          in-row chip with it, so without this the reader gets no answer at all. */}
+      {killNotice}
 
       {/* WHAT IS ACTUALLY RUNNING.
           The ledger above answers "what did our enrolment seams record", and at any

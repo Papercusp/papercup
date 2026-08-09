@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { deriveLastRespawnOutcome, priorRespawnNote } from './carry-respawn-outcome';
+import {
+  deriveLastRespawnOutcome,
+  priorRespawnNote,
+  droppedRespawnAmbientLine,
+  DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS,
+} from './carry-respawn-outcome';
 
 /**
  * EI-19480099650947832 — `session:request-compaction` returned `respawn: true`
@@ -117,5 +122,70 @@ describe('priorRespawnNote', () => {
     expect(priorRespawnNote({ outcome: 'dropped', ageMs: 30_000 })).toContain('just now');
     expect(priorRespawnNote({ outcome: 'dropped', ageMs: 3 * 3_600_000 })).toContain('3h ago');
     expect(priorRespawnNote({ outcome: 'dropped', ageMs: null })).toContain('unknown age');
+  });
+});
+
+/**
+ * EI-19326331501849713 (owner-directed 2026-08-09) — the AMBIENT line, which
+ * exists because `priorRespawnNote` only reaches an agent that calls
+ * `session:request-compaction` AGAIN, and a dropped respawn removes every reason
+ * to call again. Measured on session bd819348: the owner read the resulting
+ * silence as "the successor got an error" when no successor had ever existed.
+ */
+describe('droppedRespawnAmbientLine', () => {
+  const dropped = (over: Partial<{ reason: string; ageMs: number | null }> = {}) => ({
+    outcome: 'dropped' as const,
+    reason: 'busy-gate-expired',
+    ts: '2026-08-04T00:38:29.702Z',
+    ageMs: 4 * 60_000,
+    ...over,
+  });
+
+  it('warns on a RECENT drop, naming the reason and the observable that confirms it', () => {
+    const line = droppedRespawnAmbientLine(dropped());
+    expect(line).toContain('carry-respawn DROPPED');
+    expect(line).toContain('busy-gate-expired');
+    // The observable is what makes this actionable rather than merely alarming:
+    // the agent can confirm it without any tool call.
+    expect(line).toContain('still the same session');
+    expect(line).toContain('session:request-compaction');
+  });
+
+  // A line that fires when nothing is wrong is a line agents learn to skip —
+  // which would defeat the entire point of adding another per-turn line.
+  it('is SILENT for delivered / pending / none / null', () => {
+    expect(droppedRespawnAmbientLine({ outcome: 'delivered', ageMs: 1_000 })).toBeNull();
+    expect(droppedRespawnAmbientLine({ outcome: 'pending', ageMs: 1_000 })).toBeNull();
+    expect(droppedRespawnAmbientLine({ outcome: 'none' })).toBeNull();
+    expect(droppedRespawnAmbientLine(null)).toBeNull();
+    expect(droppedRespawnAmbientLine(undefined)).toBeNull();
+  });
+
+  it('goes quiet once the drop is old news, treating the boundary itself as still-recent', () => {
+    expect(droppedRespawnAmbientLine(dropped({ ageMs: DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS }))).not.toBeNull();
+    expect(droppedRespawnAmbientLine(dropped({ ageMs: DROPPED_RESPAWN_AMBIENT_MAX_AGE_MS + 1 }))).toBeNull();
+  });
+
+  // An unparseable host timestamp yields ageMs null. Rendering that as "recent"
+  // would nag every turn forever on exactly the rows we know least about.
+  it('is SILENT on a drop of UNKNOWN age rather than assuming it is recent', () => {
+    expect(droppedRespawnAmbientLine(dropped({ ageMs: null }))).toBeNull();
+  });
+
+  it('omits the reason clause cleanly when the host recorded none', () => {
+    const line = droppedRespawnAmbientLine({ outcome: 'dropped', ageMs: 60_000 });
+    expect(line).toContain('carry-respawn DROPPED');
+    expect(line).not.toContain('(reason:');
+  });
+
+  // CONTROL (falsifiability, per the repo's guard-testing rule): the age gate is
+  // the only thing between this line and permanent noise, so prove a
+  // deliberately-weaker gate WOULD fire where the real one stays silent. If this
+  // control ever stops discriminating, the assertions above have gone vacuous.
+  it('CONTROL: an age-blind gate fires on an ancient drop where the real one does not', () => {
+    const ancient = dropped({ ageMs: 30 * 24 * 3_600_000 });
+    const ageBlindGate = (p: ReturnType<typeof dropped>) => (p.outcome === 'dropped' ? 'would fire' : null);
+    expect(ageBlindGate(ancient)).not.toBeNull();
+    expect(droppedRespawnAmbientLine(ancient)).toBeNull();
   });
 });

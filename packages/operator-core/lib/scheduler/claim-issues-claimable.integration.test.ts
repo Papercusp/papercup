@@ -604,7 +604,11 @@ describe('explainIssueClaimFloors reports the 3 previously-missing floors (WI-37
   it('a row with a PRESENT non-terminal blocker reports refusedBy:"blocked-dep" (was admissible:true)', async () => {
     await seedIssue('EI-FLOOR-BLOCKED', { state: 'open', createdTs: 100 });
     await seedFeature('EI-FLOOR-BLOCKER', { status: 'open' });
-    await blockEdge('EI-FLOOR-BLOCKED', 'EI-FLOOR-BLOCKER', 'issue', 'feature');
+    // Feature blocker refs are harness-qualified (see the `does NOT claim an issue blocked by
+    // a NON-TERMINAL feature blocker` case above) — depsBlockedExclusionSql's unsatisfiedBlockerSql
+    // matches a feature blocker via `(bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref`,
+    // so a bare id here never matches and the blocker reads as absent/satisfied.
+    await blockEdge('EI-FLOOR-BLOCKED', `${H}#EI-FLOOR-BLOCKER`, 'issue', 'feature');
     const [attr] = await wi.explainIssueClaimFloors(H, ['EI-FLOOR-BLOCKED']);
     expect(attr.admissible).toBe(false);
     expect(attr.refusedBy).toBe('blocked-dep');

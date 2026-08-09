@@ -48,6 +48,61 @@ export type TaskInventoryRow = {
 };
 
 /**
+ * A RECURRING task — the second KIND the pane inventories (P-019).
+ *
+ * The pane's other rows answer "what is running right now"; these answer "what is
+ * scheduled to run at all", which is what makes it a task manager rather than a
+ * process manager. Projected from `ScheduleInventoryRow` (schedule-inventory.ts)
+ * rather than re-derived, so /admin/tasks and /admin/schedules can never disagree
+ * about what exists — they render ONE collection through two lenses.
+ *
+ * Deliberately a NARROWER shape than `ScheduleInventoryRow`: `detail` is an open
+ * `Record<string, unknown>` bag whose contents vary per source, and shipping it to a
+ * client would put an unbounded, untyped payload on a pane refresh. The two fields
+ * the reader actually needs out of it are lifted to real columns below.
+ */
+export type ScheduleTaskRow = {
+  /** Stable render key. `source:scope:name` — unique because a name repeats across sources. */
+  key: string;
+  name: string;
+  /** dbos | routines | in-process | managed | external-process. */
+  source: string;
+  /** durable (DBOS-backed) | ephemeral (in-process interval). */
+  tier: string;
+  category: string;
+  /** operator | harness. */
+  scope: string;
+  installSlug: string | null;
+  cadence: string;
+  /**
+   * armed/active where known — `null` means NOT APPLICABLE OR UNKNOWN, never "off".
+   * Collapsing it to a boolean is a filed defect (WI-6447): `armed !== false` reads a
+   * row whose fire-state could not be reached as armed.
+   */
+  armed: boolean | null;
+  lastFire: string | null;
+  nextFire: string | null;
+  lastError: string | null;
+  /**
+   * `detail.federated` — true when the row's fire-state was fetched LIVE from the
+   * sibling process that owns it. A false row is either the static manifest or a
+   * sibling that did not answer, so its armed/lastFire are not measurements. The
+   * repo convention is explicit that this must be read before trusting a row's
+   * fire-state, which is why it is a first-class field here and not left in `detail`.
+   */
+  federated: boolean;
+  /** `detail.process` — which process owns the timer (e.g. `bg-host:3080`), when known. */
+  process: string | null;
+};
+
+/** Counts over the recurring set, mirroring `summarizeInventory` (schedule-inventory.ts). */
+export type ScheduleTaskSummary = {
+  total: number;
+  bySource: Record<string, number>;
+  byTier: Record<string, number>;
+};
+
+/**
  * Fleet-wide resource totals over the LIVE tracked set — deliberately NOT the row set
  * `total`/`byState` describe.
  *

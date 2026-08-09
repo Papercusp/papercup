@@ -28,6 +28,7 @@ import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
+import { getModeSubject } from '../../modes/store';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
@@ -148,6 +149,41 @@ function hasDeclaredLineageTo(
  * Create ONE work-item, applying the mirror-guard + workspace resolution + hive-scope
  * gate, then the createWorkItem call (incl. the atomic create+claim). Never throws.
  */
+/**
+ * Stamp a freshly-created work-item with the goal its creator is running.
+ *
+ * Returns the goal id when a stamp was written, `null` in every
+ * not-applicable case — no workspace in scope, no owner, the creator is not in
+ * GOAL mode, or the mode carries no subject. NONE of those are errors: most
+ * work on this fleet is not goal-mode work, so a silent null is the common and
+ * correct outcome.
+ *
+ * `getModeSubject` is deliberately the only read here. Resolving the goal any
+ * other way — an argument, a plan lookup, a guess from the harness — would
+ * re-introduce exactly the self-report this mechanism replaces.
+ */
+async function stampGoalProvenance(
+  workItem: WorkItem,
+  workspaceId: string | undefined,
+  ownerId: string | undefined,
+): Promise<string | null> {
+  if (!workspaceId || workspaceId === '*' || !ownerId) return null;
+  const goalId = await getModeSubject(workspaceId, ownerId, 'goal');
+  if (!goalId) return null;
+  const sql = getOrgPg();
+  // Keyed on (harness_slug, feature_id) — the table's own identity, the same
+  // pair `createWorkItem`'s ON CONFLICT uses. Never clobbers an existing stamp:
+  // an item explicitly attributed elsewhere outranks the ambient session mode.
+  await sql`
+    UPDATE harness_shared.work_items
+       SET goal_id = ${goalId}
+     WHERE feature_id = ${workItem.id}
+       AND harness_slug = ${workItem.harness}
+       AND goal_id IS NULL
+  `;
+  return goalId;
+}
+
 export async function createOneWorkItem(
   args: CreateOneWorkItemArgs,
   ctx: CreateOneWorkItemCtx,
@@ -433,7 +469,38 @@ export async function createOneWorkItem(
         // Non-fatal — an inline edge is best-effort, like the coverage edge.
       }
     }
-    return { ok: true, workItem, ...(similarOpen ? { similarOpen } : {}), ...(stateError ? { stateError } : {}) };
+    // ── Goal provenance (goal-mode-2026-08-07 P-016) ────────────────────
+    // Stamp goal_id from SESSION CONTEXT — the `subject` of the creator's GOAL
+    // mode, set by goals:create — rather than asking the agent to pass it.
+    //
+    // This is the whole provenance mechanism, and the reason it reads from the
+    // mode rather than from an argument is that agent self-report does not
+    // survive a compaction: an agent three days into a goal, on its fifth
+    // session, has no memory of the goal id and will simply omit it. Before
+    // this, `work_items.goal_id` was NULL on all 65,462 rows, so "what belongs
+    // to this goal?" had no answer at all.
+    //
+    // Applied as a follow-on UPDATE rather than threaded through
+    // `createWorkItem`, because the two families take different write paths
+    // (feature-family INSERTs the table directly; issue-family goes through
+    // `createIssue` and the engineer_issues INSTEAD-OF trigger) and this one
+    // statement covers both. It is a DECORATION: best-effort and non-fatal,
+    // exactly like the edges above — losing provenance is bad, but failing a
+    // creation because provenance could not be recorded is worse.
+    let goalStamp: string | undefined;
+    try {
+      const stampedGoal = await stampGoalProvenance(workItem, workspaceId, ctx.ownerId);
+      if (stampedGoal) goalStamp = stampedGoal;
+    } catch {
+      // Non-fatal — the item exists; only its goal attribution is missing.
+    }
+    return {
+      ok: true,
+      workItem,
+      ...(goalStamp ? { goalId: goalStamp } : {}),
+      ...(similarOpen ? { similarOpen } : {}),
+      ...(stateError ? { stateError } : {}),
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

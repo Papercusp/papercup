@@ -71,16 +71,17 @@ export class InMemoryPresenceStore implements PresenceStore {
 
   async touchHeartbeat(
     ownerId: string,
-    liveness?: { pid?: number | null; host?: string | null },
+    liveness?: { pid?: number | null; host?: string | null; tty?: string | null },
   ): Promise<void> {
     // KEEPALIVE only — never lastActiveAt (D-003).
     const row = this.rows.get(ownerId);
     if (!row) return;
     row.heartbeatAt = this.now();
-    // WI-3898 P1: mirror the PG store's "only set what was reported, never
-    // clobber with null" contract.
+    // WI-3898 P1 (+ EI-19948333346987654 for tty): mirror the PG store's "only
+    // set what was reported, never clobber with null" contract.
     if (liveness?.pid != null) row.input.pid = liveness.pid;
     if (liveness?.host != null) row.input.host = liveness.host;
+    if (liveness?.tty != null) row.input.tty = liveness.tty;
   }
 
   async touchActivity(ownerId: string): Promise<void> {
@@ -157,6 +158,7 @@ export class InMemoryPresenceStore implements PresenceStore {
       currentFiles: r.input.currentFiles ?? [],
       host: r.input.host ?? '',
       pid: r.input.pid ?? null,
+      tty: r.input.tty ?? null,
       startedAt: new Date(r.startedAt).toISOString(),
       heartbeatAt: new Date(r.heartbeatAt).toISOString(),
       lastActiveAt: r.lastActiveAt != null ? new Date(r.lastActiveAt).toISOString() : null,

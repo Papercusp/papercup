@@ -36,6 +36,7 @@ import {
 } from './release/gate-red-ownership';
 import { releaseFixerSpawnAlive } from './release/fixer-liveness';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
+import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -619,6 +620,12 @@ export async function gitPipelineSnapshot(
   // EI-18669342433807110 — Rule 4: a stale-candidate auto-refire for the cached red running RIGHT
   // NOW, already freshness-checked (missing/malformed/abandoned ⇒ null).
   const inFlightRetriage = parseInFlightRetriage(gateHealth.inFlightRetriage);
+  // EI-19931692050586322 — the SIBLING marker, and the one that covers the common case. Same
+  // freshness contract (missing/malformed/abandoned ⇒ null), same "already in hand" property:
+  // `gateHealth` is the object we have already loaded, so this is a second key off it, never a
+  // second query. Deliberately parsed even when `inFlightRetriage` is non-null — the consumer
+  // decides precedence (a refire supersedes the original candidate), not this line.
+  const inFlightCandidate = parseInFlightCandidate(gateHealth.inFlightCandidate);
   /**
    * EI-19346660748445728 — Rule 5 input. `gate_health.candidateCommittedAt` is written by
    * `release-actions.ts` as an ISO STRING (`git show -s --format=%cI`), unlike its sibling
@@ -818,6 +825,7 @@ export async function gitPipelineSnapshot(
         typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
       ),
       inFlightRetriage,
+      inFlightCandidate,
       candidateAgeMs: gcCandidateAgeMs ?? null,
       commitsBehindTip: rawCommitsBehindTip,
       flakyWorkspaces: Object.entries(flakeHistory)

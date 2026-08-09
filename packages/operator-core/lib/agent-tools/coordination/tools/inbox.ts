@@ -51,7 +51,9 @@ import {
   contextUsagePct,
   renderBandedContextGauge,
   CONTEXT_GAUGE_LOUD_PCT,
+  CONTEXT_GAUGE_QUIET_PCT,
 } from "./inbox-context-usage";
+import { readPriorRespawnOutcome, droppedRespawnAmbientLine } from "../../../carry-respawn-outcome";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
 import { currentContextTokensForOwner } from "../../../compaction-usage";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
@@ -875,6 +877,7 @@ export default defineTool({
     // empty inbox — closing the heads-down / zero-new-mail gap (EI-6597). One renderer
     // source (renderBandedContextGauge) shared with the P-013 result-annotator.
     let contextGauge: string | null = null;
+    let respawnLine: string | null = null;
     try {
       const pres = await getPresence(identity.ownerId);
       // WI-4154: derive the usage from the transcript's CURRENT state (anchored

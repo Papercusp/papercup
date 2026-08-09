@@ -780,14 +780,24 @@ export interface PipelinePosition {
       /** WI-7035: WHERE `candidate` came from, because the two sources have different trust.
        *
        *  - `'retriage-marker'` — the run's OWN published `inFlightRetriage` marker in Postgres.
-       *    An authoritative observation of what this run is judging.
+       *    An authoritative observation of what this run is judging. Only ever present once the
+       *    run has REFIRED, which is the uncommon case.
+       *  - `'in-flight-candidate'` — the run's OWN published `inFlightCandidate` marker
+       *    (EI-19931692050586322). Equally authoritative, and it covers the COMMON case: it is
+       *    written at candidate-final time on every invocation, including a run's first
+       *    candidate. Before this existed as a read, an ordinary non-refiring cron run could
+       *    only ever be reported as `'run-probe'`.
        *  - `'run-probe'` — derived by probing the run. On a MANUAL run that is its `/tmp` unit
        *    log (an observation); on a CRON run the manual unit is inactive and the probe falls
        *    back to the checkpoint checkout's live HEAD, which is an INFERENCE that can change
        *    between two reads and is only right while that checkout is pinned to the candidate.
        *
-       *  Prefer a `'retriage-marker'` reading; treat `'run-probe'` as a hint. */
-      candidateSource?: 'retriage-marker' | 'run-probe';
+       *  The first two are observations and interchangeable in trust; prefer either over
+       *  `'run-probe'`, which is a hint. `'run-probe'` remains REACHABLE by design — both
+       *  markers are best-effort writes that swallow their own errors, so a live run can
+       *  legitimately publish neither, and the honest answer then is the labelled inference
+       *  rather than a fabricated observation. */
+      candidateSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe';
       /** EI-19327704778173646: the candidate this run STARTED on, present only once it has
        *  re-candidated. Provenance only — never verify a fix against this sha. */
       initialCandidate?: string | null;
@@ -1707,17 +1717,31 @@ export interface GateCandidates {
  */
 export function reconcileGateCandidates(
   candidates: GateCandidates,
-  inFlight: { candidate: string | null; candidateSource?: 'retriage-marker' | 'run-probe' } | null | undefined,
+  inFlight:
+    | { candidate: string | null; candidateSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe' }
+    | null
+    | undefined,
 ): GateCandidates {
   /**
    * `candidateSource: 'retriage-marker'` is only ever set when the marker was present AND
    * the run was active (`mapCheckpointRunInFlight`: `const marker = active && retriage ? …`),
    * so this single check already carries the liveness guard — no separate `active` test,
    * which would couple this to a second liveness derivation.
+   *
+   * EI-19931692050586322: `'in-flight-candidate'` carries the SAME guarantees — set only when
+   * that marker was present and the run was active — and is likewise an observation the run
+   * published about itself, so it is authoritative here too. Precedence between the two is
+   * already settled upstream (a refire supersedes the candidate the run started on, so the
+   * mapper consults the candidate marker only when there is no refire marker); this side just
+   * has to stop treating "not the retriage marker" as "therefore an inference".
    */
-  const markerSha = inFlight?.candidateSource === 'retriage-marker' ? inFlight.candidate : null;
-  if (markerSha) {
-    return { ...candidates, judgingSha: markerSha, judgingShaSource: 'retriage-marker' };
+  const markerSource =
+    inFlight?.candidateSource === 'retriage-marker' || inFlight?.candidateSource === 'in-flight-candidate'
+      ? inFlight.candidateSource
+      : null;
+  const markerSha = markerSource ? inFlight!.candidate : null;
+  if (markerSha && markerSource) {
+    return { ...candidates, judgingSha: markerSha, judgingShaSource: markerSource };
   }
   /**
    * No marker. The probe's answer stands — but it is only ATTRIBUTED when it actually named
@@ -2837,6 +2861,18 @@ export function mapCheckpointRunInFlight(
    * neither origin, whereas `cached` is a snapshot of unbounded age.
    */
   liveLock?: { held: boolean; elapsedSec: number | null } | null,
+  /**
+   * EI-19931692050586322: the run's OWN published `inFlightCandidate` marker, already
+   * freshness-checked by `parseInFlightCandidate`. Authoritative, exactly like `retriage` —
+   * the difference is COVERAGE, not trust: `retriage` exists only after a refire, whereas this
+   * is written at candidate-final time on every invocation, so it answers the common case of
+   * an ordinary cron run on its first candidate. Without it that run could only ever be
+   * reported as `'run-probe'`, which this tool itself labels not authoritative.
+   *
+   * Optional and nullable on purpose: the write is best-effort and swallows its own errors, so
+   * a genuinely live run can publish nothing. Omitted/null simply falls through to the probe.
+   */
+  candidateMarker?: { candidate: string; refireDepth: number; quietCutApplied: boolean; pid: number } | null,
 ): PipelinePosition['gate']['checkpointRunInFlight'] {
   const cachedRun = cached?.activeRun ?? null;
   // UNKNOWN only when BOTH reads are absent. Previously a missing cache alone forced this,
@@ -2886,13 +2922,18 @@ export function mapCheckpointRunInFlight(
   // The marker only describes a LIVE run; attaching it to an idle probe would assert a refire
   // is in flight for a run that has already finished.
   const marker = active && retriage ? retriage : null;
+  // EI-19931692050586322: same liveness gate, same reason — a candidate marker attached to a run
+  // the lock says is over would assert that a finished run is judging something right now.
+  // Consulted ONLY when there is no refire marker: a refire supersedes the candidate the run
+  // started on, so `retriage` legitimately wins where both exist.
+  const candMarker = active && !marker && candidateMarker ? candidateMarker : null;
   return {
     active,
     // Emitted only when the lock answered, so the cache-only shape is byte-identical to before.
     ...(lockDecides ? { activeSource: 'run-lock' as const } : {}),
     // The marker is an observation the run published about ITSELF; `candidate` here is at best a
     // log read and at worst (cron) a live-worktree inference. Prefer the observation.
-    candidate: marker ? marker.refiringCandidate : candidate,
+    candidate: marker ? marker.refiringCandidate : candMarker ? candMarker.candidate : candidate,
     ...(marker
       ? {
           candidateSource: 'retriage-marker' as const,
@@ -2910,12 +2951,23 @@ export function mapCheckpointRunInFlight(
           refireObserved: true as const,
           initialCandidate: marker.fromCandidate,
         }
-      : {
-          ...(candidate != null ? { candidateSource: 'run-probe' as const } : {}),
-          ...(refireObserved
-            ? { initialCandidate: cachedRun!.initialCandidate ?? null, refireObserved: true as const }
-            : {}),
-        }),
+      : candMarker
+        ? {
+            // EI-19931692050586322: an OBSERVATION the run published about itself, so it
+            // outranks the probe below exactly as the retriage marker does.
+            candidateSource: 'in-flight-candidate' as const,
+            // `refireDepth > 0` IS a re-candidation the run reported. On the cron path the
+            // log-derived `refireObserved` can never fire (only manual runs write that log),
+            // so without this an in-process rescue stayed invisible whenever the refire marker
+            // was absent — the same blind spot WI-7035 closed for the retriage half.
+            ...(candMarker.refireDepth > 0 ? { refireObserved: true as const } : {}),
+          }
+        : {
+            ...(candidate != null ? { candidateSource: 'run-probe' as const } : {}),
+            ...(refireObserved
+              ? { initialCandidate: cachedRun!.initialCandidate ?? null, refireObserved: true as const }
+              : {}),
+          }),
     startedAtMs,
     elapsedSec,
     // Still the CACHE's age (that is what the field documents), so it stays null when the

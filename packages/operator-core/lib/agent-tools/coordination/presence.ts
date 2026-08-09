@@ -223,11 +223,13 @@ export async function setPresenceFleet(
  *  if the row does not exist. NEVER bumps last_active_at (D-003).
  *
  *  `liveness` (WI-3898 P1): the psu supervisor beat's self-reported
- *  { pid, host } — see the file-header note. Omitted/undefined fields leave
- *  the stored value UNTOUCHED (never clobbered to null). */
+ *  { pid, host, tty } — see the file-header note. Omitted/undefined fields leave
+ *  the stored value UNTOUCHED (never clobbered to null). `tty` (EI-19948333346987654)
+ *  is the terminal device path the launcher resolved for itself (PAPERCUSP_TTY) —
+ *  same honesty rule as pid/host: only the beat's own call site can report it. */
 export async function touchHeartbeat(
   ownerId: string,
-  liveness?: { pid?: number | null; host?: string | null },
+  liveness?: { pid?: number | null; host?: string | null; tty?: string | null },
 ): Promise<void> {
   await store.touchHeartbeat(ownerId, liveness);
 }
