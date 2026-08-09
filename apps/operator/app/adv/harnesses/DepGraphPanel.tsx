@@ -292,6 +292,25 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   );
   const legendOpen = legend === 'on';
 
+  /**
+   * ZOOM (P-008). The canvas is routinely several times wider than the pane — the live
+   * papercusp graph lays out at ~4600px against a ~900px pane — so "where am I in this
+   * thing" was answerable only by scrolling, and the SHAPE of a dependency graph (how many
+   * chains, how deep, how they braid) is exactly what a scroll window destroys.
+   *
+   * A DISCRETE LADDER, in nuqs as `parseAsStringEnum`, rather than a free number: it is the
+   * house preference order for URL state, it validates (a hand-typed `dgz=9999` falls back
+   * to the default instead of rendering a 1px graph an agent then reports as blank), and
+   * seven rungs are all a reader ever wants. `fit` is a rung rather than a button that
+   * writes a number, because a shared link saying "fit" should fit the RECIPIENT's pane —
+   * baking my viewport's ratio into the URL would be the wrong semantic and would silently
+   * mis-fit on any other window size.
+   */
+  const [zoom, setZoom] = useQueryState(
+    'dgz',
+    parseAsStringEnum(['fit', '50', '67', '75', '100', '125', '150']).withDefault('100'),
+  );
+
   // SAME queryName + SAME limit as WorkItemsPanel ⇒ one shared subscription (see header).
   const itemsQuery = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
