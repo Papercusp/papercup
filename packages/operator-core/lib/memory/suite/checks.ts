@@ -210,7 +210,29 @@ async function checkEmbedderResolution(): Promise<CheckResult> {
   return pass(`Embedder resolved to '${resolved}'.`);
 }
 
+/**
+ * Can mem0 run its fact-extraction LLM step at all?
+ *
+ * Checks the extraction cascade IN ITS REAL ORDER since
+ * inference-rename-and-provider-agnostic-default-2026-08-09 P-005. It used to check only for a
+ * raw Anthropic key, which made it report a warning — and, with no OpenAI key, an outright
+ * FAILURE — on a box that extracts perfectly well via rung #1. That was already wrong before
+ * this plan (rung #1 predates it); removing the settings field just guaranteed it would fire.
+ *
+ * Rung #1 is the session transport (Haiku on the Claude session or the default account — no key,
+ * $0 marginal), so a resolvable transport is a PASS on its own and the raw key is a fall-through.
+ */
 async function checkAnthropicKey(): Promise<CheckResult> {
+  try {
+    const { probeStatelessTransport } = await import('@papercusp/papercusp-shared/agent');
+    const probe = probeStatelessTransport();
+    if (probe.ok) {
+      return pass(`Fact extraction available via the ${probe.label} transport (no raw key needed).`);
+    }
+  } catch {
+    // The probe is an OPTIMISATION on the happy path, not the verdict — fall through to the
+    // key checks below rather than failing the whole check because one import misbehaved.
+  }
   try {
     const { readCredentials } = await import('../../credentials');
     const creds = await readCredentials();
@@ -219,13 +241,14 @@ async function checkAnthropicKey(): Promise<CheckResult> {
     }
     if (creds.openai_api_key || process.env.OPENAI_API_KEY) {
       return warn(
-        'Anthropic key present (preferred for Haiku).',
-        'No Anthropic key — mem0 will fall back to OpenAI gpt-4o-mini for extraction (more expensive).',
+        'Fact extraction reaches Haiku (session transport or an Anthropic key).',
+        'No session transport and no Anthropic key — mem0 falls back to OpenAI gpt-4o-mini for extraction (more expensive).',
       );
     }
     return fail(
-      'Anthropic OR OpenAI key present for fact extraction.',
-      'Neither key found — mem0 LLM step will fail. Add a key at /settings/api-keys.',
+      'Some fact-extraction route available (session transport, Anthropic key, or OpenAI key).',
+      'No session transport and neither key found — the mem0 LLM step will fail. Set a default ' +
+        'account at /settings/deploy-accounts (Inference), or add an OpenAI embeddings key at /settings/api-keys.',
     );
   } catch (e) {
     return fail('Credentials readable.', `readCredentials threw: ${(e as Error).message}`);

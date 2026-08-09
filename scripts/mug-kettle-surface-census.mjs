@@ -1,0 +1,615 @@
+#!/usr/bin/env node
+/**
+ * mug-kettle-surface-census — a machine-generated inventory of every ENTRY POINT
+ * through which the Mug / Kettle / Cup tier can initiate, display, or offer work.
+ *
+ * Plan: retire-mug-kettle-su-only-2026-08-09 (P-005). Written BEFORE the retirement
+ * so the change is measurable, and so P-016's lint has a real population rather than
+ * one agent's grep.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────
+ * WHY THIS IS NOT A GREP FOR "mug"
+ * ─────────────────────────────────────────────────────────────────────────────────
+ * P-005 requires anchoring on the PROPERTY (does this site initiate / display / offer
+ * mug-kettle work) rather than on the spelling of a word. Two measured facts from this
+ * tree make a word-grep actively wrong, in BOTH directions:
+ *
+ *   FALSE NEGATIVE — the registration name can be a CONSTANT, not a literal.
+ *     `overwatch/loop.ts:576` reads:
+ *         registerSystemAction(OVERWATCH_LAUNCH_ACTION, handleOverwatchLaunch);
+ *     A scan for `registerSystemAction('system:...')` finds 54 actions and MISSES this
+ *     one entirely — i.e. it misses the Kettle's own launcher. Any literal-only detector
+ *     reports the Kettle as having no launch action, which reads exactly like "already
+ *     retired" and is the most expensive possible wrong answer here.
+ *
+ *   FALSE POSITIVE — the blueprint id does NOT discriminate.
+ *     `POT_BLUEPRINT_ID === 'coding'` AND `OVERWATCH_BLUEPRINT_ID === 'coding'`, the same
+ *     id an ordinary su coding session uses. Classifying by the VALUE would sweep up
+ *     unrelated launches; so blueprint launches are classified by the CONSTANT NAME.
+ *
+ * Therefore every detector below anchors on a MECHANISM (a call, a registration, a role
+ * assignment, a mounted surface) and resolves identifier arguments through a constant
+ * table before classifying.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────
+ * COVERAGE IS REPORTED, NOT ASSUMED
+ * ─────────────────────────────────────────────────────────────────────────────────
+ * A detector is only as wide as the shape it matches. This script therefore emits a
+ * `coverage` block naming (a) the shapes each detector DOES match, and (b) every site it
+ * found but could NOT resolve (`unresolved`). An empty findings list is only meaningful
+ * next to `coverage.status === 'complete'`. Read `unresolved` before concluding anything
+ * is absent — "not found" is never reported as "does not exist".
+ *
+ * Usage:
+ *   node scripts/mug-kettle-surface-census.mjs             # printed table
+ *   node scripts/mug-kettle-surface-census.mjs --json      # JSON to stdout
+ *   node scripts/mug-kettle-surface-census.mjs --out c.json
+ *   node scripts/mug-kettle-surface-census.mjs --category system-action
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/** Roots we scan. Everything else (node_modules, build output) is skipped. */
+const SCAN_ROOTS = ['packages', 'libs', 'apps', 'scripts'];
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', 'build', '.next', 'coverage', 'target',
+  '.turbo', '.cache', 'out', '.astro',
+]);
+/**
+ * Any `dist*` directory is BUILD OUTPUT, not a surface. Skipping only the exact name
+ * `dist` let `apps/operator/dist-host/hono-host.mjs` in — a 700k-line bundle that
+ * contributed duplicate "findings" for every source site it inlined, inflating the
+ * census with sites nobody can edit.
+ */
+const isBuildOutputDir = (name) => /^dist(-|$)/.test(name);
+
+/** The census must not inventory ITSELF — its own doc comments name every shape it hunts. */
+const SELF_FILE = fileURLToPath(import.meta.url);
+
+/**
+ * `_retired/` is scanned but bucketed SEPARATELY: those surfaces are already retired,
+ * so counting them in the live population would overstate the work remaining.
+ */
+const RETIRED_MARKER = `${path.sep}_retired${path.sep}`;
+
+const CODE_EXT = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.jsx']);
+const isTestFile = (p) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(p) || `${path.sep}__tests__${path.sep}`.includes(path.sep) && p.includes(`${path.sep}__tests__${path.sep}`);
+
+/* ══════════════════════════════════════════════════════════════════════════════════
+   THE DOMAIN — what counts as mug/kettle/cup machinery
+   ══════════════════════════════════════════════════════════════════════════════════ */
+
+/** Runtime roles. Ground truth: harness_shared.spawned_agents.child_role. */
+const RETIRING_ROLES = new Set(['mug', 'kettle', 'cup']);
+
+/**
+ * Constants whose NAME (not value) marks a blueprint launch as mug/kettle machinery.
+ * Both resolve to 'coding', which is why the name is the discriminator.
+ */
+const DOMAIN_BLUEPRINT_CONSTS = new Set(['POT_BLUEPRINT_ID', 'OVERWATCH_BLUEPRINT_ID']);
+
+/** Source directories that ARE the deciders (D-003 population (a)). */
+const DOMAIN_DIR_PATTERNS = [
+  /packages\/operator-core\/lib\/pot\//,
+  /packages\/operator-core\/lib\/overwatch\//,
+  /packages\/operator-core\/lib\/agent-tools\/pot\//,
+  /packages\/operator-core\/lib\/agent-tools\/cup\//,
+  /packages\/operator-core\/lib\/agent-tools\/overwatch\//,
+];
+
+/** Tool-name prefixes owned by the retiring tier. */
+const DOMAIN_TOOL_PREFIXES = ['pot:', 'cup:', 'kettle:', 'overwatch:', 'mug:'];
+
+const inDomainDir = (rel) => DOMAIN_DIR_PATTERNS.some((re) => re.test(rel));
+
+/* ── TIER VOCABULARY — matched as WHOLE TOKENS, never as substrings ────────────────
+ * The tier has two vocabularies because the lexicon rename (hive→pot, bee→cup,
+ * queen→mug, sentinel→papercup) left flag KEYS and flag VALUES out of sync, so both
+ * spellings are live in the same file.
+ *
+ * ⚠ These MUST be tested against tokens, not with `/hive/i.test(s)`. Measured here:
+ * `SESSION_ARCHIVE_AT_END: "papercusp-session-archive-at-end"` matched the tier on a
+ * substring scan because **"arc·HIVE·-at-end"** contains "hive". "archive" is one of
+ * the most common words in this codebase, so a substring detector reports a large,
+ * confident, wrong population — the exact spelling-vs-property error P-005 forbids.
+ */
+const TIER_TOKENS = new Set([
+  'pot', 'mug', 'cup', 'kettle', 'overwatch',
+  'hive', 'queen', 'bee', // pre-rename spellings, still live in flag values
+  'nursery',
+]);
+
+/**
+ * Genuine HOMONYMS — tokens that equal a tier word but name something else entirely.
+ * Each entry is an exclusion with a stated reason; without them the census sends the
+ * retirement into unrelated product surface.
+ */
+const HOMONYMS = new Map([
+  ['papercup', 'the Sentinel role (FLAGS.PAPERCUP = "papercusp-sentinel") — a separate role, not the Cup tier'],
+  ['cupboard', 'the template/plugin marketplace — unrelated to the Cup tier'],
+  ['papercusp', 'the product name — contains no tier token once split'],
+]);
+
+/**
+ * Whole NAMES excluded even though they contain a real tier token. Tokenization cannot
+ * settle these — they need the semantic call, so each carries its reason.
+ */
+const NAME_EXCLUSIONS = new Map([
+  ['RED_QUEEN', 'the red-queen learning-loop blueprint (Scout/learning family) — STAYS per D-001'],
+  ['AnimatedPapercuspCup', 'the brand coffee-cup animation — not the Cup agent tier'],
+  ['HiveThemeBridge', 'visual theming for the pot concept — displays no mug/kettle work'],
+  ['HiveVisualIdentity', 'visual theming for the pot concept — displays no mug/kettle work'],
+]);
+
+/**
+ * Split an identifier / flag value / filename into whole words: on non-alphanumerics
+ * AND on camelCase boundaries. "archive" → ["archive"] (no "hive"); "papercusp-hive-
+ * agent-tabs" → [...,"hive",...]; "AnimatedPapercuspCup" → ["animated","papercusp","cup"].
+ */
+function tokenize(s) {
+  return String(s)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((t) => t.toLowerCase());
+}
+
+/**
+ * Does this name refer to the retiring tier? Returns the matched token, or null.
+ * A name whose ONLY tier hit is explained by a homonym is rejected.
+ */
+function namesTier(...parts) {
+  for (const p of parts) {
+    if (p == null) continue;
+    if (NAME_EXCLUSIONS.has(p)) continue;
+    const tokens = tokenize(p);
+    if (tokens.some((t) => HOMONYMS.has(t) && !tokens.some((u) => TIER_TOKENS.has(u) && u !== t))) continue;
+    for (const t of tokens) {
+      if (HOMONYMS.has(t)) continue;
+      if (TIER_TOKENS.has(t)) return t;
+    }
+  }
+  return null;
+}
+
+/**
+ * SHARED POT SUBSTRATE (plan D-003 population (b)) — symbols the SU SYSTEM ITSELF runs
+ * on. `loop:arm` and `loop:checkpoint` import `resolvePotHomeSlug`; the scout watchdogs
+ * and search ingest-lag watchdog use the pot_watchdog_fires debounce table. Gating these
+ * with the tier would break the replacement system, so findings that name them are marked
+ * `substrate: true` — inventory them, do NOT retire them.
+ */
+const SUBSTRATE_SYMBOLS = new Set([
+  'resolvePotHomeSlug', 'listStartedPots', 'recentWatchdogFires',
+  'recordFire', 'claimWatchdogFire',
+]);
+
+/* ══════════════════════════════════════════════════════════════════════════════════
+   FILE WALK
+   ══════════════════════════════════════════════════════════════════════════════════ */
+
+function walk(dir, acc) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return acc; }
+  for (const e of entries) {
+    if (SKIP_DIRS.has(e.name) || isBuildOutputDir(e.name)) continue;
+    const abs = path.join(dir, e.name);
+    if (abs === SELF_FILE) continue;
+    if (e.isDirectory()) walk(abs, acc);
+    else if (CODE_EXT.has(path.extname(e.name)) || e.name.endsWith('.md')) acc.push(abs);
+  }
+  return acc;
+}
+
+const allFiles = [];
+for (const root of SCAN_ROOTS) walk(path.join(REPO_ROOT, root), allFiles);
+
+const rel = (abs) => path.relative(REPO_ROOT, abs);
+const lineOf = (src, index) => src.slice(0, index).split('\n').length;
+
+/** Read once, reuse across every detector. */
+const fileCache = new Map();
+function read(abs) {
+  if (!fileCache.has(abs)) {
+    try { fileCache.set(abs, fs.readFileSync(abs, 'utf8')); } catch { fileCache.set(abs, ''); }
+  }
+  return fileCache.get(abs);
+}
+
+const codeFiles = allFiles.filter((f) => CODE_EXT.has(path.extname(f)) && !isTestFile(f));
+
+/* ══════════════════════════════════════════════════════════════════════════════════
+   CONSTANT TABLE — so an identifier argument can be resolved to its value
+   This is what makes the detectors immune to the literal-vs-constant false negative.
+   ══════════════════════════════════════════════════════════════════════════════════ */
+
+const constants = new Map(); // NAME -> { value, file }
+const CONST_RE = /(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*(?::\s*[^=]+)?=\s*["'`]([^"'`]+)["'`]/g;
+for (const abs of codeFiles) {
+  const src = read(abs);
+  for (const m of src.matchAll(CONST_RE)) {
+    if (!constants.has(m[1])) constants.set(m[1], { value: m[2], file: rel(abs) });
+  }
+}
+
+/* ── IMPORT TABLE — which MODULE does a symbol actually come from? ────────────────
+ * A bare call name is not evidence of provenance. Measured here: `recordFire` is
+ * exported BOTH by `pot/watchdog` (the tier's debounce table) and by `autoloop` (the
+ * routine-fire recorder). 20 of 20 sampled call sites imported the AUTOLOOP one, so a
+ * name-only detector attributed a completely unrelated subsystem to the retirement.
+ * Provenance is the property; the name is only its spelling.
+ */
+const IMPORT_RE = /import\s*(?:type\s*)?\{([^}]+)\}\s*from\s*["'`]([^"'`]+)["'`]/g;
+const importSources = new Map(); // absFile -> Map(localName -> moduleSpecifier)
+
+for (const abs of codeFiles) {
+  const src = read(abs);
+  if (!src.includes('import')) continue;
+  const table = new Map();
+  for (const m of src.matchAll(IMPORT_RE)) {
+    const spec = m[2];
+    for (const piece of m[1].split(',')) {
+      const t = piece.trim();
+      if (!t) continue;
+      const asMatch = t.match(/^(\S+)\s+as\s+(\S+)$/);
+      table.set(asMatch ? asMatch[2] : t.replace(/^type\s+/, ''), spec);
+    }
+  }
+  if (table.size) importSources.set(abs, table);
+}
+
+/** Is `symbol`, as used in `abs`, actually the TIER's symbol (not a same-named sibling)? */
+const DOMAIN_MODULE_RE = /(^|\/)(pot|overwatch)(\/|$)/;
+function symbolIsFromTier(abs, symbol) {
+  const spec = importSources.get(abs)?.get(symbol);
+  if (spec) return { ok: DOMAIN_MODULE_RE.test(spec), source: spec };
+  // No import record: either defined in this file, or re-exported. Trust the file's own
+  // location — a domain file defining the symbol IS the tier.
+  if (inDomainDir(rel(abs))) return { ok: true, source: 'defined in a domain file' };
+  return { ok: false, source: 'unresolved — no import record and file is outside the domain' };
+}
+
+/**
+ * DERIVED constants — `const A = B.startsWith(…) ? … : …` where B is a known constant.
+ * The Kettle's launcher is exactly this shape:
+ *   overwatch/loop.ts:79   const OVERWATCH_LAUNCH_ACTION = OVERWATCH_WAKE_TARGET_ACTION.startsWith(…)
+ *   overwatch/loop.ts:576  registerSystemAction(OVERWATCH_LAUNCH_ACTION, handleOverwatchLaunch)
+ * A literal-only scan misses it and reports the Kettle as having NO launch action —
+ * indistinguishable from "already retired", the most expensive wrong answer available.
+ * We record it as resolved-by-derivation and carry the base constant's value as the hint.
+ */
+const derivedConstants = new Map(); // NAME -> { value, from, file }
+const DERIVED_RE = /const\s+([A-Z][A-Z0-9_]*)\s*=\s*([A-Z][A-Z0-9_]*)\b/g;
+for (const abs of codeFiles) {
+  const src = read(abs);
+  for (const m of src.matchAll(DERIVED_RE)) {
+    const [, name, base] = m;
+    if (constants.has(name) || derivedConstants.has(name)) continue;
+    const baseConst = constants.get(base);
+    if (baseConst) derivedConstants.set(name, { value: baseConst.value, from: base, file: rel(abs) });
+  }
+}
+
+/** Resolve a call argument that may be a string literal or an identifier. */
+function resolveArg(raw) {
+  const trimmed = raw.trim();
+  const lit = trimmed.match(/^["'`]([^"'`]+)["'`]$/);
+  if (lit) return { value: lit[1], via: 'literal', resolved: true };
+  if (/^[A-Za-z_$][\w$]*$/.test(trimmed)) {
+    const c = constants.get(trimmed);
+    if (c) return { value: c.value, via: `const ${trimmed} (${c.file})`, resolved: true, constName: trimmed };
+    const d = derivedConstants.get(trimmed);
+    if (d) {
+      return {
+        value: d.value, resolved: true, constName: trimmed,
+        via: `const ${trimmed} DERIVED from ${d.from} (${d.file})`, derived: true,
+      };
+    }
+    return { value: null, via: `identifier ${trimmed}`, resolved: false, constName: trimmed };
+  }
+  return { value: null, via: `expression ${trimmed.slice(0, 40)}`, resolved: false };
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════════
+   FINDINGS
+   ══════════════════════════════════════════════════════════════════════════════════ */
+
+const findings = [];
+const unresolved = [];
+
+function add(category, abs, index, subject, detail, extra = {}) {
+  const r = rel(abs);
+  findings.push({
+    category,
+    subject,
+    file: r,
+    line: lineOf(read(abs), index),
+    detail,
+    retired: r.includes('_retired/') || abs.includes(RETIRED_MARKER),
+    ...extra,
+  });
+}
+
+/* ── D1: registered system actions ─────────────────────────────────────────────────
+   Shape: registerSystemAction(<name>, handler). <name> may be a literal OR a constant.
+   Classified into the domain when the resolved action name, the constant name, or the
+   defining file sits in the mug/kettle/cup domain.                                    */
+const D1_RE = /registerSystemAction\s*\(\s*([^,)]+)/g;
+/**
+ * The registry's own DEFINITION (`system-actions.ts`, where the function's signature
+ * reads `name: string`) and the side-effect import manifest's header comment are not
+ * registrations. Excluding them keeps `coverage.unresolved` meaning "genuinely dynamic",
+ * so a reader is not desensitised to the entries that matter.
+ */
+const D1_DEFINITION_SITES = /harness\/routines\/(system-actions|register-system-actions)\.ts$/;
+let d1Sites = 0;
+for (const abs of codeFiles) {
+  const src = read(abs);
+  if (!src.includes('registerSystemAction')) continue;
+  if (D1_DEFINITION_SITES.test(rel(abs))) continue;
+  for (const m of src.matchAll(D1_RE)) {
+    d1Sites++;
+    const r = resolveArg(m[1]);
+    if (!r.resolved) {
+      unresolved.push({ category: 'system-action', file: rel(abs), line: lineOf(src, m.index), arg: r.via });
+      continue;
+    }
+    const name = r.value;
+    const hit = namesTier(name, r.constName);
+    if (hit || inDomainDir(rel(abs))) {
+      add('system-action', abs, m.index, name, `registerSystemAction via ${r.via}`, { matchedToken: hit });
+    }
+  }
+}
+
+/* ── D2: spawn role assignment ─────────────────────────────────────────────────────
+   Shape: role: 'mug' | childRole: 'cup' | child_role = 'kettle' (incl. inside SQL).   */
+const D2_RE = /\b(?:role|childRole|child_role|parent_role|parentRole)\s*[:=]\s*["'`](mug|kettle|cup)["'`]/g;
+for (const abs of codeFiles) {
+  const src = read(abs);
+  for (const m of src.matchAll(D2_RE)) {
+    if (!RETIRING_ROLES.has(m[1])) continue;
+    add('spawn-role', abs, m.index, m[1], m[0].replace(/\s+/g, ' '));
+  }
+}
+
+/* ── D3: blueprint launches ────────────────────────────────────────────────────────
+   Classified by CONSTANT NAME, because POT_BLUEPRINT_ID and OVERWATCH_BLUEPRINT_ID
+   both resolve to 'coding' — the same id ordinary coding sessions use.                */
+const D3_RE = /fireLaunchBlueprint\s*\(\s*([^,)]+)/g;
+for (const abs of codeFiles) {
+  const src = read(abs);
+  if (!src.includes('fireLaunchBlueprint')) continue;
+  for (const m of src.matchAll(D3_RE)) {
+    const r = resolveArg(m[1]);
+    if (r.constName && DOMAIN_BLUEPRINT_CONSTS.has(r.constName)) {
+      add('blueprint-launch', abs, m.index, r.constName,
+        `fireLaunchBlueprint(${r.constName}) → '${r.value ?? '?'}'`,
+        { note: 'value is shared with ordinary coding sessions — the CONSTANT is the discriminator' });
+    } else if (!r.resolved) {
+      unresolved.push({ category: 'blueprint-launch', file: rel(abs), line: lineOf(src, m.index), arg: r.via });
+    }
+  }
+}
+
+/* ── D4: tool registrations owned by the tier ──────────────────────────────────────
+   Shape: name: 'pot:start' inside a tooldef.                                          */
+const D4_RE = /name\s*:\s*["'`]((?:pot|cup|kettle|overwatch|mug):[a-z0-9_-]+)["'`]/gi;
+for (const abs of codeFiles) {
+  const src = read(abs);
+  for (const m of src.matchAll(D4_RE)) {
+    const toolName = m[1];
+    if (!DOMAIN_TOOL_PREFIXES.some((p) => toolName.toLowerCase().startsWith(p))) continue;
+    add('tool', abs, m.index, toolName, 'tool registration');
+  }
+}
+
+/* ── D5: feature flags gating the tier ─────────────────────────────────────────────
+   Shape: KEY: "papercusp-…" in libs/flags/src/types.ts. Matched on KEY or VALUE, since
+   the lexicon rename left keys (MUG_*) and values ("papercusp-queen-*") out of sync.   */
+const FLAGS_FILE = path.join(REPO_ROOT, 'libs/flags/src/types.ts');
+const D5_RE = /^\s*([A-Z][A-Z0-9_]*)\s*:\s*["'`]([a-z0-9-]+)["'`]\s*,/gm;
+if (fs.existsSync(FLAGS_FILE)) {
+  const src = read(FLAGS_FILE);
+  for (const m of src.matchAll(D5_RE)) {
+    const [, key, value] = m;
+    const hit = namesTier(key, value);
+    if (hit) add('flag', FLAGS_FILE, m.index, key, `FLAGS.${key} = "${value}"`, { matchedToken: hit });
+  }
+}
+
+/* ── D6: blueprint prompt files (the role's own contract) ──────────────────────────── */
+for (const abs of allFiles) {
+  const r = rel(abs);
+  if (!r.endsWith('.md')) continue;
+  const m = r.match(/blueprints\/([^/]+)\/prompts\/(mug|kettle|cup)(\.[a-z]+)?\.md$/);
+  if (m) add('prompt', abs, 0, `${m[1]}/${m[2]}`, `role prompt for '${m[2]}' in blueprint '${m[1]}'`);
+  else if (/blueprints\/(cup|mug|kettle)\//.test(r)) add('prompt', abs, 0, r, 'file inside a role-owned blueprint dir');
+}
+
+/* ── D7: UI mounts ─────────────────────────────────────────────────────────────────
+   A surface counts when it DISPLAYS or OFFERS the tier: a sidebar tab id, or a
+   component file named for the tier.                                                  */
+const D7_TAB_RE = /["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/g;
+
+/**
+ * Control surfaces the plan names explicitly (D-009/D-010): the buttons that drive
+ * pot/plan start-stop. Named because their filenames carry no tier token at all
+ * (`PlanRail`, `AdvNowRunning`, `hive-control`) — a token scan alone would miss them,
+ * which is the false-negative direction.
+ */
+const NAMED_CONTROL_SURFACES = /(PotHealthPane|PlanRail|LocalHivesControl|MugTab|KettleTab|AdvNowRunning|hive-control)/;
+
+for (const abs of allFiles) {
+  const r = rel(abs);
+  if (!/\.tsx?$/.test(r) || isTestFile(r)) continue;
+  const base = path.basename(r, path.extname(r));
+  const src = read(abs);
+  const tabHits = [...src.matchAll(D7_TAB_RE)];
+
+  if (NAMED_CONTROL_SURFACES.test(base)) {
+    add('ui', abs, 0, base, 'named control surface for pot/plan start-stop (plan D-009/D-010)');
+  } else if (/\.tsx$/.test(r) && namesTier(base)) {
+    add('ui', abs, 0, base, 'component file named for the retiring tier',
+      { matchedToken: namesTier(base), tabTokens: tabHits.length });
+  } else if (/\.tsx$/.test(r) && tabHits.length > 0 && /(LeftSidebar|Sidebar|Tab|Rail|Nav)/.test(base)) {
+    add('ui', abs, tabHits[0].index, base,
+      `mounts tier tab token(s): ${[...new Set(tabHits.map((h) => h[1]))].join(', ')}`);
+  }
+}
+
+/* ── D8: wake / watchdog arming ────────────────────────────────────────────────────
+   The engine: anything that ARMS or FIRES a pot/overwatch wake keeps the tier alive
+   even with the UI gone. This is the dead-man's-switch surface P-007 must gate.       */
+const D8_FNS = [
+  'declarePotTimeWake', 'recordPotWake', 'readPotWakeState', 'withinWakeFloor',
+  'effectivePotWakeFloorSec', 'wakeMug', 'resolveMugOwner', 'claimWatchdogFire',
+  'getPotStarted', 'setPotStarted', 'listStartedPots', 'getOverwatchStarted',
+  'setOverwatchStarted',
+  // shared substrate (D-003 population (b)) — detected so the retirement can SEE them
+  'resolvePotHomeSlug', 'recentWatchdogFires', 'recordFire',
+];
+let d8Rejected = 0;
+for (const abs of codeFiles) {
+  const src = read(abs);
+  for (const fn of D8_FNS) {
+    const re = new RegExp(`\\b${fn}\\s*\\(`, 'g');
+    for (const m of src.matchAll(re)) {
+      const prov = symbolIsFromTier(abs, fn);
+      if (!prov.ok) { d8Rejected++; break; } // same name, different subsystem — not ours
+      add('wake', abs, m.index, fn, `calls ${fn}() [from ${prov.source}]`,
+        SUBSTRATE_SYMBOLS.has(fn)
+          ? { substrate: true, why: 'D-003 population (b): the su system itself depends on this — inventory, do NOT gate' }
+          : {});
+      break; // one finding per fn per file — the file is the unit of work
+    }
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════════
+   REPORT
+   ══════════════════════════════════════════════════════════════════════════════════ */
+
+const live = findings.filter((f) => !f.retired);
+const retiredAlready = findings.filter((f) => f.retired);
+
+const byCategory = {};
+for (const f of live) (byCategory[f.category] ??= []).push(f);
+
+const byFile = {};
+for (const f of live) (byFile[f.file] ??= []).push(f.category);
+
+const census = {
+  generatedAt: new Date().toISOString(),
+  plan: 'retire-mug-kettle-su-only-2026-08-09',
+  item: 'P-005',
+  scanned: { roots: SCAN_ROOTS, codeFiles: codeFiles.length, constantsResolved: constants.size },
+  totals: {
+    live: live.length,
+    alreadyRetired: retiredAlready.length,
+    distinctLiveFiles: Object.keys(byFile).length,
+    /**
+     * Findings on shared pot substrate the SU system itself runs on (D-003 population
+     * (b)). These are INVENTORY, not retirement targets — gating them breaks loop:arm.
+     */
+    sharedSubstrate: live.filter((f) => f.substrate).length,
+    byCategory: Object.fromEntries(Object.entries(byCategory).map(([k, v]) => [k, v.length])),
+  },
+  coverage: {
+    status: unresolved.length === 0 ? 'complete' : 'partial',
+    unresolvedCount: unresolved.length,
+    unresolved,
+    systemActionSitesSeen: d1Sites,
+    detectorShapes: {
+      'system-action': "registerSystemAction(<literal|CONST>, …) — identifier args resolved via the constant table",
+      'spawn-role': "role|childRole|child_role|parent_role [:=] 'mug'|'kettle'|'cup' (incl. inside SQL template strings)",
+      'blueprint-launch': 'fireLaunchBlueprint(<CONST>) where CONST ∈ {POT_BLUEPRINT_ID, OVERWATCH_BLUEPRINT_ID} — classified by NAME, not value',
+      tool: "name: '<pot|cup|kettle|overwatch|mug>:<verb>' tool registrations",
+      flag: 'FLAGS entries in libs/flags/src/types.ts whose KEY or VALUE names the tier',
+      prompt: 'blueprints/**/prompts/(mug|kettle|cup).md and files under a role-owned blueprint dir',
+      ui: '.tsx named for the tier, or a sidebar/rail/tab file mounting a tier tab token',
+      wake: `call sites of ${D8_FNS.length} wake/started-bit functions (one finding per function per file)`,
+    },
+    notCovered: [
+      'live routine rows (harness_shared.routines) — query separately, see --sql',
+      'dynamic dispatch through a variable action name not in the constant table',
+      'prompt/doc prose mentioning the tier without offering it (deliberately excluded — prose is not an entry point)',
+    ],
+    readingRule:
+      'An empty category is meaningful ONLY when coverage.status === "complete". Read `unresolved` before concluding a surface is absent — this reports "none found", never "none exists".',
+  },
+  findings: live,
+  alreadyRetired: retiredAlready,
+};
+
+const ROUTINE_SQL = `-- live routine rows for the retiring tier (run with dev:pg_query)
+SELECT target_role, install_slug, active, last_fired_at, interval_sec
+  FROM harness_shared.routines
+ WHERE workspace_id = 'papercusp-workspace'
+   AND (target_role ~* '(pot|mug|kettle|cup|hive|overwatch|queen|bee|placement|nursery)')
+ ORDER BY active DESC, last_fired_at DESC NULLS LAST;`;
+
+const args = process.argv.slice(2);
+const wantJson = args.includes('--json');
+const outIdx = args.indexOf('--out');
+const catIdx = args.indexOf('--category');
+const catFilter = catIdx >= 0 ? args[catIdx + 1] : null;
+
+if (args.includes('--sql')) { console.log(ROUTINE_SQL); process.exit(0); }
+
+if (outIdx >= 0) {
+  const dest = path.resolve(args[outIdx + 1]);
+  fs.writeFileSync(dest, JSON.stringify(census, null, 2));
+  console.log(`census written to ${dest} (${live.length} live entry points)`);
+  process.exit(0);
+}
+
+if (wantJson) { console.log(JSON.stringify(census, null, 2)); process.exit(0); }
+
+/* ── printed table ─────────────────────────────────────────────────────────────── */
+const pad = (s, n) => String(s).padEnd(n);
+console.log('');
+console.log('MUG / KETTLE / CUP SURFACE CENSUS   ' + census.generatedAt);
+console.log('plan retire-mug-kettle-su-only-2026-08-09 · P-005');
+console.log('─'.repeat(100));
+console.log(`scanned ${census.scanned.codeFiles} code files · resolved ${census.scanned.constantsResolved} constants`);
+console.log(`LIVE entry points: ${live.length} across ${census.totals.distinctLiveFiles} files` +
+  (retiredAlready.length ? `  (+${retiredAlready.length} already under _retired/)` : ''));
+if (census.totals.sharedSubstrate) {
+  console.log(`  of which ${census.totals.sharedSubstrate} are SHARED SUBSTRATE (D-003 (b)) — the su system runs on these; inventory, do NOT gate`);
+}
+console.log('');
+console.log(pad('CATEGORY', 20) + pad('COUNT', 8) + 'SUBJECTS');
+console.log('─'.repeat(100));
+for (const [cat, list] of Object.entries(byCategory).sort((a, b) => b[1].length - a[1].length)) {
+  const subjects = [...new Set(list.map((f) => f.subject))];
+  const shown = subjects.slice(0, 6).join(', ');
+  console.log(pad(cat, 20) + pad(list.length, 8) + shown + (subjects.length > 6 ? `, …+${subjects.length - 6}` : ''));
+}
+console.log('');
+
+if (catFilter) {
+  console.log(`── ${catFilter} — every site ──`);
+  for (const f of (byCategory[catFilter] ?? [])) {
+    console.log(`  ${pad(f.subject, 34)} ${f.file}:${f.line}`);
+  }
+  console.log('');
+}
+
+console.log(`COVERAGE: ${census.coverage.status.toUpperCase()}  (${unresolved.length} unresolved site(s))`);
+if (unresolved.length) {
+  for (const u of unresolved.slice(0, 12)) console.log(`  ? ${u.category}  ${u.file}:${u.line}  arg=${u.arg}`);
+  if (unresolved.length > 12) console.log(`  …+${unresolved.length - 12} more`);
+}
+console.log('');
+console.log('NOT COVERED by this scan (query separately):');
+for (const n of census.coverage.notCovered) console.log(`  · ${n}`);
+console.log('');
+console.log(census.coverage.readingRule);
+console.log('');
+console.log('Live routine rows are NOT scanned from source — run:  node scripts/mug-kettle-surface-census.mjs --sql');
+console.log('');

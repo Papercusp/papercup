@@ -172,6 +172,14 @@ const TABS = [
   // conversations-agent-messages-2026-07-27 D-001, and the work-item mail
   // surface was retired 2026-07-26 (WI-6097). Agent messages replaced them as
   // the pane's highest-volume source, so it leads.
+  //
+  // FLAG-GATED (CONVERSATIONS_RAIL_TAB, DEFAULT OFF — WI-37561, owner directive
+  // 2026-08-09 "put the 'convos' tab in the middle pane behind a testing flag").
+  // The entry STAYS HERE, in its owner-set last position, rather than being
+  // deleted: `visibleTabs` filters it out at render, so flipping the flag on at
+  // /admin/features restores it exactly where the owner put it, and the pinned
+  // order test keeps policing that position while the tab is dark. Deleting the
+  // entry would have made the flip a code change.
   { id: 'conversations', label: (_t: BoundLexicon) => 'Convos', icon: MessagesSquare, tip: (_t: BoundLexicon) => 'Conversations — agent messages, group decisions and agent chats', render: (a: boolean) => <ConversationsTab active={a} /> },
   // (The 📊 Tasks tab MOVED to the AdvShell header — owner ask 2026-08-02,
   // WI-6844: "move the location of it from the middle pane to a button on our top
@@ -247,13 +255,26 @@ export default function LeftSidebar() {
   // voice-unified-sentinel-pipeline made Papercup the one voice brain) — same
   // hide-tab + stale-?lst snap-back treatment as overwatch for when it IS off.
   const sentinelOn = useFlag(FLAGS.PAPERCUP);
+  // Convos is flag-gated too (CONVERSATIONS_RAIL_TAB) and, unlike the two above,
+  // is DEFAULT OFF — an owner-requested testing gate (WI-37561), so the common
+  // case is the tab being absent. Same hide-tab + snap-back treatment: the id
+  // stays in TAB_IDS (so `?lst=conversations` still PARSES) and this guard is
+  // what turns a parsed-but-hidden tab into a landing on Mug instead of a blank
+  // body. Without the snap-back, `active` falls through to visibleTabs[0] —
+  // Accounts — while `?lst=` still reads `conversations`, so the URL and the
+  // rendered tab disagree and ui:get_state reports a tab that is not on screen.
+  const conversationsOn = useFlag(FLAGS.CONVERSATIONS_RAIL_TAB);
   const visibleTabs = TABS.filter(
-    (x) => (x.id !== 'overwatch' || overwatchOn) && (x.id !== 'sentinel' || sentinelOn),
+    (x) =>
+      (x.id !== 'overwatch' || overwatchOn) &&
+      (x.id !== 'sentinel' || sentinelOn) &&
+      (x.id !== 'conversations' || conversationsOn),
   );
   useEffect(() => {
     if (!overwatchOn && tab === 'overwatch') void setRail({ lst: 'queen' });
     if (!sentinelOn && tab === 'sentinel') void setRail({ lst: 'queen' });
-  }, [overwatchOn, sentinelOn, tab, setRail]);
+    if (!conversationsOn && tab === 'conversations') void setRail({ lst: 'queen' });
+  }, [overwatchOn, sentinelOn, conversationsOn, tab, setRail]);
 
   const pathname = usePathname() ?? '';
   const chromeless = isChromelessPath(pathname);

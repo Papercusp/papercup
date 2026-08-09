@@ -1,30 +1,34 @@
 /**
  * Every worker script that resolves its own path NEXT TO the executing module
- * must be copied beside the bundle by `bundle-host.sh`.
+ * must be staged beside the entry by EVERY bundler that produces one.
  *
- * WHY THIS GUARD EXISTS. This failure has now happened THREE times, each time
- * to a different worker, each time silently:
+ * WHY THIS GUARD EXISTS. This failure has now happened FOUR times, each time to
+ * a different worker or a different bundler, and every time silently:
  *
- *  - WI-4196 — `local-embedder-worker.script.mjs` missing from the bundle, so
- *    every embed fell back to inline main-thread ONNX (~6s vs ~36ms).
- *  - EI-19465075959589134 — `cpu-task-worker.script.mjs`, the same class,
- *    labelled in bundle-host.sh itself as "SAME CLASS AS WI-4196 ABOVE, missed
- *    for this worker". :3170 ran at p95 1920ms, 87.5% GC, for an unknown period.
+ *  - WI-4196 — `local-embedder-worker.script.mjs` missing from the host bundle,
+ *    so every embed fell back to inline main-thread ONNX (~6s vs ~36ms).
+ *  - EI-19465075959589134 — `cpu-task-worker.script.mjs`, same class, labelled
+ *    in bundle-host.sh itself as "SAME CLASS AS WI-4196 ABOVE, missed for this
+ *    worker". :3170 ran at p95 1920ms, 87.5% GC, for an unknown period.
  *  - WI-37555 — `local-reranker-worker.script.mjs`, added with this test.
+ *  - WI-37555 again, and this is the one that motivates the SECOND bundler
+ *    below: the DESKTOP sidecar build (`build-desktop-sidecar.sh`) copied NONE
+ *    of them. Measured on the 2026-08-09 06:06 build, `serve.mjs` referenced
+ *    `local-embedder-worker.script.mjs` while no `*.script.mjs` existed beside
+ *    it at all — so WI-4196's fix had never reached a packaged desktop install,
+ *    the actual shipping target.
  *
  * The shape is always identical and is why hand-memory keeps losing to it:
  * `new Worker(resolve(dirname(here), '…script.mjs'))` works perfectly in the dev
- * tree (the script IS next to the module) and fails only in the BUNDLE, where
+ * tree (the script IS next to the module) and fails only in a BUNDLE, where
  * esbuild emits no sibling non-JS assets. Every one of these workers has a
- * deliberate inline fallback, so the failure never throws, never logs an error
- * by default, and reads as "working, just slow". A test is the only thing that
- * catches it at the moment the fourth worker is written rather than months later
- * in a profile.
+ * deliberate inline fallback, so the failure never throws, never logs by
+ * default, and reads as "working, just slow".
  *
- * The invariant is deliberately anchored to the PROPERTY that defines
- * membership — a `*.script.mjs` living in a source tree — not to a hand-kept
- * list of known workers, which is exactly the form-blind mistake that let the
- * second instance through.
+ * The invariant is anchored to the PROPERTY that defines membership — a
+ * `*.script.mjs` living in a source tree, checked against every bundler — not to
+ * a hand-kept list of known workers, which is the form-blind mistake that let
+ * instances two and four through.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -32,14 +36,26 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
+
 /** Overridable so falsifiability can be proven against a COPY outside the tree
  *  (`scripts/mutation-probe.sh`) instead of mutating the shared checkout, where
  *  git-sync would commit the mutant mid-probe. */
-const BUNDLE_SCRIPT = process.env.PROBE_BUNDLE_SCRIPT ?? join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh');
+const BUNDLERS: { label: string; path: string }[] = [
+  {
+    label: 'apps/operator/bin/bundle-host.sh (host + operator sidecar bundles)',
+    path: process.env.PROBE_BUNDLE_SCRIPT ?? join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'),
+  },
+  {
+    label: 'papercusp-desktop/bin/build-desktop-sidecar.sh (packaged desktop app)',
+    path:
+      process.env.PROBE_DESKTOP_SCRIPT ??
+      join(REPO_ROOT, 'papercusp-desktop/bin/build-desktop-sidecar.sh'),
+  },
+];
 
-/** Directories that hold BUILD OUTPUT or vendored code, where a `*.script.mjs`
- *  is a COPY produced by the very step under test — counting those would make
- *  this guard pass by observing its own output. */
+/** Directories holding BUILD OUTPUT or vendored code, where a `*.script.mjs` is
+ *  a COPY produced by the very step under test — counting those would let this
+ *  guard pass by observing its own output. */
 const EXCLUDED_DIR_NAMES = new Set([
   'node_modules',
   '.git',
@@ -52,6 +68,7 @@ const EXCLUDED_DIR_NAMES = new Set([
   'target',
   '_retired',
   'sidecar',
+  'env-sidecars',
   'coverage',
 ]);
 
@@ -77,50 +94,50 @@ function findWorkerScripts(dir: string, found: string[] = []): string[] {
   return found;
 }
 
-describe('worker scripts are bundled beside the host entry', () => {
-  it('copies every source *.script.mjs in bundle-host.sh', () => {
-    const bundleSh = readFileSync(BUNDLE_SCRIPT, 'utf8');
-    const scripts = findWorkerScripts(REPO_ROOT);
+/**
+ * Lines that actually DO something — comments stripped.
+ *
+ * A bare `includes(basename)` over the whole file is satisfied by a comment
+ * MENTIONING the worker, so it would pass for a script that is documented but
+ * never copied. Verified under mutation-probe: deleting the rerank `cp` left the
+ * basename sitting in its own explanatory comment, and a whole-file check did
+ * NOT go red. Stripping comments is what makes the check mean "is staged"
+ * rather than "is discussed" — while still accepting BOTH staging forms in use
+ * (a literal `cp … "$OUTDIR/<name>"`, and a loop over a list of source paths).
+ */
+function executableText(source: string): string {
+  return source
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+}
 
-    // A zero-length scan would make this test vacuously pass — the same
-    // zero-work false-green that has burned this repo repeatedly (a tsc run
-    // checking no files, an affected-tests run selecting no suites). Assert the
-    // scan actually found the known population first.
+describe('worker scripts are staged beside every bundled entry', () => {
+  const scripts = findWorkerScripts(REPO_ROOT);
+
+  it('found the known worker-script population', () => {
+    // A zero-length scan would make every assertion below vacuously true — the
+    // same zero-work false-green this repo has paid for repeatedly (a tsc run
+    // checking no files, an affected-tests run selecting no suites).
     expect(scripts.length).toBeGreaterThanOrEqual(3);
-
-    // Anchor on the PROPERTY that defines compliance — an actual
-    // `cp … "$OUTDIR/<name>"` — not on the basename merely APPEARING in the
-    // file. A bare `includes(basename)` is satisfied by a comment mentioning
-    // the worker, so it would pass for a script that is documented but never
-    // copied: the precise form-blind failure this repo has paid for twice.
-    // (Verified: under mutation-probe, deleting the rerank `cp` left the
-    // basename in its own comment and a bare-mention check did NOT go red.)
-    const copiedToOutdir = new Set(
-      [...bundleSh.matchAll(/cp\s+"[^"]+"\s+"\$OUTDIR\/([^"]+\.script\.mjs)"/g)].map((m) => m[1]),
-    );
-
-    const missing = scripts
-      .map((s) => relative(REPO_ROOT, s))
-      .filter((rel) => !copiedToOutdir.has(rel.slice(rel.lastIndexOf('/') + 1)));
-
-    expect(
-      missing,
-      `These worker scripts are not copied by bundle-host.sh. In the dev tree they resolve ` +
-        `fine (the script sits next to its module), so this ONLY breaks in the bundle — and ` +
-        `every such worker has an inline fallback, so it degrades silently instead of failing. ` +
-        `Add a copy step next to the existing ones in ${relative(REPO_ROOT, BUNDLE_SCRIPT)}.`,
-    ).toEqual([]);
   });
 
-  it('names each copy with an $OUTDIR destination, not just a mention', () => {
-    const bundleSh = readFileSync(BUNDLE_SCRIPT, 'utf8');
-    // A basename appearing only in a comment would satisfy the check above while
-    // copying nothing — this pins that each one is a real `cp … "$OUTDIR/…"`.
-    const copiedToOutdir = [...bundleSh.matchAll(/cp\s+"[^"]+"\s+"\$OUTDIR\/([^"]+\.script\.mjs)"/g)].map(
-      (m) => m[1],
-    );
-    expect(copiedToOutdir).toContain('local-embedder-worker.script.mjs');
-    expect(copiedToOutdir).toContain('cpu-task-worker.script.mjs');
-    expect(copiedToOutdir).toContain('local-reranker-worker.script.mjs');
-  });
+  for (const bundler of BUNDLERS) {
+    it(`stages every source *.script.mjs — ${bundler.label}`, () => {
+      const executable = executableText(readFileSync(bundler.path, 'utf8'));
+
+      const missing = scripts
+        .map((s) => relative(REPO_ROOT, s))
+        .filter((rel) => !executable.includes(rel.slice(rel.lastIndexOf('/') + 1)));
+
+      expect(
+        missing,
+        `These worker scripts are not staged by ${bundler.label}. In the dev tree they resolve ` +
+          `fine (the script sits next to its module), so this ONLY breaks in the bundle — and ` +
+          `every such worker has an inline fallback, so it degrades SILENTLY to main-thread ` +
+          `work instead of failing. Add a copy step next to the existing ones in ` +
+          `${relative(REPO_ROOT, bundler.path)}.`,
+      ).toEqual([]);
+    });
+  }
 });

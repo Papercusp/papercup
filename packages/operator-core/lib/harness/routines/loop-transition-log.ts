@@ -11,9 +11,24 @@
  *
  * This records the transitions those single-row stores overwrite: `parked` (claimed and
  * parked at the 'infinity' in-flight sentinel), `rearmed` (moved back to a concrete fire
- * time), `disarmed` (deactivated). The diagnostic value is in the ABSENCE — a `parked`
- * row with no subsequent `rearmed` row IS the fault, and `actor` names the last code path
- * that touched the routine.
+ * time), `disarmed` (deactivated), `revived` (un-disarmed — the only transition that crosses
+ * back over `active = FALSE`). The diagnostic value is in the ABSENCE — a `parked` row with
+ * no subsequent `rearmed` row IS the fault, and `actor` names the last code path that
+ * touched the routine.
+ *
+ * ⚠ `disarmed` was DECLARED here and in the `event` column comment from day one and had NO
+ * EMITTER for its whole life (WI-37571) — two call sites existed, both writing `parked` or
+ * `rearmed`. So this table answered "was this loop ever disarmed?" with silence for 26+
+ * real disarms/day, while its own docstring promised it recorded them. That is the worst
+ * shape an instrument can fail in: it does not look broken, it looks like good news. The
+ * only surviving record was `routines.metadata.loop_paused_*`, which is merged with `||`
+ * and therefore holds at most ONE disarm per row forever — a re-disarm silently erases its
+ * predecessor, so the flap sequence that a bounded-revival ratchet exists to control was
+ * exactly what could not be reconstructed.
+ *
+ * A `disarmed`/`revived` pair is what makes the revival rate a first-class query instead of
+ * an inference over mutable state — "the guard stopped disarming people" and "the revival
+ * leg never ran" are indistinguishable without it.
  *
  * INVARIANT: this is EVIDENCE, never an input to scheduling. Nothing in the fire path may
  * read it, and a write failure here must never perturb the path it reports on — the whole
@@ -23,8 +38,14 @@
 import type { Sql } from 'postgres';
 import os from 'node:os';
 
-/** The loop lifecycle transitions worth a durable row. */
-export type LoopTransitionEvent = 'parked' | 'rearmed' | 'disarmed';
+/**
+ * The loop lifecycle transitions worth a durable row.
+ *
+ * The `event` column is plain `text` with NO check constraint, so widening this union needs
+ * no migration — but the column COMMENT is the schema's own documentation of the vocabulary,
+ * so a new member belongs in both (see migration 786 for `revived`).
+ */
+export type LoopTransitionEvent = 'parked' | 'rearmed' | 'disarmed' | 'revived';
 
 export interface LoopTransitionInput {
   workspaceId: string;

@@ -348,8 +348,13 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
     async (t) => {
       const { search, sessionOf, tomSessions, PROD_RECENCY } = ctx!;
       const bySession = (h: SearchHit) => sessionOf(h);
-      const found = (ranked: SearchHit[]) =>
-        new Set(ranked.map(sessionOf).filter((s) => tomSessions.includes(s))).size;
+      // The IDENTITIES, not merely the count. Two variants can both score 2/8
+      // on DIFFERENT sessions — in which case each leg is contributing ground
+      // truth the other misses and FUSION is discarding it, which is the
+      // opposite conclusion from "that leg contributes nothing". A count cannot
+      // separate those two, and D-052 was first recorded off counts alone.
+      const foundIds = (ranked: SearchHit[]) =>
+        [...new Set(ranked.map(sessionOf).filter((s) => tomSessions.includes(s)))].sort();
 
       const variants: Array<[string, Parameters<typeof search>[1]]> = [
         ['production (control)', {}],
@@ -410,10 +415,12 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
           continue;
         }
         const distinct = new Set(results.map(sessionOf)).size;
+        const hits = foundIds(results);
         rows.push(
-          `  ${label.padEnd(29)} recall ${found(results)}/${tomSessions.length}` +
+          `  ${label.padEnd(29)} recall ${hits.length}/${tomSessions.length}` +
             `  page ${results.length} rows / ${distinct} distinct sessions` +
-            (totalGroups === undefined ? '' : ` (pool held ${totalGroups})`),
+            (totalGroups === undefined ? '' : ` (pool held ${totalGroups})`) +
+            (hits.length ? `\n${' '.repeat(33)}↳ ${hits.join(' ')}` : ''),
         );
       }
       // console.LOG, not warn: `vitest-fail-on-console` fails a test on an

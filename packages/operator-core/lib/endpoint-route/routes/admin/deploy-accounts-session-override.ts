@@ -74,7 +74,8 @@ const postRoute = defineTool({
       return Response.json({ ok: true, override });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // A rejected default is a CALLER mistake (unknown id / Codex account), not a server
+      // A rejected default is a CALLER mistake (an unknown id — a Codex account is accepted
+      // since inference-rename-and-provider-agnostic-default-2026-08-09 P-003), not a server
       // fault — 400 so the UI shows the reason instead of a generic failure toast.
       const status = e instanceof AccountPoolError ? 400 : 500;
       return Response.json({ ok: false, error: msg }, { status });

@@ -16,10 +16,15 @@ import {
 } from './headroom';
 
 /**
- * Deploy accounts settings — the provider-account pool used by the inference
+ * Inference settings — the provider-account pool used by the inference
  * gateway. Claude Max accounts back Anthropic-compatible fleet egress and
  * deploy credentials; Codex accounts back OpenAI-compatible Codex account pins.
  * Link one by minting or referencing the provider credential.
+ *
+ * ⚠ Named "Deploy accounts" until inference-rename-and-provider-agnostic-default-2026-08-09
+ * P-001 relabelled it to "Inference". That rename was VISIBLE STRINGS ONLY (D-003): the route
+ * is still /settings/deploy-accounts and the API is still /api/admin/deploy-accounts/*, so a
+ * search for either name has to find this file.
  *
  * Why paste-a-token (not an in-app OAuth redirect): claude.ai's authorize endpoint rejects a
  * hand-built URL (it needs claude-code's own client handshake), so the owner runs
@@ -395,8 +400,8 @@ export default function DeployAccountsPage() {
       {confirmEl}
       <header className="pc-da__hero">
         <div className="pc-da__hero-copy">
-          <h1>Deploy accounts</h1>
-          <div className="pc-da__meta-line" aria-label="Deploy account pool summary">
+          <h1>Inference</h1>
+          <div className="pc-da__meta-line" aria-label="Inference account pool summary">
             <span>{accounts.length} accounts</span>
             <span>{providerCounts.claude} Claude / {providerCounts.codex} Codex</span>
             <span>active {activeRouteLabel}</span>
@@ -624,11 +629,21 @@ export default function DeployAccountsPage() {
         <div className="pc-da__default-banner" role="status">
           <Star size={13} aria-hidden="true" fill={defaultAccountId ? 'currentColor' : 'none'} />
           {defaultAccountId ? (
-            <span>
-              Default account: <strong className="pc-da__mono">{defaultAccountId}</strong> — agents,
-              the operator brain, judges and summarisers start here and fail over to the rest of the
-              pool.
-            </span>
+            // Provider-aware since P-003: a Codex default fronts Codex traffic only, so the
+            // Claude-shaped promise ("judges and summarisers start here") would be false for it.
+            accounts.find((a) => a.id === defaultAccountId && accountProvider(a) === 'codex') ? (
+              <span>
+                Default Codex account: <strong className="pc-da__mono">{defaultAccountId}</strong> —
+                Codex/OpenAI work starts here and fails over to the rest of the Codex pool. Anthropic
+                traffic is unaffected; set a Claude account as default to steer that too.
+              </span>
+            ) : (
+              <span>
+                Default account: <strong className="pc-da__mono">{defaultAccountId}</strong> — agents,
+                the operator brain, judges and summarisers start here and fail over to the rest of the
+                pool.
+              </span>
+            )
           ) : (
             <span>
               No default account — everything falls back to this machine&rsquo;s own Claude login
@@ -671,7 +686,7 @@ export default function DeployAccountsPage() {
                 />
               </div>
             </div>
-            <div className="pc-da__cards" aria-label="Deploy accounts">
+            <div className="pc-da__cards" aria-label="Inference accounts">
               {accounts.map((account) => (
                 <AccountCard
                   key={account.id}
@@ -696,7 +711,6 @@ export default function DeployAccountsPage() {
         .pc-da__default-banner strong { color: var(--fg); font-weight: 600; }
         .pc-da__default-banner > button { margin-left: auto; }
         .pc-da__btn--default-on { color: var(--accent-ink, var(--fg)); background: color-mix(in srgb, var(--accent), transparent 72%); border-color: color-mix(in srgb, var(--accent), transparent 40%); }
-        .pc-da__default-na { color: var(--fg-mute); opacity: 0.6; }
         .pc-da h1 { margin: 0; font-size: clamp(21px, 2.6vw, 29px); line-height: 1; letter-spacing: 0; text-shadow: none; }
         .pc-da__meta-line { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; color: var(--fg-mute); font-size: 11px; line-height: 1.2; }
         .pc-da__meta-line span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -864,9 +878,11 @@ function accountColumns(
  * Per-row "make this the default" control. Radio-like (picking one implicitly unpicks the
  * others) rather than a checkbox, because exactly one account can hold the role.
  *
- * Codex rows render a disabled marker instead of being hidden: the default stands in for the
- * machine's CLAUDE login, and a silently absent control reads as a bug, whereas a disabled one
- * with a reason answers the question the owner is actually asking.
+ * Available on EVERY provider since inference-rename-and-provider-agnostic-default-2026-08-09
+ * P-003 — Codex rows used to render a disabled "—" because the default stood in for the
+ * machine's Claude login only. A default now applies to ITS OWN provider's resolution (D-002),
+ * so the tooltip is provider-aware: picking a Codex account fronts Codex traffic and leaves
+ * Anthropic traffic on whatever it already used.
  */
 function DefaultToggle({
   row,
@@ -879,23 +895,21 @@ function DefaultToggle({
   busy: string | null;
   setDefault: (id: string | null) => void;
 }) {
-  if (accountProvider(row) !== 'claude') {
-    return (
-      <span className="pc-da__default-na" title="Only a Claude account can be the default — it stands in for this machine's Claude login.">
-        —
-      </span>
-    );
-  }
   const isDefault = defaultAccountId === row.id;
   const pending = busy !== null;
+  const isClaude = accountProvider(row) === 'claude';
   return (
     // The shared Tooltip primitive rather than a bare `title` — a title-only tooltip on a
     // button is blocked by lint:design-primitives (it is invisible to keyboard + touch users).
     <Tooltip
       label={
         isDefault
-          ? "This account stands in for the machine's own Claude login. Click to clear it."
-          : 'Make this the account everything on this machine uses by default.'
+          ? isClaude
+            ? "This account stands in for the machine's own Claude login. Click to clear it."
+            : 'This account is the default for Codex/OpenAI traffic. Click to clear it.'
+          : isClaude
+            ? 'Make this the account everything on this machine uses by default.'
+            : 'Make this the default for Codex/OpenAI traffic. Anthropic traffic is unaffected.'
       }
     >
       <button

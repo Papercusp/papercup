@@ -327,6 +327,22 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // it is not. The flag KEY still exists as a runtime kill-switch — a default-ON flag is
   // not a dark flag — so nothing here should reference it any more. Count 32 → 31,
   // parking subset + DARK_FLAGS_HIGH_WATERMARK both 14 → 13.)
+  //
+  // 2026-08-09 (WI-37561) — papercusp-conversations-rail-tab, on an EXPLICIT owner
+  // directive: "Put the 'convos' tab in the middle pane behind a testing flag", with
+  // hidden-until-flipped chosen over a visible kill-switch when the two were put to them
+  // directly. This is the same sign-off path — and, word for word, nearly the same
+  // sentence — that put papercusp-task-manager in this set two entries above; it is a
+  // DECLARED darkening, which is precisely what this snapshot exists to distinguish from
+  // a silent one. Count 31 → 32, parking subset + DARK_FLAGS_HIGH_WATERMARK both 13 → 14.
+  //
+  // It gates the 💬 Convos tab in the middle rail ONLY. /adv keeps its own Conversations
+  // tab on the same four SSE-cached queries, so OFF hides a duplicate rather than
+  // withdrawing a capability — the cheapest kind of park, and the reason no graduation
+  // trade was sought for the watermark slot. Graduates on the owner's word that the tab
+  // is part of the standard release; when it does, DELETE this entry (do not comment it
+  // out as still-dark) and ratchet the watermark 14 → 13 in the same change.
+  'papercusp-conversations-rail-tab',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -562,7 +578,13 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // 'incomplete', so this one DOES move the parking subset: 14 → 13, and
     // DARK_FLAGS_HIGH_WATERMARK was lowered 14 → 13 with it rather than left as headroom
     // (a ceiling only ratchets if a graduation spends the slot it frees). Count 32 → 31.
-    expect(offCount).toBe(31);
+    // 2026-08-09 (WI-37561) — papercusp-conversations-rail-tab: DELIBERATE darkening on an
+    // explicit owner directive ("put the 'convos' tab in the middle pane behind a testing
+    // flag"), the owner choosing hidden-until-flipped over a visible kill-switch. case:
+    // parked, so the parking subset and DARK_FLAGS_HIGH_WATERMARK both move 13 → 14.
+    // Count 31 → 32. It parks the rail TAB only — /adv keeps the same conversations on the
+    // same queries — which is why the slot was bought with a raise rather than a trade.
+    expect(offCount).toBe(32);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

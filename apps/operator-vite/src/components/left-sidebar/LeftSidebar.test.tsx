@@ -13,9 +13,22 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
-const H = vi.hoisted(() => ({ overwatchOn: false, pathname: '/adv' }));
+// `overwatchOn` is the BLANKET answer the shared useFlag mock gives every flag —
+// it predates there being more than one gated tab, and the order tests lean on it
+// to turn the whole rail on at once. `flags` overrides it PER KEY, which is what
+// the CONVERSATIONS_RAIL_TAB tests need: that flag is DEFAULT OFF (WI-37561), so
+// "overwatch on, convos off" is a real configuration and a single boolean cannot
+// express it. Without the per-key override, a test asserting the Convos tab is
+// hidden would be indistinguishable from one asserting Overwatch is hidden.
+const H = vi.hoisted(() => ({
+  overwatchOn: false,
+  flags: {} as Record<string, boolean>,
+  pathname: '/adv',
+}));
 
-vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.overwatchOn }));
+vi.mock('@papercusp/flags/client', () => ({
+  useFlag: (key: string) => H.flags[key] ?? H.overwatchOn,
+}));
 vi.mock('@/lib/router-compat/navigation', () => ({ usePathname: () => H.pathname }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
@@ -62,6 +75,7 @@ beforeAll(() => {
 beforeEach(() => {
   localStorage.clear();
   H.overwatchOn = false;
+  H.flags = {};
   H.pathname = '/adv';
   document.body.className = '';
 });
@@ -107,9 +121,12 @@ describe('<LeftSidebar> shell', () => {
   // the bare key names (restore-pot-lexicon P-005 — the classic pack shows
   // Pots / Papercup / Brain / Kettle at runtime).
   it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Goals · Agents · System · Spend', () => {
-    // The shared useFlag mock answers every flag, so this turns BOTH gated tabs
-    // (overwatch + sentinel) on — the full rail is what the owner's ordering
-    // describes; the gated-off subset is covered by the flag tests below.
+    // The blanket useFlag answer turns EVERY gated tab on — overwatch, sentinel
+    // and (since WI-37561) conversations. The full rail is what the owner's
+    // ordering describes, and pinning it with the gates open is deliberate: a
+    // dark tab still has a place in the order, and this test is what keeps that
+    // place from drifting while nobody can see the tab. The gated-OFF subsets are
+    // covered by the flag tests below.
     H.overwatchOn = true;
     renderRail();
     const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
@@ -140,6 +157,12 @@ describe('<LeftSidebar> shell', () => {
       // new tab goes last rather than reshuffling it. The label is "Convos"
       // because a 3-column tab cell fits ~8 characters beside its icon at the
       // rail's 300px minimum; the pane header carries the full word.
+      //
+      // WI-37561: Convos is now DEFAULT OFF behind CONVERSATIONS_RAIL_TAB (owner
+      // directive 2026-08-09), so at runtime the rail normally ends at Spend. It
+      // is asserted here because the flag is ON in this test — its POSITION is
+      // what survives the park, and holding that position is precisely what makes
+      // flipping the flag back on a one-click change rather than a code change.
       'Convos',
       // NOTE there is deliberately no 'Tasks' here any more: the task manager left
       // this rail on 2026-08-02 for the AdvShell header (WI-6844, owner ask) and is
@@ -287,6 +310,89 @@ describe('<LeftSidebar> shell', () => {
     // URL); assert the rail lands on the Mug tab + panel.
     await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen'));
     expect(await screen.findByTestId('panel-queen')).toBeTruthy();
+  });
+
+  // ── 💬 Convos behind its testing flag (WI-37561) ─────────────────────────────
+  // Owner directive 2026-08-09: "Put the 'convos' tab in the middle pane behind a
+  // testing flag", with hidden-until-flipped chosen over a visible kill-switch.
+  // CONVERSATIONS_RAIL_TAB is therefore DEFAULT OFF (a DARK_FLAGS 'parked' entry),
+  // which makes the hidden case the DEFAULT rendering of this rail, not an edge.
+  //
+  // Each of these pins the flag EXPLICITLY via H.flags rather than leaning on the
+  // blanket-off default. Relying on the default would keep them green if the gate
+  // were deleted and the tab simply removed from TABS — the assertion has to fail
+  // for the right reason, and "the flag is off" and "the entry is gone" are
+  // different states with the same screen.
+  describe('the Convos tab gate', () => {
+    const CONVOS = 'papercusp-conversations-rail-tab';
+
+    it('hides Convos from BOTH the tab strip and the collapsed icon rail while the flag is off', () => {
+      // Everything else on, convos off — the configuration the single blanket
+      // boolean could not express, and the one the owner actually ships.
+      H.overwatchOn = true;
+      H.flags = { [CONVOS]: false };
+      renderRail();
+      expect(screen.queryByTestId('left-sidebar-tab-conversations')).toBeNull();
+      // The collapsed rail is a SECOND rendering of TABS — a gate applied to only
+      // one of the two leaves the tab reachable from the icon rail while invisible
+      // in the strip, which is worse than not gating it at all.
+      expect(screen.queryByTestId('left-sidebar-rail-conversations')).toBeNull();
+      // The rail is otherwise intact: hiding the last tab must not disturb Spend,
+      // the tab it sits beside.
+      expect(screen.getByTestId('left-sidebar-tab-spend')).toBeTruthy();
+    });
+
+    it('shows Convos again the moment the flag is flipped on', () => {
+      H.overwatchOn = true;
+      H.flags = { [CONVOS]: true };
+      renderRail();
+      expect(screen.getByTestId('left-sidebar-tab-conversations')).toBeTruthy();
+      expect(screen.getByTestId('left-sidebar-rail-conversations')).toBeTruthy();
+    });
+
+    it('mounts the Convos panel when the flag is on and the tab is selected', async () => {
+      H.flags = { [CONVOS]: true };
+      renderRail('?lst=conversations');
+      expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('conversations');
+      expect(await screen.findByTestId('panel-conversations')).toBeTruthy();
+    });
+
+    // The failure this prevents: `conversations` stays in TAB_IDS (so the flag can
+    // be flipped back on without a code change), which means nuqs still PARSES a
+    // bookmarked ?lst=conversations. Without the guard, `active` falls through to
+    // visibleTabs[0] — Accounts — while ?lst= still reads `conversations`, so the
+    // URL, `data-tab` and ui:get_state disagree with what is on screen.
+    it('snaps a bookmarked ?lst=conversations back to Mug while the flag is off', async () => {
+      H.flags = { [CONVOS]: false };
+      renderRail('?lst=conversations');
+      await waitFor(() =>
+        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen'),
+      );
+      expect(await screen.findByTestId('panel-queen')).toBeTruthy();
+      expect(screen.queryByTestId('panel-conversations')).toBeNull();
+    });
+
+    // The one failure the mocked useFlag above CANNOT see, and it is silent in the
+    // expensive direction. `useFlag` resolves `current.flags[key] ?? FLAG_DEFAULTS[key]`
+    // — so if `FLAGS.CONVERSATIONS_RAIL_TAB` were ever undefined at runtime (a typo, or
+    // operator-vite resolving a stale second copy of @papercusp/flags — a documented
+    // hazard in this tree), the lookup would be `FLAG_DEFAULTS[undefined]` → undefined →
+    // falsy → tab hidden. The VISIBLE outcome would be exactly right, so every assertion
+    // above would still pass, while the owner's flip at /admin/features could never turn
+    // the tab back on. Pin the key against its wire value from the REAL module.
+    it('resolves a defined flag key against the real flags module, so the flip can work', async () => {
+      const { FLAGS } = await import('@papercusp/flags');
+      expect(FLAGS.CONVERSATIONS_RAIL_TAB).toBe(CONVOS);
+    });
+
+    // The id must SURVIVE in TAB_IDS: it is what keeps the nuqs enum parsing the
+    // deep link (so the snap-back above is reachable rather than a silent default)
+    // and what makes flipping the flag on a /admin/features action instead of a
+    // code change. A tab deleted outright would pass every assertion above.
+    it('keeps `conversations` in TAB_IDS so the park is a flag flip, not a deletion', async () => {
+      const { TAB_IDS } = await import('./LeftSidebar');
+      expect(TAB_IDS).toContain('conversations');
+    });
   });
 
   it('renders nothing on a chromeless (iframe-target) route', () => {

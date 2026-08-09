@@ -117,9 +117,15 @@ function accountsFor(pool: AccountPool, provider: AccountProvider) {
 }
 
 /**
- * The pool account the owner marked default, if it is still present and Claude-shaped.
- * Returns undefined for "no default set" AND for "the default names an account that is gone"
- * — both mean the caller should carry on down its normal resolution order (D-003).
+ * The owner's default account, looked up inside an ALREADY provider-filtered candidate list.
+ * Returns undefined for three cases that all mean the same thing to a caller — "no default
+ * set", "the default names an account that is gone", and "the default belongs to the OTHER
+ * provider" — because each should carry on down the normal resolution order (D-003, and
+ * D-002 of inference-rename-and-provider-agnostic-default-2026-08-09 for the third).
+ *
+ * ⚠ The provider check is STRUCTURAL, not a conditional: `accounts` is whatever the caller
+ * already filtered, so passing an unfiltered pool here would silently let a Codex default
+ * front Claude traffic. Callers must filter first.
  */
 function defaultAccountFrom(
   accounts: ReturnType<typeof accountsFor>,
@@ -216,10 +222,13 @@ export async function resolveAccountPool(ws?: string, provider: AccountProvider 
   // here", so every other account must remain behind it as failover. Narrowing the list would
   // turn a preference into a hard pin and leave in-process traffic with nothing to fall back
   // on when that one account hits its rate window.
-  // Claude-only: the default stands in for the Claude local login, so it can never name a
-  // Codex account (setDefaultAccount rejects that). Skipping the read for codex keeps this
-  // path from failing closed on a value that could not have applied to it anyway.
-  const defaultId = provider === 'claude' ? await loadDefaultAccountIdOrThrow(ws) : undefined;
+  // PROVIDER-AGNOSTIC since inference-rename-and-provider-agnostic-default-2026-08-09 P-003:
+  // the default may name a Codex account as well as a Claude one, so it is read for EVERY
+  // provider. It is still promoted only within THIS provider's already-filtered list (`all`),
+  // which is what keeps the two from crossing (D-002) — a Codex default is simply not found
+  // while resolving claude and falls through to plain pool order, exactly as a stale default
+  // does. That shared fall-through is why no explicit provider comparison is needed here.
+  const defaultId = await loadDefaultAccountIdOrThrow(ws);
   if (defaultId) {
     const idx = all.findIndex((a) => a.accountId === defaultId);
     // A default naming an account that has since been removed is a stale preference, not an

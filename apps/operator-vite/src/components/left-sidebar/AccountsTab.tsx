@@ -8,7 +8,8 @@
  * the full card — masked credential ref, availability + pause/penalty, provider windows
  * with reset + "as of", bound member harnesses, egress, live governor buckets, and a
  * per-account Reset (clear a stale projected pause). Adding / removing / linking an
- * account lives in Settings -> Deploy accounts (the heavy wizard); a link sits in the
+ * account lives in Settings -> Inference (the heavy wizard, still routed at
+ * /settings/deploy-accounts); a link sits in the
  * footer. Rows are provider-aware: legacy rows are Claude, explicit Codex rows show the
  * OpenAI-compatible route instead of Anthropic Max copy. Shares the override logic with
  * nothing else now via useAccountOverride.
@@ -330,29 +331,29 @@ export default function AccountsTab({ active }: { active: boolean }) {
                     </Collapsible.Trigger>
                     <span className={`pclsb-acct__statuspill pclsb-acct__statuspill--${statusKind}`} aria-label={statusLabel}>{statusShort}</span>
                     <div className="pclsb-acct__btns">
-                      {/* Claude-only: the default stands in for the machine's CLAUDE login, so
-                          a Codex row has no default to set (the server rejects it too). */}
-                      {accountProvider(a) === 'claude' && (
-                        <button
-                          type="button"
-                          className={`pclsb-acct__b${isDefault ? ' is-default' : ''}`}
-                          disabled={overrideBusy}
-                          aria-pressed={isDefault}
-                          aria-label={
-                            isDefault
-                              ? `Clear ${a.id} as the default account`
-                              : `Make ${a.id} the default account`
-                          }
-                          /* No `title`: a title-only tooltip on a button is blocked by
-                             lint:design-primitives (invisible to keyboard + touch). The
-                             aria-label above already states the action, the sibling
-                             Force/Exclude buttons carry no tooltip either, and the banner
-                             at the top of this tab explains what a default DOES. */
-                          onClick={() => setDefaultAccount(isDefault ? null : a.id)}
-                        >
-                          {isDefault ? '★ Default' : '☆ Default'}
-                        </button>
-                      )}
+                      {/* Every provider, not just Claude
+                          (inference-rename-and-provider-agnostic-default-2026-08-09 P-003). A
+                          default now fronts ITS OWN provider's resolution, so a Codex row has a
+                          real default to set and the server accepts it. */}
+                      <button
+                        type="button"
+                        className={`pclsb-acct__b${isDefault ? ' is-default' : ''}`}
+                        disabled={overrideBusy}
+                        aria-pressed={isDefault}
+                        aria-label={
+                          isDefault
+                            ? `Clear ${a.id} as the default account`
+                            : `Make ${a.id} the default ${accountProvider(a) === 'codex' ? 'Codex/OpenAI' : 'Claude'} account`
+                        }
+                        /* No `title`: a title-only tooltip on a button is blocked by
+                           lint:design-primitives (invisible to keyboard + touch). The
+                           aria-label above already states the action, the sibling
+                           Force/Exclude buttons carry no tooltip either, and the banner
+                           at the top of this tab explains what a default DOES. */
+                        onClick={() => setDefaultAccount(isDefault ? null : a.id)}
+                      >
+                        {isDefault ? '★ Default' : '☆ Default'}
+                      </button>
                       <button
                         type="button"
                         className={`pclsb-acct__b${isForced ? ' is-force' : ''}`}

@@ -65,7 +65,10 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       // 'login' / 'sign in' / 'chatgpt' / 'codex' live HERE, not on api-keys: the account
       // sign-in cards were removed from that page (default-deploy-account-2026-08-08 P-001),
       // so a settings search for "sign in" must land on the pool that actually holds logins.
-      { href: '/settings/deploy-accounts', label: 'Deploy accounts', keywords: ['deploy', 'deployment', 'accounts', 'credentials', 'claude', 'chatgpt', 'codex', 'oauth', 'login', 'sign in', 'default account', 'setup-token', 'remote frame', 'per-machine', 'pool', 'rate limit'] },
+      // Labelled "Inference" since inference-rename-and-provider-agnostic-default-2026-08-09 P-001.
+      // The href keeps the `deploy-accounts` path (D-003: labels-only rename), and the old name
+      // stays in `keywords` so anyone searching settings for "deploy accounts" still lands here.
+      { href: '/settings/deploy-accounts', label: 'Inference', keywords: ['inference', 'deploy', 'deployment', 'deploy accounts', 'accounts', 'credentials', 'claude', 'chatgpt', 'codex', 'oauth', 'login', 'sign in', 'default account', 'setup-token', 'remote frame', 'per-machine', 'pool', 'rate limit'] },
     ],
   },
   {

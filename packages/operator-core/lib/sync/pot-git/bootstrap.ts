@@ -135,9 +135,14 @@ const UNSHALLOW_LATCH_CONFIG_KEY = 'papercusp.bootstrapForceUnshallow';
  * 512 LANDED (+551 commits), 512 then failed, 256 failed, 128 — one success in
  * the whole descent, with `have` frozen. If 512 were above the link's capacity
  * it could not have landed, so those were flakes, not a size ceiling. At the
- * floor of 16 the remaining ~795 commits would need ~50 rungs at ~1 rung per
- * ~10-min git-sync fire — roughly 8 hours for a join that should take minutes,
- * on the exact path a brand-new peer takes on first contact.
+ * floor — 16 when this was written — the remaining ~795 commits would need ~50
+ * rungs at ~1 rung per ~10-min git-sync fire — roughly 8 hours for a join that
+ * should take minutes, on the exact path a brand-new peer takes on first contact.
+ *
+ * ⚠ {@link MIN_DEEPEN_COMMITS} is now 1, not 16 (EI-18808621019872598); see its
+ * own note for why that does NOT multiply the ~50-rung figure above. The fix for
+ * this crawl is the flake tolerance below (don't walk down on flakes), not a high
+ * floor (which instead makes a short-channel link unable to converge at all).
  *
  * So a non-timeout failure now RETRIES the same size before it halves, and only
  * a repeated failure at that size is taken as evidence the bite is too big.
@@ -148,8 +153,38 @@ const DEEPEN_FLAKE_CONFIG_KEY = 'papercusp.bootstrapDeepenFlakes';
  *  off. 2 = retry once, then halve — enough to ride out an isolated flake
  *  without stalling long on a size that is genuinely unreachable. */
 export const DEEPEN_FLAKE_TOLERANCE = 2;
-/** Rung-size bounds + starting point for the adaptive `--deepen` ladder. */
-export const MIN_DEEPEN_COMMITS = 16;
+/**
+ * Rung-size bounds + starting point for the adaptive `--deepen` ladder.
+ *
+ * The floor is 1 — the true atom of durable progress — and NOT a safety margin
+ * (EI-18808621019872598). It was 16, which made the ladder unable to converge at
+ * all on a link whose channels are short-lived: measured peer channel lifetime on
+ * that blocker is 1.6-12 s with a ~1 s mean, and a rung that cannot finish inside
+ * one channel can never land at ANY number of retries. With a floor of 16 the
+ * descent bottoms out there (`Math.floor(16/2)` re-clamps to 16), so if 16 does
+ * not fit, EVERY rung fails forever and the join makes zero progress — not slow
+ * convergence, none.
+ *
+ * Lowering the floor is safe because the cost of the two outcomes is wildly
+ * asymmetric, and the asymmetry runs the right way:
+ *  - a rung that FAILS `return partial()`s, ending the tick — so it costs a whole
+ *    git-sync fire (~5-10 min);
+ *  - a rung that LANDS continues in-call and DOUBLES (see the control law below),
+ *    up to {@link DEFAULT_MAX_STEPS} rungs, so a single tick that finds a landable
+ *    size re-climbs 1 -> 2 -> 4 -> ... -> 2048 geometrically before it returns.
+ * So a low floor is an ESCAPE HATCH, not a crawl: the ladder walks down only until
+ * something lands, then climbs back out within that same call.
+ *
+ * ⚠ This deliberately re-tunes the WI-6261 trade-off documented above, which
+ * treated bottoming out at 16 as the pathology to avoid ("~50 rungs ... roughly 8
+ * hours"). That concern is real but is about the FAILING path — one rung per tick
+ * — and it is already mitigated where it belongs: {@link DEEPEN_FLAKE_TOLERANCE}
+ * stops a flaky link from walking the size down at all, and the geometric
+ * re-climb above means reaching the floor is recoverable in one tick rather than
+ * fifty. An 8-hour join is bad; a join that provably never completes is worse,
+ * and that is what a floor of 16 produced on the measured link.
+ */
+export const MIN_DEEPEN_COMMITS = 1;
 export const INITIAL_DEEPEN_COMMITS = 64;
 export const MAX_DEEPEN_COMMITS = 8192;
 
@@ -313,15 +348,27 @@ async function readShallowBoundary(repoPath: string): Promise<string> {
   }
 }
 
+/**
+ * The one place a rung size is bounded. Exported so the floor's load-bearing
+ * property is testable without standing up the Docker cold-join rig — the
+ * ladder's ability to DESCEND to a size a short-lived channel can actually
+ * carry is what makes convergence possible at all (EI-18808621019872598), and
+ * before this was extracted the same clamp expression was written out twice
+ * with nothing asserting either copy.
+ */
+export function clampDeepenStep(n: number): number {
+  return Math.min(Math.max(n, MIN_DEEPEN_COMMITS), MAX_DEEPEN_COMMITS);
+}
+
 async function readDeepenStep(repoPath: string, runGit: RunGit): Promise<number> {
   const r = await runGit(['config', '--get', DEEPEN_CONFIG_KEY], repoPath);
   const n = r.code === 0 ? Number.parseInt(r.stdout.trim(), 10) : Number.NaN;
   if (!Number.isFinite(n) || n <= 0) return INITIAL_DEEPEN_COMMITS;
-  return Math.min(Math.max(n, MIN_DEEPEN_COMMITS), MAX_DEEPEN_COMMITS);
+  return clampDeepenStep(n);
 }
 
 async function writeDeepenStep(repoPath: string, runGit: RunGit, n: number): Promise<number> {
-  const clamped = Math.min(Math.max(n, MIN_DEEPEN_COMMITS), MAX_DEEPEN_COMMITS);
+  const clamped = clampDeepenStep(n);
   await runGit(['config', DEEPEN_CONFIG_KEY, String(clamped)], repoPath);
   return clamped;
 }

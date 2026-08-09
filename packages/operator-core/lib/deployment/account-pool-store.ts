@@ -121,9 +121,15 @@ export async function saveAccountPool(pool: AccountPool, ws?: string): Promise<v
  * pool, and account-pool-store already imports the override module — the reverse import
  * would be a cycle.
  *
- * Claude-only: the default substitutes for the Claude local login, and a Codex credential
- * cannot serve an Anthropic-format request at all. A Codex row is rejected by NAME rather
- * than filtered out of existence, so picking one reports why instead of "no such account".
+ * PROVIDER-AGNOSTIC since inference-rename-and-provider-agnostic-default-2026-08-09 P-003
+ * [owner 2026-08-09]: a Codex/OpenAI account may be the default too. It was Claude-only
+ * before, on the reasoning that the default "substitutes for the Claude local login" and a
+ * Codex credential cannot serve an Anthropic-format request. The second half is still true,
+ * which is why lifting the rule is safe rather than dangerous: per D-002 the default is a
+ * PER-PROVIDER primary, resolved inside each provider's already-filtered candidate list, so
+ * a Codex default is simply never found while resolving Claude traffic and falls through to
+ * the local login exactly as "no default" would. Nothing has to check the provider here —
+ * the filtering downstream is what keeps the two from crossing.
  */
 export async function setDefaultAccount(
   id: string | null | undefined,
@@ -143,14 +149,15 @@ export async function setDefaultAccount(
     const known = pool.accounts.map((a) => a.id).join(', ') || '(pool is empty)';
     throw new AccountPoolError(`no such account '${wanted}' in the pool. Known accounts: ${known}`);
   }
-  if (accountProvider(acct) !== 'claude') {
-    throw new AccountPoolError(
-      `account '${wanted}' is a Codex account. The default account stands in for the machine's ` +
-        `Claude login, so it must be a Claude account.`,
-    );
-  }
   const next = await setAccountOverride(workspace, { defaultAccountId: acct.id });
-  publishDefaultAccountEnv(true);
+  // CLAUDE-ONLY marker, deliberately narrower than "a default is set" (D-002). The marker's
+  // only job is to tell `chooseStatelessTransport` to route the in-process ANTHROPIC-direct
+  // family through the gateway instead of ~/.claude. A Codex default says nothing about
+  // Anthropic traffic, so setting the marker for one would reroute every judge/summariser off
+  // the local login on the strength of an unrelated choice — a silent transport change the
+  // owner never asked for. Codex defaults still apply where they mean something: the codex
+  // leg of resolveAccountPool.
+  publishDefaultAccountEnv(accountProvider(acct) === 'claude');
   return next;
 }
 
@@ -183,7 +190,15 @@ function publishDefaultAccountEnv(active: boolean): void {
  */
 export async function syncDefaultAccountEnv(ws?: string): Promise<boolean | undefined> {
   try {
-    const active = Boolean(await readDefaultAccountId(ws));
+    const workspace = ws ?? activeWorkspaceId();
+    const defaultId = await readDefaultAccountId(workspace);
+    // Mirror setDefaultAccount's CLAUDE-ONLY rule (D-002) — the marker means "route in-process
+    // Anthropic calls through the gateway", which a Codex default must not turn on. Resolving
+    // the provider needs the pool, so a default whose account has since been REMOVED reads as
+    // inactive here; that matches the resolvers, which treat a stale default as no default.
+    const pool = await loadAccountPool(workspace);
+    const acct = defaultId ? getAccount(pool, defaultId) : undefined;
+    const active = Boolean(acct && accountProvider(acct) === 'claude');
     publishDefaultAccountEnv(active);
     return active;
   } catch {

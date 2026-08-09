@@ -2265,6 +2265,24 @@ export const FLAGS = {
   // judge's empty output as byte-identical to a healthy "nothing contradicts",
   // which is not merely wrong but REASSURING.
   GUIDANCE_CONTRADICTION_SCAN: "papercusp-guidance-contradiction-scan",
+  // WI-37561 — gates the 💬 Convos tab in the MIDDLE rail (the left-sidebar
+  // steering rail), on an explicit owner directive 2026-08-09: "Put the
+  // 'convos' tab in the middle pane behind a testing flag". DEFAULT OFF (a
+  // DARK_FLAGS 'parked' entry) — the owner asked for the tab HIDDEN until
+  // they flip it on for testing, not merely for a kill-switch to exist.
+  //
+  // Scope is the RAIL TAB ONLY. /adv keeps its own Conversations tab reading
+  // the same four SSE-cached queries (components/conversations/
+  // unified-conversations), so nothing becomes unreachable while this is dark
+  // — which is exactly why hiding it is cheap.
+  //
+  // Gating follows the OVERWATCH/PAPERCUP pattern already in LeftSidebar: the
+  // tab is filtered out of both the expanded strip and the collapsed icon
+  // rail, and a stale `?lst=conversations` deep link (or ui:dispatch) snaps
+  // back to 'queen' rather than landing on a tab that is not there. The id
+  // stays in TAB_IDS so the nuqs enum keeps parsing it — that is what makes
+  // the snap-back reachable, and it is how the flag flips back ON cleanly.
+  CONVERSATIONS_RAIL_TAB: "papercusp-conversations-rail-tab",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -2289,6 +2307,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     [FLAGS.DESIGN, { case: 'parked', reason: 'cut for V1.' }],
     [FLAGS.TESTING, { case: 'parked', reason: 'cut for V1.' }],
     [FLAGS.THE_HIVE, { case: 'parked', reason: 'restore-pot-lexicon-public-release-2026-07-04 (owner 2026-07-04): public release ships the Pot (Papercup) lexicon by DEFAULT. The `the-hive`/Swarm skin is BUILT and kept, but cut from public V1 — reachable only via the TESTING-gated BrandSwitcher (P-004). OFF ⇒ the classic/pot pack (the public default); ON ⇒ the bee skin for internal/testing use.' }],
+    [FLAGS.CONVERSATIONS_RAIL_TAB, { case: 'parked', reason: 'WI-37561, owner directive 2026-08-09 verbatim: "Put the \'convos\' tab in the middle pane behind a testing flag". The owner CHOSE hidden-until-flipped over a visible kill-switch when asked directly, so this is a requested park, not finished work hidden from its own author. It parks the RAIL TAB only: /adv keeps its own Conversations tab on the same four SSE-cached queries, so no conversation content is unreachable while this is dark — the cheapness of hiding it is the reason the park is honest. ON ⇒ the 💬 Convos tab returns to the middle rail in its owner-set last position (nothing else moves; the id never left TAB_IDS). GRADUATES when the owner says the tab is part of the standard release — the same sentence that graduated papercusp-task-manager on 2026-08-02.' }],
     // TEST_COMPLETION_GATE graduated 2026-07-04 (dark-flag-age review, EI-7280):
     // enforce-system-on-generic-work-2026-06-29 P-014 verified it LIVE + enabled
     // (flags:get confirmed true) with zero blast radius (done-without-test watchdog
@@ -2636,7 +2655,26 @@ export const DARK_FLAGS_REVIEW_BY = '2026-08-23';
 // a ceiling only ratchets if a graduation SPENDS the slot it frees. Leaving it at 14
 // would silently convert this graduation into headroom for the next park — the exact
 // drift the 22→24→25→26 history above records, just in the polite direction.
-export const DARK_FLAGS_HIGH_WATERMARK = 13;
+//
+// 2026-08-09 (WI-37561) — 13→14 for papercusp-conversations-rail-tab, on an EXPLICIT
+// owner directive: "Put the 'convos' tab in the middle pane behind a testing flag".
+// This is the SECOND time this exact phrasing has bought a slot (WI-6499, the task
+// manager, 13→14 on 2026-07-27), and it is the same sign-off path the policy names
+// rather than a quiet append. No graduation trade was sought: the parked+incomplete
+// subset stood at exactly 13/13 and, offered the trade explicitly, the owner chose
+// the raise over pulling an unrelated flag review into a two-file change.
+//
+// Why this is not the parking-lot abuse the ceiling polices: the abuse is FINISHED
+// work hidden behind a flag nobody flips. Here the OWNER asked for the gate, the flip
+// back ON is a testing action they perform, and — unlike a subsystem park — nothing
+// is lost meanwhile, because /adv carries the same conversations on the same queries.
+// A park with a live alternative surface is the cheapest kind there is.
+//
+// Expected to graduate on the same sentence the task manager did ("remove that flag,
+// we'll make it part of our standard release"). If it is still here at the
+// DARK_FLAGS_REVIEW_BY date, that is the signal to chase — and the slot must then
+// ratchet 14→13 on the way out, not become headroom.
+export const DARK_FLAGS_HIGH_WATERMARK = 14;
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /

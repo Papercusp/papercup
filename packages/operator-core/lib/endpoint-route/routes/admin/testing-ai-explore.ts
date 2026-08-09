@@ -48,10 +48,27 @@ export default defineTool({
     });
     if (!parsed.ok) return new Response(parsed.msg, { status: 400 });
 
+    // RAW KEY ONLY, deliberately — and this is the one place that still needs one.
+    // inference-rename-and-provider-agnostic-default-2026-08-09 P-005 moved every other
+    // anthropic_api_key consumer onto the default account, but it CANNOT move this one: the
+    // key is piped into the stagehand-runner subprocess, which hands `{ modelName, apiKey }`
+    // to Stagehand's model config with no baseURL seam, so there is nowhere to point at the
+    // gateway. Routing it properly means teaching the runner a baseURL + an OAuth-bearer
+    // header — tracked separately, not smuggled in here.
+    //
+    // The env fallback is new: with the settings field gone (P-004), ANTHROPIC_API_KEY is the
+    // supported way to feed this route, so reading only the credential store would have left
+    // it with no reachable configuration path at all.
     const creds = await readCredentials();
-    const apiKey = creds.anthropic_api_key;
+    const apiKey = creds.anthropic_api_key?.trim() || process.env.ANTHROPIC_API_KEY?.trim();
     if (!apiKey) {
-      return new Response('No Anthropic API key configured. Set one in Settings → API keys.', { status: 400 });
+      return new Response(
+        'No Anthropic API key configured. This browser-exploration runner needs a RAW key — it ' +
+          'cannot use the default account under Settings → Inference, because the Stagehand ' +
+          'subprocess it drives takes no gateway base URL. Set ANTHROPIC_API_KEY in the ' +
+          "operator's environment, or store one via the setup:save_key tool.",
+        { status: 400 },
+      );
     }
 
     const repoRoot = resolveRepoRoot();

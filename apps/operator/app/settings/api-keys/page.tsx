@@ -29,9 +29,13 @@ interface VoiceCredsSnapshot {
   picovoice: VoiceCredsState;
 }
 
-// Core keys (Anthropic LLM, OpenAI, GitHub) — leave-alone-on-empty semantics.
+// Core keys (OpenAI embeddings, ZeroEntropy, GitHub) — leave-alone-on-empty semantics.
+//
+// No `anthropic` entry since inference-rename-and-provider-agnostic-default-2026-08-09 P-004:
+// Anthropic access comes from the default account under Settings → Inference, not a raw key.
+// `Credentials.anthropic_api_key` is still READ as a legacy fall-through (D-001) and can still
+// be written by `setup:save_key` — this page just stops offering it as the way to configure it.
 const ApiKeysSchema = z.object({
-  anthropic: z.string().optional().default(''),
   openai: z.string().optional().default(''),
   zeroentropy: z.string().optional().default(''),
   github: z.string().optional().default(''),
@@ -45,7 +49,7 @@ export default function ApiKeysPage() {
   const [loading, setLoading] = useState(true);
 
   const { register, submit, reset, errors, isSubmitting } = useFormWith(ApiKeysSchema, {
-    defaultValues: { anthropic: '', openai: '', zeroentropy: '', github: '' },
+    defaultValues: { openai: '', zeroentropy: '', github: '' },
   });
 
   useEffect(() => {
@@ -65,13 +69,12 @@ export default function ApiKeysPage() {
   }, []);
 
   const onSubmit = async (data: ApiKeysFormData) => {
-    if (!data.anthropic && !data.openai && !data.zeroentropy && !data.github) {
+    if (!data.openai && !data.zeroentropy && !data.github) {
       toast.message('Nothing to save — fill at least one field.');
       return;
     }
     try {
       const body: Record<string, string> = {};
-      if (data.anthropic) body.anthropic_api_key = data.anthropic;
       if (data.openai) body.openai_api_key = data.openai;
       if (data.zeroentropy) body.zeroentropy_api_key = data.zeroentropy;
       if (data.github) body.github_pat = data.github;
@@ -83,7 +86,7 @@ export default function ApiKeysPage() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d: MaskedCoreCredentials = await r.json();
       setMasked(d);
-      reset({ anthropic: '', openai: '', zeroentropy: '', github: '' });
+      reset({ openai: '', zeroentropy: '', github: '' });
       toast.success(`Saved to ${d.path}`);
     } catch (err: any) {
       toast.error(`save failed: ${err?.message ?? err}`);
@@ -104,10 +107,11 @@ export default function ApiKeysPage() {
       <h1>API keys</h1>
       <p className="pc-settings-intro">
         Bring-your-own API keys for the services Papercusp talks to. To sign in to a
-        Claude or Codex <em>subscription</em> instead, add it as a{' '}
-        <RouteLink href="/settings/deploy-accounts">deploy account</RouteLink> — that
-        pool is the single place account logins live, and one of its accounts can be
-        marked the default for everything on this machine.
+        Claude or Codex <em>subscription</em> instead, add it under{' '}
+        <RouteLink href="/settings/deploy-accounts">Inference</RouteLink> — that pool is
+        the single place account logins live, and one of its accounts can be marked the
+        default for everything on this machine, whether it is an Anthropic or an OpenAI
+        account.
       </p>
 
       <div className="pc-warn pc-settings-inline-callout" role="status">
@@ -118,26 +122,18 @@ export default function ApiKeysPage() {
       <section className="pc-settings-section">
         <h2>API keys — Core</h2>
         <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
-          Default backend is <code>omp</code>. Set an Anthropic key only if you switch
-          to <code>AGENT_BACKEND=claude-code</code> and don&rsquo;t already have a
-          Claude Code OAuth session. OpenAI is a fallback for some plugins. GitHub
-          PAT is needed only when publishing {t('pot', { plural: true, lower: true })} to the marketplace.
+          These are raw provider keys, not account logins. Anthropic and Codex/OpenAI
+          <em> model access</em> comes from the default account under{' '}
+          <RouteLink href="/settings/deploy-accounts">Inference</RouteLink> — there is no
+          Anthropic key to set here. The OpenAI key below is for <em>embeddings</em>, which no
+          subscription account can serve. GitHub PAT is needed only when publishing{' '}
+          {t('pot', { plural: true, lower: true })} to the marketplace.
         </p>
 
         <form onSubmit={submit(onSubmit)} className="pc-card">
         <SecretField
-          label="Anthropic API key"
-          help="Optional. Only needed when AGENT_BACKEND=claude-code and you don&apos;t have a Claude Code OAuth session."
-          placeholder={masked?.anthropic_api_key ?? 'sk-ant-…'}
-          masked={masked?.anthropic_api_key}
-          uses={['Claude Code backend']}
-          loading={loading}
-          register={register('anthropic')}
-          error={errors.anthropic?.message}
-        />
-        <SecretField
-          label="OpenAI API key (embeddings + LLM)"
-          help="Powers semantic search and memory embeddings (text-embedding-3-small) plus LLM fallback for some plugins. NOTE: this is a separate slot from the OpenAI voice key below."
+          label="OpenAI embeddings key"
+          help="Powers semantic search and memory embeddings (text-embedding-3-small), plus LLM fallback for some plugins. This is a raw API key and works SEPARATELY from any OpenAI/Codex account under Inference — a subscription account cannot serve embeddings, so this slot stays even when a default account is set. It is also a separate slot from the OpenAI voice key below."
           placeholder={masked?.openai_api_key ?? 'sk-…'}
           masked={masked?.openai_api_key}
           uses={['Semantic search', 'Memory', 'LLM fallback']}

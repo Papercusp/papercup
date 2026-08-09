@@ -28,6 +28,12 @@ function flagLabels(t: BoundLexicon): Partial<Record<FlagKey, string>> {
     [FLAGS.CLOUDFLARE_PUBLISH]: 'Cloudflare publishing',
     [FLAGS.HARNESS_PHASES]: `${t('pot')} phases`,
     [FLAGS.DESIGN]: 'Design tab',
+    // WI-37561. An unlabelled flag falls back to its raw wire key
+    // (`labels[key] ?? key`), so it is still listed and still togglable — but
+    // "papercusp-conversations-rail-tab" is not a thing an owner scans a list
+    // for. This flag in particular is one the OWNER asked for in order to flip
+    // it themselves, so a findable name is part of the feature, not polish.
+    [FLAGS.CONVERSATIONS_RAIL_TAB]: 'Convos tab (middle rail)',
     [FLAGS.TESTING]: 'Testing surfaces',
     [FLAGS.INBOX_DURABLE_ESCALATIONS]: 'Durable inbox escalations',
     [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: 'Auto-implement improvements',
@@ -43,6 +49,8 @@ function flagLabels(t: BoundLexicon): Partial<Record<FlagKey, string>> {
 function flagBlurbs(t: BoundLexicon): Partial<Record<FlagKey, string>> {
   return {
     [FLAGS.CLOUDFLARE_PUBLISH]: 'Publish-to-Cloudflare flow. Cut for V1 ship.',
+    [FLAGS.CONVERSATIONS_RAIL_TAB]:
+      'The 💬 Convos tab in the middle steering rail. OFF (default): the rail ends at Spend. ON: Convos returns to its owner-set last position. Nothing is lost while it is off — /adv keeps its own Conversations tab on the same data.',
     [FLAGS.HARNESS_PHASES]: `Multi-phase ${t('pot')} (staging / testing / production). Cut for V1 ship.`,
     [FLAGS.DESIGN]: `In-${t('pot')} design tab + /design route. Cut for V1 ship.`,
     [FLAGS.TESTING]:
