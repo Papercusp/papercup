@@ -287,15 +287,25 @@ export function renderColdWakeInjection(
   // another 20 minutes in the SAME turn has also left the note behind, and that is a true
   // positive worth flagging, not a false one.
   const postNoteMs = hasTurn && hasStamp ? lastTurnAtMs! - updatedAtMs! : 0;
+  // EI-19984789589075138: evidence, not just existence. `hasEvidence` is true only when the
+  // caller actually ran the tool-call count (never on undefined/null — evidence unavailable
+  // must NOT be read as zero, or a query failure would silently suppress a real warning).
+  const hasEvidence = typeof agentToolCallsSinceNote === 'number' && Number.isFinite(agentToolCallsSinceNote);
+  const confirmedNoWork = hasEvidence && agentToolCallsSinceNote! <= 0;
   const staleWorkLine =
     postNoteMs >= COLD_NOTE_POST_TURN_FLOOR_MS
-      ? `⚠⚠ UN-CHECKPOINTED WORK EXISTS: you completed a turn at [${coldNoteStamp(lastTurnAtMs!)}] — ` +
-        `~${coldNoteAge(postNoteMs)} AFTER this note was written. The note is refreshed ONLY by ` +
-        'loop:checkpoint, so it does NOT describe that work, and its "Next action" may ALREADY BE DONE ' +
-        'or have been superseded by it. Before executing that action, VERIFY IT IS STILL NEEDED against ' +
-        'live state — read the code/work-item it names and check whether the thing already exists. ' +
-        'Re-implementing finished work is the specific failure this warns about. Recover what you did with ' +
-        "sessions:timeline { owner:'self', since:'<the note write-time above>' }."
+      ? confirmedNoWork
+        ? `ℹ bounced fire(s) since the note: a turn completed at [${coldNoteStamp(lastTurnAtMs!)}] — ` +
+          `~${coldNoteAge(postNoteMs)} after this note was written — but it made ZERO agent tool calls. ` +
+          'That shape is a usage-wall / withheld-delivery bounce (the model emitted refusal text and the ' +
+          'turn ended), not un-checkpointed work — the note above is CURRENT. No recovery hunt needed.'
+        : `⚠⚠ UN-CHECKPOINTED WORK EXISTS: you completed a turn at [${coldNoteStamp(lastTurnAtMs!)}] — ` +
+          `~${coldNoteAge(postNoteMs)} AFTER this note was written. The note is refreshed ONLY by ` +
+          'loop:checkpoint, so it does NOT describe that work, and its "Next action" may ALREADY BE DONE ' +
+          'or have been superseded by it. Before executing that action, VERIFY IT IS STILL NEEDED against ' +
+          'live state — read the code/work-item it names and check whether the thing already exists. ' +
+          'Re-implementing finished work is the specific failure this warns about. Recover what you did with ' +
+          "sessions:timeline { owner:'self', since:'<the note write-time above>' }."
       : null;
   return [
     `❄️ COLD LOOP WAKE${fireTag} — a context reset was REQUESTED for this session: the host was asked to drop your`,

@@ -1580,6 +1580,60 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     });
   });
 
+  // EI-19984789589075138: `lastRealTurnAt` is a well-formed turn even when it is a usage-wall /
+  // withheld-fire bounce that made zero tool calls — so the WI-6951 strict signal alone still
+  // fires the banner on that shape. This is the follow-up evidence check.
+  describe('EI-19984789589075138 — evidence check downgrades a bounced-fire false alarm', () => {
+    const noteAtMs = Date.parse('2026-08-09T13:51:00.000Z');
+    const realTurnIso = '2026-08-09T14:06:00.000Z'; // ~15m after the note — clears the floor
+
+    const coldRun = async (status: Record<string, unknown> | null, countAgentToolCallsFn?: unknown) => {
+      const injectPsuHost = vi.fn(async () => true);
+      await executeWake(
+        work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 6 }) }),
+        coldDeps({
+          injectPsuHost: injectPsuHost as never,
+          getLoopCarryNoteFn: undefined,
+          getLoopCarryNoteWithMetaFn: vi.fn(async () => ({
+            note: '## Next action\nresume the wiring',
+            updatedAtMs: noteAtMs,
+          })) as never,
+          getLoopStatusFn: vi.fn(async () => status) as never,
+          ...(countAgentToolCallsFn ? { countAgentToolCallsFn: countAgentToolCallsFn as never } : {}),
+        }),
+      );
+      return (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+    };
+
+    it('downgrades to the bounced-fire notice when the evidence check confirms zero agent tool calls', async () => {
+      const countAgentToolCallsFn = vi.fn(async () => 0);
+      const data = await coldRun({ lastTurnAt: realTurnIso, lastRealTurnAt: realTurnIso }, countAgentToolCallsFn);
+      expect(countAgentToolCallsFn).toHaveBeenCalledWith('su-abc', noteAtMs, Date.parse(realTurnIso));
+      expect(data).not.toContain(BANNER);
+      expect(data).toContain('bounced fire');
+    });
+
+    it('keeps the strong banner when the evidence check finds real tool calls', async () => {
+      const countAgentToolCallsFn = vi.fn(async () => 5);
+      const data = await coldRun({ lastTurnAt: realTurnIso, lastRealTurnAt: realTurnIso }, countAgentToolCallsFn);
+      expect(data).toContain(BANNER);
+      expect(data).not.toContain('bounced fire');
+    });
+
+    it('keeps the strong (existing) banner unchanged when the evidence check is never wired (defaults preserved)', async () => {
+      const data = await coldRun({ lastTurnAt: realTurnIso, lastRealTurnAt: realTurnIso });
+      expect(data).toContain(BANNER);
+    });
+
+    it('never calls the evidence check at all when the banner would not fire anyway (inside the floor)', async () => {
+      const countAgentToolCallsFn = vi.fn(async () => 0);
+      const closeIso = '2026-08-09T13:51:30.000Z'; // 30s after the note — inside the 5min floor
+      const data = await coldRun({ lastTurnAt: closeIso, lastRealTurnAt: closeIso }, countAgentToolCallsFn);
+      expect(countAgentToolCallsFn).not.toHaveBeenCalled();
+      expect(data).not.toContain(BANNER);
+    });
+  });
+
   // WI-6862: the booked channel must say WHICH signal produced the `true`. injectIntoHost's
   // bare boolean resolves true on a BARE SOCKET CLOSE, which is exactly what a host killed
   // mid-delivery (a provider usage_limit wall hitting the respawn) looks like — so a cold

@@ -677,20 +677,47 @@ export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fata
  * cover that incidentally (any edit anywhere busted the key), so this is a real narrowing
  * and not merely a restatement.
  *
- * It is accepted rather than closed because every way of closing it re-widens the
- * watermark to "any uncommitted edit in the tree", which on a checkout ~16 agents are
- * saving into is `now` on every call — i.e. exactly the churn that made coalescing
- * impossible in the first place (~1 change/18s vs a ~170s compile). The mitigation is the
- * instruction the gate already gives everywhere: pass `--files=` listing what you actually
- * changed. That is also what makes the VERDICT trustworthy here, so the two align.
+ * It is accepted rather than closed for the GENERAL case, because every way of closing it
+ * re-widens the watermark to "any uncommitted edit in the tree", which on a checkout ~16
+ * agents are saving into is `now` on every call — i.e. exactly the churn that made
+ * coalescing impossible in the first place (~1 change/18s vs a ~170s compile). The
+ * mitigation is the instruction the gate already gives everywhere: pass `--files=` listing
+ * what you actually changed. That is also what makes the VERDICT trustworthy here, so the
+ * two align.
+ *
+ * ONE instance of "G edited, F asked about" IS closed, narrowly, because it doesn't share
+ * the churn problem above: generated `.d.mts` declarations (EI-19483243844876537). They are
+ * a small, fixed, enumerable set (`tsconfig.declarations.json`'s `files`, currently ~11) that
+ * only moves on an explicit `npm run gen:declarations` run — not on every peer's save — so
+ * folding them in doesn't reintroduce the per-18s churn the general fix was rejected for. See
+ * `declarationFilesFromConfig` below.
  *
  * @param {{ root: string, files: Set<string> | null, updateFlag: boolean }} args
  * @returns {number | null} epoch seconds, or null to disable coalescing for this run
  */
+/**
+ * The `.d.mts` companions of the `.mjs` modules declared in `tsconfig.declarations.json`
+ * (WI-6394's naming convention: `foo.mjs` -> `foo.d.mts`, same directory) — the hidden
+ * dependency `coalesceWatermarkFor` folds in below (EI-19483243844876537).
+ *
+ * Deliberately duplicated rather than imported from `scripts/gen-declarations.ts`: that
+ * module calls `generate()`/`check()` UNCONDITIONALLY at module load — no entrypoint guard —
+ * so importing it here would regenerate declarations as a side effect of every gate call,
+ * including read-only ones on a shared, concurrently-edited checkout. `generated-
+ * declarations.test.ts` already duplicates `BANNER_MARKER` for the identical reason; this
+ * follows the same precedent rather than introducing a new one.
+ *
+ * Fails open (empty array) on any read/parse error — this is a supplementary freshness
+ * SIGNAL, not a hard dependency, and a missing/malformed config must never crash the gate.
+ *
+ * @param {string} root
+ * @returns {string[]} repo-relative `.d.mts` paths
+ */
+export function declarationFilesFromConfig(root: string): string[];
 export function coalesceWatermarkFor({ root, files, updateFlag }: {
-    root: string;
-    files: Set<string> | null;
-    updateFlag: boolean;
+    root: any;
+    files: any;
+    updateFlag: any;
 }): number | null;
 /**
  * Which scope the caller asked this gate to judge — reported on the completion marker so a

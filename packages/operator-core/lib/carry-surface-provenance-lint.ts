@@ -240,6 +240,32 @@ const UNVERIFIED_ACTION_CLAIM_RE =
   /\b(?:posted|messaged|commented|notified|pinged|dispatched|replied|escalated|sent|handed(?:\s+it)?\s+off|reached\s+out|wrote\s+to)\b[^\n]{0,60}?(?:\b(?:WI|EI|F)-\d|\bsu-[0-9a-f]{4}|\bposts?\s*\d|\bfleet\s+leader\b|\bthe\s+leader\b|\bthe\s+queen\b|\bthe\s+fleet\b|\bpeer\b|\bmsg[\s-])/i;
 
 /**
+ * P-014 (fleet-lead-instrumentation-audit-2026-08-09) — the THIRD-PARTY actor test.
+ *
+ * {@link UNVERIFIED_ACTION_CLAIM_RE} matches a comm verb plus a coordination target and
+ * has no notion of WHO ACTED, so it cannot tell "I messaged the leader" from
+ * "su-6dc49b99 replied about WI-37162". The first is the claim the lint exists to
+ * police — the author asserting a side-effect only they could have produced. The second
+ * is the author RECORDING A PEER'S REPORT, which is exactly the attribution discipline
+ * this module asks for everywhere else; flagging it punishes compliance, and a lint that
+ * fires on the correct behaviour is how a leg that catches a real class gets ignored.
+ *
+ * Matched against the text PRECEDING the verb on the same line, so the actor must sit
+ * immediately before it (modulo a short closed set of adverbs/auxiliaries). A line that
+ * OPENS with the verb — "Messaged fleet leader su-bce40c51 directly", the motivating
+ * WI-5137 fabrication — has an implicit first-person subject and is still flagged.
+ */
+const THIRD_PARTY_ACTOR_RE =
+  /\b(?:su-[0-9a-f]{4,}|they|he|she|a\s+peer|the\s+peer|another\s+agent|the\s+(?:fleet\s+)?leader|the\s+queen|the\s+owner)\b(?:\s+(?:has|had|have|just|already|then|also|apparently|reportedly|since))*\s+$/i;
+
+/** Whether the matched action verb's own subject is someone OTHER than the author. */
+function isPeerReportedAction(line: string): boolean {
+  const m = UNVERIFIED_ACTION_CLAIM_RE.exec(line);
+  if (!m || m.index === undefined) return false;
+  return THIRD_PARTY_ACTOR_RE.test(line.slice(0, m.index));
+}
+
+/**
  * An explicit PROVENANCE-block header. An agent complies with the nudge by writing a block
  * like `PROVENANCE: the 'do not widen X until Y' constraint above is [self-imposed] by …` —
  * which necessarily RESTATES the imperative it is attributing so the reader knows WHICH one.
@@ -269,10 +295,16 @@ export interface ProvenanceLintMatch {
    *  documentation/comparison of the tag convention itself (a placeholder name,
    *  a backtick-quoted form, or "form"/"convention"/"e.g." nearby) rather than
    *  an actual attribution — still surfaced (never silently dropped), but out
-   *  of the loud category so that category keeps its high-precision meaning. */
+   *  of the loud category so that category keeps its high-precision meaning.
+   *  'peer-reported-action' (P-014) is the same downgrade applied to the ACTOR
+   *  rather than the tag: the comm verb's subject is a THIRD PARTY, so the line
+   *  records a peer's action as a peer's action — attribution done right, not an
+   *  unprovable claim about the author's own side-effects. Still second-hand and
+   *  still surfaced; just not accused. */
   kind:
     | 'owner-attribution'
     | 'bare-gate-imperative'
+    | 'peer-reported-action'
     | 'manual-owner-tag'
     | 'possible-owner-tag-mention'
     | 'quote-mismatch'
@@ -317,7 +349,14 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
     // DIRECTIVE that ordered the action — it does not prove the action happened), so a
     // line can carry both a directive match and this one. Guarded against the cap.
     if (UNVERIFIED_ACTION_CLAIM_RE.test(line)) {
-      matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'unverified-action-claim' });
+      // P-014: same mention-vs-use split the owner-tag legs already make, applied to the
+      // ACTOR. A peer's action recorded as a peer's action is attribution done right, so
+      // it is DOWNGRADED rather than silenced — a reader still sees it is second-hand and
+      // unverified, without being told they claimed something they cannot prove.
+      matches.push({
+        line: line.slice(0, MATCH_LINE_CAP),
+        kind: isPeerReportedAction(line) ? 'peer-reported-action' : 'unverified-action-claim',
+      });
       if (matches.length >= MAX_MATCH_LINES) continue;
     }
     if (OWNER_TAG_RE.test(line)) {
@@ -380,6 +419,32 @@ export const PROVENANCE_LINT_NOTE =
   "Verify a remembered directive or action via sessions:search { session:'self', mode:'verbatim' }. " +
   'See WI-3532 / EI-9091 / EI-18226077402946717.';
 
+/**
+ * The kinds that are SURFACED but not ACCUSED — a mention of the tag convention rather
+ * than an attribution, or an action attributed to a peer rather than claimed as one's
+ * own. Kept as data (not a boolean on each match) so the note selection below cannot
+ * disagree with the kind a consumer reads.
+ */
+const DOWNGRADED_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set([
+  'possible-owner-tag-mention',
+  'peer-reported-action',
+]);
+
+/**
+ * P-014 — the note for a write whose matches are ALL downgraded. The main note opens
+ * with "contains an owner-attributed directive and/or a claimed COMPLETED action … with
+ * no verifiable turn ref", which is simply FALSE of such a write, and being told to
+ * anchor a peer's reported action to a turn of your own is impossible advice. A lint
+ * that misdescribes the compliant case is how the whole leg gets tuned out.
+ */
+export const PROVENANCE_LINT_DOWNGRADED_NOTE =
+  'provenance_lint (FYI — nothing to fix): every match on this write is a DOWNGRADED kind. Either a ' +
+  '[owner:…]-shaped token used to DESCRIBE the convention rather than to attribute a directive, or an ' +
+  'action whose subject is a PEER ("su-… replied about WI-…") — i.e. a peer\'s claim recorded AS a ' +
+  "peer's claim, which is the attribution discipline this lint asks for, not a violation of it. Surfaced " +
+  'so a reader treats the line as second-hand and unverified; no [turn:…] ref of your own is required (and ' +
+  'for a peer\'s action you could not supply one). See the `matches[].kind` for which line is which.';
+
 /** Convenience: build the `{ flagged, note?, matches? }` shape every consumer
  *  tool folds into its JSON response — `undefined` fields when clean, so a clean
  *  write's response shape is unchanged (no `provenanceLint: { flagged: false }`
@@ -389,5 +454,12 @@ export function provenanceLintField(text: string | null | undefined):
   | undefined {
   const result = lintCarrySurfaceProvenance(text);
   if (!result.flagged) return undefined;
-  return { flagged: true, note: PROVENANCE_LINT_NOTE, matches: result.matches };
+  // A single LOUD match makes the write accusable, so the softer note applies only when
+  // EVERY match is downgraded — never let one real violation ride in under the FYI.
+  const allDowngraded = result.matches.every((m) => DOWNGRADED_KINDS.has(m.kind));
+  return {
+    flagged: true,
+    note: allDowngraded ? PROVENANCE_LINT_DOWNGRADED_NOTE : PROVENANCE_LINT_NOTE,
+    matches: result.matches,
+  };
 }

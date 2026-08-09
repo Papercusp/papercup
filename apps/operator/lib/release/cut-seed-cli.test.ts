@@ -472,6 +472,49 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     });
     expect(res.undrained).toBe(0);
   });
+
+  // WI-37500: the SAME defect one level up. The EI-18155637095067676 fix above accounts for the
+  // drain's INTERNAL self-heal (a hung pass, ≤120s). It does not account for the larger one — a
+  // bg-host PROCESS recycle by bghost-watchdog, during which nothing drains at all because the
+  // drain's owner is not running. That envelope is BOOT_GRACE_MS (8min) + POLL_MS (30s) = 510s,
+  // measured live 2026-08-09 as five consecutive 510-511s inter-restart gaps. The old 300s
+  // budget therefore could not survive even ONE recycle, while a real cut needs ~20-25min of
+  // draining — so the cut lost that race by construction.
+  it('defaults the stall tolerance to strictly more than one full bghost-watchdog recycle envelope (WI-37500)', () => {
+    const BGHOST_RECYCLE_ENVELOPE_MS = 8 * 60_000 + 30_000; // BOOT_GRACE_MS + POLL_MS = 510s
+    expect(CUT_SEED_DRAIN_STALL_MS).toBeGreaterThan(BGHOST_RECYCLE_ENVELOPE_MS);
+    // and still strictly more than the drain-pass cycle it already had to clear
+    expect(CUT_SEED_DRAIN_STALL_MS).toBeGreaterThan(DRAIN_PASS_TIMEOUT_MS * 2);
+  });
+
+  it('a stall spanning a full bg-host recycle no longer trips the default tolerance (WI-37500)', async () => {
+    // The measured incident: drain frozen while bg-host is recycled, then resumes. Model ~540s
+    // of real no-progress (9 polls × 60s) followed by a drained backlog.
+    const stuckThenDrained = () => pgReturning([...Array<number>(10).fill(100), 0]).sql;
+    let t = 0;
+    const now = () => t;
+    const sleep = async () => {
+      t += 60_000;
+    };
+
+    // Sanity control: this exact scenario MUST still throw under the OLD 300s default, or the
+    // "no longer trips" assertion below is vacuous (the same discipline as the test above).
+    t = 0;
+    await expect(
+      waitForOperatorDrain({ ...base, pg: stuckThenDrained(), stallMs: 300_000, now, sleep, warn: () => {} }),
+    ).rejects.toThrow(/NO progress/);
+
+    t = 0;
+    const res = await waitForOperatorDrain({
+      ...base,
+      pg: stuckThenDrained(),
+      // no explicit stallMs — exercise the real default
+      now,
+      sleep,
+      warn: () => {},
+    });
+    expect(res.undrained).toBe(0);
+  });
 });
 
 describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapshot)', () => {

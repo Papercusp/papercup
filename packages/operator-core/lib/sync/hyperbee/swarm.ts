@@ -36,6 +36,7 @@ import type { AdmissionResult } from './read-admission';
 import { wireHiveGitServe, type PotGitServeConfig } from '../pot-git/serve-wiring';
 import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../pot-git/peer-dial-registry';
 import { loadOrGenerateSwarmSeed } from '../../identity/swarm-keypair';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 /** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
  *  Exported for the A-002 multi-hive demonstrator test. */
@@ -506,6 +507,43 @@ const guardCountedSockets = new WeakSet<object>();
  * serving some other harness perfectly well".
  */
 const swarmJoinSocketTopics = new WeakMap<object, Set<string>>();
+
+/**
+ * EI-18808621019872598: which (socket, topic) pairs have ALREADY emitted the
+ * `peer_data_path_up` positive-data-path line.
+ *
+ * This lived as a `const dataPathProvenReported = new WeakSet<object>()` INSIDE
+ * `joinHarnessSwarm`, i.e. per-INVOCATION. The guard itself was correct — `add()`
+ * runs before the log, so within ONE join a socket reports exactly once, as its
+ * comment promised. Its LIFETIME was wrong: the WI-752/FED-2 self-heal re-peer
+ * loop re-joins a topic continuously (measured 9,726 `rejoin` lines/24h on
+ * papercup-bg-host), and every rejoin constructed a FRESH WeakSet, so every
+ * still-live socket was re-reported from scratch.
+ *
+ * Measured cost before this fix (papercup-bg-host, 24h): 873,539 lines — 21% of
+ * the unit's 4,076,943 lines/day — from just 36 distinct (topic,peer) pairs and
+ * exactly ONE peer. The identical line (`topic=d85dc18c0bac0c9a…
+ * peer=95ae30fc8272… bytesReceived=5925 packetsReceived=9`) repeated 8,268
+ * times: a frozen byte count, i.e. provably the same idle socket re-reported,
+ * not fresh sockets.
+ *
+ * That flood is not merely untidy. It is what drives `journalctl --grep` into a
+ * slow reverse scan past JOURNAL_TIMEOUT_MS, the confirmed root cause of the
+ * `logs:read` false-zero (EI-19980767336148101) — a log-triage tool reporting
+ * `matched: 0` for a defect firing constantly. A diagnostic loud enough to break
+ * the tools used to read it is worse than no diagnostic.
+ *
+ * Keyed per (socket, topic) because `joinHarnessSwarm` runs once per topic and a
+ * single Hyperswarm socket is shared across topics (see swarmJoinSocketTopics
+ * above), so "once per socket per topic" is the semantic the log line's `topic=`
+ * field already implies. Pinned through @papercusp/module-singleton rather than
+ * a bare module-scope WeakMap so a split module record cannot silently restore
+ * the duplicate reporting this fixes.
+ */
+const dataPathReportedState = pinModuleState(
+  'papercusp.operator-core.swarm-data-path-reported',
+  () => ({ bySocket: new WeakMap<object, Set<string>>() }),
+);
 
 /**
  * WI-5923 (the "harder half" — the close()-side session-vs-leave fix landed
@@ -2319,7 +2357,6 @@ export async function joinHarnessSwarm(
    * received a byte. There was no correct marker for it to gate on. This emits
    * one.
    */
-  const dataPathProvenReported = new WeakSet<object>();
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
     liveConnectionCount++;
@@ -2905,13 +2942,23 @@ export async function joinHarnessSwarm(
         // is a pure read, so this cannot perturb the replication stream. (A
         // 'data'/'readable' listener would have switched the socket to flowing
         // mode and could CONSUME replication bytes — never do that here.)
-        // Fires at most once per socket; the WeakSet lets closed sockets be GC'd.
+        // Fires at most once per (socket, topic) — for the whole process, NOT
+        // merely for this join call. The dedupe deliberately outlives
+        // `joinHarnessSwarm` (see dataPathReportedState's header): a per-join
+        // set is reset by every self-heal rejoin, which re-reported the same
+        // idle socket thousands of times (EI-18808621019872598). The WeakMap
+        // still lets closed sockets be GC'd.
         for (const socket of mySockets) {
           if (typeof socket !== 'object' || socket === null) continue;
-          if (dataPathProvenReported.has(socket)) continue;
+          let reportedTopics = dataPathReportedState.bySocket.get(socket);
+          if (reportedTopics?.has(topicHex)) continue;
           const wire = readWireStats(socket);
           if (dataPathProven(wire) !== true) continue;
-          dataPathProvenReported.add(socket);
+          if (!reportedTopics) {
+            reportedTopics = new Set<string>();
+            dataPathReportedState.bySocket.set(socket, reportedTopics);
+          }
+          reportedTopics.add(topicHex);
           if (process.env.VITEST) continue;
           try {
             const path = extractConnectionPath(socket);

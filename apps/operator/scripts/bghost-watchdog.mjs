@@ -63,8 +63,34 @@
  * ours?" is an irreversible side effect and never shares that threshold. An unreadable cgroup is UNKNOWN
  * and stays silent (same never-infer-from-a-missing-signal asymmetry as `isFrozen`/`withinBootGrace`).
  *
+ * SUSTAINED-HEALTH STRIKE CLEARING + REACHABLE CIRCUIT BREAKER (WI-37501, 2026-08-09). Two compounding
+ * defects let a boot that never actually finishes booting restart-loop FOREVER, un-escalating and
+ * un-breakered:
+ *
+ *   (1) The strike counter used to clear on a SINGLE healthy poll (`ticker recovered ... clearing
+ *       consecutive-restart strike count`). A process that fires exactly ONE routine early in boot and
+ *       then stalls again (observed live, 2026-08-09: strike cleared 60s after a restart, then judged
+ *       frozen again 8.5min later) resets to strike #1 every time — the BACKOFF_MULTIPLIER escalation
+ *       WI-3630 built specifically for "an unusually slow boot" never engages, because every restart
+ *       looks like a first offence. Fix: require `SUSTAINED_HEALTHY_POLLS` CONSECUTIVE healthy polls
+ *       (tracked in `healthyStreak`, reset by ANY stale-idleSec observation — frozen, boot-grace-excused,
+ *       or saturation-excused alike) before clearing the strike — see `shouldClearStrikes`.
+ *
+ *   (2) With the strike escalation defeated, the restart period floors at BOOT_GRACE_MS + POLL_MS (the
+ *       freeze judgment is suppressed for the whole boot-grace window and only re-evaluated on the next
+ *       poll after it lapses) — 510s at the defaults, i.e. 3600/510 = 7.06 restarts/hr. The OLD
+ *       MAX_RESTARTS_PER_HR default (8) sat just ABOVE that ceiling, so the circuit breaker built to stop
+ *       exactly this storm shape could mathematically never trip against it. Fix: default lowered to 6
+ *       (below the reachable ceiling with margin) and `maxReachableRestartsPerHr()` + a startup WARNING
+ *       guard against silently reintroducing an unreachable cap if POLL_MS/BOOT_GRACE_MS ever change.
+ *
+ *   Fixing (1) alone already reduces real-world restart frequency a lot (escalating backoff, capped at
+ *   MAX_DEBOUNCE_MS) — but (2) is an independent backstop: it must hold even if a future change
+ *   reintroduces a fast-clearing strike counter, so both are fixed rather than relying on one to save the
+ *   other.
+ *
  * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR,DB_URL,LOG,
- *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS}, PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
+ *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS,SUSTAINED_HEALTHY_POLLS}, PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
 import { execFile, execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -76,7 +102,10 @@ const UNIT = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercup-bg-host';
 const POLL_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POLL_MS) || 30_000;
 const FREEZE_SILENCE_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SILENCE_S) || 100; // newest routine older than this while active = frozen
 const DEBOUNCE_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_DEBOUNCE_MS) || 5 * 60_000;
-const MAX_RESTARTS_PER_HR = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_MAX_RESTARTS_HR) || 8;
+// WI-37501: lowered from 8 — at the default BOOT_GRACE_MS(480s)+POLL_MS(30s), the fastest a genuine
+// boot-grace-floored restart storm can recur is 510s = 7.06/hr, so 8 sat just ABOVE the reachable
+// ceiling and could never trip against that storm shape. 6 leaves real margin below it.
+const MAX_RESTARTS_PER_HR = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_MAX_RESTARTS_HR) || 6;
 /** Skip the freeze judgment while the unit has been active less than this long (EI-8901): the observed
  *  boot takes ~4-5min under load; default is a bit over 2x that plus buffer so a slow boot never gets
  *  judged frozen mid-boot. */
@@ -89,6 +118,9 @@ const MAX_DEBOUNCE_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_MAX_DEBOUNC
 /** WI-3630: fire `alertFleet()` once consecutive restarts reach this — well before MAX_RESTARTS_PER_HR (the
  *  hard breaker), so a running fleet sees a developing storm instead of only a fully-tripped one. */
 const ALERT_AFTER_RESTARTS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_ALERT_AFTER_RESTARTS) || 2;
+/** WI-37501: consecutive HEALTHY polls required before the strike counter clears — a single healthy poll
+ *  is not evidence the boot succeeded (a stalled process can fire exactly one routine early in boot). */
+const SUSTAINED_HEALTHY_POLLS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SUSTAINED_HEALTHY_POLLS) || 3;
 /** Throttled "still monitoring + ticker healthy" line so the durable log proves the watchdog is ACTIVELY
  *  reading freshness (not silently early-returning) — the operability gap that made this whole class
  *  invisible for 44h. First healthy poll logs immediately, then at most every HEARTBEAT_MS. */
@@ -107,6 +139,10 @@ const restartTimes = []; // epoch ms, rolling 1h, for the circuit breaker
 // observes the ticker genuinely healthy (NOT merely "within boot grace" — a storm isn't over until a
 // routine actually fires fresh again).
 let consecutiveRestarts = 0;
+// WI-37501: consecutive HEALTHY polls in a row, right now. Reset to 0 by ANY stale-idleSec observation
+// (frozen-and-restarting, frozen-but-boot-grace-excused, or frozen-but-saturation-excused alike) — the
+// point is proof of CONTINUOUS good health, not merely "not judged frozen enough times, spread out".
+let healthyStreak = 0;
 let logDirEnsured = false;
 const log = (m) => {
   const line = `[bghost-watchdog ${new Date().toISOString()}] ${m}`;

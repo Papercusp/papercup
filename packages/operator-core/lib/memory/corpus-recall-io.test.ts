@@ -36,9 +36,13 @@ vi.mock('../agent-tools/search/embedder', () => ({ buildQueryEmbedder }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { MEMORY_CORPUS_RECALL: 'papercusp-memory-corpus-recall' } }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag }));
 
-const { recallCorpusContext, warmCorpusEmbedder, resetCorpusEmbedderWarmup } = await import(
-  './corpus-recall-io'
-);
+const {
+  recallCorpusContext,
+  warmCorpusEmbedder,
+  resetCorpusEmbedderWarmup,
+  CORPUS_RECENCY_HALF_LIFE_MS,
+  CORPUS_RECENCY_WEIGHT,
+} = await import('./corpus-recall-io');
 
 const hit = (over: Record<string, unknown> = {}) => ({
   source: 'work_item',
@@ -84,6 +88,38 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
       'session_turn',
       'work_item',
     ]);
+  });
+
+  it('enables the recency re-rank (P-009) with the documented tunables', async () => {
+    runHybridSearch.mockResolvedValue(ok());
+    await recallCorpusContext(base);
+    const [, ctx] = runHybridSearch.mock.calls[0];
+    const recency = (ctx as { recency?: Record<string, unknown> }).recency;
+    expect(recency).toEqual({
+      halfLifeMs: CORPUS_RECENCY_HALF_LIFE_MS,
+      weight: CORPUS_RECENCY_WEIGHT,
+    });
+  });
+
+  it('leaves getTime at the engine default — both sources populate hit.ts', async () => {
+    // Overriding getTime here would mask the work_item projection: the leg would
+    // keep working while `ts` silently went missing from the SQL again.
+    runHybridSearch.mockResolvedValue(ok());
+    await recallCorpusContext(base);
+    const [, ctx] = runHybridSearch.mock.calls[0];
+    expect((ctx as { recency?: Record<string, unknown> }).recency).not.toHaveProperty('getTime');
+  });
+
+  it('does NOT enable the fresh-candidate window — it labels hits lexical-fresh', async () => {
+    // freshWindowMs adds a second BM25 leg whose hits carry a `lexical-fresh`
+    // ranker, which any agreement measure would count as a second ranker
+    // agreeing. Off deliberately, not by omission — see the call site.
+    runHybridSearch.mockResolvedValue(ok());
+    await recallCorpusContext(base);
+    const [, ctx] = runHybridSearch.mock.calls[0];
+    expect((ctx as { recency?: Record<string, unknown> }).recency).not.toHaveProperty(
+      'freshWindowMs',
+    );
   });
 
   it('passes scopeFilter: null — the regression that would silently empty this leg', async () => {

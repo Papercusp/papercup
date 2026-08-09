@@ -419,6 +419,36 @@ describe('selectCorpusLines', () => {
     expect(lines.map((l) => l.handle.ref)).toEqual(['WI-402', 'WI-401']);
   });
 
+  // FALSIFIABILITY CONTROL for the two guards above. A guard that has never failed
+  // is untested, but mutating the real module to prove it would race git-sync's
+  // whole-tree sweep (a probe legitimately holds the mutation for the length of the
+  // run, and a sweep landing in that window COMMITS it). So the wrong
+  // implementation lives here permanently instead: the naive ranker COUNT the
+  // guards replaced, asserted to produce the WRONG order on the same input.
+  it('control: the naive ranker COUNT gets those orderings wrong', () => {
+    const naiveOrder = (hits: readonly CorpusHit[]) =>
+      [...hits]
+        .sort((a, b) => (b.rankers?.length ?? 1) - (a.rankers?.length ?? 1))
+        .map((h) => h.sourceId);
+
+    // Dated single-leg vs. genuinely-agreed: both count 2, so the tie falls to
+    // input order and the dated hit wrongly leads.
+    expect(
+      naiveOrder([
+        wi({ sourceId: 'WI-401', rankers: ['bm25', 'recency'] }),
+        wi({ sourceId: 'WI-402', rankers: ['bm25', 'embeddings'] }),
+      ]),
+    ).toEqual(['WI-401', 'WI-402']);
+
+    // Same for BM25-run-twice.
+    expect(
+      naiveOrder([
+        wi({ sourceId: 'WI-411', rankers: ['lexical', 'lexical-fresh'] }),
+        wi({ sourceId: 'WI-412', rankers: ['lexical', 'embeddings'] }),
+      ]),
+    ).toEqual(['WI-411', 'WI-412']);
+  });
+
   it('does NOT count lexical-fresh as a second ranker — it is BM25 run twice', () => {
     const { lines } = selectCorpusLines({
       hits: [

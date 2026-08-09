@@ -28,6 +28,20 @@
  *     arms block-mode. Missing/stale/red verdict ⇒ not-proven ⇒ warn|block (the
  *     conservative direction for a gate whose whole job is "don't ship unproven
  *     deltas"). It never blocks when the flag is off.
+ *   - UNREACHABLE-PRECONDITION ESCAPE HATCH (WI-10890). "Not proven yet" and
+ *     "can never be proven" are different states, and block-mode was only ever
+ *     meant to hold the FORMER. When every Lane-C scenario is consistently
+ *     `red` (not missing/stale — i.e. they run and fail, which is exactly what
+ *     S23-S25 do today: no in-repo path feeds the model a raw delta body to
+ *     merge, by design, so they cannot pass), holding `main` forever is not a
+ *     safety measure — it's a deploy freeze the owner did not intend when
+ *     arming a check they reasonably believed was achievable. `evaluateDeltaGate`
+ *     downgrades block→warn in that specific all-red case only
+ *     (`DeltaGateDecision.unreachable`); any other not-proven mix (missing,
+ *     stale, errored, or red mixed with green) still blocks as designed, since
+ *     those states genuinely can resolve on the next matrix run. S23-S25
+ *     themselves are NOT removed — they remain the standing constraint on any
+ *     future external wrapper that would feed compact deltas to a model (D-003).
  */
 
 /** The Lane-C scenarios that gate the production delta opt-in (D-008). */
@@ -71,6 +85,16 @@ export interface DeltaGateDecision {
   summary: string;
   /** Per-scenario proof state for logging/telemetry. */
   proof: Array<{ scenarioId: string; state: 'green' | 'red' | 'errored' | 'stale' | 'missing' }>;
+  /**
+   * WI-10890: true when block-mode was ARMED but every Lane-C scenario is
+   * consistently `red` (not merely missing/stale) — the signature of a
+   * precondition that is structurally unreachable under the current
+   * delta-proxy architecture, not one that's simply "not proven yet". When
+   * true, `action` is forced to `warn` even though `policy.block` was set —
+   * see the note on {@link evaluateDeltaGate} for why holding forever on an
+   * unreachable precondition is not a safety measure.
+   */
+  unreachable?: boolean;
 }
 
 /** Read the gate policy from the environment (mirrors perfGatePolicyFromEnv).
@@ -157,14 +181,35 @@ export function evaluateDeltaGate(
   }
 
   const reasons = notProven.map((p) => `${p.scenarioId}: ${p.state}`);
-  const action: DeltaGateAction = policy.block ? 'block' : 'warn';
-  const verb = action === 'block' ? 'BLOCKED (block-mode armed)' : 'flagged (warn — block-mode not armed)';
+
+  // WI-10890: every scenario RED (run, and consistently failing — not merely
+  // `missing`/`stale`, which are recoverable by the nightly matrix simply
+  // running again) is the signature of a precondition that CANNOT become
+  // green under the current architecture: no in-repo path hands the model a
+  // raw `{mode:'delta'}` body to merge, so S23-S25 fail by design, not by
+  // accident. Block-mode exists to HOLD deploys until fresh proof lands —
+  // holding forever on proof that provably cannot land is not a safety
+  // measure, it's an unrecoverable deploy freeze the owner did not intend
+  // when arming it (they were arming a check they reasonably believed was
+  // achievable). Downgrade to warn ONLY in this specific all-red case; a
+  // missing/stale/errored verdict, or a MIX including at least one red among
+  // otherwise-green, still blocks as designed — those states genuinely can
+  // resolve on the next matrix run.
+  const unreachable = proof.every((p) => p.state === 'red');
+  const action: DeltaGateAction = policy.block && !unreachable ? 'block' : 'warn';
+  const verb =
+    action === 'block'
+      ? 'BLOCKED (block-mode armed)'
+      : policy.block && unreachable
+        ? 'flagged — NOT held despite block-mode armed: every Lane-C scenario is consistently RED, which means this precondition is structurally unreachable under the current delta-proxy architecture (no live path merges a raw delta body — see WI-10890), not merely unproven. Amend the gate’s proof source rather than waiting for these to go green'
+        : 'flagged (warn — block-mode not armed)';
   return {
     action,
     reasons,
     summary:
       `🟥 delta-gate: production delta flag ON but Lane-C scenarios not proven — deploy of ${sha} ${verb}: ${reasons.join('; ')}`,
     proof,
+    ...(unreachable ? { unreachable: true } : {}),
   };
 }
 

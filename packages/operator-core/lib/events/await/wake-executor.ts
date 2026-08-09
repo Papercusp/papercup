@@ -85,6 +85,7 @@ import {
   decideColdWake,
   readColdLoopMarker,
   renderColdWakeInjection,
+  COLD_NOTE_POST_TURN_FLOOR_MS,
   type ColdWakeDecision,
 } from '../../su-cold-loop';
 import {
@@ -94,7 +95,7 @@ import {
   splitCarryNoteWalls,
 } from '../../carry-note';
 import { renderLoopChecksBlock, renderLoopWallsBlock } from '../../harness/routines/loop-fire';
-import { getLoopStatus } from '../../harness/routines/loop';
+import { getLoopStatus, countAgentToolCallsInWindow } from '../../harness/routines/loop';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
@@ -1099,6 +1100,12 @@ export interface ExecuteWakeDeps {
    *  connection via getOrgPg) is unmockable, so any unit test that reaches this
    *  branch trips assertRealPgAllowed and fails via vitest-fail-on-console. */
   getLoopStatusFn?: typeof getLoopStatus;
+  /** EI-19984789589075138: count agent-authored tool calls in the post-note window, to
+   *  distinguish a genuine working turn from a usage-wall/withheld-fire bounce that still
+   *  moves `lastRealTurnAt` but did zero work. Injected for tests (same unmockable-real-PG
+   *  reason as getLoopStatusFn above); defaults to the real countAgentToolCallsInWindow
+   *  (harness/routines/loop.ts). */
+  countAgentToolCallsFn?: typeof countAgentToolCallsInWindow;
   /** compaction-continuity-hardening-2026-07-07 P-003: assemble the subscriber's
    *  carry BRIEF (held work-items + checkpoints, standing facts/walls, armed awaits,
    *  fleet pointer) appended to a COLD injection after the carry-note. Injected for
@@ -1298,6 +1305,25 @@ async function injectPsuHostWake(
         console.warn('[wake-executor] cold last-turn read failed (staleness hint omitted):', e as Error);
       }
     }
+    // EI-19984789589075138: only worth the extra query when the banner is actually about
+    // to fire (postNoteMs would clear the floor) — mirrors renderColdWakeInjection's own
+    // floor check so a routine cold wake (turn shortly after the note) never pays for it.
+    let agentToolCallsSinceNote: number | null = null;
+    if (
+      noteUpdatedAtMs != null &&
+      lastTurnAtMs != null &&
+      lastTurnAtMs - noteUpdatedAtMs >= COLD_NOTE_POST_TURN_FLOOR_MS
+    ) {
+      try {
+        agentToolCallsSinceNote = await (deps.countAgentToolCallsFn ?? countAgentToolCallsInWindow)(
+          d.subscriberId,
+          noteUpdatedAtMs,
+          lastTurnAtMs,
+        );
+      } catch (e) {
+        console.warn('[wake-executor] cold work-evidence read failed (banner unchanged):', e as Error);
+      }
+    }
     const coldText = tagWakeText(
       d,
       renderColdWakeInjection(
@@ -1306,6 +1332,7 @@ async function injectPsuHostWake(
         coldFireCount,
         noteUpdatedAtMs ?? undefined,
         lastTurnAtMs ?? undefined,
+        agentToolCallsSinceNote,
       ),
       deps.tagTurn ?? tagTurnForInjection,
     );

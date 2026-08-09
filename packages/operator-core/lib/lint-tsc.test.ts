@@ -53,6 +53,7 @@ import {
   coveragePrefixesFromGateModule,
   gateCoveringFile,
   coalesceWatermarkFor,
+  declarationFilesFromConfig,
   lintTscScopeFromArgv,
   formatLintTscResultMarker,
   mergeRatchetIntoBaseline,
@@ -62,6 +63,8 @@ import {
   TSC_COMMAND as OPERATOR_VITE_TSC_COMMAND,
   FOREIGN_BASELINES,
 } from '../../../scripts/lint-tsc-operator-vite.mjs';
+// eslint-disable-next-line import/no-relative-packages
+import { TSC_HEAP_MB, tscChildEnv } from '../../../scripts/lib/tsc-baseline-gate.mjs';
 
 describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
   // This gate is the repo's MANDATED post-edit check and takes ~150s — past the agent Bash
@@ -128,6 +131,61 @@ describe('TSC_COMMAND (EI-487 regression guard)', () => {
     // as a "harmless" perf tweak without re-deriving why it's here.
     expect(TSC_COMMAND).toContain('--incremental false');
     expect(TSC_COMMAND).toContain('--noEmit');
+  });
+});
+
+// WI-37503: `--incremental false` above is correct and stays — but it means the WHOLE
+// program is built in memory every run, and with node's DEFAULT ~4GB old-space the
+// operator-core compile (9013 files) OOM'd mid-flight and CRASHED the gate:
+//   FATAL ERROR: Ineffective mark-compacts near heap limit … heap out of memory
+//   Mark-Compact (reduce) 4086.9 (4109.7) -> 4068.3 (4086.9) MB
+// It held the fleet gate as sole holder (verdict 2026-08-09T14:30:46Z, candidate
+// 9f3c0024552a, GATE_HELD_BY entries=["lint:tsc"], all 22 test tasks passing). Before
+// the crash guard landed, that same OOM read as "every file improved to 0 errors" and
+// passed a candidate carrying a real TS2741 (WI-37485). So the heap is load-bearing for
+// the gate's correctness, not a perf tweak — pin it.
+describe('tsc child heap (WI-37503)', () => {
+  it('raises the child V8 old-space ceiling above the ~4GB default that crashed the gate', () => {
+    expect(TSC_HEAP_MB).toBeGreaterThan(4096);
+    const env = tscChildEnv();
+    expect(env.NODE_OPTIONS).toContain(`--max-old-space-size=${TSC_HEAP_MB}`);
+  });
+
+  it('DEFERS to a caller who already pinned a size — never appends a second copy', () => {
+    // node takes the LAST occurrence, so appending would silently override an
+    // operator's deliberate (possibly SMALLER, on a constrained box) pin.
+    const prev = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '--max-old-space-size=2048';
+    try {
+      const env = tscChildEnv();
+      expect(env.NODE_OPTIONS).toBe('--max-old-space-size=2048');
+      expect(env.NODE_OPTIONS?.match(/--max-old-space-size/g)).toHaveLength(1);
+    } finally {
+      if (prev === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = prev;
+    }
+  });
+
+  it('PRESERVES unrelated NODE_OPTIONS rather than clobbering them', () => {
+    const prev = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '--enable-source-maps';
+    try {
+      const env = tscChildEnv();
+      expect(env.NODE_OPTIONS).toContain('--enable-source-maps');
+      expect(env.NODE_OPTIONS).toContain(`--max-old-space-size=${TSC_HEAP_MB}`);
+    } finally {
+      if (prev === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = prev;
+    }
+  });
+
+  it('passes `extra` through, so the pc-heavy coalescing vars still reach the child', () => {
+    // The pc-heavy spawn branch relies on this: swapping the inline env object for
+    // tscChildEnv() must not drop PC_HEAVY_COALESCE_SEC / PC_HEAVY_FRESH_AFTER.
+    const env = tscChildEnv({ PC_HEAVY_COALESCE_SEC: '420', PC_HEAVY_FRESH_AFTER: '17' });
+    expect(env.PC_HEAVY_COALESCE_SEC).toBe('420');
+    expect(env.PC_HEAVY_FRESH_AFTER).toBe('17');
+    expect(env.NODE_OPTIONS).toContain('--max-old-space-size=');
   });
 });
 
@@ -2059,6 +2117,115 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       expect(
         coalesceWatermarkFor({ root: dir, files: new Set(['a.ts', 'gone.ts']), updateFlag: false }),
       ).toBeNull();
+    });
+
+    // EI-19483243844876537: a checked file's own mtime says nothing about a GENERATED
+    // `.d.mts` a different, already-tracked `.mjs` exports through — tsc resolves an
+    // importer's types via the companion declaration, not the source, so a checked file
+    // can go from red to green (or vice versa) purely because `gen:declarations` ran,
+    // with the checked file's own mtime untouched. Repro: added exports to a `.mjs`,
+    // regenerated declarations, then `lint:tsc --files=<tests using the new export>`
+    // replayed a pre-regen cached compile reporting TS2305 for exports that provably
+    // existed on disk.
+    it('folds in the newest DECLARATION mtime, not just the named files (EI-19483243844876537)', () => {
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      const fileTouched = 1_700_000_000_000;
+      const declTouchedLater = 1_700_000_900_000; // gen:declarations ran AFTER the checked file was saved
+      mk('a.test.ts', fileTouched);
+      writeFileSync(
+        join(dir, 'tsconfig.declarations.json'),
+        JSON.stringify({ files: ['scripts/foo.mjs'] }),
+      );
+      mk('scripts/foo.d.mts', declTouchedLater);
+
+      const got = coalesceWatermarkFor({ root: dir, files: new Set(['a.test.ts']), updateFlag: false });
+      // Watermark must reflect the LATER declaration write, not the (earlier) checked file —
+      // otherwise a cached compile from between the two is wrongly accepted as fresh.
+      expect(got).toBe(Math.floor(declTouchedLater / 1000) + 1);
+      expect(got).not.toBe(Math.floor(fileTouched / 1000) + 1);
+    });
+
+    it('is unaffected by declarations OLDER than the named files (no spurious widening)', () => {
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      const declTouched = 1_700_000_000_000;
+      const fileTouchedLater = 1_700_000_900_000;
+      writeFileSync(
+        join(dir, 'tsconfig.declarations.json'),
+        JSON.stringify({ files: ['scripts/foo.mjs'] }),
+      );
+      mk('scripts/foo.d.mts', declTouched);
+      mk('a.test.ts', fileTouchedLater);
+
+      const got = coalesceWatermarkFor({ root: dir, files: new Set(['a.test.ts']), updateFlag: false });
+      expect(got).toBe(Math.floor(fileTouchedLater / 1000) + 1);
+    });
+
+    it('an UNREADABLE/missing declaration is skipped, not treated as failure (fails open, unlike named files)', () => {
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      mk('a.test.ts', 1_700_000_000_000);
+      // tsconfig.declarations.json names a file that was never actually generated —
+      // must not make the whole watermark computation bail out (contrast the "fails
+      // CLOSED on a file it cannot stat" test above, which is about a NAMED file).
+      writeFileSync(
+        join(dir, 'tsconfig.declarations.json'),
+        JSON.stringify({ files: ['scripts/never-generated.mjs'] }),
+      );
+      expect(
+        coalesceWatermarkFor({ root: dir, files: new Set(['a.test.ts']), updateFlag: false }),
+      ).toBe(Math.floor(1_700_000_000_000 / 1000) + 1);
+    });
+
+    it('no tsconfig.declarations.json at all — unaffected (matches every pre-existing test above)', () => {
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      mk('a.test.ts', 1_700_000_000_000);
+      expect(
+        coalesceWatermarkFor({ root: dir, files: new Set(['a.test.ts']), updateFlag: false }),
+      ).toBe(Math.floor(1_700_000_000_000 / 1000) + 1);
+    });
+  });
+
+  describe('declarationFilesFromConfig — the `.d.mts` companions gen:declarations writes', () => {
+    let dir = '';
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+      dir = '';
+    });
+
+    it('maps each declared .mjs to its co-located .d.mts', () => {
+      dir = mkdtempSync(join(tmpdir(), 'dfc-'));
+      writeFileSync(
+        join(dir, 'tsconfig.declarations.json'),
+        JSON.stringify({ files: ['scripts/foo.mjs', 'scripts/nested/bar.mjs'] }),
+      );
+      expect(declarationFilesFromConfig(dir)).toEqual([
+        'scripts/foo.d.mts',
+        'scripts/nested/bar.d.mts',
+      ]);
+    });
+
+    it('tolerates JSONC `//` comments, same as gen-declarations.ts\'s own parser', () => {
+      dir = mkdtempSync(join(tmpdir(), 'dfc-'));
+      writeFileSync(
+        join(dir, 'tsconfig.declarations.json'),
+        '// a leading comment\n' + JSON.stringify({ files: ['scripts/foo.mjs'] }),
+      );
+      expect(declarationFilesFromConfig(dir)).toEqual(['scripts/foo.d.mts']);
+    });
+
+    it('fails OPEN (empty array) when the config is missing or malformed — a signal, not a hard dependency', () => {
+      dir = mkdtempSync(join(tmpdir(), 'dfc-'));
+      expect(declarationFilesFromConfig(dir)).toEqual([]); // no file at all
+      writeFileSync(join(dir, 'tsconfig.declarations.json'), '{ not valid json');
+      expect(declarationFilesFromConfig(dir)).toEqual([]);
+    });
+
+    it('against the REAL repo config: every entry exists on disk (sanity check on the fixture assumption)', () => {
+      const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+      const rels = declarationFilesFromConfig(root);
+      expect(rels.length).toBeGreaterThan(0);
+      for (const rel of rels) {
+        expect(existsSync(join(root, rel))).toBe(true);
+      }
     });
   });
 });

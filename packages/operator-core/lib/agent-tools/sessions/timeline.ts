@@ -13,7 +13,13 @@ import { sessionSearchEnabled, disabledResult, refreshLiveSessionsBeforeRead } f
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
-const AUTOMATIC_TOOL_NAMES = ['activity:report', 'coord:glance', 'coord:inbox'] as const;
+// Re-exported (EI-19984789589075138 / EI-19986796515232861) from the dependency-free
+// automatic-tool-names.ts so other evidence-of-work checks — e.g. the cold-wake
+// un-checkpointed-work banner (su-cold-loop.ts / loop.ts's countAgentToolCallsInWindow) —
+// share this ONE classification without pulling this file's `@papercusp/agent-mcp`
+// import (and its bootstrap side effects) into their own module graph.
+export { AUTOMATIC_TOOL_NAMES } from './automatic-tool-names';
+import { AUTOMATIC_TOOL_NAMES } from './automatic-tool-names';
 
 /** One resolved watermark → how many live assumptions it covers (P-024 (c)).
  *  `watermark` is typed `string | number` because postgres-js returns BIGINT as

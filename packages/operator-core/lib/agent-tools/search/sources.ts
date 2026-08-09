@@ -498,6 +498,13 @@ const decisions: SearchSource = {
  * like every other column here — the base table's `updated_ts` is the same fact in
  * epoch-ms, and reaching past the view for it would restate the scope/severity
  * derivation the view exists to hold exactly once.
+ *
+ * It nonetheless falls back to `created_at`, because both columns are NULLABLE
+ * (checked 2026-08-09) and full population today is an observation, not a
+ * constraint. Given the decay-0 semantics above, one null row would not degrade
+ * gracefully — it would be ranked as the oldest document in the corpus. A row with
+ * neither timestamp still lands there, which is the engine's documented behaviour
+ * and the honest floor once there is genuinely no time to read.
  */
 const workItem: SearchSource = {
   name: 'work_item',
@@ -507,7 +514,8 @@ const workItem: SearchSource = {
     const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`);
     const rows = (await sql`
       ${lex.with}
-      SELECT issue_id, scope, title, body, kind, state, severity, updated_at,
+      SELECT issue_id, scope, title, body, kind, state, severity,
+             coalesce(updated_at, created_at) AS updated_at,
              ${lex.coverage} AS coverage,
              ${lex.rank} AS rank,
              ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
@@ -567,7 +575,8 @@ const workItem: SearchSource = {
    */
   async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
     const rows = (await sql`
-      SELECT issue_id, scope, title, body, kind, state, severity, updated_at,
+      SELECT issue_id, scope, title, body, kind, state, severity,
+             coalesce(updated_at, created_at) AS updated_at,
              1 - (embedding <=> ${qVec}::vector) AS sim,
              ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
                plainto_tsquery('english', ${query}),

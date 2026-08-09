@@ -50,6 +50,17 @@ import {
   resolveTierDeclarations,
   type EnforcementTierCensus,
 } from './enforcement-tier-census';
+import {
+  DISPATCH_ADOPTION_FLOOR,
+  DISPATCH_BASELINE,
+  evaluateDispatchAdoption,
+  type DispatchAdoptionVerdict,
+} from '../agent-tools/coordination/dispatch-adoption-falsifier';
+import {
+  loadDispatchAdoptionSample,
+  type DispatchAdoptionCoverage,
+} from '../agent-tools/coordination/dispatch-adoption-sample';
+import type { DispatchAdoptionSample } from '../agent-tools/coordination/dispatch-adoption-falsifier';
 
 /** One re-mounting escalation signature over the window (the pure builder input). */
 export interface CoordEscalationStorm {
@@ -274,6 +285,23 @@ export interface CoordHealthInput {
   authoredAdoption?: CoordAuthoredAdoption;
   /** Enforcement-tier census (coordination-spec-adoption-2026-08-03 P-002 / the D-016/D-047 debt). Absent ⇒ the signal is simply not emitted. */
   enforcementCensus?: EnforcementTierCensus;
+  /** `coord:dispatch` retirement falsifier (P-013 / D-100–D-102). Absent ⇒ the signal is simply not emitted. */
+  dispatchAdoption?: CoordDispatchAdoption;
+}
+
+/**
+ * A live reading of the `coord:dispatch` retirement falsifier: the sample, what
+ * window the retained telemetry could actually substantiate, and the verdict the
+ * PRE-COMMITTED bar returns for it.
+ *
+ * Carried as an already-judged triple so `buildCoordHealthPatterns` stays pure —
+ * the evaluator is pure too, but the SAMPLE is IO, and the pure builder must not
+ * reach for a database.
+ */
+export interface CoordDispatchAdoption {
+  sample: DispatchAdoptionSample;
+  coverage: DispatchAdoptionCoverage;
+  verdict: DispatchAdoptionVerdict;
 }
 
 /**
@@ -306,6 +334,20 @@ export interface CoordHealthOpts {
 }
 
 /** Slugify a free-text signature/recipient into a compact, stable ref suffix. */
+/**
+ * The ref prefixes of this lane's KEYED families — one pattern per escalation
+ * signature and per flooded recipient, so both are unbounded in fleet size.
+ * Everything else this lane emits is a single corpus-wide reading.
+ *
+ * Used by the cap policy at the end of `buildCoordHealthPatterns`: the limit is
+ * spent on these, never on the measurements. Adding a new KEYED family means
+ * adding it here — a new SINGLETON needs no change, which is the safe default.
+ */
+export const KEYED_PATTERN_FAMILIES = [
+  'coord:escalation-storm:',
+  'coord:wake-storm:',
+] as const;
+
 function slug(s: string): string {
   return (
     s
@@ -410,10 +452,13 @@ export function buildCoordHealthPatterns(
 
   // 4. Premise-citation quality (P-011 / D-091) — the replacement for fill rate.
   //
-  //    Deliberately emitted BEFORE the wake-storm floods: floods emit one pattern
-  //    PER RECIPIENT and are the most numerous thing this lane produces, so a
-  //    noisy fleet would push this single corpus-wide reading past `limit` and
-  //    silently delete the measurement. Ordering is the cap policy here.
+  //    ⚠ CORRECTED 2026-08-09 (WI-37443). This used to read "emitted BEFORE the
+  //    wake-storm floods … ordering is the cap policy here", and that protection
+  //    was FALSE: escalation storms are keyed too AND are emitted first, so on a
+  //    noisy fleet they consumed the entire limit and this reading was cut
+  //    anyway — measured, all 10 slots taken by `coord:escalation-storm:*`.
+  //    The cap is now spent on the KEYED families only (see the tail of this
+  //    function), so every corpus-wide measurement survives regardless of order.
   const pr = input.premiseResolve;
   if (pr && pr.checked >= minPremiseChecked) {
     const failed = pr.checked - pr.holds;
@@ -602,6 +647,47 @@ export function buildCoordHealthPatterns(
     });
   }
 
+  // 4b. The `coord:dispatch` retirement falsifier (P-013 / D-100–D-102). This is
+  //     the surface that makes the pre-commitment REAL: a falsifier that is never
+  //     evaluated is indistinguishable from never having committed to one, which
+  //     is the failure P-013 existed to prevent (WI-37443 — the evaluator shipped
+  //     with zero callers). Emitting it here rather than from a new routine is
+  //     deliberate: this lane already runs on the live scout cycle, so the check
+  //     fires by construction instead of waiting for someone to activate a row.
+  const da = input.dispatchAdoption;
+  if (da) {
+    const den = `${da.sample.sendCalls} coord:send calls / ${da.sample.windowDays}d`;
+    const rate =
+      da.verdict.verdict === 'undetermined'
+        ? null
+        : `${da.verdict.ratePerThousand.toFixed(2)}/1k`;
+    const shortfall = da.coverage.shortfall
+      ? ` ⚠ telemetry retention could only substantiate ${da.coverage.coveredWindowDays}d of the ${da.coverage.requestedWindowDays}d asked for (oldest retained row ${da.coverage.oldestRetainedAt}), so the window published here is the one the data supports, not the one requested.`
+      : '';
+
+    out.push({
+      category: 'coord-health',
+      ref: 'coord:dispatch-adoption-verdict',
+      summary:
+        `coord:dispatch retirement falsifier — ${da.verdict.verdict.toUpperCase()}` +
+        (rate ? ` at ${rate} sends across ${da.sample.dispatchAgents} agent(s)` : '') +
+        ` (denominator ${den}; bar ${DISPATCH_ADOPTION_FLOOR.ratePerThousand}/1k + ${DISPATCH_ADOPTION_FLOOR.distinctAgents} agents, not judgeable before ${DISPATCH_ADOPTION_FLOOR.reEvaluateAfter})`,
+      detail:
+        `${da.verdict.why} ` +
+        `DENOMINATOR STATED INLINE per D-003: ${den}, sampled ${da.sample.asOf} across ALL tenants — the same population the baseline was measured over (${DISPATCH_BASELINE.dispatchCalls} dispatch / ${DISPATCH_BASELINE.sendCalls} sends over ${DISPATCH_BASELINE.windowDays}d = ${DISPATCH_BASELINE.ratePerThousand}/1k). ` +
+        `A sample scoped differently from its baseline would report a lift between two different populations. ` +
+        shortfall +
+        ` ⚠ UNDETERMINED IS NEVER UPGRADED TO RETIRE (the asymmetry is deliberate): an absent measurement must not read as absent demand. ` +
+        `A \`retire\` verdict retires coord:dispatch AND coord:handoff together (D-102 folded handoff in, because deleting the handoff store before the measurement would have destroyed the evidence). ` +
+        `This reading is emitted every cycle so the verdict is a standing, dated record rather than a one-shot nobody witnessed.`,
+      // Deliberately modest until the bar is judgeable: before the re-evaluate
+      // date this is a dated no-op, and it must never outrank a live coordination
+      // breakdown. A real `retire`/`keep` verdict is a decision input, so it
+      // outranks tier debt but still sits under an active storm.
+      weight: da.verdict.verdict === 'undetermined' ? 0.15 : 0.5,
+    });
+  }
+
   // 5. Wake / inbox floods — one recipient buried under thousands of (often near-
   //    duplicate) deliveries: a subscription firehose or a re-firing sender whose
   //    coalescing/dedup is leaking; heavy wake traffic burns turns and buries real
@@ -619,7 +705,39 @@ export function buildCoordHealthPatterns(
     });
   }
 
-  return out.slice(0, Math.max(1, limit));
+  // THE CAP POLICY. Two of this lane's families are KEYED and unbounded — one
+  // pattern per escalation signature, one per flooded recipient — while every
+  // other reading is a single corpus-wide measurement. A plain `slice` therefore
+  // lets a noisy fleet silently DELETE the measurements, and "emit them earlier"
+  // is not a fix: escalation storms are emitted first and are themselves keyed.
+  //
+  // MEASURED 2026-08-09 (WI-37443), which is how this was found: the live lane
+  // returned 10 patterns and ALL TEN were `coord:escalation-storm:*` — 7 of them
+  // per-agent `compaction-watchdog-context-death-su-<id>` rows. Every singleton
+  // was cut, including `coord:premise-resolve-rate`, whose own comment claimed
+  // ordering protected it. It did not.
+  //
+  // So the cap is applied to the KEYED families only. The singletons are few and
+  // structurally bounded (one per measurement, seven in total), so keeping them
+  // all cannot itself blow the budget. Ordering here is cap policy, NOT salience
+  // — `weight` carries salience, and a live blocker storm still outranks a dated
+  // no-op by weight regardless of position.
+  // ⚠ The cap decides WHAT SURVIVES, never what order it comes back in: emission
+  // order is salience here (the acute blocker leads), so the survivors are
+  // re-emitted in their original positions.
+  const cap = Math.max(1, limit);
+  const isKeyed = (p: MetaPattern) => KEYED_PATTERN_FAMILIES.some((f) => p.ref.startsWith(f));
+  const singletonCount = out.reduce((n, p) => (isKeyed(p) ? n : n + 1), 0);
+  let keyedRoom = Math.max(0, cap - singletonCount);
+  const survivors = new Set<MetaPattern>();
+  for (const p of out) {
+    if (!isKeyed(p)) survivors.add(p);
+    else if (keyedRoom > 0) {
+      survivors.add(p);
+      keyedRoom -= 1;
+    }
+  }
+  return out.filter((p) => survivors.has(p)).slice(0, cap);
 }
 
 /** Bound on how many distinct refs one lane pass will probe. */
@@ -1224,11 +1342,31 @@ export async function buildCoordHealthLane(
       /* best-effort — the census signal is optional decoration */
     }
 
+    // The coord:dispatch retirement falsifier (P-013) — independently fail-soft.
+    // Sampling is IO; the judgement is the pure pre-committed evaluator, so this
+    // seam only wires one to the other and never re-derives the bar.
+    let dispatchAdoption: CoordDispatchAdoption | undefined;
+    try {
+      const reading = await loadDispatchAdoptionSample({
+        getSql: () => getOrgPg().sql as never,
+      });
+      if (reading) {
+        dispatchAdoption = {
+          sample: reading.sample,
+          coverage: reading.coverage,
+          verdict: evaluateDispatchAdoption(reading.sample),
+        };
+      }
+    } catch {
+      /* best-effort — an outage removes the falsifier signal, never the lane */
+    }
+
     return buildCoordHealthPatterns({
       premiseResolve,
       clarifyAdoption,
       authoredAdoption,
       enforcementCensus,
+      dispatchAdoption,
       escalationStorms: escRows.map((r) => ({
         signature: r.sig || 'unknown',
         count: Number(r.n) || 0,

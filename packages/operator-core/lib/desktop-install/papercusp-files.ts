@@ -759,6 +759,19 @@ const CC_HOOK_FILES = [
   // enforcement already exists, and a lint entry no blocking path runs would (correctly)
   // red the lint-guard reachability census.
   'posttooluse-tool-prompt-weight-nudge.mjs',
+  // WI-37497: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an edit ADDS
+  // an `as never`/`as any` cast closing a vitest `.mock*(...)` call — i.e. raises the
+  // `lint:mock-cast-escape` ratchet. Same TIMING gap as the strand nudge, with a sharper
+  // incentive problem: a ratchet lint bites ONLY at the fleet gate, so the author never pays
+  // and a stranger waiting on a deploy does. Neither routine check can catch it —
+  // test:affected does not typecheck, and lint:tsc passes BECAUSE of the cast. Measured: the
+  // guard was burned 1121 -> 1061 (EI-19452618085391226, 2026-08-03) and was back to 1113 six
+  // days later, where it became the SOLE holder of a red gate and froze `main` (verdict
+  // 2026-08-09T13:59Z, candidate 00376d971c, GATE_HELD_BY count=1, every test passing).
+  // Reuses the guard's own exported matcher rather than re-implementing it: a hand-grep on
+  // `as never|as unknown as` counts 7656 tree-wide against the guard's 1113, a different
+  // population entirely.
+  'posttooluse-mock-cast-escape-nudge.mjs',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1766,6 +1779,17 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-tool-prompt-weight-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-tool-prompt-weight-nudge.mjs'),
+    });
+  // merge_mock_cast_escape_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (WI-37497). Advisory only, and it MUST stay advisory: the baseline tolerates 1076 of
+  // these and a deliberate `as never` is sometimes the right call — this reports a DELTA the
+  // author just created, not a verdict on the idiom. Fires only on an INCREASE, so a
+  // burn-down never nags the person doing it, and only for `.test.ts`/`.test.tsx`, which is
+  // exactly the population the ratchet counts.
+  if (has('posttooluse-mock-cast-escape-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-mock-cast-escape-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-mock-cast-escape-nudge.mjs'),
     });
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {

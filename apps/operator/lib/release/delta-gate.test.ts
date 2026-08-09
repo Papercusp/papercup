@@ -86,6 +86,60 @@ describe('evaluateDeltaGate (pure decision table)', () => {
     expect(d.action).toBe('warn');
     expect(d.proof.find((p) => p.scenarioId === verdicts[2].scenarioId)!.state).toBe('errored');
   });
+
+  // WI-10890: block-mode must never wedge `main` forever on a precondition
+  // that cannot become green (all three scenarios consistently red, matching
+  // S23-S25's actual state under the current delta-proxy architecture).
+  describe('WI-10890 — structurally-unreachable precondition (all-red) escape hatch', () => {
+    function allRed(): ScenarioVerdict[] {
+      return DELTA_GATE_SCENARIO_IDS.map((scenarioId) => ({
+        scenarioId,
+        status: 'failed' as const,
+        finishedAtMs: NOW - 60_000,
+      }));
+    }
+
+    it('ALL THREE red + block ARMED → downgrades to warn, and flags unreachable:true', () => {
+      const d = evaluateDeltaGate({ flagEnabled: true, verdicts: allRed(), now: NOW }, POLICY_BLOCK, 'abc1234');
+      expect(d.action).toBe('warn');
+      expect(d.unreachable).toBe(true);
+      expect(d.summary).toMatch(/structurally unreachable/);
+      expect(d.summary).toMatch(/WI-10890/);
+      // still names all three as not-proven, so the signal isn't lost
+      expect(d.reasons).toHaveLength(3);
+      expect(d.proof.every((p) => p.state === 'red')).toBe(true);
+    });
+
+    it('ALL THREE red + block NOT armed → plain warn (unreachable still reported)', () => {
+      const d = evaluateDeltaGate({ flagEnabled: true, verdicts: allRed(), now: NOW }, POLICY_WARN, 'abc1234');
+      expect(d.action).toBe('warn');
+      expect(d.unreachable).toBe(true);
+    });
+
+    it('a MIX of red + green (partial failure, NOT the all-red signature) + block armed → still BLOCKS', () => {
+      const verdicts = allGreen();
+      verdicts[0] = { ...verdicts[0], status: 'failed' };
+      const d = evaluateDeltaGate({ flagEnabled: true, verdicts, now: NOW }, POLICY_BLOCK, 'abc1234');
+      expect(d.action).toBe('block');
+      expect(d.unreachable).toBeUndefined();
+    });
+
+    it('a mix of red + missing (still not all-red) + block armed → still BLOCKS', () => {
+      const verdicts: ScenarioVerdict[] = [
+        { scenarioId: DELTA_GATE_SCENARIO_IDS[0], status: 'failed', finishedAtMs: NOW - 60_000 },
+        { scenarioId: DELTA_GATE_SCENARIO_IDS[1], status: null, finishedAtMs: null },
+        { scenarioId: DELTA_GATE_SCENARIO_IDS[2], status: 'failed', finishedAtMs: NOW - 60_000 },
+      ];
+      const d = evaluateDeltaGate({ flagEnabled: true, verdicts, now: NOW }, POLICY_BLOCK, 'abc1234');
+      expect(d.action).toBe('block');
+      expect(d.unreachable).toBeUndefined();
+    });
+
+    it('all green (proven) never reports unreachable', () => {
+      const d = evaluateDeltaGate({ flagEnabled: true, verdicts: allGreen(), now: NOW }, POLICY_BLOCK, 'abc1234');
+      expect(d.unreachable).toBeUndefined();
+    });
+  });
 });
 
 describe('runDeltaGate (IO seam)', () => {

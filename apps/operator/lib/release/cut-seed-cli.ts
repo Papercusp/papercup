@@ -854,7 +854,28 @@ export async function openSourceStoreForCut(inp: {
 // wedged. This does not mask a real wedge — outbox-drain's own DRAIN_BACKLOG_STALL_MS (10min)
 // and age/size detectors (WI-5147) still escalate a genuinely-dead drain; a truly-stuck backlog
 // still never drains and this still eventually fails, just not on one transient pass stall.
-export const CUT_SEED_DRAIN_STALL_MS = DRAIN_PASS_TIMEOUT_MS * 2 + 60_000; // 120s pass-timeout × 2 + 60s margin = 300s
+// WI-37500 — THE SAME MISTAKE ONE LEVEL UP. The derivation above accounts for the drain's
+// INTERNAL self-heal (a hung PASS, recovered by outbox-drain's own watchdog in ≤120s). It does
+// not account for the drain's OTHER, larger, equally-legitimate self-heal: a bg-host PROCESS
+// recycle issued by bghost-watchdog.mjs. During one, NOTHING drains — the drain's owner is
+// simply not running — and that blackout is structurally LONGER than 300s:
+//   • bghost-watchdog only judges a freeze after FREEZE staleness > 240s, and
+//   • it skips judgment entirely while the unit is within BOOT_GRACE_MS (8min), polling every
+//     POLL_MS (30s) — so a boot that cannot get the ticker healthy is re-killed at exactly
+//     BOOT_GRACE_MS + POLL_MS = 510s. Measured on this box 2026-08-09: five consecutive
+//     inter-restart gaps of 510-511s (10:35:59→10:44:29→10:52:59, 11:44:31→11:53:01,
+//     12:35:03→12:43:33, 13:34:05→13:42:36).
+// So the OLD 300s budget could not survive even ONE recycle, while a real cut needs ~20-25min
+// of continuous draining — i.e. the two clocks were on a collision course and the cut lost by
+// construction. Measured failure 2026-08-09T14:35Z: freeze onset ~14:30:14Z, drain resumed
+// 14:35:52Z (338s blackout), cut refused at 300s having done ~19k rows of real work.
+// WIDENING IS SAFE, and not a mask: this bounds only how long we WAIT, never what we SHIP —
+// the cut proceeds only at `undrained === 0`, so no extra wait can ever admit an omitted row.
+// A genuinely dead drain still never reaches 0 and still fails, just after one recycle's worth
+// of patience instead of before it. outbox-drain's own DRAIN_BACKLOG_STALL_MS (10min) and the
+// WI-5147 age/size detectors remain the escalation path for a truly-wedged drain.
+const BGHOST_RECYCLE_ENVELOPE_MS = 510_000; // BOOT_GRACE_MS (8min) + POLL_MS (30s), measured above
+export const CUT_SEED_DRAIN_STALL_MS = BGHOST_RECYCLE_ENVELOPE_MS + DRAIN_PASS_TIMEOUT_MS * 2 + 60_000; // 510s + 300s = 810s
 
 export async function waitForOperatorDrain(inp: {
   readonly pg: postgres.Sql;

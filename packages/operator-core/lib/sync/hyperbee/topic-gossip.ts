@@ -222,6 +222,12 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
   if (!opts.protocol) throw new Error(`${name}: protocol required`);
 
   const topics = new Map<string, TopicState<Frame>>();
+  // EI-18808621019872598: last open-channel count LOGGED per topic by
+  // broadcast(), so that trace can fire on state CHANGES instead of on every
+  // call (see broadcast() for the measured cost of the per-call form). Scoped
+  // per gossip instance, alongside `topics` itself — an instance that outlives
+  // its topics is the same object that owns them, so this cannot desync.
+  const lastBroadcastChannelCount = new Map<string, number>();
   const sockets = new Set<unknown>();
   let connectionCount = 0;
   let closed = false;
@@ -746,6 +752,9 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       const st = topics.get(hex);
       if (!st) return;
       topics.delete(hex);
+      // Forget the logged count too, so a later rejoin reports its first
+      // broadcast rather than silently inheriting the pre-leave state.
+      lastBroadcastChannelCount.delete(hex);
       st.channels.clear();
       try {
         await opts.swarm.leave(topic);
@@ -766,10 +775,32 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       // (not just infer from "pairing happened, announce still never
       // landed") whether an announce broadcast is going out over zero
       // channels.
+      // EI-18808621019872598: this trace was emitted on EVERY call. Measured on
+      // papercup-bg-host, that was 260,319 lines/24h (6.4% of the unit's whole
+      // journal, 42.2 MB/day) for ONE line — and a broadcast cadence of ~3.4/s
+      // makes it useless as a signal anyway: a reader cannot see a state CHANGE
+      // in a wall of identical lines. Worse, the volume is what pushes
+      // `journalctl --grep` into a slow reverse scan past JOURNAL_TIMEOUT_MS,
+      // the confirmed root cause of the `logs:read` false-zero
+      // (EI-19980767336148101) — the flood actively breaks the tools used to
+      // read it.
+      //
+      // The DIAGNOSTIC VALUE is real and deliberately kept: "an announce went
+      // out over zero channels" is precisely how a 50-minute total pairing
+      // outage was caught. So log on TRANSITION — the first broadcast for a
+      // topic, and every subsequent change in the open-channel count — which
+      // preserves every state change at ~1 line each instead of ~3.4/s. Set
+      // PAPERCUSP_SWARM_CHURN_DEBUG=1 for the old per-call firehose.
+      const openCount = st ? st.channels.size : 0;
       if (!process.env.VITEST) {
-        console.warn(
-          `[topic-gossip:${opts.protocol}] broadcast on topic ${topicHex} — ${st ? st.channels.size : 0} channel(s) open, topicKnown=${!!st}`,
-        );
+        const prev = lastBroadcastChannelCount.get(topicHex);
+        if (prev !== openCount || process.env.PAPERCUSP_SWARM_CHURN_DEBUG) {
+          lastBroadcastChannelCount.set(topicHex, openCount);
+          console.warn(
+            `[topic-gossip:${opts.protocol}] broadcast on topic ${topicHex} — ${openCount} channel(s) open, topicKnown=${!!st}` +
+              (prev === undefined ? '' : ` (was ${prev})`),
+          );
+        }
       }
       if (!st) return;
       for (const m of st.channels) {

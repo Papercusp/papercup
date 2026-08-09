@@ -3,6 +3,7 @@ import {
   lintCarrySurfaceProvenance,
   provenanceLintField,
   PROVENANCE_LINT_NOTE,
+  PROVENANCE_LINT_DOWNGRADED_NOTE,
 } from './carry-surface-provenance-lint';
 
 describe('lintCarrySurfaceProvenance', () => {
@@ -444,5 +445,64 @@ describe('provenanceLintField', () => {
     expect(field?.flagged).toBe(true);
     expect(field?.note).toBe(PROVENANCE_LINT_NOTE);
     expect(field?.matches.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * P-014 (fleet-lead-instrumentation-audit-2026-08-09) — the action lint had no notion of
+ * WHO ACTED, so recording a peer's report as a peer's report tripped the same accusation
+ * as fabricating one's own side-effect. Punishing the compliant case is how a
+ * high-precision leg gets tuned out.
+ */
+describe('unverified-action-claim: the ACTOR decides the kind (P-014)', () => {
+  const kinds = (t: string) => lintCarrySurfaceProvenance(t).matches.map((m) => m.kind);
+
+  it('DOWNGRADES an action whose subject is a peer session id', () => {
+    expect(kinds('su-6dc49b99 replied that my reported defect is fixed, see WI-37162')).toEqual([
+      'peer-reported-action',
+    ]);
+  });
+
+  it('downgrades the other third-party subjects agents actually write', () => {
+    for (const line of [
+      'a peer messaged the fleet leader about WI-123',
+      'they posted evidence to WI-5672 overnight',
+      'the leader notified the fleet about WI-9',
+      'another agent has already commented on WI-42',
+      'the queen just escalated WI-7 to the owner',
+    ]) {
+      expect(kinds(line), line).toEqual(['peer-reported-action']);
+    }
+  });
+
+  it('CONTROL — still ACCUSES the author\'s own narrated side-effect (the WI-5137 shape)', () => {
+    // The motivating fabrication: line OPENS with the verb, so the subject is implicitly
+    // first-person. If this ever downgrades, the lint has stopped doing its job.
+    expect(kinds('Messaged fleet leader su-bce40c51 directly')).toEqual(['unverified-action-claim']);
+    expect(kinds('Posted full evidence to WI-5672 (posts 53500-53501)')).toEqual(['unverified-action-claim']);
+    expect(kinds('I commented on WI-37162 with the census')).toEqual(['unverified-action-claim']);
+  });
+
+  it('CONTROL — a peer mentioned as the TARGET, not the actor, is still the author\'s claim', () => {
+    // "su-…" appears in the line either way; only its POSITION relative to the verb
+    // separates "I told them" from "they told me".
+    expect(kinds('I pinged su-6dc49b99 about the regression in WI-37162')).toEqual(['unverified-action-claim']);
+  });
+
+  it('still clears entirely when the line carries a [turn:…] ref, whoever acted', () => {
+    expect(kinds('su-6dc49b99 replied about WI-37162 [turn:abc123@2026-08-09T10:00:00.000Z]')).toEqual([]);
+  });
+
+  it('softens the NOTE when every match is downgraded, but not when one is loud', () => {
+    const soft = provenanceLintField('su-6dc49b99 replied that my defect is fixed, see WI-37162');
+    expect(soft?.note).toBe(PROVENANCE_LINT_DOWNGRADED_NOTE);
+    expect(soft?.note).toContain('nothing to fix');
+
+    // One real violation must never ride in under the FYI note.
+    const mixed = provenanceLintField(
+      'su-6dc49b99 replied about WI-37162\nPosted full evidence to WI-5672 (posts 53500-53501)',
+    );
+    expect(mixed?.matches.map((m) => m.kind)).toEqual(['peer-reported-action', 'unverified-action-claim']);
+    expect(mixed?.note).toBe(PROVENANCE_LINT_NOTE);
   });
 });

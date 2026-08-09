@@ -1004,6 +1004,53 @@ export function formatLandingRaceCaveat({ recentCount, windowMin = LANDING_RACE_
  *   `null` when no `-p` operand is parseable (callers must then FAIL OPEN — an unparseable
  *   command is not evidence that a file is uncovered).
  */
+/**
+ * V8 old-space ceiling (MB) for the `tsc` CHILD, applied by `tscChildEnv` below.
+ *
+ * WHY THIS EXISTS (WI-37503, measured 2026-08-09): every gate here shells out to
+ * `npx tsc … --incremental false`, which builds the WHOLE program in memory —
+ * 9013 files for operator-core. With no `--max-old-space-size` the child got
+ * node's DEFAULT old-space (~4GB) and OOM'd mid-compile:
+ *   FATAL ERROR: Ineffective mark-compacts near heap limit … heap out of memory
+ *   Mark-Compact (reduce) 4086.9 (4109.7) -> 4068.3 (4086.9) MB
+ * sitting exactly on the ceiling. This is a SIZE limit, not host pressure — the
+ * box had ~80GB free at the time — so it recurs and worsens as the tree grows.
+ *
+ * It is applied HERE, at the one place every gate actually spawns, rather than
+ * baked into each `TSC_COMMAND` string: there are four of those constants
+ * (operator-core / operator / operator-vite / orchestrator) and a fifth would be
+ * added without the number, which is precisely the drift this module's shared
+ * policy half already exists to prevent.
+ *
+ * ⚠ It is NOT free: concurrent agents each run their own compile (WI-7191
+ * measured 5 at once), so this is a per-process CEILING, not a reservation —
+ * raise it deliberately. pc-heavy's coalescing window is what keeps the
+ * concurrent count low enough for this to be safe.
+ *
+ * @type {number}
+ */
+export const TSC_HEAP_MB = Number(process.env.PAPERCUSP_TSC_HEAP_MB) || 8192;
+
+/**
+ * The child env for a tsc spawn: `process.env` plus `extra`, with
+ * `--max-old-space-size` appended to NODE_OPTIONS.
+ *
+ * An EXISTING `--max-old-space-size` in the caller's NODE_OPTIONS is left alone —
+ * an operator who pinned a value (or a constrained CI box that pinned a smaller
+ * one) must win over this default, and appending a second copy would silently
+ * take the LAST occurrence rather than erroring.
+ *
+ * @param {Record<string, string>} [extra]
+ * @returns {Record<string, string | undefined>}
+ */
+export function tscChildEnv(extra = {}) {
+  const existing = process.env.NODE_OPTIONS ?? '';
+  const nodeOptions = /--max-old-space-size(=|\s)/.test(existing)
+    ? existing
+    : `${existing} --max-old-space-size=${TSC_HEAP_MB}`.trim();
+  return { ...process.env, ...extra, NODE_OPTIONS: nodeOptions };
+}
+
 export function projectPrefixFromTscCommand(tscCommand) {
   const m = /(?:^|\s)-p\s+(\S+)/.exec(String(tscCommand ?? ''));
   if (!m) return null;
@@ -1384,16 +1431,57 @@ export function formatUncoveredFilesBanner({
  * cover that incidentally (any edit anywhere busted the key), so this is a real narrowing
  * and not merely a restatement.
  *
- * It is accepted rather than closed because every way of closing it re-widens the
- * watermark to "any uncommitted edit in the tree", which on a checkout ~16 agents are
- * saving into is `now` on every call — i.e. exactly the churn that made coalescing
- * impossible in the first place (~1 change/18s vs a ~170s compile). The mitigation is the
- * instruction the gate already gives everywhere: pass `--files=` listing what you actually
- * changed. That is also what makes the VERDICT trustworthy here, so the two align.
+ * It is accepted rather than closed for the GENERAL case, because every way of closing it
+ * re-widens the watermark to "any uncommitted edit in the tree", which on a checkout ~16
+ * agents are saving into is `now` on every call — i.e. exactly the churn that made
+ * coalescing impossible in the first place (~1 change/18s vs a ~170s compile). The
+ * mitigation is the instruction the gate already gives everywhere: pass `--files=` listing
+ * what you actually changed. That is also what makes the VERDICT trustworthy here, so the
+ * two align.
+ *
+ * ONE instance of "G edited, F asked about" IS closed, narrowly, because it doesn't share
+ * the churn problem above: generated `.d.mts` declarations (EI-19483243844876537). They are
+ * a small, fixed, enumerable set (`tsconfig.declarations.json`'s `files`, currently ~11) that
+ * only moves on an explicit `npm run gen:declarations` run — not on every peer's save — so
+ * folding them in doesn't reintroduce the per-18s churn the general fix was rejected for. See
+ * `declarationFilesFromConfig` below.
  *
  * @param {{ root: string, files: Set<string> | null, updateFlag: boolean }} args
  * @returns {number | null} epoch seconds, or null to disable coalescing for this run
  */
+
+/**
+ * The `.d.mts` companions of the `.mjs` modules declared in `tsconfig.declarations.json`
+ * (WI-6394's naming convention: `foo.mjs` -> `foo.d.mts`, same directory) — the hidden
+ * dependency `coalesceWatermarkFor` folds in below (EI-19483243844876537).
+ *
+ * Deliberately duplicated rather than imported from `scripts/gen-declarations.ts`: that
+ * module calls `generate()`/`check()` UNCONDITIONALLY at module load — no entrypoint guard —
+ * so importing it here would regenerate declarations as a side effect of every gate call,
+ * including read-only ones on a shared, concurrently-edited checkout. `generated-
+ * declarations.test.ts` already duplicates `BANNER_MARKER` for the identical reason; this
+ * follows the same precedent rather than introducing a new one.
+ *
+ * Fails open (empty array) on any read/parse error — this is a supplementary freshness
+ * SIGNAL, not a hard dependency, and a missing/malformed config must never crash the gate.
+ *
+ * @param {string} root
+ * @returns {string[]} repo-relative `.d.mts` paths
+ */
+export function declarationFilesFromConfig(root) {
+  try {
+    const raw = readFileSync(resolve(root, 'tsconfig.declarations.json'), 'utf8');
+    // tsc accepts JSONC (`//` comments) here — strip before parsing, same approach as
+    // gen-declarations.ts's own `inputs()`.
+    const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
+    const parsed = JSON.parse(stripped);
+    const mjsFiles = Array.isArray(parsed.files) ? parsed.files : [];
+    return mjsFiles.map((f) => String(f).replace(/\.mjs$/, '.d.mts'));
+  } catch {
+    return [];
+  }
+}
+
 export function coalesceWatermarkFor({ root, files, updateFlag }) {
   if (updateFlag) return null;
   if (files === null || files.size === 0) return null;
@@ -1411,6 +1499,33 @@ export function coalesceWatermarkFor({ root, files, updateFlag }) {
     }
     if (st.mtimeMs > newestMs) newestMs = st.mtimeMs;
   }
+
+  // EI-19483243844876537: a checked file's OWN mtime says nothing about a GENERATED
+  // `.d.mts` a different, already-tracked `.mjs` module exports through — tsc resolves
+  // an importer's types via the companion declaration, not the `.mjs` source, so
+  // `npm run gen:declarations` can flip a checked file's verdict without the checked
+  // file itself moving. Without this, a compile that started AFTER the checked files'
+  // own mtimes but BEFORE a `gen:declarations` run is wrongly accepted as fresh —
+  // reproduced 2026-08-04: added exports to a `.mjs`, regenerated declarations, then
+  // `lint:tsc --files=<tests using the new export>` replayed a pre-regen cached compile
+  // reporting TS2305 for exports that provably existed on disk.
+  //
+  // Fold in the newest declaration mtime alongside the checked files' own. Best-effort
+  // and fails OPEN per file (unlike the loop above): an unreadable/missing declaration
+  // is not evidence of anything about THIS caller's freshness question, so it is
+  // skipped rather than aborting the whole watermark. This can only make the watermark
+  // MORE conservative (never less) — worst case is an occasional unnecessary fresh
+  // compile, never a wrongly-stale replay.
+  for (const rel of declarationFilesFromConfig(root)) {
+    let st;
+    try {
+      st = statSync(resolve(root, rel));
+    } catch {
+      continue;
+    }
+    if (st.mtimeMs > newestMs) newestMs = st.mtimeMs;
+  }
+
   if (newestMs <= 0) return null;
 
   // +1 and floor, deliberately: mtime carries sub-second precision and pc-heavy stamps
@@ -1649,16 +1764,16 @@ export async function runTscBaselineGate({
           cwd: root,
           encoding: 'utf-8',
           maxBuffer: 64 * 1024 * 1024,
-          env: {
-            ...process.env,
+          env: tscChildEnv({
             PC_HEAVY_COALESCE_SEC: process.env.PC_HEAVY_COALESCE_SEC ?? '420',
             ...(freshAfter === null ? {} : { PC_HEAVY_FRESH_AFTER: String(freshAfter) }),
-          },
+          }),
         })
       : execSync(`${tscCommand} 2>&1`, {
           cwd: root,
           encoding: 'utf-8',
           maxBuffer: 64 * 1024 * 1024,
+          env: tscChildEnv(),
         });
   } catch (e) {
     tscThrew = true;

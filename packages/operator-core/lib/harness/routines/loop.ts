@@ -40,6 +40,16 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+// Import from the dependency-free automatic-tool-names.ts, NOT from
+// '../../agent-tools/sessions/timeline' (which re-exports the same constant) — timeline.ts
+// imports `@papercusp/agent-mcp`, whose index.ts unconditionally imports './bootstrap' and
+// side-effect-registers the whole read-tool catalog (several of which read `generated.*`
+// schema exports from '@papercusp/db-org' AT MODULE LOAD, EI-362). Importing from timeline.ts
+// here pulled that entire chain into loop.ts's module graph and broke any test importing
+// loop.ts whose db-org mock used a bare factory instead of spreading `importOriginal`
+// (measured: loop.test.ts, EI-19986796515232861). loop.ts is a core routines module reached
+// from many lightweight import graphs — keep this import light.
+import { AUTOMATIC_TOOL_NAMES } from '../../agent-tools/sessions/automatic-tool-names';
 
 /**
  * The `target_role` a loop routine carries. The DBOS fire (B-LOOP-3) recognises
@@ -1123,6 +1133,46 @@ export async function getLoopStatuses(
 
 export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): Promise<LoopStatus | null> {
   return (await getLoopStatuses([ownerId], opts)).get(ownerId) ?? null;
+}
+
+/**
+ * EI-19984789589075138: whether the owner made any AGENT-authored tool call — i.e.
+ * excluding the automatic hook/status set (AUTOMATIC_TOOL_NAMES, shared with
+ * sessions:timeline's audit) — in (sinceMs, untilMs]. The cold-wake un-checkpointed-work
+ * banner (su-cold-loop.ts's renderColdWakeInjection) sources its "a turn completed after
+ * the note" signal from `lastRealTurnAt`, which unions in session_turns' assistant turns —
+ * and a turn is a well-formed row there even when it is a usage-wall / withheld-fire bounce
+ * that did zero work (the model emits refusal text, the turn ends). This is the STRICT
+ * evidence check a caller runs before showing the alarm: a confirmed 0 downgrades it to a
+ * bounced-fire notice instead of sending the successor on a reconciliation hunt for work
+ * that never happened.
+ *
+ * Returns `null` on any query failure — callers MUST treat null as "evidence unavailable"
+ * and never read it as zero, or a transient query error would silently suppress a real
+ * warning (the existing, safe default). Best-effort only: never let this delay or drop a
+ * cold-wake delivery.
+ */
+export async function countAgentToolCallsInWindow(
+  ownerId: string,
+  sinceMs: number,
+  untilMs: number,
+  opts: { sql?: Sql } = {},
+): Promise<number | null> {
+  try {
+    const sql = opts.sql ?? getOrgPg().sql;
+    const [row] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.tool_invocations
+       WHERE coord_owner_id = ${ownerId}
+         AND invoked_at > ${new Date(sinceMs).toISOString()}::timestamptz
+         AND invoked_at <= ${new Date(untilMs).toISOString()}::timestamptz
+         AND tool_name <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[])
+    `;
+    return row ? Number(row.n) : 0;
+  } catch (e) {
+    console.warn('[loop] countAgentToolCallsInWindow failed (evidence unavailable):', e as Error);
+    return null;
+  }
 }
 
 /**

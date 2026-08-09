@@ -4,7 +4,9 @@ import {
   aggregatePremiseStamps,
   type CoordHealthInput,
   type CoordAuthoredAdoption,
+  type CoordDispatchAdoption,
 } from './coord-health-lane';
+import { evaluateDispatchAdoption } from '../agent-tools/coordination/dispatch-adoption-falsifier';
 import { buildEnforcementTierCensus } from './enforcement-tier-census';
 import type { PremiseRefKind } from '../agent-tools/coordination/message-fields';
 import type { PremiseStatus } from '../agent-tools/coordination/premise-resolve';
@@ -708,5 +710,113 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
     expect(p.detail).toContain('WI-6502#completion');
     expect(p.detail).toContain('broken');
     expect(p.detail).toContain('work-item-completion');
+  });
+});
+
+/**
+ * The coord:dispatch retirement falsifier signal (P-013 / D-100–D-102, WI-37443).
+ *
+ * WI-37443: `evaluateDispatchAdoption()` shipped with ZERO callers, so the
+ * pre-committed falsifier could never produce a verdict — indistinguishable from
+ * never having committed to one. These pin the emission that makes it real, and
+ * the D-003 property that the denominator is always stated.
+ */
+describe('buildCoordHealthPatterns — the coord:dispatch retirement falsifier (P-013)', () => {
+  const reading = (
+    over: Partial<CoordDispatchAdoption['sample']> = {},
+    coverageOver: Partial<CoordDispatchAdoption['coverage']> = {},
+  ): CoordDispatchAdoption => {
+    const sample = {
+      dispatchCalls: 40,
+      dispatchAgents: 8,
+      sendCalls: 4_000,
+      windowDays: 14,
+      asOf: '2026-09-10',
+      ...over,
+    };
+    return {
+      sample,
+      coverage: {
+        requestedWindowDays: 14,
+        coveredWindowDays: 14,
+        shortfall: false,
+        oldestRetainedAt: '2026-08-27T12:00:00.000Z',
+        ...coverageOver,
+      },
+      // The REAL pre-committed evaluator — never a stubbed verdict, or the test
+      // would pass over a broken bar.
+      verdict: evaluateDispatchAdoption(sample),
+    };
+  };
+
+  const find = (input: CoordDispatchAdoption | undefined) =>
+    buildCoordHealthPatterns(base({ dispatchAdoption: input })).find(
+      (x) => x.ref === 'coord:dispatch-adoption-verdict',
+    );
+
+  it('emits NOTHING when there is no sample — an absent reading is not a verdict', () => {
+    expect(find(undefined)).toBeUndefined();
+  });
+
+  it('emits the KEEP verdict with its rate, agent count and denominator', () => {
+    const p = find(reading())!;
+    expect(p).toBeDefined();
+    expect(p.summary).toContain('KEEP');
+    expect(p.summary).toContain('10.00/1k');
+    // D-003: the denominator rides on the ratio, always.
+    expect(p.summary).toContain('4000 coord:send calls / 14d');
+  });
+
+  it('emits RETIRE — and says it takes coord:handoff with it (D-102)', () => {
+    const p = find(reading({ dispatchCalls: 1, dispatchAgents: 1 }))!;
+    expect(p.summary).toContain('RETIRE');
+    expect(p.detail).toContain('coord:handoff');
+  });
+
+  it('reports UNDETERMINED before the agreed re-evaluate date, and ranks it low', () => {
+    const p = find(reading({ asOf: '2026-08-20' }))!;
+    expect(p.summary).toContain('UNDETERMINED');
+    // A dated no-op must never outrank a live coordination breakdown.
+    expect(p.weight).toBeLessThan(0.2);
+    expect(p.detail).toContain('NEVER UPGRADED TO RETIRE');
+  });
+
+  it('states the denominator even when the verdict is UNDETERMINED', () => {
+    // The case where an unstated denominator is most tempting: there is no rate
+    // to attach it to, so it would silently vanish.
+    const p = find(reading({ sendCalls: 12, asOf: '2026-09-10' }))!;
+    expect(p.summary).toContain('UNDETERMINED');
+    expect(p.summary).toContain('12 coord:send calls / 14d');
+  });
+
+  it('SURVIVES a fleet whose keyed storms would otherwise consume the whole cap', () => {
+    // MEASURED 2026-08-09: the live lane returned 10 patterns and all 10 were
+    // `coord:escalation-storm:*` (7 of them per-agent compaction-watchdog rows),
+    // so every corpus-wide measurement was silently deleted by the tail slice.
+    // A falsifier that is wired but cut on a busy day is still a falsifier that
+    // never produces a verdict — the exact WI-37443 defect, one layer along.
+    const out = buildCoordHealthPatterns(
+      base({
+        dispatchAdoption: reading(),
+        escalationStorms: Array.from({ length: 25 }, (_, i) => ({
+          signature: `compaction-watchdog-context-death-su-${i}`,
+          count: 9,
+          severity: 'blocker' as const,
+          sample: 'context death',
+        })),
+      }),
+    );
+    expect(out.find((x) => x.ref === 'coord:dispatch-adoption-verdict')).toBeDefined();
+    // and the cap is still honoured overall
+    expect(out.length).toBeLessThanOrEqual(10);
+    // the keyed family is what gets truncated, not the measurement
+    expect(out.some((x) => x.ref.startsWith('coord:escalation-storm:'))).toBe(true);
+  });
+
+  it('surfaces a retention shortfall rather than passing the narrowed window off as the ask', () => {
+    const p = find(reading({ windowDays: 7 }, { coveredWindowDays: 7, shortfall: true }))!;
+    expect(p.detail).toContain('could only substantiate 7d of the 14d');
+    // and the published window is the substantiated one
+    expect(p.summary).toContain('/ 7d');
   });
 });

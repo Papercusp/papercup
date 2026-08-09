@@ -37,10 +37,31 @@
  * calls and reporting a confident rate.
  */
 
-/** Measured 2026-08-09 over 30 days, all tenants: 1 dispatch / 3,724 sends. */
+/**
+ * Measured 2026-08-09, all tenants: 1 dispatch / 3,724 sends.
+ *
+ * ⚠ `windowDays` READS 14, AND THAT IS A CORRECTION OF THE LABEL, NOT A MOVED
+ * GOALPOST. This constant was first recorded as a 30-day window. It never was
+ * one: `harness_shared.tool_invocations` is pruned to **14 days**
+ * (`DEFAULT_RETENTION_TARGETS`, telemetry-retention-action.ts), so the query
+ * that produced these numbers asked for 30 days and got every row that existed
+ * — about 14. Verified 2026-08-09: `interval '30 days'` and the whole table
+ * return the same span (oldest row 14d 6h old), and this same `coord:send`
+ * count fell 3,724 -> 3,106 within five hours as the prune ran.
+ *
+ * The COUNTS below are exactly as measured and are unchanged; only the window
+ * they are attributed to is corrected. Nothing downstream shifts: `windowDays`
+ * feeds no computation here, and `ratePerThousand` is a ratio of two figures
+ * from the same window, so it is unaffected either way. The pre-committed
+ * {@link DISPATCH_ADOPTION_FLOOR} is deliberately untouched.
+ *
+ * Leaving it at 30 would have published a denominator the data never supported
+ * — the precise failure this plan's D-003 exists to prevent, reintroduced by
+ * the falsifier's own baseline.
+ */
 export const DISPATCH_BASELINE = {
   measuredAt: '2026-08-09',
-  windowDays: 30,
+  windowDays: 14,
   dispatchCalls: 1,
   dispatchAgents: 1,
   sendCalls: 3_724,

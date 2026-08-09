@@ -43,6 +43,7 @@ import {
   getLoopStatuses,
   LOOP_WAKE_ACTION,
   LOOP_INTERVAL_FLOOR_SEC,
+  countAgentToolCallsInWindow,
 } from './loop';
 
 describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', () => {
@@ -884,6 +885,35 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     const s = out.get('su-x')!;
     expect(s.firesSinceArm).toBe(0);
     expect(s.fireCount).toBe(500);
+  });
+});
+
+describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un-checkpointed-work evidence check)', () => {
+  function countSql(n: number) {
+    return (_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([{ n }]);
+  }
+  function throwingSql() {
+    return (_s: TemplateStringsArray, ..._v: unknown[]) => Promise.reject(new Error('boom'));
+  }
+
+  it('returns the row count when the query succeeds', async () => {
+    const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: countSql(3) as any });
+    expect(out).toBe(3);
+  });
+
+  it('returns 0 (not null) for a genuinely empty window — a real, confirmed answer', async () => {
+    const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: countSql(0) as any });
+    expect(out).toBe(0);
+  });
+
+  it('returns null (never 0) when the query itself fails — "unavailable" must not read as "confirmed zero"', async () => {
+    // The catch path deliberately console.warn's (best-effort logging) — expect it
+    // explicitly (vitest-fail-on-console) rather than letting it fail the test.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: throwingSql() as any });
+    expect(out).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 });
 

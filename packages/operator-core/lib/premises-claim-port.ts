@@ -150,6 +150,28 @@ export function stripNonProse(text: string): string {
     .replace(/`[^`\n]*`/g, (m) => ' '.repeat(m.length));
 }
 
+/**
+ * P-014 — recover the ORIGINAL text of a span the detector matched in redacted prose.
+ *
+ * Detection deliberately runs over {@link stripNonProse}'d text so a PASTED error
+ * string is never read as the author's own assertion. But the lint then QUOTED that
+ * redacted text back, so backticked identifiers had been blanked out of the sentence
+ * it echoed — producing the incoherent `"note there is NO column and NO top-level —
+ * the id column is )"` this fixes, complete with a recheck telling the reader to grep
+ * for that string. Stripping is right for DECIDING; it is wrong for QUOTING.
+ *
+ * Safe because the redaction is LENGTH-PRESERVING, so one offset pair indexes both
+ * strings — and self-checked, not assumed: re-redacting the recovered span must
+ * reproduce the redacted span. Should a future strip rule stop preserving length,
+ * this silently falls back to today's behaviour instead of quoting a mis-sliced
+ * sentence, which is the one outcome worse than the bug.
+ */
+function originalSpan(original: string, redacted: string, start: number, end: number): string {
+  const redactedSpan = redacted.slice(start, end);
+  const raw = original.slice(start, end);
+  return stripNonProse(raw) === redactedSpan ? raw : redactedSpan;
+}
+
 /** Trim a matched sentence to a bounded, readable claim. */
 function clampClaim(s: string): string {
   const t = s.replace(/\s+/g, ' ').trim();
@@ -224,6 +246,34 @@ function isSentenceDot(text: string, i: number): boolean {
   }
   const next = text[j];
   return next === undefined || /\s/.test(next);
+}
+
+/**
+ * The bounds of the sentence containing an offset.
+ *
+ * Split out from {@link sentenceAt} for P-014: the boundary scan must run over the
+ * REDACTED prose (where a `.` or `;` inside a code span cannot masquerade as a
+ * sentence end), while the text that gets QUOTED must be the original. Because
+ * {@link stripNonProse} redacts to EQUAL LENGTH, one offset pair indexes both.
+ */
+function sentenceBoundsAt(text: string, index: number): { start: number; end: number } {
+  let start = -1;
+  for (let i = Math.min(index, text.length) - 1; i >= 0; i--) {
+    const c = text[i];
+    if (c === '\n' || c === ';' || (c === '.' && isSentenceDot(text, i))) {
+      start = i;
+      break;
+    }
+  }
+  let end = text.length;
+  for (let i = index; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\n' || c === ';' || (c === '.' && isSentenceDot(text, i))) {
+      end = i;
+      break;
+    }
+  }
+  return { start: start + 1, end };
 }
 
 /** The sentence containing an offset — the unit a human reads as "the claim". */
@@ -329,13 +379,34 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
   for (const { re, subject } of ABSENCE_PATTERNS) {
     re.lastIndex = 0;
     for (const m of prose.matchAll(re)) {
-      const subj = (subject(m) ?? '').replace(/\s+/g, ' ').trim();
+      const redactedSubject = subject(m) ?? '';
+      const subj = redactedSubject.replace(/\s+/g, ' ').trim();
+      // A subject that was ENTIRELY code redacts to blanks — still skipped, deliberately:
+      // P-014 restores code to the QUOTE, it does not make code detectable as a claim.
       if (!subj) continue;
       // EI-19399570274386816 (1): "…I claimed did not exist" captures the verb, not a
       // subject — a report OF a claim, not a claim.
       if (REPORTED_SPEECH.has(subj.toLowerCase())) continue;
-      const claim = clampClaim(sentenceAt(prose, m.index ?? 0));
+      const bounds = sentenceBoundsAt(prose, m.index ?? 0);
+      const claim = clampClaim(originalSpan(text ?? '', prose, bounds.start, bounds.end));
       if (!claim) continue;
+      // P-014: the recheck names the subject to grep for, so it needs the identifier the
+      // author actually wrote, not its redacted husk. The group sits at a known offset
+      // inside the match; `lastIndexOf` because two patterns capture a TRAILING group.
+      // Backticks are markdown delimiters, not part of what you would search for.
+      const subjOffset = m.index != null ? m[0].lastIndexOf(redactedSubject) : -1;
+      const subjForRecheck =
+        subjOffset >= 0 && m.index != null
+          ? originalSpan(
+              text ?? '',
+              prose,
+              m.index + subjOffset,
+              m.index + subjOffset + redactedSubject.length,
+            )
+              .replace(/`/g, '')
+              .replace(/\s+/g, ' ')
+              .trim() || subj
+          : subj;
       // EI-19399570274386816 (2): the sentence retracts an absence rather than asserting
       // one, or reports one the author already attributed to their past self.
       if (SELF_RETRACTION.test(claim)) continue;
@@ -356,7 +427,7 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
         // D-001 (c): name the SCOPE requirement, not just "verify this". Scope of
         // inference — a real search over too narrow a scope — is the measured
         // failure mode, so a recheck that omits its scope reproduces the bug.
-        recheck: recheckFor(subj),
+        recheck: recheckFor(subjForRecheck),
       });
       if (out.length >= MAX_PREMISES) return out;
     }

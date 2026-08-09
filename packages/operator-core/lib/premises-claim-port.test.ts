@@ -288,3 +288,65 @@ describe('buildPremisesBrief', () => {
     expect(brief.unverified).toBe(1);
   });
 });
+
+/**
+ * P-014 (fleet-lead-instrumentation-audit-2026-08-09) — the lint QUOTED the redacted
+ * prose it detects on, so backticked identifiers were blanked out of the sentence it
+ * echoed back at the author. Stripping code is right for DECIDING whether a line is an
+ * absence claim (a pasted error string is evidence, not an assertion); it is wrong for
+ * QUOTING, and an incoherent quote plus a recheck saying "grep for this" is worse than
+ * no lint — it trains the reader to ignore a leg that catches a real class.
+ */
+describe('quoting: the echoed claim keeps the identifiers the author wrote (P-014)', () => {
+  // The shape of the reported incident: backticked identifiers inside the sentence.
+  const NOTE =
+    'I checked the schema and there is no `severity` column on `harness_shared.work_items` ' +
+    'and no top-level accessor — the id column is `payload._ei`.';
+
+  it('echoes the identifiers instead of the blanked husk', () => {
+    const [p] = derive(NOTE);
+    expect(p).toBeDefined();
+    expect(p!.claim).toContain('`severity`');
+    expect(p!.claim).toContain('`harness_shared.work_items`');
+    // The measured symptom: collapsed blanks leaving a stranded fragment.
+    expect(p!.claim).not.toMatch(/\s{2,}/);
+    expect(p!.claim).not.toContain('there is no  ');
+  });
+
+  it('names the real identifier in the recheck, so the grep it prescribes can succeed', () => {
+    const [p] = derive(NOTE);
+    expect(p!.recheck).toContain('severity');
+    expect(p!.recheck).not.toContain('`'); // backticks are markdown, not part of the search
+  });
+
+  it('CONTROL — detection still runs on REDACTED prose: a pasted error string is not a claim', () => {
+    // Calibration for the two cases above: if restoring the quote had also restored code
+    // to the DETECTION input, this would start firing — the exact false positive the
+    // stripping exists to prevent.
+    const pasted =
+      'The migration failed and I captured the output verbatim below, which is why I am filing this. ' +
+      'The server said `column "payload" does not exist` when the deploy ran.';
+    expect(derive(pasted)).toEqual([]);
+  });
+
+  it('CONTROL — a subject that is ENTIRELY code still does not register as a claim', () => {
+    // The subject group runs to the sentence end, so it is only fully redacted when the
+    // code span IS the rest of the sentence. Restoring the quote must not change this:
+    // the skip happens at subject-resolution, before anything is quoted.
+    expect(derive('I read the schema dump carefully just now and there is no `severity_rank`.')).toEqual([]);
+  });
+
+  it('quotes an ordinary code-free claim exactly as before (no regression on the common path)', () => {
+    const plain = 'I searched the whole tree and there is no exported read helper for this table anywhere.';
+    const [p] = derive(plain);
+    expect(p!.claim).toBe('I searched the whole tree and there is no exported read helper for this table anywhere');
+  });
+
+  it('does not let a dot INSIDE a code span end the quoted sentence early', () => {
+    // Why bounds are still computed on the redacted text: scanning the ORIGINAL would
+    // treat the dot in `a.b` as a sentence end and truncate the claim mid-identifier.
+    const withDot = 'Checking now, there is no `payload._ei` accessor on the view and that breaks the audit.';
+    const [p] = derive(withDot);
+    expect(p!.claim).toContain('that breaks the audit');
+  });
+});

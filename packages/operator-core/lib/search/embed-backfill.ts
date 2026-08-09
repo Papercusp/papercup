@@ -338,11 +338,88 @@ export interface BackfillTarget {
    * rather than an error), while the rest are timestamptz.
    */
   recencyColKind?: 'timestamptz' | 'epochMs';
+  /**
+   * P-026 / D-087 — the version of the TEXT RECIPE (`bodySql`) this target
+   * currently embeds. Bump it in the SAME edit that changes `bodySql`.
+   *
+   * `<embedCol>_mode` answers "which embedder produced this vector"; it says
+   * nothing about WHICH TEXT went in. So editing a `bodySql` used to mark
+   * nothing stale — only rows embedded after the edit got the new recipe, and
+   * the already-vectorised population kept the old one forever, two recipes in
+   * one column and indistinguishable at query time. That made every index-side
+   * expansion unshippable, because it would have improved only future rows.
+   *
+   * OMITTED (or 1) ⇒ exactly today's behaviour. That is the point: introducing
+   * this discriminator must re-embed NOTHING. Only a deliberate bump to 2+ makes
+   * the existing population stale, and the sweep then converges the surface onto
+   * the new recipe and goes quiet — the same converge-then-quiesce shape WI-3616
+   * gave the embedder space.
+   *
+   * ⚠ A bump is expensive and per-target: re-embedding is ~0.22s/text, so
+   * work_items (36.5k) ≈ 2.2h, session_turn_chunks (121k) ≈ 7.4h and
+   * session_turns (296k) ≈ 18.1h. Bump the surface you measured, not all of them.
+   *
+   * The version is stored in a SIBLING `<embedCol>_recipe` column, never folded
+   * into `<embedCol>_mode` — see `recipeColOf`.
+   */
+  recipeVersion?: number;
 }
 
 /** The column (migration 530) recording which embedder produced a row's vector. */
 export function modeColOf(target: BackfillTarget): string {
   return `${target.embedCol}_mode`;
+}
+
+/**
+ * The column (migration 777) recording which TEXT RECIPE produced a row's vector.
+ *
+ * ⚠ SIBLING COLUMN, NEVER A WIDENED `<embedCol>_mode` — this is the whole ruling
+ * of D-087 and it is not stylistic. Folding a recipe token into the mode column
+ * (`gemma#r2`) needs no migration and is ~5 lines, and it was built and measured
+ * UNSAFE: `*_mode` is not private to the sweep. Four query-time readers
+ * EQUALITY-match it — work-items.ts:1256 and :1318 (the work_item semantic leg),
+ * plans/semantic-leg.ts:77, doc-section-overlap.ts:179 and :213 — so a composite
+ * token matches ZERO rows there. Not an error: the semantic leg returns empty and
+ * the corpus leg silently degrades to lexical-only, invisible to types and tests.
+ * Prefix-matching it back out is not a rescue either (non-sargable on hot
+ * per-query filters — a silent outage traded for a silent index regression).
+ *
+ * Two independent axes get two columns, so a recipe bump is visible to the sweep
+ * and invisible to every query-time consumer BY CONSTRUCTION.
+ */
+export function recipeColOf(target: BackfillTarget): string {
+  return `${target.embedCol}_recipe`;
+}
+
+/**
+ * The recipe version a row with a NULL `<embedCol>_recipe` is understood to hold.
+ *
+ * A row embedded before migration 777 records no recipe, but it is not of
+ * UNKNOWN recipe — it was produced by the `bodySql` in force at that time, which
+ * is recipe 1 by definition. Reading NULL as 1 (rather than as "distinct from
+ * everything") is what makes INTRODUCING the discriminator a no-op: at version 1
+ * nothing is stale, so no surface is re-embedded merely because the column now
+ * exists. Get this wrong and deploying the column alone costs ~28h of sidecar
+ * across the corpus for zero change in what is embedded.
+ */
+export const BASELINE_RECIPE_VERSION = 1;
+
+/**
+ * The recipe version to enforce for this target, or null for "no recipe term".
+ *
+ * Null on BOTH of the two independent ways this can be inapplicable: the target
+ * declares no `recipeVersion` (it has not opted in), or the database has no
+ * `<embedCol>_recipe` column (migration 777 has not run, or ran only for the
+ * surfaces that opted in — it is deliberately per-table). Either way the sweep
+ * falls back to exactly its pre-777 predicate rather than throwing, mirroring how
+ * `spaceAware` degrades for a database without migration 530.
+ */
+export function activeRecipeVersion(
+  target: BackfillTarget,
+  recipeColPresent: boolean,
+): number | null {
+  if (!recipeColPresent) return null;
+  return target.recipeVersion ?? null;
 }
 
 /**

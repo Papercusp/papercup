@@ -376,5 +376,44 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
       // the note itself is still delivered verbatim — the warning frames it, never replaces it
       expect(out).toContain('Implement item 1: widen classifyPremiseRef...');
     });
+
+    describe('agentToolCallsSinceNote — evidence, not just existence (EI-19984789589075138)', () => {
+      it('downgrades to a bounced-fire notice when the caller CONFIRMS zero agent tool calls', () => {
+        const out = renderColdWakeInjection('note', undefined, 6, noteAt, noteAt + 37 * 60_000, 0);
+        expect(out).not.toContain('UN-CHECKPOINTED WORK EXISTS');
+        expect(out).toContain('bounced fire');
+        expect(out).toContain('ZERO agent tool calls');
+        expect(out).toContain('usage-wall');
+        expect(out).toContain('CURRENT');
+        // still names the same turn instant/age the strong banner would have
+        expect(out).toContain('[08-01T21:41:56Z]');
+        expect(out).toContain('~37m after this note was written');
+      });
+
+      it('keeps the strong banner when the count is positive (real evidence of work)', () => {
+        const out = renderColdWakeInjection('note', undefined, 6, noteAt, noteAt + 37 * 60_000, 4);
+        expect(out).toContain('UN-CHECKPOINTED WORK EXISTS');
+        expect(out).not.toContain('bounced fire');
+      });
+
+      it('keeps the strong (existing) banner, unchanged, when evidence is unavailable (undefined/null) — never suppress on "unknown"', () => {
+        const withEvidenceOmitted = renderColdWakeInjection('note', undefined, 6, noteAt, noteAt + 37 * 60_000);
+        const withEvidenceUndefined = renderColdWakeInjection('note', undefined, 6, noteAt, noteAt + 37 * 60_000, undefined);
+        const withEvidenceNull = renderColdWakeInjection('note', undefined, 6, noteAt, noteAt + 37 * 60_000, null);
+        for (const out of [withEvidenceOmitted, withEvidenceUndefined, withEvidenceNull]) {
+          expect(out).toContain('UN-CHECKPOINTED WORK EXISTS');
+          expect(out).not.toContain('bounced fire');
+        }
+        expect(withEvidenceUndefined).toBe(withEvidenceOmitted);
+        expect(withEvidenceNull).toBe(withEvidenceOmitted);
+      });
+
+      it('a confirmed zero has no effect when the banner would not have fired anyway (inside the floor)', () => {
+        const base = renderColdWakeInjection('note', undefined, 6, noteAt, noteAt + 60_000);
+        const withEvidence = renderColdWakeInjection('note', undefined, 6, noteAt, noteAt + 60_000, 0);
+        expect(withEvidence).toBe(base);
+        expect(withEvidence).not.toContain('bounced fire');
+      });
+    });
   });
 });

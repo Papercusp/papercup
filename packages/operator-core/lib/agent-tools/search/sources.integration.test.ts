@@ -169,6 +169,11 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
   // was always on the base table — 776 only made the view SELECT it. This fixture
   // is a flat table, so it carries the column directly; what it has to reproduce
   // faithfully is the SHAPE the source reads, which is the view's.
+  //
+  // P-009: `updated_at` likewise. Both work_item legs now project it as the hit's
+  // `ts` so the corpus leg's recency re-rank can see a work-item at all — omit it
+  // here and those legs fail on an undefined column, which is the standing
+  // inline-CREATE-TABLE drift trap, not a bug in the source.
   await s.unsafe(`
     CREATE TABLE harness_shared.engineer_issues (
       workspace_id TEXT NOT NULL DEFAULT 'default',
@@ -179,6 +184,11 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       kind TEXT NOT NULL DEFAULT 'bug',
       severity TEXT NOT NULL DEFAULT 'minor',
       state TEXT NOT NULL DEFAULT 'open',
+      -- Both nullable in production, and the legs read
+      -- coalesce(updated_at, created_at) — so the fixture carries both, nullable,
+      -- rather than a NOT NULL shape the real relation does not have.
+      updated_at TIMESTAMPTZ DEFAULT now(),
+      created_at TIMESTAMPTZ DEFAULT now(),
       embedding public.vector(384),
       embedding_mode TEXT,
       _search tsvector GENERATED ALWAYS AS (
@@ -671,6 +681,59 @@ describe('P-005 — work_item.embedding (the semantic leg D-078 was missing)', (
   it('respects the limit', async () => {
     const out = await embeddingOf('work_item')({ ...params({ limit: 2 }), qVec: QVEC });
     expect(idsOf(out)).toEqual(['EI-3', 'EI-2']);
+  });
+});
+
+/**
+ * P-009 — both work_item legs must project `ts`.
+ *
+ * This is the PRECONDITION for the corpus leg's recency re-rank, and its absence
+ * is silent in the worst way: `applyRecencyRerank` scores a hit with no timestamp
+ * as `decay = 0` — MAXIMALLY OLD — never as "unknown". Measured 2026-08-09,
+ * work-items were 36.6% of surfaced corpus refs and every one arrived `ts: null`,
+ * so a regression here does not disable recency for work-items, it demotes all of
+ * them for being unmeasurable, while looking exactly like recency working.
+ *
+ * Asserted against the DB rather than by reading the SQL because the failure this
+ * catches is a dropped COLUMN, which only the real query can observe.
+ */
+describe('P-009 — work_item legs project the recency timestamp', () => {
+  it('lexical carries ts from updated_at', async () => {
+    const out = await byName('work_item').lexical(params());
+    expect(out.length).toBeGreaterThan(0);
+    for (const r of out) {
+      expect(r.row.ts, `work_item:${r.row.source_id} reached the engine with no ts`).toBeTruthy();
+      expect(Number.isFinite(new Date(r.row.ts as string | Date).getTime())).toBe(true);
+    }
+  });
+
+  it('falls back to created_at when updated_at is NULL — both columns are nullable', async () => {
+    // Seeded in its OWN workspace so it cannot perturb the WS_A / WS_B row-set
+    // assertions above, which pin exact id lists.
+    const WS_P009 = 'ws-P009';
+    const createdAt = '2026-07-04T00:00:00.000Z';
+    await sql`INSERT INTO harness_shared.engineer_issues
+                (workspace_id, issue_id, scope, title, body, kind, state, severity, updated_at, created_at)
+              VALUES (${WS_P009}, 'EI-NULLTS', 'harness:sheets', 'kubernetes scaling bug',
+                      'updated_at is null here', 'bug', 'open', 'major', NULL, ${createdAt})`;
+
+    const out = await byName('work_item').lexical(params({ workspaceId: WS_P009 }));
+    const row = out.find((r) => r.row.source_id === 'EI-NULLTS')!;
+    expect(row).toBeDefined();
+    expect(new Date(row.row.ts as string | Date).toISOString()).toBe(createdAt);
+  });
+
+  it('embedding carries it too — the legs must not disagree about the same row', async () => {
+    const emb = await embeddingOf('work_item')({ ...params(), qVec: QVEC });
+    const lex = await byName('work_item').lexical(params());
+    const e1 = emb.find((r) => r.row.source_id === 'EI-1')!;
+    const l1 = lex.find((r) => r.row.source_id === 'EI-1')!;
+    expect(e1.row.ts).toBeTruthy();
+    // Same row, same fusion key — a ts that differed by leg would make the blended
+    // score depend on which leg happened to win the RRF merge.
+    expect(new Date(e1.row.ts as string | Date).getTime()).toBe(
+      new Date(l1.row.ts as string | Date).getTime(),
+    );
   });
 });
 
