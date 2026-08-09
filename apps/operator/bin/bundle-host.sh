@@ -255,6 +255,24 @@ else
   echo "WARNING: cpu-task-worker script not found at $CPU_WORKER_SRC — large batches will JSON.stringify inline on the event loop"
 fi
 
+# THIRD instance of the WI-4196 class (WI-37555): @papercusp/rerank's
+# local-reranker-worker.ts resolves `local-reranker-worker.script.mjs` next to the
+# executing module, which inside the bundle is $OUTDIR. Without this copy the
+# worker spawn fails, the engine catches it and every rerank falls back to INLINE
+# main-thread ONNX — which silently re-opens EI-20005411672741677: the caller's
+# timeout bound stops being exact and degrades to bounded-by-one-batch (~720ms of
+# overrun), and the corpus leg has only 500ms of headroom, so it times out to
+# `empty('timed-out')` and the agent gets NO pointer section at all.
+# `worker-scripts-bundled.test.ts` now fails if a FOURTH worker script is added
+# without a copy here, so this class stops recurring by hand-memory.
+RERANK_WORKER_SRC="../../libs/generic/rerank/src/local-reranker-worker.script.mjs"
+if [[ -f "$RERANK_WORKER_SRC" ]]; then
+  cp "$RERANK_WORKER_SRC" "$OUTDIR/local-reranker-worker.script.mjs"
+  echo "    ✓ bundled @papercusp/rerank reranker-worker script beside the entry"
+else
+  echo "WARNING: reranker-worker script not found at $RERANK_WORKER_SRC — reranking will run inline (timeout bound degrades to one batch; WI-37555)"
+fi
+
 # Blocked-event-loop sentinel worker (EI-19465075959589134). Unlike the two above
 # this one is TypeScript and imports the shared decider, so a plain copy cannot work:
 # the bundled host runs `node dist-host/hono-host.mjs` with NO tsx loader, so a .ts
