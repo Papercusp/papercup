@@ -16,6 +16,21 @@
  * expected; it is the shared work, not a bug.
  */
 
+// ⚠ `harness_shared.work_items` DOES NOT HAVE `closed_at` / `updated_at`. Its
+// timestamps are BIGINT EPOCH-MS columns named `closed_ts` / `updated_ts` (and
+// its primary key is `feature_id`, not `id`) — unlike `goals`, `goal_projects`
+// and every other table this file touches, which all use real timestamptz
+// `*_at` columns. Writing the `*_at` form here is the natural mistake and it
+// throws at RUNTIME ONLY (`column wi.closed_at does not exist`): tsc cannot see
+// into a SQL string, and every test that mocks the sync layer stays green. Both
+// resolvers below shipped with exactly that bug and NOTHING caught it until the
+// query was first run against a real database — see the integration test beside
+// this file, which exists to make that impossible a second time.
+//
+// Convert on the way out (`to_timestamp(x / 1000.0)`) rather than passing the
+// bigint through: the row mappers hand these to `iso()`, which expects a Date
+// or an ISO string and would otherwise stringify the raw epoch number.
+//
 // NOTE: the `tx` handle inside `sql.begin` is deliberately left INFERRED below.
 // Annotating it `Sql` is wrong and does not merely lose precision — postgres.js
 // hands the callback a `TransactionSql`, which is not assignable to `Sql`, so
@@ -139,9 +154,9 @@ export async function resolveGoalsList(args: {
                WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
                  AND gp.removed_at IS NULL) AS project_count,
              (SELECT COUNT(*) FROM harness_shared.work_items wi
-               WHERE wi.goal_id = g.id AND wi.closed_at IS NULL) AS open_work_items,
+               WHERE wi.goal_id = g.id AND wi.closed_ts IS NULL) AS open_work_items,
              (SELECT COUNT(*) FROM harness_shared.work_items wi
-               WHERE wi.goal_id = g.id AND wi.closed_at IS NULL
+               WHERE wi.goal_id = g.id AND wi.closed_ts IS NULL
                  AND COALESCE((wi.payload->>'needsHuman')::boolean, false)) AS needs_human,
              (SELECT COALESCE(SUM(s.cost_usd), 0)
                 FROM harness_shared.agent_usage_samples s
@@ -232,7 +247,7 @@ export async function resolveGoalDetail(args: {
              (SELECT COUNT(*) FROM harness_shared.work_items wi
                WHERE wi.harness_slug = gp.harness_slug
                  AND wi.goal_id = gp.goal_id
-                 AND wi.closed_at IS NULL) AS open_work_items
+                 AND wi.closed_ts IS NULL) AS open_work_items
         FROM harness_shared.goal_projects gp
        WHERE gp.workspace_id = ${workspaceId} AND gp.goal_id = ${goalId}
        ORDER BY (gp.removed_at IS NULL) DESC, (gp.role = 'owner') DESC, gp.added_at ASC
@@ -242,21 +257,23 @@ export async function resolveGoalDetail(args: {
     // thing the detail view shows after the kill criterion, because it is the
     // only section the owner can ACT on.
     const waiting = (await tx`
-      SELECT wi.feature_id AS id, wi.title, wi.harness_slug, wi.updated_at
+      SELECT wi.feature_id AS id, wi.title, wi.harness_slug,
+             to_timestamp(wi.updated_ts / 1000.0) AS updated_at
         FROM harness_shared.work_items wi
        WHERE wi.goal_id = ${goalId}
-         AND wi.closed_at IS NULL
+         AND wi.closed_ts IS NULL
          AND COALESCE((wi.payload->>'needsHuman')::boolean, false)
-       ORDER BY wi.updated_at DESC NULLS LAST
+       ORDER BY wi.updated_ts DESC NULLS LAST
        LIMIT 25
     `) as unknown as Array<Record<string, unknown>>;
 
     const activity = (await tx`
       SELECT wi.feature_id AS id, wi.title, wi.harness_slug, wi.status,
-             wi.closed_at, wi.updated_at
+             to_timestamp(wi.closed_ts / 1000.0) AS closed_at,
+             to_timestamp(wi.updated_ts / 1000.0) AS updated_at
         FROM harness_shared.work_items wi
        WHERE wi.goal_id = ${goalId}
-       ORDER BY wi.updated_at DESC NULLS LAST
+       ORDER BY wi.updated_ts DESC NULLS LAST
        LIMIT ${activityLimit}
     `) as unknown as Array<Record<string, unknown>>;
 

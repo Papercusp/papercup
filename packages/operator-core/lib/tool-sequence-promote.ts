@@ -87,6 +87,12 @@ export interface PromoteToolSequencesResult {
   coalesced: string[];
   /** Mined but still accruing evidence. */
   heldForEvidence: number;
+  /**
+   * The read hit its row ceiling, so this sweep judged a SHORTER span than asked
+   * for. Reported rather than swallowed: it degrades results silently (weaker
+   * marginals, fewer graduates) and looks exactly like a quiet week.
+   */
+  truncated: boolean;
   dryRun: boolean;
   disabled: boolean;
 }
@@ -146,7 +152,7 @@ export async function promoteToolSequences(
 ): Promise<PromoteToolSequencesResult> {
   const log = deps.log ?? (() => {});
   if (process.env[SEQUENCE_PROMOTION_KILL_ENV] === 'off') {
-    return { graduated: [], filed: [], coalesced: [], heldForEvidence: 0, dryRun: false, disabled: true };
+    return { graduated: [], filed: [], coalesced: [], heldForEvidence: 0, truncated: false, dryRun: false, disabled: true };
   }
 
   const mined = await graduateToolSequences(sql, opts);
@@ -189,6 +195,7 @@ export async function promoteToolSequences(
     filed,
     coalesced,
     heldForEvidence: mined.stats.heldForEvidence,
+    truncated: mined.stats.truncated,
     dryRun: !!opts.dryRun,
     disabled: false,
   };

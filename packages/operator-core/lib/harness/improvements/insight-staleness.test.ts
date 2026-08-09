@@ -62,7 +62,7 @@ describe('extractCitedPaths — conservative repo-file extraction', () => {
   });
 });
 
-describe('extractCitedPaths — removal marker is PARAGRAPH-scoped (EI-18680208809300804)', () => {
+describe('extractCitedPaths — removal marker is SENTENCE-scoped (EI-18680208809300804)', () => {
   // Verbatim shape from plans-egress-is-poll-frequency-not-payload: the path ends
   // a line and its "(deleted …)" acknowledgement wraps onto the next one. A
   // line-scoped test cannot see the marker, so the insight was flagged stale for
@@ -88,6 +88,21 @@ describe('extractCitedPaths — removal marker is PARAGRAPH-scoped (EI-186802088
     expect(extractCitedPaths(noMarker)).toContain(
       'libs/generic/sync/src/transports/polling/batch-fetcher.ts',
     );
+  });
+
+  it('a marker in a PRECEDING sentence, same paragraph, does not suppress (why not paragraph scope)', () => {
+    // The case that rules out simply widening to the paragraph: one paragraph,
+    // two sentences, and the marker is about some other file.
+    expect(
+      extractCitedPaths('An old file was removed.\nSee `packages/x/live.ts`.'),
+    ).toEqual(['packages/x/live.ts']);
+  });
+
+  it("a filename containing a marker word does not suppress itself", () => {
+    // Backticked spans are masked before the marker test, so `removed.ts` is inert.
+    expect(extractCitedPaths('See `packages/x/removed.ts` for the impl.')).toEqual([
+      'packages/x/removed.ts',
+    ]);
   });
 
   it('does NOT reach across a blank line into a different paragraph', () => {

@@ -84,6 +84,20 @@ import {
  */
 export const DEFAULT_DISPATCHER_TOOLS = ['tools:invoke'] as const;
 
+/**
+ * Rows read per call before truncation.
+ *
+ * Sized against the real corpus rather than guessed: one fleet-week of
+ * agent-initiated calls measured 528,878 rows on 2026-08-09, so the previous
+ * 200,000 read barely half the default span. Truncation is now harmless to the
+ * streak (the newest rows are kept — see readAgentInvocations), but a span that
+ * silently arrives half-length still weakens the lift marginals, so the default
+ * covers a normal week with headroom and callers report `stats.truncated` rather
+ * than discovering the ceiling by getting quietly worse results.
+ */
+export const DEFAULT_MAX_ROWS = 750_000;
+export const MAX_ROWS_CEILING = 1_500_000;
+
 export interface ToolSequenceOpts {
   /** Workspace to mine (required — the table is multi-tenant). */
   workspaceId: string;
@@ -305,7 +319,7 @@ export async function mineToolSequences(
   opts: ToolSequenceOpts,
 ): Promise<ToolSequenceResult> {
   const hours = Math.max(1, Math.min(720, opts.hours ?? 168));
-  const maxRows = Math.max(1000, Math.min(1_000_000, opts.maxRows ?? 200_000));
+  const maxRows = Math.max(1000, Math.min(MAX_ROWS_CEILING, opts.maxRows ?? DEFAULT_MAX_ROWS));
   const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
   const rows = await readAgentInvocations(sql, opts, sinceIso, maxRows);
@@ -391,7 +405,7 @@ export async function graduateToolSequences(
   const windows = Math.max(1, Math.min(30, opts.windows ?? 7));
   const windowHours = Math.max(1, Math.min(168, opts.windowHours ?? 24));
   const minStreak = Math.max(1, opts.minStreak ?? 3);
-  const maxRows = Math.max(1000, Math.min(1_000_000, opts.maxRows ?? 200_000));
+  const maxRows = Math.max(1000, Math.min(MAX_ROWS_CEILING, opts.maxRows ?? DEFAULT_MAX_ROWS));
 
   const nowMs = Date.now();
   const spanMs = windows * windowHours * 3600 * 1000;

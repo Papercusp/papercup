@@ -32,6 +32,7 @@ import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings'
 import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
 import { deriveCouplings } from '../../../coord/coupling-derivation';
 import { couplingSourcesFor } from '../coupling-sources';
+import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle';
 
 export default defineTool({
   name: 'coord:presence',
@@ -376,7 +377,7 @@ export default defineTool({
       {
         planSlug: (selfRow?.currentPlanSlug as string | undefined) ?? null,
         items: (selfRow?.claimedItems as string[] | undefined) ?? null,
-        harness: args.harness ?? null,
+        harness: c.harnessSlug ?? null,
       },
       active as unknown as DispatchCandidate[],
       { selfOwnerId: self?.ownerId ?? null },

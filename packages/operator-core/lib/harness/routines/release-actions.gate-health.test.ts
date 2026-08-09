@@ -66,7 +66,26 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: fakeSql }),
 }));
 
-import { trackGateStall, measureCandidateStaleness, type GitCheckRunner } from './release-actions';
+// P-005: the alert edge dynamically imports these two. Neither is mocked by default
+// here (the pre-existing tests deliberately keep the streak BELOW the alert threshold
+// so only the SELECT + the final gate_health UPDATE run) — the red-streak tests below
+// cross it on purpose, so stub both or a unit test reaches the real SSE/notify path.
+const notifyAttention = vi.fn(async (..._a: unknown[]) => {});
+vi.mock('../../attention-notify', () => ({
+  notifyAttention: (...a: unknown[]) => notifyAttention(...a),
+}));
+
+const broadcastSevereEvent = vi.fn(async (_ev: Record<string, unknown>) => true);
+const broadcastSevereEventResolved = vi.fn(async (_r: Record<string, unknown>) => true);
+vi.mock('../../severe-event-broadcast', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../severe-event-broadcast')>()),
+  broadcastSevereEvent: (ev: Record<string, unknown>) => broadcastSevereEvent(ev),
+  broadcastSevereEventResolved: (r: Record<string, unknown>) => broadcastSevereEventResolved(r),
+}));
+
+import { trackGateStall, measureCandidateStaleness, gateRedStreakBroadcast, type GitCheckRunner } from './release-actions';
+import { gateRedStreakConditionKey } from '../../coord/gate-ownership';
+import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import type { SystemActionCtx } from './system-actions';
 
 const ctx = { installSlug: 'test-slug', workspaceId: 'test-ws' } as unknown as SystemActionCtx;
@@ -88,6 +107,158 @@ function lastGateHealthWrite(): Record<string, unknown> | null {
 beforeEach(() => {
   calls.length = 0;
   seededGh = null;
+  notifyAttention.mockClear();
+  broadcastSevereEvent.mockClear();
+  broadcastSevereEventResolved.mockClear();
+});
+
+/**
+ * P-005 (gate-ownership-followup-2026-08-08): a RED gate must open exactly one
+ * condition, so the bridge mints exactly one ownable work-item — and must CLOSE it
+ * on green, so the bridge settles that item instead of leaking one per episode.
+ *
+ * These test the WIRING, which is the part that can actually be wrong. The pure
+ * composer is covered separately below; a composer test alone would pass just as
+ * happily if neither edge were wired at all — which was the pre-P-005 state
+ * (`green-checkpoint:red` existed only as an event key, never as a conditionKey, so
+ * a plain red gate had no ownable item and a 6-red streak held `main` ~4h unowned).
+ */
+describe('P-005: trackGateStall opens/closes the gate-red-streak CONDITION', () => {
+  /** `lastGateHealthWrite()` with the null-check folded in — every test here writes one. */
+  const written = (): Record<string, unknown> => {
+    const w = lastGateHealthWrite();
+    expect(w).not.toBeNull();
+    return w!;
+  };
+  const KEY = gateRedStreakConditionKey('test-slug');
+  /** Read the threshold from config rather than hardcoding 3 — a runtime re-tune
+   *  (release:checkpoint-config, P-016) must not silently invert these tests. */
+  const stallReds = releaseCheckpointConfig().stallReds;
+
+  it('⭐ opens the condition on the red tick that reaches the streak threshold', async () => {
+    // One red short of the threshold, and a RECENT green so the age leg cannot be
+    // what fires (isolating the count trigger).
+    seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'error');
+
+    expect(broadcastSevereEvent).toHaveBeenCalledTimes(1);
+    const ev = broadcastSevereEvent.mock.calls[0]![0]!;
+    expect(ev.conditionKey).toBe(KEY);
+    // WI-6228: without oneShot the condition-staleness sweep reads this emitter's
+    // deliberate silence as recovery and auto-resolves on a timer — closing the
+    // owning work-item while the gate is still red.
+    expect(ev.oneShot).toBe(true);
+    expect(written().consecutiveReds).toBe(stallReds);
+  });
+
+  it('does NOT open below the threshold — a single self-healing red mints nothing', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'error');
+
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+    expect(written().consecutiveReds).toBe(1);
+  });
+
+  it('⭐ opens ONCE per episode — a deeper red does not re-broadcast', async () => {
+    // The one-shot property is what makes the condition a SINGLETON: the bridge keys
+    // on the conditionKey, but a re-alarm every hourly red tick would re-open a
+    // condition the responder is already working and re-spam the whole fleet.
+    seededGh = { consecutiveReds: stallReds + 2, stallAlerted: true, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'error');
+
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+  });
+
+  it('⭐ closes the condition on the GREEN tick that ends a streak', async () => {
+    seededGh = { consecutiveReds: stallReds + 2, stallAlerted: true, lastGreenAt: Date.now() - 60_000 };
+
+    await trackGateStall(ctx, 'advanced');
+
+    expect(broadcastSevereEventResolved).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEventResolved.mock.calls[0]![0]!.conditionKey).toBe(KEY);
+    expect(written().consecutiveReds).toBe(0);
+  });
+
+  it('⭐ reads the PRE-reset stallAlerted, not the value this green tick writes', async () => {
+    // The trap this guards: the green branch sets `next.stallAlerted = false` a few
+    // lines ABOVE the resolve. Testing the post-reset value instead of the seeded
+    // `gh.stallAlerted` makes the resolve unreachable dead code — the condition then
+    // never closes, the bridge never settles, and the gate accumulates one
+    // permanently-open incident item per episode (D-011's leak). The assertion that
+    // catches it is simply that a green tick after an ALERTED streak DOES resolve,
+    // which the test above asserts; this one pins the reason by showing the written
+    // flag is false at the same time.
+    seededGh = { consecutiveReds: stallReds, stallAlerted: true, lastGreenAt: Date.now() - 60_000 };
+
+    await trackGateStall(ctx, 'advanced');
+
+    expect(written().stallAlerted).toBe(false);
+    expect(broadcastSevereEventResolved).toHaveBeenCalledTimes(1);
+  });
+
+  it('a routinely-GREEN tick resolves nothing — no all-clear for an alarm never raised', async () => {
+    // Without the `gh.stallAlerted` guard this fires a fleet-wide resolution every
+    // green hour, for a condition that was never open.
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'advanced');
+
+    expect(broadcastSevereEventResolved).not.toHaveBeenCalled();
+  });
+
+  it('a broadcast failure never breaks the gate_health write', async () => {
+    // Fail-safe like every sibling best-effort step here: losing the condition costs
+    // one un-owned red, losing the metadata write corrupts the streak state itself.
+    broadcastSevereEvent.mockRejectedValueOnce(new Error('coord down'));
+    seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await expect(trackGateStall(ctx, 'error')).resolves.not.toThrow();
+    expect(written().consecutiveReds).toBe(stallReds);
+  });
+});
+
+describe('P-005: gateRedStreakBroadcast (pure)', () => {
+  it('names the streak, the failing tests, and the SIBLING condition', () => {
+    const { summary, body } = gateRedStreakBroadcast({
+      installSlug: 'papercusp',
+      consecutiveReds: 4,
+      heldHrs: 5,
+      candidate: 'deadbeefcafe1234',
+      failingTests: ['a.test.ts', 'b.test.ts'],
+    });
+    expect(summary).toContain('4 consecutive red');
+    expect(summary).toContain('papercusp');
+    expect(body).toContain('a.test.ts');
+    // Naming green-stall: is the whole mitigation for the accepted double-ownership
+    // overlap — a claimant learns it from the alert instead of re-deriving it.
+    expect(body).toContain('green-stall:papercusp');
+  });
+
+  it('warns AT TIP when the judged candidate trails staging', () => {
+    // On this tree the fix is very often already committed, so a red whose candidate
+    // is behind tip is the single most common wasted chase.
+    const { body } = gateRedStreakBroadcast({
+      installSlug: 'papercusp',
+      consecutiveReds: 3,
+      heldHrs: null,
+      commitsBehindTip: 12,
+    });
+    expect(body).toContain('12 commit(s) behind staging');
+    expect(body).toContain('AT TIP');
+  });
+
+  it('omits the behind-tip note when the candidate IS tip', () => {
+    const { body } = gateRedStreakBroadcast({
+      installSlug: 'papercusp',
+      consecutiveReds: 3,
+      heldHrs: null,
+      commitsBehindTip: 0,
+    });
+    expect(body).not.toContain('behind staging');
+  });
 });
 
 describe('trackGateStall gate_health cross-writer preservation (EI-7472)', () => {

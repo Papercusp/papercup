@@ -765,6 +765,18 @@ export interface RubricStaleness {
   stale: boolean;
   /** The criteria flagged stale + why (empty when not stale). */
   staleCriteria: CriterionStaleness[];
+  /**
+   * How many criteria had enough non-idle evidence to actually be JUDGED. Zero means
+   * `stale:false` is "we could not look", NOT "we looked and it was clean" — read this
+   * before treating a false as a clean bill of health.
+   */
+  judgedCriteria: number;
+  /**
+   * false when NO criterion could be judged (a rubric that has never been graded, or
+   * whose every criterion is below `minSamples`). Distinguishes the two opposite
+   * realities that otherwise both render as `stale:false`.
+   */
+  assessed: boolean;
   /** Human-readable rubric-level summary. */
   reason: string;
 }
@@ -803,6 +815,7 @@ export function computeRubricStaleness(
   );
 
   const staleCriteria: CriterionStaleness[] = [];
+  let judgedCriteria = 0;
   for (const c of criteria) {
     // Idle-tagged unknowns are "the stage did not run" — no signal either way
     // (EI-7624). Exclude them from BOTH sides of the fraction, so a mostly-idle
@@ -811,6 +824,7 @@ export function computeRubricStaleness(
     const idle = staleRatings.has('unknown') ? (c.idleCount ?? 0) : 0;
     const samples = c.count - idle;
     if (samples < minSamples) continue; // too little non-idle evidence → not "stale", just quiet
+    judgedCriteria += 1;
     const rawStale = Object.entries(c.distribution).reduce(
       (n, [rating, k]) => (staleRatings.has(rating.toLowerCase()) ? n + k : n),
       0,

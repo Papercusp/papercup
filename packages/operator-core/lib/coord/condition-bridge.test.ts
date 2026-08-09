@@ -14,6 +14,7 @@ import {
   ACTIONABLE_CONDITION_PREFIXES,
   ACTIONABLE_CONDITIONS,
 } from './condition-bridge';
+import { gateRedStreakConditionKey, gateStallConditionKey } from './gate-ownership';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 describe('isActionableConditionKey', () => {

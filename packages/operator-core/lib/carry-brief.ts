@@ -41,6 +41,7 @@ import { harnessOfScope } from './work-item-scope';
 import { renderOwnerDirectivesBlock, type OwnerDirectiveRow } from './owner-directives';
 import type { QueryHandle } from './ambient-push';
 import { DEAD_END_KEY_PREFIX, type FactSourceProvenance } from './agent-facts/store';
+import { capPreservingOperative } from './operative-clause';
 import {
   checkCarriedFactsStaleness,
   renderFactsStalenessWarning,
@@ -798,13 +799,18 @@ export function renderCarryBriefColdExtras(
           sessionActivityMs != null &&
           h.checkpointUpdatedAtMs != null &&
           sessionActivityMs - h.checkpointUpdatedAtMs > HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS;
+        // EI-19952485326105760: checkpoints are written APPEND-STYLE, so the
+        // newest and most-binding content (e.g. a later owner directive that
+        // SUPERSEDES an earlier plan in the same body) is written last —
+        // exactly what a plain head-only `cap()` discards first. Use the
+        // operative/supersession-preserving excerpt instead of `cap()` here.
         ckpt = superseded
           ? `\n    checkpoint: ⚠ SUPERSEDED — written ${fmtClock(h.checkpointUpdatedAtMs!)}, session active until ` +
             `${fmtClock(sessionActivityMs!)} (more happened after this was written; it may be flat-out wrong — ` +
             `verify via sessions:search { session:'self', mode:'verbatim' } and the actual files/state before ` +
             `trusting it, never treat it as "nothing done" or "work undone" at face value): ` +
-            `${cap(h.checkpoint, COLD_CHECKPOINT_CAP)}`
-          : `\n    checkpoint: ${cap(h.checkpoint, COLD_CHECKPOINT_CAP)}`;
+            `${capPreservingOperative(h.checkpoint, COLD_CHECKPOINT_CAP)}`
+          : `\n    checkpoint: ${capPreservingOperative(h.checkpoint, COLD_CHECKPOINT_CAP)}`;
       }
       return `  • ${h.id}${title}${ckpt}`;
     });

@@ -687,6 +687,33 @@ export function buildCapacityReport(
           `traffic passing at all).`
         );
       }
+      // fleet-lead-instrumentation-audit-2026-08-09 P-007: a BLIND reading cannot support an
+      // owner escalation, by construction. `blindCaveat` below already prepends "do NOT treat an
+      // owner-escalation reading below as confirmed until you have RE-RUN accounts:probe-capacity"
+      // — but the clause it is warning about was still emitted, at full imperative confidence, in
+      // the same string ("escalate rather than waiting"). One advice string thus carried both
+      // "distrust this" and "escalate now", and the confident imperative is the one that gets
+      // acted on: measured live 2026-08-09T05:11Z on fleet nonp2p-bug-drain, this branch fired
+      // with blind:true / usableAccounts:0 / factor:0 while a live accounts:probe-capacity moments
+      // later found THREE OF FOUR accounts answering 200. Relaying it would have sent the owner
+      // after an egress path that was not broken — the second such false escalation in one session
+      // (the first is WI-36943, whose inFlight guard above covers a DIFFERENT axis: it disproves a
+      // dead proxy from live traffic, whereas this one refuses to make the claim at all when the
+      // underlying per-account measurements are stale/missing).
+      //
+      // Same discipline as the sharedEgress and inFlight branches above: `poolExhausted` stays
+      // real (HOLD placements is still correct); only the causal attribution and the escalation
+      // instruction are withheld, and the reader is sent to the one call that resolves it.
+      if (blind) {
+        return (
+          ` — ${edge}/${acct!.total} edge-throttled, which WOULD point at a broken egress path — but ` +
+          `${acct!.blindCount}/${acct!.total} account(s) currently have an UNRELIABLE reading, so this ` +
+          `count is not measured, it is inferred from stale/missing data. NOT an owner escalation: ` +
+          `re-run accounts:probe-capacity first and re-read this advice. A merely-stale reading is ` +
+          `indistinguishable from a real wall until you re-measure (2026-08-09: a blind read here ` +
+          `asserted an owner-gated egress fault while 3 of 4 accounts answered 200).`
+        );
+      }
       return (
         ` — DOMINANT CAUSE: ${edge}/${acct!.total} edge-throttled (a live per-IP/Cloudflare bare-429 ` +
         `cooldown, NOT account quota). This usually means the egress path itself is broken (a down/` +

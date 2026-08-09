@@ -9,6 +9,11 @@ import { listFacts, factVersions, FACT_SCOPES, type AgentFact } from '../../agen
 import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
 import { markStaleSourceFacts, type FactSourceStaleness } from './stale-source';
 import type { FactDependencyStaleness } from './dependency-staleness';
+import {
+  extractOperativeClauses,
+  OPERATIVE_CLAUSE_CHARS_DEFAULT,
+  OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT,
+} from '../../operative-clause';
 
 /** EI-10948: was 50 × (500-char body + a 160-char provenance quote) ≈ 56k chars. */
 export const FACTS_LIST_DEFAULT_LIMIT = 25;
@@ -23,19 +28,11 @@ export const FACTS_LIST_EXCERPT_NOTE =
  * for a real reason, and the fix must not quietly undo it. Only facts that actually carry an
  * imperative past the cut pay anything at all.
  */
-export const FACTS_LIST_OPERATIVE_CHARS = 220;
-export const FACTS_LIST_OPERATIVE_MAX_CLAUSES = 2;
+export const FACTS_LIST_OPERATIVE_CHARS = OPERATIVE_CLAUSE_CHARS_DEFAULT;
+export const FACTS_LIST_OPERATIVE_MAX_CLAUSES = OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT;
 
 /**
- * Words this corpus SHOUTS when a fact is telling you to do something. Case-sensitive on purpose:
- * authors upper-case these deliberately, and matching case-insensitively would drag in ordinary prose
- * ("we must have missed it") and spend the whole budget on narration.
- */
-const OPERATIVE_MARKERS = /\b(ALWAYS|NEVER|MUST|DO NOT|DON'T|REQUIRED|RULE:)/;
-
-/**
- * P-002: pull the imperative clauses out of a fact body — PURE and exported so the behaviour is
- * directly testable.
+ * P-002: pull the imperative clauses out of a fact body.
  *
  * The incident: two standing facts that would have prevented a wrong owner-facing diagnosis were
  * folded into an agent's second tool call of the session and BOTH were cut mid-instruction — one
@@ -44,34 +41,12 @@ const OPERATIVE_MARKERS = /\b(ALWAYS|NEVER|MUST|DO NOT|DON'T|REQUIRED|RULE:)/;
  * re-derive) and discarded its INSTRUCTION (which is the only part that changes behaviour). A
  * head-only slice optimises for identifying a fact; a reader needs to know what it tells them to do.
  *
- * Returns clauses that begin at the marker and run to the end of their sentence, skipping any already
- * visible in `head` (no point spending budget repeating what the reader can see), bounded by both a
- * clause count and a total char budget so a pathological body cannot blow the response.
+ * The implementation now lives in `../../operative-clause` (EI-19952485326105760) — shared with the
+ * carry-brief held-item checkpoint render, which hit the same head-only-slice defect for a
+ * SUPERSESSION rather than an imperative. Re-exported here so existing importers (this module's own
+ * `operative-clause-preservation.test.ts`) keep working unchanged.
  */
-export function extractOperativeClauses(body: string, head: string): string[] {
-  const out: string[] = [];
-  let spent = 0;
-  // Split on sentence ends AND newlines — these bodies are frequently bulleted, where a "sentence"
-  // never terminates in punctuation at all.
-  for (const rawSentence of body.split(/(?<=[.!?])\s+|\n+/)) {
-    if (out.length >= FACTS_LIST_OPERATIVE_MAX_CLAUSES || spent >= FACTS_LIST_OPERATIVE_CHARS) break;
-    const sentence = rawSentence.trim();
-    if (!sentence) continue;
-    const m = OPERATIVE_MARKERS.exec(sentence);
-    if (!m) continue;
-    // Start AT the imperative, not at the sentence start — the lead-in is usually the evidence the
-    // head already carried.
-    const clause = sentence.slice(m.index).trim();
-    // Already legible in the excerpt head ⇒ spend nothing on it.
-    if (head.includes(clause)) continue;
-    const room = FACTS_LIST_OPERATIVE_CHARS - spent;
-    const kept = clause.length > room ? `${clause.slice(0, Math.max(0, room - 1))}…` : clause;
-    if (!kept || kept === '…') break;
-    out.push(kept);
-    spent += kept.length;
-  }
-  return out;
-}
+export { extractOperativeClauses };
 
 /**
  * Project one fact for the list response: excerpt the body (and drop the bounded

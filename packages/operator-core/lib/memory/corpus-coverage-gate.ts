@@ -60,6 +60,22 @@
 import type { SearchLegs } from '@papercusp/search';
 import type { SearchCoverageReport, SourceCoverageAssessment } from '../search/coverage-gate';
 
+/**
+ * The sources the gate assesses — a PINNED COPY of `corpus-recall-io`'s
+ * `CORPUS_SOURCE_NAMES`, not an import of it.
+ *
+ * Importing the real one would be the obvious move and is wrong here: both
+ * injection suites mock `./corpus-recall-io` down to `recallCorpusContext`
+ * alone, so the imported constant would be `undefined` at test time and the
+ * gate would fall into its own catch — permanently unevaluated, while every
+ * test still passed. A fail-open path that can never be exercised is worse than
+ * no path at all, because nothing distinguishes it from a working one.
+ *
+ * `corpus-coverage-gate.test.ts` asserts this equals the real list, so drift
+ * fails a test rather than silently mis-scoping the verdict.
+ */
+export const CORPUS_GATE_SOURCES = ['session_turn', 'work_item'] as const;
+
 export type CorpusGateVerdict =
   /** Semantic ran and every semantic source is at or above the coverage floor. */
   | 'ok'

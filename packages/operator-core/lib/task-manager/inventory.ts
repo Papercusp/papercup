@@ -290,32 +290,56 @@ export function projectScheduleRows(
     detail?: Record<string, unknown>;
   }[],
 ): ScheduleTaskRow[] {
-  return rows.map((r) => ({
-    // `source:scope:name` — a name alone is NOT unique. The same sweep legitimately
-    // appears as a local `managed` row AND as a federated `external-process` row from a
-    // sibling that also runs it, so keying on name alone collides exactly where the
-    // inventory is most interesting. Duplicate React keys are a filed perf
-    // anti-pattern here, and a collision silently drops a row from the render.
-    key: `${r.source}:${r.scope}:${r.name}`,
-    name: r.name,
-    source: r.source,
-    tier: r.tier,
-    category: r.category,
-    scope: r.scope,
-    installSlug: r.installSlug ?? null,
-    cadence: r.cadence,
-    // `?? null` NOT `|| null`: `armed: false` is a real, load-bearing reading
-    // (disarmed), and `||` would flatten it into the same `null` the pane renders as
-    // "unknown" — turning a timer we KNOW is off into one we cannot see.
-    armed: r.armed ?? null,
-    lastFire: r.lastFire ?? null,
-    nextFire: r.nextFire ?? null,
-    lastError: r.lastError ?? null,
-    // Strict `=== true`, so a missing/odd `detail` can never read as federated. The
-    // whole point of the flag is that it licenses trusting armed/lastFire.
-    federated: r.detail?.federated === true,
-    process: typeof r.detail?.process === 'string' ? r.detail.process : null,
-  }));
+  // Guarantees a UNIQUE key per row, structurally — not by hoping the discriminator
+  // list below is complete.
+  //
+  // ⚠ MEASURED, not theorised: `source:scope:name` looked sufficient and passed its
+  // unit tests, then collided on 35 keys / 138 rows against the live inventory. The
+  // cause was the SAME timer reported by two sibling processes (`operator:3170` and
+  // `operator:3270`) — identical in every field the key used, differing only in
+  // `detail.process`. Duplicate React keys silently DROP rows, so the pane would have
+  // under-reported the recurring set while looking perfectly healthy: the exact
+  // can't-see-its-own-gap failure this plan exists to prevent.
+  //
+  // Adding `process` fixes today's population. The ordinal fallback is what keeps it
+  // fixed: any future source that repeats a row along an axis nobody thought to encode
+  // gets a distinct key instead of vanishing. Uniqueness is bound to the PROPERTY (one
+  // key per row) rather than to a guess about which fields happen to discriminate.
+  const seen = new Map<string, number>();
+  return rows.map((r) => {
+    const natural = [
+      r.source,
+      r.scope,
+      r.installSlug ?? '',
+      r.category,
+      typeof r.detail?.process === 'string' ? r.detail.process : '',
+      r.name,
+    ].join(':');
+    const n = seen.get(natural) ?? 0;
+    seen.set(natural, n + 1);
+    return {
+      key: n === 0 ? natural : `${natural}#${n}`,
+      name: r.name,
+      source: r.source,
+      tier: r.tier,
+      category: r.category,
+      scope: r.scope,
+      installSlug: r.installSlug ?? null,
+      cadence: r.cadence,
+      // `?? null` NOT `|| null`: `armed: false` is a real, load-bearing reading
+      // (disarmed), and `||` would flatten it into the same `null` the pane renders as
+      // "unknown" — turning a timer we KNOW is off into one we cannot see. Measured on
+      // the live inventory: 204 of 438 rows are legitimately `false`.
+      armed: r.armed ?? null,
+      lastFire: r.lastFire ?? null,
+      nextFire: r.nextFire ?? null,
+      lastError: r.lastError ?? null,
+      // Strict `=== true`, so a missing/odd `detail` can never read as federated. The
+      // whole point of the flag is that it licenses trusting armed/lastFire.
+      federated: r.detail?.federated === true,
+      process: typeof r.detail?.process === 'string' ? r.detail.process : null,
+    };
+  });
 }
 
 async function runScheduleScan(): Promise<ScheduleScanResult> {

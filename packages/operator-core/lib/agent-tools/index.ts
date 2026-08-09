@@ -663,6 +663,9 @@ import './coordination/tools/inbox';
 // Live open/resolved severe-condition state (WI-1444 lifecycle reader, EI-6138)
 import './coordination/tools/conditions';
 import './coordination/tools/ack';
+// Visually mark a peer's owned terminal window so a human can find/focus it —
+// the answer to GNOME-Wayland's wmctrl/xdotool blindness (EI-19948333346987654).
+import './coordination/tools/mark-terminal';
 // DECLARED coupling (unified-agent-state-plane P-031 / D-061): coupling was
 // derived-only, so an agent that already knew it was working alongside a peer had
 // to wait for a derivation to notice. Unrestricted and third-party-capable by

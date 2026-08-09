@@ -94,18 +94,27 @@ export function extractCitedPaths(raw: string): string[] {
     if (!REPO_PATH_RE.test(token)) continue;
     // Class 1 (EI-510): a path the insight ACKNOWLEDGES as removed/moved is a
     // historical reference, not a live dependency. Detect a removal/move marker in
-    // the path's enclosing PARAGRAPH — blank-line delimited, because a wrapped
-    // sentence puts the marker on the next line (see REMOVAL_MARKER_RE). PROSE
-    // only: strip backticked spans first, so a filename that itself contains a
-    // marker word like `removed.ts` isn't self-skipped.
+    // the path's enclosing SENTENCE — a wrapped sentence puts the marker on the
+    // next line, while a sentence boundary is what actually separates a marker
+    // about a DIFFERENT file (see REMOVAL_MARKER_RE).
     const idx = m.index ?? 0;
-    const paraStart = raw.lastIndexOf('\n\n', idx);
-    const paraEndRaw = raw.indexOf('\n\n', idx);
-    const paragraph = raw.slice(
-      paraStart === -1 ? 0 : paraStart + 2,
-      paraEndRaw === -1 ? raw.length : paraEndRaw,
-    );
-    const prose = paragraph.replace(/`[^`]*`/g, ' ');
+    // Never look past a blank line: a paragraph break ends a sentence even without
+    // punctuation (a bullet list, a heading).
+    const blockStart = masked.lastIndexOf('\n\n', idx);
+    const blockEndRaw = masked.indexOf('\n\n', idx);
+    const lo = blockStart === -1 ? 0 : blockStart + 2;
+    const hi = blockEndRaw === -1 ? masked.length : blockEndRaw;
+    let sentStart = lo;
+    let sentEnd = hi;
+    SENTENCE_BREAK_RE.lastIndex = lo;
+    for (let b = SENTENCE_BREAK_RE.exec(masked); b && b.index < hi; b = SENTENCE_BREAK_RE.exec(masked)) {
+      if (b.index < idx) sentStart = b.index + 1;
+      else {
+        sentEnd = b.index + 1;
+        break;
+      }
+    }
+    const prose = masked.slice(sentStart, sentEnd);
     if (REMOVAL_MARKER_RE.test(prose)) acknowledgedRemoved.add(token);
     else clean.add(token);
   }
