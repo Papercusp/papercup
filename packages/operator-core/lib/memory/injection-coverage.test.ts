@@ -71,37 +71,64 @@ describe('injection source list stays pinned to the real corpus leg', () => {
 });
 
 describe('healthy pass', () => {
-  it('raises no breach and reports the single-source reach as standing context', () => {
+  it('raises no breach and reports BOTH corpus sources as semantic', () => {
     const r = assessInjectionReach(HEALTHY, []);
     expect(r.breaches).toEqual([]);
     expect(r.degraded).toBe(false);
-    expect(r.semanticSourceCount).toBe(1);
-    expect(r.warning).toContain('single source');
+    expect(r.semanticSourceCount).toBe(2);
+    // The single-point-of-failure note is for the ONE-source case, which this no
+    // longer is — see the two-sources-now block below for why that changed.
+    expect(r.warning).toBeNull();
   });
 
-  it('classifies work_item as not-semantic, not as healthy', () => {
+  it('classifies work_item as healthy — it has an embedding leg since P-005', () => {
     const r = assessInjectionReach(HEALTHY, []);
     const wi = r.perSource.find((s) => s.source === 'work_item');
-    // 'healthy' would assert its embedding coverage was checked and passed. It is not
-    // consulted at all — the distinction is the finding, not a nicety.
-    expect(wi?.verdict).toBe('not-semantic');
-    expect(wi?.coverage).toBeNull();
+    expect(wi?.verdict).toBe('healthy');
+    expect(wi?.coverage).not.toBeNull();
   });
 });
 
-describe('CONTROL: work_items.embedding is not injection coverage', () => {
-  it('a total-coverage breach on work_items.embedding raises NO injection breach', () => {
-    // That surface is real, measured, and feeds the work-item dupe guard — not this
-    // search source. Attributing it to injection is the exact misreading this module
-    // exists to prevent, so it gets a failing control rather than a comment.
+/**
+ * THIS BLOCK IS AN INVERSION, AND THE INVERSION IS THE POINT.
+ *
+ * It used to read `CONTROL: work_items.embedding is not injection coverage`, and
+ * asserted that a breach there raised NOTHING here — because `work_item` exposed no
+ * `embedding()` and that surface fed only the work-item dupe guard. D-078 recorded
+ * that as the load-bearing fact.
+ *
+ * P-005 wired the leg (migration 776 exposes `embedding` on the `engineer_issues`
+ * view the source reads), so the surface IS injection coverage now and a breach on it
+ * MUST reach these breaches. Two things are worth carrying from how that landed:
+ *
+ *   • The old controls did not quietly keep passing — they failed loudly the moment
+ *     the registry entry changed, which is exactly what a control is for. Had they
+ *     been written as comments, the alarm would have gone on silently ignoring a
+ *     surface it now depends on.
+ *   • Nothing in `injection-coverage.ts` had to change for the behaviour to follow.
+ *     It reads `SEARCH_SOURCE_SURFACES`, so widening the registry widened the alarm.
+ */
+describe('work_items.embedding IS injection coverage since P-005', () => {
+  it('a total-coverage breach on work_items.embedding NOW raises an injection breach', () => {
     const r = assessInjectionReach(HEALTHY, [breach(WORK_ITEM_VEC, 'total-coverage')]);
-    expect(r.breaches).toEqual([]);
-    expect(r.degraded).toBe(false);
+    expect(r.breaches.map((b) => b.source)).toContain('work_item');
+    expect(r.degraded).toBe(true);
   });
 
-  it('a recurrence breach on work_items.embedding raises NO injection breach', () => {
+  it('a recurrence breach on work_items.embedding NOW raises an injection breach', () => {
     const r = assessInjectionReach(HEALTHY, [breach(WORK_ITEM_VEC, 'recent-coverage')]);
+    expect(r.breaches.map((b) => b.source)).toContain('work_item');
+  });
+
+  it('CONTROL — a breach on a surface injection does NOT read still raises nothing', () => {
+    // The inversion above must not be mistaken for "every breach reaches injection".
+    // Attributing an unrelated surface here is the original misreading with a new
+    // face, so it keeps a failing control of its own.
+    const r = assessInjectionReach(HEALTHY, [
+      breach('harness_shared.harness_plans.embedding', 'total-coverage'),
+    ]);
     expect(r.breaches).toEqual([]);
+    expect(r.degraded).toBe(false);
   });
 });
 

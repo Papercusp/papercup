@@ -271,6 +271,10 @@ logs are from the green run `m1785117063`.
    indefinitely — the churn the owner stopped. Re-arming before (iii) reproduces the complaint.
    ⚠ Re-arming also reverses an explicit owner instruction (wall
    `wall:live-federation-gate-timer-owner-stopped`) — it is owner-gated, not an agent call.
+   Recorded as a plan Decision so it is addressable rather than prose:
+   **`p2p-public-release-remaining-lanes-2026-07-16#D-026`** — read that body, not this summary,
+   before acting on the timer. (The pause itself was never recorded anywhere addressable; that
+   omission, not a concealed red, is the §5 process gap this closes.)
 
 1. **~~LIVE-2 acceptance drill (row 22, P-205)~~ → RE-SCOPED 2026-08-01 to a named bug:
    `WI-6680` (the packaged host never ticks the executor).** The drill HAS now been executed
