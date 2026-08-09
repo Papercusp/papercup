@@ -20,6 +20,13 @@ type NotifyFn = NonNullable<StalledLoopsSweepDeps['notify']>;
 // which against a bare `vi.fn(async () => ...)` is a zero-arg call tuple — TS2493/TS2339 at
 // lint:tsc, and completely invisible to a green vitest run.
 type ArmWakeFn = NonNullable<StalledLoopsSweepDeps['armWake']>;
+// Same reason once more (EI-19966210024116714). Two of these bind for the SAME lint:tsc-only
+// reason the four above do: the unaddressable-harness assertions read the disarm REASON itself
+// (`autoPause.mock.calls[0][2]`) — the whole point of that fix is the reason string, so asserting
+// on it is not optional — and they read `resolveOwnerWorkspaces.mock.calls[0][0]` to prove the
+// resolve is batched once per sweep rather than once per owner.
+type AutoPauseFn = NonNullable<StalledLoopsSweepDeps['autoPause']>;
+type ResolveOwnerWorkspacesFn = NonNullable<StalledLoopsSweepDeps['resolveOwnerWorkspaces']>;
 
 /** Minimal fake `harness_shared.routines` SELECT — the sweep's only direct SQL read. */
 function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
@@ -120,6 +127,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       disarmedWhileReachable: [],
       repairedWakeStarved: [],
       vetoedByWithheldFire: [],
+      disarmedUnaddressableHarness: [],
       dryRun: false,
     });
     expect(getStatuses).not.toHaveBeenCalled();
@@ -1379,5 +1387,314 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
       expect(armWake).toHaveBeenCalledTimes(1);
       expect(rearm).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('sweepStalledLoops — UNADDRESSABLE HARNESS: naming WHY the disarm happened (EI-19966210024116714)', () => {
+  // A loop can be armed against a harness its OWN session scope cannot address: the routine sits
+  // on workspace X while the owner's session_briefs row resolves to workspace Y, so every
+  // harness-scoped call that session makes returns `harness_forbidden`. Its fires land, it cannot
+  // reach the work it was woken for, no turn follows, and this sweep reaps it.
+  //
+  // The disarm is CORRECT and this branch does not change it. What it changes is the RECORD: the
+  // generic "turns-stalled: N fire(s), last turn never" reason states the symptom and loses the
+  // cause, and the remedy every other surface prints — "re-arm with loop:arm" — silently
+  // re-creates the identical hole, because re-arming does not touch the session's scope.
+  //
+  // So the assertions here are deliberately about the REASON STRING and the two notices, not about
+  // the disposition: a change that started re-arming or vetoing these would fail the disarm
+  // assertions, and a change that dropped the explanation would fail the string ones.
+  const COMATOSE = {
+    lastFiredAt: '2026-08-03T03:25:00.000Z',
+    lastTurnAt: '2026-08-03T01:00:00.000Z',
+  };
+
+  // The fail-open paths warn deliberately (an operator-log finding). Silence it here.
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  /** The strand: the owner's own session resolves to a DIFFERENT workspace than its routine. */
+  const stranded = (owner: string, ownerWs = 'default') =>
+    vi.fn<ResolveOwnerWorkspacesFn>(async () => new Map([[owner, ownerWs]]));
+
+  it('THE CASE: names the unaddressable harness in the disarm reason, with both workspaces', async () => {
+    const sql = fakeSql([{ id: 'rt_strand', target_owner_id: 'su-strand' }]);
+    const getStatuses = vi.fn(
+      async () => new Map([['su-strand', status({ ownerId: 'su-strand', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        notify,
+        probeReachability: reach(false),
+        resolveOwnerWorkspaces: stranded('su-strand'),
+      },
+    );
+
+    // Still DISARMED — this branch explains, it does not exempt.
+    expect(res.paused).toBe(1);
+    expect(res.disarmedUnaddressableHarness).toEqual(['su-strand']);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+
+    const reason = autoPause.mock.calls[0][2];
+    expect(reason).toContain('WI-6639'); // the existing prefix survives
+    expect(reason).toContain('UNADDRESSABLE HARNESS');
+    expect(reason).toContain("'ws'"); // the routine's workspace
+    expect(reason).toContain("'default'"); // the session's actual scope
+    expect(reason).toContain('harness_forbidden');
+    // The distinct remedy — the whole reason this population is separated out.
+    expect(reason).toContain('Re-arming alone will NOT fix this');
+    expect(reason).toContain('EI-19966210024116714');
+  });
+
+  it('CONTROL — a MATCHING workspace is disarmed with the ordinary reason and never accused', async () => {
+    // Byte-identical to the case above but for the resolved workspace, so a change that starts
+    // accusing every disarm fails here while still passing the test above.
+    const sql = fakeSql([{ id: 'rt_ok', target_owner_id: 'su-ok' }]);
+    const getStatuses = vi.fn(
+      async () => new Map([['su-ok', status({ ownerId: 'su-ok', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        probeReachability: reach(false),
+        resolveOwnerWorkspaces: stranded('su-ok', 'ws'),
+      },
+    );
+
+    expect(res.paused).toBe(1);
+    expect(res.disarmedUnaddressableHarness).toEqual([]);
+    expect(autoPause.mock.calls[0][2]).toContain('turns-stalled');
+    expect(autoPause.mock.calls[0][2]).not.toContain('UNADDRESSABLE');
+  });
+
+  it('FAILS OPEN — an owner whose scope is UNKNOWN is disarmed but never accused', async () => {
+    // Absent from the map is UNKNOWN, never "mismatched". A wrong accusation lands in a permanent
+    // record, so only a CONFIRMED different workspace qualifies.
+    const sql = fakeSql([{ id: 'rt_unknown', target_owner_id: 'su-unknown' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([['su-unknown', status({ ownerId: 'su-unknown', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        probeReachability: reach(false),
+        resolveOwnerWorkspaces: vi.fn<ResolveOwnerWorkspacesFn>(async () => new Map()),
+      },
+    );
+
+    expect(res.paused).toBe(1);
+    expect(res.disarmedUnaddressableHarness).toEqual([]);
+    expect(autoPause.mock.calls[0][2]).not.toContain('UNADDRESSABLE');
+  });
+
+  it('a THROWING resolver costs the explanation and NOTHING else — the sweep still disarms + broadcasts', async () => {
+    const sql = fakeSql([{ id: 'rt_x', target_owner_id: 'su-x' }]);
+    const getStatuses = vi.fn(
+      async () => new Map([['su-x', status({ ownerId: 'su-x', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        probeReachability: reach(false),
+        resolveOwnerWorkspaces: vi.fn<ResolveOwnerWorkspacesFn>(async () => {
+          throw new Error('session_briefs unavailable');
+        }),
+      },
+    );
+
+    expect(res.paused).toBe(1);
+    expect(res.disarmedUnaddressableHarness).toEqual([]);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('resolves owner scopes ONCE per sweep, batched — never once per owner', async () => {
+    const sql = fakeSql([
+      { id: 'rt_a', target_owner_id: 'su-a' },
+      { id: 'rt_b', target_owner_id: 'su-b' },
+    ]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          ['su-a', status({ ownerId: 'su-a', turnsStalled: true, ...COMATOSE })],
+          ['su-b', status({ ownerId: 'su-b', turnsStalled: true, ...COMATOSE })],
+        ]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const resolveOwnerWorkspaces = vi.fn<ResolveOwnerWorkspacesFn>(
+      async () => new Map([['su-a', 'default']]),
+    );
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false), resolveOwnerWorkspaces },
+    );
+
+    expect(resolveOwnerWorkspaces).toHaveBeenCalledTimes(1);
+    expect(resolveOwnerWorkspaces.mock.calls[0][0]).toEqual(['su-a', 'su-b']);
+    // Only the one whose scope actually diverged is named.
+    expect(res.disarmedUnaddressableHarness).toEqual(['su-a']);
+    expect(res.paused).toBe(2);
+  });
+
+  it('the fleet BROADCAST names the population and withdraws the re-arm advice for it', async () => {
+    const sql = fakeSql([{ id: 'rt_strand', target_owner_id: 'su-strand' }]);
+    const getStatuses = vi.fn(
+      async () => new Map([['su-strand', status({ ownerId: 'su-strand', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        probeReachability: reach(false),
+        resolveOwnerWorkspaces: stranded('su-strand'),
+      },
+    );
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const body = broadcast.mock.calls[0][0].body ?? '';
+    expect(body).toContain('su-strand');
+    expect(body).toContain('OF THE DISARMED ABOVE');
+    // The generic paragraph tells the fleet to re-arm; this clause must take that back for these.
+    expect(body).toContain('does NOT apply');
+    expect(body).toContain('relaunched with the correct');
+    // Names where to start, like every other population's paragraph in this module.
+    expect(body).toContain('harness_workspace_mismatch');
+  });
+
+  it('the OWNER PAGE carries the distinct remedy when the strand is also still reachable', async () => {
+    // The page already fires for a reachable disarm, and a scope-stranded session is typically
+    // alive — so without this clause the owner is paged with advice ("resume and re-arm") that
+    // provably cannot work for it.
+    const sql = fakeSql([{ id: 'rt_strand', target_owner_id: 'su-strand' }]);
+    const getStatuses = vi.fn(
+      async () => new Map([['su-strand', status({ ownerId: 'su-strand', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        notify,
+        probeReachability: reach(true),
+        resolveOwnerWorkspaces: stranded('su-strand'),
+      },
+    );
+
+    // It lands in BOTH populations by design — they overlap, neither partitions the other.
+    expect(res.disarmedWhileReachable).toEqual(['su-strand']);
+    expect(res.disarmedUnaddressableHarness).toEqual(['su-strand']);
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    const page = notify.mock.calls[0][0];
+    expect(page.body).toContain('will NOT be fixed by that');
+    expect(page.body).toContain('RELAUNCH');
+    expect(page.body).toContain('harness_forbidden');
+    expect(page.data?.unaddressableHarness).toBe('su-strand');
+    expect(page.data?.unaddressableHarnessCount).toBe(1);
+  });
+
+  it('THE GATE IS NOT WIDENED — an UNREACHABLE strand is a corpse and is still paged about by nobody', async () => {
+    // Byte-identical to the case above but for `reach(false)`. Corpse-reaping staying silent is
+    // the whole point of gating the page on a non-empty reachable subset (WI-6639's original
+    // population was 15 already-ended sessions); a strand that is also gone is exactly that.
+    const sql = fakeSql([{ id: 'rt_strand', target_owner_id: 'su-strand' }]);
+    const getStatuses = vi.fn(
+      async () => new Map([['su-strand', status({ ownerId: 'su-strand', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        notify,
+        probeReachability: reach(false),
+        resolveOwnerWorkspaces: stranded('su-strand'),
+      },
+    );
+
+    expect(res.disarmedUnaddressableHarness).toEqual(['su-strand']);
+    expect(res.disarmedWhileReachable).toEqual([]);
+    expect(notify).not.toHaveBeenCalled();
+    // …but the reason and the fleet broadcast still explain it — the page is the only thing gated.
+    expect(autoPause.mock.calls[0][2]).toContain('UNADDRESSABLE HARNESS');
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('dryRun reports the population without disarming, broadcasting or paging', async () => {
+    const sql = fakeSql([{ id: 'rt_strand', target_owner_id: 'su-strand' }]);
+    const getStatuses = vi.fn(
+      async () => new Map([['su-strand', status({ ownerId: 'su-strand', turnsStalled: true, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws', dryRun: true },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        notify,
+        probeReachability: reach(true),
+        resolveOwnerWorkspaces: stranded('su-strand'),
+      },
+    );
+
+    expect(res.dryRun).toBe(true);
+    expect(res.disarmedUnaddressableHarness).toEqual(['su-strand']);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
   });
 });

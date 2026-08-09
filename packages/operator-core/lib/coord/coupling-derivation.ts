@@ -42,6 +42,7 @@
  * outcome than a missing `expanded[]` entry.
  */
 import type { DerivedCoupling } from './couplings';
+import { censusDerivedSignals, type DerivedSignalCensus } from './derived-signal-census';
 
 /**
  * ⚠ EVERY EMIT SITE BELOW SETS BOTH `relation` AND `because`, FROM THE SAME
@@ -375,6 +376,14 @@ export interface CouplingDerivationSources {
   planEdges?: (planSlug: string) => Promise<readonly PlanBlockingEdge[]>;
   /** Concrete peers the caller exchanged DIRECTED messages with recently. */
   recentPartners?: () => Promise<readonly string[]>;
+  /**
+   * P-007 — the DEAD-SIGNAL CENSUS sink. Optional and fail-soft: a caller that
+   * wires it gets one `DerivedSignalCensus` per run (see derived-signal-census.ts
+   * for why `armed` is recorded separately from `edges`); a caller that does not
+   * changes nothing. Never let it affect the derivation's result — an observer
+   * that can alter or break what it observes is worse than no observer.
+   */
+  observe?: (census: DerivedSignalCensus) => void;
 }
 
 /**
@@ -457,5 +466,36 @@ export async function deriveCouplings(
     ...deriveCouplingsFromPlanBlocking(self, rows, edges),
     ...deriveCouplingsFromCoordExchange(self, partners),
   ];
-  return all.filter((d) => d.ownerId !== self && inRoster.has(d.ownerId));
+  const delivered = all.filter((d) => d.ownerId !== self && inRoster.has(d.ownerId));
+
+  // P-007: census the run for the dead-signal detector. Censused from `delivered`,
+  // NOT `all` — an edge dropped by the roster access boundary reached nobody, so
+  // counting it would report a signal alive on output no caller received.
+  //
+  // `armed` is the wiring bit, deliberately independent of whether the leg found
+  // anything: `heldFiles` absent is the exact shape that hid `holds-a-lock-on` for
+  // 12 days, and it is indistinguishable from honest scarcity in an emit count.
+  // `planEdges` counts as armed whenever the SOURCE is wired even if
+  // `planSignalPossible` short-circuited the read, so an unreachable precondition
+  // reports as starved-of-input rather than as a dead gate — different defect,
+  // different remedy.
+  if (sources.observe) {
+    try {
+      sources.observe(
+        censusDerivedSignals(
+          {
+            roster: { armed: true, inputs: Math.max(0, inRoster.size - (inRoster.has(self) ? 1 : 0)) },
+            heldFiles: { armed: !!sources.heldFiles, inputs: held.size },
+            planEdges: { armed: !!sources.planEdges, inputs: edges.length },
+            recentPartners: { armed: !!sources.recentPartners, inputs: partners.length },
+          },
+          delivered,
+        ),
+      );
+    } catch {
+      /* an observer must never degrade what it observes */
+    }
+  }
+
+  return delivered;
 }

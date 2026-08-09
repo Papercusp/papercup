@@ -1945,6 +1945,18 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // (right before the discovery pair). search:semantic stays OUT here too — lower
   // demand-evidence (7 reaches/7 callers/14d), reachable via tools:find/invoke.
   'search:fulltext',
+  // P-003 of psu-seed-prompt-mandate-alignment-2026-08-09 — MIRROR of the canonical
+  // orchestrator CORE_MCP_TOOL_NAMES addition (same order; the lockstep drift guard in
+  // psu-launcher.test.ts compares the arrays exactly). Cross-role, so they belong in the
+  // shared spine rather than the Claude-only extras, and admitted on measured
+  // reach-per-KB per plan D-001: plans:add-decision 622 reaches/65 callers @4,250 B
+  // (149.9/KB — the loudest unmet need in the whole fallback ledger, and recording a
+  // cross-lane ruling is MANDATORY); mode:set 124/56 @1,732 B (73.3 — an unregistered
+  // mode is invisible state a compaction drops); work_items:claimable 135/55 @2,198 B
+  // (62.9 — the SSOT claim floors, whose documented alternative overcounts ~13x).
+  'plans:add-decision',
+  'mode:set',
+  'work_items:claimable',
   'tools:find', 'tools:invoke',
 ];
 
@@ -1989,9 +2001,36 @@ export function ompCoreToolNames(env = process.env) {
  *  Previously filed independently and left unfixed: EI-19500729376783421 (capability:bash
  *  unreachable, so agents fall back to native backgrounding — whose completion
  *  notification root CLAUDE.md separately calls untrustworthy). */
+/*  P-002 of psu-seed-prompt-mandate-alignment-2026-08-09. Same principle again, now
+ *  applied against a MEASURED cost rather than demand alone (plan D-001): seed cost is
+ *  the tools/list WIRE payload, and it is dominated by argSchema, not by the
+ *  description/guidance that promptWeight() governs. Admission metric is therefore
+ *  reach-per-KB, and every name below was measured before being admitted:
+ *    dev:pipeline_position  474/88  1,919 B  252.9 reach/KB  "is my change live" is ONE
+ *                                            call (root CLAUDE.md); the highest
+ *                                            distinct-caller count of ANY unseeded tool.
+ *    testing:run            428/57  2,455 B  178.5  bash-routing table; previously filed
+ *                                            unfixed as EI-19321552629556165.
+ *    dev:restart            142/39  1,328 B  109.5  two-port model — the ONLY sanctioned
+ *                                            way to restart :3170 (a raw systemctl was
+ *                                            firing every ~5-6min uncoordinated, WI-4221).
+ *    sessions:search        129/47  2,305 B   57.3  the compaction strategy's self-recall
+ *                                            path; a successor that cannot call it
+ *                                            re-derives instead of retrieving.
+ *    build:typecheck        174/49  3,141 B   56.7  bash-routing table; refuses the
+ *                                            zero-file `tsc -p .` run that reads as clean.
+ *    coord:presence         117/48  3,331 B   36.0  liveness/wake rules — sessionState is
+ *                                            the verdict a wake decision depends on.
+ *  Subtotal +14,479 B (~3.6K tokens), seed 190.9 -> 205.4 KB against a 256 KB ceiling.
+ *  MEASURED AND DEFERRED (below the value line, listed so the next audit need not
+ *  re-derive): db:migrate 43.7, plans:add-item 28.0, work_items:link 24.1,
+ *  checkpoint:await 20.0, plans:list 12.9. release:checkpoint-run scored 57.5 and is a
+ *  genuine near-miss, held back only to keep this tranche to the plan's stated scope. */
 export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   'locks:acquire', 'locks:release', 'locks:list',
   'state:read', 'capability:bash', 'capability:bash_output',
+  'dev:pipeline_position', 'testing:run', 'dev:restart',
+  'sessions:search', 'build:typecheck', 'coord:presence',
 ];
 export function claudeSeedToolNames(env = process.env) {
   const seen = new Set();

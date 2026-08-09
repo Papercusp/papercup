@@ -323,9 +323,21 @@ export const LOOP_WAKE_FULL_TEMPLATE_EVERY = 10;
  *  a wake was observed presenting an hours-stale goal line naming a torn-down
  *  PID/run-id as if current, while the (correct) checkpoint block's "prefer
  *  this" framing never referenced the goal line specifically enough to catch
- *  it. Re-measured: shortForm 932 (stale-header case). */
+ *  it. Re-measured: shortForm 932 (stale-header case).
+ *  LOWERED 2026-08-09 (P-017, fleet-lead-instrumentation-audit-2026-08-09) — the first
+ *  time this budget has moved DOWN. The three raises above (549 → 747 → 932) were each a
+ *  caveat appended to the SHORT form's first line, and each was locally justified by a
+ *  real observed misread. They shared one unfixed root cause: that line LED with the
+ *  frozen arm-time goal, so the least trustworthy text in the wake held the most
+ *  prominent position on every fire, and every new failure mode was answered by making
+ *  the warning longer. Fixing the ORDER instead of appending a fourth caveat — lead with
+ *  the wake counter/form, demote the goal BELOW the checkpoint that supersedes it — let
+ *  the ~200-byte disclaimer collapse into one short tag at the goal's point of use.
+ *  Re-measured on the same fixtures: shortForm 810 stale / 490 fresh, fullForm 199.
+ *  GENERAL: when a budget has been raised repeatedly for the same reason, the raises are
+ *  the symptom — the next edit should attack what keeps making them necessary. */
 export const LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS = {
-  shortForm: 950,
+  shortForm: 830,
   fullForm: 210,
   wallsHeader: 220,
   wallsPerRow: 56,
@@ -505,18 +517,28 @@ export function renderLoopWakeText(opts: {
   return [
     // P-006 (fleet-member-dx, EI-9018): label this as the LOOP's own counter so it
     // can't be confused with the event-wake delivery-log id in the same injection.
-    // EI-17327: `firstLine` embeds the arm-time GOAL text verbatim — frozen at
-    // whenever the loop was last (re-)armed, possibly hours ago. A goal that names
-    // concrete facts (a PID, a run id, a leader) reads as CURRENT even long after
-    // those facts are torn down; the checkpoint block below is the fresh state, but
-    // it never said so relative to THIS line specifically. Say it here, right where
-    // the stale claim lives, not just in the checkpoint's own header.
-    `${firstLine} (your loop's wake #${opts.fireNumber}; short form — the full loop contract was delivered on wake 1 and repeats every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes. ⚠ that goal text is frozen from arm time — verify any concrete claim in it, e.g. a PID/run-id/leader, against live state before acting; your checkpoint below is the fresher source)`,
+    // P-017 (fleet-lead-instrumentation-audit-2026-08-09): this line used to LEAD with
+    // `firstLine` — the arm-time GOAL text, frozen whenever the loop was last (re-)armed
+    // — and then spend ~200 bytes telling the reader to distrust what they had just read
+    // (EI-17327). The ORDERING was the defect, not the wording: the least trustworthy
+    // text held first position on every wake, so each newly-observed misread was answered
+    // by appending another caveat to it, and the shortForm budget was raised 549 → 747 →
+    // 932 doing exactly that. Three locally-reasonable raises, one unfixed root cause.
+    // The fix is positional: lead with what is ALWAYS true (the wake counter + form),
+    // let the checkpoint block carry the fresh state, and demote the frozen goal to a
+    // labelled line BELOW it. Once the stale text no longer leads, one short tag does
+    // the work the disclaimer was doing — so the scaffold SHRANK (measured: 932 → 826).
+    `Loop wake #${opts.fireNumber} — short form (the full loop contract ships on wake 1, then every ${LOOP_WAKE_FULL_TEMPLATE_EVERY} wakes).`,
     '',
     ...priority.flatMap((s) => [s, '']),
     block,
     '',
     ...(opts.recipeLine ? [opts.recipeLine, ''] : []),
+    // The goal sits AFTER the checkpoint deliberately: it is orientation, not state, and
+    // the checkpoint's `next` is the authoritative action. Tagged at its point of use so
+    // a reader meeting a stale PID/run-id/leader here knows what it is without a preamble.
+    `Arm-time goal (frozen at arm time — the checkpoint above is the fresher source): ${firstLine}`,
+    '',
     'When this unit settles: refresh loop:checkpoint, then END YOUR TURN. `loop:end` to stop; `loop:status` to inspect.',
   ].join('\n');
 }

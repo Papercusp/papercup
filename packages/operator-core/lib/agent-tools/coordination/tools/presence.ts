@@ -31,6 +31,7 @@ import { overlayPresenceCursors } from '../presence-cursor-overlay';
 import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings';
 import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
 import { deriveCouplings } from '../../../coord/coupling-derivation';
+import { DERIVED_SIGNAL_CENSUS_KEY } from '../../../coord/derived-signal-census';
 import { couplingSourcesFor, presenceNeedsCoordinationDomain } from '../coupling-sources';
 import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle';
 
@@ -236,19 +237,32 @@ export default defineTool({
         // is a live roster field but is empty for essentially every agent (measured
         // 2026-07-27 — 119 live rows, zero populated; EI-18772330418885814), so a
         // live lock is the only AUTOMATIC "this agent is on this file" signal.
+        // P-007: publish the per-run DEAD-SIGNAL CENSUS on the EXISTING per-call
+        // metadata channel (`tool_invocations.metadata_json`), so
+        // `lint:derived-signal-firings` can answer "has this relation ever fired in
+        // production?" — the question no unit test can, and the one that would have
+        // caught `holds-a-lock-on` 12 days earlier (D-088). Cost is bounded to the
+        // opt-in `include_coupling` branch (11 calls across the whole retained
+        // window, measured 2026-08-09), never the 243-call default presence path.
+        const emitCensus = (c as { metadata?: (d: Record<string, unknown>) => void }).metadata;
         const derived = await deriveCouplings(
           self.ownerId,
           snapshot.active,
-          couplingSourcesFor({
-            selfOwnerId: self.ownerId,
-            rosterOwnerIds: snapshot.active
-              .map((r) => (r as { ownerId?: unknown }).ownerId)
-              .filter((v): v is string => typeof v === 'string' && v.length > 0),
-            // NOT `detail?.coordinationDomain` — that is the bug this replaced.
-            ...(coordinationDomain ? { coordinationDomain } : {}),
-            ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
-            ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
-          }),
+          {
+            ...couplingSourcesFor({
+              selfOwnerId: self.ownerId,
+              rosterOwnerIds: snapshot.active
+                .map((r) => (r as { ownerId?: unknown }).ownerId)
+                .filter((v): v is string => typeof v === 'string' && v.length > 0),
+              // NOT `detail?.coordinationDomain` — that is the bug this replaced.
+              ...(coordinationDomain ? { coordinationDomain } : {}),
+              ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
+              ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
+            }),
+            ...(emitCensus
+              ? { observe: (census) => emitCensus({ [DERIVED_SIGNAL_CENSUS_KEY]: census }) }
+              : {}),
+          },
         );
         const peers = resolveCoupledPeers(self.ownerId, derived, edges);
         const expansion = buildCoupledExpansion(peers, snapshot.active);

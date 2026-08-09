@@ -98,6 +98,13 @@ import {
 } from '../corpus-query-clarity';
 import { CORPUS_MAX_ITEMS, corpusTerms } from '../corpus-recall';
 import { recallCorpusContext, warmCorpusEmbedder } from '../corpus-recall-io';
+import {
+  mean,
+  permutationNull,
+  postRetrievalClarity,
+  spearman,
+  teaserOf,
+} from './corpus-clarity-validity';
 
 function argValue(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -132,156 +139,13 @@ function unitHash(s: string): number {
   return h / 0x100000000;
 }
 
-function mean(xs: readonly number[]): number | null {
-  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
-}
-
-/** Average ranks, ties shared — required for Spearman on a series with many
- *  equal values (zero-fill is a huge tie group here, so mishandling ties would
- *  quietly bias every correlation toward zero). */
-function averageRanks(xs: readonly number[]): number[] {
-  const idx = xs.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v);
-  const ranks = new Array<number>(xs.length);
-  let i = 0;
-  while (i < idx.length) {
-    let j = i;
-    while (j + 1 < idx.length && idx[j + 1]!.v === idx[i]!.v) j++;
-    const shared = (i + j) / 2 + 1;
-    for (let k = i; k <= j; k++) ranks[idx[k]!.i] = shared;
-    i = j + 1;
-  }
-  return ranks;
-}
-
-/**
- * Spearman ρ under B random pairings — the null distribution, NOT a single
- * control draw.
- *
- * ⚠ A SINGLE permutation is a sample of size ONE from this distribution, and at
- * these n its standard error is ≈1/√(n−1) — about 0.17 at n=36. Measured on the
- * N=40 smoke run, one draw returned a control ρ of −0.204 against a real ρ of
- * −0.107, i.e. the control was LARGER than the effect it was supposed to bound.
- * Read as a pass/fail that reads as "the harness manufactures the association";
- * read as a threshold it silently licences whatever the real column says. Only
- * the ensemble makes "≈0" a testable claim, and it also yields the exact
- * quantity the study needs — how often chance alone reaches the observed ρ.
- */
-function permutationNull(
-  x: readonly number[],
-  y: readonly number[],
-  observed: number,
-  draws = 999,
-): { mean: number; lo: number; hi: number; p: number } | null {
-  if (x.length < 3) return null;
-  const rhos: number[] = [];
-  let atLeastAsExtreme = 0;
-  for (let b = 0; b < draws; b++) {
-    const r = spearman(x, permute(y, b + 1));
-    if (r === null) continue;
-    rhos.push(r);
-    if (Math.abs(r) >= Math.abs(observed)) atLeastAsExtreme++;
-  }
-  if (rhos.length === 0) return null;
-  rhos.sort((a, b) => a - b);
-  const at = (q: number): number => rhos[Math.min(rhos.length - 1, Math.floor(q * rhos.length))]!;
-  return {
-    mean: mean(rhos)!,
-    lo: at(0.025),
-    hi: at(0.975),
-    // +1 in both terms: the observed pairing is itself one of the possible
-    // arrangements, so a p of exactly 0 is not attainable and must not be printed.
-    p: (atLeastAsExtreme + 1) / (rhos.length + 1),
-  };
-}
-
-/** Spearman ρ. `null` when either series is constant (ρ is undefined, NOT 0 —
- *  reporting 0 there would read as "measured no association"). */
-function spearman(a: readonly number[], b: readonly number[]): number | null {
-  if (a.length !== b.length || a.length < 3) return null;
-  const ra = averageRanks(a);
-  const rb = averageRanks(b);
-  const ma = mean(ra)!;
-  const mb = mean(rb)!;
-  let num = 0;
-  let da = 0;
-  let db = 0;
-  for (let i = 0; i < ra.length; i++) {
-    const x = ra[i]! - ma;
-    const y = rb[i]! - mb;
-    num += x * y;
-    da += x * x;
-    db += y * y;
-  }
-  if (da === 0 || db === 0) return null;
-  return num / Math.sqrt(da * db);
-}
-
-/**
- * Deterministic Fisher-Yates over a seeded LCG — the CONTROL pairing.
- *
- * ⚠ Deliberately a full shuffle rather than a rotation. A rotation preserves the
- * series' ordering structure, so if sample position carried ANY signal the
- * control would inherit it and could mask a manufactured association — the one
- * thing this control exists to detect.
- */
-function permute<T>(xs: readonly T[], seed = 1): T[] {
-  const out = [...xs];
-  let s = (Math.imul(seed, 0x9e3779b9) ^ 0x85ebca6b) >>> 0;
-  for (let i = out.length - 1; i > 0; i--) {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    const j = s % (i + 1);
-    [out[i], out[j]] = [out[j]!, out[i]!];
-  }
-  return out;
-}
-
-/**
- * Post-retrieval clarity in bits: KL(P(·|R) ‖ P(·|C)) over attested terms, using
- * the SAME estimator and the SAME attestation rule as the pre-retrieval
- * predictor (see `scoreCorpusQueryClarity` — unattested terms have `P(w|C) = 0`
- * and infinite KL, so they are excluded from the score and counted separately).
- * `null` when the retrieved set has no attested term at all.
- */
-function postRetrievalClarity(
-  texts: readonly string[],
-  df: (t: string) => number,
-  ndocs: number,
-  minDf: number,
-): { bits: number | null; attestedRatio: number | null } {
-  const tf = new Map<string, number>();
-  let total = 0;
-  let attestedTotal = 0;
-  for (const t of texts) {
-    for (const term of corpusTerms(t)) {
-      total++;
-      if (df(term) >= minDf) {
-        tf.set(term, (tf.get(term) ?? 0) + 1);
-        attestedTotal++;
-      }
-    }
-  }
-  if (attestedTotal === 0) {
-    return { bits: null, attestedRatio: total > 0 ? 0 : null };
-  }
-  let bits = 0;
-  for (const [term, count] of tf) {
-    const pr = count / attestedTotal;
-    const pc = df(term) / ndocs;
-    bits += pr * (Math.log(pr / pc) / Math.LN2);
-  }
-  return { bits, attestedRatio: attestedTotal / total };
-}
-
-/** The teaser sits between the `] ` label and the ` → ` resolve call. Scoring
- *  the whole rendered line would fold the handle boilerplate — present in EVERY
- *  line — into the retrieved language model, damping every divergence toward a
- *  shared constant. */
-function teaserOf(line: string): string {
-  const start = line.indexOf('] ');
-  const end = line.lastIndexOf(' → ');
-  if (start < 0) return line;
-  return end > start ? line.slice(start + 2, end) : line.slice(start + 2);
-}
+// The statistics this study's RULING rests on — mean / averageRanks / spearman /
+// permute / permutationNull / postRetrievalClarity / teaserOf — live in
+// `./corpus-clarity-validity` and are imported above. They are NOT inlined here
+// on purpose: a bench that only ever runs against live data has no control on
+// its own arithmetic, so a defect in `spearman` would print a plausible number
+// and never throw. The module's companion test carries permanent controls
+// (known-ρ, tie-saturated, independent-series null) that this file cannot have.
 
 interface SurfaceMix {
   surface: string;
@@ -448,7 +312,17 @@ async function main(): Promise<void> {
       skipFlagCheck: true,
     });
     const ms = Date.now() - started;
-    const post = postRetrievalClarity(res.lines.map((l) => teaserOf(l.line)), df, ndocs, MIN_DF);
+    // `corpusTerms` is passed in rather than imported by the module: the
+    // post-retrieval score MUST use the same tokenizer the predictor uses, and
+    // injecting it is what makes that commensurability visible at the call site
+    // (and testable without a corpus).
+    const post = postRetrievalClarity(
+      res.lines.map((l) => teaserOf(l.line)),
+      corpusTerms,
+      df,
+      ndocs,
+      MIN_DF,
+    );
     return {
       surface: a.surface,
       chars: a.text.length,
