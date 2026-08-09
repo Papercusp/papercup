@@ -1146,6 +1146,36 @@ export default function AgentDossier({
                   couldn’t read: {pushed.unavailable.join(' · ')}
                 </div>
               ) : null}
+              {/* P-013's "what was pushed": one row per HANDLE, not a per-port
+                  tally. `kind` is rendered because it is also the LEG OF
+                  ORIGIN — each ledger has exactly one writer — and it is the
+                  only per-ref leg attribution that exists (D-078: the finer
+                  cosine-vs-lexical split is recorded as COUNTS on the recall
+                  row, never per ref, so inventing it here would be a claim the
+                  ledgers cannot support). The `sem`/`lex` marks below stay on
+                  the injection rows, where they are actually measured. */}
+              <CappedRows
+                noun="refs"
+                open={railOpen.has('pushedRefs')}
+                onToggle={() => toggleRail('pushedRefs')}
+                testId="dossier-pushed-refs-list"
+                /* True 24h ledger total, not the carried slice. */
+                totalCount={pushed.refsTotal ?? 0}
+                rows={(pushed.refs ?? []).map((r) => (
+                  <div
+                    key={`ref:${r.kind}:${r.epoch}:${r.ref}`}
+                    className="pc-dossier__coord-line"
+                    data-testid="dossier-pushed-ref-row"
+                    title={`${r.ref} · ${r.kind} · epoch ${r.epoch}`}
+                  >
+                    <span className="pc-dossier__dir">{r.port}</span>
+                    <span className="pc-dossier__coord-text">
+                      {r.kind === 'memory' ? 'mem' : 'ptr'} {shortRef(r.ref)}
+                    </span>
+                    <span className="pc-dossier__coord-ts">{formatRelativeUpdated(r.at)}</span>
+                  </div>
+                ))}
+              />
               <CappedRows
                 noun="injections"
                 open={railOpen.has('pushed')}

@@ -146,14 +146,14 @@ describe('device-push-dispatcher', () => {
 });
 
 /**
- * WI-37478 — reaping a token the provider says is permanently dead.
+ * WI-37477 — reaping a token the provider says is permanently dead.
  *
  * The property under test is ASYMMETRIC: failing to reap costs a wasted push, reaping wrongly
  * DELETES a live device's only address. So every case below that is not the documented
  * UNREGISTERED contract is asserted NOT to reap — those are the controls, and they are the
  * point of the suite.
  */
-describe('stale FCM token reaping (WI-37478)', () => {
+describe('stale FCM token reaping (WI-37477)', () => {
   const UNREGISTERED_BODY = JSON.stringify({
     error: {
       code: 404,

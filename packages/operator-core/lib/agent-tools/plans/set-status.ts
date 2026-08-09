@@ -42,6 +42,7 @@ import {
   looksLikeResidualClosure,
   TERMINAL_WORK_ITEM_STATES,
 } from '../../plan-items/convert';
+import { findAllLinkedWorkItems } from '../../plan-items/reconcile-linked-work-items';
 import { setWorkItemState } from '../../work-items';
 import { unassignItem } from '../../plan-items/assignments';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
@@ -74,6 +75,7 @@ const itemSpec = z.object({
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
   onlyIfNotTerminal: z.boolean().optional(),
+  onlyIfNoOtherOpenCoverage: z.boolean().optional(),
 });
 
 const argsSchema = z
@@ -107,6 +109,12 @@ const argsSchema = z
       .describe(
         'Non-destructive flip: SKIP any item that is already done/dropped instead of moving it off terminal (reported `skipped:"terminal_guard"`, ok:true). For AUTOMATED reflections that must never un-finish shipped work; a human reopening an item deliberately just omits it.',
       ),
+    onlyIfNoOtherOpenCoverage: z
+      .boolean()
+      .optional()
+      .describe(
+        'Non-destructive DROP: when flipping an item to `dropped`, SKIP the flip (reported `skipped:"coverage_guard"`, ok:true) if ANOTHER non-terminal work-item is still linked to this plan item (via the `implements` conversion edge, the `relates` coverage edge, or the `payload.plan_item` stamp). Prevents dropping ONE work-item (e.g. a duplicate) from cascading `dropped` onto a plan item that another live work-item still covers (EI-19972048649686949). No effect on any status other than `dropped`. For AUTOMATED reflections (a work-item state change cascading onto its plan item); a human deliberately abandoning the item just omits it.',
+      ),
   })
   .refine(
     (a) =>
@@ -126,6 +134,10 @@ interface StatusItem {
    *  for automated reflections that must never un-finish shipped work. See the guard
    *  inside the plan lock. */
   onlyIfNotTerminal?: boolean;
+  /** Skip (don't flip) a →dropped flip when another non-terminal work-item still covers
+   *  this plan item — for automated reflections cascading a single work-item's drop. See
+   *  the coverage guard below. */
+  onlyIfNoOtherOpenCoverage?: boolean;
 }
 
 /** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
@@ -150,7 +162,11 @@ type SetStatusValue =
   /** `onlyIfNotTerminal` tripped: the item is already done/dropped and the caller
    *  asked for a non-destructive flip. Carries the CURRENT status so the caller can
    *  report what it left alone. Not an error — see the `terminal_guard` branch below. */
-  | { ok: false; code: 'terminal_guard'; currentStatus: string | null };
+  | { ok: false; code: 'terminal_guard'; currentStatus: string | null }
+  /** `onlyIfNoOtherOpenCoverage` tripped: another non-terminal work-item still covers
+   *  this plan item, so the →dropped flip was skipped. Not an error — see the
+   *  `coverage_guard` branch below. */
+  | { ok: false; code: 'coverage_guard'; coveredBy: string[] };
 
 /**
  * Extract one item's `importance` from the plan body, glyph-agnostically,
@@ -638,6 +654,43 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }
   }
 
+  // EI-19972048649686949: dropping ONE work-item linked to a plan item must not
+  // cascade `dropped` onto the plan item when ANOTHER non-terminal work-item still
+  // covers it (e.g. dropping a hand-filed duplicate of an already-claimed
+  // implementer left the real coverage silently de-queued). Opt-in — automated
+  // reflections only, see plan-items/reflect-rules.ts — and read-only, so it is
+  // checked OUTSIDE the plan lock, before it, like the claim-conflict check above.
+  // `findAllLinkedWorkItems` unions all three linkage truth sources (`implements`
+  // conversion edge, `relates` coverage edge, `payload.plan_item` stamp), unlike
+  // the residual-coverage advisory below which only reads `relates`. By the time
+  // this reaction fires, the triggering work-item's OWN state is already committed
+  // terminal, so it self-excludes from `stillCovered` without any special-casing.
+  // Best-effort: a lookup hiccup must never block a legitimate drop.
+  if (it.onlyIfNoOtherOpenCoverage && it.status === 'dropped') {
+    try {
+      const linked = await findAllLinkedWorkItems(it.slug, it.itemId);
+      const stillCovered = linked.filter((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state));
+      if (stillCovered.length > 0) {
+        return {
+          ok: true,
+          slug: it.slug,
+          itemId: it.itemId,
+          skipped: 'coverage_guard',
+          coveredBy: stillCovered.map((wi) => wi.id),
+          reason:
+            `left open — ${stillCovered.length} other linked work-item(s) ` +
+            `(${stillCovered.map((wi) => wi.id).join(', ')}) still cover this plan item; ` +
+            `dropping this one does not abandon the work`,
+        };
+      }
+    } catch (e) {
+      console.warn(
+        `[plans:set-status] coverage guard ${it.slug}#${it.itemId} failed:`,
+        (e as Error)?.message ?? e,
+      );
+    }
+  }
+
   const rev = planRevisionCapture(
     ctx as PlanRevisionCtx,
     it.slug,
@@ -1006,6 +1059,7 @@ export default defineTool({
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
           onlyIfNotTerminal: it.onlyIfNotTerminal ?? args.onlyIfNotTerminal,
+          onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
         }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({

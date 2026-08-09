@@ -121,7 +121,7 @@ export interface ReconcileLinkedWorkItemsResult {
  * `viaImplementsEdge` is the only evidence that the work-item IMPLEMENTS the
  * plan item rather than merely referencing it — see the reconcile guard.
  */
-type LinkedWorkItem = WorkItem & { viaImplementsEdge: boolean };
+export type LinkedWorkItem = WorkItem & { viaImplementsEdge: boolean };
 
 /** Match the durable `payload.plan_item` stamp (plan_slug + item_id) on either
  *  federated table.

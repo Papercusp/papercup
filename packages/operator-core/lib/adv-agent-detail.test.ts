@@ -1057,7 +1057,7 @@ describe('derivePushedContext', () => {
   });
 
   it('shapes the admission funnel and both leg marks', () => {
-    const out = derivePushedContext([row()], [], 1);
+    const out = derivePushedContext({ rows: [row()], refRows: [], total: 1 });
     expect(out.events).toEqual([
       {
         at: '2026-08-09T09:20:27.665Z',
@@ -1074,7 +1074,7 @@ describe('derivePushedContext', () => {
   it('keeps `count` the TRUE window total, not the carried slice', () => {
     // The Coord lesson [owner 2026-07-28]: a count must never name rows the
     // list cannot show — here it must name MORE, so the cap can say so.
-    const out = derivePushedContext([row(), row()], [], 57);
+    const out = derivePushedContext({ rows: [row(), row()], refRows: [], total: 57 });
     expect(out.count).toBe(57);
     expect(out.events).toHaveLength(2);
   });
@@ -1082,24 +1082,24 @@ describe('derivePushedContext', () => {
   it('never lets `count` under-report the rows it is handed', () => {
     // A total that disagrees with the slice (a racing write) must not render
     // "showing 3 of 0" — the slice is the floor.
-    expect(derivePushedContext([row(), row(), row()], [], 0).count).toBe(3);
+    expect(derivePushedContext({ rows: [row(), row(), row()], refRows: [], total: 0 }).count).toBe(3);
   });
 
   it('treats a missing admission blob as zeros rather than throwing', () => {
-    const out = derivePushedContext([row({ admission: null })], [], 1);
+    const out = derivePushedContext({ rows: [row({ admission: null })], refRows: [], total: 1 });
     expect(out.events[0]).toMatchObject({ returned: 0, admitted: 0, truncated: false });
   });
 
   it('carries per-port ref COUNTS and drops empty ports', () => {
-    const out = derivePushedContext(
-      [],
-      [
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [
         { port: 'mid-turn', refs: '30', kind: 'memory' },
         { port: 'turn-start', refs: 12, kind: 'memory' },
         { port: 'wake-brief', refs: '0', kind: 'memory' },
       ],
-      0,
-    );
+      total: 0,
+    });
     expect(out.refsByPort).toEqual([
       { port: 'mid-turn', refs: 30, kind: 'memory' },
       { port: 'turn-start', refs: 12, kind: 'memory' },
@@ -1110,14 +1110,14 @@ describe('derivePushedContext', () => {
     // Measured 2026-08-09: all 6 corpus ports also exist as memory ports, so
     // this collision is the normal case. Summing would report mem0 memories
     // and corpus pointers as one number — two different kinds of thing.
-    const out = derivePushedContext(
-      [],
-      [
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [
         { port: 'mid-turn', refs: 30, kind: 'memory' },
         { port: 'mid-turn', refs: 8, kind: 'corpus' },
       ],
-      0,
-    );
+      total: 0,
+    });
     expect(out.refsByPort).toEqual([
       { port: 'mid-turn', refs: 30, kind: 'memory' },
       { port: 'mid-turn', refs: 8, kind: 'corpus' },
@@ -1128,16 +1128,16 @@ describe('derivePushedContext', () => {
   });
 
   it('orders merged ledger rows totally, so the row sequence cannot depend on which query resolved first', () => {
-    const out = derivePushedContext(
-      [],
-      [
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [
         { port: 'claim', refs: 5, kind: 'corpus' },
         { port: 'turn-start', refs: 5, kind: 'memory' },
         { port: 'mid-turn', refs: 9, kind: 'corpus' },
         { port: 'claim', refs: 5, kind: 'memory' },
       ],
-      0,
-    );
+      total: 0,
+    });
     expect(out.refsByPort).toEqual([
       { port: 'mid-turn', refs: 9, kind: 'corpus' },
       // refs tie → kind, then port. 'corpus' < 'memory', so claim/corpus leads.
@@ -1148,12 +1148,12 @@ describe('derivePushedContext', () => {
   });
 
   it('reports an UNREADABLE ledger instead of letting it read as "surfaced nothing"', () => {
-    const out = derivePushedContext(
-      [],
-      [{ port: 'mid-turn', refs: 30, kind: 'memory' }],
-      0,
-      ['corpus-surfaced-refs'],
-    );
+    const out = derivePushedContext({
+      rows: [],
+      refRows: [{ port: 'mid-turn', refs: 30, kind: 'memory' }],
+      total: 0,
+      unavailable: ['corpus-surfaced-refs'],
+    });
     // The sources that DID answer survive — a partial failure must not blank
     // the section the way `error` deliberately does for a total one.
     expect(out.refsByPort).toEqual([{ port: 'mid-turn', refs: 30, kind: 'memory' }]);
