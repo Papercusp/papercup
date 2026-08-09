@@ -950,8 +950,30 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       });
       if (deletionErrors.length > 0) contentErrors = [...contentErrors, ...deletionErrors];
     }
-    // Exclude BOTH oversized + content offenders (incl. unsafe deletions) from the
-    // auto-commit (deduped — a file can be both). Everything clean still syncs this tick.
+    // EI-19932544083689229 quarantine-import guard (remedy #1 — ATOMICITY): a file
+    // quarantined above (oversized, or excluded by content-guard/deletion-guard) must
+    // not be committed WITHOUT also holding back any OTHER dirty file — e.g. its own
+    // `*.test.*` sibling — that imports it. Otherwise the importer commits alone and
+    // HEAD carries an unresolvable relative import forever (an isolated checkout, e.g.
+    // green-checkpoint's candidate build, gets the importer without its subject and
+    // fails deterministically on every run). Quarantine the PAIR, never just the
+    // broken half. Runs to a fixed point (a chain of dirty importers is caught too).
+    {
+      const priorQuarantined = [...new Set([...oversized.map((f) => f.path), ...contentErrors.map((c) => c.file)])];
+      if (priorQuarantined.length > 0) {
+        const dirtyForScan = await dirtyFiles(runGit, repoPath);
+        const importerErrors = await detectQuarantineImporters({
+          readText: (rel) => o.readText(repoPath, rel),
+          dirtyFiles: dirtyForScan,
+          alreadyQuarantined: priorQuarantined,
+          log: o.log,
+        });
+        if (importerErrors.length > 0) contentErrors = [...contentErrors, ...importerErrors];
+      }
+    }
+    // Exclude BOTH oversized + content offenders (incl. unsafe deletions + quarantined
+    // importers) from the auto-commit (deduped — a file can be both). Everything else
+    // still syncs this tick.
     const excludePaths = [...new Set([...oversized.map((f) => f.path), ...contentErrors.map((c) => c.file)])];
     let committedAny = false;
     // P-004: when an attribution map is supplied (flag GIT_SYNC_DERIVED_ATTRIBUTION on), peel

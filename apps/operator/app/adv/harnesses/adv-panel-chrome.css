@@ -387,6 +387,76 @@
   white-space: nowrap;
 }
 
+/* ── FOCUS (dep-graph-design-pass-2 P-006) ────────────────────────────────────────
+ * Hovering or selecting a node emphasises ITS edges and neighbours and recedes the
+ * rest. At 84 edges crossing a 129-node layered DAG this is the difference between
+ * a picture you can trace a lineage through and one that reads as a grid of cards.
+ *
+ * ⚠ EMPHASIS IS OPACITY ONLY — never stroke-width. The predecessor plan's D-001
+ * settled the owner's "the edges are much too big" by buying legibility with
+ * CONTRAST and DIRECTION rather than WEIGHT; a focus mode that thickened the focused
+ * edges would re-open that exact complaint one interaction later. Note the focused
+ * edge below RAISES opacity to 1 and leaves `stroke-width: 1` untouched, and the
+ * satisfied/dangling variants keep their own dash patterns because focus must not
+ * overwrite what an edge IS — only how loudly it is currently speaking.
+ *
+ * Transitioning `opacity` (not a layout or paint-heavy property) keeps this off the
+ * layout path — it is a compositor-only change, which matters because it fires on
+ * every mouseenter across a canvas of 129 nodes. */
+.pc-depgraph__edge--focus {
+  stroke: var(--accent, #38bdf8);
+  stroke-opacity: 1;
+}
+.pc-depgraph__edge--dim {
+  stroke-opacity: 0.08;
+}
+.pc-depgraph__node--dim {
+  opacity: 0.28;
+}
+.pc-depgraph__node--focus rect {
+  stroke: var(--accent, #38bdf8);
+}
+.pc-depgraph__edge,
+.pc-depgraph__node {
+  transition: opacity 120ms ease, stroke-opacity 120ms ease;
+}
+/* Respect a reduced-motion preference: the emphasis still happens, it just does not
+ * animate. The information is in the contrast, never in the transition. */
+@media (prefers-reduced-motion: reduce) {
+  .pc-depgraph__edge,
+  .pc-depgraph__node {
+    transition: none;
+  }
+}
+
+/* ── THE KEY (dep-graph-design-pass-2 P-005) ──────────────────────────────────────
+ * Every swatch is drawn with the REAL mark's own class, so the legend cannot drift
+ * from what it documents (see DepGraphLegend's header). Consequently there are no
+ * colours here at all — only layout. Adding a colour to this block would recreate
+ * the second source of truth the component deliberately avoids. */
+.pc-depgraph__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: center;
+  margin: 0;
+  padding: 4px 8px 6px;
+  list-style: none;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+.pc-depgraph__legend li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--fg-mute, #7f9bb4);
+  white-space: nowrap;
+}
+.pc-depgraph__legendswatch {
+  flex-shrink: 0;
+  overflow: visible;
+}
+
 /* "Clear selection" (P-007) — the Button primitive's accent variant carries the
  * emphasis; this only stops the label wrapping in the now-wrapping bar. */
 .pc-depgraph__clearsel {
