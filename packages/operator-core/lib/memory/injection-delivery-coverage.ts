@@ -215,14 +215,19 @@ export async function readInjectionDeliveryCoverage(opts: {
   const { getOrgPg } = await import('@papercusp/db-org');
   const sql = getOrgPg().sql;
 
-  const clients = INJECTION_CLIENTS as readonly string[];
+  // A plain JS array — postgres.js serialises this to a real text[]. Do NOT wrap
+  // it in sql.array() with a ::text[] cast: that path stringifies to the bare
+  // literal `claude,codex,omp` and the query dies on "malformed array literal".
+  // Caught only by running this against the live DB (2026-08-09); no unit test
+  // touches the SQL, so a green suite says nothing about it.
+  const clients: string[] = [...INJECTION_CLIENTS];
 
   // Denominator — corpus namespace, NOT the tenant (see the block comment above).
   const sessionRows = await sql<{ client: string; sessions: number }[]>`
     SELECT source_kind AS client, count(DISTINCT session_id)::int AS sessions
       FROM harness_shared.session_turns
      WHERE workspace_id = ${SESSION_CORPUS_NAMESPACE}
-       AND source_kind = ANY(${sql.array(clients as string[])}::text[])
+       AND source_kind = ANY(${clients})
        AND ts > now() - (${windowHours}::text || ' hours')::interval
      GROUP BY 1
   `;

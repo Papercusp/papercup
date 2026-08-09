@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { validateCellSpec, getCell, listCellsUnchecked, __resetCellRegistryForTests } from './cell-registry';
+import {
+  validateCellSpec,
+  getCell,
+  listCellsUnchecked,
+  __resetCellRegistryForTests,
+  type CellSpec,
+} from './cell-registry';
 import {
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,

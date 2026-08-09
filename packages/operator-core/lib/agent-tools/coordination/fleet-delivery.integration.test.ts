@@ -172,7 +172,8 @@ describe('fleet delivery override + @fleet: member resolution (real PG)', () => 
       await seedMember('alice', 'payments'); // live, non-bee → delivered
       await seedMember('dave', 'payments', { staleMinutes: 180 }); // dead heartbeat → dropped
       await seedMember('eve', 'risk'); // other fleet → not a member at all
-      await db.sql`UPDATE harness_shared.coord_presence SET agent_role = 'bee' WHERE owner_id = 'alice'`;
+      // NB the bee role token on the wire is 'cup', not 'bee' (see isBeeRole).
+      await db.sql`UPDATE harness_shared.coord_presence SET agent_role = 'cup' WHERE owner_id = 'alice'`;
       await seedMember('frank', 'payments'); // live, non-bee → delivered
 
       const { ids, omitted } = await liveFleetMemberIdsDiagnosed('payments', WS);

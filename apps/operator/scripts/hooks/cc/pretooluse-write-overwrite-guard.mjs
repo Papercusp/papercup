@@ -261,25 +261,25 @@ function selfTest() {
 
   const cases = [
     {
-      name: 'prior Read of the exact path → no hit (found)',
+      name: 'prior Read of the exact path → seen (would allow silently)',
       abs: priorReadTarget,
       transcript: priorReadTranscript,
-      selfId: 'toolu_99',
-      expect: false, // false === "seen", i.e. found === true internally; see below
-    },
-    {
-      name: 'transcript mentions only a different path → hit (unseen)',
-      abs: path.join(tmpDir, 'unrelated.ts'),
-      transcript: noReadTranscript,
       selfId: 'toolu_99',
       expect: true,
     },
     {
-      name: 'self tool_use excluded from matching itself',
+      name: 'transcript mentions only a different path → unseen (would warn)',
+      abs: path.join(tmpDir, 'unrelated.ts'),
+      transcript: noReadTranscript,
+      selfId: 'toolu_99',
+      expect: false,
+    },
+    {
+      name: 'self tool_use excluded from matching itself → unseen (would warn)',
       abs: priorReadTarget,
       transcript: priorReadTranscript,
       selfId: 'toolu_1',
-      expect: true, // excluding the only match leaves nothing seen
+      expect: false, // excluding the only match leaves nothing seen
     },
     {
       name: 'unparseable transcript → null (fail-open), not a false hit',
@@ -297,7 +297,6 @@ function selfTest() {
     if (c.expectNull) {
       ok = result === null;
     } else {
-      // "unseen" (would warn) === result === false
       ok = result === c.expect;
     }
     if (!ok) failed = true;

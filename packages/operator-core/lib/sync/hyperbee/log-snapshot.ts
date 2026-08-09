@@ -358,6 +358,21 @@ export function buildSnapshotOps(opts: {
 export const SNAPSHOT_COMPACT_EVERY_OPS = 1000;
 
 /**
+ * How many own-log blocks `produceLogSnapshot` reads concurrently.
+ *
+ * A tunable, not a constant of correctness: any positive value produces the SAME
+ * `ops` array (see the ordering note at the read site), it only sets how much of the
+ * O(history) read is in flight at once. It exists because the serial form made the
+ * snapshot uncompletable on a real corpus — 461,475 blocks unfinished after 29 min
+ * (P-014, 2026-08-09).
+ *
+ * Sized to be well clear of latency-bound without holding an unreasonable number of
+ * decoded blocks in flight; the whole folded history is already accumulated in `ops`,
+ * so the window is not what bounds peak memory here.
+ */
+export const SNAPSHOT_READ_CONCURRENCY = 256;
+
+/**
  * Should the own log be compacted now? True when it has grown at least
  * `threshold` ops since the last snapshot it produced (`lastCoversUpTo`, 0 if it
  * never snapshotted). Pure — the caller supplies the lengths so this is trivially
