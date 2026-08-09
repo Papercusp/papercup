@@ -523,7 +523,18 @@ export async function listEscalationsPaginated(
         // author-scoped read is COMPLETE for that author rather than "whatever
         // survived the workspace-wide window".
         const all = await readOpenEscalationsProjection(opts.from);
-        const page = all.slice(offset, offset + maxRecords).map(boundBodyForList);
+        // EI-19938772014458100: `all` is sorted ASCENDING (oldest-first — see
+        // readOpenEscalationsProjection's comparator). Slicing from the FRONT
+        // with offset=0 therefore returned the OLDEST `maxRecords` rows, while
+        // this tool's own contract (and every caller) expects "newest-first" —
+        // the default page silently hid every recent escalation behind however
+        // many old, never-resolved ones happened to sort first. Take the newest
+        // window instead (`offset` walks further BACK in time from the newest
+        // end), keeping ascending order WITHIN the page so within-page byte
+        // identity with the legacy fold path is preserved.
+        const end = Math.max(0, all.length - offset);
+        const start = Math.max(0, end - maxRecords);
+        const page = all.slice(start, end).map(boundBodyForList);
         return {
           escalations: page,
           truncated: offset + maxRecords < all.length,
