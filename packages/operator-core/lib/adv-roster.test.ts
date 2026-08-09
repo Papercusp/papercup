@@ -35,6 +35,7 @@ function presence(overrides: Partial<PresenceRecord> = {}): PresenceRecord {
     currentFiles: [],
     host: 'h',
     pid: 100,
+    tty: null,
     startedAt: iso(NOW - 3_600_000),
     heartbeatAt: iso(NOW - 5_000),
     lastActiveAt: iso(NOW - 5_000),

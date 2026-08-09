@@ -124,6 +124,24 @@ export const P2P_LANE_EXCLUSION_TERMS = [
   // vocabulary and costs nothing: the cheap half of "make the shared source a true
   // superset so the next editor has nothing left to hand-type".
   'duplex',
+  // EI-19928699840338901 (fleet-lead-instrumentation-audit P-008): the SUBSTRATE
+  // vocabulary under the transport terms above. `hypercore` is the sibling of
+  // `hyperbee`/`hyperswarm`/`hyperdht` already here, and admitting the family
+  // piecemeal is what left this gap. Measured 2026-08-09 against the live papercusp
+  // backlog (open, issue-family, not already caught by a term above): hypercore 2
+  // net-new. One of the two is a nit-severity Windows-build observation (EI-12901,
+  // "the ~4GB seed is incompressible hypercore blocks so lzma64 grinds") rather than
+  // hypercore work — recorded rather than hidden, because it is the one honest cost
+  // of taking the library name. The other, WI-6076, is genuine wire work
+  // (replicate()/protomux core pairing).
+  'hypercore',
+  // hyperblobs/hyperdrive/autobase have ZERO live matches — folded in on the
+  // `duplex` precedent above: unambiguous named components of the same stack, so
+  // they cost nothing today and close the family rather than leaving the next
+  // editor to meet them one at a time.
+  'hyperblobs',
+  'hyperdrive',
+  'autobase',
 ] as const;
 
 /**
@@ -159,10 +177,58 @@ export const P2P_LANE_EXCLUSION_TERMS = [
  *   Measured while fixing WI-7184: of 9 in-lane critical/major hits for
  *   hive|seat|offer|delegated, 4 were non-p2p homonyms.
  *
+ * EI-19928699840338901 proposed a SUBSTRATE tranche — corestore, seed cut / seed
+ * cuts / sparse seed, bootstrap peer, peer — reporting "~10 p2p-substrate bugs inside
+ * the non-p2p lane". Re-measured 2026-08-09 (fleet-lead-instrumentation-audit P-008,
+ * which exists to re-verify carried findings rather than act on them): the count is
+ * real, the CONCLUSION does not survive. Those terms catch predominantly single-box
+ * work, because this repo BUNDLES a corestore seed into the desktop release — so the
+ * storage vocabulary leads a second life in release engineering that `hyperbee`/
+ * `hyperswarm`/`hyperdht` simply do not have. `hypercore` itself was accepted above;
+ * the rest are rejected here:
+ *
+ * - `corestore` (13 net-new open) — the largest and most tempting. Its hits are
+ *   overwhelmingly LOCAL: a git-tracked-blob history purge (WI-3065), a desktop
+ *   bundle-size review (WI-5640), a single-process advisory lock on the own-log
+ *   Corestore (WI-4236), and the local operator's fd-lock colliding with the release
+ *   cut (EI-9796, EI-12625, EI-17145, EI-17165). Even the item's own motivating
+ *   CRITICAL, EI-19899917753028359, is a LOCAL deadlock — bg-host holding the
+ *   corestore write lock against a booted:false report on the same box. Fencing it
+ *   would have hidden a critical the fleet could actually fix.
+ * - `seed cut` / `seed cuts` / `sparse seed` (5 / 1 / 2) — the RELEASE pipeline, not
+ *   the wire. WI-10773 is "take a real release seed cut and MEASURE the size drop";
+ *   WI-36770 is bg-host self-recycling at an 11-12GB heap. Both are single-box.
+ * - `peer` (10 net-new open bugs; 1 critical, 3 major) — the `hive` mistake with a
+ *   bigger blast radius: "peer" is THE word this system uses for ANOTHER AGENT. Of
+ *   the four critical/major hits, exactly ONE is p2p (EI-18769415639448677, admitting
+ *   a peer on a hive topic); the other three are ordinary single-box bugs whose
+ *   titles merely say "a peer's committed drop" (EI-19460048118267666), "a peer's
+ *   verified fact" (EI-19478538852465365), "PEER agents' session turns" (WI-9592).
+ *   3-of-4 false at critical/major is the worst ratio ever measured on this list.
+ * - `replicate` / `replicates` — the tempting STEM-CLOSING fix, by exact analogy with
+ *   federation→federated→federate. It does NOT transfer: unlike "federate", which has
+ *   one meaning in this pot, "replicate" is a common debugging VERB here — "replicate
+ *   the floor set", "the spike replicates 2/2 boots". `replication` (a noun that only
+ *   ever names the transport) stays; its verb inflections do not. A pattern that held
+ *   twice is not thereby a rule.
+ *
  * A term belongs above only if a whole-word title match implies work a single-box
  * member CANNOT execute. If it merely CORRELATES with p2p, it belongs here instead.
  */
-export const P2P_LANE_REJECTED_ANTI_TERMS = ['rig', 'tower', 'announce', 'dial', 'hive'] as const;
+export const P2P_LANE_REJECTED_ANTI_TERMS = [
+  'rig',
+  'tower',
+  'announce',
+  'dial',
+  'hive',
+  'corestore',
+  'seed cut',
+  'seed cuts',
+  'sparse seed',
+  'peer',
+  'replicate',
+  'replicates',
+] as const;
 
 /**
  * Build the `not: { any: [...] } }` FilterNode excluding every

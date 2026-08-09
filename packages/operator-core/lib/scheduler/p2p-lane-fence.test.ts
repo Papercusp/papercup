@@ -178,6 +178,24 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     // pot runs a LOCAL coding hive as well as the federated shared-hive.
     ['hive — the local coding hive, not the federated one', 'generic-hive bee completes + posts a completion but never calls work_items:complete'],
     ['hive — a mem0 recall scope, not the wire', 'initialize/harness recall pool: harness-scoped memories are systematically outranked by hive+user memories'],
+    // EI-19928699840338901 / P-008 — the SUBSTRATE tranche. Every title below is a
+    // REAL open item measured on 2026-08-09 that the proposed widening would have
+    // hidden. They are here because this repo bundles a corestore seed into the
+    // desktop release, so the storage vocabulary also names ordinary single-box
+    // release-engineering work.
+    ['corestore — a git-history purge, not the wire', 'papercusp-desktop submodule: 77 seed corestore blobs (~1.5GB, 50–99MB each) were git-TRACKED — untracked+gitignored 2026-07-05; history purge still needed'],
+    ['corestore — a single-process advisory lock, executable on one box', 'Add single-instance advisory lock to own-log Corestore (prevents concurrent-process key contention)'],
+    ['corestore — the item\'s OWN motivating critical, and it is a LOCAL deadlock', 'Sparse seed cuts are PERMANENTLY deadlocked: bg-host holds the corestore WRITE lock while getBootedHarness reports booted:false for that same hive, so the cut can neither open the store itself nor find anyone to ask'],
+    ['seed cut — the release pipeline, not the wire', 'P-014: take a REAL release seed cut with the DEFAULTS and MEASURE coreSparseFrom > 0 + the size drop toward ~40MB'],
+    // `peer` is the worst of the tranche: 3 of its 4 critical/major hits are ordinary
+    // single-box bugs whose titles just use the word for ANOTHER AGENT.
+    ['peer — another AGENT, not a network peer', "`WHERE attempts = 0` silently excludes the 99.8% of rows where attempts IS NULL — a peer's committed drop rested on 30 of 17,318 rows and inverted its conclusion"],
+    ['peer — another AGENT, not a network peer', "facts:assert cap-eviction reports the loss to the EVICTOR (who cannot fix it) and never to the fact's AUTHOR (who can) — a peer's verified fact silently vanishes"],
+    ['peer — another AGENT, not a network peer', 'PEER agents\' session turns crowd the durable answer out of the corpus injection budget'],
+    // `replicate` is the DEBUGGING VERB here — the stem-closing analogy to federate
+    // does not transfer, because unlike "federate" this word has two meanings.
+    ['replicate — the debugging verb, not the transport', 'A fleet-scoped windDown:true miss is NOT necessarily a spec bug — before assuming so, replicate the floor set'],
+    ['replicates — the debugging verb, not the transport', "[verified] the '~1s first-arm spike replicates 2/2 BOOTS' claim was wrong as stated"],
   ];
 
   it.each(mustStayAdmitted)('does NOT over-fence (%s)', (_why, title) => {

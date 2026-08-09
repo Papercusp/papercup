@@ -603,6 +603,45 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     ]);
   });
 
+  // ── D-033 (learning-loop-identity-and-consumption-2026-08-08 P-008):
+  // `semanticBlockBand:'soft'` lets a soft hit decline, for high-volume MACHINE
+  // ideation only. The pair below is deliberate: the CONTROL pins the default so
+  // a future change that makes soft blocking universal fails HERE rather than
+  // silently costing agents their filings (owner constraint D-004).
+  it('D-033: semanticBlockBand:"soft" lets a SOFT hit decline the capture', async () => {
+    const worded = existing({ id: 'EI-54', title: 'similar-ish friction wording' });
+    const d = semDeps(deps({ found: [] }), { hard: [], soft: [{ id: 'EI-54', similarity: 0.87 }] }, [worded]);
+    const res = await captureImprovement(
+      { title: 'a completely differently worded capture', kind: 'change', semanticBlockBand: 'soft' },
+      d,
+    );
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('likely-duplicate');
+    expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-54', semantic: 'soft', similarity: 0.87 });
+  });
+
+  it('D-033 CONTROL: the DEFAULT still lets a soft hit through — agent filings are never blocked by a soft band', async () => {
+    const worded = existing({ id: 'EI-55', title: 'similar-ish friction wording' });
+    const d = semDeps(deps({ found: [] }), { hard: [], soft: [{ id: 'EI-55', similarity: 0.87 }] }, [worded]);
+    // Same inputs as the case above, minus the opt-in. Only the flag differs.
+    const res = await captureImprovement({ title: 'a completely differently worded capture', kind: 'change' }, d);
+    expect(res.created).toBe(true);
+    expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-55', semantic: 'soft' });
+  });
+
+  it('D-033: semanticBlockBand:"soft" does NOT widen blocking to CONTAINMENT hits (asymmetric, stays advisory in both modes)', async () => {
+    // Calibration: proves the opt-in widens the SEMANTIC band specifically rather
+    // than loosening blocking generally — otherwise both tests above would pass
+    // for a predicate that simply blocks everything.
+    const broad = existing({ id: 'EI-56', title: 'queue' });
+    const d = semDeps(deps({ found: [broad] }), { hard: [], soft: [] }, [broad]);
+    const res = await captureImprovement(
+      { title: 'queue starves under fleet load', kind: 'change', semanticBlockBand: 'soft' },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+
   it('a null verdict (guard disabled / embedder down) leaves the lexical behavior unchanged', async () => {
     const d = semDeps(deps({ found: [] }), null, []);
     const res = await captureImprovement({ title: 'anything at all', kind: 'bug' }, d);

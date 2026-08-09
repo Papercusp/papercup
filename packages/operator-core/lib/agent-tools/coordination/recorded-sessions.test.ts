@@ -15,7 +15,7 @@ import type { UnifiedPresenceRecord } from './federated-presence';
 function pres(ownerId: string, stale: boolean): UnifiedPresenceRecord {
   return {
     ownerId, ownerLabel: ownerId, workspaceId: 'ws-1', source: 'omp-hook-session',
-    intent: '', currentPlanSlug: null, currentFiles: [], host: '', pid: null,
+    intent: '', currentPlanSlug: null, currentFiles: [], host: '', pid: null, tty: null,
     startedAt: '2026-06-22T19:00:00.000Z', heartbeatAt: '2026-06-22T19:00:00.000Z',
     lastActiveAt: null, intentDeclaredAt: null, agentRole: 'su', potSlug: null, capabilityTags: [], stale, userId: null, revoked: false,
   };

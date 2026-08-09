@@ -298,6 +298,17 @@ export function evaluateProgramSuccess(
   const ideas = inputs.ideas;
   const criteria: SuccessCriterion[] = [];
 
+  // EI-19899928839197448: shared LIVENESS precondition for two bars keyed to the mere
+  // PRESENCE of scout-routed rows (ledger-reconciles, lens-diversity). Both read "no
+  // routed rows" as quiet health, but that reading only holds when NOTHING ran either —
+  // an empty window is a genuine absence of evidence. Once cycles actually RAN, a
+  // window-wide routed count of zero is no longer silence: it is the routing pipeline
+  // having had the opportunity to write and having written nothing, for the entire
+  // window. That is itself evidence of breakage, so both bars below must be able to go
+  // FAIL on it rather than reporting the mildest verdict available ('unknown'/'pass').
+  const scoutRoutedTotal = inputs.cadence.routedIdeas.length;
+  const ranWithNoRoutedOutput = ranTicks.length > 0 && scoutRoutedTotal === 0;
+
   // ── 1. rubric-grounded routed ideas > 0 ─────────────────────────────────────
   // The program's founding defect: the rubric digest lane produced ZERO grounded ideas for
   // its entire life and nobody could see it. Reuse the scheduler's own lane histogram so
@@ -494,11 +505,25 @@ export function evaluateProgramSuccess(
             'a truncated ledger read cannot distinguish real write-path drift from rows the read simply did not fetch — re-run with a higher `limit`',
         }
       : reconciled === 0 && mismatches.length === 0
-        ? {
-            status: 'unknown' as const,
-            observed: `no post-fix cycle in the window both ran and routed ideas${preFixNote}`,
-            unknownReason: 'nothing to reconcile — no routing activity the P-003 fix governs',
-          }
+        ? ranWithNoRoutedOutput
+          ? {
+              // EI-19899928839197448: every cycle in this loop hit the `claimed === 0 &&
+              // actual === 0` skip above, so there is nothing to reconcile in the narrow
+              // per-cycle sense — but that is exactly the shape a totally dead routing
+              // pipeline produces (ticks claim nothing because nothing gets that far, and
+              // the ledger has nothing because nothing was ever written). A 0=0 match
+              // cannot distinguish that from real health, so treat window-wide silence
+              // after real cycle activity as a failure, not as trivial consistency.
+              status: 'fail' as const,
+              observed:
+                `${ranTicks.length} cycle(s) ran in the window but the ledger holds ZERO scout-routed ideas at all` +
+                `${preFixNote} — a 0=0 per-cycle match is not evidence the write path is healthy when nothing was ever written`,
+            }
+          : {
+              status: 'unknown' as const,
+              observed: `no post-fix cycle in the window both ran and routed ideas${preFixNote}`,
+              unknownReason: 'nothing to reconcile — no routing activity the P-003 fix governs',
+            }
         : {
             status: (mismatches.length === 0 ? 'pass' : 'fail') as SuccessStatus,
             observed:

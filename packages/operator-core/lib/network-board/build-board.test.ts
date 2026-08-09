@@ -41,6 +41,7 @@ function fedPeer(over: Partial<UnifiedPresenceRecord> = {}): UnifiedPresenceReco
     currentFiles: [],
     host: 'boxA',
     pid: null,
+    tty: null,
     startedAt: '2026-06-11T00:00:00.000Z',
     heartbeatAt: '2026-06-11T00:00:00.000Z',
     lastActiveAt: null,

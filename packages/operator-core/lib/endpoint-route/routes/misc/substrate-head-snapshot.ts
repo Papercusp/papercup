@@ -50,6 +50,24 @@ export default defineTool({
   method: 'POST',
   path: '/internal/substrate/head-snapshot',
   auth: 'loopback',
+  /**
+   * P-014 — NO route watchdog. This route is not a request/response lookup: producing a
+   * head snapshot reads the ENTIRE own log (461,475 blocks on this box) and legitimately
+   * takes minutes. The route-stack default is 30s (`route-stack.ts` — `timeoutSec ?? 30`),
+   * which this route silently inherited, so it could NEVER deliver a snapshot for a real
+   * corpus: MEASURED 2026-08-09, the call returned `408 {"code":"timeout","message":"route
+   * exceeded 30s"}` while the holder itself was healthy and still working.
+   *
+   * That 408 is worse than a slow success, because the two remedies it suggests are both
+   * wrong: it looks like the holder is wedged (it is not) and it looks transient (it is
+   * not — it recurs identically at any corpus size above ~30s of read).
+   *
+   * The client owns the real budget: `live-head-snapshot-client.ts` applies
+   * DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS (15 min) and aborts. Two bounds on one operation is
+   * what produced this bug, so the server defers to the caller's rather than racing it
+   * with a much shorter one. `probeOnly` requests return immediately and are unaffected.
+   */
+  timeoutSec: null,
   async handler(req) {
     const identity = {
       process: describeProcessRole(),

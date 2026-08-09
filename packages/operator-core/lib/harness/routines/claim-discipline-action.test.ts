@@ -46,6 +46,7 @@ function presenceRecord(over: {
     currentFiles: [],
     host: 'localhost',
     pid: null,
+    tty: null,
     startedAt: now.toISOString(),
     heartbeatAt: recentHeartbeat,
     lastActiveAt: recentHeartbeat,
