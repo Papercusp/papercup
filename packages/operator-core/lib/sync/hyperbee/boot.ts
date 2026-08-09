@@ -2833,6 +2833,49 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         schemaVersion: CURRENT_SCHEMA_VERSION,
       });
       if (snap.appended) lastSnapshotCoversUpTo = snap.coversUpTo;
+
+      // EI-20019309044931698 — flush the just-appended snapshot to SSTs BEFORE the
+      // waiter is resolved, so `appended:true` cannot be observed by a release cut
+      // while the only on-disk copy of those blocks is still WAL.
+      //
+      // WHY, precisely — the filed diagnosis ("the memtable is unflushed, so the
+      // snapshot blocks are INVISIBLE to a read-only open") is MEASURABLY WRONG, and
+      // the distinction decides what this call is allowed to promise. A read-only
+      // RocksDB open uses walRecoveryMode POINT_IN_TIME and REPLAYS the WAL, so the
+      // blocks are already visible unflushed. Measured cross-process (writer held
+      // open, child doing the readOnly open form from seed-provider-corestore.ts:366):
+      // with NO flush at all the child saw all 245 blocks; a positive control reading
+      // a frozen copy correctly saw only 200, so the probe could in fact detect
+      // staleness. The filing's own evidence agrees — its ENOENT was on `002810.log`,
+      // a WAL file, i.e. the open was READING the WAL, not missing the data.
+      //
+      // What the flush actually buys is therefore NOT visibility but INDEPENDENCE
+      // from the WAL: once these blocks are in an SST, the cutter's read-only open no
+      // longer needs the WAL segments the live writer is rotating and deleting
+      // underneath it — which is the open-time race (mechanism (a)) that has direct
+      // evidence. It is a mitigation of that race, NOT a fix for it; the durable fix
+      // is to cut from a RocksDB CHECKPOINT (a consistent hard-linked dir), which
+      // removes the race class outright.
+      //
+      // ⚠ It MUST be `storage.db.flush()`. `storage.flush()` targets the root RocksDB
+      // session, pinned to the 'default' column family, while hypercore data lives in
+      // 'corestore' — measured at 0 new SSTs, i.e. a silent no-op. See the deliberate
+      // non-declaration of `storage.flush()` in holepunch.d.ts.
+      //
+      // Never fatal: the data is durable-enough in the WAL either way (measured
+      // above), so a flush failure is a DEGRADATION, not a lost snapshot — rejecting
+      // here would convert a perfectly usable snapshot into a hard cut failure.
+      // Recorded in the boot event so a silent degradation stays observable.
+      let flushed: boolean | 'skipped' = 'skipped';
+      if (snap.appended) {
+        try {
+          await store.storage.db.flush();
+          flushed = true;
+        } catch {
+          flushed = false;
+        }
+      }
+
       try {
         recordBootEvent(
           opts.workspaceId,
@@ -2840,7 +2883,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           'peer_capped',
           `on-demand head snapshot: appended=${snap.appended} coversUpTo=${snap.coversUpTo} ` +
             `chunks=${snap.chunkCount} rows=${snap.rowCount} readBlocks=${lengthBefore} ` +
-            `mergeStalledMs=${Date.now() - startedAt}`,
+            `flushedToSst=${flushed} mergeStalledMs=${Date.now() - startedAt}`,
         );
       } catch {
         // observability must never abort the merge pass

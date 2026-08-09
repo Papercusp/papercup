@@ -1,0 +1,327 @@
+/**
+ * goals:start — open a goal AND spawn the GOAL-mode agent that owns it, in one
+ * call (goals-tab-improvement-2026-08-09 P-015, D-008).
+ *
+ * WHY THIS EXISTS AS ONE TOOL. The owner's "+ Start a goal" composer needs
+ * three writes to land together: the goal row, a spawned agent, and the
+ * `agent_modes` stamp that JOINS them. Done client-side that is three
+ * independent calls with two failure gaps, and the gaps are not hypothetical —
+ * the workspace this shipped into had TWO goals, ONE goal-mode session, and
+ * ZERO rows joining any of them (EI-20015592992797890). A goal whose agent
+ * never spawned is worse than no goal: it sits on the board as an outcome
+ * somebody believes is being pursued.
+ *
+ * ORDER IS LOAD-BEARING — row, then mode, then spawn:
+ *   1. INSERT the goal (cheap, rollback-able).
+ *   2. Stamp `agent_modes` for the PRE-PINNED owner id (cheap, rollback-able).
+ *   3. Spawn the agent (expensive, and the only irreversible step).
+ * The stamp must precede the spawn because it is what the agent reads on its
+ * very first orient; writing it afterwards is a race against the agent's own
+ * boot, and losing that race yields a GOAL-mode session that does not know
+ * which goal it owns. Pre-pinning the identity (`psu --owner-id=`) is what
+ * makes writing-before-existing possible at all.
+ *
+ * If the spawn fails, both writes are compensated and the tool reports the
+ * failure — never a goal with no agent.
+ *
+ * WHY NOT IN agent-mcp beside goals:create: the spawn needs operator-core's
+ * console-launcher, and agent-mcp deliberately does not depend on
+ * operator-core. The shared half (id minting + the row write) lives in
+ * `@papercusp/agent-mcp/goals` so the two writers cannot drift.
+ */
+
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { z } from 'zod';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { buildConsoleEnvelope } from '../../console-launcher';
+import { spawnConsole, spawnHeadless } from '../../console-spawn';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { papercuspPathForWorkspace } from '../../papercusp-root';
+import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
+import { buildAgentLaunchCommand, injectLaunchedByArg } from '../../agent-launch-core';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { setMode } from '../../modes/store';
+
+/**
+ * The agent's FIRST TURN.
+ *
+ * Deliberately NOT a restatement of GOAL mode's contract — that arrives
+ * through the mode itself (`coord:orient` re-injects an active mode's contract
+ * every wake, and the contract already carries the mandatory kickoff question:
+ * read the existing portfolio before creating anything). Repeating it here
+ * would be a second copy to drift.
+ *
+ * What this brief carries is the part the contract CANNOT know: which goal,
+ * stated in the owner's own words, with the two constraints GOAL mode requires
+ * and this form is now the only place that enforces.
+ */
+export function buildGoalKickoffBrief(opts: {
+  goalId: string;
+  title: string;
+  killCriterion: string;
+  budgetCents: number;
+  body?: string | null;
+}): string {
+  const ceiling = `$${(opts.budgetCents / 100).toFixed(2)}`;
+  return [
+    `You are in GOAL mode on goal \`${opts.goalId}\`, which the owner just started.`,
+    '',
+    `OUTCOME — ${opts.title}`,
+    opts.body?.trim() ? `\n${opts.body.trim()}\n` : '',
+    `KILL THIS IF — ${opts.killCriterion}`,
+    `CEILING — ${ceiling} declared. Report actuals against it; do not quietly exceed it.`,
+    '',
+    'Your mode contract (delivered with your orient) governs how to run this, including',
+    'the mandatory kickoff question. Start there, then begin.',
+  ]
+    .filter((l) => l !== '')
+    .join('\n');
+}
+
+function err(text: string) {
+  return { content: [{ type: 'text' as const, text }], isError: true };
+}
+
+export default defineTool({
+  name: 'goals:start',
+  description:
+    'Open a GOAL and spawn the GOAL-mode agent that owns it, atomically — the goal row, the agent, and the agent_modes stamp joining them, or none of them. ' +
+    '{ title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent\'s ownerId. ' +
+    'Kill criterion and ceiling are REQUIRED: GOAL mode mandates both at creation, and this is the surface that enforces it.',
+  guidance: {
+    when:
+      'Starting a NEW outcome that needs an agent to own it end-to-end — the "+ Start a goal" path. One call: goal + its agent + the join between them.',
+    notWhen:
+      'Recording a goal with NO agent (a goal you or an existing session will own): goals:create. Proposing one for the owner to confirm: goals:propose. Launching an agent for a non-goal task: capability:launch-agent.',
+    chaining:
+      'goals:start → the spawned agent orients in GOAL mode with the goal as its subject and works the portfolio itself. Watch it on the Goals board, or coord:presence by the returned ownerId.',
+    seeAlso: [
+      'goals:create (the goal row alone, no agent)',
+      'capability:launch-agent (an agent alone, no goal)',
+    ],
+  },
+  // Same gate as goals:create, deliberately, and NOT capability:terminal. The
+  // privileged thing capability:terminal guards is running an ARBITRARY
+  // command; this spawns one fixed, fully-validated psu launch whose every
+  // argument is schema-checked. Gating it harder than goals:create would also
+  // lock out the owner's own HUD, which is the only caller this exists for.
+  capability: 'goals:write',
+  requirePrincipal: false,
+  agentRoles: [...SU_ROLES],
+  args: z.object({
+    title: z
+      .string()
+      .min(1)
+      .max(500)
+      .describe('the outcome, stated so its achievement is checkable ("ship a paid app")'),
+    killCriterion: z
+      .string()
+      .min(1)
+      .max(2000)
+      .describe(
+        'REQUIRED — the written condition under which this goal is abandoned. GOAL mode mandates one at creation; a goal with no kill criterion runs until somebody notices.',
+      ),
+    budgetCents: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe('REQUIRED — the declared spend ceiling in cents, the number actuals are reported against'),
+    body: z
+      .string()
+      .max(20000)
+      .optional()
+      .describe('the full statement: what winning looks like, scope, constraints'),
+    tripwires: z
+      .array(TripwireSchema)
+      .max(12)
+      .optional()
+      .describe('structured form of the kill criterion — renders as live bars instead of prose nobody re-checks'),
+    parentId: z.string().min(1).optional().describe('parent goal id, for a sub-goal'),
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Harness slug to file the goal under and bootstrap the agent in. Required when the caller context is wildcard/unset.'),
+    agent: z.string().max(40).optional().describe("Which backend to launch (default 'claude')."),
+    model: z.string().max(80).optional().describe('Model override for the spawned agent.'),
+    account: z
+      .string()
+      .max(80)
+      .optional()
+      .describe("Account routing: 'default' (system credential, the default), 'auto' (gateway-routed with failover), or a pool account id."),
+    headless: z
+      .boolean()
+      .optional()
+      .describe('Launch with NO desktop window (still registers presence and stays injectable).'),
+  }),
+  async handler(args, ctx) {
+    const workspaceId =
+      ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
+    if (!workspaceId) {
+      return err('No concrete workspace in scope — a goal cannot be filed workspace-less.');
+    }
+    const installSlug =
+      args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null);
+    if (!installSlug) {
+      return err('No harness in scope — goals are filed against an install_slug. Pass `harness`.');
+    }
+
+    let callerOwnerId: string | null = null;
+    try {
+      callerOwnerId = resolveAgentIdentity(ctx).ownerId;
+    } catch {
+      callerOwnerId = null;
+    }
+
+    const id = goalId(args.title);
+    // PRE-PIN the agent's coord identity so the mode stamp below can name it
+    // before it exists. Same minting `/api/adv/launch-su` does.
+    const ownerId = `su-${randomUUID()}`;
+
+    // ── 1. the goal row ───────────────────────────────────────────────────
+    try {
+      await insertGoalRow(ctx.tx, {
+        id,
+        installSlug,
+        workspaceId,
+        title: args.title,
+        body: args.body ?? null,
+        parentId: args.parentId ?? null,
+        budgetCents: args.budgetCents,
+        status: 'active',
+        killCriterion: args.killCriterion,
+        tripwires: args.tripwires ?? null,
+        metadata: { startedBy: callerOwnerId ?? 'operator-ui', agentOwnerId: ownerId },
+      });
+    } catch (e) {
+      return err(`Could not open the goal: ${(e as Error)?.message ?? e}`);
+    }
+
+    // ── 2. the join: this agent, in GOAL mode, on THIS goal ───────────────
+    // Written BEFORE the spawn on purpose — see the header. `subject` is the
+    // marker the sessions pane filters on and the Goals board pairs by
+    // (goals-tab-improvement-2026-08-09 D-007); without it the session is an
+    // ordinary agent that happens to be in goal mode.
+    const modeRes = await setMode({
+      workspaceId,
+      ownerId,
+      modeId: 'goal',
+      enabled: true,
+      reason: `owns goal ${id} — ${args.title.slice(0, 120)}`,
+      setBy: callerOwnerId ?? 'operator-ui',
+      subject: id,
+    });
+    if (!modeRes.ok) {
+      await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+      return err(
+        `Could not put the new agent in GOAL mode (${modeRes.error ?? 'unknown error'}), so nothing was spawned and the goal was rolled back. ` +
+          'A GOAL-mode agent that does not know its goal is the failure this tool exists to prevent.',
+      );
+    }
+
+    // ── 3. the agent ──────────────────────────────────────────────────────
+    const rollback = async () => {
+      await setMode({
+        workspaceId,
+        ownerId,
+        modeId: 'goal',
+        enabled: false,
+        reason: 'launch failed — rolling back',
+        setBy: callerOwnerId ?? 'operator-ui',
+      }).catch(() => {});
+      await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+    };
+
+    let base;
+    try {
+      base = await buildConsoleEnvelope({
+        workspaceId,
+        slug: installSlug,
+        operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
+        // A launched AGENT is an MCP-connected console — it needs the
+        // superuser .mcp.json (same call capability:launch-agent makes).
+        skipMcpJson: false,
+      });
+    } catch (e) {
+      await rollback();
+      return err(`Could not prepare the launch (nothing spawned, goal rolled back): ${(e as Error)?.message ?? e}`);
+    }
+
+    let command: string;
+    try {
+      command = buildAgentLaunchCommand({
+        mode: 'fresh',
+        agent: args.agent ?? 'claude',
+        harness: installSlug,
+        ownerId,
+        account: args.account ?? null,
+        model: args.model ?? null,
+        headless: !!args.headless,
+      });
+    } catch (e) {
+      await rollback();
+      return err(`Could not build the launch command (nothing spawned, goal rolled back): ${(e as Error)?.message ?? e}`);
+    }
+    command = injectLaunchedByArg(command, callerOwnerId).command;
+
+    // The brief rides the ENV, never a --kickoff= value: free-form text inside
+    // the console greeting one-liner gets double-single-quoted and breaks the
+    // shell. psu reads PAPERCUSP_KICKOFF_PROMPT as the fresh CLI's first turn.
+    const env = {
+      ...base.env,
+      PAPERCUSP_KICKOFF_PROMPT: buildGoalKickoffBrief({
+        goalId: id,
+        title: args.title,
+        killCriterion: args.killCriterion,
+        budgetCents: args.budgetCents,
+        body: args.body ?? null,
+      }),
+    };
+    const label = `goal · ${args.title.slice(0, 40)}`;
+
+    const spawned = args.headless
+      ? await spawnHeadless({
+          envelope: { ...base, env, greetingCmd: command, cwd: base.cwd },
+          label: `${label} (headless)`,
+          logDir: join(papercuspPathForWorkspace(workspaceId), 'fleet-logs'),
+        })
+      : await spawnConsole({
+          envelope: { ...base, env, greetingCmd: command, cwd: base.cwd },
+          label,
+          writeMcpJson: false,
+          allowDesktopBridge: true,
+        });
+
+    if (spawned.status !== 'ok') {
+      await rollback();
+      const detail = 'error' in spawned && spawned.error ? spawned.error : 'the spawn reported no detail';
+      return err(
+        `The goal's agent failed to launch (${detail}). The goal row and its mode stamp were ROLLED BACK — ` +
+          'nothing was left behind, so retrying is safe.',
+      );
+    }
+
+    return {
+      data: {
+        id,
+        title: args.title,
+        status: 'active',
+        kill_criterion: args.killCriterion,
+        budget_cents: args.budgetCents,
+        parent_id: args.parentId ?? null,
+        tripwires: args.tripwires ?? null,
+        workspace_id: workspaceId,
+        install_slug: installSlug,
+        // The agent that owns it. This — not an adv_sessions row, which psu
+        // records asynchronously once it boots — is the handle to open its
+        // chat, poll coord:presence, or pair it on the Goals board.
+        agent_owner_id: ownerId,
+        agent_terminal: spawned.terminal,
+        agent_pid: spawned.pid ?? null,
+        headless: !!args.headless,
+      },
+    };
+  },
+});

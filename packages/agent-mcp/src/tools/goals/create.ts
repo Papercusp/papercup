@@ -19,44 +19,19 @@
  * `papercusp://workspace/goals` resource, and search:query's `goals` kind).
  */
 
-import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SU_WRITE_ROLES } from '../../role-config';
+import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
 
-/** A readable, collision-resistant id: `ship-paid-app-3f9a1c`. */
-export function goalId(title: string): string {
-  const stem = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
-  return `${stem || 'goal'}-${randomBytes(3).toString('hex')}`;
-}
-
-export const GOAL_STATUSES = ['active', 'achieved', 'killed', 'paused'] as const;
-
-/**
- * A TRIPWIRE turns the kill criterion from prose into a readout.
- *
- * A criterion written as a sentence ("kill this if we pass $500 or 30 days
- * without a shipped build") is a promise nobody re-checks; the same thing as
- * `{ metric, threshold, current }` renders as a bar the owner can act on at a
- * glance (goal-mode-2026-08-07 P-021). Deliberately OPTIONAL and unconstrained
- * as to metric name: a goal whose criterion is genuinely unquantifiable must
- * still be creatable, and the detail view renders the prose with no bars when
- * this is null. `current` is a snapshot the agent refreshes via goals:update —
- * it is NOT computed here, because most metrics (revenue, users, shipped
- * builds) live outside this database entirely.
- */
-export const TripwireSchema = z.object({
-  metric: z.string().min(1).max(60).describe('machine key, e.g. "days_elapsed" / "spend_usd"'),
-  label: z.string().min(1).max(120).describe('how it reads to the owner, e.g. "Day 12 of 30"'),
-  threshold: z.number().describe('the value at which the criterion trips'),
-  current: z.number().optional().describe('latest observed value; omit until first measured'),
-  unit: z.string().max(20).optional().describe('"usd" / "days" / "users" — display only'),
-});
-export type Tripwire = z.infer<typeof TripwireSchema>;
+// The id minter, the status vocabulary, the tripwire schema and the row write
+// live in `./_core` so `goals:start` (operator-core — it also SPAWNS the
+// GOAL-mode agent, which cannot be done from this package) shares one
+// definition with this tool instead of re-typing the column list. Re-exported
+// here because these were this module's public surface first, and callers
+// (goals:update, goals:propose, the HUD board) already import them from it.
+export { GOAL_STATUSES, TripwireSchema, goalId };
+export type { Tripwire, GoalStatus } from './_core';
 
 export default defineTool({
   name: 'goals:create',
@@ -130,23 +105,19 @@ export default defineTool({
     }
 
     const id = goalId(args.title);
-    // The kill criterion is a first-class COLUMN (migration 765), not a
-    // metadata key. It used to be folded into `metadata` because the column did
-    // not exist — but the whole GUI reads it (the detail view's "THIS GOAL ENDS
-    // WHEN" headline, the rail's glance), and a jsonb key cannot be indexed,
-    // constrained, or joined the way the read path needs.
-    const metadata = { ...(args.metadata ?? {}) };
-    await ctx.tx`
-      INSERT INTO harness_shared.goals
-        (id, install_slug, workspace_id, title, body, parent_id, budget_cents, status,
-         kill_criterion, tripwires, metadata)
-      VALUES
-        (${id}, ${installSlug}, ${workspaceId}, ${args.title}, ${args.body ?? null},
-         ${args.parentId ?? null}, ${args.budgetCents ?? null}, ${args.status},
-         ${args.killCriterion ?? null},
-         ${args.tripwires?.length ? JSON.stringify(args.tripwires) : null}::jsonb,
-         ${Object.keys(metadata).length ? JSON.stringify(metadata) : null}::jsonb)
-    `;
+    await insertGoalRow(ctx.tx, {
+      id,
+      installSlug,
+      workspaceId,
+      title: args.title,
+      body: args.body ?? null,
+      parentId: args.parentId ?? null,
+      budgetCents: args.budgetCents ?? null,
+      status: args.status,
+      killCriterion: args.killCriterion ?? null,
+      tripwires: args.tripwires ?? null,
+      metadata: args.metadata ?? null,
+    });
 
     // ── Stamp the caller's GOAL mode with the goal it is now running ─────
     // This side effect IS the provenance mechanism (P-016). Everything the

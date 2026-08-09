@@ -492,7 +492,14 @@ describe('docs:search handler', () => {
     const p = payloadOf(res);
     expect(p.surface).toBe('harness');
     expect(p.hits[0].slug).toBe('p1');
-    expect(searchDocs).toHaveBeenCalledTimes(1);
+    // Called, but NOT an exact count. These are handler-pipeline tests; how many
+    // queries the engine issues is the engine's business, and `lexicalCascade`
+    // (libs/generic/search hybrid.ts) legitimately fires a SECOND widening query
+    // whenever stage 1 under-fills `limit` — which this 1-hit mock vs limit:8
+    // always does. The meaningful contrast is the `not.toHaveBeenCalled()` gate
+    // test above; asserting an exact count here only re-coupled this file to
+    // engine internals it does not test.
+    expect(searchDocs).toHaveBeenCalled();
   });
 
   it('project surface when PAPERCUSP_PROJECT_DOCS_ROOT is set and arg is "all"', async () => {
@@ -504,7 +511,8 @@ describe('docs:search handler', () => {
       { harnessSlug: '*' } as never,
     );
     expect(payloadOf(res).surface).toBe('project');
-    expect(searchDocs).toHaveBeenCalledTimes(1);
+    // >=1, not an exact count — see the lexicalCascade note on the happy-path test.
+    expect(searchDocs).toHaveBeenCalled();
   });
 
   it('args schema enforces query min length 2', async () => {
@@ -578,7 +586,8 @@ describe('docs:search handler', () => {
       const p = payloadOf(res);
       expect(p.surface).toBe('engineering');
       expect(p.error).toBeUndefined();
-      expect(searchDocs).toHaveBeenCalledTimes(1);
+      // >=1, not an exact count — see the lexicalCascade note on the happy-path test.
+      expect(searchDocs).toHaveBeenCalled();
     });
 
     it("harness:'engineering' without isSuperuser → no_docs_source (same gate as harness:'all')", async () => {

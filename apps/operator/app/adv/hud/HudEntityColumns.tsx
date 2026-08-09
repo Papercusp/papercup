@@ -200,6 +200,19 @@ export default function HudEntityColumns({
     ? board.columns.filter((c) => c.id === focusColumn)
     : board.columns;
 
+  /* "Is there anything to show", NOT "is the count zero" — the two can honestly
+     disagree, and gating the empty state on the COUNT hid real cards.
+
+     `counts`/`total` describe the ENTITY population, and a board may legitimately
+     carry a card that is not one of those entities: the Goals board prepends a
+     "+ Start a goal" ACTION card and deliberately leaves it uncounted, because a
+     board reporting "1 goal" when zero exist is the same class of lie as an
+     uncaveated truncated column. Gated on `total === 0`, that card rendered
+     nowhere in exactly the empty-board case it exists for. (`opts.totals` can
+     also make `total` a store-wide figure that no longer matches the sampled
+     cards, so the two were never safely interchangeable.) */
+  const hasCards = board.columns.some((c) => c.cards.length > 0);
+
   return (
     <>
       <div className="hud__top hud__top--entity">
@@ -252,7 +265,7 @@ export default function HudEntityColumns({
         <p className="hud__state hud__state--error">Could not read {noun}: {error}</p>
       ) : loading && board.total === 0 ? (
         <p className="hud__state">Reading {noun}…</p>
-      ) : board.total === 0 ? (
+      ) : !hasCards ? (
         <p className="hud__state">{query.trim() ? `No ${noun} match “${query.trim()}”.` : emptyLabel}</p>
       ) : (
         <div className="hud__cols" style={focusColumn ? { gridTemplateColumns: '1fr' } : undefined}>

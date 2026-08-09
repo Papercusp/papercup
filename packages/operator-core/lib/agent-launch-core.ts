@@ -224,6 +224,26 @@ export function buildAgentLaunchCommand(opts: {
   addDir?: string[] | null;
   /** psu --launch-context: path to a brief/markdown file injected as the launch context. */
   launchContext?: string | null;
+  /**
+   * psu --owner-id: PRE-PIN the launched session's coord identity instead of
+   * letting bootstrap-su mint one (WI-5002/EI-13277 exist for exactly this
+   * "state a spawner keys pre-spawn" case).
+   *
+   * The caller needs this whenever it must write a row ABOUT the new agent
+   * before the agent exists — `goals:start` stamps `agent_modes` (mode 'goal',
+   * subject = the goal id) for this id before it spawns, so the session's very
+   * first orient already knows which goal it owns. Without a pre-pin that write
+   * is a race against the agent's own boot, and losing it produces the exact
+   * failure already filed as EI-20015592992797890: a goal and an agent with
+   * nothing joining them.
+   *
+   * FRESH LAUNCHES ONLY — deliberately ignored on resume/fork. A resumed
+   * session already HAS an identity; forcing a fresh one onto it would either
+   * be refused by bootstrap-su or split the session away from its own history,
+   * which is the pin's purpose inverted (the same rule `/api/adv/launch-su`
+   * follows).
+   */
+  ownerId?: string | null;
   extraArgs?: string[] | null;
   platform?: NodeJS.Platform;
 }): string {
@@ -255,6 +275,11 @@ export function buildAgentLaunchCommand(opts: {
     // caller can compose an unlaunchable command. (A resume/fork carries the agent kind
     // in its recorded session, so it must NOT be passed there.)
     parts.push(`--agent=${safe('agent', opts.agent?.trim() || 'claude')}`);
+    // Pre-pinned coord identity, in the same slot `/api/adv/launch-su` emits it
+    // (after --agent, before --harness) so a GUI launch and a tool launch stay
+    // argv-comparable. FRESH ONLY — see the option's doc for why a resume must
+    // never carry one.
+    if (opts.ownerId) parts.push(`--owner-id=${safe('ownerId', opts.ownerId)}`);
     if (opts.harness) parts.push(`--harness=${safe('harness', opts.harness)}`);
     if (opts.plan) parts.push(`--plan=${safe('plan', opts.plan)}`);
   }

@@ -17,6 +17,32 @@ declare module 'corestore' {
     // connection / secret-stream) — it both replicates AND attaches the shared
     // muxer at `stream.userData` (Model B announce channel rides that muxer).
     replicate(initiatorOrStream: boolean | unknown): unknown;
+    /**
+     * The underlying hypercore-storage `CorestoreStorage`.
+     *
+     * ⚠ DELIBERATELY DOES NOT DECLARE `storage.flush()`. That method exists at
+     * runtime (hypercore-storage index.js:766 → `this.rocks.flush()`) but is NOT the
+     * durability flush anyone reaching for it wants: a rocksdb-native flush is scoped
+     * to the column family of the session it is called on
+     * (rocksdb-native/lib/state.js:225 —
+     * `binding.flush(this._handle, db._columnFamily._handle, …)`), and the root `rocks`
+     * session is pinned to the **'default'** column family (state.js:19/134), while ALL
+     * hypercore data lives in the **'corestore'** column family
+     * (hypercore-storage:10/509/1167).
+     *
+     * MEASURED (45×64KB appends, counting new .sst files on disk):
+     *   `storage.flush()`     → 0 new SSTs — flushes nothing
+     *   `storage.db.flush()`  → 1 new SST  — actually flushes the data
+     *
+     * So `storage.flush()` typechecks, ships, and silently does nothing. It is left
+     * undeclared on purpose so that mistake cannot compile. Use `storage.db.flush()`,
+     * which is what corestore's own `suspend()` calls (corestore/index.js:312).
+     */
+    readonly storage: {
+      readonly readOnly: boolean;
+      /** The **'corestore'** column-family session — the one that must be flushed. */
+      readonly db: { flush(): Promise<void> };
+    };
   }
 }
 

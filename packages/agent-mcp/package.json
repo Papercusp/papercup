@@ -11,7 +11,8 @@
     "./provisioning": "./src/provisioning.ts",
     "./auth": "./src/auth.ts",
     "./plugin-events": "./src/plugin-events.ts",
-    "./_bulk": "./src/_bulk.ts"
+    "./_bulk": "./src/_bulk.ts",
+    "./goals": "./src/tools/goals/_core.ts"
   },
   "scripts": {
     "test": "vitest",

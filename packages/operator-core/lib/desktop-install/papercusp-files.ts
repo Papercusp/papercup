@@ -831,7 +831,7 @@ function hookDirCandidates(operatorAppRoot: string, explicitRoot: boolean, subdi
  *
  * Best-effort like its CC sibling: never throws, never blocks install.
  */
-async function installInjectionHooks(home: string, injectSrcDir: string): Promise<string[]> {
+export async function installInjectionHooks(home: string, injectSrcDir: string): Promise<string[]> {
   const ompHookSrc = path.join(path.dirname(injectSrcDir), 'omp', 'inject-hook.ts');
   const installed: string[] = [];
   // EI-20006285243973245 — until now this installer recorded NOTHING, anywhere.
@@ -850,6 +850,16 @@ async function installInjectionHooks(home: string, injectSrcDir: string): Promis
     installedBy: process.argv[1] ? path.basename(process.argv[1]) : undefined,
   };
   const dispatcherFiles: string[] = [];
+  const hooksRoot = path.join(home, '.papercusp', 'hooks');
+  // Hoisted so the EARLY-RETURN path can reach it. It previously sat after the
+  // try/catch, which made it unreachable in the one case it exists to report —
+  // a missing dispatcher source returns [] from the catch. The warning about the
+  // invisible failure was itself invisible; a test caught it.
+  const warnInactive = () =>
+    console.warn(
+      `[desktop-install] injection hooks: installed NOTHING (${hooksRoot}/inject dispatcher unavailable ` +
+        `from ${injectSrcDir}) — omp inject-hook injection is INACTIVE for sessions on this box`,
+    );
   try {
     // Refuse the partial install before writing anything.
     await fs.access(path.join(injectSrcDir, 'index.mjs'));
@@ -890,6 +900,11 @@ async function installInjectionHooks(home: string, injectSrcDir: string): Promis
       await writeInstallStamp(injectDest, { sourceDir: injectSrcDir, ...stampBase, files: dispatcherFiles });
     }
   } catch {
+    // The invisible-failure case: [] is documented as "omp injection inactive on
+    // this box", which every downstream turn then presents as the
+    // indistinguishable "no memories were relevant". Say it once, loudly,
+    // instead of leaving it to be inferred from an absence.
+    warnInactive();
     return [];
   }
 
@@ -925,7 +940,6 @@ async function installInjectionHooks(home: string, injectSrcDir: string): Promis
   // returned 0 for the entire window, because nothing on this path had ever
   // logged anything. Keep the substrings 'hooks/inject' and 'inject-hook'
   // present here — that exact probe is what a future diagnosis will re-run.
-  const hooksRoot = path.join(home, '.papercusp', 'hooks');
   const sha = incomingProvenance.sourceSha ? ` @ ${incomingProvenance.sourceSha.slice(0, 12)}` : '';
   if (installed.length > 0) {
     console.log(
@@ -933,14 +947,9 @@ async function installInjectionHooks(home: string, injectSrcDir: string): Promis
         `${hooksRoot}/inject + ${hooksRoot}/omp from ${injectSrcDir}${sha} — ${installed.join(', ')}`,
     );
   } else {
-    // The invisible-failure case, and the reason this branch is worth a line at
-    // all: [] is documented as "omp injection inactive on this box", which every
-    // downstream turn then presents as the indistinguishable "no memories were
-    // relevant". Say it once, loudly, instead of leaving it to be inferred.
-    console.warn(
-      `[desktop-install] injection hooks: installed NOTHING (${hooksRoot}/inject dispatcher unavailable ` +
-        `from ${injectSrcDir}) — omp inject-hook injection is INACTIVE for sessions on this box`,
-    );
+    // Reachable when the copy loop found no .mjs to write without throwing; the
+    // throwing path warns from the catch above.
+    warnInactive();
   }
   return installed;
 }

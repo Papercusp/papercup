@@ -261,6 +261,11 @@ import './gates/canary-check';
 // mis-declared `guards` limit). The on-demand READER for the decision log — a detector nothing
 // calls is itself the Shape-4 defect it exists to catch.
 import './gates/degenerate-check';
+// goals-tab-improvement-2026-08-09 P-015 — goals:start: open a goal AND spawn the
+// GOAL-mode agent that owns it, atomically. The goal WRITE tools live in agent-mcp;
+// this one cannot, because it also spawns (agent-mcp has no operator-core dep). It is
+// the only surface that can enforce GOAL mode's "kill criterion + ceiling at creation".
+import './goals/start';
 // learning-packs-2026-06-11 P-009/P-012/P-013 — hive knowledge-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
 import './knowledge_packs/list';

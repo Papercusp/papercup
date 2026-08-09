@@ -1090,6 +1090,33 @@ while the real set was 11 real files across two workspaces. Since WI-7274 those 
 `[green-checkpoint:TEST-FIXTURE]` instead of `[green-checkpoint]`, so an untagged log predates the
 fix and every one of its `[green-checkpoint]` lines is suspect.
 
+⚠ **`skipped-locked` is a DESIGNED DEFERRAL, not a lost tick — never read it as "this cycle
+produced no verdict" or as gate throughput loss.** It means the scheduled tick fired, found the
+singleton run-lock held by another gate run, and returned without judging — because *that* run is
+producing the verdict and records it itself. The writer says so explicitly
+(`packages/operator-core/lib/harness/routines/release-actions.ts:414-415`): *"false when it is **not
+a verdict at all** (a `skipped-*` outcome — the run that HOLDS the lock is producing the real one and
+records it itself)"*. Corroborated at :420 (`isRecordableVerdict` rejects `skipped-*`), :755
+(`classify` → `'noop'`), and :834-836 (deliberately excluded from the stall counter). The row exists
+purely as history for the /admin Git tab.
+
+Measured over a 36h window (2026-08-09): **8 of 8** completed skips were followed by a real verdict
+from the lock-holding run within 11–54 min — one of them naming the *same candidate* — and the 6
+that could not be paired to a `/tmp` manual log each had a verdict land 29–55 min later. **Zero
+verdicts were lost.** A fleet of agents firing manual `release:checkpoint-run` to green their own
+changes is the *documented normal cause* of these rows (`release-actions.ts:400-409`, from the
+2026-07-16/17 stall), and the consequence that actually mattered — a manual run not dispatching a
+release-fixer — was already fixed by EI-13723.
+
+The error this exists to prevent is filing it as a defect: a `GROUP BY status` over
+`pipeline_events` makes `skipped-locked` look like a 29% throughput hole, which invites building a
+"defer-and-retry" mechanism for a non-problem. That happened (EI-20019097046659920, filed major,
+retracted and dropped the same hour, after its framing had already been propagated into a *critical*
+sibling item). The tell was there and was ignored: a suspiciously clean percentage on a small
+denominator, describing a system that would have had to be silently broken for months without
+anyone noticing. **When a finding implies a long-standing system has been broken all along and
+nobody spotted it, the prior is that you are misreading it** — read the writer before you file.
+
 ⚠⚠ **The verdict's `📍 lineage: … none of the failing files were modified in that range
 (presumptively a real red)` line is UNRELIABLE — never let it talk you out of re-checking at HEAD.**
 It asks whether the failing TEST file moved. For every test that polices OTHER files — the

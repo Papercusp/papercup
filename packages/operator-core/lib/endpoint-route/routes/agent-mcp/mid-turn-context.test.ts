@@ -97,10 +97,13 @@ describe('mid-turn-context — query derivation', () => {
   });
 
   it('yields NOTHING for a tool with no recall signal — so it can be dropped before any spend', () => {
-    // Edit/Write/TodoWrite etc. carry no investigation signal. Returning '' here
-    // is what makes an unknown tool free rather than embedding a blob of JSON.
-    expect(deriveQuery('Edit', { file_path: '/a/b.ts', old_string: 'x' })).toBe('');
-    expect(deriveQuery('TodoWrite', { todos: [] })).toBe('');
+    // Returning '' here is what makes a signal-free call FREE rather than
+    // embedding a blob of JSON. Both miss kinds must short-circuit:
+    expect(deriveQuery('TodoWrite', { todos: [] })).toBe(''); // unknown-tool
+    expect(deriveQuery('AskUserQuestion', { questions: [] })).toBe(''); // no-signal
+    // ⚠ This case used `Edit` until WI-37587, when Edit/Write were mapped to
+    // `file_path` (they carry the same signal as Read — 581 Edit calls/day were
+    // being dropped). Do not reintroduce a MAPPED tool as the example here.
   });
 });
 
@@ -135,7 +138,8 @@ describe('mid-turn-context — batch folding (the PostToolBatch payload)', () =>
   it('drops a batch whose calls carry no recall signal at all', async () => {
     const out = await post({
       owner: owner(),
-      toolCalls: [{ tool: 'Edit', toolInput: { file_path: '/a.ts' }, toolResponse: 'ok' }],
+      // A signal-free tool (see the derive test above — NOT a mapped one).
+      toolCalls: [{ tool: 'TodoWrite', toolInput: { todos: [] }, toolResponse: 'ok' }],
     });
     expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
     expect(out.text).toBe('');
@@ -158,7 +162,8 @@ describe('mid-turn-context — batch folding (the PostToolBatch payload)', () =>
 
 describe('mid-turn-context — the cost properties', () => {
   it('spends NOTHING on a tool call with no recall signal', async () => {
-    const out = await post({ owner: owner(), tool: 'Edit', toolInput: { file_path: '/a.ts' } });
+    // A signal-free tool (see the derive test above — NOT a mapped one).
+    const out = await post({ owner: owner(), tool: 'TodoWrite', toolInput: { todos: [] } });
     expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
     expect(out.text).toBe('');
   });
@@ -597,6 +602,62 @@ describe('shared tool vocabulary — codex + omp parity (D-005)', () => {
       expect(query).toBe('');
       // Known-but-omitted, NOT unknown: the alarm must not read this as drift.
       expect(miss).toBe('no-signal');
+    });
+
+    /**
+     * claude's Edit/Write carry the SAME `file_path` signal as the already
+     * mapped Read and were simply never added — 957 claude NATIVE calls/day
+     * derived nothing (Edit 581, ToolSearch 256, Write 69). WI-37587.
+     */
+    it('Edit/Write derive their file_path, exactly as Read already does', () => {
+      expect(deriveQuery('Edit', { file_path: '/repo/a.ts' })).toBe('/repo/a.ts');
+      expect(deriveQuery('Write', { file_path: '/repo/b.ts' })).toBe('/repo/b.ts');
+      // Same signal as the tool that was already mapped — that is the point.
+      expect(deriveQuery('Read', { file_path: '/repo/a.ts' })).toBe('/repo/a.ts');
+    });
+
+    /**
+     * CREDENTIAL GUARD. Edit/Write map `file_path` ONLY. The bodies are
+     * unbounded and credential-bearing on the same argument that excludes
+     * write_stdin's `chars` — and the derived query is EMBEDDED, where
+     * detectPossibleSecrets does not protect it. This is the assertion that
+     * fails if someone later "completes" the mapping with the body fields.
+     */
+    it('Edit/Write never leak file BODIES into the embedded query', () => {
+      const secret = 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI';
+      const edit = deriveQuery('Edit', {
+        file_path: '/repo/.env',
+        old_string: secret,
+        new_string: `${secret}rotated`,
+      });
+      expect(edit).toBe('/repo/.env');
+      expect(edit).not.toContain('wJalrXUtnFEMI');
+
+      const write = deriveQuery('Write', { file_path: '/repo/.env', content: secret });
+      expect(write).toBe('/repo/.env');
+      expect(write).not.toContain('wJalrXUtnFEMI');
+    });
+
+    it('ToolSearch/WebSearch/WebFetch derive their query text', () => {
+      expect(deriveQuery('ToolSearch', { query: 'select:Read,Edit' })).toBe('select:Read,Edit');
+      expect(deriveQuery('WebSearch', { query: 'vitest 4 config' })).toBe('vitest 4 config');
+      expect(deriveQuery('WebFetch', { url: 'https://x.dev/a', prompt: 'what is the API' })).toBe(
+        'https://x.dev/a — what is the API',
+      );
+    });
+
+    it('claude bookkeeping tools read as expected quiet, not as drift', () => {
+      for (const tool of [
+        'AskUserQuestion',
+        'Artifact',
+        'Skill',
+        'Monitor',
+        'TaskCreate',
+        'TaskUpdate',
+        'TaskStop',
+      ]) {
+        expect(deriveQueryDetailed(tool, { anything: 'x' }).miss, `${tool}`).toBe('no-signal');
+      }
     });
 
     /**

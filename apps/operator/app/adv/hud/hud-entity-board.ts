@@ -653,12 +653,72 @@ export function toGoalCard(goal: HudGoalInput, nowMs: number): HudEntityCard {
   };
 }
 
+/** The lane the "+ Start a goal" card lives in — the leftmost one. */
+export const GOAL_START_COLUMN: HudEntityColumnId = 'needs-you';
+/** Stable id for the action card, so a click handler and a test name the same thing. */
+export const GOAL_START_CARD_ID = 'goal:start';
+
+/**
+ * The "+ Start a goal" card — the product's ONLY path to starting a goal
+ * (goals-tab-improvement-2026-08-09 P-015).
+ *
+ * It exists because the rail deletion took the previous kickoff with it: the
+ * HUD could render a goal an agent PROPOSED, but nothing on the surface could
+ * originate one. Clicking it opens the composer, and submitting that composer
+ * spawns the GOAL-mode agent (D-008 — the composer is the spawn, deliberately
+ * overriding goal-mode-2026-08-07 P-022's conversational kickoff).
+ *
+ * `reason` doubles as the empty state: with no goals on the board this card is
+ * the only thing in the column, so it has to say what the board would
+ * otherwise have said.
+ */
+export function startGoalCard(opts: { goalCount: number }): HudEntityCard {
+  return {
+    id: GOAL_START_CARD_ID,
+    ref: '+',
+    title: 'Start a goal',
+    column: GOAL_START_COLUMN,
+    reason:
+      opts.goalCount === 0
+        ? 'No goals yet — start one and an agent takes it from here'
+        : 'Outcome, kill criterion, ceiling — then an agent owns it',
+    context: null,
+    badges: [],
+    sinceSec: null,
+    // Prepended explicitly, so this is only a tiebreak safety net.
+    sortKey: Number.NEGATIVE_INFINITY,
+    open: { kind: 'start-goal' },
+  };
+}
+
 export function buildGoalBoard(goals: HudGoalInput[], opts: HudEntityBuildOptions): HudEntityBoard {
-  return assemble(
+  const board = assemble(
     goals.map((g) => toGoalCard(g, opts.nowMs)),
     GOAL_COLUMN_EMPTY,
     opts,
   );
+
+  /* While the owner is SEARCHING, the board shows matches and nothing else. An
+     action card surviving the filter would sit among results it does not match
+     — and, worse, would keep the column non-empty, suppressing the "No goals
+     match …" message that tells the owner their query found nothing. */
+  if ((opts.query ?? '').trim()) return board;
+
+  /* The card is NOT counted. `counts`/`total` describe how many GOALS exist,
+     and this is not one: counting it would report "1" for an empty board, which
+     is precisely the lie this module guards against everywhere else (the
+     per-column "+N more", the `notice` docblock in HudEntityColumns). The
+     consequence is that `total` can be 0 while a column has a card — which is
+     why HudEntityColumns gates its empty state on "are there cards", not on the
+     count. */
+  return {
+    ...board,
+    columns: board.columns.map((c) =>
+      c.id === GOAL_START_COLUMN
+        ? { ...c, cards: [startGoalCard({ goalCount: board.total }), ...c.cards] }
+        : c,
+    ),
+  };
 }
 
 /* ── work items ──────────────────────────────────────────────────────────── */
@@ -791,7 +851,18 @@ export function workItemIdForCard(card: Pick<HudEntityCard, 'id' | 'ref'>): stri
 export type HudAskTarget =
   | { kind: 'work-item'; id: string; harnessSlug: string | null }
   | { kind: 'plan'; slug: string }
-  | { kind: 'ask'; askId: string };
+  | { kind: 'ask'; askId: string }
+  /**
+   * Not a destination — an ACTION. The Goals board's "+ Start a goal" card
+   * opens the composer instead of a popup (goals-tab-improvement-2026-08-09
+   * P-015/D-008: the composer IS the spawn).
+   *
+   * It rides this union rather than being pattern-matched out of the card id
+   * for the WI-6742 reason the union exists at all: a click handler that
+   * re-derives intent from an id is one unmatched string away from a dead
+   * button, and this card has no entity id to match on.
+   */
+  | { kind: 'start-goal' };
 
 /**
  * The ask → destination rule, in the owner's chosen order (2026-07-28: "entity

@@ -80,7 +80,17 @@ vi.mock('@papercusp/flags/server', async (orig) => {
   // the green gate. Keep every OTHER flag OFF (the prior default).
   return {
     ...actual,
-    getFlag: vi.fn(async (flag: string) => flag === 'papercusp-endpoint-auth-tiers'),
+    // TIER ENABLED (retire-mug-kettle-su-only-2026-08-09 P-008 / D-018): this
+    // file's /invoke cases launch `role=queen` (the documented production
+    // spelling for a Mug wake), which the route's retirement gate 403s while the
+    // mug/kettle/cup tier is retired — its flag's polarity is INVERTED, so OFF is
+    // the delivered state. Answering it true keeps these cases pointed at the
+    // brief/env/tracking behaviour they are about; the gate itself is covered by
+    // ../../pot/retired-tier-roles.test.ts.
+    getFlag: vi.fn(
+      async (flag: string) =>
+        flag === 'papercusp-endpoint-auth-tiers' || flag === 'papercusp-mug-kettle-system',
+    ),
   };
 });
 vi.mock('@papercusp/db-org', async (orig) => {
