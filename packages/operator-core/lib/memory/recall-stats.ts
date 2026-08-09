@@ -18,7 +18,10 @@
  * are swallowed (one warn per process).
  */
 import type { Sql } from 'postgres';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { parseEnvelope, payloadSha256 } from '../turn-provenance/turn-provenance';
+import { detectPossibleSecrets } from './secret-detect';
 import type { MemoryEntry, ScoreScale, SearchLegStats } from './backend';
 // The funnel's leg-attribution shape lives with the GATES (recall-admission),
 // not with the telemetry writer — see `admittedByLeg` there for why.
@@ -452,6 +455,66 @@ function poolsPayload(
     };
   }
   return out;
+}
+
+/**
+ * Hard ceiling on stored query text. The mid-turn caller already clamps its
+ * derived query upstream, so this is a floor-of-last-resort against a future
+ * caller passing something unbounded into a retained table — not a substitute
+ * for the caller's own clamp.
+ */
+export const QUERY_TEXT_MAX_CHARS = 4000;
+
+/**
+ * Persist the retrieval query TEXT for a bounded window (migration 771 /
+ * WI-37403). Separate from the stats insert and separately guarded — see the
+ * call site for why the stats row must never be collateral to this write.
+ *
+ * Three refusals, all of which record NOTHING rather than something partial:
+ *
+ * 1. THE KILL SWITCH (`MEMORY_RECALL_QUERY_TEXT`, default ON). This is the one
+ *    thing here that stores agent-authored text in a table, so it must be
+ *    stoppable without a deploy. Fail-CLOSED on a flag-read error — the
+ *    opposite posture from the retention prunes, which fail-safe by continuing
+ *    to DELETE. The asymmetry is deliberate: the risky direction for a prune is
+ *    stopping, and for a capture it is starting.
+ *
+ * 2. CREDENTIAL-SHAPED CONTENT. The mid-turn query is derived from raw Bash
+ *    command lines, which routinely carry connection strings and API keys — a
+ *    live scan of the memory corpus found 16 real passwords already at rest
+ *    (EI-10371). `detectPossibleSecrets` is high-confidence-only (vendor
+ *    prefixes and structural shapes, no entropy heuristics), so a refusal here
+ *    is nearly always a real credential. Skipping the row loses one sample of
+ *    telemetry; storing it copies a secret into a second place.
+ *
+ * 3. EMPTY TEXT. Nothing to measure, and a zero-length row would read as a real
+ *    empty query in exactly the reads this exists to serve.
+ */
+export async function recordRecallQueryText(
+  sql: Sql,
+  statsId: string | number,
+  query: string,
+): Promise<void> {
+  try {
+    const text = query.trim();
+    if (!text) return;
+    let enabled: boolean;
+    try {
+      enabled = await getFlag(FLAGS.MEMORY_RECALL_QUERY_TEXT, 'system:memory-recall-stats');
+    } catch {
+      return; // fail CLOSED — never capture text we could not confirm we may capture
+    }
+    if (!enabled) return;
+    if (detectPossibleSecrets(text).matched) return;
+    await sql`
+      INSERT INTO harness_shared.memory_recall_query_text (stats_id, query_text)
+      VALUES (${statsId}, ${text.slice(0, QUERY_TEXT_MAX_CHARS)})
+      ON CONFLICT (stats_id) DO NOTHING
+    `;
+  } catch {
+    /* swallow — the SHAPE columns on the stats row are the durable record;
+       this is the best-effort window on top of them. */
+  }
 }
 
 /** Insert one stats row. Never throws; never load-bearing. Call WITHOUT awaiting. */

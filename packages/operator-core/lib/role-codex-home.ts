@@ -362,13 +362,31 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * the installer §4f + an earlier version of this wrote, which codex silently
  * ignored). We write `hooks.json`.
  *
- * TURN PROVENANCE (turn-provenance-owner-vs-agent-2026-07-11 P-004): codex fires
- * ONLY PreToolUse/PostToolUse — no UserPromptSubmit-equivalent event exists in
- * its hooks.json, so the trust-layer classification hook cannot attach here.
- * Codex sessions run LAYER-1 ONLY: injected turns still carry the
- * `⟦turn-origin:… nonce:…⟧` envelope (tagged operator-side, backend-agnostic),
- * visible to the model but not ledger-VERIFIED. Revisit if codex adds a
- * prompt-submit hook event.
+ * ⚠ CORRECTED 2026-08-09 (codex-context-injection-parity-2026-08-09 D-004).
+ * This comment used to read: "codex fires ONLY PreToolUse/PostToolUse — no
+ * UserPromptSubmit-equivalent event exists in its hooks.json". That is FALSE
+ * and was load-bearing for two plans. MEASURED, live, codex-cli 0.146.0: a
+ * `$CODEX_HOME/hooks.json` carrying a `UserPromptSubmit` MatcherGroup FIRES —
+ * codex's own log prints `hook: UserPromptSubmit` / `... Completed` and the
+ * hook's stdin carries { prompt, cwd, session_id, turn_id, model, ... }.
+ * The turn-start port is therefore REACHABLE on codex via THIS file.
+ *
+ * TURN PROVENANCE (turn-provenance-owner-vs-agent-2026-07-11 P-004): that plan
+ * concluded codex sessions must run LAYER-1 ONLY (envelope tagged
+ * operator-side, never ledger-VERIFIED) because the classification hook had
+ * nowhere to attach. The premise above is refuted, so codex layer-2 provenance
+ * is now UNBLOCKED — but it is NOT implemented here (out of scope for this
+ * plan; the classification hook is a separate script). Do not read the
+ * injection registration below as provenance parity.
+ *
+ * ⚠ TRUST IS SILENT (D-004, measured): an UNTRUSTED codex hook does not fire
+ * and does not warn — no error, no log line, exit 0, session otherwise normal.
+ * Every hook registered here therefore depends on the launcher passing
+ * `--dangerously-bypass-hook-trust` (psu-launcher.mjs does, on all four codex
+ * paths). If that flag is ever dropped, EVERY hook in this file — locks,
+ * activity, objective-title AND injection — silently stops, with no signal.
+ * That is precisely the failure class the P-005 injection-coverage detector
+ * exists to catch; keep them wired together.
  *
  * LOCK HOOKS: current Codex discovers this per-session `hooks.json` and fires
  * PreToolUse/PostToolUse for `apply_patch` (plus the Edit/Write aliases) and
@@ -415,6 +433,10 @@ export function writeCodexLockHooks(
     coordSid?: string;
     activitySid?: string;
     objectiveSid?: string;
+    /** codex-context-injection-parity-2026-08-09 P-004: session id baked into
+     *  the context-injection dispatcher invocation. Absent ⇒ no injection hooks
+     *  (the dispatcher's own invariant 3 would exit 0 silently anyway). */
+    injectSid?: string;
     agentSession?: boolean;
   } = {},
 ): boolean {
@@ -472,6 +494,47 @@ export function writeCodexLockHooks(
     });
   }
 
+  // CONTEXT-INJECTION hooks (codex-context-injection-parity-2026-08-09 P-004).
+  // Both ports go through the ONE shared dispatcher (D-001) — never a codex-
+  // specific copy of the transport. The dispatcher is installed BESIDE the cc
+  // hooks at ~/.papercusp/hooks/inject/ (installInjectionHooks in
+  // desktop-install/papercusp-files.ts), so it is gated on its OWN existence,
+  // not on the cc lock-hook gate above.
+  //
+  // PAPERCUSP_SID IS BAKED, and that is load-bearing: codex hands hook commands
+  // a minimal env, and the dispatcher treats a missing PAPERCUSP_SID as "not a
+  // psu session" and exits 0 with no output (D-001 invariant 3). An un-baked
+  // sid would therefore produce a hook that runs, succeeds, and injects nothing
+  // — indistinguishable from a hook that never fired.
+  //
+  // EVENT NAMES: PascalCase, matching the payload's own hook_event_name and the
+  // codex adapter's portForEvent. UserPromptSubmit -> turn-start,
+  // PostToolUse -> mid-turn (PER CALL on codex — it has no batch event; D-002
+  // §5 explains why the frozen array interface absorbs that).
+  const injectDispatcher = join(homedir(), '.papercusp', 'hooks', 'inject', 'index.mjs');
+  const userPromptSubmit: CodexHook[] = [];
+  if (opts.injectSid && existsSync(injectDispatcher)) {
+    const injectIdentity = `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex`;
+    userPromptSubmit.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `${injectIdentity} ${injectDispatcher} --client=codex --event=UserPromptSubmit`,
+        },
+      ],
+    });
+    postToolUse.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `${injectIdentity} ${injectDispatcher} --client=codex --event=PostToolUse`,
+        },
+      ],
+    });
+  }
+
   const preToolUse: CodexHook[] = [
     {
       matcher: CODEX_LOCK_MATCHER,
@@ -498,10 +561,14 @@ export function writeCodexLockHooks(
     });
   }
 
+  // UserPromptSubmit is emitted ONLY when non-empty: an empty MatcherGroup array
+  // is meaningless, and a key that is always present would make "is turn-start
+  // registered on this home?" un-answerable by reading hooks.json.
   const hooks = {
     hooks: {
       PreToolUse: preToolUse,
       PostToolUse: postToolUse,
+      ...(userPromptSubmit.length > 0 ? { UserPromptSubmit: userPromptSubmit } : {}),
     },
   };
   writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify(hooks, null, 2), { mode: 0o600 });
@@ -608,6 +675,7 @@ export function writeRoleCodexHome(opts: {
     lockSid: opts.sid,
     activitySid: opts.sid,
     objectiveSid: opts.sid,
+    injectSid: opts.sid,
     agentSession: true,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({

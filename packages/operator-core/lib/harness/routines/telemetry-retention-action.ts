@@ -178,6 +178,14 @@ export const DEFAULT_RETENTION_TARGETS: readonly RetentionTarget[] = [
   // always recent) — verified by grepping every `harness_shared.agent_activity`
   // reader before picking the window, not by copying the sibling default.
   { category: 'agent-activity', retention_days: 7 },
+  // memory-recall-query-text (WI-37403 / migration 771): the ONLY recall-telemetry
+  // table holding agent-authored text, so it is the one entry here whose window is
+  // chosen for EXPOSURE rather than for size — it is small, and shrinking it saves
+  // nothing worth having. 3d covers a multi-day relevance audit (the purpose the
+  // capture was built for) and nothing beyond it; every durable question — hit
+  // rates, score distributions, query SHAPE, duplicate rate — is answered by
+  // columns on `memory_recall_stats`, which this prune never touches.
+  { category: 'memory-recall-query-text', retention_days: 3 },
 ];
 
 /** Bound the per-tick prune loop so a backlog can never run a tick away; the

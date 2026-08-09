@@ -21,7 +21,7 @@
  *      rendering past its track reads as a layout bug at that moment.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { GoalSummaryRow } from '@papercusp/operator-core/lib/sync-resolver/goals';
 
@@ -47,7 +47,18 @@ vi.mock('@/lib/use-workspace-id', () => ({
   useWorkspaceId: () => 'papercusp-workspace',
 }));
 
-import GoalTab, { rankGoals, tripwireBreached, tripwireFill, tripwireLabel } from './GoalTab';
+const SEED = vi.hoisted(() => ({ fn: vi.fn() }));
+vi.mock('@/app/_components/inbox/chat-seed', () => ({
+  seedOperatorChatDraft: SEED.fn,
+}));
+
+import GoalTab, {
+  GOAL_KICKOFF_DRAFT,
+  rankGoals,
+  tripwireBreached,
+  tripwireFill,
+  tripwireLabel,
+} from './GoalTab';
 
 function goal(over: Partial<GoalSummaryRow> = {}): GoalSummaryRow {
   return {
@@ -75,6 +86,7 @@ afterEach(() => {
   H.rows = [];
   H.loading = false;
   H.error = null;
+  SEED.fn.mockClear();
 });
 
 describe('tripwire arithmetic', () => {
@@ -211,5 +223,62 @@ describe('GoalTab rendering', () => {
     H.rows = [{ goals: [], portfolioSpendUsd: 0, portfolioProjects: 0 }];
     render(<GoalTab active />);
     expect(screen.getByTestId('left-sidebar-goal').textContent).toContain('No goals yet');
+  });
+});
+
+/**
+ * The kickoff half of P-022 — the replacement for a "New Goal" form.
+ *
+ * The button stages a draft in a composer that lives in ANOTHER pane and may
+ * not even be mounted, so the two things worth pinning are (a) that it really
+ * seeds, and (b) that it says so IN PLACE. Without (b) this is the
+ * "I clicked it and nothing happened" failure (WI-5175) by construction: the
+ * only feedback would be in a pane the owner isn't looking at.
+ */
+describe('GoalTab kickoff (P-022)', () => {
+  it('seeds the chat composer with the kickoff draft when Start a goal is clicked', () => {
+    H.rows = [{ goals: [], portfolioSpendUsd: 0, portfolioProjects: 0 }];
+    render(<GoalTab active />);
+    fireEvent.click(screen.getByTestId('goal-start-kickoff'));
+    expect(SEED.fn).toHaveBeenCalledTimes(1);
+    expect(SEED.fn).toHaveBeenCalledWith(GOAL_KICKOFF_DRAFT);
+  });
+
+  it('confirms IN PLACE, because the composer it seeded is in another pane', () => {
+    H.rows = [{ goals: [], portfolioSpendUsd: 0, portfolioProjects: 0 }];
+    render(<GoalTab active />);
+    expect(screen.queryByTestId('goal-kickoff-seeded')).toBeNull();
+    fireEvent.click(screen.getByTestId('goal-start-kickoff'));
+    const note = screen.getByTestId('goal-kickoff-seeded');
+    expect(note.textContent).toContain('Kickoff drafted');
+    // role=status so a screen reader announces it — a silently-appearing line
+    // is the same non-feedback as no line at all.
+    expect(note.getAttribute('role')).toBe('status');
+  });
+
+  it('offers kickoff even when goals ALREADY exist — it is not an empty-state affordance', () => {
+    H.rows = [{ goals: [goal()], portfolioSpendUsd: 310, portfolioProjects: 1 }];
+    render(<GoalTab active />);
+    expect(screen.getByTestId('goal-start-kickoff')).toBeTruthy();
+  });
+
+  it('drafts a PROMPT the owner finishes rather than a message that auto-sends', () => {
+    // The trailing "The goal: " is what makes this a template and not a form:
+    // it is left open, and nothing here sends anything.
+    expect(GOAL_KICKOFF_DRAFT.endsWith('The goal: ')).toBe(true);
+  });
+
+  it('names goals:propose, so the agent lands on the confirm card instead of creating unilaterally', () => {
+    // If this drifts to goals:create the whole P-022 confirm step is bypassed
+    // and the owner never sees the criterion or the ceiling before the write.
+    expect(GOAL_KICKOFF_DRAFT).toContain('goals:propose');
+    expect(GOAL_KICKOFF_DRAFT).not.toContain('goals:create');
+  });
+
+  it('asks for the portfolio read and the relationship — the two things a form cannot do', () => {
+    expect(GOAL_KICKOFF_DRAFT).toContain('goals:list');
+    expect(GOAL_KICKOFF_DRAFT).toContain('kill criterion');
+    expect(GOAL_KICKOFF_DRAFT).toContain('spend ceiling');
+    expect(GOAL_KICKOFF_DRAFT).toContain('sub-goal');
   });
 });

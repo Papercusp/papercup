@@ -124,6 +124,18 @@ export const STORAGE_CATEGORIES: readonly StorageCategory[] = [
       'Cross-CLI worker activity (tool calls / lifecycle / todos) powering the fleet view. Local-only.',
   },
   {
+    id: 'memory-recall-query-text',
+    label: 'Memory recall query text',
+    kind: 'pg',
+    schema: 'harness_shared',
+    table: 'memory_recall_query_text',
+    ageColumn: 'created_at',
+    ageColumnType: 'timestamptz',
+    federation: 'local-diagnostic',
+    description:
+      'Retrieval query TEXT joined to memory_recall_stats (migration 771). The only recall telemetry holding agent-authored text, so it is age-bounded deliberately — the stats row it hangs off is kept indefinitely and is unaffected by this prune.',
+  },
+  {
     id: 'harness-run-output',
     label: 'Harness run output (logs)',
     kind: 'pg',

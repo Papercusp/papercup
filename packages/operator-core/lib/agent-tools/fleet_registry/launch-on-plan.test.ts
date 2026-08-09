@@ -32,6 +32,7 @@ import launchOnPlan, {
   isSelfPublishedSeatOffer,
   extractKickoffWorkItemIds,
   looksLikeInlineLaunchContextText,
+  describeFleetFillOutcome,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -975,5 +976,112 @@ describe('extractKickoffWorkItemIds (EI-18862608742257943 — kickoff-vs-claim-s
 
   it('does NOT match a bare F- feature id (mirror-guard\'s own documented non-target)', () => {
     expect(extractKickoffWorkItemIds(['work F-AUTO-42 next'])).toEqual([]);
+  });
+});
+
+describe('describeFleetFillOutcome (P-006 — `count` is a TARGET fleet size, and a short fleet must never render as a full one)', () => {
+  /**
+   * THE REAL INCIDENT (plan knowledge-at-symptom-time-2026-08-09, P-006): an owner asked for
+   * 10 members; capacity clamped the deficit 10→4; 4 terminals opened; the agent reported that
+   * 10 were coming. The pre-fix headline was `${opened.length}/${openCount}` — a ratio whose
+   * DENOMINATOR is the post-clamp attempt — so it rendered "4/4 members opened".
+   */
+  const INCIDENT = { requested: 10, liveMembers: 0, attempted: 4, opened: 4 } as const;
+
+  it('PERMANENT FALSIFIABILITY CONTROL: the PRE-FIX render reads as complete success on the real incident input', () => {
+    // The exact pre-fix expression, kept here forever so this suite cannot go vacuously green.
+    const preFix = `${INCIDENT.opened}/${INCIDENT.attempted} members opened`;
+    expect(preFix).toBe('4/4 members opened');
+    // A caller cannot tell that from a genuinely complete 4-member fleet:
+    expect(/^(\d+)\/\1 members opened$/.test(preFix)).toBe(true);
+    // ...while the truth is that 6 of the 10 requested members never launched.
+    expect(describeFleetFillOutcome(INCIDENT).shortfall).toBe(6);
+  });
+
+  it('the FIXED render names the shortfall against the target and is not readable as complete', () => {
+    const r = describeFleetFillOutcome(INCIDENT);
+    expect(r.complete).toBe(false);
+    expect(r.fleetSize).toBe(4);
+    expect(r.shortfall).toBe(6);
+    expect(r.clause).toContain('4 of the 10 requested');
+    expect(r.clause).toContain('SHORT BY 6');
+    // the clamped case must say every attempted terminal DID open, so nobody hunts a launch failure
+    expect(r.clause).toContain('capacity-clamped');
+    expect(r.clause).not.toMatch(/\b4\/4\b/);
+  });
+
+  it('a genuine deficit top-up that REACHES the target reads as complete (fleet 2 of 2, not "1 opened")', () => {
+    const r = describeFleetFillOutcome({ requested: 2, liveMembers: 1, attempted: 1, opened: 1 });
+    expect(r.complete).toBe(true);
+    expect(r.fleetSize).toBe(2);
+    expect(r.shortfall).toBe(0);
+    expect(r.clause).toContain('1 member opened');
+    expect(r.clause).toContain('fleet is now 2 of the 2 requested');
+    expect(r.clause).not.toContain('SHORT BY');
+  });
+
+  it('distinguishes a capacity clamp from terminals that FAILED to open', () => {
+    const failed = describeFleetFillOutcome({ requested: 3, liveMembers: 0, attempted: 3, opened: 2 });
+    expect(failed.shortfall).toBe(1);
+    expect(failed.clause).toContain("1 of this wave's 3 terminals failed to open");
+    expect(failed.clause).not.toContain('capacity-clamped');
+  });
+
+  it('a full wave with no live members reads as complete', () => {
+    const r = describeFleetFillOutcome({ requested: 5, liveMembers: 0, attempted: 5, opened: 5 });
+    expect(r.complete).toBe(true);
+    expect(r.clause).toBe('5 members opened — fleet is now 5 of the 5 requested');
+  });
+
+  it('pluralizes on the OPENED count and honors the headless noun', () => {
+    expect(describeFleetFillOutcome({ requested: 1, liveMembers: 0, attempted: 1, opened: 1 }).clause).toContain(
+      '1 member opened',
+    );
+    expect(
+      describeFleetFillOutcome({ requested: 2, liveMembers: 0, attempted: 2, opened: 2, noun: 'HEADLESS member' })
+        .clause,
+    ).toContain('2 HEADLESS members opened');
+  });
+
+  it('never reports a negative shortfall when MORE members are live than requested', () => {
+    const r = describeFleetFillOutcome({ requested: 2, liveMembers: 3, attempted: 0, opened: 0 });
+    expect(r.shortfall).toBe(0);
+    expect(r.complete).toBe(true);
+  });
+
+  it('tolerates non-finite/negative inputs rather than emitting NaN into the launch message', () => {
+    const r = describeFleetFillOutcome({
+      requested: Number.NaN,
+      liveMembers: -3,
+      attempted: Number.POSITIVE_INFINITY,
+      opened: -1,
+    });
+    expect(r.clause).not.toContain('NaN');
+    expect(r.fleetSize).toBe(0);
+    expect(r.shortfall).toBe(0);
+  });
+});
+
+describe('count arg description (P-006 recurrence guard — the doc must not re-drift from the behaviour)', () => {
+  const countDescription = (launchOnPlan.args as unknown as { shape: { count: { description?: string } } }).shape.count
+    .description;
+
+  it('states the TARGET-fleet-size semantics the code actually implements', () => {
+    expect(countDescription).toBeTruthy();
+    const d = String(countDescription);
+    expect(d).toMatch(/TARGET fleet size/i);
+    expect(d).toMatch(/deficit/i);
+    // the actionable escape hatch for "add N more" (there is no add-N argument)
+    expect(d).toMatch(/count = liveMembers \+ N/i);
+  });
+
+  it('does NOT reintroduce the pre-fix wording, which described a behaviour the tool never had', () => {
+    expect(String(countDescription)).not.toMatch(/^Number of member terminals to open/);
+  });
+
+  it('points the reader at the machine-readable fill verdict rather than the opened count', () => {
+    const d = String(countDescription);
+    expect(d).toMatch(/fleetSize/);
+    expect(d).toMatch(/shortfall/);
   });
 });

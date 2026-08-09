@@ -681,6 +681,21 @@ export const FLAGS = {
   // the recall's own ids), and fail-open at every step. OFF = the clean kill-switch
   // — recall returns to its byte-identical pre-WI-36046 shape.
   MEMORY_STALENESS_IN_RECALL: "papercusp-memory-staleness-in-recall",
+  // WI-37403 / migration 771: retain the retrieval QUERY TEXT on a bounded
+  // window (harness_shared.memory_recall_query_text), joined to the recall row.
+  // Before this only query_sha256 + query_chars were stored, so the table could
+  // say what came BACK and nothing about whether the query was even about the
+  // right thing — a live finding (mid-turn cosine queries matching on shell/path
+  // chrome) had to be evidenced from an agent transcript instead of measured.
+  // Stores the DERIVED per-leg query (post splitLegQueries), never raw
+  // tool_input; text that trips the credential detector is refused outright.
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS): the owner directed
+  // the capture, and it is additive + retention-bounded by the existing
+  // system:telemetry-retention janitor. It is nonetheless the one capture here
+  // that stores agent-authored TEXT, so it gets a flag precisely so it can be
+  // stopped instantly without a deploy — and its guard fails CLOSED (a
+  // flag-read error captures nothing), unlike the retention prunes' fail-safe.
+  MEMORY_RECALL_QUERY_TEXT: "papercusp-memory-recall-query-text",
   // context-injection-audit-2026-07-28 P-039 / D-012: the presence-transition
   // emitter — the missing FEEDER for the mid-turn coord rail. Automatic
   // injection carried zero liveness, and every coord_event_log writer was an

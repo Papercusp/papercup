@@ -277,7 +277,7 @@ describe('system:telemetry-retention action', () => {
     expect(action).toBeTypeOf('function');
     await action!(ctx({}));
 
-    expect(pruneMock).toHaveBeenCalledTimes(4);
+    expect(pruneMock).toHaveBeenCalledTimes(5);
     expect(cleanupMock).toHaveBeenCalledWith({ workspaceId: 'ws-1' });
     expect(pruneMock).toHaveBeenNthCalledWith(1, {
       categoryId: 'route-invocations',
@@ -300,6 +300,16 @@ describe('system:telemetry-retention action', () => {
     expect(pruneMock).toHaveBeenNthCalledWith(4, {
       categoryId: 'agent-activity',
       olderThanDays: 7,
+      dryRun: false,
+      workspaceId: 'ws-1',
+    });
+    // WI-37403: the recall query-text window. The ONLY default target holding
+    // agent-authored text, hence the shortest window — asserted by NAME and by
+    // its 3d window, not merely counted, because a bumped count would pass just
+    // as well if this target silently stopped being pruned.
+    expect(pruneMock).toHaveBeenNthCalledWith(5, {
+      categoryId: 'memory-recall-query-text',
+      olderThanDays: 3,
       dryRun: false,
       workspaceId: 'ws-1',
     });

@@ -369,6 +369,53 @@ export function defaultMemberAccountRouting(
   return 'default';
 }
 
+/**
+ * P-006 (knowledge-at-symptom-time-2026-08-09): state the fleet's FILL against the TARGET,
+ * so a partially-filled fleet can never render as a full one.
+ *
+ * `count` is a TARGET fleet size, not "terminals to open": only the deficit
+ * (`count - liveMembers`) is attempted, and `clampFleetTopUpToCapacity` can shrink that
+ * deficit further. The pre-fix headline rendered `opened/attempted` — a ratio whose
+ * DENOMINATOR is the post-clamp attempt — so a request for 10 that clamped to 4 rendered
+ * `4/4 members opened`, which is indistinguishable from complete success. Measured incident
+ * (P-006): an owner asked for 10 members, 4 opened, and the agent reported 10 were coming.
+ *
+ * Denominating against `requested` and naming the shortfall is what makes the shortfall
+ * legible AT THE MOMENT OF THE LAUNCH — the same symptom-time principle as the rest of this
+ * plan. `attempted` is reported only as the wave's own failure detail, never as a denominator.
+ */
+export function describeFleetFillOutcome(o: {
+  /** `count` — the TARGET fleet size the caller asked for. */
+  requested: number;
+  /** Members already LIVE before this wave (they are not re-opened). */
+  liveMembers: number;
+  /** Terminals this wave tried to open (the post-clamp deficit). */
+  attempted: number;
+  /** Terminals that actually opened. */
+  opened: number;
+  /** Noun for a member, e.g. 'HEADLESS member'. Default 'member'. */
+  noun?: string;
+}): { fleetSize: number; shortfall: number; complete: boolean; clause: string } {
+  const nonNeg = (n: number) => (Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0);
+  const requested = nonNeg(o.requested);
+  const liveMembers = nonNeg(o.liveMembers);
+  const attempted = nonNeg(o.attempted);
+  const opened = nonNeg(o.opened);
+  const noun = o.noun?.trim() || 'member';
+  const fleetSize = liveMembers + opened;
+  const shortfall = Math.max(0, requested - fleetSize);
+  const complete = shortfall === 0;
+  const plural = opened === 1 ? '' : 's';
+  const failedThisWave = Math.max(0, attempted - opened);
+  const clause = complete
+    ? `${opened} ${noun}${plural} opened — fleet is now ${fleetSize} of the ${requested} requested`
+    : `${opened} ${noun}${plural} opened — ⚠ fleet is ${fleetSize} of the ${requested} requested, SHORT BY ${shortfall}` +
+      (failedThisWave > 0
+        ? ` (${failedThisWave} of this wave's ${attempted} terminal${attempted === 1 ? '' : 's'} failed to open)`
+        : ' (the deficit was capacity-clamped — every terminal this wave attempted DID open, so the fleet is still under target)');
+  return { fleetSize, shortfall, complete, clause };
+}
+
 /** Backward-compatible export for p2p delegated-spawn callers. */
 export const memberLaunchCommand = sharedMemberLaunchCommand;
 
@@ -863,7 +910,9 @@ export default defineTool({
       .min(1)
       .max(MAX_MEMBERS)
       .optional()
-      .describe(`Number of member terminals to open (default 1, max ${MAX_MEMBERS}).`),
+      .describe(
+        `TARGET fleet size — NOT the number of new terminals to open (default 1, max ${MAX_MEMBERS}). Only the DEFICIT opens: with N members already LIVE, count:M opens M−N, and a fleet already at M opens NOTHING (relaunchSuppressed:true). Capacity can clamp that deficit further, so the fleet can end up SMALLER than count — read \`fleetSize\`/\`shortfall\` on the result, never the opened count alone (a clamped wave opens every terminal it attempted, so "all attempted opened" is NOT "the fleet is full"). To ADD N members to a running fleet, pass count = liveMembers + N.`,
+      ),
     placement: z
       .enum(['local', 'remote'])
       .optional()
@@ -2331,9 +2380,18 @@ export default defineTool({
       );
     }
     const carryMode: 'warm' | 'cold' = args.carry ?? 'warm';
+    // P-006: denominate the headline against the TARGET (`count`), never against the post-clamp
+    // attempt — `opened/attempted` rendered a clamped 10→4 wave as "4/4 opened" (complete success).
+    const fill = describeFleetFillOutcome({
+      requested: count,
+      liveMembers,
+      attempted: openCount,
+      opened: opened.length,
+      noun: args.headless ? 'HEADLESS member' : 'member',
+    });
     lines.push(
       opened.length
-        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole})${planSlug ? ` on plan \`${planSlug}\`` : ' (claim-spec fleet)'} — ${opened.length}/${openCount} ${args.headless ? 'HEADLESS ' : ''}member${openCount > 1 ? 's' : ''} opened${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; requested deficit was ${requestedOpenCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
+        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole})${planSlug ? ` on plan \`${planSlug}\`` : ' (claim-spec fleet)'} — ${fill.clause}${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; the deficit was capacity-clamped ${requestedOpenCount}→${openCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
         : `No ${args.headless ? 'headless ' : ''}member${args.headless ? 's were' : ' terminals were'} started for fleet \`${fleetSlug}\`.`,
     );
     for (const o of opened) {
@@ -2450,6 +2508,11 @@ export default defineTool({
         requested: count,
         liveMembers,
         requestedOpenCount,
+        // P-006: the MACHINE-READABLE fill verdict, so a caller never has to infer "did I get the
+        // fleet I asked for?" from an opened count whose denominator is the post-clamp attempt.
+        fleetSize: fill.fleetSize,
+        shortfall: fill.shortfall,
+        fleetComplete: fill.complete,
         capacityClamp,
         sizingAdvisory,
         memberBaselineApplied: baselineApplied,
