@@ -61,10 +61,14 @@ import { scopeCgroupRelPath, scopeUnitForTask, type TaskSpec } from './types';
 const MGR = '/user.slice/user-1000.slice/user@1000.service';
 const OWN_CGROUP = `0::${MGR}/papercup-dev-api.service\n`;
 
+// Typed as TaskSpec deliberately (not `as never`): the fixture then goes RED at the
+// next required field rather than silently stale — the trap lint:required-field-strands
+// exists for, and the reason this file avoids mock casts entirely.
 const SIDECAR_SPEC: TaskSpec = {
   class: 'sidecar',
   title: 'fleet spawner sidecar',
   argv: ['tsx', 'apps/operator/bin/spawner-sidecar.ts'],
+  launchedBy: 'system:spawner-sidecar',
 };
 
 function makeChild(pid = 4242): { emitter: EventEmitter; child: ChildProcess } {
