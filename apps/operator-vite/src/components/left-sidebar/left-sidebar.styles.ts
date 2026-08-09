@@ -1604,6 +1604,19 @@ body.has-left-sidebar .pc-header {
      [data-breached="true"]  a tripwire is AT or PAST its threshold
      [data-over="true"]      fleet spend has reached the ceiling
    Both are the moment a goal should stop, so they share one alarm colour. */
+/* P-022 kickoff entry point. Styled explicitly because the operator baseline
+   gives a bare button only font/color/cursor, so an unstyled one renders as a
+   browser-default box in this dark rail. */
+.pc-goal__start { display: inline-flex; align-items: center; gap: 4px; flex: none;
+  padding: 2px 7px; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0;
+  border: 1px solid var(--accent-strong, #2b6f9c); border-radius: 5px;
+  background: var(--bg-2, #10222f); color: var(--accent, #6fb6e8); cursor: pointer; }
+.pc-goal__start:hover { border-color: var(--accent, #6fb6e8); color: var(--fg, #e7f7ff); }
+/* Staging the draft happens in ANOTHER pane, so the rail confirms it here —
+   otherwise the click looks like a no-op. */
+.pc-goal__seeded { margin: 0 0 6px; font-size: 10px; line-height: 1.35;
+  color: var(--good, #4ec9a5); }
+
 .pc-goal__card { display: flex; flex-direction: column; gap: 5px; padding: 7px 8px;
   border: 1px solid var(--border-subtle, #1d3548); border-radius: 6px;
   background: var(--bg-raised, #0d1c27); }

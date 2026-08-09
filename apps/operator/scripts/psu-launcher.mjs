@@ -1159,6 +1159,11 @@ export function resumeArgsFor(session, { coordExtPath, injectHookPath, fork = fa
     const args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
     args.push('--approval-mode', 'yolo');
     if (coordExtPath) args.push('-e', coordExtPath);
+    // omp-context-injection-parity P-003. CLI flags do not persist into an omp
+    // resume, so the injection hook must be re-passed every resume exactly like
+    // the coord extension above — otherwise a resumed session silently loses
+    // turn-start/mid-turn context while a fresh one has it.
+    if (injectHookPath) args.push('--hook', injectHookPath);
     if (model) args.push(...modelArgsFor('omp', model));
     return { bin: 'omp', args };
   }

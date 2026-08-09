@@ -22708,6 +22708,206 @@ body:has(.operator-panel) {
   }
 }
 
+/* ── GOAL-mode kickoff confirm card (P-022 / D-024) ──────────────────────
+ * The pre-filled, fully-editable replacement for a blank "New Goal" form.
+ * Sibling of .ask-choice-card and shares its token vocabulary, but every
+ * control is styled EXPLICITLY: globals.css's baseline only gives bare
+ * <button>/<input> `font/color/cursor`, so an unstyled field here would render
+ * as a browser-default box in a dark pane. */
+.goal-proposal-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.02);
+}
+
+.goal-proposal-card[data-busy="true"] {
+  cursor: progress;
+}
+
+.goal-proposal-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.goal-proposal-heading {
+  color: #eef7ff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.goal-proposal-sub {
+  color: rgba(238,247,255,0.55);
+  font-size: 11px;
+}
+
+.goal-proposal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.goal-proposal-label {
+  color: rgba(238,247,255,0.62);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The kill criterion is the only thing that can ever stop a goal, so it is the
+ * one field that reads as load-bearing rather than as another row. */
+.goal-proposal-field--ends .goal-proposal-label {
+  color: rgb(from var(--accent) r g b / 0.95);
+}
+
+.goal-proposal-input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
+  border-radius: 9px;
+  background: rgba(0,0,0,0.22);
+  color: #eef7ff;
+  font: inherit;
+  font-size: 12px;
+}
+
+.goal-proposal-input:focus-visible {
+  outline: none;
+  border-color: rgb(from var(--accent) r g b / 0.45);
+  box-shadow: 0 0 0 3px rgb(from var(--accent) r g b / 0.12);
+}
+
+.goal-proposal-input:disabled {
+  opacity: 0.6;
+}
+
+.goal-proposal-textarea {
+  resize: vertical;
+  line-height: 1.42;
+}
+
+.goal-proposal-money {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: rgba(238,247,255,0.62);
+  font-size: 12px;
+}
+
+.goal-proposal-input--money {
+  max-width: 110px;
+}
+
+.goal-proposal-select {
+  cursor: pointer;
+}
+
+.goal-proposal-why {
+  margin: 0;
+  color: rgba(238,247,255,0.72);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.goal-proposal-why-label {
+  color: rgba(238,247,255,0.5);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.goal-proposal-body summary {
+  color: rgba(238,247,255,0.6);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.goal-proposal-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.goal-proposal-create {
+  padding: 8px 14px;
+  border: 1px solid rgb(from var(--accent) r g b / 0.34);
+  border-radius: 11px;
+  background: rgb(from var(--accent) r g b / 0.16);
+  color: #eef7ff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.goal-proposal-create:hover:not(:disabled) {
+  background: rgb(from var(--accent) r g b / 0.24);
+  border-color: rgb(from var(--accent) r g b / 0.5);
+  transform: translateY(-1px);
+}
+
+.goal-proposal-create:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+
+.goal-proposal-blocked {
+  color: rgba(238,247,255,0.55);
+  font-size: 11px;
+}
+
+/* Not an error state: the agent reached a CORRECT conclusion that happens to
+ * have nothing to create. Reads as information, not as a failure. */
+.goal-proposal-notagoal {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.03);
+  color: rgba(238,247,255,0.78);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.goal-proposal-error {
+  margin: 0;
+  color: #fca5a5;
+  font-size: 11px;
+}
+
+.goal-proposal-created {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: rgba(238,247,255,0.85);
+  font-size: 12px;
+}
+
+.goal-proposal-created-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: rgb(from var(--accent) r g b / 0.95);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .goal-proposal-create:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
 /* ── Oracle/Operator sibling pass: assistant panels + command bar ──── */
 
 

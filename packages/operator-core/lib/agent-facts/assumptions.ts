@@ -316,7 +316,7 @@ export async function resolveAssumptions(
 
   // The (scope, ref) pairs are matched EXACTLY in JS below; SQL takes the cheap
   // cross-product prefilter because the row set is tiny by construction (≤10
-  // keys × the 50-per-scope cap) and a dynamic tuple-IN buys nothing here.
+  // keys × FACTS_PER_SCOPE_CAP) and a dynamic tuple-IN buys nothing here.
   let rows: RawRow[];
   try {
     // Resolving the pool and the active workspace sit INSIDE the try alongside the

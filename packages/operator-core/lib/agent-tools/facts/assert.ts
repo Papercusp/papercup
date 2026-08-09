@@ -130,7 +130,7 @@ export default defineTool({
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
     notWhen:
-      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope cap 50, TTL mandatory.`,
+      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope cap ${FACTS_PER_SCOPE_CAP}, TTL mandatory.`,
     chaining:
       'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],

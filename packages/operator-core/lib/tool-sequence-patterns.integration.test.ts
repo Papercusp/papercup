@@ -135,6 +135,25 @@ describe('tool-sequence mining (real PG)', () => {
     expect(res.graduated.map((c) => c.label)).toContain('new:one → new:two');
   });
 
+  /**
+   * FALSIFIABILITY CONTROL for the test above, kept permanently rather than proved
+   * once by mutating the miner: it runs the SUPERSEDED ordering directly and shows
+   * the fixture discriminates the two. Without this, "the recent dance survived
+   * truncation" is satisfied by a fixture where nothing was ever at risk, and the
+   * regression test would keep passing if the ordering flipped back.
+   */
+  it('control: the ASC-ordered cap this replaced keeps the OLD dance and loses the recent one', async () => {
+    const rows = (await db.adminSql`
+        SELECT tool_name FROM harness_shared.tool_invocations
+         WHERE workspace_id = ${ws} AND transport = 'mcp'
+         ORDER BY invoked_at ASC LIMIT 1000
+    `) as unknown as { tool_name: string }[];
+    const tools = new Set(rows.map((r) => r.tool_name));
+
+    expect(tools.has('old:one')).toBe(true);
+    expect(tools.has('new:one')).toBe(false);
+  });
+
   it('excludes in_process rows — a tool implementation fan-out is not an agent decision', async () => {
     // A dance recorded ONLY as in_process: it is one tool's internals, and however
     // often it repeats it must never be mined as agent behaviour.

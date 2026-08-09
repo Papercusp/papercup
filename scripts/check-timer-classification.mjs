@@ -239,7 +239,66 @@ export const CLASSIFICATIONS = ['must-sample', 'timeout-reaper', 'violation', 'u
  * matched a spelling instead of the thing (see CLAUDE.md § shared-lib singletons). NEW
  * files may NOT be added here — a new client timer must declare its own classification.
  */
-export const CLIENT_BASELINE = new Set([]);
+export const CLIENT_BASELINE = new Set([
+  'apps/operator-vite/src/components/NavigationProgress.tsx',
+  'apps/operator-vite/src/components/VersionBadge.tsx',
+  'apps/operator-vite/src/components/adv/AdvFramesTab.tsx',
+  'apps/operator-vite/src/components/adv/AgentsRunningPill.tsx',
+  'apps/operator-vite/src/components/adv/FleetRateControl.tsx',
+  'apps/operator-vite/src/components/adv/HealthTab.tsx',
+  'apps/operator-vite/src/components/env-switcher/EnvSwitcherBar.tsx',
+  'apps/operator-vite/src/components/left-sidebar/AccountsTab.tsx',
+  'apps/operator-vite/src/components/left-sidebar/MugHeartbeat.tsx',
+  'apps/operator-vite/src/components/left-sidebar/OverwatchTab.tsx',
+  'apps/operator-vite/src/lib/video/camera-capture.ts',
+  'apps/operator-vite/src/routes/admin/dogfood-substrate.tsx',
+  'apps/operator/app/_components/AuthSignInCards.tsx',
+  'apps/operator/app/_components/OnboardingConsole.tsx',
+  'apps/operator/app/_components/OperatorActionLog.tsx',
+  'apps/operator/app/_components/OperatorActiveToggle.tsx',
+  'apps/operator/app/_components/OperatorPanel.tsx',
+  'apps/operator/app/_components/SetupWizard/StepAgents.tsx',
+  'apps/operator/app/_components/SetupWizard/StepEmbeddedPg.tsx',
+  'apps/operator/app/_components/SetupWizard/StepGit.tsx',
+  'apps/operator/app/_components/SetupWizard/StepLocalModel.tsx',
+  'apps/operator/app/_components/SetupWizard/StepMobilePairing.tsx',
+  'apps/operator/app/_components/SetupWizard/useWizardStatuses.ts',
+  'apps/operator/app/_components/UpdateChip.tsx',
+  'apps/operator/app/_components/chat/HydratedWorkRefPill.tsx',
+  'apps/operator/app/_components/chat/SessionChatModal.tsx',
+  'apps/operator/app/_components/chat/message-timestamp.tsx',
+  'apps/operator/app/_components/useWslGateBlocking.ts',
+  'apps/operator/app/_components/voice/VoiceAppBridge.tsx',
+  'apps/operator/app/_components/voice/voice-leader.ts',
+  'apps/operator/app/admin/_components/CommandCard.tsx',
+  'apps/operator/app/admin/plans/LockBanner.tsx',
+  'apps/operator/app/admin/plans/plans-api.ts',
+  'apps/operator/app/admin/testing/_components/MemoryTab.tsx',
+  'apps/operator/app/admin/testing/_components/TestRunsTab.tsx',
+  'apps/operator/app/admin/testing/_lib/vitals-recorder.ts',
+  'apps/operator/app/adv/harnesses/AdvGitGraphPanel.tsx',
+  'apps/operator/app/adv/harnesses/AdvSyncHealthPanel.tsx',
+  'apps/operator/app/adv/hud/HudView.tsx',
+  'apps/operator/app/adv/sessions/AdvSessionsClient.tsx',
+  'apps/operator/app/coord/CoordDashboard.tsx',
+  'apps/operator/app/dev/_components/BackupsTab.tsx',
+  'apps/operator/app/dev/_components/IpcTab.tsx',
+  'apps/operator/app/dev/_components/PgTab.tsx',
+  'apps/operator/app/dev/_components/ProcessesTab.tsx',
+  'apps/operator/app/dev/_components/RightRail.tsx',
+  'apps/operator/app/dev/_components/StudioTab.tsx',
+  'apps/operator/app/harness/AgentInspectorModal.tsx',
+  'apps/operator/app/harness/insights/BootHistoryTableClient.tsx',
+  'apps/operator/app/harness/insights/SubstrateSummaryCardClient.tsx',
+  'apps/operator/app/installed/kpis/page.tsx',
+  'apps/operator/app/settings/deploy-accounts/page.tsx',
+  'apps/operator/app/settings/mobile/page.tsx',
+  'apps/operator/app/settings/voice/page.tsx',
+  'apps/operator/lib/ui/use-ui-presence.ts',
+  'libs/generic/git-graph/src/GitGraphPanel.tsx',
+  'libs/testing-shell/src/web/LiveWebPanel.tsx',
+  'packages/operator-core/lib/operator-window-sync.ts',
+]);
 
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
@@ -366,11 +425,46 @@ export function findOffenders() {
 }
 
 function main() {
-  const { offenders, unscanned } = findOffenders();
-  if (offenders.length === 0) {
-    const note = BASELINE.size > 0 ? ` (${BASELINE.size} file(s) still in the shrink-to-empty BASELINE — P-011)` : '';
-    console.log(`✓ no NEW unclassified managedSetInterval() timer${note}.` + describeUnscanned(unscanned));
+  const { offenders, clientOffenders, unscanned } = findOffenders();
+
+  // `--emit-client-baseline`: print the CLIENT_BASELINE literal for the CURRENT tree, so the
+  // grandfather set is always re-seeded from a measured scan instead of a hand-run grep.
+  if (process.argv.includes('--emit-client-baseline')) {
+    const files = clientOffenders.map((o) => o.file).sort();
+    console.log(`export const CLIENT_BASELINE = new Set([`);
+    for (const f of files) console.log(`  '${f}',`);
+    console.log(`]);`);
+    console.error(`\n(${files.length} client file(s) with an undeclared raw timer)`);
     process.exit(0);
+  }
+
+  if (clientOffenders.length > 0) {
+    const sites = clientOffenders.reduce((n, o) => n + o.lines.length, 0);
+    console.error(`✗ ${sites} raw client setInterval() site(s) with no timer-classification declaration:`);
+    console.error("  Declare one in a comment within 6 lines above the call, e.g.");
+    console.error("    // timer-classification: ui-timer — relative-time re-render, no data read");
+    console.error(`  Buckets: ${CLASSIFICATIONS.join(' | ')}.`);
+    console.error('  `ui-timer` = a pure render tick that reads no store (D-005). If the timer READS');
+    console.error('  data a store already pushes (plans, locks, work-items — notifySyncInvalidate),');
+    console.error("  it is a 'violation': declare it honestly rather than relabelling it to look clean.");
+    console.error('  See D-004 (stop-discarded-dedup-and-audit-server-polling-2026-07-26).\n');
+    for (const o of clientOffenders) console.error(`    ${o.file}:${o.lines.join(',')}`);
+    console.error('');
+  }
+
+  if (offenders.length === 0 && clientOffenders.length === 0) {
+    const parts = [];
+    if (BASELINE.size > 0) parts.push(`${BASELINE.size} host`);
+    if (CLIENT_BASELINE.size > 0) parts.push(`${CLIENT_BASELINE.size} client`);
+    const note = parts.length > 0 ? ` (${parts.join(' + ')} file(s) still in the shrink-to-empty BASELINEs — P-011/P-026)` : '';
+    console.log(`✓ no NEW unclassified timer${note}.` + describeUnscanned(unscanned));
+    process.exit(0);
+  }
+  if (offenders.length === 0) {
+    console.error(
+      `  ${clientOffenders.length} client file(s). See plan stop-discarded-dedup-and-audit-server-polling-2026-07-26 (P-026).`,
+    );
+    process.exit(1);
   }
   console.error('✗ NEW managedSetInterval(...) call(s) missing a D-004 classification:');
   console.error('  Pass { category, classification: \'must-sample\' | \'timeout-reaper\' | \'violation\' }');

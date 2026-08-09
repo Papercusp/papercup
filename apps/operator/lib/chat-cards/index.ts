@@ -18,3 +18,6 @@ export { registerCard, renderCard, type CardRenderProps, type CardRenderer } fro
 
 // Side-effect: registers chat:ask_choice. Future cards add a line.
 import './AskChoiceCardEntry';
+// Side-effect: registers goals:propose — the GOAL-mode kickoff confirm card
+// (goal-mode-2026-08-07 P-022 / D-024).
+import './GoalProposalCardEntry';

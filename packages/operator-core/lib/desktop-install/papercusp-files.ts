@@ -124,6 +124,10 @@ export interface InstallResult extends InstallPaths {
   /** The CC hook scripts copied to ~/.papercusp/hooks/cc/ this call (empty when the
    *  sources weren't shipped — the pre-EI-8191 Mac/Windows gap). */
   claudeHooksInstalled: string[];
+  /** Context-injection files installed under ~/.papercusp/hooks/ (dispatcher +
+   *  omp artifact), relative to that dir. EMPTY means none — never partial, so a
+   *  caller can treat [] as "omp injection inactive on this box". */
+  injectionHooksInstalled: string[];
   /** True when the CC hooks + fleet statusline were merged into ~/.claude/settings.json. */
   claudeSettingsMerged: boolean;
   /** True when [tui].status_line was merged into an existing ~/.codex/config.toml this call
@@ -757,7 +761,17 @@ const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set(['pc_tty.py']);
  * fs-read scripts, so build-desktop-sidecar.sh copies the dir verbatim.
  */
 function ccHookDirCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
-  const fromRoot = [path.join(operatorAppRoot, 'scripts', 'hooks', 'cc')];
+  return hookDirCandidates(operatorAppRoot, explicitRoot, 'cc');
+}
+
+/**
+ * Generalised form of the above for any `scripts/hooks/<subdir>` source dir.
+ * Extracted (rather than copied) when the context-injection dispatcher needed
+ * the SAME resolution — the dist-host cwd quirk documented below is exactly the
+ * kind of thing that gets fixed in one copy and not the other.
+ */
+function hookDirCandidates(operatorAppRoot: string, explicitRoot: boolean, subdir: string): string[] {
+  const fromRoot = [path.join(operatorAppRoot, 'scripts', 'hooks', subdir)];
   if (explicitRoot) return fromRoot;
   // Plain-cwd candidate mirrors cliLauncherCandidates/playbookCandidates: in the
   // dist-host layout (module at <operatorApp>/dist-host/, cwd = <operatorApp>) the
@@ -766,9 +780,66 @@ function ccHookDirCandidates(operatorAppRoot: string, explicitRoot: boolean): st
   // (found live 2026-07-12: the :3070 install endpoint returned ok with zero hooks).
   return [
     ...fromRoot,
-    path.join(process.cwd(), 'scripts', 'hooks', 'cc'),
-    path.join(process.cwd(), 'apps', 'operator', 'scripts', 'hooks', 'cc'),
+    path.join(process.cwd(), 'scripts', 'hooks', subdir),
+    path.join(process.cwd(), 'apps', 'operator', 'scripts', 'hooks', subdir),
   ];
+}
+
+/**
+ * Install the CONTEXT-INJECTION pair into `~/.papercusp/hooks/`
+ * (omp-context-injection-parity-2026-08-09 P-003 / D-001):
+ *   hooks/inject/**          the shared dispatcher (client-agnostic)
+ *   hooks/omp/inject-hook.ts the omp artifact psu passes as `--hook`
+ *
+ * ⚠ ALL-OR-NOTHING, and that is the whole point of installing them in one
+ * function. The artifact resolves the dispatcher RELATIVE TO ITSELF, so a
+ * half-install (hook present, dispatcher absent) produces an omp session that
+ * loads the hook, finds nothing, and fail-silently injects NOTHING on every
+ * turn. That reads exactly like "no memories were relevant" — the same
+ * invisible-failure shape as EI-8191, where fail-open looked like success for
+ * weeks. Sources missing ⇒ install NOTHING and report [], never a partial set.
+ *
+ * Best-effort like its CC sibling: never throws, never blocks install.
+ */
+async function installInjectionHooks(home: string, injectSrcDir: string): Promise<string[]> {
+  const ompHookSrc = path.join(path.dirname(injectSrcDir), 'omp', 'inject-hook.ts');
+  const installed: string[] = [];
+  try {
+    // Refuse the partial install before writing anything.
+    await fs.access(path.join(injectSrcDir, 'index.mjs'));
+    await fs.access(ompHookSrc);
+
+    const injectDest = path.join(home, '.papercusp', 'hooks', 'inject');
+    const ompDest = path.join(home, '.papercusp', 'hooks', 'omp');
+    await fs.mkdir(path.join(injectDest, 'adapters'), { recursive: true, mode: 0o755 });
+    await fs.mkdir(ompDest, { recursive: true, mode: 0o755 });
+
+    for (const rel of ['', 'adapters']) {
+      const srcDir = rel ? path.join(injectSrcDir, rel) : injectSrcDir;
+      for (const name of await fs.readdir(srcDir)) {
+        if (!name.endsWith('.mjs')) continue;
+        const dst = path.join(injectDest, rel, name);
+        // Same atomic-rename discipline as installClaudeHooks (EI-18755593630003816):
+        // this dir is shared by every session on the box and re-installed on every psu
+        // launch, so a concurrent hook fire must never observe a torn prefix.
+        const tmp = `${dst}.psu-install.${process.pid}.tmp`;
+        await fs.writeFile(tmp, await fs.readFile(path.join(srcDir, name)), {
+          mode: name === 'index.mjs' ? 0o755 : 0o644,
+        });
+        await fs.rename(tmp, dst);
+        installed.push(path.join('inject', rel, name));
+      }
+    }
+
+    const ompDst = path.join(ompDest, 'inject-hook.ts');
+    const ompTmp = `${ompDst}.psu-install.${process.pid}.tmp`;
+    await fs.writeFile(ompTmp, await fs.readFile(ompHookSrc), { mode: 0o644 });
+    await fs.rename(ompTmp, ompDst);
+    installed.push(path.join('omp', 'inject-hook.ts'));
+  } catch {
+    return [];
+  }
+  return installed;
 }
 
 /**
@@ -1947,6 +2018,13 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     ? await installClaudeHooks(home, ccHookSrcDir)
     : { installed: [] as string[], settingsMerged: false };
 
+  // Context-injection dispatcher + omp hook (omp-context-injection-parity P-003).
+  // Same shipping gap EI-8191 fixed for the CC hooks: esbuild cannot trace these
+  // fs-read files, so build-desktop-sidecar.sh copies them and this installs them.
+  // Without it the packaged app's omp sessions get NO turn-start/mid-turn context.
+  const injectHookSrcDir = await firstExisting(hookDirCandidates(operatorAppRoot, explicitRoot, 'inject'));
+  const injectionHooks = injectHookSrcDir ? await installInjectionHooks(home, injectHookSrcDir) : [];
+
   // Codex status line (parallel to the Claude statusLine merge above): a plain `codex` reads the
   // user's shared ~/.codex/config.toml, whose default status_line=None renders NOTHING — the
   // "no status lines in codex at all" report. Merge our native [tui].status_line in non-destructively.
@@ -2081,6 +2159,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     onboardLauncherSource: papercuspCliWritten && onboardLauncherSource ? onboardLauncherSource : '',
     pathProfilesUpdated,
     claudeHooksInstalled: claudeHooks.installed,
+    injectionHooksInstalled: injectionHooks,
     claudeSettingsMerged: claudeHooks.settingsMerged,
     codexStatusLineMerged: codexStatusLine.merged,
   };

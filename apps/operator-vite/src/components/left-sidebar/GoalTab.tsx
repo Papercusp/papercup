@@ -28,11 +28,12 @@
  * CHILDREN a goal spawns. The goal agent's own interactive turns are
  * subscription-billed and measure ~$0, so the honest name is the narrow one.
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, Target, UserRound } from 'lucide-react';
+import { AlertTriangle, MessageSquarePlus, Target, UserRound } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { seedOperatorChatDraft } from '@/app/_components/inbox/chat-seed';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { GoalSummaryRow, GoalTripwire } from '@papercusp/operator-core/lib/sync-resolver/goals';
 import { usd } from './SpendTab';
@@ -79,6 +80,31 @@ export function tripwireLabel(t: GoalTripwire): string {
  * correct if it is ever handed a hand-built list (a test, a future filter)
  * rather than the query's own output. Pure.
  */
+/**
+ * The kickoff draft the "Start a goal" button stages in the chat composer
+ * (goal-mode-2026-08-07 P-022).
+ *
+ * It is a PROMPT TEMPLATE the owner finishes, not a message that auto-sends —
+ * which is the whole difference between this and a New Goal form. The form
+ * would collect four values cold; this asks the agent to READ the portfolio
+ * first and come back with concrete ones, which is what GOAL mode's kickoff
+ * contract already requires of it. The trailing "The goal:" is deliberately
+ * left open for the owner to complete.
+ *
+ * It names `goals:propose` explicitly so the agent lands on the confirm card
+ * rather than creating the goal unilaterally.
+ */
+export const GOAL_KICKOFF_DRAFT = [
+  'Start a new goal with me.',
+  '',
+  'First read what already exists (goals:list, pot:list, plans:list) and tell me what',
+  'already targets this. Then propose a concrete kill criterion and spend ceiling, and',
+  'settle whether this is a plan inside an existing pot, a sub-goal, or a separate goal.',
+  'Put the result in front of me with goals:propose so I can confirm or edit it.',
+  '',
+  'The goal: ',
+].join('\n');
+
 const STATUS_RANK: Record<string, number> = { active: 0, paused: 1 };
 export function rankGoals(rows: readonly GoalSummaryRow[]): GoalSummaryRow[] {
   return [...rows].sort(
@@ -186,6 +212,12 @@ export default function GoalTab({ active }: { active: boolean }) {
 
   const data = q.data?.[0] ?? null;
   const goals = useMemo(() => rankGoals(data?.goals ?? []), [data]);
+  // Staging a draft is INVISIBLE from this rail — the composer lives in another
+  // pane and may not even be mounted (it consumes the pending seed when it
+  // next mounts). So the button confirms in place. A rail button that silently
+  // stages something elsewhere is the "I clicked it and nothing happened"
+  // failure WI-5175 was filed for.
+  const [seeded, setSeeded] = useState(false);
 
   if (!active) return null;
 
@@ -202,9 +234,27 @@ export default function GoalTab({ active }: { active: boolean }) {
             <span className="pc-auto__scope">workspace</span>
           </Tooltip>
           <span className="pc-auto__spacer" />
+          <Tooltip label="Drafts a kickoff message in the chat composer. The agent reads your portfolio first, then proposes the kill criterion and ceiling as an editable card — deliberately not a blank form.">
+            <button
+              type="button"
+              className="pc-goal__start"
+              data-testid="goal-start-kickoff"
+              onClick={() => {
+                seedOperatorChatDraft(GOAL_KICKOFF_DRAFT);
+                setSeeded(true);
+              }}
+            >
+              <MessageSquarePlus size={11} aria-hidden /> Start a goal
+            </button>
+          </Tooltip>
         </header>
 
         <div className="pc-auto__panel">
+          {seeded && (
+            <p className="pc-goal__seeded" data-testid="goal-kickoff-seeded" role="status">
+              Kickoff drafted in the chat composer — finish the sentence and send it.
+            </p>
+          )}
           {q.error && (
             <div className="pc-auto__err" role="alert">
               {String(q.error)}
@@ -227,8 +277,9 @@ export default function GoalTab({ active }: { active: boolean }) {
 
               {goals.length === 0 ? (
                 <div className="pc-auto__placeholder">
-                  No goals yet. Ask an agent to start one — it will propose the kill criterion
-                  and the ceiling rather than handing you a blank form.
+                  No goals yet. Hit <strong>Start a goal</strong> above — the agent reads your
+                  portfolio, then proposes the kill criterion and the ceiling as an editable
+                  card rather than handing you a blank form.
                 </div>
               ) : (
                 goals.map((g) => <GoalCard goal={g} key={g.id} />)

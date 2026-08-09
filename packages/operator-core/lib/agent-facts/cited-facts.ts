@@ -66,7 +66,12 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
-import { FACT_PROVENANCE_QUOTE_CHARS, factCitationRef, type FactScope } from './store';
+import {
+  FACT_PROVENANCE_QUOTE_CHARS,
+  FACTS_PER_SCOPE_CAP,
+  factCitationRef,
+  type FactScope,
+} from './store';
 import type { AssumptionCondition } from './assumptions';
 
 /**
@@ -310,7 +315,7 @@ export function citedFactsWarning(
     const superseded = cited.filter((c) => c.condition === 'superseded').length;
     const how: string[] = [];
     if (withdrawn > 0) how.push(`${withdrawn} RETRACTED (deliberately withdrawn — the body is quoted, but its author judged it wrong; do not act on it without re-establishing the claim)`);
-    if (evicted > 0) how.push(`${evicted} CAP-EVICTED (dropped by the 50-per-scope cap, NOT withdrawn — no one judged it wrong, it simply aged out of the scope)`);
+    if (evicted > 0) how.push(`${evicted} CAP-EVICTED (dropped by the ${FACTS_PER_SCOPE_CAP}-per-scope cap, NOT withdrawn — no one judged it wrong, it simply aged out of the scope)`);
     if (lapsed > 0) how.push(`${lapsed} EXPIRED (TTL lapsed; nobody disputed it)`);
     if (superseded > 0) how.push(`${superseded} SUPERSEDED (a NEWER version of this key exists — read that one)`);
     parts.push(
@@ -323,7 +328,7 @@ export function citedFactsWarning(
     );
   }
   parts.push(
-    'A governing ruling belongs in a plan DECISION (plans:add-decision — no TTL, addressable as <slug>#D-NNN), never a fact: facts decay by four paths (expiry, retraction, supersession and a 50-per-scope cap eviction with no time guarantee).',
+    `A governing ruling belongs in a plan DECISION (plans:add-decision — no TTL, addressable as <slug>#D-NNN), never a fact: facts decay by four paths (expiry, retraction, supersession and a ${FACTS_PER_SCOPE_CAP}-per-scope cap eviction with no time guarantee).`,
   );
   return {
     cited: [...cited],

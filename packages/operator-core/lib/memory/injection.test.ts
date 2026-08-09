@@ -32,6 +32,9 @@ type CorpusIoStub = {
   dropped: unknown[];
   embedderAvailable: boolean;
   candidateCount: number;
+  /** P-003 inputs to the coverage gate. Defaulted per-stub below. */
+  legs?: unknown;
+  retrievalDepth?: number;
 };
 let corpusIoResult: CorpusIoStub | null = null;
 const recallCorpusContext = vi.fn(async (_input: Record<string, unknown>) => {
@@ -39,6 +42,71 @@ const recallCorpusContext = vi.fn(async (_input: Record<string, unknown>) => {
   return corpusIoResult;
 });
 vi.mock('./corpus-recall-io', () => ({ recallCorpusContext }));
+
+// P-003: the coverage snapshot read is behind a dynamic import of the SEARCH
+// package's gate, so it is stubbed here and driven per-test via `coverageReport`.
+//
+// `null` (the default) makes `assessSearchCoverage` throw, which lands the gate
+// in its fail-open catch — i.e. `gate: null`, rendering exactly as it did before
+// P-003. That is the correct default for every pre-existing test in this file:
+// none of them stub a coverage surface, and a fabricated HEALTHY default would
+// assert the gate is inert while proving nothing about the degraded paths.
+let coverageReport: unknown = null;
+vi.mock('../search/coverage-gate', () => ({
+  loadCoverageSnapshotCached: vi.fn(async () => new Map()),
+  assessSearchCoverage: vi.fn(() => {
+    if (!coverageReport) throw new Error('coverage not stubbed for this test');
+    return coverageReport;
+  }),
+}));
+
+/** A coverage report shaped like `assessSearchCoverage`'s, for one source. */
+const coverageOf = (
+  verdict: 'healthy' | 'degraded' | 'unknown' | 'not-semantic',
+  over: { coverage?: number | null; embeddedRows?: number } = {},
+) => {
+  const a = {
+    source: 'session_turn',
+    verdict,
+    coverage: over.coverage ?? (verdict === 'healthy' ? 0.999 : 0.01),
+    recentCoverage: null,
+    surfaces: [
+      {
+        surface: 'harness_shared.session_turns.text_embedding',
+        observedAt: new Date(),
+        eligibleRows: 100_000,
+        embeddedRows: over.embeddedRows ?? (verdict === 'healthy' ? 99_900 : 9),
+        pct: over.coverage ?? 0.999,
+        recentPct: null,
+        stale: false,
+        ageMs: 60_000,
+      },
+    ],
+    unknownSurfaces: [],
+    note: '',
+  };
+  return {
+    degraded: verdict === 'degraded' || verdict === 'unknown',
+    degradedSources: verdict === 'degraded' ? ['session_turn'] : [],
+    unknownSources: verdict === 'unknown' ? ['session_turn'] : [],
+    perSource: [a],
+    warning: null,
+  };
+};
+
+/** A per-leg execution report shaped like the engine's `SearchLegs`. */
+const legsWith = (lexicalCandidates: number) => {
+  const leg = (candidates: number) => ({
+    status: 'ran',
+    candidates,
+    floored: 0,
+    callsRun: 1,
+    callsFailed: 0,
+    failures: [],
+    blocked: null,
+  });
+  return { lexical: leg(lexicalCandidates), semantic: leg(6), degraded: false, warning: null };
+};
 
 // The harness registry backs the member→hive resolution (knowledge-packs
 // P-004). Canned per-test via `registryProjects`; default empty ⇒ no hive pull.

@@ -372,6 +372,8 @@ const midTurnContext = defineTool({
       workspace?: string;
       harness?: string;
       cwd?: string;
+      /** Which TUI is asking — 'claude' | 'codex' | 'omp'. Recorded only (P-005). */
+      client?: string;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -445,7 +447,14 @@ const midTurnContext = defineTool({
           queryContext: { userText: query, lexicalText: lexicalQuery },
           // Free-text port; the epoch ledger is port-agnostic (D-006), so this
           // inherits turn-start's dedup instead of needing one of its own.
-          session: { sessionId: owner, port: 'mid-turn' },
+          // P-005 / migration 770: recorded on memory_recall_stats, never
+          // branched on — this endpoint stays client-agnostic (D-001 inv. 6).
+          // No client sent ⇒ NULL ⇒ unattributed, which is the honest reading.
+          session: {
+            sessionId: owner,
+            port: 'mid-turn',
+            ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
+          },
           budgetChars: MID_TURN_BUDGET_CHARS,
           heading: 'Possibly relevant (mid-turn)',
         })) ?? '';

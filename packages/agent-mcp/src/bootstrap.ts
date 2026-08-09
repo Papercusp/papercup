@@ -21,6 +21,7 @@ import './tools/features/tag_vocabulary';
 import './tools/goals/list';
 import './tools/goals/get';
 import './tools/goals/create';
+import './tools/goals/propose';
 import './tools/goals/update';
 import './tools/goals/projects';
 // issues:* fully RETIRED onto the unified work_items:* surface (coordination-unification-

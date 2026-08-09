@@ -86,6 +86,8 @@ const turnStartMemory = defineTool({
       harness?: string;
       cwd?: string;
       memoryEnabled?: boolean;
+      /** Which TUI is asking — 'claude' | 'codex' | 'omp'. Recorded only (P-005). */
+      client?: string;
     };
     try {
       body = (await req.json()) as typeof body;
