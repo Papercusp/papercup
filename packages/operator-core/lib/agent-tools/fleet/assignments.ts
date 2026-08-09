@@ -14,6 +14,7 @@ import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
+import { selectFleetPopulation, withShownCount } from './fleet-population';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   fetchWakeability,
@@ -1095,13 +1096,25 @@ export default defineTool({
     // itself. Best-effort — an unattributable caller just gets no marker.
     const self = resolveSelfRef(ctx);
     const selfMarkedAgents = markSelfRows(boundedAgents, self, 'agentId');
+    // P-010: the byte budget above is a SECOND reduction, independent of the
+    // stale-idle filter — `summary.agents` stays the true count (that is
+    // deliberate, see the comment where it is computed), which means the array
+    // beside it can be shorter with nothing saying so. Record both.
+    const summaryOut = {
+      ...summary,
+      population: withShownCount(
+        agentPopulation.census,
+        boundedAgents.length,
+        'trimmed to the agent result byte budget (22KB, live-first order) — narrow with { agent } / { plan }',
+      ),
+    };
     // {data} envelope so the payload-tier shapers apply; HTTP consumers (the
     // pui bee-dossier pane) still read identical lossless JSON text.
     return {
       data: {
         ok: true,
         ...(self ? { self } : {}),
-        summary,
+        summary: summaryOut,
         // WI-6762: SHIP THE SCOPE NEXT TO THE SCOPED COUNTS.
         //
         // Every number in `summary` is relative to the filters below, but the field

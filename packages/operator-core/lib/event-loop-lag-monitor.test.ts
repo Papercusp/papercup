@@ -21,11 +21,13 @@ import {
   isLoopElevated,
   isLoopSaturated,
   loopPressure,
+  setLagPublishTarget,
   shouldTriggerFullHeapSnapshot,
   startEventLoopLagMonitor,
   yieldToEventLoop,
   type LagMonitorHandle,
 } from './event-loop-lag-monitor';
+import { SENTINEL_SAB_IDX, SENTINEL_SAB_INT32_LEN } from './event-loop-sentinel';
 
 function blockFor(ms: number): void {
   const end = Date.now() + ms;
@@ -755,5 +757,81 @@ describe('sampling heap profiler (WI-1088 round 2 — the capture that cannot lo
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
+  });
+});
+
+describe('setLagPublishTarget (EI-19484853609145439: sentinel-readable last-known lag)', () => {
+  let handle: LagMonitorHandle | undefined;
+  afterEach(() => {
+    handle?.stop();
+    handle = undefined;
+    // Module-level state — must not bleed into other test files/tests.
+    setLagPublishTarget(null);
+  });
+
+  it('publishes rounded p50/p95/p99/max into the SAB at SENTINEL_SAB_IDX on every tick', async () => {
+    const sab = new SharedArrayBuffer(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
+    const view = new Int32Array(sab);
+    setLagPublishTarget(sab);
+    handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
+    // Manufacture real, measurable lag so the published values are not all 0
+    // by coincidence (0 is also a legal "idle loop" reading).
+    blockFor(30);
+    await new Promise((r) => setTimeout(r, 80));
+
+    const sample = handle.sample();
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P50_MS)).toBe(Math.round(sample.p50Ms));
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS)).toBe(Math.round(sample.p95Ms));
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P99_MS)).toBe(Math.round(sample.p99Ms));
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)).toBe(Math.round(sample.maxMs));
+    // The heartbeat slot (index 0, owned by event-loop-sentinel-host.ts) must
+    // never be touched by the lag monitor — it is a different publisher.
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.HEARTBEAT)).toBe(0);
+  });
+
+  it('is late-bindable: wiring the target AFTER the monitor already started still publishes', async () => {
+    const sab = new SharedArrayBuffer(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
+    const view = new Int32Array(sab);
+    handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
+    // No target wired yet — must not throw, must not write anywhere.
+    await new Promise((r) => setTimeout(r, 60));
+    setLagPublishTarget(sab);
+    await new Promise((r) => setTimeout(r, 60));
+    // Some slot moved off its zero-initialized default (lag is rarely exactly
+    // 0ms across every percentile on a real, if idle, loop over 60ms+).
+    const anyPublished =
+      Atomics.load(view, SENTINEL_SAB_IDX.LAG_P50_MS) !== 0 ||
+      Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS) !== 0 ||
+      Atomics.load(view, SENTINEL_SAB_IDX.LAG_P99_MS) !== 0 ||
+      Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS) !== 0;
+    expect(anyPublished).toBe(true);
+  });
+
+  it('null clears the target — no throw, and no further writes', async () => {
+    const sab = new SharedArrayBuffer(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
+    const view = new Int32Array(sab);
+    setLagPublishTarget(sab);
+    handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
+    await new Promise((r) => setTimeout(r, 60));
+    setLagPublishTarget(null);
+    Atomics.store(view, SENTINEL_SAB_IDX.LAG_P95_MS, -1); // sentinel value
+    await new Promise((r) => setTimeout(r, 60));
+    // If the monitor kept a stale reference it would overwrite -1; it must not.
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS)).toBe(-1);
+  });
+
+  it('a too-small/foreign SAB is rejected defensively rather than throwing inside the tick', async () => {
+    const tooSmall = new SharedArrayBuffer(4); // 1 int32 — smaller than SENTINEL_SAB_INT32_LEN
+    expect(() => setLagPublishTarget(tooSmall)).not.toThrow();
+    handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
+    // Must not throw synchronously nor asynchronously inside the interval tick.
+    await new Promise((r) => setTimeout(r, 60));
+    expect(handle.sample().p95Ms).toBeGreaterThanOrEqual(0); // monitor still alive/functioning
+  });
+
+  it('with no target wired at all, the tick is unaffected (today’s default behavior)', async () => {
+    handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
+    await expect(new Promise((r) => setTimeout(r, 60))).resolves.toBeUndefined();
+    expect(handle.sample().p95Ms).toBeGreaterThanOrEqual(0);
   });
 });
