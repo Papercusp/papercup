@@ -456,6 +456,12 @@
   flex-shrink: 0;
   overflow: visible;
 }
+/* The node swatches reuse `.pc-depgraph__node`, which carries `cursor: pointer` for the
+ * real, clickable nodes. A key is not clickable — inheriting that would promise an
+ * interaction that does not exist. */
+.pc-depgraph__legend .pc-depgraph__node {
+  cursor: default;
+}
 
 /* "Clear selection" (P-007) — the Button primitive's accent variant carries the
  * emphasis; this only stops the label wrapping in the now-wrapping bar. */

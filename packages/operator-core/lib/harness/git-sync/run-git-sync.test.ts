@@ -305,6 +305,57 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  // EI-19932544083689229 remedy #1 (ATOMICITY): reproduces the live incident —
+  // content-guard quarantines a broken SOURCE file; its clean *.test.* SIBLING
+  // (which imports it via a relative specifier) must be held back TOO, not
+  // committed alone. Pre-fix this test fails: the sibling test lands in HEAD
+  // while its subject never does, and an isolated checkout gets an unresolvable
+  // import forever.
+  it('EI-19932544083689229: a dirty sibling that IMPORTS a content-guard-quarantined file is ALSO excluded (quarantine the pair, not just the broken half)', async () => {
+    writeFileSync(join(repo, 'good.txt'), 'fine\n');
+    writeFileSync(join(repo, 'watchdog.md'), 'this is BROKEN\n'); // content-guard quarantines this
+    // The sibling "test" — clean text, but imports the quarantined file. Using a
+    // real resolvable extension (.ts) + a relative specifier so the quarantine-import
+    // guard's specifier scan actually fires (brokenDetector only targets *.md).
+    writeFileSync(join(repo, 'watchdog.test.ts'), `import './watchdog.md';\nit('ok', () => {});\n`);
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
+
+    expect(out.status).toBe('synced'); // the unrelated clean file still syncs
+    const files = out.contentErrors.map((c) => c.file).sort();
+    expect(files).toEqual(['watchdog.md', 'watchdog.test.ts']);
+    const importerOffender = out.contentErrors.find((c) => c.file === 'watchdog.test.ts');
+    expect(importerOffender?.detectorKey).toBe('quarantined-importer');
+    expect(importerOffender?.error).toContain('watchdog.md');
+
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('good.txt');
+    expect(originFiles).not.toContain('watchdog.md'); // subject excluded (as before)
+    expect(originFiles).not.toContain('watchdog.test.ts'); // NEW: importer excluded too — the fix
+    // both the subject AND its importer are left dirty for the content-fixer
+    const dirty = git(repo, 'status', '--porcelain');
+    expect(dirty).toContain('watchdog.md');
+    expect(dirty).toContain('watchdog.test.ts');
+  });
+
+  it('EI-19932544083689229: once the subject is fixed, the previously-held-back importer commits too (self-heal, no residual quarantine)', async () => {
+    writeFileSync(join(repo, 'watchdog.md'), 'this is BROKEN\n');
+    writeFileSync(join(repo, 'watchdog.test.ts'), `import './watchdog.md';\nit('ok', () => {});\n`);
+    await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('watchdog.test.ts');
+
+    // content-fixer repairs the subject (no longer BROKEN) — the NEXT tick commits both.
+    writeFileSync(join(repo, 'watchdog.md'), 'this is fine now\n');
+    const out2 = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
+
+    expect(out2.status).toBe('synced');
+    expect(out2.contentErrors).toEqual([]);
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('watchdog.md');
+    expect(originFiles).toContain('watchdog.test.ts');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   // G20: the joiner-side push:false runtime invariant — a dirty tree COMMITS
   // locally but origin/main must be byte-for-byte UNCHANGED. Asserts via the
   // origin tip SHA (not just the commit-subject log) and proves the fresh local

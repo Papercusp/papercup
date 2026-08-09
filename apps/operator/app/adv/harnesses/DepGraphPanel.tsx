@@ -192,16 +192,28 @@ function DepGraphLegend() {
         {edge('dangling')}
         <span>broken — blocker resolves to no item</span>
       </li>
+      {/*
+        ⚠ The node marks are wrapped in a <g class="pc-depgraph__node"> with the <rect> as
+        a CHILD — matching the canvas exactly. The node styles are DESCENDANT selectors
+        (`.pc-depgraph__node rect`, and `.pc-depgraph__node rect.pc-depgraph__node-planmark`
+        which is deliberately over-specific to beat the dangling rule), so putting the class
+        ON the rect would match nothing and render an unstyled outline. Same-class reuse only
+        buys drift-immunity if the STRUCTURE matches too.
+      */}
       <li>
         <LegendSwatch>
-          <rect x={1} y={1} width={24} height={10} rx={3} className="pc-depgraph__node pc-depgraph__node--dangling" />
+          <g className="pc-depgraph__node pc-depgraph__node--dangling">
+            <rect x={1} y={1} width={24} height={10} rx={3} />
+          </g>
         </LegendSwatch>
         <span>placeholder for that missing blocker</span>
       </li>
       <li>
         <LegendSwatch>
-          <rect x={1} y={1} width={24} height={10} rx={3} className="pc-depgraph__node" />
-          <rect x={1} y={1} width={3} height={10} rx={1.5} className="pc-depgraph__node-planmark" />
+          <g className="pc-depgraph__node">
+            <rect x={1} y={1} width={24} height={10} rx={3} />
+            <rect x={1} y={1} width={3} height={10} rx={1.5} className="pc-depgraph__node-planmark" />
+          </g>
         </LegendSwatch>
         <span>came from a plan</span>
       </li>
