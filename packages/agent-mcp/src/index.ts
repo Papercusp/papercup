@@ -212,6 +212,17 @@ export { tierFor, setCapabilityTierResolver } from '@papercusp/tooldef';
 // as tooldef's tier resolver (see capability-tiers-papercusp.ts).
 export { papercuspTierFor, setCapabilityTierOverride, type CapabilityTierOverride } from './capability-tiers-papercusp';
 
+// The goal stop seam (EI-20013729460455061). operator-core installs the executor at
+// module load; without it `goals:update { status:'paused' }` is a pure record write.
+export {
+  setGoalStopExecutor,
+  getGoalStopExecutor,
+  isStoppingStatus,
+  type GoalStopExecutor,
+  type GoalStopInput,
+  type GoalStopReport,
+} from './tools/goals/stop-seam';
+
 // Per-spawn URL-param parser — used by both projected-tool transports
 // to extract harness/workspace/role/feature/chunk/run/spawn from the
 // orchestrator-baked URL.

@@ -20,11 +20,12 @@
   "dependencies": {
     "@mcp-ui/server": "^6.1.0",
     "@modelcontextprotocol/sdk": "*",
+    "@papercusp/db-org": "*",
     "@papercusp/host-platform": "file:../../libs/host-platform",
     "@papercusp/result-encoding": "*",
+    "@papercusp/sse": "file:../../libs/generic/sse",
     "@papercusp/tooldef": "*",
     "@papercusp/tooldef-http": "*",
-    "@papercusp/sse": "file:../../libs/generic/sse",
     "postgres": "*",
     "zod": "*"
   },

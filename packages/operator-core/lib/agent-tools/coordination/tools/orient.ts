@@ -1472,20 +1472,122 @@ export async function composeOrient(
   // capability-gated at re-dispatch, so a read-only caller gets intentDeclared:false
   // rather than an escalation). BEST-EFFORT.
   if (args.intent) {
+    let declared: { claims?: unknown } | undefined;
     try {
-      await call('coord:declare-intent', {
+      declared = (await call('coord:declare-intent', {
         intent: args.intent,
         ...(args.planSlug ? { current_plan_slug: args.planSlug } : {}),
         ...(args.planItems ? { items: args.planItems } : {}),
         ...(args.harness ? { harness: args.harness } : {}),
-      });
+      })) as { claims?: unknown } | undefined;
       result.intentDeclared = true;
     } catch {
       result.intentDeclared = false;
     }
+    // EI-20013545515660920: surface the lane-claim OUTCOME instead of dropping it.
+    // declare-intent already computed it; discarding it here is what made a failed
+    // claim indistinguishable from a successful one at the call site.
+    if (args.planItems?.length) {
+      result.laneClaim = summarizeLaneClaim(args.planItems, declared?.claims, {
+        planSlugGiven: Boolean(args.planSlug),
+        declareFailed: result.intentDeclared === false,
+      });
+    }
   }
 
   return result;
+}
+
+/** EI-20013545515660920: the outcome of a `planItems` lane claim, as reported
+ *  back to the caller of coord:orient. Mirrors coord:declare-intent's own
+ *  `claims` block, plus the `requested` lane and an explicit `warning`. */
+export type OrientLaneClaim = {
+  requested: string[];
+  claimed: string[];
+  alreadyHeld: string[];
+  released: string[];
+  conflicts: unknown[];
+  unknown: string[];
+  hint?: string;
+  warning?: string;
+};
+
+const asStringArray = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+
+/** EI-20013545515660920: turn coord:declare-intent's `claims` block into an
+ *  UNAMBIGUOUS statement of whether the caller now holds the lane it asked for.
+ *
+ *  The bug this closes is a silent no-op: orient returned `ok: true` (and
+ *  `intentDeclared: true`) while claiming nothing, because the diagnostic
+ *  explaining why was thrown away at the call site. So the rule here is that
+ *  every path which ends with the caller holding NONE of the requested items
+ *  MUST set `warning` — including the paths where declare-intent never even
+ *  attempted a claim:
+ *    - `planItems` passed without `planSlug` (declare-intent reconciles a lane
+ *      only when BOTH are present, so it silently skips);
+ *    - the declaration call itself failed (no coord:write);
+ *    - no `claims` block came back at all.
+ *  An absent warning must mean "you hold at least part of this lane", never
+ *  "nothing went wrong as far as I looked".
+ *
+ *  Pure (no IO) so a regression test asserts the real logic, not a fixture. */
+export function summarizeLaneClaim(
+  requested: readonly string[],
+  claims: unknown,
+  opts: { planSlugGiven: boolean; declareFailed?: boolean },
+): OrientLaneClaim {
+  const req = [...requested];
+  const base: OrientLaneClaim = {
+    requested: req,
+    claimed: [],
+    alreadyHeld: [],
+    released: [],
+    conflicts: [],
+    unknown: [],
+  };
+
+  if (opts.declareFailed) {
+    return {
+      ...base,
+      warning: `coord:declare-intent FAILED, so NONE of the ${req.length} requested plan item(s) were claimed — you do NOT hold this lane. This usually means the caller lacks coord:write. Claim explicitly with plans:set-status { item, status: 'wip' } and check the result's claim object.`,
+    };
+  }
+
+  if (!opts.planSlugGiven) {
+    return {
+      ...base,
+      warning: `planItems was passed WITHOUT planSlug, so NOTHING was claimed — you do NOT hold this lane. A lane is reconciled only when BOTH are given. Re-call with planSlug, or claim explicitly via plans:set-status { item, status: 'wip' }.`,
+    };
+  }
+
+  const c = (claims && typeof claims === 'object' ? claims : null) as Record<string, unknown> | null;
+  if (!c) {
+    return {
+      ...base,
+      warning: `coord:declare-intent returned no claims block, so NONE of the ${req.length} requested plan item(s) can be confirmed as claimed — do NOT assume you hold this lane. Verify with plans:set-status { item, status: 'wip' }.`,
+    };
+  }
+
+  const summary: OrientLaneClaim = {
+    requested: req,
+    claimed: asStringArray(c.claimed),
+    alreadyHeld: asStringArray(c.alreadyHeld),
+    released: asStringArray(c.released),
+    conflicts: Array.isArray(c.conflicts) ? [...c.conflicts] : [],
+    unknown: asStringArray(c.unknown),
+    ...(typeof c.hint === 'string' ? { hint: c.hint } : {}),
+  };
+
+  const held = summary.claimed.length + summary.alreadyHeld.length;
+  if (req.length > 0 && held === 0) {
+    const why = summary.conflicts.length > 0 ? ' A live peer holds part of it (see conflicts).' : '';
+    summary.warning =
+      `NONE of the ${req.length} requested plan item(s) are held — you do NOT hold this lane, ` +
+      `even though the declaration itself succeeded.${why} An unclaimed lane is invisible to peers ` +
+      `and the Mug, so work gets double-placed. ${summary.hint ?? 'Claim explicitly via plans:set-status { item, status: \'wip\' } and check its claim object.'}`;
+  }
+  return summary;
 }
 
 /** WI-5656 + EI-18689334534773965: assembles the final coord:orient response

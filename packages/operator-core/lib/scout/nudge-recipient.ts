@@ -71,10 +71,21 @@ const DELIVERABLE_STATES = new Set(['live', 'parked']);
 /** su session owner ids are minted with this prefix (e.g. `su-bdf16205-…`). */
 const SU_OWNER_PREFIX = 'su-';
 
+/**
+ * `escalate` and `unresolved` are DELIBERATELY distinct, and collapsing them would
+ * recreate the bug this module exists to fix, one level up:
+ *   - `escalate`   — we KNOW nobody can act (presence read fine, nobody live). Tell the
+ *                    owner; this is a real "your Scout rail has no consumer" signal.
+ *   - `unresolved` — we could not TELL (presence/liveness unreadable). Absence of
+ *                    evidence, not evidence of absence. Escalating on it would page the
+ *                    owner every time a dependency hiccups and train them to ignore it.
+ *                    The legacy durable park still ran, so degrade quietly to that.
+ */
 export type NudgeRecipient =
   | { kind: 'mug'; ownerId: string; why: string }
   | { kind: 'su'; ownerId: string; ownerLabel: string; why: string }
-  | { kind: 'escalate'; why: string };
+  | { kind: 'escalate'; why: string }
+  | { kind: 'unresolved'; why: string };
 
 export interface ResolveNudgeRecipientOpts {
   workspaceId: string;
@@ -94,15 +105,28 @@ export interface ResolveNudgeRecipientOpts {
 export async function resolveNudgeRecipient(
   opts: ResolveNudgeRecipientOpts,
 ): Promise<NudgeRecipient> {
-  const listFn = opts.listPresenceFn ?? (await loadPresence()).listPresence;
-  const statesFn = opts.resolveSessionStatesFn ?? (await loadLiveness()).resolveSessionStates;
+  // The module LOADS are inside the guard too, not just the calls: a dynamic import can
+  // itself throw (a partially-mocked dependency under test, a cycle at boot), and a
+  // watchdog whose whole job is to not go quiet must never die resolving its own
+  // recipient. Anything unresolvable degrades to `unresolved`, which the caller reports.
+  let listFn: typeof listPresence;
+  let statesFn: typeof resolveSessionStates;
+  try {
+    listFn = opts.listPresenceFn ?? (await loadPresence()).listPresence;
+    statesFn = opts.resolveSessionStatesFn ?? (await loadLiveness()).resolveSessionStates;
+  } catch (e) {
+    return {
+      kind: 'unresolved',
+      why: `presence/liveness modules unavailable (${e instanceof Error ? e.message : String(e)})`,
+    };
+  }
 
   let rows: PresenceRecord[] = [];
   try {
     rows = await listFn({ workspaceId: opts.workspaceId });
   } catch (e) {
     return {
-      kind: 'escalate',
+      kind: 'unresolved',
       why: `presence unreadable (${e instanceof Error ? e.message : String(e)}) — cannot name a live recipient`,
     };
   }
@@ -133,7 +157,7 @@ export async function resolveNudgeRecipient(
     >;
   } catch (e) {
     return {
-      kind: 'escalate',
+      kind: 'unresolved',
       why: `liveness oracle failed (${e instanceof Error ? e.message : String(e)}) — refusing to guess a recipient from a raw heartbeat`,
     };
   }
@@ -206,20 +230,31 @@ export async function deliverScoutNudge(
     mugOwner: opts.mugOwner,
   });
 
-  if (recipient.kind === 'mug') {
-    // Unchanged path: wakeMug's two halves (direct wake + durable @role:mug park).
-    const { wakeMug } = await loadPlacementWatchdog();
-    await wakeMug({
-      workspaceId: opts.workspaceId,
-      mugOwner: recipient.ownerId,
-      summary: opts.summary,
-      source: opts.source,
-      payload: opts.payload,
-      body: opts.body,
-      harnessSlug: opts.harnessSlug,
-    });
-    return recipient;
-  }
+  // ALWAYS run the legacy Mug delivery first — this addition is PURELY ADDITIVE, the
+  // same discipline severe-event-broadcast took with its own routing leg.
+  //
+  // Removing the durable `@role:mug` park when no Mug is live would be a REGRESSION while
+  // the tier still runs: the park exists precisely so a FUTURE Mug relaunch drains it, and
+  // "no Mug live right now" is the normal state between wakes, not evidence that none is
+  // coming. So the park stays and the routed delivery is layered on top; when the tier is
+  // finally gated OFF this call becomes a no-op and only the routed leg remains.
+  const { wakeMug } = await loadPlacementWatchdog();
+  await wakeMug({
+    workspaceId: opts.workspaceId,
+    mugOwner: recipient.kind === 'mug' ? recipient.ownerId : opts.mugOwner,
+    summary: opts.summary,
+    source: opts.source,
+    payload: opts.payload,
+    body: opts.body,
+    harnessSlug: opts.harnessSlug,
+  });
+
+  // A deliverable Mug will act on it — no second recipient needed.
+  if (recipient.kind === 'mug') return recipient;
+
+  // Could not determine liveness — the durable park above is the honest best effort.
+  // Do NOT page the owner on a dependency hiccup (see the NudgeRecipient doc).
+  if (recipient.kind === 'unresolved') return recipient;
 
   const [{ sendMessage }, { runWithWorkspace }] = await Promise.all([
     import('../agent-tools/coordination/messages'),

@@ -20,9 +20,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { sendMessage } from '../coordination/messages';
 import { CUE_AUTHORITY_FIELD, hiveWideCueAuthority } from '../coordination/cue-authority';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { clearPotTimeWake, resolvePotHomeSlug } from '../../pot/wake';
-import { setPotStarted, setPotPlacementStarted, anyPotPlacementStarted } from '../../pot/started';
-import { setDefaultWakeMode } from '../coordination/wake-mode';
+import { resolvePotHomeSlug } from '../../pot/wake';
+import { pausePotState } from '../../pot/pause-core';
 
 export default defineTool({
   name: 'pot:pause',
@@ -75,26 +74,12 @@ export default defineTool({
     }
     const { sql } = getOrgPg();
 
-    // Per-pot Stop (per-pot start-stop 2026-06-30): clear THIS pot's placement
-    // bit FIRST (P-013 ordering — no watchdog seam re-arms between the wake clear
-    // and the state flip). This stops the workspace Mug placing THIS pot's work.
-    // WI-3309: mark the PER-POT pause deliberate too — the papercup-scoped
-    // deliberate mark below only fires when this is the LAST started pot
-    // (loopIdle), so without this the paused-pot recovery sweep read a
-    // single-pot owner Stop as a non-deliberate "silent outage" and
-    // auto-resumed it (the recurring Mug auto-unpause).
-    await setPotPlacementStarted(workspaceId, installSlug, false, { deliberate: true });
-    // Idle the workspace Mug LOOP (papercup off + wake-mode manual + clear the
-    // pending time wake) ONLY when NO pot remains started — otherwise the single
-    // workspace Mug keeps running for the other started hives.
-    const loopIdle = !(await anyPotPlacementStarted(workspaceId, installSlug));
-    if (loopIdle) {
-      // WI-3261: mark this pause DELIBERATE (owner-initiated) so the paused-pot
-      // recovery watchdog never mistakes it for a silent outage and auto-resumes it.
-      await setPotStarted(workspaceId, installSlug, false, { deliberate: true });
-      await setDefaultWakeMode('manual');
-      await clearPotTimeWake(sql, installSlug, { workspaceId });
-    }
+    // The state transition itself lives in pot/pause-core so the goal stop
+    // fan-out (EI-20013729460455061) performs the IDENTICAL transition — including
+    // the P-013 ordering and the WI-3261/WI-3309 `deliberate` markers that stop the
+    // recovery sweep auto-resuming a deliberate pause.
+    const paused = await pausePotState(sql, workspaceId, installSlug);
+    const loopIdle = paused.workspaceLoopIdle;
     // Live UI reflection (P-006): the AdvShell harness-bar control
     // (AdvNowRunning) reads pot.controlState.
     void import('../../sync-sse')

@@ -1,0 +1,146 @@
+/**
+ * The host half of the goal stop seam — what actually happens when a goal moves to
+ * `paused` or `killed` (EI-20013729460455061).
+ *
+ * Installed into `@papercusp/agent-mcp` at MODULE LOAD, the same way
+ * capability-tier-overrides installs its resolver. It is imported from the
+ * agent-tools index so loading the tool surface wires it; `stop-fanout-installed.test.ts`
+ * fails if that import is ever dropped, because an uninstalled seam would restore
+ * the exact silent no-op this module exists to remove.
+ *
+ * ── SCOPE, AND WHY IT IS NARROW ──────────────────────────────────────────────
+ *
+ * PLACEMENT is gated only on projects this goal OWNS. `goal_projects.role` is
+ * load-bearing here (migration 765, D-019/D-021): `owner` is the single goal
+ * permitted to place work into a project, while a `contributing` link is driven by
+ * a DIFFERENT goal's placement. Stopping a contributing project would halt work
+ * this goal does not own — so contributing links are listed in the report and
+ * deliberately left running.
+ *
+ * LOOPS are disarmed only for sessions ATTRIBUTED to this goal — a GOAL-mode
+ * `agent_modes` row whose `subject` is this goal id. The tempting alternative,
+ * "disarm every active loop in the goal's projects", is a fleet-wide kill switch
+ * fired by a label change: a goal's project is routinely `papercusp` itself, where
+ * dozens of unrelated su sessions hold active loops. Verified live 2026-08-09 —
+ * `harness_shared.routines` carried many active `loop-su-*` rows on `install_slug =
+ * 'papercusp'`, none of them belonging to any goal.
+ *
+ * ── WHY IT REPORTS WHAT IT DID NOT STOP ──────────────────────────────────────
+ *
+ * EI-19995648221353323 measured the failure this must not repeat: pot pause is a
+ * placement GATE, not a throttle. It bounds new Mug placements and exerts zero
+ * backpressure on sessions already alive with armed self-wake loops — so a pot read
+ * "paused, maxBees 1" while 73 distinct owners ran it at 8-13k calls/hour and drained
+ * the account pool to exhaustion. The steering surface reported a state that was not
+ * the state of the system, and every downstream capacity decision was made on that
+ * false premise.
+ *
+ * So this returns `unattributedActiveLoops`: active loops running in the goal's own
+ * projects that could NOT be tied to the goal and were left alone. That is the
+ * detector EI-19995648221353323 asks for, delivered at the moment the stop intent is
+ * expressed rather than discovered days later from the pool. A caller that renders
+ * only `status` will still be wrong — which is why `degraded` is set alongside it.
+ */
+
+import { getOrgPg, projectsForGoal } from '@papercusp/db-org';
+import {
+  setGoalStopExecutor,
+  type GoalStopInput,
+  type GoalStopReport,
+} from '@papercusp/agent-mcp';
+import { pausePotState } from '../pot/pause-core';
+import { deactivateLoop, loopRoutineName } from '../harness/routines/loop';
+
+/**
+ * Session owner ids running GOAL mode for this goal. Presence of the row IS the
+ * attribution: clearing a mode DELETEs it (modes/store.ts), so there is no enabled
+ * flag to filter on.
+ */
+async function attributedOwners(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  goalId: string,
+): Promise<string[]> {
+  const rows = await sql<Array<{ owner_id: string }>>`
+    SELECT DISTINCT owner_id
+      FROM harness_shared.agent_modes
+     WHERE workspace_id = ${workspaceId}
+       AND mode = 'goal'
+       AND subject = ${goalId}
+       AND owner_id IS NOT NULL
+  `;
+  return rows.map((r) => r.owner_id);
+}
+
+/**
+ * Active engine loops running in these projects that are NOT in `sparedNames`.
+ * Counted AFTER the disarms so it reports what is still burning, not what was.
+ */
+async function countUnattributedActiveLoops(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  projects: string[],
+  stoppedNames: string[],
+): Promise<number> {
+  if (projects.length === 0) return 0;
+  const [row] = await sql<Array<{ n: string }>>`
+    SELECT count(*)::text AS n
+      FROM harness_shared.routines
+     WHERE workspace_id = ${workspaceId}
+       AND install_slug = ANY(${projects})
+       AND active = TRUE
+       AND target_role = 'system:loop-wake'
+       ${stoppedNames.length ? sql`AND name <> ALL(${stoppedNames})` : sql``}
+  `;
+  return row ? Number(row.n) : 0;
+}
+
+export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopReport> {
+  const { sql } = getOrgPg();
+  const { goalId, workspaceId, status } = input;
+
+  const links = await projectsForGoal(sql, { workspaceId, goalId });
+  const owned = links.filter((l) => l.role === 'owner').map((l) => l.harnessSlug);
+  const contributing = links.filter((l) => l.role !== 'owner').map((l) => l.harnessSlug);
+
+  // ── Tier 1: gate placement on the projects this goal owns ──────────────────
+  const projectsStopped: string[] = [];
+  for (const slug of owned) {
+    await pausePotState(sql, workspaceId, slug);
+    projectsStopped.push(slug);
+  }
+
+  // ── Tier 2: disarm the loops of sessions attributed to this goal ───────────
+  // This is the half with actual teeth: a placement gate alone leaves every live
+  // self-waking session running (EI-19995648221353323).
+  const owners = await attributedOwners(sql, workspaceId, goalId);
+  const loopsStopped: string[] = [];
+  for (const ownerId of owners) {
+    // deactivateLoop is guarded `AND active = TRUE`, so a false return means the
+    // session had no armed loop — not a failure.
+    if (await deactivateLoop(ownerId, { sql })) loopsStopped.push(ownerId);
+  }
+
+  // ── The honest gap ─────────────────────────────────────────────────────────
+  const unattributedActiveLoops = await countUnattributedActiveLoops(
+    sql,
+    workspaceId,
+    owned,
+    loopsStopped.map((o) => loopRoutineName(o)),
+  );
+
+  return {
+    goalId,
+    status,
+    projectsStopped,
+    projectsSkippedContributing: contributing,
+    loopsStopped,
+    unattributedActiveLoops,
+    // Degraded when the stop is materially incomplete: we gated placement but real
+    // burn continues in the goal's own projects.
+    degraded: unattributedActiveLoops > 0,
+  };
+}
+
+// Install at module load — the same seam pattern as capability-tier-overrides.
+setGoalStopExecutor((input) => executeGoalStop(input));
