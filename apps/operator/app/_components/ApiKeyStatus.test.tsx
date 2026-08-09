@@ -1,14 +1,22 @@
 // @vitest-environment jsdom
 /**
- * Tests for <ApiKeyStatus> — the header pill that reads /api/credentials and
- * renders the Anthropic-key dot + a composed label of which optional keys
- * (OpenAI / GitHub) are also present.
+ * Tests for <ApiKeyStatus> — a pill that reads /api/credentials and renders a
+ * dot + label for whether the raw keys it still makes sense to require are set.
+ *
+ * ⚠ The component is NOT MOUNTED anywhere in the product (measured 2026-08-09; only this
+ * test and the stories reference it). These tests therefore pin a component's contract,
+ * not a user-visible surface.
+ *
+ * Re-keyed onto the OPENAI EMBEDDINGS key by
+ * inference-rename-and-provider-agnostic-default-2026-08-09 P-004. It used to warn on a
+ * missing ANTHROPIC key; that is no longer a gap, because Anthropic access comes from the
+ * default account under Settings → Inference and a box with no Anthropic key is the normal
+ * working configuration. Embeddings are what a subscription account cannot supply.
  *
  * Focus is the label/dot composition + the loading/failure fallbacks:
  *  - before the fetch settles (and on a non-ok / rejected fetch) → "checking…";
- *  - Anthropic set → green dot + "Anthropic key set" with the optional keys
- *    appended in order;
- *  - Anthropic missing → warn dot + "Anthropic key not set".
+ *  - embeddings key set → green dot + "Embeddings key set" (+ GitHub when present);
+ *  - embeddings key missing → warn dot + "OpenAI embeddings key not set".
  *
  * fetch is stubbed via vi.stubGlobal.
  */
@@ -51,31 +59,39 @@ describe('ApiKeyStatus', () => {
     expect(screen.getByText('checking…')).toBeTruthy();
   });
 
-  it('shows a green dot + "Anthropic key set" when the Anthropic key is present', async () => {
-    mockFetch.mockResolvedValue(okJson(creds({ anthropic_api_key: 'sk-ant' })));
+  it('shows a green dot + "Embeddings key set" when the OpenAI key is present', async () => {
+    mockFetch.mockResolvedValue(okJson(creds({ openai_api_key: 'sk-oai' })));
     render(<ApiKeyStatus />);
-    expect(await screen.findByText('Anthropic key set')).toBeTruthy();
+    expect(await screen.findByText('Embeddings key set')).toBeTruthy();
     expect(dotColor()).toContain('var(--good)');
   });
 
-  it('appends the optional keys that are set, in order (OpenAI · GitHub)', async () => {
-    mockFetch.mockResolvedValue(
-      okJson(creds({ anthropic_api_key: 'a', openai_api_key: 'o', github_pat: 'g' })),
-    );
+  it('appends GitHub when that is set too', async () => {
+    mockFetch.mockResolvedValue(okJson(creds({ openai_api_key: 'o', github_pat: 'g' })));
     render(<ApiKeyStatus />);
-    expect(await screen.findByText('Anthropic key set · OpenAI · GitHub')).toBeTruthy();
+    expect(await screen.findByText('Embeddings key set · GitHub')).toBeTruthy();
   });
 
-  it('lists only the optional keys that are actually set', async () => {
-    mockFetch.mockResolvedValue(okJson(creds({ anthropic_api_key: 'a', github_pat: 'g' })));
+  it('shows a warn dot + "OpenAI embeddings key not set" when the OpenAI key is missing', async () => {
+    mockFetch.mockResolvedValue(okJson(creds({ github_pat: 'g' })));
     render(<ApiKeyStatus />);
-    expect(await screen.findByText('Anthropic key set · GitHub')).toBeTruthy();
+    expect(await screen.findByText('OpenAI embeddings key not set')).toBeTruthy();
+    expect(dotColor()).toContain('var(--warn)');
   });
 
-  it('shows a warn dot + "Anthropic key not set" when the Anthropic key is missing', async () => {
-    mockFetch.mockResolvedValue(okJson(creds({ openai_api_key: 'o' })));
+  it('does NOT treat a missing Anthropic key as a gap', async () => {
+    // The regression guard for P-004. An Anthropic-less box is fully working now (the default
+    // account serves it), so a green dot here is the correct reading — and an ANTHROPIC key
+    // present with no embeddings key must NOT rescue it, which is what the second half pins.
+    mockFetch.mockResolvedValue(okJson(creds({ anthropic_api_key: null, openai_api_key: 'o' })));
     render(<ApiKeyStatus />);
-    expect(await screen.findByText('Anthropic key not set')).toBeTruthy();
+    expect(await screen.findByText('Embeddings key set')).toBeTruthy();
+    expect(dotColor()).toContain('var(--good)');
+    cleanup();
+
+    mockFetch.mockResolvedValue(okJson(creds({ anthropic_api_key: 'sk-ant', openai_api_key: null })));
+    render(<ApiKeyStatus />);
+    expect(await screen.findByText('OpenAI embeddings key not set')).toBeTruthy();
     expect(dotColor()).toContain('var(--warn)');
   });
 

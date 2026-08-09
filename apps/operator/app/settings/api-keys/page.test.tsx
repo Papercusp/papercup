@@ -103,16 +103,39 @@ describe('API keys settings page — sign-in cards retired (P-001)', () => {
     expect(screen.queryByText(/connect your accounts/i)).toBeNull(); // the cards' intro
   });
 
-  it('routes subscription logins to the deploy-account pool instead', async () => {
+  it('routes subscription logins to the Inference pool instead', async () => {
     // The removal is only safe because the page SAYS where logins moved to. Without this the
     // owner is left on a page titled "API keys" with no path to a Claude subscription at all.
+    // Named "Inference" since inference-rename-and-provider-agnostic-default-2026-08-09 P-001;
+    // the HREF deliberately did NOT move (D-003: labels-only rename), and asserting both
+    // together is what would catch a rename that broke the destination.
     await renderPage();
-    const link = screen.getByRole('link', { name: /deploy account/i });
-    expect(link.getAttribute('href')).toBe('/settings/deploy-accounts');
+    const links = screen.getAllByRole('link', { name: /inference/i });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) expect(link.getAttribute('href')).toBe('/settings/deploy-accounts');
   });
 
   it('mentions that a deploy account can be made the machine default', async () => {
     await renderPage();
     expect(screen.getByText(/marked the default for everything on this machine/i)).toBeTruthy();
+  });
+
+  // ── the Anthropic key field, retired (P-004) ──
+
+  it('offers NO Anthropic API key field', async () => {
+    // Anthropic access comes from the default account now, so a key field here is a second,
+    // competing way to configure the same thing — exactly the duplication P-001 collapsed for
+    // logins. Asserted on the FIELD, so a well-meant re-add is caught even if worded differently.
+    await renderPage();
+    expect(screen.queryByLabelText(/anthropic/i)).toBeNull();
+    expect(screen.queryByPlaceholderText(/sk-ant-/i)).toBeNull();
+  });
+
+  it('still offers the OpenAI EMBEDDINGS key, which no account can replace', async () => {
+    // The other half of P-004, and the more important direction: this field must SURVIVE. A
+    // sweep that removed "the provider keys" wholesale would take embeddings with it and break
+    // semantic search + memory, with nothing on the page left to explain why.
+    await renderPage();
+    expect(screen.getByLabelText(/openai embeddings key/i)).toBeTruthy();
   });
 });

@@ -44,7 +44,8 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
-import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
+import { resolveMugOwner } from '../pot/placement-watchdog';
+import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
 import { promotePlanItems } from '../plan-workitem-promotion-run';
 import { routineStorageSlug } from '../pot-membership';
@@ -183,7 +184,8 @@ async function fireDecomposeWake(
     .slice(0, 5)
     .map((c) => `• ${c.planSlug}${c.title ? ` — ${c.title}` : ''}`)
     .join('\n');
-  await wakeMug({
+  // P-034: routed, not Mug-only — see nudge-recipient.ts.
+  await deliverScoutNudge({
     workspaceId,
     mugOwner: queenOwner,
     summary:

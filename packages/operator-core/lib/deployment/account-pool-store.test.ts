@@ -370,21 +370,35 @@ describe('setDefaultAccount (default-deploy-account-2026-08-08 P-002)', () => {
     await expect(setDefaultAccount('nope', WS)).rejects.toThrow(/\(pool is empty\)/);
   });
 
-  it('REJECTS a Codex account BY NAME instead of silently filtering it away', async () => {
-    // Filtering would leave the owner staring at a Settings control that appears to do nothing.
-    // The default stands in for the machine's CLAUDE login, so a Codex id is a user error worth
-    // reporting, not a value to quietly drop.
+  it('ACCEPTS a Codex account as the default', async () => {
+    // Inverted by inference-rename-and-provider-agnostic-default-2026-08-09 P-003. This used to
+    // reject a Codex id by name, on the reasoning that the default stands in for the machine's
+    // CLAUDE login. It is now a PER-PROVIDER primary (D-002), so a Codex default is a real,
+    // meaningful choice: it fronts the Codex pool and leaves Anthropic resolution untouched.
     seedPool({ id: 'claude-a' }, { id: 'codex-main', provider: 'codex' });
-    await expect(setDefaultAccount('codex-main', WS)).rejects.toThrow(AccountPoolError);
-    await expect(setDefaultAccount('codex-main', WS)).rejects.toThrow(
-      /'codex-main' is a Codex account[\s\S]*Claude login/,
-    );
+    const out = await setDefaultAccount('codex-main', WS);
+    expect(out.defaultAccountId).toBe('codex-main');
+    expect(await readDefaultAccountId(WS)).toBe('codex-main');
+  });
+
+  it('does NOT publish the in-process transport marker for a CODEX default', async () => {
+    // The marker's only job is to route the in-process ANTHROPIC-direct family through the
+    // gateway. A Codex default says nothing about Anthropic traffic, so setting it would
+    // silently move every judge/summariser off the local login on an unrelated choice.
+    seedPool({ id: 'claude-a' }, { id: 'codex-main', provider: 'codex' });
+    await setDefaultAccount('codex-main', WS);
+    expect(DEFAULT_ACCOUNT_ACTIVE_ENV in process.env).toBe(false);
+    // ...and a Claude default still does publish it, so the assertion above is discriminating
+    // rather than passing because the marker never gets set at all.
+    await setDefaultAccount('claude-a', WS);
+    expect(process.env[DEFAULT_ACCOUNT_ACTIVE_ENV]).toBe('1');
   });
 
   it('a REJECTED write leaves an existing default intact (validate before persist)', async () => {
+    // Still validated — an UNKNOWN id is the remaining rejection case now that provider is not one.
     seedPool({ id: 'aviynw6' }, { id: 'codex-main', provider: 'codex' });
     await setDefaultAccount('aviynw6', WS);
-    await expect(setDefaultAccount('codex-main', WS)).rejects.toThrow(/Codex account/);
+    await expect(setDefaultAccount('no-such-account', WS)).rejects.toThrow(AccountPoolError);
     expect(await readDefaultAccountId(WS)).toBe('aviynw6'); // not clobbered by the failed write
     expect(process.env[DEFAULT_ACCOUNT_ACTIVE_ENV]).toBe('1'); // and the marker still reflects reality
   });

@@ -39,6 +39,7 @@ import { getOrgPg, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org'
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
+import { recordLoopTransition } from './loop-transition-log';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 // Import from the dependency-free automatic-tool-names.ts, NOT from
 // '../../agent-tools/sessions/timeline' (which re-exports the same constant) — timeline.ts
@@ -451,13 +452,49 @@ export async function materializeLoop(
  */
 export async function deactivateLoop(ownerId: string, opts: { sql?: Sql } = {}): Promise<boolean> {
   const sql = opts.sql ?? getOrgPg().sql;
-  const result = await sql`
+  const ended = await sql<
+    Array<{
+      id: string;
+      workspace_id: string;
+      install_slug: string;
+      name: string | null;
+      target_role: string | null;
+      reschedule_interval_sec: number | null;
+    }>
+  >`
     UPDATE harness_shared.routines
        SET active = FALSE, updated_at = now(),
            metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source'
      WHERE name = ${loopRoutineName(ownerId)} AND active = TRUE
+    RETURNING id, workspace_id, install_slug, name, target_role, reschedule_interval_sec
   `;
-  return Number((result as { count: number }).count ?? 0) > 0;
+
+  // WI-37571 — record the deliberate `loop:end` disarm, the third path the `event` column
+  // comment already advertises ("guard disarm / cost-cap / loop:end") and the only one an
+  // AGENT chooses. Distinguishing it from a guard reaping matters most when reconstructing
+  // why a loop went quiet: an agent that ended its own loop is a healthy outcome, a reaped
+  // one is not, and until now the durable record was identical (absent) for both.
+  //
+  // No `was_active` check is needed here, unlike autoPauseLoopRoutine: this UPDATE is already
+  // guarded `AND active = TRUE`, so every returned row genuinely crossed TRUE -> FALSE.
+  // Iterated rather than indexed [0] because the predicate keys on `name` alone, and the
+  // shadow-deactivation path above exists precisely because duplicate loop rows do occur.
+  for (const row of ended) {
+    void recordLoopTransition(sql, {
+      workspaceId: row.workspace_id,
+      installSlug: row.install_slug,
+      routineId: row.id,
+      routineName: row.name,
+      targetRole: row.target_role,
+      targetOwnerId: ownerId,
+      event: 'disarmed',
+      actor: 'loop-end',
+      newNextFireAt: null,
+      intervalSec: row.reschedule_interval_sec,
+      detail: { reason: 'loop:end — deactivated by its owner' },
+    });
+  }
+  return ended.length > 0;
 }
 
 /**
@@ -946,7 +983,18 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
  * owner should win rather than be re-stamped by the sweep.
  */
 export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: string): Promise<void> {
-  await sql`
+  const revived = await sql<
+    Array<{
+      workspace_id: string;
+      install_slug: string;
+      name: string | null;
+      target_role: string | null;
+      target_owner_id: string | null;
+      reschedule_interval_sec: number | null;
+      revived_count: number | null;
+      from_pause_reason: string | null;
+    }>
+  >`
     UPDATE harness_shared.routines
        SET active = TRUE,
            next_fire_at = now(),
@@ -963,7 +1011,48 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
                        ),
            updated_at = now()
      WHERE id = ${routineId} AND active = FALSE
+    RETURNING workspace_id, install_slug, name, target_role, target_owner_id,
+              reschedule_interval_sec,
+              (metadata->>'loop_revived_count')::int AS revived_count,
+              metadata->>'loop_revived_from_pause_reason' AS from_pause_reason
   `;
+
+  // WI-37571 — the counterpart to the `disarmed` row, and the reason this pair matters more
+  // than either event alone: without it, "the veto is working so nobody needs reviving" and
+  // "the revival pass never ran" are the SAME observation (zero). Measured 2026-08-09, that
+  // was not hypothetical — `loop_revived_at` was 0 rows workspace-wide with no way to tell
+  // those apart, which is precisely WI-36792's lesson (a blunted reaper still reports
+  // `checked: N`) arriving through the measurement instead of the reaper.
+  //
+  // `revivedCount` is the RATCHET this function documents as its flap bound. Emitting it per
+  // event turns the bound into something observable over time — a loop revived twice and
+  // re-disarmed twice is a distinct, diagnosable shape, and the mutable counter alone can
+  // never show the sequence because a later disarm overwrites the reason beside it.
+  //
+  // Guarded `AND active = FALSE`, so a returned row always crossed FALSE -> TRUE; a no-op
+  // against an already-running loop correctly logs nothing.
+  const row = revived[0];
+  if (row) {
+    void recordLoopTransition(sql, {
+      workspaceId: row.workspace_id,
+      installSlug: row.install_slug,
+      routineId,
+      routineName: row.name,
+      targetRole: row.target_role,
+      targetOwnerId: row.target_owner_id,
+      event: 'revived',
+      actor: 'stalled-loops-guard-revival',
+      // The revival schedules its rescue fire for now() — recorded as the fire time this
+      // transition WROTE, matching the column's documented contract for a re-arm.
+      newNextFireAt: new Date().toISOString(),
+      intervalSec: row.reschedule_interval_sec,
+      detail: {
+        reason,
+        revivedCount: row.revived_count,
+        fromPauseReason: row.from_pause_reason,
+      },
+    });
+  }
 }
 
 /**

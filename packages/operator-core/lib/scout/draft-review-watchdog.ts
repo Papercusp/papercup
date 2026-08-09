@@ -41,7 +41,8 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
-import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
+import { resolveMugOwner } from '../pot/placement-watchdog';
+import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire } from '../pot/watchdog';
 import { routineStorageSlug } from '../pot-membership';
 
@@ -209,7 +210,9 @@ export async function fireReviewWake(
     `This is a backstop WAKE, not an idle activity: review each and either promote it (= ready), coord:send ` +
     `feedback to its scout owner to iterate, or deprecate it WITH learnings (never just leave it). Clearing ` +
     `or progressing them stops this wake.\n\n${list}${more}`;
-  await wakeMug({
+  // P-034: routed, not Mug-only. With no deliverable Mug this reaches a live su, or
+  // escalates to the owner — it never parks in @role:mug where nobody drains it.
+  await deliverScoutNudge({
     workspaceId,
     mugOwner: queenOwner,
     summary,

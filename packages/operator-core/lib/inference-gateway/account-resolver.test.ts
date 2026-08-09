@@ -388,15 +388,53 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     expect(pool.map((p) => p.source)).toEqual(['pool', 'pool']);
   });
 
-  it('does NOT read the default for a CODEX pool (it can only ever name a Claude account)', async () => {
-    // Skipping the read matters beyond efficiency: this path fails CLOSED on a read error, and
-    // a codex resolve must not be taken down by a value that could not have applied to it.
+  it('PROMOTES a Codex default for a codex pool', async () => {
+    // Inverted by inference-rename-and-provider-agnostic-default-2026-08-09 P-003: the default
+    // used to be skipped entirely for codex because it "could only ever name a Claude account".
     mockedLoad.mockResolvedValue({
-      accounts: [acct('claude-a', 'ref:claude-a'), acct('codex-a', 'ref:codex-a', { provider: 'codex' })],
+      accounts: [
+        acct('codex-a', 'ref:codex-a', { provider: 'codex' }),
+        acct('codex-b', 'ref:codex-b', { provider: 'codex' }),
+      ],
+    });
+    mockedDefault.mockResolvedValue('codex-b');
+    const pool = await resolveAccountPool('ws', 'codex');
+    expect(pool.map((p) => p.accountId)).toEqual(['codex-b', 'codex-a']);
+    expect(pool[0].source).toBe('default-account');
+  });
+
+  it('does NOT let a CODEX default front the CLAUDE pool, or vice versa (D-002)', async () => {
+    // The cross-provider guard is STRUCTURAL — the default is looked up inside the already
+    // provider-filtered list — so this is the test that would catch someone "simplifying" the
+    // lookup to search the whole pool. Both directions, because one-way would pass on a bug
+    // that only leaks the other way.
+    mockedLoad.mockResolvedValue({
+      accounts: [
+        acct('claude-a', 'ref:claude-a'),
+        acct('claude-b', 'ref:claude-b'),
+        acct('codex-a', 'ref:codex-a', { provider: 'codex' }),
+      ],
+    });
+    mockedDefault.mockResolvedValue('codex-a');
+    const claudePool = await resolveAccountPool('ws', 'claude');
+    expect(claudePool.map((p) => p.accountId)).toEqual(['claude-a', 'claude-b']);
+    expect(claudePool.map((p) => p.source)).toEqual(['pool', 'pool']);
+
+    mockedDefault.mockResolvedValue('claude-a');
+    const codexPool = await resolveAccountPool('ws', 'codex');
+    expect(codexPool.map((p) => p.accountId)).toEqual(['codex-a']);
+    expect(codexPool[0].source).toBe('pool');
+  });
+
+  it('FAILS CLOSED on a default-read error for a CODEX pool too', async () => {
+    // Consequence of reading the default for every provider: a codex resolve is now exposed to
+    // the same read failure claude always was. That is the intended trade — the value CAN apply
+    // to codex now, so silently serving unordered pool order would ignore a real owner choice.
+    mockedLoad.mockResolvedValue({
+      accounts: [acct('codex-a', 'ref:codex-a', { provider: 'codex' })],
     });
     mockedDefault.mockRejectedValue(new Error('pg down'));
-    expect((await resolveAccountPool('ws', 'codex')).map((p) => p.accountId)).toEqual(['codex-a']);
-    expect(mockedDefault).not.toHaveBeenCalled();
+    await expect(resolveAccountPool('ws', 'codex')).rejects.toThrow(/default-account read failed/);
   });
 
   it('the default is not consulted for an EMPTY claude pool (local fallback short-circuits first)', async () => {

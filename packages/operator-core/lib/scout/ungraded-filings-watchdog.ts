@@ -40,7 +40,8 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
-import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
+import { resolveMugOwner } from '../pot/placement-watchdog';
+import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
 
 // ── tunables (env-overridable, like scoutDraftReviewStaleSec) ─────────────────
@@ -216,7 +217,9 @@ export async function fireGradingNudge(
     `priming + lens win-rates, and a grade of 3 or lower with feedback wakes the originator to ` +
     `revise. Grading them (or their artifacts reaching a terminal state) stops this nudge.\n\n` +
     `${list}${more}`;
-  await wakeMug({
+  // P-034: routed, not Mug-only — see nudge-recipient.ts. This watchdog exists BECAUSE
+  // "nothing MAKES grading happen"; a nudge that dead-ends restores exactly that gap.
+  await deliverScoutNudge({
     workspaceId,
     mugOwner,
     summary,
