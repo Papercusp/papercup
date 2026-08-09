@@ -111,9 +111,9 @@ Don't like something about Papercusp? Ask it to improve something about itself �
 
 There are additional settings in the GUI (you can also just ask the agents to configure these). The important ones are:
 
-#### Deploy accounts
+#### Inference
 
-You can auth multiple Claude Max / Codex accounts and then use the "inference gateway" to route to these accounts. When launching an agent with the psu utility, or launching a fleet, you can choose to pin their account to "auto", which will automatically pick the best account available based on current usage and rate limits — or you can ask the agent to pin them to a specific account. By default, if you don't specify either, they will just use the default system account you are logged in as. This has not been tested thoroughly on the release builds yet, but has been working super on my machine, and making this work is a priority for the next release.
+You can auth multiple Claude Max / Codex accounts and then use the "inference gateway" to route to these accounts. When launching an agent with the psu utility, or launching a fleet, you can choose to pin their account to "auto", which will automatically pick the best account available based on current usage and rate limits — or you can ask the agent to pin them to a specific account. By default, if you don't specify either, they will just use the default system account you are logged in as. You can also mark one account as the DEFAULT here, which takes over that fallback role — for Claude and for Codex/OpenAI alike, each steering its own provider's traffic. This has not been tested thoroughly on the release builds yet, but has been working super on my machine, and making this work is a priority for the next release.
 
 ### Not ready
 

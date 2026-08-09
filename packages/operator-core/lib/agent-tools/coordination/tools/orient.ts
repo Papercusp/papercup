@@ -1626,6 +1626,11 @@ export function summarizeLaneClaim(
  *      contained `leaderBrief.summary.members: 11, dead: 0`. `presenceDrift`
  *      was already promoted here (EI-18731216945970087) to make that omission
  *      LOUD; promoting the briefing itself removes the omission.
+ *   2c. `laneClaim` (EI-20013545515660920) — whether the caller actually holds
+ *      the `planItems` lane it just asked for. Small, and safety-critical in the
+ *      same way as (2b): an agent that loses this to the door reads
+ *      `intentDeclared: true` and concludes it holds a lane it does not hold,
+ *      which is strictly worse than not folding it at all.
  *   3. `ownerDirectives` / `modes` / `instructionPrecedence` / `ideate` /
  *      `captureMiss` / `configIntegrity` / `codexLocks` / `taskToolSchemaPack`
  *      — all re-delivered on subsequent turns via the system prompt +
@@ -1663,6 +1668,14 @@ export function assembleOrientOutput(legs: {
   // the prioritized slot below instead of `resultRest`. See priority tier (2b): a
   // leader that loses this to the result-door reads `me.summary.agents: 1` and
   // concludes its fleet is dead, which is strictly worse than not folding it at all.
+  // EI-20013545515660920: `laneClaim` is destructured OUT for the same reason as
+  // presenceDrift/leaderBrief above — it is a small, safety-critical diagnostic
+  // whose ENTIRE purpose is to stop a failed lane claim from reading as a
+  // successful one. Left in `resultRest` (beside `intentDeclared`, tier 4) the
+  // result-door would reliably truncate it away on a trimmed payload tier, which
+  // would reproduce the exact silent no-op this field was added to kill — the
+  // same way EI-19282566865609166 fixed the leaderBrief FOLD but left the key
+  // last, so fold-enabled and never-delivered stayed indistinguishable.
   const {
     ok,
     me,
@@ -1670,6 +1683,7 @@ export function assembleOrientOutput(legs: {
     inbox,
     presenceDrift: _presenceDriftFromResult,
     leaderBrief: leaderBriefFromResult,
+    laneClaim: laneClaimFromResult,
     ...resultRest
   } = legs.result as Record<string, unknown>;
   return {
@@ -1686,6 +1700,11 @@ export function assembleOrientOutput(legs: {
     // point is to replace a silent leaderBrief omission with something a leader
     // cannot miss.
     ...(legs.presenceDrift ? { presenceDrift: legs.presenceDrift } : {}),
+    // EI-20013545515660920: tier (2a) alongside presenceDrift — a lane-claim
+    // outcome the caller is about to act on. `!== undefined` (not truthiness) so
+    // the key's absence keeps meaning "no planItems were requested", never "the
+    // claim reported nothing".
+    ...(laneClaimFromResult !== undefined ? { laneClaim: laneClaimFromResult } : {}),
     // Tier (2b). `!== undefined` rather than a truthiness spread: a FAILED fold is
     // recorded as an explicit `leaderBrief: null` ("I tried and could not tell you"),
     // which must stay distinguishable from the key being absent ("not applicable —

@@ -48,6 +48,14 @@ import './server-vintage-wiring';
 // empty directory and every cell read `absent`. See cell-registrations-wiring.ts.
 import './cell-registrations-wiring';
 
+// EI-20013729460455061: install the GOAL STOP executor. Same failure shape as the
+// cell registrations above — without this import the seam in @papercusp/agent-mcp is
+// never wired, and `goals:update { status:'paused'|'killed' }` silently reverts to
+// what the item describes: a pure record write that stops nothing. Guarded by
+// ../goals/stop-fanout-installed.test.ts so dropping this line fails a test rather
+// than quietly restoring the bug.
+import '../goals/stop-fanout';
+
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
 // code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.
