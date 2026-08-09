@@ -374,6 +374,76 @@ export async function listConvertedPlanItemRefs(workspaceIds?: readonly string[]
   return new Set(rows.map((r) => r.dst_ref));
 }
 
+/**
+ * Every plan-item ref ('<plan>#<item>', among the given `itemIds` of `planSlug`)
+ * that already has WORK-ITEM COVERAGE of ANY kind: an `implements` edge (the
+ * canonical convert-at-pickup / promotion mint), a `relates` edge (the ad-hoc
+ * `work_items:create{targetPlanItem}` coverage write — see _create-core.ts
+ * §"Forward edge"), OR a `payload.plan_item` STAMP with no edge at all
+ * (defensive — mirrors findConvertedWorkItemByStamp's fallback for an edge
+ * deleted/never-written out-of-band).
+ *
+ * This answers a DELIBERATELY WIDER question than listConvertedPlanItemRefs
+ * ("has this item been converted via the canonical `implements` path" — the
+ * Queue/Working split those callers rely on). Use THIS one only for "should a
+ * NEW execution record be minted for this item" gates (promotion's idempotency
+ * check) — swapping it into a Queue/Working-style caller would make an ad-hoc
+ * `relates`-only coverage item (which never executes via convert-at-pickup)
+ * silently disappear from the Queue despite nothing actually converting it.
+ *
+ * EI-19946482711398073 / WI-37359: plan-workitem-promotion-run.ts's mint gate
+ * used to call listConvertedPlanItemRefs() (implements-only), so a plan item
+ * manually covered via `work_items:create{targetPlanItem}` (relates + stamp,
+ * no implements edge) read as un-promoted — a later `plans:start` re-run (or
+ * any promotion re-invocation) would mint a DUPLICATE work-item for it.
+ *
+ * Scoped to ONE plan's given items (unlike listConvertedPlanItemRefs, which is
+ * intentionally tenant-complete across every plan) — promotion only ever needs
+ * the coverage state of the specific items it is about to consider minting, so
+ * this stays cheap regardless of how many other plans/items exist system-wide.
+ */
+export async function listCoveredPlanItemRefs(
+  planSlug: string,
+  harnessSlug: string,
+  itemIds: readonly string[],
+  workspaceIds?: readonly string[],
+): Promise<Set<string>> {
+  if (itemIds.length === 0) return new Set();
+  const { sql } = getOrgPg();
+  const scopes = implementsLinkScopes(workspaceIds);
+  const refs = itemIds.map((id) => planItemRef(planSlug, id));
+  const out = new Set<string>();
+
+  const edgeRows = await sql<{ dst_ref: string }[]>`
+    SELECT DISTINCT dst_ref
+      FROM harness_shared.coord_links
+     WHERE workspace_id = ANY(${scopes})
+       AND rel = ANY(${[IMPLEMENTS_REL, 'relates']})
+       AND dst_kind = ${PLAN_ITEM_KIND}
+       AND dst_ref = ANY(${refs})`;
+  for (const r of edgeRows) out.add(r.dst_ref);
+
+  // Defensive fallback: a stamp with no edge at all (see findConvertedWorkItemByStamp's
+  // header for why the edge alone cannot be trusted as the complete truth).
+  const stampMatch = () =>
+    sql`payload->'plan_item' IS NOT NULL
+    AND payload->'plan_item'->>'plan_slug' = ${planSlug}
+    AND payload->'plan_item'->>'item_id' = ANY(${itemIds}::text[])`;
+  const featureRows = await sql<{ item_id: string }[]>`
+    SELECT payload->'plan_item'->>'item_id' AS item_id
+      FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${harnessSlug} AND ${stampMatch()}`;
+  for (const r of featureRows) out.add(planItemRef(planSlug, r.item_id));
+  const issueRows = await sql<{ item_id: string }[]>`
+    SELECT payload->'plan_item'->>'item_id' AS item_id
+      FROM harness_shared.work_items
+     WHERE item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
+       AND ${stampMatch()}`;
+  for (const r of issueRows) out.add(planItemRef(planSlug, r.item_id));
+
+  return out;
+}
+
 /** First ~`max` chars of a plan item's text as a work-item title (one line). */
 export function planItemTitle(text: string, max = 140): string {
   const oneLine = text.replace(/\s+/g, ' ').trim();

@@ -84,6 +84,46 @@ Primary stack — drives the operator UI inside the Tauri shell:
   log the dev shell prints to; `bin/dev` and `npm run dev` both write
   here by convention) for sidecar-side errors after a failure.
 
+<Aside type="danger" title="Falsifiable vs non-falsifiable — know which class a tauri-agent-tools subcommand is in BEFORE you cite it">
+Before citing any `tauri-agent-tools` output as verification evidence, ask: *what
+input would have made this look different?* If nothing could, it measured nothing.
+Most of the CLI's subcommands **cannot report failure at all** — they exit 0
+unconditionally and write a normal-looking artifact even when nothing worked. This
+list is not exhaustive by design (new subcommands default to the non-falsifiable
+side until proven otherwise); when in doubt, treat it as observational.
+
+**FALSIFIABLE — exit-coded; safe to cite alone as evidence:**
+- **`check --selector/--text/--eval/--no-errors`** — exits **1** if the assertion is
+  false. `work_items:complete` accepts a recorded `check` invocation on its own; no
+  image required.
+- **`wait --selector/--eval --timeout`** — exits nonzero on timeout, so it *can* tell
+  you a condition never became true. Treat it as a **settle guard**, not a final
+  assertion: always follow a `wait` with a `check`/`eval` read of the now-settled
+  state (§1.4 shows why a `wait` alone can be satisfied by a stale/outgoing page).
+
+**NON-FALSIFIABLE — exit 0 no matter what actually happened; observational only,
+never sufficient alone as `verifiedHow:'live-drove-ui'` evidence:**
+- **`screenshot`, `capture`** — write a plausible, normal-sized file (PNG, or a
+  bundle) **even for a window that never painted**. On a host with a working
+  screenshot backend this is *silent*: no error, no warning, just blank-white
+  pixels in a file that looks exactly like a real one (§15's cookbook has the
+  blank-screenshot check — `npm run check:screenshot`). `capture`'s screenshot
+  component inherits the same blindness even though the bundle also carries
+  DOM/console/logs.
+- **`dom`, `eval`, `probe`, `console-monitor`, `ipc-monitor`, `rust-logs`,
+  `storage`** — return whatever they observe; a wrong, stale, or empty result
+  still exits 0.
+- **`click`, `type`, `press`** — dispatch a synthetic event; success means "the
+  event was dispatched," not "the UI reacted as intended."
+
+**The rule:** close on a `check` (or `wait` immediately followed by a `check`/`eval`
+read) whenever the DOM can express the assertion — see **§1.3**'s
+`verifiedHow:'live-drove-ui'` caution for the exact citable forms. Reach for
+`screenshot`/`capture` only for a genuinely *visual* signal (layout, paint order,
+font rendering) the DOM can't express, and even then open the image before citing
+it.
+</Aside>
+
 Other tools and when:
 
 - **`verdict`** — only for **arbitrary public web pages** (docs site
@@ -237,7 +277,7 @@ tauri-agent-tools eval "window.__TSR_ROUTER__?.navigate({ to: '/settings/p2p' })
 tauri-agent-tools check --selector 'body' --text 'Peer' --no-errors
 ```
 
-:::caution[Closing with `verifiedHow:'live-drove-ui'`? Drive the ASSERTIONS with `check`/`capture`, not `eval`]
+:::caution[Closing with `verifiedHow:'live-drove-ui'`? Drive the ASSERTIONS with `check`, not `eval` — and know `capture`/`screenshot` are ACCEPTED but NOT FALSIFIABLE]
 Note which command carries the assertion above. `eval` is for **exploration** — it
 returns a value and exits 0 whether or not what you hoped was true, so no transcript of
 it is falsifiable. `work_items:complete` refuses a `verifiedHow:'live-drove-ui'` close
@@ -248,10 +288,17 @@ exactly these:
 - an **image path** (`.png`/`.jpg`/`.webp`/`.gif`), or
 - for a web deploy, a **URL + HTTP status** (`https://…/about -> 200`).
 
-A thorough `eval` transcript is **not** one of them. Plan for this **now**, while the
-shell is up: the gate fires at CLOSE time, long after an isolated instance has been torn
-down, so discovering it there costs a second full boot (~4 min) purely to re-run
-assertions you already ran.
+**Accepted is not the same as falsifiable — see §0's falsifiable/non-falsifiable
+split.** `check` is exit-coded (fails loudly on its own); a cited `capture`/
+`screenshot` is *structurally* accepted but writes a plausible file even for a
+window that never painted, so it proves nothing by itself unless you also open it
+and confirm it isn't blank (§15's cookbook). Prefer `check` whenever the DOM can
+express the assertion — it needs no such extra step.
+
+A thorough `eval` transcript is **not** accepted at all. Plan for this **now**, while
+the shell is up: the gate fires at CLOSE time, long after an isolated instance has
+been torn down, so discovering it there costs a second full boot (~4 min) purely to
+re-run assertions you already ran.
 
 Cheapest compliant form — falsifiable, and it needs no image on disk:
 
@@ -916,7 +963,7 @@ substitute the right column.
 | `verdict click <selector>` | `tauri-agent-tools click <selector>` | Real synthetic event inside the webview; no focus-steal. |
 | `verdict type <sel> <text>` | `tauri-agent-tools type <sel> <text>` | Sets value + dispatches `input` event. |
 | `verdict press <sel> <key>` | `tauri-agent-tools press <sel> <key>` | e.g. `press input Enter`. |
-| `verdict screenshot <path>` | `tauri-agent-tools screenshot --title Papercusp -o <path>` | Full window. `--selector` crop is currently flaky on this build (returns 1×1 PNG occasionally — fall back to full + crop in ImageMagick if it bites you). |
+| `verdict screenshot <path>` | `tauri-agent-tools screenshot --title Papercusp -o <path>` | Full window. `--selector` crop is currently flaky on this build (returns 1×1 PNG occasionally — fall back to full + crop in ImageMagick if it bites you). **NON-FALSIFIABLE** (§0) — exits 0 even for a blank/unpainted window; open the file before citing it. |
 | `verdict console error` | `tauri-agent-tools console-monitor --duration 200` | Window must be in scope; pass `--pid` if multiple bridges. |
 | `verdict reload` | `tauri-agent-tools eval "location.reload()"` | No dedicated `reload` verb. |
 | `verdict newtab` | (not applicable) | Tauri has one webview. For isolation, launch a second `tauri dev` against a different `PAPERCUSP_WORKSPACE_ROOT`. |
@@ -925,8 +972,8 @@ substitute the right column.
 | (n/a) | `tauri-agent-tools storage --json` | Dump localStorage / sessionStorage / cookies. |
 | (n/a) | `tauri-agent-tools ipc-monitor --duration 5000` | Capture every `__TAURI__.core.invoke` call — uniquely useful for debugging plugin/host wiring. |
 | (n/a) | `tauri-agent-tools rust-logs --tail 200` | Sidecar Rust log without rooting through `/tmp`. |
-| (n/a) | `tauri-agent-tools check --selector ... --text ... --eval ... --no-errors` | One-shot CI assertion; exits 0/1. |
-| (n/a) | `tauri-agent-tools capture -o <dir>` | Bundle: screenshot + DOM + storage + console + Rust logs. Use on every FAIL. |
+| (n/a) | `tauri-agent-tools check --selector ... --text ... --eval ... --no-errors` | One-shot CI assertion; exits 0/1. **FALSIFIABLE** (§0) — prefer this for `verifiedHow:'live-drove-ui'` evidence. |
+| (n/a) | `tauri-agent-tools capture -o <dir>` | Bundle: screenshot + DOM + storage + console + Rust logs. Use on every FAIL. **NON-FALSIFIABLE** (§0) — its screenshot component exits 0 even when blank; the DOM/console files in the bundle are the load-bearing evidence, not the PNG. |
 
 ## 3. Global elements (every page except auth)
 
@@ -2220,10 +2267,12 @@ exactly like a broken/blank app. The DOM is fine; the pixels just never render.
 :::
 
 :::caution[Check every screenshot you intend to CITE — a blank one exits 0 and looks like proof]
-`tauri-agent-tools screenshot` writes a valid PNG, prints the path and **exits 0 whether
-or not the window painted**, so its exit code tells you nothing about the thing you care
-about. The file is not obviously wrong either: the real one found on this box was 91KB
-at 1280x800 — a dark gradient and nothing else. File size is not a tell.
+This is the general case of §0's falsifiable/non-falsifiable split, worked through in
+full: `tauri-agent-tools screenshot` (and `capture`'s screenshot component) writes a
+valid PNG, prints the path and **exits 0 whether or not the window painted**, so its
+exit code tells you nothing about the thing you care about. The file is not obviously
+wrong either: the real one found on this box was 91KB at 1280x800 — a dark gradient and
+nothing else. File size is not a tell.
 
 That makes it worse than useless, because it is *citable*. `work_items:complete` requires
 a `verifiedHow:'live-drove-ui'` close to cite an artifact, and an agent who ran the

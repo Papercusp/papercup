@@ -166,7 +166,7 @@ export default defineTool({
   profile: 'engineer',
   description:
     'Enter/exit an official session mode (auto | cold-auto | ideate | drain | grade | goal) for yourself or a peer. ' +
-    '{ mode, reason, enabled?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); ' +
+    '{ mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); ' +
     'cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed ' +
     'incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the ' +
     'full binding contract — read it. Audited in agent_mode_changes.',
@@ -258,6 +258,88 @@ export default defineTool({
       } catch { /* fail-soft */ }
     }
 
+    /* ── D-002: SCOPE INSTRUCTIONS OUTLIVE THEIR DELIVERY ────────────────────
+       [owner 2026-08-09, asked whether drain instructions should be the
+       message, a standing fact, or both] — "Both."
+
+       The message below is the PUSH: the agent is told now. It is not enough on
+       its own. A drain runs for hours across several compactions, and a reason
+       delivered once is gone by the second one — which is precisely how a scope
+       instruction quietly stops being obeyed while the mode still reads ON. The
+       fact is the DURABILITY half: scoped to the target, folded verbatim into
+       every future orient/brief until retracted.
+
+       WHY THIS LIVES IN THE TOOL AND NOT IN THE CHAT UI THAT ASKED FOR IT. The
+       durability problem belongs to mode:set's delivery, not to one browser
+       surface, so putting it here buys three things a client-side pair of calls
+       cannot:
+         - RETRACTION IS TOTAL. Every path that disables the mode clears the
+           instruction — an agent exiting drain itself, an su clearing a peer,
+           the popup's Off row. A client-side retract only covers the button it
+           is wired to, and D-002 is explicit that a stale standing instruction
+           delivered verbatim on every wake is WORSE than none.
+         - IT CANNOT OUTLIVE A REFUSED WRITE. Gated on `res.ok`, so an
+           owner-sticky refusal (stickyConflict) leaves no standing instruction
+           for a mode change that never applied. Two client calls race exactly
+           there.
+         - NO NEW BROWSER-FACING FACTS DOOR. The alternative is an
+           /api/admin/facts/assert proxy — a general fact-writing surface opened
+           for one narrow use.
+
+       Deliberately NOT gated on `!res.noop`: re-scoping a RUNNING drain (same
+       mode, new instructions) is a no-op mode-wise and is exactly the case that
+       must still rewrite the fact. Upserting on one key per mode is what makes
+       that safe.
+
+       `instructions` OMITTED and `instructions: ''` mean different things on
+       purpose: omitted leaves any standing instruction alone (a caller that
+       predates this field must not silently clear one), empty explicitly clears
+       it — which is what the popup sends when the owner empties the box.
+
+       Fail-soft, like the delivery below and for the same reason: the mode
+       change is already applied and audited, so a facts hiccup degrades the
+       change to its pre-D-002 behaviour rather than failing a write that landed. */
+    const instructions = args.instructions?.trim();
+    let instructionsFact: 'asserted' | 'retracted' | 'failed' | null = null;
+    if (res.ok) {
+      const scopeRef = target;
+      try {
+        if (enabled && instructions) {
+          await assertFact({
+            scope: 'owner',
+            scopeRef,
+            key: modeInstructionsFactKey(def.id),
+            body: renderModeInstructionsFact({
+              modeId: def.id,
+              instructions,
+              ownerDirected: Boolean(args.ownerDirected && ownerAuthorized),
+              setBy: ident.ownerId,
+            }),
+            // A plain anchor, NOT the platform-verified 'owner-turn' token: that
+            // one is resolved by the facts tool layer, and claiming it from here
+            // would badge the fact with provenance nothing verified.
+            sourceRef: `mode:set '${def.id}' by ${ident.ownerId}`,
+            // Spread, not `?? undefined`: apps/operator compiles with
+            // exactOptionalPropertyTypes, where an explicit `undefined` is not
+            // assignable to an optional `string`. Omitting the key lets the
+            // store fall back to the active workspace, which is the intent.
+            ...(ident.workspaceId ? { workspaceId: ident.workspaceId } : {}),
+          });
+          instructionsFact = 'asserted';
+        } else if (!enabled || instructions === '') {
+          const removed = await retractFact({
+            scope: 'owner',
+            scopeRef,
+            key: modeInstructionsFactKey(def.id),
+            ...(ident.workspaceId ? { workspaceId: ident.workspaceId } : {}),
+          });
+          if (removed) instructionsFact = 'retracted';
+        }
+      } catch {
+        instructionsFact = 'failed';
+      }
+    }
+
     // Peer-set: deliver the why (+ contract on enable) — or the downgraded
     // REQUEST when the owner-sticky guard refused the write. Fail-soft: a
     // delivery hiccup never rolls back an applied mode change.
@@ -269,6 +351,16 @@ export default defineTool({
           summary: `mode: ${ident.ownerId} ${verb} '${def.id}' — ${args.reason.slice(0, 140)}`,
           body:
             `${ident.ownerId} ${verb} mode '${def.id}' (${def.axis} axis).\nReason: ${args.reason}` +
+            /* The instruction is the operative half of this message, so it gets
+               its own labelled line rather than being folded into the reason —
+               and it is repeated here even though it also stands as a fact,
+               because this delivery is what reaches the agent MID-RUN. */
+            (res.ok && enabled && instructions
+              ? `\n\nSCOPE INSTRUCTIONS — obey verbatim while this mode is on:\n${instructions}` +
+                (instructionsFact === 'asserted'
+                  ? `\n(Also standing as a fact on you, key '${modeInstructionsFactKey(def.id)}', re-injected every wake until this mode is turned off.)`
+                  : '')
+              : '') +
             (res.ok && res.switchedFrom ? `\nAuto-switched from same-axis mode '${res.switchedFrom}'.` : '') +
             (res.ok && enabled ? `\nEffective from your NEXT turn. Binding contract:\n\n${def.contract}` : '') +
             (wakeWarning ? `\n\n${wakeWarning}` : ''),
@@ -318,6 +410,13 @@ export default defineTool({
       stickyConflict: res.stickyConflict ?? false,
       ...(res.stickyConflict ? { note: 'incumbent is owner-directed; your reason was delivered as a REQUEST — do not retry' } : {}),
       ...(res.ok && enabled && isSelf ? { contract: def.contract } : {}),
+      /* Reported so a caller can SEE the durability half landed. 'failed' is
+         surfaced rather than swallowed: the mode still applied, but the
+         instruction is now push-only and will not survive the agent's next
+         compaction — which the caller can act on (re-send it, or retry). */
+      ...(instructionsFact
+        ? { instructionsFact, instructionsFactKey: modeInstructionsFactKey(def.id) }
+        : {}),
       ...(wakeWarning ? { wakeSource: 'owner-only', wakeSourceWarning: wakeWarning } : {}),
       ...(control ? { controlGeneration: control.generation } : {}),
       ...(res.error ? { error: res.error } : {}),

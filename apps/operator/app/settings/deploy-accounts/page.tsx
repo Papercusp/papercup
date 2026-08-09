@@ -889,21 +889,27 @@ function DefaultToggle({
   const isDefault = defaultAccountId === row.id;
   const pending = busy !== null;
   return (
-    <button
-      type="button"
-      className={`pc-da__btn ${isDefault ? 'pc-da__btn--default-on' : 'pc-da__btn--ghost'}`}
-      disabled={pending}
-      aria-pressed={isDefault}
-      title={
+    // The shared Tooltip primitive rather than a bare `title` — a title-only tooltip on a
+    // button is blocked by lint:design-primitives (it is invisible to keyboard + touch users).
+    <Tooltip
+      label={
         isDefault
           ? "This account stands in for the machine's own Claude login. Click to clear it."
           : 'Make this the account everything on this machine uses by default.'
       }
-      onClick={() => setDefault(isDefault ? null : row.id)}
     >
-      <Star size={13} aria-hidden="true" fill={isDefault ? 'currentColor' : 'none'} />
-      {isDefault ? 'Default' : 'Set'}
-    </button>
+      <button
+        type="button"
+        className={`pc-da__btn ${isDefault ? 'pc-da__btn--default-on' : 'pc-da__btn--ghost'}`}
+        disabled={pending}
+        aria-pressed={isDefault}
+        aria-label={isDefault ? `Clear ${row.id} as the default account` : `Make ${row.id} the default account`}
+        onClick={() => setDefault(isDefault ? null : row.id)}
+      >
+        <Star size={13} aria-hidden="true" fill={isDefault ? 'currentColor' : 'none'} />
+        {isDefault ? 'Default' : 'Set'}
+      </button>
+    </Tooltip>
   );
 }
 

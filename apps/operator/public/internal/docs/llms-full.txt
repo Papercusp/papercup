@@ -27060,6 +27060,102 @@ Replay the real historical defect through it. The pre-fix commit is in git; feed
 * `agent-insights/a-check-that-never-ran-must-not-read-as-passed` — the sibling rule for probes, and `npm run lint:assert-integrity`, its mechanical guard for shell scenarios.
 * EI-18765867705399052 (this class), EI-18759622667757826 (the regression the dead guard failed to stop), EI-18773280958875269 (the same rot in prompts, still unguarded).
 
+# Killing processes: an ancestor walk that stops at pid 1 logs the owner out
+
+> Two separate agents ended the owner's GNOME session on the same day (2026-08-08) with unrelated teardown bugs and one shared missing floor. `systemd --user` is an ordinary child of init, so a parent-walk that stops AT pid 1 still INCLUDES it — and SIGTERM to a user systemd manager activates exit.target, i.e. a logout. Plus the 15-char comm truncation that makes `pgrep -x gnome-session-binary` match nothing and read as "safe to kill".
+
+
+## The one-line version
+
+[Section titled “The one-line version”](#the-one-line-version)
+
+**Before you signal a pid you did not launch, filter it through the session floor:**
+
+```bash
+scripts/session-floor.sh check <pid>          # exit 1 = protected, never signal
+scripts/session-floor.sh filter $CANDIDATES   # safe pids on stdout, refusals on stderr
+```
+
+Better still, don’t do pid math at all: `processes:kill { taskId }` kills the cgroup subtree and cannot reach the session.
+
+## What happened
+
+[Section titled “What happened”](#what-happened)
+
+On 2026-08-08 the owner was logged out of their desktop **twice**, by two different agents, with two unrelated bugs — and one shared root cause: **no kill path on this box had a floor protecting the owner’s login session.**
+
+### Trap 1 — the ancestor walk that stops at pid 1 (11:52:49 EDT)
+
+[Section titled “Trap 1 — the ancestor walk that stops at pid 1 (11:52:49 EDT)”](#trap-1--the-ancestor-walk-that-stops-at-pid-1-115249-edt)
+
+An agent tearing down a Tauri test rig wanted to kill its app and the shell tree that launched it:
+
+```bash
+CHAIN="$APP"; P=$(ps -o ppid= -p "$APP" | tr -d ' ')
+# walk MY app's ancestor chain, stopping before systemd — exact pids only
+while [ -n "$P" ] && [ "$P" != "1" ]; do CHAIN="$CHAIN $P"; P=$(ps -o ppid= -p "$P" | tr -d ' '); done
+for p in $CHAIN; do kill "$p"; done
+```
+
+Read the comment: *“stopping before systemd”*. The author knew the hazard and believed `1` was the systemd to stop before. But **`systemd --user` — the per-user session manager — is an ordinary child of init, with PPID 1.** A walk that terminates when it *reaches* 1 has already appended the user manager to `$CHAIN`.
+
+And a user systemd manager treats **SIGTERM as “activate exit.target”** — which stops every user service, tears down the graphical session, and logs the user out. The journal showed `Activating special unit exit.target` two seconds after the command, then `Session 2829 logged out` three seconds after that.
+
+This is not an exotic mistake, and it is **easier to hit than it looks**: a backgrounded agent job reparents to `systemd --user` once its launching shell exits, so an ancestor walk starting from one reaches the user manager in a **single hop**.
+
+A `PreToolUse` guard in `pretooluse-bash-resource-gate.sh` now denies the shape (parent-walk **+** stop-at-1 **+** signal, all three required, so ordinary teardown and read-only walks are untouched).
+
+### Trap 2 — an unvalidated `grep -F` needle (20:32:15 EDT)
+
+[Section titled “Trap 2 — an unvalidated grep -F needle (20:32:15 EDT)”](#trap-2--an-unvalidated-grep--f-needle-203215-edt)
+
+`fed_cleanup_scoped` in `papercusp-desktop/bin/lib/federation-asserts.sh` killed a run’s leftovers with:
+
+```bash
+ps -eo pid,args | grep -F "$work" | grep -v grep | awk '{print $1}' | while read -r pid; do
+  kill -9 "$pid"
+done
+```
+
+A fuzz harness enumerated every `fed_*` function with `declare -F` and called each with placeholder args `a b c d 1 e f`. So `$work` arrived as **`"a"`**, and `grep -F a` matched nearly every process on the box: **1,896 SIGKILLs in one second**, including `gnome-session-binary`. The user manager survived only by luck — `/usr/lib/systemd/systemd --user` happens to contain no letter `a`.
+
+The validation *existed* (`fed_is_rig_work`) but guarded `fed_cleanup_run`, the **public door**, while the function that actually signals trusted its caller. **A guard on a door is not a guard on the thing behind it — validate at the point of danger.**
+
+## The 15-char comm trap (this one nearly shipped in the fix itself)
+
+[Section titled “The 15-char comm trap (this one nearly shipped in the fix itself)”](#the-15-char-comm-trap-this-one-nearly-shipped-in-the-fix-itself)
+
+The first version of the session floor used `pgrep -x gnome-session-binary`. It matched **zero rows**:
+
+```plaintext
+pgrep: pattern that searches for process name longer than 15 characters
+       will result in zero matches
+```
+
+The kernel clips `/proc/<pid>/comm` to 15 chars (`TASK_COMM_LEN` 16, incl. NUL), so `gnome-session-binary` is really `gnome-session-b`. pgrep prints a warning to stderr and still **exits cleanly** — so the floor cheerfully reported *“safe to kill”* for the exact process whose death ended the owner’s session, and nothing in its output looked wrong.
+
+Three of the obvious names truncate: `gnome-session-binary` → `gnome-session-b`, `gdm-wayland-session` → `gdm-wayland-ses`, `gnome-session-ctl` → `gnome-session-c`. **Always truncate a comm name to 15 chars before comparing.**
+
+Related: use `pgrep -x` (exact comm) and never `pgrep -f` for this — `-f` reads the full command line, so it matches any peer agent’s shell that merely *mentions* the name, including your own probe. See [exit-144-pkill-self-match](/internal/docs/agent-insights/exit-144-pkill-self-match).
+
+## What the floor protects
+
+[Section titled “What the floor protects”](#what-the-floor-protects)
+
+`scripts/lib/session-floor.sh` refuses: pid 1 · `systemd --user` · every seat-attached logind session **Leader** · `gnome-session-b` · `gnome-shell` · `gnome-session-c` · `Xorg` / `Xwayland` · `gdm-x-session` / `gdm-wayland-ses` / `gdm` (plus KDE equivalents). It fails **closed**: garbage or unreadable input is treated as protected.
+
+## Transferable rules
+
+[Section titled “Transferable rules”](#transferable-rules)
+
+1. **A parent walk’s stop condition should be the session boundary, not pid 1.** If you are walking ancestors to kill them, you are one layer away from the user manager.
+2. **Validate at the kill site, not at the public door.** Any other caller — a selftest, a fuzzer, a future rig, a human sourcing the file — reaches the dangerous line directly.
+3. **Cap the blast radius independently of the validation.** “One run’s leftovers” is never 1,600 processes. A cap needs no notion of what a valid input looks like, so it still holds when the validator’s assumptions go stale.
+4. **Key a guard on the DANGER, not on a convenient list.** Guarding by the hardcoded `/tmp/<rig>.` prefix list would have broken a live rig that legitimately uses `$HOME/.papercusp-lane-a-fed`, while *still* not describing the hazard. The hazard was non-specificity; that is what the guard measures.
+5. **An empty forensics log means “this instrument cannot see that mechanism”, not “nothing happened”.** A D-Bus monitor installed for this exact class (WI-4674) recorded nothing, because it watched `StartUnit` method calls and the real mechanism was a *signal*. Its clean gap across the incident reads exactly like innocence.
+
+Related: [desktop-session-liveness-ancestry](/internal/docs/agent-insights/desktop-session-liveness-ancestry) (the sibling problem — detecting an on-desktop session so a reaper *exempts* it).
+
 # A new learning-singleton blueprint ships its DEFINITION but does NOT auto-create the routine — materialize it post-deploy
 
 > Adding a learning loop (blueprint + LEARNING_SINGLETONS entry + op) ships code only; the `@singleton/bp-singleton-<id>-0` routine ROW is never created on deploy/boot — there is no boot-time materializer. Until you run `materializeLearningSingletons` (the seed CLI) for the workspace, the loop has no routine, never fires, and never shows in improvements:learning_loops — even with singletonActive:true and the flag ON. This is the 0th gate, before the three in dark-learning-loops-are-triple-gated.
@@ -30999,6 +31095,88 @@ If you must validate a *path* rather than a single segment, validate the **raw**
 1. Does the guard run on the **raw caller input**, or on something a `join`/`resolve`/`normalize` already touched?
 2. If the input is a single component (slug/id/name): is there a `/`-rejecting whitelist? That’s the cheap, sound check.
 3. Read and write paths for the same resource: do they validate at the **same** layer with the **same** rule? Divergence is where this hides.
+
+# pauseNewWork does NOT pause draft DISPOSAL — the scout-draft-review backstop never routes through pot:wake
+
+> Pausing a pot with pot:set_steering { pauseNewWork: true } is widely read as freezing the Mug. It does not. The scout-draft-review backstop reaches the Mug by a path that never calls the pot:wake tool — which is the only place the steering-pause gate lives — so a STARTED but steering-paused pot keeps getting draft-review wakes. The plan-review idle activity is not suppressed either; pause EMPTIES the placement frontier, and since "placement always wins" cannot win against an empty frontier, the Mug reaches plan-review SOONER. The pause that does stop the sweep is pot:pause, via a different mechanism (hive_started=false). Getting this backwards designs an agent that either starves a draft queue or double-disposes it.
+
+## The question, and why it is easy to get backwards
+
+[Section titled “The question, and why it is easy to get backwards”](#the-question-and-why-it-is-easy-to-get-backwards)
+
+An agent that takes a pot — `pot:set_steering { pauseNewWork: true }`, then places work itself — needs to know whether the Mug is still disposing that pot’s Blender-routed drafts. The intuition is “I paused the pot, so the Mug is frozen, so the draft queue now has no owner and I must adopt it.” **That intuition is wrong**, and acting on it creates a worse failure than the one it is trying to prevent: two disposers racing one queue, each believing it owns it, both writing dispositions that feed the Blender’s learning corpus.
+
+Verified 2026-08-09 (plan `goal-mode-2026-08-07`, decision D-015).
+
+## The answer
+
+[Section titled “The answer”](#the-answer)
+
+`pauseNewWork` suppresses **neither** limb of the Mug’s draft disposal.
+
+### 1. The `scout-draft-review` wake never touches the steering gate
+
+[Section titled “1. The scout-draft-review wake never touches the steering gate”](#1-the-scout-draft-review-wake-never-touches-the-steering-gate)
+
+The backstop’s path never calls the `pot:wake` tool, and `pot:wake` is the *only* place the steering-pause gate exists:
+
+```plaintext
+scoutDraftReviewSweep          dbos/routines-workflow.ts:590   (runs in bg-host)
+  -> listStartedPots()         pot/started.ts:211              reads ONLY operator_settings `hive_started:*`
+  -> fireReviewWake()          scout/draft-review-watchdog.ts:212
+  -> wakeMug()                 pot/placement-watchdog.ts:996
+       -> wakeRecipients(...)  per-agent wake-MODE gate only
+       -> sendMessage(@role:mug)  durable park, always lands
+```
+
+No leg of that reads `getOwnerSteering` or `isPausedNow`. The gate that *does* exist lives at `agent-tools/pot/wake.ts:124-140` and returns `skipped: 'steering-paused'` — but only for `source: 'event'` wakes carrying a **placement-demand** trigger (`work_items:create`, `plans:start`). `pot:set-steering`, `coord:escalate`, untriggered event wakes and explicit user wakes all still fire.
+
+This is deliberate, not an oversight: `mug.base.md:183-186` names `scout-draft-review` the **friction-path exception** whose drafts “must NOT wait”. Disposing drafts that were already routed is not “new work”.
+
+### 2. `plan-review` is not suppressed either — pause makes it run MORE
+
+[Section titled “2. plan-review is not suppressed either — pause makes it run MORE”](#2-plan-review-is-not-suppressed-either--pause-makes-it-run-more)
+
+`pauseNewWork` **empties the placement frontier** (`pot/survey.ts:100-111`, asserted by `pot/survey.test.ts:407` — *“pauseNewWork empties the FRONTIER (no new work) but keeps started-plan momentum”*). `mug.base.md:175-176` says placement always wins over plan-review — but placement cannot win against an empty frontier, so a paused pot’s Mug reaches the idle plan-review branch **sooner**, not later.
+
+Note the asymmetry inside the pause itself: it gates only NEW unplaced work. Started-plan momentum deliberately continues.
+
+## What actually stops the sweep
+
+[Section titled “What actually stops the sweep”](#what-actually-stops-the-sweep)
+
+`pot:pause` — by a completely different mechanism. It sets `hive_started=false` (`agent-tools/pot/pause.ts:94`), so the pot drops out of `listStartedPots()` and the sweep never evaluates its drafts at all. (Its second leg sets the global wake-mode to `manual`, which makes `wakeRecipients` *stage* the direct wake — but `wakeMug`’s durable `@role:mug` message still lands and is drained on the next Mug wake.)
+
+| mechanism                                     | suppresses draft disposal? | how                                                            |
+| --------------------------------------------- | -------------------------- | -------------------------------------------------------------- |
+| `pauseNewWork` / `pausedUntil`                | **no**                     | empties the frontier + gates placement-demand event wakes only |
+| `pot:pause`                                   | yes                        | `hive_started=false` ⇒ pot leaves `listStartedPots()`          |
+| `PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC <= 0` | yes                        | kill switch, checked before anything else                      |
+
+## ⚠ The same-basename trap that nearly produced the opposite answer
+
+[Section titled “⚠ The same-basename trap that nearly produced the opposite answer”](#-the-same-basename-trap-that-nearly-produced-the-opposite-answer)
+
+There are **two** files named `survey.ts`:
+
+* `packages/operator-core/lib/pot/survey.ts` — the **lib**, where pause enforcement lives.
+* `packages/operator-core/lib/agent-tools/pot/survey.ts` — the **tool**, which has *zero* steering references.
+
+Grepping only the tool file reads as *“no pause enforcement exists anywhere”* — a confident, well-formed, wrong answer. Grep by **symbol** (`isPausedNow`) rather than by directory, or check both. The same hazard applies to `wake.ts` and `watchdog.ts`, which also exist in both trees.
+
+## The rule this yields
+
+[Section titled “The rule this yields”](#the-rule-this-yields)
+
+A goal/fleet agent that takes a pot is **not** its sole disposer. Dispose a draft only when you are promoting it into work you are placing, never re-dispose one the Mug already closed, and leave the rest alone. **Exactly one disposition per draft, by exactly one agent.** The Mug’s own rules (`mug.base.md:165-200`) are the reference.
+
+## Guard
+
+[Section titled “Guard”](#guard)
+
+`packages/operator-core/lib/scout/draft-review-steering-pause.test.ts` asserts the sweep fires while `pauseNewWork: true` **and** that it never even *reads* steering, with four controls (not-started / debounce / nothing-stale / kill switch) proving the no-wake state is observable so the file cannot pass vacuously.
+
+That guard exists because the invariant held only **by accident of routing** — nothing asserted it. “Make the backstop consistent with `pot:wake`” is an entirely plausible future change that would have silently starved draft disposal for exactly as long as a pot stayed paused, with no test failing.
 
 # Payload hard-ceiling force-trims UI/sync reads — an "empty" UI list over a fat shaper-tool is THIS, not missing data
 
@@ -90652,6 +90830,23 @@ Primary stack — drives the operator UI inside the Tauri shell:
 * **`curl`** — corroborate backend state (PG row written, sidecar log line, `/api/...` returns expected JSON) after a UI action. Never as a primary verification — many bugs are UI-only and the API would pass.
 * **Operator log tail** — `tail -200 /tmp/tauri-dev.log` (or whichever log the dev shell prints to; `bin/dev` and `npm run dev` both write here by convention) for sidecar-side errors after a failure.
 
+Falsifiable vs non-falsifiable — know which class a tauri-agent-tools subcommand is in BEFORE you cite it
+
+Before citing any `tauri-agent-tools` output as verification evidence, ask: *what input would have made this look different?* If nothing could, it measured nothing. Most of the CLI’s subcommands **cannot report failure at all** — they exit 0 unconditionally and write a normal-looking artifact even when nothing worked. This list is not exhaustive by design (new subcommands default to the non-falsifiable side until proven otherwise); when in doubt, treat it as observational.
+
+**FALSIFIABLE — exit-coded; safe to cite alone as evidence:**
+
+* **`check --selector/--text/--eval/--no-errors`** — exits **1** if the assertion is false. `work_items:complete` accepts a recorded `check` invocation on its own; no image required.
+* **`wait --selector/--eval --timeout`** — exits nonzero on timeout, so it *can* tell you a condition never became true. Treat it as a **settle guard**, not a final assertion: always follow a `wait` with a `check`/`eval` read of the now-settled state (§1.4 shows why a `wait` alone can be satisfied by a stale/outgoing page).
+
+**NON-FALSIFIABLE — exit 0 no matter what actually happened; observational only, never sufficient alone as `verifiedHow:'live-drove-ui'` evidence:**
+
+* **`screenshot`, `capture`** — write a plausible, normal-sized file (PNG, or a bundle) **even for a window that never painted**. On a host with a working screenshot backend this is *silent*: no error, no warning, just blank-white pixels in a file that looks exactly like a real one (§15’s cookbook has the blank-screenshot check — `npm run check:screenshot`). `capture`’s screenshot component inherits the same blindness even though the bundle also carries DOM/console/logs.
+* **`dom`, `eval`, `probe`, `console-monitor`, `ipc-monitor`, `rust-logs`, `storage`** — return whatever they observe; a wrong, stale, or empty result still exits 0.
+* **`click`, `type`, `press`** — dispatch a synthetic event; success means “the event was dispatched,” not “the UI reacted as intended.”
+
+**The rule:** close on a `check` (or `wait` immediately followed by a `check`/`eval` read) whenever the DOM can express the assertion — see **§1.3**’s `verifiedHow:'live-drove-ui'` caution for the exact citable forms. Reach for `screenshot`/`capture` only for a genuinely *visual* signal (layout, paint order, font rendering) the DOM can’t express, and even then open the image before citing it.
+
 Other tools and when:
 
 * **`verdict`** — only for **arbitrary public web pages** (docs site on the marketing domain, third-party links, render checks for the `/docs` MDX renderer hitting an external URL). Do **not** drive the operator with verdict; the operator only renders correctly inside Tauri.
@@ -90748,7 +90943,7 @@ tauri-agent-tools eval "window.__TSR_ROUTER__?.navigate({ to: '/settings/p2p' })
 tauri-agent-tools check --selector 'body' --text 'Peer' --no-errors
 ```
 
-Closing with `verifiedHow:'live-drove-ui'`? Drive the ASSERTIONS with `check`/`capture`, not `eval`
+Closing with `verifiedHow:'live-drove-ui'`? Drive the ASSERTIONS with `check`, not `eval` — and know `capture`/`screenshot` are ACCEPTED but NOT FALSIFIABLE
 
 Note which command carries the assertion above. `eval` is for **exploration** — it returns a value and exits 0 whether or not what you hoped was true, so no transcript of it is falsifiable. `work_items:complete` refuses a `verifiedHow:'live-drove-ui'` close whose `testsRun`/`testResult`/`filesChanged` cite no real artifact, and it accepts exactly these:
 
@@ -90756,7 +90951,9 @@ Note which command carries the assertion above. `eval` is for **exploration** �
 * an **image path** (`.png`/`.jpg`/`.webp`/`.gif`), or
 * for a web deploy, a **URL + HTTP status** (`https://…/about -> 200`).
 
-A thorough `eval` transcript is **not** one of them. Plan for this **now**, while the shell is up: the gate fires at CLOSE time, long after an isolated instance has been torn down, so discovering it there costs a second full boot (\~4 min) purely to re-run assertions you already ran.
+**Accepted is not the same as falsifiable — see §0’s falsifiable/non-falsifiable split.** `check` is exit-coded (fails loudly on its own); a cited `capture`/ `screenshot` is *structurally* accepted but writes a plausible file even for a window that never painted, so it proves nothing by itself unless you also open it and confirm it isn’t blank (§15’s cookbook). Prefer `check` whenever the DOM can express the assertion — it needs no such extra step.
+
+A thorough `eval` transcript is **not** accepted at all. Plan for this **now**, while the shell is up: the gate fires at CLOSE time, long after an isolated instance has been torn down, so discovering it there costs a second full boot (\~4 min) purely to re-run assertions you already ran.
 
 Cheapest compliant form — falsifiable, and it needs no image on disk:
 
@@ -91049,24 +91246,24 @@ tauri-agent-tools check \
 
 The §3–§13 route tests below were written for verdict; the same intent maps 1:1 to tauri-agent-tools. When you read `verdict <verb>`, substitute the right column.
 
-| Verdict (legacy)              | tauri-agent-tools                                                          | Notes                                                                                                                                                     |
-| ----------------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `verdict snapshot`            | `tauri-agent-tools dom --depth 4`                                          | Returns DOM tree, not ARIA. Add `--text "..."` to filter.                                                                                                 |
-| `verdict js "<expr>"`         | `tauri-agent-tools eval "<expr>"`                                          | Returns JSON. Wrap in `JSON.stringify(...)` if the value is an object.                                                                                    |
-| `verdict click <selector>`    | `tauri-agent-tools click <selector>`                                       | Real synthetic event inside the webview; no focus-steal.                                                                                                  |
-| `verdict type <sel> <text>`   | `tauri-agent-tools type <sel> <text>`                                      | Sets value + dispatches `input` event.                                                                                                                    |
-| `verdict press <sel> <key>`   | `tauri-agent-tools press <sel> <key>`                                      | e.g. `press input Enter`.                                                                                                                                 |
-| `verdict screenshot <path>`   | `tauri-agent-tools screenshot --title Papercusp -o <path>`                 | Full window. `--selector` crop is currently flaky on this build (returns 1×1 PNG occasionally — fall back to full + crop in ImageMagick if it bites you). |
-| `verdict console error`       | `tauri-agent-tools console-monitor --duration 200`                         | Window must be in scope; pass `--pid` if multiple bridges.                                                                                                |
-| `verdict reload`              | `tauri-agent-tools eval "location.reload()"`                               | No dedicated `reload` verb.                                                                                                                               |
-| `verdict newtab`              | (not applicable)                                                           | Tauri has one webview. For isolation, launch a second `tauri dev` against a different `PAPERCUSP_WORKSPACE_ROOT`.                                         |
-| `verdict status`              | `tauri-agent-tools probe`                                                  | Lists running bridges + page state.                                                                                                                       |
-| `localStorage.clear()` via JS | `tauri-agent-tools eval "localStorage.clear()"`                            | Works only because bridge is in-webview (Tauri’s IPC alone can’t).                                                                                        |
-| (n/a)                         | `tauri-agent-tools storage --json`                                         | Dump localStorage / sessionStorage / cookies.                                                                                                             |
-| (n/a)                         | `tauri-agent-tools ipc-monitor --duration 5000`                            | Capture every `__TAURI__.core.invoke` call — uniquely useful for debugging plugin/host wiring.                                                            |
-| (n/a)                         | `tauri-agent-tools rust-logs --tail 200`                                   | Sidecar Rust log without rooting through `/tmp`.                                                                                                          |
-| (n/a)                         | `tauri-agent-tools check --selector ... --text ... --eval ... --no-errors` | One-shot CI assertion; exits 0/1.                                                                                                                         |
-| (n/a)                         | `tauri-agent-tools capture -o <dir>`                                       | Bundle: screenshot + DOM + storage + console + Rust logs. Use on every FAIL.                                                                              |
+| Verdict (legacy)              | tauri-agent-tools                                                          | Notes                                                                                                                                                                                                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verdict snapshot`            | `tauri-agent-tools dom --depth 4`                                          | Returns DOM tree, not ARIA. Add `--text "..."` to filter.                                                                                                                                                                                                       |
+| `verdict js "<expr>"`         | `tauri-agent-tools eval "<expr>"`                                          | Returns JSON. Wrap in `JSON.stringify(...)` if the value is an object.                                                                                                                                                                                          |
+| `verdict click <selector>`    | `tauri-agent-tools click <selector>`                                       | Real synthetic event inside the webview; no focus-steal.                                                                                                                                                                                                        |
+| `verdict type <sel> <text>`   | `tauri-agent-tools type <sel> <text>`                                      | Sets value + dispatches `input` event.                                                                                                                                                                                                                          |
+| `verdict press <sel> <key>`   | `tauri-agent-tools press <sel> <key>`                                      | e.g. `press input Enter`.                                                                                                                                                                                                                                       |
+| `verdict screenshot <path>`   | `tauri-agent-tools screenshot --title Papercusp -o <path>`                 | Full window. `--selector` crop is currently flaky on this build (returns 1×1 PNG occasionally — fall back to full + crop in ImageMagick if it bites you). **NON-FALSIFIABLE** (§0) — exits 0 even for a blank/unpainted window; open the file before citing it. |
+| `verdict console error`       | `tauri-agent-tools console-monitor --duration 200`                         | Window must be in scope; pass `--pid` if multiple bridges.                                                                                                                                                                                                      |
+| `verdict reload`              | `tauri-agent-tools eval "location.reload()"`                               | No dedicated `reload` verb.                                                                                                                                                                                                                                     |
+| `verdict newtab`              | (not applicable)                                                           | Tauri has one webview. For isolation, launch a second `tauri dev` against a different `PAPERCUSP_WORKSPACE_ROOT`.                                                                                                                                               |
+| `verdict status`              | `tauri-agent-tools probe`                                                  | Lists running bridges + page state.                                                                                                                                                                                                                             |
+| `localStorage.clear()` via JS | `tauri-agent-tools eval "localStorage.clear()"`                            | Works only because bridge is in-webview (Tauri’s IPC alone can’t).                                                                                                                                                                                              |
+| (n/a)                         | `tauri-agent-tools storage --json`                                         | Dump localStorage / sessionStorage / cookies.                                                                                                                                                                                                                   |
+| (n/a)                         | `tauri-agent-tools ipc-monitor --duration 5000`                            | Capture every `__TAURI__.core.invoke` call — uniquely useful for debugging plugin/host wiring.                                                                                                                                                                  |
+| (n/a)                         | `tauri-agent-tools rust-logs --tail 200`                                   | Sidecar Rust log without rooting through `/tmp`.                                                                                                                                                                                                                |
+| (n/a)                         | `tauri-agent-tools check --selector ... --text ... --eval ... --no-errors` | One-shot CI assertion; exits 0/1. **FALSIFIABLE** (§0) — prefer this for `verifiedHow:'live-drove-ui'` evidence.                                                                                                                                                |
+| (n/a)                         | `tauri-agent-tools capture -o <dir>`                                       | Bundle: screenshot + DOM + storage + console + Rust logs. Use on every FAIL. **NON-FALSIFIABLE** (§0) — its screenshot component exits 0 even when blank; the DOM/console files in the bundle are the load-bearing evidence, not the PNG.                       |
 
 ## 3. Global elements (every page except auth)
 
@@ -92302,7 +92499,7 @@ A plain `Xvfb` is a **software framebuffer with no DRI3/GL** (you’ll see `libE
 
 Check every screenshot you intend to CITE — a blank one exits 0 and looks like proof
 
-`tauri-agent-tools screenshot` writes a valid PNG, prints the path and **exits 0 whether or not the window painted**, so its exit code tells you nothing about the thing you care about. The file is not obviously wrong either: the real one found on this box was 91KB at 1280x800 — a dark gradient and nothing else. File size is not a tell.
+This is the general case of §0’s falsifiable/non-falsifiable split, worked through in full: `tauri-agent-tools screenshot` (and `capture`’s screenshot component) writes a valid PNG, prints the path and **exits 0 whether or not the window painted**, so its exit code tells you nothing about the thing you care about. The file is not obviously wrong either: the real one found on this box was 91KB at 1280x800 — a dark gradient and nothing else. File size is not a tell.
 
 That makes it worse than useless, because it is *citable*. `work_items:complete` requires a `verifiedHow:'live-drove-ui'` close to cite an artifact, and an agent who ran the capture, never opened it, and cited the path would have closed the item having verified no pixels at all — with a paper trail that reads as rigorous. (Two such captures were already sitting on this host when EI-18797014705631713 was filed.)
 

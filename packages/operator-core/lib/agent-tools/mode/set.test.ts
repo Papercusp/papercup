@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   sendMessage: vi.fn(async (..._args: unknown[]) => ({ msg_id: 'm-1' })),
   refreshControlAnchorAfterMutation: vi.fn(async (_opts: unknown) => ({ generation: 1 })),
   getLoopStatus: vi.fn(async (_ownerId: string) => null as { active: boolean } | null),
+  assertFact: vi.fn(async (_input: unknown) => ({ ok: true })),
+  retractFact: vi.fn(async (_args: unknown) => true),
 }));
 
 vi.mock('../../modes/store', () => ({ setMode: h.setMode }));
@@ -23,6 +25,15 @@ vi.mock('../../modes/store', () => ({ setMode: h.setMode }));
 // import would drag the org-PG client into a unit test.
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: h.getLoopStatus }));
 vi.mock('../coordination/messages', () => ({ sendMessage: h.sendMessage }));
+// Partial-shaped on purpose, like the loop mock above: set.ts uses exactly these
+// three bindings, and the real module opens a PG client at import.
+// FACT_BODY_MAX_CHARS is read at MODULE SCOPE (it is interpolated into the
+// `instructions` arg description), so omitting it here breaks the import, not a test.
+vi.mock('../../agent-facts/store', () => ({
+  assertFact: h.assertFact,
+  retractFact: h.retractFact,
+  FACT_BODY_MAX_CHARS: 1200,
+}));
 vi.mock('../coordination/control-anchor', () => ({
   refreshControlAnchorAfterMutation: h.refreshControlAnchorAfterMutation,
 }));
@@ -43,7 +54,12 @@ vi.mock('../coordination/identity', async () => {
   };
 });
 
-import setTool, { wakeSourceWarning, wakeSourceLostWarning } from './set';
+import setTool, {
+  wakeSourceWarning,
+  wakeSourceLostWarning,
+  modeInstructionsFactKey,
+  renderModeInstructionsFact,
+} from './set';
 import { ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -59,6 +75,119 @@ beforeEach(() => {
   h.sendMessage.mockClear().mockResolvedValue({ msg_id: 'm-1' });
   h.refreshControlAnchorAfterMutation.mockClear().mockResolvedValue({ generation: 1 });
   h.getLoopStatus.mockClear().mockResolvedValue(null);
+  h.assertFact.mockClear().mockResolvedValue({ ok: true });
+  h.retractFact.mockClear().mockResolvedValue(true);
+});
+
+/* ── `instructions`: scope that outlives its delivery (plan D-002) ────────────
+   [owner 2026-08-09] "the drain mode should have an input box where you can type
+   in instructions for the drain… e.g. all bugs except the ones related to the
+   p2p features."
+
+   The message is the PUSH; the standing fact is the DURABILITY. A drain runs for
+   hours across several compactions, and a reason delivered once is gone by the
+   second — which is exactly how a scope instruction stops being obeyed while the
+   mode still reads ON. ── */
+describe('mode:set — instructions become a standing fact', () => {
+  const DRAIN_KEY = 'mode-instructions:drain';
+  const SCOPE = 'all bugs except the ones related to the p2p features';
+
+  it('renders the operative clause FIRST, provenance last', () => {
+    const body = renderModeInstructionsFact({
+      modeId: 'drain',
+      instructions: SCOPE,
+      ownerDirected: true,
+      setBy: 'su-admin',
+    });
+    // The store hard-clips the body, and the caller's instruction can be longer
+    // than every other part combined — so the ordering is load-bearing, not
+    // style. Clipping the provenance tail costs an anchor; clipping the
+    // instruction would silently change what the agent is told to do.
+    expect(body.indexOf(SCOPE)).toBeLessThan(body.indexOf('set by'));
+    expect(body).toContain('obey this verbatim');
+    expect(modeInstructionsFactKey('drain')).toBe(DRAIN_KEY);
+  });
+
+  it('asserts the fact on the TARGET, keyed per mode', async () => {
+    const res = parse(
+      await run({ mode: 'drain', reason: 'owner scoped a drain', instructions: SCOPE, agent: PEER }),
+    );
+    expect(h.assertFact).toHaveBeenCalledTimes(1);
+    expect(h.assertFact.mock.calls[0][0]).toMatchObject({
+      scope: 'owner',
+      scopeRef: PEER,
+      key: DRAIN_KEY,
+    });
+    expect((h.assertFact.mock.calls[0][0] as { body: string }).body).toContain(SCOPE);
+    expect(res).toMatchObject({ instructionsFact: 'asserted', instructionsFactKey: DRAIN_KEY });
+  });
+
+  it('also delivers the scope in the message — the fact is durability, not delivery', async () => {
+    await run({ mode: 'drain', reason: 'owner scoped a drain', instructions: SCOPE, agent: PEER });
+    const body = (h.sendMessage.mock.calls[0][1] as { body: string }).body;
+    expect(body).toContain(SCOPE);
+    expect(body).toContain('obey verbatim');
+  });
+
+  /* Turning the mode off must clear the instruction. D-002 is explicit that a
+     stale standing instruction delivered verbatim on every wake is WORSE than
+     none — the agent keeps scoping a drain that is no longer running. */
+  it('retracts on disable, with no instructions argument needed', async () => {
+    const res = parse(await run({ mode: 'drain', reason: 'owner stopped the drain', enabled: false, agent: PEER }));
+    expect(h.retractFact).toHaveBeenCalledTimes(1);
+    expect(h.retractFact.mock.calls[0][0]).toMatchObject({ scope: 'owner', scopeRef: PEER, key: DRAIN_KEY });
+    expect(h.assertFact).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ instructionsFact: 'retracted' });
+  });
+
+  /* OMITTED and EMPTY are different on purpose. A caller that predates this
+     field must not silently wipe a standing instruction; an owner who empties
+     the box must not silently inherit last week's exclusions. */
+  it('OMITTED leaves a standing instruction alone', async () => {
+    const res = parse(await run({ mode: 'drain', reason: 'owner restarted the drain', agent: PEER }));
+    expect(h.assertFact).not.toHaveBeenCalled();
+    expect(h.retractFact).not.toHaveBeenCalled();
+    expect(res.instructionsFact).toBeUndefined();
+  });
+
+  it('EMPTY clears it', async () => {
+    await run({ mode: 'drain', reason: 'owner started an unscoped drain', instructions: '   ', agent: PEER });
+    expect(h.retractFact).toHaveBeenCalledTimes(1);
+    expect(h.assertFact).not.toHaveBeenCalled();
+  });
+
+  /* Deliberately NOT gated on `!noop`: re-scoping a RUNNING drain is a no-op
+     mode-wise and is exactly the case that must still rewrite the fact. */
+  it('re-scopes a drain that is already running (a mode-level no-op)', async () => {
+    h.setMode.mockResolvedValue({ ok: true, mode: { id: 'drain' }, switchedFrom: null, noop: true });
+    await run({ mode: 'drain', reason: 'owner re-scoped', instructions: 'only p2p bugs', agent: PEER });
+    expect(h.assertFact).toHaveBeenCalledTimes(1);
+    expect((h.assertFact.mock.calls[0][0] as { body: string }).body).toContain('only p2p bugs');
+  });
+
+  /* A refused write must leave NO standing instruction for a mode change that
+     never applied — the race a client-side pair of calls cannot close. */
+  it('writes nothing when the owner-sticky guard refuses', async () => {
+    h.setMode.mockResolvedValue({ ok: false, stickyConflict: true, mode: { id: 'drain' }, noop: false });
+    const res = parse(
+      await run({ mode: 'drain', reason: 'peer tried to re-scope', instructions: SCOPE, agent: PEER }),
+    );
+    expect(h.assertFact).not.toHaveBeenCalled();
+    expect(h.retractFact).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ ok: false, stickyConflict: true });
+  });
+
+  /* Fail-soft, like the delivery beside it: the mode change is already applied
+     and audited, so a facts hiccup must not fail a write that landed — but it
+     is REPORTED, because the instruction is now push-only and will not survive
+     the agent's next compaction. */
+  it('a facts failure degrades the change instead of failing it', async () => {
+    h.assertFact.mockRejectedValue(new Error('pg down'));
+    const res = parse(
+      await run({ mode: 'drain', reason: 'owner scoped a drain', instructions: SCOPE, agent: PEER }),
+    );
+    expect(res).toMatchObject({ ok: true, instructionsFact: 'failed' });
+  });
 });
 
 /**

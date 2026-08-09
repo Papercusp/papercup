@@ -116,6 +116,17 @@ vi.mock('./superuser-token', async (importOriginal) => {
   return { ...actual, readSuperuserToken: () => 'TESTBEARER' };
 });
 vi.mock('./device-harnesses', () => ({ listHarnessesFor: vi.fn(async () => []) }));
+// default-deploy-account-2026-08-08 P-004: resolveAccountPin now reads the owner's default
+// account for an unspecified `account`. Unmocked that reaches Postgres, and this route FAILS
+// CLOSED on an unreadable default — so the POST would return an error envelope (no codexHome,
+// no sessionId) instead of a launch, which reads as a route bug rather than a missing stub.
+// `undefined` = "no default set", the pre-feature behaviour these tests assert.
+// Partial mock on purpose: an object factory here would strand again the next time this module
+// gains an export (EI-19462958615807409).
+vi.mock('./deployment/account-pool-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./deployment/account-pool-store')>()),
+  readDefaultAccountId: vi.fn(async () => undefined),
+}));
 vi.mock('./agent-tools/plans/source', () => ({
   resolveHarnessPlansDir: vi.fn(async () => ({ harnessSlug: 'papercup', plans: '/p', archive: '/p/a' })),
   listPlanFiles: vi.fn(async () => []),

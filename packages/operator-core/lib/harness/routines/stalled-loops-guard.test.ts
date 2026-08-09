@@ -1153,11 +1153,13 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
 
   describe('withheld-fire veto (WI-36792)', () => {
     it('refuses to disarm when the last fire was WITHHELD by the gate — not repairable, but nothing to repair', async () => {
-      // Same wake-starved shape as the corpse CONTROL above (unreachable, not repairable), but
-      // this owner's most recent fire never actually went out: the fire gate withheld it, which
-      // is why lastWakeAt is frozen too (a withheld fire creates no delivery row, same as a
-      // black-holed one). The session is live with a VALID standing await — there is nothing for
-      // armWake to fix, and nothing corpse-like about it either. Must be vetoed, not disarmed.
+      // Same wake-starved shape as the corpse CONTROL above (not repairable), but this owner's
+      // most recent fire never actually went out: the fire gate withheld it, which is why
+      // lastWakeAt is frozen too (a withheld fire creates no delivery row, same as a black-holed
+      // one). There is nothing for armWake to fix — the standing await is INTACT, which is
+      // exactly why the probe reports it REACHABLE: a withheld fire never reached wake(), so
+      // Gate 1 of deriveWakeReachability passes and the verdict measures real liveness rather
+      // than returning false by construction. Must be vetoed, not disarmed.
       const sql = fakeSql([{ id: 'rt_withheld', target_owner_id: 'su-withheld' }]);
       const getStatuses = vi.fn(
         async () =>
@@ -1186,9 +1188,10 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
 
       const res = await sweepStalledLoops(
         { sql, workspaceId: 'ws' },
-        // Not repairable AND unreachable — the corpse-shaped probe. The veto must engage anyway,
-        // because repairability is not what distinguishes this population from a corpse.
-        { getStatuses, autoPause, rearm, armWake, probeReachability: reach(false), broadcast, notify },
+        // Not repairable (nothing is broken) but REACHABLE — the live-session shape. That pair is
+        // what distinguishes this population from a corpse; repairability alone cannot, because
+        // both read `awaitRepairable: false`.
+        { getStatuses, autoPause, rearm, armWake, probeReachability: reach(true), broadcast, notify },
       );
 
       expect(res.vetoedByWithheldFire).toEqual(['su-withheld']);
@@ -1198,6 +1201,99 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
       expect(armWake).not.toHaveBeenCalled();
       expect(rearm).not.toHaveBeenCalled();
       expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('CONTROL — a WITHHELD fire on an owner the probe says is GONE is still disarmed (the veto must not blunt WI-6639)', async () => {
+      // The control that decides the shape of this branch, and the reason it is not keyed on the
+      // withhold stamp alone. A corpse does not merely TOLERATE a perpetual withhold, it
+      // CONVERGES on one: with no standing await its wakes record `no-session-now`,
+      // `consecutive_errors` climbs without bound (measured live on su-4a6e2255: 5 in minutes
+      // after a relaunch), and the circuit's `base * 2^(errors-1)` backoff denies an
+      // ever-growing share of its claims — while `lastWakeAt` stays frozen either way, so
+      // `wakeStarved` is permanently true. Sample such a loop at any sweep and
+      // `lastWithheldAt >= lastFiredAt` reads TRUE. A veto that engaged on that alone would
+      // exempt WI-6639's ENTIRE original population (armed loops on sessions that had already
+      // ENDED, 37h-158h) forever — silently converting this guard into a no-op for the exact
+      // case it was built for.
+      //
+      // Byte-identical to the veto test above except for the probe verdict. That is the point:
+      // reachability is the ONLY signal separating them.
+      const sql = fakeSql([{ id: 'rt_withheld_corpse', target_owner_id: 'su-withheld-corpse' }]);
+      const getStatuses = vi.fn(
+        async () =>
+          new Map([
+            [
+              'su-withheld-corpse',
+              status({
+                ownerId: 'su-withheld-corpse',
+                turnsStalled: true,
+                lastFiredAt: FIRED,
+                lastWakeAt: WAKE_FROZEN,
+                lastTurnAt: WAKE_FROZEN,
+                lastRealTurnAt: WAKE_FROZEN,
+                lastWithheldAt: FIRED,
+              }),
+            ],
+          ]),
+      );
+      const autoPause = vi.fn(async () => {});
+      const rearm = vi.fn<RearmFn>(async () => {});
+      const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const notify = vi.fn<NotifyFn>(async () => {});
+
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, rearm, armWake, probeReachability: reach(false), broadcast, notify },
+      );
+
+      expect(res.vetoedByWithheldFire).toEqual([]);
+      expect(res.paused).toBe(1);
+      expect(autoPause).toHaveBeenCalledWith(sql, 'rt_withheld_corpse', expect.stringContaining('WI-6639'));
+    });
+
+    it('a FAILING reachability probe still vetoes — an UNCERTAIN read must not license a permanent disarm', async () => {
+      // The control above is the only thing that clears the way to disarm, and it requires the
+      // probe to have SUCCEEDED and said "gone". A probe that THREW measured nothing, and this
+      // module's stated asymmetry (a wrong veto costs one sweep and self-corrects; a wrong
+      // disarm is permanent) makes "unknown" fail toward the reversible mistake — the same
+      // direction as the fire-starved branch's `.catch(() => true)`. Guards the `!== false`
+      // in the condition: an `=== true` there would silently make a PG blip disarm live agents.
+      const sql = fakeSql([{ id: 'rt_probe_fail', target_owner_id: 'su-probe-fail' }]);
+      const getStatuses = vi.fn(
+        async () =>
+          new Map([
+            [
+              'su-probe-fail',
+              status({
+                ownerId: 'su-probe-fail',
+                turnsStalled: true,
+                lastFiredAt: FIRED,
+                lastWakeAt: WAKE_FROZEN,
+                lastTurnAt: WAKE_FROZEN,
+                lastRealTurnAt: WAKE_FROZEN,
+                lastWithheldAt: FIRED,
+              }),
+            ],
+          ]),
+      );
+      const autoPause = vi.fn(async () => {});
+      const rearm = vi.fn<RearmFn>(async () => {});
+      const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const notify = vi.fn<NotifyFn>(async () => {});
+      const probeReachability = vi.fn(async () => {
+        throw new Error('pg pool exhausted');
+      }) as unknown as NonNullable<StalledLoopsSweepDeps['probeReachability']>;
+
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, rearm, armWake, probeReachability, broadcast, notify },
+      );
+
+      expect(res.vetoedByWithheldFire).toEqual(['su-probe-fail']);
+      expect(res.paused).toBe(0);
+      expect(autoPause).not.toHaveBeenCalled();
     });
 
     it('CONTROL — the SAME wake-starved+unrepairable shape with NO withhold (or a STALE one) is still disarmed', async () => {

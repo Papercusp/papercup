@@ -104,6 +104,7 @@ import { openOwnLog, type OwnLog } from '@papercusp/operator-core/lib/sync/hyper
 import { produceLogSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/log-snapshot';
 import {
   findLiveOperatorHoldingHive,
+  waitForLiveOperatorHoldingHive,
   requestLiveOperatorHeadSnapshot,
   HEAD_SNAPSHOT_PATH,
 } from '@papercusp/operator-core/lib/sync/hyperbee/live-head-snapshot-client';
@@ -515,9 +516,15 @@ export async function openSourceStoreForCut(inp: {
         ? '--skip-corestore-refresh suppressed the refresh that appends the head snapshot'
         : undefined;
     if (!blocked && !sourceWritable) {
-      const found = await (inp.findHolderImpl ?? findLiveOperatorHoldingHive)({
+      // WAIT for a holder rather than taking one instantaneous look (P-014, 2026-08-09).
+      // This gate is the cheapest possible thing to get wrong: it runs before any mutation,
+      // so a miss costs the whole cut for a condition that clears itself in seconds. Cut
+      // attempt 1 died here in 32s because every port answered booted:false during a
+      // bg-host recycle; 18 minutes later the same probe answered booted:true.
+      const found = await waitForLiveOperatorHoldingHive({
         workspaceId: inp.workspaceId!,
         hive: inp.hive,
+        findHolderImpl: inp.findHolderImpl,
         warn,
       });
       if (found.kind !== 'holder') {

@@ -215,6 +215,43 @@ export interface ChatModeAction {
    * renders whatever it is handed and falls back to a generic prompt.
    */
   searchPlaceholder?: string;
-  /** Apply a chosen option. */
-  set(ctx: ChatActionContext, optionId: string): Promise<void> | void;
+  /**
+   * Optional value-collection step, run AFTER an option is picked and BEFORE
+   * `set` (session-chat-popup-timestamps-and-modes-2026-08-09 P-005).
+   *
+   * Return a CardSpec to collect a value for `optionId`, or null/undefined for
+   * options that need none — so an axis can ask on `on` and stay silent on
+   * `off`. The collected payload is handed to `set` as `value`; DECLINING the
+   * card cancels the write entirely, exactly as declining a ChatAction's
+   * `params` card cancels its run.
+   *
+   * ── Why a CARD and not an input inside the menu ──
+   * Two reasons, and the second is decisive.
+   *
+   * Reuse: this is the SAME CardSpec / askUserLocal / LocalCardHost plumbing
+   * `ChatAction.params` already uses three inches away (plan D-001, "there is
+   * no second card vocabulary"). An inline text field in the pill's dropdown
+   * would be a second, bespoke one.
+   *
+   * Mechanics: the plain menu is a Radix `Select`, which claims keystrokes for
+   * typeahead — a text input inside it cannot reliably receive typing at all.
+   * The searchable menu's box is a FILTER over existing options, not a value
+   * collector; it has nothing to do with entering free text.
+   *
+   * This does NOT re-open what WI-7439/the 2026-08-02 note settled ("just make
+   * it look like a standard drop down/up"). That was about the OPTION CHOOSER —
+   * a value picker whose current value is already displayed, which is precisely
+   * a <select> and had no business being a stack of cards. Collecting free text
+   * after the pick is the other thing: a question that genuinely has no answer
+   * until the human types one, which is what a card is for.
+   */
+  params?(
+    ctx: ChatActionContext,
+    optionId: string,
+  ): CardSpec<ZodTypeAny> | null | undefined;
+  /**
+   * Apply a chosen option. `value` is the `params` card's submitted payload
+   * (`undefined` when the axis declares no `params`, or none for this option).
+   */
+  set(ctx: ChatActionContext, optionId: string, value?: unknown): Promise<void> | void;
 }

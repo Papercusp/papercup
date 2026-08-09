@@ -74,7 +74,7 @@ vi.mock('../../../agent-tools/plans/source', () => ({
 }));
 vi.mock('node:fs/promises', () => ({ readFile: vi.fn(async () => 'mock markdown') }));
 
-import routesDefault, { loadCoordInbox, loadCoordPlans, loadCoordHistory } from './index';
+import routesDefault, { loadCoordInbox, loadCoordPlans, loadCoordHistory, preWarmCoordPlans } from './index';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const planBySlugRoute = (routesDefault as any[]).find((r) => r.path === '/coord/plans/:slug');
@@ -259,6 +259,40 @@ describe('loadCoordPlans — identity comes from the row, not the markdown (WI-7
     const plans = await loadCoordPlans();
     expect(plans.map((p) => p.slug)).not.toContain('legacy-plan');
     expect(plans).toHaveLength(3);
+  });
+});
+
+/**
+ * preWarmCoordPlans — the boot fire-and-forget warm-up (WI-36179): a bare
+ * `loadCoordPlans()` call fired once at boot so the first REAL post-restart
+ * call is warm (module compile + parsePlan() JIT + PG connection already
+ * paid), same pattern as system-health's preWarmSystemHealth. Pins that it
+ * (a) actually kicks the same read `readAllPlans` backs, and (b) never
+ * throws/rejects even when that read fails — boot must not block or fail
+ * on this being best-effort.
+ */
+describe('preWarmCoordPlans (WI-36179 — fire-and-forget boot warm-up)', () => {
+  it('kicks the loadCoordPlans read', async () => {
+    readAllPlansMock.mockResolvedValueOnce([]);
+    preWarmCoordPlans(); // synchronous call — does not return a promise to await
+    // loadCoordPlans() itself awaits a dynamic import() before reaching readAllPlans,
+    // which defers past this tick even though the module is already cached — flush
+    // one tick so the (fire-and-forget) read has actually started.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(readAllPlansMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never throws, and swallows a rejection via console.warn (must not block/fail boot)', async () => {
+    readAllPlansMock.mockRejectedValueOnce(new Error('cold pg pool boom'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => preWarmCoordPlans()).not.toThrow();
+      await new Promise((r) => setTimeout(r, 0)); // let the rejected read's .catch run
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]?.[0])).toMatch(/boot pre-warm of coord\.plans failed/);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 

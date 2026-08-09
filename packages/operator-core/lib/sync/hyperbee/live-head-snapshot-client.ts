@@ -265,6 +265,67 @@ export async function findLiveOperatorHoldingHive(inp: {
 }
 
 /**
+ * {@link findLiveOperatorHoldingHive}, but WAITS for a holder to appear instead of
+ * answering from one instantaneous look.
+ *
+ * Discovery is side-effect-free (`probeOnly`), so waiting costs nothing but time — and a
+ * one-shot look is wrong for the two states this box is in most often (P-014, 2026-08-09):
+ *   • a holder mid-recycle has no booted hive for a few seconds; and
+ *   • a JUST-restarted holder owns the fd lock while its `getBootedHarness` LRU is still
+ *     cold, so every port answers `booted:false` (D-025) — which is indistinguishable
+ *     from "nothing on this box holds this hive", and steers to the OUTAGE remedy.
+ *
+ * Kept separate from `findLiveOperatorHoldingHive` rather than folded into it: the
+ * snapshot request runs its OWN retry around a full discovery+POST cycle, and a retry
+ * nested inside a retry would multiply budgets that each look bounded on their own.
+ */
+export async function waitForLiveOperatorHoldingHive(inp: {
+  readonly workspaceId: string;
+  readonly hive: string;
+  readonly probeTimeoutMs?: number;
+  readonly retryBudgetMs?: number;
+  readonly retryDelayMs?: number;
+  readonly fetchImpl?: FetchLike;
+  readonly listSiblingsImpl?: typeof listSiblingOperators;
+  readonly findHolderImpl?: typeof findLiveOperatorHoldingHive;
+  readonly sleepImpl?: (ms: number) => Promise<void>;
+  readonly nowImpl?: () => number;
+  readonly warn?: (msg: string) => void;
+}): Promise<FindHiveHolderOutcome> {
+  const budgetMs = inp.retryBudgetMs ?? DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS;
+  const delayMs = inp.retryDelayMs ?? DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS;
+  const now = inp.nowImpl ?? Date.now;
+  const sleep = inp.sleepImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const find = inp.findHolderImpl ?? findLiveOperatorHoldingHive;
+
+  const startedAt = now();
+  let attempts = 0;
+  for (;;) {
+    attempts += 1;
+    const found = await find(inp);
+    if (found.kind === 'holder') {
+      if (attempts > 1) {
+        inp.warn?.(
+          `[head-snapshot] a holder for ${inp.workspaceId}::${inp.hive} appeared on attempt ` +
+            `${attempts} after ~${now() - startedAt}ms — the earlier miss was a recycle, not an absence.`,
+        );
+      }
+      return found;
+    }
+    if (now() - startedAt + delayMs > budgetMs) {
+      if (attempts > 1) {
+        inp.warn?.(
+          `[head-snapshot] no holder for ${inp.workspaceId}::${inp.hive} after ${attempts} ` +
+            `attempts over ${now() - startedAt}ms — this is a real absence, not a recycle window.`,
+        );
+      }
+      return found;
+    }
+    await sleep(delayMs);
+  }
+}
+
+/**
  * Find the operator process holding `(workspaceId, hive)` and have it append a fresh
  * head snapshot. NEVER throws: every failure is a typed outcome, because the caller
  * (a release cut) must be able to degrade deliberately rather than die mid-cut.
@@ -334,7 +395,7 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
         `[head-snapshot] giving up after ${attempts} attempt(s) over ${now() - startedAt}ms — ` +
           `the holder never came back within the ${budgetMs}ms retry budget.`,
       );
-      return withRetryLog(last, { attempts, waitedMs });
+      return attempts > 1 ? withRetryLog(last, { attempts, waitedMs }) : last;
     }
 
     inp.warn?.(

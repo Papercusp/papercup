@@ -1473,7 +1473,7 @@ export interface RelationDescription {
   relation: string;
   /** table | view | materialized view | index | sequence … */
   kind: string;
-  columns: Array<{ name: string; type: string; nullable: boolean; default: string | null }>;
+  columns: Array<{ name: string; type: string; nullable: boolean; default: string | null; comment: string | null }>;
   indexes: Array<{ name: string; definition: string }>;
   constraints: Array<{ name: string; type: string; definition: string }>;
 }
@@ -1549,16 +1549,23 @@ export async function describeRelation(
   const relation = await resolveRelation(ref, opts.client);
   if (!relation) return null;
 
+  // WI-37360: a column's own COMMENT is the one piece of schema metadata that can name
+  // "this column is dead" / "read THAT one instead" directly on the thing an agent is
+  // looking at — col_description() joined by ordinal_position (works for tables AND
+  // views; COMMENT ON COLUMN is valid on both). Left NULL for a column nobody commented,
+  // same as every other optional field here.
   const columnRows = (await sql`
-    SELECT column_name, data_type, is_nullable, column_default
-      FROM information_schema.columns
-     WHERE table_schema = ${relation.schema} AND table_name = ${relation.name}
-     ORDER BY ordinal_position
+    SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
+           col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position) AS comment
+      FROM information_schema.columns c
+     WHERE c.table_schema = ${relation.schema} AND c.table_name = ${relation.name}
+     ORDER BY c.ordinal_position
   `) as unknown as Array<{
     column_name: string;
     data_type: string;
     is_nullable: string;
     column_default: string | null;
+    comment: string | null;
   }>;
 
   const indexRows = (await sql`
@@ -1585,6 +1592,7 @@ export async function describeRelation(
       type: r.data_type || 'unknown',
       nullable: r.is_nullable === 'YES',
       default: r.column_default,
+      comment: r.comment,
     })),
     indexes: indexRows.map((r) => ({ name: r.indexname, definition: r.indexdef })),
     constraints: constraintRows.map((r) => ({

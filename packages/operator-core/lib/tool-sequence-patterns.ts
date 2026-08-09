@@ -68,6 +68,10 @@ import {
   type SequenceEvent,
   type MinedPattern,
 } from '@papercusp/sequence-patterns';
+import {
+  computeGraduationStandings,
+  type GraduationEvidenceItem,
+} from './graduation/core';
 
 /**
  * Tools that are PURE DISPATCH — the agent's intent is the tool they name, not
@@ -125,6 +129,18 @@ export interface ToolSequenceCandidate {
   strength: number;
   /** Human-readable rendering, for a work-item body or a log line. */
   label: string;
+}
+
+/** A candidate plus the evidence that it PERSISTS, not just that it spiked once. */
+export interface PersistentToolSequenceCandidate extends ToolSequenceCandidate {
+  /** Trailing consecutive windows the pattern appeared in (the graduation streak). */
+  windowStreak: number;
+  /** Windows it appeared in, lifetime across the mined span. */
+  windowsSeen: number;
+  /** Total windows examined — the denominator for `windowsSeen`. */
+  windowsExamined: number;
+  /** True once `windowStreak` clears the promotion threshold. */
+  graduated: boolean;
 }
 
 export interface ToolSequenceResult {
@@ -219,24 +235,18 @@ function toCandidate(p: MinedPattern): ToolSequenceCandidate {
 }
 
 /**
- * Mine the recurring cross-agent tool dances for a workspace.
- *
- * Deterministic given the same rows and options. Read-only.
+ * Read the agent-initiated invocations for a window. The provenance filter lives
+ * HERE, in the query: `in_process` rows are a tool implementation's fan-out (see
+ * the module docstring) and must never enter a sequence.
  */
-export async function mineToolSequences(
+async function readAgentInvocations(
   sql: postgres.Sql,
   opts: ToolSequenceOpts,
-): Promise<ToolSequenceResult> {
-  const hours = Math.max(1, Math.min(720, opts.hours ?? 168));
-  const maxRows = Math.max(1000, Math.min(1_000_000, opts.maxRows ?? 200_000));
-  const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-
+  sinceIso: string,
+  maxRows: number,
+): Promise<InvocationRow[]> {
   const harnessFrag = opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``;
-
-  // Provenance filter lives HERE, in the query: only the agent's own calls.
-  // `in_process` rows are a tool implementation's fan-out (see the module
-  // docstring) and must never enter the sequence.
-  const rows = (await sql`
+  return (await sql`
       SELECT coord_owner_id AS agent, tool_name, spawn_id, invoked_at
         FROM harness_shared.tool_invocations
        WHERE invoked_at > ${sinceIso}::timestamptz
@@ -249,13 +259,11 @@ export async function mineToolSequences(
        ORDER BY invoked_at
        LIMIT ${maxRows}
   `) as unknown as InvocationRow[];
+}
 
-  const { events, collapsed } = collapseSpawnsToDecisions(
-    rows,
-    opts.dispatcherTools ?? DEFAULT_DISPATCHER_TOOLS,
-  );
-
-  const mined = minePatternsFromEvents(
+/** Mine one already-collapsed event set with this call's floors. */
+function mineEvents(events: SequenceEvent[], opts: ToolSequenceOpts) {
+  return minePatternsFromEvents(
     events,
     { gapMs: (opts.gapSec ?? 120) * 1000, minBurstLength: 2 },
     {
@@ -267,6 +275,29 @@ export async function mineToolSequences(
       maximalOnly: true,
     },
   );
+}
+
+/**
+ * Mine the recurring cross-agent tool dances for a workspace.
+ *
+ * Deterministic given the same rows and options. Read-only.
+ */
+export async function mineToolSequences(
+  sql: postgres.Sql,
+  opts: ToolSequenceOpts,
+): Promise<ToolSequenceResult> {
+  const hours = Math.max(1, Math.min(720, opts.hours ?? 168));
+  const maxRows = Math.max(1000, Math.min(1_000_000, opts.maxRows ?? 200_000));
+  const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+  const rows = await readAgentInvocations(sql, opts, sinceIso, maxRows);
+
+  const { events, collapsed } = collapseSpawnsToDecisions(
+    rows,
+    opts.dispatcherTools ?? DEFAULT_DISPATCHER_TOOLS,
+  );
+
+  const mined = mineEvents(events, opts);
 
   return {
     candidates: mined.patterns.slice(0, opts.limit ?? 25).map(toCandidate),
@@ -284,6 +315,166 @@ export async function mineToolSequences(
       candidatesConsidered: mined.stats.candidatesConsidered,
       rejected: mined.stats.rejected,
       truncated: rows.length >= maxRows,
+    },
+  };
+}
+
+export interface GraduateToolSequencesOpts extends ToolSequenceOpts {
+  /** How many consecutive windows to examine (default 7). */
+  windows?: number;
+  /** Hours per window (default 24 — so the default span is a week of days). */
+  windowHours?: number;
+  /** Consecutive-window streak a pattern needs to graduate (default 3). */
+  minStreak?: number;
+}
+
+export interface GraduateToolSequencesResult {
+  /** Candidates that cleared the streak — the promotable set. */
+  graduated: PersistentToolSequenceCandidate[];
+  /** Everything mined in the most recent window, streak-annotated. */
+  candidates: PersistentToolSequenceCandidate[];
+  stats: ToolSequenceResult['stats'] & {
+    windows: number;
+    windowHours: number;
+    minStreak: number;
+    /** Mined in the latest window but not yet persistent — the waiting room. */
+    heldForEvidence: number;
+  };
+}
+
+/**
+ * Mine, then require the pattern to PERSIST before it may be promoted.
+ *
+ * This is the loop-closing half of workstream D. The existing recipe promotion
+ * path ends at a decision someone has to make; §10 of the design says to replace
+ * that ending with the graduation engine, and this does — with no human in it.
+ *
+ * The evidence bar is persistence across time, which matters because a single
+ * mining pass cannot distinguish a genuinely reusable dance from one busy
+ * afternoon: five agents doing the same thing during one incident is an
+ * artifact of the incident, not a pattern worth capturing. So the span is cut
+ * into consecutive windows and each window is mined independently; a pattern
+ * earns a promotion by showing up in the last N windows in a row.
+ *
+ * REUSE, NOT REBUILD: the streak counter is {@link computeGraduationStandings},
+ * the same frontier tracker `autonomy/tripwire/graduation.ts` uses — a window
+ * the pattern appears in maps to a clean 'verified' pass, a window it is absent
+ * from maps to 'recurred' and resets the streak. Writing a second streak counter
+ * here would be the parallel-machinery mistake the design names by name.
+ *
+ * Deliberately needs NO new table, sweep or migration: the windows are cut from
+ * `tool_invocations`, which has been recording this all along. One query covers
+ * the whole span; the windows are partitioned in memory.
+ */
+export async function graduateToolSequences(
+  sql: postgres.Sql,
+  opts: GraduateToolSequencesOpts,
+): Promise<GraduateToolSequencesResult> {
+  const windows = Math.max(1, Math.min(30, opts.windows ?? 7));
+  const windowHours = Math.max(1, Math.min(168, opts.windowHours ?? 24));
+  const minStreak = Math.max(1, opts.minStreak ?? 3);
+  const maxRows = Math.max(1000, Math.min(1_000_000, opts.maxRows ?? 200_000));
+
+  const nowMs = Date.now();
+  const spanMs = windows * windowHours * 3600 * 1000;
+  const startMs = nowMs - spanMs;
+
+  const rows = await readAgentInvocations(
+    sql,
+    opts,
+    new Date(startMs).toISOString(),
+    maxRows,
+  );
+  const { events, collapsed } = collapseSpawnsToDecisions(
+    rows,
+    opts.dispatcherTools ?? DEFAULT_DISPATCHER_TOOLS,
+  );
+
+  // Partition into consecutive windows, oldest first, and mine each alone.
+  const windowMs = windowHours * 3600 * 1000;
+  const perWindow: Map<string, MinedPattern>[] = [];
+  for (let w = 0; w < windows; w++) {
+    const from = startMs + w * windowMs;
+    const to = from + windowMs;
+    const slice = events.filter((e) => e.at >= from && e.at < to);
+    const mined = mineEvents(slice, opts);
+    perWindow.push(new Map(mined.patterns.map((p) => [sequenceId(p.symbols), p])));
+  }
+
+  // Every pattern seen anywhere in the span becomes one evidence CLASS, with one
+  // pass per window: present ⇒ a clean pass, absent ⇒ recurred (streak resets).
+  const allIds = new Set<string>();
+  for (const w of perWindow) for (const id of w.keys()) allIds.add(id);
+
+  const evidence: GraduationEvidenceItem[] = [];
+  for (const id of allIds) {
+    for (let w = 0; w < perWindow.length; w++) {
+      evidence.push({
+        id: `${id}@w${w}`,
+        findingClass: id,
+        resolvedAtMs: startMs + (w + 1) * windowMs,
+        lifecycle: perWindow[w]!.has(id) ? 'verified' : 'recurred',
+        autoDispatched: true,
+        hasEvidence: true,
+      });
+    }
+  }
+
+  const standings = computeGraduationStandings(
+    evidence,
+    [],
+    {
+      threshold: minStreak,
+      // A window IS the recurrence window here, so the decay bar is one window.
+      recurrenceWindowDays: Math.max(1, Math.round(windowHours / 24)),
+      neverGraduateClassPatterns: [],
+    },
+    nowMs,
+  );
+  const streakOf = new Map(standings.map((s) => [s.findingClass, s]));
+
+  // The CURRENT picture comes from the latest window; older windows supply only
+  // the evidence that the pattern is not a one-afternoon artifact.
+  const latest = perWindow[perWindow.length - 1] ?? new Map<string, MinedPattern>();
+  const latestMined = mineEvents(
+    events.filter((e) => e.at >= startMs + (windows - 1) * windowMs),
+    opts,
+  );
+
+  const annotated: PersistentToolSequenceCandidate[] = [...latest.entries()]
+    .map(([id, p]) => {
+      const s = streakOf.get(id);
+      const windowStreak = s?.cleanStreak ?? 0;
+      return {
+        ...toCandidate(p),
+        windowStreak,
+        windowsSeen: s?.totalClean ?? 0,
+        windowsExamined: windows,
+        graduated: windowStreak >= minStreak,
+      };
+    })
+    .sort((a, b) => b.windowStreak - a.windowStreak || b.strength - a.strength);
+
+  const graduated = annotated.filter((c) => c.graduated).slice(0, opts.limit ?? 25);
+
+  return {
+    graduated,
+    candidates: annotated.slice(0, opts.limit ?? 25),
+    stats: {
+      rowsRead: rows.length,
+      droppedNonAgent: 0,
+      collapsedInnerCalls: collapsed,
+      decisions: events.length,
+      agents: latestMined.stats.cohorts,
+      bursts: latestMined.stats.bursts,
+      distinctTools: latestMined.stats.distinctSymbols,
+      candidatesConsidered: latestMined.stats.candidatesConsidered,
+      rejected: latestMined.stats.rejected,
+      truncated: rows.length >= maxRows,
+      windows,
+      windowHours,
+      minStreak,
+      heldForEvidence: annotated.length - graduated.length,
     },
   };
 }

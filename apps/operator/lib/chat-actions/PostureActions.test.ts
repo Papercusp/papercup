@@ -206,7 +206,12 @@ describe('overlay pills — current(), options(), set()', () => {
   });
 
   it('offers exactly on/off — they are independent booleans, not a shared multi-select', () => {
-    expect(syncOptions(getChatModeAction('mode-drain')!).map((o) => o.id)).toEqual(['on', 'off']);
+    // Asserted through IDEATE, the remaining plain overlay. It moved off
+    // `mode-drain` in P-005 for the same reason it moved off `mode-grade` in
+    // WI-7471: drain's "on" now carries a value (its scope), so its rows are no
+    // longer the bare `on`/`off` pair this case is about — asserting it there
+    // would be asserting against ids that axis can no longer produce.
+    expect(syncOptions(getChatModeAction('mode-ideate')!).map((o) => o.id)).toEqual(['on', 'off']);
   });
 
   it('writes only its own mode, leaving the other overlays untouched', async () => {
@@ -234,6 +239,78 @@ describe('overlay pills — current(), options(), set()', () => {
       mode: 'drain',
       enabled: false,
     });
+  });
+});
+
+/* ── DRAIN's scope instructions (P-005 / plan D-002) ─────────────────────────
+   [owner 2026-08-09] "the drain mode should have an input box where you can
+   type in instructions for the drain… e.g. all bugs except the ones related to
+   the p2p features."
+
+   A drain is a mission, not a switch, so its "on" carries a value — which makes
+   it the second axis (after GRADE) that cannot be a plain on/off overlay. ── */
+describe('DRAIN — the scope instructions axis', () => {
+  const drain = (): ChatModeAction => getChatModeAction('mode-drain')!;
+  const body = (call: number): Record<string, unknown> =>
+    JSON.parse(fetchMock.mock.calls[call][1].body as string) as Record<string, unknown>;
+
+  it('collects instructions on the ON row and asks nothing on OFF', () => {
+    const spec = drain().params?.(ctx, 'on-with-scope');
+    expect(spec, 'the ON row must collect a scope').toBeTruthy();
+    expect(spec!.presentation).toMatchObject({ kind: 'text', multiline: true });
+    // The owner's own example is a sentence with an exclusion in it — a
+    // single-line field would be the wrong control for the stated use.
+    expect(spec!.presentation).toHaveProperty('placeholder');
+    expect(drain().params?.(ctx, 'off'), 'turning a drain OFF has nothing to ask').toBeFalsy();
+  });
+
+  it('sends the typed scope as `instructions`, distinct from the reason', async () => {
+    await drain().set(ctx, 'on-with-scope', {
+      value: 'all bugs except the ones related to the p2p features',
+    });
+    expect(body(0)).toMatchObject({
+      mode: 'drain',
+      enabled: true,
+      ownerDirected: true,
+      instructions: 'all bugs except the ones related to the p2p features',
+    });
+    // `reason` says WHY the mode changed; `instructions` says WHAT it covers.
+    // Collapsing the two would put the scope somewhere mode:set does not make
+    // durable — which is the whole point of the separate field.
+    expect(body(0).reason).not.toContain('p2p');
+  });
+
+  /* THE CASE THIS FIELD EXISTS FOR. An empty box means "no scope", and it must
+     CLEAR whatever a previous drain left standing rather than silently
+     inheriting it — D-002 is explicit that a stale standing instruction
+     delivered verbatim on every wake is worse than none. Omitting the key would
+     mean "leave it alone", which is exactly the inheritance to avoid. */
+  it('an EMPTY box clears the standing scope — it does not omit the field', async () => {
+    await drain().set(ctx, 'on-with-scope', { value: '   ' });
+    expect(body(0)).toMatchObject({ mode: 'drain', enabled: true, instructions: '' });
+    expect(Object.keys(body(0))).toContain('instructions');
+  });
+
+  it('turning drain OFF sends no instructions at all — the server retracts on any disable', async () => {
+    await drain().set(ctx, 'off');
+    expect(Object.keys(body(0))).not.toContain('instructions');
+  });
+
+  /* A Radix Select does not fire onChange for the row already selected. If the
+     ON row's id were 'on' it would equal current()'s display value while a
+     drain is running, and the row would be DEAD exactly when the owner wants to
+     re-scope a live drain. Both halves are pinned: the id must differ from
+     every value current() can report, AND current() must not point optionId at
+     a row while on. */
+  it('the ON row stays reachable while a drain is already running', () => {
+    const ids = syncOptions(drain()).map((o) => o.id);
+    const running = drain().current(ctxWithModes(['drain']));
+    expect(running).toMatchObject({ value: 'on', on: true });
+    expect(ids).not.toContain(running.value);
+    expect(running.optionId).toBeUndefined();
+    // While OFF the real row keeps its checkmark.
+    expect(drain().current(ctx).optionId).toBe('off');
+    expect(ids).toContain('off');
   });
 });
 

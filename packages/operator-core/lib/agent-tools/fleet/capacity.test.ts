@@ -18,6 +18,10 @@ vi.mock('../../deployment/account-session-override', async (importOriginal) => {
   return { ...actual, getAccountOverride: mockGetAccountOverride };
 });
 vi.mock('../../deployment/account-pool-store', () => ({ accountStatus: mockAccountStatus }));
+// Keep the end-to-end handler test hermetic (no live DB): the flag read is best-effort
+// (handler already `.catch(() => false)`s a failure), so a fixed resolved value is fine.
+vi.mock('@papercusp/flags', () => ({ FLAGS: { MUG_CAPACITY_DISPATCH: 'MUG_CAPACITY_DISPATCH' } }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => false }));
 
 const tieredHr = (over: Partial<GatewayHeadroom> = {}): GatewayHeadroom => ({
   reachable: true,
@@ -213,10 +217,9 @@ test('EI-19932168784507536: an account excluded by the owner session override is
 
 test('EI-19932168784507536: the full fleet:capacity report surfaces overrideExcludedAccounts ' +
   'end-to-end (capacity and admission must agree about the same pool)', async () => {
-  vi.resetModules();
   const capacityMod = await import('./capacity');
   const observability = await import('../../inference-gateway/observability');
-  vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce(tieredHr());
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce(tieredHr());
   mockAccountStatus.mockResolvedValueOnce([acctRow('aviynw3', {}), acctRow('excluded-acct', {})]);
   mockGetAccountOverride.mockResolvedValueOnce({ forcedAccounts: [], excludeAccounts: ['excluded-acct'] });
 
@@ -227,5 +230,10 @@ test('EI-19932168784507536: the full fleet:capacity report surfaces overrideExcl
   assert.equal(body.ok, true);
   assert.equal(body.availableAccounts, 1, 'admission-excluded account must not inflate availableAccounts');
   assert.equal(body.usableAccounts, 1, 'admission-excluded account must not inflate usableAccounts');
-  assert.equal(body.overrideExcludedAccounts, 1, 'the report must name the excluded account so a caller can tell "no capacity" from "fenced off"');
+  assert.equal(
+    body.overrideExcludedAccounts,
+    1,
+    'the report must name the excluded account so a caller can tell "no capacity" from "fenced off"',
+  );
+  headroomSpy.mockRestore();
 });

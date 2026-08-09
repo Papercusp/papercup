@@ -343,11 +343,11 @@ export default function AccountsTab({ active }: { active: boolean }) {
                               ? `Clear ${a.id} as the default account`
                               : `Make ${a.id} the default account`
                           }
-                          title={
-                            isDefault
-                              ? "Default — stands in for this machine's own Claude login. Click to clear."
-                              : 'Make this the account everything on this machine uses by default.'
-                          }
+                          /* No `title`: a title-only tooltip on a button is blocked by
+                             lint:design-primitives (invisible to keyboard + touch). The
+                             aria-label above already states the action, the sibling
+                             Force/Exclude buttons carry no tooltip either, and the banner
+                             at the top of this tab explains what a default DOES. */
                           onClick={() => setDefaultAccount(isDefault ? null : a.id)}
                         >
                           {isDefault ? '★ Default' : '☆ Default'}

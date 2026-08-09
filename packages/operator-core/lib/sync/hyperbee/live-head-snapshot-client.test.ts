@@ -8,10 +8,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_HEAD_SNAPSHOT_PROBE_TIMEOUT_MS,
+  DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS,
+  DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS,
   DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS,
   findLiveOperatorHoldingHive,
   HEAD_SNAPSHOT_PATH,
   requestLiveOperatorHeadSnapshot,
+  waitForLiveOperatorHoldingHive,
 } from './live-head-snapshot-client';
 
 interface Call {
@@ -329,9 +332,61 @@ describe('retrying across a holder recycle', () => {
       retryDelayMs: 15_000,
     });
     expect(out.kind).toBe('failed');
-    // Stops BEFORE overrunning the budget rather than after — 4 attempts, 45s waited.
-    expect(c.slept).toEqual([15_000, 15_000, 15_000]);
-    expect(out.retry).toEqual({ attempts: 4, waitedMs: 45_000 });
+    // Spends the budget exactly and never overruns it: 4×15s of waiting fills 60s, and
+    // the 5th attempt is the one that reports the give-up rather than sleeping past it.
+    expect(c.slept).toEqual([15_000, 15_000, 15_000, 15_000]);
+    expect(out.retry).toEqual({ attempts: 5, waitedMs: 60_000 });
+  });
+
+  it('the PRE-FLIGHT gate waits for a cold holder to warm instead of refusing in 32s', async () => {
+    // The measured attempt-1 failure: every port answered booted:false during a recycle,
+    // the cut refused, and 18 minutes later the same probe answered booted:true.
+    let passes = 0;
+    const findHolderImpl = (async () =>
+      ++passes < 3
+        ? { kind: 'no-holder' as const, answered: [3271], probed: [3271], staleBuild: [] }
+        : { kind: 'holder' as const, sibling: { port: 3271, pid: 4271, startedAt: 1 } });
+
+    const c = clock();
+    const out = await waitForLiveOperatorHoldingHive({ ...base, findHolderImpl: findHolderImpl as never, ...c });
+    expect(out.kind).toBe('holder');
+    expect(passes).toBe(3);
+  });
+
+  it('CONTROL: a single look REFUSES on that same cold window', async () => {
+    // Pins that the test above measures the waiting, not the fake being generous.
+    let passes = 0;
+    const findHolderImpl = (async () =>
+      ++passes < 3
+        ? { kind: 'no-holder' as const, answered: [3271], probed: [3271], staleBuild: [] }
+        : { kind: 'holder' as const, sibling: { port: 3271, pid: 4271, startedAt: 1 } });
+
+    const out = await waitForLiveOperatorHoldingHive({
+      ...base,
+      findHolderImpl: findHolderImpl as never,
+      retryBudgetMs: 0,
+    });
+    expect(out.kind).toBe('no-holder');
+    expect(passes).toBe(1);
+  });
+
+  it('a REAL absence still terminates — waiting cannot become hanging', async () => {
+    const findHolderImpl = (async () => ({
+      kind: 'no-holder' as const,
+      answered: [],
+      probed: [],
+      staleBuild: [],
+    })) as never;
+    const c = clock();
+    const out = await waitForLiveOperatorHoldingHive({
+      ...base,
+      findHolderImpl,
+      ...c,
+      retryBudgetMs: 60_000,
+      retryDelayMs: 15_000,
+    });
+    expect(out.kind).toBe('no-holder');
+    expect(c.slept).toEqual([15_000, 15_000, 15_000, 15_000]);
   });
 
   it('the retry budget outlasts a real bg-host recycle', async () => {

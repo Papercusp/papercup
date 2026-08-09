@@ -30,6 +30,7 @@
  * whichever mode wasn't already active. This avoids needing a mode:get round
  * trip just to pre-populate the card.
  */
+import { z } from 'zod';
 import { fetchSyncQuery } from '@papercusp/sync';
 import { modeById, modeChipLabel } from '@papercusp/operator-core/lib/modes/registry';
 import { registerChatModeAction } from './registry';
@@ -46,8 +47,13 @@ type AutonomyId = (typeof AUTONOMY_IDS)[number];
  * active rubric rather than `On`/`Off`. Leaving it here as well would register
  * the axis TWICE under the same id — so removing it from this array is part of
  * that change, not an unrelated tidy-up.
+ *
+ * `drain` left for the SAME reason (P-005): turning a drain on means saying what
+ * it is scoped to, so its "on" carries a value too. One entry is not a
+ * degenerate loop worth collapsing — it is the list of axes that genuinely are
+ * plain booleans, and the next such overlay joins it here.
  */
-const OVERLAY_IDS = ['ideate', 'drain'] as const;
+const OVERLAY_IDS = ['ideate'] as const;
 type OverlayId = (typeof OVERLAY_IDS)[number];
 
 /** POST one mode:set write through the admin proxy route (P-003). Exported for tests. */
@@ -80,11 +86,32 @@ export async function askAgent(agent: string, body: string): Promise<void> {
   }
 }
 
-export async function postModeSet(agent: string, mode: string, enabled: boolean, reason: string): Promise<void> {
+export async function postModeSet(
+  agent: string,
+  mode: string,
+  enabled: boolean,
+  reason: string,
+  /**
+   * P-005 / D-002: scope instructions that must outlive their delivery.
+   *
+   * The three states are distinct on the wire and mean different things to
+   * mode:set — OMITTED leaves any standing instruction alone (which is why this
+   * is `undefined`, not `''`, for every caller that has nothing to say), `''`
+   * explicitly clears it, and a string asserts it.
+   */
+  instructions?: string,
+): Promise<void> {
   const r = await fetch('/api/admin/mode/set', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ mode, enabled, reason, agent, ownerDirected: true }),
+    body: JSON.stringify({
+      mode,
+      enabled,
+      reason,
+      agent,
+      ownerDirected: true,
+      ...(instructions === undefined ? {} : { instructions }),
+    }),
   });
   const text = await r.text();
   if (!r.ok) throw new Error(`mode:set(${mode}) → ${r.status}: ${text.slice(0, 200)}`);
@@ -338,6 +365,110 @@ registerChatModeAction({
       'grade',
       true,
       `owner selected rubric ${optionId} for grade mode from the chat control band`,
+    );
+  },
+});
+
+/* ── DRAIN — the second overlay whose "on" carries a value (P-005) ───────────
+ * [owner 2026-08-09] "the drain mode should have an input box where you can
+ * type in instructions for the drain… e.g. all bugs except the ones related to
+ * the p2p features."
+ *
+ * A drain is a MISSION, not a switch: "drain the queue" is only half an
+ * instruction without saying which queue. So this axis follows the GRADE
+ * precedent rather than the plain On/Off loop below — same reason, one axis
+ * later.
+ *
+ * The two ids are deliberately NOT 'on'/'off'.
+ *
+ * `current()` reports the display value 'on' when drain is running, and a plain
+ * menu is a Radix Select, which does not fire onChange when you pick the row
+ * that is already selected. An `on` row would therefore be DEAD exactly when
+ * the owner most wants it — re-scoping a drain that is already running, which
+ * is the case mode:set's upsert semantics exist to serve. Giving the row an id
+ * that can never equal the current display value keeps it live in both states.
+ * GRADE does the same thing (its `current` returns optionId undefined while on,
+ * and no option is named 'on'); this is that pattern, stated.
+ */
+const DRAIN_ON = 'on-with-scope';
+const DRAIN_OFF = 'off';
+
+/** The text card's payload — LocalCardHost resolves a `text` presentation as
+ *  `{ value }`. Narrow it here rather than casting at the call site. */
+function cardText(value: unknown): string {
+  if (value && typeof value === 'object' && typeof (value as { value?: unknown }).value === 'string') {
+    return (value as { value: string }).value.trim();
+  }
+  return '';
+}
+
+registerChatModeAction({
+  id: 'mode-drain',
+  cap: modeChipLabel('drain').toUpperCase(),
+  group: 'posture',
+  available: (ctx) => Boolean(ctx.sessionOwnerId),
+  current: (ctx) => {
+    const on = activeModes(ctx).has('drain');
+    // optionId undefined while ON, so the Select's value matches no row — see
+    // the id note above. While OFF it points at the real `Off` row, so that one
+    // still carries its checkmark.
+    return {
+      value: on ? 'on' : 'off',
+      optionId: on ? undefined : DRAIN_OFF,
+      on,
+      title: modeById('drain')?.oneLiner,
+    };
+  },
+  options: () => [
+    {
+      id: DRAIN_ON,
+      label: 'On…',
+      hint: 'Set what this drain covers, then start it. Picking this while a drain is already running RE-SCOPES it.',
+    },
+    { id: DRAIN_OFF, label: 'Off', hint: 'Stop draining, and drop the standing scope instructions.' },
+  ],
+  /* The one genuinely new UI piece. Only the ON row collects anything: turning a
+     drain OFF has nothing to ask. */
+  params: (_ctx, optionId) =>
+    optionId === DRAIN_ON
+      ? {
+          prompt:
+            'What should this drain cover? Left empty, the agent drains everything actionable in its scope.',
+          dataSchema: z.object({ value: z.string() }),
+          presentation: {
+            kind: 'text' as const,
+            placeholder: 'e.g. all bugs except the ones related to the p2p features',
+            // The owner's own example is a sentence, and real scopes carry
+            // exclusions — this is not a one-word field.
+            multiline: true,
+          },
+          allowDecline: true,
+        }
+      : null,
+  set: async (ctx, optionId, value) => {
+    const agent = ownerId(ctx);
+    const enabled = optionId === DRAIN_ON;
+    if (!enabled) {
+      /* No `instructions` argument at all: mode:set retracts the standing fact
+         on ANY disable, so passing one here would be saying the same thing
+         twice — and the disable path is the one that must work even when it is
+         some other surface doing the disabling. */
+      await postModeSet(agent, 'drain', false, 'owner turned drain mode off from the chat control band');
+      return;
+    }
+    const instructions = cardText(value);
+    await postModeSet(
+      agent,
+      'drain',
+      true,
+      instructions
+        ? 'owner started a scoped drain from the chat control band'
+        : 'owner started an unscoped drain from the chat control band',
+      /* Empty is sent EXPLICITLY, not omitted. Starting a drain with an empty
+         box means "no scope", and must clear whatever a previous drain left
+         standing — inheriting last week's exclusions in silence is the exact
+         failure D-002 calls worse than none. */
+      instructions,
     );
   },
 });

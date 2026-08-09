@@ -387,4 +387,30 @@ describe('describeRelation / listRelations (real PG)', () => {
     expect(rows.some((r) => r.relation.startsWith('pg_catalog.'))).toBe(false);
     expect(rows.some((r) => r.relation.startsWith('information_schema.'))).toBe(false);
   });
+
+  /**
+   * WI-37360: a column's own COMMENT is where a "this field is dead, read THAT one
+   * instead" pointer belongs — it lands directly on the schema an agent inspects via
+   * `describe`, unlike a doc comment in a file nobody greps when orienting to a table.
+   * Before this, describeRelation dropped comments entirely, so a migration adding one
+   * (as WI-37360's own fix does, for harness_shared.work_items.completion_ref /
+   * terminal_completion_ref) would never actually reach an agent calling `describe`.
+   */
+  it('surfaces a COMMENT ON COLUMN, and reports null for a column nobody commented', async () => {
+    await db.adminSql`CREATE TABLE IF NOT EXISTS harness_shared._describe_comment_probe (
+      commented_col text,
+      plain_col text
+    )`;
+    await db.adminSql`COMMENT ON COLUMN harness_shared._describe_comment_probe.commented_col IS
+      'DEAD — read plain_col instead.'`;
+    try {
+      const d = await describeRelation('harness_shared._describe_comment_probe', { client: db.adminSql });
+      const commented = d!.columns.find((c) => c.name === 'commented_col');
+      const plain = d!.columns.find((c) => c.name === 'plain_col');
+      expect(commented?.comment).toBe('DEAD — read plain_col instead.');
+      expect(plain?.comment).toBeNull();
+    } finally {
+      await db.adminSql`DROP TABLE IF EXISTS harness_shared._describe_comment_probe`;
+    }
+  });
 });

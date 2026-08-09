@@ -561,4 +561,21 @@ export async function startDbos(): Promise<void> {
   } catch (e) {
     console.warn('[system-health] failed to arm boot pre-warm:', e instanceof Error ? e.message : e);
   }
+
+  // Pre-warm the `coord.plans` sync query (WI-36179): the FIRST call after a
+  // restart pays cold-start cost (module compile + an un-JIT'd parsePlan() sweep
+  // across the whole plan corpus + a cold PG connection) that a warm call does
+  // not, and that cost was measured to exceed the sync-resolver's 10s
+  // RESOLVER_TIMEOUT_MS on `:3170` right after a restart — the CoordDashboard's
+  // first post-restart load failed with a resolver timeout, then worked on an
+  // immediate retry. Firing the same read once here pays that cost before any
+  // user is waiting on it. Fire-and-forget (see preWarmCoordPlans); best-effort
+  // — must not block/fail boot.
+  try {
+    const { preWarmCoordPlans } = await import('../endpoint-route/routes/coord');
+    preWarmCoordPlans();
+    console.log('[coord] boot pre-warm of coord.plans kicked off');
+  } catch (e) {
+    console.warn('[coord] failed to arm coord.plans boot pre-warm:', e instanceof Error ? e.message : e);
+  }
 }

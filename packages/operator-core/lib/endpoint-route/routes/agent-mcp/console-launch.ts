@@ -13,9 +13,11 @@
  */
 import type { ChildProcess } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { papercuspPathForWorkspace } from '../../../papercusp-root';
 import { buildConsoleEnvelope } from '../../../console-launcher';
-import { advSessionTitleTag, spawnConsole } from '../../../console-spawn';
+import { advSessionTitleTag, spawnConsole, spawnHeadless } from '../../../console-spawn';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { defineTool } from '@papercusp/agent-mcp';
 import { recordAdvSession, markAdvSessionEnded, setAdvSessionPid, setAdvSessionWindowId } from '../../../adv-sessions';
@@ -181,6 +183,19 @@ const post = defineTool({
       // fork branches into a fresh session id and doesn't collide with the
       // still-running original. Only meaningful with resumeSessionId.
       fork?: boolean;
+      // "Resume in GUI" (resume-in-gui-button-2026-08-09, owner ask 2026-08-09):
+      // spawn this resume with NO terminal window. The human is going to talk to it
+      // through the HUD conversation popup (`SessionChatModal`, keyed on the session's
+      // coord owner id) instead of a terminal, and `psu --resume` is
+      // identity-preserving — it re-registers under the SAME coord owner id — so the
+      // popup the caller opens afterwards lands on this very agent.
+      //
+      // NOT just "hide the window": the envelope appends psu's `--headless`, which is
+      // what keeps the managed pty alive under non-TTY stdio. That pty is what the GUI
+      // composer's `coord:send { wake:'required' }` injects into. Only meaningful with
+      // resumeSessionId, and claude-only — the envelope refuses the rest (codex/omp
+      // resumes exec the bare CLI, so headless they would be unreachable).
+      headless?: boolean;
       // /adv plumbing: tag this session with the plan it was
       // launched from so /adv/sessions can group + display.
       planSlug?: string | null;
@@ -206,6 +221,10 @@ const post = defineTool({
         operatorBaseUrl: new URL(req.url).origin,
         resumeSessionId: body.resumeSessionId ?? undefined,
         fork: body.fork ?? false,
+        // resume-in-gui-button-2026-08-09. Only ever true alongside resumeSessionId
+        // (the GUI button is the sole caller); the envelope throws for a non-claude
+        // backend, which the catch below turns into a 400 with that reason.
+        headless: body.headless ?? false,
         runPsu: body.runPsu ?? false,
       });
     } catch (e: any) {
@@ -216,12 +235,31 @@ const post = defineTool({
     // Spawn (writes/back-ups .mcp.json, picks a terminal, opens a new window).
     // Linux-only at this tier; non-Linux operators get code 501 and the
     // renderer falls back to the Tauri console_launch command.
-    const result = await spawnConsole({
-      envelope,
-      planSlug: body.planSlug ?? null,
-      label: body.label ?? null,
-      writeMcpJson: true,
-    });
+    //
+    // resume-in-gui-button-2026-08-09: `headless` swaps the WINDOW, nothing else —
+    // same envelope, same greeting, same adv_sessions bookkeeping below. It routes
+    // through `spawnHeadless` deliberately rather than a hand-rolled detached spawn:
+    // that helper enrols the child in the task ledger and, on a systemd host, puts it
+    // in a transient `systemd-run --user --scope` sibling of the operator's own
+    // service, so an operator restart cannot reap the session the human is chatting to
+    // (EI-9748). It also probes for a boot-time death and returns the log tail, so a
+    // GUI resume that dies on launch says so instead of leaving the popup waiting on
+    // an agent that never existed.
+    const result = body.headless
+      ? await spawnHeadless({
+          envelope,
+          label: body.label ?? 'resume in GUI',
+          // The workspace's fleet-logs dir — NON-repo, so git-sync never tries to
+          // commit a session log into the staging tree (same choice launch-su's
+          // headless leg makes, and the same reason).
+          logDir: join(papercuspPathForWorkspace(activeWorkspaceId()), 'fleet-logs'),
+        })
+      : await spawnConsole({
+          envelope,
+          planSlug: body.planSlug ?? null,
+          label: body.label ?? null,
+          writeMcpJson: true,
+        });
     if (result.status === 'error') {
       console.warn(`[console-launch] spawn failed (${result.code}): ${result.error}`);
       return jsonRes({ status: 'error', error: result.error }, result.code);
@@ -242,12 +280,19 @@ const post = defineTool({
     });
     // `child` is always present here — this route never opts into the WI-3289
     // desktop bridge (the only child-less ok path); the guard is type-narrowing.
+    // (spawnHeadless returns one too, so a GUI resume closes its row the same way.)
     if (result.child) attachExitWatcher(result.child, sessionPromise);
     console.log(`[console-launch] spawned ${result.terminal} pid=${result.pid} cwd=${envelope.cwd}`);
     return jsonRes({
       status: 'ok',
       pid: result.pid,
+      // For a headless launch this already reads "headless (log: <path>)", so the
+      // caller is told where to tail without a second field.
       terminal: result.terminal,
+      // resume-in-gui-button-2026-08-09: state the posture explicitly rather than
+      // making the caller pattern-match `terminal` prose. The GUI button uses it to
+      // distinguish "no window opened, as intended" from a headed launch.
+      ...(body.headless ? { headless: true } : {}),
     });
   },
 });

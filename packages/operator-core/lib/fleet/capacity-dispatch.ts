@@ -483,6 +483,29 @@ export interface CapacityReport {
   throttled: boolean | null;
   /** One-line dispatch advice for the Queen. */
   advice: string;
+  /**
+   * P-001 (knowledge-at-symptom-time-2026-08-09): what is ALREADY KNOWN about this symptom, delivered
+   * ON the call that reports it. Present only on the alarming branches (exhausted / blocked / degraded),
+   * absent otherwise so a healthy read is byte-identical.
+   *
+   * Why this exists: on 2026-08-09 an su read `degraded: true` + "place conservatively", took it at face
+   * value, and told the owner the only remaining lever was to BUY MORE ACCOUNTS. It was wrong — three
+   * of four accounts were fine and the pool had collapsed on a shared-egress TRANSPORT throttle. The
+   * correct reading was already written down in three `agent-insights` pages AND in two standing facts
+   * that had been folded into that same agent's second tool call of the session — where they were
+   * excerpted mid-imperative ("...ALWAYS cross-read acco…") and skimmed past. Knowledge that arrives at
+   * wake-time competes with everything else the agent is doing; knowledge that arrives ON the symptom
+   * does not. `dev:pg_query`'s inline advisories demonstrably corrected that same agent twice in the
+   * same session, which is the pattern this reuses (D-001).
+   */
+  symptomKnowledge?: {
+    /** The imperative first — this is the part a truncating reader must not lose. */
+    before: string;
+    /** Why the verdict above cannot validate itself. */
+    why: string;
+    /** Pages that already explain this symptom class. */
+    insights: string[];
+  };
 }
 
 export interface FleetSizingAdvisory {
@@ -707,8 +730,26 @@ export function buildCapacityReport(
         ? `tightening (factor ${factor.toFixed(2)}) → trim low-priority placements${dispatchBudget != null ? `; ~${dispatchBudget} bee slots free` : ''}`
         : 'abundant → place broadly up to your ceiling');
 
+  // P-001: the imperative LEADS. The two standing facts that would have prevented the 2026-08-09
+  // misdiagnosis were excerpted at 180 chars and both lost their verb, so the instruction has to be
+  // the first thing in the payload, not a trailing footnote after the evidence.
+  const symptomKnowledge =
+    poolExhausted || poolBlocked || degraded
+      ? {
+          before:
+            'ALWAYS cross-read accounts:status before escalating, holding placements, or telling an owner to add accounts — this verdict is NOT self-validating.',
+          why: 'These counts collapse THREE different failures that need OPPOSITE responses: a TRANSPORT/edge throttle (shared or down egress — route around it, it is not account exhaustion), a per-minute RATE 429 (transient, pace it), and a token-budget USAGE WALL (the only one that means real quota is gone). An account excluded for the first two still holds quota, so "usable" can read 1 while three accounts are fine. Confirm which one you are looking at (usageWalled vs edgeThrottled vs sustainedlyLimited, per account) before acting.',
+          insights: [
+            '/internal/docs/agent-insights/inference-gateway-three-rate-signals-not-one',
+            '/internal/docs/agent-insights/rate-limit-is-usually-account-routing-not-capacity',
+            '/internal/docs/agent-insights/llm-429-check-the-transport-not-the-account',
+          ],
+        }
+      : undefined;
+
   return {
     reachable: true,
+    ...(symptomKnowledge ? { symptomKnowledge } : {}),
     tierLayer: !!pt,
     clampArmed: opts.clampArmed,
     utilization: hr.utilization ?? null,

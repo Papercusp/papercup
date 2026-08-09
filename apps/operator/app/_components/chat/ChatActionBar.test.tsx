@@ -349,7 +349,13 @@ describe('ChatActionBar', () => {
         openPill('chat-mode-grade');
         const row = await screen.findByRole('option', { name: /hive coordination health/i });
         fireEvent.click(row);
-        await waitFor(() => expect(set).toHaveBeenCalledWith(ctx, 'hive-coordination-health'));
+        /* The trailing `undefined` is the P-005 value slot, and pinning it is
+           deliberate: an axis with no `params` must reach `set` with NOTHING
+           collected. `toHaveBeenCalledWith` compares arity, so leaving it off
+           would not be laxer — it would assert the old two-arg shape and fail. */
+        await waitFor(() =>
+          expect(set).toHaveBeenCalledWith(ctx, 'hive-coordination-health', undefined),
+        );
         // The confirmation reads off the RESOLVED cache, so it names the row
         // rather than echoing a raw id back at the user.
         await waitFor(() =>
@@ -417,10 +423,109 @@ describe('ChatActionBar', () => {
       fireEvent.click(manual);
       // The pick reaches set() as the OPTION ID, not the label — the descriptor
       // owns the vocabulary, the bar only carries the choice across.
-      await waitFor(() => expect(set).toHaveBeenCalledWith(ctx, 'manual'));
+      await waitFor(() => expect(set).toHaveBeenCalledWith(ctx, 'manual', undefined));
       // And the outcome is acknowledged: a silent success is indistinguishable
       // from a dead click (the WI-6552 lesson, which applies to pills too).
       await waitFor(() => expect(screen.getByTestId('chat-action-bar-done').textContent).toMatch(/AUTO/));
+    });
+
+    /* ── P-005: an axis may COLLECT A VALUE for the option just picked ────────
+       DRAIN's scope instructions ("all bugs except the ones related to the p2p
+       features"). The pick alone is not the whole answer, so the axis returns a
+       CardSpec and the bar runs it through the SAME askUserLocal plumbing a
+       ChatAction's `params` uses — no second card vocabulary (plan D-001). ── */
+    describe('params() — value collection between the pick and the write', () => {
+      const textAxis = (over: Record<string, unknown> = {}) =>
+        axis({
+          id: 'drain',
+          cap: 'DRAIN',
+          current: () => ({ value: 'off', optionId: 'off', on: false }),
+          options: () => [
+            { id: 'on-with-scope', label: 'On…' },
+            { id: 'off', label: 'Off' },
+          ],
+          params: (_c: unknown, optionId: string) =>
+            optionId === 'on-with-scope'
+              ? {
+                  prompt: 'What should this drain cover?',
+                  dataSchema: z.object({ value: z.string() }),
+                  presentation: { kind: 'text' as const, multiline: true },
+                  allowDecline: true,
+                }
+              : null,
+          ...over,
+        });
+
+      it('submitting the card hands the payload to set()', async () => {
+        const set = vi.fn();
+        registerChatModeAction(textAxis({ set }));
+        render(
+          <>
+            <ChatActionBar ctx={ctx} />
+            <LocalCardHost />
+          </>,
+        );
+
+        openPill('chat-mode-drain');
+        fireEvent.click(await screen.findByRole('option', { name: /on…/i }));
+
+        const input = await screen.findByRole('textbox');
+        fireEvent.change(input, { target: { value: 'all bugs except p2p' } });
+        fireEvent.click(screen.getByRole('button', { name: /submit|send|ok/i }));
+
+        await waitFor(() =>
+          expect(set).toHaveBeenCalledWith(ctx, 'on-with-scope', { value: 'all bugs except p2p' }),
+        );
+      });
+
+      /* The half that matters most. A half-applied "drain on, scope abandoned"
+         is indistinguishable, from the agent's side, from an owner who meant an
+         unscoped drain — so declining must cancel the WRITE, not just the card. */
+      it('declining the card cancels the write entirely — set() is never called', async () => {
+        const set = vi.fn();
+        registerChatModeAction(textAxis({ set }));
+        render(
+          <>
+            <ChatActionBar ctx={ctx} />
+            <LocalCardHost />
+          </>,
+        );
+
+        openPill('chat-mode-drain');
+        fireEvent.click(await screen.findByRole('option', { name: /on…/i }));
+        fireEvent.click(await screen.findByRole('button', { name: /skip|decline|cancel/i }));
+
+        await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+        expect(set).not.toHaveBeenCalled();
+      });
+
+      /* Paired with the case above so neither is vacuous: the SAME axis asks on
+         one row and stays silent on the other, which is what makes `params`
+         per-option rather than per-axis. */
+      it('an option that declares no card writes straight through', async () => {
+        const set = vi.fn();
+        /* Reported as RUNNING on purpose. A Radix Select fires no onChange for
+           the row already selected, so an axis whose `current()` points at
+           `off` cannot be used to test PICKING `off` — the click is a no-op and
+           the failure looks like the code under test.
+           (That is the same mechanic the real DRAIN axis dodges by giving its
+           ON row an id no display value can equal — see PostureActions.) */
+        registerChatModeAction(
+          textAxis({ set, current: () => ({ value: 'on', on: true }) }),
+        );
+        render(
+          <>
+            <ChatActionBar ctx={ctx} />
+            <LocalCardHost />
+          </>,
+        );
+
+        openPill('chat-mode-drain');
+        fireEvent.click(await screen.findByRole('option', { name: /^off$/i }));
+
+        await waitFor(() => expect(set).toHaveBeenCalledWith(ctx, 'off', undefined));
+        expect(screen.queryByRole('textbox')).toBeNull();
+      });
     });
 
     it('the dropdown keeps the option HINTS the card used to show — compaction lost chrome, not information', async () => {

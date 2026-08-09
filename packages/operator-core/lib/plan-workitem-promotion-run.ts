@@ -39,6 +39,7 @@ import {
   findConvertedWorkItemByStamp,
   IMPLEMENTS_REL,
   listConvertedPlanItemRefs,
+  listCoveredPlanItemRefs,
   type PlanItemStamp,
 } from './plan-items/convert';
 import { getFeatureBlockers, syncFeatureBlockEdges } from './dbos/feature-blockers-edges';
@@ -289,16 +290,27 @@ export async function promotePlanItems(opts: {
   const effectiveById = new Map(resolvedItems.map((i) => [i.id, i]));
   const cyclicPlanItemIds = new Set(cycleMembers);
 
-  // Idempotency: an item already CONVERTED (has an `implements` edge — the same
-  // truth convert-at-pickup uses) is never re-promoted.
-  // Tenant-COMPLETE by construction — deliberately NOT `opts.workspaceId`. The implements-link
-  // plane is split BY FAMILY across two workspaces (see listConvertedPlanItemRefs' header), so
-  // passing this plan's own workspace here would make promotion blind to every feature-family
-  // conversion and re-mint all of them. Idempotency must over-include, never under-include.
-  const convertedRefs = await listConvertedPlanItemRefs();
+  // Idempotency: an item already COVERED — an `implements` edge (canonical
+  // convert-at-pickup/promotion mint), a `relates` edge (ad-hoc
+  // work_items:create{targetPlanItem} coverage — see _create-core.ts §"Forward
+  // edge"), or a bare `payload.plan_item` stamp — is never re-promoted.
+  // EI-19946482711398073 / WI-37359: this used to call listConvertedPlanItemRefs()
+  // alone (implements-only), so a plan item covered ONLY by an ad-hoc work-item
+  // (relates + stamp, no implements edge) read as un-promoted and a re-run would
+  // mint a DUPLICATE. listCoveredPlanItemRefs() sees both. It is intentionally
+  // TENANT-COMPLETE for the edge read (deliberately NOT `opts.workspaceId` — see
+  // listConvertedPlanItemRefs' header: the implements/relates plane is split BY
+  // FAMILY across two workspaces, so a single-tenant read would be blind to
+  // whichever family lives in the other one). Idempotency must over-include,
+  // never under-include.
+  const coveredRefs = await listCoveredPlanItemRefs(
+    opts.planSlug,
+    opts.harnessSlug,
+    openItems.map((i) => i.id),
+  );
   const alreadyIds = openItems
     .map((i) => i.id)
-    .filter((id) => convertedRefs.has(planItemRef(opts.planSlug, id)));
+    .filter((id) => coveredRefs.has(planItemRef(opts.planSlug, id)));
 
   const specs = computePromotions({
     planSlug: opts.planSlug,

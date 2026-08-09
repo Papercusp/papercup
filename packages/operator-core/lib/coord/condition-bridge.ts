@@ -176,8 +176,28 @@ export interface AcquireResult {
    * {@link CONDITION_BRIDGE_ACTOR} for how this failed silently for real.
    */
   duplicateLeftOpen?: string;
-  /** Set when the key is not opted in (nothing was written). */
-  skipped?: 'not-actionable';
+  /**
+   * Set when nothing was written, and WHY:
+   *   • `not-actionable`      — the key is not opted in.
+   *   • `unresolved-harness`  — the storage harness could not be resolved, so
+   *     minting was REFUSED (D-001). See {@link unresolvedHarness}.
+   *
+   * ⚠ A caller must check this before reading {@link workItem}. On
+   * `unresolved-harness`, `workItem: null` means "could not determine", NOT
+   * "nobody owns this condition" — treating the two as the same is precisely how
+   * a degraded read became a positive unowned verdict for an owned condition.
+   */
+  skipped?: 'not-actionable' | 'unresolved-harness';
+  /**
+   * Detail for `skipped: 'unresolved-harness'` — the slug we could not resolve
+   * and which failure mode it was. Present so the refusal is diagnosable from
+   * the RESULT rather than only from a log line the caller may not be reading.
+   */
+  unresolvedHarness?: {
+    requested: string;
+    reason: 'no-workspace' | 'pot-unresolved' | 'pot-lookup-failed';
+    error?: string;
+  };
 }
 
 /**
@@ -266,15 +286,80 @@ export async function releaseStaleConditionKeys(conditionKey: string, workspaceI
  * write in agreement for every producer — rather than asking each of the 12
  * condition producers to pre-normalize and leaving the trap armed for the 13th.
  *
- * FAILS SAFE to the caller's own slug: if the Pot lookup is unavailable the
- * behavior is exactly what it was before this function existed.
+ * ⚠ FAILS CLOSED — it used to fail OPEN, and that is what produced 29,645 junk
+ * rows (EI-19930875455827867, D-001). The old body returned the caller's own
+ * slug on any failure, with the rationale "the behavior is exactly what it was
+ * before this function existed." That rationale is wrong in a way worth naming,
+ * because it sounds conservative: restoring the PRE-FIX behavior restores the
+ * PRE-FIX BUG, in the one code path that had already proven it. Measured
+ * consequence — `reconcileConditions` forwarded `workspaceId: undefined`, so
+ * `resolveWorkItemPot` could not resolve a Pot, so this silently returned the
+ * member slug `oddsmith`; the ownership read was then scoped to `oddsmith` and
+ * missed the incumbent stored as `oddsmith-hive`, while `createIssue` normalized
+ * the NEW row to the Pot home anyway. Every tick therefore minted a row, lost
+ * the claim race to the incumbent it could not see, and dropped its own row —
+ * ~190/hour, 45.3% of the whole work_items table.
+ *
+ * So an unresolvable harness is now a REFUSAL the caller must handle, not a
+ * plausible-looking string it cannot distinguish from a real answer. The two
+ * failure modes are reported separately because they need different responses: a
+ * THROW means the Pot lookup is broken (infrastructure), an empty result means
+ * this harness genuinely has no Pot home (data).
  */
-export async function resolveStoredConditionHarness(harness: string, workspaceId?: string): Promise<string> {
+export type StoredConditionHarness =
+  | { ok: true; harness: string; normalized: boolean }
+  | {
+      ok: false;
+      requested: string;
+      reason: 'no-workspace' | 'pot-unresolved' | 'pot-lookup-failed';
+      error?: string;
+    };
+
+export async function resolveStoredConditionHarness(
+  harness: string,
+  workspaceId?: string,
+): Promise<StoredConditionHarness> {
+  // ⚠ THE WORKSPACE CHECK MUST COME FIRST, and it is the whole fix. Delegating to
+  // `resolveWorkItemPot` and testing its result for emptiness looks like the
+  // obvious guard and is INERT on the exact path that caused this incident:
+  // `resolveWorkItemPot` opens with
+  //
+  //     if (!ws || ws === '*') return args.rawSlug?.trim() || null;   // :125
+  //
+  // so with no concrete workspace it hands back the RAW SLUG — non-null,
+  // non-empty, indistinguishable from a successfully normalized answer. That is a
+  // deliberate fail-open in ITS contract ("no per-workspace Pot set to enforce
+  // against") and it is useless as a signal for OURS. Production forwarded
+  // `workspaceId: undefined`, so an emptiness test would have returned
+  // `ok: true, harness: 'oddsmith'` and changed nothing.
+  //
+  // Worth stating plainly because it nearly happened twice: the 29,645-row bug
+  // WAS an inert fix (D-022, inert because its only caller passed `{}`), and the
+  // natural repair is a second inert fix layered on the first. A guard that
+  // delegates its decision to a function documented to fail open cannot fail
+  // closed. So decide it HERE, on the input we actually hold.
+  //
+  // This is also D-001 read literally — "REFUSE to mint when it cannot resolve a
+  // WORKSPACE" — rather than generalized to "a harness", which is what invited the
+  // inert version.
+  const ws = workspaceId?.trim();
+  if (!ws || ws === '*') return { ok: false, requested: harness, reason: 'no-workspace' };
+
   try {
-    const pot = await resolveWorkItemPot({ rawSlug: harness, workspaceId });
-    return pot?.trim() || harness;
-  } catch {
-    return harness;
+    const pot = await resolveWorkItemPot({ rawSlug: harness, workspaceId: ws });
+    const slug = pot?.trim();
+    if (!slug) return { ok: false, requested: harness, reason: 'pot-unresolved' };
+    return { ok: true, harness: slug, normalized: slug !== harness };
+  } catch (err) {
+    // Includes PotMembershipError — an explicit slug that is not a real Pot in a
+    // workspace that HAS a platform Pot. Refusing is right: we would otherwise
+    // store under a slug the Pot set rejects.
+    return {
+      ok: false,
+      requested: harness,
+      reason: 'pot-lookup-failed',
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -360,7 +445,38 @@ export async function acquireConditionOwner(
   //    used for every read AND the create below, so they cannot disagree.
   //    See resolveStoredConditionHarness: they did disagree, and it cost a
   //    doomed work-item per tick.
-  const harness = await resolveStoredConditionHarness(spec.harness, spec.workspaceId);
+  const resolved = await resolveStoredConditionHarness(spec.harness, spec.workspaceId);
+  if (!resolved.ok) {
+    // FAIL CLOSED (D-001). Minting on this path is what produced 29,645 rows:
+    // every read would be scoped to the un-normalized slug and miss an incumbent
+    // that `createIssue` normalizes into a collision with anyway.
+    //
+    // Refusing OUTRIGHT would be its own bug though — it would report "no owner"
+    // for a condition that may be perfectly well owned. So first ask the question
+    // that is still soundly answerable: the unique index is keyed
+    // (workspace_id, harness_slug, condition_key), so within one workspace this
+    // key has at most one live holder REGARDLESS of the harness it was stored
+    // under. A harness-UNSCOPED read therefore finds the incumbent that the
+    // wrong-slug read never could, and adopting it is a true positive rather than
+    // a guess. Note this read cannot return a settled row: findConditionKeyHolder
+    // already excludes terminal states.
+    const incumbent = await findConditionKeyHolder(key, { workspaceId: spec.workspaceId });
+    if (incumbent) return { conditionKey: key, workItem: incumbent, created: false };
+    // Genuinely undetermined: no incumbent found AND no trustworthy harness to
+    // mint under. `skipped` is what stops a caller reading this as "unowned".
+    return {
+      conditionKey: key,
+      workItem: null,
+      created: false,
+      skipped: 'unresolved-harness',
+      unresolvedHarness: {
+        requested: resolved.requested,
+        reason: resolved.reason,
+        ...(resolved.error ? { error: resolved.error } : {}),
+      },
+    };
+  }
+  const harness = resolved.harness;
 
   // 1. Self-heal a missed release BEFORE looking for an owner, or a settled row
   //    would look like a live one and this condition could never be re-owned.
@@ -485,7 +601,19 @@ export async function releaseConditionOwner(
   const key = conditionKey.trim();
   // Same normalization as the acquire path — a release scoped to the caller's
   // un-normalized harness would fail to find the very row the bridge stored.
-  const harness = opts.harness ? await resolveStoredConditionHarness(opts.harness, opts.workspaceId) : undefined;
+  //
+  // ⚠ Deliberately does NOT fail closed the way `acquireConditionOwner` does, and
+  // the asymmetry is the whole point. Refusing to RELEASE would leave the key held
+  // by a row nothing will ever clear, making the condition permanently unownable —
+  // strictly worse than acquiring a duplicate, and the exact state this module
+  // exists to prevent. So when the harness cannot be resolved we WIDEN to a
+  // workspace-scoped, harness-UNSCOPED read (sound: the key has at most one live
+  // holder per workspace) rather than NARROW to a slug we know may be wrong.
+  let harness: string | undefined;
+  if (opts.harness) {
+    const resolvedHarness = await resolveStoredConditionHarness(opts.harness, opts.workspaceId);
+    harness = resolvedHarness.ok ? resolvedHarness.harness : undefined;
+  }
   // COLUMN first (the enforcement point), link second. A holder with no link is
   // exactly the row that must be released here: leaving its key in place is what
   // makes the condition permanently unownable.

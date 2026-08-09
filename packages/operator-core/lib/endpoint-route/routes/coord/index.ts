@@ -234,6 +234,39 @@ export async function loadCoordPlans(): Promise<Array<Record<string, unknown>>> 
     }));
 }
 
+/**
+ * Fire-and-forget boot warm-up for the `coord.plans` sync query (WI-36179).
+ *
+ * `loadCoordPlans()` is a single well-scoped SQL read (`listPlanRows`, one query,
+ * no N+1) followed by CPU-bound `parsePlan()` markdown parsing over every row —
+ * on a WARM process this is comfortably inside the sync-resolver's 10s
+ * RESOLVER_TIMEOUT_MS. But the FIRST call after an operator restart also pays
+ * cold-start cost that a warm call does not: compiling the `agent-tools/plans/source`
+ * import tree, running `parsePlan()` un-JIT'd across the whole corpus (932 rows /
+ * 385KB measured), and a cold PG connection/query-plan — and that combined cost
+ * was measured to exceed the 10s budget on `:3170` right after a restart, while an
+ * immediate retry (now warm) succeeded well within it. The user-visible effect was
+ * the CoordDashboard failing its first load after any operator restart, reading
+ * like a network blip, then working on refresh.
+ *
+ * Firing this same read once at boot pays that one-time cost before any user is
+ * waiting on it — the resolver's real semantics (always a synchronous, fully
+ * correct read; no snapshot staleness) are unchanged, this just moves WHEN the
+ * first invocation happens. Same pattern as `preWarmSystemHealth`
+ * (system-health/compute.ts) for the equivalent cold-cache-on-boot problem.
+ * Best-effort: a failure here is logged and swallowed, never thrown — this must
+ * never block or fail boot, and the resolver still works correctly (just slower)
+ * on its own first real call if this warm-up itself loses the race or errors.
+ */
+export function preWarmCoordPlans(): void {
+  void loadCoordPlans().catch((e: unknown) => {
+    console.warn(
+      '[coord] boot pre-warm of coord.plans failed (non-fatal — the resolver will cold-compute on first real call):',
+      e instanceof Error ? e.message : e,
+    );
+  });
+}
+
 const history = defineTool({
   method: 'GET',
   path: '/coord/history',

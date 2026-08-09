@@ -5028,6 +5028,11 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'already-completed': 'already carries a terminal completion record (EI-8972)',
   'cross-machine-rig': 'needs a ≥2-machine rig this caller does not have (WI-2796)',
   'blocked-dep': 'has a PRESENT, non-terminal blocker (work_item_deps)',
+  origin:
+    'a true-peer federated row (origin not local/null, and not one of this workspace\'s own ' +
+    'substrate-log author keys) — not self-selectable from this node (isIssueLocallyClaimableWhereSql)',
+  cooldown:
+    'released by THIS caller within the release-cooldown window (mig 499 / EI-6956) — will clear on its own',
 };
 
 /**
@@ -5059,12 +5064,14 @@ export async function explainIssueClaimFloors(
   const assignee = opts.assignee ?? '';
   const states = opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES;
 
+  const cooldown = releaseCooldownSec();
   const rows = await sql<
     {
       id: string;
       taken_by: string | null;
       ok_status: boolean;
       ok_untaken: boolean;
+      ok_origin: boolean;
       ok_observation: boolean;
       ok_needs_human: boolean;
       ok_external_blocker: boolean;
@@ -5074,12 +5081,15 @@ export async function explainIssueClaimFloors(
       ok_loop_noise: boolean;
       ok_completed: boolean;
       ok_rig: boolean;
+      ok_no_blocker: boolean;
+      ok_cooldown: boolean;
     }[]
   >`
     SELECT wi.feature_id AS id,
            wi.taken_by                                                            AS taken_by,
            (wi.status = ANY(${[...states]}::text[]))                              AS ok_status,
            (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
+           (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
            (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
            (${needsHumanExclusionSql(sql)})                                       AS ok_needs_human,
            (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
@@ -5088,7 +5098,16 @@ export async function explainIssueClaimFloors(
            (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
            (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
            (${alreadyTerminallyCompletedExclusionSql(sql)})                       AS ok_completed,
-           (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})               AS ok_rig
+           (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})               AS ok_rig,
+           (${depsBlockedExclusionSql(sql)})                                      AS ok_no_blocker,
+           (${
+             cooldown > 0 && assignee
+               ? sql`(wi.last_released_by IS NULL
+                   OR wi.last_released_by <> ${assignee}
+                   OR wi.last_released_at IS NULL
+                   OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
+               : sql`TRUE`
+           })                                                                     AS ok_cooldown
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${issueWs}
        AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
@@ -5105,25 +5124,31 @@ export async function explainIssueClaimFloors(
         ? 'not-claimable-status'
         : !r.ok_untaken
           ? 'already-taken'
-          : !r.ok_observation
-            ? 'observation-lane'
-            : !r.ok_needs_human
-              ? 'needs-human'
-              : !r.ok_external_blocker
-                ? 'external-blocker'
-                : !r.ok_claim_hold
-                  ? 'claim-hold'
-                  : !r.ok_plan_lane
-                    ? 'plan-lane-reserved'
-                    : !r.ok_federation
-                      ? 'federation-detector'
-                      : !r.ok_loop_noise
-                        ? 'loop-noise'
-                        : !r.ok_completed
-                          ? 'already-completed'
-                          : !r.ok_rig
-                            ? 'cross-machine-rig'
-                            : null;
+          : !r.ok_origin
+            ? 'origin'
+            : !r.ok_observation
+              ? 'observation-lane'
+              : !r.ok_needs_human
+                ? 'needs-human'
+                : !r.ok_external_blocker
+                  ? 'external-blocker'
+                  : !r.ok_claim_hold
+                    ? 'claim-hold'
+                    : !r.ok_plan_lane
+                      ? 'plan-lane-reserved'
+                      : !r.ok_federation
+                        ? 'federation-detector'
+                        : !r.ok_loop_noise
+                          ? 'loop-noise'
+                          : !r.ok_completed
+                            ? 'already-completed'
+                            : !r.ok_rig
+                              ? 'cross-machine-rig'
+                              : !r.ok_no_blocker
+                                ? 'blocked-dep'
+                                : !r.ok_cooldown
+                                  ? 'cooldown'
+                                  : null;
     return {
       id,
       admissible: refusedBy === null,

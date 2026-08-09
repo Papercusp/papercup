@@ -596,23 +596,45 @@ export async function sweepStalledLoops(
       // VETOED, not repaired and not re-armed — the gate's backoff is a deliberate cadence
       // (reconcileLoopRoutines' `gate-backoff` rebase honours `retryAfterSec`; re-arming here
       // would fight it, the same "leave it alone" reasoning as `vetoedByProviderWall`).
-      if (!probed?.awaitRepairable) {
-        const lastWithheldMs = status.lastWithheldAt ? Date.parse(status.lastWithheldAt) : NaN;
-        const fireWasWithheld =
-          Number.isFinite(lastWithheldMs) &&
-          Number.isFinite(lastFiredMs) &&
-          lastWithheldMs >= lastFiredMs;
-        if (fireWasWithheld) {
-          vetoedByWithheldFire.push(ownerId);
-          console.warn(
-            `[stalled-loops-guard] WITHHELD-FIRE VETO ${ownerId}: fires advanced to ${status.lastFiredAt} ` +
-              `while lastWakeAt stayed at ${status.lastWakeAt ?? 'never'} — but the fire gate WITHHELD that ` +
-              `claim (lastWithheldAt=${status.lastWithheldAt}), so it was never actually sent. The session ` +
-              `is live with a valid standing await; there is nothing to repair. Refusing to disarm — the ` +
-              `agent was never asked for a turn (WI-36792).`,
-          );
-          continue;
-        }
+      //
+      // ⚠ THE REACHABILITY TERM IS LOAD-BEARING — the withhold stamp ALONE would blunt exactly
+      // the population WI-6639 exists to reap, permanently. A corpse is not merely compatible
+      // with a perpetual withhold, it CONVERGES on one: its wakes find no standing await, so
+      // every fire records `no-session-now`, `consecutive_errors` climbs without bound, and the
+      // circuit denies an ever-growing share of its claims — while `lastWakeAt` stays frozen
+      // (no delivery row is created either way), so `wakeStarved` is permanently true. Sample it
+      // at any sweep and `lastWithheldAt >= lastFiredAt` reads true, forever.
+      //
+      // Reachability separates the two, and — unlike the WI-36685 case above, where it could NOT
+      // be used — it is MEANINGFUL here, for a reason specific to this sub-case: a withheld fire
+      // never reached `wake()`, so it never touched the standing await. Gate 1 of
+      // `deriveWakeReachability` therefore PASSES and the verdict reflects real liveness, instead
+      // of the `false`-by-construction it returns for an owner whose await is missing. A corpse's
+      // await was cancelled at SessionEnd ⇒ Gate 1 fails ⇒ `reachable:false` ⇒ no veto ⇒ it takes
+      // the disarm exactly as it did before this branch existed.
+      //
+      // `!== false` and not `=== true`: `null` is the probe having THROWN, i.e. presence UNKNOWN,
+      // and by this module's own asymmetry (a wrong veto costs one sweep; a wrong disarm is
+      // permanent) an uncertain read must not license the irreversible write — the same direction
+      // as the fire-starved branch's `.catch(() => true)` earlier in this loop.
+      //
+      // SELF-LIMITING even when it does engage, so it cannot silently become a standing
+      // exemption: the veto holds only while the withhold is the most recent event. Once the
+      // backoff clears and a fire actually goes out, a delivery row is created, `lastWakeAt`
+      // advances past `lastFiredAt`, `wakeStarved` goes false, and an agent that still is not
+      // answering takes the ordinary disarm on the very next sweep.
+      if (!probed?.awaitRepairable && lastFireWasWithheld && probed?.reachable !== false) {
+        vetoedByWithheldFire.push(ownerId);
+        console.warn(
+          `[stalled-loops-guard] WITHHELD-FIRE VETO ${ownerId}: fires advanced to ${status.lastFiredAt} ` +
+            `while lastWakeAt stayed at ${status.lastWakeAt ?? 'never'} — but the fire gate WITHHELD that ` +
+            `claim (lastWithheldAt=${status.lastWithheldAt}), so it was never actually sent and no delivery ` +
+            `row exists. The session is ` +
+            `${probed == null ? 'of UNKNOWN reachability (the probe failed — declining an irreversible write on an uncertain read)' : `reachable via ${probed.channel}`} ` +
+            `with its standing await intact, so there is nothing to repair. Refusing to disarm — the agent ` +
+            `was never asked for a turn; the gate's own backoff owns the retry (WI-36792).`,
+        );
+        continue;
       }
     }
 

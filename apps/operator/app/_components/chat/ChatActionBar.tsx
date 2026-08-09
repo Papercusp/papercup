@@ -227,7 +227,22 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
     setDone(null);
     setRunningId(mode.id);
     try {
-      await mode.set(ctx, optionId);
+      /* P-005: an axis may collect a value for the option just picked (DRAIN's
+         scope instructions). Sync on purpose — unlike `options()`, this builds a
+         spec from what the axis already knows and fetches nothing, so there is
+         no hang to bound with `withTimeout`.
+
+         Declining CANCELS the write. A half-applied "drain on, instructions
+         abandoned" is the failure to avoid: it is indistinguishable, from the
+         agent's side, from an owner who meant an unscoped drain. */
+      let value: unknown;
+      const spec = mode.params?.(ctx, optionId);
+      if (spec) {
+        const r = await askUserLocal(spec);
+        if (r.action !== 'submit') return;
+        value = r.payload;
+      }
+      await mode.set(ctx, optionId, value);
       // The CACHE, not a fresh `options()` call: re-calling would re-fetch an
       // async axis purely to render a confirmation string, and the cache is
       // guaranteed populated — this only runs after a pick from that menu.

@@ -137,6 +137,25 @@ export interface BuildEnvelopeOpts {
    * '' (the spawner then skips writing it) and needsSuperuserBootstrap to false.
    */
   skipMcpJson?: boolean;
+  /**
+   * "Resume in GUI" (resume-in-gui-button-2026-08-09, owner ask 2026-08-09): this
+   * resume is going to be spawned with NO terminal window (`spawnHeadless`), because
+   * the human will talk to it through the HUD conversation popup instead.
+   *
+   * All this flag does HERE is append psu's `--headless` to the resume greeting —
+   * and that is the load-bearing part, not a cosmetic one. `--headless` is what keeps
+   * psu's managed pty ON despite non-TTY stdio (psu-launcher L4326-4357); without it a
+   * windowless resume parks forever after one turn and nothing can inject into it, so
+   * the GUI composer — a real `coord:send { wake:'required' }` — would have nobody to
+   * wake. The window is what we are dropping; the injectable session is the whole point.
+   *
+   * Only meaningful with `resumeSessionId`, and only for CLAUDE sessions: the
+   * codex/omp branch below execs the bare interactive CLI rather than routing through
+   * psu, so it registers no presence and hosts no pty. A headless one of those would be
+   * an invisible process nobody could ever reach — refused below, same posture as the
+   * fork guard, rather than silently spawning something unreachable.
+   */
+  headless?: boolean;
 }
 
 // (kickoff-kind allowlist moved to @/lib/agent-kickoff/kickoff-kind in P-032,
@@ -413,6 +432,17 @@ export async function buildConsoleEnvelope(
         `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
       );
     }
+    // "Resume in GUI" (resume-in-gui-button-2026-08-09): a HEADLESS resume is only
+    // coherent when the resume routes through psu, which is the claude branch below.
+    // codex/omp exec the bare interactive CLI — no coord presence, no injectable pty —
+    // so windowless they would be an unreachable process rather than an agent you can
+    // chat to in the HUD. Refuse loudly (same posture as the fork guard above) instead
+    // of spawning something the GUI can never talk to.
+    if (opts.headless && backend !== 'claude-code') {
+      throw new Error(
+        `cannot resume a ${bin} session in the GUI: only claude sessions resume through psu, which is what supplies the presence + injectable pty the GUI conversation needs`,
+      );
+    }
     // WI-3988/WI-3989: `claude -r <id>` only finds the conversation with the SAME
     // CLAUDE_CONFIG_DIR + cwd the original agent used. papercusp runs each claude
     // agent in a per-session ISOLATION home (~/.papercusp/session-claude/<owner>,
@@ -482,7 +512,15 @@ export async function buildConsoleEnvelope(
       // transcript into the isolation dir so psu's `--resume=<id>` finder locates
       // an ended session.
       const forkFlag = opts.fork ? ' --fork' : '';
-      greetingCmd = `echo "${verb} plan-run ${id}…"; exec psu --resume=${id}${forkFlag}`;
+      // resume-in-gui-button-2026-08-09: `--headless` keeps psu's managed pty ON with
+      // non-TTY stdio (and implies --no-picker), which is what makes a windowless
+      // resume still injectable — i.e. still something the HUD conversation composer
+      // can wake. psu publishes the headless posture (PAPERCUSP_PSU_HEADLESS=1) BEFORE
+      // it dispatches the resume, so the flag composes with --resume rather than
+      // racing it (psu-launcher main(): headless at L7142, resume branch at L7161).
+      // Appended LAST so a headed resume's greeting stays byte-identical to today's.
+      const headlessFlag = opts.headless ? ' --headless' : '';
+      greetingCmd = `echo "${verb} plan-run ${id}…"; exec psu --resume=${id}${forkFlag}${headlessFlag}`;
     } else {
       // codex/omp: keep the bare interactive binary. The /login artifact is
       // claude-CLAUDE_CONFIG_DIR-specific; these backends authenticate from their

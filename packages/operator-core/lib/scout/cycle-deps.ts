@@ -335,7 +335,21 @@ export function buildScoutCycleDeps(
     instanceDispatch: buildInstanceDispatchPort(),
   };
 
-  const readers = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();
+  const baseReaders = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();
+  // P-004 / D-028 (learning-loop-identity-and-consumption-2026-08-08): capture the ids
+  // the friction lane actually READ this cycle, so `readCorpus` can stamp them as
+  // consumed. Wrapping the reader — rather than re-querying the lane afterwards — is
+  // what makes the stamped set provably the set the digest saw: a second read is a
+  // different recency window and would drift from it under load.
+  let lastFrictionIds: string[] = [];
+  const readers: typeof baseReaders = {
+    ...baseReaders,
+    friction: async () => {
+      const rows = await baseReaders.friction();
+      lastFrictionIds = rows.map((r) => r.id).filter((id): id is string => typeof id === 'string' && id.length > 0);
+      return rows;
+    },
+  };
   const noveltyCorpus = opts.noveltyCorpus ?? readNoveltyCorpus;
   const scoutConfig = opts.scoutConfig ?? DEFAULT_SCOUT_CONFIG;
   const baseFederatedPriming = scoutConfig.federatedPriming;
@@ -622,6 +636,28 @@ export function buildScoutCycleDeps(
           '[scout/cycle-deps] digest-snapshot leg failed (cycle unaffected):',
           err instanceof Error ? err.message : err,
         );
+      }
+      // P-004 / D-028: WRITE BACK that this cycle read these observations. The
+      // ratified defect (D-001) is precisely that the blender reads every new
+      // observation and records nothing, leaving a mined row byte-identical to an
+      // unread one. Stamps `payload.consumption`; deliberately touches NO lifecycle
+      // state — D-005 makes the observation lane a time series where `status='open'`
+      // is its designed resting state, and a prior bulk-close of 806 rows was a
+      // mistake. Runs LAST so every digest lane is populated and the pattern refs
+      // are complete. Fail-soft by contract (the helper never throws).
+      if (opts.cycleId) {
+        const { recordObservationConsumption } = await import(
+          '../harness/improvements/observation-consumption'
+        );
+        const res = await recordObservationConsumption({
+          workspaceId: activeWorkspaceId(),
+          readIds: lastFrictionIds,
+          digest,
+          cycleId: opts.cycleId,
+        });
+        if (res.error) {
+          console.warn('[scout/cycle-deps] observation-consumption stamp failed (cycle unaffected):', res.error);
+        }
       }
       return digest;
     },

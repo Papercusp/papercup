@@ -205,6 +205,40 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(idsAfterSecond).toEqual(idsAfterFirst); // no new rows
   });
 
+  it('EI-19946482711398073/WI-37359: an item already covered ad-hoc (relates + stamp, NO implements edge) is never re-promoted', async () => {
+    // Mirrors exactly what work_items:create{targetPlanItem} writes (_create-core.ts
+    // §"Forward edge" + the plan_item payload stamp EI-19390496242545842 added) — a `relates`
+    // coord_links edge PLUS a payload.plan_item stamp, and deliberately NO `implements` edge.
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Covered ad-hoc before promotion ever ran' },
+        { id: 'P-002', status: 'todo', text: 'Never touched' },
+      ],
+    });
+    const adhoc = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'Manually filed bug for P-001',
+      harness: HARNESS,
+      workspaceId: WS,
+      payload: { plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS } },
+      createdBy: 'su-test',
+    });
+    await wi.linkWorkItem(
+      adhoc.id,
+      { kind: PLAN_ITEM_KIND, ref: planItemRef(PLAN, 'P-001') },
+      'relates',
+      { harness: HARNESS, by: 'su-test' },
+    );
+    // Sanity: no `implements` edge exists yet — listConvertedPlanItemRefs alone would miss this.
+    expect((await convert.listConvertedPlanItemRefs()).has(planItemRef(PLAN, 'P-001'))).toBe(false);
+
+    const res = await run.promotePlanItems(base);
+    // Only P-002 (genuinely uncovered) is minted; P-001 is skipped, not duplicated.
+    expect(res.promoted).toBe(1);
+    const rows = await features();
+    expect(rows.map((r) => r.title)).toEqual(['Never touched']);
+  });
+
   it('a plan with ONLY done/dropped items promotes NOTHING', async () => {
     h.plans.set(PLAN, {
       items: [
