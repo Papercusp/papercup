@@ -796,15 +796,14 @@ describe('setLagPublishTarget (EI-19484853609145439: sentinel-readable last-know
     // No target wired yet — must not throw, must not write anywhere.
     await new Promise((r) => setTimeout(r, 60));
     setLagPublishTarget(sab);
-    await new Promise((r) => setTimeout(r, 60));
-    // Some slot moved off its zero-initialized default (lag is rarely exactly
-    // 0ms across every percentile on a real, if idle, loop over 60ms+).
-    const anyPublished =
-      Atomics.load(view, SENTINEL_SAB_IDX.LAG_P50_MS) !== 0 ||
-      Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS) !== 0 ||
-      Atomics.load(view, SENTINEL_SAB_IDX.LAG_P99_MS) !== 0 ||
-      Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS) !== 0;
-    expect(anyPublished).toBe(true);
+    // Manufacture real, measurable lag (an idle loop can legitimately read
+    // exactly 0ms on every percentile, which would make this assertion flaky
+    // on a fast/idle box).
+    blockFor(30);
+    await new Promise((r) => setTimeout(r, 80));
+    const sample = handle.sample();
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)).toBe(Math.round(sample.maxMs));
+    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)).toBeGreaterThan(0);
   });
 
   it('null clears the target — no throw, and no further writes', async () => {

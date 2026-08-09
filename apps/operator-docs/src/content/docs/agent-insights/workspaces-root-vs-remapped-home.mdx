@@ -85,33 +85,55 @@ remapped). For any child process spawned with a per-workspace HOME (P-051), the
 hyperbee stores. A bare `join(homedir(), '.papercusp-workspaces', …)` is the
 smell.
 
-### The rule currently has live violations (measured 2026-08-04)
+### The rule currently has live violations (measured 2026-08-09)
 
-Stating the rule is not the same as the tree obeying it. A grep for the bare form
-finds it still live in **`packages/plugin-loader/src/index.ts`** — three sites:
-the registry read (`:38`), the active-workspace `.papercusp` probe (`:62`), and
-the `default` fallback (`:83`). One more sits in
-`apps/operator/scripts/voice-stack-check.mjs:42`.
+Stating the rule is not the same as the tree obeying it.
 
-That package is the *exact* residual case reason 2 above describes: a plugin
-loader runs inside spawned children, and P-051 gives those children a
-per-workspace `HOME`. So these are not stylistic nits — under a remapped-HOME
-child they resolve to the nested
-`~/.papercusp-workspaces/<current>/.papercusp-workspaces/registry.json` this
-page opens by describing, and the symptom is the same nested-junk-registry /
-`switch failed` class. They are invisible in dev for the reason given above:
-`npm run dev` never remaps `HOME`, so `homedir()` happens to be right.
+**Fixed 2026-08-09 (EI-19484521468253560):** the three `packages/plugin-loader/src/index.ts`
+sites (registry read, active-workspace `.papercusp` probe, `default` fallback) and
+`apps/operator/scripts/voice-stack-check.mjs:42` — all now route through an env-first
+(`PAPERCUSP_WORKSPACES_ROOT`) local resolver instead of a bare `homedir()`. That package was
+the *exact* residual case reason 2 above describes: a plugin loader runs inside spawned
+children, and P-051 gives those children a per-workspace `HOME`. Under a remapped-HOME
+child the old code resolved to the nested
+`~/.papercusp-workspaces/<current>/.papercusp-workspaces/registry.json` this page opens by
+describing — the same nested-junk-registry / `switch failed` class. Invisible in dev for the
+reason given above: `npm run dev` never remaps `HOME`, so `homedir()` happened to be right
+there.
 
-Two categories of hit are NOT violations and should stay as they are:
-`_retired/snapshot-system/**` (retired, per the retired-surfaces convention) and
-`packages/operator-core/lib/workspace-registry.test.ts:230,235`, which assert the
-`homedir()` **fallback** on purpose — that fallback is part of the contract, not
-a breach of it.
+**Still open (filed 2026-08-09 as WI-37486, split out rather than expanding the ticket
+above):** re-running the audit grep while fixing the ones above turned up a substantially
+bigger population than the 2026-08-04 measurement recorded —
+`libs/papercusp/packages/cli/src/papercusp-root.ts:37,42,48` (a near-identical 3-site
+hand-rolled copy in the papercusp CLI), `libs/papercusp/packages/cli/src/operator-cli.ts:41`,
+`libs/papercusp/libs/db/scripts/backfill-workspace-id.ts:77`,
+`apps/operator/scripts/el-agent-sync.mjs:35` (voice-stack-check.mjs's sibling script, same
+shape, not yet fixed), and a THIRD near-duplicate hand-rolled implementation in
+`libs/papercusp/plugins/cloudflare-pages/index.ts:62,67,72` (plus a checked-in compiled
+`index.js:63,68,75` carrying the same 3 sites — check whether it's generated before editing
+both). See WI-37486 for the current per-site detail; this page intentionally does not keep a
+line-number inventory in sync by hand.
 
-⚠ Verify before citing this list: it is a point-in-time measurement, and the
-whole reason this page exists is that the smell reappears. Re-run
-`rg "homedir\(\), *['\"]\.papercusp-workspaces"` (excluding `node_modules`,
-`dist`, `_retired`) rather than trusting the line numbers above.
+Categories of hit that are NOT violations and should stay as they are:
+`_retired/snapshot-system/**` (retired, per the retired-surfaces convention);
+`packages/operator-core/lib/workspace-registry.ts` itself (the canonical `workspacesRoot()` —
+its own `homedir()` fallback is the contract, not a breach of it);
+`packages/operator-core/lib/workspace-registry.test.ts:230,235` and
+`libs/papercusp/packages/orchestrator/src/workspace.test.ts:64`, which assert that fallback on
+purpose; and `libs/papercusp/packages/orchestrator/src/workspace.ts`'s `workspaceHomeDir()`
+(already correctly env-first — only its unrelated `REGISTRY_PATH` constant at `:18` is a
+borderline case, noted but not asserted as a violation in WI-37486).
+
+Four to five independent hand-rolled copies of "resolve `~/.papercusp-workspaces`, env-first"
+now exist in the tree — exactly the duplication this page's own fix notes have repeatedly
+warned would keep recurring absent a shared helper. WI-37486 proposes a tiny
+shared/generic-lib env-first helper for the callers that can't safely depend on
+`@papercusp/operator-core` (plugin-loader, scripts, the CLI, plugins).
+
+⚠ Verify before citing this list: it is a point-in-time measurement, and the whole reason this
+page exists is that the smell reappears. Re-run
+`rg "homedir\(\), *['\"]\.papercusp-workspaces"` (excluding `node_modules`, `dist`, `_retired`)
+rather than trusting the paths above.
 
 ## Related invariant
 

@@ -265,6 +265,22 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     base_origin: 'engineer_issues view trigger origin-preservation helper (mig 514); op provenance supplies federation origin',
     updated_at: 'machine-local row timestamp (federated time is created_at via the mapper)',
     signal_origin: 'frontier signal provenance (organic/drill/replay/shadow) — local learning-lane tag',
+    // `lane` is GENERATED ALWAYS on the BASE table (harness_shared.work_items,
+    // mig 721) — PG recomputes it from `payload`, which DOES federate, so every
+    // peer derives the same value with no wire bytes. It is listed here rather
+    // than auto-detected because the `is_generated === 'ALWAYS'` skip below reads
+    // information_schema for the relation under test, and for a VIEW that always
+    // reports 'NEVER' — a view column never inherits its base column's generated
+    // flag. So the auto-detect silently covers work_items but not this view.
+    lane: 'GENERATED ALWAYS from the federated `payload` on the base table (mig 721) — recomputed locally by PG; the view hides the generated flag from auto-detection',
+    // Mig 776 (context-injection-retrieval-reach-and-visibility-2026-08-03 P-005)
+    // widened this VIEW to expose the embedding the base table
+    // (harness_shared.work_items) always carried, so the work_item search source
+    // could gain a semantic leg. Same embedder-mode-specific reasoning as
+    // harness_features_consolidated (mig 551) and harness_plans (mig 553) above:
+    // machine-local, re-embedded locally from the row's federated content.
+    embedding: 'embedder-mode-specific vector, machine-local (mig 776) — foreign-space noise if federated, re-embedded locally instead',
+    embedding_mode: 'tags which embedder produced `embedding` on THIS machine, machine-local (mig 776)',
   },
   harness_plan_parts: {
     author: 'rides the op provenance (writerPubkey → author_pubkey), not the row value (mapper doc)',

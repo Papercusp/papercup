@@ -107,6 +107,7 @@ describe('startEventLoopSentinel', () => {
     });
     expect(h.active()).toBe(false);
     expect(h.beats()).toBe(0);
+    expect(h.sab).toBeNull();
     expect(lines.join(' ')).toContain('disabled');
   });
 
@@ -198,6 +199,25 @@ describe('startEventLoopSentinel', () => {
       // If this fails, the SAB wiring is broken and the sentinel would read a
       // permanently frozen counter — i.e. it would think the loop is wedged.
       expect(h.beats()).toBeGreaterThan(before);
+    } finally {
+      await h.stop();
+    }
+  }, 10_000);
+
+  it('EI-19484853609145439: the SAB is sized for SENTINEL_SAB_IDX (heartbeat + last-known lag), not just the heartbeat', async () => {
+    const h = startEventLoopSentinel({
+      env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },
+      log: () => {},
+    });
+    try {
+      if (!h.active()) return; // spawn unsupported here — covered by the test above
+      expect(h.sab).not.toBeNull();
+      const { SENTINEL_SAB_INT32_LEN } = await import('./event-loop-sentinel');
+      expect(h.sab!.byteLength).toBe(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
+      // Index 0 (the heartbeat) must still be the same live counter `beats()`
+      // reads — extending the SAB must not shift the existing layout.
+      const view = new Int32Array(h.sab!);
+      expect(Atomics.load(view, 0)).toBe(h.beats());
     } finally {
       await h.stop();
     }

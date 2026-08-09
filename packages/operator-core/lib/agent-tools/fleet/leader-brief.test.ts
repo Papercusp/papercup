@@ -76,7 +76,7 @@ describe('reconcilePsuHostLiveness (WI-4755)', () => {
 
 describe('selectLeaderBriefMembers (EI-11840)', () => {
   it('keeps every live presence-backed member, including an idle member with no claims', () => {
-    const members = selectLeaderBriefMembers(
+    const { rows: members } = selectLeaderBriefMembers(
       [
         baseAgent({ agentId: 'su-live-working', claims: [{ type: 'work-item', id: 'WI-1' }] as never }),
         baseAgent({ agentId: 'su-live-idle', claims: [], alive: true }),
@@ -94,8 +94,51 @@ describe('selectLeaderBriefMembers (EI-11840)', () => {
 
   it('includes stale canonical roster entries only when explicitly requested', () => {
     const stale = baseAgent({ agentId: 'su-stale', alive: false, claims: [] });
-    expect(selectLeaderBriefMembers([stale], 'p2p-git')).toEqual([]);
-    expect(selectLeaderBriefMembers([stale], 'p2p-git', true)).toEqual([stale]);
+    expect(selectLeaderBriefMembers([stale], 'p2p-git').rows).toEqual([]);
+    expect(selectLeaderBriefMembers([stale], 'p2p-git', true).rows).toEqual([stale]);
+  });
+
+  // P-010 (fleet-lead-instrumentation-audit-2026-08-09): the same fleet read 11 /
+  // 11 / 14 / 8 / 9 across leader-brief and fleet:assignments within minutes, each
+  // number defensible and none reconciled. The census makes every count say what
+  // it counted and what it hid.
+  it('names the population and reports what the stale-idle cut withheld, with the lever to reveal it', () => {
+    const entries = [
+      baseAgent({ agentId: 'su-live-working', claims: [{ type: 'work-item', id: 'WI-1' }] as never }),
+      baseAgent({ agentId: 'su-live-idle', claims: [], alive: true }),
+      baseAgent({ agentId: 'su-stale-1', alive: false, claims: [] }),
+      baseAgent({ agentId: 'su-stale-2', alive: false, claims: [] }),
+    ];
+    const { rows, census } = selectLeaderBriefMembers(entries, 'p2p-git');
+    expect(census.counted).toBe(rows.length);
+    expect(census.candidates).toBe(4);
+    expect(census.withheld).toBe(2);
+    expect(census.reveal).toBe('include_stale: true');
+    // The operative warning: this default hides members exactly when they die.
+    expect(census.withheldReason).toContain('stale-idle');
+
+    const revealed = selectLeaderBriefMembers(entries, 'p2p-git', true);
+    expect(revealed.census.counted).toBe(4);
+    expect(revealed.census.withheld).toBe(0);
+    expect(revealed.census.withheldReason).toBeNull();
+  });
+
+  // Members of ANOTHER fleet were never candidates for this number. Counting them
+  // as `withheld` would make the field grow with unrelated fleets and read as mass
+  // concealment — the opposite of the reconciliation this exists to provide.
+  it('does NOT count other fleets as withheld — roster membership is not a discretionary filter', () => {
+    const { census } = selectLeaderBriefMembers(
+      [
+        baseAgent({ agentId: 'su-live', alive: true, claims: [] }),
+        baseAgent({ agentId: 'su-other-1', fleetSlug: 'other-fleet', alive: true }),
+        baseAgent({ agentId: 'su-other-2', fleetSlug: 'other-fleet', alive: false, claims: [] }),
+      ],
+      'p2p-git',
+    );
+    expect(census.candidates).toBe(1);
+    expect(census.counted).toBe(1);
+    expect(census.withheld).toBe(0);
+    expect(census.population).toContain('p2p-git');
   });
 });
 
