@@ -106,6 +106,22 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'hiveRoster.byHive': { potSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
   'insights.tokens': { harness: 'papercusp' }, // `harness`, not `harnessSlug`
   'planSessions.list': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
+  // planLock.byPath (P-025 of semantic-search-fingerprint-coverage-2026-08-03) — the
+  // plan-lock banner's read, which replaced a 30s poll of /api/admin/locks/queue.
+  // Args are the workspace-relative lock path the client builds via planLockPath(),
+  // so this fixture is the exact shape usePlanLock puts on the wire.
+  //
+  // ⚠ WHAT THIS CAN AND CANNOT MEASURE. The read is bounded to at most ONE
+  // active_locks row by construction (one holder per path), and a plan lock is held
+  // only for the seconds a write is in flight — so this fixture almost always
+  // resolves to 0 rows and the measurement is near-empty. That is the honest
+  // reading, not a broken fixture: the payload has no cardinality axis to grow
+  // along, which is why no ceiling is warranted here. Do NOT "fix" a 0-row
+  // measurement by pointing it at a path that happens to be locked — the number
+  // would then be a race, not a budget.
+  'planLock.byPath': {
+    path: 'apps/operator/docs/plans/semantic-search-fingerprint-coverage-2026-08-03.md',
+  },
   'plans.runHistory': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
   'plans.scheduledOccurrences': { rangeStartMs: 0, rangeEndMs: 9_999_999_999_999 },
   'p2p.grants': { potSlug: 'papercusp' },
