@@ -45,6 +45,8 @@ const {
   bootSingleHarnessMock,
   openHiveGitDuplexToDeviceMock,
   loadCachedLocalAnnounceIdentityMock,
+  contentPeerCountForTopicMock,
+  lastContentAnnounceRecvMsMock,
 } = vi.hoisted(() => ({
   loadHarnessRegistryMock: vi.fn<() => Promise<{ projects: RegistryProject[] }>>(async () => ({
     projects: [{ slug: 'shop-hive', hive_slug: 'shop-hive', self_repo: true }],
@@ -117,6 +119,13 @@ const {
   // keychain-verified announce-identity cache (no network). Default null — the
   // happy path uses the actor's devicePubkey and never reaches this `??` arm.
   loadCachedLocalAnnounceIdentityMock: vi.fn(async () => null as { devicePubkeyBase64?: string } | null),
+  // WI-37574: discriminator (2) of the persistent-miss escalation. Both are
+  // dynamically imported by the escalation branch (same reason as
+  // getBootedHarness above — a static import would drag swarm.ts's real module
+  // graph in, and swarm.ts imports two symbols from peer-dial-registry that the
+  // partial mock on L179 does not provide). Defaults = the unpaired case.
+  contentPeerCountForTopicMock: vi.fn((_topicHex?: string) => 0),
+  lastContentAnnounceRecvMsMock: vi.fn((_topicHex: string) => null as number | null),
   unsafeMock: vi.fn(async (_text: string, _params: unknown[]) => []),
   // EI-18775478513129278: the `sql` TEMPLATE-TAG call (distinct from `sql.unsafe`,
   // used by patchRoutineMetadata) — the "dialed but outcome===null" path reads the
@@ -178,6 +187,10 @@ vi.mock('../../sync/hyperbee/boot-all', () => ({
 }));
 vi.mock('../../sync/pot-git/peer-dial-registry', () => ({ openHiveGitDuplexToDevice: openHiveGitDuplexToDeviceMock }));
 vi.mock('../../sync/hyperbee/local-announce-identity', () => ({ loadCachedLocalAnnounceIdentity: loadCachedLocalAnnounceIdentityMock }));
+vi.mock('../../sync/hyperbee/swarm', () => ({
+  contentPeerCountForTopic: contentPeerCountForTopicMock,
+  lastContentAnnounceRecvMs: lastContentAnnounceRecvMsMock,
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   // WI-6372: `sql` is now used in BOTH of postgres.js's two calling
@@ -1239,6 +1252,90 @@ describe('runBootstrapLeg', () => {
         // …and never asserted as the conclusion.
         expect(warnMsg).not.toMatch(/kcpassword (drift )?detected|the peer is (dark|down|at the loginwindow)/i);
       } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    /**
+     * WI-37574. Discriminator (2) — "is any swarm connection present at all" — is the
+     * one of the three this PROCESS can answer from memory: (1) needs the rig over SSH
+     * and (3) needs a topic comparison, but the content-announce peer count for this
+     * exact topic is an O(1) Map read we are already holding. Asking the READER for it
+     * cost two consecutive wakes a manual journal dig on EI-18808621019872598, and its
+     * absence invited the wrong reading ("pot-git pairing is COMPLETELY down", i.e. a
+     * swarm fault) when the swarm was healthy and simply had no peer.
+     *
+     * Note what is asserted: a MEASUREMENT plus the conditional reading the log already
+     * spelled out — never a cause. The "names no cause" test above is the pair to this
+     * one and must keep passing.
+     */
+    it('escalation ANSWERS discriminator (2) in-band — unpaired topic reads as reachability', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      contentPeerCountForTopicMock.mockReturnValue(0);
+      lastContentAnnounceRecvMsMock.mockReturnValue(null);
+      try {
+        await missTick({ consecutiveMisses: 5, firstMissAt: Date.now() - 60 * 60_000 });
+        const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'))!;
+        // the measurement itself, scoped to THIS topic
+        expect(warnMsg).toContain('contentPeers=0');
+        // "never received an announce on this topic" is the high-value half: it
+        // separates never-paired from paired-recently-but-not-now, which no count can.
+        expect(warnMsg).toContain('lastAnnounceRecv=never');
+        // and it is read as EVIDENCE, still naming no cause
+        expect(warnMsg).toContain('This log names NO cause');
+        expect(warnMsg).not.toMatch(/the peer is (dark|down|at the loginwindow)/i);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    /**
+     * FALSIFIABILITY CONTROL for the test above. If the escalation ever hardcodes the
+     * unpaired strings (or stops calling the accessors at all), the test above still
+     * passes while measuring nothing — this case is what fails. The two readings must
+     * DIFFER, because the whole point of discriminator (2) is that it routes the
+     * investigation two different ways.
+     */
+    it('…and a PAIRED topic reads the other way — registry/topic, not reachability', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      contentPeerCountForTopicMock.mockReturnValue(3);
+      lastContentAnnounceRecvMsMock.mockReturnValue(Date.now() - 4 * 60_000);
+      try {
+        await missTick({ consecutiveMisses: 5, firstMissAt: Date.now() - 60 * 60_000 });
+        const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'))!;
+        expect(warnMsg).toContain('contentPeers=3');
+        expect(warnMsg).not.toContain('lastAnnounceRecv=never');
+        expect(warnMsg).toMatch(/lastAnnounceRecv=~?4m ago/);
+        // the accessors are scoped to the topic under investigation, not process-global
+        expect(contentPeerCountForTopicMock).toHaveBeenCalledWith('deadbeef');
+      } finally {
+        contentPeerCountForTopicMock.mockReturnValue(0);
+        lastContentAnnounceRecvMsMock.mockReturnValue(null);
+        warnSpy.mockRestore();
+      }
+    });
+
+    /**
+     * A logging path must never throw, and an unreadable measurement must NOT render as
+     * a zero — "0 peers" and "could not measure" route the investigation to opposite
+     * conclusions. This is the same unknown-is-not-absent rule that the surrounding
+     * codebase pays for repeatedly (a `.get('timers', [])` turning not_found into a
+     * false `total 0`).
+     */
+    it('an unreadable swarm degrades to UNKNOWN — never to a fabricated zero', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      contentPeerCountForTopicMock.mockImplementation(() => {
+        throw new Error('swarm module unavailable');
+      });
+      try {
+        await missTick({ consecutiveMisses: 5, firstMissAt: Date.now() - 60 * 60_000 });
+        const warnMsg = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('bootstrap-tick'))!;
+        expect(warnMsg).toContain('PERSISTENT-MISS ESCALATION'); // the tick survived
+        expect(warnMsg).toContain('contentPeers=UNKNOWN');
+        expect(warnMsg).not.toContain('contentPeers=0');
+      } finally {
+        contentPeerCountForTopicMock.mockReset();
+        contentPeerCountForTopicMock.mockReturnValue(0);
         warnSpy.mockRestore();
       }
     });

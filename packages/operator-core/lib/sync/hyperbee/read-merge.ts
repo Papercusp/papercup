@@ -430,18 +430,35 @@ async function verifySnapshotSet(
   coversUpTo: number,
   chunkCount: number,
   getTimeoutMs: number,
-): Promise<boolean> {
-  if (coversUpTo < 0 || chunkCount < 1) return false;
-  if (coversUpTo + chunkCount > log.length) return false; // set extends past the tail → incomplete
+): Promise<VerifySetResult> {
+  if (coversUpTo < 0 || chunkCount < 1) return { ok: false, reason: 'torn' };
+  if (coversUpTo + chunkCount > log.length) return { ok: false, reason: 'torn' }; // extends past the tail → incomplete
   for (let j = 0; j < chunkCount; j++) {
-    const op = await readOpBounded(log, coversUpTo + j, getTimeoutMs);
-    if (!op || !isSnapshotOp(op)) return false;
+    const idx = coversUpTo + j;
+    const r = await readOpBoundedDetailed(log, idx, getTimeoutMs);
+    // WI-37553 — UNREADABLE IS NOT TORN. A bounded get that timed out (or threw) says
+    // NOTHING about whether the chunk is present; reporting it as `torn` made a COMPLETE
+    // set look broken. Readers tolerate that (they just fold from 0), but the seed CUTTER
+    // reads it as "no snapshot" and silently degrades a sparse cut into shipping FULL
+    // history — measured: a 44-chunk set sitting 48 blocks from the tail, read off a live
+    // WAL-churning corestore, yielded a 5.62 GB seed that the degradation guard refused,
+    // failing a release cut 52 minutes in. Surface the distinction; let the caller decide.
+    if (r.kind !== 'op') {
+      return {
+        ok: false,
+        reason: 'unreadable',
+        atIndex: idx,
+        cause: r.kind === 'unavailable' ? 'timeout' : 'read-error',
+      };
+    }
+    const op = r.op;
+    if (!op || !isSnapshotOp(op)) return { ok: false, reason: 'torn' };
     const p = op.value as SnapshotPayload | undefined;
-    if (!p || p.coversUpTo !== coversUpTo) return false;
-    if ((p.chunkCount ?? 1) !== chunkCount) return false;
-    if ((p.chunkIdx ?? 0) !== j) return false;
+    if (!p || p.coversUpTo !== coversUpTo) return { ok: false, reason: 'torn' };
+    if ((p.chunkCount ?? 1) !== chunkCount) return { ok: false, reason: 'torn' };
+    if ((p.chunkIdx ?? 0) !== j) return { ok: false, reason: 'torn' };
   }
-  return true;
+  return { ok: true };
 }
 
 /** WI-2313 — seed descriptor for the latest COMPLETE snapshot set in a log. */
@@ -456,6 +473,20 @@ export interface SnapshotSeed {
   /** Number of chunks in the set. */
   chunkCount: number;
 }
+
+/** WI-37553 — why a snapshot-set verification failed. `unreadable` (a bounded get timed
+ *  out or threw) is NOT evidence the set is broken; `torn` is. */
+export type VerifySetResult =
+  | { ok: true }
+  | { ok: false; reason: 'torn' }
+  | { ok: false; reason: 'unreadable'; atIndex: number; cause: 'timeout' | 'read-error' };
+
+/** WI-37553 — the outcome of a backward snapshot scan. Only `none-in-window` means
+ *  "there is genuinely no snapshot to seed from"; `unreadable` means "ask again". */
+export type SnapshotScanOutcome =
+  | { kind: 'found'; seed: SnapshotSeed }
+  | { kind: 'unreadable'; atIndex: number; cause: 'timeout' | 'read-error' }
+  | { kind: 'none-in-window'; scannedFrom: number; floor: number };
 
 /**
  * WI-2313 (supersedes the single-op P-007 scan): find the latest COMPLETE snapshot
@@ -473,28 +504,63 @@ export async function findLatestCompleteSnapshot(
   maxLookback: number = SNAPSHOT_SCAN_LOOKBACK,
   getTimeoutMs: number = DEFAULT_GET_TIMEOUT_MS,
 ): Promise<SnapshotSeed | null> {
+  const r = await findLatestCompleteSnapshotDetailed(log, maxLookback, getTimeoutMs);
+  return r.kind === 'found' ? r.seed : null;
+}
+
+/**
+ * WI-37553 — the same scan as {@link findLatestCompleteSnapshot}, but it says WHY it
+ * came back empty instead of collapsing every cause into `null`.
+ *
+ * `null` is the right answer for a READER (fold from 0 — correct, just slower), which is
+ * why the boolean-ish wrapper above is unchanged. It is the WRONG answer for the seed
+ * CUTTER: there, "I could not read the tail" and "there is genuinely no snapshot here"
+ * have opposite remedies — retry vs. ship full history — and conflating them silently
+ * turned a transient 5s read timeout into a 5.62 GB full-history seed.
+ *
+ * Outcomes:
+ *  - `found`          — a verified complete set; `seed.seedIndex` is chunk 0.
+ *  - `unreadable`     — a bounded get timed out / threw. Says NOTHING about whether a
+ *                       snapshot exists. Retry (ideally with a longer timeout) before
+ *                       concluding anything.
+ *  - `none-in-window` — the scan genuinely reached `floor` having read every block. This
+ *                       is the only outcome that justifies falling back to full history.
+ */
+export async function findLatestCompleteSnapshotDetailed(
+  log: AdmittedLog,
+  maxLookback: number = SNAPSHOT_SCAN_LOOKBACK,
+  getTimeoutMs: number = DEFAULT_GET_TIMEOUT_MS,
+): Promise<SnapshotScanOutcome> {
   const len = log.length;
   const floor = maxLookback > 0 ? Math.max(0, len - maxLookback) : 0;
   let i = len - 1;
   while (i >= floor) {
-    const op = await readOpBounded(log, i, getTimeoutMs);
-    if (!op) return null; // unavailable/withholding tail → give up, fold from 0 (safe)
+    const r = await readOpBoundedDetailed(log, i, getTimeoutMs);
+    if (r.kind !== 'op') {
+      // Unavailable/withholding tail. The READER wrapper turns this back into `null`
+      // (fold from 0 — safe); the cutter gets the truth so it can retry.
+      return { kind: 'unreadable', atIndex: i, cause: r.kind === 'unavailable' ? 'timeout' : 'read-error' };
+    }
+    const op = r.op;
+    if (!op) return { kind: 'unreadable', atIndex: i, cause: 'timeout' };
     if (isSnapshotOp(op)) {
       const p = op.value as SnapshotPayload | undefined;
       const coversUpTo = p?.coversUpTo ?? 0;
       const chunkCount = p?.chunkCount ?? 1;
-      if (await verifySnapshotSet(log, coversUpTo, chunkCount, getTimeoutMs)) {
-        return { seedIndex: coversUpTo, coversUpTo, chunkCount };
-      }
-      // Torn/incomplete (or corrupt) set — skip its whole span and look for an
-      // earlier complete one. `Math.min` keeps the scan strictly backward even if a
-      // corrupt payload reports a coversUpTo ahead of the current index.
+      const v = await verifySnapshotSet(log, coversUpTo, chunkCount, getTimeoutMs);
+      if (v.ok) return { kind: 'found', seed: { seedIndex: coversUpTo, coversUpTo, chunkCount } };
+      // A set we could not READ is not a set we know to be torn — propagate, don't skip
+      // past it. Skipping was how a complete-but-slow-to-read set vanished from the scan.
+      if (v.reason === 'unreadable') return { kind: 'unreadable', atIndex: v.atIndex, cause: v.cause };
+      // Genuinely torn/corrupt — skip its whole span and look for an earlier complete one.
+      // `Math.min` keeps the scan strictly backward even if a corrupt payload reports a
+      // coversUpTo ahead of the current index.
       i = Math.min(coversUpTo - 1, i - 1);
       continue;
     }
     i--;
   }
-  return null;
+  return { kind: 'none-in-window', scannedFrom: len - 1, floor };
 }
 
 /**

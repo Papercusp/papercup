@@ -1969,3 +1969,180 @@ describe('P-016 role-specific pane folds (papercup paneContext / papercup-deep d
     }
   });
 });
+
+/** EI-20013545515660920: `coord:orient { planSlug, planItems }` returned ok:true
+ *  with no warning while claiming NOTHING. coord:declare-intent had already
+ *  computed the reason (unknown ids + a `hint`); orient discarded its entire
+ *  response and recorded only `intentDeclared: true`.
+ *
+ *  The invariant these tests pin: after orient, a caller can always tell whether
+ *  it HOLDS the lane it asked for. Every path ending in "you hold none of it"
+ *  must say so — including the paths where declare-intent never even attempted a
+ *  claim (no planSlug, no coord:write, no claims block). */
+describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent', () => {
+  describe('summarizeLaneClaim (pure)', () => {
+    it('warns when the declaration SUCCEEDED but nothing was claimed (the filed bug)', () => {
+      const s = summarizeLaneClaim(
+        ['P-005', 'P-046'],
+        {
+          claimed: [],
+          alreadyHeld: [],
+          conflicts: [],
+          released: [],
+          unknown: ['P-005', 'P-046'],
+          hint: 'none of the declared items parse as items of this plan',
+        },
+        { planSlugGiven: true },
+      );
+
+      expect(s.warning).toBeDefined();
+      expect(s.warning).toContain('do NOT hold this lane');
+      expect(s.unknown).toEqual(['P-005', 'P-046']);
+      // declare-intent's own explanation is carried through, not paraphrased away.
+      expect(s.hint).toContain('parse as items of this plan');
+      expect(s.warning).toContain('parse as items of this plan');
+    });
+
+    // CALIBRATION: the control for the assertions above. Without it, a bug that
+    // set `warning` unconditionally would pass every other case in this block.
+    it('does NOT warn when items were actually claimed', () => {
+      const s = summarizeLaneClaim(
+        ['P-005'],
+        { claimed: ['P-005'], alreadyHeld: [], conflicts: [], released: [], unknown: [] },
+        { planSlugGiven: true },
+      );
+      expect(s.warning).toBeUndefined();
+      expect(s.claimed).toEqual(['P-005']);
+    });
+
+    it('does NOT warn when the lane was ALREADY held (a re-declare is a legitimate no-op)', () => {
+      const s = summarizeLaneClaim(
+        ['P-005'],
+        { claimed: [], alreadyHeld: ['P-005'], conflicts: [], released: [], unknown: [] },
+        { planSlugGiven: true },
+      );
+      expect(s.warning).toBeUndefined();
+    });
+
+    it('warns and names the peer conflict when the lane is contested', () => {
+      const s = summarizeLaneClaim(
+        ['P-005'],
+        {
+          claimed: [],
+          alreadyHeld: [],
+          released: [],
+          unknown: [],
+          conflicts: [{ itemId: 'P-005', holder: 'su-peer' }],
+        },
+        { planSlugGiven: true },
+      );
+      expect(s.warning).toContain('conflicts');
+      expect(s.conflicts).toHaveLength(1);
+    });
+
+    it('warns when planItems was passed WITHOUT planSlug — declare-intent skips the claim entirely', () => {
+      // The second silent no-op on this path: reconcile runs only when BOTH are
+      // present, so without planSlug nothing is attempted and nothing errors.
+      const s = summarizeLaneClaim(['P-005'], undefined, { planSlugGiven: false });
+      expect(s.warning).toContain('WITHOUT planSlug');
+      expect(s.claimed).toEqual([]);
+    });
+
+    it('warns when the declaration itself failed (no coord:write)', () => {
+      const s = summarizeLaneClaim(['P-005'], undefined, { planSlugGiven: true, declareFailed: true });
+      expect(s.warning).toContain('FAILED');
+    });
+
+    it('warns when no claims block came back at all', () => {
+      const s = summarizeLaneClaim(['P-005'], undefined, { planSlugGiven: true });
+      expect(s.warning).toContain('no claims block');
+    });
+
+    it('never reports a claim the payload did not contain (defensive against a shape change)', () => {
+      const s = summarizeLaneClaim(['P-005'], { claimed: 'P-005' }, { planSlugGiven: true });
+      expect(s.claimed).toEqual([]);
+      expect(s.warning).toBeDefined();
+    });
+  });
+
+  describe('composeOrient wiring', () => {
+    const LANE_CORE = {
+      ...CORE,
+      'plans:get': () => ({ results: [{ now: { state: null, next: null }, items: [] }] }),
+    };
+
+    it('surfaces the warning while intentDeclared is STILL true (proving the old signal was insufficient)', async () => {
+      const { call } = fakeCall({
+        ...LANE_CORE,
+        'coord:declare-intent': () => ({
+          ok: true,
+          claims: {
+            claimed: [],
+            alreadyHeld: [],
+            conflicts: [],
+            released: [],
+            unknown: ['P-005', 'P-046'],
+            hint: 'none of the declared items parse as items of this plan',
+          },
+        }),
+      });
+
+      const r = await composeOrient(
+        {
+          intent: 'work the lane',
+          planSlug: 'retire-mug-kettle-su-only-2026-08-09',
+          planItems: ['P-005', 'P-046'],
+          harness: 'h',
+        },
+        call,
+        'me',
+      );
+
+      // This is the exact pair that made the bug invisible: ok + intentDeclared
+      // both true. They stay true; laneClaim is what disambiguates them.
+      expect(r.ok).toBe(true);
+      expect(r.intentDeclared).toBe(true);
+      expect(r.laneClaim?.warning).toContain('do NOT hold this lane');
+      expect(r.laneClaim?.unknown).toEqual(['P-005', 'P-046']);
+    });
+
+    it('reports a successful claim without a warning', async () => {
+      const { call } = fakeCall({
+        ...LANE_CORE,
+        'coord:declare-intent': () => ({
+          ok: true,
+          claims: { claimed: ['P-005'], alreadyHeld: [], conflicts: [], released: [], unknown: [] },
+        }),
+      });
+      const r = await composeOrient(
+        { intent: 'work the lane', planSlug: 'p', planItems: ['P-005'], harness: 'h' },
+        call,
+        'me',
+      );
+      expect(r.laneClaim?.claimed).toEqual(['P-005']);
+      expect(r.laneClaim?.warning).toBeUndefined();
+    });
+
+    it('omits laneClaim entirely when no planItems were requested', async () => {
+      const { call } = fakeCall({ ...LANE_CORE, 'coord:declare-intent': () => ({ ok: true }) });
+      const r = await composeOrient({ intent: 'just declaring' }, call, 'me');
+      expect(r.laneClaim).toBeUndefined();
+    });
+
+    it('still reports the lane as unheld when declare-intent throws', async () => {
+      const { call } = fakeCall({
+        ...LANE_CORE,
+        'coord:declare-intent': () => {
+          throw new Error('no coord:write');
+        },
+      });
+      const r = await composeOrient(
+        { intent: 'work the lane', planSlug: 'p', planItems: ['P-005'], harness: 'h' },
+        call,
+        'me',
+      );
+      expect(r.intentDeclared).toBe(false);
+      expect(r.laneClaim?.warning).toContain('FAILED');
+    });
+  });
+});

@@ -2422,14 +2422,43 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         // is the CONFIDENCE THAT SOMETHING IS WRONG plus the checks that discriminate —
         // never a verdict this code has no evidence for.
         const runMin = missRunStartedAt ? Math.max(1, Math.round((Date.now() - missRunStartedAt) / 60_000)) : 0;
+        // WI-37574: of the three discriminators below, (2) is the ONE this process
+        // can answer from its own memory — (1) needs the rig over SSH and (3) needs a
+        // topic comparison, but the content-announce peer count for THIS topic is an
+        // O(1) Map read we are already holding. Asking the READER to go measure it
+        // cost two consecutive wakes a manual journal dig on EI-18808621019872598,
+        // and its absence invited the wrong reading — "pot-git pairing is COMPLETELY
+        // down", i.e. a swarm fault — when the swarm was healthy and simply had no
+        // peer (the rig guest was dark; ARP FAILED).
+        //
+        // Dynamically imported for exactly the reason getBootedHarness is (see
+        // resolveHiveGitTopicHex): a static import drags swarm.ts's real module graph
+        // into every caller's test, and swarm.ts pulls symbols from peer-dial-registry
+        // that partial mocks do not provide.
+        //
+        // ⚠ It degrades to UNKNOWN, never to 0. "no peers" and "could not measure"
+        // route the investigation to OPPOSITE conclusions, and this is a logging path
+        // that must never throw.
+        let swarmEvidence = 'contentPeers=UNKNOWN lastAnnounceRecv=UNKNOWN (swarm state unreadable this tick)';
+        try {
+          const { contentPeerCountForTopic, lastContentAnnounceRecvMs } = await import('../../sync/hyperbee/swarm');
+          const peers = contentPeerCountForTopic(topicHex);
+          const lastMs = lastContentAnnounceRecvMs(topicHex);
+          const lastTxt = lastMs == null ? 'never' : `~${Math.max(0, Math.round((Date.now() - lastMs) / 60_000))}m ago`;
+          swarmEvidence = `contentPeers=${peers} lastAnnounceRecv=${lastTxt}`;
+        } catch {
+          // keep UNKNOWN — an unmeasurable swarm is not an empty one
+        }
         console.warn(
           `${missBase}. ⚠ PERSISTENT-MISS ESCALATION: ${missRunLength} consecutive ticks over ~${runMin}m with ZERO dials ` +
             `for this install. That is past the point hello-channel churn explains — this run is a REAL signal, unlike any ` +
             `single miss. This log names NO cause; run these to discriminate: ` +
             `(1) is the peer PROCESS even up? on the macOS rig, bin/vm-rig/preflight-login.sh exits 2 on the kcpassword/` +
             `loginwindow silent-death class (WI-4070/EI-13010), which presents EXACTLY as a swarm wedge with no error; ` +
-            `(2) is any swarm connection present at all (peer_connected / open channel counts) — if yes, the peers are ` +
-            `talking and this is a registry/topic problem, not reachability; ` +
+            `(2) ANSWERED IN-BAND, do not re-derive it — swarm content-announce state for THIS topic at this instant: ` +
+            `${swarmEvidence}. Reading: contentPeers>0 ⇒ the peers ARE talking, so this is a registry/topic problem and ` +
+            `NOT reachability; contentPeers=0 with lastAnnounceRecv=never ⇒ nothing has ever paired on this topic, which ` +
+            `points at reachability (check 1). This is a MEASUREMENT, not a cause; ` +
             `(3) does the dial topic match the hello channel's topic (the divergence the topicHex above exists to expose). ` +
             `Run-length + start are persisted at routines.metadata->'bootstrap'.{consecutiveMisses,firstMissAt}.`,
         );
