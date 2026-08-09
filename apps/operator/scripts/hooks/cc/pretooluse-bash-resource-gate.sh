@@ -1802,6 +1802,59 @@ for _seg in re.split(r'[;&|\n]', _scannable()):
     if _pk_m and _PKILL_DEV_TOKEN_RE.search(_pk_m.group(2)):
         deny(_PKILL_DENY.format(op=_pk.strip()[:160]))
 
+# ── ancestor-chain kill guard (WI-36926) ────────────────────────────────────
+# On 2026-08-08 11:52:49 EDT an agent tearing down a Tauri rig walked its app's
+# ancestor chain and SIGTERM'd every ancestor:
+#
+#   CHAIN="$APP"; P=$(ps -o ppid= -p "$APP"|tr -d ' ')
+#   while [ -n "$P" ] && [ "$P" != "1" ]; do CHAIN="$CHAIN $P"; P=$(ps -o ppid= -p "$P"|tr -d ' '); done
+#   for p in $CHAIN …; do kill "$p"; done
+#
+# The loop stops AT pid 1 — but `systemd --user` has PPID 1, so the chain
+# INCLUDES the user systemd manager. A user manager that receives SIGTERM
+# activates exit.target, i.e. it LOGS THE OWNER OUT. That is exactly what
+# happened: the owner's GNOME session died 2 seconds later, and they lost their
+# desktop plus every agent session on the box.
+#
+# The script's own comment read "stopping before systemd — exact pids only", so
+# this is not carelessness; the author believed pid 1 WAS the systemd to stop
+# before. The off-by-one-layer is invisible unless you already know that a user
+# manager is an ordinary child of init. Worse, it is easy to hit by accident: a
+# backgrounded agent job REPARENTS to `systemd --user`, so an ancestor walk
+# starting from one reaches the user manager in a SINGLE hop.
+#
+# Deny requires all three signals together — walking parents, stopping at pid 1,
+# and signalling — so an ordinary `kill "$pid"` or a read-only ancestor walk is
+# untouched. This is a TEXTUAL heuristic and cannot evaluate "$CHAIN": the
+# airtight floor is scripts/lib/session-floor.sh, which this message points at.
+_ANCESTOR_KILL_DENY = (
+    'ancestor-chain kill guard (WI-36926): this walks a parent chain, stops at '
+    'pid 1, and then signals what it collected. `systemd --user` — the user '
+    "systemd MANAGER — is an ordinary child of init, so a walk that stops AT "
+    'pid 1 still INCLUDES it, and a SIGTERM to a user manager activates '
+    'exit.target, which LOGS THE OWNER OUT of their desktop. This exact command '
+    'shape did that on 2026-08-08 11:52:49 EDT and cost the owner their session '
+    'plus every agent on the box. Note a backgrounded agent job reparents to '
+    '`systemd --user`, so the walk can reach it in ONE hop. Fixes, best first: '
+    '(1) do not walk ancestors at all — kill the recorded child pids you '
+    'launched, or use processes:kill {{ taskId }}, which kills the cgroup '
+    'subtree and cannot reach the session; (2) filter every candidate through '
+    'the session floor before signalling: '
+    '`scripts/session-floor.sh filter $CHAIN` (or source '
+    'scripts/lib/session-floor.sh and call session_floor_is_protected), which '
+    'refuses pid 1, the user manager, gnome-session-binary, gnome-shell and '
+    'Xwayland; (3) stop the walk at the session boundary rather than at pid 1.'
+)
+
+_ak_src = _scannable()
+_ak_walks = re.search(
+    r'ps\s+(?:-\w+\s+)*-o\s+ppid=|awk\s*[\'"]?/\^PPid:/|/proc/\$\{?\w+\}?/status', _ak_src)
+_ak_stops_at_1 = re.search(r'(?:!=|-ne)\s*["\']?1["\']?', _ak_src)
+_ak_signals = re.search(
+    r'(?:^|[;&|\n]\s*|\bdo\s+|\bthen\s+|`|\$\()\s*(?:sudo\s+)?kill\s+(?!-0\b)', _ak_src)
+if _ak_walks and _ak_stops_at_1 and _ak_signals:
+    deny(_ANCESTOR_KILL_DENY)
+
 # ── process-table wait-loop self-match guard (EI-19312699396945642) ──────────
 # `until ! pgrep -f '<pat>' …; do sleep …; done` can NEVER exit when run from
 # an agent shell: `pgrep -f` matches the FULL command line, and the loop's own
