@@ -8,7 +8,6 @@ import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 import { Button } from '@/app/harness/Button';
 import { useLexicon } from '@/lib/useLexicon';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import { AuthSignInCards } from '@/app/_components/AuthSignInCards';
 import RouteLink from '@/app/_components/RouteLink';
 import { LazyDetails } from '@/app/_components/LazyDetails';
 
@@ -102,21 +101,14 @@ export default function ApiKeysPage() {
 
   return (
     <div>
-      <h1>Keys &amp; OAuth</h1>
+      <h1>API keys</h1>
       <p className="pc-settings-intro">
-        Sign in to your subscriptions (recommended) or bring your own API keys.
-        Either gets the operator brain + agents talking to the LLMs.
+        Bring-your-own API keys for the services Papercusp talks to. To sign in to a
+        Claude or Codex <em>subscription</em> instead, add it as a{' '}
+        <RouteLink href="/settings/deploy-accounts">deploy account</RouteLink> — that
+        pool is the single place account logins live, and one of its accounts can be
+        marked the default for everything on this machine.
       </p>
-
-      <section className="pc-settings-section">
-        <h2>Sign in</h2>
-        <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
-          One-click OAuth into your Claude (Anthropic) and ChatGPT
-          (via omp) accounts. The CLI&rsquo;s sign-in flow runs in an
-          inline terminal; you complete it in your browser.
-        </p>
-        <AuthSignInCards />
-      </section>
 
       <div className="pc-warn pc-settings-inline-callout" role="status">
         <strong>Keys stay on this computer.</strong>
