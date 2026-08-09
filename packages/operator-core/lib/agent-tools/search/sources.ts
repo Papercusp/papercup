@@ -487,7 +487,7 @@ const workItem: SearchSource = {
     const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`);
     const rows = (await sql`
       ${lex.with}
-      SELECT issue_id, scope, title, body, kind, state, severity,
+      SELECT issue_id, scope, title, body, kind, state, severity, updated_at,
              ${lex.coverage} AS coverage,
              ${lex.rank} AS rank,
              ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
@@ -508,6 +508,7 @@ const workItem: SearchSource = {
       kind: string;
       state: string;
       severity: string;
+      updated_at: string | Date | null;
       rank: number;
       highlight: string;
     }>;
@@ -523,6 +524,10 @@ const workItem: SearchSource = {
           excerpt: `[${r.kind}/${r.state}/${r.severity}] ${trunc(body)}`,
           highlight: r.highlight,
           score: r.rank,
+          // See WORK_ITEM_RECENCY_NOTE — without this a work-item reaches the
+          // recency re-rank with no timestamp, which scores as decay 0 (OLDEST),
+          // not as "unknown".
+          ts: r.updated_at,
           rankers: ['lexical'],
         },
       };

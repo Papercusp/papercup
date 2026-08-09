@@ -613,3 +613,232 @@ describe('mergeCarryRows — dropped rows are reported, never silent (EI-1946373
     expect(merged.droppedChecks).toEqual([`claim ${CARRY_NOTE_MAX_CHECKS}`]);
   });
 });
+
+describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AVOIDED (P-013)', () => {
+  const check = (n: number) => ({ claim: `claim ${n}`, recheck: `probe ${n}`, verified: `ok ${n}` });
+  const wall = (n: number) => ({ claim: `wall ${n}`, recheck: `probe ${n}` });
+  const priorNoteWith = (
+    checks: Array<{ id?: string; claim: string; recheck?: string; verified?: string }>,
+    walls: Array<{ id?: string; claim: string; recheck?: string }> = [],
+  ) => mergeCarryRows({ priorNote: null, baseNote: 'body', checks, walls, hasNoteWrite: true }).note;
+
+  describe('sanitizeCarryRowId / carryRowKey', () => {
+    it('repairs an out-of-charset id instead of rejecting the row', () => {
+      // Repair-don't-refuse: the id rides attached to a multi-KB note.
+      expect(sanitizeCarryRowId('Gate Green!')).toBe('gate-green');
+      expect(sanitizeCarryRowId('  --wi-37459--  ')).toBe('wi-37459');
+      expect(sanitizeCarryRowId('x'.repeat(CARRY_ROW_ID_MAX + 20))).toHaveLength(CARRY_ROW_ID_MAX);
+    });
+
+    it('yields null for input that cannot be an id, so such a row falls back to claim identity', () => {
+      for (const bad of ['', '   ', '!!!', 42, null, undefined]) expect(sanitizeCarryRowId(bad)).toBeNull();
+      expect(carryRowKey({ id: '!!!', claim: 'the claim' })).toBe(carryRowKey({ claim: 'the claim' }));
+    });
+
+    it('TAGS the two namespaces apart so a claim can never collide with another row id', () => {
+      expect(carryRowKey({ id: 'gate' })).not.toBe(carryRowKey({ claim: 'gate' }));
+    });
+  });
+
+  describe('the id survives render -> parse (an id that does not round-trip is no identity at all)', () => {
+    it('round-trips through a check line, with and without evidence', () => {
+      for (const row of [
+        { id: 'gate-green', claim: 'the gate is green at tip', recheck: 'run it', verified: 'seen 13:0xZ' },
+        { id: 'gate-green', claim: 'the gate is green at tip', recheck: 'run it' },
+      ]) {
+        expect(parseCheckLine(renderCheckLine(row))).toMatchObject(row);
+      }
+    });
+
+    it('round-trips through a wall line', () => {
+      const row = { id: 'owner-ok', claim: 'awaiting owner OK to kill 3 PIDs', recheck: 'ps' };
+      expect(parseWallLine(renderWallLine(row))).toMatchObject(row);
+    });
+
+    it('leaves an id-less row byte-identical — no `[#…]` noise on rows that do not use it', () => {
+      expect(renderCheckLine({ claim: 'plain', recheck: 'p' })).toBe('- ? plain — re-check: p');
+      expect(renderWallLine({ claim: 'plain' })).toBe('- plain');
+    });
+
+    it('survives a FULL note round-trip, which is the path a cold wake actually reads', () => {
+      const note = priorNoteWith([{ id: 'k', claim: 'claim 1', recheck: 'probe 1', verified: 'ok 1' }]);
+      expect(splitCarryNoteChecks(note).checks[0]).toMatchObject({ id: 'k', claim: 'claim 1' });
+    });
+  });
+
+  describe('upsert-by-id — identity independent of WORDING', () => {
+    it('re-wording a claim under a stable id keeps its evidence and age, and is NOT a drop', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([{ id: 'k', claim: 'the old wording', recheck: 'probe', verified: 'ok' }]),
+        baseNote: 'body',
+        checks: [{ id: 'k', claim: 'a tightened wording' }],
+        hasNoteWrite: true,
+      });
+      expect(merged.checks).toHaveLength(1);
+      expect(merged.checks[0]).toMatchObject({ id: 'k', claim: 'a tightened wording', recheck: 'probe' });
+      expect(merged.checks[0]?.verified).toContain('ok');
+      // The point: the row was UPDATED, so nothing was lost and nothing is reported lost.
+      expect(merged.droppedChecks).toEqual([]);
+    });
+
+    it('CONTROL — the same reword WITHOUT an id loses the evidence and reads as a drop', () => {
+      // Calibration: without this, the case above would also pass for an implementation
+      // that simply never drops anything.
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([{ claim: 'the old wording', recheck: 'probe', verified: 'ok' }]),
+        baseNote: 'body',
+        checks: [{ claim: 'a tightened wording' }],
+        hasNoteWrite: true,
+      });
+      expect(merged.checks[0]?.verified).toBeUndefined();
+      expect(merged.droppedChecks).toEqual(['the old wording']);
+    });
+
+    it('preserves sinceMs across a reword — age is evidence and must not reset', () => {
+      const t0 = Date.parse('2026-08-01T00:00:00.000Z');
+      const first = mergeCarryRows({
+        priorNote: null,
+        baseNote: 'body',
+        checks: [{ id: 'k', claim: 'original' }],
+        hasNoteWrite: true,
+        nowMs: t0,
+      });
+      const second = mergeCarryRows({
+        priorNote: first.note,
+        baseNote: 'body',
+        checks: [{ id: 'k', claim: 'reworded' }],
+        hasNoteWrite: true,
+        nowMs: t0 + 86_400_000,
+      });
+      expect(second.checks[0]?.sinceMs).toBe(t0);
+    });
+  });
+
+  describe("rowsMode 'merge' — the rows you did not mention SURVIVE", () => {
+    it('adding ONE row keeps the other five (the measured loss shape, now averted)', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([1, 2, 3, 4, 5].map(check)),
+        baseNote: 'body',
+        checks: [{ claim: 'a brand new claim' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      expect(merged.checks.map((c) => c.claim)).toEqual([
+        'claim 1',
+        'claim 2',
+        'claim 3',
+        'claim 4',
+        'claim 5',
+        'a brand new claim',
+      ]);
+      expect(merged.droppedChecks).toEqual([]);
+      // Carried EVIDENCE survives, not merely the claim text (it keeps its original
+      // verification stamp — inherited evidence is never re-stamped as fresh).
+      expect(merged.checks[0]?.verified).toContain('ok 1');
+    });
+
+    it('CONTROL — the identical write under the default replace mode DOES drop them', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([1, 2, 3, 4, 5].map(check)),
+        baseNote: 'body',
+        checks: [{ claim: 'a brand new claim' }],
+        hasNoteWrite: true,
+      });
+      expect(merged.checks).toHaveLength(1);
+      expect(merged.droppedChecks).toHaveLength(5);
+    });
+
+    it('updates a mentioned row IN PLACE, keeping its position so the note does not reshuffle', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([1, 2, 3].map(check)),
+        baseNote: 'body',
+        checks: [{ claim: 'claim 2', verified: 'freshly re-verified' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      expect(merged.checks.map((c) => c.claim)).toEqual(['claim 1', 'claim 2', 'claim 3']);
+      expect(merged.checks[1]?.verified).toContain('freshly re-verified');
+    });
+
+    it('merges WALLS by the same contract — an owner-gated commitment is the worst row to drop', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([], [1, 2].map(wall)),
+        baseNote: 'body',
+        walls: [{ claim: 'wall 3' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      expect(merged.walls.map((w) => w.claim)).toEqual(['wall 1', 'wall 2', 'wall 3']);
+      expect(merged.droppedWalls).toEqual([]);
+    });
+
+    it('treats [] as a NO-OP, never a clear — a clear must stay deliberate', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([1, 2].map(check), [1].map(wall)),
+        baseNote: 'body',
+        checks: [],
+        walls: [],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      expect(merged.checks.map((c) => c.claim)).toEqual(['claim 1', 'claim 2']);
+      expect(merged.walls.map((w) => w.claim)).toEqual(['wall 1']);
+      expect(merged.droppedChecks).toEqual([]);
+    });
+
+    it('CONTROL — replace + [] still clears, so merge did not make clearing impossible', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([1, 2].map(check)),
+        baseNote: 'body',
+        checks: [],
+        hasNoteWrite: true,
+      });
+      expect(merged.checks).toEqual([]);
+      expect(merged.droppedChecks).toEqual(['claim 1', 'claim 2']);
+    });
+  });
+
+  describe('overflowChecks — a merge must not eat a NEW row silently', () => {
+    it('reports the supplied row the cap cut, instead of dropping it behind a full set', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => check(i + 1))),
+        baseNote: 'body',
+        checks: [{ claim: 'one row past the cap' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      // Carried rows hold their slots, so it is the caller's NEW row that falls off...
+      expect(merged.checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+      expect(merged.checks.map((c) => c.claim)).not.toContain('one row past the cap');
+      expect(merged.droppedChecks).toEqual([]);
+      // ...and the caller is TOLD, rather than left to diff a count they never recorded.
+      expect(merged.overflowChecks).toEqual(['one row past the cap']);
+    });
+
+    it('reports a supplied WALL the cap cut', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([], Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => wall(i + 1))),
+        baseNote: 'body',
+        walls: [{ claim: 'one wall past the cap' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      expect(merged.overflowWalls).toEqual(['one wall past the cap']);
+    });
+
+    it('is EMPTY on an ordinary write — it must not cry wolf on every checkpoint', () => {
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith([1, 2].map(check)),
+        baseNote: 'body',
+        checks: [{ claim: 'claim 3' }],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      expect(merged.overflowChecks).toEqual([]);
+      expect(merged.overflowWalls).toEqual([]);
+      // ...and on the carry-forward path, where nothing was supplied at all.
+      const carried = mergeCarryRows({ priorNote: priorNoteWith([1].map(check)), baseNote: 'b', hasNoteWrite: true });
+      expect(carried.overflowChecks).toEqual([]);
+    });
+  });
+});

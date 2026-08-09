@@ -489,7 +489,7 @@ export default defineTool({
 
     // Unreachable today (this tool passes no `guard`, and only a blocked guard skips
     // the transform) — but a missing capture must never silently read as "no rows".
-    const { walls, checks, narrativeBody, droppedWalls, droppedChecks } =
+    const { walls, checks, narrativeBody, droppedWalls, droppedChecks, overflowWalls, overflowChecks } =
       captured.merged ??
       mergeCarryRows({
         priorNote: null,
@@ -754,6 +754,27 @@ export default defineTool({
                     `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
                     `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
                     `pass no \`walls\` at all, or use rowsMode:'merge' so unmentioned rows survive.`,
+                }
+              : {}),
+            /**
+             * P-013: rows YOU supplied that the row cap cut. `checksDropped` above can
+             * only see rows lost from the CARRIED set, so without this a 13th row sent
+             * into a 12-row cap disappears behind `ok: true` — the same silence, one
+             * step over. Absent when nothing overflowed.
+             */
+            ...(overflowChecks.length || overflowWalls.length
+              ? {
+                  ...(overflowChecks.length
+                    ? { checksOverflowed: overflowChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)) }
+                    : {}),
+                  ...(overflowWalls.length
+                    ? { wallsOverflowed: overflowWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)) }
+                    : {}),
+                  overflowNote:
+                    `the row cap (${CARRY_NOTE_MAX_CHECKS} checks / ${CARRY_NOTE_MAX_WALLS} walls) cut ` +
+                    `${overflowChecks.length + overflowWalls.length} row(s) YOU supplied — they were NOT stored. ` +
+                    `Retire a carried row first (re-send the set you want under the default rowsMode:'replace'), ` +
+                    `then add the new one.`,
                 }
               : {}),
             /** WI-7264: fields trimmed to their soft cap so the write could SUCCEED instead

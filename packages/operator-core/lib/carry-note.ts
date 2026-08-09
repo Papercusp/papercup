@@ -765,6 +765,10 @@ export function mergeCarryRows(opts: {
   const rawParts = splitCarryNoteWalls(opts.baseNote ?? '');
   const rawCheckParts = splitCarryNoteChecks(rawParts.body);
   const merging = opts.mode === 'merge';
+  /** What the CALLER actually offered this write, before the merge pre-pass folds the
+   *  prior set in — the only list against which "your row did not fit" is decidable. */
+  const suppliedWalls = opts.walls ?? (rawParts.walls.length > 0 ? rawParts.walls : undefined);
+  const suppliedChecks = opts.checks ?? (rawCheckParts.checks.length > 0 ? rawCheckParts.checks : undefined);
   const walls =
     opts.walls !== undefined
       ? normalizeWallEntries(upsertOntoPrior(opts.walls, priorParts.walls, merging), priorParts.walls, opts.nowMs)
@@ -797,6 +801,8 @@ export function mergeCarryRows(opts: {
     checks,
     droppedWalls: droppedClaims(priorParts.walls, walls),
     droppedChecks: droppedClaims(priorCheckParts.checks, checks),
+    overflowWalls: suppliedWalls ? droppedClaims(suppliedWalls, walls) : [],
+    overflowChecks: suppliedChecks ? droppedClaims(suppliedChecks, checks) : [],
   };
 }
 

@@ -6,12 +6,30 @@ vi.mock('../deployment/account-pool', () => ({ accountByCredentialRef: vi.fn() }
 import { resolveBoundAccount, resolveAccountPool, poolAccountIdForRef, localLoginCredentialRef } from './account-resolver';
 import { loadAccountPool, readDefaultAccountId } from '../deployment/account-pool-store';
 import { accountByCredentialRef } from '../deployment/account-pool';
+import type { ClaudeAccount } from '../deployment/account-pool';
 
 const mockedLoad = vi.mocked(loadAccountPool);
 const mockedByRef = vi.mocked(accountByCredentialRef);
 const mockedDefault = vi.mocked(readDefaultAccountId);
 
-const acct = (id: string, credentialRef: string) => ({ id, credentialRef });
+/**
+ * A COMPLETE `ClaudeAccount`, so the pool fixtures below satisfy `AccountPool` on their own
+ * and every `mockResolvedValue` can take them UNCAST.
+ *
+ * The whole file previously closed each mock setter with `as never` (37 of them), which is the
+ * idiom `lint:mock-cast-escape` exists to stop: the cast silences the fixture type-check, so
+ * when `ClaudeAccount` gains a required field these fixtures go stale INVISIBLY to tsc and fail
+ * at runtime in some other file. Pass field overrides through `extra` rather than re-adding a
+ * cast. Mirrors the sibling convention in `capacity-probe.test.ts`.
+ */
+const acct = (id: string, credentialRef: string, extra: Partial<ClaudeAccount> = {}): ClaudeAccount => ({
+  id,
+  credentialRef,
+  addedAt: 0,
+  boundTo: [],
+  rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 },
+  ...extra,
+});
 
 /**
  * No default set is the overwhelmingly common case, so it is the baseline every test
@@ -34,7 +52,7 @@ describe('resolveBoundAccount', () => {
 
   it('uses the env-pinned account when PAPERCUSP_ACCOUNT_ID matches a pool account', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = 'acct-b';
-    mockedLoad.mockResolvedValue({ accounts: [acct('acct-a', 'ref:a'), acct('acct-b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('acct-a', 'ref:a'), acct('acct-b', 'ref:b')] });
     expect(await resolveBoundAccount('ws')).toEqual({
       accountId: 'acct-b', credentialRef: 'ref:b', source: 'env',
     });
@@ -42,7 +60,7 @@ describe('resolveBoundAccount', () => {
 
   it('throws when the env-pinned account id is not in the pool', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = 'missing';
-    mockedLoad.mockResolvedValue({ accounts: [acct('acct-a', 'ref:a')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('acct-a', 'ref:a')] });
     await expect(resolveBoundAccount('ws')).rejects.toThrow(/not in the account pool/);
   });
 
@@ -51,8 +69,8 @@ describe('resolveBoundAccount', () => {
     // never builds its per-account dispatcher and all subscriptions share one egress IP.
     process.env.PAPERCUSP_ACCOUNT_ID = 'acct-b';
     mockedLoad.mockResolvedValue({
-      accounts: [acct('acct-a', 'ref:a'), { id: 'acct-b', credentialRef: 'ref:b', egress: { proxyUrl: 'http://10.0.0.2:3128' } }],
-    } as never);
+      accounts: [acct('acct-a', 'ref:a'), acct('acct-b', 'ref:b', { egress: { proxyUrl: 'http://10.0.0.2:3128' } })],
+    });
     expect(await resolveBoundAccount('ws')).toEqual({
       accountId: 'acct-b', credentialRef: 'ref:b', egress: { proxyUrl: 'http://10.0.0.2:3128' }, source: 'env',
     });
@@ -64,9 +82,9 @@ describe('resolveBoundAccount', () => {
     mockedLoad.mockResolvedValue({
       accounts: [
         acct('acct-a', 'ref:a'),
-        { id: 'acct-b', credentialRef: 'ref:b', egressPool: [{ proxyUrl: 'http://10.0.0.2:3128' }, {}] },
+        acct('acct-b', 'ref:b', { egressPool: [{ proxyUrl: 'http://10.0.0.2:3128' }, {}] }),
       ],
-    } as never);
+    });
     expect(await resolveBoundAccount('ws')).toEqual({
       accountId: 'acct-b',
       credentialRef: 'ref:b',
@@ -76,14 +94,14 @@ describe('resolveBoundAccount', () => {
   });
 
   it('uses the sole pool account when there is no env pin and exactly one account', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] });
     expect(await resolveBoundAccount('ws')).toEqual({
       accountId: 'only', credentialRef: 'ref:only', source: 'sole-pool-account',
     });
   });
 
   it('falls back to the local login bundle when the pool is empty', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [] });
     const r = await resolveBoundAccount('ws');
     expect(r.accountId).toBe('local');
     expect(r.source).toBe('local-fallback');
@@ -91,7 +109,7 @@ describe('resolveBoundAccount', () => {
   });
 
   it('falls back to local when >1 account and no env pin (ambiguous → safe default)', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     expect((await resolveBoundAccount('ws')).source).toBe('local-fallback');
   });
 
@@ -106,20 +124,20 @@ describe('resolveBoundAccount', () => {
 
   it('trims surrounding whitespace on PAPERCUSP_ACCOUNT_ID before matching a pool account', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = '  acct-b  ';
-    mockedLoad.mockResolvedValue({ accounts: [acct('acct-a', 'ref:a'), acct('acct-b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('acct-a', 'ref:a'), acct('acct-b', 'ref:b')] });
     expect(await resolveBoundAccount('ws')).toEqual({ accountId: 'acct-b', credentialRef: 'ref:b', source: 'env' });
   });
 
   it('treats a whitespace-only PAPERCUSP_ACCOUNT_ID as NO pin (falls through to the sole pool account)', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = '   ';
-    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] });
     expect(await resolveBoundAccount('ws')).toEqual({ accountId: 'only', credentialRef: 'ref:only', source: 'sole-pool-account' });
   });
 
   // ── the owner's default account (default-deploy-account-2026-08-08 P-003) ──
 
   it('uses the owner default INSTEAD of the local fallback when >1 account (the ambiguity it resolves)', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     mockedDefault.mockResolvedValue('b');
     expect(await resolveBoundAccount('ws')).toEqual({
       accountId: 'b', credentialRef: 'ref:b', egress: undefined, egressPool: undefined, source: 'default-account',
@@ -131,14 +149,14 @@ describe('resolveBoundAccount', () => {
     // checked ABOVE the sole-pool shortcut so /healthz and the logs can answer "why is it on
     // this account" from `source` alone. Collapsing the two would make an explicit owner
     // choice indistinguishable from a box that happens to have one account registered.
-    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] });
     mockedDefault.mockResolvedValue('only');
     expect((await resolveBoundAccount('ws')).source).toBe('default-account');
   });
 
   it('the env pin still outranks the owner default', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = 'a';
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     mockedDefault.mockResolvedValue('b');
     const r = await resolveBoundAccount('ws');
     expect([r.accountId, r.source]).toEqual(['a', 'env']);
@@ -149,9 +167,9 @@ describe('resolveBoundAccount', () => {
     mockedLoad.mockResolvedValue({
       accounts: [
         acct('a', 'ref:a'),
-        { id: 'b', credentialRef: 'ref:b', egress: { localAddress: '10.0.0.2' }, egressPool: [{}] },
+        acct('b', 'ref:b', { egress: { localAddress: '10.0.0.2' }, egressPool: [{}] }),
       ],
-    } as never);
+    });
     mockedDefault.mockResolvedValue('b');
     expect(await resolveBoundAccount('ws')).toEqual({
       accountId: 'b',
@@ -166,13 +184,13 @@ describe('resolveBoundAccount', () => {
     // Deliberately asymmetric with the env pin, which throws on the same input. The env pin is
     // set by an operator for one process and should fail loudly; the default is persisted
     // config that outlives the account it names, so removing an account must not wedge routing.
-    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('only', 'ref:only')] });
     mockedDefault.mockResolvedValue('deleted-account');
     expect((await resolveBoundAccount('ws')).source).toBe('sole-pool-account');
   });
 
   it('a stale default with an ambiguous pool degrades all the way to the local login, still no throw', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     mockedDefault.mockResolvedValue('deleted-account');
     expect((await resolveBoundAccount('ws')).source).toBe('local-fallback');
   });
@@ -182,8 +200,8 @@ describe('resolveBoundAccount', () => {
     // written before that validation existed — it must degrade, not egress Claude traffic on a
     // Codex credential.
     mockedLoad.mockResolvedValue({
-      accounts: [acct('claude-a', 'ref:claude-a'), { id: 'codex-a', provider: 'codex', credentialRef: 'ref:codex-a' }],
-    } as never);
+      accounts: [acct('claude-a', 'ref:claude-a'), acct('codex-a', 'ref:codex-a', { provider: 'codex' })],
+    });
     mockedDefault.mockResolvedValue('codex-a');
     expect((await resolveBoundAccount('ws')).source).toBe('sole-pool-account');
   });
@@ -193,14 +211,14 @@ describe('resolveBoundAccount', () => {
     // override row must not resolve as "no default set" (undefined), because the gateway caches
     // its resolution for its whole lifetime — that would route every unpinned call to the box's
     // own credential for hours while looking perfectly healthy.
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     mockedDefault.mockRejectedValue(new Error('pg down'));
     await expect(resolveBoundAccount('ws')).rejects.toThrow(/default-account read failed/);
     expect(mockedDefault).toHaveBeenCalledTimes(3); // same retry budget as the pool load
   });
 
   it('retries a TRANSIENT default-read blip then succeeds', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     mockedDefault.mockRejectedValueOnce(new Error('blip')).mockResolvedValue('b');
     expect((await resolveBoundAccount('ws')).accountId).toBe('b');
   });
@@ -219,7 +237,7 @@ describe('resolveAccountPool (EI-535 failover)', () => {
   });
 
   it('returns ALL pool accounts in order when there is no pin (not ambiguous → use them all)', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['a', 'b']);
   });
 
@@ -227,16 +245,16 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     mockedLoad.mockResolvedValue({
       accounts: [
         acct('claude-a', 'ref:claude-a'),
-        { id: 'codex-a', provider: 'codex', credentialRef: 'ref:codex-a' },
+        acct('codex-a', 'ref:codex-a', { provider: 'codex' }),
       ],
-    } as never);
+    });
     expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['claude-a']);
     expect((await resolveAccountPool('ws', 'codex')).map((p) => p.accountId)).toEqual(['codex-a']);
   });
 
   it('puts the env-pinned account FIRST (primary) with the rest as failover targets', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = 'b';
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')] });
     const pool = await resolveAccountPool('ws');
     expect(pool.map((p) => p.accountId)).toEqual(['b', 'a', 'c']);
     expect(pool[0].source).toBe('env');
@@ -244,7 +262,7 @@ describe('resolveAccountPool (EI-535 failover)', () => {
 
   it('throws when the pinned id is not in the pool', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = 'missing';
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a')] });
     await expect(resolveAccountPool('ws')).rejects.toThrow(/not in the account pool/);
   });
 
@@ -253,11 +271,11 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     // resolve → so the gateway can route each account through its own dispatcher (or shared default).
     mockedLoad.mockResolvedValue({
       accounts: [
-        { id: 'a', credentialRef: 'ref:a', egress: { proxyUrl: 'http://10.0.0.1:3128' } },
-        { id: 'b', credentialRef: 'ref:b', egress: { localAddress: '10.0.0.2' } },
+        acct('a', 'ref:a', { egress: { proxyUrl: 'http://10.0.0.1:3128' } }),
+        acct('b', 'ref:b', { egress: { localAddress: '10.0.0.2' } }),
         acct('c', 'ref:c'),
       ],
-    } as never);
+    });
     const pool = await resolveAccountPool('ws');
     expect(pool.map((p) => p.egress)).toEqual([
       { proxyUrl: 'http://10.0.0.1:3128' },
@@ -273,11 +291,11 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     // account with neither must come through with both fields undefined.
     mockedLoad.mockResolvedValue({
       accounts: [
-        { id: 'a', credentialRef: 'ref:a', egressPool: [{ proxyUrl: 'http://10.0.0.1:3128' }, {}] },
-        { id: 'b', credentialRef: 'ref:b', egress: { proxyUrl: 'http://10.0.0.2:3128' } },
+        acct('a', 'ref:a', { egressPool: [{ proxyUrl: 'http://10.0.0.1:3128' }, {}] }),
+        acct('b', 'ref:b', { egress: { proxyUrl: 'http://10.0.0.2:3128' } }),
         acct('c', 'ref:c'),
       ],
-    } as never);
+    });
     const pool = await resolveAccountPool('ws');
     expect(pool.map((p) => p.egressPool)).toEqual([
       [{ proxyUrl: 'http://10.0.0.1:3128' }, {}],
@@ -289,7 +307,7 @@ describe('resolveAccountPool (EI-535 failover)', () => {
   });
 
   it('falls back to a single local account when the pool is empty', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [] });
     const pool = await resolveAccountPool('ws');
     expect(pool).toHaveLength(1);
     expect(pool[0].source).toBe('local-fallback');
@@ -303,7 +321,7 @@ describe('resolveAccountPool (EI-535 failover)', () => {
   it('retries a TRANSIENT load error then succeeds (a PG blip must not collapse the pool)', async () => {
     mockedLoad
       .mockRejectedValueOnce(new Error('blip'))
-      .mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+      .mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['a', 'b']);
   });
 
@@ -311,7 +329,7 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     mockedLoad
       .mockRejectedValueOnce(new Error('blip-1'))
       .mockRejectedValueOnce(new Error('blip-2'))
-      .mockResolvedValue({ accounts: [acct('a', 'ref:a')] } as never);
+      .mockResolvedValue({ accounts: [acct('a', 'ref:a')] });
     expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['a']);
     expect(mockedLoad).toHaveBeenCalledTimes(3);
   });
@@ -325,13 +343,13 @@ describe('resolveAccountPool (EI-535 failover)', () => {
   it('an EMPTY codex pool resolves to [] — codex has no local-login fallback (only claude does)', async () => {
     // Only a claude account is registered; the codex pool is empty. claude empty → local fallback,
     // but codex empty MUST return [] (there is no box-local codex login to degrade to).
-    mockedLoad.mockResolvedValue({ accounts: [acct('claude-a', 'ref:claude-a')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('claude-a', 'ref:claude-a')] });
     expect(await resolveAccountPool('ws', 'codex')).toEqual([]);
   });
 
   it('trims surrounding whitespace on PAPERCUSP_ACCOUNT_ID when choosing the primary', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = '  b  ';
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')] });
     expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['b', 'a', 'c']);
   });
 
@@ -344,7 +362,7 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     // in-process traffic with nothing to fail over to when that account hits its rate window.
     mockedLoad.mockResolvedValue({
       accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')],
-    } as never);
+    });
     mockedDefault.mockResolvedValue('b');
     const pool = await resolveAccountPool('ws');
     expect(pool.map((p) => p.accountId)).toEqual(['b', 'a', 'c']);
@@ -354,7 +372,7 @@ describe('resolveAccountPool (EI-535 failover)', () => {
 
   it('the env pin outranks the default, and the default is not even read', async () => {
     process.env.PAPERCUSP_ACCOUNT_ID = 'c';
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b'), acct('c', 'ref:c')] });
     mockedDefault.mockResolvedValue('b');
     const pool = await resolveAccountPool('ws');
     expect(pool.map((p) => p.accountId)).toEqual(['c', 'a', 'b']);
@@ -363,7 +381,7 @@ describe('resolveAccountPool (EI-535 failover)', () => {
   });
 
   it('a STALE default falls through to plain pool order rather than throwing', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     mockedDefault.mockResolvedValue('deleted-account');
     const pool = await resolveAccountPool('ws');
     expect(pool.map((p) => p.accountId)).toEqual(['a', 'b']);
@@ -374,21 +392,21 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     // Skipping the read matters beyond efficiency: this path fails CLOSED on a read error, and
     // a codex resolve must not be taken down by a value that could not have applied to it.
     mockedLoad.mockResolvedValue({
-      accounts: [acct('claude-a', 'ref:claude-a'), { id: 'codex-a', provider: 'codex', credentialRef: 'ref:codex-a' }],
-    } as never);
+      accounts: [acct('claude-a', 'ref:claude-a'), acct('codex-a', 'ref:codex-a', { provider: 'codex' })],
+    });
     mockedDefault.mockRejectedValue(new Error('pg down'));
     expect((await resolveAccountPool('ws', 'codex')).map((p) => p.accountId)).toEqual(['codex-a']);
     expect(mockedDefault).not.toHaveBeenCalled();
   });
 
   it('the default is not consulted for an EMPTY claude pool (local fallback short-circuits first)', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [] });
     mockedDefault.mockResolvedValue('b');
     expect((await resolveAccountPool('ws'))[0].source).toBe('local-fallback');
   });
 
   it('FAILS CLOSED on a default-read error rather than serving unordered pool order', async () => {
-    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] } as never);
+    mockedLoad.mockResolvedValue({ accounts: [acct('a', 'ref:a'), acct('b', 'ref:b')] });
     mockedDefault.mockRejectedValue(new Error('pg down'));
     await expect(resolveAccountPool('ws')).rejects.toThrow(/default-account read failed/);
   });
@@ -398,12 +416,12 @@ describe('poolAccountIdForRef', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns the account id for a known credential ref', () => {
-    mockedByRef.mockReturnValue(acct('acct-x', 'ref:x') as never);
+    mockedByRef.mockReturnValue(acct('acct-x', 'ref:x'));
     expect(poolAccountIdForRef({ accounts: [] }, 'ref:x')).toBe('acct-x');
   });
 
   it('returns undefined for an unknown credential ref', () => {
-    mockedByRef.mockReturnValue(undefined as never);
+    mockedByRef.mockReturnValue(undefined);
     expect(poolAccountIdForRef({ accounts: [] }, 'ref:nope')).toBeUndefined();
   });
 });

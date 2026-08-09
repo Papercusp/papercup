@@ -1520,7 +1520,7 @@ describe('runGreenCheckpoint', () => {
             }
           : { green: true, summary: 'all pass' };
       };
-      const recorded: Array<{ green: boolean; candidate: string }> = [];
+      const recorded: Array<{ green: boolean | null; candidate: string }> = [];
       deps.recordVerdict = async (r) => {
         calls.push('recordVerdict');
         recorded.push({ green: r.green, candidate: r.candidate });
@@ -1644,7 +1644,7 @@ describe('runGreenCheckpoint', () => {
           ? { green: false, summary: '1 failed', failingTests: ['lint:identity-leak'] } // no failingFiles ⇒ gate-only red
           : { green: true, summary: 'all pass' };
       };
-      const recorded: Array<{ green: boolean; candidate: string }> = [];
+      const recorded: Array<{ green: boolean | null; candidate: string }> = [];
       deps.recordVerdict = async (r) => {
         calls.push('recordVerdict');
         recorded.push({ green: r.green, candidate: r.candidate });

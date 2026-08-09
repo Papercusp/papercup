@@ -672,3 +672,101 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
     expect(b.wallsDropped).toBeUndefined();
   });
 });
+
+/**
+ * P-013 (fleet-lead-instrumentation-audit-2026-08-09) — the drop must be AVOIDABLE,
+ * not merely visible. The block above pins the report; this one pins the two escapes
+ * from needing it, at the TOOL boundary where an agent meets them: `rowsMode:'merge'`
+ * and a stable row `id`.
+ *
+ * Same separately-breakable split as above — the helper can merge perfectly while the
+ * handler never threads `rowsMode` through (it is passed at TWO call sites, the locked
+ * transform and its fallback), and no helper-level test can see that.
+ */
+describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidable (P-013)", () => {
+  const buildPrior = (
+    checks: { id?: string; claim: string; recheck?: string; verified?: string }[],
+    walls: { id?: string; claim: string; recheck?: string }[] = [],
+  ) => mergeCarryRows({ priorNote: null, baseNote: 'prior body', checks, walls, hasNoteWrite: true }).note;
+
+  const THREE = [
+    { claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30 @2026-08-03T10:00:00.000Z' },
+    { claim: 'main is at abc123', recheck: 'git rev-parse main' },
+    { claim: 'deploy landed', recheck: 'curl :3070/api/health' },
+  ];
+
+  it('adds ONE check without dropping the carried three, and says which mode it ran', async () => {
+    getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }], rowsMode: 'merge' }));
+
+    expect(b.ok).toBe(true);
+    expect(b.checks).toBe(4);
+    expect(b.checksDropped).toBeUndefined();
+    expect(b.rowsMode).toBe('merge');
+  });
+
+  it('CONTROL — the identical call WITHOUT rowsMode still drops them (default is unchanged)', async () => {
+    // Guards the default: a regression flipping merge on for everyone would make the
+    // merge test above pass while silently removing the only way to retire a row.
+    getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }] }));
+
+    expect(b.checks).toBe(1);
+    expect(b.checksDropped).toHaveLength(3);
+    expect(b.rowsMode).toBeUndefined(); // absent on the default path — reply shape unchanged
+  });
+
+  it('merges WALLS under the same flag', async () => {
+    getLoopCarryNote.mockResolvedValue(buildPrior([], [{ claim: 'owner must ratify the cutover' }]));
+    const b = body(await call({ did: 'progress', walls: [{ claim: 'awaiting capital arming' }], rowsMode: 'merge' }));
+
+    expect(b.walls).toBe(2);
+    expect(b.wallsDropped).toBeUndefined();
+  });
+
+  it('re-words a claim in place under a stable id, keeping its evidence and reporting no loss', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior([{ id: 'gate', claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30' }]),
+    );
+    const b = body(
+      await call({ did: 'progress', checks: [{ id: 'gate', claim: 'gate is green AT TIP, not at the candidate' }] }),
+    );
+
+    expect(b.checks).toBe(1);
+    expect(b.checksDropped).toBeUndefined();
+    // The stored note is the artifact a cold wake reads — assert against IT, not a count.
+    expect(written()).toContain('gate is green AT TIP, not at the candidate');
+    expect(written()).toContain('saw 30/30');
+    expect(written()).not.toContain('- ✓ [#gate] gate is green —');
+  });
+
+  it("explains that merge's [] is a no-op, so a caller never reads it as a failed clear", async () => {
+    getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
+    const b = body(await call({ did: 'progress', checks: [], rowsMode: 'merge' }));
+
+    expect(b.checks).toBe(3); // untouched
+    expect(b.rowsModeNote).toContain('NO-OP');
+    expect(b.rowsModeNote).toContain("rowsMode:'replace'");
+  });
+
+  it('reports a supplied row the cap CUT — merge must not eat a new row silently', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
+    );
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'one row past the cap' }], rowsMode: 'merge' }));
+
+    expect(b.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+    expect(b.checksDropped).toBeUndefined(); // nothing CARRIED was lost...
+    expect(b.checksOverflowed).toEqual(['one row past the cap']); // ...but the new row was
+    expect(b.overflowNote).toContain('NOT stored');
+  });
+
+  it('says nothing about overflow on an ordinary write', async () => {
+    getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'a fourth' }], rowsMode: 'merge' }));
+
+    expect(b.checksOverflowed).toBeUndefined();
+    expect(b.wallsOverflowed).toBeUndefined();
+    expect(b.overflowNote).toBeUndefined();
+  });
+});
