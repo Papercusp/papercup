@@ -714,22 +714,18 @@ export async function sweepStalledLoops(
        AND target_owner_id IS NOT NULL
        AND active = true
   `;
-  if (rows.length === 0)
-    return {
-      checked: 0,
-      paused: 0,
-      sample: [],
-      vetoedByRecentTurn: [],
-      reArmedFireStarved: [],
-      vetoedByProviderWall: [],
-      disarmedWhileReachable: [],
-      repairedWakeStarved: [],
-      vetoedByWithheldFire: [],
-      disarmedUnaddressableHarness: [],
-      vetoedByToolActivity: [],
-      revivedAfterDisarm,
-      dryRun,
-    };
+  // WI-37546: NO early return here any more, and the reason is a bug this restructure fixes.
+  //
+  // This used to `return` as soon as there were no ACTIVE loop rows, which reads as an obvious
+  // optimisation and is not: the revival pass above operates on INACTIVE rows, so the state where
+  // every loop in the workspace has already been disarmed — the state a revival most urgently
+  // needs to be announced in — returned before reaching any broadcast. The revivals were
+  // performed and reported to nobody.
+  //
+  // The reads below are gated on `rows.length` instead, so a workspace with nothing active still
+  // pays nothing (no status read, no scope read, no activity read) while the reporting at the
+  // bottom of the sweep stays reachable on every path.
+  const hasActiveLoops = rows.length > 0;
 
   // Latest routine id per owner (an owner should carry exactly one active loop row,
   // but guard against a duplicate the same way materializeLoop's own overwrite logic
@@ -737,7 +733,9 @@ export async function sweepStalledLoops(
   const routineIdByOwner = new Map<string, string>();
   for (const r of rows) routineIdByOwner.set(r.target_owner_id, r.id);
 
-  const statuses: Map<string, LoopStatus> = await getStatuses([...routineIdByOwner.keys()], { sql });
+  const statuses: Map<string, LoopStatus> = hasActiveLoops
+    ? await getStatuses([...routineIdByOwner.keys()], { sql })
+    : new Map<string, LoopStatus>();
 
   // EI-19966210024116714: one batch read of the owners' OWN session scopes, for the disarm reason
   // below. Deliberately hoisted out of the per-owner loop — it is a single indexed SELECT for the
@@ -746,7 +744,9 @@ export async function sweepStalledLoops(
   // Fails OPEN to an EMPTY map. An owner missing from it is UNKNOWN, never "mismatched", so a read
   // fault costs at most the extra sentence in a disarm reason — never a wrong accusation, and
   // never a changed disposition.
-  const ownerWorkspaces = await resolveOwnerWorkspaces([...routineIdByOwner.keys()], { sql }).catch(
+  const ownerWorkspaces = !hasActiveLoops
+    ? new Map<string, string>()
+    : await resolveOwnerWorkspaces([...routineIdByOwner.keys()], { sql }).catch(
     (e) => {
       console.warn(
         `[stalled-loops-guard] owner-workspace resolve failed (${e instanceof Error ? e.message : e}) — ` +
@@ -1286,10 +1286,21 @@ export async function sweepStalledLoops(
       body:
         `Owners: ${stalledOwners.join(', ')}. Each carried an ARMED loop (active:true) whose ` +
         `computeTurnsStalled verdict was true: fires were arriving and no turn followed them. ` +
-        `Auto-disarmed by stalled-loops-guard; re-arm with loop:arm if the session is genuinely ` +
-        `still working. A cluster of stalls in one sweep is usually ONE systemic event (a wedged ` +
-        `wake channel, a deploy, an operator restart) rather than independent failures — worth ` +
-        `chasing if this recurs.` +
+        `Auto-disarmed by stalled-loops-guard. This is REVERSIBLE since WI-37546: if one of these ` +
+        `owners makes progressing tool calls before the next sweep, the disarm is undone ` +
+        `automatically (bounded to ${MAX_REVIVALS} revivals inside ` +
+        `${Math.round(REVIVE_WINDOW_MS / 3600_000)}h) — so no action is needed for an agent that ` +
+        `comes back on its own; re-arm with loop:arm only for one that does not. A cluster of ` +
+        `stalls in one sweep is usually ONE systemic event (a wedged wake channel, a deploy, an ` +
+        `operator restart) rather than independent failures — worth chasing if this recurs.` +
+        (revivedAfterDisarm.length > 0
+          ? `\n\nIN THE SAME SWEEP, ${revivedAfterDisarm.length} previously-disarmed loop(s) were ` +
+            `REVIVED (${revivedAfterDisarm.join(', ')}) — each had been disarmed as turn-stalled and ` +
+            `has since made progressing tool calls, so that verdict was wrong and the owner is working. ` +
+            `Disarms and revivals in the SAME sweep mean this module's turn-stalled inference is ` +
+            `over-firing right now, not that two unrelated things happened: treat the disarm list above ` +
+            `with suspicion until the cause is known (WI-37546).`
+          : '') +
         (reArmedFireStarved.length > 0
           ? `\n\nSEPARATELY, and NOT disarmed: ${reArmedFireStarved.length} loop(s) were FIRE-STARVED ` +
             `(${reArmedFireStarved.join(', ')}) — each answered the last fire it received and then no ` +
@@ -1359,13 +1370,16 @@ export async function sweepStalledLoops(
           `${disarmedWhileReachable.join(', ')}\n\n` +
           `Each was still answering a reachability probe when stalled-loops-guard disarmed its ` +
           `engine loop for producing no turns despite repeated fires. The disarm is correct — an ` +
-          `agent that is not answering its fires will not be helped by more of them — but it is ` +
-          `also PERMANENT: a disarmed loop cannot re-arm itself, reconcileLoopRoutines only ` +
-          `re-arms loops that are still active, and the agent's own "nothing will wake you" ` +
-          `warning needs a turn it can no longer take.\n\n` +
-          `Nothing else will recover these. To bring one back: resume the session and re-arm its ` +
-          `loop (loop:arm). If this keeps happening, the upstream question is why the sessions ` +
-          `stop turning — a died carry-respawn and a wedged CLI child both present this way.` +
+          `agent that is not answering its fires will not be helped by more of them — and it is ` +
+          `no longer permanent: since WI-37546 a turn-stalled disarm is AUTOMATICALLY REVERSED by ` +
+          `the next sweep if the owner makes progressing tool calls in the meantime (up to ` +
+          `${MAX_REVIVALS} revivals, within ${Math.round(REVIVE_WINDOW_MS / 3600_000)}h). So an agent ` +
+          `that comes back on its own will be re-armed without you.\n\n` +
+          `You still matter to the ones that DON'T come back: an owner that makes no tool calls at ` +
+          `all stays down, because nothing distinguishes it from a corpse. To bring one back by ` +
+          `hand: resume the session and re-arm its loop (loop:arm). If this keeps happening, the ` +
+          `upstream question is why the sessions stop turning — a died carry-respawn and a wedged ` +
+          `CLI child both present this way.` +
           (strandedAndReachable.length > 0
             ? `\n\n⚠ ${strandedAndReachable.length} of these will NOT be fixed by that: ` +
               `${strandedAndReachable.join(', ')} had their loop armed against a harness their own ` +
@@ -1408,11 +1422,21 @@ export async function sweepStalledLoops(
   // paged by this line should not have to open the body to learn whether fires stopped or fires
   // landed nowhere, since those point at different code. Only a genuinely mixed sweep gets the
   // generic wording.
+  //
+  // WI-37546 folds REVIVALS into this same notice for the same reason, and it is the sharpest
+  // case for not adding a third broadcast: a revival is the module reporting that its OWN earlier
+  // verdict was wrong. That belongs next to the starved populations — all three say "this system,
+  // not these agents" — and a sweep that produces revivals alongside starvation is emphatically
+  // one event. When revivals are the ONLY finding, the summary says so plainly rather than
+  // reporting them under a starvation headline.
   const starved = [...reArmedFireStarved, ...repairedWakeStarved];
-  if (starved.length > 0 && stalledOwners.length === 0 && !dryRun) {
+  if ((starved.length > 0 || revivedAfterDisarm.length > 0) && stalledOwners.length === 0 && !dryRun) {
     await broadcast({
       summary:
-        repairedWakeStarved.length === 0
+        starved.length === 0
+          ? `${revivedAfterDisarm.length} engine loop(s) on ${ws} were RE-ARMED after a wrong ` +
+            `turn-stalled disarm — their owners were working all along (WI-37546).`
+          : repairedWakeStarved.length === 0
           ? `${reArmedFireStarved.length} armed engine loop(s) on ${ws} stopped RECEIVING fires while still ` +
             `answering them — re-armed, not disarmed (EI-19406534159939583).`
           : reArmedFireStarved.length === 0
@@ -1436,8 +1460,20 @@ export async function sweepStalledLoops(
             `here means awaits are being cancelled or never armed — start at the SessionEnd hook's ` +
             `cancel path and loop-fire's ensureInboxWakeArmedForActiveSession self-heal.\n\n`
           : '') +
-        `The agents are not at fault in either case. If they resume, the delivery path was the problem; ` +
-        `if a fire now lands and no turn follows, the next sweep reclassifies and disarms them normally.`,
+        (revivedAfterDisarm.length > 0
+          ? `REVIVED (wrongly disarmed earlier, owner demonstrably working): ` +
+            `${revivedAfterDisarm.join(', ')}. Each had been disarmed by THIS module as turn-stalled and ` +
+            `has since made progressing tool calls — a second distinct tool or a successful call, not ` +
+            `merely call volume. Their loops have been re-armed and made due. A disarm is a pause with a ` +
+            `condition, not a one-way door; this is bounded to ${MAX_REVIVALS} revivals per loop inside ` +
+            `${Math.round(REVIVE_WINDOW_MS / 3600_000)}h, after which a repeat offender stays down and ` +
+            `stays visible. A sustained non-zero count here is a signal about the turn-stalled ` +
+            `INFERENCE — start at why last_turn_at goes stale for owners that are visibly working ` +
+            `(WI-37546).\n\n`
+          : '') +
+        `The agents are not at fault in any of these cases. If they resume, the delivery path (or this ` +
+        `module's own verdict) was the problem; if a fire now lands and no turn follows, the next sweep ` +
+        `reclassifies and disarms them normally.`,
       category: 'severe-event',
     });
   }
@@ -1453,6 +1489,8 @@ export async function sweepStalledLoops(
     repairedWakeStarved,
     vetoedByWithheldFire,
     disarmedUnaddressableHarness,
+    vetoedByToolActivity,
+    revivedAfterDisarm,
     dryRun,
   };
 }

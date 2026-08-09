@@ -57,6 +57,32 @@ registerSystemAction('sweep-stalled-loops', async (ctx: SystemActionCtx) => {
         `(WI-36685): ${result.repairedWakeStarved.join(', ')}`,
     );
   }
+  // WI-37546: REVIVALS are this module reporting that its OWN earlier verdict was wrong — each
+  // entry is one disarm that should not have stood, and before this existed each was a session
+  // dark until a human noticed. Warn level, and named separately from every population above
+  // because it blames neither the agent nor the transport but the turn-stalled inference itself.
+  if (result.revivedAfterDisarm.length > 0) {
+    console.warn(
+      `[sweep-stalled-loops] REVIVED ${result.revivedAfterDisarm.length} previously-disarmed loop(s) ` +
+        `${result.dryRun ? 'would be re-armed' : 're-armed'} — each was disarmed as turn-stalled and its ` +
+        `owner has since made progressing tool calls, so the verdict was wrong ` +
+        `(WI-37546): ${result.revivedAfterDisarm.join(', ')}`,
+    );
+  }
+  // WI-37546: the LIVENESS veto — owners still making progressing tool calls since their last
+  // fire. Logged at info like the provider-wall line below and for the same inverted-diagnostic
+  // reason: a non-zero count here is the exemption WORKING (measured 2026-08-09, this evidence
+  // existed for 18 of 19 disarms that day and nothing read it). Worry when it is persistently
+  // ZERO on a workspace whose agents are demonstrably working — that means the activity read has
+  // stopped matching and the false disarms have silently resumed.
+  if (result.vetoedByToolActivity.length > 0) {
+    console.log(
+      `[sweep-stalled-loops] LIVE ${result.vetoedByToolActivity.length}/${result.checked} loop(s) left ` +
+        `ARMED (not disarmed) — each owner is still making progressing tool calls since its last fire, ` +
+        `so it is not wedged whatever last_turn_at claims ` +
+        `(WI-37546): ${result.vetoedByToolActivity.join(', ')}`,
+    );
+  }
   // EI-19441932615368003: walled loops are the PROVIDER half. Logged at info, not warn — unlike
   // the two above, a non-zero count here is EXPECTED under load and blames nobody: it is the
   // lifecycle-death backoff working, and this line is the evidence the guard is no longer

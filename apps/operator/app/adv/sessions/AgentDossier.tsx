@@ -45,7 +45,13 @@ import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { contextPct } from '../hud/hud-board-model';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
-import { useAgentDetail, type AgentDetail, type PushedContextRef } from './use-agent-detail';
+import {
+  useAgentDetail,
+  type AgentDetail,
+  type PushedContextRef,
+  type PushedContextEvent,
+  type PushedContextLegDetail,
+} from './use-agent-detail';
 import { RailCluster, RailQuiet, RailSectionHead, useRailCollapse } from './rail-sections';
 import { HoverDetail } from '@/app/harness/HoverDetail';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the DTO + the `agentDetail.byOwner`
@@ -147,6 +153,134 @@ function pushedRefDetail(r: PushedContextRef): string {
     return `${r.ref}\n\nThe title lookup failed, so this says nothing about whether the ${noun} still exists. The handle above is unaffected.`;
   }
   return r.ref;
+}
+
+/**
+ * Utilization at or above this fraction of the cap reads as "the budget was
+ * genuinely exhausted".
+ *
+ * A RENDERING threshold chosen here, not a system constant: recall-stats.ts
+ * describes the distinction as continuous ("spent ≈ budgetChars" vs "spent ≪
+ * budgetChars") and names no number. The panel therefore always prints both raw
+ * numbers beside the label, so a reader can judge a borderline row themselves
+ * rather than inheriting this cutoff as if it were measured.
+ */
+const BUDGET_BOUND_FRACTION = 0.9;
+
+/** One leg's line: whether it ran, then whatever the row actually recorded. */
+function legPhrase(ran: boolean | null, leg?: PushedContextLegDetail): string {
+  const head =
+    ran === true ? 'ran' : ran === false ? 'did NOT run (short-circuited)' : 'not recorded';
+  const bits: string[] = [];
+  if (leg?.candidates !== undefined) bits.push(`${leg.candidates} candidates`);
+  if (leg?.qualifying !== undefined) bits.push(`${leg.qualifying} qualifying`);
+  if (leg?.depth !== undefined) bits.push(`depth ${leg.depth}`);
+  return bits.length > 0 ? `${head} — ${bits.join(', ')}` : head;
+}
+
+/**
+ * The injection row's hover panel: what "1 of 12 admitted · truncated · sem ✓
+ * lex ✓" actually MEANS.
+ *
+ * [owner 2026-08-09] asked for the refs rows' tooltips "in the same way" on
+ * these rows. The bar is higher here than for a ref, because a ref row hides
+ * only an id while this row hides a six-stage funnel behind four glyphs: the
+ * panel must EXPLAIN rather than restate, so every number it prints is either
+ * given a plain-words reason or left out.
+ *
+ * ⚠ TWO ZEROS HERE ARE THE SPECIFICATION, NOT A DEFECT, and both have already
+ * been filed as bugs once (D-074, and the D-063/D-073/D-076 family). A panel
+ * that renders them as bare numbers invites the same misreading a third time,
+ * so each carries its design intent inline:
+ *   - `lexicalOnly: 0` is STRUCTURAL on the push path — `cosine-gated` fusion
+ *     seeds the candidate set only from cosine hits.
+ *   - the lexical leg's `qualifying: 0` is INTENDED on a prose query — the
+ *     lexical score is normalized by query-token count, so the leg is for
+ *     exact-identifier recall and "should contribute nothing rather than decide
+ *     the outcome" (recall-admission.ts).
+ * Neither is evidence the lexical arm is broken, and this panel must not imply
+ * it is.
+ */
+export function pushedEventDetail(e: PushedContextEvent): string {
+  const d = e.detail;
+  const out: string[] = [];
+
+  out.push(`${e.returned} returned by the index · ${e.admitted} reached the agent.`);
+
+  if (d?.dropped && d.dropped.length > 0) {
+    out.push('', 'Dropped before delivery:');
+    for (const s of d.dropped) out.push(`  ${s.count} — ${s.why}`);
+  }
+
+  const spent = d?.spent;
+  const cap = d?.budgetChars;
+  if (spent !== undefined || cap !== undefined) {
+    out.push('');
+    if (spent !== undefined && cap !== undefined) {
+      out.push(`Budget: ${spent} chars spent against a ${cap}-char cap.`);
+      if (spent > cap) {
+        // The third reading in recall-stats.ts's `spent` doc — and the one that
+        // explains an admitted count of exactly 1.
+        out.push(
+          'Over the cap because the always-emit-one-row rule admits a single oversized entry whatever its length, so the budget never applied to this recall.',
+        );
+      } else if (e.truncated && spent >= cap * BUDGET_BOUND_FRACTION) {
+        out.push('Budget-bound: the cap was genuinely exhausted, so a larger cap would deliver more.');
+      } else if (e.truncated) {
+        out.push(
+          'Clamp-bound: the cap was NOT exhausted — each remaining entry was individually too large for the space left, so the lever is the per-entry clamp, not the budget.',
+        );
+      }
+    } else if (spent !== undefined) {
+      out.push(`Budget: ${spent} chars spent (the cap was not recorded on this row).`);
+    } else {
+      out.push(`Budget: a ${cap}-char cap (the spend was not recorded on this row).`);
+    }
+    out.push(
+      'Caps are per-port and deliberately tight (mid-turn runs ~350 against a 16,000 default), so a low admit rate here is usually the design working.',
+    );
+  } else if (e.truncated) {
+    out.push(
+      '',
+      'Truncated: the char budget cut the tail off an already-ranked list. Neither the spend nor the cap was recorded on this row, so which of the two was binding cannot be told from here.',
+    );
+  }
+
+  out.push('', 'Retrieval legs:');
+  if (d?.mode) out.push(`  mode ${d.mode}${d.fused !== undefined ? ` · ${d.fused} fused` : ''}`);
+  else if (d?.fused !== undefined) out.push(`  ${d.fused} fused`);
+  out.push(`  semantic (cosine): ${legPhrase(e.semanticRan, d?.cosine)}`);
+  out.push(`  lexical: ${legPhrase(e.lexicalRan, d?.lexical)}`);
+
+  if (e.semanticRan === null || e.lexicalRan === null) {
+    out.push(
+      '"Not recorded" is not "did not run": this row predates per-leg provenance, so retrieval health was never measured here.',
+    );
+  }
+  if (e.semanticRan === false || e.lexicalRan === false) {
+    out.push(
+      '"Did not run" is a recorded observation: cosine-gated fusion deliberately never starts the lexical leg when the cosine leg comes back empty.',
+    );
+  }
+  if (e.lexicalRan === true && d?.lexical?.qualifying === 0 && (d.lexical.candidates ?? 0) > 0) {
+    out.push(
+      `The lexical leg supplied ${d.lexical.candidates} candidates and qualified none, so its ✓ does not mean it contributed. That is the intended shape on a prose query — the leg is scored for exact-identifier recall and should contribute nothing rather than decide the outcome. Not a defect.`,
+    );
+  }
+
+  if (d?.byLeg) {
+    out.push(
+      '',
+      `Admitted by leg: ${d.byLeg.cosineOnly} cosine-only · ${d.byLeg.both} both · ${d.byLeg.lexicalOnly} lexical-only.`,
+    );
+    if (d.byLeg.lexicalOnly === 0) {
+      out.push(
+        'Lexical-only is structurally zero on this path: cosine-gated fusion seeds candidates only from cosine hits. Moving it off zero means reverting to floored-union, which is the defect D-010 fixed.',
+      );
+    }
+  }
+
+  return out.join('\n');
 }
 
 /** Build MetaRows from label/value pairs, DROPPING the ones that would render
@@ -1245,10 +1379,26 @@ export default function AgentDossier({
                   >
                     <span className="pc-dossier__dir">{e.surface}</span>
                     <span className="pc-dossier__coord-text">
-                      {e.admitted} of {e.returned} admitted
-                      {e.truncated ? ' · truncated' : ''}
-                      {' · '}
-                      {legMark('sem', e.semanticRan)} {legMark('lex', e.lexicalRan)}
+                      {/* The row stays a summary; the panel carries the funnel
+                          behind it [owner 2026-08-09: the refs tooltips "look
+                          good but what about adding them in the same way to the
+                          [injection] section"]. These glyphs are the most
+                          cryptic thing in the dossier — "sem ✓ lex ✓" is
+                          unreadable without the code comment, and "1 of 12
+                          admitted" says eleven vanished without saying where. */}
+                      <HoverDetail
+                        ariaLabel={`Detail for ${e.surface} injection at ${e.at}`}
+                        testId="dossier-pushed-detail"
+                        side="left"
+                        align="start"
+                        header={`${e.surface} · ${e.at}`}
+                        detail={pushedEventDetail(e)}
+                      >
+                        {e.admitted} of {e.returned} admitted
+                        {e.truncated ? ' · truncated' : ''}
+                        {' · '}
+                        {legMark('sem', e.semanticRan)} {legMark('lex', e.lexicalRan)}
+                      </HoverDetail>
                     </span>
                     <span className="pc-dossier__coord-ts">{formatRelativeUpdated(e.at)}</span>
                   </div>

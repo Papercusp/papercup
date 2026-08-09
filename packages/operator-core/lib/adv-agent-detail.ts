@@ -36,6 +36,9 @@ import {
 } from './agent-tools/coordination/inbox-visibility';
 import { collectRetractedIds, suppressRetracted } from './agent-tools/coordination/retraction';
 import { readCodexHomeDiagnostics, type CodexHomeDiagnostics } from './role-codex-home';
+// The admission funnel's stage vocabulary, so the dossier's drop breakdown is
+// named and explained from the SAME source the write path records against.
+import { ADMISSION_STAGES, ADMISSION_STAGE_SHORT_WHY } from './memory/recall-stats';
 import {
   nativeSessionHandleForAdvSession,
   claudeHandleAfterRematerializeAttempt,
@@ -421,6 +424,87 @@ export interface PushedContextEvent {
   semanticRan: boolean | null;
   /** Did the LEXICAL leg execute? Same null-vs-false rule as above. */
   lexicalRan: boolean | null;
+  /**
+   * The funnel BEHIND the summary counts, for the row's hover panel. Absent
+   * whenever the ledger row carries nothing beyond what the fields above
+   * already say — see `derivePushedDetail` for the emission rule and why an
+   * empty block is worse than no block.
+   */
+  detail?: PushedContextEventDetail;
+}
+
+/** One admission stage that actually dropped rows on this recall. */
+export interface PushedContextDroppedStage {
+  /** The stage key as `recall-stats.ts` records it (`dedup`, `budget`, …). */
+  stage: string;
+  /** How many rows it removed. Always > 0 — see the emission rule below. */
+  count: number;
+  /**
+   * The stage's one-clause explanation, resolved SERVER-side from
+   * `ADMISSION_STAGE_SHORT_WHY` and shipped rather than re-typed in the client.
+   * The client cannot import that vocabulary (`recall-stats.ts` pulls in
+   * `@papercusp/flags/server`), and a hand-copied gloss in a component is how a
+   * count and its explanation drift apart.
+   */
+  why: string;
+}
+
+/** What one retrieval leg did, beyond whether it ran. */
+export interface PushedContextLegDetail {
+  /** Rows the leg returned, pre-fusion. Absent when it did not run. */
+  candidates?: number;
+  /**
+   * Rows that cleared this leg's OWN bar and were given a rank in the fusion
+   * (the lexical leg's `minLexScore`). `candidates - qualifying` is what the bar
+   * removed — the number that says whether the bar is doing anything, and the
+   * reason a leg can show a green "ran" tick while contributing nothing.
+   */
+  qualifying?: number;
+  /**
+   * The per-scope row budget in effect for this leg on this call. PER-SCOPE, so
+   * `candidates` legitimately exceeds it on a multi-scope recall (measured
+   * 2026-08-09: depth 12, candidates 25) — do NOT derive a saturation verdict
+   * by comparing the two, which is why this DTO carries the raw numbers and
+   * computes nothing.
+   */
+  depth?: number;
+}
+
+/**
+ * The admission funnel and per-leg detail behind one injection row.
+ *
+ * Every field is OPTIONAL for the wire-skew reason documented on
+ * `AgentPushedContext.refs`: the SPA rebuilds on the vite hot path while the
+ * sidecar only rebuilds on restart, so a fresh bundle can be handed an older
+ * payload. Read each field defensively.
+ */
+export interface PushedContextEventDetail {
+  /**
+   * ONLY the stages that dropped something, in the funnel's own pipeline order.
+   *
+   * The zeros are dropped on purpose: a real row is `{ dedup: 3, budget: 8,
+   * pack: 0, feedback: 0, workspace: 0, nearDuplicate: 0 }`, and rendering all
+   * six buries the two numbers that explain where the rows went behind four that
+   * say nothing happened.
+   */
+  dropped?: PushedContextDroppedStage[];
+  /** Chars the admitted lines actually consumed. */
+  spent?: number;
+  /** The char budget in force at this port — PER-PORT and deliberately tight
+   *  (mid-turn runs ~350 against a 16,000 global default), so a low admit rate
+   *  here is usually the design working rather than a defect. */
+  budgetChars?: number;
+  /** Which leg(s) the ADMITTED rows came from. Counts only — no per-ref leg
+   *  attribution exists anywhere (D-085). */
+  byLeg?: { both: number; cosineOnly: number; lexicalOnly: number };
+  /** The fusion mode in effect (`cosine-gated` | `floored-union`). */
+  mode?: string;
+  /** Distinct entries in the FUSED candidate set, before any caller limit. */
+  fused?: number;
+  /** The semantic leg. Pairs with `semanticRan` above, which holds the tri-state. */
+  cosine?: PushedContextLegDetail;
+  /** The lexical leg. Pairs with `lexicalRan` above. */
+  lexical?: PushedContextLegDetail;
 }
 
 /**
@@ -1464,6 +1548,90 @@ export function legRan(legs: JsonBlob, leg: 'cosine' | 'lexical'): boolean | nul
   return typeof ran === 'boolean' ? ran : null;
 }
 
+/** A number that was actually RECORDED, or `undefined`. Distinct from `numAt`,
+ *  which floors an absent value to 0: `spent: 0` ("nothing was spent") and an
+ *  absent `spent` ("we never measured it") are different claims, and the panel
+ *  that renders them must not state the second as the first. Same tri-state
+ *  discipline `legRan` exists for. */
+function optNumAt(o: Record<string, unknown> | null, key: string): number | undefined {
+  const v = o?.[key];
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/** One leg's post-run detail, or `undefined` when the blob recorded none. */
+function legDetail(legs: JsonBlob, leg: 'cosine' | 'lexical'): PushedContextLegDetail | undefined {
+  const b = blob(blob(legs)?.[leg]);
+  if (!b) return undefined;
+  const out: PushedContextLegDetail = {};
+  const candidates = optNumAt(b, 'candidates');
+  const qualifying = optNumAt(b, 'qualifying');
+  const depth = optNumAt(b, 'depth');
+  if (candidates !== undefined) out.candidates = candidates;
+  if (qualifying !== undefined) out.qualifying = qualifying;
+  if (depth !== undefined) out.depth = depth;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * The funnel behind one injection row — or `undefined` when there is nothing to
+ * add.
+ *
+ * THE EMISSION RULE, which is the whole design of this function: emit a block
+ * only when it carries something the summary fields do NOT already say. Two
+ * cases it must therefore refuse, both real:
+ *
+ *  - A LEGACY row (pre-P-002, no `admission`/`legs` blob) must yield NO block —
+ *    not a block of zeros. A rendered "0 dropped by dedup, 0 by budget" is a
+ *    measurement we never took, presented as a measurement of nothing, which is
+ *    the same conflation `legRan`'s null-vs-false tri-state exists to prevent.
+ *  - A row whose blobs hold ONLY `ran` flags adds nothing: `semanticRan` and
+ *    `lexicalRan` already carry those, so a block here would be pure duplication
+ *    on the wire and an empty hover panel in the UI.
+ */
+export function derivePushedDetail(r: PushedContextRow): PushedContextEventDetail | undefined {
+  const admission = blob(r.admission);
+  const detail: PushedContextEventDetail = {};
+
+  // Only the stages that actually dropped rows, in the funnel's pipeline order
+  // (ADMISSION_STAGES is that order). Zeros are omitted — see the DTO.
+  const droppedBlob = blob(admission?.dropped);
+  const dropped: PushedContextDroppedStage[] = [];
+  for (const stage of ADMISSION_STAGES) {
+    const count = optNumAt(droppedBlob, stage);
+    if (count !== undefined && count > 0) {
+      dropped.push({ stage, count, why: ADMISSION_STAGE_SHORT_WHY[stage] });
+    }
+  }
+  if (dropped.length > 0) detail.dropped = dropped;
+
+  const spent = optNumAt(admission, 'spent');
+  if (spent !== undefined) detail.spent = spent;
+  const budgetChars = optNumAt(admission, 'budgetChars');
+  if (budgetChars !== undefined) detail.budgetChars = budgetChars;
+
+  const byLeg = blob(admission?.byLeg);
+  if (byLeg) {
+    detail.byLeg = {
+      both: numAt(byLeg, 'both'),
+      cosineOnly: numAt(byLeg, 'cosineOnly'),
+      lexicalOnly: numAt(byLeg, 'lexicalOnly'),
+    };
+  }
+
+  const legs = blob(r.legs);
+  const mode = legs?.mode;
+  if (typeof mode === 'string' && mode !== '') detail.mode = mode;
+  const fused = optNumAt(legs, 'fused');
+  if (fused !== undefined) detail.fused = fused;
+
+  const cosine = legDetail(r.legs, 'cosine');
+  if (cosine) detail.cosine = cosine;
+  const lexical = legDetail(r.legs, 'lexical');
+  if (lexical) detail.lexical = lexical;
+
+  return Object.keys(detail).length > 0 ? detail : undefined;
+}
+
 export interface PushedContextRow {
   created_at: Date | string;
   surface: string;
@@ -1522,6 +1690,7 @@ export function derivePushedContext({
 }: DerivePushedContextInput): AgentPushedContext {
   const events: PushedContextEvent[] = rows.map((r) => {
     const admission = blob(r.admission);
+    const detail = derivePushedDetail(r);
     return {
       at: iso(r.created_at),
       surface: r.surface,
@@ -1530,6 +1699,10 @@ export function derivePushedContext({
       truncated: admission?.truncated === true,
       semanticRan: legRan(r.legs, 'cosine'),
       lexicalRan: legRan(r.legs, 'lexical'),
+      // Omitted rather than set to `undefined`: the sibling test asserts the
+      // event shape with toEqual, and an explicit undefined key is a different
+      // object there. It is also one less key on the wire per legacy row.
+      ...(detail ? { detail } : {}),
     };
   });
   const refsByPort = refRows

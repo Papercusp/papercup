@@ -239,6 +239,48 @@ export interface PushedContextEvent {
    *  purpose — see the server DTO for why collapsing them is a bug. */
   semanticRan: boolean | null;
   lexicalRan: boolean | null;
+  /** The funnel behind the counts, for the row's hover panel. Absent whenever
+   *  the ledger row carried nothing beyond what the fields above already say —
+   *  a legacy (pre-P-002) row has NO block rather than a block of zeros. */
+  detail?: PushedContextEventDetail;
+}
+
+/** One admission stage that dropped rows on this recall. `why` is resolved
+ *  server-side from the funnel's own vocabulary and shipped, because the client
+ *  cannot import it (`recall-stats.ts` pulls in `@papercusp/flags/server`) and a
+ *  hand-copied gloss is how a count and its explanation drift apart. */
+export interface PushedContextDroppedStage {
+  stage: string;
+  /** Always > 0 — zero-drop stages are omitted, not rendered as zeros. */
+  count: number;
+  why: string;
+}
+
+/** What one retrieval leg did, beyond whether it ran. */
+export interface PushedContextLegDetail {
+  /** Rows the leg returned, pre-fusion. */
+  candidates?: number;
+  /** ...that cleared the leg's OWN bar and were ranked in the fusion. A leg can
+   *  run, supply candidates, and qualify NONE — which is why a bare "ran ✓" tick
+   *  is not evidence the leg contributed anything. */
+  qualifying?: number;
+  /** Per-scope row budget for this leg. PER-SCOPE, so `candidates` legitimately
+   *  exceeds it on a multi-scope recall — never derive saturation from the pair. */
+  depth?: number;
+}
+
+/** Mirror of adv-agent-detail.ts's PushedContextEventDetail. Every field is
+ *  optional for the same SPA-vs-sidecar wire-skew reason as `refs` below. */
+export interface PushedContextEventDetail {
+  /** ONLY the stages that dropped something, in funnel order. */
+  dropped?: PushedContextDroppedStage[];
+  spent?: number;
+  budgetChars?: number;
+  byLeg?: { both: number; cosineOnly: number; lexicalOnly: number };
+  mode?: string;
+  fused?: number;
+  cosine?: PushedContextLegDetail;
+  lexical?: PushedContextLegDetail;
 }
 
 /** `memory` = mem0 memories, `corpus` = corpus handles (WI-6512). REQUIRED:

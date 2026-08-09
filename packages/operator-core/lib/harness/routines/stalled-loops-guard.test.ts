@@ -111,7 +111,7 @@ const wakeStarvedProbe = () =>
   }));
 
 describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving it inert)', () => {
-  it('no active loop-% rows → zero reads beyond discovery, no auto-pause, no broadcast', async () => {
+  it('no active loop-% rows and nothing to revive → no status read, no auto-pause, no broadcast', async () => {
     const sql = fakeSql([]);
     const getStatuses = vi.fn();
     const autoPause = vi.fn(async () => {});
@@ -128,6 +128,8 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       repairedWakeStarved: [],
       vetoedByWithheldFire: [],
       disarmedUnaddressableHarness: [],
+      vetoedByToolActivity: [],
+      revivedAfterDisarm: [],
       dryRun: false,
     });
     expect(getStatuses).not.toHaveBeenCalled();

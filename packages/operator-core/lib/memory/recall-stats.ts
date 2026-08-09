@@ -199,6 +199,34 @@ export const ADMISSION_STAGES: readonly AdmissionStage[] = [
 ];
 
 /**
+ * ONE CLAUSE per stage, for rendering beside a live count where a human reads it
+ * (the agent dossier's injection rows, WI-37549).
+ *
+ * Deliberately short where `ADMISSION_STAGE_DESIGN_INTENT` below is long: that
+ * one is the argument you read BEFORE filing a loss as a defect; this one is what
+ * makes a bare number legible at a glance — "8 — did not fit the char budget"
+ * rather than "8". Neither replaces the other.
+ *
+ * It lives HERE, beside the stage list it must cover, and is shipped to the UI
+ * on the wire by `derivePushedContext` rather than re-typed in the client. A
+ * hand-copied gloss in a component is how a count and its explanation drift
+ * apart, which is the failure the design-intent text below exists to prevent —
+ * and this module imports `@papercusp/flags/server`, so the client cannot import
+ * the vocabulary directly even if it wanted to.
+ *
+ * Phrased as the reason a row was DROPPED, so it reads correctly after a count:
+ * `${n} — ${ADMISSION_STAGE_SHORT_WHY[stage]}`.
+ */
+export const ADMISSION_STAGE_SHORT_WHY: Record<AdmissionStage, string> = {
+  pack: 'belongs to a knowledge pack disabled for this hive',
+  feedback: 'the user deleted this fact, so it is not re-surfaced',
+  workspace: 'scoped to another workspace (a cross-workspace correctness boundary)',
+  dedup: 'already surfaced in this session-epoch',
+  nearDuplicate: 'the same fact under another id, collapsed after ranking',
+  budget: 'did not fit the char budget, cut after ranking',
+};
+
+/**
  * WHY each stage drops what it drops — the DESIGNED loss, next to the metric.
  *
  * This exists because the funnel reports WHAT was lost and never WHY, and a bare
