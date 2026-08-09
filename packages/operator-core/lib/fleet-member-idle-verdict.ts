@@ -42,6 +42,8 @@ export type MemberIdleCause =
   | 'working'
   /** Not idle: taking turns right now (or mid a long local exec that emits no MCP calls). */
   | 'mid-turn'
+  /** Holding a claim that is NOT advancing — the work is stranded on this member. */
+  | 'stalled-holder'
   /** Idle as a CONSEQUENCE of a fleet-level block — pool, spec, floors or a pause. */
   | 'fleet-blocked'
   /** This member specifically has backed off a provider wall. */
@@ -154,7 +156,24 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 3. A fleet-level block dominates every member-level explanation below it. Reported as the
+  // 3. Holding a claim that is not advancing. ABOVE the fleet block on purpose: a stranded
+  //    claim is a member-level fact the fleet-level state does not create — the work was taken
+  //    BEFORE the block and is now stuck on a member that stopped. Found by running this
+  //    oracle over this fleet's real rows: two members held work-items with load 1 + stalled
+  //    while a pause was in force, and reporting them as merely 'fleet-blocked' hid the one
+  //    thing a leader must act on — the claim needs reclaiming whatever the fleet is doing.
+  if ((member.load ?? 0) > 0 && member.stalled) {
+    return {
+      cause: 'stalled-holder',
+      reason:
+        `Holding ${member.load} claim(s) that are NOT advancing. The work is stranded here, ` +
+        'and that stays true regardless of any fleet-level block.',
+      remedy: 'Reclaim the held item(s) so they return to the pool; then diagnose the member.',
+      ...ownSpec,
+    };
+  }
+
+  // 4. A fleet-level block dominates every member-level explanation below it. Reported as the
   //    CONSEQUENCE it is, naming the layer, so the leader acts once on the fleet rather than
   //    N times on members.
   if (fleet.blockedAtLayer) {

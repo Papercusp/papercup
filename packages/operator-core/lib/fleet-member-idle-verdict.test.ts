@@ -139,7 +139,26 @@ describe('computeMemberIdleVerdict — dominance (the P-002 inversion)', () => {
 
   it('a STALLED holder is not reported as working', () => {
     const v = computeMemberIdleVerdict(idle({ load: 1, stalled: true }), ctx());
-    expect(v.cause).not.toBe('working');
+    expect(v.cause).toBe('stalled-holder');
+    expect(v.remedy).toContain('Reclaim');
+  });
+
+  // Found by running this oracle over the fleet's REAL rows: two members held stranded claims
+  // during a pause, and 'fleet-blocked' hid the only thing the leader had to act on.
+  it('a stranded claim beats a fleet block — reclaiming is needed whatever the fleet is doing', () => {
+    const v = computeMemberIdleVerdict(
+      idle({ load: 1, stalled: true }),
+      ctx({ blockedAtLayer: 'fleet-paused' }),
+    );
+    expect(v.cause).toBe('stalled-holder');
+  });
+
+  it('but a stalled holder still taking turns is mid-turn, not stranded', () => {
+    const v = computeMemberIdleVerdict(
+      idle({ load: 1, stalled: true, lastToolCallAgeMs: 3_000 }),
+      ctx(),
+    );
+    expect(v.cause).toBe('mid-turn');
   });
 
   it('a fleet block beats a per-member provider wall — one story, not N', () => {
