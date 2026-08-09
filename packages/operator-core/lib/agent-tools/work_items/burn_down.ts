@@ -22,6 +22,8 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { countsTowardBurnDown } from '../../work-item-completion-authority';
 import { classifyTerminalOwner } from '../../completion-audit';
 import { resolveSelfRef } from '../coordination/self-marker';
+import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
+import { matchesClaimSpecFilter, claimSpecSubjectFromWorkItem } from '../../scheduler/claim-spec-match';
 
 /**
  * P-011 (fleet-lead-instrumentation-audit-2026-08-09) — what a lane fence removed
@@ -49,6 +51,37 @@ export interface BurnDownFenceReport {
   excluded: number;
   /** Stated so a reader can check the scope rather than infer it. */
   note: string;
+}
+
+/**
+ * PURE: apply a lane macro to a census, reusing the CLAIM PATH's own filter
+ * evaluator rather than re-implementing the match.
+ *
+ * The fence is built by `buildP2pLaneFence()` (the same FilterNode a claim spec
+ * composes into `view.filter`) and evaluated by `matchesClaimSpecFilter` against
+ * the same subject projection the scheduler uses. Nothing here knows what the
+ * terms ARE — so adding, removing or re-wording a term in the fence module moves
+ * this measurement with it, and there is no second copy to forget.
+ */
+export function applyLaneFence(
+  items: readonly WorkItem[],
+  lane: 'p2p-lane',
+): { rows: WorkItem[]; report: BurnDownFenceReport } {
+  const filter = buildP2pLaneFence();
+  const rows = items.filter((item) => matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(item), filter));
+  return {
+    rows,
+    report: {
+      lane,
+      candidates: items.length,
+      counted: rows.length,
+      excluded: items.length - rows.length,
+      note:
+        `Census scoped to lane '${lane}' by the shared fence macro (buildP2pLaneFence), evaluated by the ` +
+        'same matcher the claim path uses — every count below describes the fenced population, not the ' +
+        'whole harness. cohortAudit (when present) is deliberately UNfenced.',
+    },
+  };
 }
 
 /** How the fleet behind `terminal.deltaBy.fleet` was determined. Reported verbatim so a
@@ -818,6 +851,15 @@ export default defineTool({
         truncated: z.boolean(),
       })
       .optional(),
+    fence: z
+      .object({
+        lane: z.literal('p2p-lane'),
+        candidates: z.number(),
+        counted: z.number(),
+        excluded: z.number(),
+        note: z.string(),
+      })
+      .optional(),
     cohortAudit: z
       .object({
         requested: z.number(),
@@ -913,7 +955,11 @@ export default defineTool({
       censusLimit: requestedIds ? undefined : WORK_ITEMS_MAX_LIMIT,
       rowLimit: args.limit,
     });
+    // The cohort audit deliberately reads the UNFENCED rows: it answers "what
+    // happened to the exact IDs you named", and silently dropping a named ID because
+    // a fence excluded it would report it as MISSING — a fabricated verdict.
     if (requestedIds) result.cohortAudit = buildCohortAudit(requestedIds, items);
+    if (fenced) result.fence = fenced.report;
     return {
       data: result,
     };

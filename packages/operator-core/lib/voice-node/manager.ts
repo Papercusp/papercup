@@ -62,6 +62,17 @@ const identity = {
 
 let swarm: VoiceSwarmLike | null = null;
 let node: VoiceNode | null = null;
+// In-flight-build memo (WI-37484): `ensureNode` used to be a bare
+// check-then-act — `if (node) return node;` followed by several `await`s
+// (dynamic hyperswarm import, relay-key lookup, codec load) before the
+// `node = createVoiceNode(...)` assignment. Two concurrent callers (the
+// `voice:join` agent tool and the desktop local-audio-socket handler both
+// call `joinVoiceChannel` → `ensureNode`) each passed the guard, each built
+// its OWN hyperswarm instance, and only the last assignment survived — the
+// other swarm was constructed, joined the DHT, and then leaked (never
+// destroyed, never referenced again). Same promise-memo pattern already used
+// correctly by mem0-client.ts's `_clientBuildPromise`.
+let nodeBuildPromise: Promise<VoiceNode> | null = null;
 let handle: ChannelHandle | null = null;
 let channel: VoiceChannel | null = null;
 let agentSpeaking = false;
@@ -90,19 +101,25 @@ async function configureMicDspFromPrefs(): Promise<void> {
 
 async function ensureNode(): Promise<VoiceNode> {
   if (node) return node;
-  const mod = (await import('hyperswarm')) as { default: new (opts?: unknown) => VoiceSwarmLike };
-  // Explicit relay fallback (P-013/D-009): when relay keys are configured,
-  // hyperswarm retries failed hole-punches THROUGH the blind relay (it stays
-  // blind — the Noise stream is peer↔peer, so D-012's E2E guarantee holds).
-  const { getVoiceRelayKeys } = await import('./voice-relay');
-  const relayKeys = await getVoiceRelayKeys();
-  swarm = new mod.default({
-    ...(swarmConstructorOpts() as Record<string, unknown>),
-    ...(relayKeys.length > 0 ? { relayThrough: relayKeys } : {}),
+  if (nodeBuildPromise) return nodeBuildPromise;
+  nodeBuildPromise = (async (): Promise<VoiceNode> => {
+    const mod = (await import('hyperswarm')) as { default: new (opts?: unknown) => VoiceSwarmLike };
+    // Explicit relay fallback (P-013/D-009): when relay keys are configured,
+    // hyperswarm retries failed hole-punches THROUGH the blind relay (it stays
+    // blind — the Noise stream is peer↔peer, so D-012's E2E guarantee holds).
+    const { getVoiceRelayKeys } = await import('./voice-relay');
+    const relayKeys = await getVoiceRelayKeys();
+    swarm = new mod.default({
+      ...(swarmConstructorOpts() as Record<string, unknown>),
+      ...(relayKeys.length > 0 ? { relayThrough: relayKeys } : {}),
+    });
+    const codec = await getOpusCodec();
+    node = createVoiceNode({ swarm, codec, identity });
+    return node;
+  })().finally(() => {
+    nodeBuildPromise = null;
   });
-  const codec = await getOpusCodec();
-  node = createVoiceNode({ swarm, codec, identity });
-  return node;
+  return nodeBuildPromise;
 }
 
 export function voiceStatus(): VoiceStatus {

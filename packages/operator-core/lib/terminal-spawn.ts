@@ -148,6 +148,23 @@ export function shellEscape(s: string): string {
  * inside the operator's tmux/zellij pane is wrong in the same way.
  */
 export const TERMINAL_CONTEXT_ENV_KEYS: readonly string[] = [
+  // Operator-process-ONLY subsystem overrides (WI-7160 / EI-19484521469xxx class,
+  // found WI-37487 2026-08-09). These are set via `[Service] Environment=` on
+  // papercup-dev-api.service / papercup-staging-api.service SPECIFICALLY to
+  // retune that unit's OWN internal git-spawn-offload call sites
+  // (dev-deploy-state.ts's `git()`, system-health/compute.ts's `runGit`) — never
+  // meant to affect anything else. Every spawn seam here (visible terminal AND
+  // headless agent/console spawn) runs the new payload as a CHILD of the
+  // operator process with "full env inheritance intact" (systemd-scope.ts) by
+  // design, so without this scrub every spawned agent shell — and every Bash
+  // tool child process inside it — silently inherits the operator's own
+  // subsystem toggle and can trip an unrelated code path (measured: it forced
+  // an agent-shell `npm run test:file` invocation through the degraded spawner
+  // sidecar, producing a `console.warn` that failed `vitest-fail-on-console` in
+  // a THIRD, unrelated test — the recurring cycle-deps.test.ts red-test-watchdog
+  // flake).
+  'PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR',
+  'PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR',
   // GNOME / VTE
   'GNOME_TERMINAL_SCREEN',
   'GNOME_TERMINAL_SERVICE',

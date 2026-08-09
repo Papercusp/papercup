@@ -10,14 +10,33 @@
  * out: "circuit gate exists but pages nobody".
  *
  * THE FIX: after every ERROR tick lands on the ledger, check whether the
- * newest N scout ticks for the workspace are ALL errors (default N=3 ≈ 1.5h of
- * dead hourly cycles; minutes under volume firing). On a streak, fire ONE
- * debounced escalation: a durable `@role:mug`-addressed coord message naming
- * the streak + the distinct error messages (the mug-brief-launch slot drains
- * it into every future Mug wake — the fireGradingNudge "reliable half").
+ * newest N ATTEMPTED scout cycles for the workspace are ALL errors (default
+ * N=3 ≈ 1.5h of dead hourly cycles; minutes under volume firing). On a streak,
+ * fire ONE debounced escalation: a durable `@role:mug`-addressed coord message
+ * naming the streak + the distinct error messages (the mug-brief-launch slot
+ * drains it into every future Mug wake — the fireGradingNudge "reliable half").
  * Debounced per-workspace over `hive_watchdog_fires`
  * (source='scout-error-streak') so a continuing streak pages at most once per
  * window, never per tick.
+ *
+ * ⚠ THE INVERSION THIS READS ONLY ATTEMPTS TO AVOID (P-010, measured
+ * 2026-08-09). The streak window originally spanned EVERY tick, gated ones
+ * included — so the circuit gate's own turnaway rows, written to this same
+ * ledger, RESET the streak between two failures. The alarm was therefore
+ * disarmed by the exact mechanism it exists to report on: the harder the
+ * circuit gate worked, the less this could fire. The two are anti-correlated
+ * BY CONSTRUCTION, which is why "circuit gate exists but pages nobody" (the
+ * gap above) survived the fix aimed at it.
+ *
+ * Measured over the 2026-08-02→08-09 outage (papercusp-workspace): 63 error
+ * ticks, of which 37 were immediately preceded by a GATED tick. The all-ticks
+ * rule could fire on only 8 of them, landing in 3 distinct debounce windows —
+ * and exactly 3 pages were sent, across a 6-day outage, with a 3.7-day silent
+ * gap (08-04T10:10Z → 08-08T02:39Z) covering 43 of the 63 errors. Counting
+ * only ATTEMPTS yields 44 trigger points in 12 windows on the same history.
+ * (Counting circuit-gated ticks AS failures instead was measured identical —
+ * 44/12 — so this narrower, gate-reason-agnostic rule was preferred: a gate
+ * added later needs no change here.)
  *
  * Same fail-soft watchdog-family contract as ungraded-filings-watchdog.ts:
  * pure decider split from the PG/coord edge, env-tunable threshold with a
@@ -41,6 +60,22 @@ export function scoutErrorStreakThreshold(): number {
 export function scoutErrorStreakDebounceHours(): number {
   const n = Number(process.env.PAPERCUSP_SCOUT_ERROR_STREAK_DEBOUNCE_HOURS ?? 6);
   return Number.isFinite(n) && n > 0 ? n : 6;
+}
+
+/**
+ * The tick statuses that represent an ATTEMPTED cycle — the only ones the streak
+ * window may contain. A 'gated' tick is a decision NOT to run a cycle (circuit /
+ * min-interval / no-trigger / no-capacity); it is neither a success nor a failure,
+ * so it must not break a streak of failures. See the module header's INVERSION note.
+ *
+ * ONE constant feeds BOTH the SQL predicate and {@link isAttemptTick}, so the
+ * window the query returns and the window the decider assumes cannot drift apart.
+ */
+export const ATTEMPT_STATUSES = ['ran', 'error'] as const;
+
+/** Does this tick represent an attempted cycle (see {@link ATTEMPT_STATUSES})? */
+export function isAttemptTick(status: string): boolean {
+  return (ATTEMPT_STATUSES as readonly string[]).includes(status);
 }
 
 // ── pure decider (unit-tested with no DB) ─────────────────────────────────────

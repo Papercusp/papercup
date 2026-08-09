@@ -664,19 +664,20 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
       // --reuse-corestore / an outage, all of which ship a WORSE seed to dodge a condition
       // that clears by itself.
       const { openStore } = flakyRoHarness(Number.MAX_SAFE_INTEGER);
-      const err = await openSourceStoreForCut({
-        ...base,
-        wantRefresh: false,
-        openStore,
-        sleep: noSleep,
-      }).catch((e: unknown) => e as Error);
+      let err: unknown;
+      try {
+        await openSourceStoreForCut({ ...base, wantRefresh: false, openStore, sleep: noSleep });
+      } catch (e) {
+        err = e;
+      }
 
       expect(err).toBeInstanceOf(Error);
-      expect(err.message).toMatch(/TRANSIENT race/);
-      expect(err.message).toMatch(new RegExp(`all ${RO_OPEN_RETRY_ATTEMPTS} attempts`));
+      const message = err instanceof Error ? err.message : '';
+      expect(message).toMatch(/TRANSIENT race/);
+      expect(message).toMatch(new RegExp(`all ${RO_OPEN_RETRY_ATTEMPTS} attempts`));
       // It must NOT recommend the remedies that degrade the seed.
-      expect(err.message).not.toMatch(/PAPERCUSP_SKIP_SEED_CUT=1 \(release-local/);
-      expect(err.message).not.toMatch(/this is not a plain lock conflict/);
+      expect(message).not.toMatch(/PAPERCUSP_SKIP_SEED_CUT=1 \(release-local/);
+      expect(message).not.toMatch(/this is not a plain lock conflict/);
     });
 
     it('classifies ENOENT as transient but a lock / corrupt manifest as not', () => {

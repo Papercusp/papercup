@@ -22,7 +22,9 @@ import {
   buildBurnDownResult,
   buildCohortAudit,
   liveOwnersFromPresence,
+  applyLaneFence,
 } from './burn_down';
+import { P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from '../../scheduler/p2p-lane-fence';
 
 const mockListWorkItems = vi.mocked(listWorkItems);
 const mockGetWorkItem = vi.mocked(getWorkItem);
@@ -607,5 +609,70 @@ describe('work_items:burn_down', () => {
         memberCount: 2,
       });
     });
+  });
+});
+
+/**
+ * P-011 (fleet-lead-instrumentation-audit-2026-08-09) — the drain leader measured
+ * burn-down by hand-rolling SQL with a hand-maintained p2p title regex re-typed
+ * into every query, because the real metric (terminal transitions) lived here and
+ * this tool could not express a LANE. The property under test is that the fence
+ * applied here is the CLAIM PATH's fence, not a second copy of it.
+ */
+describe('applyLaneFence (P-011) — burn-down scoped to the lane the fleet may claim from', () => {
+  it('excludes p2p work and keeps local work, counting what it removed', () => {
+    const items = [
+      item({ id: 'WI-p1', title: 'hypercore session leaks a handle' }),
+      item({ id: 'WI-p2', title: 'autobase view rebuild is quadratic' }),
+      item({ id: 'WI-l1', title: 'operator restart drops the pending cut' }),
+      item({ id: 'WI-l2', title: 'plans:get returns a stale contentHash' }),
+    ];
+    const { rows, report } = applyLaneFence(items, 'p2p-lane');
+    expect(rows.map((r) => r.id)).toEqual(['WI-l1', 'WI-l2']);
+    expect(report).toMatchObject({ lane: 'p2p-lane', candidates: 4, counted: 2, excluded: 2 });
+  });
+
+  // D-007: the substrate vocabulary leads a second life naming ordinary single-box
+  // release-engineering work here (this repo BUNDLES a corestore seed into the
+  // desktop release), and 'peer' routinely means ANOTHER AGENT. Those terms were
+  // REJECTED from the fence for that reason. Pinning it through this path too,
+  // because a burn-down that quietly dropped them would hide from the fleet exactly
+  // the local work it can act on.
+  it('does NOT exclude the D-007 anti-terms — substrate vocabulary is not p2p work here', () => {
+    const items = [
+      item({ id: 'WI-a1', title: 'corestore seed bloats the desktop bundle' }),
+      item({ id: 'WI-a2', title: 'peer agent wedges the shared tree lock' }),
+      item({ id: 'WI-a3', title: 'cannot replicate the floor set locally' }),
+    ];
+    const { rows, report } = applyLaneFence(items, 'p2p-lane');
+    expect(rows.map((r) => r.id)).toEqual(['WI-a1', 'WI-a2', 'WI-a3']);
+    expect(report.excluded).toBe(0);
+    // Guard the premise, not just the outcome: if one of these terms is ever added
+    // to the fence, this test should fail HERE with a clear reason rather than as a
+    // mysterious row-count change above.
+    for (const term of ['corestore', 'peer', 'replicate']) {
+      expect(P2P_LANE_EXCLUSION_TERMS as readonly string[]).not.toContain(term);
+      expect(P2P_LANE_REJECTED_ANTI_TERMS as readonly string[]).toContain(term);
+    }
+  });
+
+  // CONTROL (falsifiability): the fence must be the SHARED macro, evaluated by the
+  // claim path's own matcher — not a local regex that happens to agree today. Drive
+  // every real exclusion term through it; a hand-rolled copy drifts from this list
+  // the moment the module changes, which is the failure P-011 is about.
+  it('CONTROL: every term in the shared fence actually excludes, via the claim-path matcher', () => {
+    const items = P2P_LANE_EXCLUSION_TERMS.map((term, i) =>
+      item({ id: `WI-${i}`, title: `${term} regression in the swarm` }),
+    );
+    const { rows, report } = applyLaneFence(items, 'p2p-lane');
+    expect(report.candidates).toBe(P2P_LANE_EXCLUSION_TERMS.length);
+    expect(rows).toEqual([]);
+    expect(report.excluded).toBe(P2P_LANE_EXCLUSION_TERMS.length);
+  });
+
+  it('is a no-op report on an empty census rather than inventing a scope', () => {
+    const { rows, report } = applyLaneFence([], 'p2p-lane');
+    expect(rows).toEqual([]);
+    expect(report).toMatchObject({ candidates: 0, counted: 0, excluded: 0 });
   });
 });
