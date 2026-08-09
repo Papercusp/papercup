@@ -252,6 +252,47 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
     await expect(p).resolves.toBeUndefined();
   });
 
+  // EI-20006410617437313. The UNCONFINED notice is an OPERATOR-RUNTIME diagnostic:
+  // it tells a human that a bg-host restart will take the sidecar with it. Under a
+  // test runner it is never the subject — confinement there depends on ambient host
+  // state the test neither sets up nor asserts on (the task manager is disabled on
+  // most boxes), so the SAME COMMIT warns or stays quiet depending on the machine.
+  // `vitest-fail-on-console` then converts that ambient condition into a red on
+  // whichever test is executing, and because `warnedUnconfined` is a MODULE-SCOPED
+  // latch the victim is simply the first file in the worker to touch this path —
+  // measured landing on `scout/observation-consumption-wiring.test.ts`, which has
+  // nothing to do with sidecar confinement.
+  //
+  // Note this file could never have caught that: its own `beforeEach` installs a
+  // blanket `vi.spyOn(console, 'warn')`, so the one suite that most exercises the
+  // unconfined path is precisely the one that cannot see the warn. Hence an
+  // explicit assertion rather than reliance on fail-on-console.
+  it('does NOT emit the UNCONFINED diagnostic through console.warn under a test runner', async () => {
+    await seedScopeProbe(false);
+    const child = makeChild();
+    spawnMock.mockImplementationOnce(() => child);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const p = spawnSpawnerSidecar(SOCK);
+    await flush();
+
+    // The spawn really did go out unconfined — otherwise this asserts nothing.
+    const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(isConfinedToSiblingScope(cmd, args)).toBe(false);
+
+    const warned = warn.mock.calls.map((c) => String(c[0] ?? ''));
+    expect(warned.filter((m) => m.includes('UNCONFINED'))).toEqual([]);
+
+    // CALIBRATION: prove the assertion above is live rather than vacuously true.
+    // A spy that records nothing would satisfy it even if the diagnostic were
+    // still being emitted, so demonstrate this spy does capture a real warn.
+    console.warn('[calibration] UNCONFINED — this control MUST be captured');
+    expect(warn.mock.calls.map((c) => String(c[0] ?? '')).filter((m) => m.includes('UNCONFINED'))).toHaveLength(1);
+
+    child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    await expect(p).resolves.toBeUndefined();
+  });
+
   // ── the re-entrancy window the async chokepoint opened ─────────────────────
 
   it('two concurrent callers spawn exactly ONE sidecar (managedSpawn is async — the old raw spawn was not)', async () => {

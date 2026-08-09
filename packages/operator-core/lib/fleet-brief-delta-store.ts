@@ -30,6 +30,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+import { coerceJson } from './pg-jsonb';
 import {
   rotateBriefSnapshot,
   computeFleetBriefDelta,
@@ -64,18 +65,22 @@ export async function readBriefSnapshot(
        AND fleet_slug   = ${key.fleetSlug}
        AND owner_id     = ${key.ownerId}
      LIMIT 1
-  `) as Array<{
-    fire_count: string | number | null;
-    baseline: FleetBriefObservation | null;
-    observation: FleetBriefObservation;
-  }>;
+  `) as Array<{ fire_count: string | number | null; baseline: unknown; observation: unknown }>;
+  // baseline/observation are typed unknown on purpose: a jsonb column reads back as an OBJECT
+  // on the prod getOrgPg client but as a raw JSON STRING under any prepare:false client (the
+  // testcontainer pool), so the shape is genuinely not known until coerceJson decodes it.
   const row = rows[0];
   if (!row) return null;
+  const observation = coerceJson<FleetBriefObservation>(row.observation);
+  // A row whose observation will not decode is not a usable baseline. Reporting it as absent
+  // makes the next read start a fresh boundary, which the delta renders as "no baseline" —
+  // strictly better than differencing against a half-parsed snapshot.
+  if (!observation) return null;
   return {
     // bigint arrives as an exact-precision string; the fire count is small, so Number is safe.
     fireCount: row.fire_count === null ? null : Number(row.fire_count),
-    baseline: row.baseline ?? null,
-    observation: row.observation,
+    baseline: coerceJson<FleetBriefObservation>(row.baseline),
+    observation,
   };
 }
 
@@ -90,8 +95,12 @@ export async function writeBriefSnapshot(
     INSERT INTO harness_shared.fleet_brief_snapshots
                 (workspace_id, fleet_slug, owner_id, fire_count, baseline, observation, rotated_at)
          VALUES (${key.workspaceId}, ${key.fleetSlug}, ${key.ownerId}, ${row.fireCount},
-                 ${row.baseline as unknown as string}::jsonb,
-                 ${row.observation as unknown as string}::jsonb, now())
+                 -- jsonb is bound as an explicit JSON.stringify + cast: sql.json() THROWS on the
+                 -- getOrgPg client (EI-607) and a bare object does not bind. A null baseline is
+                 -- bound as SQL NULL rather than the jsonb literal 'null', so "no baseline yet"
+                 -- and "a baseline that decoded to null" stay the same thing to the reader.
+                 ${row.baseline ? JSON.stringify(row.baseline) : null}::jsonb,
+                 ${JSON.stringify(row.observation)}::jsonb, now())
     ON CONFLICT (workspace_id, fleet_slug, owner_id) DO UPDATE
        SET fire_count  = EXCLUDED.fire_count,
            baseline    = EXCLUDED.baseline,

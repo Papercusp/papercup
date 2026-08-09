@@ -95,6 +95,7 @@ import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { buildCapacityReport } from '../../fleet/capacity-dispatch';
 import { readBeeProviderAvailability } from './capacity';
 import type { FleetBriefDelta } from '../../fleet-brief-delta';
+import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-member-idle-verdict';
 
 export interface LeaderBriefMember {
   agentId: string;
@@ -2368,6 +2369,28 @@ export default defineTool({
     } catch {
       /* best-effort — never block the brief on the custom-invariant registry */
     }
+    // P-023: the PER-MEMBER "why is this idle" verdict, computed AFTER `blockedAt` because it
+    // is deliberately subordinate to it. Attributing idleness to a member while the pool is at
+    // factor 0 is exactly the inversion P-002 measured; deriving a per-member answer
+    // independently would reproduce that once per member, and a specific per-member reason
+    // reads as BETTER evidence than a fleet-wide one, so it would be believed harder.
+    const membersWithVerdict = markedMembers.map((m) => ({
+      ...m,
+      idleVerdict: computeMemberIdleVerdict(
+        {
+          sessionState: m.sessionState,
+          load: m.load,
+          stalled: m.stalled,
+          lastToolCallAgeMs: m.lastToolCallAgeMs,
+          contextPressure: m.contextPressure,
+          throttled: (m as { throttled?: unknown }).throttled,
+          loopMode: m.loopMode,
+          nextFireAt: m.nextFireAt,
+        },
+        { blockedAtLayer: blockedAt?.layer ?? null, midTurnFreshnessMs: VERDICT_SPEAKING_FRESH_MS },
+      ),
+    }));
+    const idleCauses = summariseIdleCauses(membersWithVerdict.map((m) => m.idleVerdict));
     // P-022 / D-011: the wake-to-wake delta. Every field above this line is point-in-time,
     // which is what made "what changed since my last wake" a hand-reconstruction from
     // checkpoint prose. Boundary is REPORTED, never implied, and an axis with no baseline
@@ -2441,7 +2464,10 @@ export default defineTool({
         // A→B" a monitor tick actually reads; `delta` carries the per-axis availability so a
         // reader can tell an unmeasured axis from a quiet one.
         ...(delta ? { delta, deltaSummary } : {}),
-        members: markedMembers,
+        // P-023: counts by cause. A cause that never fired is ABSENT, not 0 — a zero row
+        // invites reading an unpopulated cause as a measured absence.
+        idleCauses,
+        members: membersWithVerdict,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
         ...(unownedCriticalsFederated.length > 0
           ? {

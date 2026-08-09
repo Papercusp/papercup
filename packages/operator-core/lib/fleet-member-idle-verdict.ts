@@ -1,0 +1,245 @@
+/**
+ * fleet-member-idle-verdict — the per-member "why is this one idle" oracle
+ * (fleet-lead-instrumentation-audit-2026-08-09 P-023).
+ *
+ * P-023: "A per-member 'why is this idle' oracle: throttled / spec-mismatched / floor-blocked
+ * / mid-turn / genuinely idle. Currently inferred from `lastToolCallAgeMs` plus pool state —
+ * exactly the inference P-002 shows leader-brief getting wrong."
+ *
+ * THIS IS THE PER-MEMBER ANALOG OF `computeFleetBlockVerdict` (P-019) AND IS DELIBERATELY
+ * SUBORDINATE TO IT. That subordination is the whole design, not a detail. P-002 measured the
+ * fleet-level version of this bug: the brief attributed idleness to the MEMBER while the pool
+ * was at `factor 0`, and every remedy it offered ("wake it to re-run scheduler:get_next") added
+ * another request behind the same congestion. A per-member oracle that re-derives its own
+ * answer, independently of the fleet verdict, reproduces that inversion once per member — and
+ * does it with more apparent authority, because a specific per-member reason reads as better
+ * evidence than a fleet-wide one.
+ *
+ * SO TWO OF P-023'S FIVE NAMED CAUSES ARE DELIBERATELY NOT MEMBER-LEVEL CAUSES.
+ * `spec-mismatched` and `floor-blocked` are properties of the SPEC AND THE QUEUE, not of the
+ * member: every member inheriting the fleet spec shares them exactly. Reporting them per-member
+ * would print the same fleet-scope fact N times as though it were N independent findings, and
+ * invite a leader to "fix" a member over a condition no member action can change. They resolve
+ * here to `fleet-blocked`, which NAMES the dominating layer and points at `blockedAt`. A member
+ * carrying its OWN bee spec is the one real exception, and is reported as unresolved rather
+ * than silently attributed to the fleet's spec — see `ownSpecUnresolved`.
+ *
+ * PURE: no PG / IO / clock. The caller supplies the member row, the fleet verdict and the
+ * freshness floor, so every branch is unit-testable.
+ */
+
+// Type-only import: erased at compile, so this cannot create a runtime cycle with
+// leader-brief.ts (which imports this module back). Reusing its union rather than
+// re-declaring one is the point — a second copy would drift from the arbiter it defers to.
+import type { FleetBlockLayer } from './agent-tools/fleet/leader-brief';
+
+/**
+ * Why one member is not currently doing work, in the order the causes physically dominate
+ * one another. Exactly one is reported — the leader's next action depends on which.
+ */
+export type MemberIdleCause =
+  /** Not idle: holding a claim and advancing it. */
+  | 'working'
+  /** Not idle: taking turns right now (or mid a long local exec that emits no MCP calls). */
+  | 'mid-turn'
+  /** Idle as a CONSEQUENCE of a fleet-level block — pool, spec, floors or a pause. */
+  | 'fleet-blocked'
+  /** This member specifically has backed off a provider wall. */
+  | 'throttled'
+  /** The session is gone or going: ended / draining / suspect. */
+  | 'session-ending'
+  /** Alive but nothing will ever wake it: no armed loop and no pending wake. */
+  | 'no-self-wake'
+  /** About to compact, so it is not going to pick anything up first. */
+  | 'context-exhausted'
+  /** Everything upstream is healthy, work is claimable, and it still took nothing. */
+  | 'genuinely-idle';
+
+export interface MemberIdleVerdict {
+  cause: MemberIdleCause;
+  /** Why THIS cause, phrased so a leader can check it against the member row. */
+  reason: string;
+  /** The one action that addresses it. `null` when the correct action is to do nothing. */
+  remedy: string | null;
+  /**
+   * Set when `cause` is 'fleet-blocked': the layer from `blockedAt` that dominates. Carried so
+   * the per-member row cannot drift from the fleet verdict it defers to.
+   */
+  dominatedBy?: FleetBlockLayer;
+  /**
+   * True when this member carries its OWN claim spec, which was not previewed. Its
+   * spec/floor position is therefore UNKNOWN rather than the fleet's — stated, never
+   * rounded to the fleet's answer.
+   */
+  ownSpecUnresolved?: boolean;
+}
+
+/** The member-row fields this verdict reads. A subset of leader-brief's row, by design. */
+export interface MemberIdleInput {
+  sessionState?: string | null;
+  /** Held claims. > 0 with `stalled` false means it is working. */
+  load?: number | null;
+  stalled?: boolean | null;
+  /** ms since ANY tool call; null = never (still booting). */
+  lastToolCallAgeMs?: number | null;
+  contextPressure?: string | null;
+  /** Present when the member has backed off a provider wall. */
+  throttled?: unknown;
+  /**
+   * The member's loop mode, or null when the roster resolved no loop for it. Paired with
+   * `nextFireAt` this is the documented signature for "nothing will ever wake this member"
+   * (EI-18730414627683753, where a leader had to read exactly these two fields BY HAND to
+   * catch a member that had gone permanently dormant). Deliberately NOT a `loopArmed`
+   * boolean: that field is not plumbed to this layer, and a stale armed-loop row reads true
+   * for a warm-dead session anyway (EI-14702 / WI-6639).
+   */
+  loopMode?: string | null;
+  /** A scheduled next fire, if any. */
+  nextFireAt?: string | null;
+  /** True when the member has its own bee-level claim spec rather than inheriting the fleet's. */
+  hasOwnSpec?: boolean | null;
+}
+
+export interface FleetIdleContext {
+  /** The arbitrated fleet verdict, or null when the fleet is not blocked at any layer. */
+  blockedAtLayer?: FleetBlockLayer | null;
+  /**
+   * How fresh a tool call must be to count as "mid-turn", in ms. Supplied rather than baked
+   * in so it stays one knob shared with the caller's own staleness rules.
+   */
+  midTurnFreshnessMs: number;
+}
+
+const ENDING_STATES = new Set(['ended', 'draining', 'suspect', 'recorded']);
+
+/**
+ * Decide why one member is idle.
+ *
+ * ORDERING IS PHYSICAL DOMINANCE, NOT SEVERITY — the same rule `computeFleetBlockVerdict`
+ * documents. Each earlier cause makes every later one unobservable rather than merely less
+ * important: a member mid-turn cannot be judged idle at all; a member starved of inference
+ * capacity reads as idle at every downstream layer; a floor cannot be seen to withhold work
+ * from a member that never got a turn.
+ */
+export function computeMemberIdleVerdict(
+  member: MemberIdleInput,
+  fleet: FleetIdleContext,
+): MemberIdleVerdict {
+  const ownSpec = member.hasOwnSpec === true ? { ownSpecUnresolved: true } : {};
+
+  // 1. Holding work and advancing it — not idle, and nothing to explain.
+  if ((member.load ?? 0) > 0 && !member.stalled) {
+    return {
+      cause: 'working',
+      reason: `Holding ${member.load} claim(s) and advancing them.`,
+      remedy: null,
+      ...ownSpec,
+    };
+  }
+
+  // 2. Taking turns right now. This is the branch P-023 names as the one currently inferred
+  //    wrongly: a fresh tool call means the member is ACTIVE, and "idle" is simply the wrong
+  //    frame. It is deliberately checked BEFORE the fleet block — a member still emitting
+  //    calls is not being prevented from anything, whatever the fleet-level state.
+  const age = member.lastToolCallAgeMs;
+  if (age != null && age >= 0 && age < fleet.midTurnFreshnessMs && !ENDING_STATES.has(member.sessionState ?? '')) {
+    return {
+      cause: 'mid-turn',
+      reason:
+        `Last tool call ${Math.round(age / 1000)}s ago — this member is taking turns. It may also ` +
+        'be mid a long local exec (a test run, a build) that emits no MCP calls until it returns; ' +
+        'this signal cannot tell those apart, and neither is idle.',
+      remedy: null,
+      ...ownSpec,
+    };
+  }
+
+  // 3. A fleet-level block dominates every member-level explanation below it. Reported as the
+  //    CONSEQUENCE it is, naming the layer, so the leader acts once on the fleet rather than
+  //    N times on members.
+  if (fleet.blockedAtLayer) {
+    return {
+      cause: 'fleet-blocked',
+      reason:
+        `Idle as a consequence of the fleet being blocked at '${fleet.blockedAtLayer}' — not an ` +
+        'independent member-level fault. Acting on this member cannot clear it, and a wake ' +
+        'while the pool or the spec is the constraint adds load behind the same block.',
+      remedy: "Act on blockedAt.remedy — the fleet-level layer — not on this member.",
+      dominatedBy: fleet.blockedAtLayer,
+      ...ownSpec,
+    };
+  }
+
+  // 4. This member specifically backed off a provider wall. Below the fleet block on purpose:
+  //    when the whole pool is congested that is the fleet's story, not N separate ones.
+  if (member.throttled != null) {
+    return {
+      cause: 'throttled',
+      reason:
+        'Backed off a provider wall — its nextFireAt is a WAIT, not a tick. It is not stuck ' +
+        'and it has not stopped.',
+      remedy: 'None — wait it out. Waking it re-queues behind the same wall.',
+      ...ownSpec,
+    };
+  }
+
+  // 5. The session is gone or going. Checked after the blocks above because a draining member
+  //    inside a paused fleet is complying, not failing.
+  if (ENDING_STATES.has(member.sessionState ?? '')) {
+    return {
+      cause: 'session-ending',
+      reason: `sessionState is '${member.sessionState}' — this session is gone or going.`,
+      remedy: 'Reclaim anything it still holds; respawn only if the fleet needs the headcount.',
+      ...ownSpec,
+    };
+  }
+
+  // 6. Alive, but nothing is ever going to wake it. This is the one that looks identical to
+  //    'genuinely-idle' in a flat brief and has the opposite remedy: an idle member with an
+  //    armed loop will pick work up by itself, one without a loop never will.
+  if (member.loopMode == null && !member.nextFireAt) {
+    return {
+      cause: 'no-self-wake',
+      reason:
+        'No loop and no pending wake (loopMode null, nextFireAt null) — this member cannot ' +
+        're-enter on its own, so it will stay idle indefinitely regardless of what becomes ' +
+        'claimable. This is the pair a leader previously had to read by hand.',
+      remedy: 'coord:wake it, or have it loop:arm — a disarmed loop cannot re-arm itself.',
+      ...ownSpec,
+    };
+  }
+
+  // 7. About to compact — it will not pick work up before it does.
+  if (member.contextPressure === 'critical') {
+    return {
+      cause: 'context-exhausted',
+      reason: 'contextPressure is critical — it is about to compact, not about to claim.',
+      remedy: 'Let it compact; do not hand it more work first.',
+      ...ownSpec,
+    };
+  }
+
+  // 8. The residual, and the ONLY case where waking is the right act — the same place
+  //    `computeFleetBlockVerdict` puts its 'members' layer, for the same reason.
+  return {
+    cause: 'genuinely-idle',
+    reason:
+      'Alive, loop armed, no provider wall, and no fleet-level block — capacity and scope are ' +
+      'fine and it still took nothing.',
+    remedy: 'coord:send wake:required to re-run scheduler:get_next.',
+    ...ownSpec,
+  };
+}
+
+/**
+ * Roll the per-member verdicts into counts a leader reads at a glance. Reported as a map so a
+ * cause that never fires is ABSENT rather than a zero — a zero row invites the reader to treat
+ * an unpopulated cause as a measured absence.
+ */
+export function summariseIdleCauses(
+  verdicts: readonly MemberIdleVerdict[],
+): Partial<Record<MemberIdleCause, number>> {
+  const out: Partial<Record<MemberIdleCause, number>> = {};
+  for (const v of verdicts) out[v.cause] = (out[v.cause] ?? 0) + 1;
+  return out;
+}

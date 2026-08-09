@@ -235,9 +235,11 @@ describe('buildSidecarAwareEmbedder', () => {
   });
 
   it('dead sidecar URL ⇒ THROWS sidecar_required_unavailable — never loads an in-process model (WI-4021)', async () => {
-    // The expected down-transition warn is the CORRECT behavior under test —
-    // silence it so vitest-fail-on-console doesn't flag the intended log.
+    // EI-20006179456846006: the transition is reported on console.LOG under a
+    // test runner, so this spy is belt-and-braces rather than the subject; the
+    // dedicated case below pins the channel itself.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       const stub = await startStub();
       await stub.close(); // now a dead port
@@ -250,9 +252,54 @@ describe('buildSidecarAwareEmbedder', () => {
       // ever silently falls back to a real in-process gemma load again, this
       // rejects-assertion fails instead of a 384-dim vector appearing.
       await expect(embed('x')).rejects.toThrow(/sidecar_required_unavailable/);
-      expect(warnSpy).toHaveBeenCalled(); // exactly the down-transition log
+      // The transition IS still reported — just not on a channel that fails builds.
+      expect(logSpy.mock.calls.map((c) => String(c[0] ?? '')).some((m) => m.includes('[sidecar-embedder]'))).toBe(
+        true,
+      );
     } finally {
       warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  }, 30_000);
+
+  // EI-20006179456846006. A sidecar availability TRANSITION is INFRASTRUCTURE
+  // state, not a statement about whatever test happens to be executing when it
+  // flips. Reported through the generic lib's DEFAULT onTransition it lands on
+  // console.warn, and `vitest-fail-on-console` then reds an arbitrary victim —
+  // measured killing a RANKING diagnostic in owner-query-relevance.integration
+  // .test.ts when the :3384 sidecar recovered mid-run. Two properties make that
+  // maximally expensive: the victim is unrelated to the subject (so a triager
+  // hunts a ranking regression), and it cannot reproduce on re-run (so it gets
+  // dismissed as flaky and comes back at a worse hour).
+  //
+  // The fix is a CHANNEL change at THIS seam — the host, not the shared lib,
+  // decides how its own environment reports infrastructure state. It is asserted
+  // by driving a REAL transition through the real wiring (a dead port), not by
+  // inspecting the injected callback: a fix that lands only on a seam production
+  // does not take is the failure mode this file is most exposed to.
+  it('reports a sidecar transition on console.LOG, never console.warn, under a test runner', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const stub = await startStub();
+      await stub.close(); // dead port ⇒ a genuine down-transition
+      const embed = await buildSidecarAwareEmbedder('gemma', 'document', {
+        resolveUrl: () => null,
+        ensure: async () => stub.url,
+        probeHealth: async () => CURRENT_HEALTH,
+      });
+      await expect(embed('x')).rejects.toThrow(/sidecar_required_unavailable/);
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0] ?? ''));
+      const logged = logSpy.mock.calls.map((c) => String(c[0] ?? ''));
+
+      // CALIBRATION first: prove the transition was actually reported, so the
+      // console.warn assertion below cannot pass merely because nothing happened.
+      expect(logged.filter((m) => m.includes('[sidecar-embedder]'))).not.toHaveLength(0);
+      expect(warned.filter((m) => m.includes('[sidecar-embedder]'))).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
     }
   }, 30_000);
 });

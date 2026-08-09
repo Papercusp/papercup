@@ -132,10 +132,13 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
       throw new Error('no systemd in test');
     }) as never);
     // Pinning the probe unsupported means the spawn legitimately reports itself
-    // UNCONFINED once per process, and `vitest-fail-on-console` fails any test
-    // that lets a console.warn escape. Silenced here and asserted EXPLICITLY in
-    // the dedicated case below — which is what that failure message asks for,
-    // rather than blanket-muting a signal nobody then checks.
+    // UNCONFINED once per process. Since EI-20006410617437313 that notice goes to
+    // console.LOG under a test runner — `vitest-fail-on-console` polices only
+    // warn/error, so an ambient host condition (the task manager being disabled)
+    // can no longer red whichever unrelated file happens to touch this path first.
+    // It is still asserted EXPLICITLY in the dedicated case below, rather than
+    // blanket-muting a signal nobody then checks.
+    vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
@@ -195,14 +198,18 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
   // ONCE-per-process because the probe result is cached: a per-spawn warning
   // would repeat on every crash-respawn.
   it('says so, exactly once, when the sidecar lands UNCONFINED (the cgroup hazard is back)', async () => {
-    const warn = console.warn as unknown as ReturnType<typeof vi.fn>;
+    // console.LOG, not warn: under a test runner the notice is emitted on the
+    // channel `vitest-fail-on-console` does not police (EI-20006410617437313).
+    // The message, and the exactly-once latch this case exists to pin, are
+    // unchanged — only the channel moves, and only under test.
+    const logged = console.log as unknown as ReturnType<typeof vi.fn>;
     const first = makeChild();
     spawnMock.mockReturnValueOnce(first);
     const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
     first.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
     await ready;
 
-    const unconfined = warn.mock.calls.filter((c) => String(c[0]).includes('UNCONFINED'));
+    const unconfined = logged.mock.calls.filter((c) => String(c[0]).includes('UNCONFINED'));
     expect(unconfined).toHaveLength(1);
     expect(String(unconfined[0][0])).toContain('EI-19479764372783341');
 
@@ -217,7 +224,7 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     second.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
     await again;
 
-    expect(warn.mock.calls.filter((c) => String(c[0]).includes('UNCONFINED'))).toHaveLength(1);
+    expect(logged.mock.calls.filter((c) => String(c[0]).includes('UNCONFINED'))).toHaveLength(1);
   });
 
   it('EI-8810: never hands the child the parent HTTP port or the background-worker role', async () => {

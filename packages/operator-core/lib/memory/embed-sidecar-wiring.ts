@@ -115,6 +115,42 @@ export function _resetSidecarSkewReportForTests(): void {
 }
 
 /**
+ * Transition reporter injected into BOTH sidecar-backed builders below
+ * (EI-20006179456846006).
+ *
+ * A sidecar availability transition is INFRASTRUCTURE state: it says something
+ * about the box, never about the code that happens to be running when it flips.
+ * @papercusp/memory and @papercusp/rerank both DEFAULT `onTransition` to
+ * `console.warn`, which under a test runner `vitest-fail-on-console` converts
+ * into a failure of whichever test is mid-flight — measured red-ing a RANKING
+ * diagnostic in owner-query-relevance.integration.test.ts when the :3384 sidecar
+ * RECOVERED mid-run. Two properties make that maximally expensive to triage: the
+ * victim is unrelated to the subject (so it reads as a ranking regression), and
+ * it cannot reproduce on re-run (so it then gets written off as flake).
+ *
+ * Fixed HERE rather than in the shared libs on purpose. The generic default is
+ * the right one for a consumer with no opinion, and both libs expose
+ * `onTransition` precisely so a HOST can decide how its own environment reports
+ * infrastructure state — so exercising that seam beats changing a default that
+ * also feeds production logging for every other consumer.
+ *
+ * This is a CHANNEL change, never suppression: the identical line still reaches
+ * the run output (fail-on-console polices warn/error and ignores log), so a
+ * sidecar flap that degrades an eval stays diagnosable — the whole reason the
+ * message exists. Production severity is deliberately untouched.
+ */
+function reportSidecarTransition(subject: string) {
+  return (state: 'down' | 'up' | 'rejected', detail: string): void => {
+    const line = `${subject} sidecar ${state}: ${detail}`;
+    if (process.env.VITEST || process.env.NODE_ENV === 'test') {
+      console.log(line);
+      return;
+    }
+    console.warn(line);
+  };
+}
+
+/**
  * Build a local embedder ('gemma' | 'local'/BGE | 'harrier') for `kind`,
  * served by the shared sidecar when one is configured/spawnable and
  * in-process otherwise. Drop-in replacement for the direct
@@ -132,6 +168,9 @@ export async function buildSidecarAwareEmbedder(
     model,
     kind,
     url,
+    // Same text the lib's own default emits — only the channel differs, and
+    // only under a test runner. See reportSidecarTransition.
+    onTransition: reportSidecarTransition(`[sidecar-embedder] ${model}:${kind}`),
     // BGE is symmetric — buildLocalEmbedder has no kind knob; gemma and
     // harrier are asymmetric dual-encoders, so kind picks their task prompt
     // (both sides of this fallback match what the sidecar does server-side,
@@ -166,5 +205,12 @@ export async function buildSidecarAwareReranker(
   deps: SidecarWiringDeps = defaultDeps,
 ): Promise<RerankScoreFn> {
   const url = await resolveProcessSidecarUrl(deps, [EMBED_SIDECAR_CAP_RERANK]);
-  return buildSidecarFirstReranker({ model, url });
+  // The reranker carries the IDENTICAL defaulted-to-console.warn transition
+  // reporter, so it is the same latent red on a different sidecar capability —
+  // fixed here at the same time rather than waiting for it to be filed too.
+  return buildSidecarFirstReranker({
+    model,
+    url,
+    onTransition: reportSidecarTransition(`[sidecar-reranker] ${model}`),
+  });
 }

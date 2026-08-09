@@ -1,6 +1,6 @@
 ---
 title: "plans:list/attention egress is poll-FREQUENCY, not payload — and deltas cut bytes, not call count"
-description: "plans:list + plans:attention are the dominant read-byte tools (~340GB/7d, the EI-2661 headline). MEASURED: that traffic is ~100% desktop-UI HTTP polling (transport='http': ~560K calls each / 3d; agents via mcp: <100), at ~4 calls/sec EACH, the two fired in lockstep from the same poll cycle. But the underlying plan tables are written only ~10-30×/HOUR — a ~500-2000:1 read:write ratio, so ~99.9% of those reads return byte-identical data. Two INDEPENDENT levers follow, and conflating them is the trap: (1) the rows-delta protocol (SYNC_RESOURCE_DELTA, default-ON 2026-06-23; resource-delta-config lists plans.list + plans.attention) collapses the ~99.9% unchanged reads into tiny `not_modified` bodies — the right fix for BYTES, and it's why tool_invocations.output_size will NOT show the win (it records the full pre-delta result). (2) The call COUNT itself (~4/sec, decoupled from data) stays pure waste even with deltas — each is still a full server-side tool invocation + round-trip. cachedRead (caching-an-expensive-tool-read) makes each cheap on the server but does not remove the call. The count lever is to make these reads invalidation-driven (SSE push on the rare write + a LONG drift-repair poll), not a tight fixed poll. Do NOT declare egress 'solved' when the delta lands — the byte win is real, the count waste is not touched."
+description: "plans:list + plans:attention are the dominant read-byte tools (~340GB/7d, the EI-2661 headline). MEASURED: that traffic is ~100% desktop-UI HTTP polling (transport='http': ~560K calls each / 3d; agents via mcp: <100), at ~4 calls/sec EACH, the two fired in lockstep from the same poll cycle. But the underlying plan tables are written only ~10-30×/HOUR — a ~500-2000:1 read:write ratio, so ~99.9% of those reads return byte-identical data. Two INDEPENDENT levers follow, and conflating them is the trap: (1) the rows-delta protocol (SYNC_RESOURCE_DELTA, default-ON 2026-06-23; resource-delta-config lists plans.list + plans.attention) collapses the ~99.9% unchanged reads into tiny `not_modified` bodies — the right fix for BYTES, and it's why tool_invocations.output_size will NOT show the win (it records the full pre-delta result). (2) The call COUNT itself (~4/sec, decoupled from data) stays pure waste even with deltas — each is still a full server-side tool invocation + round-trip. cachedRead (caching-an-expensive-tool-read) makes each cheap on the server but does not remove the call. The count lever is to make these reads invalidation-driven (SSE push on the rare write + a LONG drift-repair poll), not a tight fixed poll. Do NOT declare egress 'solved' when the delta lands — the byte win is real, the count waste is not touched. ⚠ STATUS CORRECTION 2026-08-09 (WI-37557): that last clause is now STALE — the count lever WAS subsequently built. plans.list/plans.attention are invalidation-driven today (useSyncQuery + notifySyncInvalidate), and measured on the same transport='http' population they now run 0.032 and 0.017 calls/sec against the ~4/sec recorded here — a ~66-125x reduction. The two-levers ANALYSIS below is still correct and still worth reading; only its present-tense status claims are out of date. Trusting them cost a wrong verdict (plan semantic-search-fingerprint-coverage-2026-08-03, D-049 retracted by D-050)."
 discovered: 2026-06-23
 tags: [perf, egress, plans, plans-list, plans-attention, sync, polling, rows-delta, not_modified, cachedRead, telemetry, EI-2661, WI-545]
 status: active
@@ -24,6 +24,59 @@ generated:
   at: 2026-06-23
 ---
 
+## ⚠ STATUS CORRECTION — 2026-08-09: the COUNT lever shipped. Read this before acting on anything below.
+
+**This page's analysis is still correct. Its present-tense STATUS claims are not.** It was
+written 2026-06-23 and describes a fixed ~4 calls/sec UI poll as a live, unfixed problem. That
+poll is gone. Three claims below are now FALSE and are flagged inline where they appear:
+
+- the frontmatter's closing "the count waste is not touched" — it was subsequently touched;
+- "The poll cadence is **fixed and decoupled from data change** — it is NOT invalidation-driven";
+- "the same ~4/sec, flat-around-the-clock shape".
+
+`plans.list` and `plans.attention` are **invalidation-driven today**: consumed via `useSyncQuery`
+(`apps/operator/app/admin/plans/plans-api.ts` L996 / L1184 / L1211), registered as sync-resolver
+queries (`sync-resolver/index.ts:3199` / `:3274`), with `notifySyncInvalidate` fired across the
+plan write path.
+
+Measured on the **same** `transport='http'` population this page measured:
+
+| | this page (2026-06-23) | measured 2026-08-09 |
+|---|---|---|
+| `plans:attention` | ~4 calls/sec (~187K/day) | **2,806/24h = 0.032/sec** |
+| `plans:list` | ~4 calls/sec (~187K/day) | **1,494/24h = 0.017/sec** |
+
+That is a **~66–125× reduction**, and one client (`pc-admin-plans-ui`) is still ~99.9% / ~95% of
+each — the agents were never the load, exactly as this page said.
+
+**The method that settles poll-vs-push — use this, not a raw total.** Compare the **FLOOR in the
+quiet hours**, not the peak. A fixed interval has an arithmetic floor independent of activity
+(30s ⇒ 120 calls/hr; 180s ⇒ 20/hr). Invalidation-driven traffic has no floor and decays toward
+zero when writes stop. Measured here: quiet hours floor at **9 calls/hr, tracking plan-writes
+~1:1** (12:00 → 9 calls / 9 writes; 11:00 → 9 / 10). That single comparison falsifies every fixed
+interval in one step, and unlike a raw total it is immune to the "how long was the UI open"
+confound.
+
+**What genuinely remains** (both narrow, neither is the poll this page describes):
+
+1. **No debounce/coalesce on invalidation → refetch.** ~3 *identical* calls per burst (161 bursts
+   in 6h; all 292 calls in a 3h sample carry one arg shape, `harness: "all"`, `payloadTier: "full"`).
+   Upper bound if perfectly coalesced: ~⅔ of ~2,800 calls/day.
+2. ~~No drift-repair backstop on these two feeds.~~ **WITHDRAWN — there IS one.**
+   `HarnessSyncProvider` runs a **180s** drift-repair tick (`DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000`,
+   `HarnessSyncProvider.tsx:57`, the default for `ssePollIntervalMs` at `:211`), which replaced a
+   shared 5s `pollIntervalMs`. That tick is the ~180s modal inter-call gap in the measurement
+   above. So the backstop exists at the transport layer and covers these feeds. Note this means
+   **both halves of the original prescription shipped** — SSE push on the write *and* a long
+   drift-repair poll — which is why the only genuine residual left is (1).
+
+**Why this correction was written.** The stale status claims kept a plan item (P-023 of
+`semantic-search-fingerprint-coverage-2026-08-03`) looking like live work months after its fix
+shipped. An agent acting on this page recorded a decision (D-049) concluding the poll was still
+live — reasoning from call VOLUME without opening the client — and had to retract it (D-050) an
+hour later. A doc that wrongly reports work as UNDONE fails silently and expensively: nothing
+contradicts it, and it diverts effort into rebuilding what exists.
+
 ## The mistake this prevents
 
 Seeing `plans:list` at ~340GB/7d (the #1 read-byte tool, ~25× the next) and concluding the
@@ -39,10 +92,19 @@ fully solves it**. Both miss the shape of the traffic.
   back to plain JSON anyway.)
 - **~4 calls/sec EACH, in lockstep.** Hour-by-hour the two tools have near-identical counts —
   one UI poll cycle fetches both. Steady around the clock.
+  <br />⚠ **STALE (2026-08-09)** — no longer ~4/sec and no longer steady: `plans:attention` is
+  0.032/sec, `plans:list` 0.017/sec, and hourly volume now swings 9 → 228 because it tracks plan
+  WRITES, not a clock. See the status correction at the top.
 - **~500–2000:1 read:write ratio.** In a representative window: ~13–15K reads/hour vs **6–27
   plan-table writes/hour**. The data changes once every few minutes; the UI re-reads it ~4×/sec.
   **~99.9% of reads are byte-identical to the previous one.** The poll cadence is **fixed and
   decoupled from data change** — it is NOT invalidation-driven.
+  <br />⚠ **STALE (2026-08-09)** — it IS invalidation-driven now (`useSyncQuery` +
+  `notifySyncInvalidate`), so the cadence is COUPLED to writes. No TIGHT fixed poll remains; what
+  is left is the deliberate **180s** drift-repair backstop (`DEFAULT_SSE_DRIFT_REPAIR_MS`), i.e.
+  exactly the "long drift-repair poll" this page prescribes. Proof the tight poll is gone: quiet
+  hours floor at 9 calls/hr tracking writes ~1:1 — below even a 180s tick's 20/hr, and far below
+  the ~14,400/hr a 4/sec poll would produce.
 
 ## The two independent levers (don't conflate)
 
@@ -115,6 +177,16 @@ conclusions above (both land on the negligible **agent/MCP** path, not the domin
 180s drift-repair backstop (`DEFAULT_SSE_DRIFT_REPAIR_MS`, replacing what was a shared 5s
 `pollIntervalMs`) — but that landed 2026-06-10, *before* this doc's original 2026-06-23
 measurement, and the re-measurement above shows the same ~4/sec, flat-around-the-clock shape
+
+:::note[⚠ STALE (2026-08-09) — and the open question below is now ANSWERED]
+The "same ~4/sec, flat-around-the-clock shape" no longer holds: volume has fallen ~66–125× to
+0.032/sec (`plans:attention`) and 0.017/sec (`plans:list`), and it is no longer flat — it tracks
+plan WRITES. The question this paragraph poses ("something else is generating it") therefore has
+no phenomenon left to explain: the traffic is invalidation-driven plus the deliberate 180s
+`DEFAULT_SSE_DRIFT_REPAIR_MS` tick. The paragraph is kept as the historical record of the 2026-06
+state. See the status correction at the top of this page.
+:::
+
 regardless. So the still-live traffic is not explained by "SSE hasn't gotten the long-drift-repair
 fix yet" — something else (many concurrent open sessions each on their own drift-repair tick,
 frequent SSE→POLLING fallback, or another caller entirely) is generating it. That's a genuine open

@@ -276,9 +276,31 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
   // so this condition is constant for the process lifetime — repeating it on every
   // lazy spawn and every crash-respawn (up to 5 in 5 minutes) would bury the one
   // line that matters under its own repetition.
+  // ...and NOT under a test runner (EI-20006410617437313). This is an operator-
+  // runtime diagnostic — it tells a human that a bg-host restart will take the
+  // sidecar with it. A test never sets up or asserts on confinement: it depends
+  // on ambient host state (the task manager is disabled on most boxes), so the
+  // SAME COMMIT warns or stays quiet depending on the machine, and
+  // `vitest-fail-on-console` converts that ambient condition into a test failure.
+  // Because the latch above is MODULE-SCOPED the victim is just the first file in
+  // the worker to touch this path — measured red-ing `scout/observation-consumption-
+  // wiring.test.ts`, which has nothing to do with sidecars. That misattribution is
+  // why the same symptom was filed SIX times (EI-19969730160803690,
+  // EI-19973369415259261, EI-20000079246831498, EI-20005899247570051, WI-37487,
+  // EI-20006410617437313) — each triager saw a different innocent victim file.
+  // The fix is a CHANNEL change, not suppression: `vitest-fail-on-console` polices
+  // console.warn/error and ignores console.log, so emitting the identical message
+  // on log under test keeps it visible in the run output — and, critically, keeps
+  // it ASSERTABLE. spawner-sidecar-spawn.test.ts deliberately covers the
+  // exactly-once latch ("says so, exactly once, when the sidecar lands
+  // UNCONFINED"); silencing it under test would have destroyed that coverage while
+  // looking like a fix. The message, the latch and the operator-runtime channel
+  // are all unchanged.
+  const underTestRunner = Boolean(process.env.VITEST) || process.env.NODE_ENV === 'test';
   if (!managed.confined && !warnedUnconfined) {
     warnedUnconfined = true;
-    console.warn(
+    const emit = underTestRunner ? console.log : console.warn;
+    emit(
       `[spawner-sidecar] UNCONFINED (${managed.confinementSkippedReason ?? 'unknown reason'}) — ` +
         "it shares bg-host's cgroup, so a bg-host restart will kill it and the desktop sidecars it parents (EI-19479764372783341).",
     );
