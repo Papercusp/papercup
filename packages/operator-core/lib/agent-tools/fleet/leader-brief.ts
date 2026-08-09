@@ -96,6 +96,7 @@ import { buildCapacityReport } from '../../fleet/capacity-dispatch';
 import { readBeeProviderAvailability } from './capacity';
 import type { FleetBriefDelta } from '../../fleet-brief-delta';
 import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-member-idle-verdict';
+import { computePoolReservation } from '../../fleet-pool-reservation';
 
 export interface LeaderBriefMember {
   agentId: string;
@@ -2391,6 +2392,14 @@ export default defineTool({
       ),
     }));
     const idleCauses = summariseIdleCauses(membersWithVerdict.map((m) => m.idleVerdict));
+    // P-024 / D-013: the reservation plan. Built on the P-023 causes above rather than on a
+    // second read of member state, so "who is holding work" cannot differ between the two
+    // blocks. Recommends nothing at all when the pool is not scarce, and never recommends a
+    // bench — the trade P-024 exists because the leader was forced to make.
+    const reservation = computePoolReservation(
+      membersWithVerdict.map((m) => ({ agentId: m.agentId, idleCause: m.idleVerdict.cause })),
+      { factor: poolCapacity?.factor ?? null, queueDepth: poolCapacity?.queueDepth ?? null },
+    );
     // P-022 / D-011: the wake-to-wake delta. Every field above this line is point-in-time,
     // which is what made "what changed since my last wake" a hand-reconstruction from
     // checkpoint prose. Boundary is REPORTED, never implied, and an axis with no baseline
@@ -2467,6 +2476,10 @@ export default defineTool({
         // P-023: counts by cause. A cause that never fired is ABSENT, not 0 — a zero row
         // invites reading an unpopulated cause as a measured absence.
         idleCauses,
+        // P-024: included only when the pool is actually scarce. Under a healthy pool the plan
+        // is "recommend nothing", and rendering that every wake would be one more always-present
+        // block a leader learns to skip past.
+        ...(reservation.scarcity.scarce ? { reservation } : {}),
         members: membersWithVerdict,
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
         ...(unownedCriticalsFederated.length > 0

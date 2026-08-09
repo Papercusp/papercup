@@ -140,6 +140,31 @@ async function mapPool<T, R>(
   return out;
 }
 
+/**
+ * The embed sidecar is SHARED with the live backfill sweep, so a transient
+ * `sidecar_required_unavailable` under load is expected, not fatal. Retry with
+ * backoff — otherwise one abort ~2 minutes into a multi-minute run discards
+ * every embedding computed so far.
+ */
+async function embedWithRetry(
+  embed: (text: string) => Promise<number[]>,
+  text: string,
+  attempts = 5,
+): Promise<number[]> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await embed(text);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 function normalise(vec: number[]): Float64Array {
   const v = Float64Array.from(vec);
   let norm = 0;
@@ -233,9 +258,15 @@ async function main(): Promise<void> {
       `k=${k} · ${totalEmbeds} embeddings at concurrency ${concurrency}`,
   );
 
-  const v1Vecs = await mapPool(pool, concurrency, async (d) => normalise(await embed(d.v1Text)));
-  const v2Vecs = await mapPool(pool, concurrency, async (d) => normalise(await embed(d.v2Text)));
-  const qVecs = await mapPool(candidateQueries, concurrency, async (q) => normalise(await embed(q.text)));
+  const v1Vecs = await mapPool(pool, concurrency, async (d) =>
+    normalise(await embedWithRetry(embed, d.v1Text)),
+  );
+  const v2Vecs = await mapPool(pool, concurrency, async (d) =>
+    normalise(await embedWithRetry(embed, d.v2Text)),
+  );
+  const qVecs = await mapPool(candidateQueries, concurrency, async (q) =>
+    normalise(await embedWithRetry(embed, q.text)),
+  );
 
   const rank = (qVec: Float64Array, vecs: Float64Array[], excludeId: string): string[] =>
     pool
