@@ -377,27 +377,31 @@ async function resolveProjectGuideText(
  * left untouched. Inserted just before the project-guide section so they sit in the playbook body,
  * not buried under the 600-line guide.
  */
-function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean } = {}): string {
-  // TWO anchors, in priority order — see SHARED_BASE_NOTES_MARKER's doc-comment for the
-  // 12-day silent drop that made the second one necessary.
+function injectSharedBaseNotes(
+  text: string,
+  opts: { repoSpecific?: boolean; eligible?: boolean } = {},
+): string {
+  // POSITION and ELIGIBILITY are now decided SEPARATELY. Conflating them is what caused the
+  // 12-day silent drop (see SHARED_BASE_NOTES_MARKER's doc-comment):
   //
-  //  1. SHARED_BASE_NOTES_MARKER — the bundle's OWN marker. The blueprint base
-  //     (libs/papercusp/.../blueprints/base/prompts/su.md) carries this; it is what the live
-  //     interactive render uses under SU_BLUEPRINT_PERSONA.
-  //  2. PROJECT_GUIDE_MARKER — the legacy anchor, kept so the .tools.md bases keep their
-  //     existing placement (notes just BEFORE the project guide) with no edit.
+  //   · POSITION — an optional hint. SHARED_BASE_NOTES_MARKER places the bundle exactly;
+  //     PROJECT_GUIDE_MARKER is the legacy anchor that keeps the `.tools.md` bases' existing
+  //     placement (notes just BEFORE the guide). With NEITHER, the notes are APPENDED.
+  //   · ELIGIBILITY — `opts.eligible`, decided by the CALLER from the ORIGINAL base, because
+  //     only the caller can still see markers that the splices have by now consumed. A
+  //     minimal/test base is ineligible and still gets nothing.
   //
-  // A base carrying NEITHER is returned untouched, which preserves the no-append contract for
-  // minimal/test bases. That branch used to be reachable by the LIVE base, which is the bug:
-  // "absent marker ⇒ silently ship nothing" is right for an optional section and wrong for a
-  // mandatory one, so the notes now own an anchor instead of borrowing the project guide's.
+  // The bundle is MANDATORY for a real su playbook, so a missing marker must never mean
+  // "ship nothing" — it means "no preferred position stated". That inversion is the fix: the
+  // old code treated an absent anchor as an absent REQUIREMENT, so the live base losing an
+  // unrelated feature's marker silently dropped five behavioural clauses.
+  const { repoSpecific = true, eligible = false } = opts;
   const anchor = text.includes(SHARED_BASE_NOTES_MARKER)
     ? SHARED_BASE_NOTES_MARKER
     : text.includes(PROJECT_GUIDE_MARKER)
       ? PROJECT_GUIDE_MARKER
       : '';
-  if (!anchor) return text;
-  const { repoSpecific = true } = opts;
+  if (!anchor && !eligible) return text;
   const notes = [
     // REPO-SPECIFIC: the deploy-pipeline note names :3070, the green gate and this repo's
     // promotion stages, so it is meaningful only for a profile that works the Papercusp repo.
@@ -422,6 +426,12 @@ function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean } = 
     renderStatePlaneNote(),
   ].filter((n) => n && n.trim());
   const body = notes.join('\n\n');
+  if (!anchor) {
+    // Eligible base with no position stated: append. Placement is less important than
+    // DELIVERY — these are standing behavioural clauses, not a section the reader navigates
+    // to, and shipping them at the end beats shipping them nowhere.
+    return notes.length === 0 ? text : `${text.replace(/\n+$/, '')}\n\n${body}\n`;
+  }
   if (anchor === SHARED_BASE_NOTES_MARKER) {
     // The bundle's own marker is CONSUMED — replaced by the notes, or removed outright when
     // there are none, so an internal marker can never leak into a rendered prompt
@@ -464,7 +474,10 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   out = spliceGeneratedSection(out, RESULT_DOOR_MARKER, renderResultDoorSection());
   // agent-managed-compaction: the agent self-management compaction protocol (client-neutral).
   out = spliceGeneratedSection(out, COMPACTION_MARKER, await readCompactionProtocol(baseSrc));
-  out = injectSharedBaseNotes(out);
+  // Same eligibility rule as renderSuPlaybook, read off the ORIGINAL base (see there).
+  out = injectSharedBaseNotes(out, {
+    eligible: base.includes(PROJECT_GUIDE_MARKER) || base.includes(AUTO_MODE_MARKER),
+  });
   // Project guide (P-001): engineer-profile install splices the repo's CLAUDE.md.
   if (out.includes(PROJECT_GUIDE_MARKER)) {
     const { text } = await resolveProjectGuideText(baseSrc, undefined);
@@ -2235,7 +2248,17 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // repo tools. Gating the whole bundle on the profile withheld all four from su-power, which
   // silently violated D-062's "the coupling prompt goes to ALL agents". Both profiles now get the
   // platform notes; only the repo-specific one is conditional.
-  const withNotes = injectSharedBaseNotes(withCompaction, { repoSpecific: profile === 'engineer' });
+  //
+  // ELIGIBILITY is computed from `base` — the ORIGINAL file, before any splice — because by
+  // now every marker the splices above consumed is gone from the text. A real su playbook
+  // carries at least one of these two; a minimal/test base carries neither and stays bare.
+  // Deliberately NOT PROJECT_GUIDE_MARKER alone: that is precisely the assumption that broke
+  // when the blueprint base (AUTO-MODE yes, PROJECT-GUIDE no) became the live one.
+  const isSuPlaybook = base.includes(PROJECT_GUIDE_MARKER) || base.includes(AUTO_MODE_MARKER);
+  const withNotes = injectSharedBaseNotes(withCompaction, {
+    repoSpecific: profile === 'engineer',
+    eligible: isSuPlaybook,
+  });
   // Project guide (P-001 / D-002): splice the repo's CLAUDE.md so a psu session
   // gets the full project conventions via psu, not client auto-load. Only read
   // the (large) guide file when the base actually carries the marker.

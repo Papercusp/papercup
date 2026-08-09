@@ -279,6 +279,10 @@ export function startEventLoopSentinel(
     () => {
       Atomics.add(view, 0, 1);
     },
+    // D-004: 'must-sample'. Nothing PUBLISHES "the event loop is still turning" —
+    // liveness here is only observable by emitting a beat and watching it stop,
+    // the same shape as D-004's PID-liveness example. A subscription cannot
+    // express it: a blocked loop would also fail to deliver the event.
     { category: 'watchdog' },
   );
 

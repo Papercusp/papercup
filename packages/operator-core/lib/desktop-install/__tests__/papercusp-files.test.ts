@@ -889,19 +889,18 @@ describe('renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002)', 
  * (EI-7075) — which carries PROJECT_GUIDE_MARKER, so the notes land and the test would go
  * green while the live path stayed broken. That false negative is the exact trap this guard
  * exists to close; do not "simplify" it by dropping the argument.
+ *
+ * The fix deliberately needs NO marker in the base: eligibility is derived from the base
+ * being a real su playbook, so a base that never mentions the bundle still receives it. That
+ * also keeps the blueprint `.md` unchanged, which matters operationally — prompts go live
+ * immediately while operator-core waits for a deploy, so a base edit that only the NEW code
+ * understands would leak a raw marker into every live render during the window between them.
  */
 describe('shared base notes reach the LIVE blueprint base (recurrence guard)', () => {
   const blueprintBase = new URL(
     '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
     import.meta.url,
   );
-
-  it('the blueprint base carries the bundle anchor', async () => {
-    const base = await fs.readFile(blueprintBase, 'utf8');
-    // If this fails the anchor was removed from the base and every note below is about to
-    // vanish silently — which is precisely how the original bug shipped.
-    expect(base).toContain('<!-- PAPERCUSP-SU:SHARED-BASE-NOTES -->');
-  });
 
   it('renders all five shared notes, and leaks no marker', async () => {
     const { text } = await renderSuPlaybook({

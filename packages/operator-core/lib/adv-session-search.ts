@@ -345,14 +345,19 @@ export function buildIdMatchResults(
  * MERGE, not replace — deliberately. Ids appear in transcript prose ("waking
  * su-bc38a419", a pasted uuid in a stack trace) and those hits are frequently
  * the reason someone is searching an id at all; dropping them would trade one
- * missing-result complaint for another. Pure.
+ * missing-result complaint for another.
+ *
+ * GENERIC over the result shape so the agents-pill can run the IDENTICAL merge
+ * on its own client-side type (whose `active`/`session` are the browser-shaped
+ * roster/ended rows, not this module's server ones). The union rule then exists
+ * once: the pill's instant id matches and the server's results cannot end up
+ * deduped by two subtly different keys. Pure.
  */
-export function mergeIdMatches(
-  idResults: readonly ClassifiedSessionHits[],
-  textResults: readonly ClassifiedSessionHits[],
-): ClassifiedSessionHits[] {
+export function mergeIdMatches<
+  T extends { sourceKind: string; sessionId: string; idMatch?: ClassifiedSessionHits['idMatch'] },
+>(idResults: readonly T[], textResults: readonly T[]): T[] {
   if (idResults.length === 0) return [...textResults];
-  const keyOf = (r: ClassifiedSessionHits) => `${r.sourceKind}:${r.sessionId}`;
+  const keyOf = (r: T) => `${r.sourceKind}:${r.sessionId}`;
   const byKey = new Map(textResults.map((r) => [keyOf(r), r] as const));
   const merged = idResults.map((r) => {
     const text = byKey.get(keyOf(r));

@@ -30,6 +30,11 @@ import {
   type FacetSelection,
 } from '@papercusp/facets';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
+/* WI-37204 — the SAME pure merge the server's id leg runs, so the instant
+   client-side id matches and the server's results are unioned by one rule
+   rather than two that can drift. adv-session-search imports only types, so it
+   erases to a pure module and is safe in this bundle. */
+import { mergeIdMatches } from '@papercusp/operator-core/lib/adv-session-search';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
@@ -453,8 +458,9 @@ function SearchResultRow({
   const top = result.hits[0] ?? null;
   /* An id match with no hits is still openable — via the head-of-transcript URL
      — so the head row must not fall back to the "no transcript viewer" dead
-     state that a hit-less result used to get. */
-  const openTarget: SearchTurnHit | null = top ?? (result.idMatch ? null : undefined) ?? null;
+     state every hit-less result used to get. `openHit(top)` with a null `top`
+     IS the head-open path, so the click handlers gate on `openable`, not on
+     `top` (which is what used to make the row inert). */
   const openable = top
     ? searchHitStreamUrl(result, top, query) !== null
     : Boolean(result.idMatch) && idMatchStreamUrl(result) !== null;
@@ -464,10 +470,16 @@ function SearchResultRow({
         className={`pc-agents-roster__row pc-agents-roster__row--nocheck pc-agents-sessions__result-head${openable ? '' : ' is-unopenable'}`}
         role={openable ? 'button' : undefined}
         tabIndex={openable ? 0 : undefined}
-        title={openable ? 'Open at the best match' : 'No transcript viewer for this source'}
-        onClick={() => top && openHit(top)}
+        title={
+          openable
+            ? top
+              ? 'Open at the best match'
+              : 'Open this session'
+            : 'No transcript viewer for this source'
+        }
+        onClick={() => openable && openHit(top)}
         onKeyDown={(e) => {
-          if ((e.key === 'Enter' || e.key === ' ') && top) { e.preventDefault(); openHit(top); }
+          if ((e.key === 'Enter' || e.key === ' ') && openable) { e.preventDefault(); openHit(top); }
         }}
       >
         <span className="pc-agents-roster__live">
@@ -477,6 +489,14 @@ function SearchResultRow({
         <span className="pc-agents-roster__glyph" style={color ? { color } : undefined} aria-hidden>{glyph}</span>
         <span className="pc-agents-roster__name" style={color ? { color } : undefined}>{title}</span>
         <span className="pc-agents-roster__doing">{meta}</span>
+        {/* WI-37204: says WHY a card with no excerpts is on screen. Without it
+            an id match is indistinguishable from a search that returned a
+            session for no visible reason. */}
+        {result.idMatch ? (
+          <span className="pc-agents-sessions__idmatch" data-testid="id-match-chip">
+            {idMatchLabel(result.idMatch)}
+          </span>
+        ) : null}
       </div>
       {result.hits.map((h) => {
         // P-004: say WHY this turn is here when the text alone cannot — it was
@@ -650,11 +670,25 @@ function FacetBar({
  * The search-results view: ACTIVE matched sessions grouped by fleet (the same
  * ordering + coloring as the running roster), then the INACTIVE section.
  */
-export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: number }) {
+export function SessionSearchResults({
+  query,
+  nowMs,
+  instantIdMatches,
+}: {
+  query: string;
+  nowMs: number;
+  /** WI-37204 — sessions the caller resolved by ID from its own roster, on the
+   *  keystroke. Rendered immediately and superseded in place when the server's
+   *  own id leg answers for the same session (see `mergeIdMatches`), so a live
+   *  agent found by id never waits on the round-trip and never double-renders. */
+  instantIdMatches?: readonly SearchSessionResult[];
+}) {
   const lex = useLexicon();
   const [sessions, setSessions] = useState<SearchSessionResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The id this query resolved AS, per the server (WI-37204); null = prose. */
+  const [idToken, setIdToken] = useState<string | null>(null);
   // Bumped by the Retry button to re-fire the same query. DELIBERATELY manual —
   // auto-retry against a server that just 408'd under load would stack more
   // heavy queries onto the exact condition that caused the failure.
@@ -705,10 +739,15 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
         const since = windowToSinceIso(windowToken);
         const sinceQs = since ? `&since=${encodeURIComponent(since)}` : '';
         const r = await fetch(`/api/adv/sessions/search-transcripts?q=${encodeURIComponent(query)}&limit=30${sinceQs}`, { signal: ctl.signal });
-        const j = await r.json() as { ok: boolean; error?: string; sessions?: SearchSessionResult[] };
+        const j = await r.json() as { ok: boolean; error?: string; sessions?: SearchSessionResult[]; idToken?: string };
         clearTimeout(deadline);
         if (!j.ok) { setError(searchFailureMessage(r.status, j.error)); setLoading(false); return; }
         setSessions(j.sessions ?? []);
+        // WI-37204: the server's verdict on whether this query IS an id, so the
+        // empty state can say "no session has that id" instead of the generic
+        // "no matches in any session" — which reads as a broken search when you
+        // just pasted an id you know is real.
+        setIdToken(typeof j.idToken === 'string' ? j.idToken : null);
         setLoading(false);
       } catch {
         clearTimeout(deadline);
@@ -737,13 +776,22 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
   //    picking status:active still advertised "role: mug 1", and clicking it
   //    landed on "No results match the selected filters" (caught in the live
   //    pixel-drive, 2026-07-12).
+  /* WI-37204 — the instant client-side id matches unioned with whatever the
+     server has answered so far, via the SAME pure merge the route runs (an id
+     match that also has transcript hits keeps them; id matches lead). Every
+     read below is of `results`, not `sessions`, so the facet counts, the
+     empty state and the rendered rows all describe the same set. */
+  const results = useMemo(
+    () => mergeIdMatches(instantIdMatches ?? [], sessions),
+    [instantIdMatches, sessions],
+  );
   const facetGroups = useMemo(
-    () => computeFacets(sessions, SESSION_FACETS, { maxValuesPerFacet: 8, selection }),
-    [sessions, selection],
+    () => computeFacets(results, SESSION_FACETS, { maxValuesPerFacet: 8, selection }),
+    [results, selection],
   );
   const filteredSessions = useMemo(
-    () => sessions.filter(facetPredicate(SESSION_FACETS, selection)),
-    [sessions, selection],
+    () => results.filter(facetPredicate(SESSION_FACETS, selection)),
+    [results, selection],
   );
   const onToggleFacet = useCallback(
     (key: string, value: string) =>
@@ -782,7 +830,7 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           </button>
         </div>
       )}
-      {!error && !(loading && sessions.length === 0) && (
+      {!error && !(loading && results.length === 0) && (
         // WI-4734: stays MOUNTED during a re-search (dimmed via is-stale) so the
         // bar doesn't flicker out on every keystroke now that `loading` spans
         // the debounce window too — and the recency pills stay clickable. A
@@ -798,10 +846,14 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           />
         </div>
       )}
-      {!loading && !error && sessions.length === 0 && (
-        <div className="pc-agents-sessions__status">No matches in any session.</div>
+      {!loading && !error && results.length === 0 && (
+        <div className="pc-agents-sessions__status" data-testid="search-empty">
+          {idToken
+            ? `No session has an id starting with "${idToken}", and no transcript mentions it.`
+            : 'No matches in any session.'}
+        </div>
       )}
-      {!loading && !error && sessions.length > 0 && filteredSessions.length === 0 && (
+      {!loading && !error && results.length > 0 && filteredSessions.length === 0 && (
         <div className="pc-agents-sessions__status" data-testid="facet-empty">
           No results match the selected filters.
         </div>
@@ -1136,6 +1188,17 @@ function SessionsStyles() {
         font-style: normal; font-size: 9px; font-family: ui-monospace, monospace;
         color: var(--fg-mute); border: 1px solid var(--border); border-radius: 3px;
         padding: 0 3px; margin-right: 5px; white-space: nowrap; vertical-align: 1px;
+      }
+      /* WI-37204 — "matched su id" / "matched session id" on the head row.
+         Accented rather than muted like the provenance chip above: it is the
+         ONLY thing explaining why a card carrying no excerpts is on screen, so
+         it has to be findable at a glance, not read as chrome. */
+      .pc-agents-sessions__idmatch {
+        margin-left: auto; flex: none;
+        font-size: 9px; font-family: ui-monospace, monospace; white-space: nowrap;
+        color: var(--accent, #7cc4ff);
+        border: 1px solid currentColor; border-radius: 3px;
+        padding: 0 3px; opacity: 0.85;
       }
       /* Sticky footer: pinned to the popover bottom so the hover detail strip
          appearing/disappearing above it never displaces it (it was "fighting"

@@ -29,18 +29,23 @@ vi.mock('./log', async (orig) => {
   return { ...actual, coordWorkspaceId: () => 'default', coordScopeWorkspace: () => 'default' };
 });
 
-// liveFleetMemberIds projects the presence rows onto the authoritative psu-HOST
-// liveness read (`livePsuFleetMemberIds` → `findLiveHost`, WI-1764 #4 / P-006): a
-// fleet member is only a deliverable audience if a live pty-host for that ownerId
-// exists ON THIS MACHINE. Our seeded owners ('alice', 'bob', …) are fixtures with no
-// such host, so the unmocked resolver correctly returns [] and every assertion here
-// fails — the test predates that tightening, not the other way round. Report the
-// seeded owners as hosted so this file keeps testing what it is actually about (the
-// heartbeat gate + the mute/digest override), and leave the host-liveness rule itself
-// to the tests that own it.
+// WI-37162: liveFleetMemberIds used to ALSO require a live psu-pty HOST process
+// for that ownerId on this machine (livePsuFleetMemberIds → findLiveHost,
+// WI-1764 #4 / P-006) before counting a fleet member as a deliverable @fleet:
+// audience — but that requirement silently dropped every IDLE headless fleet
+// member (cold carry legitimately has no live host process between loop wakes)
+// from fleet broadcasts. liveFleetMemberIds no longer calls findLiveHost at all;
+// the heartbeat gate + the oracle dead-check (ended|suspect) are the sole
+// authority for audience membership now (see the WI-37162 comment on
+// liveFleetMemberIds in fleet-roster.ts). This mock is kept only so a
+// `findLiveHost === null` owner ('headless-idle' below) is provably NOT what
+// determines inclusion here — the regression this file now guards.
 vi.mock('../../events/await/psu-pty-discovery', async (orig) => {
   const actual = await orig<typeof import('../../events/await/psu-pty-discovery')>();
-  return { ...actual, findLiveHost: (ownerId: string) => ({ ownerId }) };
+  return {
+    ...actual,
+    findLiveHost: (ownerId: string) => (ownerId === 'headless-idle' ? null : { ownerId }),
+  };
 });
 
 const { hostAudienceResolvers } = await import('./audience-host');
@@ -96,6 +101,19 @@ describe('fleet delivery override + @fleet: member resolution (real PG)', () => 
     await seedMember('bob', 'payments');
     const members = await hostAudienceResolvers.listFleetMembers('payments');
     expect(new Set(members)).toEqual(new Set(['alice', 'bob']));
+  });
+
+  // WI-37162 regression: a live (fresh-heartbeat, not authoritatively-dead) member
+  // with NO live psu-pty host — the shape of a headless fleet member on cold carry,
+  // idle between loop wakes — must still be a deliverable @fleet: audience member.
+  // Excluding it silently dropped exactly the idle members a leader most needs to
+  // reach (measured live 2026-08-09: 5 of 11 fleet members, all idle/no-claim, had
+  // a fresh coord_presence heartbeat but zero PSU_PTY_DIR entry).
+  it('includes a live member with NO psu-pty host (headless, between cold-carry wakes)', async () => {
+    await seedMember('headless-idle', 'payments'); // findLiveHost mocked to null for this id
+    await seedMember('alice', 'payments'); // findLiveHost mocked to a live host
+    const members = await hostAudienceResolvers.listFleetMembers('payments');
+    expect(new Set(members)).toEqual(new Set(['headless-idle', 'alice']));
   });
 
   it('setFleetDelivery round-trips through the subscription store; full clears the override', async () => {

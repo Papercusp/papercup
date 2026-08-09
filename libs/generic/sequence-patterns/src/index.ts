@@ -128,8 +128,21 @@ export interface MinedPattern {
   /**
    * observed / expected-under-independence. ~1 ⇒ fully explained by the symbols'
    * own rates (ambient); >>1 ⇒ the symbols genuinely travel together in this order.
+   *
+   * ⚠ NOT comparable across lengths — see {@link MinedPattern.strength}. Raw lift
+   * compounds one factor per symbol, so it grows super-linearly with length: on
+   * live data a 5-symbol pattern scored 4.7e11 against 2.4e5 for a 3-symbol one
+   * that was the better finding. Read it as evidence about ONE pattern, and rank
+   * with `strength`.
    */
   lift: number;
+  /**
+   * Length-normalized lift — the mean per-TRANSITION log10 lift,
+   * `log10(lift) / (length - 1)`. This is the ranking key, and the reason the
+   * list is not simply every 5-gram: it asks "how surprising is each step of
+   * this dance", which is the same question regardless of how many steps it has.
+   */
+  strength: number;
   /** Occurrences ÷ positions of this length — the raw rate, kept for calibration. */
   support: number;
 }
@@ -326,6 +339,7 @@ export function minePatterns(bursts: readonly Burst[], policy: PatternPolicy = {
       cohortSample,
       bursts: t.bursts.size,
       lift,
+      strength: strengthOf(lift, len),
       support: positions > 0 ? t.occurrences / positions : 0,
     });
   }

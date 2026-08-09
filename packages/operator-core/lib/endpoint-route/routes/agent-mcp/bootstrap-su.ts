@@ -293,7 +293,37 @@ export async function resolveAccountPin(
   //  • 'auto' / 'gateway'                 → route THROUGH the gateway, which auto-selects an available pool
   //                                         account and fails over (no account-pin header).
   //  • <pool id>                          → pin to that specific account (HARD when hardPin — the PSU pin).
-  if (!raw || lower === 'default' || lower === 'none' || lower === 'system') {
+  //
+  // default-deploy-account-2026-08-08 P-004 splits what used to be one branch, because the
+  // four spellings no longer mean the same thing:
+  //   • `none` / `system` — ALWAYS the machine's own login, gateway skipped. The escape hatch
+  //     (D-002): once a default account exists this is the only way back to ~/.claude, and the
+  //     only recovery path if that account's credential goes bad. Never overridden.
+  //   • '' (unspecified) / `default` — "whatever the owner nominated". That is the local login
+  //     ONLY while no default account is set; otherwise it is that account.
+  const literalSystem = lower === 'none' || lower === 'system';
+  const impliedDefault = !raw || lower === 'default';
+  // A Codex agent can never use the default (it stands in for the CLAUDE login), so don't even
+  // read it there. omp IS included: it egresses anthropic, so it resolves a claude account.
+  const defaultEligible = impliedDefault && accountProviderForInteractiveBackend(agent) === 'claude';
+  let defaultAccountId: string | undefined;
+  if (defaultEligible) {
+    try {
+      const { readDefaultAccountId } = await import('../../../deployment/account-pool-store');
+      defaultAccountId = await readDefaultAccountId(workspaceId);
+    } catch (e) {
+      // Fail CLOSED, matching the rule this function already applies to an explicit auto/pin.
+      // Silently launching on the system login here would be the exact silent-misroute this
+      // feature exists to prevent — and it would look like a perfectly normal launch.
+      const why = e instanceof Error ? e.message : String(e);
+      const error =
+        `could not read the default account (${why}). Refusing to fall back to the default ` +
+        `system login, because a default account may be configured and this session would ` +
+        `silently egress on the wrong credential.`;
+      return { env: {}, notice: error, accountId: null, provider: null, error };
+    }
+  }
+  if (literalSystem || (impliedDefault && !defaultAccountId)) {
     return {
       // Marker parity with the raw-node launcher. The default route is not the
       // absence of routing state: it actively forces Claude back to the machine's
@@ -304,8 +334,15 @@ export async function resolveAccountPin(
       provider: null,
     };
   }
-  const wantAuto = lower === 'auto' || lower === 'gateway';
-  const id = raw;
+  // A configured default routes exactly like `auto` — through the gateway with NO account-pin
+  // header — rather than as a pin. That is deliberate and is the whole of D-003: the gateway's
+  // resolveAccountPool already returns the default FIRST with every other account behind it, so
+  // reusing `auto` gets default-first ordering AND failover for free. Pinning would give the
+  // owner's preference the semantics of a hard pin, stranding the session with no fallback the
+  // moment that one account hit its rate window.
+  const routedByDefault = impliedDefault && !!defaultAccountId;
+  const wantAuto = lower === 'auto' || lower === 'gateway' || routedByDefault;
+  const id = raw ?? '';
   const label = wantAuto ? 'auto' : id;
   const fail = (why: string) => {
     const error =
@@ -362,7 +399,9 @@ export async function resolveAccountPin(
             ...gatewaySpawnEnv(true, { ownerId, priority }),
             PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto',
           },
-          notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).',
+          notice: routedByDefault
+            ? `routing through the inference gateway, starting on the default account '${defaultAccountId}' (it fails over to the rest of the pool).`
+            : 'routing through the inference gateway (auto — it selects an available pool account and fails over).',
           accountId: null,
           provider: expected,
         };
@@ -400,7 +439,9 @@ export async function resolveAccountPin(
           PAPERCUSP_OMP_MODELS_YML: config.content,
           PAPERCUSP_OMP_MODEL_SELECTOR: config.modelSelector,
         },
-        notice: 'routing OMP through the inference gateway (auto — it selects an available pool account and fails over).',
+        notice: routedByDefault
+          ? `routing OMP through the inference gateway, starting on the default account '${defaultAccountId}' (it fails over to the rest of the pool).`
+          : 'routing OMP through the inference gateway (auto — it selects an available pool account and fails over).',
         accountId: null,
         provider: expected,
         gatewayAuto: true,

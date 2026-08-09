@@ -11,7 +11,7 @@ const { notifyWorkspace, notifySyncInvalidate, recordAttentionNotifyIntent, reco
   vi.hoisted(() => ({
     notifyWorkspace: vi.fn(async (..._a: unknown[]): Promise<Array<{ platform: string; ok: boolean; status: unknown; detail?: string }>> => []),
     notifySyncInvalidate: vi.fn(async (..._a: unknown[]) => {}),
-    recordAttentionNotifyIntent: vi.fn(async (..._a: unknown[]) => 1),
+    recordAttentionNotifyIntent: vi.fn(async (..._a: unknown[]): Promise<number | null> => 1),
     recordAttentionNotifyOutcome: vi.fn(async (..._a: unknown[]) => {}),
   }));
 vi.mock('./device-push-dispatcher', () => ({ notifyWorkspace }));

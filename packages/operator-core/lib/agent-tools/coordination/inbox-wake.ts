@@ -369,7 +369,8 @@ export interface IdleRecipientReport {
   /** Concrete local recipients whose inject lands in an inbox NO live session is
    *  watching AND no scheduled loop fire will pick it up either — the work
    *  silently stalls until respawn. The genuinely reportable/reassignable set
-   *  (P-001, tightened by WI-5994 to exclude dormant-scheduled recipients). */
+   *  (P-001, tightened by WI-5994 to exclude dormant-scheduled recipients, and
+   *  by EI-19937974676482462 to exclude `aliveNotWakeable` below). */
   idle: string[];
   /** Concrete local recipients with a live watcher — the inject will be seen. */
   live: string[];
@@ -384,6 +385,23 @@ export interface IdleRecipientReport {
   /** True when a roster / await-store read failed and we degraded to report
    *  NOTHING (the send still succeeded — invariant c). `idle` is empty here. */
   degraded: boolean;
+  /**
+   * EI-19937974676482462: idle candidates (zero active inbox-wake watchers)
+   * that the SHARED liveness oracle (`resolveSessionStates`, the same one
+   * fleet:assignments/coord:presence use) confirms are ALIVE per the
+   * session-log/activity truth (`sessionState` 'live' or 'recorded') despite
+   * having no live wake-await — e.g. a cup mid-turn that never registered one
+   * (EI-12699), or a session between coord-presence registration and its
+   * first await. A wake genuinely will NOT land via the inbox-wake key for
+   * these — that part of `idle`'s meaning still holds — but the target is
+   * demonstrably NOT dead, so callers must never fold these into a
+   * `recipient_dead` / "sessionState=ended" claim (that claim would be false;
+   * it is exactly the false-dead half of the alive/dead disagreement this
+   * fixes between coord:wake and fleet:assignments for the SAME agent).
+   * Best-effort: an oracle hiccup leaves the candidate in `idle` (prior
+   * behavior), never invents a false alive verdict.
+   */
+  aliveNotWakeable: string[];
 }
 
 const EMPTY_IDLE_REPORT: IdleRecipientReport = {
@@ -392,6 +410,7 @@ const EMPTY_IDLE_REPORT: IdleRecipientReport = {
   dormantScheduled: [],
   unknown: [],
   degraded: true,
+  aliveNotWakeable: [],
 };
 
 /**
@@ -508,5 +527,40 @@ export async function reportIdleRecipients(
     }
   }
 
-  return { idle, live, dormantScheduled, unknown, degraded: false };
+  // EI-19937974676482462: before calling a remaining idle candidate dead, cross-check
+  // the SAME shared liveness oracle fleet:assignments/coord:presence already apply
+  // (resolveSessionStates — presence-derivation-unification-2026-07-17). This probe's
+  // own `idle` verdict only knows "no active coord:inbox-wake watcher" — it has NO
+  // opinion on the session-log/activity truth, so it was reporting `recipient_dead` /
+  // "sessionState=ended" for agents the oracle itself classifies `live` or `recorded`
+  // (a cup mid-turn that never registered a wake-await, per EI-12699 — the exact repro
+  // that surfaced this: fleet:assignments read alive:true/recorded for a cup coord:wake
+  // simultaneously called dead). Lazy dynamic import — liveness-oracle.ts pulls
+  // presence-wakeability.ts, which imports THIS module for COORD_INBOX_WAKE_PREFIX, so a
+  // static import here would cycle (the same reason recipient-liveness.ts imports it
+  // lazily). Best-effort: an oracle hiccup leaves every candidate in `idle` (prior
+  // behavior), never invents a false alive verdict.
+  const aliveNotWakeable: string[] = [];
+  if (idle.length > 0) {
+    try {
+      const { resolveSessionStates } = await import('./liveness-oracle');
+      const verdicts = await resolveSessionStates(
+        idle.map((ownerId) => ({ ownerId })),
+        { hydratePerId: true },
+      );
+      for (let i = idle.length - 1; i >= 0; i--) {
+        const v = verdicts.get(idle[i]);
+        if (v && (v.sessionState === 'live' || v.sessionState === 'recorded')) {
+          aliveNotWakeable.unshift(idle[i]);
+          idle.splice(i, 1);
+        }
+      }
+    } catch (e) {
+      console.warn(
+        `[inbox-wake] idle-probe liveness-oracle cross-check failed, treating candidates as plain idle: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
+
+  return { idle, live, dormantScheduled, unknown, degraded: false, aliveNotWakeable };
 }

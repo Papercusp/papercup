@@ -21,7 +21,21 @@ import { LivenessDot } from '@/app/coord/presence-ui';
 import { LIVE_MS, type Liveness } from '@papercusp/operator-core/lib/liveness';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
-import { InactiveSessionsSection, SessionSearchResults, SessionsSearchInput } from './AgentsPillSessions';
+import {
+  InactiveSessionsSection,
+  SessionSearchResults,
+  SessionsSearchInput,
+  type SearchSessionResult,
+} from './AgentsPillSessions';
+/* WI-37204 — the SAME pure id parser/matcher the server's id leg runs, so the
+   instant client pass and the server pass cannot disagree about what counts as
+   an id. adv-session-search's imports are all type-only, so it erases to a pure
+   module and is safe in this bundle. */
+import {
+  matchSessionIdField,
+  parseSessionIdQuery,
+  transcriptIdentity,
+} from '@papercusp/operator-core/lib/adv-session-search';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
@@ -477,6 +491,44 @@ export default function AgentsRunningPill() {
   );
   const activeOwnerIds = useMemo(() => new Set(running.map((a) => a.ownerId)), [running]);
   const q = searchQ.trim();
+
+  /* ── Instant id matches (WI-37204, owner ask 2026-08-08) ──────────────────
+     At >=2 chars this popover REPLACES the roster with the server's transcript
+     search, so a query that is an ID used to answer nothing at all: the engine
+     searches turn TEXT, and an agent's own id is not something its transcript
+     says (measured pre-fix on the live operator: `?q=su-bc38a419` →
+     `totalHits: 0, sessions: []`).
+
+     The server now has an id leg, but a round-trip measured 0.4–4.9s and the
+     answer for a LIVE agent is already sitting in this component's roster
+     payload — so match it here, on the keystroke, and let the server's pass
+     (which additionally reaches ENDED sessions) merge in behind it. Same
+     instant-then-union shape the HUD board uses, and the merge runs the SAME
+     pure `mergeIdMatches` the route does, so neither surface can drift.
+
+     Matched over the FULL active roster, not the `running` subset: `running`
+     drops stale entries because that is the right call for BROWSING, and naming
+     a session by its unique id is not browsing — a human holding an id wants
+     that session whatever state it is in. */
+  const instantIdMatches = useMemo<SearchSessionResult[]>(() => {
+    const token = q.length >= 2 ? parseSessionIdQuery(q) : null;
+    if (!token) return [];
+    const out: SearchSessionResult[] = [];
+    for (const a of ((data?.[0]?.active ?? []) as RosterAgent[])) {
+      const field = matchSessionIdField(a, token);
+      if (!field) continue;
+      out.push({
+        ...transcriptIdentity(a),
+        topScore: 0,
+        hits: [],
+        active: a,
+        session: null,
+        idMatch: field,
+      });
+    }
+    return out;
+  }, [data, q]);
+
   if (running.length === 0) return null;
 
   const groups = groupByFleet(running);
@@ -535,7 +587,7 @@ export default function AgentsRunningPill() {
         <div id="pc-advshell-agents-pop" data-testid="agents-running-pop">
           <SessionsSearchInput value={searchQ} onChange={(v) => void setSearchQ(v || null)} />
           {q.length >= 2 ? (
-            <SessionSearchResults query={q} nowMs={nowMs} />
+            <SessionSearchResults query={q} nowMs={nowMs} instantIdMatches={instantIdMatches} />
           ) : (
             <>
               <AgentsRoster agents={running} nowMs={nowMs} focusOwner={focusOwner} />

@@ -715,11 +715,27 @@ export async function liveFleetMemberIds(fleetSlug: string, workspaceId: string)
     rows.map((r) => ({ ownerId: r.owner_id, heartbeatAt: r.heartbeat_at, agentRole: r.agent_role })),
     ['ended', 'suspect'],
   );
-  return livePsuFleetMemberIds(
-    rows
-      .filter((r) => !dead.has(r.owner_id))
-      .map((r) => ({ ownerId: r.owner_id, agentRole: r.agent_role })),
-  );
+  // WI-37162: do NOT additionally require a live psu-pty HOST process here
+  // (that is what livePsuFleetMemberIds/findLiveHost checks, and it is the right
+  // authority for "is there a live terminal to inject into right now" — leader-brief,
+  // fleet:kill, WI-4755). It is the WRONG authority for audience MEMBERSHIP: a
+  // HEADLESS fleet member on COLD carry (the default for headless — see
+  // su-cold-loop.ts) legitimately has NO live psu-pty-host process between loop
+  // wakes — its process exits and relaunches fresh at each fire — yet it is very
+  // much alive and will read its inbox on its next wake. Requiring a live host here
+  // silently dropped every IDLE headless member from `@fleet:` sends: exactly the
+  // members a leader most needs to steer, since a steer is usually aimed at agents
+  // that are NOT currently mid-turn. Measured live 2026-08-09 (WI-37162): of 11
+  // live fleet members, the 5 holding no claim (idle, between wakes) all had a
+  // fresh coord_presence heartbeat but ZERO entry in PSU_PTY_DIR, while the 5
+  // claim-holding (actively working) members had a live host+socket pair. The
+  // oracle dead-check above (ended|suspect, backed by heartbeat staleness +
+  // pid-liveness legs) is the correct authority for "is this member actually gone"
+  // for DELIVERY purposes — a delivered message sits durably in the recipient's
+  // inbox regardless of whether a live PTY exists to inject it immediately.
+  return rows
+    .filter((r) => !dead.has(r.owner_id) && !isBeeRole(r.agent_role))
+    .map((r) => r.owner_id);
 }
 
 /**

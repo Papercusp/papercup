@@ -196,6 +196,61 @@ export interface LeaderBriefMember {
   isSelf?: true;
 }
 
+/**
+ * WI-37161: the SAME shared-inference-pool verdict `fleet:capacity` reports, trimmed to the
+ * fields the idle-member alerts below need to tell "queued for inference" apart from "declining
+ * work" / "floor-gated". Deliberately a DIFFERENT signal from a member's own `throttled`
+ * (LifecycleBackoffInfo) — that fires only once THIS member has personally hit a provider wall
+ * and its engine loop backed off; the account POOL can be degraded/exhausted for every member at
+ * once while none of them has individually backed off yet (the observed incident: `throttled: 0`
+ * fleet-wide while `fleet:capacity` reported `degraded:true, factor:0`).
+ */
+export interface PoolDegradedState {
+  poolExhausted: boolean;
+  degraded: boolean;
+  /** Pool spare-capacity factor in [0,1] — 0 means no fresh capacity at all. */
+  factor: number;
+  queueDepth: number | null;
+  usableAccounts: number | null;
+  availableAccounts: number | null;
+}
+
+/**
+ * WI-37161: best-effort, fail-soft read of the live inference-pool capacity oracle — reuses
+ * `buildCapacityReport` + `readBeeProviderAvailability` VERBATIM (the exact read `fleet:capacity`
+ * performs; not forked) so this can never disagree with what a leader sees calling that tool by
+ * hand. Fails soft to `null` (UNKNOWN), never to "healthy" — an unread pool state must not
+ * silence a real starvation signal, matching this file's `laneGating`/`fleetPaused` convention.
+ */
+export async function readPoolDegradedState(): Promise<PoolDegradedState | null> {
+  try {
+    const hr = await fetchGatewayHeadroom({ timeoutMs: 1500 });
+    const accountAvailability = await readBeeProviderAvailability();
+    const report = buildCapacityReport(hr, { clampArmed: false, accountAvailability });
+    return {
+      poolExhausted: report.poolExhausted,
+      degraded: report.degraded,
+      factor: report.factor,
+      queueDepth: report.queueDepth,
+      usableAccounts: report.usableAccounts,
+      availableAccounts: report.availableAccounts,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WI-37161: true exactly when the shared inference pool is congested ENOUGH that an idle member
+ * is more likely queued-for-inference than declining/floor-blocked work — poolExhausted OR
+ * degraded, AND a nonzero gateway queue (a degraded pool with an EMPTY queue is not currently
+ * starving anyone; the queue depth is what turns "the pool is imperfect" into "requests are
+ * backed up right now").
+ */
+function isPoolCongested(p: PoolDegradedState | null | undefined): p is PoolDegradedState {
+  return p != null && (p.poolExhausted || p.degraded) && (p.queueDepth ?? 0) > 0;
+}
+
 /** PURE: exported for direct unit-testing (no PG/DI ceremony needed).
  *  Two independent branches, both gated on NOT already benched (`parkedOn` empty —
  *  benching an already-benched member is a no-op the leader doesn't need surfaced again):
@@ -308,6 +363,14 @@ export function computeBenchSuggestion(
    * as `fleetPaused` above).
    */
   concurrency?: { blocked: boolean; activeClaims: number; heldIds: string[] } | null,
+  /**
+   * WI-37161: the live shared-inference-pool verdict (see `isPoolCongested`). Consulted ONLY by
+   * the `idle-with-claimable` branch below, and ONLY to change its diagnosis/remedy — a congested
+   * pool does NOT suppress the alert (the lane genuinely is not drained), it changes "wake it,
+   * check the claim floor" into "it's queued for inference, do not wake, do not bench".
+   * `undefined`/`null` reads as "not read on this call" and never suppresses.
+   */
+  poolCapacity?: PoolDegradedState | null,
 ): LeaderBriefMember['benchSuggestion'] {
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
@@ -389,6 +452,43 @@ export function computeBenchSuggestion(
     // Live 2026-07-26T04:32Z: five members carried this line while claimableCount was 2, and
     // the leader read it and stood the fleet down. Branch on the real number instead.
     if (claimableCount != null && claimableCount > 0) {
+      // WI-37161: the shared inference ACCOUNT POOL can be degraded/exhausted while claim
+      // floors and the claim spec are perfectly healthy — an idle member here is most likely
+      // QUEUED FOR INFERENCE (an in-flight scheduler:get_next or claim call sitting behind a
+      // congested gateway), not declining work. `throttled` (LifecycleBackoffInfo, this file's
+      // OTHER pool-shaped field) cannot see this: it only lights up once THIS member has
+      // personally hit a provider wall and its OWN engine loop backed off, and a member merely
+      // queued for inference has done neither. Checked BEFORE contextPressure below because it
+      // is the more likely explanation fleet-wide (one congested pool vs. one member's context),
+      // though the two are not mutually exclusive.
+      //
+      // Observed live 2026-08-09, fleet nonp2p-bug-drain: `throttled: 0` fleet-wide while
+      // fleet:capacity reported `degraded:true, factor:0, sustainedlyLimitedAccounts:2/2 usable,
+      // tier2 queueDepth 28` — the idle members' lastToolCallAgeMs (84s/207s/297s) were
+      // consistent with an inference-queue wait, not with declining work. The OLD reason text
+      // below ("wake it… if it still takes nothing, that is a claim-floor problem") sent the
+      // leader toward work_items:claimable's excludedBreakdown, which in that incident was
+      // healthy (claimableCount 293) — every diagnostic road it offered led away from the real
+      // cause, and its own prescribed remedy (wake 6 more members) would have pushed 6 more
+      // requests into the exact queue that was already starving the fleet.
+      if (isPoolCongested(poolCapacity)) {
+        return {
+          kind: 'idle-with-claimable',
+          reason:
+            `alive with NO claim and nothing queued while ${claimableCount} item(s) ARE claimable, ` +
+            `BUT the shared inference ACCOUNT POOL is ${poolCapacity.poolExhausted ? 'EXHAUSTED' : 'DEGRADED'} ` +
+            `right now (factor ${poolCapacity.factor.toFixed(2)}` +
+            (poolCapacity.usableAccounts != null ? `, ${poolCapacity.usableAccounts} usable account(s)` : '') +
+            (poolCapacity.queueDepth != null ? `, ~${poolCapacity.queueDepth} request(s) already queued at the gateway` : '') +
+            ') — this member is most likely QUEUED FOR INFERENCE, not declining work. DO NOT wake it: ' +
+            'coord:send wake:required just adds another request behind the same congestion, worsening it. ' +
+            'DO NOT fleet:bench it either — the lane is not drained. Re-check fleet:capacity before acting ' +
+            'on this member; once it reports degraded:false/poolExhausted:false, THEN wake it if it is still ' +
+            'idle a few wakes later.',
+          item: null,
+          itemTitle: null,
+        };
+      }
       // EI-19412077774087262: CRITICAL context inverts the remedy. The reason text below
       // prescribes "wake it to claim", which for a member at critical context is precisely
       // the wrong move — it claims, runs out of context mid-item, and dies HOLDING the
@@ -814,6 +914,12 @@ export function computeIdleWithClaimableAlert(input: {
   harness?: string | null;
   /** The members this alert is accusing — so its falsifier names a REAL one. */
   idleMemberIds?: readonly string[];
+  /** WI-37161: the live shared-inference-pool verdict — see `isPoolCongested`. When the pool is
+   *  degraded/exhausted with a nonzero gateway queue, the remedy below flips from "wake them" to
+   *  "they're queued for inference, don't wake, re-check fleet:capacity" (same reasoning as the
+   *  per-member idle-with-claimable branch in computeBenchSuggestion). `undefined`/`null` reads
+   *  as "not read on this call" and never suppresses the alert itself. */
+  poolCapacity?: PoolDegradedState | null;
 }): { reason: string; falsifier: AlertFalsifier } | undefined {
   // EI-18703234178947959: never tell a leader to wake members of an owner-PAUSED fleet.
   // The rows counted here are real backlog, but backlog OUTSIDE this fleet's paused
@@ -826,6 +932,38 @@ export function computeIdleWithClaimableAlert(input: {
   if (input.claimableCount == null || input.claimableCount <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
   const accused = input.idleMemberIds?.[0];
+  // WI-37161: see computeBenchSuggestion's identical check for the full incident writeup. The
+  // summary-level alert must not repeat the same "wake them" advice the per-member branch just
+  // stopped giving — a leader reading ONLY the summary (the common case: this is the ONE-glance
+  // surface) would otherwise still be told to wake a fleet that is actually inference-queued.
+  if (isPoolCongested(input.poolCapacity)) {
+    const p = input.poolCapacity;
+    return {
+      falsifier: {
+        tool: 'fleet:capacity',
+        check: renderFalsifierCall('fleet:capacity', {}),
+        // The live gateway/account-pool oracle — the SAME read this alert now consults, but
+        // re-run fresh: capacity moves between the brief's read and the leader acting on it.
+        measurement:
+          'a FRESH read of the live gateway/account-pool capacity oracle (fleet:capacity) — ' +
+          'this alert already consulted it once; re-running confirms the pool is STILL degraded ' +
+          'before the leader waits instead of acting',
+        kills:
+          'degraded:false AND poolExhausted:false → the pool has recovered. If members are still ' +
+          'idle beside a nonempty queue at that point, THEN wake them — the old remedy applies again.',
+      },
+      reason:
+        `${input.idleMemberCount} member(s) are alive with NO claim while ${input.claimableCount} ` +
+        `item(s) are claimable, BUT the shared inference account pool is ` +
+        `${p.poolExhausted ? 'EXHAUSTED' : 'DEGRADED'} right now (factor ${p.factor.toFixed(2)}` +
+        (p.usableAccounts != null ? `, ${p.usableAccounts} usable account(s)` : '') +
+        (p.queueDepth != null ? `, ~${p.queueDepth} request(s) already queued at the gateway` : '') +
+        ') — these members are most likely QUEUED FOR INFERENCE, not declining work. DO NOT wake ' +
+        'them: coord:send { wake: "required" } just adds MORE requests behind the same congestion, ' +
+        'amplifying the fault (WI-37161). DO NOT fleet:bench them either — the lane is not drained. ' +
+        'Re-check fleet:capacity and act only once it reports degraded:false/poolExhausted:false.',
+    };
+  }
   return {
     falsifier: {
       tool: 'work_items:list',
@@ -1262,6 +1400,9 @@ export function projectMember(
    *  oracle (work_items.taken_by), NOT the presence layer's `load`. Absent = not read on
    *  this call, which suppresses nothing. */
   concurrency?: { blocked: boolean; activeClaims: number; heldIds: string[] } | null,
+  /** WI-37161: the live shared-inference-pool verdict — see computeBenchSuggestion's
+   *  `poolCapacity` param. Absent = not read on this call, which suppresses nothing. */
+  poolCapacity?: PoolDegradedState | null,
 ): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   const prodMs = a.productiveToolCallAt ? Date.parse(a.productiveToolCallAt) : NaN;
@@ -1321,6 +1462,7 @@ export function projectMember(
         laneGating,
         fleetPaused,
         concurrency,
+        poolCapacity,
       );
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
@@ -1587,6 +1729,10 @@ export default defineTool({
         return new Map();
       }
     })();
+    // WI-37161: read the live shared-inference-pool verdict BEFORE projecting members — same
+    // fail-soft-to-null discipline as fleetLaneHealth/fleetPause above (an unread pool state
+    // must not silence a real starvation signal, and must not fabricate a healthy one either).
+    const poolCapacity = await readPoolDegradedState();
     const nowMs = Date.now();
     const members = grouped.map((a) =>
       projectMember(
@@ -1596,6 +1742,7 @@ export default defineTool({
         fleetLaneHealth,
         fleetPause.paused,
         concurrencyByOwner.get(a.agentId) ?? null,
+        poolCapacity,
       ),
     );
     const self = resolveSelfRef(ctx);
@@ -1698,6 +1845,13 @@ export default defineTool({
       // the pause, so "no alert" here means "no action needed", not "nothing was checked".
       // Lift with fleet:resume; until then the claim path refuses these members work.
       fleet_paused: fleetPause.paused,
+      // WI-37161: the live shared-inference-pool verdict (the same read `fleet:capacity`
+      // reports), surfaced HERE — not only folded into the per-member `throttled` field — so a
+      // leader reading the summary alone can see the pool is degraded/exhausted even though
+      // `throttled` (a DIFFERENT, per-member signal — see PoolDegradedState's doc comment) can
+      // legitimately read 0 for every member at once while the pool itself is congested. null
+      // means unread this call, never "healthy".
+      pool_capacity: poolCapacity,
     };
     const totalLoad = members.reduce((sum, m) => sum + m.load, 0);
     // EI-15055: loud fleet-wide zero-wip-with-supply alert — see computeStrandedFleetAlert.
@@ -1724,6 +1878,7 @@ export default defineTool({
       idleMemberIds: members
         .filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable')
         .map((m) => m.agentId),
+      poolCapacity,
     });
     // EI-18689489507862177: the GATED-lane twin of the alert above. `idle_with_claimable`
     // is 0 by construction in this state (its bench branch requires claimableCount > 0), so

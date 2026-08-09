@@ -1546,7 +1546,15 @@ export function wireOrchestratorInvokeRunner(): void {
   // SUSTAINEDLY limited, scale out onto a fresh account instead of only pausing. A no-op until
   // a process runs under PAPERCUSP_ACCOUNT_ID (i.e. account-keyed buckets exist).
   void import('../deployment/account-pool-store')
-    .then(({ initAccountScaleObserver }) => initAccountScaleObserver())
+    .then(({ initAccountScaleObserver, syncDefaultAccountEnv }) => {
+      initAccountScaleObserver();
+      // default-deploy-account-2026-08-08 P-008: publish the "a default account is in force"
+      // marker onto this process's env, so the in-process anthropic-direct family (judges,
+      // sim-users, summarisers, memory session-extraction) egresses via the gateway — which
+      // starts on the default account — instead of this box's ~/.claude login. Per-process and
+      // fail-soft; see syncDefaultAccountEnv for the sibling-host staleness note.
+      return syncDefaultAccountEnv();
+    })
     .catch((err) => console.error('[account-pool] observer init failed:', err));
   // RB-007: when PAPERCUSP_AGENT_GOVERNOR_PG=1, route the governor's rate+pause budget through a
   // PG-backed store so every operator process + the gym share ONE account budget (no co-burst).

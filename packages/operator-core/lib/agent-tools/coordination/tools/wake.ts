@@ -35,11 +35,13 @@ import { softText, clampText, LIMITS } from '../../limits';
 export default defineTool({
   name: 'coord:wake',
   description:
-    "Wake a PARKED agent NOW so it starts a turn and re-orients on its already-claimed lane — the discoverable alias for the events:emit coord:inbox-wake:<id> key (which agents kept 404ing on as coord:wake/coord:nudge). Single-target (never '*'). Optional `note` is a one-line nudge; omit for a bare wake. Returns { ok, to, woken, recipient_dead?, recipient_dormant_scheduled?, warning? }. A miss reports WHICH kind: `ended` (genuinely dead, no scheduled fire) is a LOUD miss — relaunch it, never treat as silent woken:0; a target with an armed loop instead reports `recipient_dormant_scheduled` with its next fire ETA — delivery is DEFERRED, not lost, so do NOT relaunch/reassign on that alone. To ALSO hand off a lane, use coord:dispatch; to deliver a contextual message, coord:send {wake:'required'}.",
+    "Wake a PARKED agent NOW so it starts a turn and re-orients on its already-claimed lane — the discoverable alias for the events:emit coord:inbox-wake:<id> key (which agents kept 404ing on as coord:wake/coord:nudge). Single-target (never '*'). Optional `note` is a one-line nudge; omit for a bare wake. To ALSO hand off a lane, use coord:dispatch; to deliver a contextual message, coord:send {wake:'required'}.",
   guidance: {
     when: 'The work is ALREADY assigned to the target (plan_items:assign or a prior dispatch) and you just need it to start a turn and pick it up — a re-orient nudge. Pick a `parked` target (coord:presence → sessionState:parked).',
     notWhen: 'You are assigning a NEW lane — use coord:dispatch (assign+wake+confirm). You have a contextual message to deliver — use coord:send {wake:\'required\'}. The target is `ended` (coord:presence) — it needs a relaunch/resume, not a wake.',
     chaining: 'coord:presence (find a parked target) → coord:wake { to } → check `woken`/`warning`. The woken target: coord:orient → claim + work its lane.',
+    returns:
+      '{ ok, to, woken, recipient_dead?, recipient_dormant_scheduled?, recipient_alive_not_wakeable?, warning? }. A miss reports WHICH kind: `recipient_dead` (genuinely `ended`, no scheduled fire) is a LOUD miss — relaunch it, never treat as silent woken:0. `recipient_dormant_scheduled` (an armed loop) means delivery is DEFERRED, not lost — its next fire ETA is included. `recipient_alive_not_wakeable` means the session-log liveness oracle (the SAME one fleet:assignments reads) confirms the target is ALIVE despite having no active wake-watcher right now (e.g. mid-turn, never registered one) — never relaunch on that alone; retry the wake or use a durable surface instead.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -116,6 +118,7 @@ export default defineTool({
     // not dead, and must never be told "needs a RELAUNCH".
     let recipient_dead: string[] | undefined;
     let recipient_dormant_scheduled: import('../inbox-wake').DormantScheduledInfo[] | undefined;
+    let recipient_alive_not_wakeable: string[] | undefined;
     let warning: string | undefined;
     if (woken === 0 && fan.staged === 0) {
       try {
@@ -134,6 +137,19 @@ export default defineTool({
             (d.parked
               ? 'a turn is in flight right now; it will see this on its current/next cycle.'
               : `its next scheduled fire is ${d.nextFireAt}. Delivery is DEFERRED, not lost — no relaunch needed.`);
+        } else if ((report.aliveNotWakeable ?? []).length > 0) {
+          // EI-19937974676482462: the shared liveness oracle (the same one
+          // fleet:assignments reads) confirms this target is alive per the
+          // session log — it just has no active coord:inbox-wake await right
+          // now (e.g. a cup mid-turn that never registered one). Do NOT claim
+          // sessionState=ended / NOT running here — that would be false, and
+          // is exactly the disagreement this fixes.
+          recipient_alive_not_wakeable = report.aliveNotWakeable;
+          warning =
+            `coord:wake reached no live wake-watcher for ${to}, but it is ALIVE per the session log (NOT dead) — ` +
+            'it has no active coord:inbox-wake await right now (e.g. mid-turn, or has not registered one yet). ' +
+            'Do NOT relaunch on this alone; retry the wake shortly or hand off via a durable surface ' +
+            '(work_items:checkpoint) instead.';
         } else {
           warning =
             `coord:wake woke nobody for ${to} (it may be live-but-paused or mid-turn). Confirm it is running ` +
@@ -155,6 +171,7 @@ export default defineTool({
             ...(fan.staged > 0 ? { staged: fan.staged } : {}),
             ...(recipient_dead ? { recipient_dead } : {}),
             ...(recipient_dormant_scheduled ? { recipient_dormant_scheduled } : {}),
+            ...(recipient_alive_not_wakeable ? { recipient_alive_not_wakeable } : {}),
             ...(warning ? { warning } : {}),
           }),
         },

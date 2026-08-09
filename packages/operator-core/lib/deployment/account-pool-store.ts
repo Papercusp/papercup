@@ -17,7 +17,12 @@
  *     unit-testable with a mock driver (real provisioning is owner-gated).
  */
 import type { DeploymentConfig, Frame, LogLevel } from '@papercusp/deployment-driver';
-import { onGovernorPause, parseGovernorKey, snapshotGovernors } from '@papercusp/papercusp-shared/agent';
+import {
+  onGovernorPause,
+  parseGovernorKey,
+  snapshotGovernors,
+  DEFAULT_ACCOUNT_ACTIVE_ENV,
+} from '@papercusp/papercusp-shared/agent';
 import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { readOpusBudgetPolicy } from '../opus-budget-policy';
@@ -126,7 +131,11 @@ export async function setDefaultAccount(
 ): Promise<AccountSessionOverride> {
   const workspace = ws ?? activeWorkspaceId();
   const wanted = typeof id === 'string' ? id.trim() : '';
-  if (!wanted) return setAccountOverride(workspace, { defaultAccountId: null });
+  if (!wanted) {
+    const cleared = await setAccountOverride(workspace, { defaultAccountId: null });
+    publishDefaultAccountEnv(false);
+    return cleared;
+  }
 
   const pool = await loadAccountPool(workspace);
   const acct = getAccount(pool, wanted);
@@ -140,7 +149,46 @@ export async function setDefaultAccount(
         `Claude login, so it must be a Claude account.`,
     );
   }
-  return setAccountOverride(workspace, { defaultAccountId: acct.id });
+  const next = await setAccountOverride(workspace, { defaultAccountId: acct.id });
+  publishDefaultAccountEnv(true);
+  return next;
+}
+
+/**
+ * Publish the "a default account is in force" marker onto THIS process's env, which is what
+ * `chooseStatelessTransport` (papercusp-shared) reads to route the in-process anthropic-direct
+ * family through the gateway instead of `~/.claude` (P-008 / D-004). Env is the established
+ * seam for this — papercusp-shared must not import operator-core.
+ */
+function publishDefaultAccountEnv(active: boolean): void {
+  if (active) process.env[DEFAULT_ACCOUNT_ACTIVE_ENV] = '1';
+  else delete process.env[DEFAULT_ACCOUNT_ACTIVE_ENV];
+}
+
+/**
+ * Bring this process's default-account marker in line with the persisted override. Call at host
+ * boot, and on a cadence in any long-lived host, BEFORE relying on in-process routing.
+ *
+ * ⚠ KNOWN GAP, stated rather than hidden: the marker is per-PROCESS. `setDefaultAccount` updates
+ * the process that handled the write (the operator), so its own in-process calls switch
+ * immediately — but a SIBLING host (papercup-bg-host) that booted earlier keeps its stale marker
+ * until it next runs this. The gateway itself is unaffected: it re-resolves the pool on its own
+ * hot-reload poll, so once a caller chooses the gateway leg the account is always current. This
+ * is why the marker is a boolean rather than a cached account id — the stale value can only be
+ * wrong about WHICH LEG to take, never about which account, and both legs work.
+ *
+ * FAIL-SOFT on purpose, unlike readDefaultAccountId's other callers: this is a best-effort
+ * refresher, not a routing decision. Leaving the previous marker in place on a transient read
+ * error is strictly better than flipping every in-process call to a different transport.
+ */
+export async function syncDefaultAccountEnv(ws?: string): Promise<boolean | undefined> {
+  try {
+    const active = Boolean(await readDefaultAccountId(ws));
+    publishDefaultAccountEnv(active);
+    return active;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

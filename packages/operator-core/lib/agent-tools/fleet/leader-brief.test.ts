@@ -752,6 +752,74 @@ describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-1868125956
     });
   });
 
+  // WI-37161 — the live incident: `throttled: 0` fleet-wide while fleet:capacity reported
+  // `degraded:true, factor:0` — the old reason text told the leader to wake idle members and,
+  // if they still took nothing, blamed a claim floor. The real cause was gateway queue
+  // congestion, and the prescribed remedy (wake more members) fed MORE requests into the same
+  // congested queue.
+  describe('a CONGESTED shared inference pool inverts the remedy (WI-37161)', () => {
+    const degradedPool = { poolExhausted: false, degraded: true, factor: 0, queueDepth: 28, usableAccounts: 1, availableAccounts: 2 };
+    const exhaustedPool = { poolExhausted: true, degraded: false, factor: 0, queueDepth: 5, usableAccounts: 0, availableAccounts: 0 };
+
+    it('still reports the lane is NOT drained (the claimable fact is unchanged)', () => {
+      const s = computeBenchSuggestion(idle, 2, null, false, null, degradedPool);
+      expect(s?.kind).toBe('idle-with-claimable');
+      expect(s?.reason).toMatch(/2 item\(s\) ARE claimable/);
+    });
+
+    it('does NOT tell the leader to wake it — that queues MORE requests behind the congestion', () => {
+      const s = computeBenchSuggestion(idle, 2, null, false, null, degradedPool);
+      expect(s?.reason).toMatch(/DO NOT wake it/);
+      expect(s?.reason).not.toMatch(/Wake it to re-run scheduler:get_next/);
+      expect(s?.reason).toMatch(/DO NOT fleet:bench/);
+      expect(s?.reason).toMatch(/QUEUED FOR INFERENCE/);
+    });
+
+    it('names DEGRADED vs EXHAUSTED correctly and surfaces factor/queueDepth', () => {
+      const degraded = computeBenchSuggestion(idle, 2, null, false, null, degradedPool);
+      expect(degraded?.reason).toMatch(/DEGRADED/);
+      expect(degraded?.reason).not.toMatch(/EXHAUSTED/);
+      expect(degraded?.reason).toMatch(/factor 0\.00/);
+      expect(degraded?.reason).toMatch(/28 request\(s\)/);
+
+      const exhausted = computeBenchSuggestion(idle, 2, null, false, null, exhaustedPool);
+      expect(exhausted?.reason).toMatch(/EXHAUSTED/);
+    });
+
+    it('does NOT fire when the pool is degraded but the gateway queue is EMPTY — nothing is actually backed up', () => {
+      const s = computeBenchSuggestion(idle, 2, null, false, null, { ...degradedPool, queueDepth: 0 });
+      expect(s?.reason).toMatch(/Wake it to re-run scheduler:get_next/);
+    });
+
+    it('does NOT fire when the pool read is healthy (degraded:false, poolExhausted:false)', () => {
+      const s = computeBenchSuggestion(idle, 2, null, false, null, {
+        poolExhausted: false, degraded: false, factor: 1, queueDepth: 0, usableAccounts: 4, availableAccounts: 4,
+      });
+      expect(s?.reason).toMatch(/Wake it to re-run scheduler:get_next/);
+    });
+
+    it('an UNREAD pool state (null/undefined) never suppresses or alters the existing remedy', () => {
+      expect(computeBenchSuggestion(idle, 2, null, false, null, null)?.reason).toMatch(
+        /Wake it to re-run scheduler:get_next/,
+      );
+      expect(computeBenchSuggestion(idle, 2)?.reason).toMatch(/Wake it to re-run scheduler:get_next/);
+    });
+
+    it('projectMember threads poolCapacity through end-to-end', () => {
+      const m = projectMember(
+        baseAgent({ verdict: 'waiting', monitorState: 'waiting' }),
+        NOW,
+        3,
+        null,
+        false,
+        null,
+        degradedPool,
+      );
+      expect(m.benchSuggestion?.kind).toBe('idle-with-claimable');
+      expect(m.benchSuggestion?.reason).toMatch(/QUEUED FOR INFERENCE/);
+    });
+  });
+
   it('keeps the historical bench advice when the lane is VERIFIED drained (0 claimable AND 0 matching)', () => {
     // EI-18689489507862177 TIGHTENED THIS TEST'S PREMISE. It used to pass `claimableCount: 0`
     // with no gating read and assert "VERIFIED drained" — but an empty queue alone cannot

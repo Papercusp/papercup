@@ -203,7 +203,9 @@ describe('resolveChannel — default channel while the app is in alpha (WI-4389)
 describe('channel classification — a nightly build must never reach a release install', () => {
   const rel = (tag: string, prerelease = false) => ({
     tag_name: tag,
+    published_at: '2026-01-01T00:00:00Z',
     prerelease,
+    draft: false,
     assets: [],
   });
 
