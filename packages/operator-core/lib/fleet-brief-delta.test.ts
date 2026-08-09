@@ -252,7 +252,7 @@ describe('describeFleetBriefDelta', () => {
         closes: { delta: 0, isFloor: false },
       }),
     );
-    expect(line).toContain('members +0 (3 joined / 3 left)');
+    expect(line).toContain('members 0 (3 joined / 3 left)');
   });
 
   it('says an axis is unknown rather than dropping it', () => {

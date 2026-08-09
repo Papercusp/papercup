@@ -268,9 +268,9 @@ function checksSpec() {
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
         'plain rewrite never silently drops them) and [] clears them. With `append: true` a supplied list is ' +
-        `UNIONED onto the carried set (supplied wins on matching claim text) — but the union is capped at ` +
-        `${CARRY_NOTE_MAX_CHECKS} and an overflow EVICTS THE CARRIED TAIL, so an additive write CAN still drop ` +
-        'rows. WITHOUT append a supplied list REPLACES the set: send the FULL set you want stored, ' +
+        `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
+        `${CARRY_NOTE_MAX_CHECKS}: an overflow EVICTS THE CARRIED TAIL, so an additive write CAN drop rows. ` +
+        'WITHOUT append a supplied list REPLACES the set: send the FULL set you want stored, ' +
         'because any stored claim you leave out is DROPPED — that is how you RETIRE a stale check. A supplied ' +
         'row whose claim text matches a stored one inherits that row\'s recheck/verified/sinceMs when you omit ' +
         'them, so re-sending a claim never loses its evidence. Rows dropped come back as `checksDropped`.',
