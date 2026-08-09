@@ -1614,11 +1614,16 @@ body.has-left-sidebar .pc-header {
 .pc-goal__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 11.5px; font-weight: 600; color: var(--fg, #e7f7ff); }
 .pc-goal__status { margin-left: auto; flex: none; font-size: 9px; text-transform: uppercase;
-  letter-spacing: 0.04em; color: var(--fg-mute, #7f9bb4); }
-.pc-goal__status[data-status="active"] { color: var(--ok, #4ec9a5); }
+  letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
+/* --good, not --ok: --ok is not in the operator token vocabulary, so it
+   red-pins the css-tokens lint (and with it the whole fleet's green gate).
+   Same fix, same reason as the .pclsb-acct__* block above — this one was a
+   straggler the earlier sweep missed. (No backticks in this comment: the file
+   is one tagged template literal, so a quoted identifier would close it.) */
+.pc-goal__status[data-status="active"] { color: var(--good, #4ec9a5); }
 
 .pc-goal__ends { display: flex; flex-direction: column; gap: 1px; }
-.pc-goal__ends-label { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.06em;
+.pc-goal__ends-label { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0;
   color: var(--fg-mute, #7f9bb4); }
 .pc-goal__criterion { font-size: 10.5px; line-height: 1.35; color: var(--fg, #e7f7ff); }
 /* A goal with no criterion cannot ever end, so the absence is rendered LOUDLY

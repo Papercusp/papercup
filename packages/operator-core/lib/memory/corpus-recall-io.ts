@@ -55,7 +55,7 @@ import {
 // (`injection-coverage.test.ts`) instead of drifting from it. Exported for the
 // assertion only — the alarm deliberately does not import it at runtime, which would
 // drag the whole live retrieval stack into the DBOS alarm process.
-export export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
+export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
 
 /**
  * Wall-clock bound for the WHOLE corpus leg (search + embed). This rides the

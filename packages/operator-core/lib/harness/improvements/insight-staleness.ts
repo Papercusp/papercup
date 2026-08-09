@@ -42,9 +42,27 @@ const REPO_PATH_RE = /^(?:apps|packages|libs|scripts|bin)\/[\w@./-]+\.[a-z]{1,5}
  * narrating a file it MOVED OFF / that was removed/replaced, not asserting a live
  * dependency. A path in such context must not be flagged "stale": that's the
  * dominant false positive for migration/retirement runbooks (EI-510 Class 1; the
- * "code insights bind knowledge to code paths" complaint EI-449). Line-scoped +
- * conservative, consistent with the module's stated posture (a missed citation is
- * fine; a false "stale" capture is noise).
+ * "code insights bind knowledge to code paths" complaint EI-449). Conservative,
+ * consistent with the module's stated posture (a missed citation is fine; a
+ * false "stale" capture is noise).
+ *
+ * Matched against the path's enclosing SENTENCE, not its own line (EI-18680208809300804).
+ * Line scope silently depends on where prose happens to wrap:
+ * `plans-egress-is-poll-frequency-not-payload` says
+ *
+ *     - Meta-gotcha …: `libs/generic/sync/src/transports/polling/batch-fetcher.ts`
+ *       (deleted 2026-07-26; the delta wiring now lives in its replacement, …)
+ *
+ * — an explicit acknowledgement sitting one line below the path, invisible to a
+ * line-scoped test, so the insight was flagged for citing a file it documents as
+ * deleted.
+ *
+ * The sentence is the right unit because it is what BINDS a marker to a path.
+ * Widening only to the paragraph would over-suppress the opposite case, which is
+ * equally real: "An old file was removed.\nSee `packages/x/live.ts`." is one
+ * paragraph in which the marker belongs to a DIFFERENT file, and `live.ts` must
+ * still be checked. A sentence boundary separates those two; a line break does
+ * not reliably separate either.
  */
 const REMOVAL_MARKER_RE =
   /\b(?:used to|moved (?:off|from|to|onto)|moved the|no longer|removed|deleted|retired|replaced|superseded|since deleted|migrated (?:off|from|onto)|formerly|previously|was (?:at|in)|lived (?:at|in)|old(?:er)? (?:path|location)|deprecated)\b/i;
@@ -65,14 +83,19 @@ export function extractCitedPaths(raw: string): string[] {
     if (token.includes('/node_modules/')) continue;
     if (!REPO_PATH_RE.test(token)) continue;
     // Class 1 (EI-510): a path the insight ACKNOWLEDGES as removed/moved is a
-    // historical reference, not a live dependency. Detect a removal/move marker on
-    // the path's own line (PROSE only — strip backticked spans first, so a filename
-    // that itself contains a marker word like `removed.ts` isn't self-skipped).
+    // historical reference, not a live dependency. Detect a removal/move marker in
+    // the path's enclosing PARAGRAPH — blank-line delimited, because a wrapped
+    // sentence puts the marker on the next line (see REMOVAL_MARKER_RE). PROSE
+    // only: strip backticked spans first, so a filename that itself contains a
+    // marker word like `removed.ts` isn't self-skipped.
     const idx = m.index ?? 0;
-    const lineStart = raw.lastIndexOf('\n', idx) + 1;
-    const lineEndRaw = raw.indexOf('\n', idx);
-    const line = raw.slice(lineStart, lineEndRaw === -1 ? raw.length : lineEndRaw);
-    const prose = line.replace(/`[^`]*`/g, ' ');
+    const paraStart = raw.lastIndexOf('\n\n', idx);
+    const paraEndRaw = raw.indexOf('\n\n', idx);
+    const paragraph = raw.slice(
+      paraStart === -1 ? 0 : paraStart + 2,
+      paraEndRaw === -1 ? raw.length : paraEndRaw,
+    );
+    const prose = paragraph.replace(/`[^`]*`/g, ' ');
     if (REMOVAL_MARKER_RE.test(prose)) acknowledgedRemoved.add(token);
     else clean.add(token);
   }

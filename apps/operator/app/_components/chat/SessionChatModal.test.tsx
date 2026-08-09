@@ -949,6 +949,40 @@ describe('SessionChatModal', () => {
       expect(card.getAttribute('data-item')).toBe('esc-1');
     });
 
+    /* [owner 2026-08-09, verbatim: "those decision buttons at the top of the
+       conversation should be displayed at the bottom instead"]. Nothing pinned
+       the ORDER before this — every existing assertion here checks only that
+       the block EXISTS, so the block could migrate back above the transcript
+       with the whole suite still green. These two are the recurrence guard. */
+    it('[owner 2026-08-09] docks the decisions shelf BELOW the transcript, never above it', async () => {
+      seedAttention([mkEscalation('esc-1')]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      const shelf = screen.getByTestId('session-chat-pending-escalations');
+      // With no resolved session the transcript slot renders this banner, so it
+      // stands in for "where the conversation goes" without needing a live stream.
+      const transcriptSlot = screen.getByText('No recent Claude session found for this agent.');
+
+      expect(
+        transcriptSlot.compareDocumentPosition(shelf) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it('[owner 2026-08-09] the shelf is a .pc-zone (else its title cap fill silently resolves to unset) and states the open count', async () => {
+      seedAttention([mkEscalation('esc-1'), mkEscalation('esc-2')]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      const shelf = screen.getByTestId('session-chat-pending-escalations');
+      // Not cosmetic: chat-controls.css defines the zone vars ON the zone roots,
+      // so dropping this class renders an INVISIBLE cap rather than failing loudly.
+      expect(shelf.className.split(/\s+/)).toContain('pc-zone');
+      expect(shelf.querySelector('.pc-chat-decisions__count')?.textContent).toBe('2');
+    });
+
     it('answering the inline card (onResolved) refreshes the shared attention feed', async () => {
       seedAttention([mkEscalation('esc-1')]);
       mockFetchOnce(200, { sessions: [] });

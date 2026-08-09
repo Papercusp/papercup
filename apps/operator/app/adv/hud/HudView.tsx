@@ -26,6 +26,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
 import { parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringLiteral, useQueryState } from 'nuqs';
 import SessionChatModal from '@/app/_components/chat/SessionChatModal';
@@ -39,6 +40,7 @@ import { usePlanList } from '@/app/admin/plans/plans-api';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import HudBoard from './HudBoard';
 import HudEntityColumns from './HudEntityColumns';
+import GoalDetailPanel from './GoalDetailPanel';
 import { workItemIdForCard, type HudEntityCard } from './hud-entity-board';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import {
@@ -71,13 +73,16 @@ import {
   parseSessionIdQuery,
 } from '@papercusp/operator-core/lib/adv-session-search';
 import {
+  buildGoalBoard,
   buildPlanBoard,
   buildWorkItemBoard,
+  HUD_DEFAULT_TAB,
   HUD_ENTITY_COLUMNS,
   HUD_TABS,
   HUD_WORK_ITEM_FETCH_STATES,
   rollUpStateCounts,
   type HudEntityColumnId,
+  type HudGoalInput,
   type HudTabId,
   type HudWorkItemInput,
 } from './hud-entity-board';
@@ -214,7 +219,10 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      that has to be deep-linkable and reachable from ui:get_state/ui:dispatch. */
   const [tab, setTab] = useQueryState(
     'hudtab',
-    parseAsStringLiteral(HUD_TABS).withDefault('sessions'),
+    // HUD_DEFAULT_TAB, not HUD_TABS[0]: goals is leftmost but sessions is still
+    // where the HUD lands (see the constant's docblock — the two are pinned
+    // separately so adding a tab cannot silently move the landing tab).
+    parseAsStringLiteral(HUD_TABS).withDefault(HUD_DEFAULT_TAB),
   );
   const [entityColumn, setEntityColumn] = useQueryState(
     'hudecol',
@@ -228,6 +236,29 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     'hudq',
     parseAsString.withDefault(''),
   );
+  /* `hudgoal` — the SELECTED goal (goal-mode-2026-08-07 P-020). A goal id, or
+     null for none. It is what the Goals tab highlights and what P-021's detail
+     view opens on.
+
+     ⚠ SELECTION, not yet a cross-tab FILTER — and that limit is deliberate, not
+     an oversight. Filtering Sessions/Plans/Work-items by goal needs `goalId` on
+     those wire rows, and today it is stamped on `work_items` only (P-016) while
+     the read path that ships those rows — listIssues → listWorkItems →
+     listEnrichedWorkItems → `workItems.byHarness` — does not carry the column.
+     Threading it is a real data-layer change through two shared type layers and
+     a perf-tuned query, so it is its own work-item rather than something to
+     half-do here.
+
+     A param that LOOKS like a filter but silently filters nothing is the worst
+     of the three options — the board would appear scoped while showing
+     everything — so this one is honestly named and honestly scoped until the
+     column lands.
+
+     In the URL per the nuqs-by-default rule, and here that is load-bearing
+     rather than ceremonial: "select this goal" is precisely the camera move an
+     agent needs to make on the owner's behalf via ui:dispatch, and anything in
+     useState is invisible to it. */
+  const [goalFilter, setGoalFilter] = useQueryState('hudgoal', parseAsString);
 
   /* The SESSIONS board's own search (owner ask 2026-07-26). Separate param from
      `hudq`: that one filters the entity tabs' loaded rows, this one searches
@@ -550,6 +581,40 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     [planList.data, nowMs, entityQuery],
   );
 
+  /* ── Goals tab (goal-mode-2026-08-07 P-020) ────────────────────────────── */
+
+  // Workspace-scoped, like the goals themselves. Threading the real id rather
+  // than leaning on the resolver's `'default'` fallback: an omitted workspace
+  // returns zero rows, which renders as a healthy-looking empty board pointed
+  // at the wrong tenant (the WI-5125 shape) — and "no goals yet" is a state
+  // this board legitimately shows, so it is the hardest place to spot.
+  //
+  // ⚠ The `workspaceId` PROP is nullable, so it cannot be passed straight
+  // through: `goals.list` types the arg as a string, and a null would either be
+  // rejected or coerced to the `'default'` tenant — i.e. exactly the failure the
+  // paragraph above is guarding against, reintroduced by the guard's own call
+  // site. Fall back to the host-injected browser workspace, which is what the
+  // rest of the SPA resolves against.
+  const browserWorkspaceId = useWorkspaceId();
+  const goalWorkspaceId = workspaceId ?? browserWorkspaceId;
+  const goalsQuery = useSyncQuery<{
+    goals: HudGoalInput[];
+    portfolioSpendUsd: number;
+    portfolioProjects: number;
+  }>({
+    queryName: 'goals.list',
+    args: { workspaceId: goalWorkspaceId },
+    enabled: tab === 'goals',
+  });
+  const goalBoard = useMemo(
+    () =>
+      buildGoalBoard(goalsQuery.data?.[0]?.goals ?? [], {
+        nowMs,
+        query: entityQuery,
+      }),
+    [goalsQuery.data, nowMs, entityQuery],
+  );
+
   /* ── Work items tab ────────────────────────────────────────────────────── */
 
   // Work items are stored PER HARNESS, so this board is scoped to the active
@@ -663,6 +728,22 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     (card: HudEntityCard) => void setOpenPlanSlug(card.id),
     [setOpenPlanSlug],
   );
+  /* Clicking a goal SELECTS it (goal-mode-2026-08-07 P-020): `hudgoal` becomes
+     that goal's id, which scopes the other tabs to it and — once P-021 lands —
+     is also what opens its detail view.
+
+     ONE param for "the selected goal" rather than a filter param plus a
+     separate detail param. Two params would let the board sit filtered to goal
+     A while the detail panel shows goal B, and there is no reading of that
+     screen that is not a lie about one of them.
+
+     Clicking the SAME goal again clears the selection, so the filter is
+     reversible from the card that set it — otherwise the only way out of a
+     scoped board is hand-editing the URL. */
+  const onOpenGoalCard = useCallback(
+    (card: HudEntityCard) => void setGoalFilter((prev) => (prev === card.id ? null : card.id)),
+    [setGoalFilter],
+  );
   /* WI-6742 [owner-reported]: clicking a "Needs you" card did nothing, while
      every other column opened a popup.
 
@@ -747,7 +828,25 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   );
 
   const entityView =
-    tab === 'plans' ? (
+    tab === 'goals' ? (
+      <HudEntityColumns
+        board={goalBoard}
+        focusColumn={(entityColumn as HudEntityColumnId | null) ?? null}
+        onFocusColumn={(id) => void setEntityColumn(id)}
+        query={entityQuery}
+        onQuery={(q) => void setEntityQuery(q)}
+        loading={goalsQuery.loading}
+        error={goalsQuery.error ? String(goalsQuery.error) : null}
+        emptyLabel="No goals yet — ask an agent to start one and it will propose the kill criterion and the ceiling."
+        /* Name the selected goal on screen. A selection the owner cannot see
+           is a selection they cannot clear — and since clicking the same card
+           toggles it off, the notice is also the only thing that explains why
+           a second click appears to "do nothing". */
+        notice={goalFilter ? `Selected goal ${goalFilter} — click its card again to deselect.` : null}
+        noun="goals"
+        onOpenCard={onOpenGoalCard}
+      />
+    ) : tab === 'plans' ? (
       <HudEntityColumns
         board={planBoard}
         focusColumn={(entityColumn as HudEntityColumnId | null) ?? null}

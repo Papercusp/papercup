@@ -35,6 +35,13 @@ import './delta-flag-wiring';
 // annotator appended to every tool result ≥65%. See context-gauge-wiring.ts.
 import './context-gauge-wiring';
 
+// Wire tooldef's server-vintage seam to build-info.ts + process.uptime() —
+// EI-19953470656367880: appends a build-id + boot-age hint to an `Unrecognized key`
+// invalid_args error, so a caller talking to a stale long-lived process (chiefly a
+// Tauri desktop's own spawned operator) sees "restart the app" instead of a bare
+// rejection indistinguishable from a typo. See server-vintage-wiring.ts.
+import './server-vintage-wiring';
+
 // unified-agent-state-plane-2026-07-27: install the built-in CELL registrations.
 // Until this existed, registerBuiltinCells() was called only by tests, so every
 // running operator served an EMPTY cell registry — state:read returned a cheerful

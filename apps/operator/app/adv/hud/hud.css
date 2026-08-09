@@ -960,3 +960,390 @@
 @media (max-width: 900px) {
   .hud__cols { grid-template-columns: repeat(5, minmax(170px, 1fr)); }
 }
+
+/* ── Goal detail panel (goal-mode-2026-08-07 P-021) ────────────────────────
+   The catch-up view opened from a goal card. Only tokens already in use on this
+   surface — the css-tokens lint fails on an undefined one, and it reads raw
+   source text, so a token named in a comment counts as a reference too. */
+
+.hud-goal {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 22px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.hud-goal__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud-goal__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hud-goal__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.hud-goal__body {
+  margin: 0;
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+
+.hud-goal__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* The kill criterion is the one section that says when this goal STOPS, so it
+   gets the only tinted panel on the page — everything else reports activity,
+   which an unstoppable goal produces forever. */
+.hud-goal__section--ends {
+  border-top: none;
+  padding-top: 0;
+  background: var(--bg-2);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+
+.hud-goal__h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.hud-goal__h4 {
+  margin: 10px 0 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-mute);
+}
+
+.hud-goal__criterion {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* A goal with no criterion can never stop — the alarming case, stated in the
+   alarm colour rather than left to read as merely uninformative. */
+.hud-goal__criterion--missing {
+  color: var(--bad);
+}
+
+.hud-goal__note {
+  margin: 0;
+  font-size: 10px;
+  color: var(--fg-mute);
+  line-height: 1.5;
+}
+
+.hud-goal__empty {
+  margin: 0;
+  color: var(--fg-mute);
+}
+
+/* ── tripwire bars ───────────────────────────────────────────────────────── */
+
+.hud-goal__bars {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud-goal__bar {
+  display: grid;
+  grid-template-columns: minmax(90px, 22%) 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.hud-goal__bar-label {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-goal__bar-track {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.hud-goal__bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--good);
+}
+
+/* An UNREAD tripwire is hatched, not filled — a 0%-wide fill and "nobody has
+   measured this" must not look identical, which is the whole point of the
+   surface. Form, not only colour. */
+.hud-goal__bar-unread {
+  display: block;
+  height: 100%;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--border-strong) 0 4px,
+    transparent 4px 8px
+  );
+}
+
+.hud-goal__bar-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+.hud-goal__bar--warn .hud-goal__bar-fill { background: var(--warn); }
+.hud-goal__bar--breached .hud-goal__bar-fill { background: var(--bad); }
+.hud-goal__bar--breached .hud-goal__bar-value { color: var(--bad); }
+.hud-goal__bar--unread .hud-goal__bar-value { color: var(--fg-mute); }
+
+.hud-goal__ceiling {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.hud-goal__ceiling-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.hud-goal__ceiling-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+}
+
+.hud-goal__ceiling-value--over {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+/* ── projects ────────────────────────────────────────────────────────────── */
+
+.hud-goal__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.hud-goal__proj {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+}
+
+/* Closed projects stay on the page, dimmed. They are the evidence that the
+   agent actually closes things; hiding them would leave only growth on screen. */
+.hud-goal__proj--removed {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+.hud-goal__proj-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.hud-goal__proj-slug {
+  font-weight: 600;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.hud-goal__proj-crit {
+  margin: 0;
+  color: var(--fg-dim);
+  line-height: 1.45;
+}
+
+.hud-goal__proj-crit--missing {
+  color: var(--warn);
+}
+
+.hud-goal__proj-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--fg-mute);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.hud-goal__proj-note {
+  margin: 0;
+  font-size: 10px;
+  color: var(--fg-mute);
+  font-style: italic;
+}
+
+/* ── rows (waiting-on-you + activity) ────────────────────────────────────── */
+
+.hud-goal__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hud-goal__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.hud-goal__row:last-child {
+  border-bottom: none;
+}
+
+.hud-goal__row-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.hud-goal__row-title--link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+
+.hud-goal__row-title--link:hover {
+  text-decoration: underline;
+}
+
+.hud-goal__row-meta {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--fg-mute);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* ── spend chart ─────────────────────────────────────────────────────────── */
+
+.hud-goal__chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 96px;
+  overflow-x: auto;
+  padding-top: 4px;
+}
+
+.hud-goal__col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: 1 0 14px;
+  height: 100%;
+}
+
+.hud-goal__col-track {
+  flex: 1 1 auto;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  min-height: 0;
+}
+
+.hud-goal__col-fill {
+  width: 100%;
+  display: flex;
+  flex-direction: column-reverse;
+  border-radius: 2px 2px 0 0;
+  overflow: hidden;
+  min-height: 1px;
+}
+
+/* Slices alternate tone by position rather than hashing the project name to a
+   hue: the stack is read against its hover title, and a stable per-column
+   ordering (largest first) already makes the same project sit in the same
+   place day to day. */
+.hud-goal__slice {
+  display: block;
+  width: 100%;
+  background: var(--accent);
+}
+
+.hud-goal__slice:nth-child(2n) { background: var(--accent-strong); }
+.hud-goal__slice:nth-child(3n) { background: var(--good); }
+
+.hud-goal__col-label {
+  font-size: 8.5px;
+  color: var(--fg-mute);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+}
+
+/* ── footer ──────────────────────────────────────────────────────────────── */
+
+.hud-goal__foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.hud-goal__close {
+  font: inherit;
+  padding: 5px 14px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-2);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.hud-goal__close:hover {
+  background: var(--bg);
+}

@@ -12,8 +12,12 @@ import { describe, it, expect } from 'vitest';
 import {
   askTargetFor,
   askToCard,
+  buildGoalBoard,
   buildPlanBoard,
   buildWorkItemBoard,
+  goalColumn,
+  goalSpendLabel,
+  HUD_DEFAULT_TAB,
   HUD_ENTITY_COLUMNS,
   HUD_TABS,
   HUD_WORK_ITEM_FETCH_STATES,
@@ -25,6 +29,7 @@ import {
   toBadgeTone,
   toWorkItemCard,
   workItemColumn,
+  type HudGoalInput,
   type HudPlanInput,
   type HudWorkItemInput,
 } from './hud-entity-board';
@@ -71,8 +76,137 @@ function ask(over: Partial<HudAsk> = {}): HudAsk {
 }
 
 describe('tabs', () => {
-  it('exposes exactly the three the owner asked for, sessions first', () => {
-    expect(HUD_TABS).toEqual(['sessions', 'plans', 'items']);
+  // Goals was added LEFTMOST on a later owner ask [owner 2026-08-09 interactive,
+  // verbatim: "make the goal tab in the hud tab the left most tab"], recorded as
+  // D-018 on goal-mode-2026-08-07. The tab strip is pinned exactly so a position
+  // the owner chose cannot drift silently — so if this assertion just failed,
+  // check whether the change was MEANT to reorder tabs before editing it.
+  it('exposes the four tabs in owner-set order, goals leftmost', () => {
+    expect(HUD_TABS).toEqual(['goals', 'sessions', 'plans', 'items']);
+  });
+
+  // LEFTMOST ≠ DEFAULT, and the two are easy to conflate once goals sits first.
+  // The owner asked for a position in the strip, not for a different landing
+  // tab, so the HUD must still OPEN on sessions. This pins that distinction:
+  // making goals the default is a separate behaviour change needing its own ask.
+  it('still opens on sessions — leftmost is a position, not the default tab', () => {
+    expect(HUD_TABS[0]).toBe('goals');
+    expect(HUD_DEFAULT_TAB).toBe('sessions');
+  });
+});
+
+describe('goalColumn', () => {
+  function goal(over: Partial<HudGoalInput> = {}): HudGoalInput {
+    return { id: 'g1', title: 'Ship a paid app', status: 'active', ...over };
+  }
+
+  it('routes a goal with human asks to needs-you', () => {
+    expect(goalColumn(goal({ needsHuman: 3 }))).toBe('needs-you');
+  });
+
+  it('routes a TERMINAL goal to done even when it still carries human asks', () => {
+    // Precedence case 1. A closed goal's leftover needs-human items are moot;
+    // surfacing it under "needs you" would ask the owner to act on a finished
+    // goal — the one outcome this column ordering exists to prevent.
+    for (const status of ['closed', 'done', 'achieved', 'abandoned']) {
+      expect(goalColumn(goal({ status, needsHuman: 5 }))).toBe('done');
+    }
+  });
+
+  it('prefers needs-you over blocked for a PAUSED goal that has asks', () => {
+    // Precedence case 2. Both are owner actions, but needsHuman is a concrete
+    // ask while a pause is a state. The pause is not lost — toGoalCard still
+    // badges it (asserted below), it just does not outrank the actionable thing.
+    expect(goalColumn(goal({ status: 'paused', needsHuman: 2 }))).toBe('needs-you');
+  });
+
+  it('routes a paused goal with no asks to blocked', () => {
+    expect(goalColumn(goal({ status: 'paused' }))).toBe('blocked');
+    expect(goalColumn(goal({ status: 'blocked' }))).toBe('blocked');
+  });
+
+  it('separates a goal that is WORKING from one that is merely active', () => {
+    // The distinction a status field alone cannot express, and the single most
+    // useful thing on this board: a goal can be `active` and totally idle.
+    expect(goalColumn(goal({ openWorkItems: 4 }))).toBe('working');
+    expect(goalColumn(goal({ openWorkItems: 0 }))).toBe('ready');
+    expect(goalColumn(goal({}))).toBe('ready');
+  });
+
+  it('is case-insensitive about status', () => {
+    expect(goalColumn(goal({ status: 'CLOSED' }))).toBe('done');
+    expect(goalColumn(goal({ status: 'Paused' }))).toBe('blocked');
+  });
+
+  it('treats an UNRECOGNISED status as a live goal rather than terminal', () => {
+    // Degrade toward "still running": mis-filing a live goal as done hides it,
+    // whereas mis-filing a dead one as ready is merely noise.
+    expect(goalColumn(goal({ status: 'wibble' }))).toBe('ready');
+  });
+});
+
+describe('goalSpendLabel', () => {
+  it('shows spend against the ceiling when one is set', () => {
+    expect(goalSpendLabel({ id: 'g', title: 't', status: 'active', spendUsd: 310, budgetCents: 50_000 }))
+      .toBe('$310 / $500');
+  });
+  it('shows bare spend when no ceiling was set', () => {
+    expect(goalSpendLabel({ id: 'g', title: 't', status: 'active', spendUsd: 310 })).toBe('$310');
+  });
+  it('reads a missing spend as zero, not NaN', () => {
+    expect(goalSpendLabel({ id: 'g', title: 't', status: 'active' })).toBe('$0');
+  });
+});
+
+describe('buildGoalBoard', () => {
+  const NOW = Date.parse('2026-08-09T00:00:00.000Z');
+
+  it('states the absence of a kill criterion instead of leaving the reason blank', () => {
+    // A goal with no criterion can never stop, so the card must SAY that. An
+    // empty reason line would read as "this card is uninformative" rather than
+    // as "this goal has nothing that can end it".
+    const board = buildGoalBoard([{ id: 'g1', title: 'Endless', status: 'active' }], { nowMs: NOW });
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    expect(card.reason).toContain('No kill criterion');
+  });
+
+  it('uses the kill criterion verbatim as the reason line when there is one', () => {
+    const board = buildGoalBoard(
+      [{ id: 'g1', title: 'Ship', status: 'active', killCriterion: 'No paying user by day 30.' }],
+      { nowMs: NOW },
+    );
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    expect(card.reason).toBe('No paying user by day 30.');
+  });
+
+  it('keeps the paused fact as a badge even when the column says needs-you', () => {
+    // The other half of precedence case 2 — this is what makes it safe for the
+    // column to rank the ask above the pause.
+    const board = buildGoalBoard(
+      [{ id: 'g1', title: 'Ship', status: 'paused', needsHuman: 2 }],
+      { nowMs: NOW },
+    );
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    expect(card.column).toBe('needs-you');
+    expect(card.badges.map((b) => b.label)).toContain('paused');
+  });
+
+  it('flags spend at or over the ceiling with the alarm tone', () => {
+    const board = buildGoalBoard(
+      [{ id: 'g1', title: 'Ship', status: 'active', spendUsd: 310, budgetCents: 30_000 }],
+      { nowMs: NOW },
+    );
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    expect(card.badges.find((b) => b.id === 'g1:spend')?.tone).toBe('bad');
+  });
+
+  it('leaves spend below the ceiling neutral', () => {
+    const board = buildGoalBoard(
+      [{ id: 'g1', title: 'Ship', status: 'active', spendUsd: 10, budgetCents: 30_000 }],
+      { nowMs: NOW },
+    );
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    expect(card.badges.find((b) => b.id === 'g1:spend')?.tone).toBe('neutral');
   });
 });
 

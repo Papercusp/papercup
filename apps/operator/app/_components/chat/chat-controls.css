@@ -1456,6 +1456,66 @@
   color: var(--bad);
 }
 
+/* ═══ DECISIONS shelf ═══════════════════════════════════════════════════════
+ *
+ * The pending escalation cards that need a human answer, docked at the BOTTOM
+ * of the conversation region [owner 2026-08-09]. It used to sit above the
+ * transcript, where a 45%-tall block could eat half the popup before a single
+ * message was readable.
+ *
+ * The shelf is a ZONE (`.pc-zone .pc-chat-decisions`), so it inherits the same
+ * cap/rule vocabulary as Orders, Activity and Fleet — the class is required,
+ * not cosmetic: the zone vars are defined on the zone ROOTS, so a container
+ * holding a `.pc-zone-title` without it resolves the cap fill to `unset`, i.e.
+ * an invisible cap rather than a loud failure.
+ */
+.pc-chat-decisions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* Capped + internally scrolled so several open decisions can never push the
+     composer off screen. Tighter than the 45% it used at the top: down here it
+     competes with the composer AND the action bar, not with the transcript
+     alone. */
+  max-height: 34%;
+  /* The boundary now faces the conversation it sits UNDER (was border-bottom
+     when this block lived above the transcript). */
+  border-top: 1px solid var(--pc-zone-rule);
+  /* Lifted off the transcript ground: this is a surface you ACT on, and the
+     single most common misread of the old placement was scrolling past it as
+     more conversation. */
+  background: var(--bg-raised);
+}
+
+/* Only the LIST scrolls — the title bar is its sibling, not its child, so the
+   zone cap stays put without needing the `position: sticky` the rails use. */
+.pc-chat-decisions__list {
+  min-height: 0;
+  overflow-y: auto;
+  /* A shelf pinned directly above the composer is easy to over-scroll; without
+     this the leftover delta scrolls the transcript behind it and the message
+     you were reading jumps. */
+  overscroll-behavior: contain;
+}
+
+/* How many decisions are waiting. Right-aligned on the title bar, and the one
+   place in this popup that earns an alert fill: the count is the whole reason
+   the shelf is on screen at all. Takes the plate's ground as ink, the same way
+   `.pc-zone-title__close` follows the plate rather than `--accent-ink`. */
+.pc-chat-decisions__count {
+  margin-left: auto;
+  min-width: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: var(--bg-popover);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
 /* ═══ shared focus treatment ════════════════════════════════════════════════ */
 
 .pc-ctl-mode:focus-visible,

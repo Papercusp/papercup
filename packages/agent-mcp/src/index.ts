@@ -178,6 +178,17 @@ export type { SeeAlso, SeeAlsoEntry, SeeAlsoPointer } from '@papercusp/tooldef';
 // wires its banded context gauge via context-gauge-wiring.ts, same as delta-flag-wiring.
 export { setResultAnnotator, resetResultAnnotator, applyResultAnnotator } from '@papercusp/tooldef';
 export type { ResultAnnotator } from '@papercusp/tooldef';
+// Host "server vintage" seam (EI-19953470656367880) — appends a build-id + boot-age
+// hint to an `Unrecognized key` invalid_args error. The operator wires it to
+// build-info.ts + process.uptime() via server-vintage-wiring.ts, same shape as
+// context-gauge-wiring.ts.
+export {
+  setServerVintageResolver,
+  resetServerVintageResolver,
+  readServerVintage,
+  formatVintageAge,
+} from '@papercusp/tooldef';
+export type { ServerVintage } from '@papercusp/tooldef';
 // Tool-result SEMANTIC-delta flag seam (agent-tool-delta-protocol-2026-06-22, the
 // flag-bite): tooldef gates the `mode:'delta'` upgrade behind this resolver, the
 // host wires it to FLAGS.TOOL_DELTA_PROTOCOL (see operator-core's

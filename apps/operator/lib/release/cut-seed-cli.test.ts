@@ -176,6 +176,29 @@ describe('refreshCorestoreStateForSeed', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('refreshed corestore source'));
   });
 
+  it('P-014 --no-force-backfill: passes force:false so already-swept targets are NOT re-enqueued', async () => {
+    // The DEFAULT (force:true) is asserted by the test above — that assertion is this
+    // one's control, and the pair is the point: a resume must be opt-in, because
+    // force:true is the belt-and-braces default a first-ever cut needs.
+    const ownLog = { keyHex: 'ef'.repeat(32), append: vi.fn(async () => {}), appendBatch: vi.fn(async () => {}), get: vi.fn(async () => null), length: 0 };
+    const backfillImpl = vi.fn(async () => ({ skipped: false, enqueued: 0, dropped: 0 }));
+    await refreshCorestoreStateForSeed({
+      workspaceId: 'papercusp-workspace',
+      hive: 'papercusp',
+      store: {} as never,
+      pg: {} as never,
+      openOwnLogImpl: async () => ownLog,
+      backfillImpl,
+      drainImpl: vi.fn(async () => 0),
+      warn: vi.fn(),
+      forceBackfill: false,
+    });
+    expect(backfillImpl).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      force: false,
+      maxOpsPerAuthor: 0,
+    });
+  });
+
   it('P-004: does NOT append a fresh head snapshot for a FULL cut (sparse falsy)', async () => {
     const ownLog = { keyHex: 'cd'.repeat(32), append: vi.fn(async () => {}), appendBatch: vi.fn(async () => {}), get: vi.fn(async () => null), length: 0 };
     const produceSnapshotImpl = vi.fn();
@@ -587,6 +610,40 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
       });
       // The no-outage path AND a trimmed cut — the pair P-014 could not deliver together.
       expect(res.sourceWritable).toBe(false);
+    });
+
+    it('P-014 --no-force-backfill: forwards force:false but STILL drains AND snapshots (currency preserved)', async () => {
+      const { openStore } = harness({ locked: true });
+      const backfillImpl = vi.fn(async () => ({ enqueued: 0, dropped: 0 }));
+      const waitImpl = vi.fn(async () => ({ undrained: 0, waitedMs: 5 }));
+      const headSnapshotImpl = vi.fn(async () => ({
+        kind: 'produced' as const,
+        process: 'operator',
+        appended: true,
+        coversUpTo: 1,
+        chunkCount: 1,
+        rowCount: 1,
+        elapsedMs: 1,
+      }));
+      await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        backfillImpl: backfillImpl as never,
+        waitImpl: waitImpl as never,
+        findHolderImpl: holderFound,
+        headSnapshotImpl: headSnapshotImpl as never,
+        forceBackfill: false,
+      });
+      expect(backfillImpl).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+        force: false,
+        maxOpsPerAuthor: 0,
+      });
+      // This pair IS the safety argument for the flag. Dropping the re-enqueue must not
+      // drop the drain wait or the fresh head snapshot — those two are what make the
+      // shipped sparse seed CURRENT, and without them the flag would silently ship stale.
+      expect(waitImpl).toHaveBeenCalledTimes(1);
+      expect(headSnapshotImpl).toHaveBeenCalledTimes(1);
     });
 
     it('P-019: asks for the snapshot AFTER the drain and BEFORE the read-only open (D-012 ordering)', async () => {

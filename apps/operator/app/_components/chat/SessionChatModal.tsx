@@ -1885,19 +1885,6 @@ export default function SessionChatModal({
         {actionRosterEntry ? (
           <SessionStateHeader entry={actionRosterEntry} onOpenDetail={scrollToDossierSection} />
         ) : null}
-        {pendingEscalations.length > 0 ? (
-          <div
-            style={{ flex: '0 0 auto', maxHeight: '45%', overflowY: 'auto', borderBottom: '1px solid var(--border)' }}
-            data-testid="session-chat-pending-escalations"
-          >
-            {pendingEscalations.map((i) => (
-              // key remounts per item so its local card state (answered/discuss)
-              // resets on selection change — same contract as OtherDetail's other
-              // hosts (InboxPane, the Queue's PlansClient).
-              <OtherDetail key={i.id} item={i} onResolved={refreshAttention} />
-            ))}
-          </div>
-        ) : null}
         {resolving ? (
           <div style={BANNER_STYLE}>Finding this agent's session…</div>
         ) : resolveError ? (
@@ -1959,6 +1946,52 @@ export default function SessionChatModal({
                   ? 'Delivered to the inbox, but no live session picked it up — the agent may need respawning.'
                   : 'Delivered to the agent’s inbox — it will be read at its next turn.'}
           </div>
+        ) : null}
+        {/* ── DECISIONS shelf [owner 2026-08-09, verbatim: "those decision
+            buttons at the top of the conversation should be displayed at the
+            bottom instead. fix that now. Also improve the design of it as you
+            do that"].
+
+            It used to sit between the status band and the transcript, where a
+            45%-tall block could eat half the popup before a single message was
+            readable. Bottom is also where this file's OWN spatial rule already
+            put it (see the status-band comment above: "description sits above
+            and operation below") — answering an escalation is operation, so
+            the move settles an inconsistency rather than inventing a new rule.
+
+            LAST child of the conversation region, not a sibling after it: that
+            keeps it inside what maximize paints (the same reason D-007 gives
+            for the bottom band) and directly above the action bar, so every
+            thing you can DO to this session is one contiguous stack.
+
+            `.pc-zone` is load-bearing, not decorative — chat-controls.css
+            defines the zone vars ON the zone roots, so a container that holds
+            a `.pc-zone-title` without it resolves the cap's fill to `unset`:
+            an invisible cap rather than a loud failure. ── */}
+        {pendingEscalations.length > 0 ? (
+          <section
+            className="pc-zone pc-chat-decisions"
+            data-testid="session-chat-pending-escalations"
+            aria-label="Decisions that need you"
+          >
+            {/* Mirrors the Orders / Activity / Fleet title bars so the shelf
+                reads as one of the popup's zones rather than a stray panel. */}
+            <header className="pc-zone-title">
+              <span>Decisions</span>
+              {/* "you", not "they": the other zones describe the AGENT, this
+                  one is the only zone addressed to the reader. */}
+              <span className="pc-zone-title__sub">— what needs you</span>
+              <span className="pc-chat-decisions__count">{pendingEscalations.length}</span>
+            </header>
+            <div className="pc-chat-decisions__list">
+              {pendingEscalations.map((i) => (
+                // key remounts per item so its local card state (answered/discuss)
+                // resets on selection change — same contract as OtherDetail's other
+                // hosts (InboxPane, the Queue's PlansClient).
+                <OtherDetail key={i.id} item={i} onResolved={refreshAttention} />
+              ))}
+            </div>
+          </section>
         ) : null}
         </div>
         {/* ── The BOTTOM band. Below the conversation region, and since D-007

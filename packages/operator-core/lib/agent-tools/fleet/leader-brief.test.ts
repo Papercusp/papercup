@@ -9,12 +9,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   computeBenchSuggestion,
   computeDormantAlert,
+  computeFleetBlockVerdict,
   computeFloorStarvedFleetAlert,
   computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
   computeSpinningAlert,
   computeStrandedFleetAlert,
   decorateComposedParkedOn,
+  FALSIFIER_FORBIDDEN_TOOLS,
   projectMember,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
@@ -1395,5 +1397,280 @@ describe('EI-19313376980892266 — the brief must not call an AT-CAPACITY member
     });
     const idleWithClaimable = [blocked, free].filter((s) => s?.kind === 'idle-with-claimable');
     expect(idleWithClaimable).toHaveLength(1);
+  });
+});
+
+describe('computeFleetBlockVerdict (P-019/P-012 — which LAYER is blocking the fleet)', () => {
+  const congestedPool = {
+    poolExhausted: true,
+    degraded: true,
+    factor: 0,
+    queueDepth: 28,
+    usableAccounts: 0,
+    availableAccounts: 0,
+  };
+  const healthyPool = {
+    poolExhausted: false,
+    degraded: false,
+    factor: 0.9,
+    queueDepth: 0,
+    usableAccounts: 4,
+    availableAccounts: 4,
+  };
+  /** A fleet whose members are ALL working — nothing idle, nothing paused. */
+  const working = {
+    claimable: 40,
+    matchedByFilter: 120,
+    idleMemberCount: 0,
+    lanelessIdleCount: 0,
+    poolCapacity: healthyPool,
+  };
+
+  it('returns undefined when no member is idle and the fleet is not paused', () => {
+    expect(computeFleetBlockVerdict(working)).toBeUndefined();
+  });
+
+  it('does NOT emit a reassuring "nothing wrong" row — absence is the signal', () => {
+    // Guards the shape choice: a `layer: 'none'` verdict would be one more field to read
+    // on every healthy brief, which is what the flat-alert problem already suffers from.
+    expect(computeFleetBlockVerdict(working)).toBeUndefined();
+  });
+
+  describe('precedence — the layers dominate in physical dependency order', () => {
+    it('fleet-paused outranks EVERY other layer', () => {
+      const v = computeFleetBlockVerdict({
+        ...working,
+        fleetPaused: true,
+        poolCapacity: congestedPool,
+        claimable: 0,
+        matchedByFilter: 0,
+        idleMemberCount: 6,
+        lanelessIdleCount: 3,
+      });
+      expect(v?.layer).toBe('fleet-paused');
+      expect(v?.remedy).toContain('fleet:resume');
+    });
+
+    /**
+     * THE INVERSION THIS ITEM EXISTS FOR. Measured live 2026-08-09T02:31Z: pool at factor 0
+     * with 28 queued, 6 members idle beside a NONEMPTY claimable queue. Read flat, that is
+     * `idleWithClaimableAlert` and the remedy is "wake them" — which adds six more requests
+     * behind the same congestion. The pool layer must win.
+     */
+    it('inference-pool outranks members even when the queue is full and members are idle', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 293,
+        matchedByFilter: 457,
+        idleMemberCount: 6,
+        lanelessIdleCount: 0,
+        poolCapacity: congestedPool,
+      });
+      expect(v?.layer).toBe('inference-pool');
+      expect(v?.remedy).toMatch(/do NOT coord:send wake/i);
+      // and it must NAME the alert it is overruling, so the leader does not act on it next
+      expect(v?.subordinate).toContain('idleWithClaimableAlert');
+    });
+
+    it('inference-pool outranks claim-floors', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 0,
+        matchedByFilter: 108,
+        idleMemberCount: 0,
+        lanelessIdleCount: 5,
+        poolCapacity: congestedPool,
+      });
+      expect(v?.layer).toBe('inference-pool');
+      expect(v?.subordinate).toContain('floorStarvedAlert');
+    });
+
+    it('spec-scope wins over claim-floors when the spec matches nothing', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 0,
+        matchedByFilter: 0,
+        idleMemberCount: 0,
+        lanelessIdleCount: 4,
+        poolCapacity: healthyPool,
+      });
+      expect(v?.layer).toBe('spec-scope');
+      expect(v?.remedy).toContain('scheduler:set_claim_spec');
+    });
+
+    it('claim-floors when the spec matches plenty and every row is withheld', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 0,
+        matchedByFilter: 108,
+        idleMemberCount: 0,
+        lanelessIdleCount: 5,
+        poolCapacity: healthyPool,
+      });
+      expect(v?.layer).toBe('claim-floors');
+      expect(v?.remedy).toMatch(/do NOT bench/i);
+    });
+
+    it('members ONLY when every upstream layer is read and clear', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 293,
+        matchedByFilter: 457,
+        idleMemberCount: 6,
+        lanelessIdleCount: 0,
+        poolCapacity: healthyPool,
+      });
+      expect(v?.layer).toBe('members');
+      expect(v?.remedy).toContain('coord:send');
+      expect(v?.reason).toContain('pool read and healthy');
+    });
+  });
+
+  describe('a degraded pool with an EMPTY queue is not currently starving anyone', () => {
+    it('falls through to the members layer', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 293,
+        matchedByFilter: 457,
+        idleMemberCount: 6,
+        lanelessIdleCount: 0,
+        poolCapacity: { ...congestedPool, queueDepth: 0 },
+      });
+      expect(v?.layer).toBe('members');
+    });
+  });
+
+  describe('fail-soft direction — an UNREAD pool never silently promotes the wake remedy', () => {
+    it('states that layer 2 was not ruled out, and sends the leader to check it first', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 293,
+        matchedByFilter: 457,
+        idleMemberCount: 6,
+        lanelessIdleCount: 0,
+        poolCapacity: null,
+      });
+      expect(v?.layer).toBe('members');
+      expect(v?.reason).toMatch(/could NOT be read/i);
+      expect(v?.remedy).toMatch(/falsifier FIRST/i);
+      // the falsifier must point at the layer that was NOT ruled out, not at the queue
+      expect(v?.falsifier.tool).toBe('fleet:capacity');
+      expect(v?.falsifier.kills).toMatch(/inference-pool/);
+    });
+
+    it('an unread pool cannot itself manufacture an inference-pool verdict', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 0,
+        matchedByFilter: 108,
+        idleMemberCount: 0,
+        lanelessIdleCount: 5,
+        poolCapacity: null,
+      });
+      expect(v?.layer).toBe('claim-floors');
+    });
+  });
+
+  /**
+   * The pool verdict is computed from a cached projection that has now false-positived
+   * TWICE in one session (fleet:capacity reporting poolExhausted/usableAccounts:0 while a
+   * live probe found 3 of 4 accounts answering 200). Its falsifier must therefore be the
+   * LIVE probe, not a re-read of the same projection — and must say plainly that the
+   * projection alone is not grounds to escalate to the owner.
+   */
+  describe('the inference-pool falsifier is the live probe, not the projection', () => {
+    const v = computeFleetBlockVerdict({
+      claimable: 293,
+      matchedByFilter: 457,
+      idleMemberCount: 6,
+      lanelessIdleCount: 0,
+      poolCapacity: congestedPool,
+    });
+
+    it('calls accounts:probe-capacity', () => {
+      expect(v?.falsifier.tool).toBe('accounts:probe-capacity');
+      expect(v?.falsifier.check).toContain('accounts:probe-capacity');
+    });
+
+    it('measures something INDEPENDENT of the input it fired on', () => {
+      expect(v?.falsifier.measurement).toMatch(/live/i);
+      expect(v?.falsifier.measurement).toMatch(/independent of the cached/i);
+    });
+
+    it('warns against escalating a pool fault on the projection alone', () => {
+      expect(v?.falsifier.kills).toMatch(/NEVER escalate/i);
+      expect(v?.falsifier.kills).toMatch(/probe first/i);
+    });
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL (CLAUDE.md "proving a guard is falsifiable" — module tier: a
+   * deliberately-wrong implementation kept PERMANENTLY in the test file, never a mutation
+   * of the shared tree).
+   *
+   * `naiveFlatVerdict` is the behaviour that existed BEFORE this item: the alerts read in
+   * field order, members-first, with no precedence. If someone reorders the real function's
+   * branches — or deletes the pool check — it degenerates to exactly this. The control
+   * proves the precedence assertions above can actually FAIL, and the calibration case
+   * proves they are not passing for a trivial reason (e.g. both returning undefined).
+   */
+  describe('control: the pre-fix flat reading, kept so the precedence tests can fail', () => {
+    type Input = Parameters<typeof computeFleetBlockVerdict>[0];
+    const naiveFlatVerdict = (input: Input): string | undefined => {
+      if ((input.claimable ?? 0) > 0 && input.idleMemberCount > 0) return 'members';
+      if (input.claimable === 0 && (input.matchedByFilter ?? 0) > 0) return 'claim-floors';
+      if (input.matchedByFilter === 0) return 'spec-scope';
+      return undefined;
+    };
+    // The exact live 2026-08-09T02:31Z shape: starved pool, full queue, six idle members.
+    const inversion = {
+      claimable: 293,
+      matchedByFilter: 457,
+      idleMemberCount: 6,
+      lanelessIdleCount: 0,
+      poolCapacity: congestedPool,
+    };
+
+    it('the naive reading gets the inversion WRONG (this is what regressing looks like)', () => {
+      expect(naiveFlatVerdict(inversion)).toBe('members');
+    });
+
+    it('the real function gets it RIGHT — so the precedence test is not vacuous', () => {
+      expect(computeFleetBlockVerdict(inversion)?.layer).toBe('inference-pool');
+      expect(computeFleetBlockVerdict(inversion)?.layer).not.toBe(naiveFlatVerdict(inversion));
+    });
+
+    it('CALIBRATION: the two agree wherever precedence is not in play', () => {
+      // Without this, "they differ" could be satisfied by a real function that is simply
+      // broken everywhere rather than one that is correctly ordered.
+      const noPrecedenceConflict = {
+        claimable: 0,
+        matchedByFilter: 108,
+        idleMemberCount: 0,
+        lanelessIdleCount: 5,
+        poolCapacity: healthyPool,
+      };
+      expect(computeFleetBlockVerdict(noPrecedenceConflict)?.layer).toBe(
+        naiveFlatVerdict(noPrecedenceConflict),
+      );
+    });
+  });
+
+  it('every layer ships a falsifier that is read-only', () => {
+    const inputs = [
+      { ...working, fleetPaused: true },
+      { ...working, idleMemberCount: 6, poolCapacity: congestedPool },
+      { ...working, idleMemberCount: 0, lanelessIdleCount: 4, matchedByFilter: 0, claimable: 0 },
+      { ...working, idleMemberCount: 0, lanelessIdleCount: 5, claimable: 0 },
+      { ...working, idleMemberCount: 6 },
+      { ...working, idleMemberCount: 6, poolCapacity: null },
+    ];
+    const layers = new Set<string>();
+    for (const input of inputs) {
+      const v = computeFleetBlockVerdict(input);
+      expect(v).toBeDefined();
+      layers.add(v!.layer);
+      expect(FALSIFIER_FORBIDDEN_TOOLS).not.toContain(v!.falsifier.tool);
+      expect(v!.falsifier.check.length).toBeGreaterThan(0);
+      expect(v!.falsifier.kills.length).toBeGreaterThan(0);
+      expect(v!.remedy.length).toBeGreaterThan(0);
+    }
+    // calibration: the six inputs must actually exercise all five layers, or the
+    // read-only assertion above is passing on a set that never reached most of them
+    expect(layers).toEqual(
+      new Set(['fleet-paused', 'inference-pool', 'spec-scope', 'claim-floors', 'members']),
+    );
   });
 });

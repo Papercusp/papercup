@@ -38,7 +38,14 @@ import { SEVERITY_TONE } from '../../harness/theme';
 /* ── tabs ────────────────────────────────────────────────────────────────── */
 
 /**
- * `goals` is FIRST, which also makes it the board's DEFAULT tab.
+ * `goals` is FIRST — leftmost in the tab strip.
+ *
+ * ⚠ FIRST ≠ DEFAULT. The default tab is a separate decision, set by the
+ * `hudtab` nuqs parser's `.withDefault('sessions')` in HudView, and it is
+ * deliberately UNCHANGED: the owner asked for a position in the strip, not for
+ * a different landing tab, and quietly moving where the HUD opens would be a
+ * behaviour change nobody requested. If you are here to make Goals the default,
+ * that is the line to edit — and it wants its own owner ask.
  *
  * [owner 2026-08-09 interactive, verbatim: "make the goal tab in the hud tab
  * the left most tab"] — recorded as D-018 on goal-mode-2026-08-07. The ordering
@@ -49,6 +56,17 @@ import { SEVERITY_TONE } from '../../harness/theme';
  */
 export const HUD_TABS = ['goals', 'sessions', 'plans', 'items'] as const;
 export type HudTabId = (typeof HUD_TABS)[number];
+
+/**
+ * The tab the HUD OPENS on — deliberately NOT `HUD_TABS[0]`.
+ *
+ * Hoisted out of HudView's `parseAsStringLiteral(HUD_TABS).withDefault(...)` so
+ * that "which tab is leftmost" and "which tab do we land on" are two separately
+ * readable, separately testable facts. While they were one inline literal, the
+ * only way to notice that adding a leftmost tab had also moved the landing tab
+ * was to read the parser call — and adding a tab is exactly when nobody does.
+ */
+export const HUD_DEFAULT_TAB: HudTabId = 'sessions';
 
 export const HUD_TAB_LABEL: Record<HudTabId, string> = {
   goals: 'Goals',
@@ -600,6 +618,7 @@ export function toGoalCard(goal: HudGoalInput, nowMs: number): HudEntityCard {
     id: goal.id,
     ref: goal.id.slice(0, 8),
     title: goal.title?.trim() || goal.id,
+    column,
     // The kill criterion IS the reason line. It is the one sentence that says
     // when this goal stops, and a goal with none can never stop — so its
     // absence is stated outright rather than falling back to a count summary

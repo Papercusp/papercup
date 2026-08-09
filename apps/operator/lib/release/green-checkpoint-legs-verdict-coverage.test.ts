@@ -61,7 +61,9 @@ async function runLegs(failScript: string | null) {
     }
     return ok;
   };
-  const legs = await runPostSuiteLegs(ROOT, {}, exec, '@papercusp/operator-vite');
+  // `exec` is stubbed, so the env is never used to spawn anything — pass the real one
+  // rather than a cast so the call keeps the production signature exactly.
+  const legs = await runPostSuiteLegs(ROOT, process.env, exec, '@papercusp/operator-vite');
   return { legs, invokedScripts };
 }
 

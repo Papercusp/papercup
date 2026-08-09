@@ -62,6 +62,48 @@ describe('extractCitedPaths — conservative repo-file extraction', () => {
   });
 });
 
+describe('extractCitedPaths — removal marker is PARAGRAPH-scoped (EI-18680208809300804)', () => {
+  // Verbatim shape from plans-egress-is-poll-frequency-not-payload: the path ends
+  // a line and its "(deleted …)" acknowledgement wraps onto the next one. A
+  // line-scoped test cannot see the marker, so the insight was flagged stale for
+  // citing a file it explicitly documents as deleted.
+  const WRAPPED = [
+    '- Meta-gotcha that stalled this diagnosis: `libs/generic/sync/src/transports/polling/batch-fetcher.ts`',
+    '  (deleted 2026-07-26; the delta wiring now lives in its replacement, `query-fetcher.ts`)',
+    '  contained a raw NUL byte, so ripgrep classified it BINARY.',
+  ].join('\n');
+
+  it('drops a path whose removal marker wrapped onto the NEXT line', () => {
+    expect(extractCitedPaths(WRAPPED)).not.toContain(
+      'libs/generic/sync/src/transports/polling/batch-fetcher.ts',
+    );
+  });
+
+  it('CONTROL: the same path with NO marker anywhere is still extracted', () => {
+    // Guards against the widened scope simply swallowing everything.
+    const noMarker = [
+      '- Meta-gotcha that stalled this diagnosis: `libs/generic/sync/src/transports/polling/batch-fetcher.ts`',
+      '  contained a raw NUL byte, so ripgrep classified it BINARY.',
+    ].join('\n');
+    expect(extractCitedPaths(noMarker)).toContain(
+      'libs/generic/sync/src/transports/polling/batch-fetcher.ts',
+    );
+  });
+
+  it('does NOT reach across a blank line into a different paragraph', () => {
+    // The marker belongs to a separate paragraph, so it must not suppress here —
+    // this is the over-suppression the paragraph scope has to stop short of.
+    const separated = [
+      'The old loader was `packages/operator-core/lib/gone.ts`, which we removed.',
+      '',
+      'The live one is `packages/operator-core/lib/still-here.ts`.',
+    ].join('\n');
+    const cited = extractCitedPaths(separated);
+    expect(cited).toContain('packages/operator-core/lib/still-here.ts');
+    expect(cited).not.toContain('packages/operator-core/lib/gone.ts');
+  });
+});
+
 describe('scanInsightStaleness', () => {
   const exists = (present: string[]) => (p: string) => present.includes(p);
 

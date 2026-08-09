@@ -31,6 +31,10 @@ import { getMemoryBackend, type MemoryEntry, type SearchLegStats } from './backe
 // telemetry path (see the writer below) rather than being pulled in eagerly.
 import type { RecallAdmissionStats } from './recall-stats';
 import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
+// P-003. Pure — no I/O, no PG, and its two imports are type-only, so this stays
+// a static import while the SNAPSHOT read (which does pull the search graph)
+// remains dynamic below, beside the rest of the corpus leg's dynamic imports.
+import { assessCorpusCoverageGate, type CorpusGateDecision } from './corpus-coverage-gate';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import {
@@ -502,8 +506,9 @@ function emptyCorpusLeg(
   heading: string,
   embedderAvailable: boolean,
   candidateCount: number,
+  gate: CorpusGateDecision | null = null,
 ): CorpusLegResult {
-  return { heading, lines: [], refs: [], embedderAvailable, candidateCount };
+  return { heading, lines: [], refs: [], embedderAvailable, candidateCount, gate };
 }
 
 /** One compact suffix for the phases log — never a second log site. */
@@ -581,6 +586,51 @@ export function _resetCorpusLegHealthForTests(): void {
 }
 
 /**
+ * P-003 — evaluate the coverage gate for one corpus recall.
+ *
+ * Everything expensive is already paid for elsewhere: the coverage numbers come
+ * from the samples the twice-hourly alarm persists, read through
+ * `loadCoverageSnapshotCached` (one indexed DISTINCT ON, TTL-memoised, never a
+ * live COUNT scan). The sources asked about are the leg's OWN
+ * `CORPUS_SOURCE_NAMES`, imported rather than restated, so the gate cannot end
+ * up judging a source the leg does not read — or missing one it does.
+ *
+ * FAIL-OPEN, and the direction is deliberate: a gate that cannot be evaluated
+ * returns `null`, which renders the section exactly as it does today. The
+ * alternative — treating an unreadable gate as grounds to suppress — would let
+ * a PG hiccup silently delete a working feature, which is a strictly worse
+ * failure than the one this item exists to fix.
+ *
+ * Note this is NOT the same as `unknown` COVERAGE. An unknown coverage sample
+ * is evidence the gate HAS and acts on (it degrades, per the search-side rule
+ * that absence of evidence is not health); `null` here means the gate never
+ * ran at all.
+ */
+async function assessCorpusGate(
+  workspaceId: string,
+  res: {
+    embedderAvailable: boolean;
+    legs: import('@papercusp/search').SearchLegs | null;
+    retrievalDepth: number;
+  },
+): Promise<CorpusGateDecision | null> {
+  try {
+    const { sql } = getOrgPg();
+    const [{ loadCoverageSnapshotCached, assessSearchCoverage }, { CORPUS_SOURCE_NAMES }] =
+      await Promise.all([import('../search/coverage-gate'), import('./corpus-recall-io')]);
+    const snapshot = await loadCoverageSnapshotCached(sql, workspaceId);
+    return assessCorpusCoverageGate({
+      coverage: assessSearchCoverage(CORPUS_SOURCE_NAMES, snapshot),
+      embedderAvailable: res.embedderAvailable,
+      legs: res.legs,
+      retrievalDepth: res.retrievalDepth,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Kick off the P-008 corpus leg. Everything it touches is behind a DYNAMIC
  * import on purpose: `corpus-recall-io` pulls `@papercusp/search` and the
  * search-source registry, and this module is loaded in tests against a partial
@@ -628,11 +678,44 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         // whole session chain, which is the unit this always meant.
         excludeOwnerId: sessionId,
       });
+      // P-003: what is this retrieval ENTITLED to claim? Evaluated from the
+      // coverage samples the alarm already persists — one indexed read,
+      // TTL-memoised, fail-open to `unknown` (never to healthy).
+      //
+      // Evaluated even when nothing was admitted: an empty section under a
+      // degraded index and an empty section under a healthy one are different
+      // facts, and the observability path must be able to tell them apart.
+      const gate = await assessCorpusGate(input.workspaceId, res);
+
       // P-001: a leg that ran and admitted nothing still reports HOW it ran.
       // Returning bare `null` here erased the one fact that explains an empty
       // section — whether the semantic half was even available.
       if (res.lines.length === 0) {
-        return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount);
+        return emptyCorpusLeg(
+          CORPUS_BLOCK_HEADING,
+          res.embedderAvailable,
+          res.candidateCount,
+          gate,
+        );
+      }
+
+      // P-003 SIT OUT. The narrow case (see `assessCorpusCoverageGate`): the
+      // vector index has no selectivity left AND the lexical leg contributed
+      // nothing, so every line below came from a search whose result the query
+      // did not influence. Suppressed rather than marked, because there is no
+      // sound line here to protect — marking would leave the agent holding
+      // arbitrary pointers plus a caveat it cannot act on.
+      //
+      // Returned as an EMPTY leg, not `null`: the leg ran, and the health path
+      // must keep saying so. `gate` rides along, so a suppressed turn is
+      // diagnosable rather than merely absent.
+      if (gate?.verdict === 'sit-out') {
+        return emptyCorpusLeg(
+          CORPUS_BLOCK_HEADING,
+          res.embedderAvailable,
+          res.candidateCount,
+          gate,
+        );
       }
 
       // Suppression runs POST-selection: a handle ref only exists once the
@@ -667,7 +750,12 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         }
       }
       if (lines.length === 0) {
-        return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount);
+        return emptyCorpusLeg(
+          CORPUS_BLOCK_HEADING,
+          res.embedderAvailable,
+          res.candidateCount,
+          gate,
+        );
       }
 
       return {
@@ -676,6 +764,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         refs: lines.map((l) => l.handle.ref),
         embedderAvailable: res.embedderAvailable,
         candidateCount: res.candidateCount,
+        gate,
       };
     } catch {
       return null;
@@ -697,7 +786,12 @@ function composeWithCorpus(
   corpus: CorpusLegResult | null,
 ): string | null {
   if (!corpus || corpus.lines.length === 0) return memoryBlock;
-  const body = corpus.lines.join('\n');
+  // P-003: the degradation notice leads the section rather than trailing it.
+  // A caveat after the pointers is read after they have already been believed —
+  // and on a truncated block it may not be read at all, since this section sits
+  // at the END of the injected block and is the first thing a char budget cuts.
+  const notice = corpus.gate?.notice;
+  const body = notice ? `${notice}\n\n${corpus.lines.join('\n')}` : corpus.lines.join('\n');
   if (!memoryBlock) return `## ${corpus.heading}\n\n${body}`;
   return `${memoryBlock}\n\n### ${corpus.heading}\n\n${body}`;
 }

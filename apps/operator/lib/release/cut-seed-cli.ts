@@ -48,6 +48,10 @@
  *   --workspace-id <id>    SHIPPING seal: resolve cutAtEpoch from live hive_settings + seal via=epoch
  *   --core-keys <hex,hex>  extra admitted member log keys to seed (owner's own log is always included)
  *   --skip-corestore-refresh
+ *   --no-force-backfill      resume a cut whose backfill already ran: trust
+ *                            backfillLocalState's per-target markers instead of
+ *                            re-enqueueing the whole corpus. Keeps the drain wait and
+ *                            the fresh head snapshot, so --sparse stays valid.
  *                          release escape hatch: do NOT force-refresh local PG projection rows into the
  *                          peer log before snapshotting the corestore. The default with --workspace-id
  *                          is to refresh+drain, so installer seeds include all current dogfood work-items
@@ -1024,6 +1028,7 @@ async function main(): Promise<void> {
       hive,
       sparse,
       wantRefresh: args['skip-corestore-refresh'] !== true,
+      forceBackfill: args['no-force-backfill'] !== true,
     });
     store = opened.store;
 

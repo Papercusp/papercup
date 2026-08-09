@@ -644,6 +644,67 @@ export function gateStallEscalationBody(opts: {
   });
 }
 
+/**
+ * PURE (P-005): the fleet broadcast that OPENS the `gate-red-streak:<harness>`
+ * condition — the thing that gives a red gate exactly one ownable work-item.
+ *
+ * ── WHY THIS RIDES THE EXISTING EDGE RATHER THAN A NEW DETECTOR ────────────────
+ * The state machine this needs already exists, immediately below: `consecutiveReds`
+ * increments per red tick, `stallAlerted` makes the alert one-shot per episode, and
+ * the green branch resets both. A second detector (the obvious build — sweep
+ * `gate_health` from the watchdog) would be a SECOND answer to a question the first
+ * already answers, and the two would disagree the first time either threshold moved.
+ * So the condition is emitted at the exact edge that already fires the urgent alert,
+ * and resolved at the exact edge that already clears the escalation.
+ *
+ * ⚠ THE OPEN EDGE IS `stalledByCount || stalledByAge`, NOT the count alone — and the
+ * name says "red-streak" because the count is the dominant trigger. Both legs are
+ * evaluated ONLY inside the red branch, so both mean "the gate is red and stuck";
+ * binding to the existing one-shot flag is what keeps open and close symmetric.
+ * Splitting the count out would need a SECOND dedup flag and would double-alarm on
+ * the overlap.
+ *
+ * The body names the sibling `green-stall:` condition on purpose: past 12h with no
+ * green BOTH are open and one gate carries two owning work-items (see
+ * {@link gateRedStreakConditionKey} for why that is accepted rather than suppressed).
+ * A claimant who learns it here does not have to re-derive it.
+ */
+export function gateRedStreakBroadcast(opts: {
+  installSlug: string;
+  consecutiveReds: number;
+  heldHrs: number | null;
+  candidate?: string | null;
+  failingTests?: string[];
+  ownership?: GateRedOwnership;
+  /** `staleness.commitsBehindTip` — how far the judged candidate trails staging. */
+  commitsBehindTip?: number | null;
+}): { summary: string; body: string } {
+  const tests = (opts.failingTests ?? []).slice(0, 20);
+  const held = opts.heldHrs != null ? ` (~${opts.heldHrs}h since the last green)` : '';
+  return {
+    summary:
+      `green-checkpoint RED on ${opts.installSlug} — ${opts.consecutiveReds} consecutive red checkpoint(s)${held}; ` +
+      `\`main\` is frozen and staging changes are NOT reaching the release.`,
+    body:
+      `The release gate is FIRING but every verdict is red${
+        opts.candidate ? `; the last judged candidate was ${opts.candidate.slice(0, 12)}` : ''
+      }.${
+        tests.length
+          ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.`
+          : ''
+      }${opts.ownership ? ` ${opts.ownership.label}` : ''}${
+        opts.commitsBehindTip != null && opts.commitsBehindTip > 0
+          ? ` NOTE: that candidate is ${opts.commitsBehindTip} commit(s) behind staging — on this tree the ` +
+            `fix is very often already committed, so confirm a named failure still reproduces AT TIP ` +
+            `(npm run test:file -- <paths>) before chasing it.`
+          : ''
+      }\n\nThis condition owns ONE work-item for this red (the condition bridge mints it), so claim ` +
+      `that item rather than opening another. Distinct from \`green-stall:${opts.installSlug}\`, which ` +
+      `means the gate is not producing verdicts AT ALL — during a long red streak both can be open, and ` +
+      `they are the same gate seen two ways.`,
+  };
+}
+
 /** Pure classification of a green-checkpoint tick's outcome for gate_health tracking.
  *  Exported for unit testing (EI-2615). */
 export type GateStallClass = 'reset' | 'noop' | 'red';
@@ -921,6 +982,30 @@ export async function trackGateStall(
     } catch (e) {
       console.warn(`[green-checkpoint] stall escalation clear failed: ${e instanceof Error ? e.message : e}`);
     }
+    // P-005: CLOSE the red-streak condition — the bridge settles the owning work-item
+    // on this broadcast, so a missed resolve leaks one permanently-open incident item
+    // per episode (D-011's leak, which is exactly what the bridge's `settle: true`
+    // exists to prevent). Guarded on `gh.stallAlerted`, the same transition edge the
+    // escalation clear above uses: a routinely-green tick opened no condition and must
+    // broadcast no recovery, or every green hour spams a resolution for nothing.
+    //
+    // ⚠ Read `gh.stallAlerted` (the value BEFORE this green reset), never `next`
+    // (which sets it false unconditionally two lines up) — testing the post-reset
+    // value would make this dead code that never fires.
+    if (gh.stallAlerted) {
+      try {
+        const { broadcastSevereEventResolved } = await import('../../severe-event-broadcast');
+        const { gateRedStreakConditionKey } = await import('../../coord/gate-ownership');
+        await broadcastSevereEventResolved({
+          conditionKey: gateRedStreakConditionKey(ctx.installSlug),
+          summary:
+            `green-checkpoint GREEN again on ${ctx.installSlug} — the red streak is over and \`main\` is ` +
+            `advancing; the earlier red-gate alarm is stale.`,
+        });
+      } catch (e) {
+        console.warn(`[green-checkpoint] red-streak condition resolve failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
   } else {
     const consecutiveReds = (gh.consecutiveReds ?? 0) + 1;
     const firstRedAt = gh.firstRedAt ?? Date.now();
@@ -1006,6 +1091,38 @@ export async function trackGateStall(
         );
       } catch (e) {
         console.warn(`[green-checkpoint] stall escalation write failed: ${e instanceof Error ? e.message : e}`);
+      }
+      // P-005: OPEN the `gate-red-streak:<harness>` condition, which is what turns
+      // this red into exactly ONE claimable work-item (the condition bridge mints the
+      // owner; see condition-bridge.ts's ACTIONABLE_CONDITIONS entry). Deliberately
+      // inside the `!stallAlerted` edge with the two writes above, so all three fire
+      // once per episode and the condition's lifetime IS the stall's.
+      //
+      // `oneShot: true` is load-bearing, not decoration (WI-6228): without it the
+      // condition-staleness sweep reads this emitter's deliberate silence as recovery
+      // and auto-resolves the condition on a timer — closing the owning work-item
+      // while the gate is still red, which is worse than never minting one.
+      try {
+        const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
+        const { gateRedStreakConditionKey } = await import('../../coord/gate-ownership');
+        const ev = gateRedStreakBroadcast({
+          installSlug: ctx.installSlug,
+          consecutiveReds,
+          heldHrs,
+          candidate,
+          failingTests,
+          ownership,
+          commitsBehindTip: staleness.commitsBehindTip,
+        });
+        await broadcastSevereEvent({
+          summary: ev.summary,
+          body: ev.body,
+          category: 'severe-event',
+          conditionKey: gateRedStreakConditionKey(ctx.installSlug),
+          oneShot: true,
+        });
+      } catch (e) {
+        console.warn(`[green-checkpoint] red-streak condition broadcast failed: ${e instanceof Error ? e.message : e}`);
       }
     }
     // Seed/carry the pin so the NEXT tick can detect movement (first observation
