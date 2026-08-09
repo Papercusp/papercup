@@ -19,9 +19,9 @@ export default defineTool({
   guidance: {
     when: 'At the start of work, to see the shared topic taxonomy before tagging/subscribing — and to prefer an existing topic over creating a near-duplicate (D-004).',
     notWhen: 'You want the messages already waiting for you — that is coord:inbox, not this.',
-    chaining: 'topics:list → topics:subscribe (follow a relevant area) or topics:create (only if nothing fits).',
+    chaining: 'topics:list → watch:create { pattern: topic, targetKind:"topic", wake:false } (follow a relevant area) or topics:create (only if nothing fits).',
     seeAlso: [
-      'topics:subscribe (follow a relevant area)',
+      'watch:create { targetKind:"topic", wake:false } (follow a relevant area)',
       'topics:feed { topic } (read a topic\'s activity)',
       'topics:create (only if nothing fits)',
     ],

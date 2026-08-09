@@ -48,7 +48,7 @@ import {
 } from '@/app/admin/tasks/use-resource-totals';
 // P-023/P-024 — the SHARED kill control, imported across trees for the same reason
 // use-resource-totals is: one definition of what is killable and what a refusal says.
-import KillTaskControl from '@/app/admin/tasks/KillTaskControl';
+import KillTaskControl, { KillOutcomeProvider, useKillOutcomeHoist } from '@/app/admin/tasks/KillTaskControl';
 
 /** `live` is `unknown` on TaskInventory — the scan's own shape, narrowed here. */
 type LiveScan = {
@@ -282,6 +282,10 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
     [data?.liveProcesses, needle],
   );
   const groups = useMemo(() => groupByClass(ledger), [ledger]);
+  // The killed row leaves `ledger` the moment the kill lands, taking its in-row chip with
+  // it — so the outcome is hoisted here, where it outlives the row. Same hook the full page
+  // uses, so the two surfaces cannot answer a kill differently.
+  const { outcomeContext: killOutcomeContext, notice: killNotice } = useKillOutcomeHoist(ledger);
   const { unaccounted, abandonedWindow, exempt } = useMemo(() => splitUnowned(scanned), [scanned]);
   const orphans = unaccountedGroups(live);
 
@@ -360,6 +364,12 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
         />
       </div>
 
+      {/* Above the scroller, not inside it: once the row is gone the reader is not
+          scrolled to where it used to be, and a destructive action's answer must not
+          require hunting for it. */}
+      {killNotice}
+
+      <KillOutcomeProvider value={killOutcomeContext}>
       <div className="pc-tasks-roster__scroll" data-testid="tasks-roster-scroll">
         {groups.map((g) => (
           <section key={g.cls} className="pc-tasks-roster__group">
@@ -509,6 +519,7 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
           </div>
         )}
       </div>
+      </KillOutcomeProvider>
 
       <div className="pc-tasks-roster__foot">
         <span>

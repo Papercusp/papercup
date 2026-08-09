@@ -49,6 +49,9 @@ const inventory = defineTool({
         cls: url.searchParams.get('class'),
         includeEnded: url.searchParams.get('includeEnded') === '1',
         live: url.searchParams.get('live') === '1',
+        // P-019 — `schedules=1` folds in the RECURRING kind. Opt-in here for the same
+        // reason as the pane: it reads DBOS + routines and probes sibling processes.
+        includeSchedules: url.searchParams.get('schedules') === '1',
       }),
     );
   },

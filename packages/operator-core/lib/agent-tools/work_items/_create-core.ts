@@ -170,7 +170,7 @@ async function stampGoalProvenance(
   if (!workspaceId || workspaceId === '*' || !ownerId) return null;
   const goalId = await getModeSubject(workspaceId, ownerId, 'goal');
   if (!goalId) return null;
-  const sql = getOrgPg();
+  const { sql } = getOrgPg();
   // Keyed on (harness_slug, feature_id) — the table's own identity, the same
   // pair `createWorkItem`'s ON CONFLICT uses. Never clobbers an existing stamp:
   // an item explicitly attributed elsewhere outranks the ambient session mode.

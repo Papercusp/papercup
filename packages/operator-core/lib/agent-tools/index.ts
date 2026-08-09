@@ -686,10 +686,14 @@ import './coordination/tools/fleet-delivery';
 // Spawn admission — the brain decides worth-it (unify-agent-spawn-chokepoint P-005/P-006)
 import './spawn/request';
 import './spawn/approve';
-// Coordination substrate — topics (subscribe→inject taxonomy, D-004)
+// Coordination substrate — topics (subscribe→inject taxonomy, D-004).
+// `topics:subscribe` RETIRED 2026-08-09 (coordination-spec-adoption-2026-08-03
+// D-102 → _retired/topics-subscribe/): it was the named sugar for
+// watch:create { targetKind:'topic', wake:false }, and took ZERO calls in 30 days
+// while being prescribed by name in seven role prompts. The base primitive stays,
+// so following a topic is unchanged — only the duplicate door is gone.
 import './coordination/tools/topics-list';
 import './coordination/tools/topics-create';
-import './coordination/tools/topics-subscribe';
 import './coordination/tools/topics-unsubscribe';
 import './coordination/tools/topics-merge';
 // Cross-object tagging + topic-index feed (integration-adoption Capstone P1).
@@ -1292,7 +1296,9 @@ import './events/graph';
 // liveness-adaptive (pty-inject / session-resume / inbox) + durable
 // (harness_shared.event_awaits + event_wake_deliveries, migration 163).
 // `watch` is the unified subscription primitive (unify-watch-primitive-2026-06-06);
-// events:await / topics:subscribe are thin sugar presets over it (D-007).
+// events:await is a thin sugar preset over it (D-007). The topic-flavoured preset
+// (topics:subscribe) was retired 2026-08-09 — reach the same cell directly via
+// watch:create { targetKind:'topic', wake:false }.
 import './events/watch';
 import './events/await';
 import './events/emit';

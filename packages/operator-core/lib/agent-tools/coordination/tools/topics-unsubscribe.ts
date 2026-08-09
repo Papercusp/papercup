@@ -20,9 +20,9 @@ export default defineTool({
     'Unsubscribe from one OR many topics. Idempotent — unsubscribing from a topic you do not follow is a no-op. Single: { topic }. Many: { topics:[…] } or items:[{ topic }]. Returns { ok, results:[{ ok, topic, error? }], counts } — correlate by topic, not position; one failure never fails the rest.',
   guidance: {
     when: 'A topic you followed is no longer relevant and its updates are noise. Drop several at once via topics:[…].',
-    notWhen: 'You want to mute briefly — set the subscription to mention mode via topics:subscribe instead of dropping it.',
+    notWhen: 'You want to mute briefly — re-register at mention mode via watch:create { pattern: topic, targetKind:"topic", wake:false, mode:"mention" } instead of dropping it.',
     seeAlso: [
-      'topics:subscribe (set mention-mode to mute briefly instead of dropping)',
+      'watch:create { targetKind:"topic", wake:false } (follow a topic / change its mode)',
       'topics:list (your current subscriptions)',
     ],
   },

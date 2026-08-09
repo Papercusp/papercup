@@ -37,7 +37,7 @@ export default defineTool({
     when:
       'A specific conversation is one you want to track or contribute to. Posting/answering auto-joins you; call this to follow without posting, or to change your delivery mode. Follow several at once via ids:[…] or items:[…].',
     notWhen:
-      'To follow an AREA (not one thread), use topics:subscribe. For a one-time read, just conversations:get.',
+      'To follow an AREA (not one thread), use watch:create { targetKind:"topic", wake:false }. For a one-time read, just conversations:get.',
     chaining:
       'conversations:list / conversations:get → conversations:join.',
     seeAlso: [

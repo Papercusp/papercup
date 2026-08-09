@@ -188,8 +188,13 @@ describe('promoteToolSequences — filing without a human in the loop', () => {
     const spy = captureSpy();
     const res = await promoteToolSequences(fakeSql(spike), opts, { capture: spy.capture });
 
-    expect(res.graduated).toEqual([]);
-    expect(spy.calls).toEqual([]);
+    // The spike is mined — it is a real, strong pattern — but it has not persisted,
+    // so nothing about it reaches the queue. (The filler dance runs in every window
+    // and legitimately DOES graduate; asserting on the whole set would test the
+    // fixture rather than the gate.)
+    const spikeLabel = 'spike:one → spike:two → spike:three';
+    expect(res.graduated.map((c) => c.label)).not.toContain(spikeLabel);
+    expect(spy.calls.some((c) => c.title.includes('spike:one'))).toBe(false);
     expect(res.heldForEvidence).toBeGreaterThan(0);
   });
 

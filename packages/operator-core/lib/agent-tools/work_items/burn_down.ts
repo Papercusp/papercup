@@ -706,6 +706,8 @@ export default defineTool({
       deltaSince: z.string().nullable(),
       delta: z.number(),
       deltaClosedUndated: z.number(),
+      truncatedByLimit: z.boolean(),
+      censusLimit: z.number(),
       deltaBy: z
         .object({
           fleet: z.number().nullable(),
@@ -801,7 +803,14 @@ export default defineTool({
             harness: args.harness,
             kind: args.kind as WorkItemKind | undefined,
             includeChildren: args.includeChildren,
-            limit: args.limit ?? 2000,
+            // WI-37381: this fetch feeds the AGGREGATE (terminal.*/counts.*/deltaBy.*),
+            // never just the returned row lists — so it must NEVER be bounded by the
+            // caller's `limit`. A small `limit:5` used to fetch only 5 rows total and
+            // report terminal.total 0 for a queue with 1693 real terminal rows. Always
+            // fetch up to the hard cap here; `args.limit` is applied below (via
+            // buildBurnDownResult's `rowLimit`) to the RETURNED inFlight/parked/unclaimed
+            // arrays only.
+            limit: WORK_ITEMS_MAX_LIMIT,
           }),
       listPresence({ workspaceId: (ctx as { workspaceId?: string | null }).workspaceId ?? undefined }).catch(() => []),
     ]);
@@ -842,6 +851,12 @@ export default defineTool({
       harness: args.harness,
       since: args.since ?? null,
       fleet: fleetScope,
+      // WI-37381: the fixed `ids` cohort path fetches exactly those rows (never capped),
+      // so it has no census limit to report. The real-census path always fetches at the
+      // hard cap (see above) regardless of `args.limit`; `rowLimit` is where the caller's
+      // `limit` actually takes effect — bounding only the returned row lists.
+      censusLimit: requestedIds ? undefined : WORK_ITEMS_MAX_LIMIT,
+      rowLimit: args.limit,
     });
     if (requestedIds) result.cohortAudit = buildCohortAudit(requestedIds, items);
     return {

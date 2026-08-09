@@ -3924,6 +3924,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args: unknown) => {
       const a = (args ?? {}) as {
         state?: string; cls?: string; includeEnded?: boolean; live?: boolean; countsOnly?: boolean;
+        includeSchedules?: boolean;
       };
       const [{ getTaskInventory, disabledInventory }, { isTaskManagerEnabled }] = await Promise.all([
         import('../task-manager/inventory'),
@@ -3943,6 +3944,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           includeEnded: a.includeEnded === true,
           live: a.live === true,
           countsOnly: a.countsOnly === true,
+          // P-019 — the recurring kind. Opt-in: this arm reads DBOS + routines and
+          // probes sibling processes, so it must not ride the pane's 5s refresh.
+          includeSchedules: a.includeSchedules === true,
         }),
       ];
     },

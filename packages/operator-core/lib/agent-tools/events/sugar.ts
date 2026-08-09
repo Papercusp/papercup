@@ -534,7 +534,7 @@ defineTool({
   guidance: {
     when: "You are blocked on a peer/dependency work item (its completion, unblock, or any transition) — arm this and end your turn instead of re-reading work_items:get.",
     notWhen:
-      "Just inspecting an item once — work_items:get. Waiting on a PLAN item (P-NNN) — plan-item:await. Ambient interest in a topic — topics:subscribe.",
+      "Just inspecting an item once — work_items:get. Waiting on a PLAN item (P-NNN) — plan-item:await. Ambient interest in a topic — watch:create { targetKind:\"topic\", wake:false }.",
     chaining:
       'work-item:await { id: "WI-123", state: "done" } → end turn → on wake the item has settled; continue.',
     seeAlso: [

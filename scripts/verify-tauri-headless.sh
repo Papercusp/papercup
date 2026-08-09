@@ -870,11 +870,24 @@ SPA_ENV_LINE=""
 # drift to mid-run. The initial build still happens; only rebuild-on-change goes
 # away. Editing Rust and re-verifying works exactly as before: the next
 # invocation builds your change.
+#
+# `XDG_SESSION_TYPE=x11` (EI-19950536294124572): `-u WAYLAND_DISPLAY` already scrubs the
+# leaked host-desktop compositor var, but XDG_SESSION_TYPE — a login-session property, not
+# a "display env" var most launchers think to scrub — still leaks through from the host's
+# Wayland session unless overridden. Measured: `tauri-agent-tools capture --pid <bridge>`
+# against a live rig on this box had WAYLAND_DISPLAY correctly absent + DISPLAY=:N present
+# in the target's own /proc/<pid>/environ, yet still misdetected as Wayland (demanding
+# swaymsg/grim, never installed) because its display-server probe treated
+# XDG_SESSION_TYPE=='wayland' as an equal-priority signal — see the companion local patch
+# in tauri-agent-tools' detectDisplayServer(). Setting it explicitly here is redundant
+# defense-in-depth once that patch is applied (it's a THIRD-PARTY global npm install,
+# reverted on any package reinstall/upgrade — see the note where it's applied), and keeps
+# this rig self-consistent even when the patch is absent/reverted.
 write_and_launch_tauri() {
   cat > "$WORK/launch.sh" <<LAUNCH
 #!/usr/bin/env bash
 cd "$DESKTOP_DIR"
-exec env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
+exec env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   OPERATOR_DEV_PORT="$DEV_PORT" OPERATOR_DEV_PTY_PORT="$PTY_PORT" \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL=0 \\
   PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=$MEMORY_LIMIT_MB \\

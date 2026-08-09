@@ -1,10 +1,14 @@
 'use client';
 
 import { useMemo, type CSSProperties, type ReactElement } from 'react';
-import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
+import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { fmtCpuPct, resourceTitle, useResourceTotals } from './use-resource-totals';
-import type { TaskResourceTotals } from '@papercusp/operator-core/lib/task-manager/inventory';
+import type {
+  ScheduleTaskRow,
+  ScheduleTaskSummary,
+  TaskResourceTotals,
+} from '@papercusp/operator-core/lib/task-manager/inventory';
 
 // `@/app/...` (not a relative path): this component is rendered from BOTH trees —
 // apps/operator's own /admin/tasks page and operator-vite's route + left-rail tab —
@@ -101,7 +105,20 @@ type Payload = {
   live: (Live & { unaccounted?: number | { cgroupPath: string; pids: number[]; sample: string }[] }) | null;
   rows: Row[];
   liveProcesses?: LiveProcess[];
+  /**
+   * P-019 — the RECURRING kind. Optional for the same reason as `resources` above: an
+   * older operator on `:3070` serves a payload without the key, and the section must
+   * then render NOTHING rather than an empty table that asserts "nothing is scheduled".
+   */
+  schedules?: ScheduleTaskRow[];
+  scheduleSummary?: ScheduleTaskSummary;
+  scheduleError?: string | null;
 };
+
+/** Which KIND of task the pane is inventorying. `all` is the default — the pane's
+ *  whole claim is that it is a task manager, not a process manager. */
+export const TASK_KINDS = ['all', 'running', 'recurring'] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
 
 /** `node …/foo/bar.ts --flag` → `bar.ts` — the part a human scans for. Pure. */
 export function shortCmd(cmdline: string | null): string {

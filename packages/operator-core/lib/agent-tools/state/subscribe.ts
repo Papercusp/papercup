@@ -9,8 +9,10 @@
  * under the registrant's role — which is EXACTLY `CellSpec.changeSignal`'s
  * `{ kind:'poll', tool, path }`, the same triple under a different name.
  *
- * So this is a PRESET over `watch:create`, in the same sense `events:await` and
- * `topics:subscribe` are (D-007): it resolves a cell NAME to the predicate that cell
+ * So this is a PRESET over `watch:create`, in the same sense `events:await` is
+ * (D-007 — the third preset, `topics:subscribe`, was retired 2026-08-09 for taking
+ * zero calls; this one is live at 25 calls/11 agents and is WHY the base primitive
+ * stayed): it resolves a cell NAME to the predicate that cell
  * already declares, and hands it to the one registration path. It deliberately does
  * NOT re-implement registration — `watch:create` owns the dedupe (an identical
  * predicate JOINS an existing poller instead of starting a second), the inline first

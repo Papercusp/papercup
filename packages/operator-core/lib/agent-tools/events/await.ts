@@ -66,7 +66,7 @@ export default defineTool({
   guidance: {
     when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from chat (drift strands you). work-item:unblocked:<id> latches at registration: already-unblocked returns already_unblocked instead of a dead wait.',
     notWhen:
-      'Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
+      'Ambient interest (use watch:create { targetKind:"topic", wake:false }), sub-minute waits inside one turn, or recurring schedules. Prefer sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
     chaining: 'events:catalog → events:await { event } (or a sugar verb) → END YOUR TURN → the wake carries the payload → re-register for the NEXT occurrence (one-shot: a fired await is gone). Re-awaiting the SAME key auto-retires your own prior pending registration on it (see seeAlso). events:cancel retracts early; events:status inspects.',
     seeAlso: [
       'events:catalog (what CAN I wait on? — the awaitable-key registry; check before polling)',

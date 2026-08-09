@@ -1,14 +1,20 @@
 /**
  * watch — the unified subscription primitive (unify-watch-primitive-2026-06-06 P-007).
  *
- * `events:await` and `topics:subscribe` are the same act — register an interest, receive
+ * Awaiting an event and following a topic are the same act — register an interest, receive
  * a delivery — that differ on exactly two axes: CARDINALITY (`once`: one-shot vs standing)
  * and DELIVERY (`wake`: re-invoke me as a fresh turn vs inject into my inbox for my next
  * natural turn). `watch(pattern, {wake, once, min_sleep_sec, urgency, deadline})` is the one
- * registration with those as knobs; the two named tools survive as thin sugar presets (D-007):
+ * registration with those as knobs; `events:await` survives as a thin sugar preset (D-007):
  *
  *   events:await {key}      = watch(key,   {wake:true,  once:true})
- *   topics:subscribe {topic}= watch(topic, {wake:false, once:false})
+ *
+ * The topic-flavoured preset `topics:subscribe` = watch(topic, {wake:false, once:false}) was
+ * RETIRED 2026-08-09 (coordination-spec-adoption-2026-08-03 D-102): zero calls in 30 days
+ * despite seven role prompts prescribing it by name. Ambient topic interest is now this tool
+ * directly — watch:create { pattern: <topic>, targetKind:'topic', wake:false }. Note the
+ * retirement was of the DOOR only; this base kept every cell, which is also why `state:subscribe`
+ * (the live preset, 25 calls/11 agents) still delegates to the handler below.
  *
  * Routing (D-002 — inject is the cheap default; wake is the deliberate opt-in):
  *   - `wake:false` → the inject path (a standing topic subscription → coord inbox; no token cost).
@@ -52,7 +58,7 @@ function standingWakeFloorSec(): number {
 export default defineTool({
   name: 'watch:create',
   description:
-    'The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects into your inbox (no token cost); wake:true (opt-in, tokens) re-invokes you. CARDINALITY — once:true one-shot; once:false standing. TARGET (wake:false only): targetKind "topic" (default) or "event" (exact event key — see arg). Sugar: events:await = watch(key,{wake:true,once:true}); topics:subscribe = watch(topic,{wake:false}). PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec polls a read-only tool under YOUR role, wakes on false→true.',
+    'The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects into your inbox (no token cost); wake:true (opt-in, tokens) re-invokes you. CARDINALITY — once:true one-shot; once:false standing. TARGET (wake:false only): targetKind "topic" (default) or "event" (exact event key — see arg). Sugar: events:await = watch(key,{wake:true,once:true}). Ambient topic interest is this tool with targetKind:"topic", wake:false. PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec polls a read-only tool under YOUR role, wakes on false→true.',
   guidance: {
     when: 'Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness ("wake me when THIS grant/lock/deadline is ready"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following.',
     notWhen:

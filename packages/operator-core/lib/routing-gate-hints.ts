@@ -79,7 +79,7 @@ export const ROUTING_GATE_ROWS: readonly RoutingGateRow[] = [
     trigger: 'watch for Y / alert me when Z',
     mechanism: 'watch:create',
     gloss:
-      'the unified subscription primitive; events:await/topics:subscribe are its presets. Patterns are EXACT-match — fall back to a scheduled poll+diff if events:catalog has no key.',
+      'the unified subscription primitive; events:await is its wake preset, and targetKind:"topic" + wake:false is the ambient-inject one. Patterns are EXACT-match — fall back to a scheduled poll+diff if events:catalog has no key.',
     keywords: [
       'alert me when', 'alert when', 'notify me when', 'notify when',
       'let me know when', 'watch for', 'keep an eye on', 'ping me when',

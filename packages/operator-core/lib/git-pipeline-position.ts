@@ -3681,6 +3681,10 @@ export async function gitPipelinePosition(
     Date.now(),
     snap.gate.inFlightRetriage,
     checkpointRunLockLive,
+    // EI-19931692050586322: the sibling marker, loaded and freshness-checked by the same
+    // git-pipeline-stats pass. Threading it is what lets an ordinary non-refiring run report an
+    // authoritative candidate instead of the `'run-probe'` inference.
+    snap.gate.inFlightCandidate,
   );
   const gate = {
     stalled: snap.gate.stalled,

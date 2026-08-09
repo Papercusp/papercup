@@ -23,7 +23,7 @@ export default defineTool({
     notWhen: 'A close-enough topic already exists in topics:list — subscribe/tag to that instead. Near-duplicates get merged with topics:merge.',
     seeAlso: [
       'topics:list (a close-enough topic may already exist)',
-      'topics:subscribe (follow the new topic)',
+      'watch:create { targetKind:"topic", wake:false } (follow the new topic)',
       'topics:merge (fold a near-duplicate into an existing topic)',
     ],
   },
