@@ -156,6 +156,7 @@ beforeEach(() => {
   sqlRows = [];
   registryProjects = [];
   corpusIoResult = null;
+  coverageReport = null;
   _resetForTests();
   _resetCorpusLegHealthForTests();
 });
@@ -1235,10 +1236,13 @@ describe('buildMemoryContextBlock', () => {
  * different retrieval, and acting on it as though the semantic half had run is
  * the failure this item exists to make visible.
  *
- * What is deliberately NOT asserted here: any change to the RENDERED block. A
- * degraded leg still renders byte-identically today — marking or suppressing
- * the section is P-003's job, gated on the very signal P-001 delivers. Pinning
- * the rendering as unchanged is therefore a real guard, not an omission.
+ * What is deliberately NOT asserted here: any change to the RENDERED block.
+ * That was P-003's job and it has since landed — but it renders off the COVERAGE
+ * GATE, not off `embedderAvailable` alone, and every test in this describe leaves
+ * the gate unstubbed (⇒ fail-open, `gate: null`). So these cases still pin the
+ * block as byte-identical, which remains a real guard: it is what proves P-003's
+ * marking is driven by the gate rather than by leg health on its own. The
+ * rendering assertions live in the P-003 describe below.
  */
 describe('corpus leg carries its own retrieval health (P-001)', () => {
   const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({

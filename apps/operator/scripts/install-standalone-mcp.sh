@@ -1418,26 +1418,39 @@ fi
 #                     RELATIVE TO ITSELF first (../inject/index.mjs), which is
 #                     why both land under the same ~/.papercusp/hooks root.
 #
-# Installing the hook WITHOUT the dispatcher is the one arrangement that fails
-# quietly: the hook loads, finds no dispatcher, and fail-silently injects
+# Installing a client hook WITHOUT the dispatcher is the one arrangement that
+# fails quietly: the hook loads, finds no dispatcher, and fail-silently injects
 # nothing on every turn — indistinguishable from "no memories were relevant".
-# Keep these in one block so neither can be added without the other.
+#
+# ⚠ THEIR GATES ARE SEPARATE, AND THAT IS THE POINT (codex-context-injection-
+# parity-2026-08-09 P-002). These two used to share ONE `if`, which was correct
+# while omp was the dispatcher's only consumer. It is no longer: the claude cc
+# hooks (userpromptsubmit-memory.sh, posttoolbatch-midturn-context.sh) are now
+# thin shims onto this same dispatcher, and codex reaches it from its per-session
+# hooks.json. Under the old shared gate a missing omp artifact would have skipped
+# the DISPATCHER too — silently disabling injection for CLAUDE, which is ~100% of
+# real traffic, because of an unrelated omp file. Gate each on its own source.
 INJECT_SRC_DIR="${SCRIPT_DIR}/hooks/inject"
 INJECT_DEST_DIR="${HOME}/.papercusp/hooks/inject"
 OMP_INJECT_HOOK_SRC="${SCRIPT_DIR}/hooks/omp/inject-hook.ts"
 OMP_INJECT_HOOK_DEST="${HOME}/.papercusp/hooks/omp/inject-hook.ts"
-if [ -f "${INJECT_SRC_DIR}/index.mjs" ] && [ -f "$OMP_INJECT_HOOK_SRC" ]; then
-  mkdir -p "${INJECT_DEST_DIR}/adapters" "${HOME}/.papercusp/hooks/omp"
+if [ -f "${INJECT_SRC_DIR}/index.mjs" ]; then
+  mkdir -p "${INJECT_DEST_DIR}/adapters"
   cp "${INJECT_SRC_DIR}"/*.mjs "${INJECT_DEST_DIR}/"
   cp "${INJECT_SRC_DIR}"/adapters/*.mjs "${INJECT_DEST_DIR}/adapters/"
   chmod 644 "${INJECT_DEST_DIR}"/*.mjs "${INJECT_DEST_DIR}"/adapters/*.mjs
   chmod 755 "${INJECT_DEST_DIR}/index.mjs"
+  echo "✓ Installed context-injection dispatcher to $INJECT_DEST_DIR (claude + codex + omp)"
+else
+  echo "! Context-injection dispatcher missing under ${INJECT_SRC_DIR}; skipping (turn-start/mid-turn injection inactive for ALL clients)"
+fi
+if [ -f "$OMP_INJECT_HOOK_SRC" ]; then
+  mkdir -p "${HOME}/.papercusp/hooks/omp"
   cp "$OMP_INJECT_HOOK_SRC" "$OMP_INJECT_HOOK_DEST"
   chmod 644 "$OMP_INJECT_HOOK_DEST"
-  echo "✓ Installed context-injection dispatcher to $INJECT_DEST_DIR"
   echo "✓ Installed omp injection hook to $OMP_INJECT_HOOK_DEST"
 else
-  echo "! Context-injection dispatcher or omp hook missing under ${SCRIPT_DIR}/hooks; skipping (omp turn-start/mid-turn injection inactive)"
+  echo "! omp injection hook missing under ${SCRIPT_DIR}/hooks/omp; skipping (omp injection inactive; claude/codex unaffected)"
 fi
 
 # 4c-bis. Install the shared Claude+Codex lock-enforcement hooks to a

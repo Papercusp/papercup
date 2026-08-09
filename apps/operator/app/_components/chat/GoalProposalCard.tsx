@@ -40,6 +40,7 @@
 
 import { useMemo, useState, type ReactNode } from 'react';
 import { AlertTriangle, Target } from 'lucide-react';
+import { Select } from '@/app/harness/Select';
 
 /** Mirrors `GOAL_RELATIONSHIP_KINDS` in agent-mcp's goals/propose tool. */
 export type GoalRelationshipKind =
@@ -343,19 +344,19 @@ export function GoalProposalCard({
       {/* 3. The question a blank form cannot ask. */}
       <label className="goal-proposal-field">
         <span className="goal-proposal-label">Relationship</span>
-        <select
-          className="goal-proposal-input goal-proposal-select"
-          data-testid="goal-proposal-kind"
+        {/* The shared primitive, not a native <select>: design-primitives
+            allowlists ZERO native ones, and WebKitGTK draws the native popup
+            with its own (unthemeable) chrome inside the Tauri shell. */}
+        <Select
+          className="goal-proposal-select"
+          triggerClassName="goal-proposal-input"
+          testId="goal-proposal-kind"
+          ariaLabel="Relationship"
           value={kind}
-          onChange={(e) => setKind(e.target.value as GoalRelationshipKind)}
+          onChange={(v) => setKind(v as GoalRelationshipKind)}
           disabled={busy}
-        >
-          {RELATIONSHIP_ORDER.map((k) => (
-            <option value={k} key={k}>
-              {RELATIONSHIP_LABELS[k]}
-            </option>
-          ))}
-        </select>
+          options={RELATIONSHIP_ORDER.map((k) => ({ value: k, label: RELATIONSHIP_LABELS[k] }))}
+        />
       </label>
 
       {needsRef && (
@@ -410,7 +411,10 @@ export function GoalProposalCard({
             data-testid="goal-proposal-create"
             onClick={() => void submit()}
             disabled={busy || blocked !== null}
-            title={blocked ?? undefined}
+            // No `title={blocked}`: design-primitives forbids title-only
+            // tooltips (they never appear on touch/keyboard), and it was pure
+            // duplication — the same `blocked` string already renders visibly
+            // in the sibling `.goal-proposal-blocked` span below.
           >
             {busy ? 'Creating…' : 'Create goal'}
           </button>

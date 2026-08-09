@@ -101,6 +101,7 @@ import {
   type CorpusHit,
 } from '../corpus-recall';
 import { corpusRecallTimeoutMs } from '../corpus-recall-io';
+import { sensitivityVerdict, tierShape } from './corpus-rerank-reach';
 
 const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
 
@@ -270,13 +271,10 @@ async function measureQuery(
     JSON.stringify(control) === JSON.stringify(baseline) ? 0 : 1;
 
   const survivors = survivorsOf(hits, queryText);
-  const tiers: Record<number, number> = {};
-  for (const h of survivors) {
-    const n = h.rankers?.length ?? 1;
-    tiers[n] = (tiers[n] ?? 0) + 1;
-  }
-  const tierKeys = Object.keys(tiers).map(Number).sort((a, b) => b - a);
-  const topTierSize = tierKeys.length ? tiers[tierKeys[0]] : 0;
+  // Tier shape (and the ≥2-tier confinement rule) comes from the unit-tested
+  // module, never from a local copy — see its header for the two conclusion
+  // bugs that copy shipped.
+  const shape = tierShape(survivors.map((h) => h.rankers?.length ?? 1), CORPUS_MAX_ITEMS);
 
   let top1Changed = 0;
   let setChanged = 0;
@@ -293,15 +291,10 @@ async function measureQuery(
     candidates: hits.length,
     survivors: survivors.length,
     admitted: baseline.length,
-    tiers,
-    topTierSize,
-    singleTier: tierKeys.length <= 1,
-    // ⚠ CONFINEMENT REQUIRES ≥2 TIERS. With a single tier "top tier ≥ page size"
-    // is just "≥6 survivors" and says nothing about a reranker's reach — there is
-    // no lower tier to be shut out of. Reporting it unconditionally made the
-    // BM25-only arm claim 47.4% confinement when the true answer is 0% by
-    // construction.
-    confined: tierKeys.length > 1 && topTierSize >= CORPUS_MAX_ITEMS,
+    tiers: shape.tiers,
+    topTierSize: shape.topTierSize,
+    singleTier: shape.singleTier,
+    confined: shape.confined,
     top1Changed,
     setChanged,
     orderChanged,
@@ -372,23 +365,24 @@ function render(reports: QueryReport[], bound: number, hybrid: boolean): string 
   // is the control arm confirming that array order reaches the page WHEN
   // NOTHING OUTRANKS IT. An earlier revision of this file printed exactly that
   // wrong verdict, which is why the guard is here rather than in a comment.
-  const multiTier = reports.filter((r) => !r.singleTier).length;
-  if (multiTier === 0) {
-    out.push(
-      `- ⇒ **NOT A TEST OF THE OVERRIDE.** Every query in this arm had a SINGLE agreement tier, so the agreement key was constant and could not outrank anything; the tiebreak (array order) decided by construction. The high sensitivity above is this arm working as a CONTROL — it shows the pool order does reach the page when nothing outranks it. It says nothing about P-008. **Re-run with \`--hybrid\`** — the override can only appear when both rankers contribute.`,
-    );
-  } else {
-    const mt = reports.filter((r) => !r.singleTier);
-    const mtTop1 = mean(mt.map((r) => r.top1Changed / PERMS));
+  const mt = reports.filter((r) => !r.singleTier);
+  const multiTier = mt.length;
+  // The rate MUST be restricted to multi-tier queries — the pooled rate is
+  // dominated by single-tier ones where a reorder trivially reaches the page.
+  const mtTop1 = mean(mt.map((r) => r.top1Changed / PERMS));
+  const verdict = sensitivityVerdict(multiTier, mtTop1);
+  if (verdict !== 'not-a-test') {
     out.push(
       `- restricted to the **${multiTier}/${n}** (${pct(multiTier, n)}) MULTI-TIER queries — the only ones where the override can occur — an arbitrary reorder changes the top-1 **${(100 * mtTop1).toFixed(1)}%** of the time.`,
     );
-    out.push(
-      mtTop1 < 0.25
+  }
+  out.push(
+    verdict === 'not-a-test'
+      ? `- ⇒ **NOT A TEST OF THE OVERRIDE.** Every query in this arm had a SINGLE agreement tier, so the agreement key was constant and could not outrank anything; the tiebreak (array order) decided by construction. The high sensitivity above is this arm working as a CONTROL — it shows the pool order does reach the page when nothing outranks it. It says nothing about P-008. **Re-run with \`--hybrid\`** — the override can only appear when both rankers contribute.`
+      : verdict === 'low'
         ? `- ⇒ **LOW on the queries that matter.** A reranker's ordering is largely absorbed before it reaches the page: on multi-tier queries, reordering the pool arbitrarily leaves the top-1 unchanged ${((1 - mtTop1) * 100).toFixed(1)}% of the time. P-008 is NOT a wiring job — the agreement key has to be settled first, and that is P-010's decision.`
         : `- ⇒ **HIGH on the queries that matter — this FALSIFIES the reach-ceiling concern.** Even where an agreement tiebreak exists, an upstream reorder still reaches the page, so wiring the reranker in front of \`selectCorpusLines\` would take effect and P-008 can proceed closer to as written. Latency (below) remains the open question.`,
-    );
-  }
+  );
   out.push('');
 
   const legs = reports.map((r) => r.legMs);

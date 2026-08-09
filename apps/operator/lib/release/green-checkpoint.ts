@@ -4602,6 +4602,17 @@ interface PostSuiteLegs {
    *  only blocking path was .github/workflows/test.yml, which fires on push/PR to
    *  `main` — i.e. AFTER this gate has already promoted the offender. */
   lintTimerClassification: LegOutcome;
+  /** EI-19962933556828227: `lint:no-raw-setinterval`'s only blocking path was the same
+   *  .github/workflows/test.yml push/PR-to-`main` trigger as lintTimerClassification
+   *  above (both `push`/`pull_request` triggers are inert here — every git-sync commit
+   *  carries `[skip ci]`) — so an offender committed to `staging` was invisible for its
+   *  entire life there and only reds AFTER promotion. Sibling guard, same gap, same fix:
+   *  gate it HERE, where a red actually stops the promotion. Wired only once its own
+   *  tree was proven green (the two false positives it carried — a `/dist-sidecar/`
+   *  build artifact and a reciprocal allowlist gap with check-timer-classification.mjs
+   *  — were fixed first; wiring a rotten guard reds the fleet for drift it accrued
+   *  while unwatched). */
+  lintNoRawSetinterval: LegOutcome;
   lintPlane: LegOutcome;
   build: LegOutcome;
   /** Concatenated failure detail, appended verbatim to the suite output. */
@@ -4629,6 +4640,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintGuardReachability: skipped,
     lintMockCastEscape: skipped,
     lintTimerClassification: skipped,
+    lintNoRawSetinterval: skipped,
     lintPlane: skipped,
     build: skipped,
     output: '',
@@ -5189,6 +5201,47 @@ export async function runPostSuiteLegs(
     }
   }
 
+  // EI-19962933556828227: `lint:no-raw-setinterval` (P-008's ratchet — every operator-host
+  // timer goes through managedSetInterval) had the identical enforcement-timeliness gap as
+  // lintTimerClassification just above: wired only into .github/workflows/test.yml's inert
+  // push/PR-to-`main` triggers, so an offender on `staging` was invisible for its whole life
+  // there and only reds AFTER promotion. Gate it HERE, where a red actually stops the
+  // promotion. Deterministic, whole-tree, fast. Wired only once its own tree was proven
+  // green (verified via `npm run lint:no-raw-setinterval` exiting 0 on staging after fixing
+  // the two false positives it carried).
+  const lintNoRawSetintervalCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:no-raw-setinterval');
+  if (haltedBy) {
+    legs.lintNoRawSetinterval = { status: 'skipped', skipReason: haltedBy };
+  } else if (lintNoRawSetintervalCheck === 'unreadable') {
+    legs.lintNoRawSetinterval = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:no-raw-setinterval)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:no-raw-setinterval ===\n`,
+    );
+  } else if (lintNoRawSetintervalCheck === 'absent') {
+    legs.lintNoRawSetinterval = {
+      status: 'skipped',
+      skipReason: 'candidate provides no lint:no-raw-setinterval script',
+    };
+  } else {
+    const noRawSetinterval = await exec('npm', ['run', 'lint:no-raw-setinterval'], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+    });
+    legs.lintNoRawSetinterval = { status: noRawSetinterval.code === 0 ? 'passed' : 'failed' };
+    if (noRawSetinterval.code !== 0) {
+      haltedBy = 'lint:no-raw-setinterval failed';
+      failingSignatures.push('lint:no-raw-setinterval');
+      outputs.push(
+        '\n\n=== NO-RAW-SETINTERVAL LINT FAILED (npm run lint:no-raw-setinterval) — a new recurring timer bypassed managedSetInterval (P-008) ===\n' +
+          noRawSetinterval.stdout +
+          noRawSetinterval.stderr,
+      );
+    }
+  }
+
   // agent-state-plane-verification P-020: the agent-state plane's five STANDING probes. The
   // predecessor plan shipped 8 defects past a fully green unit gate, every one the same shape
   // — the derivation was correct and the DISCLOSURE was dropped between derivation and reader
@@ -5361,6 +5414,7 @@ export async function runPostSuiteLegs(
     // dynamically and fails if a new one is ever omitted again.
     legs.lintMockCastEscape,
     legs.lintTimerClassification,
+    legs.lintNoRawSetinterval,
     legs.lintPlane,
     legs.build,
   ].some((l) => l.status === 'failed');

@@ -20,6 +20,46 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
+// The relationship control is the shared `Select` primitive (a Radix listbox —
+// design-primitives allowlists ZERO native <select>s). Radix's popup does not
+// open under jsdom, so stand in a native <select> carrying the SAME testId and
+// the same value/onChange contract. This is the house pattern for the primitive
+// (PlanActions, PlanFilters, LiveMetricsTab, MemoryTab all do it) and it keeps
+// these cases pointed at what they exist to police — that the owner's edits
+// reach the `goals:create` payload — rather than at Radix's internals, which
+// harness/Select.test.tsx covers directly.
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({
+    value,
+    onChange,
+    options,
+    testId,
+    ariaLabel,
+    disabled,
+  }: {
+    value: string;
+    onChange: (v: string) => void;
+    options: { value: string; label: React.ReactNode }[];
+    testId?: string;
+    ariaLabel?: string;
+    disabled?: boolean;
+  }) => (
+    <select
+      data-testid={testId}
+      aria-label={ariaLabel}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {String(o.label)}
+        </option>
+      ))}
+    </select>
+  ),
+}));
+
 afterEach(() => cleanup());
 
 import {

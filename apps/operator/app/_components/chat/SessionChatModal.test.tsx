@@ -983,6 +983,50 @@ describe('SessionChatModal', () => {
       expect(shelf.querySelector('.pc-chat-decisions__count')?.textContent).toBe('2');
     });
 
+    /* [owner 2026-08-09] "What do those buttons actually do its unclear."
+       The legend is the only thing on this surface that distinguishes an
+       ANSWER (terminal — replies to the agent, wakes it, closes the record)
+       from Discuss (opens a thread, touches no server state). Both claims are
+       checked against the dispatch in attention-card.test.ts; this pins that
+       the sentence is actually RENDERED, because a legend that silently stops
+       shipping looks identical to the confusion it was added to fix. */
+    it('[owner 2026-08-09] the shelf states what a pick does, and that Discuss answers nothing', async () => {
+      seedAttention([mkEscalation('esc-1')]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      const legend = screen
+        .getByTestId('session-chat-pending-escalations')
+        .querySelector('.pc-chat-decisions__legend');
+      expect(legend).toBeTruthy();
+      const text = legend?.textContent ?? '';
+      // The terminal side: all three effects named, none of them implied.
+      expect(text).toMatch(/replies to the agent/i);
+      expect(text).toMatch(/wakes it/i);
+      expect(text).toMatch(/closes the decision/i);
+      // The non-terminal side — the half that caused EI-13037 when it was invisible.
+      expect(text).toMatch(/answers nothing/i);
+    });
+
+    /* Each decision is wrapped so the SHELF owns the only scroll (the card is
+       intrinsic-height, its body no longer scrolls — chat-controls.css). The
+       wrapper is what those rules hang off, so losing it silently restores the
+       24px-tall scroll port inside a scroll that the owner reported. */
+    it('[owner 2026-08-09] wraps every decision in the single-scroll card wrapper', async () => {
+      seedAttention([mkEscalation('esc-1'), mkEscalation('esc-2')]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      const shelf = screen.getByTestId('session-chat-pending-escalations');
+      const cards = shelf.querySelectorAll('.pc-chat-decisions__card');
+      expect(cards.length).toBe(2);
+      // Wrapper must CONTAIN the card, not sit beside it — a sibling would
+      // leave the CSS matching nothing while this count still passed.
+      for (const card of cards) expect(card.querySelector('[data-testid="other-detail"]')).toBeTruthy();
+    });
+
     it('answering the inline card (onResolved) refreshes the shared attention feed', async () => {
       seedAttention([mkEscalation('esc-1')]);
       mockFetchOnce(200, { sessions: [] });

@@ -815,12 +815,17 @@ async function installInjectionHooks(home: string, injectSrcDir: string): Promis
   try {
     // Refuse the partial install before writing anything.
     await fs.access(path.join(injectSrcDir, 'index.mjs'));
-    await fs.access(ompHookSrc);
 
+    // ⚠ The omp hook is NO LONGER a precondition for installing the dispatcher
+    // (codex-context-injection-parity-2026-08-09 P-002). It used to be checked
+    // here, which was right while omp was the dispatcher's only consumer. It is
+    // no longer: the claude cc hooks are now thin shims onto this dispatcher and
+    // codex reaches it from its per-session hooks.json. A missing omp artifact
+    // would therefore have skipped the DISPATCHER as well, silently disabling
+    // injection for CLAUDE — ~100% of real traffic — over an unrelated omp file.
+    // Each artifact now gates only itself; the omp copy is best-effort below.
     const injectDest = path.join(home, '.papercusp', 'hooks', 'inject');
-    const ompDest = path.join(home, '.papercusp', 'hooks', 'omp');
     await fs.mkdir(path.join(injectDest, 'adapters'), { recursive: true, mode: 0o755 });
-    await fs.mkdir(ompDest, { recursive: true, mode: 0o755 });
 
     for (const rel of ['', 'adapters']) {
       const srcDir = rel ? path.join(injectSrcDir, rel) : injectSrcDir;
@@ -839,13 +844,28 @@ async function installInjectionHooks(home: string, injectSrcDir: string): Promis
       }
     }
 
+  } catch {
+    return [];
+  }
+
+  // omp's client-native artifact — installed SEPARATELY and best-effort, in its
+  // own try, for two reasons that both bite silently:
+  //   1. It must not gate the dispatcher (see the note above).
+  //   2. The outer catch returns [], so a throw here would ALSO discard the
+  //      dispatcher's install record — reporting "nothing installed" while its
+  //      files are in fact on disk. `injectionHooksInstalled: []` is documented
+  //      as "omp injection inactive on this box", so that mis-report is exactly
+  //      the kind of false negative the P-005 coverage detector must not be fed.
+  try {
+    const ompDest = path.join(home, '.papercusp', 'hooks', 'omp');
+    await fs.mkdir(ompDest, { recursive: true, mode: 0o755 });
     const ompDst = path.join(ompDest, 'inject-hook.ts');
     const ompTmp = `${ompDst}.psu-install.${process.pid}.tmp`;
     await fs.writeFile(ompTmp, await fs.readFile(ompHookSrc), { mode: 0o644 });
     await fs.rename(ompTmp, ompDst);
     installed.push(path.join('omp', 'inject-hook.ts'));
   } catch {
-    return [];
+    // omp hook absent/unreadable — claude + codex injection are unaffected.
   }
   return installed;
 }
@@ -2047,9 +2067,43 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
       allowScratch: process.env.PAPERCUSP_ALLOW_SCRATCH_INSTALL_SOURCE === '1',
     });
     const line = describeRefusals(what, filtered);
-    if (line) console.warn(line);
+    if (line) {
+      // SEVERITY SPLIT (fixes 27 failing tests in __tests__/papercusp-files.test.ts,
+      // which would have red-pinned the fleet gate). describeRefusals emits TWO
+      // different messages and only one of them is actionable:
+      //   destIsScratch  -> "ALLOWING scratch source(s)" — the guard INSPECTED the
+      //                     candidates and permitted them, because the destination is
+      //                     itself a scratch tree (every test installs into /tmp, and
+      //                     so does any sandbox install). Nothing was withheld, so
+      //                     there is nothing for a reader to do about it.
+      //   otherwise      -> "REFUSED scratch source(s)" — sources were actually
+      //                     dropped and the install may be incomplete. That is a
+      //                     warning.
+      // Routing both through console.warn made the EXPECTED path fail every test
+      // that calls installPapercuspFiles, via vitest-fail-on-console — a warning
+      // about a decision the guard itself just made is noise, and noise on the
+      // normal path is what trains readers to ignore the real refusal message.
+      if (filtered.destIsScratch) console.log(line);
+      else console.warn(line);
+    }
     const chosen = await firstExisting(filtered.accepted);
-    if (!chosen && filtered.refused.length > 0) {
+    // GATE ON `accepted`, NOT ON `refused` — `refused` is a RECORD, not a verdict.
+    // filterInstallSources pushes a scratch candidate onto BOTH lists when it
+    // passes it through (dest is itself a scratch tree, or the env opt-in is set;
+    // see its `if (passthrough) accepted.push(candidate)`). So a non-empty
+    // `refused` does NOT mean anything was withheld, and testing it here claimed
+    // "every candidate source was a scratch tree — installing NOTHING" for the
+    // ordinary case of an OPTIONAL artifact that simply does not exist in this
+    // layout — as console.error, which failed all 27 tests in
+    // __tests__/papercusp-files.test.ts (every test installs into /tmp) and would
+    // have red-pinned the fleet gate.
+    //
+    // `accepted.length === 0` is the condition that actually means "refusal left
+    // us with nothing to try": under passthrough it is never empty, and without
+    // passthrough it is empty exactly when every candidate was withheld. A missing
+    // file then falls through silently, which is correct — resolveSource returning
+    // null for an absent optional source is normal and its callers already handle it.
+    if (!chosen && filtered.accepted.length === 0 && filtered.refused.length > 0) {
       console.error(
         `[desktop-install] ${what}: every candidate source was a scratch tree — installing NOTHING. ` +
           `Existing files left untouched. Boot the operator from the canonical checkout, or set ` +

@@ -35,10 +35,25 @@
 # turn. Running it as a child and forcing exit 0 costs one process and closes
 # that hole. stderr is swallowed for the same reason; stdout passes through
 # untouched, since that IS the injection payload.
+#
+# ⚠ GUARD ON -f AND PREFER `node`, NOT `-x` — this bit once, in the exact shape
+# this whole plan exists to eliminate. The dispatcher's FILE MODE differs by
+# copy: the installer writes index.mjs 0755, but the REPO copy is 0644, and the
+# sidecar `cp -a` propagates whatever the source had. A `[ -x ]` guard therefore
+# passes in one layout and FAILS SILENTLY (exit 0, no output) in another — a
+# broken hook and a hook with nothing to say are byte-identical from outside.
+# Invoking through `node` removes the file mode from the contract entirely; it
+# adds no new dependency, because the 0755 copy's `#!/usr/bin/env node` shebang
+# needs node on PATH anyway. Direct execution stays as the fallback for a
+# packaged box where node is only reachable via that shebang.
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || exit 0
 dispatcher="$here/../inject/index.mjs"
-[ -x "$dispatcher" ] || exit 0
+[ -f "$dispatcher" ] || exit 0
 
-"$dispatcher" --client=claude --event=UserPromptSubmit 2>/dev/null || true
+if command -v node >/dev/null 2>&1; then
+  node "$dispatcher" --client=claude --event=UserPromptSubmit 2>/dev/null || true
+elif [ -x "$dispatcher" ]; then
+  "$dispatcher" --client=claude --event=UserPromptSubmit 2>/dev/null || true
+fi
 exit 0

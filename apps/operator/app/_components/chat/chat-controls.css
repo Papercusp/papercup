@@ -1622,6 +1622,27 @@
   gap: 8px;
 }
 
+/* The other half of "distinguishable from the other pills": stop drawing the
+   pills that say nothing HERE. Measured, the chip row cost 45px and pushed the
+   action row toward the fold of a 34%-capped shelf — and three of its five
+   chips were restating the cap directly above them:
+     `pc-tier`     "Decisions"   ← the zone cap already says DECISIONS
+     `pc-count`    "open"        ← everything in this shelf is open, by definition
+     `pc-category` "escalations" ← `pc-kind` beside it already says "escalation"
+   Those three are also the two ROUNDEST, most button-adjacent shapes in the row
+   (20px tall, 999px radius, 1px hairline), so removing them separates the real
+   buttons by subtraction as well as by weight.
+   What stays is what varies between cards and therefore informs: `pc-kind`
+   (escalation vs conversation — this shelf carries both), `pc-imp` (urgent),
+   and the harness pill. Scoped to the shelf: the Queue lists MIXED tiers,
+   categories and statuses in one pane, where every one of these earns its
+   place. */
+.pc-chat-decisions .pc-items__detail-toolbar > .pc-tier,
+.pc-chat-decisions .pc-items__detail-toolbar > .pc-count,
+.pc-chat-decisions .pc-items__detail-toolbar > .pc-category {
+  display: none;
+}
+
 .pc-chat-decisions .pc-items__action {
   min-height: 30px;
   padding: 6px 13px;

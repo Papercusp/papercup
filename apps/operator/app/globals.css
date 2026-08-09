@@ -22755,7 +22755,8 @@ body:has(.operator-panel) {
 .goal-proposal-label {
   color: rgba(238,247,255,0.62);
   font-size: 10px;
-  letter-spacing: 0.04em;
+  /* No letter-spacing: design-primitives forbids nonzero tracking app-wide
+     (uppercase micro-labels elsewhere in this file carry none either). */
   text-transform: uppercase;
 }
 
@@ -22818,7 +22819,7 @@ body:has(.operator-panel) {
   color: rgba(238,247,255,0.5);
   text-transform: uppercase;
   font-size: 10px;
-  letter-spacing: 0.04em;
+  /* No letter-spacing — see .goal-proposal-label above. */
 }
 
 .goal-proposal-body summary {

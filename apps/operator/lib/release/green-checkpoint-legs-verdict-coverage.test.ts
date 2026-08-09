@@ -152,4 +152,20 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     expect(legs.ok).toBe(false);
     expect(legs.failingSignatures).toContain('lint:timer-classification');
   });
+
+  // EI-19962933556828227: the sibling gap to the one above — `lint:no-raw-setinterval` had
+  // the SAME only-blocking-path-is-inert-CI shape (.github/workflows/test.yml push/PR to
+  // `main`), so an offender committed to `staging` was invisible for its whole life there
+  // and only reddened AFTER promotion. Named deliberately for the same reason as the
+  // timer-classification test above: that THIS guard gates promotion is the deliverable.
+  it('gates lint:no-raw-setinterval BEFORE promotion, and its red holds the gate', async () => {
+    const { legs: happy, invokedScripts } = await runLegs(null);
+    expect(invokedScripts).toContain('lint:no-raw-setinterval');
+    expect(happy.lintNoRawSetinterval.status).toBe('passed');
+
+    const { legs } = await runLegs('lint:no-raw-setinterval');
+    expect(legs.lintNoRawSetinterval.status).toBe('failed');
+    expect(legs.ok).toBe(false);
+    expect(legs.failingSignatures).toContain('lint:no-raw-setinterval');
+  });
 });

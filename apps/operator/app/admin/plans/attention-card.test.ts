@@ -22,6 +22,7 @@ vi.mock('./plans-api', () => ({
 
 import {
   attentionItemToCardSpec,
+  isNavigateAction,
   resolveAttentionAction,
   answerAttentionItem,
   replyToAttentionItem,
@@ -474,5 +475,126 @@ describe('replyToAttentionItem (P-006 reply routing, D-006/D-007)', () => {
     expect(resolveConversationAnswer).not.toHaveBeenCalled();
     expect(deliverInboxReply).not.toHaveBeenCalled();
     expect(r.resolved).toBe(false);
+  });
+});
+
+/* ── Button hints: does the button admit what the click DOES? ─────────────────
+ * [owner 2026-08-09] "What do those buttons actually do its unclear."
+ *
+ * `AskChoiceOption.hint` is rendered as the button's tooltip by
+ * QueueCardActions and as its sub-label by AskChoiceCard, in every host. Until
+ * this pass nothing SET it, so every tooltip repeated the word already printed
+ * on the button.
+ *
+ * The load-bearing case is the LIE, not the omission: `discuss` sits in
+ * NAVIGATE_ACTION_IDS and touches no server state, and omitting it from that
+ * set once made the Discuss button silently resolve real owner gates
+ * (EI-13037). A hint claiming Discuss closes something would re-create that
+ * exact confusion in prose while the dispatch stayed correct — and no other
+ * test in this file would notice, because they all assert dispatch.
+ */
+describe('option hints state what the dispatch actually does', () => {
+  const escalationWithOptions = item({
+    kind: 'coord-escalation',
+    ownerAgentId: 'su-abc',
+    actions: [
+      { id: 'resolve', label: 'Resolve', primary: true },
+      { id: 'discuss', label: 'Discuss' },
+    ],
+    ref: { kind: 'coord-escalation', msgId: 'm1', options: [{ id: 'opt-a', label: 'Relaunch it' }] },
+  } as Partial<AttentionItem>);
+
+  const escalationNoOptions = item({
+    kind: 'coord-escalation',
+    ownerAgentId: 'su-abc',
+    actions: [
+      { id: 'resolve', label: 'Resolve', primary: true },
+      { id: 'discuss', label: 'Discuss' },
+    ],
+    ref: { kind: 'coord-escalation', msgId: 'm2', options: [] },
+  } as Partial<AttentionItem>);
+
+  const hintOf = (host: AttentionItem, optionId: string) =>
+    attentionItemToCardSpec(host).options.find((o) => o.id === optionId)?.hint ?? '';
+
+  it('a named escalation option says it answers, wakes and closes — the three things it does', () => {
+    // Mirrors resolveAttentionAction's coord-escalation branch: resolveEscalation
+    // with the picked option id, then deliverInboxReply to item.ownerAgentId.
+    const hint = hintOf(escalationWithOptions, 'opt-a');
+    expect(hint).toMatch(/answers/i);
+    expect(hint).toMatch(/wakes/i);
+    expect(hint).toMatch(/closes/i);
+  });
+
+  it('generic Resolve on an escalation admits the reply carries no detail', () => {
+    // With no named option the reply text is the literal string "Resolved" —
+    // which a button reading only "Resolve" hides completely.
+    expect(hintOf(escalationNoOptions, 'resolve')).toMatch(/no detail/i);
+  });
+
+  it('Discuss disclaims BOTH outcomes — it neither answers nor closes', () => {
+    expect(hintOf(escalationWithOptions, 'discuss')).toMatch(/does not answer or close/i);
+  });
+
+  it('NO navigate option ever claims to close or answer (EI-13037’s confusion, in prose)', () => {
+    // The drift guard. Every navigate id the adapters emit, across the item
+    // kinds that carry them: a hint may describe opening a surface, never a
+    // terminal effect. This fails if a hint is re-worded without reading the
+    // dispatch, or if an id leaves NAVIGATE_ACTION_IDS.
+    const hosts: AttentionItem[] = [
+      escalationWithOptions,
+      escalationNoOptions,
+      item({
+        kind: 'conversation',
+        actions: [
+          { id: 'answer', label: 'Answer', primary: true },
+          { id: 'discuss', label: 'Discuss' },
+        ],
+        ref: { kind: 'conversation', conversationId: 'c1' },
+      } as Partial<AttentionItem>),
+      item({
+        kind: 'smoke-fail',
+        actions: [
+          { id: 'view-log', label: 'View log' },
+          { id: 'open', label: 'Open' },
+        ],
+        ref: { kind: 'smoke-fail' },
+      } as Partial<AttentionItem>),
+    ];
+    let checked = 0;
+    for (const host of hosts) {
+      for (const opt of attentionItemToCardSpec(host).options) {
+        if (!isNavigateAction(opt.id)) continue;
+        checked += 1;
+        expect(opt.hint, `navigate option "${opt.id}" must carry a hint`).toBeTruthy();
+        // The property is about THE CLICK, so it is asserted on the FIRST
+        // sentence only. A later sentence may legitimately describe a terminal
+        // effect of the surface that opens — `answer`'s box, once SUBMITTED,
+        // really does resolve the item, and hiding that would be its own lie.
+        // (The first draft of this guard banned the words outright and failed
+        // on exactly that honest hint — the blunt rule was wrong, not the text.)
+        const click = String(opt.hint).split('.')[0];
+        expect(click, `navigate hint for "${opt.id}" must lead with what the CLICK does`).toMatch(
+          /^Opens\b/,
+        );
+        expect(
+          click,
+          `navigate option "${opt.id}" claims the CLICK has a terminal effect: ${click}`,
+        ).not.toMatch(/\b(closes|resolves|wakes|answers)\b/i);
+      }
+    }
+    // Guard the guard: a loop that silently checked nothing would pass forever.
+    expect(checked).toBeGreaterThanOrEqual(4);
+  });
+
+  it('every TERMINAL option carries a hint that is not just the label again', () => {
+    const terminals = attentionItemToCardSpec(escalationWithOptions).options.filter(
+      (o) => !isNavigateAction(o.id),
+    );
+    expect(terminals.length).toBeGreaterThan(0);
+    for (const opt of terminals) {
+      expect(opt.hint, `terminal option "${opt.id}" has no hint`).toBeTruthy();
+      expect(opt.hint).not.toBe(opt.label);
+    }
   });
 });

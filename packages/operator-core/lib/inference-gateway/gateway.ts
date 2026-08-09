@@ -947,8 +947,19 @@ export interface GatewayStats {
    *  `allDown` is the detector gap the bug named: "nothing alarmed when every proxy was down" —
    *  `accounts:status` showed only the SYMPTOM (accounts unavailable), never this CAUSE. `totalProxyEntries
    *  === 0` (no account configures a proxy) or `proxyEgressDisabled` (the kill-switch is on) both read as
-   *  `allDown:false` — there is no proxy path to be down. Optional for deploy-skew readers. */
-  egressProxyHealth?: { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean };
+   *  `allDown:false` — there is no proxy path to be down. That is a SECOND, distinct condition from
+   *  "healthy", and EI-19962845612125031 named the gap: a bare `allDown:false` cannot tell a caller
+   *  which of the two it's looking at (population-empty vs population-healthy), so a monitor reading
+   *  `allDown` alone concludes "fine" when there is no proxy egress at all. `configured` disambiguates:
+   *  `false` means there is no proxy path to judge in the first place (zero entries, or the kill-switch
+   *  is on) — `allDown` is then vacuously `false` and must NOT be read as a health verdict. Optional for
+   *  deploy-skew readers. */
+  egressProxyHealth?: {
+    totalProxyEntries: number;
+    reachableProxyEntries: number;
+    allDown: boolean;
+    configured: boolean;
+  };
   /** Count of 429s shed at ADMISSION because the WHOLE pool was throttled with a far-off reset — the
    *  fail-fast path (B-GW-1) that frees the slot immediately instead of taking the acquire/retry path. */
   shedAllThrottled: number;
@@ -1773,7 +1784,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
    */
   function computeEgressProxyHealth(
     fallback: ActiveAccount,
-  ): { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean } {
+  ): { totalProxyEntries: number; reachableProxyEntries: number; allDown: boolean; configured: boolean } {
     const now = Date.now();
     let totalProxyEntries = 0;
     let reachableProxyEntries = 0;
@@ -1789,6 +1800,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       reachableProxyEntries,
       // No proxy configured, or the operator kill-switch is on ⇒ there is no proxy PATH to be down.
       allDown: !proxyEgressDisabled && totalProxyEntries > 0 && reachableProxyEntries === 0,
+      // EI-19962845612125031: false ⇒ there is no proxy path to judge at all (zero entries, or the
+      // kill-switch is on) — `allDown` is vacuously false in that case and callers must check THIS
+      // field, not `allDown`, to tell "no proxy egress configured" apart from "proxy egress healthy".
+      configured: !proxyEgressDisabled && totalProxyEntries > 0,
     };
   }
   // Edge-triggered — fires ONCE on the transition into "every proxy egress entry is currently cooled",
