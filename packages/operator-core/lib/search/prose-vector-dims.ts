@@ -169,6 +169,10 @@ export const PROSE_VECTOR_DEPENDENT_VIEWS: ReadonlyArray<{ view: string; column:
   { view: 'harness_shared.harness_features', column: 'embedding' },
   { view: 'harness_shared.harness_features_consolidated', column: 'embedding' },
   { view: 'harness_shared.work_items_claimable', column: 'embedding' },
+  // Migration 776 (P-005) — the `work_item` SearchSource's embedding leg reads
+  // its vector THROUGH this view, so a view stranded at the old width would
+  // break search, not just look wrong.
+  { view: 'harness_shared.engineer_issues', column: 'embedding' },
 ];
 
 /**

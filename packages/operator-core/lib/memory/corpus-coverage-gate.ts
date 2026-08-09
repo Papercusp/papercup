@@ -37,20 +37,23 @@
  *
  *  1. ABSENCE OF EVIDENCE IS NOT HEALTH. `unknown` (no fresh sample) degrades.
  *     Defaulting it to healthy is the silent-confidence bug being removed.
- *  2. `not-semantic` IS NOT A DEGRADATION — and D-078 makes this binding for
- *     this leg specifically. `work_item` is BM25-only in the shared engine
- *     (`agent-tools/search/sources.ts` gives it `bm25` and no `embedding`), so
- *     its embedding coverage can never degrade injection's semantic reach.
- *     `session_turn` is therefore the ONLY source whose coverage gates here.
+ *  2. `not-semantic` IS NOT A DEGRADATION. A source with no embedding leg has no
+ *     embedding coverage to be short of, so its absence from the semantic side
+ *     is a fact about the source, not a fault to alarm on.
  *
- *     ⚠ The trap D-078 names, which fails in the confident direction:
- *     `harness_shared.work_items.embedding` DOES exist and sits near 100% — but
- *     it feeds the work-item semantic DUPE GUARD, not this search source.
- *     Reading that number green and concluding "injection's surfaces are
- *     healthy" is reading a real, high figure about a different consumer.
- *     Filtering on the `not-semantic` VERDICT (rather than naming sources here)
- *     is what keeps that mistake unavailable: the mapping lives in
- *     `coverage-gate.ts`, which is exhaustiveness-tested against the registry.
+ *     ⚠ WHICH SOURCES THOSE ARE IS NOT KNOWLEDGE THIS FILE HOLDS — and that is
+ *     the whole point. D-078 recorded that `work_item` was BM25-only and that
+ *     `session_turn` therefore carried injection's ENTIRE semantic reach. P-005
+ *     changed it: `work_item` now has an `embedding()` leg reading
+ *     `harness_shared.work_items.embedding` (~100% covered) through the
+ *     `engineer_issues` view, so injection's reach is two sources wide and this
+ *     gate now assesses both. Nothing in this file needed editing for that,
+ *     because it filters on the `not-semantic` VERDICT rather than naming
+ *     sources: the mapping lives in `coverage-gate.ts`, exhaustiveness-tested
+ *     against the registry. A version of this rule that had hardcoded
+ *     "`session_turn` is the only source that gates here" would have gone
+ *     silently wrong the day P-005 landed — it would have kept a now-semantic
+ *     source out of the gate while reading exactly as authoritative.
  *  3. DEGRADED MARKS, IT DOES NOT DROP. A partially-covered corpus is still
  *     substantially useful, and silently removing it trades one dishonesty for
  *     another (search-side D-010). Suppression is reserved for the one state

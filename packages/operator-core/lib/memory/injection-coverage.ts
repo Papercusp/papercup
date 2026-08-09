@@ -27,27 +27,30 @@
  * of ever-red alarm `embed-coverage.ts`'s own header warns is worse than no alarm at all.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * THE LOAD-BEARING FACT, and the one a naive reading of the global alarm gets
- * BACKWARDS: injection's semantic reach is ONE SOURCE WIDE.
- *
- * The corpus leg reads exactly two registered sources (`CORPUS_SOURCE_NAMES` in
- * corpus-recall-io.ts): `session_turn` and `work_item`.
+ * THE LOAD-BEARING FACT: injection's semantic reach is NARROW, and it is narrow by
+ * enumeration — the corpus leg reads exactly two registered sources
+ * (`CORPUS_SOURCE_NAMES` in corpus-recall-io.ts): `session_turn` and `work_item`.
  *
  *   • `session_turn` has BM25 + a gemma@768 cosine leg, itself a P-034 union over
  *     two surfaces (`session_turns.text_embedding` and `session_turn_chunks.embedding`).
- *   • `work_item` is BM25-ONLY. Its search source exposes `bm25()` and no `embedding()`.
+ *   • `work_item` has BM25 + a gemma@768 cosine leg over
+ *     `harness_shared.work_items.embedding` (~100% covered), read through the
+ *     `engineer_issues` view since migration 776.
  *
- * `harness_shared.work_items.embedding` DOES exist, IS a measured backfill target, and
- * sits near 100% — but it feeds the work-item semantic DUPE GUARD, not this search
- * source (coverage-gate.ts says exactly this at its `work_item: []` entry). So a reader
- * who sees that surface green in the global alarm and concludes "injection's surfaces
- * are healthy" has read a number that is real, high, and about a different consumer.
- * Half of injection's corpus has no semantic path at all, by construction.
+ * ⚠ THAT SECOND BULLET IS NEW, AND THIS HEADER SAID THE OPPOSITE UNTIL 2026-08-09.
+ * D-078 recorded the reach as ONE SOURCE WIDE, because `work_item` exposed no
+ * `embedding()` at all and `work_items.embedding` fed only the work-item semantic
+ * DUPE GUARD. P-005 wired the leg; the column, its HNSW index and its backfill had
+ * been in place the whole time — what was missing was that the view the source reads
+ * did not SELECT the column. Distrust any older note still asserting the one-source
+ * framing, and note the shape of the original error: the absence was attributed to
+ * the DATA ("no embedding column yet") when it was a property of the PROJECTION.
  *
- * The consequence for alarming: if `session_turn`'s vectors starve, injection's corpus
- * leg degrades to lexical-only ENTIRELY — there is no second semantic source to carry
- * it. That is a one-source single point of failure, and it is why `no-semantic-path`
- * below is a first-class breach kind rather than an assertion in a comment.
+ * The consequence for alarming is unchanged in kind and better in degree: with two
+ * semantic sources, one starving no longer takes injection's whole corpus leg to
+ * lexical-only. `no-semantic-path` stays a first-class breach kind rather than an
+ * assertion in a comment precisely because which sources carry a semantic path is a
+ * thing that MOVES — this file learned that the expensive way.
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * WHY THE RECURRENCE SIGNAL IS READ FROM THE LIVE MEASUREMENT, NOT THE PERSISTED

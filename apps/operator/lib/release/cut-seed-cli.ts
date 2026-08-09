@@ -685,8 +685,16 @@ export async function openSourceStoreForCut(inp: {
       // the natural next move is "just retry the cut" — which re-runs the ~17-min drain to
       // arrive at the same place. If we already waited out the retry budget, the holder is
       // not merely recycling and remedy (a) is NOT the answer.
+      // WI-37467: report ELAPSED wall-clock as the headline, not waitedMs (the sum of the
+      // deliberate sleeps BETWEEN attempts) — waitedMs excludes time spent inside each
+      // attempt itself (discovery + the real POST, which can run for minutes), so a run
+      // that spent most of its time IN an attempt rather than sleeping between them
+      // rendered as e.g. "~15s of waiting" for a 616s run. Keep waitedMs as a labelled
+      // secondary term: the gap between the two numbers is itself diagnostic (a holder
+      // that never came back vs. one whose attempts each ran long and failed).
       const tried = outcome.retry
-        ? ` (after ${outcome.retry.attempts} attempts over ~${Math.round(outcome.retry.waitedMs / 1000)}s of waiting — ` +
+        ? ` (after ${outcome.retry.attempts} attempts over ~${Math.round(outcome.retry.elapsedMs / 1000)}s ` +
+          `[~${Math.round(outcome.retry.waitedMs / 1000)}s of that waiting between attempts] — ` +
           `so this is NOT a transient recycle; retrying the cut unchanged will re-run the drain and fail again)`
         : '';
       throw new Error(

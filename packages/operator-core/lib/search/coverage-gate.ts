@@ -73,10 +73,14 @@ export const SEARCH_SOURCE_SURFACES: Readonly<Record<string, readonly string[]>>
   brainstorm: ['harness_shared.harness_brainstorm.content_embedding'],
   turns: ['harness_shared.operator_turns.text_embedding'],
   decisions: ['harness_shared.harness_decisions.body_embedding'],
-  // BM25-only sources. `work_items.embedding` DOES exist and is maintained at
-  // 100% — but it is consumed by the work-item semantic dupe guard, not by
-  // this search source, so it is not this source's coverage.
-  work_item: [],
+  // P-005 / D-078: this entry used to be `[]` with the note "`work_items.embedding`
+  // DOES exist and is maintained at 100% — but it is consumed by the work-item
+  // semantic dupe guard, not by this search source". That stopped being true when
+  // the source gained its embedding leg (migration 776 exposes the column on the
+  // `engineer_issues` view the source reads; the storage is the base table's).
+  work_item: ['harness_shared.work_items.embedding'],
+  // BM25-only. 120k+ coord envelope rows are not worth embedding — see the
+  // coord_message source's own note in sources.ts.
   coord_message: [],
   // P-034 union: a turn is findable via its parent vector OR any chunk vector.
   session_turn: [

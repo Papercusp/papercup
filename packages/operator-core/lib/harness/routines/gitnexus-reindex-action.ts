@@ -34,7 +34,7 @@
 import { spawn, execFile } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, unlinkSync } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
@@ -175,6 +175,140 @@ export function buildAnalyzeArgs(root: string, repoName: string): string[] {
   return ['--yes', 'gitnexus', 'analyze', root, '--skip-agents-md', '--name', repoName];
 }
 
+// ---------------------------------------------------------------------------
+// WI-35532 (a) — the orphan-shadow preflight.
+//
+// `gitnexus analyze` writes a `.gitnexus/lbug.shadow` (+ `.gitnexus/lbug.wal.checkpoint`)
+// WHILE building, then promotes it to the real `.gitnexus/lbug` database file on success.
+// If the process dies/is killed between those two steps, the shadow is left orphaned —
+// and `analyze` REFUSES to proceed while it exists ("Found shadow file ... but no
+// corresponding database file"), with no recovery path of its own. That is a
+// self-perpetuating wedge: every future tick fails the SAME way forever. Measured
+// 2026-08-08: 66/66 consecutive hourly ticks failed this way, ~4.6 CPU-hours burned,
+// completely silently (see the module header for the alarm half of this fix).
+//
+// The fix is narrow on purpose: only delete the shadow (+ its wal checkpoint) when the
+// real db is ABSENT — a shadow existing ALONGSIDE a real db is a build genuinely in
+// progress (this action's own timeout already protects against that build hanging), and
+// must never be touched.
+// ---------------------------------------------------------------------------
+
+export interface GitnexusDbPaths {
+  db: string;
+  shadow: string;
+  walCheckpoint: string;
+}
+
+export function gitnexusDbPaths(root: string): GitnexusDbPaths {
+  const dir = path.join(root, '.gitnexus');
+  return { db: path.join(dir, 'lbug'), shadow: path.join(dir, 'lbug.shadow'), walCheckpoint: path.join(dir, 'lbug.wal.checkpoint') };
+}
+
+/** PURE — the orphan condition itself: a shadow with no promoted database beside it. */
+export function isOrphanShadow(dbExists: boolean, shadowExists: boolean): boolean {
+  return shadowExists && !dbExists;
+}
+
+export interface OrphanShadowCleanup {
+  cleaned: boolean;
+  removed: string[];
+}
+
+/**
+ * Delete the orphan shadow (+ wal checkpoint, if present) so the next `analyze` can
+ * proceed. No-ops — touches nothing — when the db exists (real build) or no shadow
+ * exists at all (nothing to clean). Never throws: a missing/racing file during unlink is
+ * exactly the "someone else already cleaned it" case and is swallowed like the rest of
+ * this fail-soft action.
+ */
+export function cleanOrphanShadow(root: string): OrphanShadowCleanup {
+  const { db, shadow, walCheckpoint } = gitnexusDbPaths(root);
+  if (!isOrphanShadow(existsSync(db), existsSync(shadow))) return { cleaned: false, removed: [] };
+  const removed: string[] = [];
+  for (const f of [shadow, walCheckpoint]) {
+    if (!existsSync(f)) continue;
+    try {
+      unlinkSync(f);
+      removed.push(f);
+    } catch {
+      // Racing with another cleanup (or the file vanished between the check and the
+      // unlink) — not our job to report, the orphan-shadow condition is gone either way.
+    }
+  }
+  return { cleaned: removed.length > 0, removed };
+}
+
+// ---------------------------------------------------------------------------
+// WI-35532 (b) — the failure alarm.
+//
+// This action is deliberately fail-soft (a wedged/failing indexer must never wedge the
+// routines tick) and previously logged failures to journald ONLY — so a 100%-failing
+// routine burning CPU every tick produced ZERO signal anywhere an owner or agent would
+// see it. `decideGitnexusHealthUpdate` is the pure state machine; the handler below
+// persists it into the SAME routine-metadata convention green-checkpoint's `gate_health`
+// uses (`metadata->'gitnexus_health'`) and fires exactly once per failure streak — never
+// once per tick — via the shared `notifyAttention` escalation rail.
+// ---------------------------------------------------------------------------
+
+export interface GitnexusHealth {
+  consecutiveFailures: number;
+  /** True once the streak has alerted — suppresses a re-alert on every subsequent
+   *  failing tick until a success clears it (mirrors green-checkpoint's `stallAlerted`). */
+  alerted: boolean;
+  lastFailureAt: number | null;
+  lastSuccessAt: number | null;
+}
+
+export const GITNEXUS_HEALTH_DEFAULT: GitnexusHealth = {
+  consecutiveFailures: 0,
+  alerted: false,
+  lastFailureAt: null,
+  lastSuccessAt: null,
+};
+
+/** Alert on the 3rd consecutive failure — one bad tick can be a transient timeout; three
+ *  in a row (across an hourly cadence, ~3h of silent burn) is a real, durable wedge. */
+export const GITNEXUS_FAILURE_ALERT_THRESHOLD = 3;
+
+export interface GitnexusHealthUpdate {
+  next: GitnexusHealth;
+  /** True on EXACTLY the tick that crosses the threshold — the caller fires the alert
+   *  only then, not on every failing tick after. */
+  shouldAlert: boolean;
+  /** True on EXACTLY the recovery tick that follows an alerted streak — the caller
+   *  resolves/logs the recovery only then. */
+  shouldResolve: boolean;
+}
+
+/** PURE — the whole alarm policy, order-sensitive and independently testable from the
+ *  4-minute subprocess it observes. */
+export function decideGitnexusHealthUpdate(
+  prev: GitnexusHealth,
+  success: boolean,
+  threshold: number,
+  nowMs: number,
+): GitnexusHealthUpdate {
+  if (success) {
+    return {
+      next: { consecutiveFailures: 0, alerted: false, lastFailureAt: prev.lastFailureAt, lastSuccessAt: nowMs },
+      shouldAlert: false,
+      shouldResolve: prev.alerted,
+    };
+  }
+  const consecutiveFailures = prev.consecutiveFailures + 1;
+  const shouldAlert = consecutiveFailures >= threshold && !prev.alerted;
+  return {
+    next: {
+      consecutiveFailures,
+      alerted: prev.alerted || shouldAlert,
+      lastFailureAt: nowMs,
+      lastSuccessAt: prev.lastSuccessAt,
+    },
+    shouldAlert,
+    shouldResolve: false,
+  };
+}
+
 export interface AnalyzeRunResult {
   code: number;
   stdout: string;
@@ -274,11 +408,21 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     return;
   }
 
+  // WI-35532 (a): clean an orphan shadow BEFORE spawning — the exact condition that wedged
+  // this routine 66/66 consecutive times. No-ops when there is no orphan to clean.
+  const orphan = cleanOrphanShadow(root);
+  if (orphan.cleaned) {
+    console.warn(
+      `[gitnexus-reindex] cleaned an ORPHAN shadow (shadow present, no database — a prior analyze died mid-build): ${orphan.removed.join(', ')}`,
+    );
+  }
+
   const timeoutMs = num(cfg, 'timeout_ms', GITNEXUS_ANALYZE_TIMEOUT_MS);
   const startedAt = Date.now();
   console.log(`[gitnexus-reindex] running analyze (${decision.reason}) — root=${root} name=${repoName}`);
   const r = await runGitnexusAnalyze(root, repoName, timeoutMs);
   const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+  const success = !r.timedOut && r.code === 0;
 
   if (r.timedOut) {
     console.warn(`[gitnexus-reindex] TIMED OUT after ${timeoutMs}ms (${elapsedSec}s) — process tree killed`);
@@ -286,5 +430,46 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     console.warn(`[gitnexus-reindex] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
   } else {
     console.log(`[gitnexus-reindex] ok in ${elapsedSec}s — ${(r.stdout || '').trim().split('\n').slice(-1)[0]}`);
+  }
+
+  // WI-35532 (b): persist the consecutive-failure streak and alert past the threshold.
+  // Fully fail-soft — a DB or notify hiccup here must never fail the routine tick itself,
+  // it merely means this one tick's health bookkeeping is lost (the next tick re-derives it).
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = (await sql.unsafe(
+      `SELECT metadata->'gitnexus_health' AS gh FROM harness_shared.routines
+        WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
+      [ctx.installSlug],
+    )) as Array<{ gh: Partial<GitnexusHealth> | null }>;
+    const prevHealth: GitnexusHealth = { ...GITNEXUS_HEALTH_DEFAULT, ...(rows[0]?.gh ?? {}) };
+    const update = decideGitnexusHealthUpdate(prevHealth, success, GITNEXUS_FAILURE_ALERT_THRESHOLD, Date.now());
+    await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+        WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
+      [ctx.installSlug, JSON.stringify({ gitnexus_health: update.next })],
+    );
+    if (update.shouldAlert) {
+      const { notifyAttention } = await import('../../attention-notify');
+      await notifyAttention({
+        kind: 'intervention',
+        title: 'gitnexus-reindex failing repeatedly — code graph going stale/dead',
+        body:
+          `system:gitnexus-reindex has now failed ${update.next.consecutiveFailures} consecutive time(s) on ` +
+          `${ctx.installSlug}. gitnexus.query / gitnexus.context lookups may be erroring while this persists. ` +
+          `Latest failure: ${r.timedOut ? `timed out after ${timeoutMs}ms` : `exited ${r.code}`} — ` +
+          `${(r.stderr || r.stdout).slice(-300)}`,
+        importance: 'urgent',
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.installSlug,
+        data: { consecutiveFailures: update.next.consecutiveFailures, timedOut: r.timedOut, code: r.code },
+      });
+    } else if (update.shouldResolve) {
+      console.log(`[gitnexus-reindex] recovered after a ${prevHealth.consecutiveFailures}-failure streak`);
+    }
+  } catch (e) {
+    console.warn(`[gitnexus-reindex] health tracking failed: ${e instanceof Error ? e.message : e}`);
   }
 });

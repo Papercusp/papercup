@@ -9,9 +9,18 @@
  *     so the suite drops one at a time and asserts the verdict falls back to
  *     `degraded`. Without those controls a gate that suppressed on ANY degraded
  *     coverage would pass every positive test in this file.
- *   • `not-semantic` IS NOT A DEGRADATION (D-078). `work_item` is BM25-only, so
- *     a healthy run with it in scope must stay `ok` — otherwise the notice fires
- *     every single turn and stops carrying information.
+ *   • `not-semantic` IS NOT A DEGRADATION. A source with no embedding leg has no
+ *     embedding coverage to be short of, so a healthy run with one in scope must
+ *     stay `ok` — otherwise the notice fires every turn and stops carrying
+ *     information.
+ *
+ *     ⚠ The `work_item` assessment below is SYNTHETIC as of P-005. D-078's
+ *     premise (work_item is BM25-only) held when this suite was written; P-005
+ *     gave that source a real `embedding()` leg, so today NEITHER corpus source
+ *     is genuinely `not-semantic`. The case is kept because the property under
+ *     test is how the gate handles the VERDICT, which must stay correct for
+ *     whichever sources carry it — but do not read the fixture as a claim about
+ *     what work_item is.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -48,7 +57,11 @@ function sessionTurn(over: Partial<SourceCoverageAssessment> = {}): SourceCovera
   };
 }
 
-/** `work_item` — BM25-only in the shared engine, so always `not-semantic`. */
+/**
+ * A `not-semantic` assessment carrying a name the gate has in scope. SYNTHETIC
+ * since P-005 gave `work_item` an embedding leg — see the header note; this
+ * exercises the verdict, not the source.
+ */
 function workItem(): SourceCoverageAssessment {
   return {
     source: 'work_item',

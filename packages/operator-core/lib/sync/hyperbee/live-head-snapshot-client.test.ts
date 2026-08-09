@@ -259,7 +259,11 @@ describe('retrying across a holder recycle', () => {
 
     expect(out.kind).toBe('produced');
     expect(realCalls).toBe(2);
-    expect(out.retry).toEqual({ attempts: 2, waitedMs: DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS });
+    expect(out.retry).toEqual({
+      attempts: 2,
+      waitedMs: DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS,
+      elapsedMs: DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS,
+    });
   });
 
   it('CONTROL: the same recycle KILLS the cut when retry is disabled', async () => {
@@ -335,7 +339,7 @@ describe('retrying across a holder recycle', () => {
     // Spends the budget exactly and never overruns it: 4×15s of waiting fills 60s, and
     // the 5th attempt is the one that reports the give-up rather than sleeping past it.
     expect(c.slept).toEqual([15_000, 15_000, 15_000, 15_000]);
-    expect(out.retry).toEqual({ attempts: 5, waitedMs: 60_000 });
+    expect(out.retry).toEqual({ attempts: 5, waitedMs: 60_000, elapsedMs: 60_000 });
   });
 
   it('the PRE-FLIGHT gate waits for a cold holder to warm instead of refusing in 32s', async () => {

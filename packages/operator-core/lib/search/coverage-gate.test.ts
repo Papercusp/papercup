@@ -145,8 +145,12 @@ describe('assessSourceCoverage — verdicts', () => {
     expect(assessSourceCoverage('turns', snap(reading(TURNS, 1000, 1000))).verdict).toBe('healthy');
   });
 
+  // The BM25-only exemplar is `coord_message`, not `work_item`: P-005 gave
+  // `work_item` a real embedding leg, so it is no longer a source with an empty
+  // surface list. `coord_message` still is (120k+ envelope rows deliberately
+  // unembedded), which is what these three cases actually need.
   it('distinguishes BM25-only sources from unknown ones', () => {
-    const a = assessSourceCoverage('work_item', snap());
+    const a = assessSourceCoverage('coord_message', snap());
     expect(a.verdict).toBe('not-semantic');
     // Must NOT be conflated with `unknown`: one is "does not apply", the other
     // is "we do not know", and only the latter is a warning.
@@ -190,7 +194,7 @@ describe('assessSourceCoverage — multi-leg union (P-034 parent + chunks)', () 
 
 describe('assessSearchCoverage — rollup', () => {
   it('returns no warning when every scoped source is healthy or non-semantic', () => {
-    const r = assessSearchCoverage(['turns', 'work_item'], snap(reading(TURNS, 1000, 1000)));
+    const r = assessSearchCoverage(['turns', 'coord_message'], snap(reading(TURNS, 1000, 1000)));
     expect(r.degraded).toBe(false);
     expect(r.warning).toBeNull();
   });
@@ -211,7 +215,7 @@ describe('assessSearchCoverage — rollup', () => {
   });
 
   it('a BM25-only source never raises a warning on its own', () => {
-    const r = assessSearchCoverage(['work_item', 'coord_message'], snap());
+    const r = assessSearchCoverage(['coord_message'], snap());
     expect(r.degraded).toBe(false);
     expect(r.warning).toBeNull();
   });

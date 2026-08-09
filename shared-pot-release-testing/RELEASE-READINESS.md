@@ -49,11 +49,34 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 > > then measures only the epoch delta, so the tool's own `ok:false code:'not_owner'` went to
 > > /dev/null for four days. Asserting that return would have named this on 2026-08-05.
 >
-> **The standing live-federation gate is DARK (WI-37144). RELEASE BLOCKER.** Its timer was disabled
-> 2026-08-07T00:35Z, 57 seconds after a 5th consecutive RED, with no recorded decision. Those five
-> reds have since been shown to be **real**. A dark gate is precisely how C-001 survived unnoticed;
-> re-arming will be noisy until `replication_soak` (WI-5481, now 5/5 runs) and `restart_durability`
-> (new) are fixed, and that trade is the substance of WI-37144.
+> **The standing live-federation gate is DARK (WI-37144). RELEASE BLOCKER.** Its timer was stopped
+> 2026-08-07T04:35:31Z and disabled 04:36:29Z. Those five reds have since been shown to be **real**,
+> and a dark gate is precisely how C-001 survived unnoticed — the blocker stands.
+>
+> ⚠ **CORRECTED 2026-08-09 (su-c2f97, WI-37144): the "no recorded decision / 57 seconds after a 5th
+> consecutive RED" reading was WRONG and must not be repeated.** The stop was ordered by the
+> **owner**, explicitly, and NOT because of the red: session `d699c658` turn 20
+> [owner:Avi 2026-08-07T04:34:50Z, verbatim] *"nvmd i know what it is, just stop it"*, followed
+> 3 minutes later by *"I still hear my computer churning. why?"*. The motive was **CPU churn on the
+> owner's box during an interactive session**; the agent complied at 04:35:27Z, stopping the run
+> **mid-flight**. The 25s adjacency to the run's own `last-run` stamp (04:34:25Z) is coincidence.
+> Verified by reading the owner's turns directly, not a search snippet. Recorded as the standing
+> harness wall `wall:live-federation-gate-timer-owner-stopped` — **re-arming this timer reverses an
+> explicit owner instruction.** (Two prior timestamps in this file read the journal's EDT
+> wall-clock as `Z`; the events are 04:3xZ, not 00:3xZ.)
+>
+> What survives the correction is the part that matters: **the pause was never written to any
+> work-item, plan Decision or coord message** — the only trace was an automated supervision
+> broadcast firing every ~8 minutes for two days with nobody acting. That durable-record gap, not a
+> concealed red, is the process defect.
+>
+> **Flip condition is now three-part**, and `WI-37464` is new: re-arming is gated on
+> `replication_soak` (WI-5481, 5/5 runs) and `restart_durability` (new) so the gate is readable —
+> **and on `WI-37464`, which is the cause of the churn the owner objected to.** Measured in the
+> script: `live-federation-gate.sh:400-402` makes hourly firing cheap ONLY via
+> `age_h(last-green) < GATE_SUCCESS_TTL_H`, and `:1309` writes `last-green` on the **green path
+> only** — so a RED gate has **no suppression at all** and runs the full heavy gate every hour
+> forever. Re-arming while red re-creates exactly the CPU churn that got it stopped.
 >
 > ⚠ **Therefore the 08-01 "CONDITIONAL-GO on three named rows" headline is SUPERSEDED, not merely
 > aged.** Any summary — including prose elsewhere in this file, and any agent checkpoint quoting it
@@ -133,7 +156,7 @@ logs are from the green run `m1785117063`.
 | 4 | Concurrent-write convergence (LWW, byte-identical winner) | 🟢 | `scn.concurrent_lww-220032.log` — no loss on distinct keys; deterministic identical winner on the same key |
 | 5 | Restart durability + settle barrier honesty | 🟢 | `scn.restart_durability-220032.log` (cold sidecar restart lost nothing, re-emitted nothing) + `scn.restart_settle_barrier-220032.log`. The barrier itself was fixed under P-415/WI-5772 — it previously reported a false PASS ("order 80 didn't run") when restart_durability had run and FAILED |
 | 6 | Reconnect / catch-up after offline window | 🟢 | `scn.reconnect_catchup-220032.log` — offline member caught up on content + plan-part + coord, no loss/dup, roster intact |
-| 7 | Revocation READ cut-off (epoch K-cut) applies live | 🔴 | **FALSIFIED 2026-08-09 (`WI-37195`) — this row was 🟢 on evidence that only ever covered ONE path.** The original green still holds *where it was measured*: `scn.revocation_kcut-220032.log` (local-matrix, `revoke.live=true`) passes, and passed again on the 2026-08-09 gate run. But the **from-repo-witness** path reproduces a **C-001 BREACH** on a demonstrably quiet box (host load 20/128, gate build pinned to cores 0-99 off the frames): `K2 REVOKE (A revokes B, epoch advanced 0→0): FAIL` → no re-key → `K4b CONTENT CUT: FAIL — B READ post-revoke content`. AK-ban, AK-unban-teeth, K0 join-keys and the K4a pre-revoke content control all PASS, which isolates it to **the epoch advance on revoke** — not encryption, not write-plane policy, not key wrapping. Path-specific, confirmed from two directions (revocation_kcut PASS + banked `rekey_boundary_applied … newEpoch=1` on that path, vs 0→0 here). Regression window: 2026-08-01T15:01Z green → 2026-08-05T09:39:58Z first red. Owner decision `0e2696ce` makes read-plane re-key the critical path to public release in terms, so this is **unshippable — not a known-limitation candidate**. ⚠ The standing gate was disabled 57s after the 5th consecutive red of this leg (`WI-37144`), so this breach was live and silent for ~2 days. |
+| 7 | Revocation READ cut-off (epoch K-cut) applies live | 🔴 | **FALSIFIED 2026-08-09 (`WI-37195`) — this row was 🟢 on evidence that only ever covered ONE path.** The original green still holds *where it was measured*: `scn.revocation_kcut-220032.log` (local-matrix, `revoke.live=true`) passes, and passed again on the 2026-08-09 gate run. But the **from-repo-witness** path reproduces a **C-001 BREACH** on a demonstrably quiet box (host load 20/128, gate build pinned to cores 0-99 off the frames): `K2 REVOKE (A revokes B, epoch advanced 0→0): FAIL` → no re-key → `K4b CONTENT CUT: FAIL — B READ post-revoke content`. AK-ban, AK-unban-teeth, K0 join-keys and the K4a pre-revoke content control all PASS, which isolates it to **the epoch advance on revoke** — not encryption, not write-plane policy, not key wrapping. Path-specific, confirmed from two directions (revocation_kcut PASS + banked `rekey_boundary_applied … newEpoch=1` on that path, vs 0→0 here). Regression window: 2026-08-01T15:01Z green → 2026-08-05T09:39:58Z first red. Owner decision `0e2696ce` makes read-plane re-key the critical path to public release in terms, so this is **unshippable — not a known-limitation candidate**. ⚠ The standing gate was dark from 2026-08-07T04:35Z (`WI-37144`), so this breach was live and silent for ~2 days. ⚠ Do NOT repeat the earlier gloss that it was "disabled 57s after the 5th consecutive red of this leg" — CORRECTED 2026-08-09: the owner ordered the stop mid-run over CPU churn, not in response to the red (see the VERDICT block, §3 B). The breach's 2-day invisibility is real; the concealment implication is not. |
 | 8 | Replication liveness detector + restart soak | 🟡 | **NOT CURRENT as of 2026-08-09 — downgraded from 🟢 ⚠.** The green quoted `scn.replication_soak-220032.log` ("OVERALL: PASS — 5 kill/restart cycles … detector quiet"); **that file is no longer on disk** (rotated out of `~/.papercusp/live-fed-gate/triage`), so the row's own evidence can no longer be re-read. The **newest banked run** (`scn.replication_soak-232013.log`) reads `OVERALL: INCOMPLETE — replication-liveness soak had failures`. This is a downgrade to 🟡 (unproven at HEAD), **not** a claim the detector regressed: the soak is genuinely flaky-or-broken and nobody has separated those yet. ⚠⚠ **Reading hazard when you check this yourself (`EI-19940993365684927`):** this scenario's log writes a trailing `✓ detector fire-path pin …` sub-assertion BELOW its verdict, so its LAST line reads as a pass on a FAILED run — a peer already concluded "all green" from it. Read the `OVERALL:` line, never the tail. Still carries the D-008 residual risk, §6. |
 | 9 | Work-item federation completeness (WI-1964: 673 vs 2229 divergence) | 🟢 | P-101/WI-5060 — `hive_slug`-first fix verified twice: gate run 20260716-222552 content-matrix (all 10 content types, both directions) + rig-level exact convergence tower 6886 = VM 6886 |
 | 10 | Data completeness at table AND column grain (incl. `p2p_memories`) | 🟢 | P-103/WI-5062 — `federated-column-completeness` extended; every column carried / PROVENANCE / reasoned NOT_FEDERATED |
