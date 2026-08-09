@@ -253,6 +253,33 @@ export interface StalledLoopsSweepResult {
    * fires to a live session. Sustained non-zero means the backoff is not clearing.
    */
   vetoedByWithheldFire: string[];
+  /**
+   * EI-19966210024116714: the subset of `stalledOwners` whose loop is armed against a harness
+   * their OWN session scope cannot address. The routine sits on workspace X while the owner's
+   * `session_briefs` row resolves to workspace Y, so every harness-scoped call that session makes
+   * comes back `harness_forbidden`. Fires land, the agent cannot reach the work it was woken for,
+   * no turn follows, and the ordinary turn-stalled verdict reaps it.
+   *
+   * DISARMED, like the rest of `stalledOwners`, and correctly so — by the same reasoning as the
+   * corpse case, more fires will not help a loop whose harness is unreachable. What this
+   * population exists for is the REASON. Without it the disarm records a generic
+   * "turns-stalled: N fire(s), last turn never" notice that states the symptom and hides the
+   * cause, and the remedy every other surface prints — "re-arm with loop:arm" — silently
+   * re-creates the identical hole, because re-arming does not change the session's scope.
+   *
+   * Overlaps `disarmedWhileReachable` BY DESIGN: a scope-stranded session is typically alive and
+   * answering probes — it is not wedged, it simply cannot reach its own harness — so most members
+   * appear in both lists. Neither is a partition of the other, and neither count subtracts from
+   * `paused`.
+   *
+   * A small non-zero count is EXPECTED on a workspace whose sessions self-relaunch: measured
+   * 2026-08-09, 2 of 28 active loop owners carried the strand. A sustained RISE means the upstream
+   * scope-resolution fault is worsening — `loop:arm`'s own `harness_workspace_mismatch` guard
+   * (agent-tools/loop/arm.ts) refuses to CREATE a new strand, so a rise means sessions are losing
+   * their scope AFTER arming. A drop to ZERO on a workspace known to carry strands means the
+   * discriminator stopped matching, not that the fault was fixed.
+   */
+  disarmedUnaddressableHarness: string[];
   dryRun: boolean;
 }
 
@@ -278,6 +305,22 @@ export async function sweepStalledLoops(
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
   const rearm = deps.rearm ?? rearmFireStarvedLoop;
   const probeReachability = deps.probeReachability ?? probeWakeReachability;
+  const resolveOwnerWorkspaces =
+    deps.resolveOwnerWorkspaces ??
+    (async (ownerIds: string[], o: { sql: Sql }) => {
+      const out = new Map<string, string>();
+      if (ownerIds.length === 0) return out;
+      const briefs = await o.sql<Array<{ owner_id: string; workspace_id: string | null }>>`
+        SELECT owner_id, workspace_id
+          FROM harness_shared.session_briefs
+         WHERE owner_id = ANY(${ownerIds}::text[])
+      `;
+      for (const b of briefs) {
+        if (typeof b.workspace_id === 'string' && b.workspace_id.length > 0)
+          out.set(b.owner_id, b.workspace_id);
+      }
+      return out;
+    });
   const armWake =
     deps.armWake ??
     (async (input: { ownerId: string; note?: string | null }) => {
@@ -322,6 +365,23 @@ export async function sweepStalledLoops(
 
   const statuses: Map<string, LoopStatus> = await getStatuses([...routineIdByOwner.keys()], { sql });
 
+  // EI-19966210024116714: one batch read of the owners' OWN session scopes, for the disarm reason
+  // below. Deliberately hoisted out of the per-owner loop — it is a single indexed SELECT for the
+  // whole sweep, and the loop body must not grow a query per iteration.
+  //
+  // Fails OPEN to an EMPTY map. An owner missing from it is UNKNOWN, never "mismatched", so a read
+  // fault costs at most the extra sentence in a disarm reason — never a wrong accusation, and
+  // never a changed disposition.
+  const ownerWorkspaces = await resolveOwnerWorkspaces([...routineIdByOwner.keys()], { sql }).catch(
+    (e) => {
+      console.warn(
+        `[stalled-loops-guard] owner-workspace resolve failed (${e instanceof Error ? e.message : e}) — ` +
+          `proceeding without the unaddressable-harness discriminator; disarm reasons stay generic.`,
+      );
+      return new Map<string, string>();
+    },
+  );
+
   const stalledOwners: string[] = [];
   const vetoedByRecentTurn: string[] = [];
   const reArmedFireStarved: string[] = [];
@@ -332,6 +392,8 @@ export async function sweepStalledLoops(
   const repairedWakeStarved: string[] = [];
   /** WI-36792: owners whose last fire the GATE withheld — never sent, so never answerable. */
   const vetoedByWithheldFire: string[] = [];
+  /** EI-19966210024116714: disarmed owners whose loop harness their own session cannot address. */
+  const disarmedUnaddressableHarness: string[] = [];
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
