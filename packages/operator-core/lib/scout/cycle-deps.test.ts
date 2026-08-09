@@ -37,6 +37,42 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: (..._args: unknown[]) => Promise.resolve([] as unknown[]) }),
 }));
 
+// WI-37487/WI-37493/EI-19984192298526649 (recurring red-test watchdog flake): one of
+// readCorpus()'s fail-soft health lanes transitively reaches `../dev-deploy-state`'s
+// `devDeployState()`, which shells out to real `git` (optionally via the spawner
+// sidecar). Under ANY ambient environment that enables/degrades the sidecar path (a
+// leaked `PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR`/`PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR`,
+// a slow/unavailable sidecar, or just a real subprocess spawn in general) this UNIT
+// suite can trip `vitest-fail-on-console` on an unrelated `console.warn`, or simply
+// perform real I/O it has no business doing — the exact same hermeticity gap WI-5367
+// above closed for PG. Stub it the same way: no caller here asserts on its return
+// value (every lane that reaches it is wrapped in a fail-soft try/catch), so a static
+// all-null snapshot is a safe, deterministic substitute that can never shell out.
+vi.mock('../dev-deploy-state', () => ({
+  devDeployState: async () => ({
+    integrationRoot: '/dev/null',
+    releaseRoot: '/dev/null',
+    releaseRef: 'main',
+    integrationBranch: 'staging',
+    stagingHead: null,
+    originHead: null,
+    stagingAheadOfOrigin: null,
+    greenPin: null,
+    deployed: null,
+    deployedAtMs: null,
+    deployedBehindStaging: null,
+    greenPinBehindStaging: null,
+    deployedBehindGreenPin: null,
+    greenPinAtStagingHead: null,
+    errors: [],
+  }),
+  resetDevDeployStateCache: () => {},
+  classifyCommitRefFailure: (_ref: string, _repo: string, _message: string) => ({
+    code: 'resolver-failed',
+    reason: 'mocked in cycle-deps.test.ts',
+  }),
+}));
+
 import { buildScoutCycleDeps, rosterForBudget } from './cycle-deps';
 import { ScoutIdeatorsTransportError } from './ideators';
 import { resolveScoutConfig } from './config';

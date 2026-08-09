@@ -486,6 +486,38 @@ function dateLabel(ts: CorpusHit['ts']): string {
 }
 
 /**
+ * Rankers that are NOT independent evidence of relevance, and so must not count
+ * toward multi-ranker agreement.
+ *
+ * The agreement key asks one question: "did two INDEPENDENT retrieval strategies
+ * both find this?" Two names in the engine's vocabulary answer a different one and
+ * would inflate it:
+ *
+ *  - `recency`      — appended by `applyRecencyRerank` to every hit that HAD A
+ *                     USABLE TIMESTAMP. It is a property of the hit's metadata, not
+ *                     a retrieval strategy that found it, so counting it would make
+ *                     "carries a date" indistinguishable from "both legs agreed" —
+ *                     and would rank a dated single-leg hit above an undated hit
+ *                     that lexical AND embeddings both returned.
+ *  - `lexical-fresh` — the same BM25 ranker as `lexical`, re-run over a time
+ *                     window. Listed defensively: the corpus leg does not enable
+ *                     `freshWindowMs` today (see the recency call in
+ *                     corpus-recall-io.ts), so this cannot appear yet, but if it is
+ *                     ever turned on it is one ranker counted twice, not two.
+ */
+const NON_RETRIEVAL_RANKERS: ReadonlySet<string> = new Set(['recency', 'lexical-fresh']);
+
+/** How many INDEPENDENT retrieval strategies found this hit. PURE. */
+function retrievalAgreement(hit: CorpusHit): number {
+  const rankers = hit.rankers;
+  if (!rankers || rankers.length === 0) return 1;
+  const n = rankers.filter((r) => !NON_RETRIEVAL_RANKERS.has(r)).length;
+  // A hit whose only labels were non-retrieval still came from somewhere; floor at
+  // 1 so it ties with a plain single-leg hit rather than sorting below it.
+  return n === 0 ? 1 : n;
+}
+
+/**
  * Select which corpus hits reach the turn, in order:
  *   1. SELF-SESSION — drop the caller's OWN turns, across its whole owner
  *                     chain (see SelectCorpusInput.excludeSessionIds);

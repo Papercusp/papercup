@@ -58,6 +58,35 @@ import {
 export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
 
 /**
+ * P-009 — the corpus leg's recency decay half-life.
+ *
+ * Injection's job is to surface what the agent is ABOUT TO RE-DERIVE, which makes
+ * this corpus unusually time-sensitive: on this fleet a finding from yesterday is
+ * routinely the one that saves the turn, while a near-duplicate from two months ago
+ * is the failure P-009 was filed against. Seven days puts a 3-day-old hit at 0.74
+ * decay and a 3-month-old one at ~0.0001 — i.e. the plan item's own example
+ * ("a three-month-old near-duplicate outranks a three-day-old finding") separates
+ * decisively, without a cliff that a one-week-old document falls off.
+ */
+export const CORPUS_RECENCY_HALF_LIFE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * How strongly recency competes with relevance on the corpus leg, 0..1.
+ *
+ * Left at the engine's documented default. In `linear` mode this is a TRUE mixing
+ * fraction against a rank-normalised relevance term, which buys a bound that holds
+ * regardless of corpus or query: the recency term can move a hit at most
+ * `w·(n-1)/(1-w)` rank positions. At w=0.3 over this leg's ~24-row fused pool that
+ * is ~10 positions — enough to rescue a fresh hit past the relevance-only cut (the
+ * whole point), and far short of letting an irrelevant-but-recent row lead.
+ *
+ * ⚠ That bound is a property of `mode: 'linear'` ONLY. `multiply` max-divides
+ * instead, and `weight` there is an exponent, not a share — do not carry this
+ * number across if the mode ever changes.
+ */
+export const CORPUS_RECENCY_WEIGHT = 0.3;
+
+/**
  * Wall-clock bound for the WHOLE corpus leg (search + embed). This rides the
  * pre-turn prompt build, so it must fail open fast: on timeout the turn simply
  * gets no pointer section. Deliberately tighter than the mem0 path's 5s
@@ -412,6 +441,23 @@ export async function recallCorpusContext(
           // hydrates them for the final top-N only, instead of paying ts_headline
           // across the whole limit*3 over-fetch pool.
           deferHighlight: true,
+          // P-009 / D-001 — the recency term. D-037 forbids an absolute score
+          // FLOOR on this leg (RRF is rank-derived, so a constant compared
+          // against it is meaningless); this is a monotone RE-ORDER of an
+          // existing ranking and compares nothing against an absolute scale,
+          // which D-001 records as the reason the two are compatible.
+          //
+          // `getTime` is left at its default (`hit.ts`) — both corpus sources
+          // now populate it. See WORK_ITEM_RECENCY_NOTE in search/sources.ts for
+          // why the work_item projection had to land FIRST: a missing timestamp
+          // scores as decay 0 (oldest), so enabling this over a blind leg would
+          // have demoted 36.6% of the section for being unmeasurable.
+          //
+          // `freshWindowMs` is deliberately NOT set. It adds a second BM25 leg
+          // over a time window, which both widens the query cost on a path with
+          // a hard latency budget and labels its hits `lexical-fresh` — one
+          // ranker counted twice by any agreement measure. Revisit separately.
+          recency: { halfLifeMs: CORPUS_RECENCY_HALF_LIFE_MS, weight: CORPUS_RECENCY_WEIGHT },
           lexicalMode,
           // Only when the caller set it — 0 is meaningful (argmin-only), so the
           // test is against undefined, not truthiness.

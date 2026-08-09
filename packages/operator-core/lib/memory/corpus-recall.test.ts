@@ -401,6 +401,64 @@ describe('selectCorpusLines', () => {
     expect(lines.map((l) => l.handle.ref)).toEqual(['WI-202', 'WI-201']);
   });
 
+  // P-009. `applyRecencyRerank` appends 'recency' to the rankers of every hit that
+  // HAD A USABLE TIMESTAMP, and this sort keys on ranker COUNT as an agreement
+  // proxy — so without filtering, "carries a date" is indistinguishable from "two
+  // independent rankers agreed". Each of these fails against the unfiltered count.
+  it('does NOT count the recency label as multi-ranker agreement', () => {
+    const { lines } = selectCorpusLines({
+      hits: [
+        // Single-leg, but dated — 2 labels, 1 retrieval ranker.
+        wi({ sourceId: 'WI-401', rankers: ['bm25', 'recency'], ts: '2026-08-09T00:00:00.000Z' }),
+        // Genuinely found by both legs — 2 labels, 2 retrieval rankers.
+        wi({ sourceId: 'WI-402', rankers: ['bm25', 'embeddings'] }),
+      ],
+      queryText: QUERY,
+      maxItems: 2,
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual(['WI-402', 'WI-401']);
+  });
+
+  it('does NOT count lexical-fresh as a second ranker — it is BM25 run twice', () => {
+    const { lines } = selectCorpusLines({
+      hits: [
+        wi({ sourceId: 'WI-411', rankers: ['lexical', 'lexical-fresh'] }),
+        wi({ sourceId: 'WI-412', rankers: ['lexical', 'embeddings'] }),
+      ],
+      queryText: QUERY,
+      maxItems: 2,
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual(['WI-412', 'WI-411']);
+  });
+
+  it('keeps the engine’s recency-blended order WITHIN one agreement tier', () => {
+    // Both single-leg + dated: agreement ties, so the engine's order (which the
+    // recency re-rank has already applied) must survive untouched.
+    const { lines } = selectCorpusLines({
+      hits: [
+        wi({ sourceId: 'WI-421', rankers: ['bm25', 'recency'], ts: '2026-08-09T00:00:00.000Z' }),
+        wi({ sourceId: 'WI-422', rankers: ['bm25', 'recency'], ts: '2026-06-20T00:00:00.000Z' }),
+      ],
+      queryText: QUERY,
+      maxItems: 2,
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual(['WI-421', 'WI-422']);
+  });
+
+  it('floors a hit whose only label is non-retrieval at one ranker, not zero', () => {
+    // Must TIE with a plain single-leg hit (so input order decides), never sort
+    // below it — a hit still had to be retrieved by something to be here at all.
+    const { lines } = selectCorpusLines({
+      hits: [
+        wi({ sourceId: 'WI-431', rankers: ['recency'], ts: '2026-08-09T00:00:00.000Z' }),
+        wi({ sourceId: 'WI-432', rankers: ['bm25'] }),
+      ],
+      queryText: QUERY,
+      maxItems: 2,
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual(['WI-431', 'WI-432']);
+  });
+
   it('otherwise preserves the engine’s fused order', () => {
     const { lines } = selectCorpusLines({
       hits: [wi({ sourceId: 'WI-301' }), wi({ sourceId: 'WI-302' })],

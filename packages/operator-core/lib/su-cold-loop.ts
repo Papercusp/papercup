@@ -160,7 +160,7 @@ function coldNoteStamp(ms: number): string {
  * — the live near-miss that motivated this had a 37-minute gap, and the cases that
  * actually burn an agent are minutes-to-hours, never seconds.
  */
-const COLD_NOTE_POST_TURN_FLOOR_MS = 5 * 60_000;
+export const COLD_NOTE_POST_TURN_FLOOR_MS = 5 * 60_000;
 
 /** Human-readable elapsed span (mirrors loop-fire.ts's humanAge). Pure. */
 function coldNoteAge(ms: number): string {
@@ -234,6 +234,22 @@ function coldNoteAge(ms: number): string {
  * gone, but the completion marker survives server-side and this render runs at compose time.
  * Absent/non-finite, or within COLD_NOTE_POST_TURN_FLOOR_MS of the note write ⇒ omitted
  * (byte-identical to before this fix).
+ *
+ * `agentToolCallsSinceNote` (EI-19984789589075138): evidence, not just existence — the strong
+ * form of the check above. `lastTurnAtMs` proves a turn COMPLETED after the note write, but a
+ * turn is well-formed (and moves `lastRealTurnAt`) even when it is a usage-wall / withheld-fire
+ * bounce that made zero tool calls: the model emits refusal text, the turn ends, nothing happened.
+ * That shape fires the banner on precisely the wakes that follow an outage, sending the successor
+ * on a reconciliation hunt for work that never occurred — measured live (su-04c552b7, cold wake
+ * #6, 2026-08-09): two consecutive fires each bounced off a session-limit wall with ZERO tool
+ * calls, and the banner still reported "you completed a turn ... ~4h AFTER this note was written."
+ * When the caller can positively COUNT agent-authored tool calls (excluding the automatic hook/
+ * status set) in (updatedAtMs, lastTurnAtMs] and that count is exactly 0, this downgrades the
+ * banner to a bounced-fire notice instead of the un-checkpointed-work alarm — the successor is
+ * told its recent fires produced no work rather than sent hunting for work that isn't there.
+ * `undefined`/`null` (evidence unavailable — the count query wasn't run or failed) or any
+ * positive count preserves the EXISTING banner unchanged: this is strictly additive, and silence
+ * about the evidence never suppresses a real warning.
  */
 export function renderColdWakeInjection(
   carryNote: string,
@@ -241,6 +257,7 @@ export function renderColdWakeInjection(
   wakeCount?: number,
   updatedAtMs?: number | null,
   lastTurnAtMs?: number | null,
+  agentToolCallsSinceNote?: number | null,
 ): string {
   const note = (carryNote ?? '').trim();
   const extraBlock = (extras ?? '').trim();
