@@ -13,6 +13,7 @@ import { readIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
+import { notifyPlanLockChange } from './notify-lock-change';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
@@ -98,7 +99,12 @@ export default defineTool({
           }),
         );
 
-      const noteShaToken = (released: string[] | undefined): void => {
+      /**
+       * Post-release side-effects, deliberately funnelled through ONE helper so
+       * a future release path cannot pick up half of them: every `return` from
+       * releaseFileLocks goes through here.
+       */
+      const onFileLocksReleased = (released: string[] | undefined): void => {
         // G-0 (P-033): remember the published sha for the next grant. On the
         // remote-authority path the authority records it too (from the routed
         // payload); this local note keeps the local-authority + fail-open paths
@@ -106,6 +112,12 @@ export default defineTool({
         if (released && released.length > 0) {
           noteShaTokenRelease(coordinationDomain, released, args.published_sha ?? null, Date.now());
         }
+        // P-025: push the release to the plan lock banner. Uses the paths the
+        // store actually released rather than `args.paths`, which is absent on
+        // the lock_id and all-mine releases. No-ops for non-plan paths; see
+        // notify-lock-change.ts for why the per-call dedupe window matters here
+        // (acquire and release share one bus key — D-042).
+        notifyPlanLockChange(released ?? []);
       };
       try {
         const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryRelease>>>(
@@ -126,7 +138,7 @@ export default defineTool({
             },
           },
         );
-        noteShaToken(routed.value.released);
+        onFileLocksReleased(routed.value.released);
         // WI-1550 (P-015): a LOCALLY-decided release (we are the authority, or
         // fail-open/no-peers/unmanaged) never appended its own instant-handover
         // lock-event before this fix — only a release relayed to a REMOTE authority
@@ -148,7 +160,7 @@ export default defineTool({
         // local release (pre-cutover behavior). No lock-event emitted here, same
         // rationale as the acquire-side fallback in acquire.ts.
         const local = await localRelease();
-        noteShaToken(local.released);
+        onFileLocksReleased(local.released);
         return local;
       }
     }

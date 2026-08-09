@@ -42,6 +42,7 @@ import { readIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import { normalizePaths, tryAcquire, tryRelease, type AcquireBusy } from './su-lock-store';
+import { notifyPlanLockChange } from './notify-lock-change';
 import { enrichBusy } from './enrich-busy';
 import { DEFAULT_LOCK_TTL_SEC } from './lock-config';
 import type { CellReader } from '../../cell-registry';
@@ -172,6 +173,10 @@ export async function guardFileLock<T>(
   }
 
   const lockId = acquired.lock_id;
+  // P-025: push the ACQUIRE to the plan lock banner. Emitted after the txn has
+  // committed, never inside it — a notify fired mid-transaction can be observed
+  // before the row it announces is visible. No-ops for non-plan paths.
+  notifyPlanLockChange(paths);
   try {
     const result = await run();
     return { acquired: true, result };
@@ -182,6 +187,12 @@ export async function guardFileLock<T>(
     ).catch((err) => {
       ctx.log?.(`[file-lock] release faulted (lock frees at TTL): ${err instanceof Error ? err.message : String(err)}`);
     });
+    // P-025: and the RELEASE. This is the emit the bus's 90s first-wins dedupe
+    // would swallow on the default window (D-042) — acquire and release share
+    // one (name, args) key — which is why notifyPlanLockChange passes a short
+    // per-call window. Emitted even when the release faulted above: the lock
+    // then frees at TTL and the banner still needs to stop showing it.
+    notifyPlanLockChange(paths);
   }
 }
 

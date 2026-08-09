@@ -15,6 +15,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireGranular, validatePath } from './su-lock-store';
+import { notifyPlanLockChange } from './notify-lock-change';
 import { hardText, LIMITS } from '../limits';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
@@ -73,6 +74,10 @@ export default defineTool({
     if (!r.ok) {
       return json({ ok: false, reason: r.reason, conflicts: r.conflicts });
     }
+    // P-025: push the acquire to the plan lock banner (post-commit; no-ops for
+    // non-plan paths). See notify-lock-change.ts for why the per-call dedupe
+    // window is load-bearing (D-042).
+    notifyPlanLockChange([args.path]);
     return json({
       ok: true,
       lock_id: r.lock_id,

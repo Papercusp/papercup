@@ -148,7 +148,14 @@ function candidateSet(cwd) {
   }
 }
 
-export function findOffenders(cwd) {
+// `cwd` defaults to ROOT rather than being left bare: under checkJs a bare
+// parameter with no default is REQUIRED, so the no-arg calls this module is
+// designed around (main() below, and the guard's own test) became TS2554
+// "Expected 1 arguments, but got 0" and red-pinned the fleet gate on lint:tsc.
+// Behaviour is unchanged — listTrackedFiles already defaults to the same ROOT
+// and candidateSet does `cwd ?? ROOT` — and it matches the idiom the sibling
+// guards already use (check-no-ungated-infinite-animation.mjs: `root = ROOT`).
+export function findOffenders(cwd = ROOT) {
   const { files, unscanned } = listTrackedFiles(cwd);
   const candidates = candidateSet(cwd);
   const offenders = [];

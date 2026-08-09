@@ -39,6 +39,8 @@ import {
   buildGreenCheckpointEnv,
   sanitizeForkNodeOptions,
   GREEN_CHECKPOINT_FORK_HEAP_MB,
+  GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
+  runPostSuiteLegs,
   checkpointFailureSignature,
   historicalFlakeAnnotations,
   summarizeSuiteOutput,
@@ -4663,5 +4665,64 @@ describe('P-004/D-002 — the gate-verdict WAKE BANNER is attributable to its pi
     const expected = `[${pipeline}] green-checkpoint: ${c2.slice(0, 8)} not green — ready held`;
     expect(summaries['green-checkpoint:red']).toBe(expected);
     expect(summaries[`green-checkpoint:red:${pipeline}`]).toBe(expected);
+  });
+});
+
+/**
+ * RECURRENCE GUARD — the post-suite legs must NOT inherit the per-FORK heap cap.
+ *
+ * `main` sat frozen ~11h behind an OOM caused by two locally-correct fixes cancelling
+ * each other: the gate pins NODE_OPTIONS to GREEN_CHECKPOINT_FORK_HEAP_MB (4 GiB,
+ * sized for EIGHT CONCURRENT vitest forks) and hands that same env to the post-suite
+ * legs, which run SEQUENTIALLY; `tscChildEnv` (scripts/lib/tsc-baseline-gate.mjs) then
+ * DEFERS to any pin the caller already set — deliberately, so a constrained box can pin
+ * a smaller one and win — so its TSC_HEAP_MB=8192 could never apply inside the gate.
+ * Candidate 28ad34252e5f died at `Scavenge 4069.4 (4092.1) MB`.
+ *
+ * This asserts the WIRING, not the constant. WI-37503's fix existed and was INERT
+ * because nothing checked it reached the path the gate actually runs — precisely the
+ * failure this guard must be able to catch.
+ */
+describe("post-suite legs get their own heap (WI-37510: fork cap OOM'd lint:tsc, froze main ~11h)", () => {
+  it('the POST-SUITE ceiling must exceed the per-fork cap, or the whole fix is a no-op', () => {
+    expect(GREEN_CHECKPOINT_POST_SUITE_HEAP_MB).toBeGreaterThan(GREEN_CHECKPOINT_FORK_HEAP_MB);
+  });
+
+  it('spawns lint:tsc with the POST-SUITE heap, never the 4 GiB fork cap', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'green-postsuite-heap-'));
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'fixture', scripts: { 'lint:tsc': 'node scripts/lint-tsc.mjs' } }),
+      );
+
+      let lintTscNodeOptions: string | undefined;
+      const exec = (async (_cmd: string, args: string[], opts?: { env?: NodeJS.ProcessEnv }) => {
+        if (args.includes('lint:tsc')) lintTscNodeOptions = opts?.env?.NODE_OPTIONS;
+        return { code: 0, stdout: '', stderr: '' };
+      }) as unknown as Parameters<typeof runPostSuiteLegs>[2];
+
+      // The env EXACTLY as the gate builds it: the bg-host's 128 GiB stripped and
+      // pinned to the per-fork cap. This is the input that caused the outage.
+      const suiteEnv: NodeJS.ProcessEnv = {
+        NODE_OPTIONS: sanitizeForkNodeOptions('--expose-gc --max-old-space-size=131072'),
+      };
+      // Precondition: prove the fixture reproduces the BAD input, so a passing
+      // assertion below cannot come from an env that was never capped in the first place.
+      expect(suiteEnv.NODE_OPTIONS).toContain(`--max-old-space-size=${GREEN_CHECKPOINT_FORK_HEAP_MB}`);
+
+      await runPostSuiteLegs(dir, suiteEnv, exec, 'apps/operator');
+
+      expect(lintTscNodeOptions).toBeDefined();
+      expect(lintTscNodeOptions).toContain(`--max-old-space-size=${GREEN_CHECKPOINT_POST_SUITE_HEAP_MB}`);
+      expect(lintTscNodeOptions).not.toContain(`--max-old-space-size=${GREEN_CHECKPOINT_FORK_HEAP_MB}`);
+      // Exactly ONE ceiling: a second occurrence silently takes the LAST, which is how
+      // an "append" fix looks correct in review and behaves unpredictably at runtime.
+      expect(lintTscNodeOptions?.match(/--max-old-space-size/g)).toHaveLength(1);
+      // And it must not eat unrelated flags the gate set.
+      expect(lintTscNodeOptions).toContain('--expose-gc');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

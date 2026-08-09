@@ -1035,19 +1035,50 @@ export const TSC_HEAP_MB = Number(process.env.PAPERCUSP_TSC_HEAP_MB) || 8192;
  * The child env for a tsc spawn: `process.env` plus `extra`, with
  * `--max-old-space-size` appended to NODE_OPTIONS.
  *
- * An EXISTING `--max-old-space-size` in the caller's NODE_OPTIONS is left alone —
- * an operator who pinned a value (or a constrained CI box that pinned a smaller
- * one) must win over this default, and appending a second copy would silently
- * take the LAST occurrence rather than erroring.
+ * An existing LARGER `--max-old-space-size` is left alone — an operator who
+ * pinned more must win — and a second copy is never appended (that would
+ * silently take the LAST occurrence rather than erroring).
+ *
+ * ⚠ A SMALLER existing value is RAISED, not deferred to. This is a correction
+ * (WI-37450, measured 2026-08-09): the previous rule deferred to ANY existing
+ * pin, reasoning that "a constrained CI box that pinned a smaller one must win".
+ * That is wrong for THIS workload and it froze the fleet gate for ~10h across 11
+ * consecutive reds. The chain:
+ *
+ *   buildGreenCheckpointEnv (green-checkpoint.ts:3145) unconditionally sets
+ *   NODE_OPTIONS = sanitizeForkNodeOptions(...), which always pins
+ *   `--max-old-space-size=GREEN_CHECKPOINT_FORK_HEAP_MB` (4096) so eight
+ *   concurrent TEST forks cannot each inherit the bg-host's 128 GiB heap. That
+ *   env is then handed to runPostSuiteLegs, which spawns `npm run lint:tsc`
+ *   with it — so the tsc child inherited a cap meant for a FORK POOL, this
+ *   function deferred to it, and TSC_HEAP_MB never applied. Measured red:
+ *   `Mark-Compact (reduce) 4081.5 (4104.6) -> 4060.6 (4078.6) MB`, i.e. a ~4 GB
+ *   ceiling on a compile that needs 8 GB.
+ *
+ * Deferring BELOW what the compile provably needs is never a graceful
+ * degradation — it converts "this box might be tight" into "this gate is
+ * structurally unpassable", which is strictly worse and silent. The 4096 pin is
+ * correct for its own purpose (a per-FORK cap) and simply is not a statement
+ * about a single whole-program tsc process.
  *
  * @param {Record<string, string>} [extra]
  * @returns {Record<string, string | undefined>}
  */
 export function tscChildEnv(extra = {}) {
   const existing = process.env.NODE_OPTIONS ?? '';
-  const nodeOptions = /--max-old-space-size(=|\s)/.test(existing)
-    ? existing
-    : `${existing} --max-old-space-size=${TSC_HEAP_MB}`.trim();
+  const pinned = /--max-old-space-size(?:=|\s+)(\d+)/.exec(existing);
+  let nodeOptions;
+  if (!pinned) {
+    nodeOptions = `${existing} --max-old-space-size=${TSC_HEAP_MB}`.trim();
+  } else if (Number(pinned[1]) >= TSC_HEAP_MB) {
+    nodeOptions = existing;
+  } else {
+    // Rewrite in place: appending a second copy would depend on last-wins.
+    nodeOptions = existing.replace(
+      /--max-old-space-size(?:=|\s+)\d+/,
+      `--max-old-space-size=${TSC_HEAP_MB}`,
+    );
+  }
   return { ...process.env, ...extra, NODE_OPTIONS: nodeOptions };
 }
 

@@ -135,7 +135,12 @@ const has = (k) => args.includes(k);
 const base = arg('--base', process.env.AFFECTED_BASE || 'origin/main');
 const runIntegration = has('--integration');
 const runAll = has('--all');
-const dry = has('--dry');
+// EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
+// git, rsync, kubectl all use it) and this repo's own agent guidance points
+// people at previewing before a heavy run — so it's the spelling an agent
+// reaches for. Accept it as an alias rather than relying solely on the
+// unknown-flag refusal below to catch it.
+const dry = has('--dry') || has('--dry-run');
 // P-016 (release-pipeline-resilience-2026-06-09 D-010): range + print-only mode for the
 // green-checkpoint's longest-green-PREFIX salvage. With --range-from/--range-to, the
 // changed-file set is the two-dot diff of that commit range (NOT the working tree), and
@@ -155,6 +160,73 @@ const printAffected = has('--print-affected');
 const runElSuite = has('--el-suite');
 const excludeArg = arg('--exclude', '');
 const excludes = new Set(excludeArg.split(',').filter(Boolean));
+
+// EI-19463337855465369: an argv token starting with `--` that none of the
+// arg()/has() calls above consumed used to be silently DISCARDED — has()/
+// arg() only ever ask "is this flag present"; neither one complains about a
+// flag they don't recognize. A typo (or the `--dry-run` convention above,
+// before the alias was added) matched nothing, and the script fell straight
+// through to its DEFAULT action — which, unlike most CLIs' cheap default, is
+// one of the heaviest jobs on this box: actually running the affected test
+// suites. This is the same zero-or-unbounded-work-reported-as-clean family
+// this repo already guards against elsewhere (a `tsc -p .` that typechecks
+// zero files and reads clean; a `test:file -t <pattern>` that matches zero
+// tests and reports `status=passed`) — here inverted: instead of silently
+// doing LESS than asked, it silently did FAR MORE, with no "unknown flag"
+// line to notice before the multi-minute run was already underway. Refuse
+// instead of guessing.
+const KNOWN_FLAGS = [
+  '--base',
+  '--integration',
+  '--all',
+  '--dry',
+  '--dry-run',
+  '--range-from',
+  '--range-to',
+  '--changed-paths',
+  '--print-affected',
+  '--el-suite',
+  '--exclude',
+];
+function editDistance(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+function closestKnownFlag(flag) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const known of KNOWN_FLAGS) {
+    const d = editDistance(flag, known);
+    if (d < bestDist) {
+      bestDist = d;
+      best = known;
+    }
+  }
+  // Only suggest something plausibly a typo of — a wild guess is worse than none.
+  return bestDist <= 4 ? best : null;
+}
+const unknownFlags = args.filter((a) => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
+if (unknownFlags.length > 0) {
+  errSync(`affected-tests.mjs: unrecognized flag(s): ${unknownFlags.join(', ')}`);
+  for (const flag of unknownFlags) {
+    const suggestion = closestKnownFlag(flag);
+    if (suggestion) errSync(`  did you mean ${suggestion}?`);
+  }
+  errSync('');
+  errSync(`Known flags: ${KNOWN_FLAGS.join(' ')}`);
+  errSync('(see the usage comment at the top of scripts/affected-tests.mjs for what each does)');
+  errSync('Refusing to run rather than silently ignoring the flag and running the full default job.');
+  process.exit(1);
+}
 
 // Read quarantine.txt: BARE workspace-level entries (no `::`) get added to
 // the whole-workspace quarantine set (logged as quarantined, not silently

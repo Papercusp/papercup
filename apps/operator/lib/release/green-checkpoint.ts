@@ -3025,6 +3025,25 @@ export const HOST_ENV_STRIP = ['AGENT_MODELS', 'HARNESS_SLUG'];
 export const GREEN_CHECKPOINT_FORK_HEAP_MB = 4096;
 
 /**
+ * V8 old-space ceiling (MB) for the POST-SUITE legs (lint:tsc and its siblings).
+ *
+ * These are NOT the test forks {@link GREEN_CHECKPOINT_FORK_HEAP_MB} is sized for.
+ * That 4 GiB number exists because up to EIGHT vitest forks run CONCURRENTLY and
+ * 8 x the bg-host's 128 GiB heap means no GC and an ENOMEM under fleet load. The
+ * post-suite legs run SEQUENTIALLY, one process at a time, so a per-fork cap is the
+ * wrong instrument for them — and applying it froze `main`.
+ *
+ * MEASURED (2026-08-09, EI/WI-37510): a whole-repo `tsc` needs more than 4 GiB here.
+ * Candidate 28ad34252e5f died with `Scavenge 4069.4 (4092.1) MB ... FATAL ERROR:
+ * Ineffective mark-compacts near heap limit` — a ~4 GiB ceiling, i.e. THIS cap, not
+ * V8's default (which is what WI-37503's title assumed, and why raising a default
+ * could never fix it: `tscChildEnv` in scripts/lib/tsc-baseline-gate.mjs deliberately
+ * DEFERS to any pin the caller already set, so the gate's 4096 silently beat the
+ * 8192 that fix introduced — two locally-correct changes cancelling each other).
+ */
+export const GREEN_CHECKPOINT_POST_SUITE_HEAP_MB = 16384;
+
+/**
  * worker-pool-crash-absorption-2026-06-25 (WI-806): the default vitest fork concurrency
  * the gate runs at. ROOT-CAUSE prevention for the 5×-consecutive-red incident where
  * `@papercusp/operator-core`'s suite CRASHED a worker fork (ENOMEM / OOM-kill under the
@@ -4748,10 +4767,24 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
  */
 export async function runPostSuiteLegs(
   treeDir: string,
-  env: NodeJS.ProcessEnv,
+  envIn: NodeJS.ProcessEnv,
   exec: CheckpointExec,
   spaWorkspace: string,
 ): Promise<PostSuiteLegs> {
+  // The suite env arrives pinned to GREEN_CHECKPOINT_FORK_HEAP_MB (4 GiB), which is
+  // sized for EIGHT CONCURRENT vitest forks. These legs run SEQUENTIALLY, so that cap
+  // is a category error here — and it is what OOM'd `lint:tsc` and froze `main` for
+  // ~11h (candidate 28ad34252e5f, verdict 2026-08-09T16:06:37Z). Re-pin to the
+  // post-suite ceiling with the SAME sanitizer, which replaces rather than appends
+  // (a second --max-old-space-size would silently take the last occurrence).
+  //
+  // Note this must be fixed HERE, not in tscChildEnv: that helper deliberately DEFERS
+  // to a pin the caller already set, so a constrained box can pin a smaller one and
+  // win. Making it override a smaller pin would fix this red and ENOMEM that box.
+  const env: NodeJS.ProcessEnv = {
+    ...envIn,
+    NODE_OPTIONS: sanitizeForkNodeOptions(envIn.NODE_OPTIONS, GREEN_CHECKPOINT_POST_SUITE_HEAP_MB),
+  };
   const legs = legsNotRun('not reached');
   const outputs: string[] = [];
   const failingSignatures: string[] = [];

@@ -159,14 +159,56 @@ describe('tsc child heap (WI-37503)', () => {
     }
   });
 
-  it('DEFERS to a caller who already pinned a size — never appends a second copy', () => {
+  it('DEFERS to a caller who pinned a LARGER size — never appends a second copy', () => {
     // node takes the LAST occurrence, so appending would silently override an
-    // operator's deliberate (possibly SMALLER, on a constrained box) pin.
+    // operator's deliberate pin. Deference is correct when they asked for MORE.
     const prev = process.env.NODE_OPTIONS;
-    process.env.NODE_OPTIONS = '--max-old-space-size=2048';
+    process.env.NODE_OPTIONS = `--max-old-space-size=${TSC_HEAP_MB * 2}`;
     try {
       const env = tscChildEnv();
-      expect(env.NODE_OPTIONS).toBe('--max-old-space-size=2048');
+      expect(env.NODE_OPTIONS).toBe(`--max-old-space-size=${TSC_HEAP_MB * 2}`);
+      expect(env.NODE_OPTIONS?.match(/--max-old-space-size/g)).toHaveLength(1);
+    } finally {
+      if (prev === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = prev;
+    }
+  });
+
+  // WI-37450 REGRESSION GUARD — this is the case that froze the fleet gate for
+  // ~10h across 11 consecutive reds, and NO test covered it: every assertion
+  // above exercises either an EMPTY NODE_OPTIONS or a larger pin, while the gate
+  // path always supplies a SMALLER one.
+  //
+  // green-checkpoint's buildGreenCheckpointEnv unconditionally pins
+  // --max-old-space-size=GREEN_CHECKPOINT_FORK_HEAP_MB (4096) to stop 8 concurrent
+  // TEST forks inheriting the bg-host's 128 GiB heap, then hands that same env to
+  // runPostSuiteLegs -> `npm run lint:tsc`. A per-FORK cap is not a statement about
+  // a single whole-program tsc compile, so it must be RAISED, not deferred to.
+  it('RAISES a smaller inherited pin (the gate per-fork cap) instead of deferring to it', () => {
+    const GATE_FORK_HEAP_MB = 4096; // GREEN_CHECKPOINT_FORK_HEAP_MB
+    expect(GATE_FORK_HEAP_MB).toBeLessThan(TSC_HEAP_MB); // else this guard proves nothing
+    const prev = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = `--max-old-space-size=${GATE_FORK_HEAP_MB}`;
+    try {
+      const env = tscChildEnv();
+      expect(env.NODE_OPTIONS).toBe(`--max-old-space-size=${TSC_HEAP_MB}`);
+      // Still exactly one copy — the last-wins hazard the deference rule guarded.
+      expect(env.NODE_OPTIONS?.match(/--max-old-space-size/g)).toHaveLength(1);
+    } finally {
+      if (prev === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = prev;
+    }
+  });
+
+  it('raises a smaller pin in the SPACE-SEPARATED form too, preserving neighbours', () => {
+    const prev = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '--enable-source-maps --max-old-space-size 4096 --expose-gc';
+    try {
+      const env = tscChildEnv();
+      expect(env.NODE_OPTIONS).toContain(`--max-old-space-size=${TSC_HEAP_MB}`);
+      expect(env.NODE_OPTIONS).toContain('--enable-source-maps');
+      expect(env.NODE_OPTIONS).toContain('--expose-gc');
+      expect(env.NODE_OPTIONS).not.toContain('4096');
       expect(env.NODE_OPTIONS?.match(/--max-old-space-size/g)).toHaveLength(1);
     } finally {
       if (prev === undefined) delete process.env.NODE_OPTIONS;
