@@ -41,6 +41,7 @@ import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
 import { detectUnsafeDeletions } from './deletion-import-guard';
+import { detectQuarantineImporters } from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import {
   groupFilesForAttribution,

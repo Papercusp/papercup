@@ -35,8 +35,10 @@ import type { RunGit } from './run-git-sync';
 import type { ContentOffender } from './content-guard';
 import { isExcludedPath } from '../../content-lint/registry';
 
-/** Extensions this guard treats as resolvable JS/TS modules. */
-const RESOLVABLE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+/** Extensions this guard treats as resolvable JS/TS modules. Exported so the sibling
+ *  quarantine-import guard (EI-19932544083689229) reuses the SAME resolvable-extension
+ *  set rather than a drifting duplicate — same rationale as `isExcludedPath` above. */
+export const RESOLVABLE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 
 /** Parent-dir names common enough that searching their bare basename (e.g. "index",
  *  "utils") would `git grep` a huge, mostly-irrelevant candidate set — for these we
