@@ -127,24 +127,52 @@ function findDecisionsSectionBody(maskedBody: string): string | null {
 }
 
 /**
+ * A `D-NNN` token in the Decisions section counts toward id allocation only
+ * when it is DECLARATION-SHAPED: the first thing on its line (after an
+ * optional blockquote marker and list bullet), written either as a markdown
+ * heading (`#### D-014 — ...`) or wrapped in emphasis (`- **D-014** ...` —
+ * the informal legacy bullet EI-15651 exists for).
+ *
+ * Anything else is a REFERENCE, not a declaration. That distinction is the
+ * whole fix for EI-19989843927675996: a decision BODY that cites another
+ * plan's ruling — `defers to D-054` — used to be scanned as if it declared
+ * D-054 here, so the next allocation jumped to D-055 and the plan read as
+ * though ~50 decisions were missing. Cross-plan citation is not an edge case
+ * but the documented good practice (CLAUDE.md tells agents to name a ruling
+ * as `<planSlug>#D-NNN`), and the inflation it caused was permanent and
+ * monotonic.
+ *
+ * Requiring emphasis-or-heading rather than merely line-initial position is
+ * measured, not guessed: across all 679 papercusp plans, informal
+ * declarations appear ONLY as `**D-NNN**` (365 lines / 105 plans) or as
+ * headings (4,631 lines / 586 plans) — a bare line-initial `D-NNN` occurs
+ * zero times, while 7,917 mid-line reference tokens do. So the tighter shape
+ * excludes no real declaration and admits no bullet-list citation
+ * (`- Supersedes D-054.`), which the looser line-initial rule would have.
+ *
+ * Slug-qualified citations (`unified-agent-state-plane-2026-07-27#D-087`)
+ * fall out for free: both branches require `D-` immediately after the
+ * heading marker or emphasis delimiter, so a qualified token never matches
+ * however it is positioned.
+ */
+const DECLARED_DECISION_TOKEN_RE =
+  /^[ \t]*(?:>[ \t]*)*(?:(?:[-*+]|\d+\.)[ \t]+)?(?:#{1,6}[ \t]+D-(\d{3,})\b|(?:\*\*|__)D-(\d{3,})(?:\*\*|__))/gm;
+
+/**
  * Allocate the next D-NNN.
  *
  * Considers BOTH real parsed (structured `### D-NNN`) decisions AND any
- * bare `D-NNN` token appearing anywhere else in the `## Decisions`
- * section body — e.g. an informal legacy-style `- **D-001** ...` prose
- * bullet, which the structured parser does not recognise as a decision
- * at all (EI-15651). Without the latter, a plan hand-authored with
- * informal decision bullets makes the allocator start counting from 1
- * again, minting a `### D-001` that collides VISUALLY with the
- * pre-existing informal `**D-001**` bullet in the rendered document,
- * even though the store treats them as unrelated. Taking the max over
- * every D-NNN token in the section (not just structured ones) keeps
- * newly-allocated ids past anything already visible there, structured or
- * not.
+ * DECLARATION-SHAPED `D-NNN` token elsewhere in the `## Decisions` section
+ * body — e.g. an informal legacy-style `- **D-001** ...` prose bullet, which
+ * the structured parser does not recognise as a decision at all (EI-15651).
+ * Without the latter, a plan hand-authored with informal decision bullets
+ * makes the allocator start counting from 1 again, minting a `### D-001`
+ * that collides VISUALLY with the pre-existing informal `**D-001**` bullet
+ * in the rendered document, even though the store treats them as unrelated.
  *
  * References to D-NNN inside prose/example fences OUTSIDE the Decisions
- * section still must not bump the allocator — hence scoping the token
- * scan to the section body (fence-masked within it too).
+ * section must not bump the allocator either — hence scoping the scan to the
+ * section body (fence-masked within it too).
  */
 export function allocateNextDecisionId(body: string): string {
   const parsed = parsePlan(body);
@@ -158,8 +186,8 @@ export function allocateNextDecisionId(body: string): string {
   }
   const sectionBody = findDecisionsSectionBody(maskFences(body));
   if (sectionBody) {
-    for (const token of sectionBody.match(/\bD-(\d{3,})\b/g) ?? []) {
-      const n = parseInt(token.slice(2), 10);
+    for (const m of sectionBody.matchAll(DECLARED_DECISION_TOKEN_RE)) {
+      const n = parseInt(m[1] ?? m[2] ?? '0', 10);
       if (n > max) max = n;
     }
   }
