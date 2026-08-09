@@ -24,7 +24,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readProcessIdentity } from '../process-identity';
-import { absCgroupDir, nodeCgroupFs, readCgroupProcs, type CgroupFs } from './cgroup-read';
+import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
 import { closeTask, getSubtree, getTask } from './store';
 import { isLiveOwnedState, type TaskRow } from './types';
 
@@ -59,7 +59,8 @@ export type ControlError =
   | 'identity_mismatch' // the pid now belongs to something else — REFUSED
   | 'no_target' // neither a scope nor a verifiable pid
   | 'unsupported' // e.g. freeze on an unconfined task
-  | 'command_failed';
+  | 'command_failed'
+  | 'incomplete'; // signal(s) sent, but the scope still holds processes after the verification window (EI-19478780721557822) — never `ok:true` on a bare "signalled"
 
 export interface ControlDeps {
   execFileAsync?: typeof execFileAsync;
@@ -161,14 +162,36 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     if (!res.ok) {
       return { ok: false, taskId, action: 'kill', error: 'command_failed', detail: res.detail };
     }
+    let escalated = false;
     if (opts.escalateAfterMs && opts.escalateAfterMs > 0) {
       await d.sleep(opts.escalateAfterMs);
-      if (scopeStillHasProcesses(row, d)) {
+      if (countScopeProcesses(row, d) > 0) {
+        escalated = true;
         await systemctl(['kill', '--signal=SIGKILL', row.scopeUnit], d);
       }
     }
-    await closeTask(taskId, { state: 'killed', exitReason: `scope kill ${signal}` });
-    return { ok: true, taskId, action: 'kill', detail: `scope ${row.scopeUnit} signalled ${signal}` };
+    // EI-19478780721557822: a `systemctl kill` exit code only proves the SIGNAL was
+    // delivered, never that the subtree actually died — a re-parented / D-state /
+    // otherwise unkillable descendant can survive both SIGTERM and an escalated
+    // SIGKILL. Re-probe (bounded, not wall-clock — see waitForScopeEmpty) before
+    // reporting anything, and never close the row as `killed` while it is not.
+    const { empty, survivors } = await waitForScopeEmpty(row, d);
+    if (!empty) {
+      return {
+        ok: false,
+        taskId,
+        action: 'kill',
+        error: 'incomplete',
+        detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} but ${survivors} process(es) still alive after the verification window — task left LIVE (not closed) so a retry or a fresh listing can still find it`,
+      };
+    }
+    await closeTask(taskId, { state: 'killed', exitReason: `scope kill ${signal}${escalated ? ' (escalated)' : ''}` });
+    return {
+      ok: true,
+      taskId,
+      action: 'kill',
+      detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} — verified empty`,
+    };
   }
 
   // ── the verified-pid path ───────────────────────────────────────────────
@@ -197,9 +220,42 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
   };
 }
 
-function scopeStillHasProcesses(row: TaskRow, d: ReturnType<typeof deps>): boolean {
-  if (!row.cgroupPath) return false;
-  return readCgroupProcs(absCgroupDir(row.cgroupPath), d.fs).length > 0;
+/** How many bounded re-probe retries to give a scope to actually empty after the
+ *  final signal, and how long to wait between them. Retry-COUNT bounded, not
+ *  wall-clock bounded, so a mocked `sleep` in tests resolves this instantly
+ *  instead of busy-spinning against real `Date.now()`. 5×100ms = 500ms of real
+ *  grace in production — SIGKILL reaping is normally sub-millisecond; this is
+ *  slack for a loaded box, not an expectation of slow exits. */
+const REPROBE_RETRIES = 5;
+const REPROBE_POLL_MS = 100;
+
+/** Deep pid count under a task's cgroup — walks nested child cgroups too (unlike
+ *  a bare `readCgroupProcs`, which only reads the ONE directory named by
+ *  `cgroupPath` and would miss anything a descendant delegated into a sub-cgroup
+ *  of its own). This is the same walk `processes:list` uses to enumerate what is
+ *  actually alive, so "did the kill work" and "what's running" can't disagree. */
+function countScopeProcesses(row: TaskRow, d: ReturnType<typeof deps>): number {
+  if (!row.cgroupPath) return 0;
+  const pids = new Set<number>();
+  for (const node of walkCgroupTree(absCgroupDir(row.cgroupPath), d.fs)) {
+    for (const pid of node.pids) pids.add(pid);
+  }
+  return pids.size;
+}
+
+/** Re-probe up to REPROBE_RETRIES times (REPROBE_POLL_MS apart) for the scope to
+ *  actually empty. Returns the LAST observed survivor count so a non-empty
+ *  outcome can be reported honestly instead of as a bare "signalled". */
+async function waitForScopeEmpty(
+  row: TaskRow,
+  d: ReturnType<typeof deps>,
+): Promise<{ empty: boolean; survivors: number }> {
+  let survivors = countScopeProcesses(row, d);
+  for (let i = 0; i < REPROBE_RETRIES && survivors > 0; i++) {
+    await d.sleep(REPROBE_POLL_MS);
+    survivors = countScopeProcesses(row, d);
+  }
+  return { empty: survivors === 0, survivors };
 }
 
 /**

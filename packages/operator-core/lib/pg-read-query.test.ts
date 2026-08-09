@@ -15,6 +15,8 @@ import {
   buildSilentNullPathAdvisory,
   buildClaimabilityAdvisory,
   buildDerivedColumnRedirect,
+  buildJsonbPathRedirect,
+  parseMissingColumnName,
   clearTenantScopeSchemaCache,
   classifyTenantPrescription,
   refutedTenantAdvisory,
@@ -1224,5 +1226,173 @@ describe('refutedTenantAdvisory', () => {
   it('explains WHY the empty result is dangerous — a zero is never re-checked', () => {
     const msg = refutedTenantAdvisory('t', 'workspace_id', 'w', ['default']);
     expect(msg).toContain('no rows exist');
+  });
+});
+
+describe('parseMissingColumnName (the ONE 42703 name parser)', () => {
+  it('reads the bare form', () => {
+    expect(parseMissingColumnName('column "severity" does not exist')).toBe('severity');
+  });
+
+  it('reads the alias-qualified form, returning the COLUMN not the alias', () => {
+    expect(parseMissingColumnName('column w.severity does not exist')).toBe('severity');
+  });
+
+  it('CONTROL: an unrelated error yields null rather than a plausible-looking guess', () => {
+    expect(parseMissingColumnName('relation "nope" does not exist')).toBeNull();
+    expect(parseMissingColumnName('syntax error at or near "FROM"')).toBeNull();
+  });
+});
+
+/**
+ * P-015 — a 42703 whose name lives INSIDE a jsonb column.
+ *
+ * `knownColumns` answers "what columns exist", which is the wrong answer to a
+ * nesting mistake and is how `work_items.severity` (really
+ * `payload->'_ei'->>'severity'`) reads as "no such field". The probe answers the
+ * question that was actually asked.
+ *
+ * The CONTROLs matter more than the hits: this advisory must stay SILENT when it
+ * has nothing to say, or it becomes noise on every ordinary typo — and it must
+ * never run a probe it does not need.
+ */
+describe('buildJsonbPathRedirect (P-015)', () => {
+  type SchemaRow = { table_schema: string; table_name: string; column_name: string; data_type?: string };
+  type ProbeRow = { depth: number; parent: string | null };
+
+  /** A client that answers information_schema by tagged template AND the probe by `.unsafe`. */
+  function stubJsonbClient(schemaRows: SchemaRow[], probeRows: ProbeRow[] | (() => never)) {
+    const probes: Array<{ query: string; params: unknown[] }> = [];
+    const sql = async (_s: TemplateStringsArray, ..._v: unknown[]) => schemaRows;
+    (sql as unknown as { unsafe: unknown }).unsafe = async (query: string, params: unknown[]) => {
+      probes.push({ query, params });
+      if (typeof probeRows === 'function') return probeRows();
+      return probeRows;
+    };
+    return { sql: sql as never, probes };
+  }
+
+  const WORK_ITEMS: SchemaRow[] = [
+    { table_schema: 'harness_shared', table_name: 'work_items', column_name: 'id', data_type: 'text' },
+    { table_schema: 'harness_shared', table_name: 'work_items', column_name: 'status', data_type: 'text' },
+    { table_schema: 'harness_shared', table_name: 'work_items', column_name: 'payload', data_type: 'jsonb' },
+  ];
+
+  it('a DEPTH-1 key returns the ->> accessor', async () => {
+    const { sql } = stubJsonbClient(WORK_ITEMS, [{ depth: 1, parent: null }]);
+    const out = await buildJsonbPathRedirect(
+      "SELECT _completionevidence FROM harness_shared.work_items",
+      'column "_completionevidence" does not exist',
+      { client: sql },
+    );
+    expect(out).toContain("payload->>'_completionevidence'");
+    expect(out).toContain('is NOT a column on harness_shared.work_items');
+  });
+
+  it('a DEPTH-2 key returns the path THROUGH the intermediate key (the severity shape)', async () => {
+    const { sql } = stubJsonbClient(WORK_ITEMS, [{ depth: 2, parent: '_ei' }]);
+    const out = await buildJsonbPathRedirect(
+      'SELECT severity FROM harness_shared.work_items',
+      'column "severity" does not exist',
+      { client: sql },
+    );
+    expect(out).toContain("payload->'_ei'->>'severity'");
+    // The relation-binding caveat is the whole reason this is not just a path.
+    expect(out).toContain('bound to THIS');
+    expect(out).toContain('NULL for EVERY row without erroring');
+  });
+
+  it('names the presence test too — `?` on the right level, not IS NOT NULL', async () => {
+    const { sql } = stubJsonbClient(WORK_ITEMS, [{ depth: 2, parent: '_ei' }]);
+    const out = await buildJsonbPathRedirect(
+      'SELECT severity FROM harness_shared.work_items',
+      'column "severity" does not exist',
+      { client: sql },
+    );
+    expect(out).toContain("payload->'_ei' ? 'severity'");
+  });
+
+  it('passes the key as a BOUND PARAMETER and bounds the sample — never interpolated', async () => {
+    const { sql, probes } = stubJsonbClient(WORK_ITEMS, [{ depth: 1, parent: null }]);
+    await buildJsonbPathRedirect(
+      'SELECT severity FROM harness_shared.work_items',
+      'column "severity" does not exist',
+      { client: sql },
+    );
+    expect(probes).toHaveLength(1);
+    expect(probes[0]?.params).toEqual(['severity']);
+    // The name reaches PG as $1, not spliced into the statement text.
+    expect(probes[0]?.query).not.toContain('severity');
+    expect(probes[0]?.query).toContain('LIMIT 200');
+    // Identifiers from information_schema are quoted.
+    expect(probes[0]?.query).toContain('"harness_shared"."work_items"');
+    expect(probes[0]?.query).toContain('"payload"');
+    // `jsonb_exists(...)`, never the `?` operator, which collides with placeholders.
+    expect(probes[0]?.query).toContain('jsonb_exists');
+    expect(probes[0]?.query).not.toContain(' ? ');
+  });
+
+  it('CONTROL: the name IS a real column — stays silent AND never probes', async () => {
+    const { sql, probes } = stubJsonbClient(WORK_ITEMS, [{ depth: 1, parent: null }]);
+    const out = await buildJsonbPathRedirect(
+      'SELECT w.status FROM harness_shared.work_items w JOIN x ON true',
+      'column w.status does not exist',
+      { client: sql },
+    );
+    expect(out).toBeNull();
+    expect(probes).toHaveLength(0);
+  });
+
+  it('CONTROL: no jsonb column on the table — stays silent AND never probes', async () => {
+    const { sql, probes } = stubJsonbClient(
+      [
+        { table_schema: 'harness_shared', table_name: 'messages', column_name: 'id', data_type: 'bigint' },
+        { table_schema: 'harness_shared', table_name: 'messages', column_name: 'body', data_type: 'text' },
+      ],
+      [{ depth: 1, parent: null }],
+    );
+    const out = await buildJsonbPathRedirect(
+      'SELECT nope FROM harness_shared.messages',
+      'column "nope" does not exist',
+      { client: sql },
+    );
+    expect(out).toBeNull();
+    expect(probes).toHaveLength(0);
+  });
+
+  it('CONTROL: the key is genuinely absent from the payload — no invented path', async () => {
+    const { sql, probes } = stubJsonbClient(WORK_ITEMS, []);
+    const out = await buildJsonbPathRedirect(
+      'SELECT definitely_not_a_key FROM harness_shared.work_items',
+      'column "definitely_not_a_key" does not exist',
+      { client: sql },
+    );
+    expect(out).toBeNull();
+    expect(probes).toHaveLength(1); // it looked, and honestly found nothing
+  });
+
+  it('CONTROL: a probe that THROWS degrades to null — an advisory never breaks the error path', async () => {
+    const { sql } = stubJsonbClient(WORK_ITEMS, () => {
+      throw new Error('permission denied');
+    });
+    await expect(
+      buildJsonbPathRedirect(
+        'SELECT severity FROM harness_shared.work_items',
+        'column "severity" does not exist',
+        { client: sql },
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it('CONTROL: an error that is not a 42703 column miss yields null without querying', async () => {
+    const { sql, probes } = stubJsonbClient(WORK_ITEMS, [{ depth: 1, parent: null }]);
+    expect(
+      await buildJsonbPathRedirect(
+        'SELECT * FROM harness_shared.work_items',
+        'relation "work_itemz" does not exist',
+        { client: sql },
+      ),
+    ).toBeNull();
+    expect(probes).toHaveLength(0);
   });
 });

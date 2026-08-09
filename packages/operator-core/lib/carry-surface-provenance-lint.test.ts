@@ -506,3 +506,51 @@ describe('unverified-action-claim: the ACTOR decides the kind (P-014)', () => {
     expect(mixed?.note).toBe(PROVENANCE_LINT_NOTE);
   });
 });
+
+describe('EI-19988211953593959: near-miss owner-tag separator shapes (space/equals/dash, not just colon)', () => {
+  // CONTROL — pins the regression this ticket fixed. The OLD colon-only anchor
+  // (`/\[owner:[^\]]+\]/i`) does not match any of these three, which is exactly the
+  // "invisible, not merely mis-categorised" failure the ticket described: had the fix
+  // regressed back to colon-only, every assertion below would fail because `flagged`
+  // would be false instead of true.
+  const OLD_COLON_ONLY_RE = /\[owner:[^\]]+\]/i;
+
+  it.each([
+    ['space', '[owner jane 2026-08-09] hold off on the release until Friday'],
+    ['equals', '[owner=jane] hold off on the release until Friday'],
+    ['dash', '[owner - jane] hold off on the release until Friday'],
+  ])('a real %s-separated owner tag is SEEN (flags manual-owner-tag), not invisible', (_shape, line) => {
+    expect(OLD_COLON_ONLY_RE.test(line)).toBe(false); // control: proves the old anchor missed it
+    const r = lintCarrySurfaceProvenance(line);
+    expect(r.flagged).toBe(true);
+    expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(true);
+  });
+
+  it('a space-separated PLACEHOLDER tag still downgrades to possible-owner-tag-mention', () => {
+    const r = lintCarrySurfaceProvenance('the convention form is [owner Name] <date>, tag every directive');
+    expect(r.flagged).toBe(true);
+    expect(r.matches[0]?.kind).toBe('possible-owner-tag-mention');
+    expect(r.matches.some((m) => m.kind === 'manual-owner-tag')).toBe(false);
+  });
+
+  it('a backtick-quoted near-miss shape still never flags (definite quoting)', () => {
+    const r = lintCarrySurfaceProvenance('the syntax is `[owner=Name]`, not a real attribution');
+    expect(r.flagged).toBe(false);
+  });
+
+  it('does NOT false-positive inside an unrelated word like "ownership"', () => {
+    const r = lintCarrySurfaceProvenance('ownership of the migration is still being discussed');
+    expect(r.flagged).toBe(false);
+  });
+
+  it('a hasTaggedProvenanceBlock check recognizes a near-miss-tagged PROVENANCE block (SOURCE_TAG_RE)', () => {
+    // Compliance path from EI-10994: a tagged PROVENANCE block suppresses bare-gate-imperative
+    // re-triggering on its own restatement. Must recognize the tag even in a near-miss shape.
+    const text =
+      'PROVENANCE: the "do not deploy until Friday" constraint above is attributed to [owner=jane 2026-08-09].\n' +
+      'do not deploy until Friday';
+    const r = lintCarrySurfaceProvenance(text);
+    // the bare-gate-imperative line is suppressed because the block is recognized as tagged
+    expect(r.matches.some((m) => m.kind === 'bare-gate-imperative')).toBe(false);
+  });
+});

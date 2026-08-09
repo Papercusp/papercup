@@ -257,3 +257,58 @@ export function sliceForClass(taskClass: TaskClass): string {
 export function isOwnedCgroupPath(cgroupPath: string): boolean {
   return cgroupPath.includes('/papercusp.slice/') || cgroupPath.includes(`/${TASK_SCOPE_PREFIX}`);
 }
+
+/**
+ * The user manager's own cgroup root (`…/user@1000.service`), from any path beneath
+ * it. Null when we are not under a user manager at all (a container, a system-slice
+ * deployment) — the caller then works relative to the cgroup root.
+ *
+ * Lives here rather than in `scan` because both the SCANNER and the SPAWN chokepoint
+ * need it, and `managed-spawn` importing `scan` would drag the whole kernel-walk
+ * graph into the hot path every process is born through. This file imports nothing.
+ */
+export function deriveUserManagerRoot(ownCgroupPath: string | null): string | null {
+  if (!ownCgroupPath) return null;
+  const segs = ownCgroupPath.split('/').filter(Boolean);
+  const idx = segs.findIndex((s) => /^user@\d+\.service$/.test(s));
+  if (idx < 0) return null;
+  return `/${segs.slice(0, idx + 1).join('/')}`;
+}
+
+/**
+ * The cgroup DIRECTORY path a slice NAME expands to.
+ *
+ * systemd reads `-` in a unit name as a hierarchy separator, so
+ * `papercusp-agent-session.slice` is not one directory — it is
+ * `papercusp.slice/papercusp-agent.slice/papercusp-agent-session.slice`, with the
+ * intermediate slices auto-created. The recursive scan never had to know this
+ * (it walks until it finds the unit); anything that wants to READ one specific
+ * scope's cgroup does, and reproducing the expansion at the call site is how two
+ * copies of a systemd naming rule drift apart.
+ */
+export function sliceCgroupPath(slice: string): string {
+  const base = slice.endsWith('.slice') ? slice.slice(0, -'.slice'.length) : slice;
+  const parts = base.split('-').filter(Boolean);
+  return parts.map((_, i) => `${parts.slice(0, i + 1).join('-')}.slice`).join('/');
+}
+
+/**
+ * Where a confined task's scope lives, as a cgroup path — DERIVED, never observed.
+ *
+ * WI-37509: reading `/proc/<child-pid>/cgroup` right after spawn looks like the
+ * direct way to answer this and is wrong, because `systemd-run --scope` FORKS —
+ * the pid we hold is the client, and it has not moved into the new scope yet (often
+ * never will, in that pid). That read therefore returns the SPAWNER's cgroup, which
+ * is how the ledger came to record a sidecar as living inside `papercup-dev-api.service`
+ * and another inside a GNOME Terminal window. The path is fully determined by the
+ * task id and class the moment they are minted, so derive it and skip the race.
+ */
+export function scopeCgroupRelPath(
+  userManagerRoot: string | null,
+  taskClass: TaskClass,
+  scopeUnit: string,
+): string {
+  const slicePath = sliceCgroupPath(sliceForClass(taskClass));
+  const root = (userManagerRoot ?? '').replace(/\/+$/, '');
+  return `${root}/${slicePath}/${scopeUnit}`;
+}

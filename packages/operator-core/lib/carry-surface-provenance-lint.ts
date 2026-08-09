@@ -26,8 +26,12 @@
  * rejected write.
  */
 
-/** The four tagged-source forms the "Directive provenance" convention recognizes. */
-const SOURCE_TAG_RE = /\[(?:owner:[^\]]+|self-imposed|peer:[^\]]+|inferred)\]/i;
+/** The four tagged-source forms the "Directive provenance" convention recognizes.
+ *  The owner alternative accepts the same near-miss separator shapes as
+ *  {@link OWNER_TAG_RE} (defined below) — kept as a literal here rather than an
+ *  interpolated reference so this declaration doesn't have to move below its
+ *  dependency; the two are asserted in sync by the module's own tests. */
+const SOURCE_TAG_RE = /\[(?:\bowner\b\s*[:=\-]?\s*[^\]]+|self-imposed|peer:[^\]]+|inferred)\]/i;
 
 /** P-014 (deterministic-context-carry): a turn ref `[turn:<session>@<ts>]` is the
  *  VERIFIABLE anchor for a directive — the stamper (carry-surface-provenance-stamp)
@@ -35,11 +39,25 @@ const SOURCE_TAG_RE = /\[(?:owner:[^\]]+|self-imposed|peer:[^\]]+|inferred)\]/i;
  *  turn owner-vs-agent mechanically. A line carrying one is never lint-flagged. */
 const TURN_REF_LINE_RE = /\[turn:[0-9a-f]{4,36}@[0-9T:.+Z-]{10,40}\]/i;
 
+/**
+ * EI-19988211953593959: the separator between the `owner` keyword and the tag's
+ * content, matched permissively — colon (the documented form) plus the near-miss
+ * shapes an agent actually types under compaction pressure (space, `=`, `-`). Every
+ * detector below (detection, backtick-quoting, placeholder, mention-context) is
+ * anchored on this SAME fragment so a near-miss shape is SEEN by the whole module —
+ * at worst downgraded to `possible-owner-tag-mention` — instead of being invisible
+ * to detection, quoting, AND mention-context alike (the prior colon-only anchor made
+ * the gap module-wide, per this ticket). `\bowner\b` (not a bare `owner`) so this
+ * never matches inside an unrelated word like "ownership".
+ */
+const OWNER_TAG_SEP = '\\bowner\\b\\s*[:=\\-]?\\s*';
+
 /** A hand-written owner tag with NO turn ref. P-014 retires these as evidence:
  *  the tag asserts, a turn ref proves — and the WI-3532 drift showed asserted
  *  tags survive compaction hops while their truth decays. Warn-only, like all
- *  of this module. */
-const OWNER_TAG_RE = /\[owner:[^\]]+\]/i;
+ *  of this module. Widened (EI-19988211953593959) to see colon/space/equals/dash
+ *  separator shapes, not just the literal colon — see {@link OWNER_TAG_SEP}. */
+const OWNER_TAG_RE = new RegExp(`\\[\\s*${OWNER_TAG_SEP}[^\\]]+\\]`, 'i');
 
 /**
  * EI-18672153930631150: `OWNER_TAG_RE` matches the literal token `[owner:` with
@@ -83,13 +101,19 @@ const OWNER_TAG_RE = /\[owner:[^\]]+\]/i;
 // or more whitespace-separated placeholder tokens (each still restricted to the same known
 // stand-ins) so a chained placeholder still reads as a placeholder, not a real attribution.
 const OWNER_TAG_PLACEHOLDER_TOKEN = '(?:name|someone|tbd|foo|bar|x|<[^>]+>|\\.{3}|…)';
+// EI-19988211953593959: anchored on the same OWNER_TAG_SEP fragment as OWNER_TAG_RE
+// (colon/space/equals/dash) so a placeholder written in a near-miss shape — e.g.
+// `[owner Name]` — still downgrades to possible-owner-tag-mention instead of being
+// invisible to every tier the way it was under the colon-only anchor.
 const OWNER_TAG_PLACEHOLDER_RE = new RegExp(
-  `\\[owner:\\s*${OWNER_TAG_PLACEHOLDER_TOKEN}(?:\\s+${OWNER_TAG_PLACEHOLDER_TOKEN})*\\s*\\]`,
+  `\\[\\s*${OWNER_TAG_SEP}${OWNER_TAG_PLACEHOLDER_TOKEN}(?:\\s+${OWNER_TAG_PLACEHOLDER_TOKEN})*\\s*\\]`,
   'i',
 );
-const BACKTICK_WRAPPED_OWNER_TAG_RE = /`\[owner:[^\]]*\]`/i;
-const OWNER_TAG_MENTION_CONTEXT_RE =
-  /(?:\bforms?\b|\bconvention\b|\bpatterns?\b|\bsyntax\b|\bexamples?\b|\be\.g\.,?|->)[^[]{0,30}\[owner:/i;
+const BACKTICK_WRAPPED_OWNER_TAG_RE = new RegExp(`\`\\[\\s*${OWNER_TAG_SEP}[^\\]]*\\]\``, 'i');
+const OWNER_TAG_MENTION_CONTEXT_RE = new RegExp(
+  `(?:\\bforms?\\b|\\bconvention\\b|\\bpatterns?\\b|\\bsyntax\\b|\\bexamples?\\b|\\be\\.g\\.,?|->)[^[]{0,30}\\[\\s*\\bowner\\b`,
+  'i',
+);
 
 /**
  * EI-19461711239876849: the module flagged `manual-owner-tag` on a line whose whole

@@ -530,15 +530,6 @@ export function applyResultProjection<T extends ProjectableResult>(
     //      you asked for did not save you anything.
     // An honest reduction — every path matched, nothing truncated upstream —
     // renders exactly as before, so the ordinary case pays nothing for this.
-    const degraded = noteRows.some((n) => n.degrades);
-    const removed = pct(projectedText.length, original.length);
-    const stats =
-      `[projection: ${describeProjection(spec)} → ${linesOut.toLocaleString()} of ` +
-      `${linesIn.toLocaleString()} lines, ${projectedText.length.toLocaleString()} of ` +
-      `${original.length.toLocaleString()} chars ` +
-      (degraded ? `(${removed} of the body removed)` : `(${removed} saved)`) +
-      (regexFlavor ? ' · grep pattern applied as a JavaScript RegExp, not GNU ERE' : '');
-
     // `linesOut === 0` earns its own headline: an empty body is the one result
     // that is READ as an answer ("there are none") rather than as a filter
     // artifact, and it is indistinguishable from a genuine empty set without it.
@@ -547,6 +538,20 @@ export function applyResultProjection<T extends ProjectableResult>(
         ? `⚠ THIS PROJECTION REMOVED EVERYTHING — the body below is empty because the filter ` +
           `matched nothing, NOT because the result was empty. Do not read it as an absence.`
         : null;
+
+    // An empty body degrades trust on its own, with or without a note. A pure
+    // `pipe` grep that matches nothing pushes NO note, so keying `degraded` off
+    // the notes alone left the two halves contradicting each other in one
+    // footer: "REMOVED EVERYTHING" above, "(100% saved)" below. Caught by this
+    // fix's own test — which is the reason the empty case gets a control.
+    const degraded = noteRows.some((n) => n.degrades) || emptyLead !== null;
+    const removed = pct(projectedText.length, original.length);
+    const stats =
+      `[projection: ${describeProjection(spec)} → ${linesOut.toLocaleString()} of ` +
+      `${linesIn.toLocaleString()} lines, ${projectedText.length.toLocaleString()} of ` +
+      `${original.length.toLocaleString()} chars ` +
+      (degraded ? `(${removed} of the body removed)` : `(${removed} saved)`) +
+      (regexFlavor ? ' · grep pattern applied as a JavaScript RegExp, not GNU ERE' : '');
 
     const leadNotes = noteRows.filter((n) => n.degrades).map((n) => n.text);
     const tailNotes = noteRows.filter((n) => !n.degrades).map((n) => n.text);

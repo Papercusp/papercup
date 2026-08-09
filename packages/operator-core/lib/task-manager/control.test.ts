@@ -98,7 +98,7 @@ describe('killTask — confined path', () => {
   it('escalates to SIGKILL only when the scope still holds processes', async () => {
     row({ taskId: 'b2' });
     const calls: string[][] = [];
-    await killTask('b2', {
+    const out = await killTask('b2', {
       escalateAfterMs: 1,
       sleep: async () => {},
       fs: { readFile: () => '999\n', readDir: () => [], isDir: () => true },
@@ -108,6 +108,49 @@ describe('killTask — confined path', () => {
       }) as never,
     });
     expect(calls.map((c) => c[2])).toEqual(['--signal=SIGTERM', '--signal=SIGKILL']);
+    // EI-19478780721557822: even after escalating to SIGKILL, a scope that STILL
+    // holds processes after the re-probe window must never be reported as a bare
+    // success — that silent false ok:true is the bug this fixes.
+    expect(out).toMatchObject({ ok: false, error: 'incomplete' });
+    expect((out as { detail: string }).detail).toMatch(/999.*process|process.*alive/i);
+  });
+
+  it('EI-19478780721557822 recurrence guard: never reports ok:true while the subtree survives, and leaves the row LIVE for a retry', async () => {
+    // No escalateAfterMs at all — the plain SIGTERM path. Before this fix, the
+    // code returned ok:true immediately after `systemctl kill` exited 0, with
+    // zero verification that anything actually died.
+    row({ taskId: 'b2b' });
+    const out = await killTask('b2b', {
+      sleep: async () => {},
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'incomplete' });
+    // The dangerous half of the bug: a false success ALSO closed the row as
+    // 'killed', which then made every subsequent taskId-mode kill attempt fail
+    // with `not_live` — the reported "escape hatch closed too". A row that is
+    // NOT actually dead must stay live so a retry (or processes:list) can find it.
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it('deep-walks nested cgroups when verifying — a descendant delegated into a sub-cgroup is not invisible', async () => {
+    // Top-level cgroup.procs is EMPTY (the leader exited), but a descendant left
+    // a process behind in a nested child directory — the shape a bare, single-
+    // directory `cgroup.procs` read cannot see (readCgroupProcs deliberately
+    // reads ONE directory only; walkCgroupTree recurses).
+    row({ taskId: 'b2c' });
+    const scopeDir = '/sys/fs/cgroup/papercusp.slice/pc-b2c.scope';
+    const out = await killTask('b2c', {
+      sleep: async () => {},
+      fs: {
+        readFile: (p: string) => (p.endsWith('/child/cgroup.procs') ? '5555\n' : ''),
+        readDir: (p: string) => (p === scopeDir ? ['child'] : []),
+        isDir: () => true,
+      },
+      execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'incomplete', detail: expect.stringContaining('1 process') });
+    expect(store.closed).toHaveLength(0);
   });
 
   it('does NOT escalate when the scope emptied after SIGTERM', async () => {

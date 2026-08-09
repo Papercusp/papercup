@@ -298,7 +298,7 @@ stale-docs-to-mistrust list:
 Some code is **retired but deliberately kept** — not deleted, not deployed, not
 tested, not to be extended. Don't write tests for it, wire new code to it, or
 "revive" it without an explicit ask. Currently: `_retired/papercup/` (public
-site), the standalone operator webapp path, `libs/zero-harness` (migrate off),
+site), the standalone operator webapp path,
 `libs/papercusp-db`, `libs/holepunch-spike` (NOT zero-importers — shim implemented
 by live orchestrator files), `libs/papercusp-shared/**/*View.tsx`, the legacy
 orchestrator run-loop + orchestrator-spawn plugin
@@ -331,11 +331,22 @@ retired 2026-07-26, WI-6097. NOT broken — it lost to `coord:send`, which carri
 work-item-scoped direction is now `work_items:comment` /
 `work_items:checkpoint`, **not** `coord:send`, which targets a live session and
 does not survive a spawn boundary. All 222 rows are preserved — this was code
-removal only. ⚠ the `coord:*` plane — `coord/messages.ts`, `coord_event_log`,
+removal only. ⚠ the `coord:*` plane — `agent-tools/coordination/messages.ts`, `coord_event_log`,
 `coord-inbox-bus` — shares the word "messages" and is fully LIVE: match the
-surface, never the substring). `lint:no-retired` guards re-imports. (The Mug/Kettle left-rail
+surface, never the substring). (The Mug/Kettle left-rail
 tabs, retired under WI-4778, were RESTORED to the LeftSidebar by owner ask
-2026-07-14 — they are live again.)
+2026-07-14 — they are live again. ⚠ `libs/zero-harness` used to be listed above as
+retired-but-kept; it was **deleted** in zero-decommission-2026-06-20, so there is
+nothing preserved and nothing to migrate off — measured 2026-08-09, it is absent
+from disk, from the git index and from `.gitmodules`.)
+
+⚠ **`lint:no-retired` exists (`scripts/check-no-retired-imports.mjs`) but NOTHING RUNS
+IT** — it is on the acknowledged-unreachable list in `scripts/check-lint-guard-reachability.mjs`,
+so the re-import guarantee this section used to assert is not currently enforced. What IS
+enforced: `lint:no-retired-resurrection` (wired as a repo-wide invariant guard in
+`scripts/affected-tests.mjs`), and the claims in THIS section, by
+`packages/operator-core/lib/doc-claims/retired-surfaces.test.ts` — every path it names must
+resolve, and a surface listed as living in a `_retired/` directory must actually be there.
 
 Full table with restore points + the retiring-a-surface convention:
 [repo-conventions § retired surfaces](/internal/docs/system/repo-conventions).

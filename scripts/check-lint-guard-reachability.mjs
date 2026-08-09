@@ -157,10 +157,12 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   ['lint:no-workspace-default', 'green; pending wire-or-retire decision'],
   ['lint:scope-defaults', 'advisory by design, but its :strict sibling exits 1; pending decision'],
   ['lint:knip', 'unused-export sweep; run by nothing — pending wire-or-retire decision'],
-  // ⚠ CLAUDE.md states "lint:no-retired guards re-imports" of retired surfaces. Nothing
-  // runs it, so that documented guarantee is currently unenforced — a doc asserting a
-  // guard that does not run is the quotable-green this whole check exists to stop.
-  ['lint:no-retired', 'DOC-ASSERTED but unenforced — CLAUDE.md claims it guards retired-surface re-imports'],
+  // Still unreachable — nothing runs it — but no longer DOC-ASSERTED: CLAUDE.md's
+  // retired-surfaces section used to state "lint:no-retired guards re-imports", and as
+  // of EI-19971915610840229 it says outright that nothing runs it and names what is
+  // actually enforced instead. The doc and this entry now agree; wiring it to a
+  // blocking path remains the open work.
+  ['lint:no-retired', 'unreachable — nothing invokes it; CLAUDE.md no longer claims it is enforced (EI-19971915610840229)'],
 
   // Coverage is a UNIT TEST of the detector's helpers only — the guard itself runs
   // over nothing. Remedy is to deepen the existing test into a real-tree assertion,

@@ -333,7 +333,14 @@ export type SurfaceClaim =
    */
   | 'retired-in-place'
   /** the doc names this surface explicitly as still LIVE (a counter-example) */
-  | 'live';
+  | 'live'
+  /**
+   * The doc names this path precisely to say it is GONE — deleted, not preserved.
+   * The assertion inverts: it must resolve to NOTHING. That keeps a tombstone
+   * honest, so if `libs/zero-harness` is ever re-added the doc's "it was deleted"
+   * sentence reds instead of quietly becoming false.
+   */
+  | 'deleted';
 
 export interface SurfaceViolation {
   line: number;
@@ -374,6 +381,20 @@ export function judgeRetiredSurfaceClaims(
     }
     seen.add(span.text);
 
+    if (claim === 'deleted') {
+      if (span.resolvesTo.length > 0) {
+        violations.push({
+          line: span.line,
+          text: span.text,
+          claim,
+          message:
+            `\`${span.text}\` is described as DELETED, but it resolves to ` +
+            `${span.resolvesTo.join(', ')}. The tombstone is stale — it came back.`,
+        });
+      }
+      continue;
+    }
+
     if (span.resolvesTo.length === 0) {
       violations.push({
         line: span.line,
@@ -385,6 +406,9 @@ export function judgeRetiredSurfaceClaims(
       });
       continue;
     }
+
+    // `retired-in-place` asserts existence only — and it just did, above.
+    if (claim === 'retired-in-place') continue;
 
     if (claim === 'retired' && !span.retiredOnDisk) {
       const live = span.resolvesTo.filter((p) => !isRetiredPath(p));

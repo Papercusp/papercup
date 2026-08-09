@@ -381,6 +381,64 @@ export function parseTransformFailure(output) {
 }
 
 /**
+ * EI-19467022057492490 — the sibling gap `transformFailureMarker` above leaves open. That fix
+ * covers exactly one culprit shape: an esbuild "Transform failed with N error" parse failure.
+ * `vitest list` can ALSO fail-to-collect a whole group for a RUNTIME reason — a `vi.mock` factory
+ * that throws at import time, a top-level side effect that crashes, a module self-installing
+ * something the batch's other files don't expect — none of which esbuild ever sees, so
+ * `parseTransformFailure` returns `[]` and the caller falls back to the bare, undifferentiated
+ * `TEST_FILE_ROUTE_ERROR requested=N matched=0`. That line reads as "all N requested files are
+ * broken", which INVERTS the real situation when only one of them is: a peer re-running the whole
+ * named set at HEAD to triage a gate red (the documented recipe CLAUDE.md itself prescribes) sees
+ * every file "still red", starts fixing files that were never broken, or disbelieves a correct
+ * "it's green here" report from whoever already isolated the real culprit.
+ *
+ * Reproduced 2026-08-03 on green-checkpoint candidate 8564677998c4 (EI-19467022057492490): a
+ * 3-file GATE_HELD_BY set batched into one `test:file` call reported `matched=0` for all three
+ * (`Error: [vitest] No "configureSearchDefaults" export is defined on the "@papercusp/search"
+ * mock` — a vi.mock factory crash in ONE file), while two of the three collect and pass cleanly
+ * the moment they are listed alone.
+ *
+ * Fixes the misattribution the same way `transformFailureMarker` does: name exactly which
+ * requested files are broken and which are healthy, instead of leaving the caller to (wrongly)
+ * infer "all of them". Isolated from I/O — `perFile` is the caller's own per-file re-list outcomes
+ * (main() below performs the actual re-listing, matching the untested-orchestration /
+ * tested-decision split every other attribution helper in this file already uses) — so the
+ * decision of what to print is unit testable without spawning a real `vitest list`.
+ *
+ * @param {{ requested: string, ok: boolean }[]} perFile per-file re-list outcome, one per requested route
+ * @param {string} cwd the group's cwd (for the label only)
+ * @param {number} groupRequested the group's original `requested` count (for the header)
+ * @param {number} groupMatched the group's original `matched` count (for the header)
+ * @returns {string | null} null when nothing was broken in isolation (a different, non-per-file cause —
+ *   caller keeps today's undifferentiated output rather than a misleading "all healthy" claim)
+ */
+export function collectionAttributionMarker({ perFile, cwd, groupRequested, groupMatched }) {
+  if (!perFile || perFile.length === 0) return null;
+  const broken = perFile.filter((f) => !f.ok);
+  const healthy = perFile.filter((f) => f.ok);
+  // Nothing collects alone either — the whole-group matched=0 has no per-file attribution to add;
+  // keep today's plain route-error rather than a marker that (falsely) claims to have narrowed it.
+  if (broken.length === 0) return null;
+  const cwdLabel = relative(REPO_ROOT, cwd) || '.';
+  const lines = [
+    `TEST_FILE_COLLECTION_ATTRIBUTION (group cwd=${cwdLabel}) requested=${groupRequested} matched=${groupMatched} — ` +
+      `a collection crash in ${broken.length} of ${perFile.length} requested file(s) poisoned the whole batch's ` +
+      "\`vitest list\` (not an esbuild parse error — parseTransformFailure found none), which is why matched=0 " +
+      'above misreports EVERY requested file as unmatched. Re-listed each file alone to attribute it:',
+  ];
+  for (const f of broken) lines.push(`  ✗ BROKEN  ${f.requested} — fails to collect even alone`);
+  for (const f of healthy) lines.push(`  ✓ ok      ${f.requested} — collects cleanly alone; NOT the cause`);
+  if (healthy.length > 0) {
+    lines.push(
+      '  Treat only the BROKEN file(s) as suspect. The ok file(s) are not "still red" — re-verify them ' +
+        'with their own `npm run test:file -- <that one file>` rather than trusting this batch\'s route error.',
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
  * Build the honest terminal marker for a zero-match run whose real cause was a transform failure.
  *
  * Isolated from I/O so the ATTRIBUTION — the part that can be wrong in a costly way — is unit

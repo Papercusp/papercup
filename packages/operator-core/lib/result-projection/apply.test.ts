@@ -449,3 +449,104 @@ describe('applyResultProjection — upstream truncation is disclosed (EI-1936177
     expect(footer).not.toContain('undefined');
   });
 });
+
+/**
+ * P-015 — the footer's ORDER, not its numbers.
+ *
+ * The defect: the footer led with "(97% saved)" and put every caveat behind it,
+ * so a `pick` that silently dropped the field the caller came for was headlined
+ * by a success statistic. These assert the caveat comes FIRST, and that the
+ * statistic stops calling itself a saving when the body cannot be trusted.
+ *
+ * The CONTROLs are the load-bearing half: an honest reduction must still render
+ * the plain "saved" wording, or this fix would just be a louder footer on every
+ * result — which trains the same ignoring it set out to cure.
+ */
+describe('applyResultProjection — degraded results lead with the caveat (P-015)', () => {
+  const JSON_BODY = JSON.stringify({
+    results: [
+      { id: 'a', state: 'open' },
+      { id: 'b', state: 'shut' },
+    ],
+  });
+
+  it('CONTROL: an honest pick — every path matched — keeps "saved" and leads with the stats', () => {
+    const out = applyResultProjection(textResult(JSON_BODY), spec({ pick: ['results[].id'] }));
+    const footer = footerOf(out);
+    expect(footer).toContain('saved)');
+    expect(footer).not.toContain('of the body removed');
+    // Nothing precedes the stats block: the footer opens with it.
+    expect(footer.trimStart().startsWith('[projection:')).toBe(true);
+    expect(reportOf(out).notes).toEqual([]);
+  });
+
+  it('a PARTIAL pick miss puts the warning ahead of the statistic', () => {
+    const out = applyResultProjection(
+      textResult(JSON_BODY),
+      spec({ pick: ['results[].id', 'results[].nosuchfield'] }),
+    );
+    const footer = footerOf(out);
+    const warnAt = footer.indexOf('matched nothing');
+    const statAt = footer.indexOf('[projection:');
+    expect(warnAt).toBeGreaterThanOrEqual(0);
+    expect(statAt).toBeGreaterThanOrEqual(0);
+    // THE ASSERTION THIS FIX EXISTS FOR: caveat before number, not after.
+    expect(warnAt).toBeLessThan(statAt);
+    expect(footer).toContain('results[].nosuchfield');
+    expect(footer).toContain('ABSENT');
+  });
+
+  it('a degraded result never calls its reduction a "saving"', () => {
+    const footer = footerOf(
+      applyResultProjection(
+        textResult(JSON_BODY),
+        spec({ pick: ['results[].id', 'results[].nosuchfield'] }),
+      ),
+    );
+    expect(footer).toContain('of the body removed');
+    expect(footer).not.toContain('saved)');
+  });
+
+  it('an EMPTY body says so before anything else — it is not an absence', () => {
+    const out = applyResultProjection(
+      textResult(['alpha', 'beta', 'gamma'].join('\n')),
+      spec({ pipe: [{ op: 'grep', pattern: 'nomatch-zzq' }] }),
+    );
+    const footer = footerOf(out);
+    expect(footer.trimStart().startsWith('⚠ THIS PROJECTION REMOVED EVERYTHING')).toBe(true);
+    expect(footer).toContain('Do not read it as an absence');
+    expect(footer).toContain('of the body removed');
+  });
+
+  it('CONTROL: a genuinely empty INPUT is not accused of being a filter artifact', () => {
+    // linesIn === 0, so there was nothing to remove — the empty-lead must stay silent.
+    const footer = footerOf(
+      applyResultProjection(textResult(''), spec({ pipe: [{ op: 'head', n: 5 }] })),
+    );
+    expect(footer).not.toContain('REMOVED EVERYTHING');
+  });
+
+  it('a non-degrading note (structuredContent dropped) stays BELOW the statistic', () => {
+    const out = applyResultProjection(
+      { content: [{ type: 'text' as const, text: JSON_BODY }], structuredContent: { big: true } },
+      spec({ pick: ['results[].id'] }),
+    );
+    const footer = footerOf(out);
+    const noteAt = footer.indexOf('structuredContent dropped');
+    const statAt = footer.indexOf('[projection:');
+    expect(noteAt).toBeGreaterThan(statAt);
+    // It is not a trust warning, so the saving is still a saving.
+    expect(footer).toContain('saved)');
+  });
+
+  it('_meta.notes still carries every note as flat strings (the report shape is unchanged)', () => {
+    const out = applyResultProjection(
+      { content: [{ type: 'text' as const, text: JSON_BODY }], structuredContent: { big: true } },
+      spec({ pick: ['results[].id', 'results[].nope'] }),
+    );
+    const notes = reportOf(out).notes;
+    expect(notes.every((n) => typeof n === 'string')).toBe(true);
+    expect(notes.some((n) => n.includes('matched nothing'))).toBe(true);
+    expect(notes.some((n) => n.includes('structuredContent dropped'))).toBe(true);
+  });
+});

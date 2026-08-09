@@ -37,7 +37,7 @@ export default defineTool({
     chaining:
       '`processes:list` -> `taskId` -> here. Add `includeSubtree:true` to also signal logically-nested tasks that got their own scopes (an agent and everything it spawned).',
     returns:
-      '{ ok, results:[...], counts } — keyed, not positional. taskId failures: `identity_mismatch` = the pid now belongs to something else, so we REFUSED (not a bug — the rail working); `not_live` = already ended or a residue row; `unsupported`/`command_failed`. pid failures: `pid_not_found` = genuinely absent; `unsupported_kind` = ALIVE but outside the six tracked kinds (never read this as "gone" — EI-18698120633403217 was exactly that false claim); `protected_kind` = tracked but off-limits.',
+      '{ ok, results:[...], counts } — keyed, not positional. taskId `ok:true` is VERIFIED — the scope was re-probed (a bounded retry window, deep-walking nested cgroups too) and found empty before we report success; a signal that was sent but did not actually clear the subtree (re-parented/D-state/unkillable descendant) comes back `ok:false, error:"incomplete"` with a survivor count, and the row is left LIVE (not closed) so a retry or a fresh `processes:list` can still find it — never trust a bare "signalled" as "dead". Other taskId failures: `identity_mismatch` = the pid now belongs to something else, so we REFUSED (not a bug — the rail working); `not_live` = already ended or a residue row; `unsupported`/`command_failed`. pid failures: `pid_not_found` = genuinely absent; `unsupported_kind` = ALIVE but outside the six tracked kinds (never read this as "gone" — EI-18698120633403217 was exactly that false claim); `protected_kind` = tracked but off-limits.',
   },
   capability: 'processes:kill',
   args: z

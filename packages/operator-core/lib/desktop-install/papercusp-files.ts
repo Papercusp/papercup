@@ -711,6 +711,7 @@ const CC_HOOK_FILES = [
   // cover it either: PreToolUse sees `new_string`, a FRAGMENT, and a fragment does not
   // parse standalone. PostToolUse reads the actual resulting file from disk.
   'posttooluse-ts-parse-nudge.mjs',
+  'posttooluse-no-proc-path-fixture-nudge.mjs',
   // EI-19359711978838614: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
   // when a new/edited migration (libs/papercusp/libs/db/sql/*.sql) introduces a column
   // that some OTHER *.integration.test.ts already relies on via an inline CREATE TABLE
@@ -1746,6 +1747,23 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-ts-parse-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-ts-parse-nudge.mjs'),
+    });
+  // merge_no_proc_path_fixture_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-19968483416347685). Advisory only, like its siblings. Closes the last gap in the
+  // guard family: until this landed, the ONLY ways to learn you had written a made-up
+  // `/proc/…` fixture were `npm run lint:no-proc-path-fixture` (which nobody runs by name)
+  // and the green-checkpoint leg — i.e. a ~55min-later red that freezes `main` fleet-wide.
+  // That put the WEAKEST feedback loop on the trap with the WORST symptom: the hang occurs
+  // during vitest COLLECTION, so the run emits zero output and reads as a queued heavy job,
+  // and it poisons sibling files in the same vitest process. Three recorded incidents
+  // (2026-07-11, 2026-08-02, 2026-08-09) before it got an edit-time nudge.
+  // Unlike the ts-parse sibling this hook IMPORTS the real detector
+  // (scripts/check-no-proc-path-fixture.mjs is already .mjs with a symlink-robust isMain
+  // guard), so there is no second copy of the allowlist or the procfs-entry set to drift.
+  if (has('posttooluse-no-proc-path-fixture-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-no-proc-path-fixture-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-no-proc-path-fixture-nudge.mjs'),
     });
   // merge_migration_fixture_drift_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19359711978838614). Advisory only: it can never deny — adding a migration column

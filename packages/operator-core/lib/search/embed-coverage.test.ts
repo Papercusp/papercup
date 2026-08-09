@@ -79,6 +79,47 @@ describe('eligibility is the sweep’s own predicate, not a restatement', () => 
     expect(q.sql).toContain(`NOT (${stalePredicateSql(sessionTurns, true, '$1')})`);
   });
 
+  it('binds the same TEXT-RECIPE version the sweep enforces, not merely the same predicate', () => {
+    // P-026 / D-087. Sharing the builder is not sufficient when the bound VALUE can differ,
+    // and this surface fails in the direction that misattributes blame: bind nothing here
+    // while the sweep enforces recipe 2, and every correctly re-embedded row still counts as
+    // stale — coverage reads 0% and the alarm accuses a sweep that is working perfectly.
+    const v2: BackfillTarget = { ...sessionTurns, recipeVersion: 2 };
+    const q0 = (t: BackfillTarget, recipeColPresent: boolean) =>
+      buildCoverageQuery(t, true, 'gemma', undefined, recipeColPresent);
+    const q = buildCoverageQuery(v2, true, 'gemma', undefined, true);
+    expect(q.sql).toContain(`coalesce(${v2.embedCol}_recipe, 1) IS DISTINCT FROM $2`);
+    expect(q.params[1]).toBe(2);
+    expect(q.sql).toContain(`NOT (${stalePredicateSql(v2, true, '$1', '$2')})`);
+
+    // FALSIFIABILITY CONTROL: same target, column not yet migrated here. The recipe term
+    // must vanish AND leave no unused bind behind — otherwise the assertions above would
+    // pass against a builder that emits the term unconditionally.
+    const unmigrated = buildCoverageQuery(v2, true, 'gemma', undefined, false);
+    expect(unmigrated.sql).not.toContain('_recipe');
+    // It must bind exactly what a target that never opted in binds — no version left over.
+    expect(unmigrated.params).toEqual(
+      buildCoverageQuery(sessionTurns, true, 'gemma', undefined, true).params,
+    );
+
+    // And the property Postgres actually enforces, on every variant: the highest $n the SQL
+    // REFERENCES equals the number of params supplied. A bind that is one too many is
+    // rejected outright ("could not determine data type of parameter $n") — on exactly the
+    // surfaces whose optional terms are absent, i.e. never on the one you tested by hand.
+    for (const q of [q0(v2, true), q0(v2, false), q0(sessionTurns, true)]) {
+      const highest = Math.max(...[...q.sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1])));
+      expect(highest).toBe(q.params.length);
+    }
+  });
+
+  it('a target that has not opted in keeps the pre-777 coverage query even where the column exists', () => {
+    // Introducing migration 777 must not change what coverage MEASURES, or the detector
+    // would report a cliff on deploy day that no data movement explains.
+    const q = buildCoverageQuery(sessionTurns, true, 'gemma', undefined, true);
+    expect(q.sql).not.toContain('_recipe');
+    expect(q.sql).toContain(`NOT (${stalePredicateSql(sessionTurns, true, '$1')})`);
+  });
+
   it('falls back to the NULL-only predicate when the mode column is absent', () => {
     const q = buildCoverageQuery(sessionTurns, false, 'gemma');
     expect(q.sql).toContain(`${sessionTurns.embedCol} IS NULL`);

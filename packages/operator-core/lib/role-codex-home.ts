@@ -292,6 +292,21 @@ const CODEX_DANGER_TOML = [
  *     `projects.*`, so every fresh per-session home booted untrusted and the
  *     TUI blocked on "Do you trust the contents of this directory?"
  *     (live-caught 2026-07-05, psu codex session-10753).
+ *     The SAME failure class recurred 2026-08-09 one prompt over: a fresh home
+ *     carries no `[tui.model_availability_nux]` state, so codex fires its
+ *     model-availability nudge ("Switch to <newer model>? / Keep current /
+ *     never show again") and blocks the TUI on it. That is merely annoying in a
+ *     visible terminal and FATAL headless, where the launch hands codex
+ *     fd0=/dev/null: the modal can never be answered, so the session wedges
+ *     forever while staying ALIVE — burning a slot, emitting nothing, detected
+ *     by no watchdog (EI-19988517595776254). Inheriting the nudge state carries
+ *     the user's existing dismissals forward, which is why that table is kept.
+ *     ⚠ This REDUCES recurrence; it does not cure it. A nudge for a model the
+ *     user has never been offered has no inherited entry to carry, and any
+ *     FUTURE codex modal wedges headless the same way. The structural fix is a
+ *     headless codex that cannot block on a modal (or that dies loudly instead
+ *     of hanging); until then, prefer a VISIBLE launch when the session must be
+ *     trusted to make progress.
  *  2. SEEDED — `trustDir`, the directory the operator is launching the agent
  *     into. A psu/role launch is trusted by definition (the launcher already
  *     passes --dangerously-bypass-hook-trust + YOLO permissions), and a fresh
@@ -310,7 +325,10 @@ function inheritedCodexTrustToml(trustDir?: string | null): string[] {
           table[1] === 'trusted_workspaces' ||
           table[1].startsWith('trusted_workspaces.') ||
           table[1] === 'projects' ||
-          table[1].startsWith('projects.');
+          table[1].startsWith('projects.') ||
+          // Nudge-dismissal state — see the model-availability note above.
+          table[1] === 'tui.model_availability_nux' ||
+          table[1].startsWith('tui.model_availability_nux.');
       }
       if (keep) out.push(line);
     }

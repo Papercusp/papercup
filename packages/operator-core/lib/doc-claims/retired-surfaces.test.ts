@@ -89,16 +89,19 @@ const extraction = extractRetiredSurfaceClaims(md, resolver);
  * check exists to prevent.
  */
 const CLASSIFICATION: Record<string, SurfaceClaim> = {
-  // ── surfaces the section presents as retired ──
+  // ── retired BY RELOCATION — must live under `_retired/` ──
   '_retired/papercup/': 'retired',
   '_retired/snapshot-system/': 'retired',
   '_retired/legacy-web-chats/': 'retired',
   '_retired/harness-dashboard/': 'retired',
   '_retired/inbox-pane/': 'retired',
   '_retired/work-item-mail/': 'retired',
-  'libs/papercusp-db': 'retired',
-  'libs/holepunch-spike': 'retired',
   'InboxPane.tsx': 'retired',
+
+  // ── retired IN PLACE — deliberately NOT relocated; existence is all that is
+  // decidable here (see SurfaceClaim's HONEST BOUND) ──
+  'libs/papercusp-db': 'retired-in-place',
+  'libs/holepunch-spike': 'retired-in-place',
 
   // ── LIVE counter-examples the section names on purpose ──
   // Each is named to say "this is NOT retired, match the surface not the substring".
@@ -110,7 +113,17 @@ const CLASSIFICATION: Record<string, SurfaceClaim> = {
   'production-defaults.test.ts': 'live',
   'apps/operator/app/harness/': 'live',
   'use-inbox-pending.ts': 'live',
-  'packages/operator-core/lib/agent-tools/coordination/messages.ts': 'live',
+  'agent-tools/coordination/messages.ts': 'live',
+  // the guards the section names as the real enforcement — a doc claiming a guard
+  // that no longer exists is the defect one level up (the `lint:no-retired` case)
+  'scripts/check-no-retired-imports.mjs': 'live',
+  'scripts/check-lint-guard-reachability.mjs': 'live',
+  'scripts/affected-tests.mjs': 'live',
+  'packages/operator-core/lib/doc-claims/retired-surfaces.test.ts': 'live',
+  '_retired/': 'retired',
+
+  // ── TOMBSTONE — named precisely to say it is gone; must NOT resolve ──
+  'libs/zero-harness': 'deleted',
 };
 
 // ───────────────────────────── fixture controls ─────────────────────────────
@@ -151,6 +164,17 @@ describe('extractRetiredSurfaceClaims — fixture controls', () => {
     });
     expect(verdict.violations).toHaveLength(1);
     expect(verdict.violations[0].message).toMatch(/resolves to NOTHING/);
+  });
+
+  it('POSITIVE CONTROL: fires when a TOMBSTONE comes back', () => {
+    // `libs/zero-harness` is named in the live doc precisely to say it was deleted.
+    // If it ever returns, that sentence is false — and the assertion inverts to
+    // catch it, which a plain "must exist" rule never could.
+    const fixture = heading + 'Note: `libs/holepunch-spike` was deleted long ago.\n';
+    const got = extractRetiredSurfaceClaims(fixture, resolver);
+    const verdict = judgeRetiredSurfaceClaims(got, { 'libs/holepunch-spike': 'deleted' });
+    expect(verdict.violations).toHaveLength(1);
+    expect(verdict.violations[0].message).toMatch(/tombstone is stale — it came back/);
   });
 
   it('POSITIVE CONTROL: fires when a LIVE counter-example has quietly been retired', () => {

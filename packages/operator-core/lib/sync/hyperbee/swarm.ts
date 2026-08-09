@@ -36,7 +36,6 @@ import type { AdmissionResult } from './read-admission';
 import { wireHiveGitServe, type PotGitServeConfig } from '../pot-git/serve-wiring';
 import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../pot-git/peer-dial-registry';
 import { loadOrGenerateSwarmSeed } from '../../identity/swarm-keypair';
-import { pinModuleState } from '@papercusp/module-singleton';
 
 /** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
  *  Exported for the A-002 multi-hive demonstrator test. */
@@ -508,42 +507,6 @@ const guardCountedSockets = new WeakSet<object>();
  */
 const swarmJoinSocketTopics = new WeakMap<object, Set<string>>();
 
-/**
- * EI-18808621019872598: which (socket, topic) pairs have ALREADY emitted the
- * `peer_data_path_up` positive-data-path line.
- *
- * This lived as a `const dataPathProvenReported = new WeakSet<object>()` INSIDE
- * `joinHarnessSwarm`, i.e. per-INVOCATION. The guard itself was correct — `add()`
- * runs before the log, so within ONE join a socket reports exactly once, as its
- * comment promised. Its LIFETIME was wrong: the WI-752/FED-2 self-heal re-peer
- * loop re-joins a topic continuously (measured 9,726 `rejoin` lines/24h on
- * papercup-bg-host), and every rejoin constructed a FRESH WeakSet, so every
- * still-live socket was re-reported from scratch.
- *
- * Measured cost before this fix (papercup-bg-host, 24h): 873,539 lines — 21% of
- * the unit's 4,076,943 lines/day — from just 36 distinct (topic,peer) pairs and
- * exactly ONE peer. The identical line (`topic=d85dc18c0bac0c9a…
- * peer=95ae30fc8272… bytesReceived=5925 packetsReceived=9`) repeated 8,268
- * times: a frozen byte count, i.e. provably the same idle socket re-reported,
- * not fresh sockets.
- *
- * That flood is not merely untidy. It is what drives `journalctl --grep` into a
- * slow reverse scan past JOURNAL_TIMEOUT_MS, the confirmed root cause of the
- * `logs:read` false-zero (EI-19980767336148101) — a log-triage tool reporting
- * `matched: 0` for a defect firing constantly. A diagnostic loud enough to break
- * the tools used to read it is worse than no diagnostic.
- *
- * Keyed per (socket, topic) because `joinHarnessSwarm` runs once per topic and a
- * single Hyperswarm socket is shared across topics (see swarmJoinSocketTopics
- * above), so "once per socket per topic" is the semantic the log line's `topic=`
- * field already implies. Pinned through @papercusp/module-singleton rather than
- * a bare module-scope WeakMap so a split module record cannot silently restore
- * the duplicate reporting this fixes.
- */
-const dataPathReportedState = pinModuleState(
-  'papercusp.operator-core.swarm-data-path-reported',
-  () => ({ bySocket: new WeakMap<object, Set<string>>() }),
-);
 
 /**
  * WI-5923 (the "harder half" — the close()-side session-vs-leave fix landed
@@ -2357,6 +2320,7 @@ export async function joinHarnessSwarm(
    * received a byte. There was no correct marker for it to gate on. This emits
    * one.
    */
+  const dataPathProvenReported = new WeakSet<object>();
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
     liveConnectionCount++;
@@ -2942,23 +2906,50 @@ export async function joinHarnessSwarm(
         // is a pure read, so this cannot perturb the replication stream. (A
         // 'data'/'readable' listener would have switched the socket to flowing
         // mode and could CONSUME replication bytes — never do that here.)
-        // Fires at most once per (socket, topic) — for the whole process, NOT
-        // merely for this join call. The dedupe deliberately outlives
-        // `joinHarnessSwarm` (see dataPathReportedState's header): a per-join
-        // set is reset by every self-heal rejoin, which re-reported the same
-        // idle socket thousands of times (EI-18808621019872598). The WeakMap
-        // still lets closed sockets be GC'd.
+        // Fires at most once per socket; the WeakSet lets closed sockets be GC'd.
+        //
+        // ⚠ EI-18808621019872598 — MEASURED VOLUME, MECHANISM STILL OPEN. On
+        // papercup-bg-host this line was 873,539 entries in 24h: 21% of that
+        // unit's whole 4,076,943-line journal, from only 36 distinct
+        // (topic,peer) pairs and exactly ONE peer. The identical line
+        // (topic=d85dc18c0bac0c9a… peer=95ae30fc8272… bytesReceived=5925
+        // packetsReceived=9) repeated 8,268 times, and one topic held 448,811
+        // of the 873,539.
+        //
+        // The dedupe below is NOT the bug, and two tempting "fixes" were
+        // checked and FALSIFIED: (a) "a self-heal rejoin resets this per-join
+        // WeakSet" is wrong — joinHarnessSwarm has ONE production caller
+        // (boot.ts) and forceRejoinNow re-joins at the DISCOVERY level without
+        // re-entering it, so the set is never reset; (b) re-keying it per
+        // (socket, topic) process-wide is a NO-OP, since each invocation only
+        // ever tests its own topicHex.
+        //
+        // What the volume actually is: an hourly histogram shows a STEADY
+        // ~50-77k/hour for ~18h (2026-08-08T14 → 2026-08-09T07) then exactly
+        // ZERO once the peer stopped pairing — so it tracks peer connectivity,
+        // i.e. fresh sockets, not re-reporting of stale ones. ~15 lines/s ÷ the
+        // 36 joined topics ≈ one physical reconnect every 2.4s, which matches
+        // DEFAULT_REFRESH_MS (2500) — the re-dial cadence. Each new socket is
+        // then reported once PER JOINED HARNESS, because this handler is
+        // registered per join on one process-global swarm
+        // (EI-18694945517907886). That also explains the identical repeated
+        // line: every re-dial dies after the same deterministic handshake, so
+        // bytesReceived is the same number each time.
+        //
+        // So the honest reduction here is to collapse the ~36x fan-out — the
+        // data path is a property of the SOCKET (readWireStats reads the
+        // socket), not of a topic — which needs a process-wide per-socket
+        // dedupe and a decision about what the `topic=` label then means.
+        // Deliberately NOT done blind: it must be verified against a window
+        // where the churn reproduces, and it was NOT reproducing at
+        // 2026-08-09T14:30Z (zero swarm connections across a 50-minute uptime).
+        // The upstream fix is to stop the re-dial storm, not to log it quieter.
         for (const socket of mySockets) {
           if (typeof socket !== 'object' || socket === null) continue;
-          let reportedTopics = dataPathReportedState.bySocket.get(socket);
-          if (reportedTopics?.has(topicHex)) continue;
+          if (dataPathProvenReported.has(socket)) continue;
           const wire = readWireStats(socket);
           if (dataPathProven(wire) !== true) continue;
-          if (!reportedTopics) {
-            reportedTopics = new Set<string>();
-            dataPathReportedState.bySocket.set(socket, reportedTopics);
-          }
-          reportedTopics.add(topicHex);
+          dataPathProvenReported.add(socket);
           if (process.env.VITEST) continue;
           try {
             const path = extractConnectionPath(socket);
