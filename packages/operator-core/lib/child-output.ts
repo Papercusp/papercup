@@ -48,8 +48,31 @@ export interface TextCollector {
    * flushed. Idempotent: repeated reads with no intervening chunk return the
    * same string, and a chunk arriving after a read re-arms the flush — so
    * reading early (in a timeout handler) cannot truncate a later read.
+   *
+   * ⚠ "Cannot TRUNCATE" is not "cannot CORRUPT", and the difference matters on
+   * exactly one usage: calling this on EVERY `data` event. The flush is
+   * `decoder.end()`, which emits the held-back bytes of a straddling character
+   * as U+FFFD *and resets the decoder*, so the continuation bytes in the next
+   * chunk then decode as invalid too. Per-chunk polling therefore reproduces
+   * the precise corruption this module exists to prevent — measured: a `⚠`
+   * split across two chunks reads back as three replacement characters when
+   * polled, and intact when read once at the end.
+   *
+   * For an incremental read — "has the landmark appeared yet?" — use
+   * {@link peek}. Use `text()` for a TERMINAL read (a close/exit handler, a
+   * timeout's diagnostic), where flushing is what you want.
    */
   text(): string;
+  /**
+   * The safely-decoded text so far, WITHOUT flushing. Safe to call on every
+   * `data` event, which is what makes an incremental watcher expressible
+   * through this helper instead of a hand-rolled accumulator.
+   *
+   * A character whose bytes have not all arrived is simply not visible yet —
+   * the right answer for a needle search, since those bytes have not formed a
+   * character to match against. The next `write` completes it.
+   */
+  peek(): string;
   /**
    * Start decoding a stream into this collector.
    *
@@ -100,6 +123,13 @@ export function createTextCollector(stream?: NodeJS.ReadableStream | null): Text
         acc += decoder.end();
         flushed = true;
       }
+      return acc;
+    },
+    peek(): string {
+      // Deliberately just `acc`: every byte the decoder has resolved into a
+      // character is already here, and the bytes of an incomplete trailing
+      // character are still held inside the decoder. Reading them out is
+      // precisely what would corrupt them, so peek() must not flush.
       return acc;
     },
     attach(s: NodeJS.ReadableStream | null | undefined): void {

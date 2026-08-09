@@ -21,6 +21,9 @@ import { fileURLToPath } from 'node:url';
 // NEVER hand-roll an "unwritable path" here: a made-up '/proc/…' hangs Node's
 // recursive mkdir forever (EI-19369372064589484). This fixture fails ENOTDIR in 0ms.
 import { unwritablePath } from '@papercusp/operator-core/lib/testing/unwritable-path';
+// Boundary-safe stderr capture (WI-6728) — child-output-guard.test.ts ratchets
+// the raw `acc += String(chunk)` idiom to zero new sites.
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 // __tests__ → cc → hooks → scripts → operator → apps → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../..');
@@ -1294,14 +1297,25 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
       const gateEnv = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0' };
       const untilStderr = (p: ReturnType<typeof spawn>, needle: string, ms = 30_000) =>
         new Promise<void>((res, rej) => {
-          let seen = '';
+          // Boundary-safe accumulation (WI-6728): pc-heavy's stderr is dense
+          // with non-ASCII, and a character straddling two 'data' events would
+          // otherwise decode to replacement chars on both sides.
+          //
+          // Two orderings are load-bearing here:
+          //  - attach FIRST (createTextCollector registers its own 'data'
+          //    handler), because Node fires handlers in registration order —
+          //    so the chunk is decoded into `seen` before the check reads it;
+          //  - peek(), NOT text(), in the per-chunk check: text() flushes the
+          //    decoder's pending partial character and resets it, so polling it
+          //    per chunk re-creates the very corruption this avoids. text() is
+          //    correct in the timeout path below — a single terminal read.
+          const seen = createTextCollector(p.stderr);
           const timer = setTimeout(
-            () => rej(new Error(`timed out waiting for ${JSON.stringify(needle)}; stderr so far: ${seen}`)),
+            () => rej(new Error(`timed out waiting for ${JSON.stringify(needle)}; stderr so far: ${seen.text()}`)),
             ms,
           );
-          p.stderr!.on('data', (d) => {
-            seen += String(d);
-            if (seen.includes(needle)) { clearTimeout(timer); res(); }
+          p.stderr!.on('data', () => {
+            if (seen.peek().includes(needle)) { clearTimeout(timer); res(); }
           });
         });
 
@@ -1314,22 +1328,21 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
           env: baseEnv(gateEnv),
           cwd: dir,
         });
-        let sweepErr = '';
-        sweepProc.stderr!.on('data', (d) => { sweepErr += String(d); });
+        const sweepErr = createTextCollector(sweepProc.stderr);
         const exited = new Promise<number>((res) => sweepProc.on('exit', (c) => res(c ?? -1)));
 
         // Confirm it is genuinely WAITING before the phase moves — otherwise this
         // would silently degrade into a re-test of the admission-time check.
         await untilStderr(sweepProc, 'queued for a heavy slot');
-        expect(sweepErr).not.toContain('REFUSING');
+        expect(sweepErr.peek()).not.toContain('REFUSING'); // mid-stream: peek, never text
 
         // The gate advances into its classifier phase while the sweep is queued.
         plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
         holder.kill('SIGKILL'); // frees the slot; the sweep now proceeds
 
         expect(await exited).toBe(75);
-        expect(sweepErr).toContain('REFUSING test:affected');
-        expect(sweepErr).toContain('isolating');
+        expect(sweepErr.text()).toContain('REFUSING test:affected'); // exited: terminal read
+        expect(sweepErr.text()).toContain('isolating');
       } finally {
         holder.kill('SIGKILL');
       }

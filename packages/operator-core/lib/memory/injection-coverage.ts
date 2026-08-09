@@ -281,8 +281,10 @@ export function assessInjectionReach(
   ).length;
 
   // Structural: injection reads sources, but none of them can be reached semantically.
-  // Today this cannot fire (session_turn carries the only embedding leg) — it is the
-  // ratchet that makes losing that one leg loud instead of silent.
+  // Since P-005 BOTH corpus sources carry an embedding leg, so firing this now takes
+  // losing two legs rather than one — it is the ratchet that makes that loud instead
+  // of silent, and it is derived from the registry rather than from a source name, so
+  // it keeps working as the registry moves.
   if (sourceNames.length > 0 && semanticSourceCount === 0) {
     out.push({
       kind: 'no-semantic-path',

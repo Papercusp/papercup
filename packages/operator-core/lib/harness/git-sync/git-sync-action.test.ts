@@ -1040,6 +1040,60 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     warn.mockRestore();
   });
 
+  it('WI-37471: an unsafe-deletion offender gets an escalate-only kickoff, never "fix the syntax"', async () => {
+    runGitSyncMock.mockResolvedValue({
+      ...contentErrorOutcome,
+      contentErrors: [
+        {
+          scope: 'superproject',
+          file: 'packages/operator-core/lib/retired-module.ts',
+          detectorKey: 'unsafe-deletion',
+          error: 'deleting this file would break a still-live import — still imported (relative) by: packages/operator-core/lib/caller.ts. Either restore this file, or finish the deletion by removing the import(s) from the listed file(s) first.',
+          fixerRole: 'content-fixer',
+        },
+      ],
+    });
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = loopbackFetchMock.mock.calls[0];
+    const body = JSON.parse((init as { body: string }).body) as Record<string, unknown>;
+    // must steer the fixer to escalate this detectorKey, and must NOT claim it's a syntax fix
+    expect(body.kickoff).toContain('unsafe-deletion');
+    expect(body.kickoff).toContain('escalate');
+    expect(body.kickoff).not.toContain('Fix ONLY the syntax so each passes its detector');
+    warn.mockRestore();
+  });
+
+  it('a mixed batch (mdx + unsafe-deletion) still gets the detector-aware kickoff, not the plain syntax-fix text', async () => {
+    runGitSyncMock.mockResolvedValue({
+      ...contentErrorOutcome,
+      contentErrors: [
+        ...contentErrorOutcome.contentErrors,
+        {
+          scope: 'superproject',
+          file: 'packages/operator-core/lib/retired-module.ts',
+          detectorKey: 'unsafe-deletion',
+          error: 'deleting this file would break a still-live import — still imported (relative) by: packages/operator-core/lib/caller.ts. Either restore this file, or finish the deletion by removing the import(s) from the listed file(s) first.',
+          fixerRole: 'content-fixer',
+        },
+      ],
+    });
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    const [, init] = loopbackFetchMock.mock.calls[0];
+    const body = JSON.parse((init as { body: string }).body) as Record<string, unknown>;
+    expect(body.kickoff).toContain('unsafe-deletion');
+    expect(body.kickoff).not.toContain('Fix ONLY the syntax so each passes its detector');
+    warn.mockRestore();
+  });
+
   it('does NOT dispatch a second content-fixer while one is genuinely in flight (dedup on last_content_fixer)', async () => {
     runGitSyncMock.mockResolvedValue(contentErrorOutcome);
     counterRows = [{ et: 0, lo: [], ct: 1 }];

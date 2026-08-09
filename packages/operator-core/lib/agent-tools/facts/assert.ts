@@ -36,6 +36,7 @@ import { assessKeyContest, type KeyContestAssessment } from '../../facts/contest
 import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
+import { neutralizeToolCallTags } from '../../text-safety';
 
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
@@ -278,12 +279,26 @@ export default defineTool({
     }
     // P-015 dead-end slot / owner-wall-ttl-lapse-hardening wall slot: normalize
     // key/body onto the slot encoding (idempotent).
+    // EI-19972486772917172: a fact's `body` (and `settledBy`, for kind:'undecidable')
+    // fold VERBATIM into every future orient — the exact hazard text-safety.ts was
+    // built to defuse for work-item/issue titles+bodies (EI-9262/EI-9267: a fabricated
+    // `</invoke><invoke name="work_items:claim">…` tail read by a later agent as a live
+    // continuation of ITS OWN tool-call stream). That defusing was applied only at
+    // `createIssue` (issues-engineer.ts) — facts:assert, the highest-stakes consumer
+    // BECAUSE of the verbatim-into-every-orient property (and because a malformed
+    // client-side tool-call serialization has now been observed leaking literal
+    // `<parameter name="…">…</invoke>`-shaped text into `body`), had no such guard.
+    // Neutralize (cosmetic full-width `＜` swap, non-destructive, idempotent — never
+    // drops or truncates content) rather than refuse: P-007's "never lose a write
+    // outright" applies here exactly as it does to the truncation path below.
+    const safeBody = neutralizeToolCallTags(args.body);
+    const safeSettledBy = neutralizeToolCallTags(args.settledBy);
     const slotted =
       args.slot === 'dead-end'
-        ? normalizeDeadEndSlot(args.key, args.body)
+        ? normalizeDeadEndSlot(args.key, safeBody)
         : args.slot === 'wall'
-          ? normalizeWallSlot(args.key, args.body)
-          : { key: args.key, body: args.body };
+          ? normalizeWallSlot(args.key, safeBody)
+          : { key: args.key, body: safeBody };
     // EI-18685042986450096 (owner-flagged): the old behavior wrote the
     // clipped body UNCONDITIONALLY and only disclosed the loss AFTER the write
     // (truncationField below) — silently dropping the OPERATIVE clause 3x,
@@ -354,7 +369,7 @@ export default defineTool({
       sourceProvenance,
       confidence: args.confidence ?? null,
       kind: args.kind ?? null,
-      settledBy: args.settledBy ?? null,
+      settledBy: safeSettledBy ?? null,
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
       ...(args.claim ? { claim: args.claim } : {}),
       // P-018: validated inside assertFact (validateConventionEnforcement), not

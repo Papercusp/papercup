@@ -22,8 +22,23 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Declare the PARAMETER, not just the return. A bare `vi.fn(async () => …)` infers
+// a zero-arg signature, so `mock.calls[0]` is the empty tuple `[]` and the `[0]`
+// argument assertions below fail to typecheck (TS2352/TS2493 — a committed gate
+// red, WI-37470). The shape mirrors the real recordObservationConsumption opts
+// (packages/operator-core/lib/harness/improvements/observation-consumption.ts:236),
+// so the assertions are checked against what the wiring actually passes.
 const recordObservationConsumption = vi.hoisted(() =>
-  vi.fn(async () => ({ planned: 0, stamped: 0 })),
+  vi.fn(
+    async (_opts: {
+      workspaceId: string;
+      readIds: readonly string[];
+      digest: unknown;
+      cycleId: string;
+      nowIso?: string;
+      cap?: number;
+    }) => ({ planned: 0, stamped: 0 }),
+  ),
 );
 vi.mock('../harness/improvements/observation-consumption', () => ({ recordObservationConsumption }));
 
@@ -82,11 +97,10 @@ describe('readCorpus → observation consumption stamp (real wiring)', () => {
     await deps.readCorpus();
 
     expect(recordObservationConsumption).toHaveBeenCalledTimes(1);
-    const arg = recordObservationConsumption.mock.calls[0]![0] as {
-      readIds: string[];
-      cycleId: string;
-      digest: unknown;
-    };
+    // No cast: the mock now declares its parameter, so this is already typed as
+    // the real opts. Re-asserting a hand-written shape here would only re-open the
+    // drift the annotation closes (and `readIds` is readonly on the real contract).
+    const arg = recordObservationConsumption.mock.calls[0]![0];
     // The ids must come from the reader that ran, not from a second query — a
     // re-read is a different recency window and would drift under load.
     expect(arg.readIds).toEqual(['EI-100', 'EI-101']);

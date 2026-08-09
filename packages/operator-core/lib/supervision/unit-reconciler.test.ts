@@ -3,6 +3,7 @@
  * (critical-process-supervisor-2026-07-04 P-002).
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { SupervisionGiveUpEpisode } from './give-up-ei';
 import {
   parseSystemctlListUnits,
   parseSystemctlShowProperties,
@@ -1038,7 +1039,14 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
 
   it('EI-19966318801100410: an escalate-give-up transition FILES a durable EI via fileGiveUpEi, carrying the unit, restart count, and cause — not just a broadcast', async () => {
     let now = 0;
-    const fileGiveUpEi = vi.fn(async () => 'EI-123');
+    // Declare the PARAMETER, not just the return: a bare `vi.fn(async () => …)`
+    // infers a zero-arg signature, so `mock.calls[0]` is the empty tuple `[]` and
+    // the `[0]` assertions below fail to typecheck (TS2493/TS2532 — a committed
+    // gate red, WI-37470). Mirroring the real dep signature keeps the argument
+    // assertions type-checked against what the reconciler actually passes.
+    const fileGiveUpEi = vi.fn(
+      async (_episode: SupervisionGiveUpEpisode): Promise<string | null> => 'EI-123',
+    );
     const deps = makeDeps({
       now: () => now,
       fileGiveUpEi,

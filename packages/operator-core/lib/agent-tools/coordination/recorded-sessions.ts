@@ -118,6 +118,7 @@ export function synthesizeRecordedRosterRows(
       currentFiles: [],
       host: '',
       pid: r.pid,
+      tty: null,
       startedAt: r.startedAt,
       // No heartbeat yet — the launch ts is the liveness baseline. `stale:false`
       // below means this never reads as heartbeat-stale (the adv_sessions

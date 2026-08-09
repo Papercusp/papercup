@@ -715,6 +715,17 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
   const filePaths = files.map((f) => `${f.scope}/${f.file}`);
   const filesSummary = contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]: ${c.error}`).join('; ');
   const dispatchedAt = Date.now();
+  // WI-37471: `unsafe-deletion` isn't a syntax fix (there's no syntax — the file
+  // doesn't exist) and "restore vs. finish the deletion" is a judgment call about
+  // intent the fixer cannot verify from the file system alone. Never tell it to
+  // "fix the syntax" for this detectorKey — the persona's own rules escalate it.
+  const hasUnsafeDeletion = contentErrors.some((c) => c.detectorKey === 'unsafe-deletion');
+  const kickoffInstruction = hasUnsafeDeletion
+    ? 'For each file: if its detector is `mdx` or `smart-quotes`, fix ONLY the flagged syntax; ' +
+      'if its detector is `unsafe-deletion`, do NOT guess whether to restore the file or finish the ' +
+      'deletion — escalate it per your persona\'s "when you cannot fix" instructions. ' +
+      'Change nothing else, leave the tree clean, and do NOT push (the next git-sync tick re-checks + commits).'
+    : 'Fix ONLY the syntax so each passes its detector, change nothing else, leave the tree clean, and do NOT push (the next git-sync tick re-checks + commits).';
 
   // (1) durable "dispatched" marker, awaited (instance-tagged so a restart-orphaned
   //     dispatch re-fires next tick rather than waiting out the TTL).
@@ -730,7 +741,7 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
     body: JSON.stringify({
       kickoff:
         `Fix the git-sync content-guard quarantine in ${slug}: ${files.length} file(s) fail their content detector and were EXCLUDED from the auto-commit so staging stays clean. ` +
-        `Fix ONLY the syntax so each passes its detector, change nothing else, leave the tree clean, and do NOT push (the next git-sync tick re-checks + commits). Files: ${filesSummary}`,
+        `${kickoffInstruction} Files: ${filesSummary}`,
       extra: ['--git-sync-content-error', JSON.stringify({ files })],
       // A small, mechanical syntax fix scoped to the named files — well under the
       // invoke route's 1200s ceiling. RESOLVER_INFLIGHT_MS (20 min) exceeds this so a

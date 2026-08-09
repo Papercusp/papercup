@@ -15,15 +15,31 @@ const h = vi.hoisted(() => ({
   // stickyConflict is optional here (not part of the default resolved value) so
   // TS infers a return type wide enough for the sticky-guard-refusal test below
   // (mockResolvedValue({ ..., stickyConflict: true, ... })) without an excess-
-  // property error — pre-existing drift, unrelated to EI-19952118814692217,
-  // fixed in passing because this file's tsc baseline is otherwise 0.
-  setMode: vi.fn(async (_opts: unknown) => ({
-    ok: true,
-    mode: { id: 'auto' },
-    switchedFrom: null,
-    noop: false,
-    stickyConflict: undefined as boolean | undefined,
-  })),
+  // property error.
+  //
+  // ⚠ It MUST be optional on the ANNOTATION, never present-but-undefined in the
+  // default value. Writing `stickyConflict: undefined as boolean | undefined`
+  // inside the returned object states the intent above but achieves the OPPOSITE:
+  // the key becomes REQUIRED in the inferred type, so every mockResolvedValue()
+  // that omits it is stranded (4 × TS2345, a committed gate red — WI-37470).
+  // The optionality here mirrors the real contract: SetModeResult declares
+  // `stickyConflict?: boolean` (packages/operator-core/lib/modes/store.ts:85).
+  setMode: vi.fn(
+    async (
+      _opts: unknown,
+    ): Promise<{
+      ok: boolean;
+      mode: { id: string };
+      switchedFrom?: string | null;
+      noop?: boolean;
+      stickyConflict?: boolean;
+    }> => ({
+      ok: true,
+      mode: { id: 'auto' },
+      switchedFrom: null,
+      noop: false,
+    }),
+  ),
   sendMessage: vi.fn(async (..._args: unknown[]) => ({ msg_id: 'm-1' })),
   refreshControlAnchorAfterMutation: vi.fn(async (_opts: unknown) => ({ generation: 1 })),
   getLoopStatus: vi.fn(async (_ownerId: string) => null as { active: boolean } | null),

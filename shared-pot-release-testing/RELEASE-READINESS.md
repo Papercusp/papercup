@@ -223,13 +223,28 @@ logs are from the green run `m1785117063`.
    path. ⚠ This row directly contradicts §5's "no longer a skip — covered and green (2026-08-01)"
    entry for the same leg; §5 records a real green that has since REGRESSED — read both.
 
-**B. The standing live-federation gate is DARK (`WI-37144`).** Timer disabled 2026-08-07T00:35Z,
-   57s after a 5th consecutive RED, with no recorded decision; the reds were all real. This is the
-   detector failure that let C-001 run unnoticed, so it is a blocker in its own right and not
-   merely operational hygiene. Flip condition: timer re-armed and producing verdicts — gated in
-   practice on `replication_soak` (`WI-5481`, 5/5 runs, load hypothesis falsified by frame PSI
-   `avg10=0.00` against host loadavg 42-51) and `restart_durability` (new, untriaged) so that a
-   re-armed gate is readable rather than permanently noisy.
+**B. The standing live-federation gate is DARK (`WI-37144`).** Timer stopped 2026-08-07T04:35:31Z,
+   disabled 04:36:29Z; the reds were all real. This is the detector failure that let C-001 run
+   unnoticed, so it is a blocker in its own right and not merely operational hygiene.
+
+   ⚠ **CORRECTED 2026-08-09 — the cause was the OWNER, not a concealed red.** This row previously
+   read "57s after a 5th consecutive RED, with no recorded decision", implying someone switched off
+   a gate that kept failing. Falsified: session `d699c658` turn 20 [owner:Avi 2026-08-07T04:34:50Z,
+   verbatim] *"nvmd i know what it is, just stop it"* — over **CPU churn**, three minutes before
+   *"I still hear my computer churning. why?"*. The stop was mid-run and the 25s adjacency to the
+   run's `last-run` stamp is coincidence. The real process defect is narrower and still open: the
+   pause was never recorded on any work-item, Decision or coord message.
+
+   Flip condition — timer re-armed and producing verdicts, gated on THREE things:
+   (i) `replication_soak` (`WI-5481`, 5/5 runs, load hypothesis falsified by frame PSI
+   `avg10=0.00` against host loadavg 42-51); (ii) `restart_durability` (new, untriaged) — both so a
+   re-armed gate is readable rather than permanently noisy; and (iii) **`WI-37464` (NEW,
+   unclaimed): a RED gate has no firing suppression at all.** `live-federation-gate.sh:400-402`
+   gates the cheap exit on `age_h(last-green) < GATE_SUCCESS_TTL_H` while `:1309` writes
+   `last-green` on the **green path only**, so once red it runs the full heavy gate every hour
+   indefinitely — the churn the owner stopped. Re-arming before (iii) reproduces the complaint.
+   ⚠ Re-arming also reverses an explicit owner instruction (wall
+   `wall:live-federation-gate-timer-owner-stopped`) — it is owner-gated, not an agent call.
 
 1. **~~LIVE-2 acceptance drill (row 22, P-205)~~ → RE-SCOPED 2026-08-01 to a named bug:
    `WI-6680` (the packaged host never ticks the executor).** The drill HAS now been executed

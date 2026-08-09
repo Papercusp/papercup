@@ -89,6 +89,30 @@ export interface CaptureImprovementInput {
    */
   dedupScope?: 'all' | 'open';
   /**
+   * Lowest semantic band eligible to DECLINE this capture. Default `'hard'` —
+   * today's behavior, and the right default for a human/agent filing: a soft hit
+   * stays advisory because widening the blocking net trades a missed duplicate
+   * for a LOST filing, the more expensive failure (see `blockEligible` below).
+   *
+   * `'soft'` lets a soft-band hit decline too, and is for HIGH-VOLUME MACHINE
+   * ideation ONLY — the Scout capture port (`buildCapturePort`), where the
+   * trade-off inverts: a declined capture is ATTRIBUTED to the existing sibling
+   * (`created:false` + that sibling's id), so nothing is lost, and the generator
+   * re-proposes freely. There is no human intent to strand.
+   *
+   * Measured 2026-08-09 (plan learning-loop-identity-and-consumption-2026-08-08,
+   * D-032/D-033): of 507 open Scout-minted items carrying the `improvementBody`
+   * template, 407 (80%) had a nearest open sibling in the SOFT band [0.85,0.93)
+   * and 64 more in the hard band — only 36 were genuinely novel. The soft band
+   * is where this backlog actually comes from.
+   *
+   * ⚠ Never set this on the agent-facing `improvements:capture` tool: owner
+   * constraint D-004 (scorecard-blender-pipeline-fixes-2026-07-11) is that a
+   * promotion/dedup gate applies to blender output ONLY, never to direct agent
+   * filings.
+   */
+  semanticBlockBand?: 'hard' | 'soft';
+  /**
    * Stable signal identity (`'<source>:<key>'`, or `overwatch:<anomalyKind>` from
    * the Kettle brief — watchdog-audit P-004 / D-001; EI-15448). Stamped into
    * `payload.watchdogKey` so cross-tick dedup is an exact indexed lookup instead
@@ -461,7 +485,14 @@ export async function captureImprovement(
   // the surfacing net is cheap (you see one more candidate); widening the BLOCKING net
   // trades a missed duplicate for a LOST filing, which is the more expensive failure —
   // and containment is asymmetric, so a broad stored title covers many narrow real ones.
-  const blockEligible = possibleDuplicates.filter((d) => d.semantic !== 'soft' && d.lexical !== 'containment');
+  // `semanticBlockBand:'soft'` (Scout's port only — see the option's doc) opts INTO
+  // letting a soft hit decline. Containment stays advisory in BOTH modes: it is
+  // asymmetric (a broad stored title covers many narrow real ones), so it is not a
+  // similarity band and widening it would not be the same trade.
+  const softMayBlock = input.semanticBlockBand === 'soft';
+  const blockEligible = possibleDuplicates.filter(
+    (d) => (softMayBlock || d.semantic !== 'soft') && d.lexical !== 'containment',
+  );
   const compatible = input.watchdogKey
     ? blockEligible.filter((d) => {
         const ck = candidateKeyOf(d.id);

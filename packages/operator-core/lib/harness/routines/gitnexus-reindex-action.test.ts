@@ -7,7 +7,7 @@
  * if load outranks a missing index and the interval floor outranks staleness.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -19,7 +19,14 @@ import {
   DEFAULT_MAX_LOAD_PER_CORE,
   DEFAULT_MIN_COMMITS_BEHIND,
   DEFAULT_MIN_INTERVAL_SEC,
+  gitnexusDbPaths,
+  isOrphanShadow,
+  cleanOrphanShadow,
+  GITNEXUS_HEALTH_DEFAULT,
+  GITNEXUS_FAILURE_ALERT_THRESHOLD,
+  decideGitnexusHealthUpdate,
   type ReindexDecisionInput,
+  type GitnexusHealth,
 } from './gitnexus-reindex-action';
 
 /** A baseline that WOULD run, so each test can flip exactly one field. */
@@ -148,6 +155,133 @@ describe('readRegistryEntry', () => {
     const f = join(dir, `${String(label).replace(/\W/g, '')}.json`);
     if (contents != null) writeFileSync(f, contents);
     expect(readRegistryEntry(f, 'papercusp')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WI-35532 (a) — the orphan-shadow preflight. Real fs in a tmpdir, matching the
+// `readRegistryEntry` tests above — no need to mock node:fs for plain file existence.
+// ---------------------------------------------------------------------------
+describe('isOrphanShadow', () => {
+  it('is the orphan condition: shadow present, db absent', () => {
+    expect(isOrphanShadow(false, true)).toBe(true);
+  });
+
+  it('is NOT orphan when the db exists (a shadow beside a real db is a build in progress)', () => {
+    expect(isOrphanShadow(true, true)).toBe(false);
+  });
+
+  it('is NOT orphan when there is no shadow at all', () => {
+    expect(isOrphanShadow(false, false)).toBe(false);
+    expect(isOrphanShadow(true, false)).toBe(false);
+  });
+});
+
+describe('cleanOrphanShadow', () => {
+  function freshRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-orphan-'));
+    mkdirSync(join(root, '.gitnexus'));
+    return root;
+  }
+
+  it('removes the shadow + wal checkpoint when the db is missing (the 66/66-failure wedge)', () => {
+    const root = freshRoot();
+    const { db, shadow, walCheckpoint } = gitnexusDbPaths(root);
+    writeFileSync(shadow, '');
+    writeFileSync(walCheckpoint, '');
+    expect(existsSync(db)).toBe(false);
+
+    const result = cleanOrphanShadow(root);
+
+    expect(result.cleaned).toBe(true);
+    expect(result.removed.sort()).toEqual([shadow, walCheckpoint].sort());
+    expect(existsSync(shadow)).toBe(false);
+    expect(existsSync(walCheckpoint)).toBe(false);
+  });
+
+  it('removes just the shadow when there is no wal checkpoint file', () => {
+    const root = freshRoot();
+    const { shadow } = gitnexusDbPaths(root);
+    writeFileSync(shadow, '');
+
+    const result = cleanOrphanShadow(root);
+
+    expect(result.cleaned).toBe(true);
+    expect(result.removed).toEqual([shadow]);
+  });
+
+  it('touches NOTHING when the db exists — a shadow beside a real db is an in-progress build', () => {
+    const root = freshRoot();
+    const { db, shadow } = gitnexusDbPaths(root);
+    writeFileSync(db, 'not-really-a-db-but-present');
+    writeFileSync(shadow, '');
+
+    const result = cleanOrphanShadow(root);
+
+    expect(result.cleaned).toBe(false);
+    expect(result.removed).toEqual([]);
+    expect(existsSync(db)).toBe(true);
+    expect(existsSync(shadow)).toBe(true); // untouched
+  });
+
+  it('touches NOTHING when there is no shadow at all (nothing to clean)', () => {
+    const root = freshRoot();
+    const result = cleanOrphanShadow(root);
+    expect(result.cleaned).toBe(false);
+    expect(result.removed).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WI-35532 (b) — the failure-alarm state machine. Pure, DB-free.
+// ---------------------------------------------------------------------------
+describe('decideGitnexusHealthUpdate', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('resets the streak and stamps lastSuccessAt on a success from a clean slate', () => {
+    const u = decideGitnexusHealthUpdate(GITNEXUS_HEALTH_DEFAULT, true, GITNEXUS_FAILURE_ALERT_THRESHOLD, NOW);
+    expect(u.next).toEqual({ consecutiveFailures: 0, alerted: false, lastFailureAt: null, lastSuccessAt: NOW });
+    expect(u.shouldAlert).toBe(false);
+    expect(u.shouldResolve).toBe(false); // was never alerted — nothing to resolve
+  });
+
+  it('increments on a failure but does NOT alert below the threshold', () => {
+    const prev: GitnexusHealth = { consecutiveFailures: 1, alerted: false, lastFailureAt: NOW - 3600_000, lastSuccessAt: null };
+    const u = decideGitnexusHealthUpdate(prev, false, GITNEXUS_FAILURE_ALERT_THRESHOLD, NOW);
+    expect(u.next.consecutiveFailures).toBe(2);
+    expect(u.shouldAlert).toBe(false);
+    expect(u.next.alerted).toBe(false);
+  });
+
+  it('alerts on EXACTLY the tick that crosses the threshold, not before and not again after', () => {
+    const belowThreshold: GitnexusHealth = { consecutiveFailures: 1, alerted: false, lastFailureAt: NOW - 3600_000, lastSuccessAt: null };
+    const atCrossing = decideGitnexusHealthUpdate(belowThreshold, false, GITNEXUS_FAILURE_ALERT_THRESHOLD, NOW);
+    expect(atCrossing.next.consecutiveFailures).toBe(GITNEXUS_FAILURE_ALERT_THRESHOLD - 1 + 1);
+    expect(atCrossing.shouldAlert).toBe(true);
+    expect(atCrossing.next.alerted).toBe(true);
+
+    // One more failure past the threshold must NOT re-alert (alerted already true).
+    const alreadyAlerted = decideGitnexusHealthUpdate(atCrossing.next, false, GITNEXUS_FAILURE_ALERT_THRESHOLD, NOW + 1000);
+    expect(alreadyAlerted.shouldAlert).toBe(false);
+    expect(alreadyAlerted.next.consecutiveFailures).toBe(GITNEXUS_FAILURE_ALERT_THRESHOLD + 1);
+    expect(alreadyAlerted.next.alerted).toBe(true);
+  });
+
+  it('resolves (once) on the success that follows an alerted streak, and clears the streak', () => {
+    const alerted: GitnexusHealth = { consecutiveFailures: 5, alerted: true, lastFailureAt: NOW - 1000, lastSuccessAt: NOW - 999_999 };
+    const u = decideGitnexusHealthUpdate(alerted, true, GITNEXUS_FAILURE_ALERT_THRESHOLD, NOW);
+    expect(u.shouldResolve).toBe(true);
+    expect(u.next).toEqual({ consecutiveFailures: 0, alerted: false, lastFailureAt: alerted.lastFailureAt, lastSuccessAt: NOW });
+  });
+
+  it('never fires shouldAlert AND shouldResolve on the same tick', () => {
+    for (const success of [true, false]) {
+      for (const alerted of [true, false]) {
+        const prev: GitnexusHealth = { consecutiveFailures: 3, alerted, lastFailureAt: null, lastSuccessAt: null };
+        const u = decideGitnexusHealthUpdate(prev, success, GITNEXUS_FAILURE_ALERT_THRESHOLD, NOW);
+        expect(u.shouldAlert && u.shouldResolve).toBe(false);
+      }
+    }
   });
 });
 

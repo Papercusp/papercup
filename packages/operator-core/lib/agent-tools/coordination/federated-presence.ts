@@ -108,6 +108,8 @@ export function mapSharedPresenceRow(
     currentFiles: [],
     host: row.machine_label,
     pid: null,
+    /** Remote session — its tty is a device path on ANOTHER machine, never ours to report. */
+    tty: null,
     startedAt: iso,
     heartbeatAt: iso,
     // A federated peer reports only last_seen (heartbeat-equivalent) — we don't
@@ -187,6 +189,8 @@ export function mapSessionPresenceRow(
     currentFiles: [],
     host: row.machine_label,
     pid: null,
+    /** Remote session — its tty is a device path on ANOTHER machine, never ours to report. */
+    tty: null,
     startedAt: iso,
     heartbeatAt: iso,
     lastActiveAt: iso,

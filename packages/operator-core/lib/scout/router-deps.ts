@@ -53,6 +53,17 @@ export interface CapturePortOptions {
   /** Synthetic provenance for a bounded drill/replay/shadow run. Omitted keeps
    *  the production Scout path organic. */
   origin?: SignalOrigin;
+  /**
+   * Lowest semantic band that may DECLINE a Scout capture. Default `'soft'`
+   * (plan learning-loop-identity-and-consumption-2026-08-08 P-008 / D-033) —
+   * deliberately STRICTER than `captureImprovement`'s own `'hard'` default,
+   * because this port is high-volume MACHINE ideation: a decline here is an
+   * ATTRIBUTION to the existing sibling, not a lost filing, so the trade-off
+   * that keeps soft advisory for agent filings does not apply.
+   *
+   * Set `'hard'` to restore the pre-D-033 behavior for a drill/replay.
+   */
+  semanticBlockBand?: 'hard' | 'soft';
 }
 
 /** Compose a readable improvement body from a proposal's structured fields. */

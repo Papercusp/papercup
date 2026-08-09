@@ -109,6 +109,46 @@ describe('createTextCollector', () => {
     expect(c.text()).toContain('!');
   });
 
+  it('peek() does NOT corrupt a split character when polled on every chunk — text() does', () => {
+    // The trap this pins, measured on a live guard red (EI-19972481847505004):
+    // the obvious way to route an INCREMENTAL watcher ("has the landmark
+    // appeared yet?") through this helper is to poll text() per 'data' event.
+    // text() flushes via decoder.end(), which emits the held-back bytes of a
+    // straddling character as U+FFFD and resets the decoder — so the
+    // continuation bytes in the next chunk decode as invalid too. That passes
+    // child-output-guard (no raw `+=` idiom remains) while reproducing the
+    // exact corruption the guard exists to prevent: a green guard over a live
+    // defect, which is the worst outcome available here.
+    const split = (write: (c: { peek(): string; text(): string }) => void): string => {
+      const stream = new PassThrough();
+      const c = createTextCollector(stream);
+      const full = Buffer.from('slot acquired ⚠ done', 'utf8');
+      const at = full.indexOf(0xe2) + 1; // INSIDE the 3-byte ⚠
+      stream.write(full.subarray(0, at));
+      write(c); // the per-chunk poll under test
+      stream.write(full.subarray(at));
+      return c.text();
+    };
+
+    // The CONTROL: proves the hazard is real, so this test cannot quietly
+    // degrade into asserting nothing if peek() ever starts flushing.
+    expect(split((c) => void c.text())).toBe('slot acquired ��� done');
+    expect(split((c) => void c.peek())).toBe('slot acquired ⚠ done');
+  });
+
+  it('peek() omits a character whose bytes have not all arrived, then reveals it', () => {
+    // Not-yet-visible is the CORRECT answer for a needle search: those bytes
+    // have not formed a character to match against.
+    const stream = new PassThrough();
+    const c = createTextCollector(stream);
+    const full = Buffer.from('ok ⚠', 'utf8');
+    stream.write(full.subarray(0, full.length - 1));
+    expect(c.peek()).toBe('ok '); // no partial, no replacement char
+    stream.write(full.subarray(full.length - 1));
+    expect(c.peek()).toBe('ok ⚠');
+    expect(c.text()).toBe('ok ⚠'); // and a terminal read still agrees
+  });
+
   it('append() adds literal text without decoding it', () => {
     const stream = new PassThrough();
     const c = createTextCollector(stream);

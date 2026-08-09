@@ -130,6 +130,7 @@ export function synthesizeNurseryAliasRosterRows(
       currentFiles: [],
       host: '',
       pid: null,
+      tty: null,
       startedAt: hb,
       heartbeatAt: hb,
       lastActiveAt: null,
