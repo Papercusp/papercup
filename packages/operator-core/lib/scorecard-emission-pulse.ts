@@ -15,11 +15,19 @@
  * check that files the same deterministic synthesized floor when NO scorecard —
  * agent OR floor — has landed within the window. Zero LLM tokens
  * (computeSystemHealth + one PG write), so it is safe through a capacity crunch
- * and while the supervisor is deliberately paused. Gated ONLY on the
- * `papercusp-overwatch` flag (the owner kill switch) — deliberately NOT on the
- * started bit: that coupling was the defect. When overwatch runs normally, cards
- * land every wake (agent, or the turn-end backstop) so the window is never empty
- * and the pulse no-ops.
+ * and while the supervisor is deliberately paused. Gated ONLY on its OWN
+ * `papercusp-scorecard-emission-pulse` flag (the owner kill switch) —
+ * deliberately NOT on the overwatch started bit, and (D-015) deliberately NOT on
+ * the `papercusp-overwatch` FLAG either. Both of those couplings are the same
+ * defect at different depths: this pulse exists BECAUSE the supervisor may be
+ * stopped, dead, or — per retire-mug-kettle-su-only-2026-08-09 — RETIRED, so
+ * gating the floor on the agent it backstops silently removes the floor at
+ * exactly the moment it becomes load-bearing. (Measured 2026-08-09: with the
+ * borrowed gate, flipping the Kettle off returned `skipped: papercusp-overwatch
+ * flag off` — no error, no alarm, emission simply stops. That is WI-2374's
+ * original silent death reintroduced one level up.) When overwatch runs
+ * normally, cards land every wake (agent, or the turn-end backstop) so the
+ * window is never empty and the pulse no-ops.
  *
  * Floors stay marked `synthesized: true` (excluded by default from
  * agent-freshness and the trend, same contract as the backstop) with a distinct
@@ -42,7 +50,8 @@
  * filing a new issue; only the FIRST pulse for a given outage creates one.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { overwatchEnabled } from './overwatch/watchdog';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { getOverwatchControlState, getOverwatchLiveness } from './overwatch/snapshot';
 import {
   checkScorecardFreshness,
@@ -163,17 +172,34 @@ export interface ScorecardEmissionPulseDeps {
 }
 
 /**
- * One pulse pass for one workspace: if the `papercusp-overwatch` flag is on and NO
- * scorecard (agent or synthesized) landed within {@link PULSE_WINDOW_MS}, synthesize
- * the deterministic floor and file it. The overwatch `started` bit is deliberately
- * NOT consulted — emission must survive a stopped/dead supervisor.
+ * The pulse's OWN kill switch (D-015). Deliberately NOT `overwatchEnabled()`: this
+ * floor backstops the overwatch agent, so gating it on that agent's flag deletes the
+ * floor in precisely the state it exists for (supervisor stopped, dead, or retired).
+ * Fail-CLOSED on an unreadable flag, matching `overwatchEnabled`'s convention — a
+ * flag-store failure must not make a writer start filing issues unbidden; the
+ * rubric-staleness watchdog is the detector for a pulse that stops.
+ */
+export async function scorecardEmissionPulseEnabled(): Promise<boolean> {
+  try {
+    return await getFlag(FLAGS.SCORECARD_EMISSION_PULSE, 'system');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One pulse pass for one workspace: if the `papercusp-scorecard-emission-pulse` flag
+ * is on and NO scorecard (agent or synthesized) landed within {@link PULSE_WINDOW_MS},
+ * synthesize the deterministic floor and file it. Neither the overwatch `started` bit
+ * NOR the overwatch flag is consulted — emission must survive a stopped, dead or
+ * RETIRED supervisor (D-015).
  */
 export async function runScorecardEmissionPulse(
   opts: { workspaceId: string },
   deps: ScorecardEmissionPulseDeps = {},
 ): Promise<PulseResult> {
   const { workspaceId } = opts;
-  const enabled = deps.enabled ?? overwatchEnabled;
+  const enabled = deps.enabled ?? scorecardEmissionPulseEnabled;
   const controlState = deps.controlState ?? getOverwatchControlState;
   const freshness = deps.freshness ?? checkScorecardFreshness;
   const computeHealth = deps.computeHealth ?? computeSystemHealth;
@@ -183,7 +209,8 @@ export async function runScorecardEmissionPulse(
   const findOpenPulseFloor = deps.findOpenPulseFloor ?? defaultFindOpenPulseFloor;
   const bumpPulseRepeat = deps.bumpPulseRepeat ?? defaultBumpPulseRepeat;
   try {
-    if (!(await enabled())) return { outcome: 'skipped', reason: 'papercusp-overwatch flag off' };
+    if (!(await enabled()))
+      return { outcome: 'skipped', reason: 'papercusp-scorecard-emission-pulse flag off' };
 
     const cs = await controlState({ workspaceId });
     const sourceHive = cs.potSlug;

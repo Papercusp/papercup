@@ -1092,7 +1092,11 @@ const sharedPresenceReaperCheck: PeriodicCheck = {
 // cards (a wedge, as on 2026-07-10 08:32Z) is raised as ONE debounced owner advisory,
 // while a benign stopped/paused supervisor stays floor-only. Both run on THIS
 // in-process seam, independent of the routinesTick pool-shed path that froze the loop.
-// Zero LLM tokens; flag-gated (papercusp-overwatch) inside each; a live overwatch makes
+// Zero LLM tokens. The two legs are gated on DIFFERENT flags and that is deliberate
+// (D-015): the PULSE gates on its own `papercusp-scorecard-emission-pulse` so the
+// deterministic floor survives a stopped/dead/RETIRED supervisor, while the WEDGE check
+// keeps gating on `papercusp-overwatch` because an alive-but-not-emitting loop cannot
+// exist once the loop is gone. A live overwatch makes
 // both a cheap freshness read + no-op. HEAVY when the floor fires (computeSystemHealth)
 // → sheds under saturation; a shed cycle just delays the floor/check 10min.
 const scorecardEmissionPulseCheck: PeriodicCheck = {

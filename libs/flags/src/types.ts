@@ -1054,6 +1054,18 @@ export const FLAGS = {
   // liveness alarm work verified harness_shared.autoloop_state firing on its 600s
   // cadence). OFF = the reversible fallback (no overwatch role, no wake-loop, no pane).
   OVERWATCH: "papercusp-overwatch",
+  // retire-mug-kettle-su-only-2026-08-09 (D-015): the scorecard-emission pulse's OWN
+  // kill switch. The pulse (scorecard-emission-pulse.ts, WI-2374) is the deterministic
+  // FLOOR that guarantees a `pot-coordination-health` scorecard keeps landing when no
+  // agent emits one — it exists precisely BECAUSE the supervisor may be stopped or dead.
+  // It used to borrow OVERWATCH above as its gate, which reintroduced the very coupling
+  // it was built to remove: retiring the Kettle (flag OFF) silently stopped rubric
+  // emission with `outcome:'skipped'` and no alarm — the WI-2374 defect one level up
+  // (there it was the `started` bit; here it was the flag). A floor must not be gated on
+  // the aliveness OR the existence of the agent it backstops. DEFAULT ON (not in
+  // DARK_FLAGS): this gates behaviour that already ships. OFF = no synthesized floor;
+  // agent-emitted scorecards are unaffected.
+  SCORECARD_EMISSION_PULSE: "papercusp-scorecard-emission-pulse",
   // sentinel-as-herald-2026-06-21: gates the PAPERCUP role (formerly `sentinel`) — a
   // new always-on autonomous system-health supervisor (sibling to the Mug, mirrors
   // OVERWATCH). The flag gates (a) the `papercup` role registration, (b) the

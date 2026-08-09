@@ -276,14 +276,15 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
       lexIdentical: number;
       callsWeighted: number;
       callsTotal: number;
-      degraded: number;
+      unmeasurable: number;
+      lexicalEmpty: number;
       reasons: Set<string>;
     };
     const cells = new Map<string, Cell>();
     const cellOf = (k: string) => {
       let c = cells.get(k);
       if (!c) {
-        c = { lexical: [], fresh: [], lexIdentical: 0, callsWeighted: 0, callsTotal: 0, degraded: 0, reasons: new Set() };
+        c = { lexical: [], fresh: [], lexIdentical: 0, callsWeighted: 0, callsTotal: 0, unmeasurable: 0, lexicalEmpty: 0, reasons: new Set() };
         cells.set(k, c);
       }
       return c;
@@ -298,14 +299,28 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
       const noFresh = await search(query, 'hybrid', RECENCY_NO_FRESH);
       const semantic = await search(query, 'embeddings', RECENCY_NO_FRESH);
 
-      const bad = [prod, noFresh, semantic].find((r) => r.legs?.degraded);
-      if (bad) {
-        // A surviving degradation is DATA, not silence: it is counted and its
-        // reason retained, so the exclusion is visible in the report.
-        cell.degraded += 1;
-        cell.reasons.add(bad.legs?.warning ?? 'unknown');
+      // ⚠ `legs.degraded` fires for TWO structurally different situations, and
+      // conflating them is a BIAS, not a loss. The previous revision skipped on
+      // either, which discarded 30-70% of queries per cell:
+      //
+      //   (a) THE EMBED FAILED → the semantic arm is empty → the two arms are
+      //       not comparable → this query genuinely cannot be measured.
+      //   (b) THE LEXICAL LEG RETURNED 0 CANDIDATES → the arms ARE perfectly
+      //       comparable, and lexical churn is 0 BY DEFINITION. These are the
+      //       queries where BM25 contributes NOTHING AT ALL. Dropping them
+      //       removes precisely the zeros from the sample and so systematically
+      //       OVERSTATES the lexical leg's influence — the single largest error
+      //       in the earlier numbers.
+      //
+      // The predicate below is STRUCTURAL — "is the semantic arm usable?" —
+      // rather than a match on warning prose, which would drift with wording.
+      if (semantic.results.length === 0 || noFresh.results.length === 0) {
+        cell.unmeasurable += 1;
+        cell.reasons.add(semantic.legs?.warning ?? noFresh.legs?.warning ?? 'unknown');
         continue;
       }
+      // Measured, AND counted: a cell's zero-rate is itself a headline result.
+      if ([prod, noFresh, semantic].some((r) => r.legs?.degraded)) cell.lexicalEmpty += 1;
 
       const [p, nf, se] = [idsOf(prod.results), idsOf(noFresh.results), idsOf(semantic.results)];
       const lexicalChurn = minus(nf, se).length; // one knob: the lexical leg
@@ -321,10 +336,13 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
     for (const [key, c] of [...cells.entries()].sort()) {
       const lex = describeDist(c.lexical);
       const fresh = describeDist(c.fresh);
-      const attempted = lex.n + c.degraded;
+      const attempted = lex.n + c.unmeasurable;
+      const zeroRate = lex.n === 0 ? 0 : (c.lexicalEmpty / lex.n) * 100;
       lines.push(
         `  ${key.padEnd(26)} n=${String(lex.n).padStart(3)} of ${String(attempted).padStart(3)} attempted` +
-          ` (${c.degraded} degraded${c.degraded ? ` — ${[...c.reasons].join('; ').slice(0, 80)}` : ''})\n` +
+          ` (${c.unmeasurable} unmeasurable — embed failed${c.unmeasurable ? `: ${[...c.reasons].join('; ').slice(0, 60)}` : ''})\n` +
+          `      BM25 RETURNED NOTHING for ${c.lexicalEmpty}/${lex.n} queries (${zeroRate.toFixed(0)}%)` +
+          ' — counted as churn 0, NOT excluded\n' +
           `      LEXICAL leg churn   median ${lex.median} (${asPct(lex.median)})  ` +
           `p25 ${lex.p25} / p75 ${lex.p75}  mean ${lex.mean.toFixed(1)}  ` +
           `| ${c.lexIdentical}/${lex.n} pages IDENTICAL without it\n` +
