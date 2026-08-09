@@ -206,11 +206,13 @@ describe('absence of evidence is not health', () => {
   });
 });
 
-describe('structural: losing the only semantic leg', () => {
+describe('structural: losing every semantic leg', () => {
   it('raises no-semantic-path when nothing injection reads can be reached by meaning', () => {
-    // Cannot fire today (session_turn carries the only embedding leg). It is the ratchet
-    // that makes losing that one leg loud instead of silent.
-    const r = assessInjectionReach(HEALTHY, [], ['work_item', 'coord_message']);
+    // Since P-005 this takes losing BOTH corpus legs, not one — so the hypothetical
+    // is built from `coord_message`, which is genuinely BM25-only (120k+ envelope
+    // rows deliberately unembedded). `work_item` used to serve this role and can no
+    // longer: it has an embedding leg now.
+    const r = assessInjectionReach(HEALTHY, [], ['coord_message']);
     const b = r.breaches.find((x) => x.kind === 'no-semantic-path');
     expect(b).toBeDefined();
     expect(b?.source).toBeNull();

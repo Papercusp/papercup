@@ -68,6 +68,42 @@ export interface PushSendResult {
   /** 'skipped' when the provider is not configured (no creds). */
   status: number | 'skipped' | 'error';
   detail?: string;
+  /** The provider says this TOKEN is permanently invalid (FCM `UNREGISTERED`) — the app was
+   *  uninstalled, the data cleared, or the token rotated. Distinct from `ok: false`, which is
+   *  usually transient (5xx, network, an unconfigured provider). Only this flag licenses
+   *  deleting the row; see `isFcmTokenPermanentlyInvalid`. Optional so no existing fixture
+   *  that builds a PushSendResult is stranded. */
+  unregistered?: boolean;
+}
+
+/**
+ * PURE: does this FCM v1 failure mean the TOKEN is permanently dead rather than the send
+ * being transiently unlucky?
+ *
+ * FCM's documented contract is explicit that the caller must stop using such a token: a
+ * `404` carrying `errorCode: "UNREGISTERED"` (equivalently the legacy `NotRegistered`) is
+ * returned when the app was uninstalled, its data cleared, or the token rotated — it will
+ * NEVER succeed again. We never acted on it, so a dead token stayed registered forever and
+ * every subsequent push re-404'd against it.
+ *
+ * Measured 2026-08-09 (harness_shared.attention_notifications, the WI-36644 receipt):
+ * **0 of 141 mobile pushes succeeded** in the entire audited window. The papercusp-workspace
+ * rows are three non-revoked FCM tokens registered 2026-07-15/16/17 whose devices were last
+ * seen 2026-07-19 — three weeks of urgent owner pages (including "6 reachable agents were
+ * disarmed", 08:07:07Z) attempting delivery to phones that had been gone for weeks, while
+ * `pushTargetsForWorkspace` kept reporting three live targets.
+ *
+ * ⚠ Deliberately NARROW, and the narrowness is the point: this authorises a DELETE. A 5xx, a
+ * network error, an expired service-account credential and an unconfigured provider
+ * (`status: 'skipped'`) are all `ok: false` too, and pruning on any of those would silently
+ * unregister a device that is perfectly alive the next time the provider hiccups — trading a
+ * rail that is dead-but-visible for one that deletes itself. So both the status AND the
+ * provider's own error code must agree, and anything unparseable answers `false` (fail-CLOSED
+ * on deletion, which is the safe direction for an irreversible write).
+ */
+export function isFcmTokenPermanentlyInvalid(status: number | 'skipped' | 'error', body: string): boolean {
+  if (status !== 404) return false;
+  return /"errorCode"\s*:\s*"UNREGISTERED"/.test(body) || /"message"\s*:\s*"NotRegistered"/.test(body);
 }
 
 export async function dispatchPush(
@@ -185,7 +221,8 @@ async function sendFcm(deviceToken: string, payload: PushPayload): Promise<PushS
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     console.warn(`[push] fcm ${res.status}: ${detail}`);
-    return { platform: 'fcm', ok: false, status: res.status, detail };
+    const unregistered = isFcmTokenPermanentlyInvalid(res.status, detail);
+    return { platform: 'fcm', ok: false, status: res.status, detail, ...(unregistered ? { unregistered } : {}) };
   }
   return { platform: 'fcm', ok: true, status: res.status };
 }
