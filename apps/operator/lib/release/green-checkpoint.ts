@@ -3748,6 +3748,26 @@ export async function runGreenCheckpoint(
           `\n\n⚠ already changed since candidate ${candidate.slice(0, 8)} (may be fixed-since downstream — verify before re-diagnosing from scratch): ${lineage.failingFilesChangedInRange.join(', ')}`;
       }
     }
+    // WI-37490: build THIS pass's own not-green CheckpointResult — shared by (a) the
+    // terminal/non-refiring fallthrough below, unchanged in shape, and (b) each auto-refire
+    // recursion site, which now records it via deps.recordVerdict BEFORE recursing (see the
+    // two `return runGreenCheckpoint(...)` call sites below). One builder means the recorded
+    // "superseded" verdict and the terminal one can never drift in shape.
+    const buildNotGreenResult = (forRetriage?: RedTriage & { tip: string | null }): CheckpointResult => ({
+      advanced: false,
+      candidate,
+      from: lastReady,
+      green: false,
+      reason: 'not-green',
+      summary,
+      failingTests,
+      failingTestNames: extractFailingTestNames(summary),
+      ...(forRetriage ? { retriage: forRetriage } : {}),
+      ...(deps.runId ? { runId: deps.runId } : {}),
+      ...(logPath ? { logPath } : {}),
+      ...(isolationNote ? { isolationNote } : {}),
+      ...(lineage ? { lineage } : {}),
+    });
     // WI-2997 (EI-7443 follow-up): best-effort 7d historical flake annotation for
     // the failing file(s) — purely informational, same fail-soft shape as the
     // already-fixed-since check above; any error here just skips the note.
@@ -3998,6 +4018,10 @@ export async function runGreenCheckpoint(
         // any checkpoint:await sha-bound to `candidate` now, or it sleeps to its own timeout
         // never learning this run moved on.
         await deps.cancelStaleAwaits?.(candidate).catch(() => {});
+        // WI-37490: record THIS pass's own (about-to-be-superseded) verdict before recursing
+        // — if the refire below dies partway through, this completed pass's verdict survives
+        // instead of gate_health freezing on whatever it held before this run even started.
+        await deps.recordVerdict?.(buildNotGreenResult(retriage)).catch(() => {});
         return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
       }
     } else {
@@ -4046,6 +4070,9 @@ export async function runGreenCheckpoint(
           // EI-19326481022404981: same rationale as the test-file rescue arm above — this
           // run is abandoning `candidate` for `tip`; retire any await sha-bound to it.
           await deps.cancelStaleAwaits?.(candidate).catch(() => {});
+          // WI-37490: same as the test-file rescue arm above — record this pass's own
+          // verdict before recursing, so a refire that dies leaves it recorded.
+          await deps.recordVerdict?.(buildNotGreenResult(retriage)).catch(() => {});
           return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
         }
       }

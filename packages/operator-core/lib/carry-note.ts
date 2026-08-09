@@ -72,6 +72,8 @@ export function loopScope(harness: string, ownerId: string): string {
  *  context boundary; a wall row survives it mechanically — rendered into every
  *  wake and every carry brief until explicitly cleared. */
 export interface WallEntry {
+  /** Stable identity, independent of wording (P-013) — see {@link carryRowKey}. */
+  id?: string;
   /** The pending action / decision, stated concretely ("3 zombie PIDs await owner OK to kill"). */
   claim: string;
   /** A concrete re-check command a successor runs to test whether the wall still stands. */
@@ -89,6 +91,8 @@ export interface WallEntry {
  *  the probe travel with the claim — and distinguishes VERIFIED (evidence attached)
  *  from PREDICTED (a hypothesis the successor must re-check before relying on). */
 export interface CheckEntry {
+  /** Stable identity, independent of wording (P-013) — see {@link carryRowKey}. */
+  id?: string;
   /** The claim about external state, stated concretely ("post-restart ticks stamp hash b01b01…"). */
   claim: string;
   /** A concrete probe a successor runs to falsify/confirm the claim before relying on it. */
@@ -259,27 +263,70 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
 export const CARRY_NOTE_CHECKS_LEGEND =
   '_✓ = VERIFIED (evidence attached) · ? = PREDICTED — run the re-check before relying on it_';
 
-/** One wall as a parseable single line: `- <claim> — re-check: <cmd> (since <ISO>)`.
- *  The " — re-check: " and trailing " (since …)" markers are the round-trip anchors. */
+/** Max length of a row `id`. Long enough to be descriptive (`gate-green-at-tip`),
+ *  short enough that the rendered `[#…]` prefix never dominates the row. */
+export const CARRY_ROW_ID_MAX = 40;
+
+/** The charset an `id` round-trips through {@link renderCheckLine} / {@link parseCheckLine}
+ *  intact: no whitespace and no `]`, so the `[#…]` anchor can never swallow claim text. */
+const CARRY_ROW_ID_ALLOWED = /[^A-Za-z0-9._:-]+/g;
+
+/** Sanitize a caller-supplied row id to the round-trippable charset, or null when
+ *  nothing survives. Repair-don't-refuse, like every other coercion in this file: an
+ *  id with a space becomes `my-id`, never a rejected write that discards the note. */
+export function sanitizeCarryRowId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.trim().replace(CARRY_ROW_ID_ALLOWED, '-').replace(/^-+|-+$/g, '');
+  if (!cleaned) return null;
+  return cleaned.slice(0, CARRY_ROW_ID_MAX).toLowerCase();
+}
+
+/**
+ * The IDENTITY of a carried row (P-013), used for EVERY identity decision — dedup,
+ * inheritance of recheck/verified/sinceMs, merge-upsert, and drop-detection.
+ *
+ * `id` when present, else the trimmed claim text. The two namespaces are TAGGED
+ * apart so a row whose claim text happens to equal another row's id can never
+ * collide with it.
+ *
+ * Why an id at all: keying identity on the claim TEXT means re-wording a claim makes
+ * it a different row — it loses its inherited evidence and `sinceMs`, and reads to
+ * the drop-report as a carried claim that vanished. An id makes identity independent
+ * of wording, which is what lets a caller tighten a claim in place.
+ */
+export function carryRowKey(row: { id?: string; claim?: string }): string {
+  const id = sanitizeCarryRowId(row.id);
+  return id ? `id:${id}` : `claim:${(row.claim ?? '').trim()}`;
+}
+
+/** One wall as a parseable single line: `- [#id] <claim> — re-check: <cmd> (since <ISO>)`.
+ *  The `[#…]` prefix, " — re-check: " and trailing " (since …)" markers are the
+ *  round-trip anchors. */
 export function renderWallLine(w: WallEntry): string {
   const recheck = (w.recheck ?? '').trim();
+  const id = sanitizeCarryRowId(w.id);
   const since =
     w.sinceMs != null && Number.isFinite(w.sinceMs) ? ` (since ${new Date(w.sinceMs).toISOString()})` : '';
-  return `- ${w.claim.trim()}${recheck ? ` — re-check: ${recheck}` : ''}${since}`;
+  return `- ${id ? `[#${id}] ` : ''}${w.claim.trim()}${recheck ? ` — re-check: ${recheck}` : ''}${since}`;
 }
 
 /** Parse one walls-section line back into a {@link WallEntry}; null for a
  *  non-row line (blank, prose, malformed). */
 export function parseWallLine(line: string): WallEntry | null {
-  const m = /^-\s+(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(line);
+  const m =
+    /^-\s+(?:\[#([A-Za-z0-9._:-]{1,40})\]\s+)?(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
+      line,
+    );
   if (!m) return null;
-  const claim = (m[1] ?? '').trim();
+  const claim = (m[2] ?? '').trim();
   if (!claim) return null;
   const out: WallEntry = { claim };
-  const recheck = (m[2] ?? '').trim();
+  const id = sanitizeCarryRowId(m[1]);
+  if (id) out.id = id;
+  const recheck = (m[3] ?? '').trim();
   if (recheck) out.recheck = recheck;
-  if (m[3]) {
-    const t = Date.parse(m[3]);
+  if (m[4]) {
+    const t = Date.parse(m[4]);
     if (Number.isFinite(t)) out.sinceMs = t;
   }
   return out;
@@ -291,11 +338,12 @@ export function parseWallLine(line: string): WallEntry | null {
 export function renderCheckLine(c: CheckEntry): string {
   const recheck = (c.recheck ?? '').trim();
   const verified = (c.verified ?? '').trim();
+  const id = sanitizeCarryRowId(c.id);
   const since =
     c.sinceMs != null && Number.isFinite(c.sinceMs) ? ` (since ${new Date(c.sinceMs).toISOString()})` : '';
-  return `- ${verified ? '✓' : '?'} ${c.claim.trim()}${recheck ? ` — re-check: ${recheck}` : ''}${
-    verified ? ` — evidence: ${verified}` : ''
-  }${since}`;
+  return `- ${verified ? '✓' : '?'} ${id ? `[#${id}] ` : ''}${c.claim.trim()}${
+    recheck ? ` — re-check: ${recheck}` : ''
+  }${verified ? ` — evidence: ${verified}` : ''}${since}`;
 }
 
 /** Parse one checks-section line back into a {@link CheckEntry}; null for a
@@ -305,19 +353,21 @@ export function renderCheckLine(c: CheckEntry): string {
  *  dropped on round-trip. */
 export function parseCheckLine(line: string): CheckEntry | null {
   const m =
-    /^-\s+(?:([✓?])\s+)?(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+—\s+evidence:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
+    /^-\s+(?:([✓?])\s+)?(?:\[#([A-Za-z0-9._:-]{1,40})\]\s+)?(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+—\s+evidence:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
       line,
     );
   if (!m) return null;
-  const claim = (m[2] ?? '').trim();
+  const claim = (m[3] ?? '').trim();
   if (!claim) return null;
   const out: CheckEntry = { claim };
-  const recheck = (m[3] ?? '').trim();
+  const id = sanitizeCarryRowId(m[2]);
+  if (id) out.id = id;
+  const recheck = (m[4] ?? '').trim();
   if (recheck) out.recheck = recheck;
-  const verified = (m[4] ?? '').trim();
+  const verified = (m[5] ?? '').trim();
   if (verified) out.verified = verified;
-  if (m[5]) {
-    const t = Date.parse(m[5]);
+  if (m[6]) {
+    const t = Date.parse(m[6]);
     if (Number.isFinite(t)) out.sinceMs = t;
   }
   return out;
@@ -528,20 +578,23 @@ export function withCarryNoteWalls(body: string, walls: WallEntry[]): string {
  *  stood (age is evidence — a rewrite must not reset it), stamp `nowMs` on new
  *  ones, cap at {@link CARRY_NOTE_MAX_WALLS}. */
 export function normalizeWallEntries(
-  entries: ReadonlyArray<{ claim: string; recheck?: string; sinceMs?: number }>,
+  entries: ReadonlyArray<{ id?: string; claim: string; recheck?: string; sinceMs?: number }>,
   prior: ReadonlyArray<WallEntry>,
   nowMs: number = Date.now(),
 ): WallEntry[] {
-  const priorByClaim = new Map(prior.map((w) => [w.claim.trim(), w] as const));
+  const priorByKey = new Map(prior.map((w) => [carryRowKey(w), w] as const));
   const seen = new Set<string>();
   const out: WallEntry[] = [];
   for (const e of entries) {
     const claim = (e.claim ?? '').trim();
-    if (!claim || seen.has(claim)) continue;
-    seen.add(claim);
-    const existing = priorByClaim.get(claim);
+    const key = carryRowKey(e);
+    if (!claim || seen.has(key)) continue;
+    seen.add(key);
+    const existing = priorByKey.get(key);
+    const id = sanitizeCarryRowId(e.id) ?? existing?.id;
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
     out.push({
+      ...(id ? { id } : {}),
       claim,
       ...(recheck ? { recheck } : {}),
       sinceMs: e.sinceMs ?? existing?.sinceMs ?? nowMs,
@@ -575,18 +628,20 @@ export function withCarryNoteChecks(body: string, checks: CheckEntry[]): string 
  *  from the prior row when omitted (a re-write must not silently drop evidence),
  *  stamp `nowMs` on new ones, cap at {@link CARRY_NOTE_MAX_CHECKS}. */
 export function normalizeCheckEntries(
-  entries: ReadonlyArray<{ claim: string; recheck?: string; verified?: string; sinceMs?: number }>,
+  entries: ReadonlyArray<{ id?: string; claim: string; recheck?: string; verified?: string; sinceMs?: number }>,
   prior: ReadonlyArray<CheckEntry>,
   nowMs: number = Date.now(),
 ): CheckEntry[] {
-  const priorByClaim = new Map(prior.map((c) => [c.claim.trim(), c] as const));
+  const priorByKey = new Map(prior.map((c) => [carryRowKey(c), c] as const));
   const seen = new Set<string>();
   const out: CheckEntry[] = [];
   for (const e of entries) {
     const claim = (e.claim ?? '').trim();
-    if (!claim || seen.has(claim)) continue;
-    seen.add(claim);
-    const existing = priorByClaim.get(claim);
+    const key = carryRowKey(e);
+    if (!claim || seen.has(key)) continue;
+    seen.add(key);
+    const existing = priorByKey.get(key);
+    const id = sanitizeCarryRowId(e.id) ?? existing?.id;
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
     let verified = (e.verified ?? existing?.verified ?? '').trim();
     // Review fold #5: evidence never goes stale SILENTLY — stamp the verification
@@ -598,6 +653,7 @@ export function normalizeCheckEntries(
       verified = `${verified} @${new Date(nowMs).toISOString()}`;
     }
     out.push({
+      ...(id ? { id } : {}),
       claim,
       ...(recheck ? { recheck } : {}),
       ...(verified ? { verified } : {}),
@@ -646,11 +702,24 @@ export function mergeCarryRows(opts: {
   /** The note this write proposes (rendered structured fields, or the raw string). */
   baseNote: string | null | undefined;
   /** An EXPLICIT walls arg — `[]` clears; `undefined` defers to the note/prior. */
-  walls?: ReadonlyArray<{ claim: string; recheck?: string; sinceMs?: number }>;
+  walls?: ReadonlyArray<{ id?: string; claim: string; recheck?: string; sinceMs?: number }>;
   /** An EXPLICIT checks arg — `[]` clears; `undefined` defers to the note/prior. */
-  checks?: ReadonlyArray<{ claim: string; recheck?: string; verified?: string; sinceMs?: number }>;
+  checks?: ReadonlyArray<{ id?: string; claim: string; recheck?: string; verified?: string; sinceMs?: number }>;
   /** Whether this call writes a narrative at all (structured fields or a raw note). */
   hasNoteWrite: boolean;
+  /**
+   * P-013 — how a supplied row list combines with the carried set.
+   *
+   * `'replace'` (DEFAULT, unchanged semantics): the supplied list IS the new set;
+   * carried rows it omits are dropped. The only way to retire a stale row, which is
+   * why it stays the default.
+   *
+   * `'merge'`: supplied rows UPSERT onto the carried set by {@link carryRowKey} —
+   * carried rows the caller did not mention SURVIVE. Turns "add one row" from a
+   * destructive write into an additive one. Under merge a `[]` list is a NO-OP, not
+   * a clear: clearing requires `'replace'`, so a clear is always deliberate.
+   */
+  mode?: 'replace' | 'merge';
   nowMs?: number;
 }): {
   note: string;

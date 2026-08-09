@@ -988,9 +988,30 @@ export function waitForRealtimeSessionStop(): Promise<void> {
 let wakeGated = false;
 let wakeGatedPrefsCache: any = null;
 let wakeGateHandle: { stop(): Promise<void> } | null = null;
+// In-flight-build memo (WI-37484): four independent call sites fire
+// `startWakeWordGate` fire-and-forget from different triggers (the
+// silence-teardown handoff, an idle-timeout re-arm, the EL-connect-failure
+// retry, and the initial mode-start) — realistically concurrent, e.g. the
+// silence-teardown listener and an idle-timeout re-arm landing in the same
+// tick. The old code was a bare check-then-act: `if (wakeGateHandle) return
+// true;` followed by a `fetch`/dynamic-import/engine-start await chain
+// before the assignment. Two overlapping callers each passed the guard,
+// each started its OWN wake-word engine capture (mic handle), and only the
+// last assignment survived — the other listener was never stopped and leaked
+// the mic-capture handle. Mirrors the reentrancy-guard already used
+// correctly by `maybeStartFullAgent`'s `fullAgentStarting` memo above.
+let wakeGateStarting: Promise<boolean> | null = null;
 
 async function startWakeWordGate(prefs: any): Promise<boolean> {
   if (wakeGateHandle) return true;
+  if (wakeGateStarting) return wakeGateStarting;
+  wakeGateStarting = startWakeWordGateInner(prefs).finally(() => {
+    wakeGateStarting = null;
+  });
+  return wakeGateStarting;
+}
+
+async function startWakeWordGateInner(prefs: any): Promise<boolean> {
   // Pick the engine: prefs.wakeWordEngine ('porcupine' | 'openwakeword').
   // 'off' is invalid here — the gated path requires a real engine.
   const engine = prefs?.wakeWordEngine ?? 'off';
@@ -1698,13 +1719,33 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
   return false;
 }
 
+// In-flight-build memo (WI-37484): both wake-engine `onWake` callbacks funnel
+// here fire-and-forget, and a single engine CAN fire `onWake` twice in quick
+// succession (a fast repeated utterance / an engine-level double-trigger).
+// The old code was a bare check-then-act — `if (whisperCapture) return;`
+// followed by a `fetch` health-probe + dynamic-import + capture-start await
+// chain before the assignment — so a second `onWake` landing inside that
+// window passed the guard too, started its OWN whisper capture against the
+// same local server, and only the last assignment survived: the first
+// capture's audio session was never stopped and leaked.
+let whisperCaptureStarting: Promise<void> | null = null;
+
 async function runOneShotWhisperAfterWake(): Promise<void> {
   if (whisperCapture) return; // already running
+  if (whisperCaptureStarting) return whisperCaptureStarting;
+  whisperCaptureStarting = runOneShotWhisperAfterWakeInner().finally(() => {
+    whisperCaptureStarting = null;
+  });
+  return whisperCaptureStarting;
+}
+
+async function runOneShotWhisperAfterWakeInner(): Promise<void> {
   // Use whatever STT engine is configured (Voicemode whisper / Deepgram).
   // The Whisper capture's first onFinal handler ships the transcript; we
   // then tear it down and resume Porcupine gating.
   const probe = await fetch('http://localhost:2022/health', { signal: AbortSignal.timeout(2000) }).catch(() => null);
   if (!probe?.ok) return;
+  if (whisperCapture) return; // a concurrent onWake already won the race
   const { startWhisperCapture } = await import('../../../app/_components/voice/stt-voicemode');
   let fired = false;
   whisperCapture = await startWhisperCapture('http://localhost:2022', {
