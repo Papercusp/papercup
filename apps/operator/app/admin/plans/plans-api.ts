@@ -1867,7 +1867,7 @@ export function planLockPath(slug: string, archived: boolean): string {
  * The open plan's lock holder, or null. PUSH, not poll (plan
  * semantic-search-fingerprint-coverage-2026-08-03, P-025).
  *
- * This used to `fetch('/api/admin/locks/queue')` on a 30s
+ * This used to bare-fetch the admin locks-queue route on a 30s
  * `window.setInterval`, justified in its own comment by "D-008 (no SSE/live
  * -sync)". That premise expired when plans moved onto `@papercusp/sync`: the
  * lock writers now emit `planLock.byPath` invalidations
