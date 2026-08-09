@@ -45,10 +45,25 @@
  * heartbeat would reintroduce the same silent dead-end one layer down.
  */
 
-import type { PresenceRecord } from './../agent-tools/coordination/presence';
-import { listPresence } from './../agent-tools/coordination/presence';
-import { resolveSessionStates } from './../agent-tools/coordination/liveness-oracle';
-import { MUG_COORD_SLOT, wakeMug } from '../pot/placement-watchdog';
+import type { PresenceRecord } from '../agent-tools/coordination/presence';
+import type { listPresence } from '../agent-tools/coordination/presence';
+import type { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
+
+/**
+ * ⚠ EVERY runtime dependency here is imported LAZILY, inside the functions — the same
+ * shape `wakeMug` uses one file over for `messages` / `workspace-als`, and for the same
+ * reason. The Scout watchdog tests mock `@papercusp/db-org` with ONLY `getOrgPg`, and
+ * vitest throws on access to ANY missing mock member. A STATIC import of the presence /
+ * liveness modules pulls the real `su-lock-store` (which calls
+ * `setAdminPoolStatementTimeoutProvider` at module scope) into their graph, and all three
+ * suites then fail to COLLECT — a failure that looks nothing like the change that caused
+ * it. Type-only imports above are erased at compile time and are safe.
+ *
+ * Keep new dependencies dynamic unless you have re-run those suites.
+ */
+const loadPresence = () => import('../agent-tools/coordination/presence');
+const loadLiveness = () => import('../agent-tools/coordination/liveness-oracle');
+const loadPlacementWatchdog = () => import('../pot/placement-watchdog');
 
 /** Session states that can actually receive and act on a nudge. */
 const DELIVERABLE_STATES = new Set(['live', 'parked']);
@@ -79,8 +94,8 @@ export interface ResolveNudgeRecipientOpts {
 export async function resolveNudgeRecipient(
   opts: ResolveNudgeRecipientOpts,
 ): Promise<NudgeRecipient> {
-  const listFn = opts.listPresenceFn ?? listPresence;
-  const statesFn = opts.resolveSessionStatesFn ?? resolveSessionStates;
+  const listFn = opts.listPresenceFn ?? (await loadPresence()).listPresence;
+  const statesFn = opts.resolveSessionStatesFn ?? (await loadLiveness()).resolveSessionStates;
 
   let rows: PresenceRecord[] = [];
   try {
@@ -193,6 +208,7 @@ export async function deliverScoutNudge(
 
   if (recipient.kind === 'mug') {
     // Unchanged path: wakeMug's two halves (direct wake + durable @role:mug park).
+    const { wakeMug } = await loadPlacementWatchdog();
     await wakeMug({
       workspaceId: opts.workspaceId,
       mugOwner: recipient.ownerId,
@@ -219,9 +235,12 @@ export async function deliverScoutNudge(
   // adjacent `wakeMug` uses this same string form.
   const to = recipient.kind === 'su' ? [recipient.ownerId] : ['human'];
 
+  // The slot name is INLINED rather than imported from placement-watchdog's
+  // MUG_COORD_SLOT: this is diagnostic prose, and the Scout tests mock that module with
+  // only { resolveMugOwner, wakeMug }, so reading any other member throws.
   const routingNote =
     `\n\n— Routed by the Scout nudge ladder because the Mug was not deliverable: ${recipient.why}. ` +
-    `Before this ladder existed the nudge would have parked in ${MUG_COORD_SLOT}, which only a Mug drains.`;
+    `Before this ladder existed the nudge would have parked in '@role:mug' (MUG_COORD_SLOT), which only a Mug drains.`;
 
   try {
     await runWithWorkspace(opts.workspaceId, () =>

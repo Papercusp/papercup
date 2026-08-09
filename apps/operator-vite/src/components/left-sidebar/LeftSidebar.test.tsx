@@ -120,7 +120,7 @@ describe('<LeftSidebar> shell', () => {
   // t('overwatch')); the useLexicon mock above echoes the key, so they render as
   // the bare key names (restore-pot-lexicon P-005 — the classic pack shows
   // Pots / Papercup / Brain / Kettle at runtime).
-  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Goals · Agents · System · Spend', () => {
+  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Agents · System · Spend', () => {
     // The blanket useFlag answer turns EVERY gated tab on — overwatch, sentinel
     // and (since WI-37561) conversations. The full rail is what the owner's
     // ordering describes, and pinning it with the gates open is deliberate: a
@@ -136,15 +136,14 @@ describe('<LeftSidebar> shell', () => {
       'operator',
       'brain',
       'overwatch',
-      // 🎯 Goals is INSERTED between Kettle and Agents, not appended — the one
-      // deliberate exception to the append-only convention this test enforces,
-      // and it is here because the OWNER placed it, not in spite of them.
-      // D-018 (goal-mode-2026-08-07), verbatim 2026-08-09: a "LEFT-RAIL tab
-      // beside Mug/Overwatch". Beside is load-bearing: Mug and Overwatch are the
-      // supervised-agent tabs and a goal is what they are supervised AGAINST, so
-      // appending it after Convos would have put the objective at the far end of
-      // the rail from the agents pursuing it.
-      'Goals',
+      // (🎯 Goals sat HERE, between Kettle and Agents, 2026-08-07 → 2026-08-09.
+      // REMOVED on owner directive: "remove the goals middle pane tab entirely.
+      // We already have a goals tab inside the hud tab lets just use that."
+      // Unlike every prior change to this rail, this is a removal from the
+      // MIDDLE, so everything below shifts up one — which is exactly the kind of
+      // silent reshuffle this test exists to make loud. If you are reading this
+      // because the test red'd, check whether your change meant to move a tab at
+      // all before editing the expectation.)
       // The scheduled-work rail, split by whether a fire RUNS A MODEL (owner ask
       // 2026-07-26). These two REPLACE the former Blender + Docs tabs, whose rows
       // redistributed into the split.
@@ -189,11 +188,9 @@ describe('<LeftSidebar> shell', () => {
       'sentinel',
       'queen',
       'overwatch',
-      // The tab ID is 'goal' (singular) while the LABEL is "Goals" — ids are
-      // frozen deep-link keys (`?lst=goal`, ui:dispatch), so they name the
-      // CONCEPT and never track the display string. Same split as hives/Pots
-      // and queen/Brain above.
-      'goal',
+      // ('goal' was here — removed 2026-08-09 with the Goals tab. It joins
+      // 'blender'/'docs'/'tasks' as a RETIRED id: a stale `?lst=goal` no longer
+      // matches the nuqs literal parser and falls through to the default tab.)
       'agents',
       'system',
       'spend',
@@ -310,6 +307,33 @@ describe('<LeftSidebar> shell', () => {
     // URL); assert the rail lands on the Mug tab + panel.
     await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen'));
     expect(await screen.findByTestId('panel-queen')).toBeTruthy();
+  });
+
+  // 🎯 Goals left this rail on 2026-08-09 (owner: "remove the goals middle pane
+  // tab entirely. We already have a goals tab inside the hud tab lets just use
+  // that."). Unlike Convos it is DELETED, not flag-gated — the owner asked for
+  // two different things and the difference is the point, so this pair of tests
+  // is what stops a later change "restoring" it by reflex.
+  it('no longer hosts a Goals tab — the HUD Goals tab is the one goals surface', () => {
+    H.overwatchOn = true;
+    H.flags = { 'papercusp-conversations-rail-tab': true };
+    renderRail();
+    expect(screen.queryByTestId('left-sidebar-tab-goal')).toBeNull();
+    expect(screen.queryByTestId('left-sidebar-rail-goal')).toBeNull();
+    // Its former neighbours are both still here — the removal came out of the
+    // MIDDLE of the array, so this is the pair most likely to be disturbed.
+    expect(screen.getByTestId('left-sidebar-tab-overwatch')).toBeTruthy();
+    expect(screen.getByTestId('left-sidebar-tab-agents')).toBeTruthy();
+  });
+
+  it("retires the 'goal' id so a stale ?lst=goal falls through to the default tab", async () => {
+    const { TAB_IDS } = await import('./LeftSidebar');
+    expect(TAB_IDS).not.toContain('goal');
+    // Deliberately UNLIKE the flag-gated Convos case: there is no snap-back
+    // effect for `goal`, because nuqs's literal parser no longer accepts the
+    // value at all — it never becomes the active tab in the first place.
+    renderRail('?lst=goal');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen');
   });
 
   // ── 💬 Convos behind its testing flag (WI-37561) ─────────────────────────────

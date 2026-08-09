@@ -312,6 +312,24 @@ export interface OrientResult {
   /** Whether the optional coord:declare-intent succeeded (present only when
    *  `intent` was passed; false = the caller lacked coord:write). */
   intentDeclared?: boolean;
+  /** EI-20013545515660920: the OUTCOME of the `planItems` lane claim that
+   *  coord:declare-intent performs on this call's behalf. Present only when
+   *  `planItems` was passed.
+   *
+   *  `intentDeclared: true` says only that the declaration CALL succeeded — it
+   *  says nothing about whether the lane was actually claimed. declare-intent
+   *  already computes a full `claims` diagnostic (unknown ids plus a `hint`
+   *  naming exactly why nothing was claimed: a plan that does not resolve in the
+   *  scope, or ids that do not parse as items of it), and this call site used to
+   *  DISCARD that entire response. The result was a silent no-op: an agent
+   *  believed it held a lane it did not hold, with nothing at the call site to
+   *  tell it apart from success. That matters because the su persona routes lane
+   *  claiming through this tool as the one-call wake bootstrap and states that an
+   *  unclaimed lane is invisible to peers and the Mug — so the failure only
+   *  surfaces later, as a double-placement.
+   *
+   *  `warning` is set whenever NONE of the requested items ended up held. */
+  laneClaim?: OrientLaneClaim;
   /** A bounded slice of the caller's fleet audience-history (coord:catch-up on
    *  @fleet:<own slug>) — present only when the caller belongs to a fleet; null on a
    *  failed fold. The auto-catch-up at wake. P-005: `unchanged:true` ⇒ `recent` is

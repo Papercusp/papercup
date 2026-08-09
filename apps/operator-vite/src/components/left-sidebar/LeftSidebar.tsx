@@ -37,7 +37,9 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import { isChromelessPath } from '@papercusp/operator-core/lib/chromeless-routes';
 import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
-import { Network, Coffee, Thermometer, CupSoda, KeyRound, Cog, Bot, Coins, Target, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+// `Target` left with the Goals tab (2026-08-09) — it was that tab's icon and
+// nothing else in this rail uses it.
+import { Network, Coffee, Thermometer, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -101,12 +103,26 @@ const ConversationsTab = lazy(() => import('./ConversationsTab'));
 // overlapping roles and reported the SAME dollars as its own. Cost is a peer tab
 // now, sitting right of Agents, with the attribution limit stated on it.
 const SpendTab = lazy(() => import('./SpendTab'));
-// 🎯 Goal — GOAL mode's rail glance (goal-mode-2026-08-07 P-019, placement D-018).
-// It sits in the RAIL rather than behind a top-level /goals route because this
-// rail is the declared steering surface and already hosts the supervised-agent
-// tabs; a goal is what those agents are supervised AGAINST, so it belongs beside
-// Mug/Overwatch rather than somewhere the owner has to remember to navigate to.
-const GoalTab = lazy(() => import('./GoalTab'));
+// (The 🎯 Goals tab is REMOVED from this rail — owner directive 2026-08-09,
+// verbatim: "remove the goals middle pane tab entirely. We already have a goals
+// tab inside the hud tab lets just use that." It shipped here two days earlier
+// under goal-mode-2026-08-07 P-019/D-018, which argued the rail was the right
+// home because a goal is what the neighbouring Mug/Overwatch agents are
+// supervised against. The owner's correction supersedes D-018: the HUD's Goals
+// tab (apps/operator/app/adv/hud, `?hudtab=goals`) is now the ONE goals surface,
+// and two boards reading the same `goals.list` was the duplication to cut.
+//
+// `goal` joins `blender`, `docs` and `tasks` as a RETIRED tab id: a stale
+// `?lst=goal` deep link now falls through to the default tab. This was a
+// REMOVAL FROM THE MIDDLE of the array, so unlike the append-only additions
+// every tab after it shifts left by one — the pinned order test is what proves
+// nothing else moved relative to its neighbours.
+//
+// ⚠ CARRIED DEBT: GoalTab owned the product's ONLY "Start a goal" affordance
+// (it seeded the chat kickoff draft that leads to the goals:propose confirm
+// card). The HUD renders that confirm card but has no kickoff of its own, so
+// until the button is relocated there is no UI path to STARTING a goal — only
+// to viewing one. Tracked as the first item of goals-tab-improvement-2026-08-09.
 // (The 📥 Inbox tab (EI-13037) MOVED to the op-chat sidebar — owner placement
 // correction 2026-07-16: this middle rail is the SETTINGS surface; the far-left
 // papercup-chat sidebar is the live surface. See _components/inbox/InboxPane.)
@@ -142,17 +158,9 @@ const TABS = [
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
   { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
   { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
-  // 🎯 Goal is INSERTED here, not appended — the one deliberate exception to the
-  // append-only rule below, made on an explicit owner placement rather than in
-  // spite of one. D-018 (goal-mode-2026-08-07), owner verbatim 2026-08-09: the
-  // goal steering surface is "a LEFT-RAIL tab beside Mug/Overwatch, NOT a
-  // top-level /goals route". Beside is the whole point — Mug and Overwatch are
-  // the supervised-agent tabs and a goal is what they are supervised AGAINST, so
-  // appending it after Spend/Convos would put the objective eight tabs away from
-  // the agents pursuing it. The order test was updated in the same commit; if you
-  // are reading this because that test just red'd, do not "fix" it by moving this
-  // entry — check whether the change was meant to reorder anything at all.
-  { id: 'goal', label: (_t: BoundLexicon) => 'Goals', icon: Target, tip: (t: BoundLexicon) => `What the ${t('fleet', { lower: true })} is pointed at — each goal's kill criterion, tripwires and spend against its ceiling`, render: (a: boolean) => <GoalTab active={a} /> },
+  // (🎯 Goals sat HERE, between Kettle and Agents, from 2026-08-07 to 2026-08-09.
+  // Removed on owner directive — see the note above the imports. The HUD's Goals
+  // tab is the one goals surface now.)
   // 🤖 Agents + ⚙ System sit immediately after the Kettle (overwatch) tab, in the
   // slots Blender + Docs held — owner placement 2026-07-25, split 2026-07-26.
   // Agents leads: it is the one that costs money. Literal labels in both lexicon

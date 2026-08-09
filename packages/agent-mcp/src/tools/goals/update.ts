@@ -15,20 +15,26 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema } from './create';
+import { resolveGoalWorkspace } from './_workspace';
+import { getGoalStopExecutor, isStoppingStatus, type GoalStopReport } from './stop-seam';
 
 export default defineTool({
   name: 'goals:update',
   description:
     'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId? }. ' +
     'Partial — an omitted field is left untouched. Use status:"killed" when the written kill criterion trips and "achieved" when the outcome is met; ' +
-    'a goal that is only ever created and never closed is the ratchet GOAL mode exists to prevent.',
+    'a goal that is only ever created and never closed is the ratchet GOAL mode exists to prevent. ' +
+    'status:"paused"|"killed" EXECUTES a stop: it gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it, ' +
+    'returning `stop` — read `stop.unattributedActiveLoops` and `degraded`, which report burn that is STILL RUNNING and could not be attributed to this goal.',
   capability: 'goals:write',
   guidance: {
     when:
       'Reporting actual spend against a goal\'s declared ceiling, revising its statement or kill criterion, or CLOSING it (achieved / killed). Under GOAL mode this is the standing-cadence write that keeps the owner report honest.',
     notWhen:
       'For per-project progress use the pot/plan/work-item beneath the goal — this row carries the goal-level state only. To read current state first, goals:get { id, detail:"full" }.',
-    chaining: 'goals:get → goals:update. A goal closed here should have its projects wound down first (unpause the pot, release claims).',
+    chaining:
+      'goals:get → goals:update. Pausing/killing winds the projects down FOR you (placement gate + loop disarm); ' +
+      'a degraded result means burn continues — chase it with fleet:assignments / loop:status on the reported projects.',
   },
   requirePrincipal: false,
   agentRoles: [...SU_WRITE_ROLES],
@@ -138,6 +144,61 @@ export default defineTool({
       SELECT id, title, status, parent_id, budget_cents, kill_criterion, tripwires, metadata
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
-    return { data: row ?? null };
+
+    // ── The stop fan-out (EI-20013729460455061) ──────────────────────────────
+    //
+    // Until this existed, moving a goal to paused/killed relabelled the row and
+    // nothing else: no consumer of harness_shared.goals gates execution on
+    // status, so every fleet, loop and pot pursuing the goal kept running.
+    //
+    // FIRED ON AN EXPLICIT `status` ARGUMENT, not on a transition edge. A stop
+    // that only fired on active->paused could never be RE-issued, and re-issuing
+    // is exactly what an owner does when the first stop came back degraded (loops
+    // still burning). Reporting spend on an already-paused goal passes no
+    // `status`, so it does not re-fire.
+    let stop: GoalStopReport | null = null;
+    let stopError: string | null = null;
+    if (args.status !== undefined && isStoppingStatus(args.status)) {
+      const executor = getGoalStopExecutor();
+      if (executor) {
+        const workspaceId = await resolveGoalWorkspace(ctx);
+        if (!workspaceId) {
+          // Refuse rather than fan out against the wrong tenant: gating placement
+          // in a workspace the goal does not live in would stop unrelated work.
+          stopError = 'no concrete workspace in scope — stop fan-out skipped';
+        } else {
+          try {
+            stop = await executor({
+              goalId: args.id,
+              workspaceId,
+              status: args.status,
+              actor: ctx.principal?.ownerId ?? null,
+            });
+          } catch (e) {
+            // The status write STANDS even when the stop fails: the owner's intent
+            // is recorded either way, and silently reverting to 'active' would be
+            // a second lie on top of the first. Surface it loudly instead.
+            stopError = e instanceof Error ? e.message : String(e);
+          }
+        }
+      } else {
+        // No host executor wired (a bare agent-mcp embedding). Say so — this is
+        // precisely the state the item describes, and it must not read as success.
+        stopError = 'no goal-stop executor installed by the host — status changed, nothing stopped';
+      }
+    }
+
+    const degradedReasons: string[] = [];
+    if (stopError) degradedReasons.push(stopError);
+    if (stop?.degraded) {
+      degradedReasons.push(
+        `goal ${args.status}, but ${stop.unattributedActiveLoops} active loop(s) in its projects could not be attributed to this goal and are STILL RUNNING`,
+      );
+    }
+
+    return {
+      data: row ? { ...row, stop } : null,
+      ...(degradedReasons.length ? { degraded: true, degradedReasons } : {}),
+    };
   },
 });

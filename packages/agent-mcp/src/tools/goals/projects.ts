@@ -25,22 +25,7 @@ import {
 } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { SU_WRITE_ROLES } from '../../role-config';
-
-/**
- * Every one of these tools is workspace-scoped and a goal cannot be filed
- * workspace-less (the table's CHECK rejects a blank), so resolve GUC-first and
- * REFUSE rather than write against the wrong tenant.
- */
-async function resolveWorkspace(ctx: {
-  tx: unknown;
-  workspaceId?: string;
-}): Promise<string | null> {
-  const tx = ctx.tx as Sql;
-  const [gucRow] = await tx<Array<{ ws: string | null }>>`
-    SELECT NULLIF(current_setting('app.workspace_id', true), '') AS ws
-  `;
-  return gucRow?.ws || (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : null);
-}
+import { resolveGoalWorkspace as resolveWorkspace } from './_workspace';
 
 /**
  * Built fresh per call rather than shared as a frozen constant: `as const`

@@ -436,6 +436,17 @@ describe('setDefaultAccount (default-deploy-account-2026-08-08 P-002)', () => {
     expect(process.env[DEFAULT_ACCOUNT_ACTIVE_ENV]).toBe('1');
   });
 
+  it('syncDefaultAccountEnv reports a CODEX default as INACTIVE (it is not an Anthropic transport steer)', async () => {
+    // The sibling-host reconciler has to agree with setDefaultAccount's claude-only marker rule
+    // (P-003 / D-002), or a bg-host would boot and flip in-process Anthropic traffic onto the
+    // gateway on the strength of a Codex choice — the exact drift the marker exists to prevent.
+    seedPool({ id: 'claude-a' }, { id: 'codex-main', provider: 'codex' });
+    await setDefaultAccount('codex-main', WS);
+    delete process.env[DEFAULT_ACCOUNT_ACTIVE_ENV];
+    expect(await syncDefaultAccountEnv(WS)).toBe(false);
+    expect(DEFAULT_ACCOUNT_ACTIVE_ENV in process.env).toBe(false);
+  });
+
   it('syncDefaultAccountEnv is FAIL-SOFT on a read error — it keeps the previous marker', async () => {
     // Deliberately unlike readDefaultAccountId's other callers, which fail closed. This one is a
     // best-effort refresher, so flipping every in-process call onto a different transport over a

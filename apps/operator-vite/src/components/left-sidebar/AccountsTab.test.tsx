@@ -185,12 +185,12 @@ describe('AccountsTab — the default account (default-deploy-account-2026-08-08
     render(<AccountsTab active />);
     expect(screen.getByText(/No default/)).toBeTruthy();
     expect(screen.getByText(/~\/\.claude/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Make acct-opus-1 the default account' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Make acct-opus-1 the default Claude account' })).toBeTruthy();
   });
 
   it('marking a default sends the account id', () => {
     render(<AccountsTab active />);
-    fireEvent.click(screen.getByRole('button', { name: 'Make acct-opus-1 the default account' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make acct-opus-1 the default Claude account' }));
     expect(H.setDefaultAccount).toHaveBeenCalledWith('acct-opus-1');
   });
 
@@ -215,9 +215,10 @@ describe('AccountsTab — the default account (default-deploy-account-2026-08-08
   it('is NOT optimistic — the button reflects the server value, not the click', () => {
     // The write is a patch + sync invalidate, so the row must stay unpressed until the server
     // round-trip lands. An optimistic flip here would show a default that may not have been
-    // accepted (setDefaultAccount rejects an unknown/Codex id at the write).
+    // accepted (setDefaultAccount still rejects an UNKNOWN id at the write — provider is no
+    // longer a rejection reason as of P-003).
     render(<AccountsTab active />);
-    const star = screen.getByRole('button', { name: 'Make acct-opus-1 the default account' });
+    const star = screen.getByRole('button', { name: 'Make acct-opus-1 the default Claude account' });
     fireEvent.click(star);
     expect(H.setDefaultAccount).toHaveBeenCalledTimes(1);
     expect(star.getAttribute('aria-pressed')).toBe('false');
@@ -225,27 +226,30 @@ describe('AccountsTab — the default account (default-deploy-account-2026-08-08
     expect(screen.getByText(/No default/)).toBeTruthy();
   });
 
-  it('a CODEX row has no default control at all (Claude-only)', () => {
-    // The server rejects a Codex default by name; the UI simply never offers it, so the two
-    // layers agree instead of the owner discovering the rule via an error toast.
+  it('a CODEX row DOES offer the default control', () => {
+    // Inverted by inference-rename-and-provider-agnostic-default-2026-08-09 P-003. The server
+    // used to reject a Codex default by name and the UI never offered it; a default is now a
+    // per-provider primary (D-002), so the control is real on a Codex row too.
     H.accounts = [CODEX_ACCOUNT];
     render(<AccountsTab active />);
-    expect(screen.queryByRole('button', { name: /default account/i })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Exclude codex-main' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Make codex-main the default Codex/OpenAI account' })).toBeTruthy();
   });
 
-  it('offers the control only on the Claude row of a mixed pool', () => {
+  it('offers the control on BOTH rows of a mixed pool, labelled per provider', () => {
+    // The label carries the provider because the two defaults do DIFFERENT things — picking the
+    // Codex row does not steer Anthropic traffic. A bare "the default account" on both rows
+    // would read as one setting with two conflicting controls.
     H.accounts = [ACCOUNT, CODEX_ACCOUNT];
     render(<AccountsTab active />);
-    expect(screen.getAllByRole('button', { name: /default account/i }).map((b) => b.getAttribute('aria-label'))).toEqual(
-      ['Make acct-opus-1 the default account'],
+    expect(screen.getAllByRole('button', { name: /the default .* account/i }).map((b) => b.getAttribute('aria-label'))).toEqual(
+      ['Make acct-opus-1 the default Claude account', 'Make codex-main the default Codex/OpenAI account'],
     );
   });
 
   it('disables the control while an override write is in flight', () => {
     H.overrideBusy = true;
     render(<AccountsTab active />);
-    expect(screen.getByRole('button', { name: 'Make acct-opus-1 the default account' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Make acct-opus-1 the default Claude account' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('a default alone does not read as "session steering active" (it restricts nothing)', () => {
