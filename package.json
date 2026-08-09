@@ -90,7 +90,8 @@
     "libs/generic/gui-readiness",
     "libs/generic/release-profile",
     "libs/generic/image-blankness",
-    "libs/generic/overlap-clusters"
+    "libs/generic/overlap-clusters",
+    "libs/generic/sequence-patterns"
   ],
   "scripts": {
     "preinstall": "npx --yes only-allow npm",
