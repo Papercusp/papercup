@@ -857,6 +857,19 @@ export async function sweepStalledLoops(
   // The notify is wrapped in its own try/catch: paging is strictly an addition to this sweep's
   // job, and a push transport being down must never cost us the disarm bookkeeping or the
   // broadcast that already succeeded.
+  // EI-19966210024116714: the subset of the page's population whose remedy is DIFFERENT. A
+  // scope-stranded session is typically alive and answering probes — it is not wedged, it simply
+  // cannot reach its own harness — so it lands in `disarmedWhileReachable` and would already be
+  // paged today, with advice ("resume the session and re-arm its loop") that CANNOT work for it:
+  // re-arming leaves the workspace scope exactly as it was and the next sweep disarms it again.
+  //
+  // Intersected rather than unioned, deliberately. This does NOT widen the gate below: a strand
+  // that is NOT reachable is a corpse, and corpse-reaping staying silent is the whole point of
+  // gating on a non-empty reachable subset (see the rationale above). Paging for one would be the
+  // noise that guard exists to prevent.
+  const unaddressableSet = new Set(disarmedUnaddressableHarness);
+  const strandedAndReachable = disarmedWhileReachable.filter((o) => unaddressableSet.has(o));
+
   if (disarmedWhileReachable.length > 0 && !dryRun) {
     try {
       await notify({
@@ -875,10 +888,25 @@ export async function sweepStalledLoops(
           `warning needs a turn it can no longer take.\n\n` +
           `Nothing else will recover these. To bring one back: resume the session and re-arm its ` +
           `loop (loop:arm). If this keeps happening, the upstream question is why the sessions ` +
-          `stop turning — a died carry-respawn and a wedged CLI child both present this way.`,
+          `stop turning — a died carry-respawn and a wedged CLI child both present this way.` +
+          (strandedAndReachable.length > 0
+            ? `\n\n⚠ ${strandedAndReachable.length} of these will NOT be fixed by that: ` +
+              `${strandedAndReachable.join(', ')} had their loop armed against a harness their own ` +
+              `session scope cannot address — the routine is on ${ws} while the session resolves to a ` +
+              `different workspace, so every harness-scoped call returns harness_forbidden. Nothing was ` +
+              `wrong with the agent; it was woken to do work it could not reach. Re-arming leaves the ` +
+              `scope unchanged and the next sweep disarms it again. RELAUNCH those sessions with the ` +
+              `correct workspace scope, or re-arm them against a harness the session can actually ` +
+              `reach (EI-19966210024116714).`
+            : ''),
         importance: 'urgent',
         workspaceId: ws,
-        data: { owners: disarmedWhileReachable.join(','), count: disarmedWhileReachable.length },
+        data: {
+          owners: disarmedWhileReachable.join(','),
+          count: disarmedWhileReachable.length,
+          unaddressableHarness: strandedAndReachable.join(','),
+          unaddressableHarnessCount: strandedAndReachable.length,
+        },
       });
     } catch (e) {
       console.warn(
