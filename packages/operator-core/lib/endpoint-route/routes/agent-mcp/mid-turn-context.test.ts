@@ -31,7 +31,7 @@ const { buildMemoryContextBlockMock, recordInjectionCoverageMock } = vi.hoisted(
 vi.mock('../../../memory/injection', () => ({
   buildMemoryContextBlock: buildMemoryContextBlockMock,
 }));
-vi.mock('../../../memory/injection-coverage', () => ({
+vi.mock('../../../memory/injection-delivery-coverage', () => ({
   recordInjectionCoverage: recordInjectionCoverageMock,
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));

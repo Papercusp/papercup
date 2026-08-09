@@ -53,7 +53,7 @@
  * for the mode it was measured on. An unmeasured mode gets NO floor, which
  * degrades to exactly today's behaviour rather than to a silent outage.
  *
- * The lexical (`bm25`) leg is likewise UNFLOORED: `ts_rank_cd` distributions
+ * The lexical (`lexical`) leg is likewise UNFLOORED: `ts_rank_cd` distributions
  * on these surfaces have not been measured, and an invented lexical floor
  * would delete real hits for no evidenced gain. Add one here when someone
  * measures it — the mechanism already supports it.

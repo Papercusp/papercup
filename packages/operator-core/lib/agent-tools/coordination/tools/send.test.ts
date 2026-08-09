@@ -15,7 +15,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws1' })) }));
 vi.mock('../messages', () => ({ sendMessage: vi.fn(), getMessageById: vi.fn(async () => null) }));
 vi.mock('../recipient-liveness', () => ({ describeMissedRecipients: vi.fn(async () => []) }));
-vi.mock('../inbox-wake', () => ({
+// EI-19965318428068990: keep the REAL `buildStagedWakeNote` (a pure fn of stagedTargets,
+// no I/O) via importOriginal — a bare factory replaces the whole module and leaves
+// send.ts's `buildStagedWakeNote` import `undefined`, which throws the moment a test
+// mocks a staged wake (fan.stagedTargets.length > 0). Same importOriginal pattern this
+// file already uses for federation-scope / premise-resolve, for the same reason.
+vi.mock('../inbox-wake', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../inbox-wake')>()),
   wakeRecipients: vi.fn(async () => ({ targets: [], woken: 0, staged: 0, stagedTargets: [] })),
   reportIdleRecipients: vi.fn(async () => ({ idle: [] })),
 }));
@@ -283,6 +289,67 @@ describe('coord:send handler (bulk keyed-array)', () => {
     const b = await body({ to: ['live-bee'], summary: 'fyi', wake: 'optimistic' });
     expect(b.results[0].wake).toMatchObject({ mode: 'optimistic', woken: 1 });
     expect(b.results[0].wake.note).toBeUndefined();
+  });
+
+  // EI-19965318428068990: `wakeOutcome` is the explicit discriminant a caller can read
+  // WITHOUT falling into the woken:0-means-either-thing trap the finding describes —
+  // a STAGED (manual wake-mode) target and a genuinely DEAD one both report woken:0.
+  describe('wakeOutcome (EI-19965318428068990)', () => {
+    it("fully delivered (woken>0, staged:0) → wakeOutcome:'delivered'", async () => {
+      wakeM.mockResolvedValueOnce({ targets: ['live-bee'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
+      const b = await body({ to: ['live-bee'], summary: 'fyi', wake: 'required' });
+      expect(b.results[0].wake).toMatchObject({ woken: 1, wakeOutcome: 'delivered' });
+      expect(b.results[0].wake.staged).toBeUndefined();
+    });
+
+    it("fully staged (woken:0, staged>0 — manual wake-mode) → wakeOutcome:'staged-manual-mode', NOT the generic miss", async () => {
+      wakeM.mockResolvedValueOnce({
+        targets: ['manual-bee'],
+        keys: [],
+        woken: 0,
+        staged: 1,
+        stagedTargets: ['manual-bee'],
+      } as never);
+      const b = await body({ to: ['manual-bee'], summary: 'fyi', wake: 'required' });
+      expect(b.results[0].wake).toMatchObject({
+        woken: 0,
+        staged: 1,
+        wakeOutcome: 'staged-manual-mode',
+      });
+      // The staged path never sets recipient_absent — a staged target is alive and
+      // wakeable, just gated; conflating it with a dead miss is exactly the bug.
+      expect(b.results[0].wake.recipient_absent).toBeUndefined();
+    });
+
+    it("mixed multi-target send (one delivered, one staged) → wakeOutcome:'partial-staged'", async () => {
+      wakeM.mockResolvedValueOnce({
+        targets: ['live-bee', 'manual-bee'],
+        keys: [],
+        woken: 1,
+        staged: 1,
+        stagedTargets: ['manual-bee'],
+      } as never);
+      const b = await body({ to: ['live-bee', 'manual-bee'], summary: 'fyi', wake: 'required' });
+      expect(b.results[0].wake).toMatchObject({ woken: 1, staged: 1, wakeOutcome: 'partial-staged' });
+    });
+
+    it("a genuine dead-recipient miss (woken:0, staged:0) → wakeOutcome:'missed', distinguishable from staged", async () => {
+      wakeM.mockResolvedValueOnce({ targets: ['dead-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
+      idleM.mockResolvedValueOnce({ idle: ['dead-bee'] } as never);
+      const b = await body({ to: ['dead-bee'], summary: 'fyi', wake: 'required' });
+      expect(b.results[0].wake.staged).toBeUndefined();
+      expect(b.results[0].wake).toMatchObject({
+        woken: 0,
+        wakeOutcome: 'missed',
+        recipient_absent: true,
+      });
+    });
+
+    it('no wakeable targets at all (e.g. broadcast-only) → wakeOutcome left unset, not a false "missed"', async () => {
+      wakeM.mockResolvedValueOnce({ targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
+      const b = await body({ to: ['*'], summary: 'fyi', wake: 'required' });
+      expect(b.results[0].wake.wakeOutcome).toBeUndefined();
+    });
   });
 });
 

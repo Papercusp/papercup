@@ -357,7 +357,7 @@ export default defineTool({
 
     const source: SearchSource = {
       name: SOURCE_KEY,
-      async bm25(): Promise<Listing> {
+      async lexical(): Promise<Listing> {
         const hits = await runLexical();
         return hits.map((h) => {
           hydration.set(h.plan, h);
@@ -370,7 +370,7 @@ export default defineTool({
               excerpt: h.matches[0]?.snippet ?? h.plan,
               highlight: h.plan,
               score: h.score,
-              rankers: ['bm25'],
+              rankers: ['lexical'],
             },
           };
         });

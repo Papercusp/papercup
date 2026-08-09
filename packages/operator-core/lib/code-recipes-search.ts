@@ -3,7 +3,7 @@
  * (code-recipes-2026-06-21 Phase 2, P-004 / P-011 / D-009).
  *
  * A recipe SearchSource that RIDES @papercusp/search (no new search engine):
- *   - bm25 leg  — `title_tsv` (the migration-349 GENERATED tsvector over
+ *   - lexical leg  — `title_tsv` (the migration-349 GENERATED tsvector over
  *     title+description), `ts_rank_cd` like every search/sources.ts surface.
  *   - embedding leg — cosine over the `embedding vector(384)` column
  *     (`embedding <=> qVec::vector`), 1 - distance as the similarity.
@@ -58,7 +58,7 @@ const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' :
  */
 export const codeRecipesSource: SearchSource = {
   name: 'code_recipes',
-  async bm25({ sql, query, limit }: SearchSourceParams): Promise<Listing> {
+  async lexical({ sql, query, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT id, title, description, run_count, tools_used,
              ts_rank_cd(title_tsv, plainto_tsquery('english', ${query})) AS rank
@@ -76,7 +76,7 @@ export const codeRecipesSource: SearchSource = {
         excerpt: trunc(`${r.title} — ${r.description}`),
         highlight: r.title,
         score: r.rank,
-        rankers: ['bm25'],
+        rankers: ['lexical'],
       },
     }));
   },

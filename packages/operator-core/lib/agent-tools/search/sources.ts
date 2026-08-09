@@ -1,9 +1,16 @@
 /**
  * The Papercusp prose search surfaces, as `@papercusp/search`
  * `SearchSource`s. Each owns its own SQL (table, tsvector/embedding
- * columns, ts_headline, row→hit mapping); both `search:fulltext` (BM25)
- * and `search:semantic` (hybrid) consume this one registry, so the BM25
+ * columns, ts_headline, row→hit mapping); both `search:fulltext` (lexical)
+ * and `search:semantic` (hybrid) consume this one registry, so the lexical
  * SQL lives in exactly one place.
+ *
+ * "lexical", not "BM25" (P-013): the ranking function here is Postgres
+ * `ts_rank_cd`, which is COVER DENSITY — proximity of the query terms within
+ * the document — not Okapi BM25's term-frequency/inverse-document-frequency
+ * with length normalisation. They are different algorithms with different
+ * failure modes, and calling this one BM25 set the wrong expectation about
+ * why a short on-topic row loses to a long one.
  *
  * Extraction per papercusp-systems-abstraction-2026-05-29 (P-013/P-020).
  * session_turn + coord_message added per session-search-scope-2026-07-05
@@ -193,7 +200,7 @@ function lexicalSql(
 
 const escalations: SearchSource = {
   name: 'escalations',
-  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+  async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, phase, escalation, supervisor_notes,
              ts_rank_cd(body_tsv, plainto_tsquery('english', ${query})) AS rank,
@@ -220,7 +227,7 @@ const escalations: SearchSource = {
           excerpt: trunc(body),
           highlight: r.highlight,
           score: r.rank,
-          rankers: ['bm25'],
+          rankers: ['lexical'],
         },
       };
     });
@@ -261,7 +268,7 @@ const escalations: SearchSource = {
 
 const brainstorm: SearchSource = {
   name: 'brainstorm',
-  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+  async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, phase, content,
              ts_rank_cd(content_tsv, plainto_tsquery('english', ${query})) AS rank,
@@ -284,7 +291,7 @@ const brainstorm: SearchSource = {
         excerpt: trunc(r.content),
         highlight: r.highlight,
         score: r.rank,
-        rankers: ['bm25'],
+        rankers: ['lexical'],
       },
     }));
   },
@@ -322,7 +329,7 @@ const turns: SearchSource = {
   // operator_turns has no workspace_id column — it joins through
   // operator_conversations.workspace_id via the conversation_id FK.
   name: 'turns',
-  async bm25({ sql, query, workspaceId, limit }: SearchSourceParams): Promise<Listing> {
+  async lexical({ sql, query, workspaceId, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT t.id, t.role, t.text,
              ts_rank_cd(t.text_tsv, plainto_tsquery('english', ${query})) AS rank,
@@ -344,7 +351,7 @@ const turns: SearchSource = {
         excerpt: `[${r.role}] ${trunc(r.text)}`,
         highlight: `[${r.role}] ${r.highlight}`,
         score: r.rank,
-        rankers: ['bm25'],
+        rankers: ['lexical'],
       },
     }));
   },
@@ -379,7 +386,7 @@ const turns: SearchSource = {
 
 const decisions: SearchSource = {
   name: 'decisions',
-  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+  async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, line_hash, verb, args, iso,
              ts_rank_cd(body_tsv, plainto_tsquery('english', ${query})) AS rank,
@@ -405,7 +412,7 @@ const decisions: SearchSource = {
           excerpt: `[${r.iso}] ${trunc(body)}`,
           highlight: r.highlight,
           score: r.rank,
-          rankers: ['bm25'],
+          rankers: ['lexical'],
         },
       };
     });
@@ -455,7 +462,7 @@ const decisions: SearchSource = {
  */
 const workItem: SearchSource = {
   name: 'work_item',
-  async bm25(p: SearchSourceParams): Promise<Listing> {
+  async lexical(p: SearchSourceParams): Promise<Listing> {
     const { sql, workspaceId, scopeFilter, limit } = p;
     // P-017 / D-062 — see lexicalSql. Byte-identical without `lexicalMode`.
     const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`);
@@ -497,7 +504,7 @@ const workItem: SearchSource = {
           excerpt: `[${r.kind}/${r.state}/${r.severity}] ${trunc(body)}`,
           highlight: r.highlight,
           score: r.rank,
-          rankers: ['bm25'],
+          rankers: ['lexical'],
         },
       };
     });
@@ -536,7 +543,7 @@ const sessionTurnFilterSql = (p: SearchSourceParams) => {
 
 const sessionTurn: SearchSource = {
   name: 'session_turn',
-  async bm25(p: SearchSourceParams): Promise<Listing> {
+  async lexical(p: SearchSourceParams): Promise<Listing> {
     const f = sessionTurnFilterSql(p);
     // WI-4734: under the engine's highlight-deferral (wantHighlight === false)
     // skip ts_headline entirely — it costs ~1.4ms/row and the engine hydrates
@@ -581,7 +588,7 @@ const sessionTurn: SearchSource = {
         // Expose the turn timestamp so the engine's optional recency re-rank
         // (RecencyRank.getTime defaults to hit.ts) can bias by freshness.
         ts: r.ts,
-        rankers: ['bm25'],
+        rankers: ['lexical'],
       },
     }));
   },
@@ -740,7 +747,7 @@ const sessionTurn: SearchSource = {
 
 /**
  * coord_message — ranked recall over the coord message stream (P-009): the
- * `messages` surface of harness_shared.coord_event_log. BM25-ONLY by design —
+ * `messages` surface of harness_shared.coord_event_log. LEXICAL-ONLY by design —
  * 120k+ envelope rows are not worth embedding; the expression GIN index
  * (migration 501) matches the EXACT to_tsvector expression below. With the
  * fleet→owners filter this answers "find where fleet X discussed Y" across
@@ -749,7 +756,7 @@ const sessionTurn: SearchSource = {
  */
 const coordMessage: SearchSource = {
   name: 'coord_message',
-  async bm25(p: SearchSourceParams): Promise<Listing> {
+  async lexical(p: SearchSourceParams): Promise<Listing> {
     const f = sessionTurnFilterSql(p);
     const rows = (await p.sql`
       SELECT msg_id, ts, harness_slug,
@@ -784,7 +791,7 @@ const coordMessage: SearchSource = {
         excerpt: `[${r.kind ?? 'message'}${r.from_owner ? ` from ${r.from_owner}` : ''} ${r.ts}] ${trunc(r.msgtext)}`,
         highlight: r.highlight,
         score: r.rank,
-        rankers: ['bm25'],
+        rankers: ['lexical'],
       },
     }));
   },

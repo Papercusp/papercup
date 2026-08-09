@@ -30,7 +30,7 @@ describe('proseMinScoreFloors', () => {
   });
 
   it('never floors the lexical leg — ts_rank_cd distributions are unmeasured', () => {
-    expect(proseMinScoreFloors('gemma')?.bm25).toBeUndefined();
+    expect(proseMinScoreFloors('gemma')?.lexical).toBeUndefined();
   });
 
   it('keeps the floor below the worst TRUE hit we measured (0.4825 in-domain top-1)', () => {

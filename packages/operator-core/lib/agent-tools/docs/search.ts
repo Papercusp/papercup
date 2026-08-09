@@ -275,7 +275,7 @@ export default defineTool({
 
     const source: SearchSource = {
       name: sourceKey,
-      async bm25({ limit: candidateLimit }): Promise<Listing> {
+      async lexical({ limit: candidateLimit }): Promise<Listing> {
         const response = await searchDocs(
           resolved.adapter,
           { ...args, limit: Math.max(candidateLimit, MIN_CANDIDATES) },
@@ -301,7 +301,7 @@ export default defineTool({
               excerpt: h.excerpt,
               highlight: h.title,
               score: h.score,
-              rankers: ['bm25'],
+              rankers: ['lexical'],
             },
           };
         });

@@ -56,7 +56,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 // because it drags nothing behind it, and because clampToBudget must stay a
 // pure sync function its tests can call directly.
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
-import { recordInjectionCoverage } from '../../../memory/injection-coverage';
+import { recordInjectionCoverage } from '../../../memory/injection-delivery-coverage';
 
 /** Query clamp — embed the head of a long command, not a pasted heredoc. */
 const QUERY_CLAMP = 1_000;

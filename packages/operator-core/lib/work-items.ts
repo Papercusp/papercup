@@ -1228,7 +1228,7 @@ function issueSearchSource(f: WorkItemSearchFilters, embeddingMode: string | nul
     }));
   return {
     name: SOURCE_ISSUES,
-    async bm25({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
+    async lexical({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
       const sql = pg as OrgSql;
       // `ts_rank` (not `ts_rank_cd`) preserves the pre-migration ordering
       // exactly; no lexical floor is registered, so nothing downstream depends
@@ -1241,7 +1241,7 @@ function issueSearchSource(f: WorkItemSearchFilters, embeddingMode: string | nul
            AND _search @@ websearch_to_tsquery('english', ${query})
       ORDER BY score DESC
          LIMIT ${limit}`;
-      return toListing(rows, 'bm25');
+      return toListing(rows, 'lexical');
     },
     ...(embeddingMode
       ? {
@@ -1293,7 +1293,7 @@ function featureSearchSource(f: WorkItemSearchFilters, embeddingMode: string | n
     }));
   return {
     name: SOURCE_FEATURES,
-    async bm25({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
+    async lexical({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
       const sql = pg as OrgSql;
       const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
         SELECT feature_id AS id, title, summary AS body,
@@ -1303,7 +1303,7 @@ function featureSearchSource(f: WorkItemSearchFilters, embeddingMode: string | n
            AND _search @@ websearch_to_tsquery('english', ${query})
       ORDER BY score DESC
          LIMIT ${limit}`;
-      return toListing(rows, 'bm25');
+      return toListing(rows, 'lexical');
     },
     ...(embeddingMode
       ? {
