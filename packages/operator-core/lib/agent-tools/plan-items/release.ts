@@ -15,6 +15,11 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolvePlanScope } from '../plans/source';
 import { getClaim, releaseClaim } from '../../plan-items/claims';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import {
+  buildDispatchHandle,
+  type DispatchCandidate,
+  type DispatchHandleResult,
+} from '../coordination/dispatch-handle';
 
 interface ReleaseSpecItem {
   plan: string;

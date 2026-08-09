@@ -1,0 +1,168 @@
+/**
+ * dispatch-adoption-falsifier.ts — the pre-committed retirement test for
+ * `coord:dispatch`.
+ *
+ * Plan `coordination-spec-adoption-2026-08-03`, P-013 (D-100 armed it, D-101
+ * corrected it from a COUNT to a RATE).
+ *
+ * THE CLAIM UNDER TEST. D-100 kept `coord:dispatch` — 1 call in 30 days, from 1
+ * agent — on the theory that its disuse is DELIVERY, not absent demand: it never
+ * reached a trimmed tool surface, and this repo's own bash-routing audit measured
+ * ~85% adoption for the one tool CLAUDE.md pointed at against ~1% for equally
+ * capable tools nobody was pointed at. That is a claim about cause, and a claim
+ * about cause with no way to be wrong is worth less than either decision it was
+ * choosing between. P-011 (seeding) + P-012 (the handles) are the intervention;
+ * this is its falsifier.
+ *
+ * WHY A RATE, NOT A COUNT. The original commitment was "retire if under 10 calls
+ * from under 3 agents in 30 days". That is an absolute count, and this fleet's
+ * activity swings by an order of magnitude — the state-plane report that prompted
+ * D-101 records its OWN measurement blocked because the fleet went idle. A quiet
+ * month would therefore have fired RETIRE on a delivery fix that actually worked,
+ * silently and in the wrong direction. So the metric is normalised against the
+ * denominator that moves with fleet activity: **`coord:dispatch` calls per 1,000
+ * `coord:send` calls.**
+ *
+ * `coord:send` is the right denominator because it is the same act one level
+ * down — an agent deciding to address a specific peer. Directed hand-off failing
+ * while conversation is enormous IS the finding D-100 flagged as bigger than the
+ * verb decision (send 3,724 / 186 agents against dispatch 1 / 1 agent). Holding
+ * that ratio fixed asks the only question that matters: when an agent turns to a
+ * peer, how often is it to hand over work rather than to talk about it?
+ *
+ * ⚠ THE DENOMINATOR IS NAMED AND PUBLISHED, per this plan's own D-003 — a ratio
+ * whose denominator is unstated is not an adoption metric, it is a number that
+ * will be quoted as one. `evaluate()` therefore refuses to return a verdict when
+ * the denominator is too small to carry one, rather than dividing by a handful of
+ * calls and reporting a confident rate.
+ */
+
+/** Measured 2026-08-09 over 30 days, all tenants: 1 dispatch / 3,724 sends. */
+export const DISPATCH_BASELINE = {
+  measuredAt: '2026-08-09',
+  windowDays: 30,
+  dispatchCalls: 1,
+  dispatchAgents: 1,
+  sendCalls: 3_724,
+  sendAgents: 186,
+  /** 0.2685 dispatches per 1,000 sends. */
+  ratePerThousand: 0.2685,
+} as const;
+
+/**
+ * The bar. Crossing it means the delivery theory survived; missing it means it
+ * was wrong and `coord:dispatch` is retired alongside `coord:handoff` (D-102
+ * deferred handoff into this same measurement, so ONE result decides both doors).
+ *
+ * 3 per 1,000 is ~11x the baseline and still modest in absolute terms — at the
+ * measured send volume it is roughly 11 dispatches a month. It is deliberately
+ * not ambitious: the question is whether the verb gets used AT ALL once it is
+ * reachable and pre-addressed, not whether it becomes popular.
+ *
+ * The agent floor is what stops one enthusiast (or one loop) from carrying the
+ * verdict — the same defect the raw count had.
+ */
+export const DISPATCH_ADOPTION_FLOOR = {
+  ratePerThousand: 3.0,
+  distinctAgents: 3,
+  /** Do not judge on a window this thin — say UNDETERMINED instead. */
+  minSendCalls: 500,
+  /** Earliest honest read: the interventions must be deployed for a full window. */
+  reEvaluateAfter: '2026-09-08',
+} as const;
+
+export interface DispatchAdoptionSample {
+  dispatchCalls: number;
+  dispatchAgents: number;
+  sendCalls: number;
+  windowDays: number;
+  /** ISO date the sample was taken. */
+  asOf: string;
+}
+
+export type DispatchAdoptionVerdict =
+  | {
+      verdict: 'keep';
+      ratePerThousand: number;
+      liftVsBaseline: number;
+      denominator: { sendCalls: number; windowDays: number };
+      why: string;
+    }
+  | {
+      verdict: 'retire';
+      ratePerThousand: number;
+      liftVsBaseline: number;
+      denominator: { sendCalls: number; windowDays: number };
+      why: string;
+      alsoRetires: readonly string[];
+      finding: string;
+    }
+  | {
+      verdict: 'undetermined';
+      denominator: { sendCalls: number; windowDays: number };
+      why: string;
+    };
+
+/**
+ * Judge a sample against the pre-committed bar. Pure.
+ *
+ * Note the asymmetry, which is deliberate: `undetermined` is returned whenever
+ * the sample cannot carry a verdict, and is NEVER upgraded to `retire`. An
+ * absent measurement must not read as absent demand — that conflation is the
+ * exact error D-102 caught five times over in the retirement list this plan
+ * started from.
+ */
+export function evaluateDispatchAdoption(
+  sample: DispatchAdoptionSample,
+  floor: typeof DISPATCH_ADOPTION_FLOOR = DISPATCH_ADOPTION_FLOOR,
+): DispatchAdoptionVerdict {
+  const denominator = { sendCalls: sample.sendCalls, windowDays: sample.windowDays };
+
+  if (sample.sendCalls < floor.minSendCalls) {
+    return {
+      verdict: 'undetermined',
+      denominator,
+      why: `only ${sample.sendCalls} coord:send calls in ${sample.windowDays}d (floor ${floor.minSendCalls}) — the fleet was too quiet for this ratio to mean anything. Re-measure over a busier window; do NOT read this as evidence against coord:dispatch.`,
+    };
+  }
+  if (sample.asOf < floor.reEvaluateAfter) {
+    return {
+      verdict: 'undetermined',
+      denominator,
+      why: `sampled ${sample.asOf}, before the agreed ${floor.reEvaluateAfter} — the seeding (P-011) and handles (P-012) need a full window in front of agents before their effect can be read.`,
+    };
+  }
+
+  const rate = (sample.dispatchCalls / sample.sendCalls) * 1_000;
+  const lift = rate / DISPATCH_BASELINE.ratePerThousand;
+  const passRate = rate >= floor.ratePerThousand;
+  const passAgents = sample.dispatchAgents >= floor.distinctAgents;
+
+  if (passRate && passAgents) {
+    return {
+      verdict: 'keep',
+      ratePerThousand: rate,
+      liftVsBaseline: lift,
+      denominator,
+      why: `${rate.toFixed(2)}/1k sends across ${sample.dispatchAgents} agents — ${lift.toFixed(1)}x the ${DISPATCH_BASELINE.ratePerThousand}/1k baseline, clearing the ${floor.ratePerThousand}/1k + ${floor.distinctAgents}-agent bar. The delivery theory held: the verb was unreachable, not unwanted.`,
+    };
+  }
+
+  const missed = [
+    passRate ? null : `rate ${rate.toFixed(2)}/1k < ${floor.ratePerThousand}/1k`,
+    passAgents ? null : `${sample.dispatchAgents} agent(s) < ${floor.distinctAgents}`,
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  return {
+    verdict: 'retire',
+    ratePerThousand: rate,
+    liftVsBaseline: lift,
+    denominator,
+    why: `${missed}. coord:dispatch was seeded onto the live surface AND handed to agents pre-addressed inside coord:presence and plan_items:release, and still was not reached for. The delivery theory is FALSIFIED.`,
+    alsoRetires: ['coord:dispatch', 'coord:handoff'],
+    finding:
+      'This fleet does not hand off lanes. Directed work-handoff was near-zero across EVERY door (dispatch 1, handoff 0, fleet:place_batch 1, coord:wake 18) while conversation was enormous (coord:send 3,724 / 186 agents). Having removed delivery as the explanation, what remains is a property of the coordination model — agents self-claim from the queue and talk about it — not a tooling gap. Record that and stop building handoff doors.',
+  };
+}

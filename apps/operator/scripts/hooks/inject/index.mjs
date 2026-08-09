@@ -35,6 +35,9 @@
  * entirely; the adapter contract is the seam, the CLI is one way to reach it.
  */
 
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { runInjection } from './core.mjs';
 
 /**
@@ -160,8 +163,25 @@ export async function dispatch(opts = {}) {
 
 // Entry point. Guarded so importing this module (tests, an in-process client)
 // never executes the CLI.
-const invokedDirectly =
-  process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+//
+// ⚠ The guard must be SYMLINK-ROBUST, and the naive form is not. Node resolves
+// `import.meta.url` through symlinks (realpath) while `process.argv[1]` keeps
+// the path as invoked, so a bare
+//     import.meta.url === `file://${process.argv[1]}`
+// compares a resolved path against an unresolved one and silently yields FALSE
+// when reached through a symlink. This repo is reachable as both
+// `papercupai-workspace/papercup` and `.../papercusp`, and the installed hook
+// copies live under ~/.papercusp/hooks — so the naive form would make the CLI
+// do nothing at all, exit 0, and emit no output: indistinguishable, on this
+// fail-silent path, from "there was nothing to inject". realpath both sides.
+const invokedDirectly = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
 
 if (invokedDirectly) {
   dispatch()

@@ -784,9 +784,24 @@ test('EI-19928050541357086 — a majority of MERELY-STALE (never-probe-failed) r
   assert.match(r.advice, /gone stale from lack of a recent refresh/);
   assert.match(r.advice, /Do NOT wait on resetInSec/);
   assert.match(r.advice, /RE-RUN.*accounts:probe-capacity/);
-  // The blind caveat still leads before the (still-technically-true) EXHAUSTED verdict + egress escalation —
-  // composes, doesn't replace, same contract as the outright-probe-failure case.
-  assert.match(r.advice, /BLIND READING[\s\S]*EXHAUSTED[\s\S]*OWNER-GATED/);
+  // The blind caveat still LEADS, before the (still-technically-true) EXHAUSTED verdict — that half of
+  // the contract is unchanged: the caveat composes with the operational advice.
+  assert.match(r.advice, /BLIND READING[\s\S]*EXHAUSTED/);
+  // CONTRACT CHANGE, fleet-lead-instrumentation-audit-2026-08-09 P-007. This assertion previously
+  // required `…EXHAUSTED[\s\S]*OWNER-GATED`, pinning the egress ESCALATION as still present on a blind
+  // reading ("composes, doesn't replace"). That contradicted this very test's own stated purpose two
+  // dozen lines above — folding stale readings into blindCount so the tool stops "rendering a confident
+  // quota-shaped exhaustion + owner-escalation verdict off data nobody has looked at in over half an
+  // hour." The caveat was prepended but the escalation it warned about was still emitted, at full
+  // imperative confidence, in the same string: one advice blob saying both "do NOT treat an
+  // owner-escalation reading below as confirmed" and "escalate rather than waiting for a quota reset".
+  // Measured live 2026-08-09T05:11Z on fleet nonp2p-bug-drain, the imperative is the half that gets
+  // acted on — a leader read it as an owner-gated infra fault while an accounts:probe-capacity moments
+  // later found 3 of 4 accounts answering 200. The operational half (HOLD placements) stays; only the
+  // causal attribution and the escalation instruction are withheld until the pool is re-measured.
+  assert.doesNotMatch(r.advice, /OWNER-GATED/, 'a blind reading must not instruct an owner escalation');
+  assert.doesNotMatch(r.advice, /escalate rather than waiting/i);
+  assert.match(r.advice, /NOT an owner escalation/i);
 });
 
 test('the floor never manufactures slots — a 0-slot pool stays 0 even when paused', () => {

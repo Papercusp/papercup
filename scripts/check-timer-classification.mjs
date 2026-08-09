@@ -227,6 +227,20 @@ export const isClientFile = (f) => f.endsWith('.tsx') || CLIENT_TS_FILES.has(f);
 /** The classification vocabulary. `ui-timer` is client-only (D-005): a pure render tick. */
 export const CLASSIFICATIONS = ['must-sample', 'timeout-reaper', 'violation', 'ui-timer'];
 
+/**
+ * CLIENT_BASELINE (TEMPORARY — must shrink to EMPTY, same discipline as BASELINE above):
+ * client files carrying a raw `setInterval` with no `timer-classification:` declaration as
+ * of 2026-08-09 (P-026). GENERATED, not hand-listed — regenerate with:
+ *
+ *   node scripts/check-timer-classification.mjs --emit-client-baseline
+ *
+ * Seeding it from a measured scan rather than a hand-run grep is deliberate: this repo has
+ * corrected a guard's population upward three times, each time because the measurement
+ * matched a spelling instead of the thing (see CLAUDE.md § shared-lib singletons). NEW
+ * files may NOT be added here — a new client timer must declare its own classification.
+ */
+export const CLIENT_BASELINE = new Set([]);
+
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
   f.includes('/_retired/') ||
@@ -281,6 +295,39 @@ export function hasUnclassifiedCall(text) {
   return findManagedSetIntervalCalls(text).some((argText) => !/\bclassification\s*:/.test(argText));
 }
 
+/** A `timer-classification: <bucket>` declaration comment, e.g. `// timer-classification: ui-timer — why`. */
+export const CLIENT_DECL_RE = new RegExp(`timer-classification\\s*:\\s*(${CLASSIFICATIONS.join('|')})\\b`);
+
+/**
+ * Raw client timer sites in `text` that lack a nearby classification declaration.
+ *
+ * Comments are NOT stripped here (unlike the host scan) — the declaration LIVES in a
+ * comment, so stripping them would delete the very thing being looked for. A prose mention
+ * of `setInterval(` inside a comment could therefore be counted as a call site; that is the
+ * safe direction (it asks for a declaration that costs one line), and the `managedSetInterval`
+ * negative-lookbehind below keeps the host wrapper out of this scan.
+ *
+ * PROXIMITY, not enclosing-scope: a declaration counts when it appears within
+ * DECL_LOOKBACK_LINES above the call, or on the call's own line. The P-058 comments already
+ * in the tree sit 1-4 lines above their call (often with an intervening `if`/`useEffect`),
+ * so a strict "line immediately above" rule would reject the established convention, and a
+ * real scope analysis needs an AST this guard deliberately does not carry.
+ */
+export const DECL_LOOKBACK_LINES = 6;
+
+export function findUndeclaredClientTimers(text) {
+  const lines = text.split('\n');
+  const hits = [];
+  const re = /(?<!managed)(?<![\w$.])(?:window\s*\.\s*)?setInterval\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    if (!re.test(lines[i])) continue;
+    const from = Math.max(0, i - DECL_LOOKBACK_LINES);
+    const window_ = lines.slice(from, i + 1).join('\n');
+    if (!CLIENT_DECL_RE.test(window_)) hits.push(i + 1);
+  }
+  return hits;
+}
+
 /**
  * Scan the tracked tree for offenders (excludes vendored/tests/.tsx + ALLOWLIST + BASELINE).
  *
@@ -295,9 +342,10 @@ export function findOffenders() {
   const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
+  const clientOffenders = [];
   for (const f of tracked) {
     if (isExcluded(f)) continue;
-    if (ALLOWLIST.has(f) || BASELINE.has(f)) continue;
+    if (ALLOWLIST.has(f)) continue;
     if (ALLOWLIST_DIRS.some((p) => f.startsWith(p))) continue;
     let text;
     try {
@@ -305,9 +353,16 @@ export function findOffenders() {
     } catch {
       continue;
     }
+    if (isClientFile(f)) {
+      if (CLIENT_BASELINE.has(f)) continue;
+      const lines = findUndeclaredClientTimers(text);
+      if (lines.length > 0) clientOffenders.push({ file: f, lines });
+      continue;
+    }
+    if (BASELINE.has(f)) continue;
     if (hasUnclassifiedCall(text)) offenders.push(f);
   }
-  return { offenders, unscanned };
+  return { offenders, clientOffenders, unscanned };
 }
 
 function main() {

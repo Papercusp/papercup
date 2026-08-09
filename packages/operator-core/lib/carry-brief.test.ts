@@ -556,6 +556,79 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('(no checkpoint written — read the item via work_items:get before acting)');
   });
 
+  describe('EI-19952485326105760 — a SUPERSEDING owner directive past the cut must not be lost', () => {
+    // The real shape: an older plan, followed by a LATER block that REVOKES it.
+    // Both are real content; only the second is still operative. A plain
+    // head-only cap() lands its cut between the two and the successor's
+    // context inherits the superseded plan with no trace of what revoked it.
+    const OLDER_PLAN =
+      'the owner report is artifact https://claude.ai/example-artifact-url; republish that path to keep the URL. ' +
+      `${'filler context '.repeat(30)}`;
+    const SUPERSEDING_BLOCK =
+      '## ⛔ SUPERSEDING OWNER DIRECTIVE — NO MORE STATUS-REPORT ARTIFACTS\n' +
+      `[owner:Avi] "i dont need the live reports stop that"`;
+    const CHECKPOINT = `${OLDER_PLAN}\n\n${SUPERSEDING_BLOCK}`;
+
+    it('preserves the superseding directive when the plain cut would have landed before it', () => {
+      // Sanity: the incident shape actually exceeds the cap and a bare slice
+      // would cut before the superseding block — otherwise this test would
+      // pass for the wrong reason.
+      expect(CHECKPOINT.length).toBeGreaterThan(500);
+      expect(CHECKPOINT.slice(0, 499)).not.toContain('SUPERSEDING');
+
+      const brief: CarryBrief = {
+        ownerId: 'x',
+        loop: null,
+        heldItems: [{ id: 'WI-37110', title: null, body: null, harness: 'h', checkpoint: CHECKPOINT }],
+        directives: [],
+        directivesTotalOpen: 0,
+        walls: [],
+        facts: [],
+        awaits: [],
+        fleet: null,
+      };
+      const out = renderCarryBriefColdExtras(brief);
+      expect(out).toContain('⚠ OPERATIVE:');
+      expect(out).toContain('NO MORE STATUS-REPORT ARTIFACTS');
+      expect(out).toContain('i dont need the live reports stop that');
+    });
+
+    it('still truncates — this is preservation, not a budget bypass', () => {
+      const brief: CarryBrief = {
+        ownerId: 'x',
+        loop: null,
+        heldItems: [{ id: 'WI-37110', title: null, body: null, harness: 'h', checkpoint: CHECKPOINT }],
+        directives: [],
+        directivesTotalOpen: 0,
+        walls: [],
+        facts: [],
+        awaits: [],
+        fleet: null,
+      };
+      const out = renderCarryBriefColdExtras(brief);
+      const ckptLine = out.split('\n').find((l) => l.includes('checkpoint: the owner report'))!;
+      expect(ckptLine).toBeDefined();
+      // capped head + a bounded operative addendum, nowhere near the full body.
+      expect(ckptLine.length).toBeLessThan(CHECKPOINT.length);
+    });
+
+    it('a fact body carrying the same shape is preserved too (the adjacent facts render)', () => {
+      const brief: CarryBrief = {
+        ownerId: 'x',
+        loop: null,
+        heldItems: [],
+        directives: [],
+        directivesTotalOpen: 0,
+        walls: [],
+        facts: [{ key: 'status-report-policy', body: CHECKPOINT }],
+        awaits: [],
+        fleet: null,
+      };
+      const out = renderCarryBriefColdExtras(brief);
+      expect(out).toContain('NO MORE STATUS-REPORT ARTIFACTS');
+    });
+  });
+
   describe('EI-18684357744098956 — a checkpoint superseded by later session activity flags as SUPERSEDED', () => {
     const now = Date.parse('2026-07-26T05:30:00.000Z');
     const brief = (checkpointUpdatedAtMs: number | null): CarryBrief => ({

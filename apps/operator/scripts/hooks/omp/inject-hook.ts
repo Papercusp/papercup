@@ -67,9 +67,31 @@ export const PORT_TIMEOUT_MS: Record<InjectionPort, number> = {
  *  omp's 30s cap. */
 export const SUBPROCESS_KILL_MARGIN_MS = 1200;
 
-/** D-001 invariant 4 — per-port kill switch. */
-const KILL_SWITCH_ENV: Record<InjectionPort, string> = {
-  'turn-start': 'PAPERCUSP_TURN_START_MEMORY',
+/**
+ * D-001 invariant 4 — per-port kill switch.
+ *
+ * ⚠ ONLY THE MID-TURN SWITCH BELONGS HERE, AND THAT ASYMMETRY IS LOAD-BEARING.
+ * Do not "finish" this map by adding turn-start; see ports.mjs, which is the
+ * authority. The two switches are different KINDS:
+ *
+ *   PAPERCUSP_MID_TURN_CONTEXT=off  -> 'suppress'. The port goes away entirely.
+ *       Mid-turn carries recall only, so skipping the spawn here costs nothing
+ *       and saves a process on every tool batch.
+ *
+ *   PAPERCUSP_TURN_START_MEMORY=off -> 'degrade', NOT suppress. The request
+ *       STILL HAPPENS with memoryEnabled=false, because turn-start carries TWO
+ *       payloads on one call: the memory delta AND the one-shot CTRL transition
+ *       (mode / loop / route changes). The env var is a MEMORY preference, and
+ *       a memory preference must never hide a safety-critical control
+ *       transition. Skipping the subprocess for it would silently delete that
+ *       property — and it would be invisible, because the turn would simply
+ *       proceed without the transition it was owed.
+ *
+ * core.mjs owns the degrade behaviour (it sets memoryEnabled from
+ * killSwitchState); this map exists only so the artifact can avoid an obviously
+ * pointless spawn for the SUPPRESS case.
+ */
+const SUPPRESSING_KILL_SWITCH: Partial<Record<InjectionPort, string>> = {
   'mid-turn': 'PAPERCUSP_MID_TURN_CONTEXT',
 };
 
@@ -108,11 +130,17 @@ export function resolveDispatcherPath(
   return null;
 }
 
-/** True when this boundary should spend nothing at all (D-001 invariants 3+4).
- *  Exported so the fail-silent invariants are directly assertable. */
+/**
+ * True when this boundary should spend nothing at all (D-001 invariant 3, and
+ * invariant 4 for the SUPPRESS port only — see SUPPRESSING_KILL_SWITCH above for
+ * why turn-start is deliberately absent).
+ *
+ * Exported so the fail-silent invariants are directly assertable.
+ */
 export function shouldSkip(port: InjectionPort, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!env.PAPERCUSP_SID) return true;
-  return env[KILL_SWITCH_ENV[port]] === 'off';
+  const suppressVar = SUPPRESSING_KILL_SWITCH[port];
+  return suppressVar !== undefined && env[suppressVar] === 'off';
 }
 
 /**

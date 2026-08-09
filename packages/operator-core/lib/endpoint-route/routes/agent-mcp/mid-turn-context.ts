@@ -285,9 +285,29 @@ export function deriveBatchQuery(calls: BatchCall[]): string {
  * `input/output`, `24/7` are prose an agent really does type into a Grep
  * pattern or a Bash description, and stripping them would delete meaning from
  * the very query this is protecting.
+ *
+ * ⚠ THE DELIMITER CLASSES ARE SHELL-SHAPED, NOT WHITESPACE (WI-37403). The
+ * boundaries used to be `(?:^|\s)` … `(?=\s|$)`, which is right for prose and
+ * wrong for the dominant input on this port: a Bash `tool_input`, where paths
+ * sit against punctuation constantly — `$(readlink -f /a/b/c);`, `"/a/b/c"`,
+ * `grep -n x pkg/lib/f.ts|head`, `2>/dev/null`. A whitespace-only boundary
+ * fails to match every one of those, so the path stayed in the cosine query and
+ * pulled the vector exactly as D-041 describes.
+ *
+ * MEASURED (2026-08-09, replayed against real commands from the session that
+ * found this): `B=$(readlink -f /home/linuxbrew/.linuxbrew/bin/codex); echo bin`
+ * was NOT stripped, and that call injected two memories whose only relationship
+ * to the task was the token `linuxbrew` — one about a Mac VM's bash version, one
+ * about dev-launcher PATH exports, while the agent was enumerating codex hook
+ * events. Same shape observed for `maxdepth` and `readlink /proc`.
+ *
+ * Lookbehind/lookahead (not consumption) so the delimiter itself survives the
+ * replace; the token shape above is UNCHANGED, so every false-positive guard it
+ * encodes still holds — `and/or`, `24/7`, `input/output`, `a b/c thing` are all
+ * verified unchanged by this widening.
  */
 const COSINE_PATH_TOKEN_RE =
-  /(?:^|\s)(?:~?\/?(?:[\w.@*[\]-]+\/){2,}[\w.@*[\]-]*|[\w.@*[\]-]+\/[\w.@*[\]-]*\.[A-Za-z][\w]{0,5})(?=\s|$)/g;
+  /(?<=^|[\s"'`(=,;:|&<>])(?:~?\/?(?:[\w.@*[\]-]+\/){2,}[\w.@*[\]-]*|[\w.@*[\]-]+\/[\w.@*[\]-]*\.[A-Za-z][\w]{0,5})(?=[\s"'`),;:|&\]]|$)/g;
 
 /**
  * Split the derived text into the two per-leg queries (P-044 / F-L, motivated by

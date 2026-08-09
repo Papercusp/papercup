@@ -803,7 +803,7 @@ export const BRAIN_TOMBSTONE_MESSAGE =
  * until the MCP-under-sandbox path has a fresh live smoke on the current CLI
  * (mirrors the codex-su wrapper).
  */
-export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, nativeSessionId, replaceClaudeBase, allowSubagents, model } = {}) {
+export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, model } = {}) {
   if (backend === 'claude') {
     // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
     // mirror suLaunchArgs — when armed, the role prompt REPLACES the Claude coding base
@@ -917,7 +917,7 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
-export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionId, replaceClaudeBase, allowSubagents } = {}) {
+export function suLaunchArgs(backend, { promptFile, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents } = {}) {
   if (backend === 'claude') {
     // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
     // when armed, the playbook REPLACES the Claude coding base (--system-prompt-file +
@@ -1086,7 +1086,7 @@ export function resumeKickoffText(args, env = process.env) {
  * in the thread). codex re-supplies its bypass flags; its hooks/MCP live in the
  * CODEX_HOME the caller points at.
  */
-export function resumeArgsFor(session, { coordExtPath, fork = false, forkSessionId = null, addDir = [], allowSubagents, model = null } = {}) {
+export function resumeArgsFor(session, { coordExtPath, injectHookPath, fork = false, forkSessionId = null, addDir = [], allowSubagents, model = null } = {}) {
   // --fork is native for claude and codex; omp has no branch-the-session flag,
   // and silently appending to the original would be the very clobber the user asked
   // to avoid. Refuse loudly instead.

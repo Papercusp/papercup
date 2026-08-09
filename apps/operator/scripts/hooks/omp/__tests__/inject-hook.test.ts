@@ -312,11 +312,28 @@ describe('inject-hook — shouldSkip', () => {
     expect(shouldSkip('turn-start', {})).toBe(true);
   });
 
-  it('honours the per-port kill switch (invariant 4) independently', () => {
-    expect(shouldSkip('turn-start', { ...SID_ENV, PAPERCUSP_TURN_START_MEMORY: 'off' })).toBe(true);
-    expect(shouldSkip('mid-turn', { ...SID_ENV, PAPERCUSP_TURN_START_MEMORY: 'off' })).toBe(false);
+  it('suppresses mid-turn when PAPERCUSP_MID_TURN_CONTEXT=off (recall-only port)', () => {
     expect(shouldSkip('mid-turn', { ...SID_ENV, PAPERCUSP_MID_TURN_CONTEXT: 'off' })).toBe(true);
     expect(shouldSkip('turn-start', { ...SID_ENV, PAPERCUSP_MID_TURN_CONTEXT: 'off' })).toBe(false);
+  });
+
+  it('does NOT skip turn-start on PAPERCUSP_TURN_START_MEMORY=off — that switch DEGRADES, it does not suppress', () => {
+    // REGRESSION GUARD, and this was a real bug here before ports.mjs was read
+    // (caught 2026-08-09, pre-merge). Inferring the semantics from D-001's
+    // one-line summary ("PER-PORT KILL-SWITCH env: PAPERCUSP_TURN_START_MEMORY
+    // =off, PAPERCUSP_MID_TURN_CONTEXT=off") reads as though both simply
+    // disable their port. They do not.
+    //
+    // turn-start carries TWO payloads on one request: the memory delta AND the
+    // one-shot CTRL transition (mode / loop / route changes). The env var is a
+    // MEMORY preference; core.mjs honours it by sending memoryEnabled=false and
+    // STILL making the call. If the artifact skipped the spawn instead, the
+    // CTRL transition would be silently dropped — invisibly, since the turn
+    // just proceeds without the transition it was owed.
+    //
+    // If someone "tidies" SUPPRESSING_KILL_SWITCH by adding a turn-start entry,
+    // this test is what stops it.
+    expect(shouldSkip('turn-start', { ...SID_ENV, PAPERCUSP_TURN_START_MEMORY: 'off' })).toBe(false);
   });
 
   it('runs when a psu session has neither switch off', () => {
@@ -367,13 +384,19 @@ describe('inject-hook — runDispatcher', () => {
     })).toBeNull();
   });
 
-  it('FAIL-SILENT: kill-switch off injects nothing even with a healthy dispatcher', async () => {
-    expect(await runDispatcher('turn-start', 'before_agent_start', { prompt: 'hi' }, {
-      env: envWith(echoDispatcher, { PAPERCUSP_TURN_START_MEMORY: 'off' }),
-    })).toBeNull();
+  it('the mid-turn kill switch suppresses the spawn entirely', async () => {
     expect(await runDispatcher('mid-turn', 'turn_end', { toolResults: [] }, {
       env: envWith(echoDispatcher, { PAPERCUSP_MID_TURN_CONTEXT: 'off' }),
     })).toBeNull();
+  });
+
+  it('the turn-start memory switch still dispatches, so CTRL transitions survive', async () => {
+    // The paired end-to-end half of the shouldSkip guard above: with memory
+    // off, the dispatcher MUST still be invoked (core.mjs then degrades the
+    // request via memoryEnabled=false rather than skipping it).
+    expect(await runDispatcher('turn-start', 'before_agent_start', { prompt: 'hi' }, {
+      env: envWith(echoDispatcher, { PAPERCUSP_TURN_START_MEMORY: 'off' }),
+    })).toBe('INJECTED CONTEXT');
   });
 
   it('FAIL-SILENT: no dispatcher installed resolves null (never throws)', async () => {
