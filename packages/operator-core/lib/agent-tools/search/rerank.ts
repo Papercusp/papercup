@@ -231,6 +231,25 @@ export async function rerankProseHits(
   query: string,
   hits: SearchHit[],
   limit: number,
+  opts?: {
+    /**
+     * Override the stage bound. Defaults to {@link PROSE_RERANK_TIMEOUT_MS} (4s),
+     * which is correct for the interactive search surfaces this function was
+     * written for and WRONG for any caller with a tighter whole-operation bound.
+     *
+     * The corpus leg of context injection is the motivating case (P-008): it wraps
+     * its whole recall in a 2,000ms `withBound`, i.e. HALF this default. A rerank
+     * that runs long there does not degrade the page — `recallCorpusContext`
+     * returns `empty('timed-out')` and the agent gets NO pointer section at all,
+     * which is strictly worse than not reranking. Passing a bound BELOW the
+     * caller's own budget is what lets the stage fall back to RRF order instead of
+     * taking the whole leg down with it.
+     *
+     * Callers should pass a value strictly less than their own bound, leaving room
+     * for the rest of their work — never equal to it.
+     */
+    rerankTimeoutMs?: number;
+  },
 ): Promise<SearchHit[]> {
   // Nothing to reorder → no engine resolution, no rerank import.
   if (hits.length <= 1) return hits.slice(0, limit);
@@ -251,7 +270,7 @@ export async function rerankProseHits(
         limit,
         // Bound the stage so a sick engine degrades the page instead of
         // stalling it (the lib's 20s backstop is a hang guard, not a UX budget).
-        rerankTimeoutMs: PROSE_RERANK_TIMEOUT_MS,
+        rerankTimeoutMs: opts?.rerankTimeoutMs ?? PROSE_RERANK_TIMEOUT_MS,
         ...(resolved.engine === 'zeroentropy'
           ? { rerankApiKey: resolved.apiKey }
           : { engine: 'local' as const, scorer: resolved.scorer }),

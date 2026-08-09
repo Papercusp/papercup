@@ -8,6 +8,7 @@
  * apart is the bare firing count this replaced.
  */
 import { describe, expect, it } from 'vitest';
+import { deriveCouplings } from './coupling-derivation';
 import { DERIVED_COUPLING_RELATIONS, type DerivedCoupling } from './couplings';
 import {
   DERIVED_SIGNAL_CENSUS_KEY,
@@ -155,5 +156,78 @@ describe('edge counting', () => {
     );
     expect(census.relations['holds-a-lock-on']).toEqual({ armed: false, inputs: 0, edges: 0 });
     expect(census.relations.awaits.armed).toBe(true);
+  });
+});
+
+/**
+ * The EMISSION contract, at the derivation's own union point. The census is
+ * worthless if `deriveCouplings` never hands it to anybody, and that is not a
+ * hypothetical failure mode — it is the exact shape of D-001 in this same plan
+ * (five prompt sections that were authored, correct, and silently never spliced).
+ */
+describe('deriveCouplings publishes a census to whoever wires the sink', () => {
+  const rows = [{ ownerId: 'su-self' }, { ownerId: 'su-peer' }];
+
+  it('calls observe exactly once per run, with every relation present', async () => {
+    const seen: unknown[] = [];
+    await deriveCouplings('su-self', rows, { observe: (c) => seen.push(c) });
+    expect(seen).toHaveLength(1);
+    const census = seen[0] as { v: number; relations: Record<string, unknown> };
+    expect(census.v).toBe(DERIVED_SIGNAL_CENSUS_VERSION);
+    expect(Object.keys(census.relations).sort()).toEqual([...DERIVED_COUPLING_RELATIONS].sort());
+  });
+
+  /**
+   * The live wiring this guards: `couplingSourcesFor` supplies `heldFiles` ONLY
+   * when a coordination domain resolved, and supplies the other two legs
+   * unconditionally. So `armed` on `holds-a-lock-on` IS the bit that was false on
+   * every production call for 12 days — a production recurrence guard for D-088,
+   * where the unit test on the predicate can only guard the predicate.
+   */
+  it('reports the lock leg unarmed when no source is supplied, armed when it is', async () => {
+    let bare: any;
+    await deriveCouplings('su-self', rows, { observe: (c) => (bare = c) });
+    expect(bare.relations['holds-a-lock-on'].armed).toBe(false);
+
+    let wired: any;
+    await deriveCouplings('su-self', rows, {
+      heldFiles: async () => new Map<string, readonly string[]>(),
+      recentPartners: async () => [],
+      observe: (c) => (wired = c),
+    });
+    expect(wired.relations['holds-a-lock-on'].armed).toBe(true);
+    expect(wired.relations['coord-exchange'].armed).toBe(true);
+    // ...and still unarmed for a leg genuinely not wired, so `armed` tracks the
+    // wiring rather than drifting to a constant true once anything is supplied.
+    expect(wired.relations['blocks-me'].armed).toBe(false);
+  });
+
+  it('counts only edges that survived the roster access boundary', async () => {
+    let census: any;
+    await deriveCouplings('su-self', rows, {
+      // `su-ghost` is NOT in the roster, so its edge reaches no caller and must not
+      // be censused as a firing — otherwise a signal reads as alive on the strength
+      // of output that was filtered away.
+      recentPartners: async () => ['su-peer', 'su-ghost'],
+      observe: (c) => (census = c),
+    });
+    expect(census.relations['coord-exchange'].edges).toBe(1);
+    expect(census.relations['coord-exchange'].inputs).toBe(2);
+  });
+
+  it('an observer that throws cannot degrade the derivation it observes', async () => {
+    const withSink = await deriveCouplings('su-self', rows, {
+      recentPartners: async () => ['su-peer'],
+      observe: () => {
+        throw new Error('sink is broken');
+      },
+    });
+    const without = await deriveCouplings('su-self', rows, { recentPartners: async () => ['su-peer'] });
+    expect(withSink).toEqual(without);
+    expect(withSink).toHaveLength(1);
+  });
+
+  it('emits nothing and stays silent when no sink is wired', async () => {
+    await expect(deriveCouplings('su-self', rows, {})).resolves.toEqual([]);
   });
 });

@@ -773,6 +773,80 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
     });
 
     /**
+     * P-024 / D-090 recurrence guard. D-089 established the model this pins:
+     * REACH IS THE QUOTIENT of the budget and the per-entry cost, so halving
+     * MAX_ENTRY_CHARS (900 -> 450) roughly DOUBLES the admitted count at the same
+     * context spend — which is why the owner chose the clamp over doubling the
+     * budget, the lever that buys the same slots for ~2x the tokens.
+     *
+     * Deliberately asserts the BEHAVIOUR, not the constant. A test reading
+     * `expect(MAX_ENTRY_CHARS).toBe(450)` would restate the source and pass for a
+     * change that re-broke reach via the prefix, the packer, or the budget. This
+     * fails if the clamp drifts back up: at the real 4,000-char turn-start budget,
+     * the pre-D-090 clamp admitted ~4.4 entries and this admits ~8.7, so the
+     * threshold sits between the two regimes and cannot be satisfied by the old one.
+     *
+     * Texts are lexically DISTINCT for the same reason CASE A/B above are:
+     * collapseNearDuplicates runs BEFORE the budget stage, so near-identical
+     * strings vanish as duplicates and the budget never binds — the test would
+     * then pass for the wrong reason.
+     */
+    it('halving the per-entry clamp roughly doubles admitted entries at the same budget (D-090)', async () => {
+      const words = [
+        'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot',
+        'golf', 'hotel', 'india', 'juliet', 'kilo', 'lima',
+      ];
+      // Each entry is far larger than the clamp, so every admitted line costs
+      // exactly clamp + prefix — the quotient's denominator, held constant.
+      useBackend(
+        mockBackend(words.map((w, i) => ({ id: `q${i}`, text: `${w} `.repeat(500) }))),
+      );
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+        budgetChars: 4000,
+      });
+      await flush();
+
+      const funnel = (
+        recordRecallStatsMock.mock.calls[0]![1] as {
+          admission: { admitted: number; budgetChars?: number };
+        }
+      ).admission;
+
+      expect(funnel.budgetChars).toBe(4000);
+      // ~8.7 slots at a 450 clamp; ~4.4 at the old 900. Between the two regimes.
+      expect(funnel.admitted).toBeGreaterThanOrEqual(7);
+    });
+
+    /**
+     * The property that made the clamp the RIGHT lever rather than merely a
+     * cheaper one (D-090): a clamped entry stays RECOVERABLE. It keeps its scope,
+     * id and lede and tells the agent how to get the rest, whereas an entry
+     * dropped for budget is invisible and unrecoverable. If the clamp ever starts
+     * truncating silently, halving it stops being a safe trade and this fails.
+     */
+    it('a clamped entry says how to recover the rest, so shortening stays non-destructive', async () => {
+      useBackend(mockBackend([{ id: 'long1', text: `mnemonic ${'detail '.repeat(400)}` }]));
+      const block = await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+        budgetChars: 4000,
+      });
+      await flush();
+
+      expect(block).toContain('truncated — memory:search for the rest');
+      // The lede survives the cut — a truncated entry is still identifiable.
+      expect(block).toContain('mnemonic');
+    });
+
+    /**
      * The THIRD reading of utilization, and the one most likely to be mistaken
      * for a bad write: >1.0 is correct. `admit()` skips the budget check while
      * `lines.length === 0` (the ALWAYS-EMIT-ONE-ROW contract), so a single

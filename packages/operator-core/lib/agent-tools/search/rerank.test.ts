@@ -121,6 +121,40 @@ describe('rerankProseHits — engine selection', () => {
     expect(vi.mocked(rankWithReranker).mock.calls[1][2].rerankTimeoutMs).toBe(PROSE_RERANK_TIMEOUT_MS);
   });
 
+  it('a caller with a tighter bound can override the budget, so it degrades instead of killing the leg', async () => {
+    // P-008 prerequisite. The 4s default is correct for the interactive search
+    // surfaces this wrapper was written for and WRONG for the corpus leg of
+    // context injection, which wraps its whole recall in a 2,000ms withBound —
+    // half the default. Without an override a slow rerank does not degrade the
+    // page: `recallCorpusContext` returns empty('timed-out') and the agent gets
+    // NO pointer section at all, which is strictly worse than not reranking.
+    //
+    // Measured (bench/corpus-rerank-reach-cli.ts, hybrid arm, n=120, 2026-08-09):
+    // one-stage rerank breaches that 2s bound on 2/120 queries (1.7%). Those two
+    // are exactly the queries this override converts from "no pointer section"
+    // into "RRF order" — which is why it is a prerequisite and not a nicety.
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+
+    await rerankProseHits('q', HITS, 5, { rerankTimeoutMs: 1_500 });
+
+    const opts = vi.mocked(rankWithReranker).mock.calls[0][2];
+    expect(opts.rerankTimeoutMs).toBe(1_500);
+    // The override must be strictly under the caller's own bound to leave room
+    // for the rest of the leg — a bound equal to it still takes the leg down.
+    expect(opts.rerankTimeoutMs!).toBeLessThan(2_000);
+  });
+
+  it('omitting the override keeps the default, so existing callers are untouched', async () => {
+    // The override is additive: every caller that does not opt in must be
+    // byte-identical to before. An optional parameter that silently changed the
+    // default would move four other search surfaces at once.
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+
+    await rerankProseHits('q', HITS, 5);
+
+    expect(vi.mocked(rankWithReranker).mock.calls[0][2].rerankTimeoutMs).toBe(PROSE_RERANK_TIMEOUT_MS);
+  });
+
   it('the search budget is tighter than the layers below it, or it guards nothing', async () => {
     // A budget above the sidecar's own 15s retry budget would never bind: the
     // sidecar would give up first and this would be decorative. Encode the

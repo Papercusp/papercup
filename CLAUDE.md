@@ -2034,6 +2034,26 @@ Per-tool when/not-when goes on the tool; cross-tool patterns in
 `<role>.tools.md`; behavior rules in `<role>.persona.md`. The split is
 intentional — see `packages/operator-core/lib/prompt-assembly.ts`.
 
+⚠ **A caller's `limit` bounds ROW LISTS ONLY — never an aggregate. If a count is
+computed over a capped fetch, the RESULT must say so ON THE AGGREGATE.** Marking
+only the row list is not enough: the aggregate is what gets read as a verdict, and
+a bounded measurement rendered as a confident number is indistinguishable from a
+real zero. Measured (WI-37381): `work_items:burn_down` at `limit:5` reported
+`terminal.total 0`, `delta 0`, `deltaBy.fleet 0` where the true values were
+`1693` / `93` / `71` — while `deltaByPartitions:true` and the `basis` note still
+rendered, so it read as a complete census of an empty queue. The fleet's own drain
+leader believed it. Same family as the zero-work false-greens above (`tsc -p .`
+checking zero files, `test:affected` selecting zero suites, a `-t` filter matching
+zero tests) — and it fails in the same direction: silently, toward "nothing there".
+
+The fix pattern, both halves: pin the census fetch independently of the caller's
+`limit` (`censusLimit`), and expose a boundedness marker beside the counts
+(`truncatedByLimit`) so a floor is never read as a total. **Guard it behaviourally,
+not by field name** — the invariant is that the same fixture at `limit:N` and
+`limit:N*100` returns equal aggregates (`burn_down.test.ts`, WI-37381). Anchoring a
+check to the spelling of a flag is the form-blind mistake documented under
+shared-lib singletons above.
+
 ## Prompts are auto-generated — edit the source, never the rendered output
 
 Every agent-facing prompt is assembled at launch/spawn from sources: chat-surface

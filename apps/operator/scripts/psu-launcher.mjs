@@ -1945,18 +1945,10 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // (right before the discovery pair). search:semantic stays OUT here too — lower
   // demand-evidence (7 reaches/7 callers/14d), reachable via tools:find/invoke.
   'search:fulltext',
-  // P-003 of psu-seed-prompt-mandate-alignment-2026-08-09 — MIRROR of the canonical
-  // orchestrator CORE_MCP_TOOL_NAMES addition (same order; the lockstep drift guard in
-  // psu-launcher.test.ts compares the arrays exactly). Cross-role, so they belong in the
-  // shared spine rather than the Claude-only extras, and admitted on measured
-  // reach-per-KB per plan D-001: plans:add-decision 622 reaches/65 callers @4,250 B
-  // (149.9/KB — the loudest unmet need in the whole fallback ledger, and recording a
-  // cross-lane ruling is MANDATORY); mode:set 124/56 @1,732 B (73.3 — an unregistered
-  // mode is invisible state a compaction drops); work_items:claimable 135/55 @2,198 B
-  // (62.9 — the SSOT claim floors, whose documented alternative overcounts ~13x).
-  'plans:add-decision',
-  'mode:set',
-  'work_items:claimable',
+  // (psu-seed-prompt-mandate-alignment-2026-08-09 P-003 tried to add plans:add-decision,
+  // mode:set and work_items:claimable HERE and reverted — this spine is capped at <=43 by
+  // invoke.test.ts and sits at 42. They live in CLAUDE_SEED_EXTRA_TOOL_NAMES instead; see
+  // the matching comment in the canonical orchestrator list and plan D-003.)
   'tools:find', 'tools:invoke',
 ];
 
@@ -2031,6 +2023,23 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   'state:read', 'capability:bash', 'capability:bash_output',
   'dev:pipeline_position', 'testing:run', 'dev:restart',
   'sessions:search', 'build:typecheck', 'coord:presence',
+  // P-003, rehomed here from the shared spine (plan D-003). Genuinely CROSS-ROLE, so the
+  // shared OMP spine was the right home on the merits — but that list is capped at <=43
+  // (invoke.test.ts) and sits at 42, and raising a cap in the change that fills it is the
+  // DARK_FLAGS-watermark anti-pattern. Seeding them Claude-only delivers the measured
+  // demand (which is overwhelmingly su/psu traffic) at zero cost to anyone's budget:
+  //   plans:add-decision   622 reaches/65 callers, 4,250 B, 149.9 reach/KB — the loudest
+  //     unmet need in the whole fallback ledger; recording a cross-lane ruling is
+  //     MANDATORY per root CLAUDE.md, so the verb discharging a standing obligation was
+  //     reachable only by a discovery round-trip.
+  //   mode:set             124/56, 1,732 B, 73.3 — an unregistered mode is invisible
+  //     session state that a compaction silently drops.
+  //   work_items:claimable 135/55, 2,198 B, 62.9 — the SSOT claim floors; the documented
+  //     alternative (raw status='open') overcounts ~13x, so unreachability here actively
+  //     pushed callers onto a WRONG answer.
+  // KNOWN GAP: OMP/codex still cannot reach these three directly. Closing that needs the
+  // spine-budget decision in plan D-003, not another quiet append.
+  'plans:add-decision', 'mode:set', 'work_items:claimable',
 ];
 export function claudeSeedToolNames(env = process.env) {
   const seen = new Set();
