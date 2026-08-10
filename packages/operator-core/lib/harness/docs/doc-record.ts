@@ -18,10 +18,9 @@
  * source — it never silently downgrades to plain generated.
  */
 
-import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
-import { parseFrontmatterBlock } from '@papercusp/docs-engine';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
+import { deriveFrontmatterIndex, sha256 } from './authored-doc-projection';
 import type { SubjectRef } from './subject-ref';
 
 export type DocSource = 'generated' | 'manual' | 'augmented';
@@ -170,19 +169,10 @@ export interface UpsertDocInput {
   content?: string | null;
 }
 
-const sha256 = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
-
-/**
- * The derived frontmatter index stored alongside the prose.
- *
- * Returns null for a doc with no frontmatter, or frontmatter that does not parse — the
- * prose is still canonical in those cases and only the INDEX is unavailable, so a parse
- * failure must not fail the write.
- */
-export function deriveFrontmatterIndex(content: string): Record<string, unknown> | null {
-  const parsed = parseFrontmatterBlock(content);
-  return parsed.present && parsed.ok && parsed.data ? parsed.data : null;
-}
+// `sha256` and `deriveFrontmatterIndex` come from ./authored-doc-projection, which is also
+// what the CLI projector and docs:author use. One definition, deliberately: if this writer
+// derived the index differently from the projector, the same doc would carry a different
+// `frontmatter` depending on which path last wrote it, and neither would be wrong-looking.
 
 /**
  * Insert or update a doc record (PK conflict on workspace+harness+doc_id).

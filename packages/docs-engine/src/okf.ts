@@ -228,12 +228,31 @@ export interface FrontmatterBlock {
  * to one and invisible to the other, and the lint's green stops meaning the read
  * surface can see the doc at all.
  */
-export function parseFrontmatterBlock(source: string): FrontmatterBlock {
+export interface ParseFrontmatterOptions {
+  /**
+   * How to resolve date-shaped scalars.
+   *
+   * `'native'` (the default, and js-yaml's) resolves `discovered: 2026-08-10` into a JS
+   * `Date`. That suits a reader doing date ARITHMETIC — `okf-expiry` comparing
+   * `stale_after` against now — and is why it stays the default.
+   *
+   * `'string'` keeps the literal text the document states. Required by any caller that
+   * PERSISTS or round-trips the parsed frontmatter (P-008 stores it as the
+   * `harness_docs.frontmatter` index): `JSON.stringify(new Date('2026-08-10'))` widens a
+   * bare date into `"2026-08-10T00:00:00.000Z"` — a timezone-bearing instant the document
+   * never claimed, which reads back as the previous day for anyone west of UTC.
+   */
+  dates?: 'native' | 'string';
+}
+
+export function parseFrontmatterBlock(source: string, opts: ParseFrontmatterOptions = {}): FrontmatterBlock {
   const m = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if (!m) return { present: false, ok: false };
   let doc: unknown;
   try {
-    doc = yaml.load(m[1]);
+    // CORE_SCHEMA is the default schema minus the timestamp (and merge/binary/omap/pairs/
+    // set) types, so every non-date value resolves identically under both settings.
+    doc = opts.dates === 'string' ? yaml.load(m[1], { schema: yaml.CORE_SCHEMA }) : yaml.load(m[1]);
   } catch (err) {
     return { present: true, ok: false, error: String((err as Error)?.message ?? err).split('\n')[0] };
   }
