@@ -12,6 +12,7 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import tool from './update';
+import { setGoalTransitionExecutor, type GoalStopReport } from './stop-seam';
 
 type Call = { sql: string; params: unknown[] };
 let calls: Call[] = [];
@@ -286,5 +287,82 @@ describe('goals:update — per-goal launch settings', () => {
     )) as { degraded?: boolean; degradedReasons?: string[] };
     expect(res.degraded).toBe(true);
     expect(res.degradedReasons?.join(' ')).toContain('launch settings NOT saved');
+  });
+});
+
+/**
+ * WI-37834 — the degraded REASON must name the cause that actually fired.
+ *
+ * `stop.degraded` became reachable two ways once a terminal goal started retiring
+ * GOAL-mode rows: burn it could not attribute, and a mode row the OWNER-STICKY guard
+ * refused to clear. A single hardcoded sentence would report whichever one it happens
+ * to name — so a sticky-refusal degrade would have read "…but 0 active loop(s) are
+ * STILL RUNNING": a confident statement about the wrong quantity, on the one surface
+ * (GoalStatusControl's sticky warning toast) that exists to stop a steering surface
+ * reporting a state that is not the state of the system (EI-19995648221353323).
+ */
+describe('goals:update — the degraded reason names the cause that fired', () => {
+  const stopReport = (over: Partial<GoalStopReport>): GoalStopReport => ({
+    goalId: 'g1',
+    status: 'achieved',
+    potsStopped: ['pot-a'],
+    potsSkippedContributing: [],
+    loopsStopped: [],
+    unattributedActiveLoops: 0,
+    modesCleared: [],
+    modesLeftArmed: [],
+    degraded: false,
+    ...over,
+  });
+
+  /**
+   * The fan-out ctx needs `principal.workspaceId`, which the shared CTX() does not
+   * carry: `resolveGoalWorkspace` reads it (UnifiedToolContext has no top-level
+   * workspaceId — EI-18884122799901600) and without it the handler degrades with
+   * "no concrete workspace in scope" BEFORE reaching the executor at all. Left
+   * unfixed these tests pass vacuously against any reason-building code whatsoever,
+   * which is how they first failed.
+   */
+  const withExecutor = async (report: GoalStopReport) => {
+    setGoalTransitionExecutor(async () => report);
+    try {
+      return (await tool.handler(
+        tool.args.parse({ id: 'g1', status: 'achieved' }) as never,
+        { ...CTX(), principal: { workspaceId: 'papercusp-workspace' } } as never,
+      )) as { degraded?: boolean; degradedReasons?: string[] };
+    } finally {
+      setGoalTransitionExecutor(undefined);
+    }
+  };
+
+  it('reports a REFUSED mode clear as the mode refusal, not as phantom running loops', async () => {
+    const res = await withExecutor(
+      stopReport({ modesLeftArmed: ['su-owner-directed'], degraded: true }),
+    );
+
+    const joined = res.degradedReasons?.join(' ') ?? '';
+    expect(joined).toContain('GOAL mode retired');
+    expect(joined).toContain('su-owner-directed');
+    // The negative control, and the whole point: with zero unattributed loops the
+    // loops sentence must not appear at all. Without it this test passes on a build
+    // that reports "0 active loop(s) … STILL RUNNING" beside the real reason.
+    expect(joined).not.toContain('STILL RUNNING');
+  });
+
+  it('still reports unattributed burn on its own', async () => {
+    const res = await withExecutor(stopReport({ unattributedActiveLoops: 3, degraded: true }));
+
+    const joined = res.degradedReasons?.join(' ') ?? '';
+    expect(joined).toContain('3 active loop(s)');
+    expect(joined).toContain('STILL RUNNING');
+    expect(joined).not.toContain('GOAL mode retired');
+  });
+
+  it('reports BOTH causes when both fired', async () => {
+    const res = await withExecutor(
+      stopReport({ unattributedActiveLoops: 2, modesLeftArmed: ['su-a'], degraded: true }),
+    );
+
+    expect(res.degradedReasons).toHaveLength(2);
   });
 });

@@ -48,6 +48,7 @@ export default defineTool({
     returns:
       '`stop` carries the fan-out report and is NOT symmetric — check its `status` before reading it. ' +
       'STOP arm (paused/killed/achieved): `potsStopped`, `potsSkippedContributing`, `loopsStopped`, and ⚠ `unattributedActiveLoops` — active loops in this goal\'s own pots that could NOT be attributed to it and are STILL RUNNING. ' +
+      'TERMINAL only (killed/achieved): `modesCleared` — sessions whose GOAL-mode row was retired — and ⚠ `modesLeftArmed`, owner-directed rows the sticky guard REFUSED, so those sessions are still being told this goal is their mission. A pause keeps the rows (resume reads them). ' +
       'RESUME arm (active): `potsResumed`, `potsSkippedContributing`, and ⚠ `loopsLeftDisarmed` — sessions attributed to this goal that are still not looping, deliberately NOT re-armed (they are routinely dead by resume time; new work re-forms from PLACEMENT instead). ' +
       '`timeWakeRestored` is always false: the pause DELETES the pot\'s declared time-wake row and its cadence is not reconstructible. ' +
       '`degraded` is true when either gap is non-zero — a caller that renders only `status` will be wrong, which is what these numbers exist to prevent.',
@@ -276,14 +277,31 @@ export default defineTool({
     if (launchSettingsError) degradedReasons.push(launchSettingsError);
     if (stopError) degradedReasons.push(stopError);
     if (stop?.degraded) {
-      degradedReasons.push(
-        isStopReport(stop)
-          ? `goal ${args.status}, but ${stop.unattributedActiveLoops} active loop(s) in its pots could not be attributed to this goal and are STILL RUNNING`
-          : // The resume mirror: placement is open again, but the sessions that were
-            // pursuing this goal are not looping and this resume deliberately did not
-            // re-arm them (plan D-013). Work will re-form from placement, not from them.
-            `goal resumed and placement re-opened on ${stop.potsResumed.length} pot(s), but ${stop.loopsLeftDisarmed} attributed session loop(s) remain DISARMED and were not re-armed — new work re-forms from placement, the paused sessions do not come back`,
-      );
+      if (isStopReport(stop)) {
+        // ONE CLAUSE PER ACTUAL CAUSE. `degraded` is now reachable two ways, so a
+        // single hardcoded sentence would report whichever cause it happens to name —
+        // and a sticky-refusal degrade would read "…but 0 active loop(s) are STILL
+        // RUNNING", a confident statement about the wrong quantity. That is the exact
+        // steering-surface lie the seam exists to prevent (EI-19995648221353323), so
+        // each cause states itself and a cause that did not fire says nothing.
+        if (stop.unattributedActiveLoops > 0) {
+          degradedReasons.push(
+            `goal ${args.status}, but ${stop.unattributedActiveLoops} active loop(s) in its pots could not be attributed to this goal and are STILL RUNNING`,
+          );
+        }
+        if (stop.modesLeftArmed.length > 0) {
+          degradedReasons.push(
+            `goal ${args.status}, but ${stop.modesLeftArmed.length} session(s) could NOT have their GOAL mode retired — the row is owner-directed and this fan-out is not an owner-authority channel, so they are still being told this finished goal is their standing mission (${stop.modesLeftArmed.join(', ')})`,
+          );
+        }
+      } else {
+        // The resume mirror: placement is open again, but the sessions that were
+        // pursuing this goal are not looping and this resume deliberately did not
+        // re-arm them (plan D-013). Work will re-form from placement, not from them.
+        degradedReasons.push(
+          `goal resumed and placement re-opened on ${stop.potsResumed.length} pot(s), but ${stop.loopsLeftDisarmed} attributed session loop(s) remain DISARMED and were not re-armed — new work re-forms from placement, the paused sessions do not come back`,
+        );
+      }
     }
 
     return {
