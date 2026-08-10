@@ -51,6 +51,9 @@ export interface GoalSummaryRow {
   body: string | null;
   status: string;
   parentId: string | null;
+  /** The agents working this goal (agent_modes mode='goal'), so the HUD Goals
+   *  tab can filter by agent id. A LIST — see the subselect's comment. */
+  agents: Array<{ ownerId: string }>;
   killCriterion: string | null;
   tripwires: GoalTripwire[];
   budgetCents: number | null;
@@ -238,6 +241,15 @@ function toSummary(r: RawGoal): GoalSummaryRow {
     body: r.body,
     status: r.status,
     parentId: r.parent_id,
+    // Already a json array from the subselect's COALESCE (never SQL NULL), but
+    // narrowed defensively: a legacy/cached payload predating P-006 has no such
+    // key, and `undefined.map` would take the whole board down over a filter.
+    agents: Array.isArray(r.agents)
+      ? (r.agents as Array<{ ownerId?: unknown }>)
+          .map((a) => String(a?.ownerId ?? ''))
+          .filter((id) => id.length > 0)
+          .map((ownerId) => ({ ownerId }))
+      : [],
     // Fall back to the pre-migration-765 home so a legacy goal still shows the
     // one string the whole GUI is built around, rather than rendering blank.
     killCriterion:
@@ -375,7 +387,26 @@ export async function resolveGoalsList(args: {
              -- MAX(wi.updated_ts) aggregation already uses below.
              (SELECT to_timestamp(MAX(wi.updated_ts) / 1000.0)
                 FROM harness_shared.work_items wi
-               WHERE wi.goal_id = g.id) AS last_activity_at
+               WHERE wi.goal_id = g.id) AS last_activity_at,
+             -- The agents working this goal, so the HUD Goals tab can be
+             -- filtered by agent id (hud-unified-search-filter-2026-08-10
+             -- P-006). Same source and same predicate the DETAIL path uses
+             -- (agent_modes mode='goal', subject=<goal id>) — deliberately
+             -- not a second definition of "who is on this goal", which is how
+             -- the board and the popup would come to disagree.
+             --
+             -- json_agg, not a scalar: D-006 makes this one agent in practice,
+             -- but a goal with TWO is a coordination fault worth seeing, and
+             -- picking one would hide it. COALESCE to '[]' so "no agents" is a
+             -- list, never SQL NULL.
+             (SELECT COALESCE(
+                       json_agg(json_build_object('ownerId', am.owner_id)
+                                ORDER BY am.set_at DESC),
+                       '[]'::json)
+                FROM harness_shared.agent_modes am
+               WHERE am.workspace_id = g.workspace_id
+                 AND am.mode = 'goal'
+                 AND am.subject = g.id) AS agents
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId}
          AND (${status}::text IS NULL OR g.status = ${status}::text)

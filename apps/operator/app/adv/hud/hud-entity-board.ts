@@ -179,11 +179,10 @@ export interface HudEntityCard {
    * card is built in three places, and siblings invite a builder to set one and
    * forget the rest, which half-works undetectably.
    *
-   * Coverage today (D-003): the work-items board populates it from `assignee`.
-   * Plans and goals cannot yet — their inputs carry no identity at all — which
-   * is P-006, not a bug in this field.
+   * ONE identity, or SEVERAL: a work item has a single assignee, a goal can
+   * have more than one agent (see identityMatches).
    */
-  identity?: HudCardIdentity;
+  identity?: HudCardIdentity | HudCardIdentity[];
 }
 
 /**
@@ -259,6 +258,10 @@ export interface HudPlanInput {
   nextAction?: string | null;
   itemCounts?: Record<string, number> | null;
   archived?: boolean;
+  /** `harness_plans.owner` — the agent that owns this plan, so the Plans tab
+   *  filters by agent id like the Sessions tab does (P-006). Absent/null when
+   *  the plan has no recorded owner; never substituted with the harness. */
+  owner?: string | null;
 }
 
 /**
@@ -332,6 +335,16 @@ export interface HudGoalInput {
    * reason the type's own docblock gives.
    */
   parentId?: string | null;
+  /**
+   * The agents working this goal (`agent_modes` mode='goal', subject=<goal id>)
+   * — so the Goals tab filters by agent id (P-006).
+   *
+   * A LIST, matching `resolveGoalDetail`'s shape and for its stated reason:
+   * D-006 makes this one agent in practice, but collapsing it would silently
+   * hide a second stamp, and a goal with two agents is a coordination fault
+   * worth SEEING rather than a row to discard.
+   */
+  agents?: Array<{ ownerId: string }> | null;
 }
 
 /**
@@ -518,12 +531,21 @@ export function planCountsSummary(counts: Record<string, number> | null | undefi
  * later refactor cannot turn "no identity" into "matches everything".
  */
 export function identityMatches(
-  identity: HudCardIdentity | undefined,
+  identity: HudCardIdentity | HudCardIdentity[] | undefined,
   needle: string,
 ): boolean {
   if (!identity || !needle) return false;
-  for (const field of [identity.ownerId, identity.sessionId, identity.agentHandle]) {
-    if (field && field.toLowerCase().includes(needle)) return true;
+  // ONE-OR-MANY, because the two card kinds genuinely differ: a work item has a
+  // single assignee, but a goal can carry SEVERAL agents. `resolveGoalDetail`
+  // returns that as a list on purpose — "a goal with two agents is a
+  // coordination fault worth SEEING rather than a row to discard" — so
+  // collapsing it here to `agents[0]` would hide the second agent from search
+  // and quietly re-introduce the bug that comment exists to prevent.
+  for (const one of Array.isArray(identity) ? identity : [identity]) {
+    if (!one) continue;
+    for (const field of [one.ownerId, one.sessionId, one.agentHandle]) {
+      if (field && field.toLowerCase().includes(needle)) return true;
+    }
   }
   return false;
 }
@@ -677,6 +699,12 @@ export function toPlanCard(plan: HudPlanInput, nowMs: number): HudEntityCard {
     badges,
     sinceSec: since,
     sortKey: sortKeyFor(column, plan.updated),
+    // P-006. UNDEFINED when the plan has no recorded owner — deliberately NOT
+    // falling back to `harnessSlug`, which is the nearest plausible string and
+    // exactly the fabrication D-003 forbids: filtering by an agent id would
+    // then return every plan in that agent's harness, which looks like it
+    // worked and is wrong.
+    identity: plan.owner ? { ownerId: plan.owner, agentHandle: shortAssignee(plan.owner) } : undefined,
   };
 }
 
@@ -1175,6 +1203,13 @@ export function toGoalCard(
     // when it was defined rather than dropping to the bottom as unknown.
     sortKey: sortKeyFor(column, goal.lastActivityAt ?? goal.updatedAt),
     ...(subGoals.length > 0 ? { subGoals } : {}),
+    // P-006. ALL the goal's agents, not just the first — see identityMatches.
+    // Undefined (not []) when there are none, so "no agent on this goal" stays
+    // one explicit state rather than an empty list that reads as "loaded, none".
+    identity:
+      goal.agents && goal.agents.length > 0
+        ? goal.agents.map((a) => ({ ownerId: a.ownerId, agentHandle: shortAssignee(a.ownerId) }))
+        : undefined,
   };
 }
 
