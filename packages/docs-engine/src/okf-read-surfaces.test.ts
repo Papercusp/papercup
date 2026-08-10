@@ -151,6 +151,19 @@ describe('starlightContentAdapter — OKF survives the on-disk parse', () => {
       '---\ntitle: Plain doc\n---\n\n# Plain doc\n\nbody\n',
       'utf8',
     );
+    // Shaped like the 28 real superseded docs: the local `status:` convention
+    // beside OKF's `type`, and NO stale_after — retirement is not an expiry.
+    await fs.writeFile(
+      path.join(root, 'retired.mdx'),
+      '---\ntitle: Retired doc\ntype: Insight\nstatus: superseded\n---\n\n# Retired doc\n\nbody\n',
+      'utf8',
+    );
+    // The 561-doc majority. Must stay completely silent at the read surfaces.
+    await fs.writeFile(
+      path.join(root, 'live.mdx'),
+      '---\ntitle: Live doc\ntype: Insight\nstatus: active\n---\n\n# Live doc\n\nbody\n',
+      'utf8',
+    );
   });
 
   afterAll(async () => {
