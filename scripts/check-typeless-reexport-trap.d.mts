@@ -19,8 +19,16 @@ export function countReexportChains(text: string, fileName?: string): number;
  * Names of workspace packages NAMED-imported by this text (`import { x } from 'pkg'`).
  * A default or namespace import (`import p from`, `import * as p from`) is NOT affected by
  * the lexer gap in the same way, so it is deliberately not matched. Exported for tests.
+ *
+ * @param {string} text
+ * @param {Iterable<string>} candidateNames
+ * @param {string} [fileName]  BRACKETS ARE THE CONTRACT: without them the generated .d.mts
+ *        declares this REQUIRED, and every pre-existing two-argument caller (this guard's own
+ *        test calls it four times that way) fails with TS2554 — which reads as "fix the callers"
+ *        when the real defect is the missing brackets here.
+ * @returns {Set<string>}
  */
-export function namedImportedPackages(text: any, candidateNames: any, fileName: any): Set<any>;
+export function namedImportedPackages(text: string, candidateNames: Iterable<string>, fileName?: string): Set<string>;
 /**
  * PURE analyzer — the guard's teeth, independent of the filesystem so it can be tested on
  * synthetic fixtures rather than only on a tree that currently has zero violations.
@@ -56,7 +64,7 @@ export function scanWorkspace(root?: string): {
     isEsm: boolean;
     reexportChains: number;
     namedImports: {
-        pkg: any;
+        pkg: string;
         file: string;
         linked: boolean;
     }[];

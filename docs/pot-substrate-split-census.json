@@ -2,12 +2,36 @@
   "generatedBy": "scripts/measure-pot-substrate-split.mjs",
   "planItem": "P-056",
   "plan": "retire-mug-kettle-su-only-2026-08-09",
-  "generatedAt": "2026-08-10T13:24:10.040Z",
-  "method": "Import specifiers are RESOLVED to absolute paths (extensionless + /index aware) and tested for containment in packages/operator-core/lib/pot — not string-matched on \"/pot/\", which both over- and under-matches. KEEP = at least one NON-TEST importer outside lib/pot.",
+  "generatedAt": "2026-08-10T14:40:47.185Z",
+  "method": "Import specifiers are RESOLVED to absolute paths (extensionless + /index aware) and tested for containment in packages/operator-core/lib/pot — not string-matched on \"/pot/\", which both over- and under-matches. KEEP = at least one LIVE (non-test, non-retired-tier) importer outside lib/pot. ⚠ READ THIS BEFORE EXECUTING ANY BUCKET (D-047/D-049): until 2026-08-10 the predicate was \"at least one NON-TEST importer\", which answers IS IT SAFE TO MOVE — not IS IT SUBSTRATE. The two agree on most symbols, so the old keep bucket looked right while quietly counting retired-tier tools as substrate evidence. Importers are now split into `liveImporters` (real evidence) and `tierImporters` (a dead thing referencing another dead thing), and symbols whose ONLY non-test importers are tier land in `keepTierOnly` rather than `keep`.",
+  "tierImporterSet": {
+    "why": "D-048 ruled the middle-band pot tools tier-vs-container; D-049 established that GATING and CLASSIFICATION are independent, so this set is built on the ruling, not on the gate.",
+    "derived": [
+      "packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
+      "packages/operator-core/lib/agent-tools/overwatch/start.ts",
+      "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+      "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts",
+      "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
+      "packages/operator-core/lib/agent-tools/pot/start.ts",
+      "packages/operator-core/lib/agent-tools/pot/survey.ts",
+      "packages/operator-core/lib/agent-tools/pot/wake.ts"
+    ],
+    "derivedRule": "any non-test file importing _mug-kettle-gate — gated, therefore dead at runtime, therefore tier. Self-maintaining.",
+    "declared": {
+      "packages/operator-core/lib/agent-tools/pot/status.ts": "D-048 ruled it TIER (\"the read-side companion of two gated actuators\"); D-049 settled its gating as NO, so it carries no _mug-kettle-gate import to derive from."
+    },
+    "selfCheck": {
+      "missing": [],
+      "falsePositives": [],
+      "note": "A MISSING entry re-inflates the substrate bucket (false negative). A FALSE POSITIVE deletes a symbol's substrate evidence and is how P-057 moves a still-live symbol — the dangerous direction.",
+      "ok": true
+    }
+  },
   "counts": {
     "potSourceFiles": 30,
     "exportedSymbols": 349,
-    "keep": 75,
+    "keep": 52,
+    "keepTierOnly": 23,
     "move": 74,
     "moveNeedsReview": 200,
     "dynamicallyImportedPotModules": 17,
@@ -24,69 +48,6 @@
     "note": "P-056 recorded 60 non-test files outside lib/pot importing from it (2026-08-10). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list."
   },
   "keep": [
-    {
-      "symbol": "anyPotPlacementStarted",
-      "definedIn": [
-        "packages/operator-core/lib/pot/started.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/start.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/durable-spawn.ts",
-        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
-        "packages/operator-core/lib/dbos/periodic-workflows.ts",
-        "packages/operator-core/lib/dbos/routines-workflow.ts",
-        "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts",
-        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/scout/nudge-recipient.ts",
-        "packages/operator-core/lib/scout/signal-accumulator.test.ts",
-        "packages/operator-core/lib/severe-event-broadcast.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "armDefaultPotWakeSubscriptions",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake-defaults.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/start.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/pot/_create.ts"
-      ]
-    },
-    {
-      "symbol": "claimPotWakeFire",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/wake.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
-        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
-        "packages/operator-core/lib/deployment/account-pool-store.ts",
-        "packages/operator-core/lib/events/await/wake-executor.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/overwatch/control-state.ts",
-        "packages/operator-core/lib/owner-steering.ts",
-        "packages/operator-core/lib/scout/scout-cycle-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/liveness-alarm.ts"
-      ]
-    },
     {
       "symbol": "claimWatchdogFire",
       "definedIn": [
@@ -116,6 +77,19 @@
         "packages/operator-core/lib/scout/error-streak-alarm.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-state-divergence-sweep.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/learning-loop-health-sweep.ts",
+        "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
+        "packages/operator-core/lib/harness/routines/sync-read-budget-watchdog.ts",
+        "packages/operator-core/lib/harness/routines/tsc-red-sweep.ts",
+        "packages/operator-core/lib/release-deploy-staleness-watchdog.ts",
+        "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts",
+        "packages/operator-core/lib/stale-prompt-render-sweep.ts"
       ]
     },
     {
@@ -143,6 +117,13 @@
         "packages/operator-core/lib/scout/scout-cycle-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/dissolve.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
     {
@@ -157,6 +138,9 @@
       "externalNonTestImporters": 1,
       "dynamicImporters": [
         "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/fleet/spawn-hydration-deps.ts"
       ]
     },
     {
@@ -175,6 +159,9 @@
         "packages/operator-core/lib/scout/error-streak-alarm.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/overwatch/scorecard-backstop.ts"
       ]
     },
     {
@@ -186,7 +173,10 @@
         "packages/operator-core/lib/agent-tools/platform/contribute.test.ts",
         "packages/operator-core/lib/agent-tools/platform/contribute.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/platform/contribute.ts"
+      ]
     },
     {
       "symbol": "convergenceChurn",
@@ -196,7 +186,10 @@
       "importers": [
         "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ]
     },
     {
       "symbol": "cupWakeEfficiency",
@@ -209,6 +202,9 @@
       "externalNonTestImporters": 1,
       "dynamicImporters": [
         "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
     {
@@ -222,6 +218,9 @@
       "externalNonTestImporters": 1,
       "dynamicImporters": [
         "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
     {
@@ -248,6 +247,12 @@
         "packages/operator-core/lib/scout/scout-cycle-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts"
       ]
     },
     {
@@ -258,19 +263,9 @@
       "importers": [
         "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ],
-      "externalNonTestImporters": 1
-    },
-    {
-      "symbol": "defaultPotEventSubscriptions",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake-defaults.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
-      ],
       "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ]
     },
     {
@@ -291,31 +286,9 @@
         "packages/operator-core/lib/scout/register-scout-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "effectivePotWakeFloorSec",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake.ts"
       ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/wake.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
-        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
-        "packages/operator-core/lib/deployment/account-pool-store.ts",
-        "packages/operator-core/lib/events/await/wake-executor.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/overwatch/control-state.ts",
-        "packages/operator-core/lib/owner-steering.ts",
-        "packages/operator-core/lib/scout/scout-cycle-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ]
     },
     {
@@ -327,7 +300,10 @@
         "packages/operator-core/lib/agent-tools/platform/enable.test.ts",
         "packages/operator-core/lib/agent-tools/platform/enable.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/platform/enable.ts"
+      ]
     },
     {
       "symbol": "evaluatePlacement",
@@ -347,17 +323,10 @@
         "packages/operator-core/lib/scout/register-scout-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ]
-    },
-    {
-      "symbol": "evaluateWakeFrontierGuard",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
-      ],
-      "externalNonTestImporters": 1
     },
     {
       "symbol": "fetchHarnessBlockGraph",
@@ -371,6 +340,9 @@
       "dynamicImporters": [
         "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/fleet/placement-gather.ts"
       ]
     },
     {
@@ -385,6 +357,9 @@
       "dynamicImporters": [
         "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/fleet/placement-gather.ts"
       ]
     },
     {
@@ -413,6 +388,14 @@
         "packages/operator-core/lib/severe-event-broadcast.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts",
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/overwatch/loop.ts"
       ]
     },
     {
@@ -439,6 +422,12 @@
         "packages/operator-core/lib/scout/scout-cycle-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_resolve.ts"
       ]
     },
     {
@@ -452,17 +441,10 @@
       "externalNonTestImporters": 1,
       "dynamicImporters": [
         "packages/operator-core/lib/dbos/routines-workflow.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts"
       ]
-    },
-    {
-      "symbol": "listNonTerminalPlacements",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
-      ],
-      "externalNonTestImporters": 1
     },
     {
       "symbol": "listStartedPots",
@@ -494,27 +476,15 @@
         "packages/operator-core/lib/severe-event-broadcast.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/dbos/orchestrator-loop.ts",
+        "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+        "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+        "packages/operator-core/lib/scout/signal-accumulator.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
       ]
-    },
-    {
-      "symbol": "listUnplacedPotFrontier",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
-      ],
-      "externalNonTestImporters": 1
-    },
-    {
-      "symbol": "looksLikeUnverifiedOwnerClaim",
-      "definedIn": [
-        "packages/operator-core/lib/pot/owner-claim-guard.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
-      ],
-      "externalNonTestImporters": 1
     },
     {
       "symbol": "MAX_SOAK_WINDOW_HOURS",
@@ -528,6 +498,9 @@
       "dynamicImporters": [
         "packages/operator-core/lib/derived-reads/producers.ts",
         "packages/operator-core/lib/sync-resolver/index.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/loop/soak_report.ts"
       ]
     },
     {
@@ -542,6 +515,9 @@
       "dynamicImporters": [
         "packages/operator-core/lib/derived-reads/producers.ts",
         "packages/operator-core/lib/sync-resolver/index.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/loop/soak_report.ts"
       ]
     },
     {
@@ -568,6 +544,10 @@
         "packages/operator-core/lib/severe-event-broadcast.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts",
+        "packages/operator-core/lib/harness/routines/hive-canary-action.ts"
       ]
     },
     {
@@ -583,6 +563,12 @@
       "dynamicImporters": [
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
     {
@@ -597,6 +583,9 @@
       "dynamicImporters": [
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
     {
@@ -610,6 +599,9 @@
       "externalNonTestImporters": 1,
       "dynamicImporters": [
         "packages/operator-core/lib/dbos/routines-workflow.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts"
       ]
     },
     {
@@ -621,7 +613,11 @@
         "packages/operator-core/lib/agent-tools/platform/enable.ts",
         "packages/operator-core/lib/agent-tools/platform/fork_gc.ts"
       ],
-      "externalNonTestImporters": 2
+      "externalNonTestImporters": 2,
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/platform/enable.ts",
+        "packages/operator-core/lib/agent-tools/platform/fork_gc.ts"
+      ]
     },
     {
       "symbol": "pausePotState",
@@ -632,17 +628,11 @@
         "packages/operator-core/lib/agent-tools/pot/pause.ts",
         "packages/operator-core/lib/goals/stop-fanout.ts"
       ],
-      "externalNonTestImporters": 2
-    },
-    {
-      "symbol": "PlacementCandidate",
-      "definedIn": [
-        "packages/operator-core/lib/pot/placement-ranker.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
-      ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 2,
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/pause.ts",
+        "packages/operator-core/lib/goals/stop-fanout.ts"
+      ]
     },
     {
       "symbol": "placementConfig",
@@ -663,17 +653,11 @@
         "packages/operator-core/lib/scout/register-scout-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/fleet/placement-gather.ts",
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ]
-    },
-    {
-      "symbol": "placementRankerSpec",
-      "definedIn": [
-        "packages/operator-core/lib/pot/placement-ranker.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
-      ],
-      "externalNonTestImporters": 1
     },
     {
       "symbol": "PLATFORM_SELF_POT_SLUG",
@@ -685,7 +669,12 @@
         "packages/operator-core/lib/agent-tools/platform/dogfood_verify.ts",
         "packages/operator-core/lib/agent-tools/platform/enable.ts"
       ],
-      "externalNonTestImporters": 3
+      "externalNonTestImporters": 3,
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/platform/contribute.ts",
+        "packages/operator-core/lib/agent-tools/platform/dogfood_verify.ts",
+        "packages/operator-core/lib/agent-tools/platform/enable.ts"
+      ]
     },
     {
       "symbol": "POT_BLUEPRINT_ID",
@@ -711,6 +700,12 @@
         "packages/operator-core/lib/scout/scout-cycle-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts"
       ]
     },
     {
@@ -729,6 +724,9 @@
         "packages/operator-core/lib/scout/error-streak-alarm.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/index.ts"
       ]
     },
     {
@@ -743,45 +741,9 @@
       "dynamicImporters": [
         "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
         "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "potWakeFloorSec",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake.ts"
       ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
-        "packages/operator-core/lib/agent-tools/pot/status.ts"
-      ],
-      "externalNonTestImporters": 2,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
-        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
-        "packages/operator-core/lib/deployment/account-pool-store.ts",
-        "packages/operator-core/lib/events/await/wake-executor.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/overwatch/control-state.ts",
-        "packages/operator-core/lib/owner-steering.ts",
-        "packages/operator-core/lib/scout/scout-cycle-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/liveness-alarm.ts"
-      ]
-    },
-    {
-      "symbol": "readCreateWakeSuppressPlans",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake-defaults.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ports.ts"
       ]
     },
     {
@@ -797,6 +759,12 @@
       "dynamicImporters": [
         "packages/operator-core/lib/derived-reads/producers.ts",
         "packages/operator-core/lib/sync-resolver/index.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/loop/soak_report.ts"
       ]
     },
     {
@@ -823,6 +791,12 @@
         "packages/operator-core/lib/scout/scout-cycle-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_resolve.ts"
       ]
     },
     {
@@ -833,7 +807,10 @@
       "importers": [
         "packages/operator-core/lib/agent-tools/loop/session_audit.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/loop/session_audit.ts"
+      ]
     },
     {
       "symbol": "recentWatchdogFires",
@@ -866,6 +843,24 @@
         "packages/operator-core/lib/scout/error-streak-alarm.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-state-divergence-sweep.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/learning-loop-health-sweep.ts",
+        "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
+        "packages/operator-core/lib/harness/routines/tsc-red-sweep.ts",
+        "packages/operator-core/lib/release-deploy-staleness-watchdog.ts",
+        "packages/operator-core/lib/rubric-staleness-watchdog.ts",
+        "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts",
+        "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+        "packages/operator-core/lib/sync/hyperbee/cold-join-canary.ts",
+        "packages/operator-core/lib/wall-lapse-watchdog.ts"
       ]
     },
     {
@@ -888,6 +883,13 @@
         "packages/operator-core/lib/scout/error-streak-alarm.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/rubric-staleness-watchdog.ts",
+        "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+        "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+        "packages/operator-core/lib/sync/hyperbee/cold-join-canary.ts",
+        "packages/operator-core/lib/wall-lapse-watchdog.ts"
       ]
     },
     {
@@ -913,6 +915,9 @@
         "packages/operator-core/lib/scout/scout-cycle-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts"
       ]
     },
     {
@@ -930,6 +935,14 @@
       "dynamicImporters": [
         "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
         "packages/operator-core/lib/work-items.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/harness/routines/hive-canary-action.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
     {
@@ -940,7 +953,10 @@
       "importers": [
         "packages/operator-core/lib/agent-tools/pot/dissolve.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/dissolve.ts"
+      ]
     },
     {
       "symbol": "resolveMugOwner",
@@ -962,6 +978,11 @@
         "packages/operator-core/lib/scout/register-scout-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
       ]
     },
     {
@@ -1006,6 +1027,30 @@
         "packages/operator-core/lib/scout/scout-cycle-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/overwatch/start.ts",
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
+        "packages/operator-core/lib/agent-tools/pot/start.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey.ts",
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.ts",
+        "packages/operator-core/lib/agent-tools/loop/session_audit.ts",
+        "packages/operator-core/lib/agent-tools/loop/soak_report.ts",
+        "packages/operator-core/lib/agent-tools/overwatch/pause.ts",
+        "packages/operator-core/lib/agent-tools/pot/get_steering.ts",
+        "packages/operator-core/lib/agent-tools/pot/pause.ts",
+        "packages/operator-core/lib/endpoint-route/routes/operator/hive-steering.ts",
+        "packages/operator-core/lib/network-board/build-board.ts",
+        "packages/operator-core/lib/overwatch/loop.ts",
+        "packages/operator-core/lib/overwatch/snapshot.ts"
       ]
     },
     {
@@ -1016,7 +1061,10 @@
       "importers": [
         "packages/operator-core/lib/goals/stop-fanout.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/goals/stop-fanout.ts"
+      ]
     },
     {
       "symbol": "runCupTranscriptCapSweep",
@@ -1026,7 +1074,10 @@
       "importers": [
         "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ]
     },
     {
       "symbol": "scopedFireReason",
@@ -1044,6 +1095,9 @@
         "packages/operator-core/lib/scout/error-streak-alarm.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts"
       ]
     },
     {
@@ -1054,81 +1108,9 @@
       "importers": [
         "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ],
-      "externalNonTestImporters": 1
-    },
-    {
-      "symbol": "setPotCarryNote",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
-      ],
       "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
-        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
-        "packages/operator-core/lib/deployment/account-pool-store.ts",
-        "packages/operator-core/lib/events/await/wake-executor.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/overwatch/control-state.ts",
-        "packages/operator-core/lib/owner-steering.ts",
-        "packages/operator-core/lib/scout/scout-cycle-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/liveness-alarm.ts"
-      ]
-    },
-    {
-      "symbol": "setPotEventSubscriptions",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
-        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
-        "packages/operator-core/lib/deployment/account-pool-store.ts",
-        "packages/operator-core/lib/events/await/wake-executor.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/overwatch/control-state.ts",
-        "packages/operator-core/lib/owner-steering.ts",
-        "packages/operator-core/lib/scout/scout-cycle-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/liveness-alarm.ts"
-      ]
-    },
-    {
-      "symbol": "setPotPlacementStarted",
-      "definedIn": [
-        "packages/operator-core/lib/pot/started.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/start.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/durable-spawn.ts",
-        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
-        "packages/operator-core/lib/dbos/periodic-workflows.ts",
-        "packages/operator-core/lib/dbos/routines-workflow.ts",
-        "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts",
-        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/scout/nudge-recipient.ts",
-        "packages/operator-core/lib/scout/signal-accumulator.test.ts",
-        "packages/operator-core/lib/severe-event-broadcast.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ]
     },
     {
@@ -1155,6 +1137,12 @@
         "packages/operator-core/lib/severe-event-broadcast.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
     {
@@ -1165,7 +1153,10 @@
       "importers": [
         "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ]
     },
     {
       "symbol": "shouldWakeOnScopeViolation",
@@ -1175,7 +1166,396 @@
       "importers": [
         "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ]
+    },
+    {
+      "symbol": "surveyPot",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 2,
+      "dynamicImporters": [
+        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ]
+    },
+    {
+      "symbol": "teardownPotLearningLoop",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/dissolve.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 2,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/dissolve.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ]
+    },
+    {
+      "symbol": "watchdogBackoffCapHours",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/overwatch/scorecard-backstop.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/dbos/routines-workflow.ts",
+        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/scout/error-streak-alarm.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/overwatch/scorecard-backstop.ts"
+      ]
+    }
+  ],
+  "keepTierOnly": [
+    {
+      "symbol": "anyPotPlacementStarted",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/dbos/durable-spawn.ts",
+        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
+        "packages/operator-core/lib/dbos/periodic-workflows.ts",
+        "packages/operator-core/lib/dbos/routines-workflow.ts",
+        "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts",
+        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
+        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/scout/nudge-recipient.ts",
+        "packages/operator-core/lib/scout/signal-accumulator.test.ts",
+        "packages/operator-core/lib/severe-event-broadcast.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ]
+    },
+    {
+      "symbol": "armDefaultPotWakeSubscriptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ]
+    },
+    {
+      "symbol": "claimPotWakeFire",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ]
+    },
+    {
+      "symbol": "defaultPotEventSubscriptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ]
+    },
+    {
+      "symbol": "effectivePotWakeFloorSec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ]
+    },
+    {
+      "symbol": "evaluateWakeFrontierGuard",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ]
+    },
+    {
+      "symbol": "listNonTerminalPlacements",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ]
+    },
+    {
+      "symbol": "listUnplacedPotFrontier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ]
+    },
+    {
+      "symbol": "looksLikeUnverifiedOwnerClaim",
+      "definedIn": [
+        "packages/operator-core/lib/pot/owner-claim-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ]
+    },
+    {
+      "symbol": "PlacementCandidate",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
+      ]
+    },
+    {
+      "symbol": "placementRankerSpec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
+      ]
+    },
+    {
+      "symbol": "potWakeFloorSec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 2,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ]
+    },
+    {
+      "symbol": "readCreateWakeSuppressPlans",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ]
+    },
+    {
+      "symbol": "setPotCarryNote",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ]
+    },
+    {
+      "symbol": "setPotEventSubscriptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ]
+    },
+    {
+      "symbol": "setPotPlacementStarted",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/dbos/durable-spawn.ts",
+        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
+        "packages/operator-core/lib/dbos/periodic-workflows.ts",
+        "packages/operator-core/lib/dbos/routines-workflow.ts",
+        "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts",
+        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
+        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/scout/nudge-recipient.ts",
+        "packages/operator-core/lib/scout/signal-accumulator.test.ts",
+        "packages/operator-core/lib/severe-event-broadcast.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ]
     },
     {
       "symbol": "summarizeOpenPlacements",
@@ -1195,21 +1575,9 @@
         "packages/operator-core/lib/scout/register-scout-action.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "surveyPot",
-      "definedIn": [
-        "packages/operator-core/lib/pot/survey.ts"
       ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts",
-        "packages/operator-core/lib/pot-eval/live-ops.ts"
-      ],
-      "externalNonTestImporters": 2,
-      "dynamicImporters": [
-        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
       ]
     },
     {
@@ -1224,20 +1592,9 @@
       "dynamicImporters": [
         "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
         "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "teardownPotLearningLoop",
-      "definedIn": [
-        "packages/operator-core/lib/pot/provision-learning-loop.ts"
       ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/dissolve.ts",
-        "packages/operator-core/lib/pot-eval/live-ops.ts"
-      ],
-      "externalNonTestImporters": 2,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
       ]
     },
     {
@@ -1248,7 +1605,10 @@
       "importers": [
         "packages/operator-core/lib/agent-tools/pot/status.ts"
       ],
-      "externalNonTestImporters": 1
+      "externalNonTestImporters": 1,
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ]
     },
     {
       "symbol": "UNVERIFIED_OWNER_CLAIM_GUIDANCE",
@@ -1258,24 +1618,9 @@
       "importers": [
         "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
       ],
-      "externalNonTestImporters": 1
-    },
-    {
-      "symbol": "watchdogBackoffCapHours",
-      "definedIn": [
-        "packages/operator-core/lib/pot/watchdog.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/overwatch/scorecard-backstop.ts"
-      ],
       "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/routines-workflow.ts",
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/scout/error-streak-alarm.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
       ]
     },
     {
@@ -1294,6 +1639,9 @@
         "packages/operator-core/lib/scout/error-streak-alarm.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
       ]
     },
     {
@@ -1312,6 +1660,9 @@
         "packages/operator-core/lib/scout/error-streak-alarm.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
       ]
     },
     {
@@ -1325,6 +1676,9 @@
       "externalNonTestImporters": 1,
       "dynamicImporters": [
         "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
       ]
     }
   ],
