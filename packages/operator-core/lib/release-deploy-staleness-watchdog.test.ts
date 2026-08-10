@@ -23,9 +23,27 @@ vi.mock('./release-deploy-launch', () => ({ computeDeployStatus: (...a: unknown[
 let escalationRows: { escalation: unknown }[] = [];
 let recoveryUpdateCount = 0;
 const sqlStatements: string[] = [];
-const fakeSql = (strings: TemplateStringsArray, ..._vals: unknown[]): Promise<unknown> => {
+// EI-20101010229759029: the deployable-since watermark lives in the operator_settings KV,
+// so the fake has to tell the two tables apart — routing its SELECT to the escalation-latch
+// rows would make every watermark read answer with the wrong shape.
+let greenSinceValue: string | null = null;
+const settingsWrites: unknown[][] = [];
+const fakeSql = (strings: TemplateStringsArray, ...vals: unknown[]): Promise<unknown> => {
   const text = strings.join('?').trim();
   sqlStatements.push(text);
+  if (/operator_settings/.test(text)) {
+    if (/^SELECT/i.test(text)) {
+      return Promise.resolve(greenSinceValue == null ? [] : [{ value: greenSinceValue }]);
+    }
+    if (/^DELETE/i.test(text)) {
+      const had = greenSinceValue != null;
+      greenSinceValue = null;
+      return Promise.resolve(Object.assign([], { count: had ? 1 : 0 }));
+    }
+    settingsWrites.push(vals);
+    greenSinceValue = String(vals[1]);
+    return Promise.resolve(Object.assign([], { count: 1 }));
+  }
   if (/^SELECT/i.test(text)) return Promise.resolve(escalationRows);
   if (/^UPDATE/i.test(text)) return Promise.resolve(Object.assign([], { count: recoveryUpdateCount }));
   return Promise.resolve(Object.assign([], { count: 1 }));
@@ -67,9 +85,64 @@ describe('evaluateDeployStaleness', () => {
   });
 
   it('flags stale once the green pin has sat deployable past the threshold', () => {
-    const v = evaluateDeployStaleness({ state: 'green-deployable', deployedAtMs: NOW - 4 * HOUR, now: NOW, thresholdMs });
+    const v = evaluateDeployStaleness({
+      state: 'green-deployable',
+      deployedAtMs: NOW - 4 * HOUR,
+      greenDeployableSinceMs: NOW - 4 * HOUR,
+      now: NOW,
+      thresholdMs,
+    });
     expect(v.stale).toBe(true);
     expect(v.reason).toMatch(/deployable-but-not-live for 4h/);
+    expect(v.ageBasis).toBe('green-deployable-since');
+  });
+
+  /**
+   * EI-20101010229759029 — THE REGRESSION. Measured live 2026-08-10: a 6h red gate went
+   * green, and because `deployedAtMs` age also runs during red-gate windows it was ALREADY
+   * 5h, so the watchdog fired instantly and announced a 5h stall. The real wait was ~3
+   * minutes, and auto-serve had not yet had a single chance at its ≤15-min cadence.
+   *
+   * This is the falsifying case: it PASSES only because the threshold now reads the
+   * condition's own clock. Revert the decider to `now - deployedAtMs` and it fails.
+   */
+  it('does NOT fire on the first green tick after a long red gate — the deployedAt clock ran while nothing was deployable', () => {
+    const v = evaluateDeployStaleness({
+      state: 'green-deployable',
+      deployedAtMs: NOW - 5 * HOUR, // last deploy 5h ago; the gate was RED for ~6h of it
+      greenDeployableSinceMs: NOW - 3 * 60_000, // deployable for 3 MINUTES
+      now: NOW,
+      thresholdMs,
+    });
+    expect(v.stale).toBe(false);
+    expect(v.ageMs).toBe(3 * 60_000);
+    expect(v.ageBasis).toBe('green-deployable-since');
+  });
+
+  it('the watermark is the operative clock — an ancient deployedAt cannot make a fresh condition stale', () => {
+    const v = evaluateDeployStaleness({
+      state: 'green-deployable',
+      deployedAtMs: NOW - 999 * HOUR,
+      greenDeployableSinceMs: NOW - 60_000,
+      now: NOW,
+      thresholdMs,
+    });
+    expect(v.stale).toBe(false);
+  });
+
+  it('falls back to deployedAt age when the watermark is unresolvable — and LABELS it inferred rather than measured', () => {
+    const v = evaluateDeployStaleness({
+      state: 'green-deployable',
+      deployedAtMs: NOW - 4 * HOUR,
+      greenDeployableSinceMs: null,
+      now: NOW,
+      thresholdMs,
+    });
+    expect(v.stale).toBe(true);
+    expect(v.ageBasis).toBe('deployed-at-fallback');
+    expect(v.reason).toMatch(/UPPER BOUND|inferred/);
+    // The fallback must never assert the measured-wait sentence that read FALSE live.
+    expect(v.reason).not.toMatch(/has been deployable-but-not-live for/);
   });
 
   it('is never stale outside the green-deployable state (up-to-date/gate-red/etc — something else already explains it)', () => {
@@ -110,12 +183,21 @@ describe('deployStalenessThresholdSec tunable', () => {
 });
 
 describe('releaseDeployStalenessSweep', () => {
+  beforeEach(() => {
+    // EI-20101010229759029: these cases mean "the pin has been deployable for ages", which
+    // is now the WATERMARK's job to say — an absent watermark would (correctly) start the
+    // clock at zero on this very tick and nothing would be stale.
+    greenSinceValue = String(Date.now() - 999 * HOUR);
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     delete process.env.PAPERCUSP_DEPLOY_STALENESS_THRESHOLD_SEC;
     escalationRows = [];
     recoveryUpdateCount = 0;
     sqlStatements.length = 0;
+    greenSinceValue = null;
+    settingsWrites.length = 0;
   });
 
   it('alerts + records a fire when stale and not already debounced', async () => {
