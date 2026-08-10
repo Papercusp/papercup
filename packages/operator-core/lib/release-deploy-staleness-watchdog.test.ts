@@ -3,7 +3,7 @@
  * Pure tests for the staleness decider + the sweep's alert/debounce/kill-switch
  * shell. IO deps (PG, the pipeline snapshot) are mocked.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { vi } from 'vitest';
 
 const recentWatchdogFires = vi.fn().mockResolvedValue(0);
@@ -27,11 +27,13 @@ const sqlStatements: string[] = [];
 // so the fake has to tell the two tables apart — routing its SELECT to the escalation-latch
 // rows would make every watermark read answer with the wrong shape.
 let greenSinceValue: string | null = null;
+let settingsFail = false;
 const settingsWrites: unknown[][] = [];
 const fakeSql = (strings: TemplateStringsArray, ...vals: unknown[]): Promise<unknown> => {
   const text = strings.join('?').trim();
   sqlStatements.push(text);
   if (/operator_settings/.test(text)) {
+    if (settingsFail) return Promise.reject(new Error('KV unavailable'));
     if (/^SELECT/i.test(text)) {
       return Promise.resolve(greenSinceValue == null ? [] : [{ value: greenSinceValue }]);
     }
@@ -246,6 +248,77 @@ describe('releaseDeployStalenessSweep', () => {
   it('degrades to outcome:error, never throws, on a snapshot failure', async () => {
     gitPipelineSnapshot.mockRejectedValueOnce(new Error('pg down'));
     await expect(releaseDeployStalenessSweep({})).resolves.toMatchObject({ outcome: 'error' });
+  });
+
+  /**
+   * EI-20101010229759029 — the watermark's lifecycle, end-to-end through the sweep.
+   * The decider tests above prove the arithmetic; these prove the sweep actually keeps
+   * the clock it reads (a correct decider fed a clock nobody winds is still broken).
+   */
+  describe('deployable-since watermark (EI-20101010229759029)', () => {
+    it('starts the clock on ENTRY and stays silent on that first tick — even with an ancient deployedAt', async () => {
+      greenSinceValue = null; // nothing recorded yet: the gate just went green this tick
+      computeDeployStatus.mockReturnValue(status('green-deployable', Date.now() - 999 * HOUR));
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(res.outcome).toBe('healthy');
+      expect(claimWatchdogFire).not.toHaveBeenCalled();
+      expect(notifyAttention).not.toHaveBeenCalled();
+      // and it WROTE the watermark, so the next tick measures from here
+      expect(settingsWrites.length).toBe(1);
+      expect(greenSinceValue).not.toBeNull();
+    });
+
+    it('retains the first observation across ticks rather than resetting the clock every sweep', async () => {
+      greenSinceValue = null;
+      computeDeployStatus.mockReturnValue(status('green-deployable', Date.now() - 999 * HOUR));
+      await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+      const firstWatermark = greenSinceValue;
+
+      await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(greenSinceValue).toBe(firstWatermark);
+      expect(settingsWrites.length).toBe(1); // second tick read, did not re-write
+    });
+
+    it('alerts once the WATERMARK itself passes the threshold', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      greenSinceValue = String(Date.now() - 4 * HOUR);
+      computeDeployStatus.mockReturnValue(status('green-deployable', Date.now() - 4 * HOUR));
+      recentWatchdogFires.mockResolvedValueOnce(0);
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(res.outcome).toBe('alerted');
+      warn.mockRestore();
+    });
+
+    it('clears the clock when the condition ends, so a later re-entry starts fresh', async () => {
+      computeDeployStatus.mockReturnValue(status('up-to-date', Date.now()));
+
+      await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(greenSinceValue).toBeNull();
+      expect(sqlStatements.some((s) => /^DELETE FROM harness_shared\.operator_settings/i.test(s))).toBe(true);
+    });
+
+    it('a KV failure degrades to the labelled fallback instead of breaking the sweep', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      greenSinceValue = null;
+      settingsFail = true;
+      computeDeployStatus.mockReturnValue(status('green-deployable', Date.now() - 999 * HOUR));
+      recentWatchdogFires.mockResolvedValueOnce(0);
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      // Fallback clock ⇒ still alerts on a genuinely ancient deploy, but says it is inferred.
+      expect(res.outcome).toBe('alerted');
+      expect(res.verdict?.ageBasis).toBe('deployed-at-fallback');
+      expect(res.verdict?.reason).toMatch(/UPPER BOUND|inferred/);
+      settingsFail = false;
+      warn.mockRestore();
+    });
   });
 
   /**
