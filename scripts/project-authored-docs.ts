@@ -51,6 +51,38 @@ export function resolveDocsRoot(root: string = ROOT): string {
   return join(root, cfg?.root ?? 'apps/operator-docs/src/content/docs');
 }
 
+/**
+ * Docs written by ANOTHER generator, which this projector must not manage.
+ *
+ * Each of these is regenerated from a LIVE source — the defineTool registry, the PG plan
+ * store, the blueprint catalog, the role registry, the insights index — by
+ * `npm run gen:doc-projections`. Postgres therefore CANNOT be canonical for them: a PG row
+ * would only ever be a stale snapshot of a registry that has already moved on. Two writers
+ * for one file is the defect; the generator is the correct owner and this projector defers.
+ *
+ * Measured 2026-08-10 (WI-37747): widening this projector from `agent-insights` to the whole
+ * corpus made it claim these five, and `gen:authored-docs:check` — a GATE — went red the
+ * moment `gen:doc-projections` next ran, because each generator legitimately rewrote the file
+ * the other considered settled. The drift guard caught it (it refused to overwrite rather
+ * than erasing the generator's output), which is the only reason this surfaced as a red gate
+ * instead of silent mutual clobbering.
+ *
+ * ⚠ This is an EXPLICIT list, deliberately, and not a sniff for the "do not edit by hand"
+ * banner: this projector writes a near-identical banner of its own, and the two differ by a
+ * single word, so a content rule would turn on a wording coincidence. The cost of the explicit
+ * form is that a NEW generated doc is not auto-excluded — but that failure is loud and
+ * self-locating (the gate reds, naming the file, and points here), which is exactly how this
+ * one was found. `reference/generated-api-and-lib-reference.mdx` is deliberately ABSENT: it
+ * carries THIS projector's banner and is genuinely PG-canonical.
+ */
+export const GENERATOR_OWNED_DOCS: ReadonlySet<string> = new Set([
+  'reference/agent-insights-index.md',
+  'reference/blueprint-catalog.md',
+  'reference/plans-index.md',
+  'reference/role-registry.md',
+  'reference/tool-catalog.md',
+]);
+
 /** Shared walk: every .mdx/.md at or under `dir`, as doc_ids relative to `docsRoot`. */
 function walkDocs(dir: string, docsRoot: string, out: string[] = []): string[] {
   if (!existsSync(dir)) return out;
@@ -63,7 +95,11 @@ function walkDocs(dir: string, docsRoot: string, out: string[] = []): string[] {
     if (entry.startsWith('.')) continue;
     const abs = join(dir, entry);
     if (statSync(abs).isDirectory()) walkDocs(abs, docsRoot, out);
-    else if (/\.mdx?$/.test(entry)) out.push(relative(docsRoot, abs).split(sep).join('/'));
+    else if (/\.mdx?$/.test(entry)) {
+      const docId = relative(docsRoot, abs).split(sep).join('/');
+      if (GENERATOR_OWNED_DOCS.has(docId)) continue; // another generator owns this file
+      out.push(docId);
+    }
   }
   return out;
 }
