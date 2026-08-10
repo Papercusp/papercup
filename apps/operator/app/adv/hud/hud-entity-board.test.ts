@@ -19,6 +19,8 @@ import {
   buildGoalBoard,
   buildPlanBoard,
   buildWorkItemBoard,
+  goalBurn,
+  goalBurnLabel,
   goalColumn,
   partitionGoals,
   goalSpendLabel,
@@ -195,6 +197,103 @@ describe('goalSpendLabel', () => {
   });
 });
 
+describe('goalBurn — the RATE behind the level (P-003)', () => {
+  const NOW = Date.parse('2026-08-09T00:00:00.000Z');
+  const DAY = 24 * 60 * 60 * 1000;
+  const born = (daysAgo: number) => new Date(NOW - daysAgo * DAY).toISOString();
+  /** An OLD goal, so the age clamp is out of the way unless a test wants it. */
+  const g = (extra: Record<string, unknown>) => ({
+    id: 'g',
+    title: 't',
+    status: 'active',
+    createdAt: born(90),
+    ...extra,
+  });
+
+  it('returns NOTHING when nothing measured the window — an unmeasured rate is not a zero rate', () => {
+    // The P-002 lesson one item later: a payload with no reading must produce
+    // NO chip, because "$0/day" is the most reassuring thing this surface can
+    // say and we have no evidence for it.
+    expect(goalBurn(g({ spendUsd: 400 }), NOW)).toBeNull();
+    expect(goalBurnLabel(g({ spendUsd: 400 }), NOW)).toBeNull();
+    // A window with no figure, and a figure with no window, are both no-reading.
+    expect(goalBurn(g({ spendRecentWindowDays: 7 }), NOW)).toBeNull();
+    expect(goalBurn(g({ spendRecentUsd: 50 }), NOW)).toBeNull();
+  });
+
+  it('reports a MEASURED zero as a real answer, distinct from no reading at all', () => {
+    const burn = goalBurn(
+      g({ spendUsd: 400, budgetCents: 50_000, spendRecentUsd: 0, spendRecentWindowDays: 7 }),
+      NOW,
+    );
+    expect(burn).not.toBeNull();
+    expect(burn!.perDayUsd).toBe(0);
+    // Named, not blank: the goal is idle against a real ceiling, worth SAYING.
+    expect(burn!.etaAbsent).toBe('no-recent-spend');
+  });
+
+  it('reports the MISSING CEILING ahead of the rate, because it is the more basic fact', () => {
+    // Precedence, pinned deliberately: with no ceiling there is nothing for any
+    // rate to run into, so "no-ceiling" is the honest reason even at zero burn.
+    // Reporting "no recent spend" here would imply a ceiling that does not exist.
+    const burn = goalBurn(g({ spendUsd: 400, spendRecentUsd: 0, spendRecentWindowDays: 7 }), NOW)!;
+    expect(burn.etaAbsent).toBe('no-ceiling');
+  });
+
+  it('divides by the window the payload declares, never a hardcoded 7', () => {
+    // The guard on the wire-carried window. If someone re-tunes the resolver's
+    // window and the UI keeps assuming 7, the rate silently doubles or halves.
+    expect(goalBurn(g({ spendRecentUsd: 140, spendRecentWindowDays: 7 }), NOW)!.perDayUsd).toBe(20);
+    expect(goalBurn(g({ spendRecentUsd: 140, spendRecentWindowDays: 14 }), NOW)!.perDayUsd).toBe(10);
+  });
+
+  it('shortens the denominator to a young goal’s own age rather than understating its burn', () => {
+    // $100 in a 2-day-old goal is $50/day. Dividing by the nominal 7 would
+    // report $14/day — a 3.5x understatement, in the reassuring direction, on
+    // the one number that exists to give advance warning.
+    const burn = goalBurn(
+      g({ createdAt: born(2), spendRecentUsd: 100, spendRecentWindowDays: 7 }),
+      NOW,
+    )!;
+    expect(burn.perDayUsd).toBe(50);
+    expect(burn.windowShort).toBe(true);
+  });
+
+  it('never LENGTHENS the denominator for a goal older than the window', () => {
+    // The other half of the asymmetry: clamping may only raise the rate.
+    const burn = goalBurn(g({ spendRecentUsd: 70, spendRecentWindowDays: 7 }), NOW)!;
+    expect(burn.perDayUsd).toBe(10);
+    expect(burn.windowShort).toBe(false);
+  });
+
+  it('projects the ceiling date from the recent rate, not the lifetime average', () => {
+    // $300 spent of a $500 ceiling = $200 of headroom, burning $10/day -> 20 days.
+    // The lifetime average over 90 days would be $3.33/day and put the ceiling
+    // 60 days out — which is exactly the misreading this item is about.
+    const burn = goalBurn(
+      g({ spendUsd: 300, budgetCents: 50_000, spendRecentUsd: 70, spendRecentWindowDays: 7 }),
+      NOW,
+    )!;
+    expect(burn.etaAbsent).toBeNull();
+    expect(burn.ceilingEtaMs).toBe(NOW + 20 * DAY);
+  });
+
+  it('names WHY there is no date, in every case, rather than going blank', () => {
+    const base = { spendRecentUsd: 70, spendRecentWindowDays: 7 };
+    expect(goalBurn(g({ ...base, spendUsd: 10 }), NOW)!.etaAbsent).toBe('no-ceiling');
+    expect(
+      goalBurn(g({ ...base, spendUsd: 600, budgetCents: 50_000 }), NOW)!.etaAbsent,
+    ).toBe('already-over');
+    // A ceiling reachable only in ~2000 years is arithmetic, not information.
+    expect(
+      goalBurn(
+        g({ spendUsd: 0, budgetCents: 5_000_000, spendRecentUsd: 0.7, spendRecentWindowDays: 7 }),
+        NOW,
+      )!.etaAbsent,
+    ).toBe('beyond-horizon');
+  });
+});
+
 describe('buildGoalBoard', () => {
   const NOW = Date.parse('2026-08-09T00:00:00.000Z');
 
@@ -244,6 +343,68 @@ describe('buildGoalBoard', () => {
     );
     const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
     expect(card.badges.find((b) => b.id === 'g1:spend')?.tone).toBe('neutral');
+  });
+
+  /* ── the burn chip (P-003) ─────────────────────────────────────────────── */
+
+  const burnBadge = (goal: Record<string, unknown>) => {
+    const board = buildGoalBoard([{ id: 'g1', title: 'Ship', status: 'active', ...goal }], {
+      nowMs: NOW,
+    });
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    return card.badges.find((b) => b.id === 'g1:burn');
+  };
+
+  it('renders NO burn chip when nothing measured the window', () => {
+    // Not a $0/day chip. The card says nothing about the rate because it knows
+    // nothing about the rate.
+    expect(burnBadge({ spendUsd: 310, budgetCents: 50_000 })).toBeUndefined();
+  });
+
+  it('promotes the projected ceiling date onto the label when it is close enough to act on', () => {
+    // $350 over 7d = $50/day against $200 of headroom -> 4 days out.
+    const badge = burnBadge({
+      spendUsd: 300,
+      budgetCents: 50_000,
+      spendRecentUsd: 350,
+      spendRecentWindowDays: 7,
+    })!;
+    expect(badge.label).toContain('ceiling ~');
+    expect(badge.tone).toBe('bad');
+  });
+
+  it('keeps a distant projection to the rate alone, so only real warnings shout', () => {
+    // $70 over 7d = $10/day against $200 of headroom -> 20 days out.
+    const badge = burnBadge({
+      spendUsd: 300,
+      budgetCents: 50_000,
+      spendRecentUsd: 70,
+      spendRecentWindowDays: 7,
+    })!;
+    expect(badge.label).toBe('$10/day');
+    expect(badge.tone).toBe('neutral');
+    // The date is still available on hover — promoted, not withheld.
+    expect(badge.title).toContain('lands around');
+  });
+
+  it('does not print a $0/day rate for a real but sub-dollar burn', () => {
+    // moneyish rounds to whole dollars; a rate must not, or a live goal reads
+    // as spending nothing.
+    const badge = burnBadge({ spendUsd: 5, spendRecentUsd: 2.8, spendRecentWindowDays: 7 })!;
+    expect(badge.label).toBe('$0.40/day');
+  });
+
+  it('drops the burn chip once the ceiling is already breached', () => {
+    // The spend chip is already alarming; a projected date for a ceiling that
+    // has been passed would be noise contradicting it.
+    expect(
+      burnBadge({
+        spendUsd: 600,
+        budgetCents: 50_000,
+        spendRecentUsd: 70,
+        spendRecentWindowDays: 7,
+      }),
+    ).toBeUndefined();
   });
 });
 

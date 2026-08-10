@@ -1329,6 +1329,26 @@
   font-weight: 600;
 }
 
+/* The burn RATE, right of the level (P-003). `margin-left: auto` on the value
+   keeps the label hard left while value and rate stay grouped — a third child
+   under this row's `space-between` would otherwise spread all three apart and
+   read as three unrelated figures rather than one measurement and its rate. */
+.hud-goal__ceiling-value {
+  margin-left: auto;
+}
+
+.hud-goal__ceiling-burn {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--fg-mute);
+  white-space: nowrap;
+}
+
+.hud-goal__ceiling-burn--urgent {
+  color: var(--bad);
+  font-weight: 600;
+}
+
 /* ── projects ────────────────────────────────────────────────────────────── */
 
 .hud-goal__grid {

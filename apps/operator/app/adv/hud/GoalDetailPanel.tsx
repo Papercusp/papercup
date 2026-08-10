@@ -409,7 +409,7 @@ export default function GoalDetailPanel({
                 {/* The RATE beside the LEVEL (P-003). Absent entirely when the
                     window was never measured — never a $0/day we cannot back. */}
                 {burn ? (
-                  <Tooltip content={burn.detail}>
+                  <Tooltip label={burn.detail}>
                     <span
                       className={`hud-goal__ceiling-burn${burn.urgent ? ' hud-goal__ceiling-burn--urgent' : ''}`}
                       data-burn-urgent={burn.urgent ? 'true' : 'false'}

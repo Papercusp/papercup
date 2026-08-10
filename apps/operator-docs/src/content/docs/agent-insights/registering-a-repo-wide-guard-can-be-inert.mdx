@@ -12,6 +12,8 @@ documents:
   - apps/operator/scripts/hooks/cc/__tests__/hook-repo-root-portability.test.ts
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 Landing WI-37593 — whose entire subject was *"this guard is wired to nothing"* — my own fix
 reproduced the bug it was fixing. Four traps, each of which independently produces a
 **green that means "it stopped checking."**
