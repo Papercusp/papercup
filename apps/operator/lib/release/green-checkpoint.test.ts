@@ -78,6 +78,7 @@ import {
   formatGateLineageLine,
   computeGateLineage,
   matchFailingFilesToChanged,
+  failingFilesUncommitted,
   type GateLineage,
   type CheckpointDeps,
   type CheckpointExec,
@@ -1362,6 +1363,129 @@ describe('runGreenCheckpoint', () => {
       const candidate = await commit('a', '2', 'c2');
       const lineage = await computeGateLineage(repo, 'main', candidate, ['src/failing.test.ts']);
       expect(lineage).toEqual({ candidate, tip: candidate, commitsBehind: 0, failingFilesChangedInRange: [] });
+    });
+
+    /* ── EI-20063423357086565: the fix is ON DISK but not committed ─────────────────
+     * Every discriminator above compares COMMITS, so none of them can see a fix that
+     * exists only in the working tree. The blindness is worst exactly where this record
+     * is most confident: `commitsBehind === 0` returns "nothing newer to blame, this is
+     * a real red". Measured incident — git-sync stalled ~31min while a complete fix sat
+     * in the tree, the gate re-judged the same tip twice more, `main` froze ~1h behind
+     * staging, and every red read as "my fix didn't work" instead of "my fix was never
+     * committed".
+     */
+
+    /** Write a file WITHOUT committing it — the incident's actual shape. */
+    function writeUncommitted(file: string, content: string): void {
+      const full = join(repo, file);
+      mkdirSync(join(full, '..'), { recursive: true });
+      writeFileSync(full, content);
+    }
+
+    it('formatGateLineageLine: candidate IS the tip but a failing file is dirty — the real-red presumption is WITHHELD', () => {
+      const base: GateLineage = {
+        candidate: 'a'.repeat(40),
+        tip: 'a'.repeat(40),
+        commitsBehind: 0,
+        failingFilesChangedInRange: [],
+      };
+      // CONTROL: the SAME record without a dirty file still produces the confident wording.
+      // Without this pair, the assertion below would also pass against a formatter that
+      // had simply stopped saying "real red" for every input.
+      expect(formatGateLineageLine(base)).toContain('this is a real red');
+
+      const line = formatGateLineageLine({
+        ...base,
+        failingFilesDirtyUncommitted: ['packages/operator-core/lib/a.test.ts'],
+      });
+      expect(line).not.toContain('this is a real red');
+      expect(line).toContain('NOT a confirmed real red');
+      expect(line).toContain('ALREADY-ON-DISK, NOT COMMITTED');
+      expect(line).toContain('packages/operator-core/lib/a.test.ts');
+      // The actionable half — a diagnosis with no next step is what cost the hour.
+      expect(line).toContain('dev:pipeline_position');
+    });
+
+    it('formatGateLineageLine: the dirty note also lands on the commits-behind verdict, and lands LAST', () => {
+      const line = formatGateLineageLine({
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: [],
+        failingPathsConsidered: 2,
+        rangeFilesChanged: 0, // the range genuinely changed nothing ⇒ "a real red"
+        failingFilesDirtyUncommitted: ['packages/x/lib/b.test.ts'],
+      });
+      // The commit-based discriminator still speaks for itself...
+      expect(line).toContain('nothing at all changed in that range');
+      // ...but it must not be the last word, because it was computed over commits only.
+      expect(line).toContain('ALREADY-ON-DISK, NOT COMMITTED');
+      expect(line.indexOf('ALREADY-ON-DISK')).toBeGreaterThan(line.indexOf('nothing at all changed'));
+    });
+
+    it('computeGateLineage: names a failing file whose fix is written but NOT committed (the incident, end to end)', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const candidate = await commit(
+        'packages/operator-core/lib/sync-read-audit.test.ts',
+        'broken',
+        'c2 — the candidate',
+      );
+
+      // CONTROL: committed and clean ⇒ nothing reported, confident wording intact. This is
+      // what proves the positive below is caused by the DIRTY WRITE and not merely by the
+      // file being named as failing.
+      const clean = await computeGateLineage(repo, 'main', candidate, ['lib/sync-read-audit.test.ts']);
+      expect(clean!.failingFilesDirtyUncommitted).toBeUndefined();
+      expect(formatGateLineageLine(clean!)).toContain('this is a real red');
+
+      // Now the fix is written to disk and git-sync has not swept it yet.
+      writeUncommitted('packages/operator-core/lib/sync-read-audit.test.ts', 'fixed');
+      const dirty = await computeGateLineage(repo, 'main', candidate, ['lib/sync-read-audit.test.ts']);
+      // Every commit-based check still agrees this is the tip — that is the whole point.
+      expect(dirty!.commitsBehind).toBe(0);
+      // Reported REPO-relative, matched from vitest's WORKSPACE-relative entry
+      // (the vocabulary skew that made the sibling signal empty-by-construction).
+      expect(dirty!.failingFilesDirtyUncommitted).toEqual([
+        'packages/operator-core/lib/sync-read-audit.test.ts',
+      ]);
+      expect(formatGateLineageLine(dirty!)).not.toContain('this is a real red');
+    });
+
+    it('computeGateLineage: an UNTRACKED new file counts as dirty (a diff against a commit cannot see it at all)', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const candidate = await commit('a', '2', 'c2 — the candidate');
+      // A brand-new test file the candidate provably cannot contain.
+      writeUncommitted('packages/operator-core/lib/brand-new.test.ts', 'it("x", () => {})');
+      const lineage = await computeGateLineage(repo, 'main', candidate, ['lib/brand-new.test.ts']);
+      expect(lineage!.failingFilesDirtyUncommitted).toEqual([
+        'packages/operator-core/lib/brand-new.test.ts',
+      ]);
+    });
+
+    it('computeGateLineage: a dirty file that is NOT among the failing tests is never reported', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const candidate = await commit('a', '2', 'c2 — the candidate');
+      // On the shared tree dozens of unrelated files are dirty at any instant. The signal
+      // is only worth anything if it stays scoped to the FAILING files.
+      writeUncommitted('packages/operator-core/lib/unrelated.ts', 'noise');
+      const lineage = await computeGateLineage(repo, 'main', candidate, ['lib/the-failing.test.ts']);
+      expect(lineage!.failingFilesDirtyUncommitted).toBeUndefined();
+    });
+
+    it('failingFilesUncommitted: all-workspace-name failures are VACUOUS, not a measured "nothing dirty"', async () => {
+      await commit('a', '1', 'c1');
+      writeUncommitted('packages/operator-core/lib/x.test.ts', 'dirty');
+      // Nothing path-shaped ⇒ nothing could be intersected (EI-19393306381214544's shape,
+      // one field over). The empty answer must not be read as evidence of a clean tree.
+      expect(await failingFilesUncommitted(repo, ['@papercusp/operator-core'])).toEqual([]);
+      // CONTROL: the very same dirty file IS found once a path-shaped entry exists —
+      // so the empty result above came from the vacuity guard, not from a broken reader.
+      expect(await failingFilesUncommitted(repo, ['lib/x.test.ts'])).toEqual([
+        'packages/operator-core/lib/x.test.ts',
+      ]);
     });
 
     it('runGreenCheckpoint: not-green verdict carries the lineage line in the broadcast body + the structured result', async () => {

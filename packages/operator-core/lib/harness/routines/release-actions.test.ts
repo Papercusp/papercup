@@ -1040,6 +1040,50 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(d.lineage).toBeUndefined();
   });
 
+  /*
+   * EI-20063423357086565. Every OTHER leg of this record is derived from commits, so a
+   * durable row can show "candidate IS the tip, 0 behind, nothing changed in range" — three
+   * true commit-based facts that together read as a confirmed real red — while the fix sat
+   * uncommitted on disk the whole time. That is the row a later reader does archaeology
+   * against, so the non-commit leg has to survive into it.
+   */
+  it('EI-20063423357086565: buildCheckpointDetail persists failingFilesDirtyUncommitted (capped), so the durable row cannot re-state the false confidence', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      lineage: {
+        candidate: 'a'.repeat(40),
+        tip: 'a'.repeat(40), // candidate IS the tip — the confident, and here WRONG, shape
+        commitsBehind: 0,
+        failingFilesChangedInRange: [],
+        failingFilesDirtyUncommitted: Array.from({ length: 30 }, (_, i) => `d${i}.test.ts`),
+      },
+    });
+    expect((d.lineage as Record<string, unknown>).failingFilesDirtyUncommitted).toEqual(
+      Array.from({ length: 20 }, (_, i) => `d${i}.test.ts`),
+    );
+  });
+
+  it('EI-20063423357086565: an EMPTY dirty list is omitted rather than written as a measured []', () => {
+    // CONTROL for the test above — proves that assertion is driven by the field's value and
+    // not by the key being written unconditionally. An empty array persisted here would read
+    // as "we checked and the tree was clean", a claim this leg is not entitled to make.
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      lineage: {
+        candidate: 'a'.repeat(40),
+        tip: 'b'.repeat(40),
+        commitsBehind: 2,
+        failingFilesChangedInRange: [],
+        failingFilesDirtyUncommitted: [],
+      },
+    });
+    expect((d.lineage as Record<string, unknown>).failingFilesDirtyUncommitted).toBeUndefined();
+  });
+
   /**
    * WI-7290. The durable record carried the WEAK proxy (lineage: "a failing file was modified
    * somewhere in the range") but not the DIRECT measurement (retriage: "we re-ran those exact

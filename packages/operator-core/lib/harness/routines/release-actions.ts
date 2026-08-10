@@ -315,6 +315,13 @@ export interface CheckpointVerdict {
      *  intersection compared NOTHING (the failures were bare workspace names), so it
      *  is vacuous rather than evidence. */
     failingPathsConsidered?: number;
+    /** EI-20063423357086565: failing files with UNCOMMITTED working-tree changes — the fix
+     *  may already be written and merely un-swept by git-sync. Carried here for the same
+     *  reason as the two discriminators above: every OTHER field in this record is derived
+     *  from commits, so a durable record without this one re-states the exact false
+     *  confidence ("candidate IS the tip ⇒ a real red") that the transient line was fixed
+     *  for. Absent ⇒ no failing file was dirty; it is NOT a claim the tree was clean. */
+    failingFilesDirtyUncommitted?: string[];
   };
   /** EI-18850448565330905: structural mirror of green-checkpoint.ts's `CheckpointResult.crashed`
    *  — this verdict was synthesized by the CLI's own crash handler because the normal run
@@ -365,6 +372,13 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
       ...(v.lineage.rangeFilesChanged != null ? { rangeFilesChanged: v.lineage.rangeFilesChanged } : {}),
       ...(v.lineage.failingPathsConsidered != null
         ? { failingPathsConsidered: v.lineage.failingPathsConsidered }
+        : {}),
+      // EI-20063423357086565: the only leg here NOT derived from commits. Without it the
+      // durable record shows "candidate IS the tip, 0 behind, nothing changed in range" —
+      // three commit-based facts that are all TRUE and together read as a confirmed real
+      // red, while the fix sat uncommitted on disk the whole time.
+      ...(v.lineage.failingFilesDirtyUncommitted?.length
+        ? { failingFilesDirtyUncommitted: v.lineage.failingFilesDirtyUncommitted.slice(0, 20) }
         : {}),
     };
   }
