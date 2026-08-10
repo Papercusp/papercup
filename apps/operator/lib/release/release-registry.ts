@@ -27,7 +27,18 @@ import type { Sql } from 'postgres';
 
 /** Terminal statuses — an item in one of these SHIPPED. (Issue-family settles to
  *  `resolved`, feature-family to `passed`; `closed` covers both.) */
-export const TERMINAL_STATUSES = ['resolved', 'passed', 'closed'] as const;
+/**
+ * The states that mean "this shipped in the window".
+ *
+ * ⚠ 'done' MUST be here: it is what `work_items:complete { state:'done' }` writes, i.e. the
+ * canonical completion verb the whole fleet uses. It was missing until 2026-08-10 and the
+ * omission was invisible because the other states are populated too — measured over the
+ * 0.0.14 window, 2,796 completed user-facing items were silently dropped from the release
+ * record while 1,138 were counted (EI-20071526453281952).
+ *
+ * 'dropped'/'deprecated' are deliberately NOT here — those are abandoned, not shipped.
+ */
+export const TERMINAL_STATUSES = ['done', 'resolved', 'passed', 'closed'] as const;
 
 export interface ReleaseArtifact {
   /**
@@ -190,7 +201,29 @@ export async function snapshotWindow(
     .map((r) => ({ id: r.feature_id, title: r.title ?? '', planSlug: r.source_plan_slug }));
   const internalIds = rows.map((r) => r.feature_id).filter((id) => !isUserFacing(id));
 
-  const slugs = [...new Set(items.map((i) => i.planSlug).filter((s): s is string => !!s))];
+  // ⚠ Plans come from TWO independent signals, UNIONed, because neither is trustworthy alone.
+  //
+  //  (a) plans that reached 'shipped' in the window — asks the plans table directly.
+  //  (b) plan slugs reverse-derived from the items — work_items.source_plan_slug.
+  //
+  // (b) WAS THE SOLE SOURCE until 2026-08-10 and it collapses: source_plan_slug is populated
+  // on only ~10% of items, and on ~0% of the statuses that were then considered terminal
+  // (resolved 0/1085, closed 0/52). For 0.0.14 that produced "plans: 1" — a single 'passed'
+  // row — against 26 plans actually shipped in the window (EI-20071526453281952).
+  // (a) alone is not sufficient either: plan status is a free-text flag decoupled from the
+  // item ledger, so genuinely-complete plans routinely still read draft/active/ready
+  // (EI-18694793291190625). Union both and let fetchPlans dedupe by slug.
+  const itemSlugs = items.map((i) => i.planSlug).filter((s): s is string => !!s);
+  const shippedRows = await sql<Array<{ plan_slug: string }>>`
+    SELECT plan_slug
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${scope.workspaceId}
+       AND harness_slug = ${scope.harnessSlug}
+       AND status = 'shipped'
+       AND updated_at >= to_timestamp(${fromMs}::bigint / 1000.0)
+       AND updated_at <  to_timestamp(${toMs}::bigint / 1000.0)
+  `;
+  const slugs = [...new Set([...shippedRows.map((r) => r.plan_slug), ...itemSlugs])];
   const plans = slugs.length > 0 ? await fetchPlans(sql, scope, slugs, items) : [];
 
   return { items, plans, internalIds };
