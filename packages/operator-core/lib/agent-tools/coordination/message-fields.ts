@@ -247,9 +247,12 @@ const COUPLING_DIVERGENCE_RULES: Record<
   // while the asserted vocabulary has one token. Comparing against one direction
   // would score every correctly-asserted other-direction message as divergent.
   'is-blocked-on': { confirmedBy: ['blocks-me', 'blocked-by-me'], absenceIsInformative: true },
-  // One-sided (see above). `shared-file` is deliberately NOT accepted as
-  // confirmation: a declared working-file is not a lock, and quietly widening the
-  // token to mean "near enough" is how a diff starts agreeing with itself.
+  // One-sided (see above). `confirmedBy` stays EXACTLY `holds-a-lock-on` — the
+  // standing rule is that a merely-adjacent signal is never accepted as
+  // confirmation, because quietly widening a token to mean "near enough" is how a
+  // diff starts agreeing with itself. This used to be enforced against
+  // `shared-file` (a DECLARED working-file is not a LOCK), which D-093 retired;
+  // the rule outlives its example and binds the next relation that looks close.
   'holds-a-lock-on': { confirmedBy: ['holds-a-lock-on'], absenceIsInformative: false },
   awaits: { confirmedBy: ['awaits'], absenceIsInformative: false },
   // NO COMPUTED COUNTERPART — and read that as the field WORKING, not as a hole.

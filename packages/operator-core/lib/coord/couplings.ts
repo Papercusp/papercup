@@ -87,7 +87,7 @@ export interface CouplingEdge {
  *     work-item fact, not a coupling edge;
  *   · `is-blocked-on` is ONE asserted token but TWO tokens here, because the
  *     direction means opposite things to the reader;
- *   · `coord-exchange` / `shared-file` have no asserted counterpart.
+ *   · `coord-exchange` has no asserted counterpart.
  */
 export const DERIVED_COUPLING_RELATIONS = [
   // ⛔ `same-fleet` WAS the first entry here and is deliberately GONE (D-054, re-fixed
@@ -101,9 +101,16 @@ export const DERIVED_COUPLING_RELATIONS = [
   // D-054's test for any FUTURE entry: an expansion edge must (a) be a pairwise relation the
   // two agents actually ENTERED, and (b) carry information the base payload cannot already
   // express. Every relation below passes both; `same-fleet` failed both.
-  /** Declared `current_files` overlap. ⚠ all but dead in practice — see the
-   *  derivation's note; kept because it is correct on the rare row that has it. */
-  'shared-file',
+  // ⛔ `shared-file` (declared `current_files` overlap) was here and is GONE (D-093,
+  // 2026-08-10). Unlike `same-fleet` above it was not too NOISY — it was permanently
+  // STARVED: measured over 14 days of production divergence stamps it produced ZERO
+  // edges, because `current_files` is populated only by an explicit declare-intent and
+  // every declare omitting the arg resets it to `[]` (EI-18772330418885814: 119 live
+  // rows, zero populated). `holds-a-lock-on` fully supersedes it. ⚠ The ROSTER FIELD
+  // `current_files` STAYS — it has a live writer and consumers (D-095); only this
+  // coupling signal went. A relation that cannot fire is not harmless: it sits in the
+  // dead-signal census forever, where permanently-starved is indistinguishable from
+  // newly-broken — which is the exact confusion the census exists to resolve.
   /** Overlapping LIVE lock holds — the file signal that actually fires. */
   'holds-a-lock-on',
   /** Both awaiting the same event key. */

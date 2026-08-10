@@ -17,6 +17,7 @@ import {
   instrumentValidity,
   pairedDifference,
   requiredPairs,
+  rescueCeiling,
   reweightToPopulation,
 } from './rerank-decision';
 
@@ -214,10 +215,11 @@ describe('instrumentValidity', () => {
     expect(v.reasons.join(' ')).toMatch(/engine was recorded/);
   });
 
-  it('flags a partially-engaged run, which silently mixes two populations', () => {
+  it('voids a half-engaged run rather than mixing two populations', () => {
     const v = instrumentValidity({ attempted: 250, total: 500, ordersMoved: 100, engine: 'local' });
     expect(v.ok).toBe(false);
-    expect(v.reasons.join(' ')).toMatch(/only 250\/500/);
+    expect(v.engineFailures).toBe(250);
+    expect(v.reasons.join(' ')).toMatch(/250\/500 RERANKABLE/);
   });
 
   it('reports no exclusions and no caveats for a fully-engaged run', () => {
@@ -253,7 +255,7 @@ describe('instrumentValidity', () => {
   it('still voids below the engagement floor even with a large sample', () => {
     const v = instrumentValidity({ attempted: 800, total: 1000, ordersMoved: 500, engine: 'local' });
     expect(v.ok).toBe(false);
-    expect(v.reasons.join(' ')).toMatch(/floor 90%/);
+    expect(v.reasons.join(' ')).toMatch(/90% floor/);
   });
 
   /** Boundary control: exactly at the floor is ACCEPTED. Fails if the
@@ -263,6 +265,46 @@ describe('instrumentValidity', () => {
     expect(v.ok).toBe(true);
     expect(v.excludedNonEngaged).toBe(100);
   });
+
+  /**
+   * PERMANENT CONTROL — `rerankRows` reports `attempted:false` for reasons that
+   * mean OPPOSITE things: 'nothing-to-reorder' (pool ≤ 1, the engine was never
+   * asked) vs 'no-engine'/'threw:*' (the engine was asked and failed). Charging
+   * benign skips against engine health would let a genuinely dark engine hide
+   * behind a pile of un-rerankable queries — D-093's failure with extra steps.
+   */
+  it('does not charge structurally un-rerankable queries against engine health', () => {
+    // 300 of 400 had a 1-row pool; the engine handled every query it was asked.
+    const v = instrumentValidity({ attempted: 100, total: 400, ordersMoved: 60, engine: 'local', benignSkips: 300 });
+    expect(v.ok).toBe(true);
+    expect(v.engagementRate).toBe(1);
+    expect(v.benignSkips).toBe(300);
+    expect(v.engineFailures).toBe(0);
+    expect(v.warnings.join(' ')).toMatch(/structurally un-rerankable/);
+  });
+
+  /** The other direction: benign skips must not LAUNDER real engine failures. */
+  it('still voids when the engine fails most of the queries it was actually asked', () => {
+    // 100 benign skips; of the 300 rerankable the engine handled only 150.
+    const v = instrumentValidity({ attempted: 150, total: 400, ordersMoved: 90, engine: 'local', benignSkips: 100 });
+    expect(v.ok).toBe(false);
+    expect(v.engineFailures).toBe(150);
+    expect(v.reasons.join(' ')).toMatch(/RERANKABLE/);
+  });
+
+  /** A run of nothing but 1-row pools never exercised the reranker at all. */
+  it('voids a run in which every query was structurally un-rerankable', () => {
+    const v = instrumentValidity({ attempted: 0, total: 50, ordersMoved: 0, engine: null, benignSkips: 50 });
+    expect(v.ok).toBe(false);
+    expect(v.reasons.join(' ')).toMatch(/never exercised/);
+  });
+
+  /** benignSkips can never exceed the actual non-engaged count, however called. */
+  it('clamps a benignSkips claim larger than the non-engaged population', () => {
+    const v = instrumentValidity({ attempted: 390, total: 400, ordersMoved: 300, engine: 'local', benignSkips: 999 });
+    expect(v.benignSkips).toBe(10);
+    expect(v.engineFailures).toBe(0);
+  });
 });
 
 /**
@@ -271,6 +313,55 @@ describe('instrumentValidity', () => {
  * mixing it in shrinks a real effect toward zero — manufacturing the very
  * "reranking does not help" reading this instrument exists to prevent.
  */
+describe('rescueCeiling', () => {
+  /**
+   * The load-bearing case: `order-blocked` came back EMPTY. The naive reading is
+   * "underpowered". But absence bounds the share, and the share bounds the
+   * population effect — so an empty band yields a CONCLUSION, not a shortfall.
+   */
+  it('bounds the population contribution from a stratum never observed', () => {
+    const c = rescueCeiling({ observed: 0, n: 390 });
+    // Wilson at 0/390 lands near the rule of three (3/390 ≈ 0.77%).
+    expect(c!.shareUpperBound).toBeGreaterThan(0.005);
+    expect(c!.shareUpperBound).toBeLessThan(0.015);
+    // nDCG ∈ [0,1] ⇒ the ceiling equals the share bound.
+    expect(c!.populationCeiling).toBeCloseTo(c!.shareUpperBound, 12);
+  });
+
+  /** Never 0: a zero upper bound would assert certainty a finite sample cannot buy. */
+  it('never returns a zero ceiling for a finite sample', () => {
+    for (const n of [10, 100, 5000]) {
+      const c = rescueCeiling({ observed: 0, n });
+      expect(c!.shareUpperBound).toBeGreaterThan(0);
+    }
+  });
+
+  /** More evidence of absence ⇒ a tighter bound. This is what makes it a conclusion. */
+  it('tightens the bound as the sample grows', () => {
+    const small = rescueCeiling({ observed: 0, n: 100 })!;
+    const large = rescueCeiling({ observed: 0, n: 10_000 })!;
+    expect(large.shareUpperBound).toBeLessThan(small.shareUpperBound);
+  });
+
+  it('exceeds the point estimate when the stratum IS observed', () => {
+    const c = rescueCeiling({ observed: 20, n: 400 })!; // p = 5%
+    expect(c.shareUpperBound).toBeGreaterThan(0.05);
+    expect(c.shareUpperBound).toBeLessThan(0.12);
+  });
+
+  it('scales the ceiling by the metric range', () => {
+    const unit = rescueCeiling({ observed: 0, n: 390 })!;
+    const half = rescueCeiling({ observed: 0, n: 390, maxPerPairGain: 0.5 })!;
+    expect(half.populationCeiling).toBeCloseTo(unit.populationCeiling / 2, 12);
+  });
+
+  it('refuses a degenerate ask instead of returning a misleading zero', () => {
+    expect(rescueCeiling({ observed: 0, n: 0 })).toBeNull();
+    expect(rescueCeiling({ observed: 5, n: 4 })).toBeNull();
+    expect(rescueCeiling({ observed: -1, n: 10 })).toBeNull();
+  });
+});
+
 describe('fail-soft pairs dilute a real effect (why the CLI analyses engaged pairs only)', () => {
   it('shrinks a real gain toward zero when un-reranked pairs are mixed in', () => {
     const control = [0.2, 0.2, 0.2, 0.2];

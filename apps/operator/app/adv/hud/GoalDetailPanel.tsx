@@ -73,6 +73,27 @@ import SubGoalsSection from './SubGoalsSection';
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
 import { useOwnerSessionChat } from '@/app/_components/chat/use-owner-session-chat';
+/* ── P-021 [owner 2026-08-10]: the sessions popup's three rails, IN ADDITION ──
+   "the conversation popup for goals should have all the same left and right
+   panels as the conversation popup in the sessions tab. the additional ones
+   should be IN ADDITION not instead of."
+
+   All three are imported VERBATIM — no forked copy, no goal-flavoured variant.
+   That is the same D-005/D-012 rule the conversation itself already obeys here:
+   the goal popup reuses the sessions popup's components and wiring, so a fix to
+   any of them lands in both surfaces at once. Each takes an agent `ownerId`,
+   which this panel already resolves as `primaryAgent`. */
+import AgentOrders from '../sessions/AgentOrders';
+import AgentDossier from '../sessions/AgentDossier';
+import FleetPeersRail from '@/app/_components/chat/FleetPeersRail';
+import { deriveFleetPeers } from '@/app/_components/chat/fleet-peers';
+import { advRosterArgs } from '@/lib/adv-roster-args';
+import type { RosterEntry } from '../sessions/SessionsRosterView';
+// pc-dossier__* — AgentDossier's stylesheet, imported the same way
+// SessionChatModal imports it for the same reused rail. AgentOrders pulls its
+// own CSS; FleetPeersRail's `pc-peers` lives in chat-controls.css, already
+// imported below.
+import '../sessions/SessionsRosterView.css';
 // The conversation popup's own control vocabulary (pc-ctl-band, pc-zone,
 // pc-peers). Imported rather than re-declared so P-018's "mimic" is literally
 // the same CSS — see the docblock.
@@ -97,6 +118,7 @@ import {
   type GoalDetailProject,
   type TripwireBar,
 } from './goal-detail-model';
+import type { HudRosterEntry } from './hud-board-model';
 
 /* The rail's two seatings, mirroring the conversation popup's rails exactly
    (DOSSIER_RAIL_SIDE_STYLE / _OVERLAY_STYLE in SessionChatModal). Side-by-side
@@ -173,12 +195,136 @@ const BRIEF_OVERLAY_STYLE: React.CSSProperties = {
    readable, so it is the first of the two to give way under width pressure. */
 const BRIEF_NARROW_MEDIA_QUERY = '(max-width: 1100px)';
 
+/* ── P-021: the three BORROWED zones ────────────────────────────────────────
+   Widths are the sessions popup's own, deliberately unchanged — a reader who
+   opens Orders here and Orders there should get the same column, not a
+   goal-flavoured near-copy. (SessionChatModal: orders 272, dossier 300,
+   peers 248.)
+
+   READING ORDER, left to right:
+       Orders │ Brief │ conversation │ Work │ Activity │ Fleet
+   Outermost is the most general, innermost the most specific to what is in
+   front of the reader. So the agent's standing ORDERS sit outside this goal's
+   BRIEF, and this goal's WORK sits inside the agent's ACTIVITY and FLEET. That
+   keeps the sessions popup's own told → conversation → doing → who-with
+   sequence intact while seating the goal's two zones next to the conversation
+   they describe. DOM order matches, so the tab sequence agrees with the visual
+   one — never a CSS `order` trick. */
+const ORDERS_WIDTH = 272;
+const DOSSIER_WIDTH = 300;
+const PEERS_WIDTH = 248;
+
+const ORDERS_SIDE_STYLE: React.CSSProperties = {
+  flex: `0 0 ${ORDERS_WIDTH}px`,
+  width: ORDERS_WIDTH,
+  minWidth: 0,
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
+const ORDERS_OVERLAY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 0,
+  left: 0,
+  width: 'min(300px, 88vw)',
+  background: 'var(--bg-popover, #0d1829)',
+  boxShadow: '8px 0 24px rgba(0,0,0,0.35)',
+  overflowY: 'auto',
+  /* Above the brief's own left-edge overlay (5): on a narrow window both
+     collapse onto the SAME edge, and the one the reader opened last must not
+     render underneath the other. Same rule the peers rail states against the
+     dossier in SessionChatModal. */
+  zIndex: 6,
+};
+
+const DOSSIER_SIDE_STYLE: React.CSSProperties = {
+  flex: `0 0 ${DOSSIER_WIDTH}px`,
+  width: DOSSIER_WIDTH,
+  minWidth: 0,
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
+const DOSSIER_OVERLAY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 0,
+  right: 0,
+  width: 'min(320px, 88vw)',
+  background: 'var(--bg-popover, #0d1829)',
+  boxShadow: '-8px 0 24px rgba(0,0,0,0.35)',
+  overflowY: 'auto',
+  zIndex: 6,
+};
+
+const PEERS_SIDE_STYLE: React.CSSProperties = {
+  flex: `0 0 ${PEERS_WIDTH}px`,
+  width: PEERS_WIDTH,
+  minWidth: 0,
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
+const PEERS_OVERLAY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 0,
+  right: 0,
+  width: 'min(280px, 88vw)',
+  background: 'var(--bg-popover, #0d1829)',
+  boxShadow: '-8px 0 24px rgba(0,0,0,0.35)',
+  overflowY: 'auto',
+  /* One above the dossier's overlay, which is itself one above the work rail's
+     (5) — the three right-edge zones stack in the order they sit as columns. */
+  zIndex: 7,
+};
+
+/* ── The give-way ladder ────────────────────────────────────────────────────
+   SIX zones cannot all be columns on an ordinary display, so each one names the
+   viewport below which it can no longer HONESTLY seat as a column, and overlays
+   instead. The numbers are derived, not chosen: the popup is
+   `880 + (seated rail columns)` wide, capped at 97vw, where the 880 already
+   covers the band, the brief and a ~540px conversation.
+
+     all six seated   880+288+304+316+264 = 2052 ⇒ needs ~2115px of viewport
+     without Fleet    880+288+304+316     = 1788 ⇒ needs ~1845
+     also w/o Orders  880    +304+316     = 1500 ⇒ needs ~1547
+
+   So the ladder is Fleet → Orders → Activity → Brief (1100) → Work (900): the
+   most SITUATIONAL zone yields first and the goal's own two survive longest,
+   because this is the goal popup — the reader came here for the goal, and the
+   borrowed rails are context around it.
+
+   ⚠ These are far wider than the sessions popup's equivalents (1400/1180/860)
+   and that is correct rather than a transcription slip: there, three zones
+   compete for the width; here, six do. Copying those numbers across would seat
+   columns that do not fit and crush the conversation to nothing. */
+const PEERS_NARROW_MEDIA_QUERY = '(max-width: 2100px)';
+const ORDERS_NARROW_MEDIA_QUERY = '(max-width: 1840px)';
+const DOSSIER_NARROW_MEDIA_QUERY = '(max-width: 1540px)';
+
 /** Same matchMedia + effect shape SessionChatModal uses for its own rails.
- *  Starts false so the server/first paint seats the rail as a column and the
- *  effect corrects it — never the reverse, which would flash an overlay over
- *  the body on every open on a wide window. */
+ *
+ *  P-021 SEEDS IT SYNCHRONOUSLY (it used to start `false` and let the effect
+ *  correct it). That was harmless while this hook only chose a STYLE — one
+ *  frame of the wrong style is invisible — and stopped being harmless the
+ *  moment P-021 made the three borrowed rails' defaults ROOM-AWARE
+ *  (`param ?? !isNarrow`). A hook that reports "wide" on the first render of a
+ *  narrow window MOUNTS those panels, fires AgentOrders' carry-brief gather and
+ *  AgentDossier's detail fetch, then unmounts them a frame later: a flash plus
+ *  exactly the fetches the closed state exists to avoid. SessionChatModal hit
+ *  this and fixed it the same way (WI-35470) — this is that fix, carried over
+ *  with the rails rather than rediscovered.
+ *
+ *  The `typeof` guards keep it SSR-safe (no window ⇒ false, so the server still
+ *  renders the column seating) and survive a test env whose jsdom lacks
+ *  matchMedia. */
 function useIsNarrowViewport(query: string): boolean {
-  const [narrow, setNarrow] = useState(false);
+  const [narrow, setNarrow] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia(query).matches;
+  });
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
     const mq = window.matchMedia(query);
@@ -264,6 +410,11 @@ export default function GoalDetailPanel({
      which is the question the popup exists to answer. */
   const [railOpen, setRailOpen] = useQueryState('hudgoalrail', parseAsBoolean.withDefault(true));
   const isRailNarrow = useIsNarrowViewport(RAIL_NARROW_MEDIA_QUERY);
+  /* P-022: the brief's own open-state, in the URL like every other
+     user-meaningful toggle here (`hudgoalrail` set the precedent). */
+  const [briefOpen, setBriefOpen] = useQueryState('hudgoalbrief', parseAsBoolean.withDefault(true));
+  const isBriefNarrow = useIsNarrowViewport(BRIEF_NARROW_MEDIA_QUERY);
+  const briefVisible = open && briefOpen;
   const railVisible = open && railOpen;
   /* Widen ONLY when the rail is actually seated as a column. On a narrow window
      it overlays, so widening there would grow the popup for a rail that is not
@@ -286,6 +437,79 @@ export default function GoalDetailPanel({
      resolving, no session, error) is a single line. */
   const chatLive = Boolean(primaryAgent && chat.resolved && chat.streamUrl);
 
+  /* ── P-021: the three borrowed zones ──────────────────────────────────────
+     Every one of them describes the AGENT, so all three are gated on there
+     being an agent at all. An agent-less goal renders none of them and shows no
+     toggles for them — the same rule D-011 already applies to the conversation
+     here: never a control that looks live and can reach nobody. */
+  const agentOwnerId = primaryAgent?.ownerId ?? null;
+
+  /* ONE roster read feeding both the dossier and the fleet rail.
+     `useSyncQuery` caches by {queryName, args}, so this is a second READER of
+     the row the sessions popup and the HUD board already hold — not a third
+     fetch of the same payload. Same reasoning SessionChatModal records for
+     re-using its own `actionRoster` row two ways. */
+  const roster = useSyncQuery<{ active?: HudRosterEntry[]; pending?: HudRosterEntry[] }>({
+    queryName: 'advRoster.list',
+    args: advRosterArgs(null),
+  });
+
+  /* AgentDossier's own prop shape. `RosterEntry` and `HudRosterEntry` are two
+     independently-inlined TS projections of the IDENTICAL server payload, so
+     the already-fetched row satisfies it structurally at runtime — cast rather
+     than re-query, exactly as SessionChatModal does for the same rail. */
+  const dossierEntry = useMemo<RosterEntry | null>(() => {
+    const payload = roster.data?.[0];
+    if (!payload || !agentOwnerId) return null;
+    const entries = [...(payload.active ?? []), ...(payload.pending ?? [])];
+    const found = entries.find((e) => e.ownerId === agentOwnerId);
+    return found ? (found as unknown as RosterEntry) : null;
+  }, [roster.data, agentOwnerId]);
+
+  /* null when this agent is in no fleet, which is the common case for a goal's
+     directed agent — the rail is then not rendered at all rather than rendered
+     empty. The derivation lives in the unit-tested module beside the rail; this
+     panel only supplies the inputs. */
+  const fleetPeers = useMemo(() => {
+    const payload = roster.data?.[0];
+    if (!payload || !agentOwnerId) return null;
+    return deriveFleetPeers(payload.active ?? [], agentOwnerId, { nowMs });
+  }, [roster.data, agentOwnerId, nowMs]);
+
+  /* ROOM-AWARE defaults (`param ?? !isNarrow`), the pattern the sessions popup
+     already uses for these same two rails — NOT `withDefault(true)`. With six
+     zones competing, defaulting them open would stack two or three overlay
+     drawers over the conversation the moment the popup opens on an ordinary
+     display. Open where there is room, closed where there is not, and the
+     reader's own choice overrides both and persists in the URL.
+
+     This is why `useIsNarrowViewport` had to start seeding synchronously — see
+     its docblock. */
+  const isOrdersNarrow = useIsNarrowViewport(ORDERS_NARROW_MEDIA_QUERY);
+  const [ordersParam, setOrdersOpen] = useQueryState('hudgoalorders', parseAsBoolean);
+  const ordersOpen = ordersParam ?? !isOrdersNarrow;
+
+  const isDossierNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
+  const [dossierParam, setDossierOpen] = useQueryState('hudgoalactivity', parseAsBoolean);
+  const dossierOpen = dossierParam ?? !isDossierNarrow;
+
+  const isPeersNarrow = useIsNarrowViewport(PEERS_NARROW_MEDIA_QUERY);
+  const [peersParam, setPeersOpen] = useQueryState('hudgoalfleet', parseAsBoolean);
+  const peersOpen = peersParam ?? !isPeersNarrow;
+
+  const ordersVisible = open && ordersOpen && Boolean(agentOwnerId);
+  const dossierVisible = open && dossierOpen && Boolean(agentOwnerId);
+  /* Unlike the other two this also needs a MODEL: an agent in no fleet has no
+     peers to show, so there is nothing to seat. */
+  const peersVisible = open && peersOpen && Boolean(agentOwnerId) && fleetPeers != null;
+
+  /* Each seated column widens the popup; an OVERLAYING one must not, or the
+     popup grows to make room for a rail that is taking no width. */
+  const borrowedColumns =
+    (ordersVisible && !isOrdersNarrow ? ORDERS_WIDTH + 16 : 0) +
+    (dossierVisible && !isDossierNarrow ? DOSSIER_WIDTH + 16 : 0) +
+    (peersVisible && !isPeersNarrow ? PEERS_WIDTH + 16 : 0);
+
   return (
     <Modal
       open={open}
@@ -299,7 +523,11 @@ export default function GoalDetailPanel({
          (the bands and body own their spacing), and a width that grows to seat
          the rail instead of squeezing the body. */
       contentStyle={{
-        width: `min(${880 + railColumns}px, ${railColumns > 0 ? 97 : 92}vw)`,
+        /* P-021: the borrowed zones widen the popup on the same terms the work
+           rail already does — only while they are actually seated as columns.
+           The 97vw cap is what keeps the arithmetic honest on a display too
+           narrow for everything the breakpoints allowed. */
+        width: `min(${880 + railColumns + borrowedColumns}px, ${railColumns + borrowedColumns > 0 ? 97 : 92}vw)`,
         height: 'min(80vh, 820px)',
         padding: 0,
         display: 'flex',
@@ -316,6 +544,27 @@ export default function GoalDetailPanel({
         }}
         data-testid="goal-detail-modal"
       >
+        {/* ── ORDERS (P-021) — the outermost LEFT zone ──────────────────────
+            What the agent running this goal was TOLD: mission and authority,
+            modes and who set them, owner directives, standing facts, walls, the
+            carry brief. It sits OUTSIDE the centre column on purpose, so the
+            vitals band does not span it: that band is the GOAL's glance, and
+            these orders are about the AGENT. The same reason the band already
+            stops short of the work rail. */}
+        {ordersVisible ? (
+          <div
+            className="pc-zone pc-zone--orders"
+            data-testid="goal-orders-rail"
+            style={isOrdersNarrow ? ORDERS_OVERLAY_STYLE : ORDERS_SIDE_STYLE}
+          >
+            <AgentOrders
+              ownerId={agentOwnerId ?? ''}
+              /* Gates the carry-brief gather: a closed zone must not fetch. */
+              enabled={ordersVisible}
+              onClose={() => void setOrdersOpen(false)}
+            />
+          </div>
+        ) : null}
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {/* ── VITALS BAND ─────────────────────────────────────────────────
               SessionChatModal's `SessionStateHeader` in goal vocabulary: the
@@ -413,6 +662,37 @@ export default function GoalDetailPanel({
                 </button>
               </Tooltip>
             ) : null}
+            {/* P-022/P-021: the zone toggles, in the SAME left-to-right order
+                as the zones they move — Orders, Brief, Work, Activity, Fleet.
+                A toggle row whose order contradicts the layout makes the reader
+                hunt for which button moves which column.
+
+                The three borrowed toggles render only when there is an agent to
+                describe, and Fleet only when that agent is actually in a fleet:
+                a control for a zone that cannot open is a dead button, which is
+                the defect WI-6742 filed against this very popup. */}
+            {agentOwnerId ? (
+              <button
+                type="button"
+                className="pc-button"
+                onClick={() => void setOrdersOpen(!ordersOpen)}
+                aria-pressed={ordersOpen}
+                aria-label={ordersOpen ? 'Hide the agent’s orders' : 'Show the agent’s orders'}
+                data-testid="goal-orders-toggle"
+              >
+                {ordersOpen ? 'Hide orders' : 'Orders'}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="pc-button"
+              onClick={() => void setBriefOpen(!briefOpen)}
+              aria-pressed={briefOpen}
+              aria-label={briefOpen ? 'Hide the goal brief' : 'Show the goal brief'}
+              data-testid="goal-brief-toggle"
+            >
+              {briefOpen ? 'Hide brief' : 'Brief'}
+            </button>
             <button
               type="button"
               className="pc-button"
@@ -423,8 +703,58 @@ export default function GoalDetailPanel({
             >
               {railOpen ? 'Hide work' : 'Work'}
             </button>
+            {agentOwnerId ? (
+              <button
+                type="button"
+                className="pc-button"
+                onClick={() => void setDossierOpen(!dossierOpen)}
+                aria-pressed={dossierOpen}
+                aria-label={dossierOpen ? 'Hide agent activity' : 'Show agent activity'}
+                data-testid="goal-activity-toggle"
+              >
+                {dossierOpen ? 'Hide activity' : 'Activity'}
+              </button>
+            ) : null}
+            {agentOwnerId && fleetPeers ? (
+              <button
+                type="button"
+                className="pc-button"
+                onClick={() => void setPeersOpen(!peersOpen)}
+                aria-pressed={peersOpen}
+                aria-label={peersOpen ? 'Hide fleet peers' : 'Show fleet peers'}
+                data-testid="goal-fleet-toggle"
+              >
+                {peersOpen ? 'Hide fleet' : 'Fleet'}
+              </button>
+            ) : null}
           </div>
 
+          {/* ── P-022: BRIEF │ CONVERSATION ────────────────────────────────────
+              Everything below the vitals band is a ROW, not a stack. That single
+              change is what gives the conversation its full height: it used to
+              sit UNDER the scrolling brief in this column, so it could only ever
+              have the leftover space (and was pinned to `0 0 46%` to stop the
+              brief crowding it out entirely).
+
+              The band stays ABOVE this row, spanning both — it is the goal's
+              glance, and it reads as a header for the brief and the conversation
+              alike rather than belonging to either one.
+
+              DOM order is brief → conversation, matching the left-to-right
+              reading order, which is why this is a real reorder and not a CSS
+              `order` trick: `order` would leave the tab sequence contradicting
+              the visual one. Same reasoning SessionChatModal gives for keeping
+              its own rails in reading order. */}
+          <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'row', position: 'relative' }}>
+          {/* The brief zone. A SIBLING of the conversation, never a parent of
+              it — the layout contract every rail in this popup and in
+              SessionChatModal holds to. */}
+          {briefVisible ? (
+          <div
+            className="pc-zone pc-zone--brief"
+            data-testid="goal-brief-rail"
+            style={isBriefNarrow ? BRIEF_OVERLAY_STYLE : BRIEF_SIDE_STYLE}
+          >
           {/* The scrolling body. `minHeight: 0` is load-bearing inside a flex
               column — without it the body grows past the popup instead of
               scrolling within it, and the vitals band scrolls away with it. */}
@@ -650,6 +980,8 @@ export default function GoalDetailPanel({
               </button>
             </footer>
           </div>
+          </div>
+          ) : null}
 
           {/* ── THE LIVE CONVERSATION (D-011) ──────────────────────────────────
               A SIBLING of the scrolling body, not a child of it — for the same
@@ -670,12 +1002,23 @@ export default function GoalDetailPanel({
           <div
             data-testid="goal-chat"
             style={{
-              flex: chatLive ? '0 0 46%' : '0 0 auto',
-              minHeight: chatLive ? 220 : undefined,
+              /* P-022: FULL height of the row, not a 46% slice of the column.
+                 The old share existed only because the brief sat above this
+                 region and would otherwise have crowded it out — with the brief
+                 moved into its own zone beside it, there is nothing left to
+                 divide the column with, which is exactly what the owner asked
+                 for ("so the conversation takes up the full height like the
+                 conversation popups in the conversation tab"). */
+              flex: 1,
+              minHeight: 0,
               minWidth: 0,
               display: 'flex',
               flexDirection: 'column',
-              borderTop: '1px solid var(--border)',
+              /* No border here: the seam belongs to the brief zone, which owns
+                 it as `.pc-zone--brief`'s border-right — the same way Orders
+                 owns the seam against the conversation in SessionChatModal.
+                 Putting it here too would double the rule whenever both are
+                 open, and would leave a stray edge when the brief is closed. */
             }}
           >
             {!primaryAgent ? (
@@ -706,6 +1049,7 @@ export default function GoalDetailPanel({
               />
             ) : null}
           </div>
+          </div>
         </div>
 
         {/* ── THE WORK RAIL (P-019) ──────────────────────────────────────────
@@ -715,7 +1059,7 @@ export default function GoalDetailPanel({
             the opposite of what a rail is for. */}
         {railVisible ? (
           <div
-            className="pc-zone pc-zone--peers"
+            className="pc-zone pc-zone--work"
             data-testid="goal-work-rail"
             style={isRailNarrow ? RAIL_OVERLAY_STYLE : RAIL_SIDE_STYLE}
           >
@@ -724,6 +1068,54 @@ export default function GoalDetailPanel({
               nowMs={nowMs}
               onOpenWorkItem={onOpenWorkItem}
               onClose={() => void setRailOpen(false)}
+            />
+          </div>
+        ) : null}
+
+        {/* ── ACTIVITY (P-021) — what the agent is DOING ────────────────────
+            AgentDossier verbatim, the same component the sessions popup and the
+            /adv two-pane both render. `zoneTitle` because here it is one of six
+            named zones and needs to say which; in the two-pane it is the detail
+            pane of a board that already says so.
+
+            `startingUp`/`launchFailed` are deliberately NOT passed: they belong
+            to the sessions popup's LAUNCH flow, which this surface has none of.
+            A goal's agent is discovered from the goal's own roster stamp, never
+            launched from here, so there is no boot window to describe and no
+            corpse to report. Defaulting them false is the honest answer, not an
+            omission. */}
+        {dossierVisible ? (
+          <div
+            className="pc-zone pc-zone--activity"
+            data-testid="goal-dossier-rail"
+            style={isDossierNarrow ? DOSSIER_OVERLAY_STYLE : DOSSIER_SIDE_STYLE}
+          >
+            <AgentDossier
+              ownerId={agentOwnerId ?? ''}
+              entry={dossierEntry}
+              zoneTitle
+              onClose={() => void setDossierOpen(false)}
+            />
+          </div>
+        ) : null}
+
+        {/* ── FLEET (P-021) — who the agent is working WITH ─────────────────
+            The outermost zone, last child so DOM order matches the reading
+            order the layout promises. `onSelectPeer` routes through the host's
+            existing `onOpenAgent`, so a peer row lands in the sessions popup —
+            the destination this panel already uses for "Open full-size". A host
+            that cannot re-target passes nothing and the rail degrades to
+            read-only rows rather than rendering buttons that do nothing. */}
+        {peersVisible && fleetPeers ? (
+          <div
+            className="pc-zone pc-zone--peers"
+            data-testid="goal-peers-rail"
+            style={isPeersNarrow ? PEERS_OVERLAY_STYLE : PEERS_SIDE_STYLE}
+          >
+            <FleetPeersRail
+              model={fleetPeers}
+              onSelectPeer={onOpenAgent}
+              onClose={() => void setPeersOpen(false)}
             />
           </div>
         ) : null}

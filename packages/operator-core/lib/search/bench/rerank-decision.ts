@@ -228,6 +228,48 @@ export function reweightToPopulation(strata: readonly Stratum[]): PopulationEffe
   return { effect, se, ci95: [effect - half, effect + half] as const, unmeasured };
 }
 
+/**
+ * The MOST a stratum could ever contribute to the population metric, given how
+ * rarely it was observed.
+ *
+ * This is the answer to the question a rare-stratum run cannot otherwise reach.
+ * When `order-blocked` — the only band reranking can win — comes back empty, the
+ * naive reading is "underpowered, measure more". But an ABSENCE bounds the share
+ * (Wilson upper bound; at 0 observed it agrees with the rule of three, ~3/n), and
+ * the share bounds the population effect: nDCG ∈ [0,1], so a target sitting below
+ * the cut contributes 0 and can gain at most 1.0 by being lifted to rank 1.
+ *
+ * So `populationCeiling` is what a PERFECT reranker — one that rescues every
+ * order-blocked query flawlessly — could add. If that ceiling is below the
+ * smallest effect worth shipping, the integration question is CLOSED, and no
+ * larger sample can reopen it. That is a conclusion from absence, not a
+ * confession of insufficient data.
+ */
+export function rescueCeiling(input: {
+  /** Pairs observed in the stratum. */
+  observed: number;
+  /** Queries classified into strata (the denominator of the share). */
+  n: number;
+  /** Largest per-pair gain the metric admits. nDCG ⇒ 1. */
+  maxPerPairGain?: number;
+}): { shareUpperBound: number; populationCeiling: number } | null {
+  const { observed, n } = input;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (!Number.isFinite(observed) || observed < 0 || observed > n) return null;
+  const maxGain = input.maxPerPairGain ?? 1;
+  if (!Number.isFinite(maxGain) || maxGain <= 0) return null;
+
+  // Wilson upper bound: well-behaved at observed = 0, where a normal
+  // approximation would collapse to exactly 0 and imply a FALSE certainty.
+  const z = 1.96;
+  const p = observed / n;
+  const denom = 1 + (z * z) / n;
+  const centre = (p + (z * z) / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+  const shareUpperBound = Math.min(1, centre + half);
+  return { shareUpperBound, populationCeiling: shareUpperBound * maxGain };
+}
+
 export interface InstrumentValidity {
   ok: boolean;
   reasons: readonly string[];
@@ -235,8 +277,15 @@ export interface InstrumentValidity {
   warnings: readonly string[];
   /** Pairs the stage did not rerank — EXCLUDED from every delta, never mixed in. */
   excludedNonEngaged: number;
-  /** attempted / total, or null when nothing ran. */
+  /**
+   * attempted / RERANKABLE (not / total): a query the engine was never asked to
+   * handle is not evidence about the engine. Null when nothing was rerankable.
+   */
   engagementRate: number | null;
+  /** Queries structurally un-rerankable (pool ≤ 1). Benign — not engine health. */
+  benignSkips: number;
+  /** Queries the engine SHOULD have handled and did not (no-engine / threw). */
+  engineFailures: number;
 }
 
 /**
@@ -270,16 +319,39 @@ export function instrumentValidity(input: {
   total: number;
   ordersMoved: number;
   engine: string | null;
+  /**
+   * Of the non-engaged queries, how many were `nothing-to-reorder` (pool ≤ 1).
+   * These are structurally un-rerankable, NOT engine failures, so they leave the
+   * engine-health denominator. Everything else non-engaged (`no-engine`,
+   * `threw:*`) IS an engine failure and counts against the floor.
+   */
+  benignSkips?: number;
 }): InstrumentValidity {
   const reasons: string[] = [];
   const warnings: string[] = [];
   const { attempted, total } = input;
-  const engagementRate = total > 0 ? attempted / total : null;
   const excludedNonEngaged = Math.max(0, total - attempted);
+  // `nothing-to-reorder` (pool ≤ 1) is NOT an engine failure: the engine was
+  // never asked. Counting it against engine health would let a genuinely dark
+  // engine hide behind a pile of un-rerankable queries — the D-093 failure with
+  // extra steps. So it leaves the denominator entirely.
+  const benignSkips = Math.min(Math.max(0, input.benignSkips ?? 0), excludedNonEngaged);
+  const rerankable = Math.max(0, total - benignSkips);
+  const engineFailures = Math.max(0, rerankable - attempted);
+  const engagementRate = rerankable > 0 ? attempted / rerankable : null;
 
   if (total <= 0) reasons.push('no queries ran');
-  if (attempted <= 0) reasons.push('the rerank stage NEVER engaged — this is a dead-engine run, not a null result');
-  else if (attempted < total) {
+  else if (rerankable <= 0)
+    reasons.push(
+      `every one of the ${total} queries was structurally un-rerankable (pool ≤ 1) — the engine was never exercised, so this run says nothing about reranking`,
+    );
+  if (benignSkips > 0)
+    warnings.push(
+      `${benignSkips}/${total} queries had a pool of ≤1 row and are structurally un-rerankable — excluded from the delta, and NOT counted as engine failures (the engine was never asked)`,
+    );
+  if (attempted <= 0 && rerankable > 0)
+    reasons.push('the rerank stage NEVER engaged — this is a dead-engine run, not a null result');
+  else if (attempted > 0 && engineFailures > 0) {
     // PARTIAL engagement is NOT a dead engine, and voiding the whole run for it
     // is a power failure of its own: one fail-soft query discarded 389 good
     // pairs on the 2026-08-10 pool=24 run. A fail-soft pair is treatment ==
@@ -288,25 +360,33 @@ export function instrumentValidity(input: {
     // The floor keeps D-093's protection: a substantially dead engine still voids.
     if (engagementRate !== null && engagementRate < MIN_ENGAGEMENT_RATE) {
       reasons.push(
-        `the stage engaged on only ${attempted}/${total} queries ` +
-          `(${(engagementRate * 100).toFixed(1)}%, floor ${(MIN_ENGAGEMENT_RATE * 100).toFixed(0)}%) — ` +
+        `the engine failed on ${engineFailures}/${rerankable} RERANKABLE queries — engagement ` +
+          `${(engagementRate * 100).toFixed(1)}%, below the ${(MIN_ENGAGEMENT_RATE * 100).toFixed(0)}% floor — ` +
           `too little engagement to attribute any delta to the reranker`,
       );
     } else {
       warnings.push(
-        `${excludedNonEngaged}/${total} queries were fail-soft (the stage did not engage) and are ` +
-          `EXCLUDED from every delta below — they are treatment == control by construction, so ` +
-          `including them would dilute the estimate toward zero`,
+        `${engineFailures}/${rerankable} rerankable queries were fail-soft ENGINE FAILURES ` +
+          `(no-engine / threw) and are EXCLUDED from every delta below — they are ` +
+          `treatment == control by construction, so including them would dilute the estimate toward zero`,
       );
       warnings.push(
-        `engagement was ${(engagementRate! * 100).toFixed(1)}% — the excluded pairs are NOT a random ` +
-          `sample if the engine drops on the largest/slowest queries, so the estimand is "the effect ` +
-          `WHEN the reranker runs", not "the effect of enabling it"`,
+        `engine engagement was ${(engagementRate! * 100).toFixed(1)}% — the excluded pairs are NOT a ` +
+          `random sample if the engine drops on the largest/slowest queries, so the estimand is ` +
+          `"the effect WHEN the reranker runs", not "the effect of enabling it"`,
       );
     }
   }
   if (input.ordersMoved <= 0)
     reasons.push('the admitted ORDER never moved on any query — indistinguishable from a disabled reranker');
   if (!input.engine) reasons.push('no rerank engine was recorded — the result cannot be attributed to a specific reranker (WI-37649)');
-  return { ok: reasons.length === 0, reasons, warnings, excludedNonEngaged, engagementRate };
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    warnings,
+    excludedNonEngaged,
+    engagementRate,
+    benignSkips,
+    engineFailures,
+  };
 }

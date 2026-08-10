@@ -51,7 +51,7 @@ export default defineTool({
     // coordination-layer bug). `summary.active` is a COUNT, not the roster — do not confuse
     // the two `active` keys at different nesting levels.
     returns:
-      '{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), self?: { ownerId, ownerLabel } (you, only when resolvable), etag, as_of, scope }. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }. With include_coupling: an APPENDED expanded[] ({ ownerId, expandedBecause, source: derived|declared|both, reason?, declaredBy?, inRoster, ownerLabel, sessionState, intent, intentStale, lastActiveSecAgo }) + expandedTotal — `active` is unchanged by it. `intent` there is the peer\'s DECLARED INTENT, not a goal; goal + assumptions arrive with P-016/P-008. expanded[] is reader-relative and NOT etag-tracked, so a `since:` stub can lag a coupling change.',
+      '{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), self?: { ownerId, ownerLabel } (you, only when resolvable), etag, as_of, scope }. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }. Unless include_coupling:false — an APPENDED expanded[] ({ ownerId, expandedBecause, source: derived|declared|both, reason?, declaredBy?, inRoster, ownerLabel, sessionState, intent, intentStale, lastActiveSecAgo }) + expandedTotal — `active` is unchanged by it. `intent` there is the peer\'s DECLARED INTENT, not a goal; goal + assumptions arrive with P-016/P-008. expanded[] is reader-relative and NOT etag-tracked, so a `since:` stub can lag a coupling change.',
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always
@@ -116,7 +116,7 @@ export default defineTool({
     include_coupling: z
       .boolean()
       .optional()
-      .describe('P-031: append `expanded[]` — the peers YOU are coupled to (coord:couple), each with `expandedBecause`, plus their declared intent and staleness projected from the roster row you are already being sent. Opt-in + fail-soft. The base roster is byte-identical whether this is on or off (D-053): coupling decides only who appears in the appended block, never what the base rows contain. A coupled peer outside this read\'s scope appears with inRoster:false and null state — coupling re-ranks what you can already see, it never widens it.'),
+      .describe('ON BY DEFAULT — pass false to suppress. Appends `expanded[]`: the peers YOU are coupled to (coord:couple + signals derived from the roster you are already being sent), each with `expandedBecause`, their declared intent and staleness. Fail-soft. The base roster is byte-identical either way (D-053): coupling decides only who appears in the appended block, never what the base rows contain. A coupled peer outside this read\'s scope appears with inRoster:false and null state — coupling re-ranks what you can already see, it never widens it. Passing TRUE explicitly also arms the QUERYING signals (lock holds), which need the coordination domain.'),
     since: z
       .string()
       .optional()
@@ -209,15 +209,27 @@ export default defineTool({
     // paths and provably independent of the modes/parkedOn/deafness/cursor
     // overlays below.
     //
-    // P-013 has now BUILT the derived half (D-078), so `derived` is no longer the
-    // empty list this call site was written around. It is derived purely from the
-    // snapshot rows already in hand, so the original opt-in rationale — "paying a
-    // query on every read of a hot poll surface to append an empty array is the
-    // wrong trade" — no longer applies: there is no query, and the block is no
-    // longer provably empty. What remains behind `include_coupling` is a PAYLOAD
-    // SIZE trade on a hot poll surface, not a compute one.
+    // ⚠ DEFAULT-ON since 2026-08-10 (D-094) — `!== false`, not `=== true`. The
+    // opt-in gate was the reason the entire coupling payoff was invisible: measured
+    // over the whole retained window, `include_coupling` was passed 11 times EVER,
+    // by 4 agents, ALL of them this feature's own authors, out of 316 `coord:presence`
+    // calls. A feature whose only callers are the people who wrote it is not deployed,
+    // however green its tests — and no amount of correctness work downstream could
+    // ever have surfaced through a flag nobody passes.
+    //
+    // The original opt-in rationale — "paying a query on every read of a hot poll
+    // surface to append an empty array is the wrong trade" — died when P-013 built
+    // the derived half (D-078): the roster signals are computed purely from snapshot
+    // rows already in hand, so they add no query and the block is no longer provably
+    // empty. What remained was a PAYLOAD SIZE trade, and `buildCoupledExpansion` caps
+    // the block (presence-cost.test.ts leg d), so it is bounded rather than unbounded.
+    //
+    // The QUERYING legs stay behind `include_detail` / an EXPLICIT `include_coupling:
+    // true`: they need `coordinationDomain`, which `presenceNeedsCoordinationDomain`
+    // resolves only for those two. So a default read gets the free roster-derived
+    // signals and pays nothing for the lock lane — the gate moved, it did not vanish.
     let coupling: Record<string, unknown> = {};
-    if (args.include_coupling === true && self) {
+    if (args.include_coupling !== false && self) {
       try {
         const edges = await listCouplingsFor(self.ownerId, c.workspaceId ?? undefined);
         // P-013 (scoping ruling D-078): the derived half, plugged in exactly where
@@ -241,9 +253,13 @@ export default defineTool({
         // metadata channel (`tool_invocations.metadata_json`), so
         // `lint:derived-signal-firings` can answer "has this relation ever fired in
         // production?" — the question no unit test can, and the one that would have
-        // caught `holds-a-lock-on` 12 days earlier (D-088). Cost is bounded to the
-        // opt-in `include_coupling` branch (11 calls across the whole retained
-        // window, measured 2026-08-09), never the 243-call default presence path.
+        // caught `holds-a-lock-on` 12 days earlier (D-088). ⚠ THIS NOW RIDES THE
+        // DEFAULT PATH (D-094) — it used to be bounded to the opt-in branch, all 11
+        // calls of it, which is precisely why ZERO rows in `tool_invocations` have
+        // ever carried `metadata_json.derivedSignals` and the detector built to
+        // answer "has this relation ever fired in production?" could not answer it
+        // for anyone. The census is a bounded per-call object on a path that already
+        // writes metadata; the firings data it finally collects is the point.
         const emitCensus = (c as { metadata?: (d: Record<string, unknown>) => void }).metadata;
         const derived = await deriveCouplings(
           self.ownerId,

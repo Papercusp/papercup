@@ -274,6 +274,14 @@
 .pc-zone--activity {
   border-left: 1px solid var(--pc-zone-rule);
 }
+/** The goal popup's BRIEF zone (P-022) — a left zone, so it takes the same
+ *  edge rule as Orders. Declared here beside its siblings rather than in
+ *  hud.css because `--pc-zone-rule` is defined by `.pc-zone` in THIS file, and
+ *  a rule that reaches for the token from another stylesheet is one import
+ *  ordering change away from resolving to nothing. */
+.pc-zone--brief {
+  border-right: 1px solid var(--pc-zone-rule);
+}
 
 /** A HORIZONTAL zone's name: an inline cap sharing the band's own row. */
 .pc-zone-cap {
@@ -1242,6 +1250,17 @@
  * the lint.
  */
 .pc-zone--peers {
+  border-left: 1px solid var(--pc-zone-rule);
+}
+
+/* The goal popup's WORK rail (plans + work items under a goal). Identical rule
+ * to `.pc-zone--peers`, and it existed as a borrow of that very class until
+ * P-021 — which put a REAL peers rail in the goal popup and so made the borrow
+ * an outright lie: two zones, both claiming to be the fleet rail, in one popup.
+ * Named separately rather than left to collide, because the next reader greps
+ * `pc-zone--peers` to find the fleet rail and must not land on the work rail.
+ * Declared here beside its siblings for the token-scoping reason above. */
+.pc-zone--work {
   border-left: 1px solid var(--pc-zone-rule);
 }
 

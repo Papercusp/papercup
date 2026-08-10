@@ -50,6 +50,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -220,6 +221,41 @@ function read(abs) {
   return fileCache.get(abs);
 }
 
+/**
+ * Source with COMMENTS MASKED — what every detector below scans.
+ *
+ * WHY (WI-37661, measured 2026-08-10): the detectors text-match tokens, and a comment is
+ * not code. D7's `D7_TAB_RE` matches a QUOTED role token, and its backtick alternative —
+ * there to catch template literals — also matches ordinary markdown code-quoting in prose.
+ * So a JSX comment in `OperatorChatSidebar.tsx` EXPLAINING why the kettle glyph was removed
+ * (it names the cast glyph for `kettle`/`overwatch`) was reported as a NEW UNGATED entry
+ * point "mounts tier tab token(s): kettle", red-pinning the fleet gate on a comment.
+ *
+ * That is structural for THIS census specifically: the plan it enforces
+ * (retire-mug-kettle-su-only-2026-08-09) is executed by writing comments that name the
+ * retired roles, so the guard was primed to fire on its own plan's documentation. Rewording
+ * the one offending comment would leave the trap armed for the next one.
+ *
+ * Two prior detectors already worked AROUND comment-blindness instead of removing it — the
+ * SELF_FILE exclusion (census:71, "its own doc comments name every shape it hunts") and
+ * D1_DEFINITION_SITES (which exists partly to skip a "header comment"). Those workarounds
+ * are now belt-and-braces rather than load-bearing.
+ *
+ * `stripCommentsOnly`, NOT `stripCommentsAndStrings`: the tokens these detectors read are
+ * quoted VALUES (`'kettle'`, `role: 'cup'`, the flags map's `MUG_*: 'papercusp-queen-*'`),
+ * so stripping string CONTENTS would blind the census completely — trading a false positive
+ * for a false negative, the worse direction for a guard. That is the per-call-site A/B the
+ * shared module's own docs prescribe.
+ *
+ * It is length- and newline-preserving (verified against the implementation, not its
+ * docstring), so `lineOf(...)` offsets and every reported line number stay exact.
+ */
+function code(abs) {
+  if (!codeCache.has(abs)) codeCache.set(abs, stripCommentsOnly(read(abs)));
+  return codeCache.get(abs);
+}
+const codeCache = new Map();
+
 const codeFiles = allFiles.filter((f) => CODE_EXT.has(path.extname(f)) && !isTestFile(f));
 
 /* ══════════════════════════════════════════════════════════════════════════════════
@@ -230,7 +266,7 @@ const codeFiles = allFiles.filter((f) => CODE_EXT.has(path.extname(f)) && !isTes
 const constants = new Map(); // NAME -> { value, file }
 const CONST_RE = /(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*(?::\s*[^=]+)?=\s*["'`]([^"'`]+)["'`]/g;
 for (const abs of codeFiles) {
-  const src = read(abs);
+  const src = code(abs);
   for (const m of src.matchAll(CONST_RE)) {
     if (!constants.has(m[1])) constants.set(m[1], { value: m[2], file: rel(abs) });
   }
@@ -247,7 +283,7 @@ const IMPORT_RE = /import\s*(?:type\s*)?\{([^}]+)\}\s*from\s*["'`]([^"'`]+)["'`]
 const importSources = new Map(); // absFile -> Map(localName -> moduleSpecifier)
 
 for (const abs of codeFiles) {
-  const src = read(abs);
+  const src = code(abs);
   if (!src.includes('import')) continue;
   const table = new Map();
   for (const m of src.matchAll(IMPORT_RE)) {
@@ -285,7 +321,7 @@ function symbolIsFromTier(abs, symbol) {
 const derivedConstants = new Map(); // NAME -> { value, from, file }
 const DERIVED_RE = /const\s+([A-Z][A-Z0-9_]*)\s*=\s*([A-Z][A-Z0-9_]*)\b/g;
 for (const abs of codeFiles) {
-  const src = read(abs);
+  const src = code(abs);
   for (const m of src.matchAll(DERIVED_RE)) {
     const [, name, base] = m;
     if (constants.has(name) || derivedConstants.has(name)) continue;
@@ -348,7 +384,7 @@ const D1_RE = /registerSystemAction\s*\(\s*([^,)]+)/g;
 const D1_DEFINITION_SITES = /harness\/routines\/(system-actions|register-system-actions)\.ts$/;
 let d1Sites = 0;
 for (const abs of codeFiles) {
-  const src = read(abs);
+  const src = code(abs);
   if (!src.includes('registerSystemAction')) continue;
   if (D1_DEFINITION_SITES.test(rel(abs))) continue;
   for (const m of src.matchAll(D1_RE)) {
@@ -370,7 +406,7 @@ for (const abs of codeFiles) {
    Shape: role: 'mug' | childRole: 'cup' | child_role = 'kettle' (incl. inside SQL).   */
 const D2_RE = /\b(?:role|childRole|child_role|parent_role|parentRole)\s*[:=]\s*["'`](mug|kettle|cup)["'`]/g;
 for (const abs of codeFiles) {
-  const src = read(abs);
+  const src = code(abs);
   for (const m of src.matchAll(D2_RE)) {
     if (!RETIRING_ROLES.has(m[1])) continue;
     add('spawn-role', abs, m.index, m[1], m[0].replace(/\s+/g, ' '));
@@ -382,7 +418,7 @@ for (const abs of codeFiles) {
    both resolve to 'coding' — the same id ordinary coding sessions use.                */
 const D3_RE = /fireLaunchBlueprint\s*\(\s*([^,)]+)/g;
 for (const abs of codeFiles) {
-  const src = read(abs);
+  const src = code(abs);
   if (!src.includes('fireLaunchBlueprint')) continue;
   for (const m of src.matchAll(D3_RE)) {
     const r = resolveArg(m[1]);
@@ -400,7 +436,7 @@ for (const abs of codeFiles) {
    Shape: name: 'pot:start' inside a tooldef.                                          */
 const D4_RE = /name\s*:\s*["'`]((?:pot|cup|kettle|overwatch|mug):[a-z0-9_-]+)["'`]/gi;
 for (const abs of codeFiles) {
-  const src = read(abs);
+  const src = code(abs);
   for (const m of src.matchAll(D4_RE)) {
     const toolName = m[1];
     if (!DOMAIN_TOOL_PREFIXES.some((p) => toolName.toLowerCase().startsWith(p))) continue;
@@ -412,9 +448,17 @@ for (const abs of codeFiles) {
    Shape: KEY: "papercusp-…" in libs/flags/src/types.ts. Matched on KEY or VALUE, since
    the lexicon rename left keys (MUG_*) and values ("papercusp-queen-*") out of sync.   */
 const FLAGS_FILE = path.join(REPO_ROOT, 'libs/flags/src/types.ts');
-const D5_RE = /^\s*([A-Z][A-Z0-9_]*)\s*:\s*["'`]([a-z0-9-]+)["'`]\s*,/gm;
+/**
+ * `[ \t]*`, NOT `\s*`, after the `^` anchor — `\s` matches NEWLINES, and this scans
+ * comment-masked source where a comment block becomes a run of spaces AND blank lines.
+ * With `\s*` the match started at the top of that whitespace run and swallowed it, so
+ * `m.index` (and therefore the reported line) pointed at the doc COMMENT above the flag
+ * instead of the flag itself. Caught by mug-kettle-census-comment-blindness.test.ts —
+ * masking comments and anchoring with `\s*` interact, and neither is wrong alone.
+ */
+const D5_RE = /^[ \t]*([A-Z][A-Z0-9_]*)\s*:\s*["'`]([a-z0-9-]+)["'`]\s*,/gm;
 if (fs.existsSync(FLAGS_FILE)) {
-  const src = read(FLAGS_FILE);
+  const src = code(FLAGS_FILE);
   for (const m of src.matchAll(D5_RE)) {
     const [, key, value] = m;
     const hit = namesTier(key, value);
@@ -448,7 +492,7 @@ for (const abs of allFiles) {
   const r = rel(abs);
   if (!/\.tsx?$/.test(r) || isTestFile(r)) continue;
   const base = path.basename(r, path.extname(r));
-  const src = read(abs);
+  const src = code(abs);
   const tabHits = [...src.matchAll(D7_TAB_RE)];
 
   if (NAMED_CONTROL_SURFACES.test(base)) {
@@ -475,7 +519,7 @@ const D8_FNS = [
 ];
 let d8Rejected = 0;
 for (const abs of codeFiles) {
-  const src = read(abs);
+  const src = code(abs);
   for (const fn of D8_FNS) {
     const re = new RegExp(`\\b${fn}\\s*\\(`, 'g');
     for (const m of src.matchAll(re)) {

@@ -55,9 +55,6 @@ import { censusDerivedSignals, type DerivedSignalCensus } from './derived-signal
  * divergence check while still looking fine to a human reading `expanded[]`.
  */
 
-/** How many overlapping files to NAME before summarising the rest. */
-export const DERIVATION_FILES_NAMED = 2;
-
 /** How many overlapping LOCK HOLDS to name before summarising the rest. */
 export const DERIVATION_LOCKS_NAMED = 2;
 
@@ -71,9 +68,6 @@ export const DERIVATION_LOCKS_NAMED = 2;
 export interface DerivationRow {
   ownerId?: string | null;
   fleetSlug?: string | null;
-  /** ⚠ EMPTY IN PRACTICE — see `deriveCouplingsFromRoster`'s note. Kept because it
-   *  is free and correct when populated; the LOCK-HOLD signal is the real one. */
-  currentFiles?: readonly string[] | null;
   awaitingEventKey?: string | null;
   currentPlanSlug?: string | null;
   claimedItems?: readonly string[] | null;
@@ -100,16 +94,6 @@ function fileSet(v: unknown): Set<string> {
   return out;
 }
 
-/** Render the shared-file signal, naming a bounded number of paths. */
-function sharedFilesPhrase(shared: readonly string[]): string {
-  const named = shared.slice(0, DERIVATION_FILES_NAMED);
-  const rest = shared.length - named.length;
-  const list = named.join(', ');
-  return rest > 0
-    ? `both working in ${list} (+${rest} more shared ${rest === 1 ? 'file' : 'files'})`
-    : `both working in ${list}`;
-}
-
 /**
  * Derive coupled peers from the caller's own roster.
  *
@@ -118,19 +102,28 @@ function sharedFilesPhrase(shared: readonly string[]): string {
  * why a peer coupled three ways reads "same fleet; both working in x; ..." and
  * not just the first signal that happened to fire.
  *
- * Signal order is fixed (fleet → files → awaited event) and rows are visited in
- * the order given, so two readers with the same roster derive the same string.
+ * Rows are visited in the order given, so two readers with the same roster
+ * derive the same string.
  *
- * ⚠ THE `currentFiles` SIGNAL IS ALL BUT DEAD IN PRACTICE — kept deliberately,
- * not by oversight. `current_files` is a real emitted roster field, but it is
- * populated ONLY by an explicit `coord:declare-intent { current_files }`, and
- * every declare that OMITS the arg RESETS it to `[]`. Measured live 2026-07-27
- * (EI-18772330418885814, recorded in audience.ts): 119 live presence rows, ZERO
- * with a non-empty `current_files`. The `@file:` audience selector hit exactly
- * this and drew the conclusion this module now follows — a live FILE LOCK is the
+ * ⛔ NO `shared-file` EDGE HERE — the `currentFiles` signal was REMOVED
+ * 2026-08-10 (D-093) after measuring ZERO shared-file edges across 14 days of
+ * production divergence stamps. It was never a bug, just permanently starved:
+ * `current_files` is populated ONLY by an explicit
+ * `coord:declare-intent { current_files }`, and every declare that OMITS the arg
+ * RESETS it to `[]`, so measured live 2026-07-27 (EI-18772330418885814) 119 live
+ * presence rows carried ZERO non-empty `current_files`. A live FILE LOCK is the
  * strongest, and the only AUTOMATIC, "this agent is on this file" signal there
- * is. So the working file signal is `deriveCouplingsFromHeldFiles`; this one is
- * retained because it costs nothing and is correct on the rare row that has it.
+ * is, so `deriveCouplingsFromHeldFiles` fully supersedes it. Keeping a signal
+ * that cannot fire is not free: it sat in the dead-signal census forever, where
+ * a permanently-starved leg is indistinguishable from a newly-broken one.
+ *
+ * ⚠ THE ROSTER FIELD `current_files` ITSELF STAYS — do not "finish the job" by
+ * removing it (D-095). It has a real writer (session-brief.ts) and live
+ * consumers (adv-roster.ts, agent-orders-notify.ts). Only the COUPLING SIGNAL
+ * derived from it is gone. The comment this file used to carry — "populated only
+ * by explicit declare-intent, 119 live rows zero populated" — is a statement
+ * about AGENTS not populating the field, NOT about the code lacking a writer,
+ * and it was misread as the latter once already.
  *
  * The general lesson, since it nearly shipped silently here: a green unit test
  * over hand-built fixtures cannot distinguish "field is wrong" from "field is
@@ -159,7 +152,6 @@ export function deriveCouplingsFromRoster(
   // a caller outside its own roster is a scope question, not a coupling question.
   if (!selfRow) return [];
 
-  const myFiles = fileSet(selfRow.currentFiles);
   const myAwait = cleanId(selfRow.awaitingEventKey);
 
   const out: DerivedCoupling[] = [];
@@ -175,15 +167,6 @@ export function deriveCouplingsFromRoster(
     // Do not "restore the missing fleet signal": fleet membership is already on every roster
     // row as `fleetSlug`, so deriving an edge from it buys volume and no information. See
     // DERIVED_COUPLING_RELATIONS for the measured blast radius (18-member fleet ⇒ 306 edges).
-
-    if (myFiles.size > 0) {
-      const shared: string[] = [];
-      for (const f of fileSet(row.currentFiles)) if (myFiles.has(f)) shared.push(f);
-      if (shared.length > 0) {
-        shared.sort();
-        out.push({ ownerId, relation: 'shared-file', because: sharedFilesPhrase(shared) });
-      }
-    }
 
     if (myAwait && cleanId(row.awaitingEventKey) === myAwait) {
       out.push({ ownerId, relation: 'awaits', because: `both awaiting ${myAwait}` });

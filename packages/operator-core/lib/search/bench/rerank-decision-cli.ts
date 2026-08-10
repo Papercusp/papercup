@@ -77,6 +77,7 @@ import {
   instrumentValidity,
   pairedDifference,
   requiredPairs,
+  rescueCeiling,
   reweightToPopulation,
   type RerankOpportunity,
 } from './rerank-decision';
@@ -130,6 +131,8 @@ interface Outcome {
   ndcgTreatment: Record<number, number>;
   orderMoved: boolean;
   attempted: boolean;
+  /** When !attempted: 'nothing-to-reorder' (benign) | 'no-engine' | 'threw:*'. */
+  skipReason: string | null;
   engine: string | null;
 }
 
@@ -286,6 +289,11 @@ async function main(): Promise<void> {
 
         let attempted = false;
         let engine: string | null = null;
+        // WHY the stage did not engage, when it did not. The three reasons mean
+        // OPPOSITE things — 'nothing-to-reorder' is a benign 1-row pool, while
+        // 'no-engine'/'threw:*' are engine failures — so a run that does not
+        // record this cannot tell a healthy exclusion from a dark engine.
+        let skipReason: string | null = null;
         // limit = pool.length: REORDER without cutting. The cut is applied
         // afterwards, per-k, so one rerank call serves the whole sweep.
         const reranked = await rerankRows<SearchHit>(s.query, pool, {
@@ -299,6 +307,7 @@ async function main(): Promise<void> {
           onOutcome: (o) => {
             attempted = o.attempted;
             if (o.attempted && o.reason) engine = o.reason;
+            if (!o.attempted) skipReason = o.reason ?? 'unknown';
           },
         });
         const treatmentKeys = reranked.map(hitId);
@@ -320,6 +329,7 @@ async function main(): Promise<void> {
           ndcgTreatment,
           orderMoved: !sameOrder(controlKeys, treatmentKeys),
           attempted,
+          skipReason,
           engine,
         });
       } catch (err) {
@@ -341,11 +351,13 @@ async function main(): Promise<void> {
 
   // ── Instrument validity FIRST. A void run must not print a verdict. ──
   const engineSeen = outcomes.find((o) => o.engine)?.engine ?? null;
+  const skipped = outcomes.filter((o) => !o.attempted);
   const validity = instrumentValidity({
     attempted: outcomes.filter((o) => o.attempted).length,
     total: outcomes.length,
     ordersMoved: outcomes.filter((o) => o.orderMoved).length,
     engine: engineSeen,
+    benignSkips: skipped.filter((o) => o.skipReason === 'nothing-to-reorder').length,
   });
 
   console.log(`## Run health\n`);
@@ -355,6 +367,13 @@ async function main(): Promise<void> {
     `| ${outcomes.length} | ${outcomes.filter((o) => o.attempted).length} | ` +
       `${outcomes.filter((o) => o.orderMoved).length} | ${engineSeen ?? '**NONE RECORDED**'} |\n`,
   );
+  if (skipped.length) {
+    // A bare "N did not engage" conflates a benign 1-row pool with a dark
+    // engine. Name the reasons so the reader can tell which happened.
+    const byReason = new Map<string, number>();
+    for (const o of skipped) byReason.set(o.skipReason ?? 'unknown', (byReason.get(o.skipReason ?? 'unknown') ?? 0) + 1);
+    console.log(`Non-engagement by reason: ` + [...byReason].map(([r, n]) => `\`${r}\` ×${n}`).join(', ') + `\n`);
+  }
   if (!validity.ok) {
     console.log(`## ⛔ RUN VOIDED — do NOT read a verdict from it\n`);
     for (const r of validity.reasons) console.log(`- ${r}`);
@@ -453,6 +472,33 @@ async function main(): Promise<void> {
         `production effect: a large win confined to \`order-blocked\` is scaled by that stratum's ` +
         `share, and a demotion inside \`admitted\` subtracts from it.`,
     );
+  }
+
+  // ── The ceiling on what reranking could EVER contribute. ──
+  // Printed UNCONDITIONALLY, including when `order-blocked` is empty — that is
+  // precisely the case the old sizing block stayed silent on, and the case where
+  // a bound is decisive rather than merely suggestive.
+  const obAll = outcomes.filter((o) => o.opportunity === 'order-blocked');
+  const ceiling = rescueCeiling({ observed: obAll.length, n: outcomes.length });
+  if (ceiling) {
+    console.log(`\n## Ceiling — the most reranking could EVER be worth here\n`);
+    console.log(
+      `\`order-blocked\` observed **${obAll.length}/${outcomes.length}**; 95% upper bound on its ` +
+        `population share = **${(ceiling.shareUpperBound * 100).toFixed(2)}%**.\n`,
+    );
+    console.log(
+      `nDCG ∈ [0,1], so a target below the cut scores 0 and can gain at most 1.0 by being lifted to ` +
+        `rank 1. A **PERFECT** reranker — rescuing every order-blocked query flawlessly, and never ` +
+        `demoting an admitted one — therefore raises population nDCG@${PRIMARY_CUT} by at most ` +
+        `**+${ceiling.populationCeiling.toFixed(4)}**.\n`,
+    );
+    if (obAll.length === 0)
+      console.log(
+        `⚠ This is a bound derived from an ABSENCE, and it is a CONCLUSION, not a shortfall: a larger ` +
+          `sample can only lower it. If this ceiling is under the smallest effect worth shipping, the ` +
+          `integration question is closed at this over-fetch — the lever is retrieval REACH (pool size), ` +
+          `not ranking order.\n`,
+      );
   }
 
   // ── Sizing guidance for the NEXT run. ──

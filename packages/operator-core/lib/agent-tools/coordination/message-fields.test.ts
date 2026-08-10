@@ -464,10 +464,13 @@ describe('couplingDivergenceVerdict (D-087) — three-valued, deliberately', () 
     );
   });
 
-  it('does not accept a shared declared FILE as confirmation of a LOCK claim', () => {
+  it('does not accept a merely-ADJACENT computed signal as confirmation of a LOCK claim', () => {
     // Quietly widening the token to "near enough" is how a diff starts agreeing
-    // with itself. A declared working-file is not a lock.
-    expect(couplingDivergenceVerdict({ relation: 'holds-a-lock-on' }, ['shared-file'])).toBe(
+    // with itself. Until 2026-08-10 this was asserted against `shared-file` — a
+    // DECLARED working-file, which is not a lock — but D-093 retired that relation
+    // and the case became inexpressible in the type. The rule is unchanged, so it
+    // is re-anchored on another live relation rather than deleted with its signal.
+    expect(couplingDivergenceVerdict({ relation: 'holds-a-lock-on' }, ['awaits'])).toBe(
       'not-comparable',
     );
   });

@@ -80,7 +80,6 @@ export type DerivedSignalLeg = 'roster' | 'heldFiles' | 'planEdges' | 'recentPar
  * produced both incidents above.
  */
 export const DERIVED_SIGNAL_LEGS = {
-  'shared-file': 'roster',
   'holds-a-lock-on': 'heldFiles',
   awaits: 'roster',
   'blocks-me': 'planEdges',

@@ -326,4 +326,9 @@ export const CENSUS_EXCLUSIONS: Readonly<Record<string, string>> = {
     '(context-injection-retrieval-reach-and-visibility-2026-08-03) run by hand via `npx tsx`, asking how much ' +
     'of the corpus leg an upstream reranker can actually control. It calls the engine to MEASURE, and is ' +
     'imported by no route, tool, or product path — only by its own unit test. Never runs in the operator.',
+  'search/bench/rerank-decision-cli.ts':
+    'Same class as the two memory/bench CLIs above: the WI-37653 reranker INTEGRATION benchmark, ' +
+    'owner-directed 2026-08-10 to decide how to integrate the reranker. It calls the engine to MEASURE ' +
+    'retrieval quality, so its results ARE the experiment rather than something a user sees. Measured ' +
+    '2026-08-10: nothing imports it at all (not even a unit test) — it is run by hand via `npx tsx`.',
 };

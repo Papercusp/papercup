@@ -34,16 +34,25 @@ let syncResult: { data: unknown[] | null; loading: boolean; error: unknown } = {
    job here is to flip a boolean. */
 vi.mock('nuqs', async () => {
   const React = await import('react');
-  return {
-    parseAsBoolean: {
-      withDefault(defaultValue: boolean) {
-        return { defaultValue };
-      },
+  /* P-021: the panel now mounts AgentOrders and AgentDossier, whose shared
+     `useRailCollapse` reaches for `parseAsString` — so a mock carrying only
+     `parseAsBoolean` throws "No parseAsString export is defined" from inside
+     the render path. Both parsers are therefore built by ONE factory rather
+     than enumerated: the failure mode of this mock is that it silently lags the
+     component's parser vocabulary, and the next parser added would otherwise
+     break it the same way again. */
+  const parser = <T,>() => ({
+    withDefault(defaultValue: T) {
+      return { defaultValue };
     },
-    useQueryState(_key: string, parser?: { defaultValue?: boolean }) {
-      const [value, setValue] = React.useState(parser?.defaultValue ?? null);
+  });
+  return {
+    parseAsBoolean: parser<boolean>(),
+    parseAsString: parser<string>(),
+    useQueryState(_key: string, p?: { defaultValue?: unknown }) {
+      const [value, setValue] = React.useState(p?.defaultValue ?? null);
       const set = React.useCallback((next: unknown) => {
-        setValue(typeof next === 'function' ? (next as (p: unknown) => boolean)(value) : (next as boolean));
+        setValue(typeof next === 'function' ? (next as (prev: unknown) => unknown)(value) : next);
         return Promise.resolve(new URLSearchParams());
       }, [value]);
       return [value, set];
@@ -51,10 +60,22 @@ vi.mock('nuqs', async () => {
   };
 });
 
+/* P-021 added a SECOND query to this panel (`advRoster.list`, feeding the
+   borrowed Activity and Fleet rails). The mock therefore answers PER QUERY
+   NAME: a single shared `syncResult` would hand the goal-detail payload to the
+   roster reader too, which is not merely untidy — it would make the fleet rail
+   assertions untestable, because a payload with no `active[]` derives a null
+   fleet model no matter what the component does. */
+let rosterResult: { data: unknown[] | null; loading: boolean; error: unknown } = {
+  data: null,
+  loading: false,
+  error: null,
+};
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
     syncCalls.push(opts);
-    return { ...syncResult, fetching: false, invalidate: vi.fn() };
+    const result = opts.queryName === 'advRoster.list' ? rosterResult : syncResult;
+    return { ...result, fetching: false, invalidate: vi.fn() };
   },
 }));
 
@@ -102,6 +123,7 @@ vi.mock('@/app/_components/chat/SessionChatModal', () => ({
 beforeEach(() => {
   syncCalls.length = 0;
   syncResult = { data: null, loading: false, error: null };
+  rosterResult = { data: null, loading: false, error: null };
   // Default: no session resolved, so a test that does not opt in gets the
   // inert-chat baseline rather than another test's leftover state.
   chatState = {};
@@ -598,11 +620,231 @@ describe('GoalDetailPanel', () => {
       expect(screen.getByTestId('goal-waiting-jump').textContent).toContain('2 waiting on you');
     });
 
+    it('keeps the brief BESIDE the conversation, never wrapping it (P-022)', () => {
+      // The owner's ask was "the conversation takes up the full height", and the
+      // mechanism is structural: the brief is a SIBLING zone, so the chat column
+      // has nothing stacked above it. Asserted as containment rather than by
+      // reading a flex value, because a style assertion would still pass if the
+      // brief were nested back inside the conversation column.
+      renderPanel(detail());
+      const brief = screen.getByTestId('goal-brief-rail');
+      const chat = screen.getByTestId('goal-chat');
+      expect(brief.contains(chat)).toBe(false);
+      expect(chat.contains(brief)).toBe(false);
+      // Same invariant SessionChatModal states twice for its own rails: a zone
+      // that becomes a PARENT of the conversation silently breaks the layout
+      // contract, and nothing else in the tree would catch it.
+      expect(screen.getByTestId('goal-detail-modal').contains(brief)).toBe(true);
+    });
+
+    it('the brief zone can be closed, and closing it leaves the conversation mounted', () => {
+      renderPanel(detail());
+      expect(screen.getByTestId('goal-brief-rail')).toBeTruthy();
+      fireEvent.click(screen.getByTestId('goal-brief-toggle'));
+      expect(screen.queryByTestId('goal-brief-rail')).toBeNull();
+      // The point of the toggle is more room for the conversation — so the
+      // conversation must survive it.
+      expect(screen.getByTestId('goal-chat')).toBeTruthy();
+    });
+
     it('stays silent at zero — no control, no note', () => {
       renderPanel(detail({ waitingOnYou: [], waitingOnYouTotal: 0 }));
       expect(screen.queryByTestId('goal-waiting-jump')).toBeNull();
       expect(screen.queryByTestId('goal-waiting-note')).toBeNull();
       expect(document.body.textContent).toContain('Nothing is parked on you.');
+    });
+  });
+
+  /* ── P-021: the sessions popup's rails, IN ADDITION ───────────────────────
+     [owner 2026-08-10, verbatim] "the conversation popup for goals should
+     ahve all the smae left and right panels as the conversation popup in the
+     sessions tab. the additional ones shoudl be IN ADDITION not instead of."
+
+     These guards are written against STRUCTURE, not against widths or flex
+     values. A test that reads a computed style passes just as happily when a
+     zone has been nested back inside the conversation — which is precisely the
+     regression that would undo P-022's full-height contract while every number
+     still looked right. */
+  describe('P-021: the borrowed session rails', () => {
+    const AGENT = { ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' };
+    const withAgent = () => detail({ agents: [AGENT] });
+
+    /** A roster row, complete enough to survive `toHudSession`.
+     *
+     *  Built from a factory rather than written inline: several of these fields
+     *  are REQUIRED on `HudRosterEntry` (`claims`, `currentFiles`, `modes`), so
+     *  the server always sends them and the real derivation dereferences them
+     *  unguarded — `e.claims.length`. A hand-thinned literal therefore throws
+     *  inside `deriveFleetPeers`, which looks like a product bug and is not.
+     *  ⚠ The right fix for that throw is THIS, not a `?? []` in the component:
+     *  defaulting a required field in production would hide a genuinely
+     *  malformed payload behind an empty rail. */
+    function rosterEntry(over: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        ownerId: 'su-abc',
+        label: 'su · abc',
+        source: 'presence',
+        intent: 'working the goal',
+        currentFiles: [],
+        liveness: 'live',
+        sessionState: 'live',
+        stale: false,
+        lastActiveAt: new Date(NOW).toISOString(),
+        intentDeclaredAt: new Date(NOW).toISOString(),
+        loopArmed: true,
+        modes: [],
+        pidAlive: true,
+        claims: [],
+        declaredUnclaimed: false,
+        currentPlanSlug: null,
+        harnessSlug: 'papercusp',
+        agentPaneKind: 'claude',
+        role: 'su',
+        agent: 'claude',
+        advSessionId: 1,
+        windowId: null,
+        wakeMode: 'auto',
+        pendingWakes: 0,
+        /** The field that decides whether there is a fleet at all — absent, and
+         *  `deriveFleetPeers` returns null, which is the common case for a
+         *  goal's single directed agent. */
+        fleetSlug: null,
+        fleetColor: null,
+        fleetRole: null,
+        contextTokens: 1000,
+        compactionLimit: 400_000,
+        openAwait: null,
+        thinking: false,
+        ...over,
+      };
+    }
+    function rosterRows(rows: Array<Record<string, unknown>>) {
+      rosterResult = { data: [{ active: rows }], loading: false, error: null };
+    }
+    const inFleet = [rosterEntry({ fleetSlug: 'fleet-x' })];
+
+    it('renders the three borrowed zones IN ADDITION to the goal’s own two, never instead of them', () => {
+      rosterRows(inFleet);
+      renderPanel(withAgent());
+      // The goal's own two — the thing "in addition, not instead of" protects.
+      expect(screen.getByTestId('goal-brief-rail')).toBeTruthy();
+      expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+      // …and the three borrowed from the sessions popup.
+      expect(screen.getByTestId('goal-orders-rail')).toBeTruthy();
+      expect(screen.getByTestId('goal-dossier-rail')).toBeTruthy();
+      expect(screen.getByTestId('goal-peers-rail')).toBeTruthy();
+    });
+
+    it('seats every borrowed zone as a SIBLING of the conversation, never inside or around it', () => {
+      rosterRows(inFleet);
+      renderPanel(withAgent());
+      const chat = screen.getByTestId('goal-chat');
+      for (const id of ['goal-orders-rail', 'goal-dossier-rail', 'goal-peers-rail']) {
+        const zone = screen.getByTestId(id);
+        // Containment asserted BOTH ways: nesting a zone inside the
+        // conversation, or wrapping the conversation in one, are the two shapes
+        // that break the layout contract while still rendering something
+        // plausible at one particular width.
+        expect(chat.contains(zone)).toBe(false);
+        expect(zone.contains(chat)).toBe(false);
+      }
+    });
+
+    it('keeps DOM order equal to the promised reading order, so tab order cannot contradict the layout', () => {
+      rosterRows(inFleet);
+      renderPanel(withAgent());
+      /* Orders │ Brief │ conversation │ Work │ Activity │ Fleet. This is the
+         guard that forbids reaching for CSS `order` to place a zone: `order`
+         moves the pixels and leaves the tab sequence behind, which is the a11y
+         failure this codebase already rejects elsewhere. */
+      const nodes = [
+        'goal-orders-rail',
+        'goal-brief-rail',
+        'goal-chat',
+        'goal-work-rail',
+        'goal-dossier-rail',
+        'goal-peers-rail',
+      ].map((id) => screen.getByTestId(id));
+      for (let i = 1; i < nodes.length; i += 1) {
+        const rel = nodes[i - 1]!.compareDocumentPosition(nodes[i]!);
+        expect(rel & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    });
+
+    it('renders no borrowed zone and no toggle for one when the goal has no agent', () => {
+      rosterRows(inFleet);
+      renderPanel(detail({ agents: [] }));
+      // Absent, not present-and-inert — WI-6742's dead-control shape, which
+      // this popup has already been filed against once.
+      for (const id of [
+        'goal-orders-rail',
+        'goal-dossier-rail',
+        'goal-peers-rail',
+        'goal-orders-toggle',
+        'goal-activity-toggle',
+        'goal-fleet-toggle',
+      ]) {
+        expect(screen.queryByTestId(id)).toBeNull();
+      }
+      // The goal's own zones are untouched: the borrowed rails are context
+      // ABOUT an agent, never a precondition for showing the goal.
+      expect(screen.getByTestId('goal-brief-rail')).toBeTruthy();
+      expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+    });
+
+    it('shows the fleet zone only when the agent is actually in a fleet — never an empty column', () => {
+      rosterRows(inFleet);
+      const { unmount } = renderPanel(withAgent());
+      expect(screen.getByTestId('goal-peers-rail')).toBeTruthy();
+      expect(screen.getByTestId('goal-fleet-toggle')).toBeTruthy();
+      unmount();
+      cleanup();
+
+      // Same agent, no fleet. The zone AND its toggle go away together.
+      rosterRows([rosterEntry({ fleetSlug: null })]);
+      renderPanel(withAgent());
+      expect(screen.queryByTestId('goal-peers-rail')).toBeNull();
+      expect(screen.queryByTestId('goal-fleet-toggle')).toBeNull();
+      // …while the two that need no fleet stay. A regression that gated all
+      // three on the fleet model would pass the previous assertions alone.
+      expect(screen.getByTestId('goal-orders-rail')).toBeTruthy();
+      expect(screen.getByTestId('goal-dossier-rail')).toBeTruthy();
+    });
+
+    it('closing a borrowed zone leaves the conversation and the other zones mounted', () => {
+      rosterRows(inFleet);
+      renderPanel(withAgent());
+      fireEvent.click(screen.getByTestId('goal-orders-toggle'));
+      expect(screen.queryByTestId('goal-orders-rail')).toBeNull();
+      // The point of every toggle here is more room for the conversation, so
+      // the conversation must survive each one.
+      expect(screen.getByTestId('goal-chat')).toBeTruthy();
+      expect(screen.getByTestId('goal-dossier-rail')).toBeTruthy();
+      expect(screen.getByTestId('goal-peers-rail')).toBeTruthy();
+    });
+
+    it('adds exactly ONE query of its own for the borrowed rails — the shared roster read', () => {
+      rosterRows(inFleet);
+      renderPanel(withAgent());
+      /* The reuse-first claim, pinned — and stated honestly. The two rails are
+         SELF-SUFFICIENT components (that is what makes them reusable), so
+         `agentOrders.byOwner` and `agentDetail.byOwner` are theirs and appear
+         here by design. What this panel adds is exactly ONE read,
+         `advRoster.list`, serving the dossier's entry and the fleet derivation
+         both — `useSyncQuery` caches by {queryName, args}, so a second reader
+         is free.
+
+         Pinned as the whole SET rather than as a count, so it fails in both
+         directions: a rail given a redundant panel-level fetch shows up as a
+         fifth name, and a rail that stopped fetching shows up as a missing one.
+         A set, not a tally, because React re-renders re-issue the same calls
+         and a raw count would be flaky. */
+      expect([...new Set(syncCalls.map((c) => c.queryName))].sort()).toEqual([
+        'advRoster.list',
+        'agentDetail.byOwner',
+        'agentOrders.byOwner',
+        'goals.detail',
+      ]);
     });
   });
 });

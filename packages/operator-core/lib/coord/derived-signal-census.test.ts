@@ -103,20 +103,26 @@ describe('armed is not emitted — the distinction the bare firing count could n
   });
 
   /**
-   * `current_files`'s shape: the relation is wired and consulted every run, and the
-   * field it reads is empty on essentially every roster row. Reporting this
-   * identically to the unarmed case would send someone to fix a gate that is fine.
+   * The wired-but-starved shape: a relation consulted on every run whose input
+   * simply has nothing in it. Reporting this identically to the unarmed case would
+   * send someone to fix a gate that is fine.
+   *
+   * ⚠ This used to be anchored on `shared-file`, whose starvation was PERMANENT —
+   * and that is the distinction the census could not draw, so the relation was
+   * retired instead (D-093). Keeping it would have meant a leg reporting
+   * `armed:true, inputs:0` forever, which is indistinguishable from a signal that
+   * broke this morning. `awaits` is the right anchor: same roster leg, but a
+   * relation that genuinely does fire, so a starved reading is real information.
    */
   it('separates a wired-but-starved leg from an unwired one', () => {
     const starved = censusDerivedSignals(
       { ...LEGS_ALL_ARMED, roster: { armed: true, inputs: 0 } },
       [],
     );
-    expect(starved.relations['shared-file']).toEqual({ armed: true, inputs: 0, edges: 0 });
-    expect(starved.relations['shared-file'].armed).not.toBe(
-      censusDerivedSignals({ ...LEGS_ALL_ARMED, roster: { armed: false, inputs: 0 } }, []).relations[
-        'shared-file'
-      ].armed,
+    expect(starved.relations.awaits).toEqual({ armed: true, inputs: 0, edges: 0 });
+    expect(starved.relations.awaits.armed).not.toBe(
+      censusDerivedSignals({ ...LEGS_ALL_ARMED, roster: { armed: false, inputs: 0 } }, []).relations
+        .awaits.armed,
     );
   });
 });

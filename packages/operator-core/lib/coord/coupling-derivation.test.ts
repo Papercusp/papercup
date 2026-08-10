@@ -52,23 +52,23 @@ describe('deriveCouplingsFromRoster', () => {
     expect(derived).toEqual([]);
   });
 
-  it('couples peers holding an overlapping file, naming it', () => {
+  // THE D-093 RECURRENCE GUARD, written in the same shape as the D-054 one above
+  // and for the same reason. Two tests here used to assert that overlapping
+  // `currentFiles` DOES couple two agents; both were green for the signal's whole
+  // life while it produced ZERO edges in production across 14 days of divergence
+  // stamps. The field is real but empty on essentially every roster row
+  // (EI-18772330418885814: 119 live rows, zero populated), so hand-built fixtures
+  // could only ever prove the code path works — never that anything reaches it.
+  it('does NOT couple two agents over overlapping currentFiles (D-093)', () => {
     const derived = deriveCouplingsFromRoster('su-me', [
       row({ ownerId: 'su-me', currentFiles: ['a.ts', 'b.ts'] }),
       row({ ownerId: 'su-peer', currentFiles: ['b.ts', 'c.ts'] }),
-      row({ ownerId: 'su-far', currentFiles: ['z.ts'] }),
     ]);
-    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'shared-file', because: 'both working in b.ts' }]);
-  });
-
-  it('bounds how many overlapping files it names and summarises the rest', () => {
-    const derived = deriveCouplingsFromRoster('su-me', [
-      row({ ownerId: 'su-me', currentFiles: ['a.ts', 'b.ts', 'c.ts', 'd.ts'] }),
-      row({ ownerId: 'su-peer', currentFiles: ['a.ts', 'b.ts', 'c.ts', 'd.ts'] }),
-    ]);
-    expect(derived).toEqual([
-      { ownerId: 'su-peer', relation: 'shared-file', because: 'both working in a.ts, b.ts (+2 more shared files)' },
-    ]);
+    // Superseded by `holds-a-lock-on`, which reads a LIVE LOCK — the only
+    // automatic "this agent is on this file" signal there is. ⚠ This asserts the
+    // COUPLING SIGNAL is gone, NOT that the roster field is: `current_files` has a
+    // live writer and live consumers and must stay (D-095).
+    expect(derived).toEqual([]);
   });
 
   it('couples peers parked on the SAME awaited event', () => {
@@ -107,10 +107,17 @@ describe('deriveCouplingsFromRoster', () => {
   });
 
   it('never couples the caller to itself', () => {
+    // ⚠ NON-VACUOUS BY CONSTRUCTION: the peer proves the signal is live on this
+    // very roster, so the empty self-edge is the assertion doing work rather than
+    // nothing firing at all. (Until 2026-08-10 this passed a lone self row whose
+    // only signal was `currentFiles`; once that emit went it would have asserted
+    // an emptiness that no longer had anything to do with self-coupling.)
     const derived = deriveCouplingsFromRoster('su-me', [
-      row({ ownerId: 'su-me', fleetSlug: 'alpha', currentFiles: ['x.ts'] }),
+      row({ ownerId: 'su-me', awaitingEventKey: 'gate:1' }),
+      row({ ownerId: 'su-peer', awaitingEventKey: 'gate:1' }),
     ]);
-    expect(derived).toEqual([]);
+    expect(derived).toHaveLength(1);
+    expect(derived.map((d) => d.ownerId)).not.toContain('su-me');
   });
 
   it('returns empty when the caller has no row of its own', () => {
@@ -135,17 +142,18 @@ describe('deriveCouplingsFromRoster', () => {
         { ownerId: 'su-peer', fleetSlug: 'alpha', currentFiles: [null, 7, 'x.ts'] },
       ]),
     ).not.toThrow();
-    // The junk entries are now EXERCISED INTO AN EMITTED EDGE rather than sitting
-    // beside one: the caller's list is well-formed, so the peer's `[null, 7,
-    // 'x.ts']` must be cleaned down to the single real overlap. Until 2026-08-09
-    // this asserted a `same-fleet` edge derived from `fleetSlug`, which meant the
-    // malformed `currentFiles` never actually reached the emit path it names.
+    // The junk is EXERCISED INTO AN EMITTED EDGE rather than sitting beside one:
+    // a surviving signal must still fire on a roster full of malformed rows.
+    // ⚠ This has now been re-anchored TWICE for the same reason — first off
+    // `fleetSlug` (D-054), then off `currentFiles` (D-093) — because each time the
+    // relation it rode was retired the test kept passing while exercising nothing.
+    // Anchor it to a signal that is LIVE, and re-anchor it the day that changes.
     const derived = deriveCouplingsFromRoster('su-me', [
-      { ownerId: 'su-me', fleetSlug: 'alpha', currentFiles: ['x.ts'] },
-      { ownerId: 'su-peer', fleetSlug: 'alpha', currentFiles: [null, 7, 'x.ts'] },
+      { ownerId: 'su-me', fleetSlug: 'alpha', awaitingEventKey: 'gate:1' },
+      { ownerId: 'su-peer', fleetSlug: 'alpha', awaitingEventKey: 'gate:1' },
     ]);
     expect(derived).toEqual([
-      { ownerId: 'su-peer', relation: 'shared-file', because: 'both working in x.ts' },
+      { ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting gate:1' },
     ]);
   });
 
@@ -163,19 +171,39 @@ describe('deriveCouplingsFromRoster', () => {
 
 describe('deriveCouplingsFromRoster ∘ resolveCoupledPeers — the union contract', () => {
   it('feeds the union so signals accumulate into one derivedBecause', () => {
+    // ⚠ ACCUMULATION NOW SPANS TWO DERIVATIONS, and that is the honest shape. It
+    // used to pair `shared-file` + `awaits`, both from the roster — but once
+    // D-093 removed the file signal the roster emits at most ONE relation per
+    // peer, so a roster-only fixture could no longer demonstrate accumulation at
+    // all. Pairing the roster's `awaits` with the lock derivation exercises the
+    // real production path: `deriveCouplings` concatenates the legs and the union
+    // folds them into one peer.
     const rows = [
-      row({ ownerId: 'su-me', currentFiles: ['x.ts'], awaitingEventKey: 'gate:1' }),
-      row({ ownerId: 'su-peer', currentFiles: ['x.ts'], awaitingEventKey: 'gate:1' }),
+      row({ ownerId: 'su-me', awaitingEventKey: 'gate:1' }),
+      row({ ownerId: 'su-peer', awaitingEventKey: 'gate:1' }),
     ];
-    const peers = resolveCoupledPeers('su-me', deriveCouplingsFromRoster('su-me', rows), []);
+    const derived = [
+      ...deriveCouplingsFromRoster('su-me', rows),
+      ...deriveCouplingsFromHeldFiles(
+        'su-me',
+        new Map([
+          ['su-me', ['x.ts']],
+          ['su-peer', ['x.ts']],
+        ]),
+      ),
+    ];
+    // The antecedent, asserted: two distinct signals really did fire, so the fold
+    // below is exercised rather than trivially satisfied by a single edge.
+    expect(derived).toHaveLength(2);
+    const peers = resolveCoupledPeers('su-me', derived, []);
     expect(peers).toEqual([
       {
         ownerId: 'su-peer',
         source: 'derived',
-        derivedBecause: 'both working in x.ts; both awaiting gate:1',
+        derivedBecause: 'both awaiting gate:1; you both hold locks in x.ts',
         // D-087: the typed half survives END-TO-END, derivation through union —
         // asserted here on the real path, not only on hand-built rows.
-        derivedRelations: ['shared-file', 'awaits'],
+        derivedRelations: ['awaits', 'holds-a-lock-on'],
       },
     ]);
   });
@@ -234,7 +262,6 @@ describe('DerivationRow is bound to the real presence producer', () => {
     const readFields: (keyof DerivationRow)[] = [
       'ownerId',
       'fleetSlug',
-      'currentFiles',
       'awaitingEventKey',
       'currentPlanSlug',
       'claimedItems',
