@@ -190,4 +190,62 @@ describe('starlightContentAdapter — OKF survives the on-disk parse', () => {
     expect(entry.content).toContain('Last verified 2025-12-01 by avi');
     expect(entry.trust).toMatchObject({ tier: 'human-verified', stale: true });
   });
+
+  it('parses the local `status:` off disk beside the OKF fields', async () => {
+    const adapter = starlightContentAdapter({ contentRoot: root, name: 'okf-test-status' });
+    expect((await adapter.getPage('retired'))?.okf).toEqual({
+      type: 'Insight',
+      status: 'superseded',
+    });
+  });
+});
+
+/**
+ * The bug this whole change exists to close: `status: superseded` was an
+ * ESTABLISHED convention that agents were instructed to perform, and it changed
+ * NOTHING about what a reader got back. These assert at the surfaces an agent
+ * actually calls — a unit-level verdict that never reaches docs:get/docs:search
+ * is the same inert field with more code behind it.
+ */
+describe('status: superseded reaches the READ SURFACES', () => {
+  it('banners a superseded doc through getDocs, ahead of the body', async () => {
+    const src = makeSource([
+      { slug: 'gone', body: '# Gone\n\nbody', okf: { status: 'superseded' } },
+    ]);
+    const entry = (await getDocs(src, { slugs: ['gone'] }, { now: NOW })).results[0];
+    expect(entry.found).toBe(true);
+    if (!entry.found) return;
+    expect(entry.content.startsWith('> ⛔ **SUPERSEDED')).toBe(true);
+    expect(entry.content).toContain('# Gone');
+    expect(entry.trust).toMatchObject({ superseded: true, status: 'superseded' });
+  });
+
+  it('flags a superseded HIT so a reader can skip it before spending a docs:get', async () => {
+    const src = makeSource([
+      { slug: 'old-way', body: 'pgbouncer pooling notes', okf: { status: 'superseded' } },
+      { slug: 'new-way', body: 'pgbouncer pooling notes', okf: { status: 'active' } },
+    ]);
+    const res = await searchDocs(src, { query: 'pgbouncer pooling' }, { now: NOW });
+    expect(res.hits.find((h) => h.slug === 'old-way')?.trust).toMatchObject({ superseded: true });
+    // The majority case: `status: active` must not start labelling 561 docs.
+    expect(res.hits.find((h) => h.slug === 'new-way')).not.toHaveProperty('trust');
+  });
+
+  it('adds NOTHING for an active doc at either surface (no payload regression)', async () => {
+    const src = makeSource([{ slug: 'fine', body: '# Fine\n\nbody', okf: { status: 'active' } }]);
+    const entry = (await getDocs(src, { slugs: ['fine'] }, { now: NOW })).results[0];
+    expect(entry.found).toBe(true);
+    if (!entry.found) return;
+    expect(entry).not.toHaveProperty('trust');
+    expect(entry.content).toBe('# Fine\n\nbody');
+  });
+
+  it('does not reorder a superseded hit — trust is a LABEL, not a ranking signal', async () => {
+    const src = makeSource([
+      { slug: 'strong', body: 'widget widget widget widget', okf: { status: 'superseded' } },
+      { slug: 'weak', body: 'widget' },
+    ]);
+    const res = await searchDocs(src, { query: 'widget' }, { now: NOW });
+    expect(res.hits[0]?.slug).toBe('strong');
+  });
 });
