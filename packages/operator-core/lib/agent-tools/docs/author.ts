@@ -250,35 +250,9 @@ export default defineTool({
     //   explicit `harness` → ctx harness → (superuser) 'papercusp' (the engineering
     //   reference owner). 'all'/'*'/none under superuser maps to 'papercusp' so the
     //   write root == the anchor read root == apps/operator-docs/src/content/docs.
-    const scope = resolveHarnessScope(args.harness, ctxAny);
-    let harnessSlug: string;
-    if (isEngineeringDocsSentinel(args.harness)) {
-      // EI-20100921170504541: FINDING the page and WRITING it are one workflow, so the
-      // two halves must accept the same argument for the same corpus. `docs:search`'s
-      // own schema tells a workspace-scoped caller to pass 'engineering' (the literal
-      // the workspace clamp does not intercept — EI-18894866320087268); doing the
-      // natural thing and passing it back to this tool used to fail `unknown_harness`,
-      // because resolveHarnessScope classifies it as a CONCRETE slug and no such
-      // harness is registered. That error names a registry concept rather than the fix,
-      // so it read as "this corpus is unreachable from here" — the opposite of true.
-      //
-      // Handled HERE rather than inside resolveHarnessScope on purpose: that helper is
-      // shared with `plans:*` and `harness_docs:*`, and the sentinel is deliberately
-      // invisible to the `_mcp-handler` workspace clamp. Teaching the shared resolver
-      // about it would hand every one of those tools a cross-harness escape the clamp
-      // cannot see — a tenant-data boundary, not a docs one. The sentinel's own
-      // docstring scopes it to doc tools treating it "exactly like HarnessScope's 'all'
-      // kind", which is precisely what this branch does.
-      harnessSlug = 'papercusp';
-    } else if (scope.kind === 'harness') {
-      harnessSlug = scope.slug;
-    } else if (scope.kind === 'all') {
-      harnessSlug = 'papercusp';
-    } else {
-      // kind === 'none': no harness in context and not the 'all' sentinel.
-      if (ctxAny.isSuperuser) harnessSlug = 'papercusp';
-      else return err('harness_required — pass harness (or "all" for the engineering reference)');
-    }
+    const harnessRes = resolveAuthorHarness(args.harness, ctxAny);
+    if (!harnessRes.ok) return err(harnessRes.error);
+    const harnessSlug = harnessRes.harnessSlug;
 
     const paths = await resolveHarnessDocPaths(harnessSlug);
     if (!paths)
