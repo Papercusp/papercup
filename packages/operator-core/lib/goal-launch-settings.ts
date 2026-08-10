@@ -295,19 +295,7 @@ export async function resolveGoalLaunch(args: {
   requested?: LaunchProfile | null;
   sql?: Sql;
 }): Promise<GoalLaunchResolution> {
-  const count = Math.max(1, Math.floor(args.count ?? 1));
   const degradedReasons: string[] = [];
-  const base: GoalLaunchResolution = {
-    goalId: null,
-    settings: null,
-    effective: foldLaunchProfile(null, args.role, args.requested),
-    ceilings: { maxAgents: null, maxPerFleet: null },
-    headcount: { total: 0, fleet: args.fleetSlug ? 0 : null },
-    refusal: null,
-    degraded: false,
-    degradedReasons: [],
-  };
-
   let goalId: string | null = null;
   try {
     goalId = await resolveGoalContext(args.workspaceId, args.launcherOwnerId, args.sql);
@@ -317,8 +305,49 @@ export async function resolveGoalLaunch(args: {
     // exactly the pre-P-004 behaviour — but say so.
     degradedReasons.push(`goal context unresolved: ${e instanceof Error ? e.message : String(e)}`);
   }
+  return resolveGoalLaunchForGoal({ ...args, goalId, priorDegraded: degradedReasons });
+}
+
+/**
+ * The same resolution for a goal named EXPLICITLY.
+ *
+ * Exists for exactly one shape of caller: the door that is MINTING the
+ * association rather than inheriting it. `goals:start` launches a goal's own
+ * agent, so at that moment the goal is the SUBJECT of the launch and not yet
+ * anybody's context — `resolveGoalContext(caller)` correctly returns null there,
+ * and the goal's own settings (which model its agent runs at, how many agents it
+ * may go on to spawn) must still apply.
+ *
+ * Prefer {@link resolveGoalLaunch} everywhere else. Taking a `goalId` is exactly
+ * the thing a door can forget to pass, which is why the launcher-derived form is
+ * the default and this one is the documented exception rather than the general
+ * API.
+ */
+export async function resolveGoalLaunchForGoal(args: {
+  workspaceId: string;
+  goalId: string | null;
+  role?: string | null;
+  fleetSlug?: string | null;
+  count?: number;
+  requested?: LaunchProfile | null;
+  sql?: Sql;
+  /** Degraded reasons accumulated by a caller before delegating here. */
+  priorDegraded?: string[];
+}): Promise<GoalLaunchResolution> {
+  const count = Math.max(1, Math.floor(args.count ?? 1));
+  const degradedReasons: string[] = [...(args.priorDegraded ?? [])];
+  const goalId = args.goalId;
   if (!goalId) {
-    return { ...base, degraded: degradedReasons.length > 0, degradedReasons };
+    return {
+      goalId: null,
+      settings: null,
+      effective: foldLaunchProfile(null, args.role, args.requested),
+      ceilings: { maxAgents: null, maxPerFleet: null },
+      headcount: { total: 0, fleet: args.fleetSlug ? 0 : null },
+      refusal: null,
+      degraded: degradedReasons.length > 0,
+      degradedReasons,
+    };
   }
 
   const { settings, error: settingsError } = await readGoalLaunchSettings(goalId, args.sql);
