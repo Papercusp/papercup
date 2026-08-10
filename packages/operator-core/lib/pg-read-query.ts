@@ -397,6 +397,21 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
 const CORPUS_NAMESPACED_TABLES = new Set([
   'tool_usage_rollup',
   'session_turns',
+  // EI-20103748074297088. Added after the per-table verification this doc prescribes:
+  // measured 2026-08-10, 603,723 rows, ALL under 'default', 21 distinct owners, current to
+  // the minute. The writer hardcodes it (search/session-ingest.ts insertParts) and says why
+  // — 'default' is the transcript CORPUS namespace, not a tenant.
+  //
+  // Its absence here was expensive in a way the sibling entries were not: session_turn_parts
+  // is the ONLY place native client tools (Edit/Write/Bash) are recorded, so it is exactly
+  // where someone lands after tool_invocations gives them a false zero for the same question.
+  // The generic advisory fired and suggested the tenant predicate, which returns 0 of 603,723
+  // rows — a SECOND false zero that reads as confirmation of the first.
+  //
+  // Checked at the same time and deliberately NOT added: session_turn_journal is genuinely
+  // mixed (10,453 'default' vs 4,706 'papercusp-workspace'), so the advisory is right about
+  // it. session_turns is 362,038 vs 15 strays — already here, correctly.
+  'session_turn_parts',
   'event_awaits',
   'event_wake_deliveries',
   'event_key_fires',
@@ -1157,6 +1172,119 @@ export function buildClaimabilityAdvisory(rawSql: string): string | null {
     'adds the floors that depend on the CALLER and the MOMENT (cross-machine-rig, swarm-affinity, ' +
     'redundancy, release-cooldown, your claim SPEC) and returns a per-floor `excludedBreakdown`. Those ' +
     'caller-relative floors are why claimability cannot be a column at all.'
+  );
+}
+
+/** Native client tools — the ones an agent here actually edits code with. None is ever an MCP
+ *  tool, so none can appear in `tool_invocations` (EI-20103748074297088). */
+const NATIVE_CLIENT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Read', 'Bash', 'Glob', 'Grep'];
+
+/**
+ * Every `workspace_id = '<literal>'` style predicate in a query, as its literal values.
+ *
+ * Matched against RAW sql for the same reason as the claimability advisory: the interesting
+ * token IS the string literal, which the stripper erases. Only equality-shaped operators are
+ * collected — a `workspace_id <> 'default'` is a deliberate exclusion, not the habit this
+ * catches.
+ */
+function workspaceIdPredicateValues(rawSql: string): string[] {
+  const masked = sqlLiteralAndCommentRanges(rawSql);
+  const startsInsideComment = (idx: number): boolean =>
+    masked.some(([from, to]) => idx >= from && idx < to && rawSql.slice(from, from + 2) === '--');
+  const re = /\bworkspace_id\b\s*(?:=|\bin\b|=\s*any)\s*\(?\s*(?:array\s*\[\s*)?'([^']*)'/gi;
+  const out: string[] = [];
+  for (let m = re.exec(rawSql); m; m = re.exec(rawSql)) {
+    if (!startsInsideComment(m.index)) out.push(m[1]);
+  }
+  return out;
+}
+
+/**
+ * A TENANT predicate written against a CORPUS-namespaced table — the false zero that reads as
+ * a real answer (EI-20103748074297088).
+ *
+ * {@link CORPUS_NAMESPACED_TABLES} already SUPPRESSES the generic "add workspace_id" suggestion
+ * for these tables. That is only half the problem, and it is the half that was already solved:
+ * suppressing a wrong SUGGESTION does nothing for a caller who writes the predicate from HABIT,
+ * which is what actually happened here. Every other papercusp table an agent touches is
+ * tenant-scoped and this very tool advises adding the predicate — correctly — all session long.
+ * Applying that habit to session_turn_parts returned 0 rows out of 603,723.
+ *
+ * So this fires on the PRESENCE of the predicate, not its absence. That inversion is the same
+ * one {@link buildTestRunsAdvisory} makes and for the same reason: for these tables the column's
+ * presence is the trap, not the fix, so an advisory that clears when it appears would go quiet
+ * at precisely the moment it is needed.
+ *
+ * ⚠ Silent when the value IS 'default' (the caller knows the namespace) and when there is no
+ * predicate at all (the correct unscoped read — the suppression path already covers it). The
+ * point is to be loud about the wrong answer, never about the right one.
+ */
+export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  const corpusHits = tables.filter((t) => CORPUS_NAMESPACED_TABLES.has(bareTableName(t)));
+  if (!corpusHits.length) return null;
+
+  const values = workspaceIdPredicateValues(rawSql);
+  if (!values.length) return null; // unscoped: correct for these tables
+  if (values.includes('default')) return null; // caller already knows the namespace
+
+  const named = [...new Set(corpusHits)].slice(0, 3).join(', ');
+  const wrong = [...new Set(values)].slice(0, 2).map((v) => "'" + v + "'").join(', ');
+  return (
+    '⚠ corpus namespace, not a tenant: ' + named + ' stores every row under the literal ' +
+    "workspace_id = 'default' (the session-transcript CORPUS namespace — see " +
+    'search/session-ingest.ts, which hardcodes it deliberately). This query filters it by ' +
+    wrong + ', which matches ZERO rows out of a fully-populated table and returns a clean, ' +
+    'confidence-inspiring empty result. This is the habit-driven form of the trap, so the ' +
+    'warning fires BECAUSE the predicate is present: drop it, or write ' +
+    "workspace_id = 'default'. To scope to a tenant here, filter on `owner` (the coord " +
+    'ownerId) instead — that is the column that actually identifies an agent.'
+  );
+}
+
+/**
+ * `tool_invocations` asked about a NATIVE client tool — a guaranteed zero (EI-20103748074297088).
+ *
+ * `harness_shared.tool_invocations` is an MCP-tool ledger; native Edit / Write / Bash never pass
+ * through MCP, so they never produce a row. Measured 2026-08-10 over 24h: capability:bash 1997,
+ * capability:read 73, capability:edit 17 — and ZERO rows for any native name. A query counting
+ * code edits there therefore under-reports by exactly the amount of work done with native tools,
+ * which for coding agents here is most of it, and returns a well-formed zero while doing it.
+ *
+ * Paired with {@link buildCorpusNamespaceAdvisory} on purpose. These two traps COMPOSE: an agent
+ * that hits this one, correctly reasons "I need the transcript store instead", and lands on
+ * session_turn_parts gets a SECOND zero from the tenant-predicate habit — and two sources
+ * agreeing feels like corroboration when it is the same mistake twice. So this advisory does not
+ * just warn; it hands over the query that works, tenant predicate already correct.
+ */
+export function buildNativeToolAttributionAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'tool_invocations')) return null;
+
+  const masked = sqlLiteralAndCommentRanges(rawSql);
+  const startsInsideComment = (idx: number): boolean =>
+    masked.some(([from, to]) => idx >= from && idx < to && rawSql.slice(from, from + 2) === '--');
+  if (!/\btool_name\b/i.test(stripSqlLiteralsAndComments(rawSql))) return null;
+
+  const hits = new Set<string>();
+  for (const name of NATIVE_CLIENT_TOOLS) {
+    const re = new RegExp("'" + name + "'", 'g');
+    for (let m = re.exec(rawSql); m; m = re.exec(rawSql)) {
+      if (!startsInsideComment(m.index)) hits.add(name);
+    }
+  }
+  if (!hits.size) return null;
+
+  return (
+    '⚠ harness_shared.tool_invocations records MCP tools ONLY — ' + [...hits].slice(0, 4).join('/') +
+    ' are NATIVE client tools and never appear in it, so this returns a well-formed zero rather ' +
+    'than a real count (measured 24h: capability:bash 1997, capability:edit 17, native Edit 0). ' +
+    'The store that DOES see native tools is harness_shared.session_turn_parts — and it is ' +
+    "corpus-namespaced, so it needs workspace_id = 'default', NOT your tenant id: " +
+    "SELECT owner, count(*) FILTER (WHERE tool_name IN ('Edit','Write','MultiEdit')) " +
+    "FROM harness_shared.session_turn_parts WHERE workspace_id = 'default' " +
+    "AND ts > now() - interval '24 hours' GROUP BY 1. `owner` is the coord ownerId, so it joins " +
+    'straight to an agent.'
   );
 }
 
