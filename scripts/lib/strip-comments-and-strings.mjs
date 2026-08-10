@@ -1,3 +1,5 @@
+import ts from 'typescript';
+
 /**
  * Strip comments AND the CONTENTS of string/template literals, in ONE pass.
  *
@@ -49,82 +51,41 @@
  * you detect is CODE (a call or identifier); keep reading raw text when the token is legitimately
  * string-resident.
  *
- * KNOWN LIMIT, stated rather than papered over: a regex literal containing a quote or a slash
- * (`/'/`) can still confuse this, since telling a regex from division needs real parsing. That
- * is the same class of approximation the call-scanners already document ("without a real AST
- * parse"), and it fails toward the pre-existing behaviour.
+ * ⚠ REGEX LITERAL BODIES ARE BLANKED TOO (delimiters kept). A guard's own detection regex is
+ * the single most likely place for its token to appear — `/\bsetInterval\s*\(/` sits in the
+ * source of the very guard that bans `setInterval(` — so a regex body is data, exactly like a
+ * string, for every consumer of this function.
+ *
+ * ⚠ JSX TEXT IS LEFT AS CODE. `<p>see https://x/y</p>` is neither a comment nor a literal;
+ * treating the `//` there as a comment (which the pre-AST lexer did) erases the rest of the
+ * line. Leaving it fails toward a false POSITIVE, which is the safe direction for a guard.
+ *
+ * WHY A REAL PARSER (EI-20064929206355679, measured 2026-08-10). This was a hand-rolled lexer
+ * until then, and it carried TWO defects that no amount of care in the regexes downstream
+ * could have compensated for:
+ *
+ *   1. NO REGEX-LITERAL HANDLING. The quote in an ordinary `/['"]/` opened a phantom string
+ *      that ran to the end of the line, DELETING whatever followed it — including a real
+ *      call site — and then consumed the newline, gluing the next line onto it. Telling a
+ *      regex from division genuinely needs parsing; the old header said so and accepted it.
+ *   2. BLOCK COMMENTS WERE DELETED, NEWLINES AND ALL, so every line after one SHIFTED UP.
+ *      Any caller counting lines in the stripped text reported the wrong line, and an
+ *      `^`-anchored /m regex could match across a boundary that does not exist in the source.
+ *
+ * Both are now structurally impossible: TypeScript's own parser supplies the literal, regex
+ * and comment ranges, and every removal is BLANKED WITH SPACES rather than deleted, so the
+ * output is the same LENGTH as the input, character for character. Offsets and line numbers
+ * in the stripped text are therefore exact — `text.indexOf(x)` and `slice(0, i).split('\n')`
+ * mean in the stripped text precisely what they mean in the source.
  *
  * @param {string} text
+ * @param {string} [fileName]  the real path, used ONLY to pick a ScriptKind (.ts vs .tsx
+ *        change how `<T>x` parses). Omit it and the kind is inferred by parsing both ways and
+ *        keeping whichever the parser preferred — correct, but twice the work, so pass it.
  * @returns {string}
  */
-export function stripCommentsAndStrings(text) {
-  let out = '';
-  let i = 0;
-  const n = text.length;
-
-  while (i < n) {
-    const c = text[i];
-    const c2 = text[i + 1];
-
-    if (c === '/' && c2 === '/') {
-      while (i < n && text[i] !== '\n') i += 1;
-      continue;
-    }
-
-    if (c === '/' && c2 === '*') {
-      i += 2;
-      while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1;
-      i += 2;
-      continue;
-    }
-
-    if (c === '"' || c === "'") {
-      out += c;
-      i += 1;
-      while (i < n && text[i] !== c && text[i] !== '\n') {
-        i += text[i] === '\\' ? 2 : 1;
-      }
-      out += c;
-      i += 1;
-      continue;
-    }
-
-    if (c === '`') {
-      out += '`';
-      i += 1;
-      while (i < n && text[i] !== '`') {
-        if (text[i] === '\\') {
-          i += 2;
-          continue;
-        }
-        if (text[i] === '$' && text[i + 1] === '{') {
-          out += '${';
-          i += 2;
-          let depth = 1;
-          const exprStart = i;
-          while (i < n && depth > 0) {
-            if (text[i] === '{') depth += 1;
-            else if (text[i] === '}') depth -= 1;
-            if (depth === 0) break;
-            i += 1;
-          }
-          out += text.slice(exprStart, i);
-          out += '}';
-          i += 1;
-          continue;
-        }
-        i += 1;
-      }
-      out += '`';
-      i += 1;
-      continue;
-    }
-
-    out += c;
-    i += 1;
-  }
-
-  return out;
+export function stripCommentsAndStrings(text, fileName) {
+  return blankRanges(text, collectRanges(text, fileName, { strings: true, regex: true }));
 }
 
 /**
@@ -162,51 +123,109 @@ export function stripCommentsAndStrings(text) {
  * line numbers stay true. String CONTENTS are still fully preserved — this function remains
  * string-blind BY DESIGN, which is what `guard-string-literal-blindness` uses it to control for.
  *
+ * ⚠ IT WAS ALSO REGEX-BLIND until 2026-08-10 (EI-20064929206355679), and that defect ran in
+ * the FALSE-POSITIVE direction — the one this module exists to eliminate. The quote in a
+ * regex literal (`/'/`, `/['"]/`) opened a phantom string that never closed, so from that
+ * point to the end of the file NO comment was blanked and every detection token quoted in a
+ * doc comment read as a live call site. Measured, not hypothetical: it put a phantom
+ * `role: 'cup'` — text from a doc comment in `check-ungated-mug-kettle.mjs` — into the
+ * mug/kettle surface census. Comment ranges now come from TypeScript's parser, which knows a
+ * regex from a division.
+ *
  * @param {string} text
+ * @param {string} [fileName]  the real path, used ONLY to pick a ScriptKind. See
+ *        `stripCommentsAndStrings` — omitting it costs a second parse.
  * @returns {string}
  */
-export function stripCommentsOnly(text) {
-  let out = '';
-  let i = 0;
-  let quote = null; // "'" | '"' | '`' — inside a literal, `//` and `/*` are just characters
-  while (i < text.length) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (quote) {
-      if (c === '\\') {
-        out += text.slice(i, i + 2);
-        i += 2;
-        continue;
+export function stripCommentsOnly(text, fileName) {
+  return blankRanges(text, collectRanges(text, fileName, { strings: false, regex: false }));
+}
+
+/** .ts and .tsx disagree only on `<T>expr` vs JSX, but they disagree HARD — guessing wrong
+ *  mis-blanks real code, which is the failure this module exists to prevent. */
+function parseSource(text, fileName) {
+  const byExt = !fileName
+    ? null
+    : fileName.endsWith('.tsx')
+      ? ts.ScriptKind.TSX
+      : fileName.endsWith('.ts') || fileName.endsWith('.mts') || fileName.endsWith('.cts')
+        ? ts.ScriptKind.TS
+        : fileName.endsWith('.jsx')
+          ? ts.ScriptKind.JSX
+          : ts.ScriptKind.JS;
+  if (byExt !== null) {
+    return ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, byExt);
+  }
+  const asTs = ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const asTsx = ts.createSourceFile('x.tsx', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  return (asTsx.parseDiagnostics || []).length < (asTs.parseDiagnostics || []).length ? asTsx : asTs;
+}
+
+function collectRanges(text, fileName, { strings, regex }) {
+  const sf = parseSource(text, fileName);
+  const ranges = [];
+  const seen = new Set();
+
+  // BOTH trivia directions are required. ts.getLeadingCommentRanges only begins collecting
+  // AFTER a newline, so a comment that starts on the SAME LINE as the previous token —
+  // `{/* jsx */}`, `foo(/* inline */ x)`, `const a = 1; /* note */` — is not LEADING anything;
+  // it is TRAILING trivia of the token before it. Leading-only leaves those comments standing
+  // as live code: measured, it resurrected a `kettle` mention inside a JSX comment that even
+  // the old lexer got right.
+  const addComments = (crs) => {
+    if (!crs) return;
+    for (const r of crs) {
+      const key = `${r.pos}:${r.end}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ranges.push([r.pos, r.end]);
+    }
+  };
+
+  const visit = (node) => {
+    addComments(ts.getLeadingCommentRanges(text, node.pos));
+    addComments(ts.getTrailingCommentRanges(text, node.end));
+    const k = node.kind;
+    const s = node.getStart(sf);
+    const e = node.getEnd();
+    if (strings) {
+      if (k === ts.SyntaxKind.StringLiteral || k === ts.SyntaxKind.NoSubstitutionTemplateLiteral) {
+        ranges.push([s + 1, Math.max(s + 1, e - 1)]);
+      } else if (k === ts.SyntaxKind.TemplateHead || k === ts.SyntaxKind.TemplateMiddle) {
+        // `\`head${` and `}middle${` — two closing characters, not one.
+        ranges.push([s + 1, Math.max(s + 1, e - 2)]);
+      } else if (k === ts.SyntaxKind.TemplateTail) {
+        ranges.push([s + 1, Math.max(s + 1, e - 1)]);
       }
-      if (c === quote) quote = null;
-      out += c;
-      i += 1;
-      continue;
     }
-    if (c === "'" || c === '"' || c === '`') {
-      quote = c;
-      out += c;
-      i += 1;
-      continue;
+    if (regex && k === ts.SyntaxKind.RegularExpressionLiteral) {
+      const lastSlash = text.lastIndexOf('/', e - 1); // before the flags
+      if (lastSlash > s) ranges.push([s + 1, lastSlash]);
     }
-    if (c === '/' && next === '/') {
-      while (i < text.length && text[i] !== '\n') {
-        out += ' ';
-        i += 1;
-      }
-      continue;
+    for (const child of node.getChildren(sf)) visit(child);
+  };
+
+  visit(sf);
+  return ranges;
+}
+
+function blankRanges(text, ranges) {
+  if (!ranges.length) return text;
+  // split('') — UTF-16 CODE UNITS, which is what both String.length and TypeScript's node
+  // offsets count. Array.from() splits by code POINT, so a single astral emoji (🚨, and this
+  // repo is full of them) desynchronises every offset after it and silently mis-blanks code.
+  const buf = text.split('');
+  for (const [s, e] of ranges) {
+    for (let i = Math.max(0, s); i < Math.min(e, buf.length); i += 1) {
+      const ch = buf[i];
+      if (ch !== '\n' && ch !== '\r') buf[i] = ' ';
     }
-    if (c === '/' && next === '*') {
-      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) {
-        out += text[i] === '\n' ? '\n' : ' ';
-        i += 1;
-      }
-      out += '  ';
-      i += 2;
-      continue;
-    }
-    out += c;
-    i += 1;
+  }
+  const out = buf.join('');
+  /* c8 ignore next 4 -- a tripwire, not a branch under test: it can only fire on an offset
+     desynchronisation, which would mean silently mis-blanked code. Loud is the point. */
+  if (out.length !== text.length) {
+    throw new Error(`strip-comments-and-strings: offset desync (${text.length} -> ${out.length})`);
   }
   return out;
 }

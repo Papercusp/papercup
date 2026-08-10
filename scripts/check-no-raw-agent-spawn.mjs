@@ -83,8 +83,8 @@ export const isExcluded = (f) =>
  * are stripped first (see `stripComments`) so a parenthetical prose aside can't
  * masquerade as a call. Pure (text → boolean) so it's unit-testable.
  */
-export function isRawAgentSpawnBypass(text) {
-  return /\bbuildInvokeOnce\s*\(/.test(stripCommentsAndStrings(text));
+export function isRawAgentSpawnBypass(text, fileName) {
+  return /\bbuildInvokeOnce\s*\(/.test(stripCommentsAndStrings(text, fileName));
 }
 
 /**
@@ -108,7 +108,7 @@ export function findOffenders() {
     } catch {
       continue;
     }
-    if (isRawAgentSpawnBypass(text)) offenders.push(f);
+    if (isRawAgentSpawnBypass(text, f)) offenders.push(f);
   }
   return { offenders, unscanned };
 }

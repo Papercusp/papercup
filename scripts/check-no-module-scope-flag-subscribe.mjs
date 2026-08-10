@@ -96,8 +96,8 @@ export const isExcluded = (f) =>
  * partial-mock importer at collection time; a lazy (function-body / arrow-RHS)
  * form of either is fine and is not flagged.
  */
-export function usesModuleScopeFlagSubscribe(text) {
-  const src = stripCommentsAndStrings(text);
+export function usesModuleScopeFlagSubscribe(text, fileName) {
+  const src = stripCommentsAndStrings(text, fileName);
   if (/^(void\s+)?onFlagChange\s*\(/m.test(src)) return true;
   if (/^(export\s+)?(const|let)\s+\w+\s*=\s*FLAG_DEFAULTS\s*\[/m.test(src)) return true;
   return false;
@@ -131,7 +131,7 @@ const MIN_JUSTIFICATION_CHARS = 60;
  * deliberately prose-heavy). Comments are stripped first, so the helper's own doc-comment example is
  * not scanned as a call site.
  */
-export function extractLazyFlagRefreshCalls(text) {
+export function extractLazyFlagRefreshCalls(text, fileName) {
   // COMMENTS ONLY here, deliberately — NOT stripCommentsAndStrings. The extracted call text is
   // handed to checkUnpopulatedDeclaration, which reads string VALUES out of it
   // (/kind\s*:\s*['"]([a-z-]+)['"]/ and the `keys: [...]` list). Emptying string contents turns
@@ -139,7 +139,7 @@ export function extractLazyFlagRefreshCalls(text) {
   // "no `unpopulated.kind` declared" against perfectly correct code. Measured, not theorised
   // (EI-19991116787260658). The detector above is the opposite case and DOES strip strings:
   // the A/B split is per CALL SITE, not per guard.
-  const src = stripCommentsOnly(text);
+  const src = stripCommentsOnly(text, fileName);
   const needle = 'lazyFlagRefresh(';
   const calls = [];
   let i = 0;
@@ -373,13 +373,13 @@ export function findOffenders() {
     // The unpopulated-state cross-check applies to every caller, INCLUDING a BASELINE file (a
     // BASELINE entry exempts a module-scope subscribe, not a malformed declaration).
     if (!LAZY_SELF_REFERENTIAL.has(f) && text.includes('lazyFlagRefresh(')) {
-      for (const call of extractLazyFlagRefreshCalls(text)) {
+      for (const call of extractLazyFlagRefreshCalls(text, f)) {
         const problem = checkUnpopulatedDeclaration(call);
         if (problem) declarationProblems.push({ file: f, problem });
       }
     }
     if (BASELINE.has(f)) continue;
-    if (usesModuleScopeFlagSubscribe(text)) offenders.push(f);
+    if (usesModuleScopeFlagSubscribe(text, f)) offenders.push(f);
   }
   return { offenders, declarationProblems, unscanned };
 }

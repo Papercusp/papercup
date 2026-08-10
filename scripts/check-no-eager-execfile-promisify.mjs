@@ -68,8 +68,10 @@ export const isExcluded = (f) =>
 // read as a real module-scope call and minted a phantom offender.
 
 /** The tell: a column-0 (module-scope) `const`/`let` assigned from `promisify(execFile...)`. */
-export function usesEagerExecFilePromisify(text) {
-  return /^(export\s+)?(const|let)\s+\w+\s*=\s*promisify\(\s*execFile\w*\s*\)/m.test(stripCommentsAndStrings(text));
+export function usesEagerExecFilePromisify(text, fileName) {
+  return /^(export\s+)?(const|let)\s+\w+\s*=\s*promisify\(\s*execFile\w*\s*\)/m.test(
+    stripCommentsAndStrings(text, fileName),
+  );
 }
 
 // BASELINE seeded 2026-07-18 (EI-10161) — 61 files. Do NOT add new entries; each
@@ -161,7 +163,7 @@ export function findOffenders() {
     } catch {
       continue;
     }
-    if (usesEagerExecFilePromisify(text)) offenders.push(f);
+    if (usesEagerExecFilePromisify(text, f)) offenders.push(f);
   }
   return { offenders, unscanned };
 }

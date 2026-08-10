@@ -251,7 +251,7 @@ function read(abs) {
  * docstring), so `lineOf(...)` offsets and every reported line number stay exact.
  */
 function code(abs) {
-  if (!codeCache.has(abs)) codeCache.set(abs, stripCommentsOnly(read(abs)));
+  if (!codeCache.has(abs)) codeCache.set(abs, stripCommentsOnly(read(abs), abs));
   return codeCache.get(abs);
 }
 const codeCache = new Map();

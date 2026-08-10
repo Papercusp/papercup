@@ -99,7 +99,7 @@ export function findViolations(repoRoot, roots = GC_TAG_SOURCE_ROOTS) {
       let src;
       try { src = readFileSync(path.join(repoRoot, rel), 'utf8'); } catch { continue; }
       if (!src.includes(needle)) continue; // cheap pre-filter before the scanner
-      const lines = stripCommentsOnly(src).split('\n');
+      const lines = stripCommentsOnly(src, rel).split('\n');
       lines.forEach((text, idx) => {
         if (text.includes(needle)) out.push({ file: rel, line: idx + 1, text: text.trim().slice(0, 160) });
       });

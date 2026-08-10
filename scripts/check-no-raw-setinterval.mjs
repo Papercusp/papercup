@@ -194,8 +194,8 @@ export const isExcluded = (f) =>
  * or `typeof setInterval` (followed by `>`/`,`). Comments are stripped first. Pure
  * (text → boolean) so it's unit-testable.
  */
-export function usesRawSetInterval(text) {
-  return /\bsetInterval\s*\(/.test(stripCommentsAndStrings(text));
+export function usesRawSetInterval(text, fileName) {
+  return /\bsetInterval\s*\(/.test(stripCommentsAndStrings(text, fileName));
 }
 
 /**
@@ -222,7 +222,7 @@ export function findOffenders() {
     } catch {
       continue;
     }
-    if (usesRawSetInterval(text)) offenders.push(f);
+    if (usesRawSetInterval(text, f)) offenders.push(f);
   }
   return { offenders, unscanned };
 }
