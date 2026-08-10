@@ -176,8 +176,11 @@ export const RUNNER_CLASSES = {
  * that deserves the scrutiny.
  */
 export const UNATTRIBUTABLE_TASKS = [
-  '@papercupai/operator-docs :: test',
-  '@papercupai/papercusp-docs :: test',
+  // EI-20102376842495928 shrank this: the two `astro check` tasks moved out when
+  // parseAstroCheckFailedFiles landed. What remains is the genuinely-unparseable half —
+  // a bespoke script's command string cannot reveal what runs inside it, so the fix for
+  // these two is to make them EMIT a machine-readable failing-file line, not to guess a
+  // parser from `node scripts/el-tools-check.mjs`.
   '@papercusp/web :: lint:el-tools',
   '@papercusp/web :: test:el-suite',
 ];

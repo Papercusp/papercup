@@ -38,6 +38,7 @@ import {
   renderFailingFilesSummary,
   parseFailedTestFiles,
   parseNodeTestFailedFiles,
+  parseAstroCheckFailedFiles,
   transformCulpritsFrom,
   AFFECTED_TESTS_FAILING_FILES_TOKEN,
   FAILING_FILES_LINE_MAX_ENTRIES,
@@ -636,5 +637,85 @@ describe('WI-37607 — transform-casualty attribution', () => {
       expect(block).not.toContain('PARSE (transform) FAILURE DETECTED');
       expect(block).toContain('failing test file(s)');
     });
+  });
+});
+
+/**
+ * EI-20102376842495928 — `astro check` attribution.
+ *
+ * Two tasks (`@papercupai/operator-docs :: test`, `@papercupai/papercusp-docs :: test`) are
+ * literally `astro check`. A red in either used to report `no-file-rows`, whose documented
+ * causes are "a worker crash, an OOM, a spawn error" — so the runner handed the triager a
+ * plausible INFRASTRUCTURE diagnosis for what is really a type error on a named line.
+ *
+ * Every fixture below is verbatim from a real astro 6.3.6 run (a scratch copy of the
+ * operator-docs app with a planted two-error .astro file), read back through `cat -A`.
+ */
+describe('parseAstroCheckFailedFiles (EI-20102376842495928)', () => {
+  // REAL BYTES. astro colors its output even when redirected to a file, so this is the
+  // shape production actually captures — not the rendered text a terminal shows.
+  const ERROR_ROW =
+    '\x1b[96msrc/pages/__fixture-broken.astro\x1b[0m:\x1b[93m3\x1b[0m:\x1b[93m7\x1b[0m - \x1b[91merror\x1b[0m\x1b[90m ts(2322): \x1b[0mType \'undefined\' is not assignable to type \'string\'.';
+  const SECOND_ERROR_SAME_FILE =
+    '\x1b[96msrc/pages/__fixture-broken.astro\x1b[0m:\x1b[93m2\x1b[0m:\x1b[93m7\x1b[0m - \x1b[91merror\x1b[0m\x1b[90m ts(2322): \x1b[0mType \'string\' is not assignable to type \'number\'.';
+  const WARNING_ROW =
+    '\x1b[96msrc/content.config.ts\x1b[0m:\x1b[93m34\x1b[0m:\x1b[93m14\x1b[0m - \x1b[93mwarning\x1b[0m\x1b[90m ts(6385): \x1b[0m\'z\' is deprecated.';
+  const RESULT_TAIL = 'Result (6 files): \n- 2 errors\n- 0 warnings\n- 23 hints';
+
+  it('names the file from REAL colored bytes', () => {
+    expect(parseAstroCheckFailedFiles([WARNING_ROW, ERROR_ROW, RESULT_TAIL].join('\n'))).toEqual([
+      'src/pages/__fixture-broken.astro',
+    ]);
+  });
+
+  /**
+   * The reason the ANSI strip is load-bearing rather than decorative, pinned as an assertion
+   * so nobody "simplifies" it away. A matcher written from the RENDERED text finds nothing in
+   * these bytes — and an empty parse result reads as "nothing failed", never as "my matcher is
+   * wrong". This is the third time this class has bitten this module.
+   */
+  it('CALIBRATION: the raw bytes contain no literal `error ts(` — a matcher that skips the strip sees zero', () => {
+    expect(ERROR_ROW).not.toContain('error ts(');
+    expect(ERROR_ROW).toMatch(/error/); // it IS there, just not contiguous
+  });
+
+  it('is failure-exclusive: warnings and hints never attribute', () => {
+    expect(parseAstroCheckFailedFiles([WARNING_ROW, RESULT_TAIL].join('\n'))).toEqual([]);
+  });
+
+  it('dedupes several errors in one file', () => {
+    expect(parseAstroCheckFailedFiles([ERROR_ROW, SECOND_ERROR_SAME_FILE].join('\n'))).toEqual([
+      'src/pages/__fixture-broken.astro',
+    ]);
+  });
+
+  /**
+   * No extension whitelist — astro check reports on .astro/.ts/.md/.mdx and whatever a future
+   * integration adds. Pinning a list is the naming-convention assumption that made
+   * parseNodeTestFailedFiles return [] for @papercusp/cli: correct on the case you sampled,
+   * empty on the one you did not.
+   */
+  it('attributes any file shape the typechecker names, not a fixed extension list', () => {
+    const mdx = "src/content/docs/guide.mdx:12:3 - error ts(2304): Cannot find name 'Foo'.";
+    expect(parseAstroCheckFailedFiles(mdx)).toEqual(['src/content/docs/guide.mdx']);
+  });
+
+  it('a clean run attributes nothing', () => {
+    expect(parseAstroCheckFailedFiles('Result (6 files): \n- 0 errors\n- 0 warnings\n- 23 hints')).toEqual(
+      [],
+    );
+  });
+
+  it('END-TO-END: a real astro red is attributed to its file instead of reporting no-file-rows', () => {
+    const res = attributeFailedTask({
+      workspace: '@papercupai/operator-docs',
+      task: '@papercupai/operator-docs :: test',
+      captured: true,
+      output: [WARNING_ROW, ERROR_ROW, RESULT_TAIL].join('\n'),
+    });
+    expect(res.entries).toEqual([
+      { workspace: '@papercupai/operator-docs', file: 'src/pages/__fixture-broken.astro' },
+    ]);
+    expect(res.unattributed).toEqual([]);
   });
 });
