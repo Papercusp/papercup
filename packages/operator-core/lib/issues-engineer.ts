@@ -1035,10 +1035,39 @@ function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // A/B measurement, mirroring 721's own diligence). Same NULL-safety as the COALESCE
   // form: `lane` is NULL both when payload is NULL and when the key is absent, and
   // `NULL IS DISTINCT FROM 'observation'` = TRUE ⇒ included (never excluded).
+  //
+  // WI-37761: the federation-detector floor. WI-2633 gates auto-filed
+  // `[replication-liveness]` detector EIs out of the CLAIM floors
+  // (federationDetectorExclusionSql, work-items.ts) and states that gate is
+  // "UNCONDITIONAL (no caller bypass): no GENERIC self-select caller legitimately
+  // wants one" — but `admissibleOnly` never mirrored it, so every read on this path
+  // still ADVERTISED them. Measured live: `coord:orient { intent }` (no `harness`)
+  // takes the `work_items:list({ admissibleOnly:true })` leg, and returned a
+  // claimable list of 8 containing 2 detector EIs (EI-20083218992626765,
+  // EI-20083218888012602) — 97 open rows carry this filer today. The rows are
+  // origin='local' with lane NULL, so none of the floors above can catch them.
+  //
+  // ⚠ COST: `created_by` is NOT a cheap column. engineer_issues is a VIEW over
+  // work_items and derives it as `(payload -> '_ei') ->> 'created_by'` (verified
+  // against pg_get_viewdef in prod AND test/_work-items-schema.ts — they agree), so
+  // this floor touches the same out-of-line payload datum as the `_claimHold` /
+  // `needsHuman` floors below. It does NOT add a fetch (those already force it), but
+  // do not "optimize" it on the belief that it is a plain column — it is the SAME
+  // class WI-7102 tracks for a generated-column migration, and belongs in that batch.
+  //
+  // Deriving it from payload is also what makes this floor AGREE BY CONSTRUCTION with
+  // federationDetectorExclusionSql (work-items.ts), which reads
+  // `wi.payload #>> '{_ei,created_by}'` on the base table — the same datum by another
+  // path, so the advertise floor and the claim floor cannot drift apart.
+  // The literal is hardcoded rather than imported from RECOVERY_OWNER
+  // (sync/hyperbee/replication-stall-ei.ts) because that module FILES issues and so
+  // imports this one — importing back would cycle. Same precedent, same reason, as
+  // harness/improvements/policy.ts and work-items.ts's own copy.
   return aliased
     ? sql`(
         (ei.origin = 'local' OR ei.origin IS NULL)
         AND ei.lane IS DISTINCT FROM 'observation'
+        AND ei.created_by IS DISTINCT FROM 'system:replication-liveness'
         AND COALESCE(ei.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
         AND COALESCE(ei.payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
         AND NOT (
@@ -1060,6 +1089,7 @@ function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
     : sql`(
         (origin = 'local' OR origin IS NULL)
         AND lane IS DISTINCT FROM 'observation'
+        AND created_by IS DISTINCT FROM 'system:replication-liveness'
         AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
         AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
         AND NOT (
