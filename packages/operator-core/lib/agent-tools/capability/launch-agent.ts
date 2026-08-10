@@ -41,7 +41,7 @@ import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { resolveGoalLaunch } from '../../goal-launch-settings';
+import { resolveGoalLaunch, foldLaunchProfile } from '../../goal-launch-settings';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import {
   buildAgentLaunchCommand,
@@ -342,7 +342,10 @@ export default defineTool({
     const goalLaunch = await resolveGoalLaunch({
       workspaceId,
       launcherOwnerId: callerOwnerId ?? '',
-      role: args.role ?? null,
+      // No role at the BATCH level — this tool has no top-level `role`, and the
+      // ceilings do not depend on one. Per-member role profiles are folded below,
+      // off the settings this call already fetched (no extra query).
+      role: null,
       fleetSlug,
       count,
       requested: {
@@ -367,9 +370,25 @@ export default defineTool({
       headless: args.headless || undefined,
       extraArgs: args.extraArgs ?? undefined,
     };
-    const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) =>
-      isResume ? flatBase : foldMemberSpec(flatBase, memberSpecs[i]),
-    );
+    const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) => {
+      if (isResume) return flatBase;
+      // Layer the goal's per-ROLE profile between the goal defaults (already in
+      // flatBase) and this member's own spec, so precedence stays
+      // member > goal-role > goal-defaults > system.
+      const role = memberSpecs[i]?.role ?? null;
+      const roleProfile = role ? foldLaunchProfile(goalLaunch.settings, role) : null;
+      const withRole: FleetMemberDefaults = roleProfile
+        ? {
+            ...flatBase,
+            ...(roleProfile.agent ? { agent: roleProfile.agent } : {}),
+            ...(roleProfile.account ? { account: roleProfile.account } : {}),
+            ...(roleProfile.model ? { model: roleProfile.model } : {}),
+            ...(roleProfile.effort ? { effort: roleProfile.effort } : {}),
+            ...(roleProfile.contextSize ? { contextSize: roleProfile.contextSize } : {}),
+          }
+        : flatBase;
+      return foldMemberSpec(withRole, memberSpecs[i]);
+    });
     const memberCommands: string[] = [];
     for (let i = 0; i < count; i++) {
       const folded = foldedConfigs[i];
