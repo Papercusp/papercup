@@ -35,6 +35,15 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 vi.mock('../../events/await/store', () => ({
   cancelClaimableAwaits: cancelClaimableAwaitsM,
 }));
+// EI-20099413453852234: a successful claim now declares the caller's intent, which is a
+// presence WRITE — mocked here for the same reason as cancelClaimableAwaits above, so these
+// unit tests never touch real PG, and so the block below can assert exactly what was written.
+const getPresenceM = vi.hoisted(() => vi.fn(async () => null as unknown));
+const writePresenceM = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('../coordination/presence', () => ({
+  getPresence: getPresenceM,
+  writePresence: writePresenceM,
+}));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getFlag: vi.fn(async () => true),

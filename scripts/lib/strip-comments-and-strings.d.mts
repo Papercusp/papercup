@@ -161,7 +161,14 @@ export function stripSqlComments(text: string): string;
  *       are still blanked but its statements stay live. Correct when a hit inside a body is REAL
  *       and sealing it would be a FALSE NEGATIVE on a safety lint: `findUniqueIndexShapeSwap`
  *       (a DROP + re-ADD of a unique constraint inside a `DO` block really executes, and really
- *       breaks every `ON CONFLICT` written against the old shape) and `findUnguardedReslug`.
+ *       breaks every `ON CONFLICT` written against the old shape).
+ *
+ * ⚠ "A hit inside a body is real, so use 'code'" is NOT sufficient — check whether the consumer
+ * also EXEMPTS itself on something it finds. `findUnguardedReslug` detects a real in-body offence
+ * AND disarms on a guard token found anywhere in the file, so 'code' widens its exemption faster
+ * than its detection and makes it strictly blinder (measured: 2 offences found, 0 reported). It
+ * stays on 'literal' for that reason. For any detect-then-exempt check, ask what the wider view
+ * does to the EXEMPT branch, not just to the detect branch.
  *
  * Both readings are legitimate — PostgreSQL says a dollar-quoted body IS a string literal, while
  * every one of these consumers cares about whether the DDL inside it RUNS. Choosing per call site
