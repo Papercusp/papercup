@@ -6,7 +6,9 @@
  * bees); the tab-style surfaces live HERE.
  *
  * SCOPE (owner placement corrections, 2026-07-16 → 2026-07-17): this rail is
- * the SETTINGS / steering surface — Accounts, Mug, Kettle, Papercup, Pots. The
+ * the SETTINGS / steering surface — Accounts, Mug, Kettle, Papercup. (Pots was
+ * removed 2026-08-10 on owner directive — see the note at its old slot in TABS.)
+ * The
  * LIVE surfaces moved out to the leftmost op-chat sidebar one by one: Inbox
  * (EI-13037), then Fleet + Peers (WI-5162). Their panes still live in this
  * directory; only their host changed — see components/chat-faces/ChatFacesHost.
@@ -39,7 +41,9 @@ import { useLexicon } from '@/lib/useLexicon';
 import type { BoundLexicon } from '@papercusp/lexicon';
 // `Target` left with the Goals tab (2026-08-09) — it was that tab's icon and
 // nothing else in this rail uses it.
-import { Network, Coffee, Thermometer, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+// `Network` left with the Pots tab (2026-08-10) — it was that tab's icon and
+// nothing else in this rail uses it.
+import { Coffee, Thermometer, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
