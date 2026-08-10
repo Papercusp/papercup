@@ -76,6 +76,63 @@ export function insightsIndexNudge(section: string, harnessSlug: string): string
   return 'the curated insights index is generated and was NOT refreshed — run `npm run gen:doc-insights-index` to list this doc in reference/agent-insights-index.md (docs:search finds it either way).';
 }
 
+/**
+ * Which harness's docs root this write targets.
+ *
+ * Resolved the SAME way the docs read adapters resolve it — explicit `harness` → ctx
+ * harness → (superuser) 'papercusp', the engineering-reference owner — so the write
+ * root == the anchor read root == apps/operator-docs/src/content/docs.
+ *
+ * EI-20100921170504541 — the `'engineering'` branch. FINDING a page and WRITING it are
+ * one workflow, so both halves must accept the same argument for the same corpus.
+ * `docs:search`'s own schema tells a workspace-scoped caller to pass `'engineering'`
+ * (the literal the `_mcp-handler` workspace clamp does not intercept —
+ * EI-18894866320087268). Doing the natural thing and passing it back here used to fail
+ * `unknown_harness`, because {@link resolveHarnessScope} classifies it as a CONCRETE
+ * slug and no such harness is registered — an error naming a registry concept rather
+ * than the fix, so it read as "this corpus is unreachable from here", the opposite of
+ * true.
+ *
+ * Handled HERE rather than inside {@link resolveHarnessScope} on purpose: that helper is
+ * shared with `plans:*` and `harness_docs:*`, and this sentinel is deliberately invisible
+ * to the workspace clamp. Teaching the shared resolver about it would hand every one of
+ * those tools a cross-harness escape the clamp cannot see — a tenant-data boundary, not
+ * a docs one. {@link isEngineeringDocsSentinel}'s own contract scopes it to doc tools
+ * treating it "exactly like HarnessScope's 'all' kind", which is what this does.
+ */
+export function resolveAuthorHarness(
+  argHarness: string | null | undefined,
+  ctx: { harnessSlug?: string | null; isSuperuser?: boolean } | null | undefined,
+): { ok: true; harnessSlug: string } | { ok: false; error: string } {
+  if (isEngineeringDocsSentinel(argHarness)) return { ok: true, harnessSlug: 'papercusp' };
+  const scope = resolveHarnessScope(argHarness, ctx);
+  if (scope.kind === 'harness') return { ok: true, harnessSlug: scope.slug };
+  if (scope.kind === 'all') return { ok: true, harnessSlug: 'papercusp' };
+  // kind === 'none': no harness in context and not the 'all' sentinel.
+  if (ctx?.isSuperuser) return { ok: true, harnessSlug: 'papercusp' };
+  return {
+    ok: false,
+    error:
+      "harness_required — pass harness (a concrete slug), or omit it / pass 'engineering' for the engineering reference",
+  };
+}
+
+/** The `description` length we ask for — a search/outline hook reads best short. */
+export const DESCRIPTION_RECOMMENDED_MAX = 500;
+/** The length we actually REFUSE at. Generous on purpose — see the schema comment. */
+export const DESCRIPTION_HARD_MAX = 1200;
+
+/**
+ * A warning for an over-long description, or null. Split out from the schema because a
+ * REJECTION at this boundary costs a full resend of the body, which is out of all
+ * proportion to overshooting a display field (EI-20100921170504541).
+ */
+export function descriptionLengthWarning(description: string): string | null {
+  const n = description.trim().length;
+  if (n <= DESCRIPTION_RECOMMENDED_MAX) return null;
+  return `description is ${n} chars — over the recommended ${DESCRIPTION_RECOMMENDED_MAX}. Accepted, but it is the index hook docs:search and the outline show, so it reads best tightened to one line.`;
+}
+
 /** Strip a leading YAML frontmatter block from a body (we generate our own). */
 export function stripLeadingFrontmatter(body: string): { body: string; stripped: boolean } {
   const m = /^﻿?\s*---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/.exec(body);
@@ -179,8 +236,18 @@ const argsSchema = z.object({
   description: z
     .string()
     .min(1)
-    .max(500)
-    .describe('One-line summary (frontmatter `description`) — this is the index hook docs:search / the outline shows.'),
+    // EI-20100921170504541 (second half): this was a hard .max(500), and a REJECTION here
+    // costs the caller a resend of the whole call — body included (~6k tokens, measured) —
+    // for overshooting a display field by a few words. The failure cost was wildly out of
+    // proportion to the mistake, and validating scalars "first" would not have changed it:
+    // the body is already on the wire, and any retry re-sends it regardless. So the bound
+    // is now a generous sanity limit and the RECOMMENDED length is enforced as a warning
+    // instead. Safe to widen: nothing downstream depends on 500 — it is not checked by
+    // lint:okf-conformance, the frontmatter writer, or the projection.
+    .max(DESCRIPTION_HARD_MAX)
+    .describe(
+      `One-line summary (frontmatter \`description\`) — this is the index hook docs:search / the outline shows. Keep it under ~${DESCRIPTION_RECOMMENDED_MAX} chars (longer is accepted up to ${DESCRIPTION_HARD_MAX}, with a warning).`,
+    ),
   body: z
     .string()
     .min(1)
@@ -253,6 +320,9 @@ export default defineTool({
     const harnessRes = resolveAuthorHarness(args.harness, ctxAny);
     if (!harnessRes.ok) return err(harnessRes.error);
     const harnessSlug = harnessRes.harnessSlug;
+
+    const descWarning = descriptionLengthWarning(args.description);
+    if (descWarning) warnings.push(descWarning);
 
     const paths = await resolveHarnessDocPaths(harnessSlug);
     if (!paths)

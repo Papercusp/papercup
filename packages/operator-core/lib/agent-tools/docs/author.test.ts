@@ -15,8 +15,13 @@ import {
   buildFrontmatter,
   composeDoc,
   todayIso,
+  resolveAuthorHarness,
+  descriptionLengthWarning,
+  DESCRIPTION_RECOMMENDED_MAX,
+  DESCRIPTION_HARD_MAX,
   type FrontmatterInput,
 } from './author';
+import { resolveHarnessScope } from '../_harness-scope';
 // The SAME parser the anchor system uses to read a doc's `documents:` frontmatter.
 // docs:author and harness_docs:anchor must agree on the format or the doc ships
 // un-anchored (the EI-4889 class). This round-trips them against each other.
@@ -69,6 +74,86 @@ describe('insightsIndexNudge', () => {
   });
   it('stays silent for a harness-scoped agent-insights dir — the generator does not read it', () => {
     expect(insightsIndexNudge('agent-insights', 'some-other-harness')).toBeNull();
+  });
+});
+
+describe('resolveAuthorHarness (EI-20100921170504541)', () => {
+  // The regression: docs:search's own schema tells a workspace-scoped caller to reach
+  // the agent-insights corpus with harness:'engineering'. Handing that same literal
+  // back to docs:author used to fail `unknown_harness`, so the two halves of ONE
+  // workflow disagreed about the same corpus.
+  it("accepts 'engineering' — the same literal docs:search takes for this corpus", () => {
+    expect(resolveAuthorHarness('engineering', { harnessSlug: 'papercusp-workspace' })).toEqual({
+      ok: true,
+      harnessSlug: 'papercusp',
+    });
+  });
+
+  it("treats 'engineering' identically to omitting it, and to the 'all' sentinel", () => {
+    const viaSentinel = resolveAuthorHarness('engineering', { isSuperuser: true });
+    const viaOmission = resolveAuthorHarness(undefined, { isSuperuser: true });
+    const viaAll = resolveAuthorHarness('all', {});
+    const viaStar = resolveAuthorHarness('*', {});
+    expect(viaSentinel).toEqual(viaOmission);
+    expect(viaSentinel).toEqual(viaAll);
+    expect(viaSentinel).toEqual(viaStar);
+  });
+
+  it('matches the sentinel case-insensitively and around whitespace', () => {
+    for (const v of ['ENGINEERING', ' engineering ', 'Engineering']) {
+      expect(resolveAuthorHarness(v, {})).toEqual({ ok: true, harnessSlug: 'papercusp' });
+    }
+  });
+
+  it('still routes a concrete slug to that harness, and ctx scope when no arg', () => {
+    expect(resolveAuthorHarness('some-harness', {})).toEqual({ ok: true, harnessSlug: 'some-harness' });
+    expect(resolveAuthorHarness(undefined, { harnessSlug: 'scoped-harness' })).toEqual({
+      ok: true,
+      harnessSlug: 'scoped-harness',
+    });
+  });
+
+  it('fails with an error naming the FIX, not just a registry miss', () => {
+    const r = resolveAuthorHarness(undefined, { harnessSlug: '*', isSuperuser: false });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    // The old failure said only "<slug> is not registered", which reads as "that corpus
+    // is unreachable from here" — the opposite of true.
+    expect(r.error).toMatch(/engineering/);
+    expect(r.error).toMatch(/omit/i);
+  });
+
+  // SECURITY-RELEVANT, and the reason this fix lives in docs:author rather than in the
+  // shared resolver: `resolveHarnessScope` is also used by `plans:*` and
+  // `harness_docs:*`, and the 'engineering' literal is deliberately INVISIBLE to the
+  // _mcp-handler workspace clamp (that is its whole purpose — EI-18894866320087268).
+  // Teaching the shared resolver about it would silently hand every one of those tools
+  // a cross-harness escape the clamp cannot see, across a TENANT-data boundary rather
+  // than a docs one. If this test ever fails, that widening has happened — do not
+  // "fix" it by updating the expectation.
+  it('does NOT widen the shared resolver — plans:*/harness_docs:* must not inherit the sentinel', () => {
+    expect(resolveHarnessScope('engineering', {})).toEqual({ kind: 'harness', slug: 'engineering' });
+  });
+});
+
+describe('descriptionLengthWarning (EI-20100921170504541, second half)', () => {
+  it('is silent at or under the recommended length', () => {
+    expect(descriptionLengthWarning('short')).toBeNull();
+    expect(descriptionLengthWarning('x'.repeat(DESCRIPTION_RECOMMENDED_MAX))).toBeNull();
+  });
+
+  it('warns — rather than rejecting — just over the recommendation, and reports the count', () => {
+    // 618 chars is the measured real case: a hard reject there cost a resend of the
+    // whole call, body included (~6k tokens), for overshooting a display field.
+    const w = descriptionLengthWarning('x'.repeat(618));
+    expect(w).toBeTruthy();
+    expect(w).toContain('618');
+    expect(w).toContain(String(DESCRIPTION_RECOMMENDED_MAX));
+  });
+
+  it('leaves real headroom above the recommendation before anything is refused', () => {
+    expect(DESCRIPTION_HARD_MAX).toBeGreaterThan(DESCRIPTION_RECOMMENDED_MAX);
+    expect(descriptionLengthWarning('x'.repeat(DESCRIPTION_HARD_MAX))).toBeTruthy();
   });
 });
 
