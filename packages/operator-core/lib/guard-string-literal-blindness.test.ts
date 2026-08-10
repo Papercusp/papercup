@@ -420,7 +420,19 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
    */
   const SCANS_UNMASKED_SOURCE = new Set([
     'check-constant-conditional.mjs',
-    'check-env-feature-gates.mjs',
+    // check-env-feature-gates.mjs was REMOVED here on 2026-08-10 (WI-37717). BOTH passes now
+    // detect over stripCommentsOnly() text (the `git grep` is a fast FILE FINDER, not the
+    // detector). Two latent harms, both measured reachable: (1) a comment naming an
+    // UNCLASSIFIED gate is reported as real, and `--strict` is CI-wired, so that is a red gate
+    // for code that does not exist; (2) worse, `seen.add` runs BEFORE the classification test
+    // and `seen` drives the stale-registry check, so a capability gate DELETED from code but
+    // still described in a comment is never reported stale — its registry entry lingers
+    // forever, defeating the anti-linger purpose the guard exists for (EI-2390).
+    // Two live instances of the shape (both absorbed by ALLOW, hence currently invisible):
+    // PAPERCUSP_SPAWNER_SIDECAR and PAPERCUSP_LOOP_PROFILER — the latter in a comment that
+    // explains the env gate BECAME a flag, i.e. it is gone.
+    // ⚠ comments ONLY: the operative token IS a string literal (`=== '1'`), so
+    // stripCommentsAndStrings would take both passes silently 100% inert.
     // check-explicit-presence.mjs was REMOVED here on 2026-08-10 (WI-37717) because it now
     // imports stripCommentsOnly, which this file's classifier ranks as `shared`. Read that as
     // a PARTIAL mask, not a full one: it deliberately still text-matches against unmasked

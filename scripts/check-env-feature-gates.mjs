@@ -38,6 +38,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { coverageOf, describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -242,6 +244,68 @@ const KNOWN_ENV_CAPABILITY_GATES = {
   },
 };
 
+// A boolean gate: env compared to a boolean LITERAL (1|0|true|false|on|off|yes|no).
+const GATE_RE = /process\.env\.(PAPERCUSP_[A-Z_0-9]+)\s*[!=]==?\s*['"](?:1|0|true|false|on|off|yes|no)['"]/;
+
+// The "assign-then-compare" idiom (EI-2390 blind spot) — see the 2nd pass below.
+const ASSIGN_RE = /(?:const|let)\s+(\w+)\s*=\s*process\.env\.(PAPERCUSP_[A-Z_0-9]+)\s*;/g;
+
+// ── --self-test: prove the masking is falsifiable, with no tree scan and no shared-tree
+// mutation. Runs against the REAL GATE_RE / ASSIGN_RE above (never a copy — a self-test with
+// its own regexes drifts from the detector it claims to prove).
+if (process.argv.includes('--self-test')) {
+  const scan = (text) => {
+    const masked = stripCommentsOnly(text, 'sample.ts');
+    const names = new Set();
+    for (const line of masked.split('\n')) {
+      const g = line.match(GATE_RE);
+      if (g) names.add(g[1]);
+    }
+    for (const am of masked.matchAll(new RegExp(ASSIGN_RE.source, 'g'))) {
+      const [, varName, name] = am;
+      const window = masked.slice(am.index + am[0].length, am.index + am[0].length + 400);
+      if (new RegExp(`\\b${varName}\\s*[!=]==?\\s*['"](?:1|0|true|false|on|off|yes|no)['"]`).test(window)) names.add(name);
+    }
+    return [...names];
+  };
+  const cases = [
+    // POSITIVE CONTROLS — these must fire, or a clean run proves nothing. They are also the
+    // TRIPWIRE: the operative token is a STRING literal, so swapping stripCommentsOnly for
+    // stripCommentsAndStrings blanks `'1'` and kills every one of these, loudly.
+    { name: 'single-line gate (code)', expect: ['PAPERCUSP_X'], text: `if (process.env.PAPERCUSP_X === '1') go();` },
+    { name: 'assign-then-compare (the EI-2390 idiom)', expect: ['PAPERCUSP_Y'],
+      text: `const f = process.env.PAPERCUSP_Y;\nif (f === '1') go();` },
+    { name: 'negated compare', expect: ['PAPERCUSP_Z'], text: `if (process.env.PAPERCUSP_Z !== '0') go();` },
+    // NEGATIVE CONTROLS — prose describing a gate is history, not a live gate. Left unmasked,
+    // each of these is reported as real: under --strict that is a CI red for code that does not
+    // exist, and (worse) it keeps a deleted gate out of the stale-registry report forever.
+    { name: 'line comment recounting a removed inline gate', expect: [],
+      text: `// each hand-rolled its own process.env.PAPERCUSP_GONE === '1' inline\nexport const a = 1;` },
+    { name: 'jsdoc explaining a gate BECAME a flag', expect: [],
+      text: `/**\n * WHY IT IS A FLAG NOW: was gated on process.env.PAPERCUSP_OLD === '1'.\n */\nexport const b = 2;` },
+    { name: 'commented-out assign-then-compare', expect: [],
+      text: `// const f = process.env.PAPERCUSP_DEAD;\n// if (f === '1') go();\nexport const c = 3;` },
+    // MIXED — proves masking is per-position, not per-file: a whole-file "does it mention it"
+    // test would wrongly drop the live gate on line 2 because line 1 mentions one in prose.
+    { name: 'prose gate on line 1, real gate on line 2', expect: ['PAPERCUSP_REAL'],
+      text: `// historical: process.env.PAPERCUSP_PROSE === '1'\nif (process.env.PAPERCUSP_REAL === '1') go();` },
+  ];
+  let failed = 0;
+  for (const c of cases) {
+    const got = scan(c.text).sort();
+    const want = [...c.expect].sort();
+    const ok = got.length === want.length && got.every((v, i) => v === want[i]);
+    if (!ok) failed++;
+    console.log(`${ok ? '✓' : '✗'} ${c.name} — expected [${want}], got [${got}]`);
+  }
+  if (failed) {
+    console.error(`\n✗ self-test: ${failed} case(s) failed.`);
+    process.exit(1);
+  }
+  console.log('\n✓ self-test: comments masked, real gates (incl. their string literals) still detected.');
+  process.exit(0);
+}
+
 // Broad scan (git grep), precise filter in JS. --recurse-submodules so the
 // libs/papercusp submodule (orchestrator, db, embedded-pg, …) is covered — the old
 // superproject-only scan was blind to it (the PAPERCUSP_PGBOUNCER blind spot).
@@ -257,26 +321,67 @@ try {
   else throw e;
 }
 
-// A boolean gate: env compared to a boolean LITERAL (1|0|true|false|on|off|yes|no).
-const GATE_RE = /process\.env\.(PAPERCUSP_[A-Z_0-9]+)\s*[!=]==?\s*['"](?:1|0|true|false|on|off|yes|no)['"]/;
+// (GATE_RE is declared above the self-test, so both share one definition.)
 
 const hits = new Map(); // unclassified name -> [file:line, …]
 const seen = new Set(); // every boolean gate name seen anywhere (for stale-registry detection)
 const scannedFiles = new Set(); // every file that referenced a PAPERCUSP_ env var (for the 2nd pass below)
+
+// The `git grep` above is a fast FILE FINDER, not the detector: its per-line text is RAW, so a
+// gate merely DESCRIBED in a comment reads as a live one. Both harms are latent-but-reachable
+// (measured 2026-08-10, WI-37717):
+//   1. a comment naming an UNCLASSIFIED gate is reported as real — and `--strict` is CI-wired,
+//      so that is a red gate for code that does not exist;
+//   2. worse, `seen` is what drives the stale-registry check below, and `seen.add` happens
+//      BEFORE the classification test — so a capability gate DELETED from code but still
+//      mentioned in a comment is never reported stale, and its registry entry lingers forever.
+//      That is precisely the anti-linger purpose this guard exists to serve (EI-2390).
+// Two live instances of the shape today (both absorbed by ALLOW, so currently invisible):
+// PAPERCUSP_SPAWNER_SIDECAR (a comment recounting 3 now-refactored inline checks) and
+// PAPERCUSP_LOOP_PROFILER (a comment in types.ts explaining it BECAME a flag — i.e. the env
+// gate it names is gone).
+// So detect over MASKED text instead. Comments only — never stripCommentsAndStrings: the
+// operative token here IS a string literal (`=== '1'`), so blanking strings takes both passes
+// silently 100% inert. Blanking is length-preserving, so line numbers still match the file.
 for (const line of raw.split('\n')) {
   const m = line.match(/^(.+?):(\d+):(.*)$/);
   if (!m) continue;
-  const [, file, lineno, content] = m;
+  const [, file] = m;
   if (!file.endsWith('.ts') && !file.endsWith('.tsx') && !file.endsWith('.mjs')) continue;
   if (file.endsWith('.test.ts') || file.endsWith('.test.tsx')) continue; // tests legitimately poke env
   scannedFiles.add(file);
-  const g = content.match(GATE_RE);
-  if (!g) continue;
-  const name = g[1];
-  seen.add(name);
-  if (ALLOW.has(name) || name in KNOWN_ENV_CAPABILITY_GATES) continue;
-  if (!hits.has(name)) hits.set(name, []);
-  hits.get(name).push(`${file}:${lineno}`);
+}
+/** file -> comment-masked text, read once and shared by both passes. */
+const maskedText = new Map();
+const unreadable = [];
+for (const file of scannedFiles) {
+  try {
+    maskedText.set(file, stripCommentsOnly(readFileSync(join(ROOT, file), 'utf8'), file));
+  } catch {
+    // Moved/deleted since the git grep snapshot — not fatal (the 2nd pass always behaved this
+    // way). But detection now DEPENDS on the read succeeding, where pass 1 used to fall back to
+    // git grep's own line text, so an unreadable file is a silent HOLE in the scan rather than a
+    // missing extra. Say so out loud: a guard that quietly checks fewer files than it claims is
+    // indistinguishable from a clean run. (Measured 2026-08-10: 0 of 506 unreadable, submodules
+    // included — so this is a tripwire, not a routine path.)
+    unreadable.push(file);
+  }
+}
+if (unreadable.length) {
+  console.log(
+    `check-env-feature-gates: ⚠ ${unreadable.length} file(s) matched the grep but could not be read — NOT scanned: ${unreadable.slice(0, 5).join(', ')}${unreadable.length > 5 ? ', …' : ''}`,
+  );
+}
+for (const [file, text] of maskedText) {
+  text.split('\n').forEach((content, i) => {
+    const g = content.match(GATE_RE);
+    if (!g) return;
+    const name = g[1];
+    seen.add(name);
+    if (ALLOW.has(name) || name in KNOWN_ENV_CAPABILITY_GATES) return;
+    if (!hits.has(name)) hits.set(name, []);
+    hits.get(name).push(`${file}:${i + 1}`);
+  });
 }
 
 // ── 2nd pass: the "assign-then-compare" idiom (EI-2390 blind spot) ──
@@ -288,14 +393,10 @@ for (const line of raw.split('\n')) {
 // EI-2390 audit 2026-07-18). Read each already-touched file's full content and
 // also match `const/let NAME = process.env.X;` followed, within a bounded
 // window, by a boolean-literal compare against that SAME local variable name.
-const ASSIGN_RE = /(?:const|let)\s+(\w+)\s*=\s*process\.env\.(PAPERCUSP_[A-Z_0-9]+)\s*;/g;
-for (const file of scannedFiles) {
-  let text;
-  try {
-    text = readFileSync(join(ROOT, file), 'utf8');
-  } catch {
-    continue; // file moved/deleted since the git grep snapshot — skip, not fatal
-  }
+// (ASSIGN_RE is declared above the self-test, so both share one definition.)
+for (const [file, text] of maskedText) {
+  // Same comment-masked text as pass 1 — a commented-out `const flag = process.env.X;`, or a
+  // compare that only appears in prose inside the 400-char window, must not read as a gate.
   for (const am of text.matchAll(ASSIGN_RE)) {
     const [, varName, name] = am;
     const windowEnd = Math.min(text.length, am.index + am[0].length + 400);
