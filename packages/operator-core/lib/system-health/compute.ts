@@ -150,6 +150,32 @@ const STALE_PAUSE_CRITICAL_MS = 4 * 60 * 60_000; // 4h
 // still-live stale pause — only routines nobody has touched in a long time.
 const STALE_PAUSE_DECOMMISSIONED_MS = 7 * 24 * 60 * 60_000; // 7d
 const RELEASE_CRITICAL_ROUTINE_NAMES = new Set(['release-trigger', 'green-checkpoint']);
+/**
+ * EI-20045691451471399 — routines whose STOPPAGE is fleet-blocking, used to pick which
+ * overdue routines the engine-starvation alarm NAMES. Derived from
+ * `RELEASE_CRITICAL_ROUTINE_NAMES` so the two can never drift apart, plus `git-sync`.
+ *
+ * git-sync is deliberately NOT in the release-critical PAUSE set (whose meaning is "a
+ * paused deploy pipeline") but IS fleet-blocking when DEAD: it is the routine that commits
+ * the shared working tree, so while it is stopped nothing any agent writes reaches a commit
+ * — and the green gate then re-judges a candidate that structurally CANNOT contain anyone's
+ * fix. Both filed incidents (EI-20045691451471399, EI-20063652008382478) turned on exactly
+ * that, so a dead git-sync must never be the member the alarm omits.
+ */
+export const FLEET_BLOCKING_ROUTINE_NAMES: ReadonlySet<string> = new Set([
+  ...RELEASE_CRITICAL_ROUTINE_NAMES,
+  'git-sync',
+]);
+/** How many overdue routines the alarm NAMES. Bounds the exemplar list ONLY — never the count. */
+const DEAD_ROUTINE_EXEMPLAR_LIMIT = 6;
+/**
+ * Census fetch cap, deliberately decoupled from {@link DEAD_ROUTINE_EXEMPLAR_LIMIT}: the
+ * display list is short, but the population it is drawn from must not be. Only ~144 rows are
+ * in scope on this box, so this is a pathology backstop, not a working limit — and even when
+ * it DOES bind, the reported COUNT stays exact because it comes from `count(*) OVER ()`
+ * (computed before LIMIT), never from the length of the fetched rows.
+ */
+const DEAD_ROUTINE_CENSUS_LIMIT = 500;
 const ESCALATION_AGING_MS = 6 * 60 * 60_000;
 const execFileP = promisify(execFile);
 
@@ -636,16 +662,105 @@ export function countStuckFrontier(rows: ReadonlyArray<{ ageDays?: number; title
  * exclusion therefore matches claimDueRoutine's own PURE-loop definition
  * (`isLoop && !hasRecurrence`).
  */
-export async function readDeadRoutines(sql: Sql, overdueMs: number): Promise<string[]> {
-  const rows = await sql<Array<{ name: string }>>`
-    SELECT name FROM harness_shared.routines
-     WHERE active = true AND next_fire_at IS NOT NULL
-       AND NOT ( reschedule_interval_sec IS NOT NULL
-                 AND NOT jsonb_exists(trigger_config, 'cron')
-                 AND NOT jsonb_exists(trigger_config, 'rrule') )
-       AND next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})
-     ORDER BY next_fire_at ASC LIMIT 20`;
-  return rows.map((r) => r.name);
+export async function readDeadRoutines(sql: Sql, overdueMs: number): Promise<DeadRoutineCensus> {
+  const rows = await sql<Array<{ name: string; overdue_total: number; scope_total: number }>>`
+    WITH scope AS (
+      SELECT name, next_fire_at FROM harness_shared.routines
+       WHERE active = true AND next_fire_at IS NOT NULL
+         AND NOT ( reschedule_interval_sec IS NOT NULL
+                   AND NOT jsonb_exists(trigger_config, 'cron')
+                   AND NOT jsonb_exists(trigger_config, 'rrule') )
+    )
+    SELECT name,
+           count(*) OVER ()::int AS overdue_total,
+           (SELECT count(*)::int FROM scope) AS scope_total
+      FROM scope
+     WHERE next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})
+     ORDER BY next_fire_at ASC
+     LIMIT ${DEAD_ROUTINE_CENSUS_LIMIT}`;
+  // Zero overdue rows ⇒ no alarm fires, so the denominator is never read; report a clean zero
+  // rather than paying a second query for a scope count nothing will consume.
+  if (rows.length === 0) {
+    return { count: 0, totalInScope: 0, names: [], criticalNames: [], namesTruncated: false, censusTruncated: false };
+  }
+  return summarizeDeadRoutines(rows.map((r) => r.name), {
+    count: rows[0].overdue_total,
+    totalInScope: rows[0].scope_total,
+    censusTruncated: rows.length >= DEAD_ROUTINE_CENSUS_LIMIT,
+  });
+}
+
+/**
+ * The engine-starvation census. Separates the two things the old `string[]` return
+ * conflated — a BOUNDED display list and an UNBOUNDED population count.
+ */
+export interface DeadRoutineCensus {
+  /**
+   * TRUE number of overdue routines — from `count(*) OVER ()`, computed before LIMIT.
+   * ⚠ Never `names.length`: that is what produced the measured misreport this type exists
+   * to prevent (see {@link summarizeDeadRoutines}).
+   */
+  count: number;
+  /** Active in-scope durable routines — the DENOMINATOR that turns a bare count into a ratio. */
+  totalInScope: number;
+  /** Exemplars to NAME, fleet-blocking first, then most-overdue. Capped; see `namesTruncated`. */
+  names: string[];
+  /** Every fleet-blocking routine implicated (git-sync / green-checkpoint / release-trigger). */
+  criticalNames: string[];
+  /** `names` was cut to the exemplar cap. Bounds the LIST only — `count` remains exact. */
+  namesTruncated: boolean;
+  /** The census fetch itself hit `DEAD_ROUTINE_CENSUS_LIMIT`; `count` is still exact. */
+  censusTruncated: boolean;
+}
+
+/**
+ * PURE exemplar selection + boundedness accounting for the dead-routine alarm (no DB, no clock).
+ *
+ * ## Why this is not just formatting (EI-20045691451471399)
+ *
+ * The previous implementation returned `string[]` from a `LIMIT 20` query, and the panel then
+ * set `deadRoutines: deadRoutineNames.length`. That made the reported COUNT a function of the
+ * fetch cap: an engine freeze of ANY magnitude ≥20 reported exactly "20".
+ *
+ * That is not hypothetical. On 2026-08-10 the alarm broadcast **"20 dead routine(s) overdue
+ * >10m … the routine engine is starved"** while **101 of 151** durable routines were actually
+ * overdue (EI-20063652008382478) — a 5× understatement pinned precisely at the cap. The agent
+ * triaging that broadcast read the 20 and wrote "The DETECTOR is fine", then spent the
+ * investigation on the restart actuator instead. A saturated count is worse than a missing
+ * one: it is indistinguishable from a real measurement, so it redirects triage rather than
+ * inviting a second look.
+ *
+ * So `count` here is always the caller's uncapped total and is NEVER recomputed from `names`.
+ *
+ * ## Why order by consequence rather than by overdue-seconds
+ *
+ * The rows arrive most-overdue-first, which sounds like severity ordering and is not: it ranks
+ * by how long ago a routine was DUE, which for a frozen engine is decided by cron phase — i.e.
+ * essentially arbitrary. In the filed incident that put `pr-poll` first by SECONDS and buried
+ * `git-sync`, so a fleet-wide commit outage was announced under its least consequential
+ * member. Fleet-blocking names are hoisted so the cap can never bury the one that explains the
+ * blast radius, and `criticalNames` is reported in full regardless of the exemplar cap.
+ */
+export function summarizeDeadRoutines(
+  overdueMostOverdueFirst: readonly string[],
+  totals: { count: number; totalInScope: number; censusTruncated?: boolean },
+  opts: { exemplarLimit?: number; criticalNames?: ReadonlySet<string> } = {},
+): DeadRoutineCensus {
+  const limit = opts.exemplarLimit ?? DEAD_ROUTINE_EXEMPLAR_LIMIT;
+  const critical = opts.criticalNames ?? FLEET_BLOCKING_ROUTINE_NAMES;
+  const criticalNames = overdueMostOverdueFirst.filter((n) => critical.has(n));
+  const rest = overdueMostOverdueFirst.filter((n) => !critical.has(n));
+  const names = [...criticalNames, ...rest].slice(0, limit);
+  return {
+    count: totals.count,
+    totalInScope: totals.totalInScope,
+    names,
+    criticalNames,
+    // Compare against the POPULATION, not the fetched slice: with a truncated census there are
+    // provably more names than were fetched, so the list is truncated even if it fit the cap.
+    namesTruncated: totals.count > names.length,
+    censusTruncated: totals.censusTruncated ?? false,
+  };
 }
 
 /**
@@ -953,7 +1068,8 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // resource footprint is active or just finished — see resolveDeadRoutineOverdueMs's doc
     // comment. Fail-soft: any probe error keeps the tight base threshold (never suppresses).
     const deadRoutineOverdueMs = await resolveDeadRoutineOverdueMs(sql, potSlug, ctx.now);
-    const deadRoutineNames = await readDeadRoutines(sql, deadRoutineOverdueMs);
+    const deadCensus = await readDeadRoutines(sql, deadRoutineOverdueMs);
+    const deadRoutineNames = deadCensus.names;
     // WI-5839 / EI-18654017982759582 items 2+3: stale/unexplained PAUSED routines —
     // the complement readDeadRoutines can never see (it only looks at active=true).
     // Best-effort/fail-soft: never let a metadata-shape surprise sink the whole panel.
@@ -992,7 +1108,13 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     } catch { /* improvements unreadable — leave 0s (the dead-routine signal still computes) */ }
     const data: WorkFeedHealth = {
       frontier, frontierStuck, frontierBlocked, startedPlans, autoEligibleStuck,
-      keylessHumanReviewBacklog, deadRoutines: deadRoutineNames.length, deadRoutineNames,
+      // EI-20045691451471399: the TRUE overdue count, not `deadRoutineNames.length` — the names
+      // are a capped display list, and reading their length as the count is what reported a
+      // 101-routine freeze as "20 dead routine(s)".
+      keylessHumanReviewBacklog, deadRoutines: deadCensus.count, deadRoutineNames,
+      deadRoutinesInScope: deadCensus.totalInScope,
+      deadRoutineCriticalNames: deadCensus.criticalNames,
+      ...(deadCensus.namesTruncated ? { deadRoutineNamesTruncated: true } : {}),
       stalePausedRoutines: stalePaused.length, stalePausedRoutineNames, stalePausedCriticalRoutines,
       ...(stalePausedUnreadable ? { stalePausedRoutinesUnreadable: true } : {}),
       ...(frontierUnreadable ? { frontierUnreadable: true } : {}),
@@ -1001,7 +1123,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     return {
       status,
       summary: data.deadRoutines > 0
-        ? `DEAD ROUTINE(S): ${deadRoutineNames.slice(0, 3).join(', ')}`
+        ? `DEAD ROUTINE(S) ${data.deadRoutines}/${deadCensus.totalInScope}: ${deadRoutineNames.slice(0, 3).join(', ')}${deadCensus.count > 3 ? ', …' : ''}`
         : stalePausedCriticalRoutines > 0
           ? `STALE PAUSE on release-critical routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')} — deploy pipeline may be silently stopped`
           : `${frontier} ready${frontierStuck > 0 ? ` (${frontierStuck} long-stuck/gated)` : ''}, ${frontierBlocked} blocked, ${startedPlans} started plan(s)${autoEligibleStuck > 0 ? `, ${autoEligibleStuck} auto-stuck` : ''}${keylessHumanReviewBacklog > 0 ? `, ${keylessHumanReviewBacklog} keyless human-review` : ''}${stalePaused.length > 0 ? `, ${stalePaused.length} stale-paused routine(s): ${stalePausedRoutineNames.slice(0, 3).join(', ')}` : ''}`,
