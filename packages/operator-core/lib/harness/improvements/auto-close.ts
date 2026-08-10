@@ -41,94 +41,20 @@ import {
 import type { CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 
 /**
- * Sources where a signal's ABSENCE reliably means the problem resolved (the
- * collector runs every tick and would re-fire if it persisted). Conservative
- * allowlist — live-state/one-shot/ambiguous sources stay out so a quiet tick is
- * never mistaken for a resolution.
+ * Sources where a signal's ABSENCE reliably means the problem resolved.
+ *
+ * MOVED to the leaf module `./auto-close-sources` (EI-20106946822538304) so the issue-family
+ * self-select CLAIM floor can share the one definition — `work-items.ts` cannot import THIS
+ * file (`work-items.ts -> auto-close.ts -> issues-engineer.ts -> work-items.ts` is a cycle).
+ * Re-exported here so this module's public API is unchanged; the allowlist's full rationale
+ * (including why 'red-test' is deliberately absent) lives with the constant.
+ *
+ * The two halves must never disagree: this set decides which items auto-close CLOSES on a
+ * quiet tick, and the same set decides which items the claim floor withholds while they are
+ * still inside that recovery window. Forking it would let an agent claim an item the sweep is
+ * about to retire — the very defect the floor was added to fix.
  */
-export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
-  // ⛔ 'red-test' is DELIBERATELY ABSENT — do not re-add it (template-supply-chain-repair
-  // 2026-08-10 P-003). It is the one source whose input is a LOG OF EXTERNALLY-TRIGGERED
-  // EVENTS (`harness_shared.test_runs`) rather than a live re-derivation of the condition.
-  // Every other entry here re-evaluates its own predicate each tick (a DB query, a claim
-  // table, a routine's `active` flag), so a quiet tick genuinely means "the condition is
-  // gone". For red-test a quiet tick means only "nobody RAN this test" — the collector
-  // cannot distinguish a test that was fixed from one that was dropped from its suite,
-  // renamed, left un-owned by any vitest config, or whose checkout disappeared.
-  //
-  // Measured case (EI-11141, templates/papercusp-desktop-app/checks/composition-integrity
-  // .test.ts): last run 2026-07-27, `resolved` 2026-08-02, and ZERO 'pass' rows in ALL of
-  // test_runs history — the named import (@papercusp/template-kit) was still unresolvable
-  // when the item was closed, and stayed broken for another 8 days. Its runs stopped
-  // because NO vitest config owns templates/**/checks/*.test.ts (testing:run answers
-  // TEST_FILE_ROUTE_ERROR), not because anything was fixed.
-  //
-  // Removing it costs nothing: red-test is also the ONLY source with a POSITIVE-evidence
-  // resolution path (`resolveProvenGreenRedTests`, P-007), which resolves a genuinely-fixed
-  // test on N consecutive recorded greens and attaches them as real completion evidence.
-  // Absence-closing it was strictly the weaker, unfalsifiable half of that pair.
-  'repeated-tool-error',
-  'stalled-feature',
-  'unresolved-escalation',
-  'failed-spawn',
-  'smoke-fail',
-  'escalation-spike',
-  'fire-circuit-open',
-  // P-011: per-harness sources whose absence reliably means resolution (a torn-down
-  // benchmark hive's saturation/orphan/stuck signal simply stops). Added so auto-close
-  // retires the full benchmark-debris set (governor-starvation was the gap — 27 EIs).
-  'governor-starvation',
-  'orphaned-spawn',
-  'stuck-plan',
-  'ship-link-stuck',
-  // agent-activity-liveness-truth P-007: a live-state collector — when the claim
-  // progresses (or is freed/reclaimed) the stalled signal simply stops, so its
-  // absence reliably means resolution.
-  'stalled-claim',
-  // EI-5994: collectLoopStalledSignals filters `r.active = true` — once the dead-owner
-  // reaper (loop-unreachable-guard / autoPauseLoopRoutine) deactivates the routine, this
-  // signal STOPS firing immediately and unconditionally (not just recency-gated), so its
-  // absence reliably means the underlying loop is gone/paused, not merely quiet.
-  'loop-stalled',
-  // EI-1760: collectMigrationDriftSignals re-derives `missing` from a live DB query
-  // EVERY tick (never caches/latches) and, unlike service-down's freshness-gated probe
-  // skip, degrades LOUD not silent on failure — checkMigrationDrift's own internal
-  // catch treats an unreachable schema_migrations tracker as "report all on-disk as
-  // missing", so a query outage still FIRES the signal rather than going quiet. A quiet
-  // tick therefore reliably means every on-disk migration is applied (the common case:
-  // the operator restarted and boot-apply caught up) — the exact condition this EI was
-  // filed to auto-resolve instead of leaving self-cleared criticals polluting the queue.
-  'migration-drift',
-  // EI-18143028205990222 class: perf-regression-rig.ts's `consider()` re-derives EVERY
-  // metric (loop-lag-p95, conn-saturation, dispatch-orphan-rate, coord-open-escalations,
-  // adv-tab-switch-median, adv-fcp) from a LIVE query/read each tick — none of them cache
-  // or latch a stale verdict — so a quiet tick reliably means the metric has dropped back
-  // under budget, the same reasoning as `migration-drift` above. Without this, a SLO
-  // breach whose root cause is already fixed elsewhere (e.g. dispatch-orphan-rate reading
-  // a trailing 24h window full of PRE-FIX orphan rows — verified zero new orphans for 4h+
-  // after durable-spawn.ts's EI-18118495431535177 fix landed) has NO path back to closed:
-  // the collector keeps re-deriving the same true-but-stale elevated number every tick
-  // until the window ages the old rows out (hours), and nothing ever retires the EI in
-  // the meantime — every future transient perf-regression breach would hit the same dead
-  // end. dispatchOrphanRate/connSaturationPct/etc. dropping below budget on a later tick
-  // is exactly the "signal absent from known-open keys" condition this sweep exists for.
-  'perf-regression',
-  // EI-19417016857494865: collectRoutineFailureSignals re-derives from a LIVE query every
-  // tick (`active = true AND metadata->>'last_error' <> ''`) and never caches or latches —
-  // the same reasoning as `loop-stalled` and `migration-drift` above. The routine RUNNER
-  // deletes `last_error`/`last_error_at`/`last_error_source` on its success path
-  // (routines-workflow.ts, source-scoped to 'runner'), so the signal stops the moment a
-  // routine fires cleanly again; deactivation also stops it unconditionally via the
-  // `active = true` filter. A quiet tick therefore reliably means the routine recovered.
-  // Without this, an instantaneous self-clearing failure (e.g. git-sync hitting one
-  // transient GitHub `Connection reset by peer` on a ~2min cadence) is escalated to a
-  // PERSISTENT claimable MAJOR bug that nothing ever retires: measured 2026-08-03, the
-  // `routine:git-sync` key alone re-filed 3× in 3 days and 12 such EIs since 07-11 were
-  // each hand-drained by a separate agent burning a full claim cycle on an
-  // already-recovered routine. The open-dup guard only suppresses a re-file WHILE one is
-  // open, so draining one merely clears the way for the next.
-  'routine-failure',
-]);
+export { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources';
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */
 export interface AutoCloseCandidate {
