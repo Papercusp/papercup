@@ -65,49 +65,71 @@ function markerPath(): string {
 
 let cached: BundleStaleness | null | undefined;
 
+/**
+ * A marker we could not fully understand. Reached whenever the file EXISTS but
+ * its contents are unusable — corrupt JSON, or written by a writer whose shape
+ * we do not recognise.
+ *
+ * ⚠ The ONLY signal that matters for the verdict is that the file EXISTS:
+ * bundle-host.sh writes it exclusively on the fallback path and deletes it on
+ * every success, so its mere presence proves a build failed and this process
+ * booted on an older bundle. The contents are detail. Degrading an
+ * unparseable marker to `null` would report a genuinely-stale process as
+ * healthy — the single failure mode this module exists to prevent — so we
+ * return staleness with a `reason` instead.
+ */
+function unreadable(reason: string): BundleStaleness {
+  return {
+    schema: 'bundle-stale-v1',
+    failedAt: 'unknown',
+    entry: null,
+    outfile: '(unreadable marker)',
+    servingBundleMtime: null,
+    servingBundleAgeSecAtFailure: null,
+    failingFiles: [],
+    error: `${reason} — the marker at ${markerPath()} exists, so this process is serving STALE code; its details could not be read`,
+  };
+}
+
 function read(): BundleStaleness | null {
   let raw: string;
   try {
     raw = readFileSync(markerPath(), 'utf8');
   } catch {
-    // ENOENT is the overwhelmingly common case and means HEALTHY: the last
-    // build succeeded, so bundle-host.sh removed the marker.
+    // ENOENT is the overwhelmingly common case and is the ONLY thing that means
+    // HEALTHY: the last build succeeded, so bundle-host.sh removed the marker.
     return null;
   }
+
+  let parsed: Partial<BundleStaleness>;
   try {
-    const parsed = JSON.parse(raw) as Partial<BundleStaleness>;
-    if (!parsed || typeof parsed !== 'object' || typeof parsed.outfile !== 'string') return null;
-    return {
-      schema: typeof parsed.schema === 'string' ? parsed.schema : 'bundle-stale-v1',
-      failedAt: typeof parsed.failedAt === 'string' ? parsed.failedAt : 'unknown',
-      entry: typeof parsed.entry === 'string' ? parsed.entry : null,
-      outfile: parsed.outfile,
-      servingBundleMtime:
-        typeof parsed.servingBundleMtime === 'string' ? parsed.servingBundleMtime : null,
-      servingBundleAgeSecAtFailure:
-        typeof parsed.servingBundleAgeSecAtFailure === 'number'
-          ? parsed.servingBundleAgeSecAtFailure
-          : null,
-      failingFiles: Array.isArray(parsed.failingFiles)
-        ? parsed.failingFiles.filter((f): f is string => typeof f === 'string')
-        : [],
-      error: typeof parsed.error === 'string' ? parsed.error : '',
-    };
+    parsed = JSON.parse(raw) as Partial<BundleStaleness>;
   } catch {
-    // A corrupt marker must not be reported as HEALTHY — that is the one
-    // failure mode this module exists to prevent. Report staleness with
-    // whatever little we can stand behind.
-    return {
-      schema: 'bundle-stale-v1',
-      failedAt: 'unknown',
-      entry: null,
-      outfile: '(unparseable marker)',
-      servingBundleMtime: null,
-      servingBundleAgeSecAtFailure: null,
-      failingFiles: [],
-      error: `bundle-stale marker at ${markerPath()} could not be parsed; treat this process as serving STALE code`,
-    };
+    return unreadable('bundle-stale marker could not be parsed as JSON');
   }
+  if (!parsed || typeof parsed !== 'object') {
+    return unreadable('bundle-stale marker was not a JSON object');
+  }
+  if (typeof parsed.outfile !== 'string') {
+    return unreadable('bundle-stale marker is missing the `outfile` field');
+  }
+
+  return {
+    schema: typeof parsed.schema === 'string' ? parsed.schema : 'bundle-stale-v1',
+    failedAt: typeof parsed.failedAt === 'string' ? parsed.failedAt : 'unknown',
+    entry: typeof parsed.entry === 'string' ? parsed.entry : null,
+    outfile: parsed.outfile,
+    servingBundleMtime:
+      typeof parsed.servingBundleMtime === 'string' ? parsed.servingBundleMtime : null,
+    servingBundleAgeSecAtFailure:
+      typeof parsed.servingBundleAgeSecAtFailure === 'number'
+        ? parsed.servingBundleAgeSecAtFailure
+        : null,
+    failingFiles: Array.isArray(parsed.failingFiles)
+      ? parsed.failingFiles.filter((f): f is string => typeof f === 'string')
+      : [],
+    error: typeof parsed.error === 'string' ? parsed.error : '',
+  };
 }
 
 /**

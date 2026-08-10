@@ -41,14 +41,24 @@ function tail(text, n) {
  * useful field for whoever reads the marker: it names the file to go fix,
  * without them having to reconstruct it from the journal.
  *
- * esbuild renders it on its own indented line beneath the ✘ [ERROR] header:
- *     ../../packages/operator-core/lib/agent-tools/templates/new-app.ts:333:688
+ * esbuild renders it on its own indented line beneath the ✘ [ERROR] header,
+ * with a TRAILING COLON — verified against esbuild 0.25.0 output, not from the
+ * incident report, whose quoted journal line had the trailing colon truncated:
+ *
+ *     ✘ [ERROR] Expected "}" but found "s"
+ *
+ *         ../../packages/operator-core/lib/.../new-app.ts:333:688:
+ *           333 │ ... `supplyChain` is this install's resolved …
+ *
+ * The `:?` is therefore load-bearing: anchoring `\s*$` directly after the column
+ * matches nothing and yields a marker with an empty `failingFiles`, which reads
+ * as "no file was named" rather than "the parser missed it".
  */
 function failingFiles(log) {
   const out = [];
   for (const line of log.split('\n')) {
-    const m = /^\s*(\S+\.(?:ts|tsx|mts|cts|js|mjs|cjs|json)):(\d+):(\d+)\s*$/.exec(line);
-    if (m && !out.includes(m[0].trim())) out.push(m[0].trim());
+    const m = /^\s*(\S+\.(?:ts|tsx|mts|cts|js|mjs|cjs|jsx|json|css):\d+:\d+):?\s*$/.exec(line);
+    if (m && !out.includes(m[1])) out.push(m[1]);
   }
   return out.slice(0, 20);
 }
