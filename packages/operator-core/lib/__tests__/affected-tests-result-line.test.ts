@@ -56,8 +56,13 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
     // "no affected workspaces" and "no workspace declares a test script" are
     // both genuine PASS verdicts (nothing to run is not a failure) — a caller
     // grepping for the marker line must still find one, not silence.
+    // Prose deliberately loose (`[^']*`) for the reason spelled out below — this
+    // assertion is the one that had NOT been loosened, and on 2026-08-10 it reded the
+    // gate exactly as predicted: the message grew "(and no repo-wide invariant guard
+    // matched the changed paths)" and a copy edit that cannot affect a single caller
+    // grepping the marker took the fleet's gate red. Same lesson, second assertion.
     expect(source).toMatch(
-      /outSync\('No affected workspaces\.'\);\s*\n\s*outSync\('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces'\);/,
+      /outSync\('No affected workspaces[^']*'\);\s*\n\s*outSync\('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces'\);/,
     );
     // The message TAIL is deliberately loose (`[^`]*`): what this guards is that
     // the marker line is emitted on this early-exit path, not the prose of the
