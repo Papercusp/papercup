@@ -67,7 +67,25 @@ const CODE_EXT = ['.ts', '.tsx', '.mts', '.mjs'];
  * The gap changes ZERO keep/move verdicts: their only symbol, `computeCupWakeDossier`, is
  * KEEP regardless on an independent real importer (lib/fleet/spawn-hydration-deps.ts).
  */
-const EXPECTED_EXTERNAL_IMPORTERS = 57;
+const EXPECTED_EXTERNAL_IMPORTERS = 59;
+
+/**
+ * RECONCILED AGAIN 2026-08-10, 57 → 59 (EI-20087329768209149). The tree did not drift and
+ * nothing was added to it: the parser started SEEING two importers it had always been blind to.
+ * `resolveSpecifier` used to `return null` for any specifier not starting with '.', so the two
+ * apps/operator-vite consumers that reach lib/pot through the package name were dropped:
+ *     LearningTab.tsx            from '@papercusp/operator-core/lib/pot/soak-report'
+ *     MugWakeEfficiencyPanel.tsx from '@papercusp/operator-core/lib/pot/mug-wake-efficiency'
+ * MEASURED as a set difference against the pre-fix artifact: exactly those two ADDED, zero
+ * removed — so the delta is fully explained and is not a coincidence of equal counts.
+ *
+ * ⚠ NOTE FOR THE NEXT READER: this constant reading MATCH is weak evidence, and was actively
+ * misleading once. Before the AST fix it compared a number produced by the broken regex parser
+ * against a number the SAME broken parser had produced earlier — so it printed MATCH while the
+ * keep bucket was under-counted by 14 symbols. Agreement between two runs of one method is not
+ * corroboration. The real guard is `scripts/verify-pot-substrate-ast.mjs`, an independently
+ * written implementation that exits non-zero on disagreement; run THAT before executing a move.
+ */
 
 const args = process.argv.slice(2);
 const outPath = args.includes('--json') ? args[args.indexOf('--json') + 1] : null;
@@ -237,34 +255,57 @@ function resolveSpecifier(fromFile, spec) {
 const inPot = (abs) => abs === POT_DIR || abs.startsWith(POT_DIR + '/');
 
 // ── exported symbols of lib/pot ─────────────────────────────────────────────
-const EXPORT_PATTERNS = [
-  /^\s*export\s+(?:async\s+)?function\s+([A-Za-z0-9_$]+)/gm,
-  /^\s*export\s+(?:const|let|var)\s+([A-Za-z0-9_$]+)/gm,
-  /^\s*export\s+class\s+([A-Za-z0-9_$]+)/gm,
-  /^\s*export\s+(?:type|interface)\s+([A-Za-z0-9_$]+)/gm,
-  /^\s*export\s+enum\s+([A-Za-z0-9_$]+)/gm,
-];
-
+/**
+ * AST, for the same reason the import side is (EI-20087329768209149). The regex
+ * enumeration this replaces missed `CarryJournalEntry` (wake.ts:52): inside a multi-line
+ * `export { … }` an element written `type CarryJournalEntry,` splits to "type
+ * CarryJournalEntry", which fails /^[A-Za-z0-9_$]+$/ on the embedded space and is dropped —
+ * the identical inline-type-modifier defect the import scan had. A missing EXPORT is the
+ * quieter half of the same bug: the symbol never enters the population at all, so it cannot
+ * be classified either way and simply vanishes from the artifact.
+ */
 const potFiles = walk(POT_DIR).filter((f) => !isTest(f));
 /** symbol -> Set(defining file) */
 const exportsBySymbol = new Map();
 for (const f of potFiles) {
   const src = readFileSync(f, 'utf8');
-  for (const re of EXPORT_PATTERNS) {
-    for (const m of src.matchAll(re)) {
-      if (!exportsBySymbol.has(m[1])) exportsBySymbol.set(m[1], new Set());
-      exportsBySymbol.get(m[1]).add(relative(REPO, f));
+  const relF = relative(REPO, f);
+  const add = (name) => {
+    if (!name) return;
+    if (!exportsBySymbol.has(name)) exportsBySymbol.set(name, new Set());
+    exportsBySymbol.get(name).add(relF);
+  };
+  const sf = ts.createSourceFile(f, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const hasExportMod = (node) =>
+    (ts.canHaveModifiers?.(node) ? ts.getModifiers(node) : node.modifiers)?.some(
+      (m) => m.kind === ts.SyntaxKind.ExportKeyword,
+    ) ?? false;
+  const bind = (nameNode) => {
+    if (ts.isIdentifier(nameNode)) add(nameNode.text);
+    else if (ts.isObjectBindingPattern(nameNode) || ts.isArrayBindingPattern(nameNode))
+      for (const el of nameNode.elements) if (ts.isBindingElement(el)) bind(el.name);
+  };
+  sf.forEachChild((node) => {
+    if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isTypeAliasDeclaration(node) ||
+        ts.isEnumDeclaration(node) ||
+        ts.isModuleDeclaration(node)) &&
+      hasExportMod(node)
+    ) {
+      if (node.name) add(node.name.text);
+    } else if (ts.isVariableStatement(node) && hasExportMod(node)) {
+      for (const d of node.declarationList.declarations) bind(d.name);
+    } else if (ts.isExportDeclaration(node) && node.exportClause) {
+      if (ts.isNamedExports(node.exportClause))
+        for (const el of node.exportClause.elements) add(el.name.text);
+      else if (ts.isNamespaceExport(node.exportClause)) add(node.exportClause.name.text);
+    } else if (ts.isExportAssignment(node)) {
+      add('default');
     }
-  }
-  // export { a, b as c } [from '...']
-  for (const m of src.matchAll(/^\s*export\s*\{([^}]*)\}/gm)) {
-    for (const part of m[1].split(',')) {
-      const name = part.trim().split(/\s+as\s+/).pop()?.trim();
-      if (!name || !/^[A-Za-z0-9_$]+$/.test(name)) continue;
-      if (!exportsBySymbol.has(name)) exportsBySymbol.set(name, new Set());
-      exportsBySymbol.get(name).add(relative(REPO, f));
-    }
-  }
+  });
 }
 
 // ── external importers ──────────────────────────────────────────────────────
@@ -493,7 +534,7 @@ const artifact = {
     expectedExternalNonTestImporters: EXPECTED_EXTERNAL_IMPORTERS,
     actual: externalImporterFiles.size,
     matches: externalImporterFiles.size === EXPECTED_EXTERNAL_IMPORTERS,
-    note: 'P-056 recorded 60 non-test files outside lib/pot importing from it (2026-08-10). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list.',
+    note: 'Baseline 59 (P-056 recorded 60 → 57 after excluding 3 gitignored scratch importers → 59 once bare/package specifiers resolved, EI-20087329768209149). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list. A MATCH is weak evidence on its own: it compares this method against itself. Run scripts/verify-pot-substrate-ast.mjs for independent confirmation.',
   },
   keep,
   keepTierOnly,
@@ -530,7 +571,7 @@ if (!quiet) {
   console.log(`external non-test importers: ${c.externalNonTestImporterFiles} static  (test: ${c.externalTestImporterFiles})`);
   console.log(`                             ${c.externalNonTestDynamicImporterFiles} dynamic (test: ${c.externalTestDynamicImporterFiles})`);
   console.log(
-    `SELF-CHECK vs P-056's recorded 60: ${artifact.selfCheck.matches ? 'MATCH' : `MISMATCH (got ${artifact.selfCheck.actual})`}`,
+    `SELF-CHECK vs baseline ${EXPECTED_EXTERNAL_IMPORTERS}: ${artifact.selfCheck.matches ? 'MATCH (same-method only — run verify-pot-substrate-ast.mjs to confirm)' : `MISMATCH (got ${artifact.selfCheck.actual})`}`,
   );
   console.log('\nKEEP symbols with the most external importers:');
   for (const r of [...keep].sort((a, b) => b.externalNonTestImporters - a.externalNonTestImporters).slice(0, 15)) {
