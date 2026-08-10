@@ -266,7 +266,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, waitAtPrompt
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "duplicate" | "superseded" | "queued";
+    schedule(msg: any): "superseded" | "duplicate" | "queued";
 };
 /**
  * Submit verifier (WI-2930) — the POST-submit sibling of makeAgentBusyGate. The
