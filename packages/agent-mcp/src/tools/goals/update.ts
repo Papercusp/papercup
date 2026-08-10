@@ -34,7 +34,7 @@ export default defineTool({
     'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings? }. ' +
     'Partial — an omitted field is left untouched. Use status:"killed" when the written kill criterion trips and "achieved" when the outcome is met; ' +
     'a goal that is only ever created and never closed is the ratchet GOAL mode exists to prevent. ' +
-    'status FANS OUT, in both directions: "paused"|"killed" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
+    'status FANS OUT, in both directions: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
     '"active" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.',
   capability: 'goals:write',
   guidance: {
@@ -47,7 +47,7 @@ export default defineTool({
       'a degraded result means burn continues — chase it with fleet:assignments / loop:status on the reported projects.',
     returns:
       '`stop` carries the fan-out report and is NOT symmetric — check its `status` before reading it. ' +
-      'STOP arm (paused/killed): `potsStopped`, `potsSkippedContributing`, `loopsStopped`, and ⚠ `unattributedActiveLoops` — active loops in this goal\'s own pots that could NOT be attributed to it and are STILL RUNNING. ' +
+      'STOP arm (paused/killed/achieved): `potsStopped`, `potsSkippedContributing`, `loopsStopped`, and ⚠ `unattributedActiveLoops` — active loops in this goal\'s own pots that could NOT be attributed to it and are STILL RUNNING. ' +
       'RESUME arm (active): `potsResumed`, `potsSkippedContributing`, and ⚠ `loopsLeftDisarmed` — sessions attributed to this goal that are still not looping, deliberately NOT re-armed (they are routinely dead by resume time; new work re-forms from PLACEMENT instead). ' +
       '`timeWakeRestored` is always false: the pause DELETES the pot\'s declared time-wake row and its cadence is not reconstructible. ' +
       '`degraded` is true when either gap is non-zero — a caller that renders only `status` will be wrong, which is what these numbers exist to prevent.',

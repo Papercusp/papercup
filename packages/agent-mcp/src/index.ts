@@ -219,6 +219,7 @@ export {
   setGoalTransitionExecutor,
   getGoalTransitionExecutor,
   isStoppingStatus,
+  STOPPING_STATUSES,
   isResumingStatus,
   isTransitioningStatus,
   isStopReport,

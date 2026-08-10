@@ -169,7 +169,7 @@ export function getGoalTransitionExecutor(): GoalTransitionExecutor | undefined 
  * each other — the drift that let `achieved` be a first-class member of
  * `GOAL_STATUSES` while being invisible to this seam (WI-37832).
  */
-const STOPPING_STATUSES: readonly StoppingStatus[] = ['paused', 'killed', 'achieved'];
+export const STOPPING_STATUSES: readonly StoppingStatus[] = ['paused', 'killed', 'achieved'];
 
 /** A goal status that triggers the stop fan-out. */
 export function isStoppingStatus(status: string): status is StoppingStatus {

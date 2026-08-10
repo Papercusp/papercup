@@ -9,6 +9,11 @@
  * fails if anyone makes that change.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  STOPPING_STATUSES,
+  isStopReport,
+  type StoppingStatus,
+} from '@papercusp/agent-mcp';
 
 const pausePotState = vi.hoisted(() => vi.fn(async () => ({})));
 const resumePotState = vi.hoisted(() => vi.fn(async () => ({})));
@@ -248,7 +253,7 @@ describe('executeGoalResume', () => {
  * arm only). These assert the dispatch, not the arms.
  */
 describe('executeGoalTransition routing', () => {
-  const transition = (status: 'paused' | 'killed' | 'active') =>
+  const transition = (status: StoppingStatus | 'active') =>
     executeGoalTransition({ goalId: 'g1', workspaceId: 'ws', status, actor: 'su-test' });
 
   beforeEach(() => potsForGoal.mockResolvedValue([link('pot-a', 'owner')]));
@@ -262,12 +267,50 @@ describe('executeGoalTransition routing', () => {
     expect(pausePotState).not.toHaveBeenCalled();
   });
 
-  it.each(['paused', 'killed'] as const)('routes "%s" to the STOP arm', async (status) => {
+  // Driven from the seam's OWN list rather than a literal copy of it: a status added
+  // to STOPPING_STATUSES gets behavioural coverage automatically, instead of joining
+  // the set while every test keeps asserting the old two (WI-37832).
+  it.each(STOPPING_STATUSES)('routes "%s" to the STOP arm', async (status) => {
     const report = await transition(status);
 
     expect(report.status).toBe(status);
     expect(pausePotState).toHaveBeenCalledWith(expect.anything(), 'ws', 'pot-a');
     // Positive control for the assertion above: these arms must NOT resume.
     expect(resumePotState).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-37832 — the SUCCESS terminal must wind down, not leak.
+ *
+ * Stated separately from the parameterised routing test above because it is a
+ * REGRESSION, not a table row: `achieved` was a first-class member of GOAL_STATUSES
+ * while being invisible to this seam, so the status you set when a goal SUCCEEDS was
+ * the only one that wound nothing down — pots left ungated and attributed loops left
+ * burning, while `killed` cleaned both up. Measured live at filing: a goal sat
+ * `achieved` for 2h38m owning a pot (goal_pots role='owner', removed_at NULL) with its
+ * attributed session's engine loop still active.
+ *
+ * Asserting both tiers matters: routing alone would still pass if the stop arm ever
+ * gated placement without disarming loops, which is the half with actual teeth.
+ */
+describe('a goal closed as achieved', () => {
+  beforeEach(() => {
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    sqlRows.owners = ['su-attributed'];
+  });
+
+  it('gates placement on its owned pots AND disarms its attributed loops', async () => {
+    const report = await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'achieved',
+      actor: 'su-test',
+    });
+
+    expect(pausePotState).toHaveBeenCalledWith(expect.anything(), 'ws', 'pot-a');
+    expect(deactivateLoop).toHaveBeenCalledWith('su-attributed', expect.anything());
+    expect(isStopReport(report) && report.potsStopped).toEqual(['pot-a']);
+    expect(isStopReport(report) && report.loopsStopped).toEqual(['su-attributed']);
   });
 });
