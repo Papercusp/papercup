@@ -157,7 +157,22 @@ function isFile(p: string): boolean {
   }
 }
 
-/** Resolve a RELATIVE specifier to a concrete .ts/.tsx file, or null. */
+/**
+ * Resolve a RELATIVE specifier to a concrete .ts/.tsx/.mjs file, or null.
+ *
+ * `.mjs` is accepted because this repo deliberately keeps a handful of shared
+ * modules as plain ESM with a `.d.mts` sibling — `su-tier-roles.mjs`,
+ * `model-context-budget.mjs`, `mcp-proxy/budgets.mjs`, `psu-launch-log.mjs` —
+ * so that bare-`node` scripts (psu-launcher.mjs) and the TypeScript host can
+ * import the SAME definition. Those are ordinary runtime imports.
+ *
+ * Until WI-37841 the extension filter below rejected them even though `base`
+ * already WAS the real file on disk, so the first such import inside a search
+ * surface's graph reported an unresolved specifier — which the conformance
+ * suite correctly treats as a TRUNCATED WALK, since any "unreachable" verdict
+ * computed from a graph that stopped early is unsound. Accepting `.mjs` makes
+ * the walk follow them instead of stopping at them.
+ */
 export function resolveRelative(fromFile: string, specifier: string): string | null {
   const base = resolve(dirname(fromFile), specifier);
   // `.js` in a specifier is the ESM-correct spelling of a `.ts` source here.
@@ -171,7 +186,7 @@ export function resolveRelative(fromFile: string, specifier: string): string | n
     `${base}/index.ts`,
     `${base}/index.tsx`,
   ]) {
-    if (/\.(ts|tsx)$/.test(cand) && isFile(cand)) return cand;
+    if (/\.(ts|tsx|mjs)$/.test(cand) && isFile(cand)) return cand;
   }
   return null;
 }
