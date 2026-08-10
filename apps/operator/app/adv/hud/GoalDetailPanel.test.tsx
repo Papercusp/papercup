@@ -58,6 +58,44 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+/* D-011: the popup now EMBEDS the agent conversation. These two mocks stand in
+   for its network half and its renderer, so the assertions below are about what
+   this panel is responsible for — mounting the right thing, with the right
+   props, in each state — rather than about SSE.
+
+   ⚠ Mocking the hook is what makes these tests DISCRIMINATING. Without it, the
+   unmocked `fetch` in jsdom means the session never resolves, so "no composer
+   renders" is true no matter what this component does — which is exactly how
+   the retracted D-011's `offers no composer` assertion kept passing after the
+   composer was added. A test that cannot fail is not evidence. */
+let chatState: Record<string, unknown> = {};
+const chatSends: string[] = [];
+vi.mock('@/app/_components/chat/use-owner-session-chat', () => ({
+  useOwnerSessionChat: (ownerId: string | null) => ({
+    streamUrl: null,
+    resolved: null,
+    resolving: false,
+    resolveError: null,
+    send: (t: string) => chatSends.push(t),
+    sending: false,
+    sendError: null,
+    sentOk: null,
+    // The per-test override wins, but only when there IS an agent — passing a
+    // null ownerId must stay inert regardless of what a test asked for.
+    ...(ownerId ? chatState : {}),
+  }),
+}));
+vi.mock('@/app/_components/chat/SessionChatModal', () => ({
+  LiveSessionChat: (p: { streamUrl: string; sessionOwnerId: string; onSend: (t: string) => void }) => (
+    <div data-testid="live-chat" data-owner={p.sessionOwnerId} data-stream={p.streamUrl}>
+      <textarea aria-label="Message" />
+      <button type="button" onClick={() => p.onSend('hello')}>
+        Send
+      </button>
+    </div>
+  ),
+}));
+
 // The Radix dialog renders into a portal; the assertions below read
 // document.body, so no shim is needed — but jsdom lacks the pointer-capture
 // APIs Radix probes on mount.

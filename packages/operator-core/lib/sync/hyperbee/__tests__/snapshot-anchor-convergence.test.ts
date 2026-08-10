@@ -71,8 +71,8 @@ function makeGrowingLog(initial: number, growAfterReads: number, growBy: number)
       }
       return blocks[i] ?? null;
     },
-    async appendBatch(ops: AnyOp[]) {
-      blocks.push(...ops);
+    async appendBatch(ops: readonly unknown[]) {
+      blocks.push(...(ops as AnyOp[]));
     },
   };
 }
