@@ -17,6 +17,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { WithPlanLockResult } from './with-plan-lock';
+
+/** Mirrors new.ts's own (unexported) `NewPlanValue` success branch. */
+type NewPlanValue = { ok: true; slug: string };
+
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: vi.fn(() => 'offsite-planner-demo') }));
 vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
@@ -29,8 +34,31 @@ vi.mock('./revisions', () => ({
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
 vi.mock('../../harness/usage-emitters', () => ({ emitPlanAuthored: vi.fn(async () => {}) }));
 vi.mock('./item-parse-feedback', () => ({ summarizeItemParse: vi.fn(() => ({})) }));
+// The mock MUST mirror `AppliedResult` exactly — `kind:'applied'` plus the
+// `scope` pair. with-plan-lock.ts has exactly ONE applied-kind return and it
+// always carries `scope`, so every caller is entitled to read `result.scope`
+// unconditionally (new.ts:497 does, for stampPlanGoalProvenance). A fixture
+// that invents a `kind:'ok'` with no `scope` is not a simplification — it is a
+// shape the production code can never receive, and it red-pinned the gate the
+// day migration 791 started reading that field.
+// NOT cast to `never`/`any`: typing the fixture as the real `WithPlanLockResult`
+// is the recurrence guard. The next required field added to `AppliedResult`
+// then strands HERE at `tsc`, where it is a one-line fix, instead of at runtime
+// in the green gate, where it blocks every agent's deploys.
+const appliedResult = (): WithPlanLockResult<NewPlanValue> => ({
+  kind: 'applied',
+  value: { ok: true, slug: 'demo-plan-2026-07-18' },
+  filePath: 'x',
+  scope: { workspaceId: 'default', harnessSlug: 'offsite-planner-demo' },
+});
+
 vi.mock('./with-plan-lock', () => ({
-  withPlanLock: vi.fn(async () => ({ kind: 'ok', value: { ok: true, slug: 'demo-plan-2026-07-18' }, filePath: 'x' })),
+  withPlanLock: vi.fn(async () => ({
+    kind: 'applied',
+    value: { ok: true, slug: 'demo-plan-2026-07-18' },
+    filePath: 'x',
+    scope: { workspaceId: 'default', harnessSlug: 'offsite-planner-demo' },
+  })),
 }));
 
 const { withPlanLock } = await import('./with-plan-lock');
@@ -47,11 +75,7 @@ const call = (extra: Record<string, unknown> = {}) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  withPlanLockM.mockResolvedValue({
-    kind: 'ok',
-    value: { ok: true, slug: 'demo-plan-2026-07-18' },
-    filePath: 'x',
-  } as never);
+  withPlanLockM.mockResolvedValue(appliedResult());
 });
 
 describe('plans:new workspaceId opt-in (EI-1543)', () => {
