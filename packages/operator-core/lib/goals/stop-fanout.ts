@@ -44,11 +44,15 @@
 
 import { getOrgPg, projectsForGoal } from '@papercusp/db-org';
 import {
-  setGoalStopExecutor,
+  setGoalTransitionExecutor,
+  isStoppingStatus,
+  type GoalTransitionInput,
+  type GoalTransitionReport,
   type GoalStopInput,
   type GoalStopReport,
+  type GoalResumeReport,
 } from '@papercusp/agent-mcp';
-import { pausePotState } from '../pot/pause-core';
+import { pausePotState, resumePotState } from '../pot/pause-core';
 import { deactivateLoop, loopRoutineName } from '../harness/routines/loop';
 
 /**
@@ -142,5 +146,81 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
   };
 }
 
+/**
+ * Engine loops of sessions attributed to this goal that are currently DISARMED.
+ *
+ * A CURRENT-STATE measurement, not a replay of what the pause did — loop disarms have
+ * no durable audit trail (`routine_loop_transitions` records only `parked`/`rearmed`,
+ * measured 2026-08-09), so that table's silence about a disarm is not evidence of
+ * anything. Rows that never existed are not counted: only a routine row that exists
+ * and is inactive.
+ */
+async function countAttributedDisarmedLoops(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  owners: string[],
+): Promise<number> {
+  if (owners.length === 0) return 0;
+  const names = owners.map((o) => loopRoutineName(o));
+  const [row] = await sql<Array<{ n: string }>>`
+    SELECT count(*)::text AS n
+      FROM harness_shared.routines
+     WHERE name = ANY(${names})
+       AND active = FALSE
+  `;
+  return row ? Number(row.n) : 0;
+}
+
+/**
+ * The resume half (WI-37615, plan D-013). NOT the inverse of the stop, by design.
+ *
+ * It restores PLACEMENT on the projects this goal owns — the thing the pause gated and
+ * that nothing else can un-gate, because `pausePotState` marks the pause `deliberate`
+ * precisely so the recovery sweep leaves it alone. The fleet re-forms from placement.
+ *
+ * It deliberately does NOT re-arm the loops the pause disarmed. Those belong to
+ * SESSIONS, which are routinely dead by the time a goal resumes; re-arming a dead
+ * session's loop is meaningless and re-arming a live re-tasked one is worse. The count
+ * is REPORTED instead — same contract as the stop's `unattributedActiveLoops`: a caller
+ * that renders only `status` will be wrong, so hand it the number that says so.
+ */
+export async function executeGoalResume(input: GoalTransitionInput): Promise<GoalResumeReport> {
+  const { sql } = getOrgPg();
+  const { goalId, workspaceId } = input;
+
+  const links = await projectsForGoal(sql, { workspaceId, goalId });
+  const owned = links.filter((l) => l.role === 'owner').map((l) => l.harnessSlug);
+  const contributing = links.filter((l) => l.role !== 'owner').map((l) => l.harnessSlug);
+
+  const projectsResumed: string[] = [];
+  for (const slug of owned) {
+    await resumePotState(workspaceId, slug);
+    projectsResumed.push(slug);
+  }
+
+  const owners = await attributedOwners(sql, workspaceId, goalId);
+  const loopsLeftDisarmed = await countAttributedDisarmedLoops(sql, owners);
+
+  return {
+    goalId,
+    status: 'active',
+    projectsResumed,
+    projectsSkippedContributing: contributing,
+    loopsLeftDisarmed,
+    timeWakeRestored: false,
+    // Degraded when the resume is materially incomplete: placement is open again but
+    // sessions that were pursuing this goal are still not looping.
+    degraded: loopsLeftDisarmed > 0,
+  };
+}
+
+/** Route a status move to the arm that handles it. */
+export async function executeGoalTransition(
+  input: GoalTransitionInput,
+): Promise<GoalTransitionReport> {
+  return isStoppingStatus(input.status)
+    ? executeGoalStop({ ...input, status: input.status })
+    : executeGoalResume(input);
+}
+
 // Install at module load — the same seam pattern as capability-tier-overrides.
-setGoalStopExecutor((input) => executeGoalStop(input));
+setGoalTransitionExecutor((input) => executeGoalTransition(input));

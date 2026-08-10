@@ -16,7 +16,12 @@ import { defineTool } from '@papercusp/tooldef';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema } from './create';
 import { resolveGoalWorkspace } from './_workspace';
-import { getGoalStopExecutor, isStoppingStatus, type GoalStopReport } from './stop-seam';
+import {
+  getGoalTransitionExecutor,
+  isTransitioningStatus,
+  isStopReport,
+  type GoalTransitionReport,
+} from './stop-seam';
 
 export default defineTool({
   name: 'goals:update',
@@ -156,10 +161,10 @@ export default defineTool({
     // is exactly what an owner does when the first stop came back degraded (loops
     // still burning). Reporting spend on an already-paused goal passes no
     // `status`, so it does not re-fire.
-    let stop: GoalStopReport | null = null;
+    let stop: GoalTransitionReport | null = null;
     let stopError: string | null = null;
-    if (args.status !== undefined && isStoppingStatus(args.status)) {
-      const executor = getGoalStopExecutor();
+    if (args.status !== undefined && isTransitioningStatus(args.status)) {
+      const executor = getGoalTransitionExecutor();
       if (executor) {
         // UnifiedToolContext carries NO top-level workspaceId — only
         // principal.workspaceId (EI-18884122799901600) — so pass the two fields
@@ -199,7 +204,12 @@ export default defineTool({
     if (stopError) degradedReasons.push(stopError);
     if (stop?.degraded) {
       degradedReasons.push(
-        `goal ${args.status}, but ${stop.unattributedActiveLoops} active loop(s) in its projects could not be attributed to this goal and are STILL RUNNING`,
+        isStopReport(stop)
+          ? `goal ${args.status}, but ${stop.unattributedActiveLoops} active loop(s) in its projects could not be attributed to this goal and are STILL RUNNING`
+          : // The resume mirror: placement is open again, but the sessions that were
+            // pursuing this goal are not looping and this resume deliberately did not
+            // re-arm them (plan D-013). Work will re-form from placement, not from them.
+            `goal resumed and placement re-opened on ${stop.projectsResumed.length} project(s), but ${stop.loopsLeftDisarmed} attributed session loop(s) remain DISARMED and were not re-armed — new work re-forms from placement, the paused sessions do not come back`,
       );
     }
 
