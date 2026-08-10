@@ -2872,6 +2872,116 @@ describe('relative target after an unfollowable `cd` (EI-20106159536811878 / WI-
   });
 });
 
+/**
+ * A tree path used as a READ (a require/import specifier) must not trip the write
+ * guard (EI-18898365995336025). Requiring a module FROM the tree while writing
+ * scratch OUT of it is the normal shape of an ad-hoc probe — bundle a lib to test
+ * it in isolation, extract a fixture, dump a projection — and the guard's own
+ * advice ("write it outside the tree — /tmp") is unhelpful to a command already
+ * writing to /tmp.
+ *
+ * These are the reporter's two verbatim repros, kept as regression pins. The
+ * narrowing that fixes them (EI-18814109122347052: only WRITE-CALL ARGUMENT spans
+ * are candidates, so a `require(...)` specifier is never scanned) landed for a
+ * different report and was never pinned against THESE commands, so nothing stopped
+ * a future widening of the candidate scan from silently reopening them.
+ */
+/**
+ * A heredoc script whose every target is absolute and under /tmp must not be denied
+ * on a NON-PATH fragment of its own source text (EI-18800669297694465,
+ * EI-18700825865251498).
+ *
+ * Both reporters were shown a confidently-worded verdict naming something that is
+ * not a path at all — `wrote /tmp/promote-substitution-tiers.mts` (the argument of a
+ * `print()`) and ` in ln: ln = ln.replace(` (a fragment of a for-loop body). As both
+ * pointed out, the message then closed by advising them to "write it outside the tree
+ * (/tmp)", which is exactly what the blocked script already did. A guard whose refusal
+ * describes the thing you just did teaches agents to route around it.
+ *
+ * Kept as verbatim regression pins: the two narrowings that fixed these (whitespace
+ * tokenizing of each literal, and scanning only write-call argument spans) were filed
+ * for OTHER symptoms and never tested against these commands.
+ */
+describe('non-path source fragments are not write targets (EI-18800669297694465 / EI-18700825865251498)', () => {
+  it('allows a /tmp heredoc write whose print() mentions the same path (EI-18800669297694465)', () => {
+    const command = [
+      "cd /tmp && python3 - <<'EOF'",
+      "open('/tmp/promote-substitution-tiers.mts','w').write('x')",
+      'print("wrote /tmp/promote-substitution-tiers.mts")',
+      'EOF',
+    ].join('\n');
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows a /tmp heredoc write alongside loop-body code fragments (EI-18700825865251498)', () => {
+    const command = [
+      "python3 - <<'EOF'",
+      "for ln in ['a','b']:",
+      "    if 'x' in ln: ln = ln.replace('a','b')",
+      "open('/tmp/wi5980-live/fixture-differs.log','w').write('x')",
+      'EOF',
+    ].join('\n');
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  // Negative control: the same heredoc shape aimed INTO the tree must still deny, so
+  // the two allows above cannot be satisfied by a guard that stopped scanning heredocs.
+  it('still denies a heredoc write whose target IS in the tree', () => {
+    const command = [
+      "python3 - <<'EOF'",
+      "print('wrote /tmp/decoy.txt')",
+      "open('apps/operator/generated.ts','w').write('x')",
+      'EOF',
+    ].join('\n');
+    const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+});
+
+describe('read-only tree references do not trip the write guard (EI-18898365995336025)', () => {
+  it('allows an absolute /tmp write from a cwd inside the tree (repro 1)', () => {
+    expectAllow(
+      runGate(
+        bashCmd(
+          `node -e "const fs=require('fs'); fs.writeFileSync('/tmp/egress-probe/wv-bundle.js', 'x')"`,
+          { cwd: CANON },
+        ),
+        CANON_ENV,
+      ),
+    );
+  });
+
+  it('allows requiring a module FROM the tree while writing to /tmp (repro 2)', () => {
+    expectAllow(
+      runGate(
+        bashCmd(
+          `cd /tmp/egress-probe && node -e "const esbuild = require('${CANON}/node_modules/esbuild'); const fs=require('fs'); fs.writeFileSync('/tmp/egress-probe/wv-bundle.js', 'text')"`,
+          { cwd: CANON },
+        ),
+        CANON_ENV,
+      ),
+    );
+  });
+
+  // The guard must still catch the thing it exists for: the SAME shape, but with
+  // the write itself aimed into the tree. Without this, the two allows above could
+  // be satisfied by a guard that had simply stopped working.
+  it('still denies when the WRITE target itself is in the tree', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd(
+          `node -e "const esbuild = require('${CANON}/node_modules/esbuild'); const fs=require('fs'); fs.writeFileSync('apps/operator/generated.ts', 'text')"`,
+          { cwd: CANON },
+        ),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+});
+
 describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
   const expectInterpDeny = (out: { stdout: string; status: number | null }) => {
     const reason = denyReason(out);
