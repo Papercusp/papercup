@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 import {
-  FEATURE_DISPATCHABLE_STATE,
   FEATURE_TERMINAL_STATES,
   ISSUE_TERMINAL_STATES,
   ANY_FAMILY_TERMINAL_STATES,
@@ -80,18 +80,41 @@ describe('cross-family terminal union (EI-18653071581558556)', () => {
 });
 
 describe('feature-state constant invariants', () => {
-  it('the dispatchable state and terminal states are members of the family vocabulary', () => {
-    expect(FEATURE_FAMILY_STATES).toContain(FEATURE_DISPATCHABLE_STATE);
+  it('the claimable and terminal states are members of the family vocabulary', () => {
+    for (const s of CLAIM_STATES_ALLOWLIST) expect(FEATURE_FAMILY_STATES).toContain(s);
     for (const t of FEATURE_TERMINAL_STATES) expect(FEATURE_FAMILY_STATES).toContain(t);
   });
 
-  it('non-requeue states = dispatchable + terminal + blocked + needs-human + open, with no duplicates', () => {
+  it('non-requeue states = open + legacy todo + terminal + blocked + needs-human, with no duplicates', () => {
     // work-item-status-full-unify: `open` (the unified claimable token) is non-requeue for the
-    // same reason as `todo` — already claimable, nothing to do.
+    // same reason legacy `todo` is — already claimable, nothing to do.
     expect(new Set(FEATURE_NON_REQUEUE_STATES)).toEqual(
-      new Set([FEATURE_DISPATCHABLE_STATE, ...FEATURE_TERMINAL_STATES, 'blocked', 'needs-human', 'open']),
+      new Set(['open', 'todo', ...FEATURE_TERMINAL_STATES, 'blocked', 'needs-human']),
     );
     expect(FEATURE_NON_REQUEUE_STATES.length).toBe(new Set(FEATURE_NON_REQUEUE_STATES).size);
+  });
+
+  it('every CLAIMABLE state is also non-requeue EXCEPT `failing` (the re-drive token)', () => {
+    // The coupling that matters: a row the pool can already claim must not also be rewritten
+    // by the reaper. `failing` is the deliberate exception — it IS offered to the pool (a
+    // build-failed feature the pipeline may re-drive), but a FREED `failing` row is stranded
+    // mid-flight and is reset to `open`. Asserted so the exception stays a decision rather
+    // than becoming an accident if the allowlist grows.
+    for (const s of CLAIM_STATES_ALLOWLIST) {
+      if (s === 'failing') expect(FEATURE_NON_REQUEUE_STATES).not.toContain(s);
+      else expect(FEATURE_NON_REQUEUE_STATES).toContain(s);
+    }
+  });
+
+  it('the retired `todo` spelling is non-requeue but NOT claimable (EI-19363744726544384)', () => {
+    // This pair is the whole trap. `todo` survives in the non-requeue set because ~28 live
+    // feature-family rows still sit at it (see the constant's comment for the recount query),
+    // and it is NOT claimable because the unify narrowed the floor to CLAIM_STATES_ALLOWLIST.
+    // A fixture seeding `todo` is therefore invisible to claimNextWorkItem — which is exactly
+    // how work-item-redundancy.integration.test.ts stayed red for three weeks. If someone ever
+    // re-adds `todo` to the claim allowlist, this fails and points at the reaper coupling.
+    expect(FEATURE_NON_REQUEUE_STATES).toContain('todo');
+    expect(CLAIM_STATES_ALLOWLIST as readonly string[]).not.toContain('todo');
   });
 
   it('the family vocabulary has no duplicates', () => {

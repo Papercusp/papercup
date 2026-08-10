@@ -104,9 +104,10 @@ const REPLICAS_DDL = `
  * fixture cannot silently drift away from the floor a second time. The guard test
  * below fails loudly (and self-explains) if the vocabulary moves again.
  *
- * ⚠ `FEATURE_DISPATCHABLE_STATE` in work-item-dispatch-states.ts still reads 'todo'
- * and its docstring still claims to name the claimable state. It is inert (no
- * production consumer) but actively misleading — do not reach for it here.
+ * (EI-19363744726544384, fixed 2026-08-10: the `FEATURE_DISPATCHABLE_STATE = 'todo'`
+ * export that misled the original author is DELETED — work-item-dispatch-states.ts no
+ * longer answers the claimability question at all, and says so. There is nothing left
+ * to reach for there; `CLAIM_STATES_ALLOWLIST` below is the source of truth.)
  */
 const CLAIMABLE_STATUS = 'open';
 

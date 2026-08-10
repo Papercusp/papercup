@@ -12,11 +12,23 @@
  * needs-human / wip), NOT the aspirational dogfood-v5 `feature-state-types.ts`
  * model (backlog/in_queue/working/pending_done/shipped), which is a separate,
  * not-yet-wired lifecycle.
+ *
+ * ⚠ CLAIMABILITY IS NOT DEFINED HERE. This module answers "may the reaper requeue
+ * this row?", never "is this row offered to the claimable pool?". The claimable
+ * vocabulary is `CLAIM_STATES_ALLOWLIST` (`scheduler/claim-states.ts`) enforced by
+ * `claimFloorsWhereSql` (`work-items.ts`) — and the honest answer is that there is
+ * no SINGLE claimable state to name (it is ['open','failing']).
+ *
+ * That distinction was previously blurred by a `FEATURE_DISPATCHABLE_STATE = 'todo'`
+ * export here whose docstring claimed to name the claimable state. It had no
+ * production consumer, but it was the most authoritative-looking thing in the tree on
+ * a question it answered WRONGLY — a fixture author reaching for it seeded rows that
+ * no claim could see, and `work-item-redundancy.integration.test.ts` was red for three
+ * weeks (2026-07-19 → 08-02) on `expected undefined to be 'F-051'`, a symptom naming
+ * neither the status column nor the vocabulary change. It is deleted rather than
+ * re-worded, so the wrong reach finds nothing instead of finding a confident lie
+ * (EI-19363744726544384).
  */
-
-/** The single state in which a feature-family work-item is offered to the
- *  claimable pool (`claimNextWorkItem` / the dispatch frontier filter on it). */
-export const FEATURE_DISPATCHABLE_STATE = 'todo';
 
 /** Settled feature states — a terminal outcome, never re-dispatched and never
  *  requeued by the reaper. (Mirrors the settled set in setWorkItemState that
@@ -55,8 +67,10 @@ export const ANY_FAMILY_TERMINAL_STATES: readonly string[] = [
 ];
 
 /**
- * Feature states the reaper / release path must NOT requeue to `todo`:
- *   - `todo`         — already claimable, nothing to do;
+ * Feature states the reaper / release path must NOT requeue (the requeue TARGET is
+ * `open` since work-item-status-full-unify; it was `todo` before the flip):
+ *   - `open`         — already claimable, nothing to do;
+ *   - `todo`         — retired spelling of the same thing, still held by live rows;
  *   - terminal       — settled, leave alone;
  *   - `blocked`      — a deliberate park with its own delegator-notify signal path;
  *   - `needs-human`  — a deliberate OWNER-park (fleet-scheduler-hardening-2026-07-03
@@ -72,15 +86,27 @@ export const ANY_FAMILY_TERMINAL_STATES: readonly string[] = [
  * stuck-items health metric (P-008a).
  */
 export const FEATURE_NON_REQUEUE_STATES: readonly string[] = [
-  FEATURE_DISPATCHABLE_STATE,
+  // work-item-status-full-unify: `open` is the unified claimable token (todo→open in the
+  // backfill) — an `open` row is ALREADY claimable, so a freed one needs no requeue.
+  'open',
+  // The RETIRED `todo` spelling, kept deliberately — NOT leftover drift. Migration 638
+  // backfilled the rows and no writer emits it any more (FEATURE_STATE_ALIASES folds
+  // todo→open), but the backfill did not reach everything: MEASURED 2026-08-10 on
+  // papercusp/papercusp-workspace there are still 28 unheld feature-family rows sitting at
+  // 'todo' (23 item_kind='feature' + 5 'chunk', created 2026-06-21 → 07-27). Dropping this
+  // entry would make every one of them requeueable — the six consumers that derive from this
+  // array (work-items.ts voluntary release, work-queue-health's stuck metric ×2,
+  // WORK_ITEM_NON_REQUEUE_STATES in work-items-stale-claims, fleet/spawn-reclaim ×2,
+  // fleet/spawn-relaunch) would start rewriting settled legacy rows to 'open' and re-offering
+  // them. RETIRE THIS ENTRY ONLY when that count is genuinely 0 — verify, never assume
+  // (EI-19363744726544384: the change that proposed dropping it asserted the count was 0 on
+  // the strength of a code comment, and the live table said 28):
+  //   SELECT count(*) FROM harness_shared.work_items
+  //    WHERE status = 'todo' AND item_kind NOT IN ('bug','change','task');
+  'todo',
   ...FEATURE_TERMINAL_STATES,
   'blocked',
   'needs-human',
-  // work-item-status-full-unify: `open` is the unified claimable token (todo→open in the
-  // backfill) — an `open` row is ALREADY claimable, so a freed one needs no requeue (same
-  // rationale as `todo`). Covers both today's drifted `open` features and the post-migration
-  // vocabulary. FEATURE_DISPATCHABLE_STATE itself flips 'todo'→'open' at the coordinated cutover.
-  'open',
 ];
 
 /** Pure predicate: is this freed feature row stranded mid-flight (should the
