@@ -182,10 +182,13 @@ function isSqlFile(fileName) {
  * way here as it does for TS.
  *
  * @param {string} text
- * @param {{ strings?: boolean }} [opts]  also blank string/identifier literal CONTENT
+ * @param {{ strings?: boolean, dollarBodies?: 'literal'|'code' }} [opts]
+ *   `strings` also blanks string/identifier literal CONTENT.
+ *   `dollarBodies` decides what a `$tag$…$tag$` body IS — see the note on `stripSqlCommentsAndStrings`.
+ *   It defaults to the reading `strings` implies, so the two long-standing masks are unchanged.
  * @returns {Array<[number, number]>} half-open [start, end) ranges
  */
-function collectSqlRanges(text, { strings = false } = {}) {
+function collectSqlRanges(text, { strings = false, dollarBodies = strings ? 'literal' : 'code' } = {}) {
   const ranges = [];
   const n = text.length;
   let i = 0;
@@ -227,7 +230,7 @@ function collectSqlRanges(text, { strings = false } = {}) {
         // Unterminated ⇒ treat the rest as body; a truncated file must not read as clean code.
         const bodyEnd = close === -1 ? n : close;
         const end = close === -1 ? n : close + delim.length;
-        if (strings) {
+        if (dollarBodies === 'literal') {
           // The literal reading: to `stripSqlCommentsAndStrings` a dollar-quoted body IS a string
           // literal, and its consumers (injection / transaction-control detection) want the whole
           // body opaque. Blank it entire and do not look inside.
@@ -240,7 +243,10 @@ function collectSqlRanges(text, { strings = false } = {}) {
           // ONLY because it sits in a body (e.g. 000-baseline.sql's "-- Echo-loop guard:").
           // Recursion also handles nesting ($$ inside $function$) for free, and a `--` inside a
           // STRING within the body still correctly stays live, which a blanket skip cannot express.
-          for (const [s, e] of collectSqlRanges(text.slice(bodyStart, bodyEnd), { strings })) {
+          for (const [s, e] of collectSqlRanges(text.slice(bodyStart, bodyEnd), {
+            strings,
+            dollarBodies,
+          })) {
             ranges.push([bodyStart + s, bodyStart + e]);
           }
         }
@@ -289,11 +295,35 @@ export function stripSqlComments(text) {
 /**
  * SQL comments AND literal contents blanked — the SQL counterpart of
  * `stripCommentsAndStrings`, and the default choice unless you must read literal values.
+ *
+ * `dollarBodies` PICKS WHAT A `$tag$…$tag$` BODY IS, and there is no universally right answer —
+ * which is exactly why it is a parameter rather than a fixed behaviour:
+ *
+ *   'literal' (DEFAULT) — the body is an opaque string literal; blank it entire. Correct when a
+ *       hit inside a body would be a FALSE POSITIVE because the body is not top-level SQL:
+ *       `findRawTxControl` (a `COMMIT` inside a PL/pgSQL body is not top-level transaction
+ *       control) and `findUnguardedConstraintRename` (a rename inside a `DO` block is that
+ *       lint's own documented FIX SHAPE, so flagging it would flag the fix).
+ *
+ *   'code' — the body is PL/pgSQL CODE; recurse into it, so comments and strings INSIDE the body
+ *       are still blanked but its statements stay live. Correct when a hit inside a body is REAL
+ *       and sealing it would be a FALSE NEGATIVE on a safety lint: `findUniqueIndexShapeSwap`
+ *       (a DROP + re-ADD of a unique constraint inside a `DO` block really executes, and really
+ *       breaks every `ON CONFLICT` written against the old shape) and `findUnguardedReslug`.
+ *
+ * Both readings are legitimate — PostgreSQL says a dollar-quoted body IS a string literal, while
+ * every one of these consumers cares about whether the DDL inside it RUNS. Choosing per call site
+ * is the whole point; a single shared answer silently mints false positives for one half of the
+ * callers or false negatives for the other. Getting this wrong is not hypothetical: masking every
+ * body was measured to drop migration 377's in-`DO` unique-constraint swap from
+ * `findUniqueIndexShapeSwap` (6 firing files -> 5) with every test still green (WI-37800).
+ *
  * @param {string} text
+ * @param {{ dollarBodies?: 'literal'|'code' }} [opts]
  * @returns {string}
  */
-export function stripSqlCommentsAndStrings(text) {
-  return blankRanges(text, collectSqlRanges(text, { strings: true }));
+export function stripSqlCommentsAndStrings(text, { dollarBodies = 'literal' } = {}) {
+  return blankRanges(text, collectSqlRanges(text, { strings: true, dollarBodies }));
 }
 
 /**

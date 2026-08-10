@@ -51,7 +51,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
-import { stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+import { stripSqlComments, stripSqlCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR = join(ROOT, 'libs/papercusp/libs/db/sql');
@@ -103,78 +103,49 @@ export const ENFORCED_FROM = 494;
  * file, and do not bother "fixing" its sha256 row — no code reads it.
  */
 
-/**
- * Strip dollar-quoted bodies ($$…$$ / $tag$…$tag$), quoted strings, and
- * comments so only top-level SQL remains for transaction-control detection.
+/*
+ * THE TWO MASKS BELOW, AND WHY THIS FILE NEEDS BOTH (WI-37800).
+ *
+ * These detectors used to share one private `stripSqlBodies`. That was wrong twice over, and
+ * both faults were measured on the live corpus rather than reasoned about:
+ *
+ * 1. ITS TAG REGEX WAS WRONG, AND THE BUG WAS LOAD-BEARING. It matched `/^\$[A-Za-z_]*\$/`, but
+ *    PostgreSQL allows DIGITS in a dollar-quote tag after the first character. So `$$` and
+ *    `$body$` were sealed while `$mig377$` was NOT — leaving that body's DDL live. Whether a
+ *    `DO` block's contents were visible to a lint therefore depended on whether its author
+ *    happened to put a digit in the tag. Migration 377's in-`DO` unique-constraint swap was
+ *    detected ONLY by that accident.
+ *
+ * 2. THE CALL SITES WANT OPPOSITE MASKS, so no single stripper — however correct — can serve
+ *    them. Fixing the tag bug ALONE would have sealed `$mig377$` and silently dropped that
+ *    detection (findUniqueIndexShapeSwap: 6 firing files -> 5), with every test still green,
+ *    because no test covered it. The tag fix and this split had to land together.
+ *
+ * The axis is `dollarBodies`, and the right value follows from what a hit INSIDE a body means
+ * for that particular detector — a false positive, or a real finding:
  */
-export function stripSqlBodies(sqlText) {
-  /*
-   * ⚠ DELIBERATELY NOT MIGRATED ONTO THE SHARED MASK — measured, not assumed
-   * (EI-20073035509369492, 2026-08-10). Its three siblings in this repo's SQL-stripper family
-   * WERE consolidated; this one must not be, until its call sites are split. Two findings:
-   *
-   * 1. THE TAG REGEX BELOW IS WRONG, AND THAT BUG IS LOAD-BEARING TODAY. PostgreSQL allows
-   *    digits in a dollar-quote tag after the first character, but `[A-Za-z_]*` does not match
-   *    them — so `DO $mig377$ … $mig377$` is NOT recognised as a dollar quote and its body is
-   *    left LIVE, while `DO $$ … $$` and `$body$ … $body$` are sealed. Whether a DO block's DDL
-   *    is visible to the detectors below therefore depends on whether its tag happens to contain
-   *    a digit. That is arbitrary, and it is why migration 377's in-DO unique-constraint swap is
-   *    currently seen by findUniqueIndexShapeSwap at all.
-   *
-   * 2. THE CALL SITES WANT OPPOSITE MASKS, so no single swap is correct:
-   *      - findRawTxControl NEEDS bodies sealed — a `BEGIN` inside a PL/pgSQL body is not a
-   *        top-level transaction control, and un-sealing it mints false positives.
-   *      - findUniqueIndexShapeSwap NEEDS to SEE inside bodies — a DROP+re-ADD of a unique
-   *        constraint inside a `DO` block is real DDL that really executes, and sealing it is a
-   *        false NEGATIVE on a safety lint.
-   *    Swapping wholesale to `stripSqlCommentsAndStrings` seals every body and was MEASURED to
-   *    drop migration 377's detection (6 firing files -> 5). Consolidating here means choosing a
-   *    mask PER CALL SITE and fixing the tag bug — a behavioural redesign of these detectors,
-   *    not the mechanical substitution the other three sites were. Tracked separately rather
-   *    than smuggled in behind a refactor.
-   */
-  const s = String(sqlText);
-  let out = '';
-  let i = 0;
-  while (i < s.length) {
-    if (s.startsWith('--', i)) {
-      const nl = s.indexOf('\n', i);
-      i = nl === -1 ? s.length : nl;
-      continue;
-    }
-    if (s.startsWith('/*', i)) {
-      const end = s.indexOf('*/', i + 2);
-      i = end === -1 ? s.length : end + 2;
-      continue;
-    }
-    const dq = /^\$[A-Za-z_]*\$/.exec(s.slice(i));
-    if (dq) {
-      const tag = dq[0];
-      const end = s.indexOf(tag, i + tag.length);
-      i = end === -1 ? s.length : end + tag.length;
-      out += ' ';
-      continue;
-    }
-    if (s[i] === "'") {
-      let j = i + 1;
-      while (j < s.length) {
-        if (s[j] === "'" && s[j + 1] === "'") { j += 2; continue; }
-        if (s[j] === "'") break;
-        j++;
-      }
-      i = j + 1;
-      out += ' ';
-      continue;
-    }
-    out += s[i];
-    i++;
-  }
-  return out;
-}
+
+/**
+ * For detectors judging TOP-LEVEL SQL: a dollar-quoted body is an opaque literal.
+ * A hit inside a body is a FALSE POSITIVE here — it is not top-level SQL, and for
+ * `findUnguardedConstraintRename` the in-`DO` form is that lint's own documented FIX SHAPE,
+ * so flagging it would flag the fix.
+ */
+const maskSealingBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText);
+
+/**
+ * For detectors judging DDL WHEREVER IT EXECUTES: a dollar-quoted body is PL/pgSQL CODE.
+ * Comments and strings inside the body are still blanked, but its statements stay live —
+ * a DROP + re-ADD of a unique constraint inside a `DO` block really runs, and really breaks
+ * every `ON CONFLICT` written against the old shape. Sealing it is a FALSE NEGATIVE on a
+ * safety lint.
+ */
+const maskLiveBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText, { dollarBodies: 'code' });
 
 /** Top-level transaction-control statements found in a migration file. */
 export function findRawTxControl(sqlText) {
-  const stripped = stripSqlBodies(sqlText);
+  // SEALED: a `COMMIT` inside a PL/pgSQL body is not top-level transaction control.
+  const stripped = maskSealingBodies(sqlText);
   const hits = [];
   const re = /^\s*(BEGIN\s*;|BEGIN\s+(?:TRANSACTION|WORK)\b|COMMIT\b|ROLLBACK\b|START\s+TRANSACTION\b)/gim;
   let m;
@@ -210,7 +181,10 @@ export function findRawTxControl(sqlText) {
  * to the index itself) and is correctly not flagged.
  */
 export function findUnguardedConstraintRename(sqlText) {
-  const stripped = stripSqlBodies(sqlText);
+  // SEALED, and this one is load-bearing: the in-`DO` guarded rename is this lint's OWN
+  // documented fix shape (see above). A body-live mask here would flag every correct fix,
+  // starting with migration 592's.
+  const stripped = maskSealingBodies(sqlText);
   const hits = [];
   const re = /\bRENAME\s+CONSTRAINT\s+("?[A-Za-z_][\w$]*"?)/gi;
   let m;
@@ -230,11 +204,16 @@ export function findUnguardedConstraintRename(sqlText) {
  * reslug UPDATE and no guard (so a guarded reslug — or a file with none — is clean).
  */
 export function findUnguardedReslug(sqlText) {
-  // stripSqlBodies replaces string literals with a space, so we detect the RE-SLUG
-  // structurally: an UPDATE on work_items whose SET clause ASSIGNS harness_slug
-  // (not merely a harness_slug in the WHERE). Capture the SET clause up to
-  // WHERE/RETURNING/; and require harness_slug to be assigned inside it.
-  const stripped = stripSqlBodies(sqlText);
+  // The mask blanks string literals, so we detect the RE-SLUG structurally: an UPDATE on
+  // work_items whose SET clause ASSIGNS harness_slug (not merely a harness_slug in the
+  // WHERE). Capture the SET clause up to WHERE/RETURNING/; and require harness_slug to be
+  // assigned inside it.
+  //
+  // BODIES LIVE: a reslug UPDATE inside a `DO` block really executes, so sealing bodies
+  // would be a false negative on a crash-loop guard. It is symmetric — the GUARD forms
+  // (`DELETE FROM work_items`, `NOT EXISTS`) are read from the same masked text, so a
+  // guarded in-body reslug still reads as guarded.
+  const stripped = maskLiveBodies(sqlText);
   const re =
     /UPDATE\s+[\w".]*\bwork_items\b\s+(?:AS\s+\w+\s+)?SET\b([\s\S]*?)(?:\bWHERE\b|\bRETURNING\b|;)/gi;
   const reslugs = [];
@@ -450,7 +429,10 @@ export function findUniqueIndexShapeSwap(sqlText) {
   // to close.
   if (/--[ \t]*lint-migrations:[ \t]*allow-index-swap[ \t]+\S+/i.test(raw)) return [];
 
-  const stripped = stripSqlBodies(raw);
+  // BODIES LIVE: migration 377's in-`DO` DROP+re-ADD of a unique constraint is real DDL that
+  // really executes. It was detected before only because the old private tag regex failed to
+  // recognise `$mig377$`; this makes that intentional rather than accidental.
+  const stripped = maskLiveBodies(raw);
 
   const IDENT = '(?:"?[\\w$]+"?\\.)?"?[\\w$]+"?';
 
