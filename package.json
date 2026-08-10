@@ -195,6 +195,7 @@
     "lint:no-unbounded-inbox-read": "node scripts/check-unbounded-inbox-read.mjs",
     "lint:no-unenrolled-mjs-imports": "node scripts/check-unenrolled-mjs-imports.mjs",
     "lint:no-raw-setinterval": "node scripts/check-no-raw-setinterval.mjs",
+    "lint:no-ungated-mug-kettle": "node scripts/check-ungated-mug-kettle.mjs",
     "lint:no-hand-rolled-module-pin": "node scripts/check-no-hand-rolled-module-pin.mjs",
     "lint:no-unthreaded-apply": "node scripts/check-no-unthreaded-apply.mjs",
     "lint:partial-index-alignment": "node scripts/check-partial-index-alignment.mjs",

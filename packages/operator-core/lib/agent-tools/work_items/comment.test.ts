@@ -34,10 +34,54 @@ vi.mock('../../work-items', async (importOriginal) => {
 });
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 
+import type { WorkItem } from '../../work-items';
 import { commentWorkItem, getWorkItem } from '../../work-items';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 const cmtM = vi.mocked(commentWorkItem);
 const getM = vi.mocked(getWorkItem);
 const tool = (await import('./comment')).default;
+
+/**
+ * A FULLY-TYPED `WorkItem` fixture — the handler only reads `state`, but the value is
+ * checked against `getWorkItem`'s real return type rather than cast `as never`.
+ *
+ * The cast form is what made WI-6673's fixtures stale invisibly: `as never` makes the
+ * installed value assignable to ANY signature, so the day `WorkItem` gains a REQUIRED
+ * field this file keeps compiling and fails at RUNTIME, in a run some unrelated peer's
+ * change selected. Typed, that same day is a compile error HERE, at the fixture.
+ * (`lint:mock-cast-escape` ratchets the count of the cast form; see
+ * `packages/operator-core/lib/testing/typed-mock.ts`.)
+ */
+const wi = (over: Partial<WorkItem> & Pick<WorkItem, 'id' | 'state'>): WorkItem => ({
+  kind: 'bug',
+  family: 'issue',
+  harness: null,
+  title: 't',
+  summary: 's',
+  assignee: null,
+  takenAt: null,
+  lastProgressAt: null,
+  assignedBy: null,
+  createdBy: null,
+  severity: null,
+  parent: null,
+  payload: null,
+  origin: 'local',
+  auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
+  rank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  priority: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  terminalCompletionEvidence: null,
+  completionAuthority: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  closedAt: null,
+  ...over,
+});
 
 type Out = { data: any };
 const run = (args: unknown) => tool.handler(args as never, {} as never) as Promise<Out>;
@@ -87,7 +131,7 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
   describe('EI-8837: completion-shaped post on a still-open item gets a nudge hint', () => {
     it('a "DONE + GREEN" post on a non-terminal item carries `hint`', async () => {
       cmtM.mockResolvedValue({ id: 'post-1' } as never);
-      getM.mockResolvedValue({ id: 'WI-1', state: 'open' } as never);
+      mockResolvedTyped(getM, wi({ id: 'WI-1', state: 'open' }));
       const b = await body({ id: 'WI-1', body: '✅ DONE + GREEN, all tests pass.' });
       expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', hint: expect.stringContaining('work_items:set_state') });
       expect(getM).toHaveBeenCalledWith('WI-1', undefined);
@@ -95,7 +139,7 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
 
     it('the SAME post on an ALREADY-terminal item carries no hint', async () => {
       cmtM.mockResolvedValue({ id: 'post-1' } as never);
-      getM.mockResolvedValue({ id: 'WI-1', state: 'resolved' } as never);
+      mockResolvedTyped(getM, wi({ id: 'WI-1', state: 'resolved' }));
       const b = await body({ id: 'WI-1', body: 'VM-verified, fully fixed.' });
       expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
       expect(b.results[0].hint).toBeUndefined();
@@ -134,7 +178,7 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
      * retraction a real filer writes.
      */
     it('MATCHES the real measured retraction text that this bug was filed for', async () => {
-      getM.mockResolvedValue({ id: 'EI-1', state: 'open' } as never);
+      mockResolvedTyped(getM, wi({ id: 'EI-1', state: 'open' }));
       const b = await body({
         id: 'EI-1',
         body: "## ⚠⚠ RETRACTION BY THE FILER — this item's central premise is WRONG. Do not act on it as written.",
@@ -143,7 +187,7 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
     });
 
     it('the nudge names the QUEUE consequence, not just the verb', async () => {
-      getM.mockResolvedValue({ id: 'EI-1', state: 'open' } as never);
+      mockResolvedTyped(getM, wi({ id: 'EI-1', state: 'open' }));
       const b = await body({ id: 'EI-1', body: 'Retracting this — my analysis was wrong.' });
       // The whole failure was that a retraction is invisible to routing, so the
       // hint has to say THAT, or it reads as optional bookkeeping.
@@ -152,7 +196,7 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
     });
 
     it('the SAME retraction on an ALREADY-terminal item carries no hint', async () => {
-      getM.mockResolvedValue({ id: 'EI-1', state: 'dropped' } as never);
+      mockResolvedTyped(getM, wi({ id: 'EI-1', state: 'dropped' }));
       const b = await body({ id: 'EI-1', body: 'Retracting this — the premise is wrong.' });
       expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-1' });
       expect(b.results[0].hint).toBeUndefined();
@@ -165,7 +209,7 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
      * disproved its premise — the wrong verb in the expensive direction.
      */
     it('retraction WINS over completion when a post matches both predicates', async () => {
-      getM.mockResolvedValue({ id: 'EI-1', state: 'open' } as never);
+      mockResolvedTyped(getM, wi({ id: 'EI-1', state: 'open' }));
       const b = await body({
         id: 'EI-1',
         body: 'I retract this. Ready to close — the finding was wrong, and all tests are green so done.',
@@ -208,7 +252,7 @@ describe('body/comment alias (EI-10897) + schema representability (EI-10996)', (
 
   beforeEach(() => {
     cmtM.mockResolvedValue({ id: 'p1' } as never);
-    getM.mockResolvedValue({ id: 'WI-1', state: 'wip' } as never);
+    mockResolvedTyped(getM, wi({ id: 'WI-1', state: 'wip' }));
   });
 
   it('accepts { id, comment } — the obvious spelling — and posts it as the body', async () => {

@@ -980,7 +980,8 @@ async function reportVintage(unit) {
 function start() {
   log(
     `up — unit ${UNIT}, poll ${POLL_MS}ms, freeze-silence ${FREEZE_SILENCE_S}s, debounce ${DEBOUNCE_MS}ms (backoff x${BACKOFF_MULTIPLIER}, cap ${MAX_DEBOUNCE_MS}ms), ` +
-      `boot-grace ${BOOT_GRACE_MS}ms, alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr, pool-shed-grace ${POOL_SHED_GRACE_S}s; ` +
+      `boot-grace ${BOOT_GRACE_MS}ms (progress-extendable to ${BOOT_GRACE_MAX_MS}ms on >=${BOOT_PROGRESS_MIN_TICKS} CPU ticks per ${BOOT_PROGRESS_SAMPLE_MS}ms /proc sample), ` +
+      `alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr, pool-shed-grace ${POOL_SHED_GRACE_S}s; ` +
       `signal=PG-routine-freshness (journald-independent); durable log ${LOG_FILE}`,
   );
   // WI-37501: a recurrence guard, not just a fix — if POLL_MS/BOOT_GRACE_MS/MAX_RESTARTS_HR are ever

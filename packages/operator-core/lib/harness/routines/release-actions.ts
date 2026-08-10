@@ -33,6 +33,18 @@ import {
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from '../../release/gate-red-ownership';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
+// WI-37605: narrate under the RESOLVED tag, never a hardcoded '[green-checkpoint]'. This module's
+// own suite (release-actions*.test.ts) drives these code paths, and vitest captures their stdout
+// verbatim into the gate's persisted verdict log — so a hardcoded prefix emits a line
+// byte-identical to a real gate decision. Measured: the `skipped-locked` line from
+// gateStallNoopLogMessage() below appeared at line 6693 of the 33cd2bfebec8 verdict log reading
+// exactly like the gate explaining why it stood down. It was a test fixture.
+//
+// WI-7274 fixed this class for green-checkpoint.ts's own narration by tagging at the emit funnel;
+// this module never got that treatment because the tag was believed to live in apps/operator. It
+// does not — it lives in operator-core (checkpoint-log-tags.ts, moved down by
+// EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
+import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
 
@@ -433,7 +445,7 @@ export async function recordCheckpointVerdict(
   // recording, which already happened above.
   if (shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests)) {
     await dispatchReleaseFixer(target, verdict.candidate, verdict.failingTests).catch((e) =>
-      console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
+      console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
   return true;
@@ -453,7 +465,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   const { resolveCheckpointRouting } = await import('./hive-release-env');
   const routing = await resolveCheckpointRouting(ctx, integrationRoot());
   if (routing.skip) {
-    console.log(`[green-checkpoint] skip ${ctx.installSlug}: ${routing.skip.reason}`);
+    console.log(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${routing.skip.reason}`);
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId,
       installSlug: ctx.installSlug,
@@ -467,7 +479,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   const tooling = releaseToolingStatus(root, 'apps/operator/lib/release/green-checkpoint.ts');
   if (!tooling.ok) {
     console.warn(
-      `[green-checkpoint] skip ${ctx.installSlug}: release tooling unavailable (${tooling.reason}) at ${root}`,
+      `${orchestratorStdoutTag()} skip ${ctx.installSlug}: release tooling unavailable (${tooling.reason}) at ${root}`,
     );
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId,
@@ -500,9 +512,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     { memoryMaxG: CHECKPOINT_SCOPE_MEMORY_MAX_G },
   );
   if (r.code !== 0) {
-    console.warn(`[green-checkpoint] exited ${r.code}: ${(r.stderr || r.stdout).slice(-500)}`);
+    console.warn(`${orchestratorStdoutTag()} exited ${r.code}: ${(r.stderr || r.stdout).slice(-500)}`);
   } else {
-    console.log(`[green-checkpoint] ${(r.stdout || '').trim().slice(-200)}`);
+    console.log(`${orchestratorStdoutTag()} ${(r.stdout || '').trim().slice(-200)}`);
   }
 
   // Pipeline history (mig 177): log the checkpoint outcome for the /admin Git tab.
@@ -539,7 +551,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
    */
   const recordedByRun = parsed?.recorded === true;
   if (recordedByRun) {
-    console.log(`[green-checkpoint] '${status}' — recorded by the run that produced it (WI-4494)`);
+    console.log(`${orchestratorStdoutTag()} '${status}' — recorded by the run that produced it (WI-4494)`);
   } else {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId,
@@ -563,7 +575,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // keeps this a pure fallback instead of a race with the producer-side dispatch.
   if (!recordedByRun && shouldDispatchReleaseFixer(status, candidate, failingTests)) {
     await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
-      console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
+      console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
 
@@ -577,7 +589,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // EI-13288: thread the parsed run's own retriage verdict through this fallback recorder too
     // (version-skew / crash path) — same as the WI-4494 producer-side path above.
     await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null, parsed?.retriage).catch((e) =>
-      console.warn(`[green-checkpoint] stall tracking failed: ${e instanceof Error ? e.message : e}`),
+      console.warn(`${orchestratorStdoutTag()} stall tracking failed: ${e instanceof Error ? e.message : e}`),
     );
   }
 
@@ -589,7 +601,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // `<ws>::<file>`, finer-grained than the workspace-retry markers, so a chronically
   // load-flaky FILE trips the same quarantine nudge.
   await trackFlakeHistory(ctx, summary, flakeSuspects).catch((e) =>
-    console.warn(`[green-checkpoint] flake history failed: ${e instanceof Error ? e.message : e}`),
+    console.warn(`${orchestratorStdoutTag()} flake history failed: ${e instanceof Error ? e.message : e}`),
   );
 });
 
@@ -789,7 +801,7 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
 export function gateStallNoopLogMessage(status: string): string {
   if (status === 'migrations-pending') {
     return (
-      `[green-checkpoint] 'migrations-pending' — this run ABORTED at the migration preflight ` +
+      `${orchestratorStdoutTag()} 'migrations-pending' — this run ABORTED at the migration preflight ` +
       `(the dev PG is known to be behind the candidate). NO peer run is in flight and no verdict ` +
       `is coming until the pending migration applies — see the pending migration(s) and their ` +
       `errors named just above. Leaving gate_health untouched (not a red: this tick judged no code ` +
@@ -797,7 +809,7 @@ export function gateStallNoopLogMessage(status: string): string {
       `watchdog, not by this counter — see classifyGateStallStatus)`
     );
   }
-  return `[green-checkpoint] '${status}' — an active peer run holds the lock; leaving gate_health untouched (not a red, see classifyGateStallStatus)`;
+  return `${orchestratorStdoutTag()} '${status}' — an active peer run holds the lock; leaving gate_health untouched (not a red, see classifyGateStallStatus)`;
 }
 
 /**
@@ -916,7 +928,7 @@ export async function trackGateStall(
       } catch (e) {
         // Fail-safe, exactly like every other write in this function: an unrecorded abort
         // degrades to the pre-EI-19405864032365760 behaviour (invisible), never to a wrong verdict.
-        console.warn(`[green-checkpoint] inconclusive-verdict record failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(`${orchestratorStdoutTag()} inconclusive-verdict record failed: ${e instanceof Error ? e.message : e}`);
       }
     }
     return;
@@ -936,7 +948,7 @@ export async function trackGateStall(
   if (gateClass === 'reset') {
     if (!isGreen) {
       console.log(
-        `[green-checkpoint] release pin moved ${gh.lastFrom} → ${fromPin} outside this routine (status '${status}') — main is advancing; resetting the stall streak`,
+        `${orchestratorStdoutTag()} release pin moved ${gh.lastFrom} → ${fromPin} outside this routine (status '${status}') — main is advancing; resetting the stall streak`,
       );
     }
     // EI-7472: the final metadata write below REPLACES the whole `gate_health`
@@ -976,11 +988,11 @@ export async function trackGateStall(
       );
       if (shouldWarnOnStallClearMiss(!!gh.stallAlerted, cleared.count)) {
         console.warn(
-          `[green-checkpoint] stall escalation clear MATCHED 0 ROWS for harness_slug='${ctx.installSlug}' phase='${GATE_STALL_PHASE}' despite gate_health.stallAlerted=true (an escalation should have existed) — the durable harness_escalations row may be stuck OPEN even though this routine believes the stall is resolved. Check harness_escalations for a stale row under a different harness_slug value.`,
+          `${orchestratorStdoutTag()} stall escalation clear MATCHED 0 ROWS for harness_slug='${ctx.installSlug}' phase='${GATE_STALL_PHASE}' despite gate_health.stallAlerted=true (an escalation should have existed) — the durable harness_escalations row may be stuck OPEN even though this routine believes the stall is resolved. Check harness_escalations for a stale row under a different harness_slug value.`,
         );
       }
     } catch (e) {
-      console.warn(`[green-checkpoint] stall escalation clear failed: ${e instanceof Error ? e.message : e}`);
+      console.warn(`${orchestratorStdoutTag()} stall escalation clear failed: ${e instanceof Error ? e.message : e}`);
     }
     // P-005: CLOSE the red-streak condition — the bridge settles the owning work-item
     // on this broadcast, so a missed resolve leaks one permanently-open incident item
@@ -1003,7 +1015,7 @@ export async function trackGateStall(
             `advancing; the earlier red-gate alarm is stale.`,
         });
       } catch (e) {
-        console.warn(`[green-checkpoint] red-streak condition resolve failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(`${orchestratorStdoutTag()} red-streak condition resolve failed: ${e instanceof Error ? e.message : e}`);
       }
     }
   } else {
@@ -1062,7 +1074,7 @@ export async function trackGateStall(
           },
         });
       } catch (e) {
-        console.warn(`[green-checkpoint] stall alert failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(`${orchestratorStdoutTag()} stall alert failed: ${e instanceof Error ? e.message : e}`);
       }
       // P-003: ALSO write a durable harness_escalations row — the silent-stall
       // gap (every other pipeline failure escalates; this one only notified +
@@ -1090,7 +1102,7 @@ export async function trackGateStall(
           ],
         );
       } catch (e) {
-        console.warn(`[green-checkpoint] stall escalation write failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(`${orchestratorStdoutTag()} stall escalation write failed: ${e instanceof Error ? e.message : e}`);
       }
       // P-005: OPEN the `gate-red-streak:<harness>` condition, which is what turns
       // this red into exactly ONE claimable work-item (the condition bridge mints the
@@ -1122,7 +1134,7 @@ export async function trackGateStall(
           oneShot: true,
         });
       } catch (e) {
-        console.warn(`[green-checkpoint] red-streak condition broadcast failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(`${orchestratorStdoutTag()} red-streak condition broadcast failed: ${e instanceof Error ? e.message : e}`);
       }
     }
     // Seed/carry the pin so the NEXT tick can detect movement (first observation
@@ -1270,7 +1282,7 @@ async function trackFlakeHistory(
         data: { workspaces: newlyChronic.join(',') },
       });
     } catch (e) {
-      console.warn(`[green-checkpoint] flake notify failed: ${e instanceof Error ? e.message : e}`);
+      console.warn(`${orchestratorStdoutTag()} flake notify failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 }
@@ -1565,7 +1577,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
   );
   if (isStaleReleaseFixerCandidate(staleCheck)) {
     console.log(
-      `[green-checkpoint] release-fixer dispatch skipped for ${candidate.slice(0, 8)}: stale candidate ` +
+      `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: stale candidate ` +
         `(exists=${staleCheck.candidateExists}, promoted=${staleCheck.candidatePromoted}) — gate already resolved`,
     );
     await appendPipelineEvent({
@@ -1637,7 +1649,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
         data: { candidate: candidate.slice(0, 12), failing: (failingTests ?? []).slice(0, 10).join(','), selfHeal: String(selfHeal) },
       });
     } catch (e) {
-      console.warn(`[green-checkpoint] release-red notify failed: ${e instanceof Error ? e.message : e}`);
+      console.warn(`${orchestratorStdoutTag()} release-red notify failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -1650,7 +1662,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
     const { entries } = await testFlakeRollup(7);
     flakeAnnotation = annotateFailingTestsWithFlakeStats(failingTests, flagFlakeSuspects(entries, 7));
   } catch (e) {
-    console.warn(`[green-checkpoint] flake-suspect annotation skipped (non-fatal): ${e instanceof Error ? e.message : e}`);
+    console.warn(`${orchestratorStdoutTag()} flake-suspect annotation skipped (non-fatal): ${e instanceof Error ? e.message : e}`);
   }
 
   // P-006/P-014: fire the release-fixer via the canonical spawn-recording, DBOS-durable
@@ -1671,7 +1683,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
       timeoutMs: 900_000,
     });
   } catch (e) {
-    console.warn(`[green-checkpoint] release-fixer fire failed: ${e instanceof Error ? e.message : e}`);
+    console.warn(`${orchestratorStdoutTag()} release-fixer fire failed: ${e instanceof Error ? e.message : e}`);
   }
   // Patch the recorded fixer's spawn id so the NEXT tick can check ITS liveness (D-009).
   const spawnId = fired?.spawn?.spawnId ?? null;

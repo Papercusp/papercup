@@ -185,7 +185,13 @@ function collectCensus() {
     cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
   });
   const census = JSON.parse(raw);
+  const selfRel = path.relative(REPO_ROOT, SELF_FILE);
   return (census.findings ?? [])
+    // This guard must not inventory ITSELF or its own baseline: the doc comment above
+    // quotes `role: 'cup'` and the gate symbols verbatim, so the census sees a surface
+    // and this file's own gate-symbol mentions mark it "gated" — a self-referential
+    // green. The census applies the same exclusion to itself (SELF_FILE, census:71).
+    .filter((f) => f.file !== selfRel && !f.file.endsWith('ungated-mug-kettle-baseline.json'))
     // `retired` = already under _retired/. `substrate` = D-003 population (b): the su
     // system itself runs on these, so gating them breaks loop:arm — inventory, never gate.
     .filter((f) => !f.retired && !f.substrate)

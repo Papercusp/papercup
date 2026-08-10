@@ -627,7 +627,7 @@ async function awaitBounded(p: Promise<unknown>, graceMs: number, log: (msg: str
       new Promise<void>((resolve) => {
         graceTimer = setTimeout(() => {
           log(
-            `[green-checkpoint] self-watchdog onFire hook did not settle within ${graceMs}ms — ` +
+            `self-watchdog onFire hook did not settle within ${graceMs}ms — ` +
               `proceeding to SIGKILL (the red verdict may not have been emitted)`,
           );
           resolve();
@@ -679,14 +679,14 @@ export function armSelfWatchdog(
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const timer = setTimeout(() => {
     log(
-      `[green-checkpoint] self-watchdog fired after ${Math.round(ms / 60_000)}m with no normal exit — ` +
+      `self-watchdog fired after ${Math.round(ms / 60_000)}m with no normal exit — ` +
         `presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL); ` +
         `releasing the run-lock and killing this process's OWN group (pid ${pid}) so no orphan can outlive it`,
     );
     try {
       const snapshot = snapshotProcessGroup(pid);
       if (snapshot) {
-        log(`[green-checkpoint] self-watchdog process-group snapshot before SIGKILL:\n${snapshot}`);
+        log(`self-watchdog process-group snapshot before SIGKILL:\n${snapshot}`);
       }
     } catch {
       /* diagnostic-only */
@@ -903,7 +903,7 @@ export function createTerminationSignalHandler(
   log: (msg: string) => void = (m) => console.error(m),
 ): (signal: NodeJS.Signals) => void {
   return (signal: NodeJS.Signals): void => {
-    log(`[green-checkpoint] received ${signal} — releasing run-lock and exiting (pid ${process.pid})`);
+    log(`received ${signal} — releasing run-lock and exiting (pid ${process.pid})`);
     releaseAndExit(143);
   };
 }
@@ -5901,7 +5901,7 @@ export function realCheckpointDeps(
         const { recordCheckpointVerdict } = await import('@papercusp/operator-core/lib/harness/routines/release-actions');
         return await recordCheckpointVerdict(target, r);
       } catch (e) {
-        console.error(`[green-checkpoint] superseded-pass verdict record failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+        console.error(`${orchestratorStdoutTag()} superseded-pass verdict record failed (non-fatal): ${e instanceof Error ? e.message : e}`);
         return false;
       }
     },
@@ -6154,7 +6154,7 @@ export function realCheckpointDeps(
         if (validated.dropped.length) {
           const note = `\n\nNOTE: ${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} did not resolve under the candidate tree root (expected for a workspace-relative path — see WI-7239; retained, not dropped): ${validated.dropped.join(', ')}`;
           summary = `${summary}${note}`.slice(-2000);
-          log(`[green-checkpoint] ${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} did not resolve under the tree root (retained — workspace-relative paths never resolve there; WI-7239): ${validated.dropped.join(', ')}`);
+          log(`${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} did not resolve under the tree root (retained — workspace-relative paths never resolve there; WI-7239): ${validated.dropped.join(', ')}`);
         }
       }
       if (!green && buildOk && failingTests.length) {
@@ -6166,11 +6166,11 @@ export function realCheckpointDeps(
             failingTests = q.failingTests;
             const note = `\n\nQuarantined out of v1 gate verdict: ${q.quarantined.join(', ')}`;
             summary = `${summary}${note}`.slice(-2000);
-            log(`[green-checkpoint] ${q.quarantined.length} quarantined test failure(s) excluded from v1 verdict: ${q.quarantined.join(', ')}`);
+            log(`${q.quarantined.length} quarantined test failure(s) excluded from v1 verdict: ${q.quarantined.join(', ')}`);
           }
           if (q.allFailuresQuarantined) green = true;
         } catch (e) {
-          log(`[green-checkpoint] quarantine read failed; preserving red verdict: ${e instanceof Error ? e.message : String(e)}`);
+          log(`quarantine read failed; preserving red verdict: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
       // Workspace-mapped failures for the stale-candidate re-triage (which file, and the
@@ -6789,7 +6789,7 @@ if (require.main === module) {
       await emitAwaitedEvent({ key: `green-checkpoint:inconclusive:${pipeline}`, summary, payload, source: 'green-checkpoint' });
     } catch (e) {
       console.error(
-        `[green-checkpoint] green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
+        `${orchestratorStdoutTag()} green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
       );
     }
   };
@@ -6856,7 +6856,7 @@ if (require.main === module) {
       const { recordCheckpointVerdict } = await import('@papercusp/operator-core/lib/harness/routines/release-actions');
       return await recordCheckpointVerdict(target, r);
     } catch (e) {
-      console.error(`[green-checkpoint] verdict self-record failed (the caller will record): ${e instanceof Error ? e.message : e}`);
+      console.error(`${orchestratorStdoutTag()} verdict self-record failed (the caller will record): ${e instanceof Error ? e.message : e}`);
       return false;
     }
   };
@@ -6916,7 +6916,7 @@ if (require.main === module) {
         process.exit(0);
       })
       .catch(async (e) => {
-        console.error('[green-checkpoint] FAILED:', e instanceof Error ? e.message : e);
+        console.error(`${orchestratorStdoutTag()} FAILED:`, e instanceof Error ? e.message : e);
         await emitCrashResult(e);
         process.exit(1);
       });
@@ -6972,7 +6972,7 @@ if (require.main === module) {
           });
         } catch (e) {
           console.error(
-            `[green-checkpoint] self-watchdog red-verdict emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
+            `${orchestratorStdoutTag()} self-watchdog red-verdict emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
           );
         }
         try {
@@ -7033,7 +7033,7 @@ if (require.main === module) {
       })
       .catch(async (e) => {
         watchdog.cancel();
-        console.error('[green-checkpoint] FAILED:', e instanceof Error ? e.message : e);
+        console.error(`${orchestratorStdoutTag()} FAILED:`, e instanceof Error ? e.message : e);
         // EI-18850448565330905: emit a crash verdict BEFORE releasing the lock / exiting —
         // this is exactly the path that used to leave NO __GREEN_CHECKPOINT_RESULT__ marker
         // at all when a non-test leg threw instead of reporting through allowNonZero/haltedBy.

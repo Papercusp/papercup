@@ -687,6 +687,47 @@
 }
 
 .hud__card:hover { border-color: var(--border-strong); background: var(--bg-raised); }
+
+/* ── Per-card ACTION (goals-tab-improvement-2026-08-09 P-016) ─────────────────
+   The card is itself a <button> whenever it has a destination, so a control that
+   ACTS on the entity (rather than navigating to it) cannot be nested inside it —
+   invalid HTML, and browsers reparent it. The wrapper makes the action a SIBLING
+   and positions it over the card's top-right.
+
+   Only boards that pass `renderCardAction` get this wrapper at all, so the Plans
+   and Work-items boards render exactly the tree they did before. */
+.hud__card-wrap {
+  display: block;
+  position: relative;
+}
+
+.hud__card-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  /* The wrapper spans the card, so without this the gap BETWEEN the buttons would
+     swallow clicks meant for the card underneath. The buttons re-enable it. */
+  pointer-events: none;
+}
+
+.hud__card-actions > * {
+  pointer-events: auto;
+}
+
+/* The action is secondary to the card's own content: legible on hover/focus, quiet
+   at rest, so a board of 40 cards does not read as 40 buttons. `:focus-within`
+   keeps it visible for keyboard users, who cannot hover to reveal it. */
+.hud__card-actions {
+  opacity: 0.35;
+  transition: opacity 120ms ease;
+}
+
+.hud__card-wrap:hover .hud__card-actions,
+.hud__card-wrap:focus-within .hud__card-actions {
+  opacity: 1;
+}
 .hud__card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .hud__card--needs-you { border-color: rgb(from var(--warn) r g b / 0.45); }

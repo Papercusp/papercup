@@ -781,6 +781,23 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // declaration reintroduces the edge without touching a single import.
     appliesTo: (f) => /\.tsx?$/.test(f) || f === 'package.json' || f.endsWith('/package.json'),
   },
+  {
+    // retire-mug-kettle-su-only-2026-08-09 P-016 — the recurrence guard for the
+    // mug/kettle/cup retirement. Repo-wide because the thing it guards against is a NEW
+    // entry point, and nobody knows in advance which file is about to grow one: the
+    // console door (D-022) appeared in endpoint-route/routes/agent-mcp/, which no
+    // narrower predicate would have thought to watch.
+    workspace: '@papercusp/operator-core',
+    // ~3.4s: it shells out to scripts/mug-kettle-surface-census.mjs --json rather than
+    // re-implementing its 8 detectors, so there is exactly ONE implementation of them.
+    script: 'lint:no-ungated-mug-kettle',
+    // Mirrors the union of both scan surfaces: the census walks packages/libs/apps/scripts
+    // for the TS-family + .mjs, and the guard's own role-door pass adds .mjs launchers
+    // (apps/operator/scripts/psu-launcher.mjs is a real door). Blueprint PROMPTS are a
+    // census category too (`prompt|coding/mug|…md`), so .md counts — a new mug role prompt
+    // is exactly the kind of quiet re-introduction this is for.
+    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) || f.endsWith('.md'),
+  },
 ];
 
 const workspaces = [

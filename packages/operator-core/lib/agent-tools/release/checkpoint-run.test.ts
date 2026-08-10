@@ -1019,4 +1019,70 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     expect(b.ok).toBe(true);
     expect(b.reason).toBeUndefined();
   });
+
+  /**
+   * WI-37618. The refusal above is returned to the CALLER and stored nowhere else:
+   * `tool_invocations` keeps only transport metadata and `output_ref` is a reference, not a
+   * body. So in the ledger a refusal looked identical to a call that spent a ~55min suite, and
+   * a FALSE refusal — the one failure mode that would wedge the fleet's only manual verdict
+   * lever — left nothing behind to audit.
+   *
+   * These assert the LEDGER STAMP specifically, not the reply. The reply is what the caller can
+   * already see; the stamp is what anyone can see AFTERWARDS. `MAKE_CTX` deliberately has no
+   * `metadata`, which is why the handler optional-chains it and why these build their own ctx.
+   */
+  const MAKE_CTX_META = () => {
+    const metadata = vi.fn();
+    return {
+      ctx: {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        role: 'operator',
+        metadata,
+      } as never,
+      metadata,
+    };
+  };
+
+  it('stamps the REFUSAL into ctx.metadata, so a false refusal is auditable after the fact', async () => {
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => REFUSAL) });
+    const { default: tool } = await import('./checkpoint-run');
+    const { ctx, metadata } = MAKE_CTX_META();
+    await tool.handler({ paths: [MINE] }, ctx);
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenCalledTimes(1);
+    // Enough to re-derive the decision later: which paths were held back, against which
+    // candidate, and for how long. The commits themselves stay recoverable from the candidate.
+    expect(metadata.mock.calls[0][0]).toMatchObject({
+      preLaunchExclusion: 'refused',
+      preLaunchCandidate: 'aaaaaaaaaaaa',
+      preLaunchTip: 'ffffffffffff',
+      preLaunchWaitSec: 120,
+      preLaunchBlockedPaths: [{ path: MINE, eligibleInSec: 120 }],
+    });
+  });
+
+  it('stamps a PASS with its proceedReason, so the refusal rate has a denominator', async () => {
+    mockLaunch({
+      assessPreLaunchExclusion: vi.fn(async () => ({
+        ...REFUSAL,
+        refuse: false,
+        proceedReason: 'exclusion-undecidable',
+      })),
+    });
+    const { default: tool } = await import('./checkpoint-run');
+    const { ctx, metadata } = MAKE_CTX_META();
+    await tool.handler({ paths: [MINE] }, ctx);
+
+    const stamped = metadata.mock.calls[0][0] as Record<string, unknown>;
+    // The defect was that these two were the SAME observation. They must never be again.
+    expect(stamped.preLaunchExclusion).toBe('passed');
+    // And WHICH fail-open path: "could not assess" is not "assessed and allowed", and a
+    // bare `passed` would rebuild exactly the ambiguity this exists to remove.
+    expect(stamped.preLaunchProceedReason).toBe('exclusion-undecidable');
+    // A pass carries no blocked-path detail — that would imply a refusal that never happened.
+    expect(stamped).not.toHaveProperty('preLaunchBlockedPaths');
+  });
 });
