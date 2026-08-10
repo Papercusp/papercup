@@ -51,6 +51,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
+import { offersTierRoute } from './lib/mug-kettle-ui-route.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -566,28 +567,13 @@ const D7_TAB_RE = /["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/g;
  * decides the gate. That is the same seam `retired` and `substrate` already use — a
  * census that stopped SEEING these would be a real loss of recall, and would also make
  * this change invisible to the comment-blindness suite's population CONTROL.
+ *
+ * The classifier itself lives in `scripts/lib/mug-kettle-ui-route.mjs` — not for reuse
+ * (this is its only caller) but for FALSIFIABILITY: proving it still fires on a real
+ * mount needs a fixture, and the only way to hand THIS script a new mount is to write one
+ * into the shared tree, where git-sync can commit it before the probe finishes. `namesTier`
+ * is injected so the homonym ruling above stays the single copy.
  */
-const D7_DECL_RE =
-  /(?:\b(?:id|key|tab|tabId|value|kind|name|slug|pane|view|route|to|href)\s*[:=]\s*|[[,(]\s*)["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/;
-
-/**
- * The other half of OFFERS, and a recall GAIN rather than a trade: a file that renders
- * `<MugTab/>` is mounting the tier whether or not a quoted token happens to sit nearby.
- * `LeftSidebar` is caught today only by the `id: 'queen'` string beside it — had the id
- * been a constant, the mount itself was invisible. Resolved through `namesTier`, so the
- * homonym/exclusion rulings above apply here too (`AnimatedPapercuspCup` stays out).
- */
-const D7_JSX_RE = /<\s*([A-Z][A-Za-z0-9_]*)/g;
-
-/** Does this file OFFER a route into the tier? Returns how, or null (display-only). */
-function offersTierRoute(src) {
-  const decl = D7_DECL_RE.exec(src);
-  if (decl) return `declares tab identity (${decl[0].replace(/\s+/g, ' ').trim().slice(0, 40)})`;
-  for (const m of src.matchAll(D7_JSX_RE)) {
-    if (namesTier(m[1])) return `mounts <${m[1]}>`;
-  }
-  return null;
-}
 
 /**
  * Control surfaces the plan names explicitly (D-009/D-010): the buttons that drive
@@ -640,7 +626,7 @@ for (const abs of allFiles) {
       { matchedToken: namesTier(base), tabTokens: tabHits.length });
   } else if (/\.tsx$/.test(r) && tabHits.length > 0 && /(LeftSidebar|Sidebar|Tab|Rail|Nav)/.test(base)) {
     const tokens = [...new Set(tabHits.map((h) => h[1]))].join(', ');
-    const offers = offersTierRoute(src);
+    const offers = offersTierRoute(src, namesTier);
     if (offers) {
       add('ui', abs, tabHits[0].index, base, `mounts tier tab token(s): ${tokens} — ${offers}`);
     } else {

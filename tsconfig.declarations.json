@@ -88,6 +88,14 @@
     // --check cannot police. Unlike that one it IS also imported directly by a .ts
     // (guard-string-literal-blindness.test.ts), which had been paying a suppressed TS7016 for it.
     "scripts/lib/strip-comments-and-strings.mjs",
+    // EI-20091394509538630 — the mug/kettle D7 "offers a route vs merely names the tier"
+    // classifier. Registered for the FIRST reason this list exists: it is imported directly
+    // by mug-kettle-census-ui-route-vs-display.test.ts, which is the whole point of it being
+    // a module (the census scans 7,200 real files, so the only way to falsify the classifier
+    // in place is to write a mount into the shared tree, where git-sync can commit it).
+    // Unregistered it would pay a TS7016 there — and `gen:declarations` reports SUCCESS while
+    // emitting nothing for an unlisted input (EI-20035436440627349), so the absence is silent.
+    "scripts/lib/mug-kettle-ui-route.mjs",
     // EI-20081449067583201 — the one Postgres-URL resolver for scripts/* CLIs. Registered
     // for BOTH reasons this list exists: it is imported directly by .ts scripts and by
     // scripts-pg-url.test.ts (which paid a TS7016 for it), AND it is imported by three
