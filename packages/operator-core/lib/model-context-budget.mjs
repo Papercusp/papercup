@@ -137,6 +137,29 @@ export function installedModelContextWindow({ agent, model, home = homedir() }) 
   return null;
 }
 
+/**
+ * Resolve a model's context window: explicit/live values win, then the installed
+ * registry, then a per-backend conservative default.
+ *
+ * ⚠ The `= {}` whole-object default COLLAPSES tsc's inferred options type down to
+ * only the properties that carry their own initializer — here just `home`. Measured
+ * 2026-08-10 (EI-19384804106131566): with no `@param`, declaration emit typed this
+ * bag as `{ home?: string }`, so every caller passing `agent`/`model` became a
+ * TS2353 excess-property error the moment this module was pulled into
+ * `tsconfig.declarations.json`. The sibling `installedModelContextWindow` has no
+ * `= {}` default and is unaffected, which is what isolates the cause. The explicit
+ * `@param`/`@returns` below are what keep the emitted `.d.mts` honest — do not drop
+ * them, and prefer them to removing the `= {}` (callers rely on the no-arg form).
+ *
+ * @param {{
+ *   agent?: string,
+ *   model?: string | null,
+ *   home?: string,
+ *   declaredWindow?: number | null,
+ *   liveWindow?: number | null,
+ * }} [opts]
+ * @returns {{ window: number, source: string }}
+ */
 export function resolveModelContextWindow({ agent, model, home = homedir(), declaredWindow, liveWindow } = {}) {
   const declared = POSITIVE(declaredWindow);
   const live = POSITIVE(liveWindow);
@@ -163,6 +186,41 @@ export function estimatePromptTokens(text) {
   return Math.ceil(Buffer.byteLength(String(text ?? ''), 'utf8') / 3.7);
 }
 
+/**
+ * Build the full context-budget record for a launch.
+ *
+ * ⚠ Same `= {}` inference collapse as `resolveModelContextWindow` above — see that
+ * note. Keep the explicit `@param`/`@returns`; without them the emitted `.d.mts`
+ * types this bag as `{ home?: string }` and widens `window`/`level` to `any`/`string`.
+ *
+ * @param {{
+ *   agent?: string,
+ *   model?: string | null,
+ *   home?: string,
+ *   contextSize?: string,
+ *   promptText?: string,
+ *   additionalPromptText?: string,
+ *   estimatedPromptTokens?: number,
+ *   declaredWindow?: number | null,
+ *   liveWindow?: number | null,
+ * }} [opts]
+ * @returns {{
+ *   version: number,
+ *   agent: string,
+ *   model: string | null,
+ *   window: number,
+ *   windowSource: string,
+ *   variant: 'full' | 'trimmed',
+ *   promptTokens: number,
+ *   runtimeOverheadTokens: number,
+ *   baselineTokens: number,
+ *   reserveTokens: number,
+ *   availableInputTokens: number,
+ *   level: 'ok' | 'warn' | 'refuse',
+ *   pct: number,
+ *   estimator: string,
+ * }}
+ */
 export function buildContextBudget({
   agent,
   model,

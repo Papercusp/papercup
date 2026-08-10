@@ -149,7 +149,12 @@ async function setup() {
   const embedder = await buildQueryEmbedder({ acquireBudgetMs: 120_000 }).catch(() => null);
   const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
 
-  const once = async (query: string, mode: 'embeddings' | 'hybrid', recency: typeof RECENCY_PROD) => {
+  const once = async (
+    query: string,
+    mode: 'embeddings' | 'hybrid',
+    recency: typeof RECENCY_PROD,
+    opts?: { lexicalCascade?: boolean },
+  ) => {
     const { results, legs } = await runHybridSearch(sources, {
       sql,
       query,
@@ -162,6 +167,13 @@ async function setup() {
       recency,
       signal: new AbortController().signal,
       deferHighlight: true,
+      // Spread CONDITIONALLY so the production arms do not pass the key at all.
+      // `hybrid.ts` gates on `ctx.lexicalCascade !== false`, so passing an
+      // explicit `true` is behaviourally identical — but omitting it keeps the
+      // prod arm byte-for-byte the shape it had before this knob existed, which
+      // is what makes the pre-existing lexical/fresh numbers still comparable
+      // to D-060's.
+      ...(opts?.lexicalCascade === false ? { lexicalCascade: false } : {}),
     });
     return { results: results as SearchHit[], legs };
   };
@@ -177,10 +189,15 @@ async function setup() {
    * every query back-to-back saturates it. Backing off and retrying addresses
    * the cause; the surviving degradations are reported with their reason.
    */
-  const search = async (query: string, mode: 'embeddings' | 'hybrid', recency: typeof RECENCY_PROD) => {
+  const search = async (
+    query: string,
+    mode: 'embeddings' | 'hybrid',
+    recency: typeof RECENCY_PROD,
+    opts?: { lexicalCascade?: boolean },
+  ) => {
     let last: Awaited<ReturnType<typeof once>> | null = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      last = await once(query, mode, recency);
+      last = await once(query, mode, recency, opts);
       if (!last.legs?.degraded) return { ...last, attempts: attempt };
       if (attempt < MAX_ATTEMPTS) await sleep(250 * attempt);
     }
