@@ -215,8 +215,27 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
 /**
  * Tiers that actually STOP a bad change. `hook` and `logic-test` are deliberately
  * excluded — see the header: both are real coverage of a kind, and neither blocks.
+ *
+ * `repo-wide` = registered in REPO_WIDE_INVARIANT_GUARDS (scripts/affected-tests.mjs) AND
+ * declared by the workspace it names. That pair makes affected-tests.mjs push the guard as
+ * a real task (`tasks.push({ ws, script: guard.script })`) whenever a changed path matches
+ * its own `appliesTo` predicate — inside `test:affected`, which green-checkpoint runs as a
+ * blocking leg. So it stops a bad change exactly like the other four.
+ *
+ * ⚠ WHY THIS TIER HAD TO EXIST (WI-37627, the ed2c4f36 gate red). `classifyGuard` read only
+ * the gate/ci/test/hook/logic-test corpora, so a guard whose ONLY wiring was a registration
+ * scored `tier: null` — reported verbatim as "nothing runs it at all" while it was in fact
+ * running on every matching changed path. It went unnoticed because all 11 registered guards
+ * that pre-dated it ALSO carried a corpus mention (a CI job, or a *.test.ts that names them),
+ * so the blind spot needed a registration-ONLY guard to become visible;
+ * `lint:no-ungated-mug-kettle` was the first, and it red-pinned `main` for the whole fleet.
+ *
+ * Note the script was already INTERNALLY INCONSISTENT about this: `computeCoverage` credits a
+ * registered guard `verdict: 'full'` (line ~440), but that branch is unreachable for a
+ * registration-only guard because the same function early-returns `not-enforced` whenever
+ * `!row.blocking`. One axis called registration sufficient; the other had never heard of it.
  */
-export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained']);
+export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained', 'repo-wide']);
 
 /**
  * A test EXECUTES a guard over the real tree (rather than unit-testing its helpers)
@@ -329,13 +348,25 @@ export function referencedScripts(command) {
  * Classify one guard against the pre-built runner corpora.
  * Returns the STRONGEST tier found, plus every tier for reporting.
  */
-export function classifyGuard({ name, command, corpora }) {
+export function classifyGuard({ name, command, corpora, repoWideRegistered = new Set() }) {
   const impls = resolveImplementationPaths(command);
   const tiers = [];
   const mentions = (text) => text.includes(name) || impls.some((p) => p && text.includes(p));
   for (const [tier, text] of Object.entries(corpora)) {
     if (mentions(text)) tiers.push(tier);
   }
+  // Appended AFTER the corpora so `blocking[0]` keeps reporting the more specific tier for a
+  // guard that is both registered and named by a CI job / gate leg / enforcing test — all 11
+  // registrations that pre-dated this tier are in that state, so their reported tier is
+  // unchanged and only a registration-ONLY guard newly reads `repo-wide`.
+  //
+  // Membership is an exact Set lookup, deliberately NOT the substring `mentions()` used above:
+  // guard names nest (`lint:no-retired` is a prefix of `lint:no-retired-resurrection`, and both
+  // are registered), so a text-corpus spelling of this would credit the shorter name off the
+  // longer one's registration. The caller passes the EFFECTIVE set — registrations whose named
+  // workspace actually declares the script — so an INERT registration confers nothing here
+  // either, and still falls through to be reported as the unwired guard it really is.
+  if (repoWideRegistered.has(name)) tiers.push('repo-wide');
   const blocking = tiers.filter((t) => BLOCKING_TIERS.has(t));
   return {
     name,
@@ -483,9 +514,19 @@ export function computeCoverage({
  * `coverage` is OPTIONAL: omit it and no coverage is computed (rows simply carry no
  * `coverage` field). Supplying it adds the third axis described above.
  */
-export function buildReachabilityCensus({ scripts, corpora, acknowledged = new Map(), coverage = null }) {
+export function buildReachabilityCensus({
+  scripts,
+  corpora,
+  acknowledged = new Map(),
+  coverage = null,
+  // Defaults to the coverage axis's own set so an existing caller that passes registrations
+  // only under `coverage` keeps the same behaviour on BOTH axes. Accepted at the top level
+  // too because enforcement is measurable without the coverage inputs, and conflating them
+  // is what let the two axes disagree about registration in the first place (see BLOCKING_TIERS).
+  repoWideRegistered = coverage?.repoWideRegistered ?? new Set(),
+} = {}) {
   const rows = selectGuardScripts(scripts).map((name) =>
-    classifyGuard({ name, command: scripts[name], corpora }),
+    classifyGuard({ name, command: scripts[name], corpora, repoWideRegistered }),
   );
 
   // A `chained` guard inherits reachability from whatever reachable script runs it.
@@ -766,10 +807,20 @@ function main() {
   const inertRegistrations = findInertRepoWideRegistrations({ pairs: repoWidePairs, scriptsByWorkspaceName });
   const inertScripts = new Set(inertRegistrations.map((p) => p.script));
 
+  // EFFECTIVE registrations — registered AND declared by the workspace named. Computed once
+  // and used by BOTH axes: enforcement (a `repo-wide` blocking tier) and coverage (`full`).
+  // They used to be derived separately, which is how they came to disagree.
+  const effectiveRepoWideRegistered = new Set(
+    [...parseRepoWideRegistrations(coverageMeasurable ? affectedTestsSource : '')].filter(
+      (s) => !inertScripts.has(s),
+    ),
+  );
+
   const census = buildReachabilityCensus({
     scripts,
     corpora,
     acknowledged: ACKNOWLEDGED_UNREACHABLE,
+    repoWideRegistered: effectiveRepoWideRegistered,
     coverage: coverageMeasurable
       ? {
           enforcingTests,
@@ -778,9 +829,7 @@ function main() {
           // EFFECTIVE registrations only — an INERT one (workspace does not declare the
           // script) is deliberately NOT credited, so it falls through to the ordinary
           // coverage analysis and is reported as the partial/unenforced guard it really is.
-          repoWideRegistered: new Set(
-            [...parseRepoWideRegistrations(affectedTestsSource)].filter((s) => !inertScripts.has(s)),
-          ),
+          repoWideRegistered: effectiveRepoWideRegistered,
         }
       : null,
   });
@@ -847,10 +896,25 @@ function main() {
     console.error('   Remove them: they assert a pending decision about a script that is gone.');
   }
 
-  if (census.unacknowledged.length) {
+  // Gated on the registry having actually been READ, for the same reason as the two
+  // partial-coverage checks below and with the same fail-OPEN stance as the skip notice above.
+  // A registration is now one of the ways a guard is blocking, so with the registry unreadable
+  // this axis cannot tell "nothing runs it" from "the thing that runs it is the file I could
+  // not open" — and of those two wrong answers only the false POSITIVE red-pins the fleet on a
+  // missing file rather than a real defect. Reported as a loud warning so an unmeasured run is
+  // never mistaken for a clean one.
+  const unacknowledgedUnenforced = coverageMeasurable ? census.unacknowledged : [];
+  if (!coverageMeasurable && census.unacknowledged.length) {
+    console.warn(
+      `\n⚠ enforcement axis DEGRADED: ${census.unacknowledged.length} guard(s) look unenforced, but the\n` +
+        '  registration source was unreadable, so a `repo-wide` registration could not be seen.\n' +
+        '  NOT failing on them — this run cannot substantiate the finding.',
+    );
+  }
+  if (unacknowledgedUnenforced.length) {
     failed = true;
-    console.error(`\n❌ ${census.unacknowledged.length} lint guard(s) run on NO blocking path:`);
-    for (const r of census.unacknowledged) {
+    console.error(`\n❌ ${unacknowledgedUnenforced.length} lint guard(s) run on NO blocking path:`);
+    for (const r of unacknowledgedUnenforced) {
       const why =
         r.tier === 'logic-test'
           ? 'only a UNIT TEST of its helpers — proves the detector works, runs it over nothing'
