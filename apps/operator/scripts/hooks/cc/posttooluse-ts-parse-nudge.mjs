@@ -146,6 +146,30 @@ export function findRepoRoot(filePath, exists = existsSync) {
 const MAX_GRAMMAR_DIAGNOSTIC_CODE = 2000;
 
 /**
+ * Codes ABOVE that bound which esbuild nevertheless REFUSES TO BUNDLE — so a file carrying
+ * one takes every bundling host down exactly like a syntax error. Mirrors
+ * ESBUILD_FATAL_DIAGNOSTIC_CODES in ts-parse.ts (the drift test pins the two).
+ *
+ * An explicit SET, never a higher bound (EI-19457229906581679): phase 2 runs with
+ * `noLib: true` and routinely emits 2xxx noise of its own (TS2318 "Cannot find global type
+ * 'Promise'", TS2584 "Cannot find name 'console'") that must stay filtered.
+ *
+ * TS2451 — "Cannot redeclare block-scoped variable 'x'". Measured 2026-08-10: a mid-edit
+ * duplicate `const startingAdvSessionId` failed bundle-host.sh and crash-looped
+ * papercup-staging-api until the reconciler gave up. Phase 1 saw ZERO parse diagnostics (a
+ * redeclaration is an ECMAScript EARLY error, not a parse error) and TS2451 was filtered
+ * for being ≥ 2000 — so this hook, built for exactly this outage class, watched it happen
+ * again in silence.
+ */
+const ESBUILD_FATAL_DIAGNOSTIC_CODES = new Set([2451]);
+
+/** True when a diagnostic breaks the FILE (syntax/grammar, or esbuild-fatal), rather than
+ *  merely describing a type problem. */
+function isFileBreakingDiagnostic(code) {
+  return code < MAX_GRAMMAR_DIAGNOSTIC_CODE || ESBUILD_FATAL_DIAGNOSTIC_CODES.has(code);
+}
+
+/**
  * The parse check itself — deliberately identical in behaviour to
  * `findTsParseError` in packages/operator-core/lib/content-lint/ts-parse.ts.
  * Returns the FIRST syntactic diagnostic, or null when the text parses cleanly.
@@ -205,7 +229,7 @@ function findGrammarError(ts, fileName, text, scriptKind) {
   }
   let earliest;
   for (const d of diagnostics) {
-    if (d.code >= MAX_GRAMMAR_DIAGNOSTIC_CODE) continue; // a TYPE error — never ours to flag
+    if (!isFileBreakingDiagnostic(d.code)) continue; // a TYPE error — never ours to flag
     if (!earliest || (d.start ?? 0) < (earliest.start ?? 0)) earliest = d;
   }
   return earliest ? toParseError(ts, sf, earliest) : null;
@@ -377,6 +401,26 @@ async function selfTest() {
     readFile: () => 'const n: number = "not a number";\nimport { nope } from "./does-not-exist";\n',
   });
   check('silent on a type error / unresolved import', typeErr === null);
+
+  // EI-19457229906581679 — the 2026-08-10 outage shape. A duplicate block-scoped
+  // declaration parses cleanly (it is an ECMAScript EARLY error, not a parse error), so
+  // phase 1 reports nothing and the ONLY signal is TS2451 — which the < 2000 bound used to
+  // discard. esbuild refuses the file outright, so this DOES take the bundling hosts down.
+  const dupConst = await nudgeFor('/repo/packages/x/launch-su.ts', {
+    ...base,
+    readFile: () =>
+      'export function f(ownerId: string) {\n  const sessionId = ownerId ? "a" : null;\n  const sessionId = ownerId ? "b" : null;\n  return sessionId;\n}\n',
+  });
+  check('reports a duplicate block-scoped declaration (TS2451)', typeof dupConst === 'string' && /does NOT PARSE/.test(dupConst));
+  check('names the redeclared symbol', typeof dupConst === 'string' && /sessionId/.test(dupConst));
+
+  // ...and the noLib NOISE that shares the same 2xxx range must STAY filtered — this is
+  // what makes the enumerated set necessary instead of simply raising the bound.
+  const noLibNoise = await nudgeFor('/repo/packages/x/d.ts', {
+    ...base,
+    readFile: () => 'export async function f() {\n  console.log("hi");\n  return Promise.resolve(1);\n}\n',
+  });
+  check('silent on noLib-only diagnostics (TS2318/TS2584)', noLibNoise === null);
 
   // Non-candidate paths short-circuit without touching the filesystem.
   const notTs = await nudgeFor('/repo/packages/x/readme.md', {

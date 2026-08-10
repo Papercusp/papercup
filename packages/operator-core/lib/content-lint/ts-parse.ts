@@ -55,6 +55,40 @@ export interface TsParseError {
 const MAX_GRAMMAR_DIAGNOSTIC_CODE = 2000;
 
 /**
+ * Codes ABOVE that bound which esbuild nevertheless REFUSES TO BUNDLE — so a file carrying
+ * one takes every bundling host down exactly like a syntax error, even though TypeScript
+ * files it with the type system.
+ *
+ * WHY AN EXPLICIT SET AND NOT A HIGHER BOUND (EI-19457229906581679). The bound above is
+ * this detector's whole safety argument: 2xxx is where "cannot find name", "wrong
+ * annotation" and friends live, and quarantining on those would fire on ordinary work in
+ * progress. Phase 2 also runs with `noLib: true`, so it ROUTINELY produces 2xxx noise of
+ * its own (TS2318 "Cannot find global type 'Promise'", TS2584 "Cannot find name
+ * 'console'") that must stay filtered. Raising the bound would admit all of it. Only an
+ * enumerated set adds the file-breaking codes without any of that.
+ *
+ * TS2451 — "Cannot redeclare block-scoped variable 'x'". Measured 2026-08-10: an agent's
+ * mid-edit duplicate `const startingAdvSessionId` in routes/adv/launch-su.ts failed
+ * bundle-host.sh with `✘ [ERROR] The symbol "startingAdvSessionId" has already been
+ * declared`, crash-looping papercup-staging-api until systemd's reconciler gave up and
+ * :3170 was down fleet-wide. Phase 1 reported ZERO parse diagnostics (the grammar is
+ * fine — a redeclaration is an ECMAScript EARLY error, not a parse error), and phase 2's
+ * only signal was TS2451, filtered out for being ≥ 2000. The guard built for precisely
+ * this outage class watched it happen a second time and said nothing.
+ *
+ * Membership test: does esbuild REFUSE the file? A duplicate TYPE alias also reports 2xxx
+ * (TS2300) but is erased before emit and bundles fine — so it does NOT belong here. Verify
+ * with esbuild before adding a code.
+ */
+const ESBUILD_FATAL_DIAGNOSTIC_CODES: ReadonlySet<number> = new Set([2451]);
+
+/** True when a diagnostic breaks the FILE (syntax/grammar, or esbuild-fatal), rather than
+ *  merely describing a type problem. */
+function isFileBreakingDiagnostic(code: number): boolean {
+  return code < MAX_GRAMMAR_DIAGNOSTIC_CODE || ESBUILD_FATAL_DIAGNOSTIC_CODES.has(code);
+}
+
+/**
  * Pure detector: the FIRST syntactic diagnostic in `text`, or null when the file
  * parses cleanly. Never throws on a syntax error (that is the expected result and
  * is returned); it throws only if the TS build cannot report parse diagnostics at
@@ -144,7 +178,7 @@ function findTsGrammarError(fileName: string, text: string, scriptKind: ts.Scrip
   }
   let earliest: ts.Diagnostic | undefined;
   for (const d of diagnostics) {
-    if (d.code >= MAX_GRAMMAR_DIAGNOSTIC_CODE) continue; // a TYPE error — never ours to flag
+    if (!isFileBreakingDiagnostic(d.code)) continue; // a TYPE error — never ours to flag
     if (!earliest || (d.start ?? 0) < (earliest.start ?? 0)) earliest = d;
   }
   return earliest ? toParseError(sf, earliest) : null;
