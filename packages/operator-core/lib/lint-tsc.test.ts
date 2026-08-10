@@ -93,6 +93,75 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     }
   });
 
+  // EI-20072775668558359 — the gate exits 1 for TWO different reasons, and the machine-readable
+  // field is the one callers grep. Calling "nothing was typechecked" a REGRESSION is a false
+  // alarm: read literally it sends someone hunting a type error that does not exist, and once
+  // learned as "regressed can mean nothing ran" it corrodes the token exactly when a regression
+  // IS real. Most edits here are NOT in operator-core, so an out-of-scope `--files=` run is a
+  // common shape. These assertions pin the two apart.
+  describe('distinguishes "nothing was typechecked" from a real regression', () => {
+    it('reports out-of-scope, NOT regressed, when the run compiled none of the named files', () => {
+      const marker = formatLintTscResultMarker({
+        label: 'operator-core',
+        scope: 'files',
+        code: 1,
+        nothingTypechecked: true,
+      });
+      expect(marker).toBe(
+        'LINT_TSC_RESULT label=operator-core scope=files exit=1 status=out-of-scope',
+      );
+      // The failure contract is deliberately UNCHANGED — non-zero still means "did not pass".
+      expect(marker).toContain('exit=1');
+      expect(marker).not.toContain('status=regressed');
+    });
+
+    it('still reports a real regression as regressed — the flag must not swallow the common case', () => {
+      expect(
+        formatLintTscResultMarker({ label: 'operator-core', scope: 'files', code: 1 }),
+      ).toContain('status=regressed');
+      expect(
+        formatLintTscResultMarker({
+          label: 'operator-core',
+          scope: 'files',
+          code: 1,
+          nothingTypechecked: false,
+        }),
+      ).toContain('status=regressed');
+    });
+
+    // The drift the formatter's own note warns about: a refinement flag must never be able to
+    // turn a FAILING run into a passing one. code===0 wins unconditionally.
+    it('cannot make a failing run look clean, nor a clean run look failed', () => {
+      expect(
+        formatLintTscResultMarker({
+          label: 'x',
+          scope: 'all',
+          code: 0,
+          nothingTypechecked: true,
+        }),
+      ).toBe('LINT_TSC_RESULT label=x scope=all exit=0 status=clean');
+      for (const code of [1, 2, 124, 137, 143]) {
+        expect(
+          formatLintTscResultMarker({ label: 'x', scope: 'all', code, nothingTypechecked: true }),
+        ).not.toContain('status=clean');
+      }
+    });
+
+    it('leaves an abnormal-termination code reading as an error, not out-of-scope', () => {
+      // A SIGTERM'd / OOM'd run is UNMEASURED. It must not borrow the tidy out-of-scope label
+      // just because the flag happened to be set before the process died — so the refinement is
+      // scoped to exit 1 (the gate's own considered failure) and abnormal codes always win.
+      for (const code of [2, 124, 137, 143]) {
+        expect(
+          formatLintTscResultMarker({ label: 'x', scope: 'files', code, nothingTypechecked: true }),
+        ).toContain(`status=error(${code})`);
+      }
+      expect(
+        formatLintTscResultMarker({ label: 'x', scope: 'files', code: 143 }),
+      ).toContain('status=error(143)');
+    });
+  });
+
   it('reports the scope, so a --files verdict is never mistaken for a whole-project one', () => {
     expect(lintTscScopeFromArgv([])).toBe('all');
     expect(lintTscScopeFromArgv(['--mine'])).toBe('mine');

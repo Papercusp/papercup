@@ -1593,12 +1593,46 @@ export function lintTscScopeFromArgv(argv) {
  * the `process.on('exit')` hook that prints it is not.
  *
  * `status` is derived from the exit code the gate actually exited with, never from a
- * separately-tracked variable that could drift out of sync with it.
- * @param {{ label: string, scope: string, code: number }} input
+ * separately-tracked verdict variable that could drift out of sync with it.
+ *
+ * `nothingTypechecked` is the ONE deliberate exception, and it is a REFINEMENT of the
+ * failure, never the verdict itself (EI-20072775668558359). The exit code alone genuinely
+ * cannot separate the two ways this gate exits 1:
+ *
+ *   - a real REGRESSION — files were compiled and some sit above baseline;
+ *   - NOTHING WAS TYPECHECKED — every `--files=` path lies outside this project, so the
+ *     gate compiled none of them and has no verdict to give.
+ *
+ * Reporting the second as `status=regressed` is a false alarm in the machine-readable
+ * field, which is the one a caller greps. It fails in both directions: read literally it
+ * sends someone hunting a type error that does not exist, and once learned as "regressed
+ * here can mean nothing ran" it corrodes the token that must stay trustworthy when a
+ * regression IS real. Most edits in this repo are NOT in operator-core, so a `--files=` run
+ * naming out-of-scope paths is a common shape, not an exotic one.
+ *
+ * The drift the original note warns about is still excluded: `nothingTypechecked` cannot
+ * make a FAILING run look clean (a truthy value is only consulted when `code !== 0`, and
+ * `code === 0` still reports `clean` unconditionally), and it is set at the same site that
+ * computes `fatal` and calls `process.exit(1)` — so the flag and the exit cannot disagree
+ * without that one branch being wrong about itself. Pinned by
+ * packages/operator-core/lib/lint-tsc.test.ts.
+ *
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code }) {
-  const status = code === 0 ? 'clean' : code === 1 ? 'regressed' : `error(${code})`;
+export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked = false }) {
+  // The refinement applies ONLY to the gate's own considered failure (exit 1). An abnormal
+  // code — SIGTERM, OOM, a toolchain crash — means the run is UNMEASURED, and it must keep
+  // reading as `error(N)` rather than borrowing the tidy out-of-scope label just because the
+  // flag happened to be set before the process died.
+  const status =
+    code === 0
+      ? 'clean'
+      : code === 1
+        ? nothingTypechecked
+          ? 'out-of-scope'
+          : 'regressed'
+        : `error(${code})`;
   return `LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`;
 }
 
@@ -1635,9 +1669,14 @@ export async function runTscBaselineGate({
   // This mirrors `TEST_FILE_RESULT` in scripts/test-files.mjs, whose consumer idiom
   // (`if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi`) is already established in this
   // repo — the convention is reused, not reinvented.
+  // EI-20072775668558359 — set ONLY by the all-uncovered branch below, on the line before its
+  // `process.exit(1)`, so the flag and the exit it describes are the same decision. It refines
+  // WHICH failure this is; it can never turn a failure into a pass (see the formatter's note).
+  let nothingTypechecked = false;
+
   process.on('exit', (code) => {
     console.log(
-      formatLintTscResultMarker({ label, scope: lintTscScopeFromArgv(argv), code }),
+      formatLintTscResultMarker({ label, scope: lintTscScopeFromArgv(argv), code, nothingTypechecked }),
     );
   });
 
@@ -1689,7 +1728,12 @@ export async function runTscBaselineGate({
         }
         // Some covered, some not: the covered verdict below is still TRUE and worth having, so
         // warn and continue. Nothing covered: there is no honest verdict to print at all.
-        if (fatal) process.exit(1);
+        if (fatal) {
+          // Paired with the exit on the very next line so the marker cannot claim `regressed`
+          // about a run that compiled nothing (EI-20072775668558359).
+          nothingTypechecked = true;
+          process.exit(1);
+        }
       }
     }
   }
