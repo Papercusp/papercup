@@ -36,6 +36,7 @@ import { surveyPot, surveyWorkspace } from '../../pot/survey';
 import { placementRankerSpec } from '../../pot/placement-ranker';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { shapePotSurvey } from './survey-shape';
+import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';
 import { readIssueClaimability } from '../../scheduler/get-next';
 import { DEFAULT_CLAIM_SPEC, formatSpecRef } from '../../scheduler/claim-spec';
 import type { Ranked } from '../../queue-ranker';
@@ -185,6 +186,16 @@ export default defineTool({
     trimmed: (data) => shapePotSurvey(data, 'trimmed'),
   },
   async handler(args, ctx) {
+    // D-048 ruled this TIER, from its own guidance: "You are the Mug starting a
+    // placement wake" — and its documented chaining is `pot:survey → cup:spawn`,
+    // which D-017 already gates. Read-only, so the refusal is not preventing a
+    // write; it is refusing to hand back a placement frontier that nothing
+    // retired can act on, and whose only next step is a tool that refuses.
+    const retired = await refuseIfMugKettleRetired(
+      "run the Mug's placement survey",
+      'Drive the app with an su session (GOAL mode); scheduler:get_next is the claim path that replaces placement.',
+    );
+    if (retired) return retired;
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {

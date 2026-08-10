@@ -20,6 +20,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { requestUrgentPotWake } from '../../pot/urgent-wake';
 import { setOwnerSteering, type OwnerSteeringPatch } from '../../owner-steering';
+import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';
 import { LIMITS } from '../limits';
 
 const json = (o: unknown) => ({ data: o });
@@ -159,6 +160,17 @@ export default defineTool({
     // invalid_args at the point of the typo.
   }).strict(),
   async handler(args, ctx) {
+    // D-048 ruled this TIER, from its own guidance: "Steering the Mug from the
+    // owner surface … The 👑 Mug tab is the UI for this". This is the ONE of the
+    // four that is a true ACTUATOR under the D-017 scope rule — it WRITES
+    // (setOwnerSteering) and then calls requestUrgentPotWake, i.e. it can arm a
+    // wake on a tier the owner retired. So this gate is harm-prevention, not
+    // merely refusing to advertise a dead surface.
+    const retired = await refuseIfMugKettleRetired(
+      'steer the Mug',
+      'Drive the app with an su session (GOAL mode) instead.',
+    );
+    if (retired) return retired;
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolvePotHomeSlug(args.pot, ctx.harnessSlug ?? undefined);
     if (!installSlug) {

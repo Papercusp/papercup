@@ -39,6 +39,19 @@ export default defineTool({
     limit: z.number().int().min(1).max(500).optional().describe('Most-recent wakes to aggregate (default 50).'),
   }),
   async handler(args, ctx) {
+    // D-048 ruled this TIER, from its own guidance: "inspect the LIVE Mug's
+    // per-wake efficiency … the B-06 measurement read". Under retirement there
+    // are no Mug wakes, so the honest answer is a refusal naming the flag — NOT
+    // an all-zero report. That distinction is load-bearing: a zero here reads as
+    // "the Mug is idle/efficient" when it actually means "the tier is retired",
+    // the same zero-because-gated confound P-030 has to defend against on the
+    // spawn baseline. Read-only, so this is not harm-prevention; it is refusing
+    // to hand back a number whose units silently changed.
+    const retired = await refuseIfMugKettleRetired(
+      "read the Mug's wake efficiency",
+      'There are no Mug wakes to measure. For the su engine loop use loop:soak_report / loop:session_audit.',
+    );
+    if (retired) return retired;
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     const eff = await mugWakeEfficiency(workspaceId, {

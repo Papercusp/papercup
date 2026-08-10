@@ -1,6 +1,17 @@
 /**
- * THE TOOL GATE — the five mug/kettle/cup ACTUATOR tools refuse while the tier
- * is retired (retire-mug-kettle-su-only-2026-08-09 P-010, D-017).
+ * THE TOOL GATE — the nine mug/kettle/cup tools that refuse while the tier is
+ * retired (retire-mug-kettle-su-only-2026-08-09 P-010, D-017, D-048).
+ *
+ * TWO POPULATIONS, gated for DIFFERENT reasons — do not collapse them:
+ *   • ACTUATORS (D-017, 5) — they INITIATE or SUSTAIN autonomous tier work, so
+ *     the refusal is HARM-PREVENTION. `pot:set-steering` (D-048) joins these:
+ *     it writes steering and then calls requestUrgentPotWake.
+ *   • TIER SURFACES (D-048, the rest) — read-only, so nothing is prevented. The
+ *     refusal exists because the ALTERNATIVE IS WORSE THAN NOTHING: under
+ *     retirement `pot:mug_efficiency` returns an all-zero report that reads as
+ *     "the Mug is idle and efficient" rather than "this tier is retired" — the
+ *     same zero-because-gated confound P-030 defends against on the spawn
+ *     baseline. A refusal naming the flag is the honest answer; a zero is not.
  *
  * P-007 gated the ENGINE (the loop cannot arm its own wake). This gates the
  * HANDS: the tools an agent or the owner could call to restart the tier by hand.
@@ -84,8 +95,24 @@ function parse(result: unknown): Record<string, unknown> {
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-beforeEach(() => {
+/**
+ * Drain the macrotask queue. Load-bearing for the no-write assertion, because
+ * some of these handlers FIRE AND FORGET: the CALIBRATION case (tier ENABLED)
+ * lets a handler run for real, and `setOwnerSteering` → `requestUrgentPotWake` →
+ * `notifySyncInvalidate` lands its `pg_notify` a tick or two LATER — i.e. after
+ * that test has already ended. Without this drain those writes surface in the
+ * NEXT test's `sqlCalls` and get blamed on a tool that never made them
+ * (observed 2026-08-10: pot:set-steering's calibration writes were attributed to
+ * pot:declare-wake, and pot:declare-wake's to pot:survey — two red tests, both
+ * pointing at innocent tools).
+ */
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+beforeEach(async () => {
   tierFlag = true;
+  // Drain BEFORE the reset, never after: the point is that in-flight writes from
+  // the previous test are attributed to it and discarded here.
+  await settle();
   sqlCalls = [];
 });
 
@@ -122,19 +149,42 @@ describe('P-010 tool gate: the shared refusal', () => {
 });
 
 /**
- * The ACTUATOR population from D-017, invoked for real. `pot:declare-wake` is
- * deliberately absent — it is already covered via `getPotStarted` (P-007/D-016),
- * and duplicating a gate is how two gates drift.
+ * The gated population — D-017's five actuators plus D-048's four tier surfaces,
+ * every one invoked for real.
+ *
+ * ⚠ `pot:declare-wake` USED TO BE DELIBERATELY ABSENT HERE, on the reasoning
+ * that it is "already covered via getPotStarted (P-007/D-016), and duplicating a
+ * gate is how two gates drift." That reasoning was CHECKED, not discarded, and
+ * it is half right (D-049):
+ *   - The coverage claim is TRUE. pot/started.ts:117 opens getPotStarted with
+ *     `if (!(await mugKettleSystemEnabled())) return false`, so declare-wake's
+ *     started check already refused under retirement, before any write.
+ *   - The DRIFT risk is NOT. Drift needs two gates that can disagree about
+ *     whether to ALLOW. These resolve the same flag through the same function,
+ *     so flag-ON makes the refusal return null AND getPotStarted read the real
+ *     row. Strictly nested, never parallel.
+ * What the added gate buys is the DIAGNOSIS: the started check reports
+ * `hive_paused` and tells the caller "pot:start resumes autonomous wakes" —
+ * pointing at a tool D-017 gates, so a retired tier sent the caller to a dead
+ * route without ever naming the flag. Pause and retirement are different states.
  */
-const ACTUATORS: Array<{ name: string; load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }> = [
+const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }> = [
+  // D-017 actuators — the refusal is harm-prevention.
   { name: 'pot:start', load: () => import('./pot/start'), args: { harness: 'papercusp' } },
   { name: 'pot:wake', load: () => import('./pot/wake'), args: { harness: 'papercusp', reason: 't' } },
   { name: 'cup:spawn', load: () => import('./cup/spawn'), args: { harness: 'papercusp', role: 'coder' } },
   { name: 'kettle:start', load: () => import('./overwatch/start'), args: { harness: 'papercusp' } },
   { name: 'kettle:declare-wake', load: () => import('./overwatch/declare_wake'), args: { harness: 'papercusp', inSeconds: 60 } },
+  // D-048 tier surfaces. set-steering is the one true actuator of the four (it
+  // writes, then requestUrgentPotWake); the rest are reads whose zero-valued
+  // answers would misreport a retired tier as a healthy idle one.
+  { name: 'pot:set-steering', load: () => import('./pot/set_steering'), args: { pot: 'papercusp', pauseNewWork: true } },
+  { name: 'pot:declare-wake', load: () => import('./pot/declare_wake'), args: { harness: 'papercusp', inSeconds: 60 } },
+  { name: 'pot:survey', load: () => import('./pot/survey'), args: { harness: 'papercusp' } },
+  { name: 'pot:mug_efficiency', load: () => import('./pot/mug_efficiency'), args: { harness: 'papercusp' } },
 ];
 
-describe.each(ACTUATORS)('P-010 tool gate: $name', ({ name, load, args }) => {
+describe.each(GATED)('P-010 tool gate: $name', ({ name, load, args }) => {
   it('tier RETIRED: refuses, and performs NO write', async () => {
     tierFlag = false;
     const mod = await load();
@@ -145,6 +195,13 @@ describe.each(ACTUATORS)('P-010 tool gate: $name', ({ name, load, args }) => {
     // also pass if the handler ran its whole body and refused at the END — which
     // is precisely the bug shape for pot:start, whose body IS the restart.
     // Zero writes is the only evidence that nothing was restarted.
+    //
+    // Settle FIRST so this catches a FIRE-AND-FORGET write too — a handler that
+    // refuses correctly while a floating promise writes a tick later would
+    // otherwise pass. This makes the assertion strictly stronger; it is the same
+    // drain beforeEach does, applied to the call under test rather than to the
+    // previous one.
+    await settle();
     expect(sqlCalls).toEqual([]);
   });
 
@@ -195,6 +252,29 @@ const EXCLUDED: Array<{ name: string; why: string; load: () => Promise<{ default
     why: 'the pot-as-CONTAINER surface — a Pot is a harness container and a federation peer, not only a Mug host (D-003 one layer up)',
     load: () => import('./pot/list'),
     args: {},
+  },
+  {
+    name: 'pot:dissolve',
+    why:
+      'D-048 ruled it CONTAINER-KEEP. Its own guidance is "Permanently tearing down a local pot — stop the Mug, ' +
+      'cancel its cups, deregister it": it is a STOPPER, and D-017 is explicit that refusing a stop is never the ' +
+      'safe direction. Gating it is how a tier gets stranded RUNNING with no way to wind it down after ON→OFF. ' +
+      'It sits in the same `pot:*` namespace as four tools this file DOES gate, so it is exactly the entry a ' +
+      'namespace-shaped or name-shaped pass would sweep up by mistake',
+    load: () => import('./pot/dissolve'),
+    args: { harness: 'papercusp', confirm: true },
+  },
+  {
+    name: 'pot:status',
+    why:
+      'D-048 ruled it TIER but explicitly left its gating OPTIONAL ("read-only … not harm-prevention"), and D-049 ' +
+      'settles the option as NO. Two independent reasons: it falls outside _mug-kettle-gate.ts\'s own stated scope ' +
+      '(ACTUATORS ONLY — a tool that INITIATES or SUSTAINS tier work), and it is a DIAGNOSTIC used to verify the ' +
+      'tier is wound down. Gating the read that confirms the retirement worked removes evidence for P-030/P-031 ' +
+      'to close on. Unlike pot:mug_efficiency it reports declaration STATE, not a zero-valued metric, so it cannot ' +
+      'misreport a retired tier as a healthy idle one — the reason the other reads are gated does not apply here',
+    load: () => import('./pot/status'),
+    args: { harness: 'papercusp' },
   },
 ];
 

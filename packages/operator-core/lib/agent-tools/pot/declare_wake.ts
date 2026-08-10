@@ -39,6 +39,7 @@ import {
   readCreateWakeSuppressPlans,
 } from '../../pot/wake-defaults';
 import { getPotStarted } from '../../pot/started';
+import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
 import { softText, clampText, LIMITS } from '../limits';
 import { looksLikeUnverifiedOwnerClaim, UNVERIFIED_OWNER_CLAIM_GUIDANCE } from '../../pot/owner-claim-guard';
@@ -143,6 +144,33 @@ export default defineTool({
     }
 
     const { sql } = getOrgPg();
+
+    // D-048 ruled this TIER ("You are the pot/operator ending a turn — ALWAYS
+    // declare your next wake" = the Mug's own loop primitive), and D-049 is why
+    // this refusal is placed HERE, immediately ABOVE the started check.
+    //
+    // THIS IS NOT A SECOND, DRIFTABLE GATE. Verified 2026-08-10: the tier is
+    // ALREADY refused below, transitively — pot/started.ts:117 opens
+    // getPotStarted with `if (!(await mugKettleSystemEnabled())) return false`,
+    // so under retirement the next branch already refuses before any write.
+    // Both readings resolve the SAME flag through the SAME function, so they
+    // cannot disagree in the ALLOW direction: flag ON ⇒ this returns null AND
+    // getPotStarted reads the real row. They are strictly nested, not parallel,
+    // which is what makes this safe where a genuinely independent second gate
+    // would not be.
+    //
+    // WHAT IT FIXES is the DIAGNOSIS, and that was a real defect: the
+    // `hive_paused` refusal below tells the caller "pot:start resumes autonomous
+    // wakes" — but pot:start is gated by D-017 and refuses too, so a retired
+    // tier sent the caller to a dead route with no mention of the flag. The
+    // gate helper's own contract is a LOUD refusal the caller can act on
+    // "without reading this plan"; `hive_paused` failed that. Ordering matters:
+    // pause and retirement are different states and must not report as one.
+    const retired = await refuseIfMugKettleRetired(
+      "declare the Mug's next wake",
+      'The Mug loop no longer wakes. Use an su session and loop:arm / loop:checkpoint for the engine loop.',
+    );
+    if (retired) return retired;
 
     // WI-2012 (owner directive 2026-07-03): no started hives ⇒ the mug STAYS paused.
     // pot:pause clears the pending time wake, but an IN-FLIGHT mug turn used to
