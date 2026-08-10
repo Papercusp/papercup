@@ -49,6 +49,7 @@ const appliedResult = (): WithPlanLockResult<NewPlanValue> => ({
   kind: 'applied',
   value: { ok: true, slug: 'demo-plan-2026-07-18' },
   filePath: 'x',
+  version: 1,
   scope: { workspaceId: 'default', harnessSlug: 'offsite-planner-demo' },
 });
 
@@ -57,6 +58,7 @@ vi.mock('./with-plan-lock', () => ({
     kind: 'applied',
     value: { ok: true, slug: 'demo-plan-2026-07-18' },
     filePath: 'x',
+    version: 1,
     scope: { workspaceId: 'default', harnessSlug: 'offsite-planner-demo' },
   })),
 }));
