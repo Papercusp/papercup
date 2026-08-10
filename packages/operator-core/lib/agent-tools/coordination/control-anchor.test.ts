@@ -212,3 +212,68 @@ describe('compact durable CTRL anchor', () => {
     expect(delivery.state).not.toEqual(stale.state);
   });
 });
+
+describe('deriveClaimScope — an agent must not lose its own lane to a lapsed lease', () => {
+  const claim = (item: string, lease_valid: boolean) => ({
+    harness_slug: 'papercusp',
+    plan_slug: 'retire-mug-kettle-su-only-2026-08-09',
+    item_id: item,
+    lease_valid,
+  });
+
+  it('REGRESSION (2026-08-10): a lapsed-but-unreleased claim still yields plan AND items', () => {
+    // The exact production failure. A session driving this plan respawned and
+    // reported `scope: { plan: null, items: [] }` while its P-034 claim row was
+    // still present and unreleased — the 1200s lease had lapsed 13h earlier.
+    // Filtering self-scope by expires_ts emptied `items`, and `plan` then fell
+    // through to null. The agent lost its mission and had to ask the owner.
+    const scope = deriveClaimScope([claim('P-034', false)], null, null);
+
+    expect(scope.plan).toBe('retire-mug-kettle-su-only-2026-08-09');
+    expect(scope.items).toEqual(['P-034']);
+    expect(scope.harness).toBe('papercusp');
+    // Still ours, but the lease is cold — surfaced so a caller re-claims
+    // before editing rather than assuming peers are locked out.
+    expect(scope.lapsed).toEqual(['P-034']);
+  });
+
+  it('a live lease is not reported as lapsed', () => {
+    const scope = deriveClaimScope([claim('P-034', true)], null, null);
+    expect(scope.items).toEqual(['P-034']);
+    expect(scope.lapsed).toEqual([]);
+  });
+
+  it('the session brief wins for the plan when it has one', () => {
+    const scope = deriveClaimScope(
+      [claim('P-034', false), { ...claim('P-999', true), plan_slug: 'other-plan' }],
+      'retire-mug-kettle-su-only-2026-08-09',
+      'papercusp',
+    );
+    // Only the briefed plan's items form the lane — a stray claim on another
+    // plan must not leak in.
+    expect(scope.plan).toBe('retire-mug-kettle-su-only-2026-08-09');
+    expect(scope.items).toEqual(['P-034']);
+  });
+
+  it('with no brief, the lane is a SINGLE plan — claims across plans do not merge', () => {
+    // Before the fix the no-brief branch passed every row through, so an agent
+    // holding items on two plans got a lane whose items did not all belong to
+    // the plan reported beside them.
+    const scope = deriveClaimScope(
+      [claim('P-034', false), { ...claim('P-999', true), plan_slug: 'other-plan' }],
+      null,
+      null,
+    );
+    expect(scope.plan).toBe('retire-mug-kettle-su-only-2026-08-09');
+    expect(scope.items).toEqual(['P-034']);
+  });
+
+  it('no claims and no brief is an empty lane, not a crash', () => {
+    expect(deriveClaimScope([], null, null)).toEqual({
+      harness: null,
+      plan: null,
+      items: [],
+      lapsed: [],
+    });
+  });
+});
