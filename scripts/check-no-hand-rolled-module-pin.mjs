@@ -56,6 +56,8 @@ import { readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
+
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const ROOTS = ['libs', 'packages', 'apps'];
 
@@ -141,8 +143,19 @@ function* walk(dir) {
  * (`Symbol.for('drizzle:Name')`), and tagging a non-globalThis shared object
  * (`console[Symbol.for(...)]`).
  */
-export function findPins(src) {
+export function findPins(src, fileName = 'pin.ts') {
   const hits = [];
+  // CODE ONLY. This file's own header carries a complete worked pin as PROSE
+  // (`const K = '__papercuspPulseCache'; (globalThis as G)[K]`) — measured under
+  // WI-37717 to trip this very detector when a file containing it is scanned, which
+  // is a rule's documentation reddening its own gate. Any doc comment that shows the
+  // banned shape is the same phantom.
+  //
+  // stripCommentsOnly, NEVER stripCommentsAndStrings: the pin KEY is a string literal
+  // (`Symbol.for('…')` / `const K = '…'`), so masking strings would delete the thing
+  // being detected and turn this guard into a silent pass. The mask is length-
+  // preserving, so the `declLine` line numbers below stay correct.
+  src = stripCommentsOnly(src, fileName);
   if (!/globalThis/.test(src)) return hits;
 
   // Bind each key const to the name it is assigned to. Symbol form first, so a
@@ -236,7 +249,7 @@ export function scanTree() {
       // symbol spelling is precisely what hid ~20 string-key pins.
       if (!src.includes('globalThis')) continue;
 
-      const pins = findPins(src);
+      const pins = findPins(src, rel);
       if (pins.length === 0) continue;
 
       for (const p of pins) everyPin.push({ rel, ...p });

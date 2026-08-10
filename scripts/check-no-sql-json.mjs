@@ -24,6 +24,7 @@
  */
 import { readFileSync } from 'node:fs';
 
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -81,14 +82,20 @@ for (const f of tracked) {
     continue;
   }
   if (!/[Ss]ql\.json/.test(text)) continue;
+  // Match against the MASKED text, report the RAW line. The mask is length-preserving,
+  // so line numbers and columns are identical in both — never re-split the masked text
+  // for display, or the offender prints as blanks.
+  //
+  // This replaced a per-line heuristic (`t.startsWith('//') || t.startsWith('*') || …`
+  // plus an indexOf('//') position test) that covered exactly one of the three ways this
+  // token appears without being a call. It missed a `/* … */` block whose continuation
+  // line is not `*`-prefixed, and — measured, WI-37717 — it missed STRING literals
+  // entirely: this guard's own `console.error('✗ sql.json( in getOrgPg-class code…')`
+  // is the shape, and any error message or doc string in the scanned dirs that names the
+  // banned call would red CI while being no call at all.
+  const masked = stripCommentsAndStrings(text, f).split('\n');
   text.split('\n').forEach((line, i) => {
-    const m = SQL_JSON.exec(line);
-    if (!m) return;
-    // Skip comment lines + inline mentions after `//` (the codebase has many `// NOT sql.json()` notes).
-    const t = line.trimStart();
-    if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('--')) return;
-    const slash = line.indexOf('//');
-    if (slash !== -1 && slash < m.index) return;
+    if (!SQL_JSON.test(masked[i] ?? '')) return;
     offenders.push(`${f}:${i + 1}  ${line.trim().slice(0, 100)}`);
   });
 }
