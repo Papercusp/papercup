@@ -27,7 +27,9 @@ async function main(): Promise<void> {
   console.log(`attaching repo harness '${memberHarnessSlug}' → hive '${potHomeSlug}' (ws=${workspaceId})…`);
   const res = await addHarnessToPot({ workspaceId, potHomeSlug, memberHarnessSlug });
   console.log(JSON.stringify(res, null, 1));
-  process.exit(res.ok ? 0 : 1);
+  // NOT process.exit(): it does not drain an async pipe write, so piping this result
+  // would silently truncate it. See scripts/check-undrained-stdout-exit.mjs.
+  process.exitCode = res.ok ? 0 : 1;
 }
 
 main().catch((e) => {

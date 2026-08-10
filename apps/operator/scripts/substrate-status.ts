@@ -78,7 +78,11 @@ async function main(): Promise<void> {
   if (!enabled || bootedCount === 0) {
     const out = formatSubstrateStatus({ enabled, bootedCount });
     for (const line of out.lines) console.log(line);
-    process.exit(out.exitCode);
+    // NOT process.exit(): the loop above can emit well past what a pipe flushes
+    // synchronously, and exit() does not drain it — piping this status would drop the
+    // tail. See scripts/check-undrained-stdout-exit.mjs.
+    process.exitCode = out.exitCode;
+    return;
   }
 
   const health = await get<HealthResponse>('/api/admin/dogfood-substrate-health');
@@ -95,7 +99,8 @@ async function main(): Promise<void> {
     summary: hok.summary ?? null,
   });
   for (const line of out.lines) console.log(line);
-  process.exit(out.exitCode);
+  // NOT process.exit() — see above. Last statement, so exitCode alone suffices.
+  process.exitCode = out.exitCode;
 }
 
 main().catch((e) => {

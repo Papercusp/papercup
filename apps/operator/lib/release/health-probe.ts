@@ -443,6 +443,10 @@ if (require.main === module) {
   const timeoutMs = process.argv[3] ? Number(process.argv[3]) : undefined;
   probeHealth(url, { timeoutMs, log: (s) => console.error(`[health] ${s}`) }).then((r) => {
     console.log(JSON.stringify(r, null, 2));
-    process.exit(r.healthy ? 0 : 1);
+    // NOT process.exit(): stdout is async on a pipe and exit() does not drain it, so
+    // `health-probe | jq` would silently lose the tail of this JSON. Setting exitCode
+    // lets the process end naturally with the stream flushed. See
+    // scripts/check-undrained-stdout-exit.mjs.
+    process.exitCode = r.healthy ? 0 : 1;
   });
 }

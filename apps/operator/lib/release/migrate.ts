@@ -144,7 +144,9 @@ if (require.main === module) {
   applyStagedMigrations({ dbUrl: arg('--db'), sqlDir: arg('--sql-dir') })
     .then((r) => {
       console.log(JSON.stringify(r, null, 2));
-      process.exit(0);
+      // NOT process.exit(): it does not drain an async pipe write, so `migrate | jq`
+      // would silently truncate this report. See scripts/check-undrained-stdout-exit.mjs.
+      process.exitCode = 0;
     })
     .catch((e) => {
       console.error('[migrate] FAILED:', e instanceof Error ? e.message : e);

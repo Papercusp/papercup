@@ -74,13 +74,19 @@ if (require.main === module) {
     if (!process.argv.includes('--execute')) {
       console.log(JSON.stringify({ mode: 'plan', fromSha, toSha, restoreSnapshot: !!snapshot }, null, 2));
       console.error('\n[rollback] PLAN ONLY — pass --execute to revert. (Add --snapshot <kopiaId> to also restore the DB.)');
-      process.exit(0);
+      // NOT process.exit(): it does not drain an async pipe write, so piping the plan
+      // would silently truncate it. `return` preserves the early-exit control flow.
+      // See scripts/check-undrained-stdout-exit.mjs.
+      process.exitCode = 0;
+      return;
     }
 
     const { realDeps } = (await import('./deploy-deps')) as typeof import('./deploy-deps');
     const res = await executeRollback(cfg, realDeps(cfg), { toSha, fromSha, snapshot });
     console.log(JSON.stringify(res, null, 2));
-    process.exit(res.ok ? 0 : 1);
+    // NOT process.exit() — see above; this is the last statement, so exitCode alone
+    // ends the process with the result fully written.
+    process.exitCode = res.ok ? 0 : 1;
   })().catch((e) => {
     console.error('[rollback] FATAL:', e instanceof Error ? e.stack : e);
     process.exit(1);
