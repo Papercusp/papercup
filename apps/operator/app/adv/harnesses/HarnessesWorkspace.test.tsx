@@ -27,7 +27,7 @@ vi.mock('@/lib/useWorkspaceLabel', () => ({ useWorkspaceLabel: () => 'My Workspa
 vi.mock('./HarnessTopBar', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="topbar">{slug}</div> }));
 vi.mock('./HarnessesDock', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="dock">{slug}</div> }));
 vi.mock('./HarnessWelcome', () => ({ default: () => <div data-testid="welcome" /> }));
-vi.mock('./HiveMemberRail', () => ({
+vi.mock('./PotMemberRail', () => ({
   default: ({ members, activeSlug }: { members: Array<{ slug: string }>; activeSlug: string | null }) => (
     <div data-testid="member-rail">
       {members.map((m) => m.slug).join(',')}|active:{activeSlug ?? ''}
@@ -39,7 +39,7 @@ vi.mock('./HiveMemberRail', () => ({
 // pot-level chrome. Mocking a component the subject no longer mounts is what made
 // the assertion below pass vacuously in one direction and fail in the other
 // (EI-18814950644299297).
-vi.mock('./HiveWorkspaceCards', () => ({
+vi.mock('./PotWorkspaceCards', () => ({
   default: ({ onCreate }: { onCreate: () => void }) => (
     <div data-testid="workspace-cards">
       <button data-testid="cards-create" onClick={onCreate}>create</button>
@@ -126,7 +126,7 @@ describe('HarnessesWorkspace — dock branch', () => {
   it('mounts the dock for a solo non-hive harness', () => {
     // The member rail is mounted unconditionally and decides its own visibility
     // from the member set — that logic belongs to (and is pinned by)
-    // HiveMemberRail.test.tsx, so this suite asserts only the branch it owns:
+    // PotMemberRail.test.tsx, so this suite asserts only the branch it owns:
     // a solo slug lands on the dock, not the all-mode cards.
     syncResult = { data: [project({ slug: 'solo' })], error: null };
     renderWs(<HarnessesWorkspace />, '?slug=solo');

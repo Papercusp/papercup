@@ -1,21 +1,21 @@
 'use client';
 
 /**
- * PublishHiveCard — the picker share-offer's embedded Share-Hive form
+ * PublishPotCard — the picker share-offer's embedded Share-Hive form
  * (comb-hive-native-sharing-2026-06-11 P-004).
  *
  * Was the retired ShareWizard's one-click default-public publish; now the
  * MINIMAL embedded form of the Share-Hive dialog: the same visibility choice
  * (public / invite / private) with consequence copy, title + description,
  * member-repo listing, and the invite artifact — via the shared
- * `ShareHiveForm` core (ShareHiveDialog.tsx). Sharing happens at the HIVE
+ * `SharePotForm` core (SharePotDialog.tsx). Sharing happens at the HIVE
  * level; surfaces that used to launch the ShareWizard embed this card.
  */
 
 import React from 'react';
-import { ShareHiveForm, type ShareHiveFormProps } from './ShareHiveDialog';
+import { SharePotForm, type ShareHiveFormProps } from './SharePotDialog';
 
-export function PublishHiveCard({
+export function PublishPotCard({
   potSlug,
   hiveLabel = 'hive',
   ...seams
@@ -39,7 +39,7 @@ export function PublishHiveCard({
       <div style={{ color: 'var(--fg-dim)', marginBottom: 10 }}>
         Sharing happens at the {hiveLabel} level — choose who can find and join it.
       </div>
-      <ShareHiveForm potSlug={potSlug} hiveLabel={hiveLabel} compact {...seams} />
+      <SharePotForm potSlug={potSlug} hiveLabel={hiveLabel} compact {...seams} />
     </div>
   );
 }

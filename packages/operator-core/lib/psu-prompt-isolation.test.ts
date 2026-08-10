@@ -152,21 +152,49 @@ describe('psu prompt isolation — installer no longer enables OMP native memory
  */
 describe('repo project guide leaks no human-facing interaction rule to self-hosting bees (EI-148)', () => {
   const claudeMd = readFileSync(join(repoRoot, 'CLAUDE.md'), 'utf8');
+  const agentsMd = readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8');
   const engineerPlaybook = readFileSync(
     join(operatorAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
     'utf8',
   );
 
-  it('AGENTS.md is the same content as CLAUDE.md (symlink) — guarding one guards both', () => {
-    expect(readFileSync(join(repoRoot, 'AGENTS.md'), 'utf8')).toBe(claudeMd);
+  /*
+   * Both client guides are checked, not just CLAUDE.md.
+   *
+   * This used to assert `AGENTS.md === CLAUDE.md`, justified as "symlink — guarding
+   * one guards both". That premise is retired by claude-md-projection-from-pg-2026-08-10:
+   * each file is now projected independently from `harness_shared.harness_doc_parts`
+   * for its own client, and each banner names that client, so they are deliberately
+   * NOT byte-identical (measured 2026-08-10: 58,803 vs 58,812 chars). Asserting
+   * equality would pin a symlink the projector explicitly retires.
+   *
+   * The byte-equality was never the property this guard cared about — it was only the
+   * cheap way to get "checking one checks both". So take that coverage directly: every
+   * leak assertion runs over BOTH guides. This is strictly stronger than the old form,
+   * which could only ever have caught a leak in whichever file the symlink pointed at.
+   */
+  const guides = [
+    ['CLAUDE.md', claudeMd],
+    ['AGENTS.md', agentsMd],
+  ] as const;
+
+  it('both client guides exist and are substantial (non-vacuity)', () => {
+    // Without a floor, a projection that emitted an empty or stub file would make every
+    // `not.toMatch` below pass vacuously — a guard measuring nothing while reporting green.
+    for (const [name, text] of guides) {
+      expect(text.length, `${name} is empty or a stub — the leak checks below would be vacuous`)
+        .toBeGreaterThan(10_000);
+    }
   });
 
-  it('CLAUDE.md carries no human-to-the-USER imperative', () => {
-    expect(claudeMd).not.toMatch(/the user's call/i);
-    expect(claudeMd).not.toMatch(/so the user knows/i);
-    expect(claudeMd).not.toMatch(/EVERY deferred item in EVERY status update/);
-    // any directive aiming a status update / deferral at "the user" is a leak
-    expect(claudeMd).not.toMatch(/(status update|deferred item)[^.]*\bto the user\b/i);
+  it('neither client guide carries a human-to-the-USER imperative', () => {
+    for (const [name, text] of guides) {
+      expect(text, name).not.toMatch(/the user's call/i);
+      expect(text, name).not.toMatch(/so the user knows/i);
+      expect(text, name).not.toMatch(/EVERY deferred item in EVERY status update/);
+      // any directive aiming a status update / deferral at "the user" is a leak
+      expect(text, name).not.toMatch(/(status update|deferred item)[^.]*\bto the user\b/i);
+    }
   });
 
   it('the psu engineer playbook still carries those rules (a MOVE, not a delete)', () => {

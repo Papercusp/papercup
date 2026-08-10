@@ -7,7 +7,7 @@
  * substrate live" — so a user who published to 0 peers (the G-001 stranded-publish
  * case) or whose substrate is degraded had no corrective in-app signal (findings-G
  * G-004: a gap, not a lie). This read closes the gap with the signals that are
- * HONEST and available today; the UI (HiveFederationStatus) labels each precisely.
+ * HONEST and available today; the UI (PotFederationStatus) labels each precisely.
  *
  * The composition lives in `build-federation-status.ts` (buildFederationStatus) so
  * this loopback GET AND the `network.federationStatus` sync resolver serve the

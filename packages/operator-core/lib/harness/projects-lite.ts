@@ -32,7 +32,7 @@ export interface ProjectsLiteEntry {
   /**
    * A one-line "brief" for the pot — the first human-meaningful line of its
    * SPEC.md (headings/blank/list markers skipped, capped). Powers the
-   * Description column on the All-Pots Working list (HiveWorkspaceCards). Null
+   * Description column on the All-Pots Working list (PotWorkspaceCards). Null
    * when the pot has no SPEC.md or no usable prose line. This is the
    * "best-available" description: pots carry no first-class description field,
    * and SPEC.md is the one brief nearly every pot has.

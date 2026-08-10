@@ -17,7 +17,7 @@
  * the AdvNowRunning variants (--start/--stop/--waiting) live in that shared
  * sheet; the selector-specific rules below are moved here verbatim and keep
  * their `pc-advshell__*` class names — they are referenced by name from tests
- * and from AdvNowRunning/HivesRunningPill/AgentsRunningPill.
+ * and from AdvNowRunning/PotsRunningPill/AgentsRunningPill.
  */
 
 /* The row itself. `flex:none` — this is fixed chrome above the tab body, never

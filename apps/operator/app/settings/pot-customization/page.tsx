@@ -29,7 +29,7 @@ import { toast } from 'sonner';
 import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
 import { agentRoleLabel } from '../../harness/agent-display';
-import { HivePolicyPanel } from './HivePolicyPanel';
+import { PotPolicyPanel } from './PotPolicyPanel';
 
 interface HiveRow {
   slug: string;
@@ -495,7 +495,7 @@ export default function PotCustomizationPage() {
           </section>
 
           {/* EN-1: the owner-enforcement policy surface (claim-gated, signed + federated). */}
-          <HivePolicyPanel key={`policy:${hive}`} hive={hive} />
+          <PotPolicyPanel key={`policy:${hive}`} hive={hive} />
         </>
       )}
     </div>

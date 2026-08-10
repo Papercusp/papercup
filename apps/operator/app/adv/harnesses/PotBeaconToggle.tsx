@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * HiveBeaconToggle — the pot's live-status-beacon publish consent, as one compact
+ * PotBeaconToggle — the pot's live-status-beacon publish consent, as one compact
  * pot-bar pill.
  *
  * WHY it lives here and not in the Work tab (owner ask 2026-07-27): the Work tab's
@@ -71,7 +71,7 @@ export async function defaultSetBeaconConsent(
   }
 }
 
-export default function HiveBeaconToggle({
+export default function PotBeaconToggle({
   potSlug,
   getBeaconConsent = defaultGetBeaconConsent,
   setBeaconConsent = defaultSetBeaconConsent,

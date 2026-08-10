@@ -3,7 +3,7 @@
 
 import { Tooltip } from '@/app/harness/Tooltip';
 /**
- * ShareHiveDialog / ShareHiveForm — the real share surface for a hive
+ * SharePotDialog / SharePotForm — the real share surface for a hive
  * (comb-hive-native-sharing-2026-06-11 P-004). Replaces the retired
  * default-public one-click publish with an explicit choice:
  *
@@ -14,9 +14,9 @@ import { Tooltip } from '@/app/harness/Tooltip';
  *     stored secret on edit (re-minting would orphan every link already
  *     handed out; mint only when none exists)
  *
- * ShareHiveForm is the embeddable core: PublishHiveCard (the picker's
+ * SharePotForm is the embeddable core: PublishPotCard (the picker's
  * share-offer) embeds it as its minimal form; the hive header strip opens it
- * centered via ShareHiveDialog (a Modal wrapper). Data flows through
+ * centered via SharePotDialog (a Modal wrapper). Data flows through
  * injectable seams for tests:
  *
  *   - fetchShareMeta: GET /api/discovery/pot-meta (prefill + pubkey + repos)
@@ -167,7 +167,7 @@ export interface ShareHiveFormProps {
   setHiveListing?: typeof defaultSetHiveListing;
 }
 
-export function ShareHiveForm({
+export function SharePotForm({
   potSlug,
   hiveLabel = 'hive',
   compact = false,
@@ -406,7 +406,7 @@ export interface ShareHiveDialogProps extends ShareHiveFormProps {
 }
 
 /** The centered Share-Hive surface — the hive header's Share target. */
-export function ShareHiveDialog({ open, onOpenChange, ...form }: ShareHiveDialogProps) {
+export function SharePotDialog({ open, onOpenChange, ...form }: ShareHiveDialogProps) {
   const label = form.hiveLabel ?? 'hive';
   return (
     <Modal
@@ -435,7 +435,7 @@ export function ShareHiveDialog({ open, onOpenChange, ...form }: ShareHiveDialog
       <p style={{ margin: '0 0 14px' }}>
         <HowSharingWorks />
       </p>
-      <ShareHiveForm {...form} />
+      <SharePotForm {...form} />
     </Modal>
   );
 }

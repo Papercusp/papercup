@@ -1040,36 +1040,88 @@ async function loadAttributionRoster(workspaceId: string | null): Promise<Attrib
   }
 }
 
+/**
+ * A ledger `intent` that is really the LOCK HOOK'S OWN NAME, not a declared intent (WI-37668).
+ *
+ * The automatic per-edit file-lock hook acquires with `intent: f'PreToolUse:{tool_name}'`
+ * (~/.papercusp/hooks/cc/pretooluse-locks-acquire.sh), and locks:acquire persists that verbatim
+ * into the edit ledger. It is a lifecycle label, never a description of the work — and since it
+ * is non-empty, `intentToSubject` would happily render it as a commit SUBJECT
+ * ("PreToolUse:Edit (su · su-1bf26)"). Measured 2026-08-10: 3,180 of ~3,260 ledger rows in the
+ * last 24h (97.5%) carry exactly this sentinel, so ungated it would be the subject of nearly
+ * every attributed commit — strictly worse than the single `chore(git-sync): auto-commit`
+ * it replaces, on the fleet-wide commit hot path.
+ *
+ * Treating it as ABSENT (so the agent's declared coord intent wins, else the default subject)
+ * is the same precedent the lock hook already applies to its own blocked-peer message:
+ * `intent = b.get('holder_intent') or b.get('intent')` — declared intent first, generic second.
+ */
+const GENERIC_LOCK_INTENT_RE = /^(?:Pre|Post)ToolUse:/i;
+
+/** True when a roster `intent` is the lock hook's lifecycle label rather than declared work. */
+export function isGenericLockIntent(intent: string | undefined | null): boolean {
+  const line = (intent ?? '').trim();
+  return line.length === 0 || GENERIC_LOCK_INTENT_RE.test(line);
+}
+
+/**
+ * WI-37668: merge the ledger + presence rosters, recovering a real commit SUBJECT for ledger
+ * entries whose `intent` is only the lock hook's sentinel.
+ *
+ * The ledger stays authoritative for WHICH FILES belong to WHICH AGENT (durable — it outlives
+ * the session, which is the whole point of D-002); presence is consulted ONLY to supply the
+ * agent's declared intent when the ledger's is a generic label. An agent with no usable intent
+ * on either side yields `undefined`, which `intentToSubject` renders as
+ * DEFAULT_GIT_SYNC_SUBJECT — today's message, never the sentinel.
+ *
+ * Pure + exported so the subject-recovery rule is guarded directly.
+ */
+export function mergeAttributionRosters(
+  ledger: AttributionRosterEntry[],
+  presence: AttributionRosterEntry[],
+): AttributionRosterEntry[] {
+  const declaredIntentByAgent = new Map<string, string>();
+  for (const p of presence) {
+    const declared = (p.intent ?? '').trim();
+    if (!isGenericLockIntent(declared) && !declaredIntentByAgent.has(p.agent)) {
+      declaredIntentByAgent.set(p.agent, declared);
+    }
+  }
+  const repaired = ledger.map((e) => ({
+    ...e,
+    intent: isGenericLockIntent(e.intent) ? declaredIntentByAgent.get(e.agent) : e.intent?.trim(),
+  }));
+  return [...repaired, ...presence];
+}
+
 /** P-003 (deterministic-commit-workitem-attribution-2026-06-22): the attribution roster,
- *  preferring the DURABLE edit ledger (keyed by repo root) over live presence — so a commit is
+ *  preferring the DURABLE edit ledger (keyed by workspace) over live presence — so a commit is
  *  attributed even after the editing agent's session ended (D-002), and carries the work-item(s)
  *  it was claimed under. Ledger entries come FIRST so attributionMapForRepo's first-wins gives
  *  them priority; presence fills any files the ledger window missed (and supplies agentLabels).
  *  Best-effort throughout: a ledger-read failure degrades to presence, exactly as before. */
 async function loadAttributionRosterMerged(
-  slug: string,
   workspaceId: string | null,
 ): Promise<AttributionRosterEntry[]> {
   let ledger: AttributionRosterEntry[] = [];
   try {
-    const { projectDirForSlug } = await import('../../operator-notes');
-    const repoRoot = await projectDirForSlug(slug);
-    if (repoRoot) {
-      const { readEditAttributionRoster } = await import('../../edit-attribution');
-      ledger = (await readEditAttributionRoster(repoRoot)).map((e) => ({
-        agent: e.agent,
-        intent: e.intent,
-        files: e.files,
-        workItems: e.workItems,
-        planSlug: e.planSlug,
-        sessionId: e.sessionId,
-      }));
-    }
+    // WI-37668: scope the ledger read by WORKSPACE, not by this repo's root. `repo_root` in the
+    // ledger is the lock coordination domain (the repo root of whichever operator process served
+    // locks:acquire), not the repo the edited files live in — keying on it matched zero rows and
+    // made this whole flag inert. See readEditAttributionRoster's doc comment.
+    const { readEditAttributionRoster } = await import('../../edit-attribution');
+    ledger = (await readEditAttributionRoster({ workspaceId })).map((e) => ({
+      agent: e.agent,
+      intent: e.intent,
+      files: e.files,
+      workItems: e.workItems,
+      planSlug: e.planSlug,
+      sessionId: e.sessionId,
+    }));
   } catch {
     /* best-effort: fall through to presence */
   }
-  const presence = await loadAttributionRoster(workspaceId);
-  return [...ledger, ...presence];
+  return mergeAttributionRosters(ledger, await loadAttributionRoster(workspaceId));
 }
 
 /** P-006 (assign-don't-broadcast / F5): recipients for a content-guard escalation — the agents who
@@ -1349,7 +1401,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       config: cfg,
       contentDetectors: contentGuardOn ? undefined : [],
       deletionGuard: deletionGuardOn,
-      loadRoster: attributionOn ? () => loadAttributionRosterMerged(slug, workspaceId) : undefined,
+      loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
       step: runCheckpointedStep,

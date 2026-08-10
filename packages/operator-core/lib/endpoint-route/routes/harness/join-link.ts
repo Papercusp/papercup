@@ -370,7 +370,7 @@ export async function handleJoinLink(
           // on the wrong potId (its `discovered.set(h.potId, h)` keys on this
           // literal string) — the later real beacon then lands as a SEPARATE,
           // duplicate entry instead of merging, visible in the federation UI
-          // panels (HiveFederationStatus / WorkbenchHiveDirectoryPanel, both
+          // panels (PotFederationStatus / WorkbenchPotDirectoryPanel, both
           // keyed/displayed by `h.potId`). Doesn't affect bootstrap-admit
           // itself (loadHiveOwnerDeviceBindings matches on hivePubkey only).
           potId: `${link.repoName}-pot`,

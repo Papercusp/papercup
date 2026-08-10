@@ -31,7 +31,7 @@
     "apps/operator/app/adv/harnesses/AdvGitGraphPanel.test.tsx": 1,
     "apps/operator/app/adv/harnesses/AdvGitPanel.test.tsx": 6,
     "apps/operator/app/adv/harnesses/AdvPrsPanel.test.tsx": 1,
-    "apps/operator/app/adv/harnesses/HiveMemberRail.test.tsx": 1,
+    "apps/operator/app/adv/harnesses/PotMemberRail.test.tsx": 1,
     "apps/operator/app/adv/harnesses/WorkItemsPanel.test.tsx": 1,
     "apps/operator/app/adv/sessions/__tests__/AgentDossier.test.tsx": 14,
     "apps/operator/app/coord/presence-ui.tsx": 1,

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// LocalHivesControl render + control coverage (hive-control-surface). Mounts the
+// LocalPotsControl render + control coverage (hive-control-surface). Mounts the
 // central local-hive start/stop list against a mocked hive.controlState query +
 // a stubbed run-tool dispatch (the pinned AdvNowRunning sibling pattern). Asserts:
 // a row per hive with state shown via the Start/Stop toggle label, the running
@@ -39,7 +39,7 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => hiveResult }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import { toast } from 'sonner';
-import LocalHivesControl from './LocalHivesControl';
+import LocalPotsControl from './LocalPotsControl';
 
 const toastMock = vi.mocked(toast);
 
@@ -82,9 +82,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('LocalHivesControl', () => {
+describe('LocalPotsControl', () => {
   it('renders a row per hive with its state + the running tally', () => {
-    render(<LocalHivesControl />);
+    render(<LocalPotsControl />);
     expect(screen.getByTestId('confirm-dialog')).toBeTruthy();
     expect(screen.getByText('local pot · 1/2 running')).toBeTruthy();
     expect(screen.getByTestId('local-hive-papercup-hive')).toBeTruthy();
@@ -96,12 +96,12 @@ describe('LocalHivesControl', () => {
 
   it('honest empty state when no local hives are registered', () => {
     hiveResult = { data: [], loading: false, error: null };
-    render(<LocalHivesControl />);
+    render(<LocalPotsControl />);
     expect(screen.getByText(/no local pot registered/)).toBeTruthy();
   });
 
   it('Start on a stopped hive fires pot:start (no drainCups)', async () => {
-    render(<LocalHivesControl />);
+    render(<LocalPotsControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-sb-devboard-hive'));
     await waitFor(() =>
       expect(runToolCalls).toEqual([
@@ -114,7 +114,7 @@ describe('LocalHivesControl', () => {
   });
 
   it('Stop on a started hive confirms with the shared dialog, then fires pot:pause{drainCups}', async () => {
-    render(<LocalHivesControl />);
+    render(<LocalPotsControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-papercup-hive'));
     await waitFor(() =>
       expect(H.confirm).toHaveBeenCalledWith(expect.objectContaining({
@@ -135,7 +135,7 @@ describe('LocalHivesControl', () => {
 
   it('a declined confirm aborts the pause', () => {
     H.confirmResult = false;
-    render(<LocalHivesControl />);
+    render(<LocalPotsControl />);
     fireEvent.click(screen.getByTestId('local-hive-toggle-papercup-hive'));
     expect(H.confirm).toHaveBeenCalled();
     expect(runToolCalls).toEqual([]);

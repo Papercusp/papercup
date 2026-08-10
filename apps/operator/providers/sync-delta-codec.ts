@@ -24,7 +24,7 @@ import type { SyncDeltaCodec, SyncDeltaSlot, SyncDeltaMeta } from '@papercusp/sy
  * HAPPENED — the server gained `plans.byHive` (WI-7083) and `codeRecipes` (2026-08-02) while
  * this set sat unchanged from 2026-06-23, so neither delta could ever be negotiated: the client
  * gates first (`query-fetcher.ts:468` — no `enabled(name)` ⇒ no cursor ⇒ the server serves full).
- * Both had live subscribers the whole time (`HiveContentPanel.tsx:88`, `RecipesClient.tsx:100`).
+ * Both had live subscribers the whole time (`PotContentPanel.tsx:88`, `RecipesClient.tsx:100`).
  * `sync-delta-codec.test.ts` asserts this set against the server's exported
  * `RESOURCE_DELTA_NAMES`, so adding one there without adding it here now fails a test.
  */

@@ -1,5 +1,5 @@
 /**
- * HiveSteeringTree — the nested hive→plan steering picker
+ * PotSteeringTree — the nested hive→plan steering picker
  * (steering-nested-hive-plan-tree-2026-06-17, P-002).
  *
  * The owner's two steering axes — Eligible HIVES (the placement scope) and
@@ -153,7 +153,7 @@ function HiveNode({
   );
 }
 
-export default function HiveSteeringTree({
+export default function PotSteeringTree({
   tree,
   illegalCount,
   busy,

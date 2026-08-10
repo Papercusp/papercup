@@ -1,5 +1,5 @@
 /**
- * HiveFederationStatus — Brief M / G-004: the desktop's first LIVE federation
+ * PotFederationStatus — Brief M / G-004: the desktop's first LIVE federation
  * status surface, mounted in the always-visible left-sidebar Hives tab.
  *
  * Before this the desktop had member counts + a declared-visibility badge but NO
@@ -76,7 +76,7 @@ export function reachLabel(h: Pick<FedHive, 'visibility' | 'reachablePeers'>): s
     return `discoverable to ${h.reachablePeers} peer${h.reachablePeers === 1 ? '' : 's'}`;
   }
   // Announced (public/invite) but nobody on the topic — the honest stranded state
-  // (mirrors ShareHiveForm's 0-peer copy). NEVER "synced" / "0 peers connected".
+  // (mirrors SharePotForm's 0-peer copy). NEVER "synced" / "0 peers connected".
   return 'no peers connected yet — broadcasting into the void';
 }
 
@@ -169,7 +169,7 @@ export interface HiveFederationStatusProps {
   collapsible?: boolean;
 }
 
-export default function HiveFederationStatus({ collapsible = false }: HiveFederationStatusProps = {}) {
+export default function PotFederationStatus({ collapsible = false }: HiveFederationStatusProps = {}) {
   const t = useLexicon();
   // P-009 (data-sync-push-completion): push-driven federation status. The
   // `network.federationStatus` resolver serves the SAME { ok, substrate, hives }

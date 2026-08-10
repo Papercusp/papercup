@@ -2,7 +2,7 @@
 /**
  * PotsTab render coverage (left-sidebar-tauri-2026-06-07) — the p2p swarm
  * roster. The pure `groupHives` reducer has its own unit test (group-hives.test);
- * this pins the COMPONENT branches: the POT_CONTROL-gated LocalHivesControl, the
+ * this pins the COMPONENT branches: the POT_CONTROL-gated LocalPotsControl, the
  * joined/live count line, the error + honest-empty states, and the per-device row
  * (live vs stale dot, stale pill, gh-users + harness suffixes). The `sidebar.hives`
  * sync query and the flag client are mocked; the child control is stubbed.
@@ -21,14 +21,14 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.result }));
 // test from the flag hook; classic pack renders 'Pots'/'Pot' at runtime
 // (restore-pot-lexicon P-005).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
-vi.mock('./LocalHivesControl', () => ({
+vi.mock('./LocalPotsControl', () => ({
   default: () => <div data-testid="local-hives-control" />,
 }));
-// HiveFederationStatus is mounted inside PotsTab but is its OWN surface with its
+// PotFederationStatus is mounted inside PotsTab but is its OWN surface with its
 // own test + its own `network.federationStatus` sync query. Stub it so this test's
 // queryName-agnostic useSyncQuery mock doesn't feed it PotsTab's hive rows (which
-// it would mis-read as a FedStatus and crash on). Mirrors the LocalHivesControl stub.
-vi.mock('./HiveFederationStatus', () => ({
+// it would mis-read as a FedStatus and crash on). Mirrors the LocalPotsControl stub.
+vi.mock('./PotFederationStatus', () => ({
   default: () => <div data-testid="hive-federation-status" />,
 }));
 
@@ -64,7 +64,7 @@ describe('<PotsTab>', () => {
     expect(screen.queryByTestId('local-hives-control')).toBeNull();
   });
 
-  it('mounts LocalHivesControl only when the POT_CONTROL flag is on', () => {
+  it('mounts LocalPotsControl only when the POT_CONTROL flag is on', () => {
     H.flagOn = true;
     render(<PotsTab active={true} />);
     expect(screen.getByTestId('local-hives-control')).toBeTruthy();

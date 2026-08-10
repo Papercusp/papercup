@@ -10,8 +10,8 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { useLexicon } from '@/lib/useLexicon';
-import LocalHivesControl from './LocalHivesControl';
-import HiveFederationStatus from './HiveFederationStatus';
+import LocalPotsControl from './LocalPotsControl';
+import PotFederationStatus from './PotFederationStatus';
 
 interface FederatedRow {
   ownerId: string;
@@ -93,10 +93,10 @@ export default function PotsTab({ active }: { active: boolean }) {
           are settings you visit, while the p2p roster below is the thing you scan.
           Each keeps a live summary in its collapsed header, so nothing that needs
           attention is hidden by closing them. */}
-      {hiveControlOn && <LocalHivesControl collapsible />}
+      {hiveControlOn && <LocalPotsControl collapsible />}
       {/* G-004 (Brief M): the live federation status surface — my published hives'
           peer reach + install substrate health. Polls only while the tab is open. */}
-      {active && <HiveFederationStatus collapsible />}
+      {active && <PotFederationStatus collapsible />}
       <div className="pclsb-panel__bar">
         <span className="pclsb-panel__bar-label">
           p2p {t('pot', { plural: true, lower: true })} · {groups.length} joined · {live} live

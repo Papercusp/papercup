@@ -141,7 +141,7 @@ describe('design tokens — black theme variant ([data-theme="black"])', () => {
 
 // The legacy `[data-theme="hive"]` alias (hive.semantic.tokens.json →
 // _semantic.hive.css) was deleted in design-simplification-2026-07-09 P-011:
-// nothing selected it (HiveThemeBridge applies data-theme="honeycomb", and
+// nothing selected it (PotThemeBridge applies data-theme="honeycomb", and
 // isValidThemeId('hive') is false). The Swarm skin ships as Honeycomb, below.
 
 describe('design tokens — Honeycomb theme variant ([data-theme="honeycomb"])', () => {

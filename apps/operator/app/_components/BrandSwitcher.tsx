@@ -6,10 +6,10 @@
  * hand-rolled, portaled menu) that flips the entire brand bundle in one switch:
  * the lexicon (`useLexicon` → "Pot/Cupboard" vs "Hive/Comb"), the wordmark
  * (`OperatorWordmarkLockup`), the page title + favicon + forced theme
- * (`HiveThemeBridge`) — all of which key off the single `THE_HIVE` flag. So this
+ * (`PotThemeBridge`) — all of which key off the single `THE_HIVE` flag. So this
  * control just toggles that flag (POST /api/flags/set, the same write the
  * /admin/features page uses). It flips the flag in the client store
- * OPTIMISTICALLY so the reactive `useFlag` (lexicon + wordmark + HiveThemeBridge)
+ * OPTIMISTICALLY so the reactive `useFlag` (lexicon + wordmark + PotThemeBridge)
  * re-renders INSTANTLY, then the server write + SSE `flag_changed` reconcile it
  * (rolling back the local flip on failure). Without the optimistic apply the
  * switch waited on the whole POST → flag-bus → SSE → bootstrap-refetch round-trip
@@ -18,7 +18,7 @@
  *
  * NOTE — branding is a WORKSPACE-GLOBAL flag (unlike the per-user color theme), so
  * switching here changes the brand for the whole install. And turning Hive ON forces
- * the `honeycomb` theme (HiveThemeBridge), so the theme picker is inert in Hive mode.
+ * the `honeycomb` theme (PotThemeBridge), so the theme picker is inert in Hive mode.
  *
  * Open-state lives in the URL (`?brandSwitch=`) per the repo nuqs rule, so the
  * dropdown is agent-driveable and survives reloads.
@@ -57,7 +57,7 @@ export default function BrandSwitcher() {
     setBusy(true);
     const enabled = id === 'the-hive';
     // Optimistic flip: push the new flag value into the client store NOW so every
-    // `useFlag(THE_HIVE)` consumer (lexicon, wordmark, HiveThemeBridge) re-renders
+    // `useFlag(THE_HIVE)` consumer (lexicon, wordmark, PotThemeBridge) re-renders
     // immediately, instead of waiting on POST → flag-bus → SSE → bootstrap-refetch.
     // Snapshot the prior payload so a failed write can roll the local flip back.
     const prev = getFlagSnapshot();

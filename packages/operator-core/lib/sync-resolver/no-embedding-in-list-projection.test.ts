@@ -6,7 +6,7 @@
 // column to the browser, including the search-index internals no component
 // renders. Measured on `featuresConsolidated.byHive`: 14,688 rows × a 384-dim
 // `embedding` vector = **6.1MB** (+ 0.95MB `_search`) parsed into the webview on
-// every HiveContentPanel load. An embedding vector and a tsvector are, by
+// every PotContentPanel load. An embedding vector and a tsvector are, by
 // construction, never display data.
 //
 // This is a RECURRING regression, which is why it needs a guard: WI-5412 added

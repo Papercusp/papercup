@@ -26,7 +26,7 @@ const registerWorkbenchVoicePanel = vi.fn();
 const registerWorkbenchHiveDirectoryPanel = vi.fn();
 vi.mock('@/app/harness/dock/workbench-panels', () => ({ registerWorkbenchPanels: () => registerWorkbenchPanels() }));
 vi.mock('../components/workbench/WorkbenchVoicePanel', () => ({ registerWorkbenchVoicePanel: () => registerWorkbenchVoicePanel() }));
-vi.mock('../components/workbench/WorkbenchHiveDirectoryPanel', () => ({ registerWorkbenchHiveDirectoryPanel: () => registerWorkbenchHiveDirectoryPanel() }));
+vi.mock('../components/workbench/WorkbenchPotDirectoryPanel', () => ({ registerWorkbenchHiveDirectoryPanel: () => registerWorkbenchHiveDirectoryPanel() }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 vi.mock('@/app/harness/Select', () => ({
   Select: ({ value, onChange, options, testId }: {

@@ -46,6 +46,25 @@ export interface QueenNotifyPorts {
   resolveQueenOwner: () => Promise<string | null>;
   /** Deliver one coord message Scout→Queen (sendMessage as `scout:<hive>`). */
   send: (msg: QueenNotifyMessage) => Promise<void>;
+  /**
+   * WI-37625 — resolve the DURABLE co-address that used to be a hardcoded `@role:mug`.
+   *
+   * Both pings below address a concrete owner PLUS a durable slot, because the Queen is
+   * fresh-per-wake and the concrete id is usually already dead (WI-963). That reasoning
+   * still holds; what changed is that `@role:mug` is drained by exactly one consumer
+   * (`pot/mug-brief-launch.ts`, at Mug spawn), so with the spawn gate closed (D-018) the
+   * durable half addressed a slot with no reader — and for `notifyQueenDraftRouted` with
+   * no resolvable owner it was the ONLY address, so the notice vanished entirely.
+   *
+   * This is a PORT rather than a direct `deliverScoutNudge` call because this module is
+   * deliberately I/O-free DI, and the ladder is workspace-scoped — the runner
+   * (`register-scout-action.ts`) is where `workspaceId` actually lives.
+   *
+   * REQUIRED, not optional-with-a-default: a default would silently fall back to the dead
+   * slot the moment a caller forgot to inject it, which is precisely the bug being fixed.
+   * Returns the selectors to co-address (possibly empty).
+   */
+  resolveDurableCoAddress: () => Promise<string[]>;
 }
 
 export interface DraftRoutedNotice {
@@ -96,7 +115,18 @@ export async function notifyQueenDraftRouted(
   } catch {
     owner = null;
   }
-  const to = owner ? [owner, '@role:mug'] : ['@role:mug'];
+  // WI-37625: the durable half is RESOLVED now, not a hardcoded `@role:mug`.
+  let durable: string[] = [];
+  try {
+    durable = await ports.resolveDurableCoAddress();
+  } catch {
+    durable = [];
+  }
+  // With no concrete owner AND no resolvable durable address this notice would have no
+  // recipient at all — the failure mode that made the old hardcoded slot dangerous. Fall
+  // back to the owner rather than sending into the void.
+  const to = [...(owner ? [owner] : []), ...durable];
+  if (to.length === 0) to.push('human');
   try {
     await ports.send({
       to,
@@ -125,7 +155,7 @@ export async function notifyQueenDraftRouted(
  * actually delivered.
  */
 export async function notifyQueenRevised(
-  ports: Pick<QueenNotifyPorts, 'send'>,
+  ports: Pick<QueenNotifyPorts, 'send' | 'resolveDurableCoAddress'>,
   outcomes: readonly RevisionOutcome[],
 ): Promise<{ delivered: number }> {
   let delivered = 0;
@@ -138,7 +168,17 @@ export async function notifyQueenRevised(
       // ended (fresh-per-wake) — also address the durable `@role:mug` slot so
       // the ping-back reliably reaches her next wake even when the concrete
       // owner is already dead.
-      await ports.send({ to: [o.fromOwnerId, '@role:mug'], planSlug: o.planSlug, summary, body });
+      // WI-37625: durable half resolved, not a hardcoded `@role:mug`. Unlike the
+      // draft-routed ping there is always a concrete `fromOwnerId` here (the loop
+      // `continue`s without one), so an empty resolution is safe — it degrades to the
+      // threaded owner alone rather than to nobody.
+      let durable: string[] = [];
+      try {
+        durable = await ports.resolveDurableCoAddress();
+      } catch {
+        durable = [];
+      }
+      await ports.send({ to: [o.fromOwnerId, ...durable], planSlug: o.planSlug, summary, body });
       delivered += 1;
     } catch {
       /* best-effort per item */

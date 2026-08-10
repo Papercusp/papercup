@@ -34,7 +34,7 @@ import RouteTransitionProvider from '@/app/_components/RouteTransitionProvider';
 import ExternalLinkProvider from '@/app/_components/ExternalLinkProvider';
 import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
-import { HiveThemeBridge } from '@/app/_components/HiveThemeBridge';
+import { PotThemeBridge } from '@/app/_components/PotThemeBridge';
 import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier';
 import DesktopConsoleLaunchBridge from '@/app/_components/DesktopConsoleLaunchBridge';
 import FlagStreamSubscriber from '@/app/_components/FlagStreamSubscriber';
@@ -269,7 +269,7 @@ function RootComponent() {
                 <WslOnboardingGate>
                   <OperatorConversationProvider>
                     <PostHogProvider>
-                      <HiveThemeBridge />
+                      <PotThemeBridge />
                       {/* Global chrome — header/navbar, left operator-chat
                           sidebar, Oracle dock. Renders before <main>,
                           mirroring the Next operator's layout.tsx.

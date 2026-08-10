@@ -1,8 +1,8 @@
 /**
  * Shared hive start/stop control (start-hive-wake-orchestration P-006).
  *
- * Extracted from AdvNowRunning so the central Hives-tab control (LocalHivesControl)
- * and the always-visible header "N hives running" pill (HivesRunningPill) drive the
+ * Extracted from AdvNowRunning so the central Hives-tab control (LocalPotsControl)
+ * and the always-visible header "N hives running" pill (PotsRunningPill) drive the
  * SAME gated/audited dispatch and read the same `hive.controlState` sync query —
  * one write path, no drift. `pot:start` / `pot:pause` flip the persisted started
  * bit and fire `notifySyncInvalidate('hive.controlState')`, so every consumer

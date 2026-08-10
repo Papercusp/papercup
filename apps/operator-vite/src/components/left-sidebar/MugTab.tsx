@@ -50,7 +50,7 @@ import MugHeartbeat from './MugHeartbeat';
 import ModelTiersOverride from './ModelTiersOverride';
 import ThrottleSection, { throttleActiveCount, type IdleKind, type IdleToggles, type ThrottleDefaults } from './ThrottleSection';
 import AutonomySurfacing, { type DecompMode } from './AutonomySurfacing';
-import HiveSteeringTree from './HiveSteeringTree';
+import PotSteeringTree from './PotSteeringTree';
 import {
   buildSteeringTree,
   detectIllegalEligiblePlans,
@@ -732,7 +732,7 @@ export default function MugTab({ active }: { active: boolean }) {
       </section>
 
       {steeringTreeOn ? (
-        <HiveSteeringTree
+        <PotSteeringTree
           tree={steeringTree}
           illegalCount={illegalCount}
           busy={controlsBusy}

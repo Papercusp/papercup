@@ -7,7 +7,7 @@ import { FLAGS, type FlagPayload, resolveWithDefaults } from '@papercusp/flags';
 import { setFlagPayload } from '@papercusp/flags/client';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 
-import { HiveThemeBridge } from '../HiveThemeBridge';
+import { PotThemeBridge } from '../PotThemeBridge';
 import { THEME_STORAGE_KEY } from '@/lib/theme';
 
 function setHive(on: boolean): void {
@@ -42,10 +42,10 @@ afterEach(() => {
   setHive(false);
 });
 
-describe('HiveThemeBridge', () => {
+describe('PotThemeBridge', () => {
   it('forces the Hive theme title and favicon while the-hive is enabled', () => {
     setHive(true);
-    render(<HiveThemeBridge />);
+    render(<PotThemeBridge />);
 
     expect(document.documentElement.dataset.theme).toBe('honeycomb');
     expect(document.title).toBe('The Swarm');
@@ -56,7 +56,7 @@ describe('HiveThemeBridge', () => {
   it('restores the saved classic theme when the flag turns off', () => {
     window.localStorage.setItem(wsLocalKey(THEME_STORAGE_KEY), 'black');
     setHive(true);
-    render(<HiveThemeBridge />);
+    render(<PotThemeBridge />);
     expect(document.documentElement.dataset.theme).toBe('honeycomb');
 
     setHive(false);

@@ -158,24 +158,55 @@ export async function checkAndFireErrorStreakAlarm(opts: {
       `scout_ticks has per-cycle detail. Signal is NOT lost — the accumulator watermark only ` +
       `advances on a successful cycle — but nothing routes until a cycle lands.`;
 
-    // The durable half (fireGradingNudge's reliable leg): an @role:mug park the
-    // Mug brief drains on its next wake, whatever owner id it boots under.
-    const [{ sendMessage }, { runWithWorkspace }] = await Promise.all([
-      import('../agent-tools/coordination/messages'),
-      import('../workspace-als'),
-    ]);
-    await runWithWorkspace(ws, () =>
-      sendMessage(
-        {
-          ownerId: 'scout-error-streak-alarm',
-          ownerLabel: 'scout-error-streak-alarm',
-          source: 'static-client',
-          workspaceId: ws,
-          userId: null,
-        },
-        { to: ['@role:mug'], summary, body: summary },
-      ),
-    );
+    // WI-37625: this used to be a bare `@role:mug` park. That slot is drained by exactly
+    // one consumer (pot/mug-brief-launch.ts, which runs at Mug spawn), so with the spawn
+    // gate closed (D-018) it had NO reader — and this is a PAGER, so it went silent
+    // precisely when Scout was down. Route through the SHARED nudge-recipient ladder
+    // instead (reuse, never a second ladder): live su → direct, nobody live → the owner,
+    // and the legacy park is preserved when the tier is switched back on for testing.
+    const { deliverScoutNudge } = await import('./nudge-recipient');
+    const { resolveMugOwner } = await import('../pot/placement-watchdog');
+    const mugOwner = await resolveMugOwner(sql, ws, slug).catch(() => null);
+    const recipient = await deliverScoutNudge({
+      workspaceId: ws,
+      mugOwner,
+      summary,
+      source: 'scout-error-streak-alarm',
+      body: summary,
+      harnessSlug: opts.installSlug ?? null,
+      payload: { kind: 'scout-error-streak', threshold, errors },
+    });
+
+    // The ladder picks WHO; urgency picks HOW LOUD (D-038). For the three watchdogs an
+    // `unresolved` verdict is correctly a quiet best-effort — a presence hiccup is not
+    // evidence that nobody is home, and paging the owner on one would cry wolf. A PAGER
+    // inverts that trade: the whole point of this alarm is that ideation is ALREADY down,
+    // so failing to determine a recipient must not also silence it. Escalate explicitly.
+    if (recipient.kind === 'unresolved') {
+      const [{ sendMessage }, { runWithWorkspace }] = await Promise.all([
+        import('../agent-tools/coordination/messages'),
+        import('../workspace-als'),
+      ]);
+      await runWithWorkspace(ws, () =>
+        sendMessage(
+          {
+            ownerId: 'scout-error-streak-alarm',
+            ownerLabel: 'scout-error-streak-alarm',
+            source: 'static-client',
+            workspaceId: ws,
+            userId: null,
+          },
+          {
+            to: ['human'],
+            summary,
+            body:
+              `${summary}\n\n— The Scout nudge ladder could not determine a recipient ` +
+              `(${recipient.why}). Escalated to you directly because this is a PAGER: ` +
+              `staying quiet on an undetermined recipient is exactly the failure it exists to prevent.`,
+          },
+        ),
+      );
+    }
   } catch (e) {
     console.warn(
       `[scout-error-streak] alarm failed (tick recording unaffected): ${e instanceof Error ? e.message : e}`,

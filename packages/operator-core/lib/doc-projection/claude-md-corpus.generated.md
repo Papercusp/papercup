@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 288
-  corpus-blocks: 253
+  corpus-parts: 284
+  corpus-blocks: 250
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 

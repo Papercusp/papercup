@@ -7,10 +7,10 @@ import { Check, Plus, Share2 } from 'lucide-react';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
-import { defaultFetchShareMeta, type HiveShareVisibility } from '@/app/harness/ShareHiveDialog';
+import { defaultFetchShareMeta, type HiveShareVisibility } from '@/app/harness/SharePotDialog';
 import HarnessWorkspacesButton from '@/app/adv/harnesses/HarnessWorkspacesButton';
 import RegisterSubsButton from '@/app/adv/harnesses/RegisterSubsButton';
-import HiveBeaconToggle from '@/app/adv/harnesses/HiveBeaconToggle';
+import PotBeaconToggle from '@/app/adv/harnesses/PotBeaconToggle';
 import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import { useLexicon } from '@/lib/useLexicon';
 import AdvNowRunning from './AdvNowRunning';
@@ -228,7 +228,7 @@ export default function AdvPotBar({ withStatus = false }: { withStatus?: boolean
             work-level, so they belong on this row and therefore on every tab in
             POT_BAR_TAB_IDS. They need a single concrete pot, so all three are
             hidden in all-mode; the beacon additionally needs a formal Pot home. */}
-        {!allMode && activeSlug && activeIsHive && <HiveBeaconToggle potSlug={activeSlug} />}
+        {!allMode && activeSlug && activeIsHive && <PotBeaconToggle potSlug={activeSlug} />}
         {!allMode && activeSlug && <HarnessWorkspacesButton slug={activeSlug} />}
         {!allMode && activeSlug && <RegisterSubsButton slug={activeSlug} />}
       </div>

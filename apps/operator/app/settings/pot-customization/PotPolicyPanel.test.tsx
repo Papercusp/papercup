@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * HivePolicyPanel.test.tsx — the owner-only Hive policy form. Covers the
+ * PotPolicyPanel.test.tsx — the owner-only Hive policy form. Covers the
  * collapsed/open toggle (?hivePolicy), the claim-authority gate (checking /
  * read-only non-claimant / editable claimant), the policy load (+ load-error
  * toast), and save: the built policy preserves unknown/forward-compat keys and
@@ -33,7 +33,7 @@ vi.mock('../../adv/harnesses/useHarnessClaimStatus', () => ({ useHarnessClaimSta
 // routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-import { HivePolicyPanel } from './HivePolicyPanel';
+import { PotPolicyPanel } from './PotPolicyPanel';
 
 type GetMode = 'ok' | 'fail' | 'pending';
 let getMode: GetMode;
@@ -60,7 +60,7 @@ const LOADED = {
 const CLAIMANT = { data: { viewer_is_claimant: true, status: 'claimed' } };
 
 function renderPanel(searchParams = '') {
-  return render(<NuqsTestingAdapter searchParams={searchParams}><HivePolicyPanel hive="myhive" /></NuqsTestingAdapter>);
+  return render(<NuqsTestingAdapter searchParams={searchParams}><PotPolicyPanel hive="myhive" /></NuqsTestingAdapter>);
 }
 
 beforeEach(() => {
@@ -72,7 +72,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-describe('HivePolicyPanel', () => {
+describe('PotPolicyPanel', () => {
   it('starts collapsed — header + Show, no form', () => {
     renderPanel();
     expect(screen.getByRole('button', { name: 'Show' })).toBeTruthy();

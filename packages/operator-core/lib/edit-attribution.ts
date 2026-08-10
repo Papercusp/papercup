@@ -111,23 +111,42 @@ interface LedgerRow {
  * Build git-sync's attribution roster for a repo from the edit ledger (P-003) — the
  * DURABLE source (D-002), so a commit is attributed even after the editing agent's session
  * ended (which live-presence derivation misses). Each file is attributed to its MOST-RECENT
- * editor within `lookbackHours` (DISTINCT ON (file) ORDER BY ts DESC — index-backed on
- * (repo_root, file, ts DESC)); rows are then grouped by agent. Best-effort: returns [] on
- * any error so the caller falls back to presence. `repoRoot` is the lock coordination
- * domain (the physical repo root the ledger keys on).
+ * editor within `lookbackHours` (DISTINCT ON (file) ORDER BY ts DESC); rows are then grouped
+ * by agent. Best-effort: returns [] on any error so the caller falls back to presence.
+ *
+ * ⚠ SCOPED BY workspace_id, NOT repo_root (WI-37668) — do NOT "restore" a repo_root filter.
+ * The ledger's `repo_root` column is written from the LOCK COORDINATION DOMAIN
+ * (locks/identity.ts readIdentity → lockCoordinationDomain()), which resolves to the repo root
+ * of whichever OPERATOR PROCESS served the locks:acquire call — NOT the repo the edited files
+ * live in. This box serves locks from the release checkout while agents edit the staging tree,
+ * so rows land under `…/papercup-release` while git-sync syncs `…/papercusp`. The old
+ * `WHERE repo_root = <git-sync's root>` therefore matched ZERO rows and made derived
+ * attribution silently inert: measured 2026-08-10, 3,379 rows/24h under the serving root vs 0
+ * under the sync root (last row under the sync root: 2026-07-17). Fixing this writer-side is
+ * not available — locks:acquire receives already-repo-relative paths and carries no
+ * harness/project context, so it cannot know the file's true repo root.
+ *
+ * DISCRIMINATION is workspace scoping PLUS the caller's dirty-file intersection: git-sync
+ * partitions the DIRTY set (git-sync-attribution.buildAttributionGroups), so a roster entry for
+ * a file that is not dirty in this repo never matches. Residual risk: two repos in ONE workspace
+ * sharing a repo-relative path, both dirty, both edited inside the window, could cross-attribute
+ * a trailer. Tighten by also scoping on harness_slug once that column is reliably populated — it
+ * is NULL on ~99.6% of rows today because it is joined from the agent's active work-item claim.
  */
-export async function readEditAttributionRoster(
-  repoRoot: string,
-  lookbackHours = 24,
-): Promise<LedgerRosterEntry[]> {
+export async function readEditAttributionRoster(opts: {
+  /** The syncing repo's workspace — the join key. Absent ⇒ [] (unscopable, never read globally). */
+  workspaceId: string | null | undefined;
+  lookbackHours?: number;
+}): Promise<LedgerRosterEntry[]> {
   try {
-    if (!repoRoot) return [];
+    const { workspaceId, lookbackHours = 24 } = opts;
+    if (!workspaceId) return [];
     const { sql } = getOrgPg();
     const rows = await sql<LedgerRow[]>`
       SELECT DISTINCT ON (file)
              agent_id, file, work_item_id, plan_slug, intent, session_id, contributor
         FROM harness_shared.edit_attribution_ledger
-       WHERE repo_root = ${repoRoot}
+       WHERE workspace_id = ${workspaceId}
          AND ts >= now() - make_interval(hours => ${lookbackHours})
        ORDER BY file, ts DESC
     `;

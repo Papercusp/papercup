@@ -142,8 +142,8 @@ const HOMONYMS = new Map([
 const NAME_EXCLUSIONS = new Map([
   ['RED_QUEEN', 'the red-queen learning-loop blueprint (Scout/learning family) — STAYS per D-001'],
   ['AnimatedPapercuspCup', 'the brand coffee-cup animation — not the Cup agent tier'],
-  ['HiveThemeBridge', 'visual theming for the pot concept — displays no mug/kettle work'],
-  ['HiveVisualIdentity', 'visual theming for the pot concept — displays no mug/kettle work'],
+  ['PotThemeBridge', 'visual theming for the pot concept — displays no mug/kettle work'],
+  ['PotVisualIdentity', 'visual theming for the pot concept — displays no mug/kettle work'],
 ]);
 
 /**
@@ -541,7 +541,7 @@ const D7_TAB_RE = /["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/g;
  * (`PlanRail`, `AdvNowRunning`, `hive-control`) — a token scan alone would miss them,
  * which is the false-negative direction.
  */
-const NAMED_CONTROL_SURFACES = /(PotHealthPane|PlanRail|LocalHivesControl|MugTab|KettleTab|AdvNowRunning|hive-control)/;
+const NAMED_CONTROL_SURFACES = /(PotHealthPane|PlanRail|LocalPotsControl|MugTab|KettleTab|AdvNowRunning|hive-control)/;
 
 for (const abs of allFiles) {
   const r = rel(abs);

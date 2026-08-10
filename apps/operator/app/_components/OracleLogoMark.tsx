@@ -6,7 +6,7 @@ import {
   type ComponentPropsWithoutRef,
 } from 'react';
 import { useLexiconPackId } from '@/lib/useLexicon';
-import { HiveQueenMark } from './HiveVisualIdentity';
+import { HiveQueenMark } from './PotVisualIdentity';
 
 type Props = ComponentPropsWithoutRef<'svg'> & {
   decorative?: boolean;

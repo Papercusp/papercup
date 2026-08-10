@@ -15,7 +15,7 @@
  * "does NOT request the live scan" case is inverted rather than deleted so the
  * reversal is legible to whoever reads this next.
  *
- * Mocks mirror HivesRunningPill.test — the sync query, nuqs and the lazy panel are
+ * Mocks mirror PotsRunningPill.test — the sync query, nuqs and the lazy panel are
  * stubbed so this isolates the pill's own guards. TooltipProvider is required
  * because the shared <Popover> composes a Radix Tooltip (see that file's note; a
  * missing provider is a green-checkpoint deploy blocker, not a test-only detail).

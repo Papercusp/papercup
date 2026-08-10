@@ -4,12 +4,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // mock both seams plus the raw SQL handle so the INSERT's actual bound values are
 // inspectable without a real Postgres connection.
 const insertCalls: unknown[][] = [];
+// WI-37668: readEditAttributionRoster's tests need the tagged-template to RETURN rows (and to be
+// able to fail), so the stub reads from a mutable holder. Defaults keep every pre-existing
+// recordEditAttribution test byte-identical (they only inspect insertCalls, never the result).
+const sqlStub: { rows: unknown[]; throws: boolean } = { rows: [], throws: false };
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({
     sql: Object.assign(
       (_strings: TemplateStringsArray, ...values: unknown[]) => {
         insertCalls.push(values);
-        return Promise.resolve([]);
+        if (sqlStub.throws) return Promise.reject(new Error('pg unreachable'));
+        return Promise.resolve(sqlStub.rows);
       },
       { unsafe: () => Promise.resolve([]) },
     ),
@@ -26,7 +31,82 @@ vi.mock('./agent-tools/coordination/presence', () => ({
   getPresence: async () => mockPresence,
 }));
 
-import { parsePapercuspTrailers, recordEditAttribution } from './edit-attribution';
+import { parsePapercuspTrailers, readEditAttributionRoster, recordEditAttribution } from './edit-attribution';
+
+describe('readEditAttributionRoster — workspace-scoped, never repo_root-scoped (WI-37668)', () => {
+  beforeEach(() => {
+    insertCalls.length = 0;
+    sqlStub.rows = [];
+    sqlStub.throws = false;
+  });
+
+  const row = (over: Partial<Record<string, unknown>> = {}) => ({
+    agent_id: 'su-70b6af5b',
+    file: 'packages/operator-core/lib/doc-projection/project-doc-parts.test.ts',
+    work_item_id: null,
+    plan_slug: null,
+    intent: null,
+    session_id: null,
+    contributor: null,
+    ...over,
+  });
+
+  // THE REGRESSION GUARD. The old implementation bound the syncing repo's ABSOLUTE ROOT as the
+  // scope key (`WHERE repo_root = …/papercusp`), while every ledger row is written under the
+  // repo root of whichever operator process served locks:acquire (…/papercup-release). That
+  // matched 0 of ~3.4k rows/day and made derived attribution silently inert. This test fails
+  // against that implementation, because a filesystem path would appear in the bound values.
+  it('binds the workspace id as the scope — and never a filesystem path', async () => {
+    await readEditAttributionRoster({ workspaceId: 'papercusp-workspace' });
+    expect(insertCalls).toHaveLength(1);
+    const bound = insertCalls[0].filter((v): v is string => typeof v === 'string');
+    expect(bound).toContain('papercusp-workspace');
+    expect(bound.filter((v) => v.startsWith('/'))).toEqual([]);
+  });
+
+  it('attributes a row whose repo_root differs from the syncing repo (the live shape)', async () => {
+    sqlStub.rows = [row({ work_item_id: 'WI-37668', intent: 'fix attribution scope' })];
+    const roster = await readEditAttributionRoster({ workspaceId: 'papercusp-workspace' });
+    expect(roster).toEqual([
+      {
+        agent: 'su-70b6af5b',
+        files: ['packages/operator-core/lib/doc-projection/project-doc-parts.test.ts'],
+        workItems: ['WI-37668'],
+        intent: 'fix attribution scope',
+      },
+    ]);
+  });
+
+  it('groups multiple files under one agent and keeps distinct agents apart', async () => {
+    sqlStub.rows = [
+      row({ agent_id: 'su-aaa', file: 'a.ts', work_item_id: 'WI-1' }),
+      row({ agent_id: 'su-aaa', file: 'b.ts', work_item_id: 'WI-1' }),
+      row({ agent_id: 'su-bbb', file: 'c.ts', work_item_id: 'WI-2' }),
+    ];
+    const roster = await readEditAttributionRoster({ workspaceId: 'papercusp-workspace' });
+    expect(roster).toHaveLength(2);
+    expect(roster.find((e) => e.agent === 'su-aaa')?.files).toEqual(['a.ts', 'b.ts']);
+    expect(roster.find((e) => e.agent === 'su-aaa')?.workItems).toEqual(['WI-1']); // deduped
+    expect(roster.find((e) => e.agent === 'su-bbb')?.files).toEqual(['c.ts']);
+  });
+
+  it('returns [] without a workspace id rather than reading across every workspace', async () => {
+    expect(await readEditAttributionRoster({ workspaceId: null })).toEqual([]);
+    expect(await readEditAttributionRoster({ workspaceId: undefined })).toEqual([]);
+    expect(await readEditAttributionRoster({ workspaceId: '' })).toEqual([]);
+    expect(insertCalls).toHaveLength(0); // never even issues the query
+  });
+
+  it('honours a custom lookback window', async () => {
+    await readEditAttributionRoster({ workspaceId: 'papercusp-workspace', lookbackHours: 3 });
+    expect(insertCalls[0]).toContain(3);
+  });
+
+  it('degrades to [] when the ledger read fails, so git-sync falls back to presence', async () => {
+    sqlStub.throws = true;
+    await expect(readEditAttributionRoster({ workspaceId: 'papercusp-workspace' })).resolves.toEqual([]);
+  });
+});
 
 describe('recordEditAttribution — plan_slug fill (WI-6584)', () => {
   beforeEach(() => {

@@ -17,7 +17,7 @@
  * A paste-time lookup hit returns `existing` — a JOIN OFFER with zero side
  * effects. The form swaps to a confirm card whose Join drives the EXISTING
  * join path (POST /api/harness/join-link per member link — the
- * WorkbenchHiveDirectoryPanel mechanics, with the per-repo slug derived from
+ * WorkbenchPotDirectoryPanel mechanics, with the per-repo slug derived from
  * each link's github coords). No member links → "exists but isn't joinable
  * yet" + Create-anyway (re-submit with force:true → duplicateOf-flagged).
  *

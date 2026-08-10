@@ -11,7 +11,7 @@ import {
   HiveNounIcon,
   HivePrimaryMark,
   HiveQueenMark,
-} from '../HiveVisualIdentity';
+} from '../PotVisualIdentity';
 import { OperatorLogoMark } from '../OperatorLogoMark';
 import { OperatorWordmarkLockup } from '../OperatorWordmarkLockup';
 

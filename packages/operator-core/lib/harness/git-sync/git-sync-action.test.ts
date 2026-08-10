@@ -196,7 +196,14 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 // importing the action module registers `git-sync` into the system-action registry,
 // exactly as production's register-system-actions side-effect import does.
 import './git-sync-action';
-import { isResolverInFlight, acquireWithContentionRetry, formatOwnHeadPublishedLine } from './git-sync-action';
+import {
+  isResolverInFlight,
+  acquireWithContentionRetry,
+  formatOwnHeadPublishedLine,
+  mergeAttributionRosters,
+  isGenericLockIntent,
+} from './git-sync-action';
+import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
 import type { OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
 import { getSystemAction, getSystemActionEntry, type SystemActionCtx } from '../routines/system-actions';
 
@@ -1331,5 +1338,73 @@ describe('formatOwnHeadPublishedLine (EI-19341838904344665)', () => {
     });
     expect(line).not.toContain('BACKLOG REMAINS');
     expect(line).not.toContain('(');
+  });
+});
+
+describe("WI-37668: the lock hook's sentinel intent never becomes a commit subject", () => {
+  // The per-edit lock hook acquires with intent `PreToolUse:<tool>` (pretooluse-locks-acquire.sh
+  // :752) and locks:acquire persists that verbatim into the edit ledger. Measured 2026-08-10:
+  // 3,180 of ~3,260 rows in a 24h window (97.5%) carry exactly that sentinel. Because it is
+  // NON-EMPTY, intentToSubject would render it as the commit subject for nearly every attributed
+  // commit on the fleet-wide hot path — strictly worse than the single auto-commit message.
+  const entry = (agent: string, intent: string | undefined, files = ['packages/a.ts']) => ({
+    agent,
+    intent,
+    files,
+    workItems: [] as string[],
+    planSlug: undefined,
+    sessionId: undefined,
+  });
+
+  it("REGRESSION GUARD: a PreToolUse sentinel is replaced by the agent's DECLARED intent", () => {
+    const merged = mergeAttributionRosters(
+      [entry('su-1', 'PreToolUse:Edit')],
+      [entry('su-1', 'WI-37668: fix derived attribution scoping', [])],
+    );
+    // Falsifiable: pre-fix this asserted value was the raw 'PreToolUse:Edit'.
+    expect(merged[0].intent).toBe('WI-37668: fix derived attribution scoping');
+    expect(merged[0].intent).not.toMatch(/PreToolUse/);
+  });
+
+  it('a sentinel with NO declared intent yields undefined ⇒ the DEFAULT subject, never the sentinel', () => {
+    const merged = mergeAttributionRosters([entry('su-2', 'PreToolUse:Write')], []);
+    expect(merged[0].intent).toBeUndefined();
+    // The point of the whole guard: the subject degrades to today's message, not a leaked hook name.
+    expect(intentToSubject(merged[0].intent, 'su · su-2')).toBe(DEFAULT_GIT_SYNC_SUBJECT);
+  });
+
+  it('a REAL declared ledger intent is preserved verbatim (the fix must not flatten good data)', () => {
+    const real = 'P-004: per-agent commit attribution';
+    const merged = mergeAttributionRosters([entry('su-3', real)], [entry('su-3', 'other')]);
+    expect(merged[0].intent).toBe(real);
+  });
+
+  it('the ledger keeps FILE authority — presence is consulted for the SUBJECT only', () => {
+    const merged = mergeAttributionRosters(
+      [entry('su-4', 'PreToolUse:Edit')],
+      [entry('su-4', 'declared work', ['packages/z.ts'])],
+    );
+    // Ledger entry stays first (attributionMapForRepo is first-wins) and keeps its own files.
+    expect(merged[0].files).toEqual(['packages/a.ts']);
+    expect(merged[0].intent).toBe('declared work');
+    // Presence still appended, so it can fill files the ledger window missed.
+    expect(merged[1].files).toEqual(['packages/z.ts']);
+  });
+
+  it("does not borrow a DIFFERENT agent's intent", () => {
+    const merged = mergeAttributionRosters(
+      [entry('su-5', 'PreToolUse:Edit')],
+      [entry('su-OTHER', "someone else's work")],
+    );
+    expect(merged[0].intent).toBeUndefined();
+  });
+
+  it('isGenericLockIntent treats blank and both hook phases as unusable', () => {
+    for (const bad of ['', '   ', 'PreToolUse:Edit', 'PreToolUse:Write', 'PostToolUse:Edit', 'pretooluse:multiedit']) {
+      expect(isGenericLockIntent(bad)).toBe(true);
+    }
+    for (const good of ['WI-1: real work', 'fix the thing']) {
+      expect(isGenericLockIntent(good)).toBe(false);
+    }
   });
 });

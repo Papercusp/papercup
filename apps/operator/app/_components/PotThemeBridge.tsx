@@ -26,7 +26,7 @@ function setHiveFavicon(enabled: boolean): void {
   if (!existing) document.head.appendChild(link);
 }
 
-export function HiveThemeBridge() {
+export function PotThemeBridge() {
   const hiveEnabled = useFlag(FLAGS.THE_HIVE);
 
   useEffect(() => {

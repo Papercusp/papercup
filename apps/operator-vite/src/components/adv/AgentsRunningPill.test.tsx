@@ -4,7 +4,7 @@
  * expands into a fleet-grouped, fleet-colored roster (agents-running-roster).
  * The advRoster.list sync query, nuqs, and LivenessDot are mocked so this
  * isolates the pill's count/guards + the pure grouping helpers. The shared
- * <Popover> needs a TooltipProvider ancestor (same as HivesRunningPill.test).
+ * <Popover> needs a TooltipProvider ancestor (same as PotsRunningPill.test).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';

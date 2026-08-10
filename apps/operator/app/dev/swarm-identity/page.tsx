@@ -3,7 +3,7 @@
 import type { CSSProperties } from 'react';
 import { useEffect, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
-import { HiveNounIcon, HiveQueenMark } from '../../_components/HiveVisualIdentity';
+import { HiveNounIcon, HiveQueenMark } from '../../_components/PotVisualIdentity';
 import styles from './swarm-identity.module.css';
 
 type DirectionId = 'crown' | 'signal' | 'blackcomb' | 'papercup' | 'eclipse';

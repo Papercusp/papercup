@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useLexiconPackId } from '@/lib/useLexicon';
-import { HivePrimaryMark } from './HiveVisualIdentity';
+import { HivePrimaryMark } from './PotVisualIdentity';
 
 const CUP_MOTIONS = ['spin', 'bob', 'tilt', 'orbit', 'pulse', 'scan'] as const;
 type CupMotion = (typeof CUP_MOTIONS)[number];

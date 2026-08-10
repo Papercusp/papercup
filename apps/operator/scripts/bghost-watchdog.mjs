@@ -180,21 +180,32 @@
  *   - Walked PID-ANCHORED (/proc/<pid>/task/<tid>/children), never by process-name pattern, so it cannot
  *     self-match a peer agent's diagnostic shell the way `pgrep -f` does.
  *
- * BOUNDED, because the sibling failure is the opposite one. `BOOT_GRACE_MAX_MS` caps how long progress
- * may extend the grace, and past that we restart ANYWAY (loudly, with an alert). That bound is taken
- * directly from EI-20025430746362695, where the pool-shed suppression had NO upper bound: it excused
- * staleness climbing 1372 -> 3173s across four consecutive passes and turned a guardrail into a ~53min
- * fleet-wide outage in silence. An unbounded suppression is not a safer suppression.
+ * BOUNDED, because the sibling failure is the opposite one. `SATURATION_MAX_SUPPRESS_S` caps how long
+ * this evidence may suppress a restart, and past that we restart ANYWAY (loudly, with an alert). That
+ * bound is taken directly from EI-20025430746362695, where the pool-shed suppression had NO upper bound:
+ * it excused staleness climbing 1372 -> 3173s across four consecutive passes and turned a guardrail into
+ * a ~53min fleet-wide outage in silence. An unbounded suppression is not a safer suppression.
  *
- * Scoped to the BOOT WINDOW only (`activeForSec` between `BOOT_GRACE_MS` and `BOOT_GRACE_MAX_MS`), so it
- * can never excuse a steady-state freeze, and UNKNOWN (unreadable /proc, pid reuse, a negative delta)
- * grants NO suppression — the same never-infer-from-a-missing-signal asymmetry as `isFrozen` /
- * `withinBootGrace` / `poolShedExplainsFreeze` above. Placed LAST among the suppressions, immediately
- * before `restart()`, so it costs its sample only when we were otherwise about to kill the process.
+ * ⚠ THE BOUND IS MEASURED IN CONTINUOUS SUPPRESSION TIME, NOT THE UNIT'S AGE (EI-20051589102188691).
+ * It was originally scoped to a "BOOT WINDOW" — `activeForSec` between `BOOT_GRACE_MS` and a 45min
+ * `BOOT_GRACE_MAX_MS` — on the reading that `activeForSec` measured how long boot had been running. It
+ * does not: it is the unit's UPTIME, which keeps climbing long after boot finishes, so the window shut
+ * permanently 45min into every host's life and took the whole saturated-not-dead protection with it.
+ * Measured 2026-08-10T07:34:52Z: a bg-host was killed at 3506s uptime while burning 446 ticks/5s, having
+ * logged `boot complete in 40443ms` 57 minutes earlier — the "boot grace" it had exceeded was long over.
+ * The replacement clock resets whenever a routine fires, so it can still never excuse a steady-state
+ * freeze (a host that produces nothing for `SATURATION_MAX_SUPPRESS_S` dies) while protecting a busy
+ * host at ANY age. Note it is STRICTLY TIGHTER than what it replaced: the old window permitted 37min of
+ * unbroken suppression (480s->2700s), this permits 900s.
+ *
+ * UNKNOWN (unreadable /proc, pid reuse, a negative delta) grants NO suppression — the same
+ * never-infer-from-a-missing-signal asymmetry as `isFrozen` / `withinBootGrace` /
+ * `poolShedExplainsFreeze` above. Placed LAST among the suppressions, immediately before `restart()`,
+ * so it costs its sample only when we were otherwise about to kill the process.
  *
  * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR,DB_URL,LOG,
  *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS,SUSTAINED_HEALTHY_POLLS,
- *   POOL_SHED_GRACE_S,BOOT_GRACE_MAX_MS,BOOT_PROGRESS_SAMPLE_MS,BOOT_PROGRESS_MIN_TICKS},
+ *   POOL_SHED_GRACE_S,SATURATION_MAX_SUPPRESS_S,SATURATION_ALERT_AFTER_S,BOOT_PROGRESS_SAMPLE_MS,BOOT_PROGRESS_MIN_TICKS},
  *   PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
 import { execFile, execFileSync } from 'node:child_process';
@@ -254,13 +265,32 @@ const BGHOST_HEALTH_URL =
   process.env.PAPERCUSP_BGHOST_WATCHDOG_HEALTH_URL || 'http://127.0.0.1:3271/api/health';
 const BGHOST_HEALTH_TIMEOUT_MS =
   Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HEALTH_TIMEOUT_MS) || 5_000;
-/** EI-20029519971967372: the ABSOLUTE cap on how long demonstrated forward progress may extend the boot
- *  grace. Past this we restart even while progressing — a boot that has not finished in this long is a
- *  different, worse problem than a slow one, and an UNBOUNDED suppression is exactly what turned the
- *  pool-shed guardrail into a 53min outage (EI-20025430746362695). Default 45min: the measured
- *  1.23M-block boot needed >8min and grows with the log, so this leaves real headroom while still
- *  bounding the damage. */
-const BOOT_GRACE_MAX_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_BOOT_GRACE_MAX_MS) || 45 * 60_000;
+/** EI-20051589102188691: the bound on how long CPU evidence may suppress a restart — expressed as
+ *  CONTINUOUS SUPPRESSION TIME, deliberately NOT as the unit's age.
+ *
+ *  ⚠ This replaces `BOOT_GRACE_MAX_MS`, which bounded `activeForSec` (the unit's UPTIME) in the belief
+ *  that it measured how long boot had been running. It does not: uptime never stops growing once boot
+ *  finishes, so that cap silently expired the whole "saturated, not dead" protection 45min after start
+ *  and never restored it — re-arming the exact failure EI-20029519971967372 had just fixed, for every
+ *  host older than 45min. Measured 2026-08-10T07:34:52Z: a bg-host was killed at 3506s uptime while its
+ *  tree burned 446 ticks/5s, and its own log had recorded `boot complete in 40443ms` — i.e. the "boot
+ *  grace" it was judged to have exceeded had ended 57 minutes earlier.
+ *
+ *  A duration of continuous suppression is the honest bound, because it measures the thing we are
+ *  actually worried about (how long we have excused an absent ticker) rather than a proxy that drifts
+ *  away from it. It RESETS the moment a routine fires (the healthy path below), so a host that ticks at
+ *  all is protected indefinitely at ANY age, while one that burns CPU and produces nothing still dies —
+ *  which is a no-forward-progress detector rather than a clock. Bounded for the same reason as its
+ *  pool-shed sibling: an unbounded suppression turned that guardrail into a 53min outage
+ *  (EI-20025430746362695). Default 900s mirrors `POOL_SHED_MAX_SUPPRESS_S`, and tightens the old
+ *  effective ceiling (45min of uptime) rather than loosening it. */
+const SATURATION_MAX_SUPPRESS_S =
+  Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SATURATION_MAX_SUPPRESS_S) || 900;
+/** How long saturation may suppress before it becomes an operator-visible alarm (still suppressing —
+ *  this is the warning, not the bound above). Mirrors POOL_SHED_ALERT_AFTER_S; a duration, not a pass
+ *  count, for the reason spelled out there. */
+const SATURATION_ALERT_AFTER_S =
+  Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SATURATION_ALERT_AFTER_S) || 300;
 /** EI-20029519971967372: wall time between the two /proc CPU samples. A SINGLE sample is meaningless —
  *  CPU usage is a delta (the `top -n1` artifact, EI-20017779937060288). 5s matches the recipe that
  *  measured the real worker at +493 ticks/5s. */
@@ -301,6 +331,16 @@ let poolShedAlerted = false;
  *  by reset calls sprinkled across poll()'s many early-return paths — one place to get right instead of
  *  six to remember, and self-healing if a new branch is added later. */
 let poolShedSuppressLastAtMs = 0;
+/** EI-20051589102188691: the CURRENT saturation ("burning CPU, so not dead") suppression streak — the
+ *  clock that BOUNDS it, replacing the old unit-age cap. Judged broken by a GAP in `…LastAtMs` rather
+ *  than by reset calls sprinkled across poll()'s many early-return paths, mirroring the pool-shed streak
+ *  above deliberately: one place to get right instead of six to remember, and self-healing if a new
+ *  branch is added later. A gap is exactly what a routine firing produces (the healthy path returns
+ *  without touching this), so "the ticker recovered" resets the bound for free. */
+let saturationSuppressSinceMs = null;
+let saturationSuppressPasses = 0;
+let saturationAlerted = false;
+let saturationSuppressLastAtMs = 0;
 let logDirEnsured = false;
 const log = (m) => {
   const line = `[bghost-watchdog ${new Date().toISOString()}] ${m}`;
@@ -389,26 +429,43 @@ export function withinBootGrace(activeForSec, bootGraceMs = BOOT_GRACE_MS) {
   return activeForSec != null && activeForSec >= 0 && activeForSec * 1000 < bootGraceMs;
 }
 
-/** Pure progress-aware boot-grace verdict (EI-20029519971967372): may DEMONSTRATED forward progress
- *  extend the boot grace past `bootGraceMs`? True only when ALL of:
- *    - the unit is past the plain grace but still inside the absolute cap (so this can only ever extend
- *      a BOOT window — it can never excuse a steady-state freeze), and
+/** Pure "saturated, not frozen" verdict (EI-20029519971967372, re-bounded by EI-20051589102188691): may
+ *  DEMONSTRATED forward progress suppress a restart? True only when ALL of:
+ *    - the unit is past the plain boot grace (below it, `withinBootGrace` already covers us), and
+ *    - we have not been suppressing CONTINUOUSLY for `maxSuppressS` (the bound — see below), and
  *    - `cpuTicksDelta` is a NUMBER at or above `minTicks` (positive evidence of work being done).
+ *
+ *  ⚠ THE BOUND IS A SUPPRESSION DURATION, NOT THE UNIT'S AGE — and that distinction IS the fix. The
+ *  previous form took `activeForSec` (uptime) and refused past a 45min cap, reading uptime as "how long
+ *  boot has been running". Uptime keeps growing after boot completes, so the refusal became permanent
+ *  for any host older than 45min: the saturation protection switched itself off and never came back,
+ *  which is how a host burning 446 ticks/5s was killed at 3506s uptime, 57 minutes after its own log
+ *  said `boot complete in 40443ms` (EI-20051589102188691).
+ *
+ *  This is NOT the unbounded-suppression bug sign-flipped (EI-20025430746362695 — a suppression with no
+ *  cap excused staleness 1372→3173s and caused a ~53min outage). The cap is still here and is STRICTLY
+ *  TIGHTER: the old uptime window permitted 37min of unbroken suppression (480s→2700s), this permits
+ *  `maxSuppressS` (900s). It is also self-clearing — the caller resets the clock the moment a routine
+ *  fires — so the quantity bounded is "how long we have excused an absent ticker", which is the thing
+ *  the sibling outage was actually about, rather than a proxy that drifts away from it.
+ *
  *  null/undefined/negative `cpuTicksDelta` is UNKNOWN and grants NOTHING — a /proc read fault, a pid
  *  reused mid-sample, or a tree that shrank must never manufacture suppression from a missing signal
  *  (the same asymmetry as `isFrozen` / `withinBootGrace` / `poolShedExplainsFreeze`). Likewise an
- *  unknown `activeForSec`: if we cannot say we are in the boot window, we are not. */
-export function bootProgressExtendsGrace(
+ *  unknown `activeForSec` or an unreadable suppression clock: if we cannot say suppression is still
+ *  inside its bound, it is not. */
+export function saturationExtendsGrace(
   activeForSec,
   cpuTicksDelta,
+  suppressedForSec = 0,
   bootGraceMs = BOOT_GRACE_MS,
-  bootGraceMaxMs = BOOT_GRACE_MAX_MS,
+  maxSuppressS = SATURATION_MAX_SUPPRESS_S,
   minTicks = BOOT_PROGRESS_MIN_TICKS,
 ) {
   if (activeForSec == null || !Number.isFinite(activeForSec) || activeForSec < 0) return false;
-  const activeMs = activeForSec * 1000;
-  if (activeMs < bootGraceMs) return false; // plain boot grace already covers this — not our case
-  if (activeMs >= bootGraceMaxMs) return false; // past the absolute cap: restart even while progressing
+  if (activeForSec * 1000 < bootGraceMs) return false; // plain boot grace already covers this
+  if (suppressedForSec == null || !Number.isFinite(suppressedForSec) || suppressedForSec < 0) return false;
+  if (suppressedForSec >= maxSuppressS) return false; // THE BOUND: restart even while progressing
   if (cpuTicksDelta == null || !Number.isFinite(cpuTicksDelta) || cpuTicksDelta < 0) return false;
   return cpuTicksDelta >= minTicks;
 }
@@ -883,7 +940,7 @@ export async function probeHostLiveness(url = BGHOST_HEALTH_URL, timeoutMs = BGH
  *   - a recent shed event explains the staleness (`shedExplains`), and
  *   - the host gave POSITIVE evidence of life (`hostAlive === true`). null/false both decline: the same
  *     never-suppress-on-a-missing-signal asymmetry as `isFrozen` / `withinBootGrace` /
- *     `bootProgressExtendsGrace`. Getting this wrong costs an outage; an unnecessary restart is cheap.
+ *     `saturationExtendsGrace`. Getting this wrong costs an outage; an unnecessary restart is cheap.
  *   - the suppression has not already run past `maxSuppressSec`. An UNKNOWN duration does not consume
  *     the budget, but it cannot extend it either — a bound you cannot measure is not a bound, so an
  *     unmeasurable duration declines rather than suppressing forever. */
@@ -1037,35 +1094,66 @@ async function poll() {
       poolShedSuppressPasses = 0;
       poolShedAlerted = false;
     }
-    // EI-20029519971967372: LAST suppression before the kill — is this a boot that is still WORKING?
-    // Both PG signals go silent for a saturated boot exactly as they do for a dead one, so ask /proc
-    // instead: a two-sample CPU delta over the unit's whole process tree. Placed here (rather than beside
-    // the plain boot-grace check) so the sample is only paid when we were otherwise about to restart.
-    // Bounded by BOOT_GRACE_MAX_MS — past that we kill anyway, loudly, because an unbounded suppression
-    // is how the sibling pool-shed guardrail became a 53min outage (EI-20025430746362695).
+    // EI-20029519971967372: LAST suppression before the kill — is this process still WORKING? Both PG
+    // signals go silent for a saturated process exactly as they do for a dead one, so ask /proc instead:
+    // a two-sample CPU delta over the unit's whole process tree. Placed here (rather than beside the
+    // plain boot-grace check) so the sample is only paid when we were otherwise about to restart.
+    // Bounded by SATURATION_MAX_SUPPRESS_S of CONTINUOUS suppression — past that we kill anyway, loudly,
+    // because an unbounded suppression is how the sibling pool-shed guardrail became a 53min outage
+    // (EI-20025430746362695). EI-20051589102188691: that bound used to be the unit's AGE, which silently
+    // switched this whole suppression off 45min into every host's life — see the header note.
     const progressTicks = await bootProgressTicks();
-    if (bootProgressExtendsGrace(activeForSec, progressTicks)) {
-      const now = Date.now();
-      if (now - lastHeartbeat >= HEARTBEAT_MS) {
-        lastHeartbeat = now;
+    const satNowMs = Date.now();
+    // Start a fresh streak when there isn't one, or when the last suppressed pass is old enough that the
+    // streak is broken (a healthy poll leaves exactly that gap — see the state declaration).
+    if (saturationSuppressSinceMs == null || satNowMs - saturationSuppressLastAtMs > POLL_MS * 3) {
+      saturationSuppressSinceMs = satNowMs;
+      saturationSuppressPasses = 0;
+      saturationAlerted = false;
+    }
+    const satSuppressedForSec = Math.round((satNowMs - saturationSuppressSinceMs) / 1000);
+    if (saturationExtendsGrace(activeForSec, progressTicks, satSuppressedForSec)) {
+      saturationSuppressPasses += 1;
+      saturationSuppressLastAtMs = satNowMs;
+      if (satNowMs - lastHeartbeat >= HEARTBEAT_MS) {
+        lastHeartbeat = satNowMs;
         log(
-          `boot STILL PROGRESSING (unit active ${Math.round(activeForSec)}s, past the ${Math.round(BOOT_GRACE_MS / 1000)}s plain grace but under the ${Math.round(BOOT_GRACE_MAX_MS / 1000)}s cap) — ` +
-            `process tree burned ${progressTicks} CPU ticks in ${Math.round(BOOT_PROGRESS_SAMPLE_MS / 1000)}s (>= ${BOOT_PROGRESS_MIN_TICKS}), so routine fires ${idleSec}s stale AND scheduler ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} stale is BOOT SATURATION, not a freeze. NOT restarting (EI-20029519971967372).`,
+          `SATURATED, not frozen (unit active ${Math.round(activeForSec)}s — NOTE: uptime, which says nothing about whether boot finished) — ` +
+            `process tree burned ${progressTicks} CPU ticks in ${Math.round(BOOT_PROGRESS_SAMPLE_MS / 1000)}s (>= ${BOOT_PROGRESS_MIN_TICKS}), so routine fires ${idleSec}s stale AND scheduler ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} stale is CPU SATURATION, not a freeze. ` +
+            `NOT restarting (EI-20029519971967372) — suppression held ${satSuppressedForSec}s of ${SATURATION_MAX_SUPPRESS_S}s max across ${saturationSuppressPasses} passes; any routine firing resets that clock (EI-20051589102188691).`,
         );
+      }
+      // Visible, not just logged, once a suppression stops being brief — mirrors the pool-shed alarm.
+      if (!saturationAlerted && satSuppressedForSec >= SATURATION_ALERT_AFTER_S) {
+        saturationAlerted = true;
+        const msg =
+          `⚠ ${UNIT}: CPU-saturation suppression has held for ${satSuppressedForSec}s (${saturationSuppressPasses} passes) — routine fires ${idleSec}s stale while the process tree burns ` +
+          `${progressTicks} ticks/${Math.round(BOOT_PROGRESS_SAMPLE_MS / 1000)}s. Judged saturated-not-dead so NO restart has been issued, but a host working this long without firing a routine is its own problem. ` +
+          `Hard bound: restarting anyway at ${SATURATION_MAX_SUPPRESS_S}s (EI-20051589102188691).`;
+        log(msg);
+        void alertFleet(msg);
       }
       return;
     }
-    // Past the cap while still progressing is its own alarm: we are about to kill a process that is
-    // demonstrably working, because it has had long enough. Say so — this is the case an operator must
-    // see, and the one the bounded-suppression design deliberately does not hide.
-    if (activeForSec != null && activeForSec * 1000 >= BOOT_GRACE_MAX_MS && progressTicks != null && progressTicks >= BOOT_PROGRESS_MIN_TICKS) {
+    // The suppression DID NOT hold. Name which condition failed — a suppression that can only ever say
+    // "not restarting" is how the sibling guardrail hid a 53min outage, so the declining path must be at
+    // least as loud. Only speak when there was actually CPU evidence to overrule; a genuinely idle tree
+    // is the ordinary freeze the restart line below already explains.
+    if (progressTicks != null && progressTicks >= BOOT_PROGRESS_MIN_TICKS) {
+      const why =
+        satSuppressedForSec >= SATURATION_MAX_SUPPRESS_S
+          ? `the suppression hit its ${SATURATION_MAX_SUPPRESS_S}s hard bound (held ${satSuppressedForSec}s across ${saturationSuppressPasses} passes without a single routine firing)`
+          : `the unit is still inside its ${Math.round(BOOT_GRACE_MS / 1000)}s plain boot grace, or its active-for age is unreadable`;
       const msg =
-        `⚠ ${UNIT} boot exceeded the ${Math.round(BOOT_GRACE_MAX_MS / 1000)}s progress-extended boot grace and is STILL burning CPU ` +
-        `(${progressTicks} ticks/${Math.round(BOOT_PROGRESS_SAMPLE_MS / 1000)}s) after ${Math.round(activeForSec)}s active — restarting anyway (bounded suppression, EI-20029519971967372). ` +
-        `A boot this slow is a different problem than a slow boot: check own-log length.`;
+        `⚠ ${UNIT}: CPU-saturation suppression DECLINED and we are about to kill a process that is demonstrably working ` +
+        `(${progressTicks} ticks/${Math.round(BOOT_PROGRESS_SAMPLE_MS / 1000)}s, ${Math.round(activeForSec ?? -1)}s active) because ${why}. ` +
+        `Restarting anyway (bounded suppression, EI-20029519971967372/EI-20051589102188691).`;
       log(msg);
       void alertFleet(msg);
     }
+    saturationSuppressSinceMs = null;
+    saturationSuppressPasses = 0;
+    saturationAlerted = false;
     // Snapshot the cgroup BEFORE restarting — the restart tears it down, so this is unreadable after.
     // Fail-soft (null ⇒ report nothing) and deliberately off the decision path: `restart()` is called
     // with whatever this returns, including null, so a collateral-read fault can never suppress a
@@ -1083,6 +1171,16 @@ async function poll() {
   // consecutive-strike counter, so a LATER, unrelated freeze starts its backoff from the base debounce —
   // not wherever a past storm left off, and not before the past storm is actually confirmed over.
   healthyStreak += 1;
+  // EI-20051589102188691: a routine FIRING is the outcome the saturation suppression was waiting for, so
+  // it clears that suppression's bound immediately and explicitly. The GAP mechanism alone would not do
+  // it: at POLL_MS=30s a single healthy poll between two suppressed passes leaves a ~60s gap, under the
+  // POLL_MS*3 staleness window, so the streak would carry across a recovery and the host would inherit a
+  // partly-spent bound it had already earned its way out of. The gap check stays as the self-healing
+  // backstop for poll()'s other early-return paths; this is the one that makes "any routine firing resets
+  // the clock" true rather than approximately true.
+  saturationSuppressSinceMs = null;
+  saturationSuppressPasses = 0;
+  saturationAlerted = false;
   if (consecutiveRestarts > 0 && shouldClearStrikes(healthyStreak)) {
     log(`ticker sustained-healthy (${healthyStreak} consecutive polls, fired ${idleSec}s ago) — clearing consecutive-restart strike count (was ${consecutiveRestarts})`);
     consecutiveRestarts = 0;
@@ -1138,7 +1236,7 @@ async function reportVintage(unit) {
 function start() {
   log(
     `up — unit ${UNIT}, poll ${POLL_MS}ms, freeze-silence ${FREEZE_SILENCE_S}s, debounce ${DEBOUNCE_MS}ms (backoff x${BACKOFF_MULTIPLIER}, cap ${MAX_DEBOUNCE_MS}ms), ` +
-      `boot-grace ${BOOT_GRACE_MS}ms (progress-extendable to ${BOOT_GRACE_MAX_MS}ms on >=${BOOT_PROGRESS_MIN_TICKS} CPU ticks per ${BOOT_PROGRESS_SAMPLE_MS}ms /proc sample), ` +
+      `boot-grace ${BOOT_GRACE_MS}ms (extendable at ANY unit age while >=${BOOT_PROGRESS_MIN_TICKS} CPU ticks per ${BOOT_PROGRESS_SAMPLE_MS}ms /proc sample, alarms at ${SATURATION_ALERT_AFTER_S}s, hard bound ${SATURATION_MAX_SUPPRESS_S}s of CONTINUOUS suppression — reset by any routine firing), ` +
       `alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr, ` +
       `pool-shed-grace ${POOL_SHED_GRACE_S}s (suppression requires a live ${BGHOST_HEALTH_URL} within ${BGHOST_HEALTH_TIMEOUT_MS}ms, alarms at ${POOL_SHED_ALERT_AFTER_S}s, hard bound ${POOL_SHED_MAX_SUPPRESS_S}s); ` +
       `signal=PG-routine-freshness (journald-independent); durable log ${LOG_FILE}`,

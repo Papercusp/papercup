@@ -31,7 +31,7 @@ import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { useLexicon } from '@/lib/useLexicon';
 
 /** A federated feature row (featuresConsolidated.byHive = harness_features_consolidated). */
-interface HiveFeatureRow {
+interface PotFeatureRow {
   featureId: string;
   harnessSlug: string;
   title: string | null;
@@ -63,7 +63,7 @@ function matchesSearch(haystack: Array<string | null | undefined>, needle: strin
   return haystack.some((h) => (h ?? '').toLowerCase().includes(q));
 }
 
-export default function HiveContentPanel({ params, api }: PanelComponentProps) {
+export default function PotContentPanel({ params, api }: PanelComponentProps) {
   const t = useLexicon();
   // The dock auto-binds `harnessSlug` to the active route slug for every panel
   // (HarnessesDock rebinds it on slug-switch), so read it FIRST — same convention
@@ -79,7 +79,7 @@ export default function HiveContentPanel({ params, api }: PanelComponentProps) {
   const [, setHarness] = useQueryState('harness', parseAsString);
   const [, setSel] = useQueryState('sel', parseAsString.withDefault(''));
 
-  const featuresQ = useSyncQuery<HiveFeatureRow>({
+  const featuresQ = useSyncQuery<PotFeatureRow>({
     queryName: 'featuresConsolidated.byHive',
     args: { potHomeSlug },
     enabled: Boolean(potHomeSlug),

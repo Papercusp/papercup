@@ -5,7 +5,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { HarnessDock } from '@/app/harness/dock/HarnessDock';
 import { registerWorkbenchPanels } from '@/app/harness/dock/workbench-panels';
 import { registerWorkbenchVoicePanel } from '../components/workbench/WorkbenchVoicePanel';
-import { registerWorkbenchHiveDirectoryPanel } from '../components/workbench/WorkbenchHiveDirectoryPanel';
+import { registerWorkbenchHiveDirectoryPanel } from '../components/workbench/WorkbenchPotDirectoryPanel';
 import { onDockApiBind, listPanels, setPanelParams } from '@/app/harness/dock/dock-actions';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';

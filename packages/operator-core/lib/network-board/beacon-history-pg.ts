@@ -77,7 +77,7 @@ export async function captureBeaconSnapshot(
       void m.notifySyncInvalidate('network.board').catch(() => {});
       // P-009 (data-sync-push-completion): a beacon is an accepted directory
       // announce — push the directory browse + federation-status panels too so the
-      // desktop's WorkbenchHiveDirectoryPanel / HiveFederationStatus converge off
+      // desktop's WorkbenchPotDirectoryPanel / PotFederationStatus converge off
       // their old polls. Workspace-singleton, no-arg consumers.
       void m.notifySyncInvalidate('network.hiveDirectory').catch(() => {});
       void m.notifySyncInvalidate('network.federationStatus').catch(() => {});

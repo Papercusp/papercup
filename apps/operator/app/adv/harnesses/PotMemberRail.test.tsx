@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// HiveMemberRail — the in-tab member selector for the Harnesses tab. Pure
+// PotMemberRail — the in-tab member selector for the Harnesses tab. Pure
 // presentational logic worth testing: a solo hive (≤1 member) renders nothing;
 // a multi-member hive renders the rail, open (full list) or collapsed (the
 // expand button), with the open/closed state in nuqs (?rail). We assert the
@@ -39,7 +39,7 @@ vi.mock('../../harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-import HiveMemberRail from './HiveMemberRail';
+import PotMemberRail from './PotMemberRail';
 import type { HiveMember } from './harness-axis';
 
 afterEach(() => cleanup());
@@ -54,25 +54,25 @@ const MEMBERS: HiveMember[] = [
   member('child-b'),
 ];
 
-describe('<HiveMemberRail /> solo hive', () => {
+describe('<PotMemberRail /> solo hive', () => {
   it('renders nothing for an empty member list', () => {
     const { container } = render(
-      <HiveMemberRail members={[]} activeSlug={null} onSelect={vi.fn()} />,
+      <PotMemberRail members={[]} activeSlug={null} onSelect={vi.fn()} />,
     );
     expect(container.firstChild).toBeNull();
   });
 
   it('renders nothing for a single-member hive (no choice to make)', () => {
     const { container } = render(
-      <HiveMemberRail members={[member('only')]} activeSlug="only" onSelect={vi.fn()} />,
+      <PotMemberRail members={[member('only')]} activeSlug="only" onSelect={vi.fn()} />,
     );
     expect(container.firstChild).toBeNull();
   });
 });
 
-describe('<HiveMemberRail /> open (default)', () => {
+describe('<PotMemberRail /> open (default)', () => {
   it('lists every member with the count in the header', () => {
-    render(<HiveMemberRail members={MEMBERS} activeSlug="child-a" onSelect={vi.fn()} />);
+    render(<PotMemberRail members={MEMBERS} activeSlug="child-a" onSelect={vi.fn()} />);
     const rail = screen.getByTestId('hive-member-rail');
     expect(rail.getAttribute('data-collapsed')).toBe('false');
     expect(screen.getByTestId('hive-member-root-h')).toBeTruthy();
@@ -82,7 +82,7 @@ describe('<HiveMemberRail /> open (default)', () => {
   });
 
   it('marks the active member (is-active + aria-current) and only that one', () => {
-    render(<HiveMemberRail members={MEMBERS} activeSlug="child-a" onSelect={vi.fn()} />);
+    render(<PotMemberRail members={MEMBERS} activeSlug="child-a" onSelect={vi.fn()} />);
     const active = screen.getByTestId('hive-member-child-a');
     expect(active.className).toContain('is-active');
     expect(active.getAttribute('aria-current')).toBe('true');
@@ -91,7 +91,7 @@ describe('<HiveMemberRail /> open (default)', () => {
 
   it('renders the root Home marker, kind badge, shared icon, and liveness dot', () => {
     render(
-      <HiveMemberRail
+      <PotMemberRail
         members={MEMBERS}
         activeSlug={null}
         onSelect={vi.fn()}
@@ -109,15 +109,15 @@ describe('<HiveMemberRail /> open (default)', () => {
 
   it('fires onSelect with the member slug on click', () => {
     const onSelect = vi.fn();
-    render(<HiveMemberRail members={MEMBERS} activeSlug={null} onSelect={onSelect} />);
+    render(<PotMemberRail members={MEMBERS} activeSlug={null} onSelect={onSelect} />);
     fireEvent.click(screen.getByTestId('hive-member-child-b'));
     expect(onSelect).toHaveBeenCalledWith('child-b');
   });
 });
 
-describe('<HiveMemberRail /> collapse toggle', () => {
+describe('<PotMemberRail /> collapse toggle', () => {
   it('collapses to the expand button on Hide, then re-opens on the expand click', () => {
-    render(<HiveMemberRail members={MEMBERS} activeSlug={null} onSelect={vi.fn()} />);
+    render(<PotMemberRail members={MEMBERS} activeSlug={null} onSelect={vi.fn()} />);
     // open → click Hide
     fireEvent.click(screen.getByRole('button', { name: /hide harnesses/i }));
     const collapsed = screen.getByTestId('hive-member-rail');

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// HiveBeaconToggle — the pot bar's live-status-beacon consent pill (moved off the
+// PotBeaconToggle — the pot bar's live-status-beacon consent pill (moved off the
 // deleted HiveHeaderStrip on 2026-07-27, owner ask). What is pinned here is the
 // behavior that survived the move, because the move is exactly when it could have
 // been dropped silently:
@@ -46,7 +46,7 @@ vi.mock('@/app/harness/Tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-import HiveBeaconToggle from './HiveBeaconToggle';
+import PotBeaconToggle from './PotBeaconToggle';
 
 beforeEach(() => {
   syncState.rows = null;
@@ -60,11 +60,11 @@ afterEach(cleanup);
 
 const toggle = () => screen.getByTestId('hive-beacon-toggle');
 
-describe('HiveBeaconToggle', () => {
+describe('PotBeaconToggle', () => {
   it('reads absent consent as OFF and flips to ON through the write seam', async () => {
     const setBeaconConsent = vi.fn(async () => ({ ok: true, consent: true }));
     render(
-      <HiveBeaconToggle
+      <PotBeaconToggle
         potSlug="acme"
         getBeaconConsent={async () => false}
         setBeaconConsent={setBeaconConsent}
@@ -84,7 +84,7 @@ describe('HiveBeaconToggle', () => {
   it('flips ON → OFF, sending the negated value', async () => {
     const setBeaconConsent = vi.fn(async () => ({ ok: true, consent: false }));
     render(
-      <HiveBeaconToggle
+      <PotBeaconToggle
         potSlug="acme"
         getBeaconConsent={async () => true}
         setBeaconConsent={setBeaconConsent}
@@ -102,7 +102,7 @@ describe('HiveBeaconToggle', () => {
     // The server refused the flip and echoed back the unchanged value. The pill
     // must show what the server said, or it advertises a beacon that is not on.
     render(
-      <HiveBeaconToggle
+      <PotBeaconToggle
         potSlug="acme"
         getBeaconConsent={async () => false}
         setBeaconConsent={async () => ({ ok: true, consent: false })}
@@ -118,7 +118,7 @@ describe('HiveBeaconToggle', () => {
 
   it('keeps the previous state and toasts when the write fails', async () => {
     render(
-      <HiveBeaconToggle
+      <PotBeaconToggle
         potSlug="acme"
         getBeaconConsent={async () => true}
         setBeaconConsent={async () => ({ ok: false, error: 'not the owner' })}
@@ -134,7 +134,7 @@ describe('HiveBeaconToggle', () => {
 
   it('with no injected reader, reads the canonical hive.beaconConsent sync query', async () => {
     syncState.rows = [{ potId: 'acme', consent: true }];
-    render(<HiveBeaconToggle potSlug="acme" />);
+    render(<PotBeaconToggle potSlug="acme" />);
 
     await waitFor(() => expect(toggle().textContent).toMatch(/on/i));
     expect(syncState.lastEnabled).toBe(true);
@@ -143,14 +143,14 @@ describe('HiveBeaconToggle', () => {
 
   it('an injected reader DISABLES the sync query (test seam only, never a second read path)', async () => {
     syncState.rows = [{ potId: 'acme', consent: true }];
-    render(<HiveBeaconToggle potSlug="acme" getBeaconConsent={async () => false} />);
+    render(<PotBeaconToggle potSlug="acme" getBeaconConsent={async () => false} />);
 
     await waitFor(() => expect(toggle().textContent).toMatch(/off/i));
     expect(syncState.lastEnabled).toBe(false);
   });
 
   it('renders nothing without a pot slug', () => {
-    const { container } = render(<HiveBeaconToggle potSlug="" />);
+    const { container } = render(<PotBeaconToggle potSlug="" />);
     expect(container.innerHTML).toBe('');
   });
 });

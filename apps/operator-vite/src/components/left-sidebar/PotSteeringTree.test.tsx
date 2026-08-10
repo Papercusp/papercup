@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * HiveSteeringTree render coverage (steering-nested-hive-plan-tree-2026-06-17
+ * PotSteeringTree render coverage (steering-nested-hive-plan-tree-2026-06-17
  * P-002) — the nested hive→plan steering picker. Purely presentational over a
  * prebuilt SteeringTree; this pins the render branches and the pure toggle
  * intents:
@@ -16,7 +16,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-import HiveSteeringTree, { type HiveSteeringTreeProps } from './HiveSteeringTree';
+import PotSteeringTree, { type HiveSteeringTreeProps } from './PotSteeringTree';
 import type { SteeringTree, TreeHive, TreePlan } from './hive-steering-tree';
 
 // Lexicon resolver mocked to ECHO its key (t('brain') → 'brain', t('pot') → 'pot')
@@ -67,26 +67,26 @@ function makeProps(over: Partial<HiveSteeringTreeProps> = {}): HiveSteeringTreeP
 
 afterEach(cleanup);
 
-describe('<HiveSteeringTree> states', () => {
+describe('<PotSteeringTree> states', () => {
   it('renders the loading placeholder', () => {
-    render(<HiveSteeringTree {...makeProps({ loading: true })} />);
+    render(<PotSteeringTree {...makeProps({ loading: true })} />);
     expect(screen.getByText(/Loading pot \+ plans/)).toBeTruthy();
   });
 
   it('renders the empty placeholder when there are no hives', () => {
-    render(<HiveSteeringTree {...makeProps()} />);
+    render(<PotSteeringTree {...makeProps()} />);
     expect(screen.getByText('No pot with plans.')).toBeTruthy();
   });
 
   it('shows the compact all-work state when nothing is checked', () => {
-    render(<HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }) })} />);
+    render(<PotSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }) })} />);
     expect(screen.getByText('all work')).toBeTruthy();
     expect(screen.queryByText(/brain may work ANY pot\/plan/)).toBeNull();
   });
 
   it('shows the focused pot count without an instructional paragraph when a pot is checked', () => {
     render(
-      <HiveSteeringTree
+      <PotSteeringTree
         {...makeProps({ tree: tree({ hives: [hive({ checked: true, planMode: 'all' })] }) })}
       />,
     );
@@ -95,17 +95,17 @@ describe('<HiveSteeringTree> states', () => {
   });
 
   it('renders the illegal-plan alert when illegalCount > 0', () => {
-    render(<HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }), illegalCount: 2 })} />);
+    render(<PotSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }), illegalCount: 2 })} />);
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toContain('2 eligible plans');
     expect(alert.textContent).toContain('excluded pot');
   });
 });
 
-describe('<HiveSteeringTree> hive nodes', () => {
+describe('<PotSteeringTree> hive nodes', () => {
   it('renders an unchecked hive with its plan count meta', () => {
     render(
-      <HiveSteeringTree
+      <PotSteeringTree
         {...makeProps({ tree: tree({ hives: [hive({ plans: [plan(), plan({ slug: 'p-2' })] })] }) })}
       />,
     );
@@ -116,7 +116,7 @@ describe('<HiveSteeringTree> hive nodes', () => {
 
   it('renders a checked hive in all-plans mode with the "all plans" meta', () => {
     render(
-      <HiveSteeringTree
+      <PotSteeringTree
         {...makeProps({
           tree: tree({ hives: [hive({ checked: true, planMode: 'all', plans: [plan({ checked: true })] })] }),
         })}
@@ -127,7 +127,7 @@ describe('<HiveSteeringTree> hive nodes', () => {
 
   it('renders the eligible/total meta in some-mode and shows the plan rows when expanded', () => {
     render(
-      <HiveSteeringTree
+      <PotSteeringTree
         {...makeProps({
           tree: tree({
             hives: [
@@ -151,7 +151,7 @@ describe('<HiveSteeringTree> hive nodes', () => {
   it('fires onToggleHive when the hive checkbox is clicked', () => {
     const onToggleHive = vi.fn();
     render(
-      <HiveSteeringTree
+      <PotSteeringTree
         {...makeProps({ tree: tree({ hives: [hive({ plans: [plan()] })] }), onToggleHive })}
       />,
     );
@@ -162,7 +162,7 @@ describe('<HiveSteeringTree> hive nodes', () => {
   it('uses the indeterminate pot checkbox to select every plan', () => {
     const onSetHivePlans = vi.fn();
     render(
-      <HiveSteeringTree
+      <PotSteeringTree
         {...makeProps({
           tree: tree({ hives: [hive({ checked: true, planMode: 'some', plans: [plan()] })] }),
           onSetHivePlans,
@@ -178,7 +178,7 @@ describe('<HiveSteeringTree> hive nodes', () => {
   it('uses a checked pot checkbox to remove the pot from focus', () => {
     const onToggleHive = vi.fn();
     render(
-      <HiveSteeringTree
+      <PotSteeringTree
         {...makeProps({
           tree: tree({ hives: [hive({ checked: true, planMode: 'all', plans: [plan({ checked: true })] })] }),
           onToggleHive,
@@ -190,24 +190,24 @@ describe('<HiveSteeringTree> hive nodes', () => {
   });
 });
 
-describe('<HiveSteeringTree> header chips + unassigned', () => {
+describe('<PotSteeringTree> header chips + unassigned', () => {
   it('offers one All work escape hatch when focus is active', () => {
     const onSetAllHives = vi.fn();
     render(
-      <HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive({ checked: true, planMode: 'all' })] }), onSetAllHives })} />,
+      <PotSteeringTree {...makeProps({ tree: tree({ hives: [hive({ checked: true, planMode: 'all' })] }), onSetAllHives })} />,
     );
     fireEvent.click(screen.getByLabelText('Clear work focus'));
     expect(onSetAllHives).toHaveBeenCalledWith(false);
   });
 
   it('hides the reset action when all work is already available', () => {
-    render(<HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }) })} />);
+    render(<PotSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }) })} />);
     expect(screen.queryByLabelText('Clear work focus')).toBeNull();
   });
 
   it('renders the unassigned (no-hive) plans section', () => {
     render(
-      <HiveSteeringTree
+      <PotSteeringTree
         {...makeProps({
           tree: tree({ hives: [hive()], unassigned: [plan({ slug: 'orphan', title: 'Orphan Plan' })] }),
         })}

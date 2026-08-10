@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * HiveContentPanel (adv:hive-content) — CROSS-MEMBER BROWSE
+ * PotContentPanel (adv:hive-content) — CROSS-MEMBER BROWSE
  * (shared-hive-member-content-federation-2026-06-20 WI-259 P-006, D-010). The
  * explicit cross-member view: a member browses EVERY hive member's federated
  * features + plans in one rollup, member-ORIGIN-labeled, read-only, with a
@@ -41,7 +41,7 @@ vi.mock('@papercusp/sync', () => ({
 // panel title from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-import HiveContentPanel from './HiveContentPanel';
+import PotContentPanel from './PotContentPanel';
 
 afterEach(() => {
   cleanup();
@@ -60,7 +60,7 @@ const PLANS = [
 ];
 
 const api = { setParams: vi.fn(), setTitle: vi.fn(), close: vi.fn() } as unknown as React.ComponentProps<
-  typeof HiveContentPanel
+  typeof PotContentPanel
 >['api'];
 const PANEL = { panelId: 'test-panel', panelType: 'adv:hive-content' } as const;
 
@@ -76,13 +76,13 @@ function renderPanel(
   return render(
     <TooltipProvider>
       <NuqsTestingAdapter searchParams={searchParams} onUrlUpdate={onUrlChange}>
-        <HiveContentPanel {...PANEL} params={panelParams} api={api} />
+        <PotContentPanel {...PANEL} params={panelParams} api={api} />
       </NuqsTestingAdapter>
     </TooltipProvider>,
   );
 }
 
-describe('HiveContentPanel (adv:hive-content)', () => {
+describe('PotContentPanel (adv:hive-content)', () => {
   it('renders federated features member-origin-labeled, reads the byHive queries for the hive home', async () => {
     renderPanel();
 
@@ -149,7 +149,7 @@ describe('HiveContentPanel (adv:hive-content)', () => {
     render(
       <TooltipProvider>
         <NuqsTestingAdapter searchParams="">
-          <HiveContentPanel {...PANEL} params={{ harnessSlug: 'demo-hive' }} api={api} />
+          <PotContentPanel {...PANEL} params={{ harnessSlug: 'demo-hive' }} api={api} />
         </NuqsTestingAdapter>
       </TooltipProvider>,
     );
@@ -162,7 +162,7 @@ describe('HiveContentPanel (adv:hive-content)', () => {
     render(
       <TooltipProvider>
         <NuqsTestingAdapter searchParams="">
-          <HiveContentPanel {...PANEL} params={{}} api={api} />
+          <PotContentPanel {...PANEL} params={{}} api={api} />
         </NuqsTestingAdapter>
       </TooltipProvider>,
     );

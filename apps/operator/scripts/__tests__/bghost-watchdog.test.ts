@@ -24,11 +24,12 @@ let probeHostLiveness: (
   timeoutMs?: number,
   deps?: { fetch?: unknown },
 ) => Promise<{ alive: boolean | null; why: string }>;
-let bootProgressExtendsGrace: (
+let saturationExtendsGrace: (
   activeForSec: number | null | undefined,
   cpuTicksDelta: number | null | undefined,
+  suppressedForSec?: number | null,
   bootGraceMs?: number,
-  bootGraceMaxMs?: number,
+  maxSuppressS?: number,
   minTicks?: number,
 ) => boolean;
 let procTreeCpuTicks: (
@@ -85,7 +86,7 @@ beforeAll(async () => {
     poolShedExplainsFreeze,
     poolShedSuppressionHolds,
     probeHostLiveness,
-    bootProgressExtendsGrace,
+    saturationExtendsGrace,
     procTreeCpuTicks,
     alertFleet,
     circuitOpenMessage,
@@ -694,39 +695,114 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
    * boot exactly as they do for a dead process, so the fix gives it a signal that separates them:
    * out-of-process forward progress, two-sample, bounded by an absolute cap.
    */
-  describe('bootProgressExtendsGrace — progress-aware boot grace (EI-20029519971967372)', () => {
+  describe('saturationExtendsGrace — progress-aware suppression (EI-20029519971967372 + EI-20051589102188691)', () => {
     const GRACE = 8 * 60_000; // 480s plain grace
-    const CAP = 45 * 60_000; // absolute cap
+    const MAX_SUPPRESS = 900; // seconds of CONTINUOUS suppression
     const MIN = 50; // ticks/sample
+    const FRESH = 0; // a suppression streak that has just begun
 
     it('extends the grace for the MEASURED failure: past 480s, tree burning ~99% of a core', () => {
       // The live numbers from the filing: unit active 500s (past grace), +493 ticks in the 5s sample.
-      expect(bootProgressExtendsGrace(500, 493, GRACE, CAP, MIN)).toBe(true);
+      expect(saturationExtendsGrace(500, 493, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(true);
     });
 
-    it('does NOT extend when the tree is idle — a boot that has stopped working is a freeze', () => {
-      expect(bootProgressExtendsGrace(500, 0, GRACE, CAP, MIN)).toBe(false);
-      expect(bootProgressExtendsGrace(500, MIN - 1, GRACE, CAP, MIN)).toBe(false);
+    it('does NOT extend when the tree is idle — a process that has stopped working is a freeze', () => {
+      expect(saturationExtendsGrace(500, 0, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(500, MIN - 1, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
     });
 
     it('treats exactly minTicks as progress (boundary is inclusive)', () => {
-      expect(bootProgressExtendsGrace(500, MIN, GRACE, CAP, MIN)).toBe(true);
+      expect(saturationExtendsGrace(500, MIN, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(true);
     });
 
     /**
-     * THE BOUND. Taken from the sibling failure EI-20025430746362695, where the pool-shed suppression
-     * had no upper limit and excused staleness climbing 1372 -> 3173s across four passes, turning a
-     * guardrail into a ~53min fleet-wide outage. A suppression that never expires is not a safer
-     * suppression — past the cap we restart even while the process is demonstrably working.
+     * THE BOUND — unchanged in PURPOSE, corrected in VARIABLE. It is taken from the sibling failure
+     * EI-20025430746362695, where the pool-shed suppression had no upper limit and excused staleness
+     * climbing 1372 -> 3173s across four passes, turning a guardrail into a ~53min fleet-wide outage. A
+     * suppression that never expires is not a safer suppression — past the bound we restart even while
+     * the process is demonstrably working.
+     *
+     * ⚠ This assertion previously read `STOPS extending at the absolute cap` and passed `activeForSec`
+     * (the unit's UPTIME) as the capped quantity — encoding the premise that uptime measured how long
+     * boot had been running. It does not, so that form asserted the EI-20051589102188691 defect as
+     * correct: it required a working host to be killed purely for being older than 45 minutes. The
+     * capped quantity is now continuous suppression time, so the cap still cannot be removed without
+     * failing here, and it no longer expires with age.
      */
-    it('STOPS extending at the absolute cap, however hard the process is working', () => {
-      expect(bootProgressExtendsGrace(CAP / 1000, 100_000, GRACE, CAP, MIN)).toBe(false);
-      expect(bootProgressExtendsGrace(CAP / 1000 + 600, 100_000, GRACE, CAP, MIN)).toBe(false);
+    it('STOPS extending at the suppression bound, however hard the process is working', () => {
+      expect(saturationExtendsGrace(500, 100_000, MAX_SUPPRESS, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(500, 100_000, MAX_SUPPRESS + 600, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      // ...and the bound binds at ANY age, so a young host gets no free pass either.
+      expect(saturationExtendsGrace(10_000, 100_000, MAX_SUPPRESS, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+    });
+
+    /**
+     * THE REGRESSION GUARD for EI-20051589102188691, stated in the measured numbers of the kill it
+     * describes: 2026-08-10T07:34:52Z, unit active 3506s (58min — well past the old 45min cap), tree
+     * burning 446 ticks/5s, own log having recorded `boot complete in 40443ms` 57 minutes earlier. The
+     * old form returned false here — killing a demonstrably working host — because it read uptime as
+     * boot duration. Age must not by itself withdraw the suppression.
+     */
+    it('THE REGRESSION: suppresses at 3506s uptime (the measured kill), because age is not evidence', () => {
+      expect(saturationExtendsGrace(3506, 446, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(true);
+      // A host up for a week is no different: what matters is whether it is working, not how old it is.
+      expect(saturationExtendsGrace(7 * 86_400, 446, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(true);
+    });
+
+    /**
+     * CONTROL — the OLD rule, transcribed verbatim and kept here permanently, so the regression
+     * assertion above is provably FALSIFIABLE without ever mutating the shared tree (CLAUDE.md's
+     * tier-1 falsifiability: a deliberately-wrong implementation as a control, never a copy-mutate-
+     * restore of production code, which on this tree races git-sync's sweep and has committed a mutant
+     * before). A guard that has never been seen to fail is not a guard.
+     *
+     * It also pins the defect's SHAPE for whoever reads this next: the only difference is which
+     * quantity the cap is applied to.
+     */
+    it('CONTROL: the old uptime-capped rule FAILS the regression case (so the guard discriminates)', () => {
+      const oldUptimeCappedRule = (
+        activeForSec: number | null,
+        ticks: number | null,
+        graceMs = GRACE,
+        capMs = 45 * 60_000,
+        minTicks = MIN,
+      ) => {
+        if (activeForSec == null || !Number.isFinite(activeForSec) || activeForSec < 0) return false;
+        const activeMs = activeForSec * 1000;
+        if (activeMs < graceMs) return false;
+        if (activeMs >= capMs) return false; // ← THE DEFECT: uptime read as boot duration
+        if (ticks == null || !Number.isFinite(ticks) || ticks < 0) return false;
+        return ticks >= minTicks;
+      };
+
+      // The measured kill: the old rule declines to suppress, so the working host dies. The new rule
+      // suppresses. If these two ever agree, the regression guard above has stopped discriminating.
+      expect(oldUptimeCappedRule(3506, 446)).toBe(false);
+      expect(saturationExtendsGrace(3506, 446, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(true);
+
+      // CALIBRATION: on the case the two rules SHOULD agree about (the original EI-20029519971967372
+      // failure, inside the old window) they do agree — proving the control is a faithful transcription
+      // and not simply a function that returns false, which would make the assertion above vacuous.
+      expect(oldUptimeCappedRule(500, 493)).toBe(true);
+      expect(saturationExtendsGrace(500, 493, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(true);
+    });
+
+    /**
+     * The replacement bound must be STRICTLY TIGHTER than what it replaced, or this fix would be the
+     * unbounded-suppression bug (EI-20025430746362695) with the sign flipped. The old uptime window
+     * permitted continuous suppression from 480s to 2700s of uptime = 2220s unbroken; the new bound
+     * permits 900s. Asserted as an inequality so it cannot silently loosen later.
+     */
+    it('is strictly tighter than the uptime window it replaced (no sign-flipped regression)', () => {
+      const OLD_MAX_UNBROKEN_SUPPRESSION_S = (45 * 60_000 - GRACE) / 1000; // 2220s
+      expect(MAX_SUPPRESS).toBeLessThan(OLD_MAX_UNBROKEN_SUPPRESSION_S);
+      // At the old ceiling the new bound has long since fired.
+      expect(saturationExtendsGrace(500, 100_000, OLD_MAX_UNBROKEN_SUPPRESSION_S, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
     });
 
     it('defers to the plain boot grace below its window (not this check’s job)', () => {
-      expect(bootProgressExtendsGrace(120, 493, GRACE, CAP, MIN)).toBe(false);
-      expect(bootProgressExtendsGrace(GRACE / 1000 - 1, 493, GRACE, CAP, MIN)).toBe(false);
+      expect(saturationExtendsGrace(120, 493, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(GRACE / 1000 - 1, 493, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
     });
 
     /**
@@ -736,16 +812,23 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
      * (restart / pid reuse), not that it went idle.
      */
     it('grants nothing on an UNKNOWN progress reading', () => {
-      expect(bootProgressExtendsGrace(500, null, GRACE, CAP, MIN)).toBe(false);
-      expect(bootProgressExtendsGrace(500, undefined, GRACE, CAP, MIN)).toBe(false);
-      expect(bootProgressExtendsGrace(500, Number.NaN, GRACE, CAP, MIN)).toBe(false);
-      expect(bootProgressExtendsGrace(500, -400, GRACE, CAP, MIN)).toBe(false);
+      expect(saturationExtendsGrace(500, null, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(500, undefined, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(500, Number.NaN, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(500, -400, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
     });
 
     it('grants nothing on an UNKNOWN active-for reading', () => {
-      expect(bootProgressExtendsGrace(null, 493, GRACE, CAP, MIN)).toBe(false);
-      expect(bootProgressExtendsGrace(undefined, 493, GRACE, CAP, MIN)).toBe(false);
-      expect(bootProgressExtendsGrace(-5, 493, GRACE, CAP, MIN)).toBe(false);
+      expect(saturationExtendsGrace(null, 493, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(undefined, 493, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(-5, 493, FRESH, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+    });
+
+    /** The same asymmetry applied to the NEW argument: an unreadable suppression clock grants nothing. */
+    it('grants nothing on an UNKNOWN suppression clock', () => {
+      expect(saturationExtendsGrace(500, 493, null, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(500, 493, Number.NaN, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
+      expect(saturationExtendsGrace(500, 493, -1, GRACE, MAX_SUPPRESS, MIN)).toBe(false);
     });
   });
 
@@ -878,7 +961,7 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
     });
 
     it('UNKNOWN liveness never suppresses (a missing signal grants nothing)', () => {
-      // Same asymmetry as isFrozen/withinBootGrace/bootProgressExtendsGrace: only POSITIVE evidence of
+      // Same asymmetry as isFrozen/withinBootGrace/saturationExtendsGrace: only POSITIVE evidence of
       // life may hold off a restart. An unnecessary restart is cheap; the other direction is an outage.
       expect(poolShedSuppressionHolds(true, null, 60)).toBe(false);
     });

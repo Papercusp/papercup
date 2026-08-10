@@ -1,6 +1,6 @@
 /*
  * adv-header-pills.css — the SHARED styles for the AdvShell header "running" pills
- * (HivesRunningPill = "▶ N POT running", AgentsRunningPill = "⚡ N agents running").
+ * (PotsRunningPill = "▶ N POT running", AgentsRunningPill = "⚡ N agents running").
  *
  * SINGLE SOURCE OF TRUTH (quick-panel-status-pills-2026-07-13 D-001). These rules
  * used to live in AdvShell.tsx's inline <style>, so the pills rendered correctly
@@ -91,7 +91,7 @@
   color: #fde68a;
 }
 
-/* ── HivesRunningPill: "▶ N POT running" button + fold-out control popover ── */
+/* ── PotsRunningPill: "▶ N POT running" button + fold-out control popover ── */
 .pc-advshell__hives-pill-wrap {
   position: relative;
   flex: 0 0 auto;

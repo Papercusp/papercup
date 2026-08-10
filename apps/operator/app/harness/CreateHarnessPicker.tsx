@@ -41,7 +41,7 @@ import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 import { EntryGithubSearchForm } from './EntryGithubSearchForm';
 import { CupboardBlueprintForm } from './CupboardBlueprintForm';
-import { PublishHiveCard } from './PublishHiveCard';
+import { PublishPotCard } from './PublishPotCard';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -1275,7 +1275,7 @@ function ShareOfferStep({
       </p>
       {potSlug ? (
         <div style={{ marginBottom: 16 }}>
-          <PublishHiveCard potSlug={potSlug} hiveLabel={hiveLabel.toLowerCase()} />
+          <PublishPotCard potSlug={potSlug} hiveLabel={hiveLabel.toLowerCase()} />
         </div>
       ) : (
         <p data-testid="share-offer-standalone-note" style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--fg-dim)' }}>

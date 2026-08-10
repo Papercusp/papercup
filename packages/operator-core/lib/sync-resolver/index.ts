@@ -769,7 +769,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   // hive.beaconConsent — the pot bar's beacon-toggle owner-consent read (WI-4137 /
-  // P-010; consumer is HiveBeaconToggle since 2026-07-27, previously the deleted
+  // P-010; consumer is PotBeaconToggle since 2026-07-27, previously the deleted
   // HiveHeaderStrip). The query is deliberately keyed by the Hive home slug: a
   // pot_settings write on one Hive must not refetch every open toggle — and the
   // toggle now renders on EVERY pot-scoped tab, so that scoping matters more than
@@ -2801,7 +2801,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // WI-5412 slimmed the sibling `.bySlug` but MISSED this cross-member `.byHive`,
       // which kept a bare `.select()` (SELECT *) and shipped all ~70 view columns —
       // including `embedding` (a 384-dim pgvector) and `_search` (tsvector). Measured
-      // on papercusp: 14,688 rows ≈ 10.2MB parsed into the webview per HiveContentPanel
+      // on papercusp: 14,688 rows ≈ 10.2MB parsed into the webview per PotContentPanel
       // load, of which the embedding alone was 6.1MB and _search 0.95MB — search-index
       // internals NO component renders.
       //
@@ -2815,7 +2815,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       //
       // The remaining six (attempts/claims/tags/needsHumanReview/sourcePlanSlug/
       // workingUsers) went with it: `.byHive` has exactly ONE consumer, and it declares
-      // its own 5-field `HiveFeatureRow` (HiveContentPanel.tsx) that names none of them.
+      // its own 5-field `PotFeatureRow` (PotContentPanel.tsx) that names none of them.
       // So this deliberately no longer mirrors `.bySlug` — that sibling keeps its 11
       // columns for its OWN wider consumer set. The wire here matches the one consumer's
       // declared row type, pinned BOTH ways (kept + dropped) by the byHive projection
@@ -6760,7 +6760,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // network.hiveDirectory — the P2P hive-directory browse list (data-sync-push-
   // completion P-009): the SAME un-muted, un-expired, non-private discovered set
-  // GET /api/discovery/pots serves to the desktop WorkbenchHiveDirectoryPanel,
+  // GET /api/discovery/pots serves to the desktop WorkbenchPotDirectoryPanel,
   // moved onto the sync rail so a withdrawn hive drops out / a new announce
   // appears WITHOUT the old 30s poll. Reuses the directory's own
   // listDiscoveredHives builder + the endpoint's exact row shape (so the panel
@@ -6783,7 +6783,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // network.federationStatus — the desktop's LIVE federation status read (data-
   // sync-push-completion P-009): the SAME { ok, substrate, hives } payload GET
   // /api/discovery/federation-status serves to the left-sidebar
-  // HiveFederationStatus panel, moved onto the sync rail so the old 10s poll is
+  // PotFederationStatus panel, moved onto the sync rail so the old 10s poll is
   // gone. Reuses the endpoint's exact builder (buildFederationStatus) so the
   // FedStatus shape matches precisely. Workspace-singleton, no-arg; returns a
   // FLAT one-element array per the resolver contract — the consumer reads data[0].

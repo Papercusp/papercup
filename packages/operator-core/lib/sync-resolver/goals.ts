@@ -8,17 +8,17 @@
  * tab, the detail view) reads from exactly these two.
  *
  * ── The counting rule these queries encode ─────────────────────────────────
- * A project can serve several goals (D-021), so a shared project's spend counts
+ * A pot can serve several goals (D-021), so a shared pot's spend counts
  * IN FULL against each of them and `goals.list`'s per-row spend figures DO NOT
  * SUM. The list therefore also returns `portfolioSpendUsd` — computed over
- * DISTINCT projects — so a client that wants a total has one to read and never
+ * DISTINCT pots — so a client that wants a total has one to read and never
  * has to add the rows up itself. The `Σ rows ≠ portfolio` gap is real and
  * expected; it is the shared work, not a bug.
  */
 
 // ⚠ `harness_shared.work_items` DOES NOT HAVE `closed_at` / `updated_at`. Its
 // timestamps are BIGINT EPOCH-MS columns named `closed_ts` / `updated_ts` (and
-// its primary key is `feature_id`, not `id`) — unlike `goals`, `goal_projects`
+// its primary key is `feature_id`, not `id`) — unlike `goals`, `goal_pots`
 // and every other table this file touches, which all use real timestamptz
 // `*_at` columns. Writing the `*_at` form here is the natural mistake and it
 // throws at RUNTIME ONLY (`column wi.closed_at does not exist`): tsc cannot see
@@ -77,7 +77,7 @@ export interface GoalSummaryRow {
    * staleness (the P-002 unmeasured-is-not-zero rule, applied a third time).
    */
   lastActivityAt: string | null;
-  projectCount: number;
+  potCount: number;
   /** Open work-items stamped to this goal — the "is anything moving" signal. */
   openWorkItems: number;
   /** Items parked on the owner. The rail's "waiting on you" count. */
@@ -92,10 +92,10 @@ export interface GoalSummaryRow {
    * thing the owner needs advance warning of.
    *
    * Attributed exactly as `spendUsd` is — every sample for the goal's
-   * non-removed projects — so the two are the same measurement over different
+   * non-removed pots — so the two are the same measurement over different
    * spans and a caller may divide one by the window to get a rate. It follows
    * that this inherits D-021: it is per-goal and DOES NOT SUM across goals,
-   * because a shared project's spend counts in full against each goal it serves.
+   * because a shared pot's spend counts in full against each goal it serves.
    */
   spendRecentUsd: number;
   /**
@@ -151,7 +151,7 @@ interface RawGoal {
   created_at: string | Date | null;
   updated_at: string | Date | null;
   last_activity_at: string | Date | null;
-  project_count: string | null;
+  pot_count: string | null;
   open_work_items: string | null;
   needs_human: string | null;
   spend_usd: string | null;
@@ -184,7 +184,7 @@ function toSummary(r: RawGoal): GoalSummaryRow {
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
     lastActivityAt: iso(r.last_activity_at),
-    projectCount: num(r.project_count),
+    potCount: num(r.pot_count),
     openWorkItems: num(r.open_work_items),
     needsHuman: num(r.needs_human),
     spendUsd: num(r.spend_usd),
@@ -204,7 +204,7 @@ export async function resolveGoalsList(args: {
   workspaceId: string;
   status?: string | null;
   limit?: number;
-}): Promise<{ goals: GoalSummaryRow[]; portfolioSpendUsd: number; portfolioProjects: number }> {
+}): Promise<{ goals: GoalSummaryRow[]; portfolioSpendUsd: number; portfolioPots: number }> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const { workspaceId, status = null, limit = 100 } = args;
@@ -216,9 +216,9 @@ export async function resolveGoalsList(args: {
     return (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.metadata, g.created_at, g.updated_at,
-             (SELECT COUNT(*) FROM harness_shared.goal_projects gp
+             (SELECT COUNT(*) FROM harness_shared.goal_pots gp
                WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
-                 AND gp.removed_at IS NULL) AS project_count,
+                 AND gp.removed_at IS NULL) AS pot_count,
              (SELECT COUNT(*) FROM harness_shared.work_items wi
                WHERE wi.goal_id = g.id AND wi.closed_ts IS NULL) AS open_work_items,
              (SELECT COUNT(*) FROM harness_shared.work_items wi
@@ -228,7 +228,7 @@ export async function resolveGoalsList(args: {
                 FROM harness_shared.agent_usage_samples s
                WHERE s.workspace_id = g.workspace_id
                  AND s.harness_slug IN (
-                   SELECT gp.harness_slug FROM harness_shared.goal_projects gp
+                   SELECT gp.harness_slug FROM harness_shared.goal_pots gp
                     WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
                       AND gp.removed_at IS NULL)) AS spend_usd,
              -- The same sum over the recent window. s.ts is epoch MILLIS
@@ -240,7 +240,7 @@ export async function resolveGoalsList(args: {
                WHERE s.workspace_id = g.workspace_id
                  AND s.ts >= ${recentSinceMs}
                  AND s.harness_slug IN (
-                   SELECT gp.harness_slug FROM harness_shared.goal_projects gp
+                   SELECT gp.harness_slug FROM harness_shared.goal_pots gp
                     WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
                       AND gp.removed_at IS NULL)) AS spend_recent_usd,
              -- ACTIVITY, as distinct from the definition-edit time in

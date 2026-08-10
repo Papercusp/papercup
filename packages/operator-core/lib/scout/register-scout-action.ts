@@ -349,6 +349,31 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
       return resolveMugOwner(sql, workspaceId, harnessSlug);
     },
     send: queenSend,
+    // WI-37625: was a hardcoded `@role:mug` inside queen-notify. Resolve it through the
+    // SHARED nudge-recipient ladder (reuse, never a second ladder) — this is the layer
+    // that actually has `workspaceId`, which is why the module takes it as a port.
+    //
+    // The ladder picks WHO (D-038): a deliverable Mug keeps the legacy slot so the tier
+    // still works when switched on for testing; otherwise a live su is addressed directly,
+    // and with nobody live it escalates to the owner. `unresolved` returns NOTHING on
+    // purpose — a presence hiccup is not evidence nobody is home, and these two pings
+    // always carry a concrete owner id alongside, so the message still goes somewhere.
+    resolveDurableCoAddress: async () => {
+      try {
+        const { resolveNudgeRecipient } = await import('./nudge-recipient');
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { resolveMugOwner } = await import('../pot/placement-watchdog');
+        const { sql } = getOrgPg();
+        const mugOwner = await resolveMugOwner(sql, workspaceId, harnessSlug).catch(() => null);
+        const recipient = await resolveNudgeRecipient({ workspaceId, mugOwner });
+        if (recipient.kind === 'mug') return ['@role:mug'];
+        if (recipient.kind === 'su') return [recipient.ownerId];
+        if (recipient.kind === 'escalate') return ['human'];
+        return [];
+      } catch {
+        return [];
+      }
+    },
   };
 
   // P-001: a queen-feedback tick runs a TARGETED revision of the Queen's draft(s)

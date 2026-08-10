@@ -30,13 +30,13 @@ import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
-import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
+import { PublishPotCard } from '@/app/harness/PublishPotCard';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { CATEGORICAL } from '@/app/harness/theme';
-import HivesRunningPill from './HivesRunningPill';
+import PotsRunningPill from './PotsRunningPill';
 import AgentsRunningPill from './AgentsRunningPill';
 import TasksRunningPill from './TasksRunningPill';
 // The pills' own button/popover styles. Portable by design
@@ -706,7 +706,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
               `tasks` tab, removed in the same change; plan decision D-014 reasoned
               about WHERE in that rail it sat, which this supersedes. */}
           <div className="pc-advshell__header-status">
-            <HivesRunningPill />
+            <PotsRunningPill />
             <AgentsRunningPill />
             <TasksRunningPill />
           </div>
@@ -785,7 +785,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
             color: 'var(--fg, #e8e8ea)',
           }}
         >
-          <PublishHiveCard potSlug={activeSlug} />
+          <PublishPotCard potSlug={activeSlug} />
         </Modal>
       )}
       <div className="pc-advshell__body">

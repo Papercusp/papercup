@@ -21,9 +21,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const M = vi.hoisted(() => ({
   sendMessage: vi.fn(async (..._args: unknown[]) => ({ to: [] }) as unknown),
   wakeRecipients: vi.fn(async (..._args: unknown[]) => ({}) as unknown),
+  // WI-37625: the retirement flag the `@role:mug` delivery gate reads. Defaults to
+  // FALSE because default-OFF IS the delivered end state (D-020) — the tier being ON is
+  // the reversible testing escape hatch, not the baseline.
+  mugKettleSystemEnabled: vi.fn(async () => false),
 }));
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage: M.sendMessage }));
 vi.mock('./agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: M.wakeRecipients }));
+vi.mock('./pot/started', () => ({ mugKettleSystemEnabled: M.mugKettleSystemEnabled }));
 
 import {
   broadcastSevereEvent,
@@ -150,12 +155,59 @@ describe('broadcastSevereEvent — EI-10060 route leg (additive, opt-in)', () =>
     const [, broadcastOpts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
     expect(broadcastOpts).toMatchObject({ to: ['*'], summary: 'health tick frozen' }); // untouched
     const [, routeOpts] = M.sendMessage.mock.calls[1] as [unknown, Record<string, unknown>];
+    // WI-37625: with the Mug tier retired (the default), a `@role:mug` route is redirected
+    // to the owner — that slot is drained only by a Mug spawn, so the routed "you are on
+    // the hook" leg used to dead-end while the broadcast still looked healthy.
     expect(routeOpts).toMatchObject({
-      to: ['@role:mug'],
+      to: ['human'],
       expectsReply: true,
     });
     expect(routeOpts.summary).toContain('fleet-health role');
     expect(routeOpts.summary).toContain('health tick frozen');
+    expect(routeOpts.summary).toContain('the Mug tier is retired');
+  });
+
+  /**
+   * CALIBRATION for the gate above. Without this, `gateMugSelector` could simply return
+   * 'human' unconditionally — every other assertion in this file would still pass, and
+   * the escape hatch would be silently dead. This is the case that fails if the gate
+   * stops reading the flag at all.
+   */
+  it('preserves the legacy @role:mug slot when the tier is switched ON (WI-37625)', async () => {
+    M.mugKettleSystemEnabled.mockResolvedValueOnce(true);
+    M.sendMessage
+      .mockImplementationOnce(async () => ({ to: ['*'] }))
+      .mockImplementationOnce(async () => ({ to: ['su-mug-1'] }));
+
+    await broadcastSevereEvent({
+      summary: 'health tick frozen',
+      route: { ownerSelector: '@role:mug', reason: 'fleet-health role' },
+    });
+
+    const [, routeOpts] = M.sendMessage.mock.calls[1] as [unknown, Record<string, unknown>];
+    expect(routeOpts).toMatchObject({ to: ['@role:mug'] });
+    expect(routeOpts.summary).not.toContain('the Mug tier is retired');
+  });
+
+  /**
+   * The gate must be NARROW — it exists to redirect one dead slot, not to re-route
+   * severe-event ownership generally. A `@fleet-leader:` selector resolves to a live
+   * leader at send time and was never affected by the retirement.
+   */
+  it('leaves a non-Mug owner selector untouched (WI-37625)', async () => {
+    M.sendMessage
+      .mockImplementationOnce(async () => ({ to: ['*'] }))
+      .mockImplementationOnce(async () => ({ to: ['su-leader-2'] }));
+
+    await broadcastSevereEvent({
+      summary: 's',
+      route: { ownerSelector: '@fleet-leader:drain-crew', reason: 'fleet-scoped condition' },
+    });
+
+    const [, routeOpts] = M.sendMessage.mock.calls[1] as [unknown, Record<string, unknown>];
+    expect(routeOpts).toMatchObject({ to: ['@fleet-leader:drain-crew'] });
+    expect(routeOpts.summary).toContain('fleet-scoped condition');
+    expect(routeOpts.summary).not.toContain('the Mug tier is retired');
   });
 
   it('wakes whoever the route resolved to LIVE (env.to from sendMessage), not the raw selector', async () => {

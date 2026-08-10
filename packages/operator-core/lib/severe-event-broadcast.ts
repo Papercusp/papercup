@@ -154,7 +154,62 @@ export function renderSevereEventEmitter(e: SevereEventEmitter): string {
 }
 
 /**
- * Best-effort directed route: a durable message to `route.ownerSelector` + a
+ * The Mug role slot, INLINED rather than imported from placement-watchdog's
+ * `MUG_COORD_SLOT` — same precedent as scout/nudge-recipient.ts: this is a comparison
+ * against a wire constant, and importing that module here would drag the placement
+ * watchdog into every severe-event broadcast path.
+ */
+const MUG_ROLE_SLOT = '@role:mug';
+
+/**
+ * WI-37625 — gate the DELIVERY, not the decision to send (D-027).
+ *
+ * `resolveSevereEventOwner` routes two condition classes (`health-tick-stale`,
+ * `dead-routines`) at `@role:mug`. That slot is drained by exactly one consumer
+ * (`pot/mug-brief-launch.ts`, at Mug spawn), so with the spawn gate closed (D-018) a
+ * severe-event route lands somewhere nothing reads — the condition is still detected,
+ * still broadcast to `*`, but the ROUTED "you are on the hook" leg silently dead-ends,
+ * which is the exact dual failure EI-10060 existed to close.
+ *
+ * The fix belongs HERE and not in the registry for two measured reasons:
+ *   1. `resolveSevereEventOwner` is deliberately PURE/SYNC (its doc-comment prizes this,
+ *      so `@fleet-leader:` never goes stale relative to a leadership change), and the
+ *      retirement flag is async — gating there would infect it with I/O.
+ *   2. The Scout ladder does not fit either: `SEVERE_EVENT_IDENTITY.workspaceId` is
+ *      `null` and `resolveNudgeRecipient` is workspace-scoped, so there is no workspace
+ *      to resolve a live su against. `human` is the honest fallback — these two classes
+ *      ("a frozen health tick blinds fleet placement", "dead routines stall placement")
+ *      are owner-worthy by construction, and the module's own step 3 already says an
+ *      unresolved condition should escalate toward human attention.
+ *
+ * When the tier is switched back ON for testing the legacy slot is preserved unchanged.
+ */
+async function gateMugSelector(
+  route: SevereEventRoute,
+): Promise<{ selector: string; reason: string }> {
+  if (route.ownerSelector !== MUG_ROLE_SLOT) {
+    return { selector: route.ownerSelector, reason: route.reason };
+  }
+  let enabled = true;
+  try {
+    const { mugKettleSystemEnabled } = await import('./pot/started');
+    enabled = await mugKettleSystemEnabled();
+  } catch {
+    // Fail SAFE toward the legacy slot: if we cannot read the flag we must not silently
+    // redirect a severe event to the owner (that would page a human on a flag hiccup).
+    enabled = true;
+  }
+  if (enabled) return { selector: route.ownerSelector, reason: route.reason };
+  return {
+    selector: 'human',
+    reason:
+      `${route.reason} — the Mug tier is retired, so this routed to you instead of ` +
+      `'${MUG_ROLE_SLOT}', a slot only a Mug spawn drains`,
+  };
+}
+
+/**
+ * Best-effort directed route: a durable message to the gated owner selector + a
  * best-effort wake of whoever that selector resolves to LIVE right now (mirrors
  * `wakeMug`'s two-halves pattern in pot/placement-watchdog.ts — a direct wake for
  * a currently-live holder, a durable send for a role slot with none yet). Never
@@ -162,9 +217,10 @@ export function renderSevereEventEmitter(e: SevereEventEmitter): string {
  */
 async function deliverRoute(route: SevereEventRoute, summary: string, body: string | undefined): Promise<void> {
   try {
+    const { selector, reason } = await gateMugSelector(route);
     const env = await sendMessage(SEVERE_EVENT_IDENTITY, {
-      to: [route.ownerSelector],
-      summary: `[routed: ${route.reason}] ${summary}`,
+      to: [selector],
+      summary: `[routed: ${reason}] ${summary}`,
       body,
       expectsReply: true,
     });

@@ -1,5 +1,5 @@
 /**
- * LocalHivesControl — the central start/stop control for this Swarm's LOCAL
+ * LocalPotsControl — the central start/stop control for this Swarm's LOCAL
  * hives (hive-control-surface). Reads `hive.controlState` (the persisted started
  * bit per registered hive) and toggles each via pot:start / pot:pause through
  * the shared runHiveControl dispatch.
@@ -7,7 +7,7 @@
  * Before this, start/stop lived ONLY inside a single hive's status bar
  * (AdvNowRunning, N=1) — there was no one place to see every hive's started
  * state or flip them. This is that place. Mounted both at the top of the Hives
- * tab and inside the header HivesRunningPill popover (one control, two mounts).
+ * tab and inside the header PotsRunningPill popover (one control, two mounts).
  */
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -24,14 +24,14 @@ export interface LocalHivesControlProps {
    * Render inside a collapsible RailSection instead of an always-open panel
    * (owner ask 2026-07-25: the Pots tab must show its p2p roster without
    * scrolling, and this control + the federation panel were what pushed the
-   * roster off-screen). The OTHER mount — the header HivesRunningPill popover —
+   * roster off-screen). The OTHER mount — the header PotsRunningPill popover —
    * leaves this false: that popover exists solely to show this control, so
    * collapsing it there would hide the only thing the popover is for.
    */
   collapsible?: boolean;
 }
 
-export default function LocalHivesControl({ collapsible = false }: LocalHivesControlProps = {}) {
+export default function LocalPotsControl({ collapsible = false }: LocalHivesControlProps = {}) {
   const t = useLexicon();
   const { data, loading, error } = useSyncQuery<HiveControlRow>({
     queryName: 'hive.controlState',

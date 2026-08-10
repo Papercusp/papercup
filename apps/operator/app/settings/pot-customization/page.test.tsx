@@ -33,7 +33,7 @@ vi.mock('nuqs', async () => {
   return {
     ...nuqsParsers,
     parseAsString: builder(null),
-    // HivePolicyPanel uses parseAsBoolean.withDefault(false) for the 'hivePolicy'
+    // PotPolicyPanel uses parseAsBoolean.withDefault(false) for the 'hivePolicy'
     // panel-open URL state — the mock must export it or the panel render throws.
     parseAsBoolean: builder(false),
     useQueryState: (key: string, parser?: { __default?: unknown }) => {

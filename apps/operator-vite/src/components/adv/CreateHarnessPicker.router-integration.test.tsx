@@ -28,7 +28,7 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: undefined, erro
 vi.mock('@/app/adv/harnesses/useViewer', () => ({ useViewer: () => ({ viewer: null }), isViewer: () => false }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/app/harness/EntryGithubSearchForm', () => ({ EntryGithubSearchForm: () => <div data-testid="gh-search" /> }));
-vi.mock('@/app/harness/PublishHiveCard', () => ({ PublishHiveCard: () => <div /> }));
+vi.mock('@/app/harness/PublishPotCard', () => ({ PublishPotCard: () => <div /> }));
 vi.mock('@/app/_components/HowSharingWorks', () => ({ HowSharingWorks: () => <div /> }));
 
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';

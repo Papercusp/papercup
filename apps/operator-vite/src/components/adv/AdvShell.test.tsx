@@ -8,7 +8,7 @@
 // spies — the restore effect keyed on the project count would re-fire forever
 // with per-render vi.fn() identities; otherwise the pinned sibling pattern, see
 // AdvNowRunning.test.tsx). Children with their own suites (CreateHarnessPicker,
-// PublishHiveCard) are stubbed; the pure exports (buildHarnessSelectOptions,
+// PublishPotCard) are stubbed; the pure exports (buildHarnessSelectOptions,
 // visibleAdvTabs, ADV_TABS shape, the D-001 primary/secondary split, recent-tabs
 // helpers) are pinned in __tests__/adv-shell-logic.test.ts.
 //
@@ -104,8 +104,8 @@ vi.mock('@/app/harness/CreateHarnessPicker', () => ({
       </div>
     ) : null,
 }));
-vi.mock('@/app/harness/PublishHiveCard', () => ({
-  PublishHiveCard: ({ potSlug }: { potSlug: string }) => (
+vi.mock('@/app/harness/PublishPotCard', () => ({
+  PublishPotCard: ({ potSlug }: { potSlug: string }) => (
     <div data-testid="publish-hive-card" data-slug={potSlug} />
   ),
 }));
@@ -141,7 +141,7 @@ vi.mock('@/lib/useLexicon', () => ({
 // The two workspace-wide status pills the strip carries since 2026-08-01. Each
 // has its own suite (and its own sync queries + popovers); stub them so this one
 // stays about WHERE the strip puts them.
-vi.mock('./HivesRunningPill', () => ({ default: () => <div data-testid="hives-pill" /> }));
+vi.mock('./PotsRunningPill', () => ({ default: () => <div data-testid="hives-pill" /> }));
 vi.mock('./AgentsRunningPill', () => ({ default: () => <div data-testid="agents-pill" /> }));
 
 // Shortcut bus: capture each registered action so tests can trigger it.

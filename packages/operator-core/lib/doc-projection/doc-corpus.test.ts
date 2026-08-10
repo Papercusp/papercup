@@ -121,10 +121,46 @@ describe('the committed corpus agrees with the committed manifest', () => {
     expect(prov.sourceSha).toBe(manifest.snapshotSha256);
   });
 
-  it('has one block per manifest part', () => {
+  /*
+   * POST-LOAD PART MUTATIONS.
+   *
+   * The manifest records the ONE-TIME cut from the hand-authored CLAUDE.md (its
+   * `snapshotSha256`). Since the cutover, Postgres is canonical for parts and they
+   * legitimately evolve — so "one block per manifest part" is a LOAD-TIME invariant that
+   * the first deliberate part change necessarily breaks, permanently.
+   *
+   * Rather than relax this to a tolerance (which would stop catching silent loss — the
+   * thing it exists for), every deliberate change is enumerated here with its reason and
+   * its block delta. The assertion stays EXACT: anything going missing that is not listed
+   * below still fails.
+   */
+  const POST_LOAD_BLOCK_DELTA = [
+    {
+      when: '2026-08-10',
+      plan: 'claude-md-projection-from-pg-2026-08-10 P-018',
+      // The `gen:tool-routing` generated block had been cut into 4 parts. Parts are joined
+      // with a blank line, so the projection could not reproduce the block byte-exactly and
+      // `npm run gen:tool-routing:check` failed against the projected CLAUDE.md. The block is
+      // one generated unit whose exact bytes a build gate asserts, so it was merged into the
+      // single BEGIN-marker part — atomic by construction, unsplittable by a future re-cut.
+      why: 'merged the gen:tool-routing block into one atomic part (byte-fidelity)',
+      // 4 parts merged into 1 => 3 fewer. One of the four was an `#evidence` part, which
+      // composeCorpus folds into its parent and never counts as a block of its own; it was
+      // also the half that was silently unprojected, which is what broke the block.
+      blocksRemoved: 3,
+    },
+  ] as const;
+
+  it('has one block per manifest part, less deliberate post-load merges', () => {
     const manifest = JSON.parse(readFileSync(MANIFEST, 'utf8')) as { parts: unknown[] };
     const prov = readCorpusProvenance(readFileSync(CORPUS, 'utf8'));
-    expect(prov.blocks).toBe(manifest.parts.length);
+    const merged = POST_LOAD_BLOCK_DELTA.reduce((sum, d) => sum + d.blocksRemoved, 0);
+    expect(
+      prov.blocks,
+      `corpus blocks (${prov.blocks}) != manifest parts (${manifest.parts.length}) - documented ` +
+        `post-load merges (${merged}). If you deliberately changed the part set, add an entry to ` +
+        `POST_LOAD_BLOCK_DELTA with its reason; otherwise blocks have gone missing.`,
+    ).toBe(manifest.parts.length - merged);
   });
 
   it('is the WHOLE corpus, not the projected subset', () => {

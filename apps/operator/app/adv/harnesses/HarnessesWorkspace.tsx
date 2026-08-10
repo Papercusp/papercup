@@ -9,8 +9,8 @@ import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
 import HarnessWelcome from './HarnessWelcome';
-import HiveMemberRail from './HiveMemberRail';
-import HiveWorkspaceCards from './HiveWorkspaceCards';
+import PotMemberRail from './PotMemberRail';
+import PotWorkspaceCards from './PotWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { useSyncQuery } from '@papercusp/sync';
 import { hiveMembers, resolveFocusedMember, resolveDockSlug, isHarnessParamStale } from './harness-axis';
@@ -184,7 +184,7 @@ export default function HarnessesWorkspace() {
       {allMode ? (
         // All-mode (D-003): the hive-grouped workspace overview replaces the
         // stale single-harness dock the tab used to keep showing.
-        <HiveWorkspaceCards
+        <PotWorkspaceCards
           groups={groups}
           workspaceLabel={workspaceLabel}
           onDrill={(hive, member) => void drillIntoMember(hive, member)}
@@ -200,7 +200,7 @@ export default function HarnessesWorkspace() {
           <div className="pc-adv-harnesses__body">
             {/* The member rail (P-002) — the in-tab harness selector. Renders
                 nothing for solo hives (single member → no choice). */}
-            <HiveMemberRail
+            <PotMemberRail
               members={members}
               activeSlug={dockSlug}
               onSelect={(memberSlug) => void setHarness(memberSlug)}

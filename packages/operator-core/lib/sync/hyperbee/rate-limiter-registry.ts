@@ -5,7 +5,7 @@
  * THE GAP THIS CLOSES (WI-253 / findings-EN-4.md "EN-1 GUI snapshot surface — fast
  * follow"): `rateLimiter` in boot.ts was a function-local `const` with no exported
  * accessor, so no HTTP endpoint could ever reach it to serve the owner-facing "member X
- * at N/cap" observability panel (EN-1's HivePolicyPanel ⇄ EN-2's `limiter.snapshot()`).
+ * at N/cap" observability panel (EN-1's PotPolicyPanel ⇄ EN-2's `limiter.snapshot()`).
  * This module is a THIN, ADDITIVE accessor only — it changes no enforcement behavior;
  * the merge seam in boot.ts still closes over its own direct reference to the limiter
  * exactly as it did before. Registering it here is a side-effect-free second reference.

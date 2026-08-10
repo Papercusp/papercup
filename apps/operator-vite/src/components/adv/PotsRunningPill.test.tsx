@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * HivesRunningPill render + interaction coverage (hive-control-surface).
+ * PotsRunningPill render + interaction coverage (hive-control-surface).
  *
  * The always-visible header pill: hidden when the POT_CONTROL flag is off or no
  * local hive is registered; otherwise a "N hives running" toggle whose `is-running`
  * class reflects the started count, and clicking it flips the nuqs ?hivesCtl param
- * to expand the inline LocalHivesControl popover. The flag client, the
+ * to expand the inline LocalPotsControl popover. The flag client, the
  * `hive.controlState` sync query, and the child control are all mocked so this
  * isolates the pill's guards + toggle.
  */
@@ -14,7 +14,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 // The pill now renders via the shared `<Popover>` (harness), which composes a Radix
 // `Tooltip` requiring a `TooltipProvider` ancestor — supplied at the app root in production.
 // Wrap the isolated renders in one, exactly as every sibling component test does
-// (Popover.test / HiveContentPanel / MemberWorkPanel / QueuePanel). Without it the pill renders
+// (Popover.test / PotContentPanel / MemberWorkPanel / QueuePanel). Without it the pill renders
 // throw "Tooltip must be used within TooltipProvider" — the green-checkpoint deploy blocker.
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 
@@ -30,7 +30,7 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: H.rows }) }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 // The child control boots its own sync/runtime — stub to a marker so we only
 // assert that the popover mounts it.
-vi.mock('../left-sidebar/LocalHivesControl', () => ({
+vi.mock('../left-sidebar/LocalPotsControl', () => ({
   default: () => <div data-testid="local-hives-control">control</div>,
 }));
 
@@ -43,12 +43,12 @@ vi.mock('nuqs', () => ({
   parseAsBoolean: { withDefault: () => ({}) },
 }));
 
-import HivesRunningPill from './HivesRunningPill';
+import PotsRunningPill from './PotsRunningPill';
 
 /** Render the pill inside the TooltipProvider the shared Popover requires (see top-of-file). */
 const Pill = () => (
   <TooltipProvider>
-    <HivesRunningPill />
+    <PotsRunningPill />
   </TooltipProvider>
 );
 
@@ -60,7 +60,7 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe('<HivesRunningPill>', () => {
+describe('<PotsRunningPill>', () => {
   it('renders nothing when the POT_CONTROL flag is off', () => {
     H.flagOn = false;
     const { container } = render(<Pill />);
@@ -104,7 +104,7 @@ describe('<HivesRunningPill>', () => {
     expect(nuqs.set).toHaveBeenCalledWith(false);
   });
 
-  it('mounts the LocalHivesControl popover only while open', () => {
+  it('mounts the LocalPotsControl popover only while open', () => {
     const { rerender } = render(<Pill />);
     expect(screen.queryByTestId('hives-running-pop')).toBeNull();
     expect(screen.queryByTestId('local-hives-control')).toBeNull();

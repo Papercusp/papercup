@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * HivePolicyPanel — the minimal owner control surface for a Hive's enforceable policy
+ * PotPolicyPanel — the minimal owner control surface for a Hive's enforceable policy
  * (shared-hive-owner-enforcement-2026-06-19 EN-1, build step 4).
  *
  * Gated on the SAME authority as the authoring API: only a viewer who is a claimant of a
@@ -76,7 +76,7 @@ function linesToList(s: string): string[] {
   return s.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
 }
 
-export function HivePolicyPanel({ hive }: { hive: string }): React.ReactElement {
+export function PotPolicyPanel({ hive }: { hive: string }): React.ReactElement {
   const t = useLexicon();
   const [open, setOpen] = useQueryState('hivePolicy', parseAsBoolean.withDefault(false));
   const { data: claim } = useHarnessClaimStatus(hive);

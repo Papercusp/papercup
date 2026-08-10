@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-vi.mock('./HivesRunningPill', () => ({
+vi.mock('./PotsRunningPill', () => ({
   default: () => <div data-testid="hives-pill">pot running</div>,
 }));
 vi.mock('./AgentsRunningPill', () => ({

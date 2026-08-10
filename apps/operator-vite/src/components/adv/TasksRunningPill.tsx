@@ -3,8 +3,8 @@
  * (WI-6844, owner ask 2026-08-02: "move the location of it from the middle pane
  * to a button on our top bar to the right of the 'agents running' button").
  *
- * Third pill in `pc-advshell__header-status`, after HivesRunningPill and
- * AgentsRunningPill. Modelled on HivesRunningPill rather than AgentsRunningPill:
+ * Third pill in `pc-advshell__header-status`, after PotsRunningPill and
+ * AgentsRunningPill. Modelled on PotsRunningPill rather than AgentsRunningPill:
  * both are Popover-over-a-pill, but the hives one is the 65-line version that has
  * not accreted a roster, a search box and a bulk-action bar, and this pill's job
  * is only to open the panel.

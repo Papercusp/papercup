@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * HiveFederationStatus render + honesty coverage (Brief M / G-004).
+ * PotFederationStatus render + honesty coverage (Brief M / G-004).
  *
  * "The UI never lies" is this surface's whole reason to exist, so the assertions
  * are honesty-shaped: a 0-peer published hive must read "broadcasting into the
@@ -37,13 +37,13 @@ vi.mock('@papercusp/sync', () => ({
 // The pure label fns (reachLabel/substrateLabel/drainLabel) carry no lexicon nouns.
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-import HiveFederationStatus, {
+import PotFederationStatus, {
   reachLabel,
   substrateLabel,
   drainLabel,
   contentSyncLabel,
   type FedStatus,
-} from './HiveFederationStatus';
+} from './PotFederationStatus';
 
 /** Push one FedStatus onto the panel's sync query (flat one-element array). */
 function mockSync(body: FedStatus | null, error: Error | null = null) {
@@ -143,10 +143,10 @@ describe('drainLabel (install-wide SYNC honesty — EI-1618/EI-1599)', () => {
   });
 });
 
-describe('<HiveFederationStatus>', () => {
+describe('<PotFederationStatus>', () => {
   it('renders an announced hive\'s reach + the install substrate line', async () => {
     mockSync(status({ hives: [{ potId: 'h1', title: 'My Hive', visibility: 'public', memberCount: 1, reachablePeers: 4 }] }));
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     expect((await screen.findByTestId('fed-reach-h1')).textContent).toBe('discoverable to 4 peers');
     expect(screen.getByTestId('fed-substrate').textContent).toContain('2 harnesses booted');
     // honest scope note always present, now describing per-hive content-sync too (EI-1599)
@@ -171,7 +171,7 @@ describe('<HiveFederationStatus>', () => {
         ],
       }),
     );
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     const content = await screen.findByTestId('fed-content-h2');
     expect(content.textContent).toBe('syncing content with 2 peers · last synced 10s ago');
   });
@@ -184,14 +184,14 @@ describe('<HiveFederationStatus>', () => {
         ],
       }),
     );
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     const content = await screen.findByTestId('fed-content-h3');
     expect(content.textContent).toBe('no content-sync peers right now');
   });
 
   it('shows a 0-peer published hive as STRANDED (void copy + down dot), never "synced"', async () => {
     mockSync(status({ hives: [{ potId: 'h0', title: 'Lonely', visibility: 'public', memberCount: 1, reachablePeers: 0 }] }));
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     const reach = await screen.findByTestId('fed-reach-h0');
     expect(reach.textContent).toBe('no peers connected yet — broadcasting into the void');
     const tile = screen.getByTestId('fed-hive-h0');
@@ -201,13 +201,13 @@ describe('<HiveFederationStatus>', () => {
 
   it('shows a private hive honestly (not announced), not a 0-peer failure', async () => {
     mockSync(status({ hives: [{ potId: 'hp', title: 'Secret', visibility: 'private', memberCount: 0, reachablePeers: 0 }] }));
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     expect((await screen.findByTestId('fed-reach-hp')).textContent).toBe('private — not announced');
   });
 
   it('flags a degraded substrate with a down dot', async () => {
     mockSync(status({ substrate: { active: true, bootedHarnesses: 2, healthy: 1, booting: 0, degraded: 1 } }));
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     const sub = await screen.findByTestId('fed-substrate');
     expect(sub.textContent).toContain('⚠ 1 degraded');
     expect(sub.querySelector('.pclsb-dot.is-down')).toBeTruthy();
@@ -226,7 +226,7 @@ describe('<HiveFederationStatus>', () => {
         },
       }),
     );
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     const drain = await screen.findByTestId('fed-drain');
     expect(drain.textContent).toContain('not syncing');
     expect(drain.textContent).toContain('5 changes');
@@ -247,20 +247,20 @@ describe('<HiveFederationStatus>', () => {
         },
       }),
     );
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     await screen.findByTestId('fed-substrate');
     expect(screen.queryByTestId('fed-drain')).toBeNull();
   });
 
   it('honest empty state when no hives are published', async () => {
     mockSync(status({ hives: [] }));
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     expect((await screen.findByTestId('fed-no-hives')).textContent).toMatch(/No pot published/);
   });
 
   it('surfaces a sync error instead of claiming health', async () => {
     mockSync(null, new Error('resolver failed'));
-    render(<HiveFederationStatus />);
+    render(<PotFederationStatus />);
     expect((await screen.findByText(/status unavailable/)).textContent).toMatch(/resolver failed/);
   });
 });

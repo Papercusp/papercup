@@ -10,17 +10,17 @@
  *
  * ── SCOPE, AND WHY IT IS NARROW ──────────────────────────────────────────────
  *
- * PLACEMENT is gated only on projects this goal OWNS. `goal_projects.role` is
+ * PLACEMENT is gated only on pots this goal OWNS. `goal_pots.role` is
  * load-bearing here (migration 765, D-019/D-021): `owner` is the single goal
- * permitted to place work into a project, while a `contributing` link is driven by
- * a DIFFERENT goal's placement. Stopping a contributing project would halt work
+ * permitted to place work into a pot, while a `contributing` link is driven by
+ * a DIFFERENT goal's placement. Stopping a contributing pot would halt work
  * this goal does not own — so contributing links are listed in the report and
  * deliberately left running.
  *
  * LOOPS are disarmed only for sessions ATTRIBUTED to this goal — a GOAL-mode
  * `agent_modes` row whose `subject` is this goal id. The tempting alternative,
- * "disarm every active loop in the goal's projects", is a fleet-wide kill switch
- * fired by a label change: a goal's project is routinely `papercusp` itself, where
+ * "disarm every active loop in the goal's pots", is a fleet-wide kill switch
+ * fired by a label change: a goal's pot is routinely `papercusp` itself, where
  * dozens of unrelated su sessions hold active loops. Verified live 2026-08-09 —
  * `harness_shared.routines` carried many active `loop-su-*` rows on `install_slug =
  * 'papercusp'`, none of them belonging to any goal.
@@ -36,13 +36,13 @@
  * false premise.
  *
  * So this returns `unattributedActiveLoops`: active loops running in the goal's own
- * projects that could NOT be tied to the goal and were left alone. That is the
+ * pots that could NOT be tied to the goal and were left alone. That is the
  * detector EI-19995648221353323 asks for, delivered at the moment the stop intent is
  * expressed rather than discovered days later from the pool. A caller that renders
  * only `status` will still be wrong — which is why `degraded` is set alongside it.
  */
 
-import { getOrgPg, projectsForGoal } from '@papercusp/db-org';
+import { getOrgPg, potsForGoal } from '@papercusp/db-org';
 import {
   setGoalTransitionExecutor,
   isStoppingStatus,
@@ -77,21 +77,21 @@ async function attributedOwners(
 }
 
 /**
- * Active engine loops running in these projects that are NOT in `sparedNames`.
+ * Active engine loops running in these pots that are NOT in `sparedNames`.
  * Counted AFTER the disarms so it reports what is still burning, not what was.
  */
 async function countUnattributedActiveLoops(
   sql: ReturnType<typeof getOrgPg>['sql'],
   workspaceId: string,
-  projects: string[],
+  pots: string[],
   stoppedNames: string[],
 ): Promise<number> {
-  if (projects.length === 0) return 0;
+  if (pots.length === 0) return 0;
   const [row] = await sql<Array<{ n: string }>>`
     SELECT count(*)::text AS n
       FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId}
-       AND install_slug = ANY(${projects})
+       AND install_slug = ANY(${pots})
        AND active = TRUE
        AND target_role = 'system:loop-wake'
        ${stoppedNames.length ? sql`AND name <> ALL(${stoppedNames})` : sql``}
@@ -103,15 +103,15 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
   const { sql } = getOrgPg();
   const { goalId, workspaceId, status } = input;
 
-  const links = await projectsForGoal(sql, { workspaceId, goalId });
+  const links = await potsForGoal(sql, { workspaceId, goalId });
   const owned = links.filter((l) => l.role === 'owner').map((l) => l.harnessSlug);
   const contributing = links.filter((l) => l.role !== 'owner').map((l) => l.harnessSlug);
 
-  // ── Tier 1: gate placement on the projects this goal owns ──────────────────
-  const projectsStopped: string[] = [];
+  // ── Tier 1: gate placement on the pots this goal owns ──────────────────────
+  const potsStopped: string[] = [];
   for (const slug of owned) {
     await pausePotState(sql, workspaceId, slug);
-    projectsStopped.push(slug);
+    potsStopped.push(slug);
   }
 
   // ── Tier 2: disarm the loops of sessions attributed to this goal ───────────
@@ -136,12 +136,12 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
   return {
     goalId,
     status,
-    projectsStopped,
-    projectsSkippedContributing: contributing,
+    potsStopped,
+    potsSkippedContributing: contributing,
     loopsStopped,
     unattributedActiveLoops,
     // Degraded when the stop is materially incomplete: we gated placement but real
-    // burn continues in the goal's own projects.
+    // burn continues in the goal's own pots.
     degraded: unattributedActiveLoops > 0,
   };
 }
@@ -173,7 +173,7 @@ async function countAttributedDisarmedLoops(
 /**
  * The resume half (WI-37615, plan D-013). NOT the inverse of the stop, by design.
  *
- * It restores PLACEMENT on the projects this goal owns — the thing the pause gated and
+ * It restores PLACEMENT on the pots this goal owns — the thing the pause gated and
  * that nothing else can un-gate, because `pausePotState` marks the pause `deliberate`
  * precisely so the recovery sweep leaves it alone. The fleet re-forms from placement.
  *
@@ -187,14 +187,14 @@ export async function executeGoalResume(input: GoalTransitionInput): Promise<Goa
   const { sql } = getOrgPg();
   const { goalId, workspaceId } = input;
 
-  const links = await projectsForGoal(sql, { workspaceId, goalId });
+  const links = await potsForGoal(sql, { workspaceId, goalId });
   const owned = links.filter((l) => l.role === 'owner').map((l) => l.harnessSlug);
   const contributing = links.filter((l) => l.role !== 'owner').map((l) => l.harnessSlug);
 
-  const projectsResumed: string[] = [];
+  const potsResumed: string[] = [];
   for (const slug of owned) {
     await resumePotState(workspaceId, slug);
-    projectsResumed.push(slug);
+    potsResumed.push(slug);
   }
 
   const owners = await attributedOwners(sql, workspaceId, goalId);
@@ -203,8 +203,8 @@ export async function executeGoalResume(input: GoalTransitionInput): Promise<Goa
   return {
     goalId,
     status: 'active',
-    projectsResumed,
-    projectsSkippedContributing: contributing,
+    potsResumed,
+    potsSkippedContributing: contributing,
     loopsLeftDisarmed,
     timeWakeRestored: false,
     // Degraded when the resume is materially incomplete: placement is open again but

@@ -19,7 +19,7 @@
  * write: SELECT -> UPDATE -> SELECT, no wake, no stop, no fan-out. Nothing outside
  * the goals tools reads `goals.status`, so pausing or killing a goal changed a
  * label and nothing else while the fleets, loops and pots pursuing it kept running.
- * The tool's own guidance said the projects "should have their projects wound down
+ * The tool's own guidance said the goals "should have their pots wound down
  * first" — i.e. the wind-down was documented as a manual prerequisite.
  *
  * THE HONESTY REQUIREMENT (EI-19995648221353323). The measured failure one level
@@ -33,30 +33,30 @@
  * caller read "paused" as "burn stopped" is the bug, not the fix.
  */
 
-/** What a goal stop did, per project and in total. Every field is a MEASUREMENT, not an intent. */
+/** What a goal stop did, per pot and in total. Every field is a MEASUREMENT, not an intent. */
 export interface GoalStopReport {
   /** The goal whose status moved. */
   goalId: string;
   /** The status it moved INTO — only 'paused' and 'killed' fan out. */
   status: 'paused' | 'killed';
   /**
-   * Projects whose placement was gated, i.e. those this goal is the `owner` of.
-   * A `contributing` link is deliberately NOT stopped: that project is driven by
+   * Pots whose placement was gated, i.e. those this goal is the `owner` of.
+   * A `contributing` link is deliberately NOT stopped: that pot is driven by
    * a DIFFERENT goal's placement, and stopping it would halt work this goal does
-   * not own (goal_projects role semantics, migration 765 D-019/D-021).
+   * not own (goal_pots role semantics, migration 765 D-019/D-021).
    */
-  projectsStopped: string[];
+  potsStopped: string[];
   /** Live pairings this goal only contributes to — listed so the caller sees they were spared. */
-  projectsSkippedContributing: string[];
+  potsSkippedContributing: string[];
   /**
    * Engine loops disarmed. Scoped to sessions ATTRIBUTED to this goal (a GOAL-mode
    * `agent_modes` row whose `subject` is this goal id) — never harness-wide, because
-   * a goal's project is routinely the same harness dozens of unrelated su sessions
+   * a goal's pot is routinely the same harness dozens of unrelated su sessions
    * loop in, and disarming those would be a fleet-wide kill switch fired by a label change.
    */
   loopsStopped: string[];
   /**
-   * ⚠ THE HONEST GAP. Active engine loops running IN this goal's owned projects that
+   * ⚠ THE HONEST GAP. Active engine loops running IN this goal's owned pots that
    * could NOT be attributed to the goal, and were therefore left running. A non-zero
    * value means the goal is paused but real burn continues — the exact false-premise
    * state EI-19995648221353323 measured. Surfaced at the moment the intent is
@@ -78,10 +78,10 @@ export interface GoalStopReport {
 export interface GoalResumeReport {
   goalId: string;
   status: 'active';
-  /** Projects whose placement was re-opened — the same OWNED set the stop gates. */
-  projectsResumed: string[];
+  /** Pots whose placement was re-opened — the same OWNED set the stop gates. */
+  potsResumed: string[];
   /** Contributing links, spared on the way down and untouched on the way up. */
-  projectsSkippedContributing: string[];
+  potsSkippedContributing: string[];
   /**
    * ⚠ THE HONEST GAP, resume edition. Sessions attributed to this goal whose engine
    * loop is currently disarmed and which this resume deliberately did NOT re-arm.

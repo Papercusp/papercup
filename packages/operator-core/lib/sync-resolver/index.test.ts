@@ -1216,8 +1216,8 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
   });
 
   /**
-   * WI-7087: pins the projection to the FIVE columns HiveContentPanel's own
-   * `HiveFeatureRow` declares. Both halves are asserted, because they fail in
+   * WI-7087: pins the projection to the FIVE columns PotContentPanel's own
+   * `PotFeatureRow` declares. Both halves are asserted, because they fail in
    * opposite directions: a column coming BACK is a silent re-inflation (`summary`
    * alone was 831,678 B = 56.58% of the live payload and nothing ever read it),
    * and a column going AWAY is a silent render break.
@@ -1226,7 +1226,7 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
    * a wider consumer set. The old resolver comment claimed the two mirrored each
    * other exactly, which is how `summary` survived `.bySlug` dropping it.
    */
-  it('projects exactly HiveContentPanel\'s five declared columns — no summary, no bare select', async () => {
+  it('projects exactly PotContentPanel\'s five declared columns — no summary, no bare select', async () => {
     const captured: { cols: string[] } = { cols: [] };
     vi.doMock('../harness-registry', () => ({
       hiveMemberHarnessScopes: vi.fn(() => ['hive-home']),
@@ -1265,7 +1265,7 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
     const { resolveNamedQueryV2: r } = await import('./index');
     await r('featuresConsolidated.byHive', { potHomeSlug: 'hive-home' });
 
-    // KEPT — exactly HiveFeatureRow (HiveContentPanel.tsx).
+    // KEPT — exactly PotFeatureRow (PotContentPanel.tsx).
     expect(new Set(captured.cols)).toEqual(
       new Set(['harnessSlug', 'featureId', 'title', 'status', 'updatedTs']),
     );

@@ -1,7 +1,7 @@
 /**
- * HivesRunningPill — the always-visible header control (hive-control-surface).
+ * PotsRunningPill — the always-visible header control (hive-control-surface).
  * A compact "▶ N running" pill in the AdvShell header toolbar; click expands an
- * inline panel with the full per-hive start/stop control (LocalHivesControl), so
+ * inline panel with the full per-hive start/stop control (LocalPotsControl), so
  * the Swarm's autonomous state is visible + flippable from anywhere — not just
  * inside one hive's status bar. Reads the same `hive.controlState` query the
  * Hives-tab control does. Hidden when no local hive is registered or the flag
@@ -15,12 +15,12 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
 import { useLexicon } from '@/lib/useLexicon';
 import { countStarted, hivesRunningLabel, type HiveControlRow } from './hive-control';
-import LocalHivesControl from '../left-sidebar/LocalHivesControl';
+import LocalPotsControl from '../left-sidebar/LocalPotsControl';
 // Portable pill styles (button base + hives popover) — shared with AdvShell so
 // this pill renders styled in the Quick Panel popup too (quick-panel-status-pills D-001).
 import './adv-header-pills.css';
 
-export default function HivesRunningPill() {
+export default function PotsRunningPill() {
   const t = useLexicon();
   const on = useFlag(FLAGS.POT_CONTROL);
   const [open, setOpen] = useQueryState('hivesCtl', parseAsBoolean.withDefault(false));
@@ -57,7 +57,7 @@ export default function HivesRunningPill() {
           id="pc-advshell-hives-pop"
           data-testid="hives-running-pop"
         >
-          <LocalHivesControl />
+          <LocalPotsControl />
         </div>
       </Popover>
     </div>

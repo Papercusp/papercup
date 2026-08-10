@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * HiveWorkspaceCards — the all-mode (`?scope=all`, "All Pots") workspace view
+ * PotWorkspaceCards — the all-mode (`?scope=all`, "All Pots") workspace view
  * for the Working tab (harnesses-tab-hive-model-2026-06-07 P-003 / D-003).
  *
  * Redesign 2026-07-07 (WI-3345, owner ask): this used to be a grid of big
@@ -12,7 +12,7 @@
  *
  *   Pot · Kind · Hive · Description · Members · State · Shared · Spec · Path
  *
- * The name kept `HiveWorkspaceCards` (its import + the `hive-workspace-cards`
+ * The name kept `PotWorkspaceCards` (its import + the `hive-workspace-cards`
  * mount oracle + the `hive-card-<slug>` / `hive-member-<slug>` row testids are
  * relied on by HarnessesWorkspace and the adv-harness-member-axis e2e). Rows
  * flatten `groupByHive`: each group's root (the hive/pot) is a `hive-card-*`
@@ -138,7 +138,7 @@ export function flattenPotRows(groups: readonly HiveGroup[]): PotRow[] {
   return rows;
 }
 
-export default function HiveWorkspaceCards({ groups, workspaceLabel, onDrill, onCreate }: HiveWorkspaceCardsProps) {
+export default function PotWorkspaceCards({ groups, workspaceLabel, onDrill, onCreate }: HiveWorkspaceCardsProps) {
   const t = useLexicon();
   const hiveLabel = t('pot');
   const hivesLabel = t('pot', { plural: true });

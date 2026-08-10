@@ -2,7 +2,7 @@
 
 
 /**
- * HiveMemberRail — the in-tab member selector for the Harnesses tab
+ * PotMemberRail — the in-tab member selector for the Harnesses tab
  * (harnesses-tab-hive-model-2026-06-07 P-002).
  *
  * THIS is the "place to select the harnesses" the tab was missing: a
@@ -42,7 +42,7 @@ export interface HiveMemberRailProps {
   livenessBySlug?: Record<string, boolean>;
 }
 
-export default function HiveMemberRail({
+export default function PotMemberRail({
   members,
   activeSlug,
   onSelect,

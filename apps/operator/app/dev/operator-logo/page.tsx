@@ -7,7 +7,7 @@ import {
   HiveNounIcon,
   HivePrimaryMark,
   HiveQueenMark,
-} from '../../_components/HiveVisualIdentity';
+} from '../../_components/PotVisualIdentity';
 import styles from './logo-lab.module.css';
 
 // Labels follow the D-007-revised canon (the-hive-lexicon, packs.ts): the live

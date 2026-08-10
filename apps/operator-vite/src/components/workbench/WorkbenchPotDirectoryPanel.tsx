@@ -1,5 +1,5 @@
 /**
- * WorkbenchHiveDirectoryPanel — the desktop workbench's P2P hive-directory
+ * WorkbenchPotDirectoryPanel — the desktop workbench's P2P hive-directory
  * browser (p2p-hive-directory-2026-06-06 P-007).
  *
  * Browses the hives this peer has discovered on the well-known directory topic
@@ -62,7 +62,7 @@ const headerRow: React.CSSProperties = {
   padding: '8px 12px 0',
 };
 
-export function WorkbenchHiveDirectoryPanel({ api }: PanelComponentProps): React.ReactElement {
+export function WorkbenchPotDirectoryPanel({ api }: PanelComponentProps): React.ReactElement {
   const t = useLexicon();
   // Route the live tab title through the lexicon so the static registry
   // title ('Hives') is overridden with the classic-pack term when THE_HIVE
@@ -190,7 +190,7 @@ let registered = false;
 export function registerWorkbenchHiveDirectoryPanel(): void {
   if (registered) return;
   registered = true;
-  panelRegistry.register('workbench:hive-directory', WorkbenchHiveDirectoryPanel, {
+  panelRegistry.register('workbench:hive-directory', WorkbenchPotDirectoryPanel, {
     keepAlive: true,
     title: 'Pots',
   });

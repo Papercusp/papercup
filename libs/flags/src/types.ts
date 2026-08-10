@@ -1003,8 +1003,8 @@ export const FLAGS = {
   // flags-default-on policy): the bar is additive surfacing over a tested engine.
   GRID_COLUMN_FILTERS: "papercusp-grid-column-filters",
   // hive-control-surface-2026-06-14: gates the central LOCAL-hive start/stop
-  // control — the Hives-tab LocalHivesControl panel + the always-visible header
-  // HivesRunningPill ("N running" + click-to-expand per-hive toggles). Reads
+  // control — the Hives-tab LocalPotsControl panel + the always-visible header
+  // PotsRunningPill ("N running" + click-to-expand per-hive toggles). Reads
   // hive.controlState; writes via pot:start / pot:pause. DEFAULT ON (alpha
   // flags-default-on): additive surfacing over the existing gated controls; OFF
   // = the new surfaces render nothing (per-hive start/stop in AdvNowRunning is

@@ -48,7 +48,7 @@ vi.mock('../adv/adv-harness-selection', () => ({ ALL_HARNESSES_OPTION: '__all__'
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => true }));
 // Lexicon resolver mocked to ECHO its key (t('brain') → 'brain', t('pot') → 'pot')
 // — isolates from the THE_HIVE flag hook (restore-pot-lexicon P-005). The routed
-// header/summary strings aren't asserted here; the tree UI is HiveSteeringTree's.
+// header/summary strings aren't asserted here; the tree UI is PotSteeringTree's.
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 import MugTab from './MugTab';

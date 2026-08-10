@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// WorkbenchHiveDirectoryPanel render + Join CTA gating (p2p-hive-directory P-007).
+// WorkbenchPotDirectoryPanel render + Join CTA gating (p2p-hive-directory P-007).
 // P-009 (data-sync-push-completion): the directory is now push-driven via the
 // `network.hiveDirectory` sync query (not the old /api/discovery/pots poll), so
 // the directory data is mocked through useSyncQuery (the AdvNowRunning pattern);
@@ -32,7 +32,7 @@ vi.mock('@papercusp/sync', () => ({
 // hive→pot routed copy from the THE_HIVE flag hook (restore-pot-lexicon P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-import { WorkbenchHiveDirectoryPanel } from './WorkbenchHiveDirectoryPanel';
+import { WorkbenchPotDirectoryPanel } from './WorkbenchPotDirectoryPanel';
 
 // The panel is a dock panel — it receives PanelComponentProps and sets its live
 // title via api.setTitle. Supply an inert api so rendering standalone works.
@@ -71,25 +71,25 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
+describe('WorkbenchPotDirectoryPanel (P-007 / P-009)', () => {
   it('renders discovered hives (title/owner/visibility)', async () => {
     dirRows = [
       { potId: 'ash', title: 'Ash Hive', description: 'shop work', owner: 'alice', visibility: 'public', memberTopics: ['a'], memberLinks: ['papercusp://harness?topic=a'], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
     ];
-    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
+    render(<WorkbenchPotDirectoryPanel {...panelProps} />);
     expect(await screen.findByText('Ash Hive')).toBeTruthy();
     expect(screen.getByText(/owner: alice/)).toBeTruthy();
   });
 
   it('shows the loading state while the first push has not resolved', () => {
     dirRows = undefined;
-    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
+    render(<WorkbenchPotDirectoryPanel {...panelProps} />);
     expect(screen.getByText(/Loading the pot directory/)).toBeTruthy();
   });
 
   it('shows the empty-state when no hives are discovered', async () => {
     dirRows = [];
-    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
+    render(<WorkbenchPotDirectoryPanel {...panelProps} />);
     expect(await screen.findByText(/No pot discovered yet/)).toBeTruthy();
   });
 
@@ -97,7 +97,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     dirRows = [
       { potId: 'topic-only', title: 'Topic Hive', description: '', owner: 'bob', visibility: 'public', memberTopics: ['a', 'b'], memberLinks: [], memberCount: 2, createdAt: 1, lastSeenMs: 1 },
     ];
-    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
+    render(<WorkbenchPotDirectoryPanel {...panelProps} />);
     const btn = (await screen.findByRole('button', { name: 'Join' })) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     expect(screen.getByText('link required')).toBeTruthy();
@@ -107,7 +107,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     dirRows = [
       { potId: 'ash', title: 'Ash Hive', description: '', owner: 'al', visibility: 'public', memberTopics: ['a'], memberLinks: [], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
     ];
-    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
+    render(<WorkbenchPotDirectoryPanel {...panelProps} />);
     fireEvent.click(await screen.findByTestId('hive-directory-refresh'));
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
   });
@@ -118,7 +118,7 @@ describe('WorkbenchHiveDirectoryPanel (P-007 / P-009)', () => {
     ];
     const fetchMock = mockJoinFetch();
     vi.stubGlobal('fetch', fetchMock);
-    render(<WorkbenchHiveDirectoryPanel {...panelProps} />);
+    render(<WorkbenchPotDirectoryPanel {...panelProps} />);
     const btn = await screen.findByRole('button', { name: 'Join' });
     fireEvent.click(btn);
     // The panel reports the hive slug + member tally from the composed response.

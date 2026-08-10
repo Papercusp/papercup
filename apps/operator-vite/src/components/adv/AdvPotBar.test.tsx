@@ -115,7 +115,7 @@ vi.mock('@/app/harness/Select', () => ({
 // `hiveShareMeta` per test; default null = never published (unshared → the Share
 // button shows). `public`/`invite` = shared → the Shared badge shows.
 let hiveShareMeta: { found: boolean; visibility: 'public' | 'invite' | 'private' | null } | null = null;
-vi.mock('@/app/harness/ShareHiveDialog', () => ({
+vi.mock('@/app/harness/SharePotDialog', () => ({
   defaultFetchShareMeta: vi.fn(async () => hiveShareMeta),
 }));
 
@@ -130,7 +130,7 @@ vi.mock('./AdvNowRunning', () => ({
 // row must NOT import them any more. The stubs stay deliberately: they are what
 // makes the negative assertion below real — re-adding either import here would
 // render a stub and red the test, rather than silently restoring the duplicate.
-vi.mock('./HivesRunningPill', () => ({ default: () => <div data-testid="hives-pill" /> }));
+vi.mock('./PotsRunningPill', () => ({ default: () => <div data-testid="hives-pill" /> }));
 vi.mock('./AgentsRunningPill', () => ({ default: () => <div data-testid="agents-pill" /> }));
 vi.mock('./DiscordBadge', () => ({
   default: ({ slug }: { slug: string | null }) => (
