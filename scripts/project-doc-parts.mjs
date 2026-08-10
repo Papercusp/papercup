@@ -730,6 +730,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         records[spec.client] = projectionRecord({ file: spec.file, text: out.text });
         if (isPrimary) primaryText = out.text;
         console.log(`    ✓ wrote ${spec.file}  (${verdict.reason})`);
+      } else {
+        // Reported on a dry run too, and deliberately: the verdict is the interesting
+        // half of `--check`. Without it a dry run cannot distinguish "this file would be
+        // updated" from "this file would be REFUSED", which is exactly the state
+        // EI-20055472930397669 sat in undetected — and it makes the guard falsifiable
+        // against the live database with no write.
+        console.log(`    overwrite    allowed (${verdict.reason}) — dry run, not written`);
       }
     }
 
