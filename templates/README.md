@@ -136,11 +136,26 @@ official v1 mechanism that closes them:
 - **Other component packages** (`@papercusp/sync`, `@papercusp/ui-primitives`,
   …) are not published to npm either and are NOT vendored (they have runtime
   deps or platform coupling the mirror can't carry). The official v1
-  mechanism: `file:`-link
-  them from a **local papercusp install** (`<install>/libs/generic/<pkg>`) —
-  e.g. `"@papercusp/sync": "file:../papercusp/libs/generic/sync"`. A
-  papercusp install is a prerequisite for building a papercusp app; the
-  templates assume its `libs/generic/*` tree is reachable.
+  mechanism: `file:`-link them from a **local papercusp install**
+  (`<install>/libs/generic/<pkg>`).
+
+  ⚠ **Do NOT copy a relative example path into an app.** This bullet used to
+  read `"@papercusp/sync": "file:../papercusp/libs/generic/sync"`, which only
+  works inside a dev checkout that happens to have a sibling `papercusp/` repo.
+  On a real install there is no such sibling, so that dependency resolves to
+  nothing and `npm install` fails on a package that also 404s on npm (all of
+  these are `private: true`). **The path is per-install and the product now
+  reports it**: `templates:get-guide` and `templates:new-app` both return a
+  `supplyChain` block carrying this install's resolved `libs/generic` root and
+  an absolute `file:` spec to use, and `templates:new-app` also injects it into
+  the builder's kickoff. Read that instead of hardcoding a path
+  (`packages/operator-core/lib/cupboard/generic-libs-root.ts`).
+
+  `supplyChain.root: null` is a REAL answer, not an error: this install has no
+  source tree, so these packages cannot be linked at all — build with what the
+  template vendors, or install a build that ships `source.tar.zst`. That is the
+  current state of **macOS**, whose build paths default `PAPERCUSP_STAGE_SOURCE`
+  to 0 and ship no source archive (WI-37790).
 - **Runnable checks harness**: the mirror root carries `package.json` +
   `vitest.config.ts`, so `npm install && npm test` runs every
   `<id>/checks/*.test.ts` — `composition-integrity` green against the

@@ -310,3 +310,72 @@ describe('composeNewApp — compensating rollback after a durable create (WI-377
     expect(payload.error).not.toContain('is safe');
   });
 });
+
+/**
+ * P-005 / WI-37791 — the per-install component-package path reaches the builder.
+ *
+ * The GUIDE ships one text to every platform and can only cite the dev-checkout
+ * example, so the resolved root has to be injected at kickoff time. A builder that
+ * never sees it writes `file:../papercusp/libs/generic/<pkg>` and fails npm install
+ * on packages that are all private — which is the bug this closes.
+ */
+describe('composeNewApp — libs/generic supply chain', () => {
+  const withTree: NewAppDeps['resolveSupplyChain'] = () => ({
+    root: '/opt/install/dev-source/libs/generic',
+    sourceRoot: '/opt/install/dev-source',
+    source: 'dev-source-tree',
+    pending: false,
+    available: ['sync', 'ui-primitives'],
+    explanation: 'RESOLVED-ROOT-EXPLANATION',
+  });
+  const noTree: NewAppDeps['resolveSupplyChain'] = () => ({
+    root: null,
+    sourceRoot: null,
+    source: 'none',
+    pending: false,
+    available: [],
+    explanation: 'CANNOT be file:-linked here — NO-TREE-EXPLANATION',
+  });
+
+  it('reports the resolved root on the result AND in the builder kickoff', async () => {
+    const { inner, calls } = mockInner();
+    const result = await composeNewApp(
+      baseArgs(),
+      inner,
+      baseDeps({ resolveSupplyChain: withTree }),
+    );
+    const payload = parse(result);
+
+    expect(payload.supplyChain).toMatchObject({
+      root: '/opt/install/dev-source/libs/generic',
+      source: 'dev-source-tree',
+    });
+    const sent = calls.find((c) => c.name === 'agent_chats:send_message')!;
+    expect(sent.args.content).toContain('/opt/install/dev-source/libs/generic');
+    // The GUIDE still leads; the supply-chain correction follows it.
+    expect(sent.args.content.indexOf('MUST: ship a homepage.')).toBeLessThan(
+      sent.args.content.indexOf('/opt/install/dev-source/libs/generic'),
+    );
+  });
+
+  it('tells the builder plainly when this install has NO tree, rather than staying silent', async () => {
+    const { inner, calls } = mockInner();
+    const result = await composeNewApp(baseArgs(), inner, baseDeps({ resolveSupplyChain: noTree }));
+
+    expect(parse(result).supplyChain).toMatchObject({ root: null, source: 'none' });
+    const sent = calls.find((c) => c.name === 'agent_chats:send_message')!;
+    expect(sent.args.content).toContain('NO-TREE-EXPLANATION');
+    // Never the dev-checkout path as an instruction.
+    expect(sent.args.content).not.toContain('"file:../papercusp/libs/generic');
+  });
+
+  it('still reports the supply chain when no builder is kicked off', async () => {
+    const { inner } = mockInner();
+    const result = await composeNewApp(
+      baseArgs({ kickoffBuilder: false }),
+      inner,
+      baseDeps({ resolveSupplyChain: withTree }),
+    );
+    expect(parse(result).supplyChain.root).toBe('/opt/install/dev-source/libs/generic');
+  });
+});

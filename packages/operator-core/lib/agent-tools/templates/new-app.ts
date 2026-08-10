@@ -27,6 +27,11 @@ import { papercuspRoot } from '../../papercusp-root';
 import { resolveTemplateListing, fetchTemplateGuide } from '../../cupboard/templates';
 import { resolveLocalTemplate, readLocalGuide } from '../../cupboard/template-store';
 import {
+  resolveGenericLibsRoot,
+  describeSupplyChain,
+  type GenericLibsRootVerdict,
+} from '../../cupboard/generic-libs-root';
+import {
   materializeTemplateCore,
   compensateCreatedHarness,
   cloneSourceAcquire,
@@ -55,20 +60,33 @@ export interface ResolvedTemplateSource {
   acquireSourceDir: () => Promise<TemplateSourceDir>;
 }
 
-/** Compose the GUIDE.md into a builder kickoff message. */
+/**
+ * Compose the GUIDE.md into a builder kickoff message.
+ *
+ * The supply-chain block is appended AFTER the guide on purpose (P-005/WI-37791).
+ * The GUIDE is authored once and shipped to every platform, so it can only ever
+ * cite the dev-checkout example `file:../papercusp/libs/generic/<pkg>` — a path
+ * that does not exist on a real install. The resolved root is per-install, known
+ * only here, and it must reach the builder as an INSTRUCTION rather than sit in a
+ * tool result the builder may never read: this message is the one surface every
+ * kicked-off builder is guaranteed to see. Placing it last also means it is read
+ * as the correction to the guide's example, which is exactly its job.
+ */
 function kickoffMessage(
   listing: { title: string; ref: string },
   guide: string | null,
   guideTruncated: boolean,
+  supplyChain?: string,
 ): string {
   const head = `Build a new app from the "${listing.title}" template (ref: ${listing.ref}). Its files have been materialized into this harness — start from them.`;
+  const tail = supplyChain ? `\n\n---\n${supplyChain}` : '';
   if (!guide) {
-    return `${head}\n\n(The template GUIDE.md could not be pre-fetched — read GUIDE.md in the repo root, then compose the app per its MUST/SHOULD/FREE tiers.)`;
+    return `${head}\n\n(The template GUIDE.md could not be pre-fetched — read GUIDE.md in the repo root, then compose the app per its MUST/SHOULD/FREE tiers.)${tail}`;
   }
   const trunc = guideTruncated
     ? '\n\n[GUIDE.md truncated here — read the full GUIDE.md in the repo for the rest.]'
     : '';
-  return `${head}\n\nFollow the template's build guide below (honor its MUST/SHOULD/FREE tiers):\n\n---\n${guide}${trunc}`;
+  return `${head}\n\nFollow the template's build guide below (honor its MUST/SHOULD/FREE tiers):\n\n---\n${guide}${trunc}${tail}`;
 }
 
 /**
@@ -120,6 +138,12 @@ export interface NewAppDeps {
   ) => Promise<ResolvedTemplateSource | { error: string; status: number }>;
   /** The parent dir when the caller passes none (creates it if absent). */
   defaultParentDir: () => string;
+  /**
+   * Resolve THIS install's libs/generic root for the builder's `file:` deps
+   * (default: resolveGenericLibsRoot). Injected so a test can exercise both the
+   * has-a-tree and the no-tree install without a real filesystem.
+   */
+  resolveSupplyChain?: () => GenericLibsRootVerdict;
 }
 
 /**
@@ -171,6 +195,10 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
   if ('error' in src) return fail(src.status, src.error);
 
   const parentDir = args.parentDir?.trim() || deps.defaultParentDir();
+  // Resolved BEFORE any durable step so the answer is reported even when the
+  // builder kickoff is skipped or fails — the caller still needs to know where
+  // (or whether) this install's component packages can be linked from.
+  const supplyChain = (deps.resolveSupplyChain ?? resolveGenericLibsRoot)();
 
   // WI-37768: pot:create is the first DURABLE step, so anything that throws after it
   // strands the slug and blocks the retry. Roll the pot back — it was created by THIS
@@ -271,7 +299,12 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
       await inner('agent_chats:send_message', {
         slug: materialized.slug,
         chatId: chat.id,
-        content: kickoffMessage(src.listing, src.guide, src.guideTruncated),
+        content: kickoffMessage(
+          src.listing,
+          src.guide,
+          src.guideTruncated,
+          describeSupplyChain(supplyChain),
+        ),
       });
       builder = { spawned: true, chatId: chat.id, role: args.builderRole };
     } catch (e) {
@@ -289,6 +322,7 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
     filesCopied: materialized.filesCopied,
     template: { id: src.listing.id, ref: src.listing.ref, title: src.listing.title },
     guideBranch: src.guideBranch,
+    supplyChain,
     builder,
   });
 }
@@ -296,7 +330,7 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
 export default defineTool({
   name: 'templates:new-app',
   description:
-    'Materialize an app-template into a NEW pot (its own Hive home — a plan-capable project, created IDLE + local-only) and (by default) kick off a building agent seeded with the template GUIDE. V1: first-party templates ship BUNDLED, so this copies them from the local store (works offline). Composes pot:create + agent_chats. Args: `template` (ref e.g. "papercusp-webapp" or listing id), `slug` (new harness + folder name), `parentDir?` (default <~/.papercusp>/apps), `kickoffBuilder?` (default true), `builderRole?` (default "architect"). Returns { ok, harnessSlug, path, filesCopied, template, guideBranch, builder:{spawned,chatId?} }. This is the "build from a template NOW" verb — the write complement of templates:get-guide.',
+    'Materialize an app-template into a NEW pot (its own Hive home — a plan-capable project, created IDLE + local-only) and (by default) kick off a building agent seeded with the template GUIDE. V1: first-party templates ship BUNDLED, so this copies them from the local store (works offline). Composes pot:create + agent_chats. Args: `template` (ref e.g. "papercusp-webapp" or listing id), `slug` (new harness + folder name), `parentDir?` (default <~/.papercusp>/apps), `kickoffBuilder?` (default true), `builderRole?` (default "architect"). Returns { ok, harnessSlug, path, filesCopied, template, guideBranch, supplyChain, builder:{spawned,chatId?} } — `supplyChain` is the resolved libs/generic root for THIS install (the real path for `file:` deps, or an explicit statement that this install has none), and the builder kickoff carries it. This is the "build from a template NOW" verb — the write complement of templates:get-guide.',
   guidance: {
     when: 'The user picked a template (from templates:list, or named one) and wants to START building the app — this scaffolds the harness AND hands the GUIDE to a builder in one call.',
     notWhen:
