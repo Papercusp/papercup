@@ -46,6 +46,7 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
     carry: 'warm',
     continuation: 'settle',
     mode: 'work',
+    goal: null,
     fireCount: 10,
     firesSinceArm: 10,
     parked: false,
