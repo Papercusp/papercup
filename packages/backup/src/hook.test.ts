@@ -246,6 +246,81 @@ describe('runPreSnapshotHook outcome logging', () => {
   });
 });
 
+/**
+ * The free-space guard is sized to the DUMP, never to the DISK
+ * (EI-20109034777197353).
+ *
+ * The original rule asked for 10% of total capacity, capped at 100GiB. On this
+ * 2TB box that saturated at the cap, so writing a 1.7GB dump demanded 100GiB
+ * free — unsatisfiable in normal operation. The guard meant to protect the
+ * backup silently DISABLED it, hourly, for 26 hours, while the snapshot ledger
+ * kept committing status='ok'.
+ *
+ * The numbers below are the real measured ones from that incident, so a
+ * reserve that drifts back toward a capacity-derived constant fails here.
+ */
+describe('free-space reserve is sized to the dump, not the disk (EI-20109034777197353)', () => {
+  const GIB = 1024n * 1024n * 1024n;
+  /** The real dump: ~1.7GB (pg-embedded.sql.gz, 2026-08-09). */
+  const REAL_DUMP_BYTES = 1_780_687_612;
+  /** Free space at the last skipping tick: ~35GB. */
+  const REAL_FREE_BYTES = 35_319_316_480;
+  /** What the old rule demanded to write that 1.7GB file. */
+  const OLD_RESERVE_BYTES = 107_374_182_400n;
+  const blocksFor = (bytes: number) => Math.floor(bytes / 4096);
+
+  it('asks for single-digit GiB to write the real 1.7GB dump — not the 100GiB the old rule demanded', () => {
+    const reserve = requiredFreeBytes(BigInt(REAL_DUMP_BYTES));
+    expect(reserve).toBeLessThan(10n * GIB);
+    expect(reserve).toBeLessThan(OLD_RESERVE_BYTES);
+    // Still strictly more than the dump itself: the new .tmp and the previous
+    // dump coexist until the closing rename.
+    expect(reserve).toBeGreaterThan(BigInt(REAL_DUMP_BYTES) * 2n);
+  });
+
+  it('falls back to a fixed floor when no previous dump exists to measure', () => {
+    expect(requiredFreeBytes(null)).toBe(3n * GIB);
+    expect(requiredFreeBytes(0n)).toBe(3n * GIB);
+  });
+
+  it('scales with the dump — a reserve that ignores its input is the original bug', () => {
+    const small = requiredFreeBytes(1n * GIB);
+    const large = requiredFreeBytes(50n * GIB);
+    expect(large).toBeGreaterThan(small);
+    // A capacity-derived constant would be equal for both.
+    expect(large).not.toBe(small);
+  });
+
+  it('THE INCIDENT: 1.7GB dump with 35GB free now PROCEEDS (it skipped hourly for 26h)', async () => {
+    h.previousDumpSize = REAL_DUMP_BYTES;
+    h.availableBlocks = blocksFor(REAL_FREE_BYTES);
+    const result = await runPreSnapshotHook(ctx);
+    expect(result.ok).toBe(true);
+    expect(pgDumpCall()).toBeDefined();
+    expect(h.logLines.join('')).not.toMatch(/insufficient free space/);
+  });
+
+  it('still refuses when space is GENUINELY short, naming the dump it sized for', async () => {
+    h.previousDumpSize = REAL_DUMP_BYTES;
+    h.availableBlocks = blocksFor(2_000_000_000); // 2GB free vs a ~6.4GB need
+    await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({ ok: false });
+    expect(h.spawnCalls.filter((c) => c.cmd === 'pg_dump')).toHaveLength(0);
+    expect(h.logLines.join('')).toMatch(
+      new RegExp(`insufficient free space.*needed for a dump of ${REAL_DUMP_BYTES} bytes`),
+    );
+  });
+
+  it('reclaims a stale .tmp even on the SKIP path — the orphan outlived 26h of skips', async () => {
+    h.previousDumpSize = REAL_DUMP_BYTES;
+    h.availableBlocks = blocksFor(2_000_000_000);
+    await runPreSnapshotHook(ctx);
+    // dumpPg never ran (see the assertion above), so this unlink can ONLY have
+    // come from the pre-check — which is the point: under the old ordering the
+    // orphaned .tmp was re-captured by every snapshot forever.
+    expect(h.unlinkCalls.some((p) => p.endsWith('pg-embedded.sql.gz.tmp'))).toBe(true);
+  });
+});
+
 describe('runPreSnapshotHook broken-pipe resilience (deploy-crash regression 2026-07-10)', () => {
   // The pg_dump→gzip pipe (`dump.stdout.pipe(gz.stdin)`) is a socket. When gzip
   // dies mid-stream (SIGKILL from the 60s timeout, OOM under load, a crash),
