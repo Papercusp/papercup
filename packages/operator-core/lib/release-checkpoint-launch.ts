@@ -1115,6 +1115,9 @@ export async function assessPreLaunchExclusion(args: {
   maxWaitSec?: number;
   /** Injectable for tests; defaults to the real systemd probe. */
   activeRun?: (root: string, execFn: ExecSyncLike) => boolean;
+  /** Injectable for tests. A doMock CANNOT reach this call — it is an internal module
+   *  binding — so without this seam any test of the gate forks git against the live repo. */
+  containmentFn?: typeof checkpointCandidateContainment;
 }): Promise<PreLaunchExclusion> {
   const open = (proceedReason: PreLaunchProceedReason, rest: Partial<PreLaunchExclusion> = {}): PreLaunchExclusion => ({
     refuse: false,
@@ -1145,7 +1148,7 @@ export async function assessPreLaunchExclusion(args: {
   // Nothing was cut, so nothing can be excluded.
   if (candidate === tip) return open('no-quiet-cut', { candidate, tip, quietCutSec });
 
-  const containment = await checkpointCandidateContainment({
+  const containment = await (args.containmentFn ?? checkpointCandidateContainment)({
     root,
     candidateSha: candidate,
     tipSha: tip,

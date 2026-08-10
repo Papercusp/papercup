@@ -3279,6 +3279,22 @@ describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches th
     expect(body.indexOf('--- orchestrator transcript')).toBeLessThan(body.indexOf('Test Files  571 passed'));
   });
 
+  it('⭐ the header FORWARDS to the promotion trailer (EI-20014356905761236)', async () => {
+    // The seam between the two halves of that fix, which are otherwise tested apart: the
+    // header is written HERE, by the suite dep, and cannot know the promotion outcome — the
+    // decision is taken later, by runGreenCheckpoint. So this line's only job is to forward
+    // the reader. Stop forwarding and `green=true` goes straight back to being read as
+    // "this became the pin", which is the whole incident.
+    const body = await runAndReadLog('Test Files  3 passed (3)\n');
+    const header = body.split('\n')[0]!;
+
+    expect(header).toContain('green=');
+    expect(header).toContain('promoted=see-GATE_PROMOTION');
+    // ...and it must state what ABSENCE means, or a run killed before its decision (which
+    // writes no trailer at all) reads as a missing field rather than a real third state.
+    expect(header).toContain('never reached a promotion decision');
+  });
+
   it('adds no fence at all when the run recorded nothing (an empty header is worse than none)', () => {
     // Kept as a direct call rather than a runGreen round-trip: runGreen legitimately logs
     // its own lines before the write, so "empty transcript" is not reachable through it.

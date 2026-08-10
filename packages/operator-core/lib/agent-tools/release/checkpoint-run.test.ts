@@ -34,6 +34,22 @@ function parse(result: { content: Array<{ text: string }> }): Record<string, unk
  * containment logic itself is tested in candidate-contains.test.ts and
  * release-checkpoint-launch.test.ts.
  */
+/**
+ * EI-20025784115349280 — the pre-launch exclusion gate, pinned OPEN. Its real implementation
+ * forks git + systemctl against the live repo, so any test that passes `paths` and does not
+ * inject this is testing whatever the fleet happened to commit in the last four minutes.
+ * A test that wants the gate to FIRE supplies its own verdict instead of this one.
+ */
+const PRELAUNCH_OPEN = vi.fn(async () => ({
+  refuse: false,
+  proceedReason: 'no-declared-paths' as const,
+  candidate: null,
+  tip: null,
+  quietCutSec: null,
+  blockedPaths: [],
+  waitSec: null,
+}));
+
 const NO_CONTAINMENT = vi.fn(async () => ({
   candidateSha: null,
   tipSha: null,
@@ -722,6 +738,12 @@ describe('release:checkpoint-run', () => {
       ...(await orig()),
       launchDetachedCheckpoint: launchSpy,
       checkpointCandidateContainment: containmentSpy,
+      // EI-20025784115349280: the pre-launch gate calls the REAL containment (an internal
+      // module binding a doMock cannot reach), so without this a `paths` test forks git and
+      // systemctl against the live repo — non-deterministic, and the verdict would depend on
+      // whatever the fleet had just committed. These cases are about the POST-launch warning;
+      // pin the gate open so they keep testing exactly that.
+      assessPreLaunchExclusion: PRELAUNCH_OPEN,
     }));
     return { launchSpy, containmentSpy };
   };
@@ -832,6 +854,7 @@ describe('release:checkpoint-run', () => {
       ...(await orig()),
       launchDetachedCheckpoint: launchSpy,
       checkpointCandidateContainment: containmentSpy,
+      assessPreLaunchExclusion: PRELAUNCH_OPEN,
     }));
 
     const { default: tool } = await import('./checkpoint-run');
