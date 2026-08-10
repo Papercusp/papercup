@@ -265,9 +265,25 @@ export interface WorkFeedHealth {
    *  `autoEligibleStuck` or used to trigger a Mug nudge/escalation (EI-14223).
    *  Optional; absent ⇒ 0 (prior callers/fixtures unaffected). */
   keylessHumanReviewBacklog?: number;
-  /** Active routines whose next_fire_at is long overdue (the dead-routine / EI-584 signal). */
+  /** Active routines whose next_fire_at is long overdue (the dead-routine / EI-584 signal).
+   *  ⚠ EI-20045691451471399: this is the UNCAPPED population count, NOT `deadRoutineNames.length`
+   *  — the names are a bounded display list. Deriving the count from that list is what reported
+   *  a measured 101-of-151 engine freeze as "20 dead routine(s)", pinned at the old fetch cap. */
   deadRoutines: number;
+  /** Exemplars to NAME: fleet-blocking routines (git-sync / green-checkpoint / release-trigger)
+   *  first, then most-overdue. A BOUNDED slice of `deadRoutines` — never its measure. */
   deadRoutineNames: string[];
+  /** Active in-scope durable routines — the denominator that makes `deadRoutines` legible
+   *  ("101 of 151" reads as an engine freeze; a bare "101" does not). Optional; absent ⇒
+   *  unknown, in which case render the bare count rather than inventing a ratio. */
+  deadRoutinesInScope?: number;
+  /** Every fleet-blocking routine among the overdue set, reported in FULL regardless of the
+   *  exemplar cap — so a fleet-wide commit outage can never be announced under a bystander
+   *  routine's name (the filed incident led with `pr-poll` and omitted `git-sync`). */
+  deadRoutineCriticalNames?: string[];
+  /** `deadRoutineNames` was cut to the exemplar cap (more routines are overdue than are named).
+   *  Optional; absent ⇒ the list is complete. Bounds the LIST only — `deadRoutines` stays exact. */
+  deadRoutineNamesTruncated?: boolean;
   /** Currently-PAUSED (active:false) routines flagged stale (WI-5839 /
    *  EI-18654017982759582 items 2+3): an unattributed pause (no recorded
    *  metadata.pause.reason) is flagged immediately; a reasoned pause is flagged once
