@@ -478,7 +478,29 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // `const u = 'https://x.com'; const ws = scope ?? 'default';` reported nothing.
     'check-shell-syntax.mjs',
     'check-smart-quotes.mjs',
-    'check-sql-guidance-justified.mjs',
+    // check-sql-guidance-justified.mjs was REMOVED here on 2026-08-10 (WI-37717). Detection now
+    // runs over stripCommentsOnly() for .ts; prose surfaces (.md/.mdx) are deliberately NOT
+    // masked, because there the agent-facing text IS the corpus and a TS parser would blank
+    // whatever follows a `//` in a URL. Same PARTIAL-mask shape as its siblings above — the
+    // token it reads IS a string literal (`description: '…'`, the guidance object's values), so
+    // stripCommentsAndStrings would take it silently 100% inert.
+    // Unmasked it walked COMMENT text as code in `guidanceRegions()` and was wrong in BOTH
+    // directions, each measured on the real corpus (986 agent-tool files):
+    //   - an apostrophe in a comment inside the object ("a peer's", "they haven't") opens a fake
+    //     string the walker never closes, so depth never returns to 0 and the region runs to EOF:
+    //     work_items/claim_next.ts's region covered the whole 22KB file, which would report that
+    //     tool's OWN implementation SQL as agent-facing guidance — precisely what the guard's
+    //     header promises it does not flag. mode/set.ts over-ran by 5.5KB the same way;
+    //   - the mirror image: a comment BETWEEN `description:` and its literal makes the walker see
+    //     `/` instead of a quote and skip the region entirely (3 live today — the prompt-weight
+    //     annotations agents add sit exactly there), and a brace in a comment closed
+    //     dev/pipeline_position.ts's region 9KB early. Guidance past that point was never linted.
+    // Both were LATENT, not live: none of the 3 affected files currently holds covered-table SQL,
+    // and the tree verdict is unchanged at 3 (all .mdx). Reachable, though — claim_next.ts is a
+    // work_items tool whose most likely future edit is exactly the SQL its runaway region covers.
+    // ⚠ The MARKER window still reads RAW text: a justification is normally written AS a comment
+    // (`// sql-snippet-justified: …`), so masking it would blank every justification in the repo
+    // and turn the guard into a false-positive machine. `--self-test` case 4 pins that.
     'check-systemd-startlimit-placement.mjs',
     'check-vacuous-negative-assertions.mjs',
     // check-workspace-default-sql.mjs was REMOVED here on 2026-08-10 (WI-37717 /

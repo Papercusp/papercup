@@ -70,11 +70,11 @@
  * (wire the leg, cut the relation, or record a `ruling` here).
  */
 import { readFileSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -307,19 +307,6 @@ export function formatReport(rows, roll, now, ctx = {}) {
   return out.join('\n');
 }
 
-function resolvePgUrl() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  try {
-    const p = JSON.parse(readFileSync(`${os.homedir()}/.papercusp/embedded-pg.json`, 'utf8'));
-    if (p?.host && p?.port && p.user && p.password) {
-      return `postgresql://${p.user}:${p.password}@${p.host}:${p.port}/papercusp`;
-    }
-  } catch {
-    /* no discovery file — fall through to the dev default */
-  }
-  return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-}
-
 async function main() {
   const relSource = readFileSync(path.join(HERE, '..', RELATIONS_SOURCE), 'utf8');
   const declared = parseDeclaredRelations(relSource);
@@ -335,7 +322,7 @@ async function main() {
   }
 
   const postgres = (await import('postgres')).default;
-  const sql = postgres(resolvePgUrl(), { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
+  const sql = postgres(resolveScriptPgUrl().url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
   const now = new Date();
   let observed = new Map();
   let censusRows = 0;

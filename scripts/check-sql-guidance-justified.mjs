@@ -47,11 +47,35 @@
  *
  *   node scripts/check-sql-guidance-justified.mjs           # report + exit 1
  *   node scripts/check-sql-guidance-justified.mjs --report  # report, exit 0
+ *   node scripts/check-sql-guidance-justified.mjs --self-test
+ *
+ * MASKING (WI-37717). Detection runs over `stripCommentsOnly()` text for .ts —
+ * COMMENTS ONLY, never stripCommentsAndStrings: what this guard reads IS a string
+ * literal (`description: '…'`, the `guidance` object's values), so blanking strings
+ * would take it silently 100% inert. Unmasked, `guidanceRegions()` walked comment
+ * text as code and was wrong in BOTH directions (each measured on the real corpus):
+ *
+ *   - an apostrophe in a comment inside the object ("a peer's", "they haven't")
+ *     opens a fake string the walker never closes, so `depth` never returns to 0
+ *     and the region runs to EOF — work_items/claim_next.ts's region covered the
+ *     WHOLE 22KB file, which would report that tool's own implementation SQL as
+ *     agent-facing guidance: precisely what the "deliberately does NOT flag" list
+ *     above promises. mode/set.ts over-ran by 5.5KB the same way;
+ *   - the mirror image, and the costlier one: a comment BETWEEN `description:` and
+ *     its literal makes the walker see `/` instead of a quote and skip the region
+ *     entirely (3 live today — the prompt-weight annotations agents add sit exactly
+ *     there), and a brace in a comment closed dev/pipeline_position.ts's region
+ *     9KB early. Guidance past that point is never linted.
+ *
+ * ⚠ The MARKER window is deliberately read from the RAW text: a justification is
+ * normally written AS a comment (`// sql-snippet-justified: …`), so masking it
+ * would blank every justification and turn the guard into a false-positive machine.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPORT_ONLY = process.argv.includes('--report');
@@ -101,7 +125,7 @@ const PATHSPECS = [
   'AGENT-ENV.md',
 ];
 
-function isTestFile(file) {
+export function isTestFile(file) {
   return (
     /\.test\.(ts|tsx|mjs)$/.test(file) ||
     file.includes('/__tests__/') ||
@@ -115,7 +139,7 @@ function isTestFile(file) {
  * string literal and the whole `guidance: { … }` object. SQL outside these is
  * the tool's own implementation — the thing we WANT.
  */
-function guidanceRegions(src) {
+export function guidanceRegions(src) {
   const regions = [];
   // description: '<literal>' — walk the literal so escapes/newlines are handled.
   for (const m of src.matchAll(/\bdescription\s*:\s*/g)) {
@@ -155,6 +179,24 @@ function guidanceRegions(src) {
   return regions;
 }
 
+/**
+ * Detection text for a file. `.ts` is masked COMMENTS-ONLY (length-preserving, so
+ * every offset below addresses raw and masked identically); prose surfaces are
+ * returned untouched — an .md/.mdx corpus IS the agent-facing text this guard
+ * exists to read, and running it through a TypeScript parser would blank whatever
+ * followed a `//` in a URL. See the masking note in the header.
+ */
+export function detectionText(relPath, src) {
+  if (!relPath.endsWith('.ts')) return src;
+  const masked = stripCommentsOnly(src, relPath);
+  // Length-preservation is what makes the offsets interchangeable. If a future
+  // stripper stops preserving it, fail loudly rather than address the wrong bytes.
+  if (masked.length !== src.length) {
+    throw new Error(`stripCommentsOnly changed length for ${relPath} (${src.length} -> ${masked.length})`);
+  }
+  return masked;
+}
+
 /** Byte offset of the START of 1-indexed `lineno` in `src`. */
 function lineOffset(src, lineno) {
   let off = 0;
@@ -165,6 +207,127 @@ function lineOffset(src, lineno) {
   }
   return off;
 }
+
+/**
+ * The whole per-site decision, PURE — given a candidate line (what `git grep`
+ * found) and the file's RAW text, is this an unjustified agent-facing snippet?
+ *
+ * Both the real run and `--self-test` call THIS, so a positive control cannot
+ * drift away from the code it is meant to pin.
+ *
+ * @returns {{ table: string } | null}  null = not a violation
+ */
+export function classifyHit({ file, lineno, content, rawSrc }) {
+  if (isTestFile(file) || !rawSrc) return null;
+  const src = detectionText(file, rawSrc);
+  const lines = src.split('\n');
+
+  // The SELECT may sit on an earlier line than the FROM git grep matched — look
+  // back a few lines so a wrapped column list can't slip past.
+  const windowStart = Math.max(0, lineno - 1 - SELECT_LOOKBACK);
+  const sqlMatch = lines.slice(windowStart, lineno).join('\n').match(SQL_RE);
+  if (!sqlMatch) return null;
+
+  // TS: only the agent-facing description/guidance text counts.
+  if (file.endsWith('.ts')) {
+    // Anchor on the FROM (this line) — it is inside the same literal as the SELECT.
+    const off = lineOffset(src, lineno) + Math.max(0, content.toLowerCase().indexOf('from'));
+    if (!guidanceRegions(src).some(([a, b]) => off >= a && off <= b)) return null;
+  }
+
+  // A justified site: the marker (WITH a reason) on this line, just above it, or
+  // just above the SELECT that opened the query (which may be further up).
+  // ⚠ RAW, not masked: a justification is normally written AS a comment, so
+  // reading this window from masked text would blank every marker in the repo.
+  const markerFrom = Math.max(0, windowStart - MARKER_LOOKBACK);
+  if (MARKER_RE.test(rawSrc.split('\n').slice(markerFrom, lineno).join('\n'))) return null;
+
+  return { table: sqlMatch[1].toLowerCase() };
+}
+
+// Import-safe: everything below the pure exports runs only when this file is the
+// entrypoint, so a test can import classifyHit/guidanceRegions without the scan
+// firing (and calling process.exit) at import time.
+const RUN_AS_MAIN = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (RUN_AS_MAIN && process.argv.includes('--self-test')) {
+  // POSITIVE CONTROLS + NON-REGRESSION ANCHORS. Two kinds, both required — do not
+  // "tidy" the second kind away for looking redundant:
+  //   [FALSIFIES]  cases 1, 2, 5 — measured to give the WRONG answer against the
+  //                pre-fix unmasked walker (proven 2026-08-10). These pin the fix.
+  //   [ANCHOR]     cases 3, 4, 6 — pass before AND after on purpose: they pin that
+  //                the mask did not make the guard inert (3), did not blank the
+  //                comment-borne justification markers (4), and did not start
+  //                running a TypeScript parser over prose surfaces (6). Those are
+  //                exactly the three ways this fix could have gone wrong.
+  // A no-diff run over the tree proves nothing; these do.
+  const SQL = `SELECT id FROM harness_shared.work_items WHERE state = 'open'`;
+  const cases = [
+    [
+      'over-extended region: an apostrophe in a comment inside guidance ran the region to EOF, ' +
+        "so the tool's OWN implementation SQL read as agent-facing (work_items/claim_next.ts, 18.5KB over)",
+      'packages/operator-core/lib/agent-tools/x/tool.ts',
+      `export const tool = {\n  guidance: {\n    // a peer's takeover — this apostrophe opened a fake string\n    when: 'claim the next item',\n  },\n  handler: async () => {\n    const rows = await sql(\`${SQL}\`);\n    return rows;\n  },\n};\n`,
+      7,
+      null, // implementation SQL is NOT a violation — that is the encapsulation working
+    ],
+    [
+      'skipped region: a comment BETWEEN `description:` and its literal made the walker see `/` ' +
+        'and drop the whole region (3 live in the corpus today)',
+      'packages/operator-core/lib/agent-tools/x/tool.ts',
+      `export const tool = {\n  description:\n    // PROMPT-WEIGHT: trimmed from 1180 chars\n    'To find open items run ${SQL}',\n};\n`,
+      4,
+      'work_items',
+    ],
+    [
+      'a genuine violation in a plain description still reports (the guard is not inert)',
+      'packages/operator-core/lib/agent-tools/x/tool.ts',
+      `export const tool = {\n  description: 'To find open items run ${SQL}',\n};\n`,
+      2,
+      'work_items',
+    ],
+    [
+      'a justification written AS a comment still silences the site (marker read from RAW)',
+      'packages/operator-core/lib/agent-tools/x/tool.ts',
+      `export const tool = {\n  // sql-snippet-justified: the counter-example the description is about\n  description: 'never run ${SQL}',\n};\n`,
+      3,
+      null,
+    ],
+    [
+      'SQL inside a plain comment is not agent-facing and must not report',
+      'packages/operator-core/lib/agent-tools/x/tool.ts',
+      `export const tool = {\n  guidance: {\n    // historically we told agents to ${SQL}\n    when: 'x',\n  },\n};\n`,
+      3,
+      null,
+    ],
+    [
+      'PROSE surfaces are never masked — an .mdx snippet still reports',
+      'apps/operator-docs/src/content/docs/agent-insights/x.mdx',
+      `Run this to see the queue:\n\n\`\`\`sql\n${SQL}\n\`\`\`\n`,
+      4,
+      'work_items',
+    ],
+  ];
+  let failed = 0;
+  for (const [name, file, rawSrc, lineno, expectTable] of cases) {
+    const content = rawSrc.split('\n')[lineno - 1] ?? '';
+    let got;
+    try {
+      got = classifyHit({ file, lineno, content, rawSrc });
+    } catch (e) {
+      got = `THREW ${e.message}`;
+    }
+    const ok = expectTable === null ? got === null : got && got.table === expectTable;
+    if (!ok) failed++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}\n       expected=${expectTable ?? 'no-violation'} got=${JSON.stringify(got)}`);
+  }
+  console.log(`\n--self-test: ${cases.length - failed}/${cases.length} passed`);
+  process.exit(failed ? 1 : 0);
+}
+
+if (!RUN_AS_MAIN) {
+  // Imported (a test, another script): expose the pure API only.
+} else {
 
 let raw = '';
 try {
@@ -196,34 +359,11 @@ for (const line of raw.split('\n')) {
   if (!m) continue;
   const [, file, linenoStr, content] = m;
   const lineno = Number(linenoStr);
-  if (isTestFile(file)) continue;
 
-  const src = fileText(file);
-  if (!src) continue;
-  const lines = src.split('\n');
+  const verdict = classifyHit({ file, lineno, content, rawSrc: fileText(file) });
+  if (!verdict) continue;
 
-  // The SELECT may sit on an earlier line than the FROM git grep matched — look
-  // back a few lines so a wrapped column list can't slip past.
-  const windowStart = Math.max(0, lineno - 1 - SELECT_LOOKBACK);
-  const sqlWindow = lines.slice(windowStart, lineno).join('\n');
-  const sqlMatch = sqlWindow.match(SQL_RE);
-  if (!sqlMatch) continue;
-
-  // TS: only the agent-facing description/guidance text counts.
-  if (file.endsWith('.ts')) {
-    // Anchor on the FROM (this line) — it is inside the same literal as the SELECT.
-    const off = lineOffset(src, lineno) + Math.max(0, content.toLowerCase().indexOf('from'));
-    const inGuidance = guidanceRegions(src).some(([a, b]) => off >= a && off <= b);
-    if (!inGuidance) continue;
-  }
-
-  // A justified site: the marker (WITH a reason) on this line, just above it, or
-  // just above the SELECT that opened the query (which may be further up).
-  const markerFrom = Math.max(0, windowStart - MARKER_LOOKBACK);
-  const markerWindow = lines.slice(markerFrom, lineno).join('\n');
-  if (MARKER_RE.test(markerWindow)) continue;
-
-  hits.push({ file, lineno, table: sqlMatch[1].toLowerCase(), content: content.trim() });
+  hits.push({ file, lineno, table: verdict.table, content: content.trim() });
 }
 
 if (hits.length === 0) {
@@ -261,3 +401,5 @@ console.log(
     `Rule: claimable-read-tool-and-sql-encapsulation-audit-2026-07-21 P-006.\n`,
 );
 process.exit(REPORT_ONLY ? 0 : 1);
+
+} // end RUN_AS_MAIN
