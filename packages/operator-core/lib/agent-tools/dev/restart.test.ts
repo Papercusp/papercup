@@ -47,6 +47,8 @@ import { tryAcquireResource, tryReleaseResource } from '../locks/su-lock-store';
 import { guardResource } from '../locks/resource-lock-guard';
 import { spawn } from 'node:child_process';
 import { probeServiceStart } from './systemd-service-probe';
+import { preflightRestartTarget } from './restart-preflight';
+import { mockImplementationTyped } from '../../testing/typed-mock';
 import { getOrgPg } from '@papercusp/db-org';
 
 const acquireM = vi.mocked(tryAcquireResource);
@@ -54,6 +56,21 @@ const releaseM = vi.mocked(tryReleaseResource);
 const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
+const preflightM = vi.mocked(preflightRestartTarget);
+/** A boot-integrity verdict. Defaults to an inspected, clean tree. */
+const bootVerdict = (over: Record<string, unknown> = {}) =>
+  ({
+    target: 'dev',
+    unit: 'papercup-dev-api.service',
+    checked: true,
+    ok: true,
+    requestedRoot: '/tree/apps/operator',
+    lockRoot: '/tree',
+    missing: [],
+    extraneous: [],
+    note: 'clean',
+    ...over,
+  }) as never;
 const orgPgM = vi.mocked(getOrgPg);
 const auditUnsafeM = vi.fn(async (_query: string, _params: unknown[]) => undefined);
 
@@ -86,6 +103,7 @@ beforeEach(() => {
   // Benign default: no live main process to report. Individual tests that care
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
   probeM.mockResolvedValue({ ok: true, mainPid: 0 } as never);
+  preflightM.mockResolvedValue(bootVerdict());
   auditUnsafeM.mockClear();
   orgPgM.mockReturnValue({ sql: { unsafe: auditUnsafeM } } as never);
 });
@@ -226,6 +244,73 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
 // already-running operator process — authorize:true is the in-band equivalent,
 // still gated behind confirm:true (the deliberate-action + drain gate), and
 // always audited (unlike the raw-systemctl bypass it exists to replace).
+// EI-18661647550414959. Unit-testing the preflight proves nothing about whether
+// dev:restart CALLS it — these are the call-site assertions. The failure being
+// prevented: a restart that returns {ok:true, restarted:true} and then crash-loops
+// the service on `[boot-integrity] FATAL` (exit 78), taking routines/git-sync down
+// fleet-wide, which is exactly what happened on 2026-07-25.
+describe('dev:restart boot-integrity preflight', () => {
+  const inconsistent = bootVerdict({ ok: false, missing: ['hono', 'postgres'], note: '[boot-integrity] /tree is INCONSISTENT' });
+
+  it('REFUSES an inconsistent tree and does NOT drain, lock, restart or audit', async () => {
+    // guardResource is deliberately left UNARMED: if the refusal ever regressed, the
+    // handler would call it and fail loudly rather than quietly restarting.
+    preflightM.mockResolvedValue(inconsistent);
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'x' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'dev',
+      reason: 'boot_integrity_inconsistent',
+      restarted: false,
+      drained: false,
+      boot_integrity: { checked: true, missing: ['hono', 'postgres'] },
+    });
+    // The whole point: the host is left UP on working code. Nothing was disturbed.
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('runs the preflight BEFORE the drain, against the requested target', async () => {
+    preflightM.mockResolvedValue(inconsistent);
+    await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'x' });
+    expect(preflightM).toHaveBeenCalledWith('bg-host');
+  });
+
+  it('override_boot_integrity:true proceeds — the restart may itself be the remedy', async () => {
+    mockImplementationTyped(guardM, runGuard(fenceOk()));
+    preflightM.mockResolvedValue(inconsistent);
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'x', override_boot_integrity: true }));
+
+    expect(b).toMatchObject({ ok: true, target: 'dev', restarted: true });
+    expect(spawnM).toHaveBeenCalled();
+  });
+
+  // Fails OPEN: a guard that cannot run must never be the reason a wedged host stays
+  // wedged. `checked:false` is NOT a clean bill, but it is also not a blocker.
+  it('proceeds when the tree could not be inspected (checked:false, ok:true)', async () => {
+    mockImplementationTyped(guardM, runGuard(fenceOk()));
+    preflightM.mockResolvedValue(bootVerdict({ checked: false, lockRoot: null, reason: 'no package-lock.json' }));
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'x' }));
+    expect(b).toMatchObject({ ok: true, restarted: true });
+  });
+
+  it('previews the verdict in the DRY RUN, where the decision is actually made', async () => {
+    preflightM.mockResolvedValue(inconsistent);
+    const b = body(await call({ target: 'dev' }));
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      boot_integrity: { checked: true, would_block: true, tree: '/tree', missing: ['hono', 'postgres'] },
+    });
+  });
+});
+
 describe('dev:restart confirm:true + authorize:true, PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
   it('fires a real restart on authorize:true alone (no env var needed) and writes an audit_log row tagged viaAuthorizeArg', async () => {
     guardM.mockImplementation(runGuard(fenceOk(5)) as never);
