@@ -201,3 +201,90 @@ describe('the census reaches the paths that ACTUALLY execute', () => {
     expect(observed[0]!.v).toBe(DERIVED_SIGNAL_CENSUS_VERSION);
   });
 });
+
+/**
+ * NEGATIVE CONTROLS — the falsifiability proof, kept EXECUTABLE and permanent.
+ *
+ * Measured at the pre-fix baseline (commit cfbb72e5a1): `coupling-divergence-stamp.ts`,
+ * `coupled-topics-read.ts` and `topics-feed.ts` contained ZERO occurrences of
+ * `observe`, and send.ts's only two were the English word "observed" in unrelated
+ * comments. So no executing path could accept or forward a sink, and every positive
+ * assertion above necessarily failed.
+ *
+ * ⚠ That argument is not kept as a comment alone, because a one-time manual mutation
+ * proves a guard discriminated ONCE and then rots. These controls assert the positive
+ * cases track ACTUAL SINK INVOCATION rather than being vacuously true — so if someone
+ * later "simplifies" the wiring back out, the positives fail rather than passing on a
+ * technicality. They deliberately mutate NOTHING on disk: mutating the shared tree to
+ * prove falsifiability races git-sync, which commits the whole tree on a timer and can
+ * publish the mutant even when nothing goes wrong (CLAUDE.md).
+ */
+describe('negative controls — the positive assertions above are not vacuous', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  it('a reader that IGNORES the sink (the pre-fix shape) observes nothing', async () => {
+    const { resolveCouplingDivergenceStamps } = await import(
+      '../agent-tools/coordination/coupling-divergence-stamp'
+    );
+    const observed: DerivedSignalCensus[] = [];
+
+    // Exactly the pre-fix behaviour of this hop: the sink arrives and is dropped.
+    const preFixReader = async () => new Map<string, readonly never[]>();
+
+    await resolveCouplingDivergenceStamps(
+      {
+        selfOwnerId: 'self-owner',
+        to: ['peer-1'],
+        sections: [{ forYouBecause: { relation: 'holds-a-lock-on', ref: 'some/file.ts' } }],
+        workspaceId: 'ws',
+        harnessSlug: 'papercusp',
+        observe: (c) => void observed.push(c),
+      },
+      preFixReader,
+    );
+
+    // If this were nonzero the positive test above would pass without any wiring.
+    expect(observed).toHaveLength(0);
+  });
+
+  it('a derivation that never calls observe leaves the collector empty', async () => {
+    // Proves the positive `readPeerRelations` assertion measures invocation, not
+    // merely that the property was accepted onto an options object.
+    const observed: DerivedSignalCensus[] = [];
+
+    vi.doMock('../agent-tools/coordination/presence-snapshot', () => ({
+      resolvePresenceScope: async () => ({}),
+      assemblePresenceSnapshot: async () => ({ active: [{ ownerId: 'peer-1' }] }),
+    }));
+    vi.doMock('../agent-tools/coordination/coupling-sources', () => ({
+      couplingSourcesFor: () => ({}),
+    }));
+    vi.doMock('./couplings', () => ({
+      listCouplingsFor: async () => [],
+      resolveCoupledPeers: () => [],
+      DERIVED_COUPLING_RELATIONS: [],
+    }));
+    vi.doMock('../agent-tools/locks/coordination-domain', () => ({
+      lockCoordinationDomain: () => '/repo',
+    }));
+    vi.doMock('./coupling-derivation', () => ({
+      // Accepts the sink and ignores it — a derivation that does not observe.
+      deriveCouplings: async () => [],
+    }));
+
+    const { readPeerRelations } = await import('../agent-tools/coordination/coupling-divergence-stamp');
+    await readPeerRelations('self-owner', {
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      observe: (c) => void observed.push(c),
+    });
+
+    expect(observed).toHaveLength(0);
+  });
+});
