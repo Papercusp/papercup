@@ -30,6 +30,7 @@ import {
   selfDescribingRoots,
   enumerateSelfDescribingDirs,
 } from './self-describing-store';
+import type { ShadowEvent } from './self-describing-store';
 
 /** A template resolved from the local store (a single self-describing subdir). */
 export interface LocalTemplate {
@@ -45,6 +46,13 @@ export interface LocalTemplate {
   /** Absolute path to the template's content dir (the overlay source). */
   dir: string;
   layer: 'bundled' | 'user';
+  /**
+   * Whether the dir carried a listing.json (the rich metadata). A dir with only
+   * template.yaml still resolves — that is the supported v2 install shape — but
+   * it is NOT allowed to silently degrade an official template it collides with
+   * (WI-37781).
+   */
+  hasListing: boolean;
 }
 
 export interface TemplateRoot {
@@ -133,7 +141,34 @@ export function readTemplateDir(dir: string, ref: string, layer: 'bundled' | 'us
     source: str(listing.source) ?? (layer === 'user' ? 'installed' : 'first-party'),
     dir,
     layer,
+    hasListing,
   };
+}
+
+/**
+ * Shadow policy (WI-37781). The user layer is the v2 install target and normally
+ * wins on a ref collision — that is deliberate. What is NOT acceptable is an
+ * INCOMPLETE user dir (no listing.json) silently replacing a COMPLETE official
+ * template, which downgrades it to an untitled, undescribed, non-official entry
+ * with no signal anywhere. That is the shape a half-written install leaves
+ * behind: an interrupted clone, a partial v2 marketplace write, a hand-copied
+ * dir. A listing-less user dir with no bundled collision still resolves fine, so
+ * the supported v2 "template.yaml only" install is unaffected.
+ */
+export function mayTemplateShadow(
+  next: LocalTemplate,
+  prev: LocalTemplate,
+): { allow: boolean; reason?: string } {
+  if (next.layer === 'user' && !next.hasListing && prev.hasListing) {
+    return {
+      allow: false,
+      reason:
+        `user-layer dir ${next.dir} has no listing.json and would downgrade the ` +
+        `${prev.source} template "${prev.title}" to an untitled entry — keeping the ${prev.layer} one. ` +
+        `Add listing.json to that dir, or remove it if it is stale residue.`,
+    };
+  }
+  return { allow: true };
 }
 
 /**
@@ -141,9 +176,26 @@ export function readTemplateDir(dir: string, ref: string, layer: 'bundled' | 'us
  * bundled one. Non-dir entries (README.md) and dirs without a manifest are skipped.
  */
 export function listLocalTemplates(roots: TemplateRoot[] = templateRoots()): LocalTemplate[] {
+  return listLocalTemplatesWithShadows(roots).templates;
+}
+
+/**
+ * Same enumeration, but ALSO returns every cross-layer ref collision — allowed
+ * or refused. Callers that render a template list should surface `shadows` so a
+ * degraded/overridden official template is visible instead of silent (WI-37781).
+ */
+export function listLocalTemplatesWithShadows(roots: TemplateRoot[] = templateRoots()): {
+  templates: LocalTemplate[];
+  shadows: ShadowEvent[];
+} {
   // Enumeration + user-shadows-bundled + sort live in the shared read core
   // (self-describing-store.ts, extracted for the rubric-store sibling).
-  return enumerateSelfDescribingDirs(roots, readTemplateDir);
+  const shadows: ShadowEvent[] = [];
+  const templates = enumerateSelfDescribingDirs(roots, readTemplateDir, {
+    mayShadow: mayTemplateShadow,
+    onShadow: (e) => shadows.push(e),
+  });
+  return { templates, shadows };
 }
 
 /** Resolve one template by ref (or id) from the local store, or null. */

@@ -14,7 +14,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { fetchCupboardTemplates, type TemplateListing } from '../../cupboard/templates';
-import { listLocalTemplates, toTemplateListing } from '../../cupboard/template-store';
+import { listLocalTemplatesWithShadows, toTemplateListing } from '../../cupboard/template-store';
 
 const ok = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
@@ -55,7 +55,8 @@ export default defineTool({
   async handler(args) {
     // v1: the first-party templates are bundled + resolved from the local store.
     const q = args.q?.trim().toLowerCase();
-    const localAll = listLocalTemplates().map(toTemplateListing);
+    const { templates: localTemplates, shadows } = listLocalTemplatesWithShadows();
+    const localAll = localTemplates.map(toTemplateListing);
     const local = q
       ? localAll.filter(
           (t) =>
@@ -87,6 +88,20 @@ export default defineTool({
       count: templates.length,
       source: marketplace ? 'local+marketplace' : 'local',
       templates,
+      // A user-layer dir colliding with a bundled ref used to happen SILENTLY,
+      // which is how two official templates spent weeks listed as untitled,
+      // non-official entries (WI-37781). Report every collision, and lead with
+      // the refused ones — those name a dir that needs a listing.json or removal.
+      ...(shadows.length
+        ? {
+            shadows,
+            shadowNote:
+              `${shadows.length} template ref(s) exist in more than one layer. ` +
+              (shadows.some((s) => s.refused)
+                ? 'REFUSED entries were kept official on purpose — the shadowing dir is incomplete (no listing.json); fix or remove it.'
+                : 'The user layer is in effect for these refs.'),
+          }
+        : {}),
       ...(marketplace && !reachable
         ? { note: 'Marketplace unreachable — showing the bundled first-party templates only.' }
         : {}),

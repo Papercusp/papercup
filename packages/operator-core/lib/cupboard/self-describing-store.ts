@@ -98,11 +98,40 @@ export function selfDescribingRoots(cfg: SelfDescribingRootsConfig): SelfDescrib
  * ref shadows a bundled one. Non-dir entries (README.md) and dirs the reader
  * rejects (no manifest) are skipped. Sorted by ref for stable output.
  */
+/**
+ * A later-layer entry met an earlier-layer entry on the same ref. Recorded
+ * whether or not the shadow was allowed, so a caller can SHOW it — silent
+ * shadowing is what let a half-written user-layer dir replace an official
+ * template with a nameless one (WI-37781).
+ */
+export interface ShadowEvent {
+  ref: string;
+  /** The layer that supplied the entry now in effect. */
+  winnerLayer: 'bundled' | 'user';
+  /** The layer whose entry was (or would have been) replaced. */
+  shadowedLayer: 'bundled' | 'user';
+  /** true when the shadow was REFUSED and the earlier entry was kept. */
+  refused: boolean;
+  reason?: string;
+}
+
+export interface EnumerateOptions<T> {
+  /**
+   * Decide whether `next` (a later, higher-precedence layer) may replace
+   * `prev`. Default: always allow — the historical blind-overwrite behaviour.
+   */
+  mayShadow?: (next: T, prev: T, ref: string) => { allow: boolean; reason?: string };
+  /** Called for every ref collision, allowed or refused. */
+  onShadow?: (event: ShadowEvent) => void;
+}
+
 export function enumerateSelfDescribingDirs<T>(
   roots: SelfDescribingRoot[],
   readDir: (dir: string, ref: string, layer: 'bundled' | 'user') => T | null,
+  opts: EnumerateOptions<T> = {},
 ): T[] {
   const byRef = new Map<string, T>();
+  const layerByRef = new Map<string, 'bundled' | 'user'>();
   for (const root of roots) {
     if (!existsSync(root.dir)) continue;
     let entries: string[];
@@ -121,7 +150,31 @@ export function enumerateSelfDescribingDirs<T>(
       }
       if (!isDir) continue;
       const entry = readDir(dir, ref, root.layer);
-      if (entry) byRef.set(ref, entry); // later root (user) overwrites earlier (bundled)
+      if (!entry) continue;
+
+      const prev = byRef.get(ref);
+      if (prev === undefined) {
+        byRef.set(ref, entry);
+        layerByRef.set(ref, root.layer);
+        continue;
+      }
+
+      // A ref collision across layers: later root (user) normally overwrites
+      // earlier (bundled) — but the policy may refuse, and either way it is
+      // reported rather than happening silently.
+      const prevLayer = layerByRef.get(ref) ?? 'bundled';
+      const verdict = opts.mayShadow?.(entry, prev, ref) ?? { allow: true };
+      if (verdict.allow) {
+        byRef.set(ref, entry);
+        layerByRef.set(ref, root.layer);
+      }
+      opts.onShadow?.({
+        ref,
+        winnerLayer: verdict.allow ? root.layer : prevLayer,
+        shadowedLayer: verdict.allow ? prevLayer : root.layer,
+        refused: !verdict.allow,
+        reason: verdict.reason,
+      });
     }
   }
   return [...byRef.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, v]) => v);

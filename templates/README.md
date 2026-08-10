@@ -120,26 +120,52 @@ official v1 mechanism that closes them:
   round-3 build proved the catalog's source repo is not reachable from
   outside papercusp, so the seam MUST ride the mirror). Zero runtime deps,
   `main: ./src/index.ts`; the mirror root `package.json` wires
-  `"@papercusp/pot-app-seam": "file:./pot-app-seam"`, and an app repo
-  links it as
-  `"@papercusp/pot-app-seam": "file:../<mirror-clone>/pot-app-seam"`.
+  `"@papercusp/pot-app-seam": "file:./pot-app-seam"`.
   Canonical: `libs/generic/pot-app-seam` in the monorepo.
-- **Mirror sync is NOT guarded today — sync it by hand and verify by hand.**
-  ⚠ This bullet previously described `scripts/templates-mirror-sync.mjs`, a
-  `npm run mirror:check` that "exits non-zero on ANY drift", a `npm run
-  mirror:push`, and publish tooling that "refuses to publish official listings
-  while red". **None of that exists** — no such script, no such npm scripts, no
-  such publish gate (verified 2026-08-10, WI-37775). The text was aspirational
-  and read as a guarantee, which is worse than no text: it invited maintainers
-  to trust a drift check that never ran, and the mirror duly went stale and
-  pre-rename.
+  ⚠ An app repo should link it from the **install-resolved `libs/generic`
+  root** (`templates:get-guide` / `templates:new-app` return it as
+  `supplyChain`), NOT from a mirror clone: the mirror is currently pre-rename
+  and 404s on `pot-app-seam/`, still serving `hive-app-seam/` (measured
+  2026-08-10, WI-37775). `npm run mirror:check` tells you whether that is
+  still true.
+- **Mirror sync has a drift CHECK you must run by hand — it is not automatic.**
+  `scripts/templates-mirror-sync.mjs` diffs this canonical tree against a local
+  clone of the mirror and exits non-zero on ANY drift:
 
-  Until a real sync tool lands, treat mirror publishing as MANUAL: after
-  changing any template dir, this README, or a vendored package
-  (`template-kit/`, `pot-app-seam/`), push the changed dirs to
-  [Papercusp/templates](https://github.com/Papercusp/templates) yourself and
-  diff them before re-publishing a listing. Assume the mirror trails the
-  canonical tree unless you just checked.
+  ```bash
+  git clone https://github.com/Papercusp/templates.git /tmp/pc-templates-mirror
+  PC_TEMPLATES_MIRROR=/tmp/pc-templates-mirror npm run mirror:check   # exit 1 on drift
+  PC_TEMPLATES_MIRROR=/tmp/pc-templates-mirror npm run mirror:push    # apply + commit + push
+  ```
+
+  It compares every template dir, this README, and the vendored packages
+  (`template-kit/`, `pot-app-seam/` — `src/**` minus `*.test.ts`, plus
+  `package.json`/`tsconfig.json`), and leaves the mirror's own root plumbing
+  (`package.json`, lockfile, each vendored `README.md`) alone. Exit codes:
+  `0` in sync · `1` drift · `2` usage/env error.
+
+  ⚠ **Read this bullet's history before trusting any claim in it.** It used to
+  assert that this same check ran as a gate and that publish tooling "refuses
+  to publish official listings while red". That was false for five weeks: the
+  script had been written but was auto-committed in a side clone that was never
+  pushed, so nothing in this repo ran it or could even see it, and the mirror
+  duly went stale AND pre-rename (WI-37775). The script is now restored here
+  and covered by
+  `packages/operator-core/lib/templates-mirror-sync-cli.test.ts`.
+
+  **What still does NOT exist — do not assume otherwise:** no CI job, no
+  green-checkpoint gate and no publish tooling runs `mirror:check`. Nothing
+  stops a stale mirror from being published. Syncing remains a MANUAL step you
+  perform after changing any template dir, this README, or a vendored package —
+  the check just means you can now verify it in one command instead of by eye.
+  Assume the mirror trails the canonical tree unless you just ran the check.
+
+  **Measured 2026-08-10:** the live mirror is at 132 drift items (76 missing,
+  26 changed, 30 extraneous) — including `missing pot-app-seam/package.json`
+  and `extraneous papercusp-ops-hives/…`, i.e. it still serves the pre-rename
+  `hive-app-seam`/`papercusp-ops-hives` layout. Until someone runs
+  `mirror:push`, a `file:`-link into a mirror clone will NOT resolve
+  `@papercusp/pot-app-seam`.
 - **Other component packages** (`@papercusp/sync`, `@papercusp/ui-primitives`,
   …) are not published to npm either and are NOT vendored (they have runtime
   deps or platform coupling the mirror can't carry). The official v1

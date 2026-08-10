@@ -1,0 +1,168 @@
+/**
+ * scripts/templates-mirror-sync.mjs — drift-engine + CLI contract tests
+ * (template-supply-chain-repair-2026-08-10 P-006 / WI-37775).
+ *
+ * WHY THIS FILE EXISTS. templates/README.md advertised a mirror drift guard —
+ * `npm run mirror:check` that "exits non-zero on ANY drift" — for five weeks
+ * while no such script existed in this repo, and the public mirror duly went
+ * stale AND pre-rename (it still serves `hive-app-seam/`, so the ops-pots
+ * Tier-B MUST pointed at a 404). The script had in fact been written, but it
+ * was auto-committed in a side clone that was never pushed, so nothing here
+ * ran it and nothing here could see it. A guard nobody executes is
+ * indistinguishable from a guard nobody wrote — this test is what makes the
+ * restored one real.
+ *
+ * Every case drives a SYNTHETIC tree under tmpdir. Nothing here mutates the
+ * shared checkout: a probe that edits the real tree can be committed by the
+ * git-sync sweep even when nothing goes wrong (house rule — "proving a guard
+ * is falsifiable, never by mutating the shared tree").
+ */
+import { promises as fs } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+// eslint-disable-next-line import/no-relative-packages
+import {
+  VENDORED,
+  buildExpected,
+  buildActual,
+  computeDrift,
+  driftTotal,
+} from '../../../scripts/templates-mirror-sync.mjs';
+
+const SCRIPT = fileURLToPath(new URL('../../../scripts/templates-mirror-sync.mjs', import.meta.url));
+
+let tmp: string;
+
+/** A minimal but structurally faithful canonical tree + mirror clone. */
+async function makeCanonicalRoot(root: string, vendored: string[] = VENDORED) {
+  await fs.mkdir(join(root, 'templates/papercusp-ops-pots'), { recursive: true });
+  await fs.writeFile(join(root, 'templates/papercusp-ops-pots/GUIDE.md'), 'guide body\n');
+  await fs.writeFile(join(root, 'templates/README.md'), 'templates readme\n');
+  for (const pkg of vendored) {
+    const dir = join(root, 'libs/generic', pkg);
+    await fs.mkdir(join(dir, 'src'), { recursive: true });
+    await fs.writeFile(join(dir, 'package.json'), `{"name":"@papercusp/${pkg}"}\n`);
+    await fs.writeFile(join(dir, 'tsconfig.json'), '{}\n');
+    await fs.writeFile(join(dir, 'src/index.ts'), `export const x = '${pkg}';\n`);
+    // *.test.ts is deliberately excluded from the vendored surface.
+    await fs.writeFile(join(dir, 'src/index.test.ts'), 'should never be vendored\n');
+  }
+}
+
+/** Materialize a mirror that is perfectly in sync with `root`. */
+async function makeMirrorInSync(root: string, mirror: string) {
+  const { expected } = await buildExpected(root, VENDORED);
+  for (const [rel, src] of expected) {
+    const dst = join(mirror, rel);
+    await fs.mkdir(join(dst, '..'), { recursive: true });
+    await fs.copyFile(src, dst);
+  }
+  // Mirror-OWNED plumbing the guard must never flag.
+  await fs.writeFile(join(mirror, 'package.json'), '{"name":"templates-mirror"}\n');
+}
+
+beforeAll(async () => {
+  tmp = await mkdtemp(join(tmpdir(), 'mirror-sync-test-'));
+});
+afterAll(async () => {
+  if (tmp) await rm(tmp, { recursive: true, force: true });
+});
+
+describe('VENDORED — the hive->pot rename regression guard', () => {
+  it('vendors pot-app-seam and NOT the retired hive-app-seam', () => {
+    // The live mirror still carries hive-app-seam/, which is exactly why the
+    // ops-pots MUST 404s. If this list ever regresses to the old name the
+    // guard would call the stale mirror "in sync" and the 404 would persist.
+    expect(VENDORED).toContain('pot-app-seam');
+    expect(VENDORED).not.toContain('hive-app-seam');
+    expect(VENDORED).toContain('template-kit');
+  });
+});
+
+describe('drift engine', () => {
+  it('reports ZERO drift when the mirror matches the canonical tree', async () => {
+    const root = join(tmp, 'sync/root');
+    const mirror = join(tmp, 'sync/mirror');
+    await makeCanonicalRoot(root);
+    await fs.mkdir(mirror, { recursive: true });
+    await makeMirrorInSync(root, mirror);
+
+    const { expected } = await buildExpected(root, VENDORED);
+    const actual = await buildActual(mirror, VENDORED);
+    const drift = await computeDrift(expected, actual, mirror);
+
+    expect(drift).toEqual({ missing: [], changed: [], extraneous: [] });
+    expect(driftTotal(drift)).toBe(0);
+  });
+
+  it('excludes *.test.ts and mirror-OWNED root plumbing from the synced surface', async () => {
+    const root = join(tmp, 'excl/root');
+    const mirror = join(tmp, 'excl/mirror');
+    await makeCanonicalRoot(root);
+    await fs.mkdir(mirror, { recursive: true });
+    await makeMirrorInSync(root, mirror);
+
+    const { expected } = await buildExpected(root, VENDORED);
+    expect([...expected.keys()]).not.toContain('template-kit/src/index.test.ts');
+
+    // The mirror's own package.json exists but must not read as extraneous.
+    const actual = await buildActual(mirror, VENDORED);
+    const drift = await computeDrift(expected, actual, mirror);
+    expect(drift.extraneous).toEqual([]);
+  });
+
+  it('catches all three drift shapes: missing, changed, extraneous', async () => {
+    const root = join(tmp, 'drift/root');
+    const mirror = join(tmp, 'drift/mirror');
+    await makeCanonicalRoot(root);
+    await fs.mkdir(mirror, { recursive: true });
+    await makeMirrorInSync(root, mirror);
+
+    // (a) a canonical file the mirror lacks
+    await fs.writeFile(join(root, 'templates/papercusp-ops-pots/NEW.md'), 'new\n');
+    // (b) a file whose bytes differ — the stale-mirror case
+    await fs.writeFile(join(mirror, 'README.md'), 'STALE readme\n');
+    // (c) a mirror dir with no canonical source — the pre-rename case
+    await fs.mkdir(join(mirror, 'papercusp-ops-hives'), { recursive: true });
+    await fs.writeFile(join(mirror, 'papercusp-ops-hives/GUIDE.md'), 'old name\n');
+
+    const { expected } = await buildExpected(root, VENDORED);
+    const actual = await buildActual(mirror, VENDORED);
+    const drift = await computeDrift(expected, actual, mirror);
+
+    expect(drift.missing).toContain('papercusp-ops-pots/NEW.md');
+    expect(drift.changed).toContain('README.md');
+    expect(drift.extraneous).toContain('papercusp-ops-hives/GUIDE.md');
+    expect(driftTotal(drift)).toBe(3);
+  });
+
+  it('REFUSES when a vendored package source is missing, instead of reading it as empty', async () => {
+    // The dangerous case: an uninitialized submodule makes the canonical
+    // source look empty, so every vendored mirror file reads "extraneous" —
+    // and --push would DELETE the lot. It must throw exit-code 2, not diff.
+    const root = join(tmp, 'uninit/root');
+    await makeCanonicalRoot(root, ['template-kit']); // pot-app-seam absent
+    await expect(buildExpected(root, VENDORED)).rejects.toMatchObject({ exitCode: 2 });
+  });
+});
+
+describe('CLI contract', () => {
+  it('exits 2 (not 0, not 1) when the mirror clone is absent', () => {
+    const r = spawnSync('node', [SCRIPT, '--mirror', join(tmp, 'no-such-mirror')], {
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/mirror clone not found/);
+    expect(r.stderr).toMatch(/git clone/);
+  });
+
+  it('exits 2 on unknown args rather than silently checking', () => {
+    const r = spawnSync('node', [SCRIPT, '--bogus-flag'], { encoding: 'utf8' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/unknown args/);
+  });
+});

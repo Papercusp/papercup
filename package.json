@@ -289,6 +289,8 @@
     "lint:migrations": "node scripts/lint-migrations.mjs",
     "lint:design-primitives": "node scripts/test-files.mjs apps/operator/app/_lints/design-primitives.test.ts apps/operator/app/_lints/css-tokens.test.ts apps/operator/app/_lints/contrast.test.ts",
     "db:next-migration": "node scripts/next-migration.mjs",
+    "mirror:check": "node scripts/templates-mirror-sync.mjs",
+    "mirror:push": "node scripts/templates-mirror-sync.mjs --push",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",
     "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && patch-package"
   },

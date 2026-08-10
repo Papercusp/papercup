@@ -41,10 +41,17 @@ typed contract comes DOWN through a single parse gate into an app table.
    (`buildDomainWorkItemsSeam`), the ingest loop (`startIngestLoop`). Do not
    hand-roll fetch calls against `/api/harness/*` — the seam component IS the
    blessed primitive (that's what buys observability, Queen dispatch, and
-   confinement). Supply chain: the package is vendored in the public
-   templates mirror as `pot-app-seam/` — `file:`-link it like the kit
-   (`"@papercusp/pot-app-seam": "file:../<mirror-clone>/pot-app-seam"`;
-   templates README § Supply chain).
+   confinement). Supply chain: `file:`-link it from **this install's resolved
+   `libs/generic` root**, which `templates:get-guide` and `templates:new-app`
+   hand you as `supplyChain` — that is the only path guaranteed to exist where
+   you are actually building
+   (`"@papercusp/pot-app-seam": "file:<supplyChain>/pot-app-seam"`).
+   ⚠ Do NOT link it out of a clone of the public templates mirror. The mirror
+   is pre-rename and 404s on `pot-app-seam/` — it still serves the old
+   `hive-app-seam/` (measured 2026-08-10, WI-37775), so the documented
+   `file:../<mirror-clone>/pot-app-seam` never resolves. Run
+   `npm run mirror:check` in the monorepo before assuming the mirror is
+   current; templates README § Supply chain.
 2. **Own contracts package, ONE parse gate** — specialize
    `contracts/candidate-set.ts` into e.g. `@yourapp/contracts`: `.strict()`
    zod schemas both directions; the join key round-trips unchanged; an empty
