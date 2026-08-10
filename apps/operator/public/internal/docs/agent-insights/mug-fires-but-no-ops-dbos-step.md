@@ -3,6 +3,21 @@ URL: /internal/docs/agent-insights/mug-fires-but-no-ops-dbos-step
 
 >-
 
+:::caution\[Superseded — the Mug no longer fires at all, so this symptom cannot occur]
+Since 2026-08-09 the Mug/Kettle/Cup tier is RETIRED (owner-directed) and held off
+by `papercusp-mug-kettle-system`, whose default-OFF **is the delivered end state**.
+The pot autoloop no longer arms a Mug wake, so there are no `child_role='mug'`
+spawn rows to be short, and the 30-min cadence this page diagnoses is gone.
+
+**Still true and still load-bearing:** the underlying mechanism — a blueprint
+launch fired from **inside a DBOS step/transaction** gets a broken spawn context
+and completes in tens of milliseconds without doing its work. That trap belongs to
+`launch-blueprint.ts`, not to the Mug, and it will bite any future role launched
+the same way. Read this page for the mechanism; ignore the Mug framing.
+
+Canonical account: [The Mug · Kettle · Cup tier is RETIRED](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+:::
+
 ## Symptom
 
 The autonomous Mug (the `pot` autoloop) fires every \~30 min, but

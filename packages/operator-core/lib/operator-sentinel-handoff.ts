@@ -64,13 +64,26 @@ export interface SentinelHandoffDeps {
   }) => Promise<{ id: string } | null>;
   /** Bump the new item to high priority (the user-asked default). Best-effort. */
   setPriority: (id: string, priority: 'high', harness: string | null) => Promise<void>;
-  /** Nudge the Mug — a coord notify (escalation when urgent) carrying a wake.
-   *  `kind:'escalate'` for urgent, `kind:'send'` otherwise. */
-  nudgeMug: (n: {
+  /** Nudge whoever can ACTUALLY act on the filed item — resolved through the
+   *  shared nudge-recipient ladder (a live Mug while the tier still runs → a live
+   *  su → escalate to the owner), never hardcoded to the Mug.
+   *
+   *  Renamed from `nudgeMug` (WI-37616 / retire-mug-kettle-su-only-2026-08-09
+   *  P-052). The rename IS part of the fix, not cosmetics: with the Mug/Kettle
+   *  tier retired behind `papercusp-mug-kettle-system` (default OFF), a
+   *  NON-URGENT handoff was parked in the `@role:mug` coord slot, which only a
+   *  Mug drains and no Mug ever spawns — so a user-requested handoff was filed
+   *  and then silently stranded. The old name taught that retired route to every
+   *  reader of this interface, which is how the dead rail kept getting rebuilt.
+   *
+   *  `workspaceId` is REQUIRED because recipient resolution is workspace-scoped:
+   *  the ladder reads presence + the liveness oracle for that workspace. */
+  nudgeRecipient: (n: {
     workItemId: string;
     summary: string;
     urgent: boolean;
     harness: string | null;
+    workspaceId: string;
   }) => Promise<void>;
   /** Subscribe the operator-owner to the work_item thread so its landing fans back
    *  via hindsight (P-016). */
@@ -172,18 +185,21 @@ export async function dispatchSentinelHandoff(
     // hindsight ("[While you were away]").
     await deps.subscribeOperator(created.id, h.harness).catch(() => {});
 
-    // P-014: nudge the Mug with a wake (escalate when urgent).
+    // P-014: nudge whoever can act on it, with a wake (escalate when urgent).
+    // WI-37616: `workspaceId` is threaded through so the dep can resolve a REAL
+    // recipient rather than parking in the retired Mug's role-slot.
     let nudged = false;
     try {
-      await deps.nudgeMug({
+      await deps.nudgeRecipient({
         workItemId: created.id,
         summary: h.summary,
         urgent: h.urgent,
         harness: h.harness,
+        workspaceId,
       });
       nudged = true;
     } catch {
-      /* the create-event already wakes her; a failed explicit nudge is non-fatal */
+      /* the item is already filed and durable; a failed explicit nudge is non-fatal */
     }
 
     return { status: 'filed', workItemId: created.id, tier, nudged };

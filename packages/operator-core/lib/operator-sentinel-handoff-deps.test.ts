@@ -34,7 +34,125 @@ vi.mock('./delegated-tasks', () => ({
   OPERATOR_COORD_OWNER: 'operator',
 }));
 
+// WI-37616 / P-052: `nudgeRecipient` (was `nudgeMug`) reaches two more substrate
+// modules — the coord `sendMessage` it delivers on, and the SHARED nudge ladder it
+// resolves the recipient through. Both are mocked so the routing decision is
+// asserted directly, with no PG and no real presence/liveness oracle.
+const sendMessageSpy = vi.fn(async (_identity: unknown, _input: unknown) => ({ msg_id: 'msg-1' }));
+type Recipient =
+  | { kind: 'mug'; ownerId: string; why: string }
+  | { kind: 'su'; ownerId: string; ownerLabel: string; why: string }
+  | { kind: 'escalate'; why: string }
+  | { kind: 'unresolved'; why: string };
+let nextRecipient: Recipient = { kind: 'su', ownerId: 'su-live-1', ownerLabel: 'su · live', why: 'test default' };
+const resolveNudgeRecipientSpy = vi.fn(async (_opts: unknown) => nextRecipient);
+
+vi.mock('./agent-tools/coordination/messages', () => ({
+  sendMessage: (...args: unknown[]) => sendMessageSpy(...(args as [unknown, unknown])),
+}));
+vi.mock('./scout/nudge-recipient', () => ({
+  resolveNudgeRecipient: (...args: unknown[]) => resolveNudgeRecipientSpy(...(args as [unknown])),
+}));
+
 import { defaultSentinelHandoffDeps } from './operator-sentinel-handoff-deps';
+
+/**
+ * WI-37616 / retire-mug-kettle-su-only-2026-08-09 P-052 — the sentinel handoff must
+ * nudge someone who EXISTS.
+ *
+ * The defect these guard: `nudgeMug` sent every NON-URGENT handoff to the `@role:mug`
+ * coord slot. That slot is drained only by a Mug, and with the Mug/Kettle tier retired
+ * behind `papercusp-mug-kettle-system` (default OFF) no Mug ever spawns — so a
+ * user-requested handoff was filed and then stranded with nobody signalled. The urgent
+ * path escaped the bug only incidentally, by using the escalation channel.
+ *
+ * FALSIFIABILITY: the first test below fails against the OLD implementation, which sent
+ * to '@role:mug' unconditionally on the non-urgent path regardless of who was live. The
+ * `mug`-recipient test is its calibration case — it asserts the legacy park is still
+ * produced when the ladder DOES name a Mug, so these are not passing merely because the
+ * legacy path was deleted outright.
+ */
+describe('defaultSentinelHandoffDeps().nudgeRecipient — routes to someone who can act (WI-37616)', () => {
+  const nudge = (over: Partial<Parameters<ReturnType<typeof defaultSentinelHandoffDeps>['nudgeRecipient']>[0]> = {}) => ({
+    workItemId: 'WI-101',
+    summary: 'draft the auth module',
+    urgent: false,
+    harness: 'papercup',
+    workspaceId: 'ws-1',
+    ...over,
+  });
+
+  beforeEach(() => {
+    openEscalationSpy.mockClear();
+    sendMessageSpy.mockClear();
+    resolveNudgeRecipientSpy.mockClear();
+    nextRecipient = { kind: 'su', ownerId: 'su-live-1', ownerLabel: 'su · live', why: 'test default' };
+  });
+
+  it('a live su gets the nudge DIRECTLY — never the retired @role:mug slot', async () => {
+    await defaultSentinelHandoffDeps().nudgeRecipient(nudge());
+
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+    const [, input] = sendMessageSpy.mock.calls[0]!;
+    const to = (input as { to: string[] }).to;
+    // The whole point: addressed to a REAL session id...
+    expect(to).toEqual(['su-live-1']);
+    // ...and emphatically NOT parked in the slot with no drainer. This is the
+    // assertion the old implementation fails.
+    expect(to).not.toContain('@role:mug');
+  });
+
+  it('threads the caller workspaceId into the ladder — resolution is workspace-scoped', async () => {
+    await defaultSentinelHandoffDeps().nudgeRecipient(nudge({ workspaceId: 'ws-42' }));
+    expect(resolveNudgeRecipientSpy).toHaveBeenCalledTimes(1);
+    expect(resolveNudgeRecipientSpy.mock.calls[0]![0]).toMatchObject({ workspaceId: 'ws-42' });
+  });
+
+  it('CALIBRATION: when the ladder names a Mug, the legacy @role:mug park is still produced', async () => {
+    // Guards against the lazy "fix" of deleting the Mug path outright: while the tier
+    // flag is ON as a testing escape hatch, a Mug recipient must still be served.
+    nextRecipient = { kind: 'mug', ownerId: 'mug-1', why: 'tier running' };
+    await defaultSentinelHandoffDeps().nudgeRecipient(nudge());
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+    expect((sendMessageSpy.mock.calls[0]![1] as { to: string[] }).to).toEqual(['@role:mug']);
+  });
+
+  it('nobody live (escalate) surfaces to the owner instead of vanishing into the slot', async () => {
+    nextRecipient = { kind: 'escalate', why: 'no Mug and no live su' };
+    await defaultSentinelHandoffDeps().nudgeRecipient(nudge());
+    expect(openEscalationSpy).toHaveBeenCalledTimes(1);
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    const [, input] = openEscalationSpy.mock.calls[0]!;
+    expect((input as { body: string }).body).toContain('no Mug and no live su');
+  });
+
+  it('an UNRESOLVED ladder does NOT page the owner — a dependency hiccup is not evidence nobody is home', async () => {
+    // The ladder's own documented contract: escalating on `unresolved` would page the
+    // owner every time presence/liveness stutters and train them to ignore the channel.
+    // The filed work_item remains durable and claimable, so this is a quiet degrade.
+    nextRecipient = { kind: 'unresolved', why: 'presence unreadable' };
+    // The degrade is deliberately NOT silent — it warns so the fallback is greppable
+    // in the operator log. Asserted explicitly (rather than suppressed) because
+    // `vitest-fail-on-console` treats an unasserted warn as a defect, and because a
+    // quiet fallback here is exactly the failure mode this whole item is about.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await defaultSentinelHandoffDeps().nudgeRecipient(nudge());
+    } finally {
+      warn.mockRestore();
+    }
+    expect(openEscalationSpy).not.toHaveBeenCalled();
+    expect((sendMessageSpy.mock.calls[0]![1] as { to: string[] }).to).toEqual(['@role:mug']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('nudge recipient unresolved for WI-101');
+  });
+
+  it('urgency picks the CHANNEL, not the destination: an urgent su nudge still goes to the su', async () => {
+    await defaultSentinelHandoffDeps().nudgeRecipient(nudge({ urgent: true }));
+    expect((sendMessageSpy.mock.calls[0]![1] as { to: string[] }).to).toEqual(['su-live-1']);
+    expect((sendMessageSpy.mock.calls[0]![1] as { expectsReply: boolean }).expectsReply).toBe(true);
+  });
+});
 
 describe('defaultSentinelHandoffDeps().surfaceForApproval — WI-2200 stable dedup identity', () => {
   beforeEach(() => {

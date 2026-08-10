@@ -1,0 +1,162 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// P-006 (plan claude-md-projection-from-pg-2026-08-10) — the PreToolUse guard that
+// refuses a hand-edit to a file DECLARING ITSELF GENERATED in its own header.
+//
+// Every fixture lives in a temp dir OUTSIDE the repo: this tree is swept by git-sync
+// every few minutes, so mutating a tracked file to prove a guard fires can commit the
+// mutant (EI-19450431506682666). The one exception is the read-only assertions over
+// real repo artifacts at the bottom, which never write.
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+// The subject is overridable so `scripts/mutation-probe.sh` can prove this suite is
+// falsifiable via its COPY-OUT tier — mutate a copy outside the tree and point the
+// suite at it, instead of mutating the shared checkout (which git-sync would commit
+// mid-probe, EI-19450431506682666). Defaults to the real hook.
+const HOOK =
+  process.env.PAPERCUSP_GENERATED_GUARD_HOOK ||
+  resolve(HERE, '..', 'pretooluse-generated-file-edit-guard.mjs');
+const REPO = resolve(HERE, '..', '..', '..', '..', '..', '..');
+
+/** Run the hook exactly as Claude Code does: JSON on stdin, read the decision. */
+function runHook(
+  payload: unknown,
+  env: NodeJS.ProcessEnv = {},
+): { denied: boolean; reason: string } {
+  const out = execFileSync('node', [HOOK], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    env: { ...process.env, PAPERCUSP_ALLOW_GENERATED_EDIT: '', ...env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (!out.trim()) return { denied: false, reason: '' };
+  const parsed = JSON.parse(out);
+  const d = parsed.hookSpecificOutput ?? {};
+  return { denied: d.permissionDecision === 'deny', reason: d.permissionDecisionReason ?? '' };
+}
+
+const edit = (file_path: string, tool = 'Edit') => ({ tool_name: tool, tool_input: { file_path } });
+
+const GENERATED_HEAD =
+  '<!-- GENERATED FILE — DO NOT EDIT BY HAND. -->\n<!-- Projected from Postgres. -->\n\n# Body\n';
+const HAND_AUTHORED_HEAD = '# Papercup — agent guide\n\n> Invariants + pointers only.\n';
+
+let dir: string;
+let generated: string;
+let handAuthored: string;
+
+beforeAll(() => {
+  dir = mkdtempSync(join(tmpdir(), 'generated-guard-'));
+  generated = join(dir, 'GENERATED.md');
+  handAuthored = join(dir, 'HAND.md');
+  writeFileSync(generated, GENERATED_HEAD, 'utf8');
+  writeFileSync(handAuthored, HAND_AUTHORED_HEAD, 'utf8');
+});
+
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+describe('pretooluse-generated-file-edit-guard — falsifiability in both directions', () => {
+  it('DENIES an Edit to a file whose header declares it generated', () => {
+    const { denied, reason } = runHook(edit(generated));
+    expect(denied).toBe(true);
+    expect(reason).toMatch(/declares itself GENERATED/);
+  });
+
+  it('ALLOWS an Edit to a hand-authored file — the guard must not fire on everything', () => {
+    // The control that makes the test above meaningful: without it, a guard that
+    // denied unconditionally would pass every other case here.
+    expect(runHook(edit(handAuthored)).denied).toBe(false);
+  });
+
+  it.each(['Edit', 'Write', 'MultiEdit'])('covers %s', (tool) => {
+    expect(runHook(edit(generated, tool)).denied).toBe(true);
+  });
+
+  it('ignores tools it does not police', () => {
+    expect(runHook(edit(generated, 'Bash')).denied).toBe(false);
+    expect(runHook(edit(generated, 'Read')).denied).toBe(false);
+  });
+
+  it('fails OPEN on an absent file, a missing path, and malformed input', () => {
+    expect(runHook(edit(join(dir, 'no-such-file.md'))).denied).toBe(false);
+    expect(runHook({ tool_name: 'Edit', tool_input: {} }).denied).toBe(false);
+    expect(runHook({}).denied).toBe(false);
+  });
+
+  it('honours the documented session bypass', () => {
+    expect(runHook(edit(generated), { PAPERCUSP_ALLOW_GENERATED_EDIT: '1' }).denied).toBe(false);
+    // …and only for the sanctioned values, so a stray empty/0 env cannot disarm it.
+    expect(runHook(edit(generated), { PAPERCUSP_ALLOW_GENERATED_EDIT: '0' }).denied).toBe(true);
+  });
+});
+
+describe('the refusal RELAYS the file’s own regenerator instead of hardcoding one', () => {
+  // This is the property that lets a NEW generated file get a correct, specific
+  // refusal with no change to the hook — and that stops the message drifting out of
+  // date the way a hardcoded command would.
+  it('quotes the marker line verbatim, including its regeneration command', () => {
+    const f = join(dir, 'CUSTOM.md');
+    writeFileSync(f, '# T\n\n> **Generated — do not edit by hand.** Run `npm run gen:widgets`.\n');
+    const { denied, reason } = runHook(edit(f));
+    expect(denied).toBe(true);
+    expect(reason).toContain('npm run gen:widgets');
+  });
+});
+
+describe('predicate precision — each clause is load-bearing', () => {
+  const cases: Array<[string, string, boolean]> = [
+    ['both tokens on ONE line', '// Generated — do not edit.\n', true],
+    ['tokens on DIFFERENT lines', '# Generated report\n\nPlease do not edit the fixture.\n', false],
+    ['"do not edit" alone (prose about something else)', '// Do not edit this test.\n', false],
+    ['"generated" alone', '// Generated at runtime from the registry.\n', false],
+    ["apostrophe form (don't edit)", "// Generated by X. don't edit.\n", true],
+    ['marker below the 10-line header window', `${'x\n'.repeat(12)}<!-- GENERATED do not edit -->\n`, false],
+    // A 4KB minified .js.map line embedding a banner in sourcesContent was the ONE
+    // false positive in the measured tree-wide population; the length cap drops it.
+    ['minified blob line > 300 chars', `{"s":"${'y'.repeat(400)} GENERATED do not edit"}\n`, false],
+  ];
+  it.each(cases)('%s -> deny=%s', (_name, content, expected) => {
+    const f = join(dir, `case-${Math.random().toString(36).slice(2)}.md`);
+    writeFileSync(f, content, 'utf8');
+    expect(runHook(edit(f)).denied).toBe(expected);
+  });
+
+  it('has a passing embedded --self-test', () => {
+    const out = execFileSync('node', [HOOK, '--self-test'], { encoding: 'utf8' });
+    expect(out).not.toMatch(/FAIL/);
+  });
+});
+
+describe('the real artifacts this protects in THIS repo', () => {
+  // Read-only. Pins that the guard actually reaches the artifacts it was built for,
+  // rather than only synthetic fixtures.
+  it.each([
+    'BORROWABLE.md',
+    'AGENT-ENV.md',
+    'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md',
+  ])('denies a hand-edit to %s', (rel) => {
+    const p = resolve(REPO, rel);
+    expect(existsSync(p), `${rel} should exist — fix the path, do not weaken the test`).toBe(true);
+    expect(runHook(edit(p)).denied).toBe(true);
+  });
+
+  // ⚠ Deliberately a PROPERTY, not a fixed expectation. CLAUDE.md is hand-authored
+  // today and becomes a projection at the P-006/D-014 cutover, at which point it
+  // starts carrying the banner. Asserting "CLAUDE.md is allowed" would red the fleet
+  // gate the moment this plan's own cutover lands. What must hold in BOTH eras is
+  // that the guard agrees with the file: it denies iff the file declares itself
+  // generated — which is exactly the self-arming behaviour the design rests on.
+  it('denies CLAUDE.md iff CLAUDE.md declares itself generated (holds across the cutover)', () => {
+    const p = resolve(REPO, 'CLAUDE.md');
+    const head = readFileSync(p, 'utf8').split('\n').slice(0, 10);
+    const declares = head.some(
+      (l) => l.length <= 300 && /\b(?:auto[-\s]?)?generated\b/i.test(l) && /\bdo\s*n(?:o|')?t\s+edit\b/i.test(l),
+    );
+    expect(runHook(edit(p)).denied).toBe(declares);
+  });
+});

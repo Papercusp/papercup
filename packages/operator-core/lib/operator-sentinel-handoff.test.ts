@@ -27,7 +27,7 @@ function makeDeps(over: Partial<SentinelHandoffDeps> = {}): {
   spies: {
     createWorkItem: ReturnType<typeof vi.fn>;
     setPriority: ReturnType<typeof vi.fn>;
-    nudgeMug: ReturnType<typeof vi.fn>;
+    nudgeRecipient: ReturnType<typeof vi.fn>;
     subscribeOperator: ReturnType<typeof vi.fn>;
     surfaceForApproval: ReturnType<typeof vi.fn>;
     standingApprovals: ReturnType<typeof vi.fn>;
@@ -35,14 +35,14 @@ function makeDeps(over: Partial<SentinelHandoffDeps> = {}): {
 } {
   const createWorkItem = vi.fn(async () => ({ id: 'WI-101' }));
   const setPriority = vi.fn(async () => {});
-  const nudgeMug = vi.fn(async () => {});
+  const nudgeRecipient = vi.fn(async () => {});
   const subscribeOperator = vi.fn(async () => {});
   const surfaceForApproval = vi.fn(async () => {});
   const standingApprovals = vi.fn(async () => [] as Array<{ capability: string; targetHarness: string }>);
   const deps: SentinelHandoffDeps = {
     createWorkItem,
     setPriority,
-    nudgeMug,
+    nudgeRecipient,
     subscribeOperator,
     surfaceForApproval,
     standingApprovals,
@@ -50,7 +50,7 @@ function makeDeps(over: Partial<SentinelHandoffDeps> = {}): {
   };
   return {
     deps,
-    spies: { createWorkItem, setPriority, nudgeMug, subscribeOperator, surfaceForApproval, standingApprovals },
+    spies: { createWorkItem, setPriority, nudgeRecipient, subscribeOperator, surfaceForApproval, standingApprovals },
   };
 }
 
@@ -88,13 +88,20 @@ describe('dispatchSentinelHandoff — file + nudge (P-014)', () => {
     // P-016: subscribed for hindsight outcome feedback.
     expect(spies.subscribeOperator).toHaveBeenCalledWith('WI-101', 'papercup');
 
-    // P-014: the Mug was nudged about the filed item.
-    expect(spies.nudgeMug).toHaveBeenCalledTimes(1);
-    expect(spies.nudgeMug.mock.calls[0][0]).toMatchObject({
+    // P-014: a recipient was nudged about the filed item.
+    expect(spies.nudgeRecipient).toHaveBeenCalledTimes(1);
+    expect(spies.nudgeRecipient.mock.calls[0][0]).toMatchObject({
       workItemId: 'WI-101',
       summary: 'draft the auth module',
       urgent: false,
     });
+
+    // WI-37616: `workspaceId` MUST be threaded through to the dep. Recipient
+    // resolution is workspace-scoped, so a dep that never receives it cannot
+    // resolve a live su and silently falls back to the retired `@role:mug` park.
+    // Asserted separately from the toMatchObject above so a regression names THIS
+    // field rather than failing an opaque whole-object comparison.
+    expect(spies.nudgeRecipient.mock.calls[0][0].workspaceId).toBe(WS);
 
     // P-014 (the whole point): the Sentinel NEVER surfaces a low action for approval.
     expect(spies.surfaceForApproval).not.toHaveBeenCalled();
@@ -104,12 +111,12 @@ describe('dispatchSentinelHandoff — file + nudge (P-014)', () => {
     const { deps, spies } = makeDeps();
     await dispatchSentinelHandoff(lowHandoff({ urgent: true }), WS, deps);
     expect(spies.createWorkItem.mock.calls[0][0].urgent).toBe(true);
-    expect(spies.nudgeMug.mock.calls[0][0].urgent).toBe(true);
+    expect(spies.nudgeRecipient.mock.calls[0][0].urgent).toBe(true);
   });
 
-  it('still reports filed (nudged:false) when the Mug nudge throws — the create-event wakes her anyway', async () => {
+  it('still reports filed (nudged:false) when the nudge throws — the filed item stays durable and claimable', async () => {
     const { deps, spies } = makeDeps({
-      nudgeMug: vi.fn(async () => {
+      nudgeRecipient: vi.fn(async () => {
         throw new Error('coord down');
       }),
     });
@@ -122,7 +129,7 @@ describe('dispatchSentinelHandoff — file + nudge (P-014)', () => {
     const { deps, spies } = makeDeps({ createWorkItem: vi.fn(async () => null) });
     const out = await dispatchSentinelHandoff(lowHandoff(), WS, deps);
     expect(out).toEqual({ status: 'error', error: 'work_item create failed' });
-    expect(spies.nudgeMug).not.toHaveBeenCalled();
+    expect(spies.nudgeRecipient).not.toHaveBeenCalled();
   });
 });
 
@@ -140,7 +147,7 @@ describe('dispatchSentinelHandoff — tier gate (P-015, the user-facing approval
     });
     // Deferred to the Mug post-approval: nothing is filed/nudged now.
     expect(spies.createWorkItem).not.toHaveBeenCalled();
-    expect(spies.nudgeMug).not.toHaveBeenCalled();
+    expect(spies.nudgeRecipient).not.toHaveBeenCalled();
   });
 
   it('a medium/high action ALREADY standing-approved is filed (not re-surfaced)', async () => {
@@ -153,7 +160,7 @@ describe('dispatchSentinelHandoff — tier gate (P-015, the user-facing approval
     expect(out).toMatchObject({ status: 'filed', tier: 'high' });
     expect(spies.surfaceForApproval).not.toHaveBeenCalled();
     expect(spies.createWorkItem).toHaveBeenCalledTimes(1);
-    expect(spies.nudgeMug).toHaveBeenCalledTimes(1);
+    expect(spies.nudgeRecipient).toHaveBeenCalledTimes(1);
   });
 
   it('a wildcard standing approval (target=*) covers any harness', async () => {

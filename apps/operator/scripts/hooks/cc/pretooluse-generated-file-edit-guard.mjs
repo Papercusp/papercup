@@ -1,0 +1,278 @@
+#!/usr/bin/env node
+// apps/operator/scripts/hooks/cc/pretooluse-generated-file-edit-guard.mjs
+//
+// PreToolUse (Edit|Write|MultiEdit) BLOCKING guard: refuse a hand-edit to a file
+// that DECLARES ITSELF GENERATED in its own header. Plan
+// claude-md-projection-from-pg-2026-08-10 P-006, extending the repo rule that
+// already governs prompts — "edit the source, never the rendered output".
+//
+// WHY
+//   Once CLAUDE.md / AGENTS.md are projected from Postgres
+//   (`harness_shared.harness_doc_parts`, D-003/D-004), a hand-edit to either is
+//   worse than useless: it is silently erased by the next projection and is
+//   invisible to every other client. The same is already true of ~50 other
+//   generated artifacts here (`gen:declarations` .d.mts files, style-dictionary
+//   CSS, the doc-site reference projections). Every one of them says so in its
+//   own first lines, and agents edit them anyway, because a banner is passive.
+//
+// THE KEY DESIGN CHOICE: the trigger is the ARTIFACT, not a path list.
+//   A hardcoded list of protected paths would be wrong in both directions here.
+//   Before the cutover CLAUDE.md is still HAND-AUTHORED and edited several times
+//   an hour by this fleet — a path-keyed guard would have to be armed on a flag
+//   day, in the right order, and would block legitimate edits if it landed early
+//   (D-014.1 gates the cutover on exactly this ordering). Keying on the marker
+//   instead makes the guard SELF-ARMING and SELF-DISARMING: it starts denying
+//   the instant `--write` puts the GENERATED banner at the top of the file, and
+//   it stops the instant a file legitimately goes back to being hand-authored.
+//   There is no flag day and no ordering hazard, and a NEW generated file is
+//   protected for free the moment it carries a banner. Files opt IN.
+//
+// WHAT COUNTS AS THE MARKER (measured, not assumed)
+//   A line within the first 10 lines / 4096 bytes that contains BOTH a
+//   "generated" token AND a "do not edit" token, and is at most 300 chars.
+//   Measured against all 21,267 tracked files on 2026-08-10: 54 match, and every
+//   one is a genuine generated artifact that names its own regenerator
+//   (AGENT-ENV.md, BORROWABLE.md, 5 doc-site reference projections + their
+//   public/ copies, 5 style-dictionary CSS files, ~30 `gen:declarations` .d.mts
+//   files, release-video.ts, the claude-md corpus). CLAUDE.md itself does NOT
+//   match today, which is the correct pre-cutover behaviour.
+//
+//   Each clause of the predicate is load-bearing:
+//   - BOTH tokens, on the SAME line — "do not edit" alone matches prose about
+//     something else ("do not edit this test"), and "generated" alone matches
+//     any file discussing generation. All 54 real banners put both on one line.
+//   - The 300-char cap — without it the predicate also matched a minified
+//     `.js.map` whose single 4096-char JSON line embeds a banner inside
+//     `sourcesContent`. The cap drops exactly that one file and keeps all 54.
+//     A human-readable banner is short prose; a false positive is a blob.
+//
+// THE DENY MESSAGE RELAYS THE FILE'S OWN LINE
+//   The guard holds no per-file knowledge. It quotes the marker line back, and
+//   that line already names the regenerator (`npm run gen:borrowable`,
+//   `node scripts/project-doc-parts.mjs --write`, `npm run gen:declarations`…).
+//   So a new generated file gets a correct, specific, actionable refusal with no
+//   change here — the failure mode of a hardcoded message (drifting out of date
+//   and sending agents to a command that no longer exists) cannot occur.
+//
+// SCOPE — this is FAST FEEDBACK, not enforcement, and the distinction is honest
+//   D-003 puts enforcement in the STRUCTURE: whatever you hand-write is
+//   overwritten by the next projection, which is what makes the invariant hold
+//   without a hook fighting agents at write time. This guard exists to make that
+//   loss immediate and legible instead of silent and delayed — you learn at the
+//   edit, not when your work vanishes an hour later.
+//   It follows that a determined write ROUTES AROUND it: PreToolUse fires on
+//   Claude-CLI tool calls only, so `capability:bash` with `sed -i`/a heredoc,
+//   or any other process, is unaffected. That is a deliberate accepted gap, not
+//   an oversight — closing it would mean policing every write syscall on a
+//   shared box, and the structural backstop already covers the case that matters.
+//   It is also, in practice, the escape hatch (see BYPASS).
+//
+// GENERATORS ARE STRUCTURALLY UNAFFECTED — VERIFIED, NOT ASSUMED
+//   Every `gen:*` script writes with node:fs (`writeFileSync`), which is not a
+//   tool call, so this hook never sees it. Confirmed by the strongest available
+//   natural experiment rather than by reasoning alone: the projector WRITES a
+//   file this guard PROTECTS (`claude-md-corpus.generated.md` carries the marker
+//   and is written by `scripts/project-doc-parts.mjs --write-corpus`). If the
+//   guard could reach generator writes at all, that command would fail. It does
+//   not — re-run it to re-verify at any time.
+//
+// BYPASS (documented, per the item's requirement)
+//   1. Preferred: DON'T. Edit the source and re-run the regenerator the marker
+//      line names — that is the whole point, and the edit survives.
+//   2. Per-call escape hatch: write via `capability:bash` (`node -e`, heredoc,
+//      `sed -i`). PreToolUse does not see it. Use when a generator is broken and
+//      you must repair its output by hand to unblock the fleet.
+//   3. Session-wide: launch with `PAPERCUSP_ALLOW_GENERATED_EDIT=1`, which makes
+//      this guard warn instead of deny for the whole session. Env is read from
+//      the CLI process the hook inherits, so it cannot be set per tool call.
+//
+// CONTRACT
+//   - Scope: Edit / Write / MultiEdit. Write IS included (unlike the nul-byte
+//     guard, whose bug is specific to find/replace): a full-file overwrite of a
+//     generated artifact by hand is precisely the thing being prevented.
+//   - Trigger: the file ALREADY ON DISK carries the marker. A Write CREATING a
+//     new file is always allowed — there is nothing generated to protect yet.
+//   - On a hit: permissionDecision "deny" (JSON, exit 0) — the same contract as
+//     the secrets-guard / content-lint / nul-byte-edit-guard siblings.
+//   - FAIL-OPEN on any internal error (missing file, read error, bad JSON, stdin
+//     timeout). A bug here must never wedge an ordinary edit.
+//   - `--self-test` runs the embedded cases (no stdin needed) and exits non-zero
+//     on failure; mirrors pretooluse-secrets-guard.mjs's own flag.
+//
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import process from 'node:process';
+
+/** How much of the file's head may carry the banner. */
+export const HEADER_LINES = 10;
+export const HEADER_BYTES = 4096;
+/** A banner is short prose. Above this a "line" is a minified blob — see header. */
+export const MAX_MARKER_LINE = 300;
+
+const GENERATED = /\b(?:auto[-\s]?)?generated\b/i;
+// "do not edit" / "do NOT edit" / "don't edit" / "dont edit"
+const DO_NOT_EDIT = /\bdo\s*n(?:o|')?t\s+edit\b/i;
+
+const BYPASS_ENV = 'PAPERCUSP_ALLOW_GENERATED_EDIT';
+
+/**
+ * Run only when executed as the hook, never when imported (a test importing the
+ * pure predicate must not be killed by main()'s process.exit).
+ *
+ * ⚠ Symlink-robust on purpose: node realpaths the entry module's
+ * `import.meta.url` while `process.argv[1]` keeps the path as invoked, so
+ * through this box's papercupai-workspace/papercup -> papercusp symlink a naive
+ * string compare is FALSE for a genuine direct run — which would silently
+ * disable the guard. Both sides are realpath'd, and an undecidable comparison
+ * falls back to RUNNING: a guard that quietly no-ops is the worse failure.
+ */
+function invokedAsScript() {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(argv1);
+  } catch {
+    return true;
+  }
+}
+
+if (invokedAsScript()) main();
+
+async function main() {
+  if (process.argv.includes('--self-test')) return selfTest();
+  try {
+    const hook = JSON.parse(await readStdin(250));
+    const tool = hook.tool_name || '';
+    if (tool !== 'Edit' && tool !== 'Write' && tool !== 'MultiEdit') return done();
+    const filePath = (hook.tool_input || {}).file_path || '';
+    if (!filePath) return done();
+
+    const marker = findGeneratedMarker(readHead(filePath));
+    if (marker && !bypassed()) return deny(filePath, marker, tool);
+  } catch {
+    // fail-open: never wedge edits on a hook bug
+  }
+  done();
+}
+
+function bypassed() {
+  const v = process.env[BYPASS_ENV];
+  return v === '1' || v === 'true';
+}
+
+/** The file's first HEADER_LINES lines, or null when absent/unreadable
+ *  (fail-open — never deny on our own inability to read the target). */
+function readHead(filePath) {
+  let buf;
+  try {
+    buf = readFileSync(filePath);
+  } catch {
+    return null;
+  }
+  // A binary file has no banner to honour, and decoding it is meaningless.
+  if (buf.indexOf(0) !== -1) return null;
+  return buf.subarray(0, HEADER_BYTES).toString('utf8').split('\n').slice(0, HEADER_LINES);
+}
+
+/**
+ * The declaring line, or null. Exported for the test + for anything that needs
+ * to ask "would the guard fire on this text?" without spawning the hook.
+ */
+export function findGeneratedMarker(headLines) {
+  if (!headLines) return null;
+  for (const raw of headLines) {
+    const line = raw.replace(/\r$/, '');
+    if (line.length > MAX_MARKER_LINE) continue;
+    if (GENERATED.test(line) && DO_NOT_EDIT.test(line)) return line.trim();
+  }
+  return null;
+}
+
+function deny(filePath, marker, tool) {
+  const base = filePath.split(/[/\\]/).pop();
+  const reason =
+    `🛑 generated-file-edit-guard (P-006): ${base} declares itself GENERATED, so this ${tool} ` +
+    `would be silently erased by the next regeneration and is invisible to every other client.\n\n` +
+    `The file's own header says:\n  ${marker}\n\n` +
+    `Edit the SOURCE and re-run the generator that line names — that is the only edit that ` +
+    `survives. This is the same rule that already governs prompts in this repo: edit the source, ` +
+    `never the rendered output.\n\n` +
+    `If you genuinely must hand-repair this artifact (a broken generator blocking the fleet), the ` +
+    `documented escape hatches are: write it via \`capability:bash\` (\`node -e\`, a heredoc, ` +
+    `\`sed -i\`) — PreToolUse does not see those — or relaunch with ${BYPASS_ENV}=1 to downgrade ` +
+    `this guard to a warning for the session. Prefer fixing the generator.`;
+  try {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: reason,
+        },
+      }) + '\n',
+    );
+    process.stderr.write(reason + '\n');
+  } catch {
+    /* ignore */
+  }
+  process.exit(0);
+}
+
+function done() {
+  process.exit(0);
+}
+
+function readStdin(timeoutMs) {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) return resolve('');
+    let data = '';
+    let settled = false;
+    const finish = () => {
+      if (!settled) {
+        settled = true;
+        resolve(data);
+      }
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (c) => (data += c));
+    process.stdin.on('end', () => {
+      clearTimeout(timer);
+      finish();
+    });
+    process.stdin.on('error', () => {
+      clearTimeout(timer);
+      finish();
+    });
+  });
+}
+
+function selfTest() {
+  const L = (s) => s.split('\n');
+  const cases = [
+    // ── the five real banner shapes in this tree (verbatim heads) ──────────
+    { name: 'projector banner (CLAUDE.md post-cutover)', head: L('<!-- GENERATED FILE — DO NOT EDIT BY HAND. -->\n<!-- Projected from Postgres -->'), expectDeny: true },
+    { name: 'AGENT-ENV.md', head: L('<!-- GENERATED by npx tsx scripts/gen-agent-env.ts — do NOT edit by hand. Regenerate after'), expectDeny: true },
+    { name: 'BORROWABLE.md (marker on line 3)', head: L('# Borrowable libraries\n\n> **Generated — do not edit by hand.** Run `npm run gen:borrowable`.'), expectDeny: true },
+    { name: 'release-video.ts', head: L(' * ⚠ GENERATED FILE — do not edit by hand. Run bin/gen-release-video.sh.'), expectDeny: true },
+    { name: 'style-dictionary CSS', head: L(' * Do not edit directly, this file was auto-generated.'), expectDeny: true },
+    { name: "apostrophe form (don't edit)", head: L('// Generated by X. don\'t edit.'), expectDeny: true },
+    // ── must NOT fire ──────────────────────────────────────────────────────
+    { name: 'hand-authored CLAUDE.md (pre-cutover)', head: L('# Papercup — agent guide\n\n> Invariants + pointers only.'), expectDeny: false },
+    { name: 'both tokens but on DIFFERENT lines', head: L('# Generated report\n\nPlease do not edit the fixture below.'), expectDeny: false },
+    { name: '"do not edit" alone (prose about something else)', head: L('// Do not edit this test without reading the header.'), expectDeny: false },
+    { name: '"generated" alone', head: L('// This module is generated at runtime from the registry.'), expectDeny: false },
+    { name: 'marker below the header window (line 11)', head: L('a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n<!-- GENERATED — do not edit -->').slice(0, HEADER_LINES), expectDeny: false },
+    { name: 'minified blob line >300 chars (the .js.map false positive)', head: [`{"x":"${'y'.repeat(400)} GENERATED do not edit"}`], expectDeny: false },
+    { name: 'unreadable/absent file (fail-open)', head: null, expectDeny: false },
+  ];
+  let failed = false;
+  for (const c of cases) {
+    const denied = findGeneratedMarker(c.head) !== null;
+    const ok = denied === c.expectDeny;
+    if (!ok) failed = true;
+    process.stdout.write(`${ok ? 'ok' : 'FAIL'} — ${c.name}\n`);
+  }
+  process.stdout.write(failed ? 'SELF-TEST FAILED\n' : `ok — ${cases.length} cases\n`);
+  process.exit(failed ? 1 : 0);
+}

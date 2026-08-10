@@ -3,6 +3,26 @@ URL: /internal/docs/agent-insights/pot-mug-fresh-per-wake
 
 Every declared/event/watchdog Mug wake spawns a FRESH claude session via the pot launch blueprint (--session-id <new uuid>), carrying NO transcript. The only --resume path is the generic wake-executor inbox/await delivery channel. Map of the wake paths + where resume-vs-fresh is decided.
 
+:::caution\[Superseded — there are no Mug wakes left; the wake-path map still holds]
+Since 2026-08-09 the Mug/Kettle/Cup tier is RETIRED (owner-directed) and held off
+by `papercusp-mug-kettle-system`, whose default-OFF **is the delivered end state**.
+`pot/watchdog.ts` no longer arms a Mug wake, so the fresh-vs-resume question this
+page settles no longer has a Mug to settle it for.
+
+**Still true and still worth reading:** the MAP — which wake paths spawn a fresh
+`--session-id` session versus which go through the generic wake-executor
+`--resume` delivery channel, and where that decision is actually made
+(`harness/spawn.ts`, `orchestrator/src/invoke.ts`,
+`events/await/wake-executor.ts`). That plumbing is shared and still carries su
+wakes today; only the Mug-specific conclusion is dead.
+
+⚠ Note the su engine loop reads `resolvePotHomeSlug` from `pot/wake` — the pot
+substrate is deliberately NOT gated by the retirement (it is what the replacement
+system runs on), so do not read "the Mug is retired" as "`pot/*` is dead code".
+
+Canonical account: [The Mug · Kettle · Cup tier is RETIRED](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+:::
+
 ## What
 
 A common (and load-bearing) misread: "the Pot Mug RESUMES her prior session

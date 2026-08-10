@@ -687,6 +687,15 @@ const CC_HOOK_FILES = [
   // would be the wrong trade on a shared tree) when a Write targets an existing file with
   // no matching prior Read/Edit/MultiEdit/Write in the transcript.
   'pretooluse-write-overwrite-guard.mjs',
+  // Plan claude-md-projection-from-pg-2026-08-10 P-006: PreToolUse (matcher
+  // "Edit|Write|MultiEdit") BLOCKING guard on a hand-edit to a file that DECLARES ITSELF
+  // GENERATED in its own header — extending the repo rule that already governs prompts
+  // ("edit the source, never the rendered output"). Keyed on the ARTIFACT's banner rather
+  // than a path list, so it arms itself the instant CLAUDE.md/AGENTS.md become projections
+  // (D-003/D-014) with no flag day, and disarms if a file goes back to hand-authored.
+  // Measured: 54 of 21,267 tracked files carry such a banner, every one a real generated
+  // artifact. Generators are untouched — they write via node:fs, not tool calls.
+  'pretooluse-generated-file-edit-guard.mjs',
   // EI-19374535041074908: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
   // when an edit adds a REQUIRED field to an exported interface (or tightens one from
   // optional), which silently strands every construction site in files the change never
@@ -2006,6 +2015,14 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-write-overwrite-guard.mjs'), {
       matcher: 'Write',
       hooks: cmd('pretooluse-write-overwrite-guard.mjs'),
+    });
+  // merge_generated_file_edit_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit'
+  // (claude-md-projection-from-pg-2026-08-10 P-006). Hard DENY, self-arming off the
+  // target file's own GENERATED banner — see the script header.
+  if (has('pretooluse-generated-file-edit-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-generated-file-edit-guard.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('pretooluse-generated-file-edit-guard.mjs'),
     });
 
   return cfg;

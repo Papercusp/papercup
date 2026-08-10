@@ -3,7 +3,7 @@ title: Pot wake fires but no Mug spawns → it's fleet-spawn starvation, not the
 description: When a pot's wake fires (lastFiredAt advances) yet placements stay empty and liveAgents:0, the cause is almost always the rate-governor's fleet effective concurrency being saturated — NOT your pot config, the work-item kind, or the operator. Diagnose with dev:rate_governor_status, not by recreating the pot.
 discovered: 2026-06-18
 tags: [pot, mug, fleet, concurrency, rate-limit, governor, placement, spawn, diagnosis]
-status: active
+status: superseded
 documents:
   - packages/operator-core/lib/rate-limit-config.ts
   - packages/operator-core/lib/connection-pressure-governor.ts
@@ -14,6 +14,31 @@ generated:
   by: agent
   at: 2026-06-18
 ---
+
+:::caution[Superseded — check the FLAG first; this diagnosis now sends you the wrong way]
+This page is the most actively misleading of the retired-tier docs, because its
+symptom still reproduces exactly while its cause no longer applies.
+
+Since 2026-08-09 the Mug/Kettle/Cup tier is RETIRED (owner-directed), held off by
+`papercusp-mug-kettle-system`, whose default-OFF **is the delivered end state**.
+So "pot wake fires but no Mug spawns" is now the EXPECTED, CORRECT behaviour: the
+spawn gate refuses the role. `liveAgents: 0` and an empty `placements.items` are
+what a healthy retired system looks like.
+
+Follow this page's advice in that state and you will go audit
+`dev:rate_governor_status` for a saturation that is not there — the exact
+wild-goose chase it was written to prevent, pointed at the wrong quarry.
+
+**Check first:** is `papercusp-mug-kettle-system` OFF? If yes, stop — nothing is
+wrong. The gate is at `pot/retired-tier-roles.ts` + the three spawn doors, and
+refusals carry the machine-readable code `mug_kettle_retired`.
+
+**Still true:** the rate-governor starvation mechanism itself, and the
+`dev:rate_governor_status` diagnostic. Both still apply to **su/fleet** spawn
+starvation — the same governor gates those. Read the diagnosis, ignore the Mug.
+
+Canonical account: [The Mug · Kettle · Cup tier is RETIRED](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+:::
 
 ## Symptom
 

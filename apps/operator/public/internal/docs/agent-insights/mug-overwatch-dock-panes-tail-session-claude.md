@@ -3,6 +3,23 @@ URL: /internal/docs/agent-insights/mug-overwatch-dock-panes-tail-session-claude
 
 The dock's ♛ mug / 👁 overwatch panes are READ-ONLY transcript tails (`pui brain-view`), not interactive psu sessions. They showed "waiting…" because psu-launched agents write their transcript under ~/.papercusp/session-claude/<session>/projects/<munged>/<uuid>.jsonl — NOT ~/.claude/projects/ — and the roster's sessionId was empty for them. Map of all four moving parts.
 
+:::caution\[Superseded — those two panes no longer mount; the transcript-path lesson is very much live]
+Since 2026-08-09 the Mug/Kettle/Cup tier is RETIRED (owner-directed) and held off
+by `papercusp-mug-kettle-system`, whose default-OFF **is the delivered end state**.
+`LeftSidebar.tsx` gates the `queen` (Mug) and `overwatch` (Kettle) tabs on that
+flag, so the `♛ mug` / `👁 overwatch` panes this page troubleshoots are not
+rendered at all. Their "waiting…" symptom is therefore unreachable.
+
+**Still true, still load-bearing, and still the reason to read this page:** a
+psu-launched agent writes its transcript under
+`~/.papercusp/session-claude/<session>/projects/<munged>/<uuid>.jsonl`, **NOT**
+`~/.claude/projects/`. That path fact governs every transcript tail, dock pane and
+roster attach in the app — it has nothing to do with the Mug, and getting it wrong
+still produces exactly the blank-pane symptom described below for any role.
+
+Canonical account: [The Mug · Kettle · Cup tier is RETIRED](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+:::
+
 ## Symptom
 
 The desktop chat dock's `♛ mug` and `👁 overwatch` panes are blank or stuck on
