@@ -147,10 +147,36 @@ export function stripSqlComments(text: string): string;
 /**
  * SQL comments AND literal contents blanked — the SQL counterpart of
  * `stripCommentsAndStrings`, and the default choice unless you must read literal values.
+ *
+ * `dollarBodies` PICKS WHAT A `$tag$…$tag$` BODY IS, and there is no universally right answer —
+ * which is exactly why it is a parameter rather than a fixed behaviour:
+ *
+ *   'literal' (DEFAULT) — the body is an opaque string literal; blank it entire. Correct when a
+ *       hit inside a body would be a FALSE POSITIVE because the body is not top-level SQL:
+ *       `findRawTxControl` (a `COMMIT` inside a PL/pgSQL body is not top-level transaction
+ *       control) and `findUnguardedConstraintRename` (a rename inside a `DO` block is that
+ *       lint's own documented FIX SHAPE, so flagging it would flag the fix).
+ *
+ *   'code' — the body is PL/pgSQL CODE; recurse into it, so comments and strings INSIDE the body
+ *       are still blanked but its statements stay live. Correct when a hit inside a body is REAL
+ *       and sealing it would be a FALSE NEGATIVE on a safety lint: `findUniqueIndexShapeSwap`
+ *       (a DROP + re-ADD of a unique constraint inside a `DO` block really executes, and really
+ *       breaks every `ON CONFLICT` written against the old shape) and `findUnguardedReslug`.
+ *
+ * Both readings are legitimate — PostgreSQL says a dollar-quoted body IS a string literal, while
+ * every one of these consumers cares about whether the DDL inside it RUNS. Choosing per call site
+ * is the whole point; a single shared answer silently mints false positives for one half of the
+ * callers or false negatives for the other. Getting this wrong is not hypothetical: masking every
+ * body was measured to drop migration 377's in-`DO` unique-constraint swap from
+ * `findUniqueIndexShapeSwap` (6 firing files -> 5) with every test still green (WI-37800).
+ *
  * @param {string} text
+ * @param {{ dollarBodies?: 'literal'|'code' }} [opts]
  * @returns {string}
  */
-export function stripSqlCommentsAndStrings(text: string): string;
+export function stripSqlCommentsAndStrings(text: string, { dollarBodies }?: {
+    dollarBodies?: "literal" | "code";
+}): string;
 /**
  * Was the character at `index` LIVE CODE, or was it blanked out as string/comment content?
  *

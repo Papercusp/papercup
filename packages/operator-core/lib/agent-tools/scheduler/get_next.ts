@@ -15,7 +15,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
+import { getPresence, writePresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   getNextForBee,
