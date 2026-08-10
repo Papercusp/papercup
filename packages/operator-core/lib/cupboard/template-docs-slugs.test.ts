@@ -24,6 +24,16 @@
  * that actually failed; if a section-level bundle exclusion is ever introduced,
  * THAT is when to extend this guard — with the built tree as its input.
  *
+ * PREMISE RE-CHECKED 2026-08-10 (audit WI-37833). WI-37779's wording — "the two
+ * differ, which is how build-system/ hid" — no longer describes the tree, and it is
+ * worth saying so rather than leaving a live-sounding warning in place. Both copy
+ * legs are wholesale today: build-desktop-sidecar.sh copies public/internal/docs
+ * with no per-section exclusion, and operator-docs' postbuild-copy rsyncs the whole
+ * dist. `build-system/` is present in source and its cited page
+ * (build-system/tauri-release-kit-proposal.mdx) exists, so the source tree and the
+ * shipped tree agree by construction, not by luck. The residual risk is a page that
+ * fails to BUILD, which is the Starlight build's job to report, not this guard's.
+ *
  * Uses the filesystem, NOT `git ls-files`: a doc authored in the same change is
  * untracked until git-sync sweeps, and a git-backed lint would report a
  * just-written page as missing.
