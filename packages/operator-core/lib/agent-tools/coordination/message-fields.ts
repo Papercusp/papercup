@@ -154,17 +154,9 @@ export function classifyPremiseRef(ref: string): ClassifiedPremise {
   return { ref: trimmed, kind, invalidatable: INVALIDATABLE_KINDS.has(kind) };
 }
 
-const premisesArg = z
-  .array(z.string().min(1))
-  .max(20)
-  .optional()
-  .describe(
-    'PER-SECTION. What this section RESTS ON — claims someone ASSERTED (D-041). Cite refs: ' +
-      '`fact:owner:<id>:<key>@v<N>` · `<plan-slug>#D-NNN` · `WI-NNNN#completion` (the completion ' +
-      'CLAIM, not the item) · `msg:<msg_id>` · `owner-turn:<ref>` · `/internal/docs/...`. Any ref ' +
-      'may be cited; the ref KIND decides whether it can go stale (a doc is declarable, never ' +
-      'invalidatable). Distinct from `basedOn`, which is what you READ and is auto-derived.',
-  );
+// `premisesArg` is defined further down, beside `youMayNotKnowArg` / `couldNotDetermineArg`:
+// it needs `shapeTaughtArray` and `SHAPE_REFUSAL_TAIL`, and the three section fields now share
+// one refusal style, so they are kept together rather than split across the file.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // forYouBecause — the sender's model of why THIS recipient is being told (D-021)
@@ -527,6 +519,36 @@ const couldNotDetermineEntrySchema = z.object({
   what: z.string().min(1),
   note: z.string().min(1).optional(),
 });
+
+/**
+ * `premises` is the THIRD section field whose shape has to be taught, and the one most likely
+ * to be got wrong, because the section's OTHER structured field is an object: `forYouBecause`
+ * is `{ relation, ref?, note? }`, so `premises: [{ ref: "WI-1234" }]` is the natural
+ * generalization — and it is wrong. Premises entries are BARE REF STRINGS.
+ *
+ * Measured 2026-08-10 (EI-20088434414057337 and four sibling filings): the object form returned
+ * `Invalid input: expected string, received object` and the bare-string form returned
+ * `expected array, received string` — both true, neither actionable, and both on the first
+ * field an agent tends to reach for. Its two siblings were given taught refusals; this one was
+ * not, so it stayed the entry point to the same round-trip loop.
+ */
+const PREMISES_SHAPE_MESSAGE =
+  '`premises` must be an ARRAY of REF STRINGS — not a string, and not an array of objects. ' +
+  'Write: premises: ["WI-1234#completion", "my-plan#D-007"]. Note the difference from the ' +
+  "section's `forYouBecause`, which IS an object — that asymmetry is the usual cause of this " +
+  'error. Cite refs: `fact:owner:<id>:<key>@v<N>` · `<plan-slug>#D-NNN` · `WI-NNNN#completion` ' +
+  '(the completion CLAIM, not the item) · `msg:<msg_id>` · `owner-turn:<ref>` · ' +
+  '`/internal/docs/...`.' +
+  SHAPE_REFUSAL_TAIL;
+
+const premisesArg = shapeTaughtArray('premises', z.string().min(1), PREMISES_SHAPE_MESSAGE).describe(
+  'PER-SECTION. What this section RESTS ON — claims someone ASSERTED (D-041). An ARRAY OF REF ' +
+    'STRINGS (not objects — `forYouBecause` is the object one). Cite refs: ' +
+    '`fact:owner:<id>:<key>@v<N>` · `<plan-slug>#D-NNN` · `WI-NNNN#completion` (the completion ' +
+    'CLAIM, not the item) · `msg:<msg_id>` · `owner-turn:<ref>` · `/internal/docs/...`. Any ref ' +
+    'may be cited; the ref KIND decides whether it can go stale (a doc is declarable, never ' +
+    'invalidatable). Distinct from `basedOn`, which is what you READ and is auto-derived.',
+);
 
 const youMayNotKnowArg = shapeTaughtArray(
   'youMayNotKnow',

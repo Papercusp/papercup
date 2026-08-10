@@ -22,6 +22,7 @@ import {
   SILENT_LOOP_THRESHOLD,
   SILENT_LOOP_WINDOW_MS,
   summarizeSystemctlStatusCause,
+  supervisionSnapshot,
   extractBuildErrorDetail,
   stdoutFromExecError,
   type SystemctlUnitStatus,
@@ -761,6 +762,67 @@ describe('checkSilentCrashLoop (EI-10750 silent-crash-loop guard)', () => {
     // Only the {n:40} obs is still in-window; delta = 41 - 40 = 1, below threshold.
     expect(r.restartsInWindow).toBe(1);
     expect(r.escalate).toBe(false);
+  });
+});
+
+/**
+ * EI-20093902925801178 — the false-GREEN this reproduces at the source.
+ *
+ * `flapStateByUnit` is plain module state, so it is populated ONLY in the
+ * process that runs `reconcileTick` — and the sole non-test caller is the
+ * `supervision-reconcile` ROUTINE, which executes inside `papercup-bg-host`.
+ * `dev:service_health` imports this module in the OPERATOR process, where the
+ * Map is therefore empty forever. Every entry took the `state === undefined`
+ * branch and serialized `restartsLast10m: 0, lastRestartAt: null,
+ * flapState: 'ok'` — a NO-DATA reading wearing the exact shape of a
+ * measured-healthy one. Live cost, 2026-08-10: papercup-staging-api reported
+ * all of that while systemd's own NRestarts was 4.
+ *
+ * The test below IS that production condition (an empty map), so `flapObserved`
+ * must be false. If someone later makes it default true, this fails.
+ */
+describe('supervisionSnapshot flapObserved (EI-20093902925801178)', () => {
+  beforeEach(() => {
+    _resetReconcilerState();
+  });
+
+  it('reports flapObserved:false when this process holds NO reconciler state — the zeros are defaults, not measurements', () => {
+    const snap = supervisionSnapshot(1_000_000, [AUTORESTART_ENTRY, REPORT_ONLY_ENTRY]);
+    expect(snap).toHaveLength(2);
+    for (const row of snap) {
+      expect(row.flapObserved, `${row.name} has no flap state in this process`).toBe(false);
+      // The zero-defaults that made this indistinguishable from health. They are
+      // still reported — the fix is that `flapObserved` now disambiguates them,
+      // not that the reading is hidden.
+      expect(row.restartsLast10m).toBe(0);
+      expect(row.lastRestartAt).toBeNull();
+      expect(row.flapState).toBe('ok');
+    }
+  });
+
+  it('flips flapObserved:true only for units the reconciler has actually tracked', async () => {
+    // One tick populates flap state for the units in THIS registry.
+    const execUser = vi.fn(async (args: string[]) => {
+      if (args[0] === 'list-units') return LIST_UNITS_FIXTURE;
+      if (args[0] === 'show') return 'Result=success\nNRestarts=0\n';
+      return '';
+    });
+    await reconcileTick({
+      execUser,
+      notify: async () => {},
+      now: () => 1_000_000,
+      autoRestartFlagOn: async () => true,
+      registry: () => [AUTORESTART_ENTRY],
+      log: () => {},
+    } as unknown as ReconcilerDeps);
+
+    const [tracked] = supervisionSnapshot(1_000_000, [AUTORESTART_ENTRY]);
+    expect(tracked?.flapObserved, 'a unit this process reconciled IS observed').toBe(true);
+
+    // ...and a unit absent from that tick stays honestly un-observed, so the
+    // flag tracks real per-unit knowledge rather than "did any tick ever run".
+    const [untracked] = supervisionSnapshot(1_000_000, [REPORT_ONLY_ENTRY]);
+    expect(untracked?.flapObserved).toBe(false);
   });
 });
 

@@ -403,10 +403,14 @@ describe("bgHostWatchdogOwnership (EI-20065717746825416, pure)", () => {
 
 describe("overlayNodeChildSupervision (P-006, pure)", () => {
   const base = [
-    { name: "mcp-proxy", layer: "systemd-user" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 1, lastRestartAt: 999, restartsLast10m: 1, flapState: "damping" as const },
-    { name: "substrate-sidecar", layer: "node-child" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const },
-    { name: "spawner-sidecar", layer: "node-child" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const },
-    { name: "desktop-shell", layer: "desktop-shell" as const, autoRestart: true, criticality: "critical" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const },
+    // EI-20093902925801178: mcp-proxy carries REAL reconciler data here (it is
+    // damping with a nonzero count), so flapObserved:true. The node-child and
+    // desktop-shell rows are legitimately un-tracked by the systemd reconciler —
+    // their respawn state is what this overlay is about to supply.
+    { name: "mcp-proxy", layer: "systemd-user" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 1, lastRestartAt: 999, restartsLast10m: 1, flapState: "damping" as const, flapObserved: true },
+    { name: "substrate-sidecar", layer: "node-child" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const, flapObserved: false },
+    { name: "spawner-sidecar", layer: "node-child" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const, flapObserved: false },
+    { name: "desktop-shell", layer: "desktop-shell" as const, autoRestart: true, criticality: "critical" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const, flapObserved: false },
   ];
 
   it("leaves non-sidecar entries (systemd-user, desktop-shell) completely untouched", () => {
@@ -449,6 +453,10 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
     lastRestartAt: null,
     restartsLast10m: 0,
     flapState: "ok" as const,
+    // EI-20093902925801178: OBSERVED, so these zeros are real measurements and
+    // no caveat note is expected. The un-observed case — where the identical
+    // zeros mean "measured nothing" — is covered by its own test below.
+    flapObserved: true,
   };
   const registry = [{ name: "staging-api", unit: "papercup-staging-api" }];
 
@@ -467,6 +475,42 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
     expect(out[0]?.secondsSinceStart).toBe(600);
     expect(out[0]?.recentRestartNote).toBeUndefined();
     expect(out[0]?.active).toBe(true);
+  });
+
+  /**
+   * EI-20093902925801178 — THE false-GREEN guard.
+   *
+   * `flapObserved:false` means the counters beside it measured NOTHING: they are
+   * zero-defaults produced in a process that never runs the reconciler (it runs
+   * inside papercup-bg-host; this tool reads the Map in the operator). Rendering
+   * that as `flapState:'ok'` with no caveat is exactly how a real 4-restart
+   * crash-loop of papercup-staging-api read as perfectly healthy on 2026-08-10.
+   */
+  it("flags an UNOBSERVED systemd-user entry so its zero counters cannot read as measured-healthy", async () => {
+    const unobserved = { ...stagingEntry, flapObserved: false };
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 114, activeState: "active", nRestarts: 4 }));
+    const out = await overlaySystemdRestartRecency([unobserved], probeFn, registry);
+    expect(out[0]?.flapCountersNote, "an un-observed entry must say its counters measured nothing").toMatch(
+      /measured NOTHING/,
+    );
+    // ...and the number that IS trustworthy is surfaced right beside it. These
+    // are the real captured values: systemd said 4 while restartsLast10m said 0.
+    expect(out[0]?.nRestarts).toBe(4);
+    expect(out[0]?.restartsLast10m).toBe(0);
+  });
+
+  it("does NOT flag an observed entry — the note has to stay rare enough to mean something", async () => {
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 600, activeState: "active", nRestarts: 4 }));
+    const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+    expect(out[0]?.flapCountersNote).toBeUndefined();
+    expect(out[0]?.nRestarts).toBe(4);
+  });
+
+  it("omits nRestarts when systemd did not report it — absent must never render as zero restarts", async () => {
+    const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 600, activeState: "active" }));
+    const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+    expect(out[0]?.nRestarts).toBeUndefined();
+    expect(out[0]).not.toHaveProperty("nRestarts");
   });
 
   it("leaves the entry untouched when the probe can't determine anything (fail-soft) — honest 'unknown', never active:false", async () => {

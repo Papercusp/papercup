@@ -112,6 +112,10 @@ describe('dev:service_health supervision overlay reports the honest state (WI-61
     lastRestartAt: null,
     restartsLast10m: 0,
     flapState: 'ok' as const,
+    // EI-20093902925801178: these rows model entries the reconciler HAS
+    // observed, so the zeros above are measurements. The un-observed case (same
+    // zeros, no data behind them) is guarded in service_health.test.ts.
+    flapObserved: true,
   });
   const probeReturning = (activeState: string, secondsSinceStart?: number) => async (): Promise<ServiceStartInfo> => ({
     ok: true,

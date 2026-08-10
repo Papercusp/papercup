@@ -254,8 +254,13 @@ export function unitStateFromProps(props: Map<string, string>, scope: 'user' | '
   // inapplicable to the unit TYPE is absent (never an empty string), and an
   // absent counter is UNKNOWN, not zero — collapsing the two would recreate
   // exactly the "no data rendered as healthy" bug this field exists to kill.
-  const rawNRestarts = props.get('NRestarts');
-  const parsedNRestarts = rawNRestarts === undefined ? Number.NaN : Number(rawNRestarts);
+  // ⚠ An EMPTY value (`NRestarts=` with nothing after it — systemd really does
+  // emit bare KEY= for some properties, per parseSystemctlShowOutput's own
+  // tests) must be treated as ABSENT, not as zero. `Number('')` is 0, so a
+  // naive parse turns "systemd told us nothing" into "measured zero restarts" —
+  // the precise defect this field exists to eliminate. Caught by its own test.
+  const rawNRestarts = props.get('NRestarts')?.trim();
+  const parsedNRestarts = rawNRestarts ? Number(rawNRestarts) : Number.NaN;
   const nRestarts = Number.isInteger(parsedNRestarts) && parsedNRestarts >= 0 ? parsedNRestarts : undefined;
   return {
     unit: props.get('Id') ?? fallbackUnit,
@@ -406,8 +411,11 @@ export async function probeServiceStart(unit: string): Promise<ServiceStartInfo>
     // down unit have restart histories too, and dropping the counter on those
     // paths would reintroduce "absent reads as zero" for exactly the units whose
     // restarts matter most. Absent/unparseable stays undefined, never 0.
-    const nRestartsRaw = props.get('NRestarts');
-    const nRestartsNum = nRestartsRaw === undefined ? Number.NaN : Number(nRestartsRaw);
+    // Empty-is-absent, for the same reason as unitStateFromProps above:
+    // `Number('')` is 0, which would render "systemd said nothing" as a
+    // measured zero.
+    const nRestartsRaw = props.get('NRestarts')?.trim();
+    const nRestartsNum = nRestartsRaw ? Number(nRestartsRaw) : Number.NaN;
     const restarts = Number.isInteger(nRestartsNum) && nRestartsNum >= 0 ? { nRestarts: nRestartsNum } : {};
     if (mainPidRaw === undefined) {
       // No MainPID property for this unit type at all (e.g. a `.timer`) —
