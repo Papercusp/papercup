@@ -789,8 +789,24 @@ export interface IssueClaimExclusionBreakdown {
  *  It does NOT make two separate round-trips atomic — against a concurrently-mutating table
  *  they observe different snapshots and legitimately disagree. Callers that present the
  *  count and the list together as one verdict MUST read them through
- *  {@link readIssueClaimability}, which puts them in one REPEATABLE READ transaction. */
-const ALL_ISSUE_CLAIM_FLOORS_PASS =
+ *  {@link readIssueClaimability}, which puts them in one REPEATABLE READ transaction.
+ *
+ *  ⚠ THE ONE THING THIS CONSTANT DOES NOT GET FOR FREE (EI-20091339613996367). The floor
+ *  LOGIC cannot drift — every `ok_*` boolean is computed by the same exported helper the
+ *  claim path enforces. What IS hand-maintained is the SET below: a floor decorated by
+ *  {@link issueClaimCandidateSubquery} but never ANDed here is computed for every candidate
+ *  row and then silently IGNORED, so the count and the row list over-admit while every
+ *  per-floor test still passes. Nothing about that failure is loud — no SQL error, no type
+ *  error, and the seeded-row agreement tests only catch drift their fixtures happen to
+ *  exercise, which a newly-added floor by definition has none of.
+ *
+ *  Exported for exactly one reason: `get-next-exclusion-breakdown.integration.test.ts`
+ *  ("the claimability bar applies EVERY floor the candidate subquery computes") asserts this
+ *  set equals the `ok_*` columns the subquery actually returns, read from live result-column
+ *  METADATA rather than from source text — so a floor added to the subquery and forgotten
+ *  here fails immediately instead of silently widening the queue. Add a floor to the
+ *  subquery ⇒ add it here. */
+export const ALL_ISSUE_CLAIM_FLOORS_PASS =
   `ok_untaken AND ok_claim_hold AND ok_needs_human AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
   `AND ok_completed AND ok_rig AND ok_no_blocker AND ok_cooldown AND ok_origin`;
