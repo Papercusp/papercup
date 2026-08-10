@@ -613,7 +613,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   const goalsQuery = useSyncQuery<{
     goals: HudGoalInput[];
     portfolioSpendUsd: number;
-    portfolioProjects: number;
+    portfolioPots: number;
   }>({
     queryName: 'goals.list',
     args: { workspaceId: goalWorkspaceId },

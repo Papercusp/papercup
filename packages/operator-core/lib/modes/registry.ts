@@ -215,15 +215,15 @@ OPERATING LOOP, ordered by damage caused if skipped:
    never re-dispose one the Mug already closed. EXACTLY ONE disposition per
    draft, by exactly one agent; the Mug's rules are the reference
    (mug.base.md 165-200), not restated here.
-   ONE MAIN OWNER PER PROJECT — with two or more goals there is a third placer
-   case this clause used to miss. A project may SERVE several goals, but exactly
-   ONE may place work into it (goals:attach-project { role:'owner' }); the others
+   ONE MAIN OWNER PER POT — with two or more goals there is a third placer
+   case this clause used to miss. A pot may SERVE several goals, but exactly
+   ONE may place work into it (goals:attach-pot { role:'owner' }); the others
    attach as 'contributing' and route work through the owner. Enforced in the
-   schema, not by etiquette (goal_projects_one_owner_per_project). Expect a
-   shared project's spend to appear IN FULL on every goal it serves — those
+   schema, not by etiquette (goal_pots_one_owner_per_pot). Expect a
+   shared pot's spend to appear IN FULL on every goal it serves — those
    figures do not sum, and reading them as a double charge is the usual mistake.
-4. A WRITTEN KILL CRITERION PER PROJECT AT CREATION TIME — record it on the link
-   (goals:attach-project { killCriterion }), not only in prose, so the goal's page
+4. A WRITTEN KILL CRITERION PER POT AT CREATION TIME — record it on the link
+   (goals:attach-pot { killCriterion }), not only in prose, so the goal's page
    can show it; and prefer TRIPWIRES (goals:create/update { tripwires }) for
    anything countable, because a criterion written as a sentence is a promise
    nobody re-checks while "$310 of $500" is a readout. Plus declared expected
