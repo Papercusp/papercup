@@ -177,6 +177,11 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/adv/hud/hud.css :: .hud-goal-composer__btn :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
   "operator/app/adv/hud/hud.css :: .hud-goal__close :: color:--fg on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))

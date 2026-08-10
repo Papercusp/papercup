@@ -20,14 +20,34 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 // "overwatch on, convos off" is a real configuration and a single boolean cannot
 // express it. Without the per-key override, a test asserting the Convos tab is
 // hidden would be indistinguishable from one asserting Overwatch is hidden.
+// `mugKettleOn` is a THIRD knob, separate from the blanket for the same reason
+// `flags` is: a single boolean cannot express a real configuration. It defaults
+// to TRUE — the inverse of `overwatchOn` — because MUG_KETTLE_SYSTEM is the only
+// gate here whose OFF state removes the rail's DEFAULT tab, so letting the
+// blanket answer it would silently retire the Mug tier underneath every test
+// written before the gate existed. Those tests would not fail loudly; the
+// "defaults to OPEN on the Mug tab" and "snaps ?lst=overwatch back to Mug" cases
+// would just start asserting the retirement instead of their own subject
+// (retire-mug-kettle-su-only-2026-08-09 — the quiet vi.mock trap the plan warns
+// about). Defaulting it ON keeps every existing case testing what it was written
+// to test; the gate's own OFF behaviour is covered by its describe block below,
+// which sets this false explicitly.
+//
+// It is read BEFORE `flags` rather than after, so the wholesale `H.flags = {…}`
+// assignments several tests do cannot clobber it by omission.
+const MUG_KETTLE = 'papercusp-mug-kettle-system';
 const H = vi.hoisted(() => ({
   overwatchOn: false,
+  mugKettleOn: true,
   flags: {} as Record<string, boolean>,
   pathname: '/adv',
 }));
 
 vi.mock('@papercusp/flags/client', () => ({
-  useFlag: (key: string) => H.flags[key] ?? H.overwatchOn,
+  useFlag: (key: string) =>
+    key === 'papercusp-mug-kettle-system'
+      ? (H.flags[key] ?? H.mugKettleOn)
+      : (H.flags[key] ?? H.overwatchOn),
 }));
 vi.mock('@/lib/router-compat/navigation', () => ({ usePathname: () => H.pathname }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
@@ -75,6 +95,7 @@ beforeAll(() => {
 beforeEach(() => {
   localStorage.clear();
   H.overwatchOn = false;
+  H.mugKettleOn = true;
   H.flags = {};
   H.pathname = '/adv';
   document.body.className = '';
@@ -416,6 +437,124 @@ describe('<LeftSidebar> shell', () => {
     it('keeps `conversations` in TAB_IDS so the park is a flag flip, not a deletion', async () => {
       const { TAB_IDS } = await import('./LeftSidebar');
       expect(TAB_IDS).toContain('conversations');
+    });
+  });
+
+  // MUG_KETTLE_SYSTEM (retire-mug-kettle-su-only-2026-08-09 P-012). Unlike the
+  // three gates above, this one hides the rail's DEFAULT tab, so the interesting
+  // assertions are not "is the tab gone" but "where does everything that used to
+  // land on Mug land now". Note the polarity: OFF is the shipped end state here,
+  // so this block describes production and the rest of the file describes the
+  // testing escape hatch.
+  describe('the Mug/Kettle tier gate', () => {
+    // Re-declared rather than shared with the Convos block above: the two gates
+    // are independent, and the cross-gate test below is the only place they meet.
+    const CONVOS_KEY = 'papercusp-conversations-rail-tab';
+
+    it('hides Mug AND Overwatch from both the tab strip and the collapsed icon rail while the tier is retired', () => {
+      H.overwatchOn = true; // even with OVERWATCH explicitly ON
+      H.mugKettleOn = false;
+      renderRail();
+      expect(screen.queryByTestId('left-sidebar-tab-queen')).toBeNull();
+      expect(screen.queryByTestId('left-sidebar-rail-queen')).toBeNull();
+      expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
+      expect(screen.queryByTestId('left-sidebar-rail-overwatch')).toBeNull();
+      // The ungated rail is otherwise intact — removing two tabs from the middle
+      // must not disturb their neighbours on either side.
+      expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
+      expect(screen.getByTestId('left-sidebar-tab-agents')).toBeTruthy();
+    });
+
+    it('shows both again the moment the testing flag is flipped on', () => {
+      H.overwatchOn = true;
+      H.mugKettleOn = true;
+      renderRail();
+      expect(screen.getByTestId('left-sidebar-tab-queen')).toBeTruthy();
+      expect(screen.getByTestId('left-sidebar-tab-overwatch')).toBeTruthy();
+    });
+
+    // The two gates on `overwatch` are an AND, and this is the direction that
+    // matters: OVERWATCH is a SEPARATE flag an owner can flip at /admin/features,
+    // and it must not resurrect a tab for a tier that cannot run. Asserting only
+    // the tier-off case above would pass even if the gate were an OR.
+    it('keeps Overwatch hidden when its own flag is ON but the tier is retired', () => {
+      H.overwatchOn = true;
+      H.mugKettleOn = false;
+      renderRail();
+      expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
+    });
+
+    it('keeps Overwatch hidden when the tier is ON but its own OVERWATCH flag is off', () => {
+      H.overwatchOn = false;
+      H.mugKettleOn = true;
+      renderRail();
+      expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
+      // ...while Mug, gated only by the tier, is unaffected.
+      expect(screen.getByTestId('left-sidebar-tab-queen')).toBeTruthy();
+    });
+
+    // THE DEFAULT-TAB FIX. The nuqs default is a static 'queen', so a first load
+    // with no ?lst at all reads `queen` — a hidden tab. Without the snap-back the
+    // rail renders Accounts (via `active`'s ?? visibleTabs[0]) while data-tab and
+    // ui:get_state still say `queen`: the URL and the screen disagree.
+    it('lands a fresh load on Accounts instead of the hidden default Mug tab', async () => {
+      H.mugKettleOn = false;
+      renderRail();
+      await waitFor(() =>
+        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
+      );
+      expect(await screen.findByTestId('panel-accounts')).toBeTruthy();
+      expect(screen.queryByTestId('panel-queen')).toBeNull();
+    });
+
+    it('snaps a bookmarked ?lst=queen back to Accounts while the tier is retired', async () => {
+      H.mugKettleOn = false;
+      renderRail('?lst=queen');
+      await waitFor(() =>
+        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
+      );
+      expect(screen.queryByTestId('panel-queen')).toBeNull();
+    });
+
+    it('snaps a bookmarked ?lst=overwatch back to Accounts while the tier is retired', async () => {
+      H.overwatchOn = true;
+      H.mugKettleOn = false;
+      renderRail('?lst=overwatch');
+      await waitFor(() =>
+        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
+      );
+      expect(screen.queryByTestId('panel-overwatch')).toBeNull();
+    });
+
+    // The OTHER gates' snap-backs used to hardcode 'queen' as their landing. With
+    // the tier retired that target is itself hidden, so every one of them would
+    // have snapped a stale deep link onto a tab that is not on screen — the exact
+    // URL-vs-screen disagreement those snap-backs exist to prevent, reintroduced
+    // one level up. This is the regression `homeTab` exists to stop, and it is
+    // invisible unless a test crosses TWO gates at once.
+    it('lands the OTHER gates’ snap-backs on Accounts too, not on the hidden Mug tab', async () => {
+      H.mugKettleOn = false;
+      H.flags = { [CONVOS_KEY]: false };
+      renderRail('?lst=conversations');
+      await waitFor(() =>
+        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
+      );
+      expect(screen.queryByTestId('panel-queen')).toBeNull();
+      expect(screen.queryByTestId('panel-conversations')).toBeNull();
+    });
+
+    // Same reasoning as the Convos gate: the ids must SURVIVE so the flag stays a
+    // flip rather than a code change, and so the snap-backs above are reachable
+    // (a deleted id would not parse, and the deep link would silently default).
+    it('keeps `queen` and `overwatch` in TAB_IDS so the retirement is a flag flip, not a deletion', async () => {
+      const { TAB_IDS } = await import('./LeftSidebar');
+      expect(TAB_IDS).toContain('queen');
+      expect(TAB_IDS).toContain('overwatch');
+    });
+
+    it('resolves a defined flag key against the real flags module, so the flip can work', async () => {
+      const { FLAGS } = await import('@papercusp/flags');
+      expect(FLAGS.MUG_KETTLE_SYSTEM).toBe(MUG_KETTLE);
     });
   });
 

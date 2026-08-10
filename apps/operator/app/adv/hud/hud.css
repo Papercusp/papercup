@@ -1367,9 +1367,13 @@
 
 .hud-goal-composer__label {
   font-size: 11px;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--fg-mute);
+  /* No tracking: `lint:design-primitives` ENFORCES letter-spacing:0 across app
+     UI, so 0.04em here reds the fleet's gate. This is the THIRD time this file
+     has hit it (2026-08-02 on .hud__micro-label, again 2026-08-09 here) — case
+     + size + colour carry the label distinction instead, matching
+     .hud-goal__ceiling-label and .hud-goal__h4 above. */
 }
 
 .hud-goal-composer__input {

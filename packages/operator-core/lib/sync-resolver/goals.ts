@@ -203,6 +203,43 @@ export interface GoalProjectCard {
 }
 
 /**
+ * One PLAN associated with a goal (goals-tab-improvement-2026-08-09 P-019).
+ *
+ * ⚠ Read D-010 before changing how this is derived. A goal has NO direct plan
+ * link — `harness_plans` carries no `goal_id` and there is no join table — so
+ * this is DERIVED, and only one derivation is honest: a plan serves a goal iff a
+ * work item STAMPED with that goal came from that plan
+ * (`work_items.goal_id` → `work_items.source_plan_slug`).
+ *
+ * The tempting alternative — every plan in a harness that `goal_projects` links
+ * to the goal — is REJECTED and must not be reintroduced: a harness holds
+ * hundreds of plans, so it answers "plans in a project that serves this goal",
+ * which would render the entire papercusp plan directory under a one-day-old
+ * goal and call it association.
+ *
+ * Deriving it this way also inherits the stamp's provenance rule for free:
+ * `stampGoalProvenance` writes `goal_id` only from the creator's live GOAL-mode
+ * subject, never from an argument or a guess, so a plan cannot self-report its
+ * way onto a goal.
+ */
+export interface GoalPlanCard {
+  planSlug: string;
+  harnessSlug: string;
+  /** Null when the work items reference a plan slug that no longer resolves —
+   *  rendered as the bare slug rather than dropped, because a plan that was
+   *  deleted out from under live work items is worth SEEING, not hiding. */
+  title: string | null;
+  status: string | null;
+  archived: boolean;
+  /** Work items on this goal that came from this plan. NOT a count of the
+   *  plan's own items — the plan may be far larger than its goal-stamped slice,
+   *  and labelling this "plan progress" would overstate what the goal owns. */
+  items: number;
+  openItems: number;
+  updatedAt: string | null;
+}
+
+/**
  * One goal, everything its page needs, in a single round-trip.
  *
  * ⚠ KILLED PROJECTS ARE INCLUDED, flagged rather than filtered. If kills
@@ -275,6 +312,28 @@ export async function resolveGoalDetail(args: {
        WHERE wi.goal_id = ${goalId}
        ORDER BY wi.updated_ts DESC NULLS LAST
        LIMIT ${activityLimit}
+    `) as unknown as Array<Record<string, unknown>>;
+
+    // Plans, DERIVED through the goal's stamped work items (D-010). The LEFT
+    // JOIN is deliberate: a slug whose plan row is gone still returns a card
+    // with a null title, because live work items pointing at a deleted plan is
+    // exactly the state worth surfacing.
+    const planRows = (await tx`
+      SELECT wi.source_plan_slug AS plan_slug,
+             wi.harness_slug,
+             p.title, p.status, COALESCE(p.archived, false) AS archived,
+             COUNT(*) AS items,
+             COUNT(*) FILTER (WHERE wi.closed_ts IS NULL) AS open_items,
+             to_timestamp(MAX(wi.updated_ts) / 1000.0) AS updated_at
+        FROM harness_shared.work_items wi
+        LEFT JOIN harness_shared.harness_plans p
+               ON p.workspace_id = ${workspaceId}
+              AND p.harness_slug = wi.harness_slug
+              AND p.plan_slug = wi.source_plan_slug
+       WHERE wi.goal_id = ${goalId}
+         AND wi.source_plan_slug IS NOT NULL
+       GROUP BY wi.source_plan_slug, wi.harness_slug, p.title, p.status, p.archived
+       ORDER BY COUNT(*) FILTER (WHERE wi.closed_ts IS NULL) DESC, MAX(wi.updated_ts) DESC NULLS LAST
     `) as unknown as Array<Record<string, unknown>>;
 
     // Spend by day, stacked by project — the shape the chart wants, computed
