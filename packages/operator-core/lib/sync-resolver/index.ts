@@ -985,20 +985,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // goals tab, the goal detail view — reads from exactly these two.
   //
   // BOTH return a SINGLE row wrapping an object, not a row-per-goal. The list's
-  // portfolio totals are computed server-side over DISTINCT projects precisely
-  // so a client never re-sums the goals itself (a shared project's spend counts
+  // portfolio totals are computed server-side over DISTINCT pots precisely
+  // so a client never re-sums the goals itself (a shared pot's spend counts
   // in full against each goal it serves, so the per-goal figures do not add up
   // — D-021). Emitting them as sibling rows would put the wrong arithmetic back
   // within easy reach of every consumer. Same shape as automation.catalog.
   //
   // All four backing tables genuinely move these reads: `goals` is the record,
-  // `goal_projects` changes both the project count and the spend denominator,
+  // `goal_pots` changes both the pot count and the spend denominator,
   // `work_items` carries the open/needs-human counters through its goal_id
   // stamp, and `agent_usage_samples` is what the spend meters sum.
   'goals.list': {
     backingTables: [
       'harness_shared.goals',
-      'harness_shared.goal_projects',
+      'harness_shared.goal_pots',
       'harness_shared.work_items',
       'harness_shared.agent_usage_samples',
     ],
@@ -1018,7 +1018,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'goals.detail': {
     backingTables: [
       'harness_shared.goals',
-      'harness_shared.goal_projects',
+      'harness_shared.goal_pots',
       'harness_shared.work_items',
       'harness_shared.agent_usage_samples',
       // P-019/D-010: the plans rail joins harness_plans for each derived plan's

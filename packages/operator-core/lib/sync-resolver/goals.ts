@@ -262,7 +262,7 @@ export async function resolveGoalsList(args: {
   });
   const goals = rows.map(toSummary);
 
-  // The portfolio total, over DISTINCT projects. Deliberately returned
+  // The portfolio total, over DISTINCT pots. Deliberately returned
   // alongside the rows the client already has: the natural thing to do with a
   // list of spend figures is add them up, and that answer is wrong by exactly
   // the shared work. Handing over the correct total removes the temptation.
@@ -274,17 +274,17 @@ export async function resolveGoalsList(args: {
   return {
     goals,
     portfolioSpendUsd: portfolio.costUsd,
-    portfolioProjects: portfolio.projects,
+    portfolioPots: portfolio.pots,
   };
 }
 
-export interface GoalProjectCard {
+export interface GoalPotCard {
   harnessSlug: string;
   role: 'owner' | 'contributing';
   killCriterion: string | null;
   note: string | null;
   addedAt: string;
-  /** How many goals this project serves — the "shared with N goals" badge. */
+  /** How many goals this pot serves — the "shared with N goals" badge. */
   servesGoals: number;
   spendUsd: number;
   openWorkItems: number;
@@ -299,9 +299,9 @@ export interface GoalProjectCard {
  * work item STAMPED with that goal came from that plan
  * (`work_items.goal_id` → `work_items.source_plan_slug`).
  *
- * The tempting alternative — every plan in a harness that `goal_projects` links
+ * The tempting alternative — every plan in a harness that `goal_pots` links
  * to the goal — is REJECTED and must not be reintroduced: a harness holds
- * hundreds of plans, so it answers "plans in a project that serves this goal",
+ * hundreds of plans, so it answers "plans in a pot that serves this goal",
  * which would render the entire papercusp plan directory under a one-day-old
  * goal and call it association.
  *
@@ -352,7 +352,7 @@ export async function resolveGoalDetail(args: {
     const [goalRow] = (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.metadata, g.created_at, g.updated_at,
-             0 AS project_count, 0 AS open_work_items, 0 AS needs_human,
+             0 AS pot_count, 0 AS open_work_items, 0 AS needs_human,
              0 AS spend_usd, 0 AS spend_recent_usd
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId} AND g.id = ${goalId}
@@ -360,11 +360,11 @@ export async function resolveGoalDetail(args: {
     `) as unknown as RawGoal[];
     if (!goalRow) return { goal: null };
 
-    // Projects, INCLUDING removed ones (see the note above) — `removedAt`
+    // Pots, INCLUDING removed ones (see the note above) — `removedAt`
     // non-null is what the greyed-out card renders from.
-    const projectRows = (await tx`
+    const potRows = (await tx`
       SELECT gp.harness_slug, gp.role, gp.kill_criterion, gp.note, gp.added_at, gp.removed_at,
-             (SELECT COUNT(*) FROM harness_shared.goal_projects sib
+             (SELECT COUNT(*) FROM harness_shared.goal_pots sib
                WHERE sib.workspace_id = gp.workspace_id
                  AND sib.harness_slug = gp.harness_slug
                  AND sib.removed_at IS NULL) AS serves_goals,
@@ -372,7 +372,7 @@ export async function resolveGoalDetail(args: {
                 FROM harness_shared.agent_usage_samples s
                WHERE s.workspace_id = gp.workspace_id
                  AND s.harness_slug = gp.harness_slug) AS spend_usd,
-             -- The recent-window half, per project, so the popup's burn rate is
+             -- The recent-window half, per pot, so the popup's burn rate is
              -- the SAME measurement the card's is (P-003). Deliberately the
              -- rolling ts predicate the list uses, NOT the calendar-day buckets
              -- spend_by_day builds below: those are different windows, and
@@ -386,7 +386,7 @@ export async function resolveGoalDetail(args: {
                WHERE wi.harness_slug = gp.harness_slug
                  AND wi.goal_id = gp.goal_id
                  AND wi.closed_ts IS NULL) AS open_work_items
-        FROM harness_shared.goal_projects gp
+        FROM harness_shared.goal_pots gp
        WHERE gp.workspace_id = ${workspaceId} AND gp.goal_id = ${goalId}
        ORDER BY (gp.removed_at IS NULL) DESC, (gp.role = 'owner') DESC, gp.added_at ASC
     `) as unknown as Array<Record<string, unknown>>;
@@ -479,7 +479,7 @@ export async function resolveGoalDetail(args: {
        ORDER BY am.set_at DESC
     `) as unknown as Array<Record<string, unknown>>;
 
-    // Spend by day, stacked by project — the shape the chart wants, computed
+    // Spend by day, stacked by pot — the shape the chart wants, computed
     // once here rather than bucketed client-side over a raw sample list.
     const spendByDay = (await tx`
       SELECT to_char(to_timestamp(s.ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
@@ -488,14 +488,14 @@ export async function resolveGoalDetail(args: {
         FROM harness_shared.agent_usage_samples s
        WHERE s.workspace_id = ${workspaceId}
          AND s.harness_slug IN (
-           SELECT gp.harness_slug FROM harness_shared.goal_projects gp
+           SELECT gp.harness_slug FROM harness_shared.goal_pots gp
             WHERE gp.workspace_id = ${workspaceId} AND gp.goal_id = ${goalId}
               AND gp.removed_at IS NULL)
        GROUP BY day, s.harness_slug
        ORDER BY day ASC
     `) as unknown as Array<Record<string, unknown>>;
 
-    const projects = projectRows.map((p) => ({
+    const pots = potRows.map((p) => ({
       harnessSlug: String(p.harness_slug),
       role: p.role === 'owner' ? 'owner' : 'contributing',
       killCriterion: (p.kill_criterion as string | null) ?? null,
@@ -508,25 +508,25 @@ export async function resolveGoalDetail(args: {
     }));
 
     const goal = toSummary(goalRow);
-    goal.projectCount = projects.filter((p) => !p.removedAt).length;
+    goal.potCount = pots.filter((p) => !p.removedAt).length;
     // From the UNBOUNDED count, never `waiting.length` — that array stops at 25,
     // so a goal with 31 parked items used to render "31 needs you" on the card
     // (goals.list counts unbounded) and "25 waiting on you" in this panel, with
     // nothing disclosing the cap. Sourcing both from the same predicate makes the
     // two surfaces agree BY CONSTRUCTION rather than by coincidence.
     goal.needsHuman = num(waitingTotalRow?.total);
-    goal.spendUsd = projects
+    goal.spendUsd = pots
       .filter((p) => !p.removedAt)
       .reduce((acc, p) => acc + p.spendUsd, 0);
-    // Summed over the SAME project set as spendUsd immediately above, so the
+    // Summed over the SAME pot set as spendUsd immediately above, so the
     // level and the rate always describe one population. Read off the raw rows
     // rather than the mapped ones: this is an input to the burn, not a field of
-    // the project card, and widening the card's type for it would put an
+    // the pot card, and widening the card's type for it would put an
     // unrendered number on a public shape.
-    goal.spendRecentUsd = projectRows
+    goal.spendRecentUsd = potRows
       .filter((p) => p.removed_at == null)
       .reduce((acc, p) => acc + num(p.spend_recent_usd), 0);
-    goal.openWorkItems = projects.reduce((acc, p) => acc + p.openWorkItems, 0);
+    goal.openWorkItems = pots.reduce((acc, p) => acc + p.openWorkItems, 0);
 
     /* SUBDIRECTIVES + the parent, for the popup's hierarchy section
        (goals-tab-improvement-2026-08-09 P-017).
@@ -573,7 +573,7 @@ export async function resolveGoalDetail(args: {
       parent: parentRow
         ? { id: String(parentRow.id), title: (parentRow.title as string | null) ?? String(parentRow.id) }
         : null,
-      projects,
+      pots,
       agents: agentRows.map((a) => ({
         ownerId: String(a.owner_id),
         setAt: iso(a.set_at as string | Date | null),
@@ -616,7 +616,7 @@ export async function resolveGoalDetail(args: {
       // invites the wrong comparison.
       spendLabel: 'fleet spend',
       spendNote:
-        'Spawned-agent cost attributed to this goal’s projects. A project shared with another goal counts here IN FULL, so goal spend figures do not sum.',
+        'Spawned-agent cost attributed to this goal’s pots. A pot shared with another goal counts here IN FULL, so goal spend figures do not sum.',
     };
   });
 }

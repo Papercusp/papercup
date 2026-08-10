@@ -402,13 +402,13 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
      and each moves for a different reason, so all three are bridged:
        - `goals` — the record itself (status, kill criterion, tripwire `current`
          values, which advance via goals:update as evidence lands);
-       - `goal_projects` — attach/detach/promote, which changes BOTH the project
+       - `goal_pots` — attach/detach/promote, which changes BOTH the pot
          grid AND every spend figure, since spend is summed over the linked set;
        - `agent_usage_samples` — the spend meters themselves.
      Full-bust rather than row-keyed: the queries are keyed by workspace/goal
      rather than by these tables' PKs. */
   'harness_shared.goals': ['goals.list', 'goals.detail'],
-  'harness_shared.goal_projects': ['goals.list', 'goals.detail'],
+  'harness_shared.goal_pots': ['goals.list', 'goals.detail'],
   /* NOTE: the goal SPEND meters also go stale on `agent_usage_samples` writes,
      but that table already has an entry further down — the goal queries are
      added THERE rather than here. A second key for the same table in this object
