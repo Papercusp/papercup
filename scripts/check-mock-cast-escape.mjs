@@ -116,39 +116,77 @@ function escapeKindOf(typeNode) {
  */
 
 /**
- * Every `.mock*(...)` call in `rawText` whose installed argument(s) end in a bare
- * `as never` / `as any` — regardless of how many lines the call spans.
+ * Every `.mock*(...)` call in `rawText` that installs a value cast `as never` / `as any`,
+ * regardless of how many lines the call spans or how it is formatted.
+ *
+ * `line`/`snippet` are anchored to the `.mockXxx` NAME token, not to the start of the
+ * enclosing expression — in a chain (`m.mockReturnValueOnce(a).mockReturnValueOnce(b)`)
+ * the CallExpression starts back at `m`, which would report every link on one line and
+ * break the hook's before/after snippet matching.
  *
  * @param {string} rawText
+ * @param {string} [fileName] - used only to choose TS vs TSX parsing. Callers that have a
+ *   path SHOULD pass it; the default parses JSX, which is the safe end of that trade (a
+ *   `.tsx` fixture parsed as TS loses whole subtrees, while the `.ts`-only shape TSX
+ *   misreads — an angle-bracket `<never>x` assertion — is not the `as` idiom this counts).
  * @returns {MockCastEscape[]}
  */
-export function findMockCastEscapesInText(rawText) {
-  const masked = maskStringsAndComments(rawText);
-  /** @type {MockCastEscape[]} */
+export function findMockCastEscapesInText(rawText, fileName = 'in-memory.tsx') {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    rawText,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+
+  /** @type {(MockCastEscape & { pos: number })[]} */
   const results = [];
-  MOCK_CALL_RE.lastIndex = 0;
-  let m;
-  while ((m = MOCK_CALL_RE.exec(masked)) !== null) {
-    const openParenIndex = m.index + m[0].length - 1;
-    const closeIndex = findMatchingParen(masked, openParenIndex);
-    if (closeIndex === -1) continue; // unbalanced — a masking edge case, not a crash
-    const argsText = masked.slice(openParenIndex + 1, closeIndex);
-    const escMatch = AS_ESCAPE_RE.exec(argsText.replace(/\s+$/, ''));
-    if (!escMatch) continue;
 
-    const lineNum = rawText.slice(0, m.index).split('\n').length;
-    const lineStart = rawText.lastIndexOf('\n', m.index) + 1;
-    const lineEndIdx = rawText.indexOf('\n', m.index);
-    const lineText = rawText.slice(lineStart, lineEndIdx === -1 ? rawText.length : lineEndIdx).trim();
-
+  /** @param {import('typescript').Node} call @param {'never'|'any'} kind @param {string} verb */
+  const record = (call, kind, verb) => {
+    const nameStart = call.expression.name.getStart(sourceFile);
+    const { line } = sourceFile.getLineAndCharacterOfPosition(nameStart);
+    const lineStart = rawText.lastIndexOf('\n', nameStart) + 1;
+    const lineEndIdx = rawText.indexOf('\n', nameStart);
     results.push({
-      line: lineNum,
-      verb: `mock${m[1]}`,
-      kind: /** @type {'never'|'any'} */ (escMatch[1]),
-      snippet: lineText,
+      pos: nameStart,
+      line: line + 1,
+      verb,
+      kind,
+      snippet: rawText.slice(lineStart, lineEndIdx === -1 ? rawText.length : lineEndIdx).trim(),
     });
-  }
-  return results;
+  };
+
+  /** @param {import('typescript').Node} node */
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && MOCK_VERBS.has(node.expression.name.text)) {
+      const verb = node.expression.name.text;
+      for (const arg of node.arguments) {
+        // (a) the installed value itself is the cast
+        const direct = ts.isAsExpression(arg) ? escapeKindOf(arg.type) : null;
+        if (direct) {
+          record(node, direct, verb);
+          continue;
+        }
+        // (b) an installed FUNCTION whose concise body is the cast — the return value is
+        //     what gets typechecked against the real signature, so this is the same escape.
+        if (ts.isArrowFunction(arg) && arg.body && ts.isAsExpression(arg.body)) {
+          const viaReturn = escapeKindOf(arg.body.type);
+          if (viaReturn) record(node, viaReturn, verb);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+
+  // A CHAINED call (`m.mockReturnValueOnce(a).mockReturnValueOnce(b)`) nests with the LAST
+  // link outermost, so the walk meets it first and would emit descending line numbers.
+  // Callers (the gate's per-file report, the PostToolUse nudge's diff) read this as source
+  // order, so sort by position — not by line, which cannot separate two hits on one line.
+  results.sort((a, b) => a.pos - b.pos);
+  return results.map(({ pos: _pos, ...rest }) => rest);
 }
 
 /**
@@ -218,7 +256,7 @@ function main() {
     } catch {
       continue; // deleted/renamed since `git ls-files` ran — not a crash
     }
-    const found = findMockCastEscapesInText(text);
+    const found = findMockCastEscapesInText(text, file);
     if (found.length) {
       byFile[file] = found;
       count += found.length;

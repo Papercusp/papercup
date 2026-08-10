@@ -7,52 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { decide, findMatchingParen, findMockCastEscapesInText, maskStringsAndComments } from '../../../../scripts/check-mock-cast-escape.mjs';
-
-describe('maskStringsAndComments', () => {
-  it('blanks out line comments but preserves line breaks (so line numbers stay correct)', () => {
-    const src = 'const a = 1; // as never) fake\nconst b = 2;';
-    const masked = maskStringsAndComments(src);
-    expect(masked).not.toContain('as never');
-    expect(masked.split('\n')).toHaveLength(2);
-  });
-
-  it('blanks out block comments spanning multiple lines', () => {
-    const src = '/* a mock call\n   .mockResolvedValue(x as never) */\nreal();';
-    const masked = maskStringsAndComments(src);
-    expect(masked).not.toContain('mockResolvedValue');
-    expect(masked.split('\n')).toHaveLength(3);
-  });
-
-  it('blanks out string literal contents but keeps quotes/length', () => {
-    const src = `const s = "not a mock(1 as never)";`;
-    const masked = maskStringsAndComments(src);
-    expect(masked).not.toContain('mock(1 as never)');
-    expect(masked.length).toBe(src.length);
-  });
-
-  it('blanks template literal text but leaves ${...} interpolation live', () => {
-    const src = 'const t = `literal text as never ${real(x as never)}`;';
-    const masked = maskStringsAndComments(src);
-    expect(masked).not.toContain('literal text as never');
-    expect(masked).toContain('real(x as never)');
-  });
-});
-
-describe('findMatchingParen', () => {
-  it('finds the matching close paren across nested parens/braces', () => {
-    const text = 'foo(bar({ a: (1 + 2) }), baz())';
-    const openIndex = text.indexOf('(');
-    const closeIndex = findMatchingParen(text, openIndex);
-    expect(text[closeIndex]).toBe(')');
-    expect(closeIndex).toBe(text.length - 1);
-  });
-
-  it('returns -1 when the call never closes (unbalanced)', () => {
-    const text = 'foo(bar(';
-    expect(findMatchingParen(text, 3)).toBe(-1);
-  });
-});
+import { decide, findMockCastEscapesInText } from '../../../../scripts/check-mock-cast-escape.mjs';
 
 describe('findMockCastEscapesInText', () => {
   it('flags a single-line `.mockResolvedValue(... as never)`', () => {
@@ -112,6 +67,79 @@ describe('findMockCastEscapesInText', () => {
     // Annotated because the helper is imported from an untyped `.mjs` script, so `found` is
     // `any` and the callback parameter would otherwise be an implicit-any (TS7006) gate red.
     expect(found.map((f: { line: number }) => f.line)).toEqual([1, 2]);
+  });
+});
+
+/**
+ * EI-20059456952698638 — FALSIFIABILITY.
+ *
+ * These are the cases that made the previous hand-rolled lexer wrong, in BOTH directions.
+ * They are the point of the AST rewrite, so they are pinned here as fixture STRINGS: a
+ * detector that silently matches nothing is indistinguishable from a clean repo, so each
+ * "ignores X" case below is paired with a live offender in the SAME fixture, proving the
+ * detector was still capable of firing when it declined to.
+ *
+ * (Fixture strings, never a mutation of a real tracked file: git-sync commits the whole
+ * tree on a timer, so a probe that edits the shared tree can be committed even when
+ * nothing goes wrong and no handler fails.)
+ */
+describe('findMockCastEscapesInText — lexical traps that broke the pre-AST detector', () => {
+  it('is not blinded by a regex literal containing a quote (the whole-file blanking bug)', () => {
+    // The old masker had no regex-literal state: the `'` below opened a "string" that ran
+    // to EOF, blanking every later line. It reported ZERO escapes for this exact shape.
+    const src = [`const QUOTE_RE = /['"]/g;`, `vi.mocked(realFn).mockResolvedValue({ stale: true } as never);`].join('\n');
+    const found = findMockCastEscapesInText(src);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ line: 2, verb: 'mockResolvedValue', kind: 'never' });
+  });
+
+  it('is not blinded by a regex literal containing a slash or a comment-lookalike', () => {
+    const src = [`const URL_RE = /https?:\\/\\/[^"']+/;`, `const NOT_A_COMMENT = /[/*]/;`, `fn.mockReturnValue(x as any);`].join('\n');
+    expect(findMockCastEscapesInText(src)).toHaveLength(1);
+  });
+
+  it('flags a cast followed by a TRAILING COMMA — i.e. any prettier-formatted multi-line call', () => {
+    // The old `/\bas\s+(never|any)\s*$/` was anchored, so the comma prettier emits here
+    // defeated it. 13 real escapes in this repo were invisible for this reason alone.
+    const src = ['vi.mocked(lookup).mockReturnValue(', '  makeTool({ handler: vi.fn() }) as never,', ');'].join('\n');
+    const found = findMockCastEscapesInText(src);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ line: 1, kind: 'never' });
+  });
+
+  it('flags an installed arrow whose concise body is the cast (the return value is what is checked)', () => {
+    const src = `getAcct.mockImplementation((_pool: unknown, id: string) => ({ id }) as never);`;
+    expect(findMockCastEscapesInText(src)).toHaveLength(1);
+  });
+
+  it('attributes each link of a CHAINED mock call to its own line, not the head of the chain', () => {
+    const src = ['spawnSyncMock', '  .mockReturnValueOnce({ status: 0 } as never)', '  .mockReturnValueOnce({ status: 1 } as never);'].join('\n');
+    const found = findMockCastEscapesInText(src);
+    expect(found.map((f: { line: number }) => f.line)).toEqual([2, 3]);
+  });
+
+  it('ignores `as never` in a comment, a string, a template literal and a regex — while still flagging real code beside them', () => {
+    const src = [
+      '// historical: fn.mockReturnValue(x as never)',
+      '/* also fn.mockResolvedValue(y as never) */',
+      `const s = "fn.mockReturnValue(z as never)";`,
+      'const t = `fn.mockReturnValue(q as never)`;',
+      'const r = /fn\\.mockReturnValue\\(w as never\\)/;',
+      'realFn.mockReturnValue(actual as never);', // <- the ONLY live offender
+    ].join('\n');
+    const found = findMockCastEscapesInText(src);
+    expect(found).toHaveLength(1);
+    expect(found[0].line).toBe(6);
+  });
+
+  it('does NOT flag a cast nested deeper inside an argument (deliberately out of policy)', () => {
+    const src = `fn.mockResolvedValue(makeThing({ inner: 1 as never }));`;
+    expect(findMockCastEscapesInText(src)).toHaveLength(0);
+  });
+
+  it('parses TSX without losing the tree when a filename says so', () => {
+    const src = ['const el = <div className="x">{"y"}</div>;', 'fn.mockReturnValue(el as never);'].join('\n');
+    expect(findMockCastEscapesInText(src, 'fixture.test.tsx')).toHaveLength(1);
   });
 });
 
