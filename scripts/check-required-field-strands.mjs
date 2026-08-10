@@ -273,10 +273,31 @@ const EXIT_NOT_CHECKED = 2;
  * choice, but it would fail runs that did do real work, so it should be made
  * on purpose rather than as a side effect of this one.
  */
-export function exitForNoFindings({ examinedFiles = [], identicalFiles = [], declared = false } = {}) {
-  if (examinedFiles.length === 0) return EXIT_NOT_CHECKED;
-  if (declared && identicalFiles.length >= examinedFiles.length) return EXIT_NOT_CHECKED;
-  return 0;
+export function exitForNoFindings(opts = {}) {
+  return provedNothing(opts) ? EXIT_NOT_CHECKED : 0;
+}
+
+/**
+ * "This run compared nothing, so it proved nothing" — the SINGLE predicate behind both
+ * the exit status and the headline.
+ *
+ * They were computed separately, and drifted exactly as you would expect: the exit code
+ * correctly said EXIT_NOT_CHECKED for an all-identical declared run while the text still
+ * opened with `✓ no required fields added to exported types`, burying the invalidation
+ * four lines down as what reads like a caveat on a pass (EI-20097325488507587). A reader
+ * acts on the headline; a script acts on the status; each was independently defensible
+ * and together they said opposite things.
+ *
+ * Deriving both from here makes that disagreement unrepresentable rather than merely
+ * fixed — which matters because this is the fourth filing in the same class, and the
+ * previous three each repaired one surface and left the other live.
+ */
+export function provedNothing({ examinedFiles = [], identicalFiles = [], declared = false } = {}) {
+  if (examinedFiles.length === 0) return true;
+  // identicalFiles is only ever populated in declared mode (the auto-diff mode derives
+  // its candidates FROM the diff, so a listed file cannot be identical to base) — the
+  // `declared` term keeps that an explicit precondition rather than an inherited one.
+  return declared && identicalFiles.length >= examinedFiles.length;
 }
 
 /**

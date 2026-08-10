@@ -291,9 +291,15 @@ describe('formatNoFindings — "examined nothing" must never read as "clean"', (
       declared: true,
       identicalFiles: ['mine.ts'],
     });
-    // Still reports the clean-bill count/list (other declared files may be genuinely
-    // examined) but must not read as an unqualified clean bill for the identical one.
-    expect(msg).toMatch(/^✓/);
+    // EI-20097325488507587: this assertion used to require `/^✓/` here, on the rationale
+    // that "other declared files may be genuinely examined" — true of the MIXED case
+    // below, but not of this one, where EVERY named file was identical and the run
+    // therefore compared nothing at all. exitForNoFindings already returned
+    // EXIT_NOT_CHECKED for this exact input, so the ✓ headline contradicted the tool's
+    // own exit status, and the invalidation sat four lines below it reading as a caveat
+    // on a pass. The headline is what a reader acts on, so it has to carry the verdict.
+    expect(msg).toMatch(/^⚠ NOT CHECKED/);
+    expect(msg).not.toMatch(/^✓/);
     expect(msg).toContain('NOT CHECKED');
     expect(msg).toContain('BYTE-IDENTICAL');
     expect(msg).toContain('mine.ts');
@@ -314,6 +320,37 @@ describe('formatNoFindings — "examined nothing" must never read as "clean"', (
     });
     expect(msg).toContain('1 of 2 named file(s)');
     expect(msg).toContain('also-mine.ts');
+    // A PARTIAL run did verify something, so it keeps the ✓ headline — the distinction
+    // the invariant below polices, and the reason this is not simply "warn whenever any
+    // file is identical".
+    expect(msg).toMatch(/^✓/);
+  });
+
+  /**
+   * THE INVARIANT, not another example: the headline a human acts on and the exit status
+   * a script acts on must never disagree.
+   *
+   * They are separate code paths that happened to agree until they didn't — the text said
+   * ✓ while the status said EXIT_NOT_CHECKED for an all-identical declared run. Pinning
+   * the pair across the whole input matrix is what makes that unrepresentable; asserting
+   * the two known cases individually is what let the third one drift.
+   */
+  it.each([
+    { name: 'zero files examined', files: [] as string[], identical: [] as string[], declared: false },
+    { name: 'inferred set, files examined', files: ['peer.ts'], identical: [], declared: false },
+    { name: 'declared, none identical', files: ['mine.ts'], identical: [], declared: true },
+    { name: 'declared, all identical', files: ['mine.ts'], identical: ['mine.ts'], declared: true },
+    {
+      name: 'declared, partially identical',
+      files: ['mine.ts', 'also.ts'],
+      identical: ['also.ts'],
+      declared: true,
+    },
+  ])('headline and exit status agree: $name', ({ files, identical, declared }) => {
+    const msg = formatNoFindings(files, 'HEAD', { declared, identicalFiles: identical });
+    const code = exitForNoFindings({ examinedFiles: files, identicalFiles: identical, declared });
+    expect(msg.startsWith('⚠ NOT CHECKED')).toBe(code !== 0);
+    expect(msg.startsWith('✓')).toBe(code === 0);
   });
 });
 
