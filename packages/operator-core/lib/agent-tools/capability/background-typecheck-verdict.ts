@@ -35,6 +35,7 @@
  */
 
 import { deadTypecheckVerdict } from './inspect';
+import { TSC_HEAP_MB, parseHeapPinMb } from '../tsc-heap';
 
 /**
  * Program-shaped prefixes we walk PAST to find the real command, because each
@@ -95,6 +96,49 @@ export function isTypecheckCommand(command: string): boolean {
     if (i < tokens.length && baseName(tokens[i]) === 'tsc') return true;
   }
   return false;
+}
+
+/**
+ * A LAUNCH-time warning for a tsc command whose heap is unpinned or pinned too
+ * low — or `null` when there is nothing worth saying.
+ *
+ * Why warn instead of fixing it: `capability:bash` runs a command the CALLER
+ * composed, and silently rewriting NODE_OPTIONS underneath it is more surprising
+ * than letting it fail — the tool cannot know that a smaller pin was not
+ * deliberate. The sibling paths (`build:typecheck`, `capability:inspect`) spawn
+ * tsc THEMSELVES, so they can and do pin it via `tscHeapEnv()`. This one only
+ * removes the tacit-knowledge requirement (EI-20063051138162607).
+ *
+ * The under-pinned case is reported as well as the unpinned one, and is the more
+ * dangerous of the two: `withTscHeap` RAISES a too-small pin precisely because
+ * deferring to one below what the compile needs froze the fleet gate for ~10h
+ * across 11 reds (WI-37450). A hand-rolled command gets no such correction, so
+ * here it is the reading that most needs saying out loud.
+ *
+ * Stated at launch because the failure is SILENT-SHAPED: an OOM-killed tsc emits
+ * a V8 GC dump and native stack trace containing zero `error TS` lines, so the
+ * grep a caller reaches for next reports a clean compile (EI-20057167830211785).
+ */
+export function typecheckHeapLaunchWarning(
+  command: string,
+  ambientNodeOptions: string | undefined = process.env.NODE_OPTIONS,
+): string | null {
+  if (!isTypecheckCommand(command)) return null;
+  const pinned = parseHeapPinMb(command) ?? parseHeapPinMb(ambientNodeOptions);
+  if (pinned !== null && pinned >= TSC_HEAP_MB) return null;
+  const diagnosis =
+    pinned === null
+      ? `this looks like a direct \`tsc\` invocation with no \`--max-old-space-size\`, so it inherits node's ~4GB default`
+      : `this looks like a direct \`tsc\` invocation pinned to only ${pinned}MB`;
+  return (
+    ` NOTE: ${diagnosis} — a large project in this repo needs ~5GB peak RSS, and the sibling ` +
+    `typecheck tools pin ${TSC_HEAP_MB}MB for exactly that reason. Nothing has been changed about your ` +
+    `command. If it dies on heap the failure is SILENT-SHAPED: the V8 GC dump contains zero \`error TS\` ` +
+    `lines, so grepping the log for diagnostics reports a CLEAN compile rather than a dead one — read ` +
+    `capability:bash_output's typecheck verdict, not a grep. To pin it yourself, prefix the command with ` +
+    `\`NODE_OPTIONS=--max-old-space-size=${TSC_HEAP_MB}\`; or use build:typecheck / capability:inspect, ` +
+    `which pin the heap for you.`
+  );
 }
 
 /**

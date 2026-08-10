@@ -15,7 +15,9 @@ import {
   backgroundTypecheckVerdict,
   countTscDiagnostics,
   isTypecheckCommand,
+  typecheckHeapLaunchWarning,
 } from './background-typecheck-verdict';
+import { TSC_HEAP_MB } from '../tsc-heap';
 
 /** The verbatim shape of the measured failure (EI-20057167830211785 repro). */
 const OOM_LOG = `
@@ -136,5 +138,62 @@ describe('backgroundTypecheckVerdict', () => {
     // Same exit code, same dump — a vitest run that OOMs is a real event, but it
     // is not this verdict's to report, and claiming it would be a false alarm.
     expect(backgroundTypecheckVerdict(job({ command: 'npx vitest run' }))).toBeNull();
+  });
+});
+
+describe('typecheckHeapLaunchWarning — EI-20063051138162607', () => {
+  /** No ambient pin, so the command is the only thing under test. */
+  const NO_AMBIENT = '';
+
+  it('warns on an unpinned tsc command, naming the pin the caller would need', () => {
+    const warning = typecheckHeapLaunchWarning('npx tsc --noEmit -p apps/operator/tsconfig.json', NO_AMBIENT);
+    expect(warning).toBeTruthy();
+    expect(warning).toContain(`--max-old-space-size=${TSC_HEAP_MB}`);
+  });
+
+  it('names the SILENT-SHAPED failure, not just the heap — a grep would read the death as clean', () => {
+    // The whole reason this is said at LAUNCH: the caller's next move after a
+    // dead compile is to grep for `error TS`, which reports zero either way.
+    const warning = typecheckHeapLaunchWarning('npx tsc --noEmit', NO_AMBIENT);
+    expect(warning).toContain('error TS');
+  });
+
+  it('warns about an UNDER-pin and states the actual number (the WI-37450 shape)', () => {
+    // Deferring to a pin below what the compile needs is the dangerous case:
+    // withTscHeap RAISES it, but a hand-rolled command gets no such correction.
+    const warning = typecheckHeapLaunchWarning(
+      'NODE_OPTIONS=--max-old-space-size=4096 npx tsc --noEmit -p apps/operator/tsconfig.json',
+      NO_AMBIENT,
+    );
+    expect(warning).toBeTruthy();
+    expect(warning).toContain('4096MB');
+  });
+
+  it('is SILENT when the command already carries an adequate pin', () => {
+    expect(
+      typecheckHeapLaunchWarning(
+        `NODE_OPTIONS=--max-old-space-size=${TSC_HEAP_MB} npx tsc --noEmit`,
+        NO_AMBIENT,
+      ),
+    ).toBeNull();
+  });
+
+  it('is SILENT when the pin comes from the ambient NODE_OPTIONS instead of the command', () => {
+    // The child inherits the operator's env, so an ambient pin is a real pin —
+    // warning here would be a false alarm about a correctly-configured run.
+    expect(
+      typecheckHeapLaunchWarning('npx tsc --noEmit', `--max-old-space-size=${TSC_HEAP_MB}`),
+    ).toBeNull();
+  });
+
+  it('CONTROL: silent for a command that merely MENTIONS tsc', () => {
+    // Inherits isTypecheckCommand's head-position rule. A false alarm is a bug
+    // in the alarm, and an unconditional warning would be indistinguishable
+    // from a working one on the only input that matters.
+    expect(typecheckHeapLaunchWarning('grep tsc build.log', NO_AMBIENT)).toBeNull();
+  });
+
+  it('CONTROL: silent for an npm script wrapping tsc — that population owns its own heap', () => {
+    expect(typecheckHeapLaunchWarning('npm run lint:tsc', NO_AMBIENT)).toBeNull();
   });
 });

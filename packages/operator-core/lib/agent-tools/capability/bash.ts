@@ -30,6 +30,7 @@ import {
   runForeground,
   startBackground,
 } from './bash-jobs';
+import { typecheckHeapLaunchWarning } from './background-typecheck-verdict';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { displayForHive } from '../computer/desktop-lease';
 import { resolveCapabilityBaseDir } from './base-dir';
@@ -125,6 +126,12 @@ export default defineTool({
           `An empty bash_output read here is NOT evidence the job hasn't started or produced nothing — poll for ` +
           `the "[capability:bash] JOB END" marker rather than for growing output.`
         : '';
+      // EI-20063051138162607: the sibling typecheck tools spawn tsc themselves and
+      // so can pin its heap (tscHeapEnv); this one runs a command the CALLER wrote,
+      // and rewriting NODE_OPTIONS underneath it would be the more surprising
+      // behavior. So say it instead of fixing it — the caller keeps sovereignty
+      // over the command, and stops needing to know the heap requirement by heart.
+      const heapNote = typecheckHeapLaunchWarning(args.command) ?? '';
       return {
         content: [
           {
@@ -145,7 +152,8 @@ export default defineTool({
                 `Stop: capability:bash_kill { bash_id: "${job.id}" }. ` +
                 `It is terminated at ${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'its deadline'} — ` +
                 `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if it needs longer.` +
-                bufferingNote,
+                bufferingNote +
+                heapNote,
             }),
           },
         ],

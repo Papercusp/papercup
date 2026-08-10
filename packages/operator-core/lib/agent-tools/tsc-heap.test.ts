@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TSC_HEAP_MB, withTscHeap, tscHeapEnv } from './tsc-heap';
+import { TSC_HEAP_MB, withTscHeap, tscHeapEnv, parseHeapPinMb } from './tsc-heap';
 
 /**
  * EI-20019651513530828. These pin the NODE_OPTIONS merge for a tsc child.
@@ -56,5 +56,26 @@ describe('withTscHeap', () => {
 
   it('tscHeapEnv returns just the NODE_OPTIONS overlay', () => {
     expect(tscHeapEnv('')).toEqual({ NODE_OPTIONS: `--max-old-space-size=${TSC_HEAP_MB}` });
+  });
+});
+
+describe('parseHeapPinMb', () => {
+  it('reads a pin out of a bare NODE_OPTIONS value', () => {
+    expect(parseHeapPinMb('--max-old-space-size=4096')).toBe(4096);
+  });
+
+  it('reads a pin out of a WHOLE COMMAND — the case withTscHeap never sees', () => {
+    // capability:bash gets a command, not a NODE_OPTIONS string, and both
+    // spellings below produce the same child ceiling, so both must answer 4096.
+    expect(parseHeapPinMb('NODE_OPTIONS=--max-old-space-size=4096 npx tsc --noEmit')).toBe(4096);
+    expect(parseHeapPinMb('node --max-old-space-size=4096 ./node_modules/.bin/tsc')).toBe(4096);
+  });
+
+  it('distinguishes NO PIN from a pin of zero — null is not 0', () => {
+    // The caller branches on `=== null`; returning 0 for "absent" would make an
+    // unpinned command compare as "pinned below the floor" and mis-word the warning.
+    expect(parseHeapPinMb('npx tsc --noEmit')).toBeNull();
+    expect(parseHeapPinMb(undefined)).toBeNull();
+    expect(parseHeapPinMb('')).toBeNull();
   });
 });
