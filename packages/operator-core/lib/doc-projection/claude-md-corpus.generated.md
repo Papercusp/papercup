@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 284
+  corpus-parts: 285
   corpus-blocks: 250
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -1707,22 +1707,20 @@ for anything whose load has changed), and any first-iteration sampler has no
 prior sample to difference against. CPU usage *is* a delta; ask for one:
 
 ```bash
-P=<pid>                       # USER_HZ=100, so 500 ticks per core per 5s
-t() { awk '{i=index($0,") ");split(substr($0,i+2),f," ");print f[12]+f[13]}' /proc/$P/stat; }
-A=$(t); sleep 5; B=$(t); echo "$((B-A)) ticks/5s => $(echo "scale=2;($B-$A)/500" | bc) cores"
-# per-thread: same arithmetic over /proc/$P/task/*/stat   (tid == pid => the MAIN thread)
-```
+ROOT=<pid>        # CLK_TCK=100 => 100 ticks = 1 core-second
+# Sum fields 14-17 = utime+stime+CUTIME+CSTIME over the LIVE TREE. Dropping the c* pair makes a
+# fork-and-reap tree (vitest, npm test) read NEGATIVE or near-zero -- a confident false "idle".
+kids(){ local a=$1 f=$1 n; for _ in 1 2 3 4 5 6; do n=; for p in $f; do n="$n $(pgrep -P $p 2>/dev/null)"; done; [ -z "${n// /}" ] && break; a="$a $n"; f=$n; done; echo $a; }
+t(){ local s=0 v; for p in $(kids $ROOT); do v=$(awk '{i=index($0,") ");split(substr($0,i+2),f," ");print f[12]+f[13]+f[14]+f[15]}' /proc/$p/stat 2>/dev/null); s=$((s+${v:-0})); done; echo $s; }
+A=$(t); S=$(date +%s.%N); sleep 5; B=$(t); E=$(date +%s.%N)
+echo "scale=2;($B-$A)/100/($E-$S)" | bc   # cores -- divide by MEASURED elapsed, never the sleep
+# per-thread: same arithmetic over /proc/$ROOT/task/*/stat   (tid == pid => the MAIN thread)
+```Measured 2026-08-10 (EI-20067988429441680). On a reap-heavy tree steadily burning ~2.7 cores, summing only fields 14+15 gave **89, -89, 74, -73, 0, 81** ticks/3s while the corrected sum gave 668-887: the live set is MEMBERSHIP-VARYING, so its difference is not a rate — vitest forks a worker per file and reaps it, and ticks counted in sample A are simply absent from B. ⚠ Fixing this by reading the ROOT's `cutime` alone is WORSE, not better: `cutime` only credits children the parent has `wait()`ed on, and in the real chain (`npm` -> `sh` -> `vitest` -> workers) *vitest* reaps the workers while the root reaps nothing until the run ends — measured **0, 0, 0, 0, 0, 0** for the whole run, a silent false idle instead of a noisy one. Sum the LIVE TREE. Calibrated against known loads: 0.99 / 2.99 / 0.99 cores for 1 / 3 / 1 burners (the corrected form reads ~6% low under churn — a reaped child's ticks land only at `wait()`, so it lags, but it is monotonic and never negative). And divide by MEASURED elapsed, never the sleep constant: the tree walk forks `pgrep`/`awk` dozens of times, so a nominal `sleep 3` took 4.1-5.3s on this box and the nominal divisor inflated every reading by 35-75%.
 
 ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
 service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
 work runs in a child, so measuring it alone reports "idle" about a process
-burning a full core. That trap cost a critical (EI-20029519971967372: the
-bg-host freeze watchdog killed a healthy boot every ~8 min because it had no
-way to tell "saturated and working" from "dead"). Walk children via
-`/proc/<pid>/task/<tid>/children` — **pid-anchored, so unlike a `pgrep -f`
-pattern it cannot self-match a peer's diagnostic shell**. Working
-implementation to copy: `procTreeCpuTicks` in
-`apps/operator/scripts/bghost-watchdog.mjs`.
+burning a full core. That trap cost a critical (EI-20029519971967372: the bg-host freeze watchdog killed a healthy boot every ~8 min because it had no way to tell "saturated and working" from "dead"). Walk children via `/proc/<pid>/task/<tid>/children` — **pid-anchored, so unlike a `pgrep -f` pattern it cannot self-match a peer's diagnostic shell**. Reference implementation: `procTreeCpuTicks` in `apps/operator/scripts/bghost-watchdog.mjs` — ⚠ but copy its TRAVERSAL, not its arithmetic: it sums utime+stime only and so carries the reap-heavy defect above (WI-37714), which is correct for bg-host's long-lived tree and wrong for any tree that forks-and-reaps.
 
 ⚠ A corollary worth knowing before you design one: **a liveness/progress beat
 emitted BY the process being judged cannot report on main-thread saturation** —
