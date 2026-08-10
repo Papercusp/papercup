@@ -288,6 +288,60 @@ describe('memberLaunchCommand', () => {
     expect(cmd).not.toContain('--compaction-limit');
   });
 
+  // goal-mode-hardening P-009 / D-013: fleet:launch-on-plan { leader:'spawn' } must write
+  // the fleet row naming its leader BEFORE that leader exists, so the leader's coord
+  // identity is minted by the caller and pinned onto the launch. Without this flag reaching
+  // psu, the pre-pin silently does nothing: the spawned agent mints its OWN id at boot, the
+  // fleet row points at an identity that never appears, and the fleet is permanently
+  // leaderless while every write involved reported success.
+  it('emits --owner-id so a pre-pinned coord identity actually reaches the launched agent', () => {
+    const cmd = memberLaunchCommand({
+      fleetSlug: 'ops',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      ownerId: 'su-11111111-2222-3333-4444-555555555555',
+    });
+    expect(cmd).toContain('--owner-id=su-11111111-2222-3333-4444-555555555555');
+  });
+
+  // The slot matters, not just the presence: buildAgentLaunchCommand emits --owner-id in
+  // exactly this position (after --agent, before --harness) and its doc states the reason —
+  // a GUI launch and a tool launch stay argv-comparable, which is what lets the two be
+  // diffed when one of them misbehaves. A drifting slot silently costs that property.
+  it('emits --owner-id in the same argv slot buildAgentLaunchCommand uses (after --agent, before --harness)', () => {
+    const cmd = memberLaunchCommand({
+      fleetSlug: 'ops',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      ownerId: 'su-abc',
+    });
+    expect(cmd.indexOf('--agent=')).toBeLessThan(cmd.indexOf('--owner-id='));
+    expect(cmd.indexOf('--owner-id=')).toBeLessThan(cmd.indexOf('--harness='));
+  });
+
+  it('omits --owner-id entirely when unset (an ordinary member mints its own identity)', () => {
+    const cmd = memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'h', plan: 'p' });
+    expect(cmd).not.toContain('--owner-id');
+  });
+
+  // The composed command lands inside a terminal greeting one-liner, so an identity-shaped
+  // value is VALIDATED rather than quoted — same treatment as fleet/agent/harness. A minted
+  // ownerId can never contain metacharacters, so a value that does is a bug or an injection
+  // and must be loud rather than shell-escaped into silent acceptance.
+  it('refuses an ownerId carrying shell metacharacters instead of quoting it', () => {
+    expect(() =>
+      memberLaunchCommand({
+        fleetSlug: 'ops',
+        agent: 'claude',
+        harness: 'h',
+        plan: 'p',
+        ownerId: 'su-abc; touch /tmp/pwned',
+      }),
+    ).toThrow(/refusing ownerId/);
+  });
+
   // P-003: `plan` is optional — a pure claim-spec fleet launches with no plan, so the
   // member command omits --plan entirely (members self-pull via the fleet claim spec).
   it('omits --plan when no plan is given (pure claim-spec fleet)', () => {

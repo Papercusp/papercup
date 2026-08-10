@@ -316,8 +316,18 @@ describe('GOAL mode', () => {
     const c = goal!.contract;
     expect(c).toMatch(/LAUNCH AN AGENT AND HAVE IT LEAD/i);
     expect(c).toContain('headless');
-    expect(c).toMatch(/makes\s*\n?\s*the CALLER the leader/i);
     expect(c).toContain('coord:couple');
+    // goal-mode-hardening P-009 / D-013: the contract must name the ONE-CALL route.
+    // Before P-009, `leader:'spawn'` did not exist, so the contract deliberately taught
+    // the two-hop relay (launch an agent, brief IT to call this tool, since the CALLER
+    // becomes the leader) and this guard asserted THAT phrasing. D-012 bound P-009 to
+    // replace the argument and the clause together; this is the tightened form.
+    expect(c).toMatch(/leader:\s*'spawn'/);
+    // The two-hop route must be GONE, not merely supplemented. A contract is re-injected
+    // on every wake, so a superseded route left standing beside the current one is not
+    // harmless redundancy — it is a second, WRONG answer carrying equal authority, and a
+    // reader has no way to tell which is live. This is the half that actually rots.
+    expect(c).not.toMatch(/makes\s*\n?\s*the CALLER the leader/i);
   });
 
   // Owner directive 5: a standing per-goal drain fleet, always maintained. The

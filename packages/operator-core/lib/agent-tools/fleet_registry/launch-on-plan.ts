@@ -49,6 +49,7 @@ import {
   fleetSlugFromName,
   getFleetScheme,
   releaseFleetLaunchSlot,
+  setFleetLeader,
 } from '../../agent-fleets-store';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
@@ -1286,12 +1287,21 @@ export default defineTool({
     let leaderReseed: Awaited<ReturnType<typeof reseedLeaderCompactionLimit>> = null;
     // ── goal-mode-hardening P-009 / D-013: who leads ─────────────────────────────
     // 'spawn' means a FRESH agent leads and the caller stays out of the fleet. Its coord
-    // identity is minted HERE, before the fleet row is written, so the row names its real
-    // leader from the first write — the "state a spawner keys pre-spawn" case `psu
-    // --owner-id` exists for (the same pattern goals:start uses). The rejected alternative
-    // was to create the fleet under the caller and relay leadership after boot: that leaves
-    // a window in which the registry says the caller leads, and if the spawned agent never
-    // boots the window never closes — silently, because every write succeeded.
+    // identity is minted HERE, pre-spawn — the "state a spawner keys pre-spawn" case `psu
+    // --owner-id` exists for (the same pattern goals:start uses) — so the agent is
+    // addressable the moment this returns and the leader can be installed by a known id.
+    //
+    // The fleet is created LEADERLESS and the leader is installed only once it has actually
+    // OPENED (setFleetLeader, after the spawn below). Two rejected alternatives, both of
+    // which write a leader the registry cannot honour:
+    //   - create under the CALLER and relay leadership after boot: there is then a window in
+    //     which the registry says the caller leads, and if the spawned agent never boots the
+    //     window never closes — silently, because every write succeeded.
+    //   - create with the MINTED id up front: the row would name a leader before that agent
+    //     exists, and the refusal gates between here and the spawn (capacity clamped to
+    //     zero, a claim-spec pool collapse) return EARLY — leaving a fleet permanently
+    //     recording a leader that was never launched.
+    // Leaderless is the only state that is TRUE at this point, so it is the one to write.
     const wantsSpawnedLeader = args.leader === 'spawn';
     const spawnedLeaderOwnerId = wantsSpawnedLeader ? `su-${randomUUID()}` : null;
     // Set when 'spawn' was asked for but the fleet ALREADY existed: it has a leader
@@ -1303,7 +1313,9 @@ export default defineTool({
         fleetSlug,
         title: args.name,
         owner: ownerId,
-        leaderOwnerId: spawnedLeaderOwnerId ?? ownerId,
+        // Leaderless while a leader is being spawned — see the note above. Installed by
+        // setFleetLeader only after that agent's terminal actually opens.
+        leaderOwnerId: wantsSpawnedLeader ? null : ownerId,
       });
       if (wantsSpawnedLeader && !created) {
         // Idempotency beats the flag: a relaunch/top-up of an existing fleet must not
@@ -2370,6 +2382,118 @@ export default defineTool({
     // scheme, no desktop bridge. Members log under the workspace's fleet-logs dir
     // (NON-repo — never the staging tree git-sync would try to commit).
     const headlessLogDir = args.headless ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs') : null;
+
+    // ── goal-mode-hardening P-009 / D-013: open the SPAWNED LEADER, before any member ──
+    // The ORDER is load-bearing, not stylistic. The leader opens FIRST and a failure
+    // ABORTS the launch with zero members opened, because the state that would otherwise
+    // result — members draining a queue with no leader watching — is strictly worse than
+    // no fleet at all: nobody reclaims their stalled claims, nobody relaunches them when
+    // they die, and nothing surfaces any of it to the owner. Fail closed.
+    //
+    // The leader is IN ADDITION to `count`, which is the pre-existing semantics rather than
+    // a new exception: `count` has always meant MEMBERS, with the leader (until now always
+    // the caller) sitting outside it.
+    let spawnedLeader: {
+      ownerId: string;
+      terminal: string;
+      pid: number | null;
+      command: string;
+      registered: boolean;
+    } | null = null;
+    if (spawningLeader && spawnedLeaderOwnerId) {
+      // The leader's brief is the standing leader job — the same text a caller-leader gets
+      // in this tool's RESULT and would otherwise have had to relay by hand, which is the
+      // hop this mode removes. LEADER_AUTO_MODE_DIRECTIVE is included deliberately: leading
+      // from an ask-first posture is the documented way fleets die unsupervised, and unlike
+      // a caller-leader this agent has no human in front of it to switch it over.
+      let leaderCtxPath: string | undefined;
+      try {
+        const leaderBrief = [
+          `You are the LEADER of fleet \`${fleetSlug}\`${planSlug ? ` on plan \`${planSlug}\`` : ''}.`,
+          '',
+          'You were LAUNCHED to lead it. The agent that called fleet:launch-on-plan delegated this to',
+          'you and is deliberately NOT in this fleet — it is a portfolio manager, not your supervisor,',
+          'so do not wait on it for permission or direction. The registry ALREADY records you as this',
+          "fleet's leader (your coord identity was pinned before the fleet row was written), so there is",
+          'no leadership to claim — but there IS a monitor loop to arm, and nothing happens until you do.',
+          '',
+          LEADER_AUTO_MODE_DIRECTIVE,
+          ...LEADER_STANDING_JOB.map((point, i) => `  ${i + 1}. ${point}`),
+        ].join('\n');
+        const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
+        mkdirSync(ctxDir, { recursive: true });
+        leaderCtxPath = join(ctxDir, `fleet-${fleetSlug}-leader-context.md`);
+        writeFileSync(leaderCtxPath, leaderBrief, 'utf8');
+      } catch {
+        // Compose/write failed — the leader still launches, just on the bare baseline.
+        // Losing the brief is survivable; losing the leader is not.
+        leaderCtxPath = undefined;
+      }
+      const leaderCommand = memberLaunchCommand({
+        ...fleetDefaults,
+        fleetSlug,
+        harness,
+        plan: planSlug ?? undefined,
+        // The pre-pin. This is what makes the fleet row written above name a REAL agent.
+        ownerId: spawnedLeaderOwnerId,
+        launchContext: leaderCtxPath,
+      });
+      const leaderLabel = `${fleetSlug} · LEADER (${planSlug ?? 'claim-spec'})`;
+      const leaderResult = args.headless
+        ? await spawnHeadless({
+            envelope: { ...base, greetingCmd: leaderCommand, cwd: base.cwd },
+            label: leaderLabel,
+            logDir: headlessLogDir,
+          })
+        : await spawnConsole({
+            envelope: { ...base, greetingCmd: leaderCommand, cwd: base.cwd },
+            label: leaderLabel,
+            writeMcpJson: false,
+            scheme,
+            allowDesktopBridge: true,
+            displayOverride: args.display,
+          });
+      if (leaderResult.status !== 'ok') {
+        // Nothing else has opened yet, so release the launch slot — an immediate, legitimate
+        // retry must not be suppressed for the whole 5-minute window by a launch that
+        // produced no agents at all.
+        try {
+          await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+        } catch {
+          /* the guard self-heals when the window elapses */
+        }
+        return err(
+          `leader:'spawn' — the LEADER failed to open (${leaderResult.error}), so NO members were ` +
+            `opened (deliberately: an unled fleet is worse than none). Fleet \`${fleetSlug}\` now exists ` +
+            `and is LEADERLESS — no leader was recorded, because none launched. Recover by re-running ` +
+            `this call (the fleet exists now, so \`leader:'spawn'\` is reported as ignored and it only ` +
+            `tops up members — claim it yourself with fleet:take-leadership, or launch a leader onto it ` +
+            `with capability:launch-agent), or use a NEW fleet name to get a fresh spawned leader.`,
+        );
+      }
+      // The leader is OPEN — only now does the registry learn who leads. Before this line the
+      // fleet was honestly leaderless; after it, it names an agent that demonstrably launched.
+      // Best-effort: a registry write failure must not orphan a leader that is already running,
+      // and the fleet stays claimable via fleet:take-leadership if it does fail.
+      let leaderRegistered = true;
+      try {
+        await setFleetLeader(workspaceId, fleetSlug, spawnedLeaderOwnerId);
+      } catch {
+        leaderRegistered = false;
+      }
+      spawnedLeader = {
+        ownerId: spawnedLeaderOwnerId,
+        terminal: leaderResult.terminal,
+        pid: leaderResult.pid,
+        command: leaderCommand,
+        // False = the agent IS running and briefed as leader, but the registry write failed,
+        // so fleet:status will not show it leading until someone repairs that. Surfaced
+        // rather than swallowed: a silently-unregistered leader looks exactly like a fleet
+        // nobody is watching.
+        registered: leaderRegistered,
+      };
+    }
+
     const results = await Promise.all(
       Array.from({ length: openCount }, (_v, i) =>
         args.headless
@@ -2537,10 +2661,30 @@ export default defineTool({
           `  ↳ compaction cap lifted ${leaderReseed.from} → ${leaderReseed.applied} tokens (P-009): you were at the 300k member cap; leaders get the full window. Your \`context: N/limit\` signal reflects it next turn.`,
         );
       }
-      lines.push(LEADER_AUTO_MODE_DIRECTIVE);
-      // Auto-numbered from the single canonical LEADER_STANDING_JOB source (P-013): a future
-      // insert never hand-renumbers, and the rendered length is test-guarded against balloon.
-      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      // goal-mode-hardening P-009 / D-013: a DELEGATING caller must not be handed the
+      // leader's standing job. It is not leading this fleet — telling it to arm a monitor
+      // loop and watch the members would re-create by instruction the exact role it just
+      // paid a spawn to avoid, and (worse) it would then believe the fleet is supervised
+      // by itself rather than by the agent that actually holds the role.
+      if (spawnedLeader) {
+        lines.push(
+          `THIS FLEET IS LED BY A LAUNCHED AGENT, NOT BY YOU — \`${spawnedLeader.ownerId}\` was spawned to lead it ` +
+            `and already holds the role in the registry. You are NOT in this fleet and you do NOT enter AUTO mode ` +
+            `from this call. Do not arm a monitor loop for it; that is the leader's standing job and it was briefed ` +
+            `with it at launch.`,
+        );
+        lines.push(
+          `  ↳ Stay connected without polling: \`coord:couple { b: "${spawnedLeader.ownerId}" }\` makes its state ` +
+            `visible to you, and \`coord:send\` reaches it directly. It is addressable NOW — the identity was pinned ` +
+            `before the fleet row was written — even though it is still booting.`,
+        );
+      } else {
+        lines.push(LEADER_AUTO_MODE_DIRECTIVE);
+        // Auto-numbered from the single canonical LEADER_STANDING_JOB source (P-013): a future
+        // insert never hand-renumbers, and the rendered length is test-guarded against balloon.
+        LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      }
+      if (leaderSpawnSkipped) lines.push(leaderSpawnSkipped);
       if (baselineApplied) {
         lines.push(
           'Your members were launched with this MEMBER OPERATING BASELINE (already told to them — do NOT re-issue or contradict it; your custom brief, if any, is layered BELOW it and wins on fleet-specifics):',
@@ -2561,7 +2705,23 @@ export default defineTool({
         // The launch result is the moment the caller BECOMES a leader — leadership
         // auto-enters AUTO mode (persona rule; see the message text). Structured so
         // non-prose consumers (hooks, scorers) can key on it.
-        autoModeEntered: opened.length > 0,
+        //
+        // goal-mode-hardening P-009: NOT when the leader was spawned. The caller
+        // delegated leadership precisely so it would not be leading, so the rule that
+        // fires on becoming a leader must not fire on it — it stays a portfolio manager
+        // in whatever posture it already held. The SPAWNED leader gets the directive
+        // instead, in its own launch brief.
+        autoModeEntered: opened.length > 0 && !spawnedLeader,
+        // goal-mode-hardening P-009 / D-013: the agent launched to lead this fleet
+        // (null on an ordinary caller-led launch). `ownerId` is the PRE-PINNED coord
+        // identity already recorded as the fleet's leader, so it is addressable
+        // (coord:send / coord:presence / coord:couple) from the moment this returns —
+        // before that agent has finished booting.
+        spawnedLeader,
+        // Non-null when `leader:'spawn'` was asked for and deliberately NOT honored
+        // (the fleet already existed with a leader). Surfaced rather than silent: the
+        // caller believes it is not leading, and on this path it may well be.
+        leaderSpawnIgnored: leaderSpawnSkipped,
         plan: planSlug,
         harness,
         agent: effAgent,
