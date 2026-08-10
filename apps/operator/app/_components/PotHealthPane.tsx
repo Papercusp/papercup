@@ -244,9 +244,14 @@ export function PotHealthPane() {
     [stats],
   );
 
+  // The accumulator is annotated explicitly: `WorkItemDeltaRow`'s counters are
+  // nullable (a kind with no movement may omit one), and without the type
+  // argument the reduce widens the accumulator to the nullable row shape — so
+  // the sums, and every consumer of them below, inherit a null they can never
+  // actually hold.
   const movement = useMemo(
     () =>
-      delta.reduce(
+      delta.reduce<{ opened: number; closed: number }>(
         (acc, d) => ({
           opened: acc.opened + (d.opened ?? 0),
           closed: acc.closed + (d.closed ?? 0),

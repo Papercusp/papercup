@@ -1140,6 +1140,27 @@
   color: var(--fg-mute);
 }
 
+/** The truncation disclosure beside a section count ("showing 25 of 31").
+ *  Deliberately NOT uppercase like its parent heading: it is a caveat on the
+ *  number, not another label, and it must read as prose so it is not mistaken
+ *  for a second count. */
+.hud-goal__h-note {
+  text-transform: none;
+  font-weight: 400;
+  color: var(--fg-mute);
+}
+
+/* The section is focusable (the vitals-band count jumps to it) but is not a tab
+   stop, so it must not paint a ring on a plain mouse jump. focus-visible keeps
+   the ring for the keyboard path that needs it. */
+.hud-goal__section:focus {
+  outline: none;
+}
+.hud-goal__section:focus-visible {
+  outline: 2px solid var(--warn);
+  outline-offset: 3px;
+}
+
 .hud-goal__h4 {
   margin: 10px 0 0;
   font-size: 10px;

@@ -146,7 +146,7 @@ const SpendTab = lazy(() => import('./SpendTab'));
 const TABS = [
   { id: 'accounts', label: (_t: BoundLexicon) => 'Accounts', icon: KeyRound, tip: (_t: BoundLexicon) => 'Provider accounts & API keys your agents sign in with', render: (a: boolean) => <AccountsTab active={a} /> },
   // (The Fleet + Peers tabs MOVED to the op-chat sidebar — owner ask 2026-07-17
-  // (WI-5162): they now sit right of the 🫖 Pot Health "kettle" button as faces
+  // (WI-5162): they now sit right of the 🎯 Pot Health "kettle" button as faces
   // of the far-left live surface, alongside the Inbox that moved there the day
   // before (EI-13037). Same panes (SwarmTab / VoiceTab), composed for the
   // sidebar in components/chat-faces/ChatFacesHost. This middle rail keeps the

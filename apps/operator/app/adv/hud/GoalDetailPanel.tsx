@@ -59,7 +59,7 @@
  * `onOpenAgent` survives as a secondary "open full-size" affordance, because
  * the embedded chat is width-constrained beside the work rail.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '@/app/harness/Modal';
@@ -91,6 +91,7 @@ import {
   partitionProjects,
   spendStack,
   tripwireBars,
+  waitingCount,
   workRail,
   type GoalDetailInput,
   type GoalDetailProject,
@@ -129,6 +130,48 @@ const RAIL_OVERLAY_STYLE: React.CSSProperties = {
 /** Below this the rail stops taking a column. The body wants ~560px and the
  *  rail 288, so two columns plus chrome need ~900. */
 const RAIL_NARROW_MEDIA_QUERY = '(max-width: 900px)';
+
+/* ── P-022 [owner 2026-08-10]: the goal BRIEF as its own left zone ────────
+   "move the panel that houses this stuff … as another additional panel on the
+   left, so the conversation takes up the full height like the conversation
+   popups in the conversation tab".
+
+   The brief used to be stacked ABOVE the conversation inside the centre column,
+   which is precisely why the conversation could never run full height — it was
+   pinned to whatever was left over (`flex: 0 0 46%`). Moving it into a zone
+   BESIDE the conversation is what frees that column, so this constant and the
+   `flex: 1` on the chat region are two halves of ONE change.
+
+   Wider than the work rail (288): this zone carries prose — the goal body and
+   the kill criterion — and a narrow measure makes a paragraph unreadable, where
+   the work rail carries short rows that fit comfortably. */
+const BRIEF_WIDTH = 340;
+
+const BRIEF_SIDE_STYLE: React.CSSProperties = {
+  flex: `0 0 ${BRIEF_WIDTH}px`,
+  width: BRIEF_WIDTH,
+  minWidth: 0,
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
+/* Below the breakpoint it overlays from the LEFT rather than taking a column —
+   the same give-way pattern the work rail uses, mirrored to this edge. */
+const BRIEF_OVERLAY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 0,
+  left: 0,
+  width: 'min(340px, 88vw)',
+  background: 'var(--bg-popover, #0d1829)',
+  boxShadow: '8px 0 24px rgba(0,0,0,0.35)',
+  overflowY: 'auto',
+  zIndex: 5,
+};
+
+/* Wider than the work rail's 900px: the brief needs a real measure to stay
+   readable, so it is the first of the two to give way under width pressure. */
+const BRIEF_NARROW_MEDIA_QUERY = '(max-width: 1100px)';
 
 /** Same matchMedia + effect shape SessionChatModal uses for its own rails.
  *  Starts false so the server/first paint seats the rail as a column and the
@@ -196,6 +239,21 @@ export default function GoalDetailPanel({
   const stack = useMemo(() => spendStack(data?.spendByDay), [data?.spendByDay]);
 
   const waiting = data?.waitingOnYou ?? [];
+  // P-006/D-018: the honest headline. `waiting.length` is a CAPPED row count, so
+  // it is used only for what is on screen — never as the number we claim.
+  const waitingN = useMemo(() => waitingCount(data), [data]);
+
+  // The band chip is a jump, not a navigation: the section it targets is already
+  // in this popup, so re-routing would be theatre. Focus moves WITH the scroll —
+  // a scroll alone leaves a keyboard user's focus stranded in the band, which is
+  // the accessibility half of "the count goes nowhere".
+  const waitingSectionRef = useRef<HTMLElement | null>(null);
+  const jumpToWaiting = useCallback(() => {
+    const el = waitingSectionRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    el.focus({ preventScroll: true });
+  }, []);
   const activity = data?.activity ?? [];
   const rail = useMemo(() => workRail(data, nowMs), [data, nowMs]);
 
@@ -303,10 +361,29 @@ export default function GoalDetailPanel({
                 {ceiling.text}
               </span>
             ) : null}
-            {waiting.length > 0 ? (
-              <span className="pc-ctl-state pc-ctl-state--warn" title="Parked on you">
-                {waiting.length} waiting on you
-              </span>
+            {/* P-006/D-018 — the one number on this surface the OWNER can
+                personally clear, so it is a control rather than a readout. The
+                card's chip cannot be (HudEntityColumns makes the whole card a
+                <button>, and a nested button is invalid HTML — see that file's
+                P-016 docblock); this band is a plain <div> that already seats
+                three buttons, so here it is legal.
+
+                Tooltip, NOT a `title=` attribute: a native title is unreachable
+                by keyboard and on touch, and `lint:design-primitives` fails a
+                title on a <button> for exactly that reason — a green-checkpoint
+                LEG, so it is a fleet-wide red rather than a style nit. Same note
+                as the "Open full-size" control below. */}
+            {waitingN.label ? (
+              <Tooltip label="Jump to the items parked on you" side="bottom">
+                <button
+                  type="button"
+                  className="pc-ctl-state pc-ctl-state--warn pc-ctl-state--action"
+                  data-testid="goal-waiting-jump"
+                  onClick={jumpToWaiting}
+                >
+                  {waitingN.label}
+                </button>
+              </Tooltip>
             ) : null}
 
             <span className="pc-ctl-band__spacer" />
@@ -436,10 +513,27 @@ export default function GoalDetailPanel({
               />
             ) : null}
 
-            <section className="hud-goal__section">
+            {/* tabIndex -1: focusable by the band's jump control, but never a
+                tab stop of its own — the rows below are the real stops. */}
+            <section
+              className="hud-goal__section"
+              ref={waitingSectionRef}
+              tabIndex={-1}
+              data-testid="goal-waiting-section"
+            >
               <h3 className="hud-goal__h">
                 Waiting on you
-                {waiting.length > 0 ? <span className="hud__chip hud__chip--warn">{waiting.length}</span> : null}
+                {/* The TOTAL, not the row count — the list below stops at 25 and
+                    the note says so. Rendering the capped length here is what
+                    made the card ("31 needs you") and this panel ("25") disagree. */}
+                {(waitingN.total ?? waitingN.shown) > 0 ? (
+                  <span className="hud__chip hud__chip--warn">{waitingN.total ?? waitingN.shown}</span>
+                ) : null}
+                {waitingN.note ? (
+                  <span className="hud-goal__h-note" data-testid="goal-waiting-note">
+                    {waitingN.note}
+                  </span>
+                ) : null}
               </h3>
               {waiting.length === 0 ? (
                 <p className="hud-goal__empty">Nothing is parked on you.</p>

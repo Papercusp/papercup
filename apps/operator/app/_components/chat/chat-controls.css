@@ -535,6 +535,30 @@
   white-space: nowrap;
 }
 
+/** A state chip that is actually a <button> (P-006/D-018: the "N waiting on you"
+ *  count jumps to the section it counts). It keeps the chip's exact shape — a
+ *  control that announced itself by CHANGING SHAPE would break the band's
+ *  alignment — and earns its affordance from the cursor plus a real focus ring.
+ *  `font: inherit` is not cosmetic: a <button> otherwise takes the UA's font
+ *  stack and size, so the chip would render visibly different from the <span>
+ *  siblings sitting beside it in the same row. */
+.pc-ctl-state--action {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.pc-ctl-state--action:hover {
+  background: color-mix(in oklab, transparent, var(--warn) 22%);
+}
+/* focus-VISIBLE, not focus: a mouse click on a chip should not leave a ring
+   behind, but a keyboard user must never lose their place. */
+.pc-ctl-state--action:focus-visible {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+}
+
 .pc-ctl-state__dot {
   flex: none;
   width: 6px;

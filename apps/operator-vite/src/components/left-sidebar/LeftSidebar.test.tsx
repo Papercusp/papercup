@@ -284,7 +284,7 @@ describe('<LeftSidebar> shell', () => {
   });
 
   // WI-5162 (owner ask 2026-07-17): Fleet + Peers MOVED to the op-chat sidebar,
-  // right of the 🫖 Pot Health button. They must be gone from this rail —
+  // right of the 🎯 Pot Health button. They must be gone from this rail —
   // expanded tabs AND collapsed icon rail — or the owner sees them in two
   // places at once, which is exactly what the move was meant to end.
   it('no longer hosts the Fleet or Peers tabs — they moved to the op-chat sidebar (WI-5162)', () => {

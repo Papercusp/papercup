@@ -219,4 +219,68 @@ describe('instrumentValidity', () => {
     expect(v.ok).toBe(false);
     expect(v.reasons.join(' ')).toMatch(/only 250\/500/);
   });
+
+  it('reports no exclusions and no caveats for a fully-engaged run', () => {
+    const v = instrumentValidity({ attempted: 500, total: 500, ordersMoved: 310, engine: 'local' });
+    expect(v.excludedNonEngaged).toBe(0);
+    expect(v.warnings).toEqual([]);
+    expect(v.engagementRate).toBe(1);
+  });
+
+  /**
+   * PERMANENT CONTROL — the 2026-08-10 pool=24 regression. A flapping rerank
+   * sidecar left ONE query of 390 fail-soft, and an all-or-nothing guard binned
+   * all 389 good pairs, so a 20-minute run produced no verdict at all. Voiding
+   * for partial engagement is a power failure in its own right; the remedy is to
+   * EXCLUDE the fail-soft pair, which is treatment == control by construction.
+   */
+  it('keeps a 389/390 run and excludes the one fail-soft pair instead of binning 389 good ones', () => {
+    const v = instrumentValidity({ attempted: 389, total: 390, ordersMoved: 347, engine: 'local' });
+    expect(v.ok).toBe(true);
+    expect(v.excludedNonEngaged).toBe(1);
+    expect(v.warnings.join(' ')).toMatch(/EXCLUDED/);
+  });
+
+  /** The exclusion must not silently become "the effect of enabling rerank":
+   *  a sidecar that drops on the slowest queries makes the excluded set non-random. */
+  it('states the narrowed estimand rather than implying the effect of enabling it', () => {
+    const v = instrumentValidity({ attempted: 389, total: 390, ordersMoved: 347, engine: 'local' });
+    expect(v.warnings.join(' ')).toMatch(/WHEN the reranker runs/);
+  });
+
+  /** D-093's protection survives the relaxation: a substantially dead engine
+   *  still voids, no matter how many pairs it managed to produce. */
+  it('still voids below the engagement floor even with a large sample', () => {
+    const v = instrumentValidity({ attempted: 800, total: 1000, ordersMoved: 500, engine: 'local' });
+    expect(v.ok).toBe(false);
+    expect(v.reasons.join(' ')).toMatch(/floor 90%/);
+  });
+
+  /** Boundary control: exactly at the floor is ACCEPTED. Fails if the
+   *  comparison is ever tightened to strict, which would void a legal run. */
+  it('accepts a run sitting exactly on the engagement floor', () => {
+    const v = instrumentValidity({ attempted: 900, total: 1000, ordersMoved: 500, engine: 'local' });
+    expect(v.ok).toBe(true);
+    expect(v.excludedNonEngaged).toBe(100);
+  });
+});
+
+/**
+ * The JUSTIFICATION for excluding fail-soft pairs, as an executable control
+ * rather than a comment. A fail-soft pair contributes an exact 0 difference, so
+ * mixing it in shrinks a real effect toward zero — manufacturing the very
+ * "reranking does not help" reading this instrument exists to prevent.
+ */
+describe('fail-soft pairs dilute a real effect (why the CLI analyses engaged pairs only)', () => {
+  it('shrinks a real gain toward zero when un-reranked pairs are mixed in', () => {
+    const control = [0.2, 0.2, 0.2, 0.2];
+    const treatment = [0.6, 0.6, 0.6, 0.6];
+    const engagedOnly = pairedDifference(control, treatment);
+    // Four fail-soft pairs: the stage never ran, so treatment === control.
+    const mixed = pairedDifference([...control, 0.5, 0.5, 0.5, 0.5], [...treatment, 0.5, 0.5, 0.5, 0.5]);
+
+    expect(engagedOnly?.meanDiff).toBeCloseTo(0.4, 6);
+    expect(mixed?.meanDiff).toBeCloseTo(0.2, 6);
+    expect(mixed!.meanDiff).toBeLessThan(engagedOnly!.meanDiff);
+  });
 });

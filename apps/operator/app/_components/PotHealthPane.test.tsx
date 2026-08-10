@@ -150,10 +150,16 @@ describe('PotHealthPane (su-only rebuild — P-018..P-021 / D-032)', () => {
 
   it('GOALS: renders the kill criterion, the ceiling, and the goal meta', () => {
     seedAll();
-    render(<PotHealthPane />);
+    const { container } = render(<PotHealthPane />);
 
     expect(screen.getByText('Stop when the beta has 20 external installs.')).toBeTruthy();
-    expect(screen.getByText('$310 of $500')).toBeTruthy();
+    // Scoped to the kv grid on purpose: "$310 of $500" is ALSO the spend
+    // tripwire's value text, and the two are different readouts that happen to
+    // agree. Asserting it unscoped would pass even if the ceiling row vanished.
+    const kvValues = [...container.querySelectorAll('.op-ph-kv .op-ph-v')].map(
+      (el) => el.textContent,
+    );
+    expect(kvValues).toContain('$310 of $500');
     expect(screen.getByText(/3 projects · 9 open · 2 need you/)).toBeTruthy();
   });
 
@@ -168,13 +174,22 @@ describe('PotHealthPane (su-only rebuild — P-018..P-021 / D-032)', () => {
 
   it('GOALS: an UNMEASURED tripwire renders as unread, never as a healthy zero', () => {
     seedAll();
-    render(<PotHealthPane />);
+    const { container } = render(<PotHealthPane />);
 
-    // The measured one shows its reading...
-    expect(screen.getByText('$310 of $500')).toBeTruthy();
+    const barValues = [...container.querySelectorAll('.op-ph-bar-value')].map(
+      (el) => el.textContent ?? '',
+    );
+    // The measured tripwire shows its reading...
+    expect(barValues).toContain('$310 of $500');
     // ...and the unmeasured one refuses to render a 0 it never took.
-    expect(screen.getByText(/not measured yet/i)).toBeTruthy();
-    expect(screen.queryByText('0 of 20')).toBeNull();
+    expect(barValues.some((v) => /not measured yet/i.test(v))).toBe(true);
+    expect(barValues).not.toContain('0 of 20');
+
+    // Stronger than the text check: an unread bar must have NO fill element at
+    // all, so it cannot read as a 0%-consumed (i.e. healthy) bar.
+    const unread = container.querySelector('.op-ph-bar.unread');
+    expect(unread).toBeTruthy();
+    expect(unread?.querySelector('.op-ph-bar-fill')).toBeNull();
   });
 
   it('SU AGENTS: renders sessionState as the liveness verdict', () => {

@@ -329,8 +329,9 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
   });
 
   it('the header is ALWAYS the Papercup identity — no Mug/Kettle mark, even with a docked rail (WI-4778 reverts WI-4739)', async () => {
-    // Rail docked (the old WI-4739 trigger) → still Papercup: there is no
-    // Mug/Kettle chat to switch to; the 🫖 toggle shows their inputs instead.
+    // Rail docked (the old WI-4739 trigger) → still Papercup: Papercup is the
+    // one persona you talk to; the 🎯 toggle swaps the body for the pot's
+    // goals / agents / throughput view instead.
     document.body.classList.add('has-left-sidebar');
     render(<OperatorChatSidebar />);
     await waitFor(() => {

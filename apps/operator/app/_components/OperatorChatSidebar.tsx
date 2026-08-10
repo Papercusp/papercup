@@ -69,7 +69,7 @@ const STORAGE_KEY = 'papercusp.operatorChat.width';
  *  single piece of the rigid voice-controls cluster — 67px of icon buttons,
  *  MEASURED in the Tauri shell) collapses from two inline icon buttons into
  *  one small overflow trigger, so the width it frees goes back to the
- *  owner-asked-for [🥤 Papercup] / [🫖 Pot Health] identity labels (WI-4793 /
+ *  owner-asked-for [🥤 Papercup] / [🎯 Pot Health] identity labels (WI-4793 /
  *  WI-4789), which were squeezing to literal 0px at the 360px DEFAULT width.
  *  MEASURED against the 360/460/560/700/900 checkpoints already used by the
  *  WI-5162 face-label container query above; unlike that query this is a JS
@@ -86,7 +86,7 @@ const AUDIENCE_MODE_OVERFLOW_WIDTH = 620;
  *  unattributed lane (hud-consolidation P-002 proved coverage first), and a
  *  drill-in opens the agent's conversation there instead (P-004, below).
  *
- *  EXTRA faces (WI-5162: [👥 Fleet] [🎧 Peers], mounted right of 🫖) widen this
+ *  EXTRA faces (WI-5162: [👥 Fleet] [🎧 Peers], mounted right of 🎯) widen this
  *  enum at runtime — their panes live in operator-vite and arrive as `faces`
  *  descriptors, see op-chat-faces.ts. */
 const CHAT_VIEW_VALUES = BUILT_IN_CHAT_VIEWS;
@@ -147,7 +147,7 @@ function readStoredWidth(): number {
 }
 
 /**
- * @param faces EXTRA header faces mounted to the RIGHT of 🫖 Pot Health
+ * @param faces EXTRA header faces mounted to the RIGHT of 🎯 Pot Health
  *   (WI-5162, owner ask 2026-07-17: "put them to the right of the kettle
  *   button"). The Vite SPA root (apps/operator-vite/src/routes/__root.tsx)
  *   injects the Fleet + Peers panes here — those components live under
@@ -299,9 +299,10 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   }
 
   // WI-4778 (reverts WI-4739): the header is ALWAYS the Papercup identity —
-  // there is no Mug/Kettle chat to switch to. The 🫖 toggle below swaps the
-  // BODY between the chat and the full-height Pot Health view (what the Mug +
-  // Kettle decide from), inside this same pane.
+  // Papercup is the one persona you talk to. The 🎯 toggle below swaps the BODY
+  // between the chat and the full-height Pot Health view — now the pot's goals,
+  // its su agents, and its throughput (retire-mug-kettle-su-only-2026-08-09
+  // P-018..P-021), not the retired Mug/Kettle briefs — inside this same pane.
   // WI-5162: extra faces widen the enum, so ?opcv=fleet survives a reload
   // instead of being rejected back to 'chat'. Memoised on the ids alone — a new
   // parser identity each render would make nuqs re-parse on every tick.
@@ -533,14 +534,14 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
           <div className="op-chat-header-main">
             {/* WI-4793 (owner ask 2026-07-14 "make the Papercup button look
                 like the Pot Health button"): the Papercup identity is now a
-                FLAT peer toggle sharing the 🫖 button's pill chrome — the two
-                faces read as a matched pair [🥤 Papercup] [🫖 Pot Health]. It
+                FLAT peer toggle sharing the 🎯 button's pill chrome — the two
+                faces read as a matched pair [🥤 Papercup] [🎯 Pot Health]. It
                 is lit (is-on) while the chat face shows and returns to it from
-                the pot view (the symmetric dual of the 🫖 toggle). The old
+                the pot view (the symmetric dual of the 🎯 toggle). The old
                 raised, glowing 38px orb is gone. */}
             {/* owner-plans-single-pane-2026-07-17 + owner ask 2026-07-17: the
                 Plans face sits LEFT of Papercup — [📋 Plans] [🥤 Papercup]
-                [🫖 Pot Health]. Simplified plan tracking; badge = plans that
+                [🎯 Pot Health]. Simplified plan tracking; badge = plans that
                 need YOU. (The Inbox face that used to sit here retired —
                 hud-consolidation-2026-07-26 P-003 — asks now surface on the
                 HUD board instead.) */}
@@ -582,13 +583,24 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                 />
               </button>
             </Tooltip>
-            {/* WI-4778/WI-4789: the 🫖 toggle — chat ⇄ the full-height Pot
-                Health view (the info the Mug + Kettle look at), same pane.
-                Sits RIGHT BESIDE the Papercup identity (owner ask 2026-07-14)
-                and carries its own "Pot Health" wordmark-style label (owner
-                ask 2026-07-14) so the pane's two "faces" read as peers:
-                [🥤 Papercup] [🫖 Pot Health]. */}
-            <Tooltip label={potOpen ? 'Back to chat' : 'Pot health — see what the Kettle and Mug look at'}>
+            {/* WI-4778/WI-4789: the Pot Health toggle — chat ⇄ the full-height
+                Pot Health view, same pane. Sits RIGHT BESIDE the Papercup
+                identity (owner ask 2026-07-14) and carries its own "Pot Health"
+                wordmark-style label (owner ask 2026-07-14) so the pane's two
+                "faces" read as peers: [🥤 Papercup] [🎯 Pot Health].
+
+                GLYPH 🎯 → 🎯 (retire-mug-kettle-su-only-2026-08-09 P-022 / D-032
+                §8). The teapot was the KETTLE's mark, not the pot's — it is the
+                cast glyph for `kettle`/`overwatch` in `AgentsRunningPill`'s
+                KIND_GLYPH map, which is why this control was called "the kettle
+                button" throughout the codebase. Leaving a retired mind's mark on
+                a live control kept advertising the tier to the owner. 🎯 is this
+                product's own Goals mark, freed when the Goals rail tab was
+                removed (owner directive 2026-08-09) — and the rebuilt pane now
+                LEADS with goals, so the glyph says what the pane is for. The
+                NAME "Pot Health" survives: pots are ungated and outlive the
+                Mug/Kettle tier (D-003). */}
+            <Tooltip label={potOpen ? 'Back to chat' : 'Pot health — goals, agents and throughput'}>
               <button
                 type="button"
                 className={`op-chat-pot-toggle${potOpen ? ' is-on' : ''}`}
@@ -596,7 +608,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                 aria-pressed={potOpen}
                 aria-label={potOpen ? 'Back to chat' : 'Show pot health'}
               >
-                <span aria-hidden="true">🫖</span>
+                <span aria-hidden="true">🎯</span>
                 <span className="op-chat-pot-toggle-label">Pot Health</span>
               </button>
             </Tooltip>
@@ -604,8 +616,8 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                 from the middle section to the leftmost section and put them to
                 the right of the kettle button"): the Fleet + Peers faces, which
                 used to be tabs in the MIDDLE rail (LeftSidebar), now sit here as
-                peers of 🫖 — [📥 Inbox] [🥤 Papercup] [🫖 Pot Health] [👥 Fleet]
-                [🎧 Peers]. They share the 🫖 pill chrome and the same body-swap
+                peers of 🎯 — [📥 Inbox] [🥤 Papercup] [🎯 Pot Health] [👥 Fleet]
+                [🎧 Peers]. They share the 🎯 pill chrome and the same body-swap
                 contract; their panes arrive from operator-vite (op-chat-faces). */}
             {extraFaces.map((face) => {
               const isOn = view === face.id;
@@ -665,13 +677,13 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
         </div>
         {activeFace ? (
           /* WI-5162: a Fleet/Peers face is lit — its pane replaces the chat
-             body, same as 🫖 does. The pane is rendered lazily by the
+             body, same as 🎯 does. The pane is rendered lazily by the
              provider (operator-vite), so nothing mounts until it is picked. */
           <Suspense fallback={<div className="op-chat-view-loading">Loading {activeFace.label.toLowerCase()}…</div>}>
             {activeFace.render()}
           </Suspense>
         ) : potOpen ? (
-          /* WI-4778: 🫖 on — the full-height Pot Health view replaces the
+          /* WI-4778: 🎯 on — the full-height Pot Health view replaces the
              chat body (strip + messages + composer), same pane, one scroll. */
           <PotHealthPane />
         ) : plansOpen ? (
@@ -683,7 +695,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
           </Suspense>
         ) : (
           /* WI-4789 (owner ask 2026-07-14): the ambient Mug/Kettle status
-             strip that used to sit here is GONE — the 🫖 Pot Health toggle
+             strip that used to sit here is GONE — the 🎯 Pot Health toggle
              beside the Papercup name is the one entry to that information. */
           <OperatorChat
             messages={conv.messages}
@@ -734,7 +746,7 @@ const OP_CHAT_SIDEBAR_CSS = `
 /* ── Shared face-pill chrome (originally the EI-13037 Inbox toggle; the
    Inbox face itself retired hud-consolidation-2026-07-26 P-003 — these
    classes are named after it but are shared base styling now used by the
-   Plans toggle: [📋 Plans] [🥤 Papercup] [🫖 Pot Health]).
+   Plans toggle: [📋 Plans] [🥤 Papercup] [🎯 Pot Health]).
    Pill chrome mirrors .op-chat-pot-toggle so they read as peers. */
 .op-chat-header-main .op-chat-inbox-toggle {
   flex: 0 1 auto;
@@ -1023,11 +1035,11 @@ const OP_CHAT_SIDEBAR_CSS = `
   gap: 5px;
 }
 
-/* WI-4778/WI-4789: the 🫖 pot-health toggle — flat control (design docs §
+/* WI-4778/WI-4789: the 🎯 pot-health toggle — flat control (design docs §
    buttons: 1px border, tinted fill, no shadow/gradient/lift), lit accent
    while the pot view is on. Docked immediately AFTER the Papercup orb + name
    (owner ask 2026-07-14) and carrying its own "Pot Health" label so the
-   pane's two faces read as peers: [🥤 Papercup] [🫖 Pot Health]. */
+   pane's two faces read as peers: [🥤 Papercup] [🎯 Pot Health]. */
 .op-chat-header-main .op-chat-papercup-toggle,
 .op-chat-header-main .op-chat-pot-toggle {
   flex: 0 1 auto;
@@ -1047,7 +1059,7 @@ const OP_CHAT_SIDEBAR_CSS = `
 }
 
 /* WI-4793: the Papercup toggle's leading glyph — the brand mark inline at the
-   🫖 peer's scale, with NO orb box / gradient / glow (the 🫖 side is a plain
+   🎯 peer's scale, with NO orb box / gradient / glow (the 🎯 side is a plain
    text emoji), so the two pills read as a matched pair. */
 .op-chat-header-main .op-chat-papercup-mark {
   flex: 0 0 auto;
@@ -1078,9 +1090,9 @@ const OP_CHAT_SIDEBAR_CSS = `
   color: var(--fg);
 }
 
-/* WI-5162: the Fleet + Peers faces — same flat pill chrome as 🫖 (they share
+/* WI-5162: the Fleet + Peers faces — same flat pill chrome as 🎯 (they share
    .op-chat-pot-toggle), but their glyph is a lucide icon rather than an emoji,
-   so it needs explicit sizing to sit at the 🫖/🥤 peers' scale. */
+   so it needs explicit sizing to sit at the 🎯/🥤 peers' scale. */
 .op-chat-header-main .op-chat-face-icon {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1126,7 +1138,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   /* OWNER ASK 2026-07-27 ("the learning tab button is too hard to see — make it
      have the text Learning like the pot health button"): 🎓 Learning is EXEMPT
      from the icon-only collapse above and keeps its label at every width the
-     button itself renders at, exactly like [🫖 Pot Health] and the [🥤 Papercup]
+     button itself renders at, exactly like [🎯 Pot Health] and the [🥤 Papercup]
      wordmark. A bare graduation-cap glyph was not self-evident — the owner could
      not tell what the button was, which is the whole point of a label.
 
@@ -1140,7 +1152,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   .op-chat-header-main .op-chat-face-toggle--learning .op-chat-pot-toggle-label {
     display: block;
   }
-  /* …and with the label back, match [🫖 Pot Health]'s pill padding rather than
+  /* …and with the label back, match [🎯 Pot Health]'s pill padding rather than
      the tightened icon-only padding, so the two read as the matched pair the
      owner asked for. */
   .op-chat-header-main .op-chat-face-toggle--learning {
@@ -1150,7 +1162,7 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 /* EI-13551: the voice-control cluster (.op-chat-controls) is flex: 0 0 auto
    — it never shrinks, so ANY width shortfall lands entirely on the two
-   owner-asked-for identity labels ([🥤 Papercup] wordmark WI-4793, [🫖 Pot
+   owner-asked-for identity labels ([🥤 Papercup] wordmark WI-4793, [🎯 Pot
    Health] WI-4789), which squeeze to literal 0px well before the sidebar's
    860px default. Below that same threshold, drop the controls cluster's own
    TEXT labels (OperatorActiveToggle's state word, VoiceButton's mode word —
@@ -1802,7 +1814,7 @@ body.has-op-chat .pc-header {
   background: transparent !important;
 }
 
-/* Same carve-out for the lit 🫖 / Papercup state (WI-4778 / WI-4793). */
+/* Same carve-out for the lit 🎯 / Papercup state (WI-4778 / WI-4793). */
 .op-chat-header-main .op-chat-papercup-toggle.is-on,
 .op-chat-header-main .op-chat-pot-toggle.is-on {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 30%) !important;

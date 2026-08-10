@@ -80,6 +80,7 @@ import {
   reweightToPopulation,
   type RerankOpportunity,
 } from './rerank-decision';
+import { writeFileSync } from 'node:fs';
 
 function argValue(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -98,6 +99,13 @@ const POOL = argInt('--pool', 24);
 const CONCURRENCY = argInt('--concurrency', 3);
 const SEED = argInt('--seed', 17);
 const WORKSPACE = argValue('--workspace') ?? 'papercusp-workspace';
+/**
+ * Where to dump the raw per-query outcomes as JSON. Written BEFORE the validity
+ * gate on purpose: retrieval is the expensive part of this run, and an
+ * ANALYSIS-layer verdict must never be able to discard it. The 2026-08-10
+ * pool=24 run threw away 390 pairs of real work because one query was fail-soft.
+ */
+const DUMP = argValue('--dump');
 
 /** Cuts to sweep. The integration question is "at what page size", not "yes/no". */
 const CUTS = [3, 6, 10] as const;
@@ -184,17 +192,31 @@ async function main(): Promise<void> {
   // `speaker='user'` keeps the queries human-authored prose rather than an
   // agent's own summary of what it just did, which would be near-verbatim to
   // the item body and re-introduce the ceiling stripping the id exists to avoid.
+  // ⚠ NO `workspace_id` FILTER HERE, deliberately. `session_turns.workspace_id`
+  // is ALWAYS the literal 'default' — a transcript-corpus namespace, not a
+  // tenant. Filtering it by the tenant slug returns 6 rows out of 55,734 and
+  // the run VOIDs for what looks like a data shortage. (The tenant slug IS
+  // correct for the `runHybridSearch` call below, which reads work_items.)
+  //
+  // ⚠ AND `speaker='user'` IS NOT ENOUGH. On agent sessions that role also
+  // carries MACHINE-INJECTED text — wake pumps, loop fires, compaction
+  // continuations — which cite ids inside boilerplate no human would ever type.
+  // Benchmarking retrieval on wake-pump prose measures the wrong distribution,
+  // so the machine shapes are excluded explicitly.
   const rows = (await sql`
     SELECT st.text AS turn_text,
            substring(st.text from '(?:WI|EI)-[0-9]{3,}') AS target_id
       FROM harness_shared.session_turns st
-     WHERE st.workspace_id = ${WORKSPACE}
-       AND st.speaker = 'user'
+     WHERE st.speaker = 'user'
        AND st.ts > now() - interval '30 days'
-       AND length(st.text) BETWEEN 80 AND 600
+       AND length(st.text) BETWEEN 60 AND 1200
        AND st.text ~ '(WI|EI)-[0-9]{3,}'
+       AND st.text NOT LIKE '%turn-origin:%'
+       AND st.text NOT LIKE '%[await-event]%'
+       AND st.text NOT LIKE '%LOOP WAKE%'
+       AND st.text NOT LIKE '%system-reminder%'
      ORDER BY md5(st.session_id || st.turn_idx::text || ${String(SEED)})
-     LIMIT ${QUERIES * 3}
+     LIMIT ${QUERIES * 4}
   `) as Array<{ turn_text: string; target_id: string | null }>;
 
   const samples: Sample[] = [];
@@ -211,14 +233,18 @@ async function main(): Promise<void> {
     samples.push({ query, targetId });
   }
 
-  // Only targets that actually exist can be "relevant".
+  // Only targets that actually exist can be "relevant" — and existence is
+  // checked in `engineer_issues`, the SAME relation the `work_item` search
+  // source selects from (sources.ts). Checking a different relation would admit
+  // targets retrieval can never return, inflating `not-retrieved` with rows
+  // that were never candidates and diluting every stratum below it.
   const ids = samples.map((s) => s.targetId);
   const live = new Set(
     (
       (await sql`
-        SELECT id FROM harness_shared.work_items WHERE id = ANY(${ids})
-      `) as Array<{ id: string }>
-    ).map((r) => r.id),
+        SELECT issue_id FROM harness_shared.engineer_issues WHERE issue_id = ANY(${ids})
+      `) as Array<{ issue_id: string }>
+    ).map((r) => r.issue_id),
   );
   const usable = samples.filter((s) => live.has(s.targetId));
   console.log(
@@ -303,6 +329,16 @@ async function main(): Promise<void> {
   }
   await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
 
+  // ── Persist the RAW outcomes before any verdict logic can discard them. ──
+  if (DUMP) {
+    try {
+      writeFileSync(DUMP, JSON.stringify({ workspace: WORKSPACE, pool: POOL, seed: SEED, cuts: CUTS, primaryCut: PRIMARY_CUT, outcomes }, null, 2));
+      console.log(`[dump] ${outcomes.length} raw outcomes → ${DUMP}\n`);
+    } catch (err) {
+      console.error(`[dump] FAILED to write ${DUMP}: ${(err as Error).message}`);
+    }
+  }
+
   // ── Instrument validity FIRST. A void run must not print a verdict. ──
   const engineSeen = outcomes.find((o) => o.engine)?.engine ?? null;
   const validity = instrumentValidity({
@@ -327,7 +363,20 @@ async function main(): Promise<void> {
         `to the control. A delta of 0.000 from such a run is indistinguishable from "reranking does ` +
         `not help" and must never be published as one.`,
     );
+    if (DUMP) console.log(`\nThe raw outcomes were still dumped to ${DUMP} — re-analyse without re-running.`);
     return;
+  }
+
+  // Every delta below is computed on the ENGAGED subset ONLY. A fail-soft pair
+  // is treatment == control by construction, so including it would drag the
+  // estimate toward zero — the exact "looks like no effect" artefact this
+  // instrument exists to prevent. The strata SHARES stay on the full ran set:
+  // `opportunity` is a CONTROL-arm property, valid whether or not rerank engaged.
+  const engaged = outcomes.filter((o) => o.attempted);
+  if (validity.warnings.length) {
+    console.log(`### ⚠ Caveats that travel with every number below\n`);
+    for (const w of validity.warnings) console.log(`- ${w}`);
+    console.log(`\nAnalysed pairs: **${engaged.length}** of ${outcomes.length} ran.\n`);
   }
 
   // ── Strata base rates (the population shares reweighting needs). ──
@@ -353,7 +402,7 @@ async function main(): Promise<void> {
   console.log(`|---:|---|---:|---:|---|---:|---|`);
   for (const k of CUTS) {
     for (const name of [...strataNames, 'ALL' as const]) {
-      const bucket = name === 'ALL' ? outcomes : outcomes.filter((o) => o.opportunity === name);
+      const bucket = name === 'ALL' ? engaged : engaged.filter((o) => o.opportunity === name);
       if (bucket.length < 3) {
         console.log(`| ${k} | ${name} | ${bucket.length} | — | — | — | too few pairs to measure |`);
         continue;
@@ -382,7 +431,7 @@ async function main(): Promise<void> {
   console.log(`\n## Population effect at cut=${PRIMARY_CUT} (strata reweighted to base rates)\n`);
   const strata = strataNames
     .map((name) => {
-      const bucket = outcomes.filter((o) => o.opportunity === name);
+      const bucket = engaged.filter((o) => o.opportunity === name);
       if (bucket.length < 3) return null;
       const d = pairedDifference(
         bucket.map((o) => o.ndcgControl[PRIMARY_CUT]!),
@@ -407,7 +456,7 @@ async function main(): Promise<void> {
   }
 
   // ── Sizing guidance for the NEXT run. ──
-  const ob = outcomes.filter((o) => o.opportunity === 'order-blocked');
+  const ob = engaged.filter((o) => o.opportunity === 'order-blocked');
   if (ob.length >= 3) {
     const d = pairedDifference(
       ob.map((o) => o.ndcgControl[PRIMARY_CUT]!),

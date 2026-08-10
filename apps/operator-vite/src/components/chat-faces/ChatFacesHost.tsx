@@ -3,7 +3,7 @@
  * sidebar's header row and hands them down to ChromeShell (WI-5162, owner ask
  * 2026-07-17: "move the fleet and peers panes from the middle section to the
  * leftmost section and put them to the right of the kettle button" — the
- * "kettle button" being the 🫖 Pot Health toggle in the leftmost sidebar,
+ * "kettle button" being the 🎯 Pot Health toggle in the leftmost sidebar,
  * confirmed with the owner before the move).
  *
  * WHY THE COMPOSITION RUNS FROM THIS SIDE: the panes (SwarmTab / VoiceTab) live
@@ -76,7 +76,7 @@ export default function ChromeShellWithChatFaces() {
   // Rebuilt per render (cheap: two object literals) but memo-stable enough —
   // OperatorChatSidebar keys its nuqs parser off the face IDS, not identity.
   const faces: OpChatFace[] = [
-    // FIRST so 🎓 sits immediately right of 🫖 Pot Health (owner ask
+    // FIRST so 🎓 sits immediately right of 🎯 Pot Health (owner ask
     // 2026-07-26, option C "Loop" of three rendered mockups).
     {
       id: 'learning',

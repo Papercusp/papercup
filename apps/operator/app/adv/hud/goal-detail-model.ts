@@ -157,6 +157,13 @@ export interface GoalDetailInput {
   plans?: GoalDetailPlanInput[] | null;
   agents?: GoalDetailAgentInput[] | null;
   waitingOnYou?: GoalDetailWaitingInput[] | null;
+  /** The UNBOUNDED count of items parked on the owner. `waitingOnYou` is capped
+   *  at 25 rows by the resolver, so this is the only honest source for the
+   *  headline number. Optional/nullable ON PURPOSE: absent means NOT MEASURED,
+   *  which `waitingCount` reports as such rather than silently substituting the
+   *  row count (same discipline as P-004's `unmeasured` silence state — an absent
+   *  reading is not a zero, and it is not a total either). */
+  waitingOnYouTotal?: number | null;
   activity?: GoalDetailActivityInput[] | null;
   spendByDay?: GoalDetailSpendDayInput[] | null;
   spendLabel?: string | null;
@@ -491,6 +498,62 @@ function burnRateShort(perDayUsd: number): string {
    appears in BOTH. Rendering them as separate sections without subtracting
    would show that item twice, and a rail whose whole job is "what is under this
    goal" must not let the reader count one thing as two. */
+
+/* ── Waiting-on-you count (P-006 / D-018) ─────────────────────────────────────
+
+   The resolver fetches waiting rows `LIMIT 25` but counts the total unbounded,
+   because the two answer different questions: the rows are what you RENDER, the
+   total is what you can honestly CLAIM. Collapsing them — reporting the capped
+   array's length as the headline — is the failure this type exists to prevent,
+   and it is the direction that silently UNDER-reports the one queue only the
+   owner can clear.
+
+   Derived here rather than inline in the component for the same reason the work
+   rail is: the rule for what number appears is a decision worth pinning with a
+   test, and a component that computes it inline can only be checked by
+   rendering it. */
+
+export interface GoalWaitingCount {
+  /** Rows actually present and rendered — never presented as a total. */
+  shown: number;
+  /** The true count, or null when the resolver did not measure it. */
+  total: number | null;
+  /** `shown` is a floor: rows were capped and some are not on screen. */
+  truncated: boolean;
+  /** No total was supplied — the reader is seeing rows, not a census. */
+  unmeasured: boolean;
+  /** The headline, e.g. `31 waiting on you`. Empty when nothing is parked. */
+  label: string;
+  /** Disclosure for the section heading when capped, else null. */
+  note: string | null;
+}
+
+export function waitingCount(data: GoalDetailInput | null | undefined): GoalWaitingCount {
+  const shown = (data?.waitingOnYou ?? []).length;
+  const raw = data?.waitingOnYouTotal;
+  // Number.isFinite rejects NaN from a malformed payload as firmly as it rejects
+  // null — a nonsense total must degrade to `unmeasured`, never to a rendered NaN.
+  const total = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+  const unmeasured = total == null;
+  // Only a total STRICTLY above what we hold proves a cap. Equal counts are the
+  // ordinary case and must not be labelled truncated.
+  const truncated = total != null && total > shown;
+  // The headline prefers the total; with none, `shown` is all we can honestly
+  // say, and the note marks it as un-censused rather than dressing it as a total.
+  const headline = total ?? shown;
+  return {
+    shown,
+    total,
+    truncated,
+    unmeasured,
+    label: headline > 0 ? `${headline} waiting on you` : '',
+    note: truncated
+      ? `showing ${shown} of ${total}`
+      : unmeasured && shown > 0
+        ? 'count not measured'
+        : null,
+  };
+}
 
 export type GoalWorkTone = 'needs-you' | 'open' | 'closed';
 

@@ -16,6 +16,7 @@ import {
   spendStack,
   tripwireBar,
   tripwireBars,
+  waitingCount,
   workRail,
   type GoalDetailInput,
   type GoalDetailProjectInput,
@@ -367,5 +368,56 @@ describe('planLabel', () => {
       missing: true,
     });
     expect(planLabel({ planSlug: 'my-plan', harnessSlug: 'h', title: '   ' }).missing).toBe(true);
+  });
+});
+
+describe('waitingCount', () => {
+  const rows = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: `WI-${i}`, title: `t${i}` }));
+
+  it('reports the TOTAL, not the capped row count, and discloses the cap', () => {
+    // The defect this helper exists for (D-018): the resolver fetches waiting
+    // rows LIMIT 25 but counts unbounded. Rendering the array length as the
+    // headline made the card say "31 needs you" and this panel say "25".
+    const c = waitingCount({ goal: null, waitingOnYou: rows(25), waitingOnYouTotal: 31 });
+    expect(c.shown).toBe(25);
+    expect(c.total).toBe(31);
+    expect(c.truncated).toBe(true);
+    expect(c.label).toBe('31 waiting on you');
+    expect(c.note).toBe('showing 25 of 31');
+  });
+
+  it('does NOT label an uncapped list as truncated', () => {
+    // Equal counts are the ordinary case; a `>=` here would put a "showing 4 of
+    // 4" caveat on every healthy goal and teach the reader to ignore the note.
+    const c = waitingCount({ goal: null, waitingOnYou: rows(4), waitingOnYouTotal: 4 });
+    expect(c.truncated).toBe(false);
+    expect(c.note).toBeNull();
+    expect(c.label).toBe('4 waiting on you');
+  });
+
+  it('treats an ABSENT total as unmeasured rather than substituting the row count', () => {
+    // P-004's lesson: an absent reading is not a zero — and here it is not a
+    // total either. We still show what we hold, but we say it was not censused
+    // instead of dressing a floor up as a count.
+    const c = waitingCount({ goal: null, waitingOnYou: rows(3) });
+    expect(c.total).toBeNull();
+    expect(c.unmeasured).toBe(true);
+    expect(c.truncated).toBe(false);
+    expect(c.label).toBe('3 waiting on you');
+    expect(c.note).toBe('count not measured');
+  });
+
+  it('degrades a NaN total to unmeasured instead of rendering NaN', () => {
+    const c = waitingCount({ goal: null, waitingOnYou: rows(2), waitingOnYouTotal: Number.NaN });
+    expect(c.unmeasured).toBe(true);
+    expect(c.label).toBe('2 waiting on you');
+  });
+
+  it('stays SILENT at zero — an empty lane is not news', () => {
+    // The one clause of P-006's original text that measured correctly.
+    expect(waitingCount({ goal: null, waitingOnYou: [], waitingOnYouTotal: 0 }).label).toBe('');
+    expect(waitingCount(null).label).toBe('');
+    expect(waitingCount(null).note).toBeNull();
   });
 });

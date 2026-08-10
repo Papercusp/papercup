@@ -27573,7 +27573,7 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 
 /* ── Pot health row idioms (operator-chat-sidebar-revival P-018 → WI-4778/89)
    The ambient status STRIP that used to live here was retired with WI-4789
-   (owner ask 2026-07-14): the 🫖 Pot Health toggle beside the Papercup name
+   (owner ask 2026-07-14): the 🎯 Pot Health toggle beside the Papercup name
    is the one entry to this information. What remains are the row/chip/dot
    idioms the full-height PotHealthPane composes — same token vocabulary as
    the op-chat blocks above; FLAT per the design docs (no gradients, no
@@ -27611,8 +27611,6 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   padding: 0;
   list-style: none;
 }
-
-.op-pot-cups { gap: 4px; }
 
 .op-pot-queue {
   counter-reset: potq;

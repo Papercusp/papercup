@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 // Keep this import on ONE line, exactly as the sibling manifest test does: the directive
 // suppresses the error TS reports on the module SPECIFIER, so wrapping the clause moves that
 // line and the directive reads as unused (TS2578) while the TS7016 goes unsuppressed.
-import { buildRuleEvidence, citationsIn, droppedCitations, sentenceBoundaries, splitRuleEvidence, tellsIn } from '../../../../scripts/split-claude-md-rule-evidence.mjs';
+import { buildRuleEvidence, citationsIn, droppedCitations, droppedImperatives, imperativesIn, sentenceBoundaries, splitRuleEvidence, tellsIn } from '../../../../scripts/split-claude-md-rule-evidence.mjs';
 
 /**
  * P-015 — (rule, evidence) separation for CLAUDE.md blocks.
@@ -142,6 +142,65 @@ describe('droppedCitations — CONTROLS that must FAIL', () => {
   });
 });
 
+describe('droppedImperatives — the gap the citation invariant cannot see', () => {
+  // The whole reason this check exists. Every referent survives, so the citation
+  // invariant is satisfied — while the prohibition itself is gone.
+  const ORIGINAL = 'You must never bypass `locks:acquire`. Measured 2026-08-02 (WI-1): a peer edit was stranded.';
+  const GUTTED = 'Use `locks:acquire` when convenient.\nMeasured 2026-08-02 (WI-1): a peer edit was stranded.';
+
+  it('CONTROL — catches a dropped prohibition that keeps EVERY citation', () => {
+    // Precondition: the citation invariant is blind here. If this ever stops being
+    // true the control is no longer testing the gap it claims to test.
+    expect(droppedCitations(ORIGINAL, GUTTED)).toEqual([]);
+    expect(droppedImperatives(ORIGINAL, GUTTED)).toContain('prohibit:locks:acquire');
+  });
+
+  it('CALIBRATION — a faithful re-authoring drops nothing', () => {
+    const faithful = 'Never bypass `locks:acquire`.\nMeasured 2026-08-02 (WI-1): a peer edit was stranded.';
+    expect(droppedImperatives(ORIGINAL, faithful)).toEqual([]);
+  });
+
+  it('anchors a directive to what FOLLOWS it, not to every identifier in the sentence', () => {
+    // The first version anchored to the whole sentence and emitted a cross-product,
+    // producing 25 phantom drops on one faithful block. `git status` trails the
+    // marker's clause and must not be annexed as something the prohibition governs.
+    const sigs = imperativesIn('Never run `git clean -fd` here. The tree is swept, so `git status` is clean.');
+    expect(sigs).toContain('prohibit:git clean -fd');
+    expect(sigs).not.toContain('prohibit:git status');
+  });
+
+  // The three false-positive modes measured over the real corpus. Each fires on
+  // prose that is CORRECT, so a widening that re-breaks one would make the check
+  // report drops against faithful authoring — the direction that erodes trust in it.
+  it('CONTROL — narrative "never" after an explicit be-verb is not a directive', () => {
+    const original = 'The advancing candidate was never contradicted by `ps`.';
+    expect(droppedImperatives(original, 'The advancing candidate holds; `ps` does not contradict it.')).toEqual([]);
+  });
+
+  // CHARACTERISATION, not an endorsement: with the be-verb ELIDED ("was true and
+  // never contradicted"), the narrative reading is not detected and the check
+  // reports a drop against correct prose. This is one of the measured
+  // false-positive modes and is exactly why the result is advisory rather than
+  // gating. Pinned so the limitation is KNOWN rather than rediscovered; if it is
+  // ever fixed, this test fails and should be promoted to a CONTROL above.
+  it('KNOWN LIMITATION — an elided be-verb before "never" still reads as a directive', () => {
+    const original = 'The claim was true and never contradicted by `ps`.';
+    expect(droppedImperatives(original, 'The claim held; `ps` does not contradict it.')).toEqual(['prohibit:ps']);
+  });
+
+  it('CONTROL — a ⚠ lede glyph is decoration, not a directive to preserve', () => {
+    const original = '⚠ Read `coverage` before `files`, because an empty list is ambiguous.';
+    expect(droppedImperatives(original, 'Read `coverage` before `files`, because an empty list is ambiguous.')).toEqual([]);
+  });
+
+  it('CONTROL — re-authoring that ADDS precision is not a drop', () => {
+    const original = 'Of 53 packages with a tsconfig, only 7 declared one.';
+    const sharper = 'Of 53 packages with a tsconfig, only 7 declared a `typecheck` script.';
+    // The anchor moves from unanchored to anchored, which must not read as a loss.
+    expect(droppedImperatives(original, sharper)).toEqual([]);
+  });
+});
+
 describe('buildRuleEvidence — every block is accounted for', () => {
   const DOC = [
     '# Doc',
@@ -177,5 +236,33 @@ describe('buildRuleEvidence — every block is accounted for', () => {
     const a = buildRuleEvidence(DOC, { [target.blockSha]: { rule: 'Rule with no referents.', evidence: 'Nothing cited.' } });
     expect(a.problems.length).toBeGreaterThan(0);
     expect(a.problems[0]).toMatch(/drops \d+ citation/);
+  });
+
+  // A dropped DIRECTIVE is advisory, a dropped CITATION is fatal. Keeping them in
+  // separate channels is load-bearing: `problems` refuses to write the artifact,
+  // and this check has a measured false-positive rate on correct prose, so routing
+  // it there would refuse to write a CORRECT artifact.
+  it('reports a suspected dropped directive as an advisory, never as a problem', () => {
+    const doc = ['# Doc', '', 'Measured 2026-08-02 (WI-1): you must never bypass `locks:acquire` here.', ''].join('\n');
+    const target = buildRuleEvidence(doc, {}).pairs.find((p: { mode: string }) => p.mode === 'needs-authoring');
+    expect(target).toBeDefined();
+    const a = buildRuleEvidence(doc, {
+      // Keeps every citation, drops the prohibition.
+      [target.blockSha]: { rule: 'Use `locks:acquire` here.', evidence: 'Measured 2026-08-02 (WI-1).' },
+    });
+    expect(a.problems).toEqual([]);
+    expect(a.advisories.length).toBeGreaterThan(0);
+    expect(a.advisories[0]).toMatch(/may drop \d+ directive/);
+    expect(a.pairs.find((p: { mode: string }) => p.mode === 'authored').droppedImperatives).toContain('prohibit:locks:acquire');
+  });
+
+  it('CALIBRATION — a faithful authored pair raises no advisory', () => {
+    const doc = ['# Doc', '', 'Measured 2026-08-02 (WI-1): you must never bypass `locks:acquire` here.', ''].join('\n');
+    const target = buildRuleEvidence(doc, {}).pairs.find((p: { mode: string }) => p.mode === 'needs-authoring');
+    const a = buildRuleEvidence(doc, {
+      [target.blockSha]: { rule: 'Never bypass `locks:acquire`.', evidence: 'Measured 2026-08-02 (WI-1).' },
+    });
+    expect(a.advisories).toEqual([]);
+    expect(a.problems).toEqual([]);
   });
 });

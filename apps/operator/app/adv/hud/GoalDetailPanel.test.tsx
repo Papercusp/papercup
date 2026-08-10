@@ -546,4 +546,63 @@ describe('GoalDetailPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalled();
   });
+
+  /* ── "Waiting on you" (P-006 / D-018) ──────────────────────────────────────
+     The count only the OWNER can clear. Two separate claims are pinned here,
+     because they fail independently: that the number is HONEST (the resolver
+     caps the rows at 25 and counts unbounded), and that it is a DESTINATION
+     rather than the readout it used to be. */
+  describe('waiting-on-you count', () => {
+    const waiting = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ id: `WI-${i}`, title: `Ask ${i}` }));
+
+    it('renders the count as a CONTROL that jumps to the section it counts', () => {
+      renderPanel(detail({ waitingOnYou: waiting(3), waitingOnYouTotal: 3 }));
+      // A <button>, not a <span>: getByRole is what discriminates. The card's
+      // chip deliberately stays a span (nested-button rule) — this band does not.
+      const jump = screen.getByTestId('goal-waiting-jump');
+      expect(jump.tagName).toBe('BUTTON');
+      expect(jump.textContent).toContain('3 waiting on you');
+
+      // jsdom implements neither, and their ABSENCE is what the old dead-text
+      // version relied on — so stub and assert they are actually called.
+      const section = screen.getByTestId('goal-waiting-section');
+      const scrollIntoView = vi.fn();
+      const focus = vi.fn();
+      section.scrollIntoView = scrollIntoView;
+      section.focus = focus;
+
+      fireEvent.click(jump);
+      expect(scrollIntoView).toHaveBeenCalled();
+      // Focus MUST move with the scroll: a scroll alone strands a keyboard
+      // user's focus in the band, which is the accessibility half of "the
+      // count goes nowhere".
+      expect(focus).toHaveBeenCalled();
+    });
+
+    it('shows the TOTAL and discloses the cap when rows are truncated', () => {
+      // The resolver's LIMIT 25 against a true 31. Before D-018 the panel
+      // rendered `waiting.length`, so it said 25 while the goal card — which
+      // counts unbounded — said 31, with nothing explaining the difference.
+      renderPanel(detail({ waitingOnYou: waiting(25), waitingOnYouTotal: 31 }));
+      expect(screen.getByTestId('goal-waiting-jump').textContent).toContain('31 waiting on you');
+      expect(screen.getByTestId('goal-waiting-note').textContent).toBe('showing 25 of 31');
+      const section = screen.getByTestId('goal-waiting-section');
+      // The capped length must not appear as the headline anywhere.
+      expect(section.querySelector('.hud__chip')?.textContent).toBe('31');
+    });
+
+    it('adds no cap note when the list is complete', () => {
+      renderPanel(detail({ waitingOnYou: waiting(2), waitingOnYouTotal: 2 }));
+      expect(screen.queryByTestId('goal-waiting-note')).toBeNull();
+      expect(screen.getByTestId('goal-waiting-jump').textContent).toContain('2 waiting on you');
+    });
+
+    it('stays silent at zero — no control, no note', () => {
+      renderPanel(detail({ waitingOnYou: [], waitingOnYouTotal: 0 }));
+      expect(screen.queryByTestId('goal-waiting-jump')).toBeNull();
+      expect(screen.queryByTestId('goal-waiting-note')).toBeNull();
+      expect(document.body.textContent).toContain('Nothing is parked on you.');
+    });
+  });
 });

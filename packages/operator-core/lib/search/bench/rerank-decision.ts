@@ -231,7 +231,24 @@ export function reweightToPopulation(strata: readonly Stratum[]): PopulationEffe
 export interface InstrumentValidity {
   ok: boolean;
   reasons: readonly string[];
+  /** Non-void caveats that MUST be printed beside the verdict, never dropped. */
+  warnings: readonly string[];
+  /** Pairs the stage did not rerank — EXCLUDED from every delta, never mixed in. */
+  excludedNonEngaged: number;
+  /** attempted / total, or null when nothing ran. */
+  engagementRate: number | null;
 }
+
+/**
+ * Minimum share of queries on which the rerank stage must have ENGAGED for the
+ * run to be analysable at all.
+ *
+ * Above the floor, non-engaged pairs are EXCLUDED from the delta (they are
+ * treatment == control by construction, so mixing them in only dilutes the
+ * estimate toward zero). Below it, the engine was substantially unavailable and
+ * no subset of the run can be attributed to the reranker.
+ */
+export const MIN_ENGAGEMENT_RATE = 0.9;
 
 /**
  * Would this run be publishable, or must it be VOIDED?
@@ -255,12 +272,41 @@ export function instrumentValidity(input: {
   engine: string | null;
 }): InstrumentValidity {
   const reasons: string[] = [];
-  if (input.total <= 0) reasons.push('no queries ran');
-  if (input.attempted <= 0) reasons.push('the rerank stage NEVER engaged — this is a dead-engine run, not a null result');
-  else if (input.attempted < input.total)
-    reasons.push(`the stage engaged on only ${input.attempted}/${input.total} queries — the delta mixes reranked and un-reranked pairs`);
+  const warnings: string[] = [];
+  const { attempted, total } = input;
+  const engagementRate = total > 0 ? attempted / total : null;
+  const excludedNonEngaged = Math.max(0, total - attempted);
+
+  if (total <= 0) reasons.push('no queries ran');
+  if (attempted <= 0) reasons.push('the rerank stage NEVER engaged — this is a dead-engine run, not a null result');
+  else if (attempted < total) {
+    // PARTIAL engagement is NOT a dead engine, and voiding the whole run for it
+    // is a power failure of its own: one fail-soft query discarded 389 good
+    // pairs on the 2026-08-10 pool=24 run. A fail-soft pair is treatment ==
+    // control BY CONSTRUCTION, so the fix is to EXCLUDE it from the delta (see
+    // the CLI's `engaged` filter), not to mix it in and not to bin the run.
+    // The floor keeps D-093's protection: a substantially dead engine still voids.
+    if (engagementRate !== null && engagementRate < MIN_ENGAGEMENT_RATE) {
+      reasons.push(
+        `the stage engaged on only ${attempted}/${total} queries ` +
+          `(${(engagementRate * 100).toFixed(1)}%, floor ${(MIN_ENGAGEMENT_RATE * 100).toFixed(0)}%) — ` +
+          `too little engagement to attribute any delta to the reranker`,
+      );
+    } else {
+      warnings.push(
+        `${excludedNonEngaged}/${total} queries were fail-soft (the stage did not engage) and are ` +
+          `EXCLUDED from every delta below — they are treatment == control by construction, so ` +
+          `including them would dilute the estimate toward zero`,
+      );
+      warnings.push(
+        `engagement was ${(engagementRate! * 100).toFixed(1)}% — the excluded pairs are NOT a random ` +
+          `sample if the engine drops on the largest/slowest queries, so the estimand is "the effect ` +
+          `WHEN the reranker runs", not "the effect of enabling it"`,
+      );
+    }
+  }
   if (input.ordersMoved <= 0)
     reasons.push('the admitted ORDER never moved on any query — indistinguishable from a disabled reranker');
   if (!input.engine) reasons.push('no rerank engine was recorded — the result cannot be attributed to a specific reranker (WI-37649)');
-  return { ok: reasons.length === 0, reasons };
+  return { ok: reasons.length === 0, reasons, warnings, excludedNonEngaged, engagementRate };
 }

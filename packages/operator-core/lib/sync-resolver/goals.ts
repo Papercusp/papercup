@@ -405,6 +405,28 @@ export async function resolveGoalDetail(args: {
        LIMIT 25
     `) as unknown as Array<Record<string, unknown>>;
 
+    // The TRUE number parked on the owner, counted UNBOUNDED against the SAME
+    // predicate as the row fetch above.
+    //
+    // ⚠ THIS IS NOT REDUNDANT WITH `waiting.length`. That array is capped at 25,
+    // and a capped list length rendered as an aggregate is the repeat-offender
+    // class this repo has already paid for (CLAUDE.md: "a caller's `limit` bounds
+    // ROW LISTS ONLY — never an aggregate"; measured in WI-37381, where a capped
+    // fetch reported `terminal.total 0` against a true 1693). It matters most
+    // HERE, because "waiting on you" is the one lane only the owner can clear, and
+    // the failure direction is silent UNDER-reporting of the owner's own queue.
+    //
+    // Counted separately rather than by lifting the LIMIT: the payload stays
+    // bounded while the aggregate stays honest. Both are needed — the rows to
+    // render, the count to be truthful about how many there are.
+    const [waitingTotalRow] = (await tx`
+      SELECT COUNT(*)::int AS total
+        FROM harness_shared.work_items wi
+       WHERE wi.goal_id = ${goalId}
+         AND wi.closed_ts IS NULL
+         AND COALESCE((wi.payload->>'needsHuman')::boolean, false)
+    `) as unknown as Array<Record<string, unknown>>;
+
     const activity = (await tx`
       SELECT wi.feature_id AS id, wi.title, wi.harness_slug, wi.status,
              to_timestamp(wi.closed_ts / 1000.0) AS closed_at,
@@ -487,7 +509,12 @@ export async function resolveGoalDetail(args: {
 
     const goal = toSummary(goalRow);
     goal.projectCount = projects.filter((p) => !p.removedAt).length;
-    goal.needsHuman = waiting.length;
+    // From the UNBOUNDED count, never `waiting.length` — that array stops at 25,
+    // so a goal with 31 parked items used to render "31 needs you" on the card
+    // (goals.list counts unbounded) and "25 waiting on you" in this panel, with
+    // nothing disclosing the cap. Sourcing both from the same predicate makes the
+    // two surfaces agree BY CONSTRUCTION rather than by coincidence.
+    goal.needsHuman = num(waitingTotalRow?.total);
     goal.spendUsd = projects
       .filter((p) => !p.removedAt)
       .reduce((acc, p) => acc + p.spendUsd, 0);
@@ -562,6 +589,9 @@ export async function resolveGoalDetail(args: {
         openItems: num(p.open_items),
         updatedAt: iso(p.updated_at as string | Date | null),
       })),
+      /** The unbounded total, so the client can say "showing 25 of 31" instead of
+       *  presenting a capped row count as the whole truth. */
+      waitingOnYouTotal: num(waitingTotalRow?.total),
       waitingOnYou: waiting.map((w) => ({
         id: String(w.id),
         title: String(w.title),

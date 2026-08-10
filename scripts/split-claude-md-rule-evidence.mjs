@@ -202,12 +202,120 @@ export function droppedCitations(original, authoredText) {
   return [...citationsIn(original)].filter((c) => !have.has(c));
 }
 
+/**
+ * IMPERATIVES — the DIRECTIVE a block states, as (polarity, anchor) signatures.
+ *
+ * WHY THIS EXISTS AND WHAT IT ADDS. `citationsIn` proves the REFERENTS survived a
+ * re-authoring; it cannot prove the DIRECTIVE did. Its alphabet contains no modal
+ * term at all, so a pair that keeps every id, date and `tool:name` while quietly
+ * dropping a "NEVER do X" passes it cleanly. That is precisely the failure D-002
+ * exists to prevent, and it is the gap P-017 was opened to close.
+ *
+ * A directive GOVERNS WHAT FOLLOWS IT, so each marker is anchored to the nearest
+ * citation after it. The first version anchored to every citation in the marker's
+ * SENTENCE and emitted a cross-product: one entirely faithful block produced 25
+ * phantom drops, because a sentence naming ten identifiers minted ten signatures
+ * per marker. Nearest-following anchoring cut that to 4 across the whole corpus.
+ *
+ * ⚠ ADVISORY, NEVER GATING — and unlike the tell-set above, that is not a
+ * preference. Measured over the 55 authored pairs at the time it was written: 74
+ * signatures, and THREE residual false positives (in 2 blocks) on prose that is
+ * CORRECT, in two surviving modes:
+ *   • narrative "never" with an ELIDED be-verb ("...was true and never contradicted
+ *     it") — the explicit form ("was never contradicted") is handled
+ *   • window annexation — ".)" defeats the sentence-stop lookbehind, so the window
+ *     reaches past the clause and anchors on an identifier the directive never governed
+ * Wired into `problems` it would therefore refuse to write a CORRECT artifact. It
+ * reports into `advisories`, which nothing gates on, so a suspected drop is raised
+ * for a human to adjudicate without red-flagging faithful work.
+ *
+ * ⚠ Those numbers were re-derived AFTER the last change to the matcher, not carried
+ * over from the draft that motivated it. Two earlier readings are worth knowing,
+ * because both were produced by a narrower detector and both looked authoritative:
+ * an explicit-case alternation silently missed a lowercase "do not" and so reported
+ * 61 signatures rather than 74; and before `must` was excluded before not/never, and
+ * before an unanchored signature was compared by polarity, the residual false
+ * positives were 4 across 3 blocks. Change the alphabet or the anchoring and this
+ * paragraph is stale until re-measured — the corpus population is not a constant.
+ */
+export const IMPERATIVES = [
+  ['prohibit', /\bnever\b|\bdo not\b|\bdon[''’]t\b|\bmust not\b|⛔|🚫/gi],
+  // `must` is an obligation ONLY when it is not the auxiliary of a prohibition:
+  // "must never bypass X" states ONE directive, not an obligation plus a ban. Read
+  // as two, a faithful re-authoring to "Never bypass X" appears to drop an
+  // obligation that was never separately stated — caught by this file's own
+  // CALIBRATION case, which is what a control is for.
+  ['oblige', /\bmust\b(?!\s+(?:not|never)\b)|\balways\b|\bmandatory\b/gi],
+  ['restrict', /\bonly\b/gi],
+];
+
+/**
+ * "never" in a narrative clause reports what HAPPENED, not what you must not do
+ * ("was never contradicted", "while never stating the premise"). Matching it as a
+ * directive fires the check on correct prose — both such flags in the measured
+ * corpus were this shape.
+ */
+const NARRATIVE_LEAD = /\b(?:was|were|is|are|be|been|being|had|has|have|while)\s+$/i;
+
+/** How far past a marker to look for the identifier it governs. */
+const ANCHOR_WINDOW = 140;
+
+export function imperativesIn(text) {
+  // Flatten hard-wrap and blockquote markers so a window ends where the CLAUSE
+  // ends rather than where the line does. Offsets are not preserved and need not
+  // be — this returns a SET of signatures, never a position. (Deliberately its own
+  // pass, not shared with `maskUncuttable`, whose length preservation is
+  // load-bearing because it reports a byte offset.)
+  const flat = text
+    .replace(/^[ \t]*(?:>[ \t]?)?```[\s\S]*?^[ \t]*(?:>[ \t]?)?```/gm, ' ')
+    .replace(/\n[ \t]*(?:>[ \t]?)?/g, ' ');
+  const out = new Set();
+  for (const [polarity, re] of IMPERATIVES) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(flat))) {
+      if (/never/i.test(m[0]) && NARRATIVE_LEAD.test(flat.slice(0, m.index))) continue;
+      const after = flat.slice(m.index + m[0].length, m.index + m[0].length + ANCHOR_WINDOW);
+      const clause = after.split(/(?<=[.!?])\s+(?=[A-Z⚠🚫✅⛔🚨])/)[0];
+      // Ids, dates and clock times are EVIDENCE referents — `citationsIn` already
+      // guarantees those survive. What this check adds is the polarity attached to
+      // a named thing, so anchor only on the backticked identifiers.
+      const anchors = [...citationsIn(clause)].filter(
+        (c) => !/^\d{4}-\d\d-\d\d$/.test(c) && !/^(?:EI|WI|F|P|D)-\d+$/.test(c) && !/^\d{2}:\d{2}/.test(c),
+      );
+      out.add(anchors.length ? `${polarity}:${anchors[0]}` : `${polarity}:<unanchored>`);
+    }
+  }
+  return out;
+}
+
+/** Directive signatures present in the original but missing from the authored pair. */
+export function droppedImperatives(original, authoredText) {
+  const have = imperativesIn(authoredText);
+  const polarityOf = (s) => s.slice(0, s.indexOf(':'));
+  const havePolarities = new Set([...have].map(polarityOf));
+  return [...imperativesIn(original)].filter((s) => {
+    if (have.has(s)) return false;
+    // An UNANCHORED signature is one whose governed identifier could not be
+    // determined, so the only thing it can honestly assert is that the polarity
+    // survives SOMEWHERE — not where. Comparing it by exact identity punishes a
+    // re-authoring that ADDS precision ("declared one" -> "declared a `typecheck`
+    // script"), which moves the signature from unanchored to anchored and reads as
+    // a loss when the directive in fact got sharper.
+    if (s.endsWith(':<unanchored>')) return !havePolarities.has(polarityOf(s));
+    return true;
+  });
+}
+
 const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 
 export function buildRuleEvidence(text, authored = AUTHORED) {
   const parts = extractParts(text);
   const pairs = [];
   const problems = [];
+  // Kept separate from `problems` on purpose: `problems` refuses to write the
+  // artifact, and this check has a measured false-positive rate on correct prose.
+  const advisories = [];
   const summary = { total: parts.length, clean: 0, split: 0, authored: 0, needsAuthoring: 0 };
 
   for (const p of parts) {
@@ -231,8 +339,18 @@ export function buildRuleEvidence(text, authored = AUTHORED) {
     if (hand) {
       const dropped = droppedCitations(p.raw, `${hand.rule}\n${hand.evidence}`);
       if (dropped.length) problems.push(`${p.partKey}: authored pair drops ${dropped.length} citation(s): ${dropped.slice(0, 5).join(', ')}`);
+      const lostImperatives = droppedImperatives(p.raw, `${hand.rule}\n${hand.evidence}`);
+      if (lostImperatives.length) advisories.push(`${p.partKey}: authored pair may drop ${lostImperatives.length} directive(s): ${lostImperatives.slice(0, 5).join(', ')}`);
       summary.authored += 1;
-      pairs.push({ ...base, mode: 'authored', splitOffset: null, rule: hand.rule, evidence: hand.evidence, droppedCitations: dropped });
+      pairs.push({
+        ...base,
+        mode: 'authored',
+        splitOffset: null,
+        rule: hand.rule,
+        evidence: hand.evidence,
+        droppedCitations: dropped,
+        droppedImperatives: lostImperatives,
+      });
       continue;
     }
     summary.needsAuthoring += 1;
@@ -245,6 +363,7 @@ export function buildRuleEvidence(text, authored = AUTHORED) {
     tellSet: TELLS.map(([k]) => k),
     summary,
     problems,
+    advisories,
     pairs,
   };
 }
@@ -282,6 +401,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     checked += 1;
   }
   console.log(`\n  reconstruction ${checked}/${split} split pair(s) verified loss-free`);
+
+  // ADVISORY — printed, never gating. Reported BEFORE the problems block so it is
+  // visible on a run that then exits for an unrelated reason.
+  if (artifact.advisories.length) {
+    console.log(`\n  advisories     ${artifact.advisories.length} authored pair(s) may have dropped a directive (NOT a failure — adjudicate by hand):`);
+    for (const a of artifact.advisories.slice(0, 15)) console.log(`   ⚠ ${a}`);
+    console.log('   (this check has a measured false-positive rate on correct prose — see IMPERATIVES)');
+  } else {
+    console.log('\n  advisories     none — every authored pair preserves its directives');
+  }
 
   if (artifact.problems.length) {
     console.error(`\n✗ ${artifact.problems.length} problem(s):`);

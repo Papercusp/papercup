@@ -282,6 +282,38 @@ describe('goals.* resolvers against real SQL', () => {
     expect(out.spendLabel).toBe('fleet spend');
   });
 
+  it('counts waiting-on-you UNBOUNDED while capping the rows it returns', async () => {
+    // The D-018 defect, pinned against real SQL: the rows are fetched LIMIT 25,
+    // and the aggregate used to be `waiting.length` — so a goal with 31 parked
+    // items reported 25 here while goals.list (which counts unbounded) reported
+    // 31 on the card, with nothing disclosing the cap.
+    //
+    // Asserted BEHAVIOURALLY, not by field name: rows are bounded, the count is
+    // not, and the two disagree by exactly the overflow. Anchoring to the
+    // literal 25 as well is deliberate — a silent change to the cap should fail
+    // here rather than quietly change what the owner is shown.
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    for (let i = 0; i < 31; i += 1) {
+      await workItem(`WI-wait-${String(i).padStart(2, '0')}`, { needsHuman: true });
+    }
+    // One row that must be counted by NEITHER — same goal, but not parked on the
+    // owner. A count that drops the predicate would read 32 and still look sane.
+    await workItem('WI-not-waiting');
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      goal: { needsHuman: number } | null;
+      waitingOnYou: unknown[];
+      waitingOnYouTotal: number;
+    };
+
+    expect(out.waitingOnYou).toHaveLength(25);
+    expect(out.waitingOnYouTotal).toBe(31);
+    // The headline the card also renders — the two surfaces must agree BY
+    // CONSTRUCTION, which is the whole point of sourcing both from one predicate.
+    expect(out.goal?.needsHuman).toBe(31);
+  });
+
   it('converts the epoch-ms timestamps into something Date can parse', async () => {
     // The columns are bigint epoch-ms but the row mappers hand them to `iso()`,
     // which expects a Date/ISO string — so passing the raw number through would
