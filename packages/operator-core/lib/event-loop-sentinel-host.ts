@@ -173,11 +173,25 @@ const INACTIVE: EventLoopSentinelHandle = {
  * Two runtimes, two artifacts, and getting this wrong makes the sentinel
  * silently absent rather than visibly broken:
  *
- * - **tsx** (`npx tsx bin/hono-host.ts` — dev, desktop sidecar): the `.ts` sits
- *   beside this module and loads directly (measured: a Worker spawned from a
- *   tsx-run parent resolves repo `.ts` fine, under vitest too).
- * - **bundled** (`node dist-host/hono-host.mjs` — :3170 staging, and the
- *   bg-host): plain node, NO tsx loader, so a `.ts` worker cannot load at all.
+ * - **tsx** (`npx tsx bin/hono-host.ts` — dev, desktop sidecar, AND the bg-host):
+ *   the `.ts` sits beside this module and loads directly.
+ *
+ *   ⚠ CORRECTED 2026-08-10. This bullet used to claim "measured: a Worker
+ *   spawned from a tsx-run parent resolves repo `.ts` fine, under vitest too",
+ *   and that claim is FALSE — it is what let the sentinel ship dead. A worker
+ *   thread does NOT inherit the parent's registered ESM loader hooks, so the
+ *   `.ts` entry is loaded by NODE'S NATIVE type stripping (Node 25), whose
+ *   standard ESM resolution has no extensionless lookup. The entry itself
+ *   loads; its extensionless RELATIVE IMPORT is what throws. Hence the fix is
+ *   an explicit extension in `event-loop-sentinel.worker.ts`, not a loader —
+ *   and this path now needs no loader at all, verified against a plain-`node`
+ *   parent as well as a tsx one.
+ *
+ *   The second error in the old text: bg-host was listed as "bundled". It is
+ *   not — it runs `npx tsx` from the working tree, which is precisely why it
+ *   took the `.ts` fallback and why IT was the host left unguarded.
+ * - **bundled** (`node dist-host/hono-host.mjs` — :3170 staging): plain node,
+ *   NO tsx loader; `bundle-host.sh` esbuilds the worker to a sibling `.mjs`.
  *   `bundle-host.sh` esbuilds it to `event-loop-sentinel.worker.mjs` beside the
  *   entry, which is what `dirname(here)` resolves to inside a bundle.
  *
