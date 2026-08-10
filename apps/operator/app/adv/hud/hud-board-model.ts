@@ -134,6 +134,14 @@ export interface HudRosterEntry {
    * absent means "not a failed launch", never "unknown".
    */
   launchFailed?: boolean;
+  /**
+   * WI-37841: WHY it failed — the tail of psu's boot log, as captured server-side.
+   * Set only alongside `launchFailed`, and absent from an older operator's
+   * payload, so a reader must fall back to the generic copy rather than assume
+   * a cause is always available. '' (the launch printed nothing) is a real
+   * finding and is NOT the same as null/absent (no log at all).
+   */
+  launchFailureHint?: string | null;
   claims: Array<{ id?: string; planSlug?: string | null; status?: string | null }>;
   declaredUnclaimed: boolean;
   currentPlanSlug: string | null;

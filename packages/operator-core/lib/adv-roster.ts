@@ -23,6 +23,9 @@ import { machineFingerprint } from './identity/device-keychain-id';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { advSessionsByCoordOwner, isFailedTerminalLaunch, type AdvSessionRow } from './adv-sessions';
+// WI-37841: the cause of a failed launch, from the boot log psu-launcher.mjs and
+// launch-su.ts both write. One shared path derivation — see psu-launch-log.mjs.
+import { readPsuLaunchLogTail } from './psu-launch-log.mjs';
 import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
 import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
@@ -228,6 +231,23 @@ export interface RosterEntry {
    * never "unknown" — a reader may treat falsy as fine.
    */
   launchFailed?: boolean;
+  /**
+   * WI-37841: WHY that launch failed, in psu's own words — the tail of this
+   * launch's boot log. Set only alongside `launchFailed`.
+   *
+   * `launchFailed` is DERIVED (ended, never registered), so it is structurally
+   * incapable of carrying a cause, and the banner above it could only ever be a
+   * fixed string. That one string has cost two full forensic sessions for two
+   * different root causes, each of which psu had already printed — to a window
+   * nobody could read afterwards.
+   *
+   * null vs '' matters and readers must keep them apart: null = no log (an old
+   * launch, a pre-WI-37841 psu, a resume with no pre-pinned owner) ⇒ say nothing
+   * and fall back to the generic copy; '' = the launch ran and printed NOTHING,
+   * which is itself a finding worth showing rather than hiding behind the
+   * generic line.
+   */
+  launchFailureHint?: string | null;
   advSessionId: number | null;
   /** Live plan (presence) preferred; falls back to the launch-time plan. */
   currentPlanSlug: string | null;
@@ -818,6 +838,12 @@ export function startingLaunchesToRosterEntries(
       // death. Saying "starting up" about a corpse is the lie WI-6821 filed.
       intent: failed ? 'launch failed' : 'starting up',
       launchFailed: failed,
+      // WI-37841: read the cause ONLY for a launch already known to have failed.
+      // Gating on `failed` keeps this off the hot path entirely — a healthy boot
+      // window does no file I/O — and a failed launch is both rare and bounded
+      // by STARTING_LAUNCH_WINDOW_SEC. Never throws (see readPsuLaunchLogTail):
+      // a missing or unreadable log degrades to today's generic copy.
+      launchFailureHint: failed ? readPsuLaunchLogTail(r.coordOwnerId) : null,
       currentFiles: [],
       host: localHost,
       pid: r.pid,
