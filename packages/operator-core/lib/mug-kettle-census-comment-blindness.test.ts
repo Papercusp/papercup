@@ -30,6 +30,34 @@ const CENSUS = join(REPO_ROOT, 'scripts/mug-kettle-surface-census.mjs');
 
 type Finding = { category: string; subject: string; file: string; line: number; detail?: string };
 
+/**
+ * TEMPORARY MITIGATION (EI-20088302984457398), not a fix — sized, not guessed.
+ *
+ * `census()` shells out to a full-repo AST scan of ~7,200 files. MEASURED on this box:
+ * 33s quiet (EI-20068047132832988), 49.7s and 57.8s on two runs at load ~95. Against the
+ * 60s default this test is not occasionally flaky — its headroom is smaller than the box's
+ * normal variance, so it reds whenever the box is busy and then reads as an unrelated flake
+ * inside someone else's gate triage. That MISATTRIBUTION is the expensive part: it trains
+ * readers to wave this file's reds through, which is how a real regression eventually gets
+ * waved through too.
+ *
+ * THE DURABLE FIX IS CENSUS COST, TRACKED AS EI-20068047132832988 — the scan went 7s -> 33s
+ * when the shared stripper became AST-based. Until that lands, a budget sized to ~3x the
+ * worst measured run stops the false reds without disarming the guard.
+ *
+ * ⚠ WHY NOT THE OTHER TWO OPTIONS, both considered and rejected on evidence:
+ *   - Marking this integration: `affected-tests.mjs:1156` gates integration behind
+ *     `--integration` and the gate runs plain `test:affected`, so that DISARMS the guard
+ *     rather than relocating it.
+ *   - Bounding CONTROL to a subtree: the census has no `--roots` (SCAN_ROOTS is hardcoded),
+ *     and the comment that originally red-pinned the fleet gate lived in `apps/operator`,
+ *     which an operator-core-only scan would stop covering.
+ *
+ * Do NOT read this number as headroom to spend. If the census gets slower again, fix the
+ * census — raising this further only widens the window.
+ */
+const CENSUS_TIMEOUT_MS = 180_000;
+
 let cached: Finding[] | null = null;
 function census(): Finding[] {
   if (!cached) {
@@ -50,7 +78,7 @@ describe('mug/kettle census — comment blindness (WI-37661)', () => {
    * the census went blind. That is the failure direction the fix itself risked — masking
    * comments could just as easily have masked the code.
    */
-  it('CONTROL: the census still sees a substantial population of REAL entry points', () => {
+  it('CONTROL: the census still sees a substantial population of REAL entry points', { timeout: CENSUS_TIMEOUT_MS }, () => {
     const findings = census();
     expect(findings.length).toBeGreaterThan(100);
 
@@ -69,7 +97,7 @@ describe('mug/kettle census — comment blindness (WI-37661)', () => {
    * resolves to line 1 and is not a token position at all. Line 1 is very often `/**`,
    * so including those would fail on correct behaviour.
    */
-  it('reports no finding whose token lives in a comment', () => {
+  it('reports no finding whose token lives in a comment', { timeout: CENSUS_TIMEOUT_MS }, () => {
     const offenders = census()
       .filter((f) => f.line > 1)
       .filter((f) => {
