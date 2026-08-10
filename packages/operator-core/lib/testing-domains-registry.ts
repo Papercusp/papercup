@@ -1617,6 +1617,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/roster-scope.selftest.sh'], label: 'roster-gate workspace + pot scoping (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh'], label: 'rig deployed-state: uniform sidecar + build provenance + DHT isolation (WI-6212)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh'], label: 'Windows installer legacy-uninstall reaper: ghosts reaped, LIVE entries spared (WI-4490)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rust-path-remap.selftest.sh'], label: 'Rust build-box path remap: every build entry point sets it itself + is idempotent (EI-20075266271803900)' },
       ],
     },
   ],
