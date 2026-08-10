@@ -38,6 +38,9 @@ import {
   classifyReplaceRequest,
   checkpointCandidateContainment,
   renderContainmentWarning,
+  assessPreLaunchExclusion,
+  renderPreLaunchRefusal,
+  PRELAUNCH_EXCLUSION_MAX_WAIT_SEC,
 } from './release-checkpoint-launch';
 
 // 2026-07-10: every run wrote to /tmp/<unit>.log, so the natural response to a red —

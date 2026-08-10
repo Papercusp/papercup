@@ -631,14 +631,15 @@ export async function produceLogSnapshot(
   // a misleading "no complete snapshot within the reader scan window". A snapshot
   // that cannot be located is not a snapshot, so this FAILS LOUDLY instead.
   const anchorOp = await ownLog.get(coversUpTo);
-  const anchorCovers = isSnapshotOp(anchorOp)
+  const anchorIsSnapshot = anchorOp != null && isSnapshotOp(anchorOp);
+  const anchorCovers = anchorIsSnapshot
     ? (anchorOp.value as SnapshotPayload | undefined)?.coversUpTo
     : undefined;
   if (anchorCovers !== coversUpTo) {
     throw new Error(
       `[snapshot] anchor race: appended a ${snapshotOps.length}-chunk set for coversUpTo=${coversUpTo}, ` +
         `but index ${coversUpTo} does not hold chunk 0 of that set (found ` +
-        `${isSnapshotOp(anchorOp) ? `a snapshot for coversUpTo=${String(anchorCovers)}` : `a non-snapshot op`}). ` +
+        `${anchorIsSnapshot ? `a snapshot for coversUpTo=${String(anchorCovers)}` : anchorOp == null ? `no readable op` : `a non-snapshot op`}). ` +
         `A concurrent append displaced the set, and the reader locates a set only at ` +
         `[coversUpTo, coversUpTo+chunkCount) — so it would be unfindable. Refusing to report ` +
         `success; retry the snapshot when the own log is quieter (WI-37526).`,
