@@ -3,6 +3,8 @@ import { Square, Play, AlertTriangle } from 'lucide-react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { useFlag } from '@papercusp/flags/client';
+import { FLAGS } from '@papercusp/flags';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
@@ -43,10 +45,25 @@ export function waitingLabel(n: number): string {
  * (`pot:pause { drainCups:true }`). "Active" = the persisted per-hive
  * `started` bit (live via the hive.controlState invalidation) or a just-clicked
  * Start. Hidden when no hive is registered.
+ *
+ * START IS FLAG-GATED, STOP IS NOT — AND THE ASYMMETRY IS DELIBERATE
+ * (retire-mug-kettle-su-only-2026-08-09 P-043, D-010 + D-017):
+ *   - D-010 [owner 2026-08-09] retires "the gui buttons driving that
+ *     functionality", so while the tier is retired there is no Start affordance.
+ *     `pot:start` already refuses server-side via the _mug-kettle-gate; showing a
+ *     button whose only possible outcome is a toasted refusal is a worse answer
+ *     than not showing it.
+ *   - D-017 keeps the STOPPERS reachable: "refusing a stop is never the safe
+ *     direction". A pot left started when the flag flips ON -> OFF must still be
+ *     stoppable, so Stop renders on `effectivelyAlive` REGARDLESS of the flag.
+ * POLARITY IS INVERTED (D-016): flag OFF is the delivered, retired state; ON is
+ * the reversible testing escape hatch that restores the Start button.
  */
 export default function AdvNowRunning({ slug }: Props) {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
   const t = useLexicon();
+  // OFF (the default) = tier retired. Gates START only — never Stop.
+  const tierLive = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [starting, setStarting] = useState(false);
   // Optimistic post-launch state: the started bit arrives a beat after
@@ -166,8 +183,9 @@ export default function AdvNowRunning({ slug }: Props) {
       )}
 
       {/* Start (when paused) / Stop (when started) — THE hive control.
-          Hidden when no hive is registered. */}
-      {hive && !effectivelyAlive && (
+          Hidden when no hive is registered, and Start is additionally hidden
+          while the tier is retired (D-010); Stop below is NOT gated (D-017). */}
+      {hive && !effectivelyAlive && tierLive && (
         <Tooltip label={`Start ${t('pot', { lower: true })} (${hive.slug}) — wake the ${t('brain')} and enable autonomous wakes`}>
           <button
             type="button"

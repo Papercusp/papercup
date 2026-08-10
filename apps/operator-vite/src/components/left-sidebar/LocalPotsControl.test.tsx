@@ -37,6 +37,13 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => hiveResult }));
 // t('contributor')→'contributor') — isolates from the THE_HIVE flag hook; classic
 // pack renders 'Pot(s)'/'Brain'/'Cup(s)' at runtime (restore-pot-lexicon P-005).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+// Mug/Kettle/Cup retirement flag (retire-mug-kettle-su-only-2026-08-09 P-043).
+// POLARITY IS INVERTED: false = tier RETIRED (the shipped default), true = the
+// reversible testing escape hatch. Defaults to true here so the pre-existing
+// Start/Stop coverage below keeps exercising the live-tier path; the
+// retirement assertions flip it per-test.
+let tierLive = true;
+vi.mock('@papercusp/flags/client', () => ({ useFlag: () => tierLive }));
 
 import { toast } from 'sonner';
 import LocalPotsControl from './LocalPotsControl';
@@ -60,6 +67,7 @@ beforeEach(() => {
   };
   runToolCalls = [];
   runToolResponse = { ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } };
+  tierLive = true;
   H.confirmResult = true;
   H.confirm = vi.fn(async () => H.confirmResult);
   toastMock.success.mockReset();
@@ -131,6 +139,42 @@ describe('LocalPotsControl', () => {
     await waitFor(() =>
       expect(toastMock.success).toHaveBeenCalledWith('pot paused', expect.anything()),
     );
+  });
+
+  // ---- Mug/Kettle/Cup retirement (P-043; D-010 retires the buttons, D-017
+  // keeps the stoppers). The ASYMMETRY is the invariant worth guarding: Start
+  // disappears, Stop survives. A guard that only checked "the control is gone"
+  // would pass just as happily on the unsafe version that strands a running
+  // tier with no way to stop it.
+  it('tier retired: a stopped pot offers no Start button', () => {
+    tierLive = false;
+    render(<LocalPotsControl />);
+    // The ROW still renders — state stays visible; only the affordance goes.
+    expect(screen.getByTestId('local-hive-sb-devboard-hive')).toBeTruthy();
+    expect(screen.queryByTestId('local-hive-toggle-sb-devboard-hive')).toBeNull();
+  });
+
+  it('tier retired: a STILL-STARTED pot keeps a working Stop (D-017 — never strand a running tier)', async () => {
+    tierLive = false;
+    render(<LocalPotsControl />);
+    const stop = screen.getByTestId('local-hive-toggle-papercup-hive');
+    expect(stop.textContent).toContain('Stop');
+    // Present is not enough — it must still actually stop the tier.
+    fireEvent.click(stop);
+    await waitFor(() =>
+      expect(runToolCalls).toEqual([
+        { name: 'pot:pause', args: { harness: 'papercup-hive', drainCups: true }, confirmed: true },
+      ]),
+    );
+  });
+
+  it('tier retired: the hint stops advertising a Start/Stop control that is no longer rendered', () => {
+    tierLive = false;
+    render(<LocalPotsControl />);
+    const hint = screen.getByTestId('queen-tab-pointer').textContent ?? '';
+    expect(hint).toContain('retired');
+    expect(hint).toContain('su + GOAL mode');
+    expect(hint).not.toContain('chooses');
   });
 
   it('a declined confirm aborts the pause', () => {

@@ -73,6 +73,13 @@ vi.mock('@papercusp/sync', () => ({
 // copy from the THE_HIVE flag hook; classic pack renders 'Pot'/'Brain'/'Cup(s)'
 // at runtime (restore-pot-lexicon P-006).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+// Mug/Kettle/Cup retirement flag (retire-mug-kettle-su-only-2026-08-09 P-043).
+// POLARITY IS INVERTED: false = tier RETIRED (the shipped default), true = the
+// reversible testing escape hatch. Defaults to true so the pre-existing
+// Start/Stop coverage keeps exercising the live-tier path; the retirement
+// assertions flip it per-test.
+let tierLive = true;
+vi.mock('@papercusp/flags/client', () => ({ useFlag: () => tierLive }));
 
 import { toast } from 'sonner';
 import AdvNowRunning from './AdvNowRunning';
@@ -97,6 +104,7 @@ beforeEach(() => {
   waitingCountRows = [];
   runToolCalls = [];
   runToolResponse = { ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } };
+  tierLive = true;
   toastMock.success.mockReset();
   toastMock.error.mockReset();
   vi.stubGlobal(
@@ -215,5 +223,32 @@ describe('AdvNowRunning', () => {
     // started hive → stopped=false → plans.waitingCount disabled (no fetch) → no nudge
     expect(syncEnabled['plans.waitingCount']).toBe(false);
     expect(screen.queryByText(/plans? waiting/)).toBeNull();
+  });
+
+  // ---- Mug/Kettle/Cup retirement (P-043; D-010 retires the buttons, D-017
+  // keeps the stoppers reachable). Both halves are asserted because the
+  // ASYMMETRY is the invariant: a guard that only checked "Start is gone" would
+  // pass equally on the unsafe variant that also removes Stop and strands a
+  // running tier with no way to wind it down.
+  it('tier retired: no Start button on a stopped pot (D-010)', async () => {
+    tierLive = false;
+    hiveRows = [{ slug: 'hive-1', started: false }];
+    render(<AdvNowRunning slug="pot-a" />);
+    // Wait for the bar itself so this cannot pass merely because nothing rendered yet.
+    await waitFor(() => expect(document.querySelector('.pc-advshell__harness-bar')).toBeTruthy());
+    expect(screen.queryByText('Start pot')).toBeNull();
+  });
+
+  it('tier retired: a STILL-STARTED pot keeps a working Stop (D-017)', async () => {
+    tierLive = false;
+    hiveRows = [{ slug: 'hive-1', started: true }];
+    render(<AdvNowRunning slug="pot-a" />);
+    fireEvent.click(await screen.findByText('Stop pot'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause pot' }));
+    await waitFor(() =>
+      expect(runToolCalls).toEqual([
+        { name: 'pot:pause', args: { harness: 'hive-1', drainCups: true }, confirmed: true },
+      ]),
+    );
   });
 });

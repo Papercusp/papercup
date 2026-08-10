@@ -14,6 +14,8 @@ import type { ReactNode } from 'react';
 import { Play, Square, Boxes } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { useFlag } from '@papercusp/flags/client';
+import { FLAGS } from '@papercusp/flags';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { useLexicon } from '@/lib/useLexicon';
 import { runHiveControl, countStarted, type HiveControlRow } from '../adv/pot-control';
@@ -33,6 +35,18 @@ export interface LocalHivesControlProps {
 
 export default function LocalPotsControl({ collapsible = false }: LocalHivesControlProps = {}) {
   const t = useLexicon();
+  // Mug/Kettle/Cup retirement (retire-mug-kettle-su-only-2026-08-09 P-043).
+  // POLARITY IS INVERTED (D-016): OFF (the default) is the DELIVERED state —
+  // the tier is retired — and ON is the reversible testing escape hatch.
+  //
+  // Gates START ONLY. A stopped pot offers no Start affordance while the tier is
+  // retired (D-010 retires "the gui buttons driving that functionality", and
+  // `pot:start` already refuses server-side, so the button could only ever
+  // produce a toasted refusal). A STARTED pot keeps its Stop button no matter
+  // what the flag says — D-017: "refusing a stop is never the safe direction",
+  // so a tier still running when the flag flips ON -> OFF stays stoppable
+  // instead of being stranded with its control removed.
+  const tierLive = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
   const { data, loading, error } = useSyncQuery<HiveControlRow>({
     queryName: 'hive.controlState',
     args: {},
@@ -89,17 +103,19 @@ export default function LocalPotsControl({ collapsible = false }: LocalHivesCont
               </div>
             ) : null}
           </div>
-          <button
-            type="button"
-            className={`pclsb-hivebtn pclsb-hivebtn--${h.started ? 'stop' : 'start'}`}
-            data-testid={`local-hive-toggle-${h.slug}`}
-            aria-label={h.started ? `Stop ${t('pot', { lower: true })} ${h.slug}` : `Start ${t('pot', { lower: true })} ${h.slug}`}
-            disabled={busy === h.slug}
-            onClick={() => void toggle(h)}
-          >
-            {h.started ? <Square size={11} aria-hidden /> : <Play size={11} aria-hidden />}
-            {busy === h.slug ? '…' : h.started ? 'Stop' : 'Start'}
-          </button>
+          {(h.started || tierLive) && (
+            <button
+              type="button"
+              className={`pclsb-hivebtn pclsb-hivebtn--${h.started ? 'stop' : 'start'}`}
+              data-testid={`local-hive-toggle-${h.slug}`}
+              aria-label={h.started ? `Stop ${t('pot', { lower: true })} ${h.slug}` : `Start ${t('pot', { lower: true })} ${h.slug}`}
+              disabled={busy === h.slug}
+              onClick={() => void toggle(h)}
+            >
+              {h.started ? <Square size={11} aria-hidden /> : <Play size={11} aria-hidden />}
+              {busy === h.slug ? '…' : h.started ? 'Stop' : 'Start'}
+            </button>
+          )}
         </div>
       ))}
       {hives.length > 0 && (
@@ -108,8 +124,21 @@ export default function LocalPotsControl({ collapsible = false }: LocalHivesCont
           data-testid="queen-tab-pointer"
           style={{ padding: '6px 8px 4px', fontSize: 11, color: 'var(--fg-mute)', lineHeight: 1.45, borderTop: '1px solid var(--border)' }}
         >
-          ▸ Start/Stop chooses <em>which {t('pot', { plural: true, lower: true })} run</em>. Pick each {t('pot', { lower: true })}&apos;s{' '}
-          <strong>plan focus &amp; work-item steering</strong> in the ☕ {t('brain')} tab (left sidebar).
+          {tierLive ? (
+            <>
+              ▸ Start/Stop chooses <em>which {t('pot', { plural: true, lower: true })} run</em>. Pick each {t('pot', { lower: true })}&apos;s{' '}
+              <strong>plan focus &amp; work-item steering</strong> in the ☕ {t('brain')} tab (left sidebar).
+            </>
+          ) : (
+            /* Without this the panel would still advertise a Start/Stop control
+               that is no longer rendered — a hint describing a retired affordance
+               is worse than no hint. */
+            <>
+              ▸ Autonomous {t('pot', { lower: true })} start/stop is <em>retired</em>. Drive work with{' '}
+              <strong>su + GOAL mode</strong> instead
+              {started > 0 ? '; still-running ' + t('pot', { plural: true, lower: true }) + ' keep their Stop button' : ''}.
+            </>
+          )}
         </div>
       )}
     </>
