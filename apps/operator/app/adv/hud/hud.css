@@ -1104,10 +1104,36 @@
   font-weight: 600;
 }
 
+/* The brief, as a BOUNDED PANE (goals-tab-improvement-2026-08-09 P-023).
+   [owner 2026-08-10]: "When the brief is large it takes up too much hight.
+   mimic the desin of the non goal conersation popup."
+
+   WHY A CAP AT ALL. P-022 gave the brief its own column with one scroll region
+   at `.hud-goal`, which fixed the CONVERSATION's height but not this: the whole
+   column scrolls as a unit, so a long brief still pushes "This goal ends when",
+   the work rail and the sub-goals below the fold. The section that says when the
+   goal STOPS must never be something you have to scroll a brief to reach.
+
+   WHY max-height AND NOT height. A short brief must not leave an empty box, and
+   max-height collapses to the content — which is the second half of the item's
+   verification, and the half a fixed height would fail.
+
+   THE REFERENCE. SessionChatModal bounds each of its panes with its own
+   `overflow-y: auto` rather than letting any one grow the shell; this is that
+   same treatment applied to the one pane in this popup that still grew. The cap
+   is in `em` so it tracks the reading measure (~10 lines at this line-height)
+   instead of pinning prose to a pixel count.
+
+   overscroll-behavior: contain — reaching the end of the brief must not chain
+   into scrolling the column behind it, which would undo the fix at exactly the
+   moment the reader is furthest into a long brief. */
 .hud-goal__body {
   margin: 0;
   color: var(--fg-dim);
   line-height: 1.5;
+  max-height: 15em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .hud-goal__section {
@@ -1129,26 +1155,23 @@
   padding: 14px 16px;
 }
 
-.hud-goal__h {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--fg-mute);
-}
+/* `.hud-goal__h` and `.hud-goal__h-note` were DELETED here (P-024, D-023).
+   They were the goal panels' own heading idiom — bare 10px/600 uppercase muted
+   text — where the conversation popup this popup is meant to match uses a
+   filled plate (`.pc-zone-title` in chat-controls.css: sticky, tinted, ruled,
+   10.5px/700). Every call site now uses the popup's primitives directly:
+   `.pc-zone-title` for the heading and `.pc-zone-title__sub` for the caveat
+   beside a count, which already existed for exactly that job and carries the
+   same reasoning (sentence case + lighter, so the zone NAME is what a scanning
+   eye lands on).
 
-/** The truncation disclosure beside a section count ("showing 25 of 31").
- *  Deliberately NOT uppercase like its parent heading: it is a caveat on the
- *  number, not another label, and it must read as prose so it is not mistaken
- *  for a second count. */
-.hud-goal__h-note {
-  text-transform: none;
-  font-weight: 400;
-  color: var(--fg-mute);
-}
+   The rules are removed rather than kept as aliases ON PURPOSE: a retired class
+   that still styles something is how a third idiom grows back, and GoalWorkRail
+   had already adopted `.pc-zone-title` — this finishes that migration instead of
+   leaving the panels split between two languages.
+
+   Both stylesheets are already loaded wherever these panels render (hud.css
+   imports chat-controls.css), so nothing here needs a new import. */
 
 /* The section is focusable (the vitals-band count jumps to it) but is not a tab
    stop, so it must not paint a ring on a plain mouse jump. focus-visible keeps

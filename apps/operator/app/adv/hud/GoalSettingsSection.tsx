@@ -257,7 +257,7 @@ export default function GoalSettingsSection({
 
   return (
     <section className="hud-goal__section" data-testid="goal-settings-section">
-      <h3 className="hud-goal__h">
+      <h3 className="pc-zone-title">
         Launch settings
         <button
           type="button"

@@ -853,7 +853,7 @@ export default function GoalDetailPanel({
               tabIndex={-1}
               data-testid="goal-waiting-section"
             >
-              <h3 className="hud-goal__h">
+              <h3 className="pc-zone-title">
                 Waiting on you
                 {/* The TOTAL, not the row count — the list below stops at 25 and
                     the note says so. Rendering the capped length here is what
@@ -862,7 +862,7 @@ export default function GoalDetailPanel({
                   <span className="hud__chip hud__chip--warn">{waitingN.total ?? waitingN.shown}</span>
                 ) : null}
                 {waitingN.note ? (
-                  <span className="hud-goal__h-note" data-testid="goal-waiting-note">
+                  <span className="pc-zone-title__sub" data-testid="goal-waiting-note">
                     {waitingN.note}
                   </span>
                 ) : null}
@@ -885,7 +885,7 @@ export default function GoalDetailPanel({
 
             {/* ── 3. POTS ─────────────────────────────────────────────────── */}
             <section className="hud-goal__section">
-              <h3 className="hud-goal__h">Pots</h3>
+              <h3 className="pc-zone-title">Pots</h3>
               {pots.active.length === 0 && pots.removed.length === 0 ? (
                 <p className="hud-goal__empty">No pots serve this goal yet.</p>
               ) : null}
@@ -915,7 +915,7 @@ export default function GoalDetailPanel({
 
             {/* ── 4. ACTIVITY ─────────────────────────────────────────────── */}
             <section className="hud-goal__section">
-              <h3 className="hud-goal__h">Activity</h3>
+              <h3 className="pc-zone-title">Activity</h3>
               {activity.length === 0 ? (
                 <p className="hud-goal__empty">Nothing has moved under this goal yet.</p>
               ) : (
@@ -939,7 +939,7 @@ export default function GoalDetailPanel({
 
             {/* ── 5. SPEND BY DAY ─────────────────────────────────────────── */}
             <section className="hud-goal__section">
-              <h3 className="hud-goal__h">{data?.spendLabel ?? 'fleet spend'} by day</h3>
+              <h3 className="pc-zone-title">{data?.spendLabel ?? 'fleet spend'} by day</h3>
               {/* D-021: per-goal spend figures do NOT sum across goals — a
                   shared pot counts in full against each. The caveat rides
                   with the chart because this is the section most likely to be

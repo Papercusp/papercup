@@ -205,7 +205,7 @@ export default function GoalEndsSection({
 
   return (
     <section className="hud-goal__section hud-goal__section--ends" data-testid="goal-ends-section">
-      <h3 className="hud-goal__h">This goal ends when</h3>
+      <h3 className="pc-zone-title">This goal ends when</h3>
 
       {editing === 'criterion' ? (
         <form

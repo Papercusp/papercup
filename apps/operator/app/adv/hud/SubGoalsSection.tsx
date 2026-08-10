@@ -91,7 +91,7 @@ export default function SubGoalsSection({
 
   return (
     <section className="hud-goal__section">
-      <h3 className="hud-goal__h">
+      <h3 className="pc-zone-title">
         Subdirectives
         {children.length > 0 ? <span className="hud__chip">{children.length}</span> : null}
       </h3>
