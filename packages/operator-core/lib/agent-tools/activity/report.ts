@@ -94,7 +94,10 @@ export default defineTool({
   // parse throws and it fails open SILENTLY, dropping the coordination fold
   // with no error anywhere (64,326 truncated responses/24h, 87% of all door
   // fires on the box). See ProjectedTool.skipResultDoor.
-  skipResultDoor: true,
+  // WI-37843: the reason is load-bearing, not decorative — it is what keeps the
+  // store-identity-suspect PROSE off this body too, so the hook's `json.loads`
+  // stays valid. Behavior is unchanged from the former `true`.
+  skipResultDoor: 'programmatic-caller',
   agentRoles: [...SU_ROLES],
   args: z.object({
     /** The reporting worker's coordination identity (PAPERCUSP_SID). */

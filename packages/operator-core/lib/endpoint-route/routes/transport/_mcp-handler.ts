@@ -2264,6 +2264,10 @@ const handler = createMcpHandler(
               // door-truncated body plus its prose footer is invalid JSON, so
               // such a caller's parse throws and fails open SILENTLY, dropping
               // the call's payload with no error anywhere.
+              // WI-37843: the opt-out now carries its REASON, because a
+              // MODEL-FACING tool can also be oversize by design (coord:orient,
+              // the session bootstrap). Both skip the door; only the
+              // programmatic one must also be spared appended prose (below).
               const doored = projected.skipResultDoor
                 ? projectedResult
                 : applyResultDoor(
@@ -2292,10 +2296,18 @@ const handler = createMcpHandler(
               // suspect a problem to call. Applied HERE because this is where every
               // model-facing tool result converges, so it covers all ~60 not_found-emitting
               // agent-tools and every future one with a single edit. Hot-path cost in the
-              // healthy case is one module-level null check. `!skipResultDoor` keeps a
+              // healthy case is one module-level null check. Suppressing the PROSE keeps a
               // programmatic caller's body parseable (EI-19386201256023240) while still
               // stamping the machine-readable `_meta` marker.
-              const result = annotateStoreIdentitySuspectResult(doored, !projected.skipResultDoor);
+              // WI-37843: gate that on the REASON, not on the mere fact of skipping the
+              // door. `'oversize-by-design'` is a MODEL-FACING exemption — orient's reader
+              // is an agent, and "this not_found may be from the WRONG database" is exactly
+              // the warning a bootstrap read must not lose. Only `'programmatic-caller'`
+              // needs a byte-clean body.
+              const result = annotateStoreIdentitySuspectResult(
+                doored,
+                projected.skipResultDoor !== 'programmatic-caller',
+              );
               // EI-19389431406847252: the door spills to scratch but the telemetry
               // row for THIS call was already snapshotted+queued inside
               // runDispatchStack's `finally`, which runs BEFORE this point — so the
