@@ -57,15 +57,38 @@ export const GOAL_HEADCOUNT_STALE_MS = 10 * 60_000;
  */
 export const GOAL_HEADCOUNT_BOOT_GRACE_MS = 10 * 60_000;
 
+/**
+ * The closed sets a launch profile may name, as CONSTANTS the schema is then
+ * built from — not as literals inside `z.enum(...)`.
+ *
+ * The editor (P-005) has to offer exactly the values this schema accepts, and a
+ * hand-spelled option list in the UI is the drift D-011 is about: the panel and
+ * the validator would be two declarations of one set, and the panel's copy would
+ * fall behind silently — offering a value the write refuses, or hiding one it
+ * accepts. Exporting the arrays lets the read path SHIP them (goals.detail's
+ * `launchSettingsOptions`), so the editor renders what the validator enforces by
+ * construction rather than by someone remembering to update both.
+ */
+export const LAUNCH_PROFILE_AGENTS = ['claude', 'codex', 'omp'] as const;
+export const LAUNCH_PROFILE_CARRY = ['warm', 'cold'] as const;
+export const LAUNCH_PROFILE_CONTEXT_SIZES = ['full', 'trimmed'] as const;
+
+/** The option lists an editor must render, in one payload-shaped object. */
+export const LAUNCH_PROFILE_OPTIONS = {
+  agent: LAUNCH_PROFILE_AGENTS,
+  carry: LAUNCH_PROFILE_CARRY,
+  contextSize: LAUNCH_PROFILE_CONTEXT_SIZES,
+} as const;
+
 /** The launch knobs a goal can pin, per role or as its across-the-board default. */
 export const launchProfileSchema = z
   .object({
-    agent: z.enum(['claude', 'codex', 'omp']).optional(),
+    agent: z.enum(LAUNCH_PROFILE_AGENTS).optional(),
     model: z.string().min(1).max(120).optional(),
     effort: z.string().min(1).max(40).optional(),
     account: z.string().min(1).max(120).optional(),
-    carry: z.enum(['warm', 'cold']).optional(),
-    contextSize: z.enum(['full', 'trimmed']).optional(),
+    carry: z.enum(LAUNCH_PROFILE_CARRY).optional(),
+    contextSize: z.enum(LAUNCH_PROFILE_CONTEXT_SIZES).optional(),
   })
   .strict();
 
@@ -134,6 +157,33 @@ export interface GoalLaunchResolution {
 }
 
 /**
+ * Validate one stored `launch_settings` value, however it was fetched.
+ *
+ * Split out from the reader below because there are two legitimate ways to hold
+ * that value — this module SELECTs it, and goals.detail already has it on a row
+ * it selected for other reasons (P-005) — and only one of them should own what
+ * "valid" means. A second `safeParse` at the other call site would be a second
+ * place for the definition to move.
+ *
+ * `null` in, `null` out and NO error: "none declared" is the common case and the
+ * correct launch default, not a fault.
+ */
+export function parseGoalLaunchSettings(
+  raw: unknown,
+  label = 'launch_settings',
+): { settings: GoalLaunchSettings | null; error: string | null } {
+  if (raw == null) return { settings: null, error: null };
+  try {
+    const parsed = goalLaunchSettingsSchema.safeParse(typeof raw === 'string' ? JSON.parse(raw) : raw);
+    if (!parsed.success) return { settings: null, error: `${label} is invalid: ${parsed.error.message}` };
+    return { settings: parsed.data, error: null };
+  } catch (e) {
+    // A string that is not JSON at all lands here rather than in safeParse.
+    return { settings: null, error: `${label} is unreadable: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/**
  * Read + validate one goal's launch settings. Returns null for "none declared"
  * (the common case, and the correct default), and reports invalid stored JSON as
  * an error rather than silently treating a malformed document as absent — a
@@ -149,13 +199,10 @@ export async function readGoalLaunchSettings(
     const rows = await pg(sql)`
       SELECT launch_settings FROM harness_shared.goals WHERE id = ${goalId} LIMIT 1`;
     if (!rows.length) return { settings: null, error: null };
-    const raw = (rows[0] as { launch_settings?: unknown }).launch_settings;
-    if (raw == null) return { settings: null, error: null };
-    const parsed = goalLaunchSettingsSchema.safeParse(typeof raw === 'string' ? JSON.parse(raw) : raw);
-    if (!parsed.success) {
-      return { settings: null, error: `goal ${goalId} launch_settings is invalid: ${parsed.error.message}` };
-    }
-    return { settings: parsed.data, error: null };
+    return parseGoalLaunchSettings(
+      (rows[0] as { launch_settings?: unknown }).launch_settings,
+      `goal ${goalId} launch_settings`,
+    );
   } catch (e) {
     return { settings: null, error: e instanceof Error ? e.message : String(e) };
   }

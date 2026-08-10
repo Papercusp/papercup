@@ -341,6 +341,10 @@ export async function resolveGoalDetail(args: {
   activityLimit?: number;
 }): Promise<unknown> {
   const { getOrgPg } = await import('@papercusp/db-org');
+  // Dynamic like its neighbour above, and for the same reason: this module is
+  // imported by callers that must not pay for the store's server dependencies at
+  // module load. The TYPE it validates into is imported statically (erased).
+  const { parseGoalLaunchSettings, LAUNCH_PROFILE_OPTIONS } = await import('../goal-launch-settings');
   const { sql } = getOrgPg();
   const { workspaceId, goalId, activityLimit = 40 } = args;
   // Same cut as resolveGoalsList — see the note there.
@@ -351,7 +355,7 @@ export async function resolveGoalDetail(args: {
 
     const [goalRow] = (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
-             g.budget_cents, g.metadata, g.created_at, g.updated_at,
+             g.budget_cents, g.metadata, g.launch_settings, g.created_at, g.updated_at,
              0 AS pot_count, 0 AS open_work_items, 0 AS needs_human,
              0 AS spend_usd, 0 AS spend_recent_usd
         FROM harness_shared.goals g
@@ -560,8 +564,34 @@ export async function resolveGoalDetail(args: {
         `) as unknown as Array<{ id: string; title: string | null }>)
       : [];
 
+    /* PER-GOAL LAUNCH SETTINGS (P-005), read through the SAME schema that
+       validates the write (P-004 / D-009). Parsed here rather than handed over
+       raw so the panel renders a document the launch resolver would actually
+       honour — a raw blob would let the editor show, and re-save, a shape the
+       ceiling code rejects.
+
+       AN INVALID DOCUMENT IS REPORTED, NOT SWALLOWED. `readGoalLaunchSettings`
+       makes the same call for the same reason: a settings blob that fails to
+       parse means the owner's ceiling is NOT IN FORCE, and rendering that as
+       "no settings" would show an unlimited goal as deliberately unlimited.
+       The panel says so instead. */
+    const { settings: launchSettings, error: launchSettingsInvalid } = parseGoalLaunchSettings(
+      (goalRow as unknown as { launch_settings?: unknown }).launch_settings,
+      `goal ${goalId} launch settings`,
+    );
+
     return {
       goal,
+      /** Null = none declared, which is the launch default (no ceiling, no pinned
+       *  profile) and NOT an error. */
+      launchSettings,
+      /** Non-null when the stored document could not be read — the ceilings are
+       *  therefore NOT being enforced, which the panel must say out loud. */
+      launchSettingsInvalid,
+      /** The closed sets the editor may offer, from the schema's own constants
+       *  (D-011): shipped rather than re-spelled client-side so the form cannot
+       *  drift from the validator. */
+      launchSettingsOptions: LAUNCH_PROFILE_OPTIONS,
       /** Present and empty when this goal has none — never absent, so the panel
        *  can tell "no subdirectives" from "this payload predates P-017". */
       subGoals: childRows.map((c) => ({
