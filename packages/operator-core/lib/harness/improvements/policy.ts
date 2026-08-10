@@ -234,6 +234,16 @@ export const DEFAULT_RISK_TIER_POLICY: RiskTierPolicy = {
     'git-sync',
     'operator-core safety',
     'auth',
+    // EI-19485505354981364: the auth FAMILY is listed explicitly because keyword matching is
+    // word-anchored (see mentionsProtectedKeyword). Under the old substring test these were all
+    // covered incidentally by 'auth'; naming them keeps every genuine hit gated while 'auth'
+    // itself stops matching 'author'/'authoritative'/'authority'. NOT a widening — it restores
+    // exactly the true positives the narrowing would otherwise drop.
+    'oauth',
+    'authentication',
+    'authorization',
+    'authn',
+    'authz',
     'credential',
     'rls',
     'security',
@@ -246,6 +256,52 @@ export const DEFAULT_RISK_TIER_POLICY: RiskTierPolicy = {
     'double-allocate',
   ],
 };
+
+/**
+ * Does `hayLower` mention `keyword` as a WORD, rather than as an arbitrary substring?
+ *
+ * EI-19485505354981364. This used to be a bare `hay.includes(keyword)`, which is a silent,
+ * high-blast-radius bug: a keyword hit writes `payload.needsHuman = true`, and that is claim
+ * floor #6 — the row becomes INVISIBLE to scheduler:get_next and self-select. It does not fail
+ * loudly; the item simply never appears in anyone's queue. So every false positive is a work-item
+ * quietly removed from the backlog.
+ *
+ * MEASURED on papercusp-workspace 2026-08-10, before this fix: 351 items keyword-gated, of which
+ * `auth` alone accounted for 109 — and only 13 of those 109 mention `auth` as a word. The other 96
+ * were `author`, `authoritative`, `authority`, `authored`, `author_pubkey`, `cueAuthority`. `rls`
+ * matched `urls` and `urlsearchparams`. One casualty was a severity=critical item hidden 18 days.
+ *
+ * WHY NOT A PLAIN \b...\b ANCHOR (what the item proposed): it would fix `auth` and simultaneously
+ * BREAK the keywords that were working — `deploy` would stop matching `deployment`/`deployed` and
+ * `migration` would stop matching `migrations`, turning a false-positive bug into false NEGATIVES
+ * on a safety gate. So the keyword may carry a conservative inflection: a small prefix set and a
+ * small suffix set, chosen so that no auth false positive comes back (`or`/`ority`/`oritative` are
+ * deliberately NOT suffixes).
+ *
+ * Validated against the live corpus rather than by inspection — per-keyword, gated-before →
+ * gated-after: git-sync 126→126, migration 32→32, release gate 7→7, credential 4→4, security 3→3,
+ * release-gate 2→2 (every correctly-working keyword preserved exactly), deploy 65→64 (the one loss
+ * is the concatenated identifier `deployinprogress` in a TS type-error item), rls 3→1 (both losses
+ * are `urls`), auth 109→13. The narrowing lands only where the bug was.
+ */
+const KEYWORD_INFLECTION_PREFIXES = '(?:un|re|non|de)?';
+const KEYWORD_INFLECTION_SUFFIXES = '(?:s|es|ed|d|ing|ment|ments|ion|ions|able|ables)?';
+const protectedKeywordRegexCache = new Map<string, RegExp>();
+
+export function mentionsProtectedKeyword(hayLower: string, keyword: string): boolean {
+  const lower = keyword.toLowerCase();
+  let re = protectedKeywordRegexCache.get(lower);
+  if (!re) {
+    // Escape first: `protectedKeywordAdditions` is caller-supplied (improvements:set-auto-policy),
+    // so an unescaped metachar would either throw at construction or silently widen the gate.
+    const escaped = lower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(
+      `(^|[^a-z0-9])${KEYWORD_INFLECTION_PREFIXES}${escaped}${KEYWORD_INFLECTION_SUFFIXES}([^a-z0-9]|$)`,
+    );
+    protectedKeywordRegexCache.set(lower, re);
+  }
+  return re.test(hayLower);
+}
 
 export interface TierDecision {
   tier: Tier;
@@ -479,7 +535,10 @@ export function classifyImprovement(
     }
 
     const hay = `${c.title} ${c.body ?? ''}`.toLowerCase();
-    const kw = policy.protectedKeywords.find((k) => hay.includes(k.toLowerCase()));
+    // EI-19485505354981364: WORD-anchored, not `hay.includes(k)` — a substring test gated 96 items
+    // on the word "author"/"authoritative" alone, and a keyword hit silently removes the row from
+    // every claim queue (needsHuman is claim floor #6). See mentionsProtectedKeyword.
+    const kw = policy.protectedKeywords.find((k) => mentionsProtectedKeyword(hay, k));
     if (kw) {
       reasons.push(`mentions protected keyword "${kw}" → human (the deploy gate is the real backstop)`);
       return { tier: 'human', reasons, protectedHit: kw };

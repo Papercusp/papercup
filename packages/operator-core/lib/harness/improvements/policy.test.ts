@@ -86,6 +86,74 @@ describe('classifyImprovement — protected keywords (pre-paths proxy)', () => {
   });
 });
 
+describe('classifyImprovement — keyword match is WORD-anchored, not substring (EI-19485505354981364)', () => {
+  // The gate was `hay.includes(kw)`. A hit sets payload.needsHuman, which is claim floor #6 —
+  // the item goes INVISIBLE to every queue rather than failing loudly. Measured on
+  // papercusp-workspace 2026-08-10: 109 items gated on "auth", only 13 of which say "auth";
+  // the other 96 said "author"/"authoritative"/"authority". One was a critical hidden 18 days.
+  //
+  // BOTH halves are required. Without the negative cases the bug is back; without the positive
+  // cases a narrowing could silently disarm the safety gate entirely — which is the worse
+  // failure, since these keywords are the pre-paths proxy for the TCB surfaces.
+
+  const tierFor = (title: string, body?: string) =>
+    classifyImprovement(cand({ id: 'kw', kind: 'bug', title, body }));
+
+  const falsePositives: [string, string][] = [
+    ['authoritative', 'the most authoritative thing in the tree is wrong'],
+    ['author', 'so the next author does not reach for it'],
+    ['authority', 'completionAuthority is not set on the row'],
+    ['authored', 'the remote-authored row cannot be completed here'],
+    ['author_pubkey', 'unbounded read of author_pubkey in the event log'],
+    ['cueAuthority', 'coord:send stamps cueAuthority.scope=fleet-members'],
+    ['urls (vs the `rls` keyword)', 'the plan claims P-002 raises loud urls in the store'],
+    ['urlsearchparams (vs `rls`)', 'empty --client value breaks urlsearchparams parsing'],
+  ];
+  it.each(falsePositives)('%s does NOT trip the gate', (_label, text) => {
+    expect(tierFor(text).tier).toBe('auto');
+  });
+
+  const truePositives: [string, string][] = [
+    ['auth as a bare word', 'the auth perimeter rejects the token'],
+    ['auth with punctuation', 'papercusp_auth: the gym fixture cannot log in'],
+    ['oauth', 'the oauth attestation fails after peer_connect'],
+    ['authentication', 'authentication regressed for federated peers'],
+    ['authorization', 'authorization header is dropped by the proxy'],
+    ['security', 'a security hole in the capability envelope'],
+    ['credential', 'the credential rotates before the refresh lands'],
+    ['rls as a bare word', 'rls policies are missing on the new table'],
+  ];
+  it.each(truePositives)('%s DOES trip the gate', (_label, text) => {
+    expect(tierFor(text).tier).toBe('human');
+  });
+
+  // The reason a bare \b...\b anchor (the originally-proposed fix) is NOT what landed: it would
+  // have stopped these from matching, converting a false-positive bug into false NEGATIVES on
+  // the safety gate. Measured: `deploy` covers 65 gated items, `migration` 32.
+  const inflections: [string, string][] = [
+    ['deployment', 'the deployment step leaves the release inconsistent'],
+    ['deployed', 'nothing was deployed after the green checkpoint'],
+    ['undeployed', 'fleet:capacity miscounts undeployed members'],
+    ['redeploy', 'we redeploy on every red gate'],
+    ['migrations', 'two migrations race for the same number'],
+    ['deploys', 'the routine deploys the wrong sha'],
+  ];
+  it.each(inflections)('%s still trips the gate (no false negatives)', (_label, text) => {
+    expect(tierFor(text).tier).toBe('human');
+  });
+
+  it('a caller-supplied keyword containing regex metacharacters is escaped, not executed', () => {
+    // protectedKeywordAdditions is caller-supplied via improvements:set-auto-policy — an
+    // unescaped metachar would either throw at RegExp construction or silently widen the gate.
+    const policy = { ...DEFAULT_RISK_TIER_POLICY, protectedKeywords: ['c++ (unsafe)'] };
+    expect(() => classifyImprovement(cand({ id: 'rx', kind: 'bug', title: 'anything' }), policy)).not.toThrow();
+    expect(classifyImprovement(cand({ id: 'rx1', kind: 'bug', title: 'uses c++ (unsafe) casts' }), policy).tier)
+      .toBe('human');
+    expect(classifyImprovement(cand({ id: 'rx2', kind: 'bug', title: 'cxx unsafe casts' }), policy).tier)
+      .toBe('auto');
+  });
+});
+
 describe('classifyImprovement — OWNER FULL-AUTONOMY grant lifts the protected-path/keyword TCB (Phase 2)', () => {
   const ON = { ownerFullAutonomy: true };
   // A bug touching the deploy gate / flags / capability dispatch / migrations / the
