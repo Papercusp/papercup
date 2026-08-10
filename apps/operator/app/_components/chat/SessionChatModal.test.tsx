@@ -1929,6 +1929,91 @@ describe('SessionChatModal', () => {
       expect(screen.queryByText(FAILED)).toBeNull();
     });
 
+    // ── WI-37841: say WHY it failed ──────────────────────────────────────────
+    // `launchFailed` is derived (ended, never registered), so it can only ever
+    // produce a fixed string. That string has cost two full forensic sessions
+    // for two DIFFERENT root causes — psu printed the reason both times, into a
+    // window nobody could read afterwards. The reason now rides the roster.
+    it('shows psu\'s own words when the server captured them', async () => {
+      seedTiers({
+        starting: [
+          {
+            ownerId: 'su-new-1',
+            startedAt: new Date().toISOString(),
+            launchFailed: true,
+            launchFailureHint: 'psu: operator at http://127.0.0.1:9 unreachable — exiting',
+          },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-launch-failure-hint')).toBeTruthy());
+      expect(screen.getByTestId('session-chat-launch-failure-hint').textContent).toContain(
+        'operator at http://127.0.0.1:9 unreachable',
+      );
+      // The headline still leads — the cause is detail BELOW it, not a replacement.
+      expect(screen.getByText(OBSERVED_FAILED)).toBeTruthy();
+    });
+
+    it('drops "Try launching it again" once a cause is on screen', async () => {
+      // The retry advice is actively harmful when the failure is deterministic:
+      // it sends the owner to re-run a launch that will fail identically every
+      // time, which is exactly what happened on both prior investigations.
+      seedTiers({
+        starting: [
+          {
+            ownerId: 'su-new-1',
+            startedAt: new Date().toISOString(),
+            launchFailed: true,
+            launchFailureHint: 'psu: refusing to boot',
+          },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-launch-failure-hint')).toBeTruthy());
+      expect(screen.queryByText(/Try launching it again/)).toBeNull();
+    });
+
+    it('KEEPS the retry advice when no cause was captured (non-vacuity)', async () => {
+      // Without this, the test above would pass against a build that had simply
+      // deleted the retry sentence outright.
+      seedTiers({
+        starting: [
+          { ownerId: 'su-new-1', startedAt: new Date().toISOString(), launchFailed: true },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByText(OBSERVED_FAILED)).toBeTruthy());
+      expect(screen.getByText(/Try launching it again/)).toBeTruthy();
+      expect(screen.queryByTestId('session-chat-launch-failure-hint')).toBeNull();
+    });
+
+    it('never shows a cause for a launch that has NOT failed', async () => {
+      // A hint on a still-booting session would turn ordinary boot chatter into
+      // a failure report — the fabricated-diagnosis failure mode this whole
+      // area exists to avoid.
+      seedTiers({
+        starting: [
+          {
+            ownerId: 'su-new-1',
+            startedAt: new Date().toISOString(),
+            launchFailed: false,
+            launchFailureHint: 'psu: some routine boot chatter',
+          },
+        ],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-starting-up')).toBeTruthy());
+      expect(screen.queryByTestId('session-chat-launch-failure-hint')).toBeNull();
+    });
+
     it('tells the dossier rail too, so the rail beside the banner cannot contradict it', async () => {
       seedTiers({
         starting: [
