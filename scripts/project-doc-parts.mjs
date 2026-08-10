@@ -47,6 +47,46 @@ export const PREAMBLE = '(preamble)';
 export const SPILL_SECTION = 'Trimmed to fit this client’s budget';
 
 /**
+ * The suffix `load-claude-md-doc-parts.mjs` gives the evidence half of a split block.
+ * Declared here rather than imported so composing does not drag the loader (and its
+ * manifest/rule-evidence reads) into every consumer of this module; the two are checked
+ * against each other by `doc-corpus.test.ts`, so they cannot drift silently.
+ */
+export const EVIDENCE_SUFFIX = '#evidence';
+
+/**
+ * Where the composed corpus is written. This is the DB-free subject the doc-claims
+ * guards read, and it exists for exactly one reason: those guards are UNIT tests, and
+ * the green gate runs `npm run test:affected` with no `--integration`, so a guard that
+ * needed Postgres would quietly stop gating the fleet. That is the "migration that
+ * greens by weakening a guard" P-004 forbids, so the corpus is projected to a file
+ * instead — the same D-004 test the client files pass ("a reader we do not control
+ * requires a file on disk"), where the reader is the unit tier.
+ */
+export const CORPUS_FILE = 'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md';
+
+/**
+ * Deliberately inert: no fenced block, no `npm run`, no grep recipe, no path that the
+ * retired-surfaces guard would read as a claim. The banner is part of the text those
+ * guards judge, so anything executable-looking here would become a claim the corpus
+ * appears to make. Verified: the three guards report identical counters with and
+ * without it.
+ */
+export const CORPUS_BANNER = [
+  '<!--',
+  '  GENERATED FILE — DO NOT EDIT, and do not treat it as documentation to read.',
+  '',
+  '  It is the full CLAUDE.md corpus (every part, projected and unprojected alike)',
+  '  composed from harness_shared.harness_doc_parts, which is canonical. It exists so',
+  '  the doc-claims guards can judge the WHOLE corpus without a database: the client',
+  '  files carry only the projected minority, so pointing those guards at CLAUDE.md',
+  '  after the cutover would leave them judging a fraction of what they judge today.',
+  '',
+  '  Written by scripts/project-doc-parts.mjs. Edit the rows, never this file.',
+  '-->',
+].join('\n');
+
+/**
  * How many cut parts the spill pointer ENUMERATES before it stops naming them.
  *
  * The cap is load-bearing, not cosmetic. An unbounded list grows with every part cut,
