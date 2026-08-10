@@ -382,7 +382,39 @@ const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 //
 // Its Rust tests are NOT included and must not be: a separate cargo step already runs
 // them (`test:rust` -> scripts/report-cargo-tests.mjs). The gap was only the JS/shell side.
-const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop'];
+//
+// `libs/generic/sse` is the SECOND case, and it arrived here for a DIFFERENT reason than
+// papercusp-desktop: not a deliberate exclusion, an OVERSIGHT. It is structurally identical
+// to its listed siblings (`libs/generic/search`, `/memory`, `/sync` — all git submodules, no
+// private lockfile, same layout) and simply never got added to `root.workspaces`, so every
+// path under it mapped to NO workspace. MEASURED 2026-08-10 (EI-20027740706934564):
+//
+//   --changed-paths libs/generic/sse/src/index.ts  -> (nothing)  EXIT=0   ZERO workspaces
+//   --changed-paths libs/generic/search/src/hybrid.ts -> @papercusp/search, @papercusp/web,
+//                                                        @papercusp/operator-core, @papercusp/agent-mcp
+//
+// Cost of that hole, both directions: sse's own 18 test files / 183 tests never ran in the
+// gate (greenCmd is `npm run test:affected`), AND none of the SEVEN packages that already
+// DECLARE @papercusp/sse ran either — apps/operator + agent-mcp (`file:../../libs/generic/sse`),
+// flags, agent-chat, tooldef-http, sync, desktop-ipc (`"*"`). Note the declarations were never
+// the problem: the reverse-dep walk could not use them because the changed path never resolved
+// to the package in the first place. This is the SSE transport — `HarnessSyncProvider` passes a
+// literal syncType="SSE" with no runtime branch — i.e. the shipping desktop product's sync path.
+// Latent rather than constantly-breaking for the same reason the `scripts/` hole was: git-sync
+// sweeps the whole tree, so an sse change is nearly always co-committed with paths that DO
+// select something. Invisible until the one sweep where it isn't.
+//
+// ⚠ Joined HERE rather than added to `root.workspaces` for a MEASURED reason, not a stylistic
+// one: `package-lock.json` carries its OWN copy of the workspaces array (84 entries, exactly
+// matching root package.json), and CI runs `npm ci` strict. Listing sse there without
+// regenerating the lockfile breaks `npm ci`; regenerating it means a full `install:safe` that
+// rewrites node_modules/.bin under every concurrent agent's in-flight test run. Normalizing it
+// into a real workspace is the cleaner end-state and should be done in a quiet window — the
+// lockfile already records it as `{"resolved":"libs/generic/sse","link":true}`, identical in
+// shape to a listed sibling, so that change is small; it is the TIMING that makes it costly.
+// Its `test` script was added in the same change (siblings all use the same `vitest run`);
+// scripts are not recorded in lockfile package entries, so that half is lockfile-inert.
+const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop', 'libs/generic/sse'];
 
 // EI-19346163916263067 — NON-WORKSPACE SOURCE DIRECTORIES.
 //

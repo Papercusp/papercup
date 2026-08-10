@@ -400,18 +400,27 @@ describe('bootstrap-role — WI-4608 context_size threading', () => {
     expect(json.contextSize).toBe('full'); // mock spec's resolved value, surfaced verbatim
   });
 
+  // P-013/D-022: this case's SUBJECT is context_size threading — the role is
+  // incidental fixture. It used to use `mug`, which the retirement gate now
+  // refuses (403) with the flag OFF, and the refusal happened BEFORE
+  // buildRoleLaunchSpec was called — leaving the `mockResolvedValueOnce` below
+  // UNCONSUMED, so it leaked into the next test that called the mock and failed
+  // it with a stray `sid: 'role-mug'` (EI-18788176839043286, exactly). Switched
+  // to a non-retired role so the case tests its own subject and no longer
+  // depends on the retired tier being launchable. Coverage that a mug CAN
+  // bootstrap with the flag ON lives in the D-022 SHOW control below.
   it('explicit context_size:"trimmed" is forwarded to buildRoleLaunchSpec and surfaced on the response', async () => {
     buildRoleLaunchSpecMock.mockResolvedValueOnce({
-      role: 'mug', runId: 'mug-1', spawnId: 'sp-mug', harnessSlug: 'papercup', featureId: null,
-      cwd: LC_DIR, promptText: 'MUG PROMPT', promptFile: '/h/prompts/mug.md',
-      mcpUrl: 'http://localhost:3070/api/mcp?role=mug&tools=a%2Cb&sig=x', mcpJsonContents: '{}',
-      sid: 'role-mug', nativeSessionId: 'nsid-mug',
-      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-mug'),
-      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-mug'),
+      role: 'scoper', runId: 'scoper-ctx-1', spawnId: 'sp-scoper', harnessSlug: 'papercup', featureId: null,
+      cwd: LC_DIR, promptText: 'SCOPER PROMPT', promptFile: '/h/prompts/scoper.md',
+      mcpUrl: 'http://localhost:3070/api/mcp?role=scoper&tools=a%2Cb&sig=x', mcpJsonContents: '{}',
+      sid: 'role-scoper', nativeSessionId: 'nsid-scoper',
+      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-scoper'),
+      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-scoper'),
       contextSize: 'trimmed',
     });
     roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'none' });
-    const res = await callPost({ role: 'mug', agent: 'claude', harness_slug: 'papercup', context_size: 'trimmed' });
+    const res = await callPost({ role: 'scoper', agent: 'claude', harness_slug: 'papercup', context_size: 'trimmed' });
     expect(res.status).toBe(200);
     expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ contextSize: 'trimmed' }));
     const json = await res.json();
@@ -539,7 +548,11 @@ describe('bootstrap-role — P-013/D-022 retired-tier gate (the psu --role conso
   it('flag ON + role=mug ⇒ NOT refused — the cutover escape hatch still works (SHOW control)', async () => {
     // Fails if the gate refuses unconditionally. The flag is `case: 'cutover'`;
     // reversibility is the point, so ON must still launch the tier.
+    // consumes:none — the suite's beforeEach defaults to feature:'required',
+    // which would 400 this launch for a reason unrelated to the gate and make
+    // the control pass for the wrong reason.
     mugKettleEnabledMock.mockResolvedValue(true);
+    roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'none' });
     const res = await callPost({ role: 'mug', agent: 'claude', harness_slug: 'papercup' });
     expect(res.status).toBe(200);
     expect(buildRoleLaunchSpecMock).toHaveBeenCalled();
