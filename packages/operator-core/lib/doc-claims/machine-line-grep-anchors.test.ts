@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { judgeMachineLineGrepAnchors, REQUIRED_ANCHOR } from './machine-line-grep-anchors';
+import { judgeMachineLineGrepAnchors, CANONICAL_ANCHOR } from './machine-line-grep-anchors';
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -31,11 +31,11 @@ describe('CLAUDE.md machine-line grep anchors', () => {
       expect(verdict.ok).toBe(false);
       expect(verdict.unanchoredSites).toHaveLength(1);
       expect(verdict.unanchoredSites[0]!.marker).toBe('GATE_HELD_BY');
-      expect(verdict.violations.join('\n')).toMatch(/anchor it as `GATE_HELD_BY count=`/);
+      expect(verdict.violations.join('\n')).toMatch(/e\.g\. `GATE_HELD_BY count=`/);
     });
 
     it('catches every other house marker in its bare form', () => {
-      for (const [marker, anchor] of Object.entries(REQUIRED_ANCHOR)) {
+      for (const [marker, anchor] of Object.entries(CANONICAL_ANCHOR)) {
         const verdict = judgeMachineLineGrepAnchors(
           pad(fence(`grep -o '${marker}.*' <log> | tail -1`)),
         );
@@ -78,6 +78,24 @@ describe('CLAUDE.md machine-line grep anchors', () => {
         pad(['```bash', '# GATE_HELD_BY count=1 truncated=false entries=["x"]', '```'].join('\n')),
       );
       expect(verdict.ok).toBe(true);
+    });
+
+    it('accepts a REAL line whose first field is not the canonical suggestion', () => {
+      // The bug this control exists to catch, found in the first version of this judge:
+      // the rule pinned ONE field per marker, derived from lines I happened to observe,
+      // and was wrong for TEST_FILE_RESULT — which really emits `requested=` first. A
+      // one-key rule flags a correct recipe AND sends agents to grep a string no log
+      // contains. The emitters legitimately vary their first field, so the rule is
+      // "some key=", never a specific key.
+      for (const cmd of [
+        "grep -o 'TEST_FILE_RESULT requested=.*' <log>", // the REAL shape
+        "grep -o 'TEST_FILE_RESULT status=.*' <log>",
+        "grep -o 'GATE_HELD_BY entries=.*' <log>",
+        "grep -o 'AFFECTED_TESTS_RESULT failed=.*' <log>",
+      ]) {
+        const verdict = judgeMachineLineGrepAnchors(pad(fence(cmd)));
+        expect(verdict.ok, `must accept: ${cmd}`).toBe(true);
+      }
     });
 
     it('accepts the anchored form, including a trailing comment', () => {

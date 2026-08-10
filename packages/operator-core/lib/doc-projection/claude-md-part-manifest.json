@@ -3,20 +3,20 @@
  "sourcePath": "CLAUDE.md",
  "docId": "claude-md",
  "contentMode": "composed",
- "snapshotSha256": "723bd35a1d38eb04b5fbe347cc3751785325336bb32306e4f74950a021941d62",
- "snapshotChars": 163602,
- "snapshotBytes": 165114,
- "snapshotLines": 2311,
+ "snapshotSha256": "5e90c6e830b3a4dbff49aece6a25f8f856d615d6b3e82f711304af10c3e092bf",
+ "snapshotChars": 165562,
+ "snapshotBytes": 167098,
+ "snapshotLines": 2334,
  "generatedBy": "scripts/gen-claude-md-manifest.mjs (P-014, claude-md-projection-from-pg-2026-08-10)",
  "summary": {
   "byKind": {
    "invariant": {
-    "parts": 102,
+    "parts": 101,
     "chars": 64941
    },
    "prose": {
-    "parts": 135,
-    "chars": 90133
+    "parts": 137,
+    "chars": 92091
    },
    "pointer": {
     "parts": 7,
@@ -28,7 +28,8 @@
    }
   },
   "projectedChars": 71477,
-  "totalParts": 252
+  "totalParts": 253,
+  "needsReview": 0
  },
  "parts": [
   {
@@ -375,33 +376,16 @@
    "targetSection": "Spawning: no unenrolled `detached` spawn, and never kill by name",
    "projectRank": 100,
    "expiring": false,
-   "blockSha": "2b8e9d6915de4bbd",
-   "chars": 88,
+   "blockSha": "77d68e26ec8e559e",
+   "chars": 436,
    "lineHint": [
     181,
-    181
-   ]
-  },
-  {
-   "partKey": "spawning-no-unenrolled-detac-live-desktop-window",
-   "ordinal": 22,
-   "kind": "invariant",
-   "clientScope": [
-    "all"
-   ],
-   "targetSection": "Spawning: no unenrolled `detached` spawn, and never kill by name",
-   "projectRank": 100,
-   "expiring": false,
-   "blockSha": "813a655611e8682a",
-   "chars": 348,
-   "lineHint": [
-    182,
     185
    ]
   },
   {
    "partKey": "spawning-no-unenrolled-detac-you-want-use-not",
-   "ordinal": 23,
+   "ordinal": 22,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -418,7 +402,7 @@
   },
   {
    "partKey": "spawning-no-unenrolled-detac-human-pane-admintas",
-   "ordinal": 24,
+   "ordinal": 23,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -435,7 +419,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-module-scoped-mutab",
-   "ordinal": 25,
+   "ordinal": 24,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -452,7 +436,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-use-pinmodulestate",
-   "ordinal": 26,
+   "ordinal": 25,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -469,7 +453,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-ts",
-   "ordinal": 27,
+   "ordinal": 26,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -486,7 +470,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-it-pins-to-globalth",
-   "ordinal": 28,
+   "ordinal": 27,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -503,7 +487,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-measured-ei-1945165",
-   "ordinal": 29,
+   "ordinal": 28,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -518,7 +502,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-listmoduleduplicati",
-   "ordinal": 30,
+   "ordinal": 29,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -533,7 +517,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-that-population-has",
-   "ordinal": 31,
+   "ordinal": 30,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -548,7 +532,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-1-the-commissioning",
-   "ordinal": 32,
+   "ordinal": 31,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -563,7 +547,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-a-proxy-measurement",
-   "ordinal": 33,
+   "ordinal": 32,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -578,7 +562,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-note-the-allow-list",
-   "ordinal": 34,
+   "ordinal": 33,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -593,7 +577,7 @@
   },
   {
    "partKey": "shared-lib-singletons-pin-th-fixing-the-detector",
-   "ordinal": 35,
+   "ordinal": 34,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -608,7 +592,7 @@
   },
   {
    "partKey": "deployment-model-desktop-is-shipping-target-the",
-   "ordinal": 36,
+   "ordinal": 35,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -625,7 +609,7 @@
   },
   {
    "partKey": "retired-preserved-not-active-some-code-is-retire",
-   "ordinal": 37,
+   "ordinal": 36,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -642,7 +626,7 @@
   },
   {
    "partKey": "retired-preserved-not-active-what-enforces-this",
-   "ordinal": 38,
+   "ordinal": 37,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -657,7 +641,7 @@
   },
   {
    "partKey": "retired-preserved-not-active-full-table-with-res",
-   "ordinal": 39,
+   "ordinal": 38,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -672,7 +656,7 @@
   },
   {
    "partKey": "borrowable-libraries-generic-domain-free-libs-li",
-   "ordinal": 40,
+   "ordinal": 39,
    "kind": "pointer",
    "clientScope": [
     "all"
@@ -689,7 +673,7 @@
   },
   {
    "partKey": "this-app-is-in-testing-there-there-is-no-product",
-   "ordinal": 41,
+   "ordinal": 40,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -706,7 +690,7 @@
   },
   {
    "partKey": "a-blocker-is-work-not-a-stop-hit-a-blocker-somet",
-   "ordinal": 42,
+   "ordinal": 41,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -723,7 +707,7 @@
   },
   {
    "partKey": "a-blocker-is-work-not-a-stop-interactive-human-p",
-   "ordinal": 43,
+   "ordinal": 42,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -740,7 +724,7 @@
   },
   {
    "partKey": "a-cross-lane-ruling-is-a-pla-any-agent-not-only",
-   "ordinal": 44,
+   "ordinal": 43,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -757,7 +741,7 @@
   },
   {
    "partKey": "a-cross-lane-ruling-is-a-pla-this-is-not-a-paper",
-   "ordinal": 45,
+   "ordinal": 44,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -774,7 +758,7 @@
   },
   {
    "partKey": "a-cross-lane-ruling-is-a-pla-two-mechanisms-make",
-   "ordinal": 46,
+   "ordinal": 45,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -789,7 +773,7 @@
   },
   {
    "partKey": "a-cross-lane-ruling-is-a-pla-at-claim-time-sched",
-   "ordinal": 47,
+   "ordinal": 46,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -804,7 +788,7 @@
   },
   {
    "partKey": "branch-discipline-the-shared-the-canonical-share",
-   "ordinal": 48,
+   "ordinal": 47,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -821,7 +805,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-a-background-git-sy",
-   "ordinal": 49,
+   "ordinal": 48,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -838,7 +822,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-checking-whether-yo",
-   "ordinal": 50,
+   "ordinal": 49,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -853,7 +837,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-superproject-ha",
-   "ordinal": 51,
+   "ordinal": 50,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -868,7 +852,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-git-blame-on-this-r",
-   "ordinal": 52,
+   "ordinal": 51,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -885,7 +869,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-never-run-a-tree-wi",
-   "ordinal": 53,
+   "ordinal": 52,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -902,7 +886,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-never-sit-in-a-wait",
-   "ordinal": 54,
+   "ordinal": 53,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -919,7 +903,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-is-my-change-live-a",
-   "ordinal": 55,
+   "ordinal": 54,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -936,7 +920,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-you-want-to-know-re",
-   "ordinal": 56,
+   "ordinal": 55,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -953,7 +937,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-nextaction-null-is",
-   "ordinal": 57,
+   "ordinal": 56,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -970,7 +954,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-about-to-act-on-one",
-   "ordinal": 58,
+   "ordinal": 57,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -987,7 +971,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-you-do-not-have-to",
-   "ordinal": 59,
+   "ordinal": 58,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1004,7 +988,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-handle-is-alrea",
-   "ordinal": 60,
+   "ordinal": 59,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1021,7 +1005,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-block-is-derive",
-   "ordinal": 61,
+   "ordinal": 60,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1038,7 +1022,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-two-specifics-worth",
-   "ordinal": 62,
+   "ordinal": 61,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1055,7 +1039,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-is-the-gate-red-abo",
-   "ordinal": 63,
+   "ordinal": 62,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1072,7 +1056,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-it-does-answer-whic",
-   "ordinal": 64,
+   "ordinal": 63,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1089,7 +1073,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-this-passage-assert",
-   "ordinal": 65,
+   "ordinal": 64,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1104,7 +1088,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-transferable-le",
-   "ordinal": 66,
+   "ordinal": 65,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1119,7 +1103,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-judgingcontainspath",
-   "ordinal": 67,
+   "ordinal": 66,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1134,7 +1118,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-premise-under-e",
-   "ordinal": 68,
+   "ordinal": 67,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1151,7 +1135,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-green-checkpointts3",
-   "ordinal": 69,
+   "ordinal": 68,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1168,7 +1152,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-get-this-wrong-and",
-   "ordinal": 70,
+   "ordinal": 69,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1185,7 +1169,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-this-section-docume",
-   "ordinal": 71,
+   "ordinal": 70,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1202,7 +1186,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-step-0-first-establ",
-   "ordinal": 72,
+   "ordinal": 71,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -1219,7 +1203,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-one-call-answers-st",
-   "ordinal": 73,
+   "ordinal": 72,
    "kind": "recipe",
    "clientScope": [
     "all"
@@ -1236,7 +1220,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o",
-   "ordinal": 74,
+   "ordinal": 73,
    "kind": "recipe",
    "clientScope": [
     "all"
@@ -1253,7 +1237,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-it-returns-the-judg",
-   "ordinal": 75,
+   "ordinal": 74,
    "kind": "recipe",
    "clientScope": [
     "all"
@@ -1270,7 +1254,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-candidate-field",
-   "ordinal": 76,
+   "ordinal": 75,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1285,7 +1269,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-that-drift-is-a-fea",
-   "ordinal": 77,
+   "ordinal": 76,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1300,7 +1284,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-do-not-settle-this",
-   "ordinal": 78,
+   "ordinal": 77,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1315,7 +1299,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-that-check-was-sedu",
-   "ordinal": 79,
+   "ordinal": 78,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1330,7 +1314,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-do-not-try-to-settl",
-   "ordinal": 80,
+   "ordinal": 79,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1345,7 +1329,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-on-that-same-held-e",
-   "ordinal": 81,
+   "ordinal": 80,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1360,7 +1344,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-started-at-elapsed",
-   "ordinal": 82,
+   "ordinal": 81,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1375,7 +1359,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-only-primary-ob",
-   "ordinal": 83,
+   "ordinal": 82,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1390,7 +1374,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-fallback-the-routin",
-   "ordinal": 84,
+   "ordinal": 83,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1405,7 +1389,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-sql",
-   "ordinal": 85,
+   "ordinal": 84,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1420,7 +1404,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-two-keys-answer",
-   "ordinal": 86,
+   "ordinal": 85,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1435,7 +1419,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-inflightretriage-no",
-   "ordinal": 87,
+   "ordinal": 86,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1450,7 +1434,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-scope-both-install",
-   "ordinal": 88,
+   "ordinal": 87,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1465,7 +1449,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-tmppapercup-gre",
-   "ordinal": 89,
+   "ordinal": 88,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1480,7 +1464,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-for-a-manual-run-th",
-   "ordinal": 90,
+   "ordinal": 89,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1495,7 +1479,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-bash",
-   "ordinal": 91,
+   "ordinal": 90,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1510,7 +1494,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-do-not-collapse-tha",
-   "ordinal": 92,
+   "ordinal": 91,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1525,7 +1509,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-measured-2026-08-02",
-   "ordinal": 93,
+   "ordinal": 92,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1540,7 +1524,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-do-not-take-the-fir",
-   "ordinal": 94,
+   "ordinal": 93,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1555,7 +1539,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-two-traps-specific",
-   "ordinal": 95,
+   "ordinal": 94,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1570,7 +1554,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-then-and-only-then",
-   "ordinal": 96,
+   "ordinal": 95,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1585,7 +1569,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-bash-2",
-   "ordinal": 97,
+   "ordinal": 96,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1600,7 +1584,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-blob-line-compa",
-   "ordinal": 98,
+   "ordinal": 97,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1615,7 +1599,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-it-is-asymmetric-re",
-   "ordinal": 99,
+   "ordinal": 98,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1630,7 +1614,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-blob-identical-defi",
-   "ordinal": 100,
+   "ordinal": 99,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1645,7 +1629,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-treating-inconclusi",
-   "ordinal": 101,
+   "ordinal": 100,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1660,7 +1644,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-blob-identity-answe",
-   "ordinal": 102,
+   "ordinal": 101,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1675,7 +1659,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-measured-2026-08-03",
-   "ordinal": 103,
+   "ordinal": 102,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1690,7 +1674,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-tail-1-not-1-s-list",
-   "ordinal": 104,
+   "ordinal": 103,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1705,7 +1689,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-verified-in-this-re",
-   "ordinal": 105,
+   "ordinal": 104,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1720,7 +1704,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-2",
-   "ordinal": 106,
+   "ordinal": 105,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1735,7 +1719,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-s-is-blind-to-a-cha",
-   "ordinal": 107,
+   "ordinal": 106,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1750,7 +1734,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-recipe-above-is",
-   "ordinal": 108,
+   "ordinal": 107,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1765,7 +1749,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-verified-in-this-re-2",
-   "ordinal": 109,
+   "ordinal": 108,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1780,7 +1764,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-3",
-   "ordinal": 110,
+   "ordinal": 109,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1795,7 +1779,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-cost-when-it-fired",
-   "ordinal": 111,
+   "ordinal": 110,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1810,7 +1794,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-no-string-unique-to",
-   "ordinal": 112,
+   "ordinal": 111,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1825,7 +1809,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-this-corrects-two-c",
-   "ordinal": 113,
+   "ordinal": 112,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1840,7 +1824,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-is-ancestor-has-not",
-   "ordinal": 114,
+   "ordinal": 113,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1855,7 +1839,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-marker-is-still-use",
-   "ordinal": 115,
+   "ordinal": 114,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1870,7 +1854,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-callereditsincandid",
-   "ordinal": 116,
+   "ordinal": 115,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1885,7 +1869,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-reason-newer-commit",
-   "ordinal": 117,
+   "ordinal": 116,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1900,7 +1884,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-a-runs-judged-candi",
-   "ordinal": 118,
+   "ordinal": 117,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1915,7 +1899,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-this-single-unstate",
-   "ordinal": 119,
+   "ordinal": 118,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1930,7 +1914,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-authoritative-r",
-   "ordinal": 120,
+   "ordinal": 119,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1945,7 +1929,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-sql-2",
-   "ordinal": 121,
+   "ordinal": 120,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1960,7 +1944,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-null-means-no-refir",
-   "ordinal": 122,
+   "ordinal": 121,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1975,7 +1959,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-persisted-log-n",
-   "ordinal": 123,
+   "ordinal": 122,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -1990,7 +1974,7 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-green-in-that-heade",
-   "ordinal": 124,
+   "ordinal": 123,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2005,17 +1989,32 @@
   },
   {
    "partKey": "commit-discipline-git-sync-o-bash-3",
+   "ordinal": 124,
+   "kind": "prose",
+   "clientScope": [],
+   "targetSection": null,
+   "projectRank": 1000,
+   "expiring": false,
+   "blockSha": "cbe4038edb3767ae",
+   "chars": 149,
+   "lineHint": [
+    1062,
+    1065
+   ]
+  },
+  {
+   "partKey": "commit-discipline-git-sync-o-the-candidate-ancho",
    "ordinal": 125,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
    "projectRank": 1000,
    "expiring": false,
-   "blockSha": "041b83a758cea201",
-   "chars": 138,
+   "blockSha": "213721f3ce9a76cf",
+   "chars": 435,
    "lineHint": [
-    1062,
-    1065
+    1067,
+    1071
    ]
   },
   {
@@ -2029,8 +2028,8 @@
    "blockSha": "e2cd0743682078de",
    "chars": 577,
    "lineHint": [
-    1067,
-    1072
+    1073,
+    1078
    ]
   },
   {
@@ -2044,8 +2043,8 @@
    "blockSha": "f687b7b41747698f",
    "chars": 431,
    "lineHint": [
-    1074,
-    1078
+    1080,
+    1084
    ]
   },
   {
@@ -2059,8 +2058,8 @@
    "blockSha": "ced537e7901e72f0",
    "chars": 338,
    "lineHint": [
-    1080,
-    1083
+    1086,
+    1089
    ]
   },
   {
@@ -2074,8 +2073,8 @@
    "blockSha": "af02d9e8c7d628df",
    "chars": 354,
    "lineHint": [
-    1085,
-    1088
+    1091,
+    1094
    ]
   },
   {
@@ -2089,8 +2088,8 @@
    "blockSha": "7a5a6df28fee06bb",
    "chars": 94,
    "lineHint": [
-    1090,
-    1090
+    1096,
+    1096
    ]
   },
   {
@@ -2101,11 +2100,11 @@
    "targetSection": null,
    "projectRank": 1000,
    "expiring": false,
-   "blockSha": "863aa214371ed86f",
-   "chars": 295,
+   "blockSha": "4d615c553e999816",
+   "chars": 350,
    "lineHint": [
-    1092,
-    1097
+    1098,
+    1103
    ]
   },
   {
@@ -2119,8 +2118,8 @@
    "blockSha": "7df078897fc37db4",
    "chars": 644,
    "lineHint": [
-    1099,
-    1105
+    1105,
+    1111
    ]
   },
   {
@@ -2134,8 +2133,8 @@
    "blockSha": "82082392e298c071",
    "chars": 686,
    "lineHint": [
-    1107,
-    1113
+    1113,
+    1119
    ]
   },
   {
@@ -2149,8 +2148,8 @@
    "blockSha": "1d18a6f3ff88a7b1",
    "chars": 529,
    "lineHint": [
-    1115,
-    1120
+    1121,
+    1126
    ]
   },
   {
@@ -2164,8 +2163,8 @@
    "blockSha": "2174a152031f6d95",
    "chars": 808,
    "lineHint": [
-    1122,
-    1130
+    1128,
+    1136
    ]
   },
   {
@@ -2179,8 +2178,8 @@
    "blockSha": "8ac2efd8312a339b",
    "chars": 261,
    "lineHint": [
-    1132,
-    1134
+    1138,
+    1140
    ]
   },
   {
@@ -2191,11 +2190,11 @@
    "targetSection": null,
    "projectRank": 1000,
    "expiring": false,
-   "blockSha": "b2321462e16bfd65",
-   "chars": 126,
+   "blockSha": "4b7c788b2032a7fe",
+   "chars": 133,
    "lineHint": [
-    1136,
-    1139
+    1142,
+    1145
    ]
   },
   {
@@ -2209,13 +2208,28 @@
    "blockSha": "271ae4e9a800081e",
    "chars": 263,
    "lineHint": [
-    1141,
-    1143
+    1147,
+    1149
+   ]
+  },
+  {
+   "partKey": "commit-discipline-git-sync-o-keep-the-count-in-t",
+   "ordinal": 139,
+   "kind": "prose",
+   "clientScope": [],
+   "targetSection": null,
+   "projectRank": 1000,
+   "expiring": false,
+   "blockSha": "5db12b56770442ca",
+   "chars": 1450,
+   "lineHint": [
+    1151,
+    1166
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-why-this-exists-can",
-   "ordinal": 139,
+   "ordinal": 140,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2224,13 +2238,13 @@
    "blockSha": "ad99342c423e745d",
    "chars": 745,
    "lineHint": [
-    1145,
-    1152
+    1168,
+    1175
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-a-verdict-log-writt",
-   "ordinal": 140,
+   "ordinal": 141,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2239,13 +2253,13 @@
    "blockSha": "35313821b6e53431",
    "chars": 275,
    "lineHint": [
-    1154,
-    1156
+    1177,
+    1179
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-a-verdict-log-older",
-   "ordinal": 141,
+   "ordinal": 142,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2254,13 +2268,13 @@
    "blockSha": "2130881cdce5a4b3",
    "chars": 1002,
    "lineHint": [
-    1158,
-    1168
+    1181,
+    1191
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-bash-6",
-   "ordinal": 142,
+   "ordinal": 143,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2269,13 +2283,13 @@
    "blockSha": "13041991032a57d4",
    "chars": 147,
    "lineHint": [
-    1170,
-    1174
+    1193,
+    1197
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-do-not-mine-the-gat",
-   "ordinal": 143,
+   "ordinal": 144,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2284,13 +2298,13 @@
    "blockSha": "f54d7d1eae5982c3",
    "chars": 649,
    "lineHint": [
-    1176,
-    1182
+    1199,
+    1205
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-skipped-locked-is-a",
-   "ordinal": 144,
+   "ordinal": 145,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2299,13 +2313,13 @@
    "blockSha": "bf7b67f81ee5e72d",
    "chars": 800,
    "lineHint": [
-    1184,
-    1192
+    1207,
+    1215
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-measured-over-a-36h",
-   "ordinal": 145,
+   "ordinal": 146,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2314,13 +2328,13 @@
    "blockSha": "38855efd6b674f62",
    "chars": 631,
    "lineHint": [
-    1194,
-    1200
+    1217,
+    1223
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-error-this-exis",
-   "ordinal": 146,
+   "ordinal": 147,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2329,13 +2343,13 @@
    "blockSha": "7e2ea34870db73bd",
    "chars": 760,
    "lineHint": [
-    1202,
-    1209
+    1225,
+    1232
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-verdicts-lineag",
-   "ordinal": 147,
+   "ordinal": 148,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2344,13 +2358,13 @@
    "blockSha": "a420dc64ec2a7dc4",
    "chars": 748,
    "lineHint": [
-    1211,
-    1218
+    1234,
+    1241
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-measured-2026-08-03-2",
-   "ordinal": 148,
+   "ordinal": 149,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2359,13 +2373,13 @@
    "blockSha": "bafb8f043a1b35d5",
    "chars": 608,
    "lineHint": [
-    1220,
-    1225
+    1243,
+    1248
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-wording-is-fixe",
-   "ordinal": 149,
+   "ordinal": 150,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2374,13 +2388,13 @@
    "blockSha": "e470e518549f64bb",
    "chars": 389,
    "lineHint": [
-    1227,
-    1230
+    1250,
+    1253
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-the-verdict-says-it",
-   "ordinal": 150,
+   "ordinal": 151,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2389,13 +2403,13 @@
    "blockSha": "01e9025d8bba626a",
    "chars": 694,
    "lineHint": [
-    1232,
-    1237
+    1255,
+    1260
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-an-unmeasured-range",
-   "ordinal": 151,
+   "ordinal": 152,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2404,13 +2418,13 @@
    "blockSha": "15df6bdaf2788aa3",
    "chars": 291,
    "lineHint": [
-    1239,
-    1241
+    1262,
+    1264
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-do-not-glob-tmppape",
-   "ordinal": 152,
+   "ordinal": 153,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2419,13 +2433,13 @@
    "blockSha": "035cd82fccacabd1",
    "chars": 572,
    "lineHint": [
-    1243,
-    1248
+    1266,
+    1271
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-never-fire-a-manual",
-   "ordinal": 153,
+   "ordinal": 154,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2436,13 +2450,13 @@
    "blockSha": "64de8e9bbda7bdd3",
    "chars": 569,
    "lineHint": [
-    1250,
-    1255
+    1273,
+    1278
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-you-no-longer-have",
-   "ordinal": 154,
+   "ordinal": 155,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2453,13 +2467,13 @@
    "blockSha": "804950dd37c9775c",
    "chars": 1141,
    "lineHint": [
-    1257,
-    1268
+    1280,
+    1291
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-and-when-it-does-re",
-   "ordinal": 155,
+   "ordinal": 156,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2470,13 +2484,13 @@
    "blockSha": "845692d887802108",
    "chars": 261,
    "lineHint": [
-    1270,
-    1272
+    1293,
+    1295
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-never-answer-is-a-g",
-   "ordinal": 156,
+   "ordinal": 157,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2485,13 +2499,13 @@
    "blockSha": "1076e6582337a2dd",
    "chars": 2186,
    "lineHint": [
-    1274,
-    1296
+    1297,
+    1319
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-systemctl-user-is-a",
-   "ordinal": 157,
+   "ordinal": 158,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2500,13 +2514,13 @@
    "blockSha": "d908fbc2598db63e",
    "chars": 669,
    "lineHint": [
-    1298,
-    1304
+    1321,
+    1327
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-bash-7",
-   "ordinal": 158,
+   "ordinal": 159,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2515,13 +2529,13 @@
    "blockSha": "00dd1a504756e5e4",
    "chars": 113,
    "lineHint": [
-    1306,
-    1308
+    1329,
+    1331
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-measured-2026-08-10",
-   "ordinal": 159,
+   "ordinal": 160,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2530,13 +2544,13 @@
    "blockSha": "0d34c7edbd65d8b9",
    "chars": 657,
    "lineHint": [
-    1310,
-    1316
+    1333,
+    1339
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-read-the-pid-compar",
-   "ordinal": 160,
+   "ordinal": 161,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2545,13 +2559,13 @@
    "blockSha": "5e2eaf02e85cfc54",
    "chars": 705,
    "lineHint": [
-    1318,
-    1325
+    1341,
+    1348
    ]
   },
   {
    "partKey": "commit-discipline-git-sync-o-this-is-the-same-cl",
-   "ordinal": 161,
+   "ordinal": 162,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2560,13 +2574,13 @@
    "blockSha": "ad6c8643a7f84c62",
    "chars": 544,
    "lineHint": [
-    1327,
-    1332
+    1350,
+    1355
    ]
   },
   {
    "partKey": "server-side-edits-and-the-tw-the-hono-host-binho",
-   "ordinal": 162,
+   "ordinal": 163,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2577,13 +2591,13 @@
    "blockSha": "b37a4c94e9c7724d",
    "chars": 185,
    "lineHint": [
-    1336,
-    1338
+    1359,
+    1361
    ]
   },
   {
    "partKey": "server-side-edits-and-the-tw-3070-green-operator",
-   "ordinal": 163,
+   "ordinal": 164,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2594,13 +2608,13 @@
    "blockSha": "dd3d3c16ea21bada",
    "chars": 1268,
    "lineHint": [
-    1340,
-    1357
+    1363,
+    1380
    ]
   },
   {
    "partKey": "server-side-edits-and-the-tw-3055-vite-does-hot",
-   "ordinal": 164,
+   "ordinal": 165,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2611,13 +2625,13 @@
    "blockSha": "589f5f1c2a566b5c",
    "chars": 211,
    "lineHint": [
-    1359,
-    1361
+    1382,
+    1384
    ]
   },
   {
    "partKey": "before-you-design-or-test-re-two-internaldocs-se",
-   "ordinal": 165,
+   "ordinal": 166,
    "kind": "pointer",
    "clientScope": [
     "all"
@@ -2628,13 +2642,13 @@
    "blockSha": "4f2d5f8dce767df6",
    "chars": 141,
    "lineHint": [
-    1365,
-    1366
+    1388,
+    1389
    ]
   },
   {
    "partKey": "before-you-design-or-test-re-before-any-design-w",
-   "ordinal": 166,
+   "ordinal": 167,
    "kind": "pointer",
    "clientScope": [
     "all"
@@ -2645,13 +2659,13 @@
    "blockSha": "8b3975627aff70ab",
    "chars": 767,
    "lineHint": [
-    1368,
-    1379
+    1391,
+    1402
    ]
   },
   {
    "partKey": "read-this-before-changing-co-performance-regress",
-   "ordinal": 167,
+   "ordinal": 168,
    "kind": "pointer",
    "clientScope": [
     "all"
@@ -2662,13 +2676,13 @@
    "blockSha": "fe90b0f548cc2875",
    "chars": 395,
    "lineHint": [
-    1383,
-    1388
+    1406,
+    1411
    ]
   },
   {
    "partKey": "storage-policy-postgres-by-d-new-durable-state-g",
-   "ordinal": 168,
+   "ordinal": 169,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2679,13 +2693,13 @@
    "blockSha": "bde0343bcddfe0f8",
    "chars": 233,
    "lineHint": [
-    1392,
-    1394
+    1415,
+    1417
    ]
   },
   {
    "partKey": "storage-policy-postgres-by-d-schema-migrations-o",
-   "ordinal": 169,
+   "ordinal": 170,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2696,13 +2710,13 @@
    "blockSha": "7c2c63a4925fceb3",
    "chars": 2362,
    "lineHint": [
-    1396,
-    1426
+    1419,
+    1449
    ]
   },
   {
    "partKey": "storage-policy-postgres-by-d-you-want-use-not",
-   "ordinal": 170,
+   "ordinal": 171,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2713,13 +2727,13 @@
    "blockSha": "70995baa9ec3b3c1",
    "chars": 1233,
    "lineHint": [
-    1428,
-    1436
+    1451,
+    1459
    ]
   },
   {
    "partKey": "storage-policy-postgres-by-d-nothing-in-the-tabl",
-   "ordinal": 171,
+   "ordinal": 172,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2728,13 +2742,13 @@
    "blockSha": "1f7f2c434ca42bc9",
    "chars": 2308,
    "lineHint": [
-    1438,
-    1467
+    1461,
+    1490
    ]
   },
   {
    "partKey": "storage-policy-postgres-by-d-prefer-work-itemsli",
-   "ordinal": 172,
+   "ordinal": 173,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2743,13 +2757,13 @@
    "blockSha": "756b093548e0cf6e",
    "chars": 1798,
    "lineHint": [
-    1469,
-    1489
+    1492,
+    1512
    ]
   },
   {
    "partKey": "storage-policy-postgres-by-d-full-guide-acceptab",
-   "ordinal": 173,
+   "ordinal": 174,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2758,13 +2772,13 @@
    "blockSha": "b5df62699d4e875a",
    "chars": 182,
    "lineHint": [
-    1491,
-    1493
+    1514,
+    1516
    ]
   },
   {
    "partKey": "reaching-for-bash-these-read-bash-is-still-41-of",
-   "ordinal": 174,
+   "ordinal": 175,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2775,13 +2789,13 @@
    "blockSha": "f69d44f7c18bd230",
    "chars": 524,
    "lineHint": [
-    1497,
-    1503
+    1520,
+    1526
    ]
   },
   {
    "partKey": "reaching-for-bash-these-read-each-row-was-earned",
-   "ordinal": 175,
+   "ordinal": 176,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2792,13 +2806,13 @@
    "blockSha": "246ab9293decba28",
    "chars": 456,
    "lineHint": [
-    1505,
-    1510
+    1528,
+    1533
    ]
   },
   {
    "partKey": "reaching-for-bash-these-read-begin-generated-gen",
-   "ordinal": 176,
+   "ordinal": 177,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2809,13 +2823,13 @@
    "blockSha": "0faee05e4ef63165",
    "chars": 64,
    "lineHint": [
-    1512,
-    1512
+    1535,
+    1535
    ]
   },
   {
    "partKey": "reaching-for-bash-these-read-generated-from-the",
-   "ordinal": 177,
+   "ordinal": 178,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2826,13 +2840,13 @@
    "blockSha": "ef63643187e95b00",
    "chars": 1067,
    "lineHint": [
-    1514,
-    1527
+    1537,
+    1550
    ]
   },
   {
    "partKey": "reaching-for-bash-these-read-you-want-use-not",
-   "ordinal": 178,
+   "ordinal": 179,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2843,13 +2857,13 @@
    "blockSha": "95747aa1c2c2eac5",
    "chars": 5435,
    "lineHint": [
-    1529,
-    1550
+    1552,
+    1573
    ]
   },
   {
    "partKey": "reaching-for-bash-these-read-end-generated-gento",
-   "ordinal": 179,
+   "ordinal": 180,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2860,13 +2874,13 @@
    "blockSha": "00405c9d2de846e9",
    "chars": 40,
    "lineHint": [
-    1552,
-    1552
+    1575,
+    1575
    ]
   },
   {
    "partKey": "reaching-for-bash-these-read-the-tool-call-is-al",
-   "ordinal": 180,
+   "ordinal": 181,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2877,13 +2891,13 @@
    "blockSha": "6890a3ee45450078",
    "chars": 290,
    "lineHint": [
-    1554,
-    1557
+    1577,
+    1580
    ]
   },
   {
    "partKey": "cd-outside-the-repo-tree-doe-the-bash-tools-own",
-   "ordinal": 181,
+   "ordinal": 182,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2894,13 +2908,13 @@
    "blockSha": "4f2e5f8d46afcfb8",
    "chars": 654,
    "lineHint": [
-    1561,
-    1569
+    1584,
+    1592
    ]
   },
   {
    "partKey": "cd-outside-the-repo-tree-doe-why-this-is-dangero",
-   "ordinal": 182,
+   "ordinal": 183,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2911,13 +2925,13 @@
    "blockSha": "e9805356e972f3ef",
    "chars": 895,
    "lineHint": [
-    1571,
-    1582
+    1594,
+    1605
    ]
   },
   {
    "partKey": "cd-outside-the-repo-tree-doe-the-defensive-patte",
-   "ordinal": 183,
+   "ordinal": 184,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2928,13 +2942,13 @@
    "blockSha": "d35f1c4cbb45bd4e",
    "chars": 566,
    "lineHint": [
-    1584,
-    1593
+    1607,
+    1616
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-is-my-job-done-is-1",
-   "ordinal": 184,
+   "ordinal": 185,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2945,13 +2959,13 @@
    "blockSha": "f48b559d4983fb5b",
    "chars": 373,
    "lineHint": [
-    1597,
-    1601
+    1620,
+    1624
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-for-anything-that-r",
-   "ordinal": 185,
+   "ordinal": 186,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -2962,13 +2976,13 @@
    "blockSha": "df875d429419e135",
    "chars": 272,
    "lineHint": [
-    1603,
-    1606
+    1626,
+    1629
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-a-background-job-st",
-   "ordinal": 186,
+   "ordinal": 187,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2977,13 +2991,13 @@
    "blockSha": "c7067bd770034678",
    "chars": 512,
    "lineHint": [
-    1608,
-    1613
+    1631,
+    1636
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-that-deadline-used",
-   "ordinal": 187,
+   "ordinal": 188,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -2992,13 +3006,13 @@
    "blockSha": "ffff959586dce219",
    "chars": 678,
    "lineHint": [
-    1615,
-    1623
+    1638,
+    1646
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-why-the-tool-and-no",
-   "ordinal": 188,
+   "ordinal": 189,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3007,13 +3021,13 @@
    "blockSha": "74b7062f00f2fdb5",
    "chars": 1408,
    "lineHint": [
-    1625,
-    1642
+    1648,
+    1665
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-so-checkpoint-the-b",
-   "ordinal": 189,
+   "ordinal": 190,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3022,13 +3036,13 @@
    "blockSha": "695a32ca1fd3e5fb",
    "chars": 135,
    "lineHint": [
-    1644,
-    1645
+    1667,
+    1668
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-a-background-comman",
-   "ordinal": 190,
+   "ordinal": 191,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3037,13 +3051,13 @@
    "blockSha": "3f1b752321c68ef0",
    "chars": 1562,
    "lineHint": [
-    1647,
-    1668
+    1670,
+    1691
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-never-combine-capab",
-   "ordinal": 191,
+   "ordinal": 192,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3052,13 +3066,13 @@
    "blockSha": "9fb4c191a7d02616",
    "chars": 1378,
    "lineHint": [
-    1670,
-    1688
+    1693,
+    1711
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-never-wait-on-a-pro",
-   "ordinal": 192,
+   "ordinal": 193,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3069,13 +3083,13 @@
    "blockSha": "5e1bca1a7df7dedb",
    "chars": 840,
    "lineHint": [
-    1690,
-    1700
+    1713,
+    1723
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-there-is-a-purpose",
-   "ordinal": 193,
+   "ordinal": 194,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3086,13 +3100,13 @@
    "blockSha": "927834d4bf877196",
    "chars": 1081,
    "lineHint": [
-    1702,
-    1716
+    1725,
+    1739
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-pgrep-q-does-not-ex",
-   "ordinal": 194,
+   "ordinal": 195,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3103,13 +3117,13 @@
    "blockSha": "817b46f2295b2eae",
    "chars": 628,
    "lineHint": [
-    1718,
-    1726
+    1741,
+    1749
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-pgrep-x-matches-pro",
-   "ordinal": 195,
+   "ordinal": 196,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3120,13 +3134,13 @@
    "blockSha": "a6ad6f0d833209bf",
    "chars": 458,
    "lineHint": [
-    1728,
-    1733
+    1751,
+    1756
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-is-this-process-act",
-   "ordinal": 196,
+   "ordinal": 197,
    "kind": "recipe",
    "clientScope": [
     "all"
@@ -3137,13 +3151,13 @@
    "blockSha": "c1782d515e4dfd2b",
    "chars": 543,
    "lineHint": [
-    1735,
-    1741
+    1758,
+    1764
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-bash",
-   "ordinal": 197,
+   "ordinal": 198,
    "kind": "recipe",
    "clientScope": [
     "all"
@@ -3154,13 +3168,13 @@
    "blockSha": "077c693cfbd1f8d6",
    "chars": 364,
    "lineHint": [
-    1743,
-    1748
+    1766,
+    1771
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-measure-the-whole-p",
-   "ordinal": 198,
+   "ordinal": 199,
    "kind": "recipe",
    "clientScope": [
     "all"
@@ -3171,13 +3185,13 @@
    "blockSha": "c9bd347b0f99cead",
    "chars": 675,
    "lineHint": [
-    1750,
-    1759
+    1773,
+    1782
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-a-corollary-worth-k",
-   "ordinal": 199,
+   "ordinal": 200,
    "kind": "recipe",
    "clientScope": [
     "all"
@@ -3188,13 +3202,13 @@
    "blockSha": "39e6396657a6dbb3",
    "chars": 477,
    "lineHint": [
-    1761,
-    1767
+    1784,
+    1790
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-ei-2001777993706028",
-   "ordinal": 200,
+   "ordinal": 201,
    "kind": "recipe",
    "clientScope": [
     "all"
@@ -3205,13 +3219,13 @@
    "blockSha": "143dc7b8bb9a5f84",
    "chars": 616,
    "lineHint": [
-    1769,
-    1776
+    1792,
+    1799
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-waiting-on-the-righ",
-   "ordinal": 201,
+   "ordinal": 202,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3220,13 +3234,13 @@
    "blockSha": "0c123901804f11e4",
    "chars": 1135,
    "lineHint": [
-    1778,
-    1792
+    1801,
+    1815
    ]
   },
   {
    "partKey": "long-jobs-background-them-at-do-not-sit-in-a-sle",
-   "ordinal": 202,
+   "ordinal": 203,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3235,13 +3249,13 @@
    "blockSha": "a16df2a12c3492a6",
    "chars": 223,
    "lineHint": [
-    1794,
-    1796
+    1817,
+    1819
    ]
   },
   {
    "partKey": "feature-flags-posthog-single-source-of-truth-for",
-   "ordinal": 203,
+   "ordinal": 204,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3252,13 +3266,13 @@
    "blockSha": "fc68f3375242f3e2",
    "chars": 2546,
    "lineHint": [
-    1800,
-    1828
+    1823,
+    1851
    ]
   },
   {
    "partKey": "feature-flags-posthog-the-dark-allowlist-is-shri",
-   "ordinal": 204,
+   "ordinal": 205,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3269,13 +3283,13 @@
    "blockSha": "3081f67c74f4b6c9",
    "chars": 1952,
    "lineHint": [
-    1830,
-    1850
+    1853,
+    1873
    ]
   },
   {
    "partKey": "tests-after-editing-bash",
-   "ordinal": 205,
+   "ordinal": 206,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3286,13 +3300,13 @@
    "blockSha": "f429c0576f582bf4",
    "chars": 241,
    "lineHint": [
-    1854,
-    1858
+    1877,
+    1881
    ]
   },
   {
    "partKey": "tests-after-editing-testaffected-runs-the-suites",
-   "ordinal": 206,
+   "ordinal": 207,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3303,13 +3317,13 @@
    "blockSha": "cf89d72b815e45d4",
    "chars": 168,
    "lineHint": [
-    1860,
-    1861
+    1883,
+    1884
    ]
   },
   {
    "partKey": "tests-after-editing-bash-2",
-   "ordinal": 207,
+   "ordinal": 208,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3320,13 +3334,13 @@
    "blockSha": "604a87dff9035d3b",
    "chars": 122,
    "lineHint": [
-    1863,
-    1865
+    1886,
+    1888
    ]
   },
   {
    "partKey": "tests-after-editing-a-git-based-probe-cannot-ans",
-   "ordinal": 208,
+   "ordinal": 209,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3335,13 +3349,13 @@
    "blockSha": "44ca503355dae149",
    "chars": 738,
    "lineHint": [
-    1867,
-    1875
+    1890,
+    1898
    ]
   },
   {
    "partKey": "tests-after-editing-testaffected-is-type-blind-a",
-   "ordinal": 209,
+   "ordinal": 210,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3350,13 +3364,13 @@
    "blockSha": "74ca3b4968a179fd",
    "chars": 709,
    "lineHint": [
-    1877,
-    1885
+    1900,
+    1908
    ]
   },
   {
    "partKey": "tests-after-editing-name-the-files-do-not-use-mi",
-   "ordinal": 210,
+   "ordinal": 211,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3365,13 +3379,13 @@
    "blockSha": "d17082cf3a1d386f",
    "chars": 1615,
    "lineHint": [
-    1887,
-    1906
+    1910,
+    1929
    ]
   },
   {
    "partKey": "tests-after-editing-linttsc-typechecks-packageso",
-   "ordinal": 211,
+   "ordinal": 212,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3382,13 +3396,13 @@
    "blockSha": "52ef786fc2a21a70",
    "chars": 558,
    "lineHint": [
-    1908,
-    1914
+    1931,
+    1937
    ]
   },
   {
    "partKey": "tests-after-editing-editing-appsoperator-includi",
-   "ordinal": 212,
+   "ordinal": 213,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3397,13 +3411,13 @@
    "blockSha": "697a35614c18dc09",
    "chars": 2663,
    "lineHint": [
-    1916,
-    1947
+    1939,
+    1970
    ]
   },
   {
    "partKey": "tests-after-editing-do-not-reach-for-npm-run-wor",
-   "ordinal": 213,
+   "ordinal": 214,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3412,13 +3426,13 @@
    "blockSha": "40311cdd1b01ddbe",
    "chars": 1250,
    "lineHint": [
-    1949,
-    1967
+    1972,
+    1990
    ]
   },
   {
    "partKey": "tests-after-editing-files-no-longer-lies-about-t",
-   "ordinal": 214,
+   "ordinal": 215,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3427,13 +3441,13 @@
    "blockSha": "3e0a7eb255eca08d",
    "chars": 975,
    "lineHint": [
-    1969,
-    1979
+    1992,
+    2002
    ]
   },
   {
    "partKey": "tests-after-editing-use-the-tool-not-a-hand-run",
-   "ordinal": 215,
+   "ordinal": 216,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3442,13 +3456,13 @@
    "blockSha": "cad87fed13e22326",
    "chars": 864,
    "lineHint": [
-    1981,
-    1990
+    2004,
+    2013
    ]
   },
   {
    "partKey": "tests-after-editing-the-same-false-green-also-ar",
-   "ordinal": 216,
+   "ordinal": 217,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3457,13 +3471,13 @@
    "blockSha": "c1a57a19187b8bff",
    "chars": 1409,
    "lineHint": [
-    1992,
-    2014
+    2015,
+    2037
    ]
   },
   {
    "partKey": "tests-after-editing-the-trigger-to-watch-adding",
-   "ordinal": 217,
+   "ordinal": 218,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3474,13 +3488,13 @@
    "blockSha": "fcee96eba4e0475f",
    "chars": 737,
    "lineHint": [
-    2016,
-    2024
+    2039,
+    2047
    ]
   },
   {
    "partKey": "tests-after-editing-dont-do-that-by-hand-npm-run",
-   "ordinal": 218,
+   "ordinal": 219,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3491,13 +3505,13 @@
    "blockSha": "696c41418fa6d887",
    "chars": 939,
    "lineHint": [
-    2026,
-    2036
+    2049,
+    2059
    ]
   },
   {
    "partKey": "tests-after-editing-a-migration-that-adds-a-colu",
-   "ordinal": 219,
+   "ordinal": 220,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3508,13 +3522,13 @@
    "blockSha": "93b5e017137a3e57",
    "chars": 900,
    "lineHint": [
-    2038,
-    2048
+    2061,
+    2071
    ]
   },
   {
    "partKey": "tests-after-editing-schemamigration-edits-libspa",
-   "ordinal": 220,
+   "ordinal": 221,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3525,13 +3539,13 @@
    "blockSha": "86eb8c670916f459",
    "chars": 423,
    "lineHint": [
-    2050,
-    2055
+    2073,
+    2078
    ]
   },
   {
    "partKey": "tests-after-editing-npm-only-never-pnpmyarn-in-t",
-   "ordinal": 221,
+   "ordinal": 222,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3542,13 +3556,13 @@
    "blockSha": "cedaf4a3f0707c5a",
    "chars": 679,
    "lineHint": [
-    2057,
-    2065
+    2080,
+    2088
    ]
   },
   {
    "partKey": "tests-after-editing-bash-3",
-   "ordinal": 222,
+   "ordinal": 223,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3559,13 +3573,13 @@
    "blockSha": "74c47a8ae5c1183e",
    "chars": 85,
    "lineHint": [
-    2067,
-    2069
+    2090,
+    2092
    ]
   },
   {
    "partKey": "tests-after-editing-it-discovers-each-files-owni",
-   "ordinal": 223,
+   "ordinal": 224,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3574,13 +3588,13 @@
    "blockSha": "5cdb745785ff1da7",
    "chars": 596,
    "lineHint": [
-    2071,
-    2078
+    2094,
+    2101
    ]
   },
   {
    "partKey": "tests-after-editing-a-t-pattern-that-matches-zer",
-   "ordinal": 224,
+   "ordinal": 225,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3589,13 +3603,13 @@
    "blockSha": "753269b6f7e24b96",
    "chars": 845,
    "lineHint": [
-    2080,
-    2089
+    2103,
+    2112
    ]
   },
   {
    "partKey": "tests-after-editing-npm-eats-one-level-of-quotin",
-   "ordinal": 225,
+   "ordinal": 226,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3604,13 +3618,13 @@
    "blockSha": "f1bebcd7beab0999",
    "chars": 375,
    "lineHint": [
-    2091,
-    2095
+    2114,
+    2118
    ]
   },
   {
    "partKey": "tests-after-editing-npm-installnpm-ci-on-this-sh",
-   "ordinal": 226,
+   "ordinal": 227,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3619,13 +3633,13 @@
    "blockSha": "0c7b4511eae63346",
    "chars": 1365,
    "lineHint": [
-    2097,
-    2113
+    2120,
+    2136
    ]
   },
   {
    "partKey": "tests-after-editing-a-test-file-route-error-matc",
-   "ordinal": 227,
+   "ordinal": 228,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3634,13 +3648,13 @@
    "blockSha": "7b82683bfa113f74",
    "chars": 942,
    "lineHint": [
-    2115,
-    2124
+    2138,
+    2147
    ]
   },
   {
    "partKey": "tests-after-editing-hit-a-confusing-cannot-find",
-   "ordinal": 228,
+   "ordinal": 229,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3649,13 +3663,13 @@
    "blockSha": "61a96076f8d15924",
    "chars": 1038,
    "lineHint": [
-    2126,
-    2138
+    2149,
+    2161
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-a-guard-test-that-h",
-   "ordinal": 229,
+   "ordinal": 230,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3666,13 +3680,13 @@
    "blockSha": "8c4ffbf2682ac693",
    "chars": 200,
    "lineHint": [
-    2142,
-    2144
+    2165,
+    2167
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-bash",
-   "ordinal": 230,
+   "ordinal": 231,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3683,13 +3697,13 @@
    "blockSha": "5906ba775cdd8991",
    "chars": 88,
    "lineHint": [
-    2146,
-    2148
+    2169,
+    2171
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-it-fails-in-two-ind",
-   "ordinal": 231,
+   "ordinal": 232,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3700,13 +3714,13 @@
    "blockSha": "27bdb010a03f2163",
    "chars": 86,
    "lineHint": [
-    2150,
-    2150
+    2173,
+    2173
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-1-death-race-the-re",
-   "ordinal": 232,
+   "ordinal": 233,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3717,13 +3731,13 @@
    "blockSha": "9c82ff4efdfa0041",
    "chars": 537,
    "lineHint": [
-    2152,
-    2158
+    2175,
+    2181
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-both-fired-for-real",
-   "ordinal": 233,
+   "ordinal": 234,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3734,13 +3748,13 @@
    "blockSha": "3c6daf2c989e9206",
    "chars": 529,
    "lineHint": [
-    2160,
-    2166
+    2183,
+    2189
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-pick-the-lowest-tie",
-   "ordinal": 234,
+   "ordinal": 235,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3751,13 +3765,13 @@
    "blockSha": "c252815e5bf92fd9",
    "chars": 78,
    "lineHint": [
-    2168,
-    2168
+    2191,
+    2191
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-your-subject-how-to",
-   "ordinal": 235,
+   "ordinal": 236,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3766,13 +3780,13 @@
    "blockSha": "aba95162c5517792",
    "chars": 777,
    "lineHint": [
-    2170,
-    2174
+    2193,
+    2197
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-scriptsmutation-pro",
-   "ordinal": 236,
+   "ordinal": 237,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3781,13 +3795,13 @@
    "blockSha": "1b0502dc916158cf",
    "chars": 352,
    "lineHint": [
-    2176,
-    2180
+    2199,
+    2203
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-bash-2",
-   "ordinal": 237,
+   "ordinal": 238,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3796,13 +3810,13 @@
    "blockSha": "a15204c8f6cc5d8e",
    "chars": 236,
    "lineHint": [
-    2182,
-    2186
+    2205,
+    2209
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-exit-codes-0-mutant",
-   "ordinal": 238,
+   "ordinal": 239,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3811,13 +3825,13 @@
    "blockSha": "1fc7000761ea9ac8",
    "chars": 305,
    "lineHint": [
-    2188,
-    2191
+    2211,
+    2214
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-for-tier-3-pause-th",
-   "ordinal": 239,
+   "ordinal": 240,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3826,13 +3840,13 @@
    "blockSha": "65289b5b559eff0d",
    "chars": 131,
    "lineHint": [
-    2193,
-    2194
+    2216,
+    2217
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab",
-   "ordinal": 240,
+   "ordinal": 241,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3841,13 +3855,13 @@
    "blockSha": "4f42386af1aaea88",
    "chars": 150,
    "lineHint": [
-    2196,
-    2199
+    2219,
+    2222
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-a-trap-alone-does-n",
-   "ordinal": 241,
+   "ordinal": 242,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3856,13 +3870,13 @@
    "blockSha": "434cf3c3e6dc98ad",
    "chars": 582,
    "lineHint": [
-    2201,
-    2207
+    2224,
+    2230
    ]
   },
   {
    "partKey": "proving-a-guard-is-falsifiab-prior-independent-d",
-   "ordinal": 242,
+   "ordinal": 243,
    "kind": "prose",
    "clientScope": [],
    "targetSection": null,
@@ -3871,13 +3885,13 @@
    "blockSha": "b91e84a01ec98560",
    "chars": 158,
    "lineHint": [
-    2209,
-    2210
+    2232,
+    2233
    ]
   },
   {
    "partKey": "browser-checks-use-verdict-ad-hocexploratory-bro",
-   "ordinal": 243,
+   "ordinal": 244,
    "kind": "pointer",
    "clientScope": [
     "all"
@@ -3888,13 +3902,13 @@
    "blockSha": "075e32c7a23c908d",
    "chars": 404,
    "lineHint": [
-    2214,
-    2219
+    2237,
+    2242
    ]
   },
   {
    "partKey": "use-context7-for-current-lib-before-non-trivial",
-   "ordinal": 244,
+   "ordinal": 245,
    "kind": "pointer",
    "clientScope": [
     "all"
@@ -3905,13 +3919,13 @@
    "blockSha": "a15ceed76f086d5e",
    "chars": 280,
    "lineHint": [
-    2223,
-    2226
+    2246,
+    2249
    ]
   },
   {
    "partKey": "adding-a-tool-the-per-role-g-1-define-in-package",
-   "ordinal": 245,
+   "ordinal": 246,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3922,13 +3936,13 @@
    "blockSha": "58386d1a4df840f6",
    "chars": 818,
    "lineHint": [
-    2230,
-    2241
+    2253,
+    2264
    ]
   },
   {
    "partKey": "adding-a-tool-the-per-role-g-it-is-a-root-entryp",
-   "ordinal": 246,
+   "ordinal": 247,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3939,13 +3953,13 @@
    "blockSha": "291812318290e300",
    "chars": 471,
    "lineHint": [
-    2243,
-    2249
+    2266,
+    2272
    ]
   },
   {
    "partKey": "adding-a-tool-the-per-role-g-editing-a-live-tool",
-   "ordinal": 247,
+   "ordinal": 248,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3956,13 +3970,13 @@
    "blockSha": "ec0638175389cfbf",
    "chars": 685,
    "lineHint": [
-    2251,
-    2259
+    2274,
+    2282
    ]
   },
   {
    "partKey": "adding-a-tool-the-per-role-g-per-tool-whennot-wh",
-   "ordinal": 248,
+   "ordinal": 249,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3973,13 +3987,13 @@
    "blockSha": "75e3908615aeba51",
    "chars": 202,
    "lineHint": [
-    2261,
-    2263
+    2284,
+    2286
    ]
   },
   {
    "partKey": "adding-a-tool-the-per-role-g-a-callers-limit-bou",
-   "ordinal": 249,
+   "ordinal": 250,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -3990,13 +4004,13 @@
    "blockSha": "a2b74f0477fcccc8",
    "chars": 890,
    "lineHint": [
-    2265,
-    2275
+    2288,
+    2298
    ]
   },
   {
    "partKey": "adding-a-tool-the-per-role-g-the-fix-pattern-bot",
-   "ordinal": 250,
+   "ordinal": 251,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -4007,13 +4021,13 @@
    "blockSha": "b91bf87758146611",
    "chars": 506,
    "lineHint": [
-    2277,
-    2283
+    2300,
+    2306
    ]
   },
   {
    "partKey": "prompts-are-auto-generated-e-every-agent-facing",
-   "ordinal": 251,
+   "ordinal": 252,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -4024,13 +4038,13 @@
    "blockSha": "c5e47127c8ddc297",
    "chars": 854,
    "lineHint": [
-    2287,
-    2298
+    2310,
+    2321
    ]
   },
   {
    "partKey": "where-new-tests-go-four-cano-every-new-test-goes",
-   "ordinal": 252,
+   "ordinal": 253,
    "kind": "invariant",
    "clientScope": [
     "all"
@@ -4041,8 +4055,8 @@
    "blockSha": "9524269f3f867738",
    "chars": 593,
    "lineHint": [
-    2302,
-    2310
+    2325,
+    2333
    ]
   }
  ]

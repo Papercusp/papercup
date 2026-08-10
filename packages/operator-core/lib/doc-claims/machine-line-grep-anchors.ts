@@ -22,19 +22,38 @@
  * reader COPIES actually live.
  */
 
-/** Marker → the field that only a real emitted line carries. */
-export const REQUIRED_ANCHOR: Readonly<Record<string, string>> = Object.freeze({
+/**
+ * THE RULE IS THE PROPERTY, NOT THE SPELLING: a real emitted line always continues
+ * `MARKER <key>=…`; a test name never does (`GATE_HELD_BY / AFFECTED_TESTS_RESULT
+ * shape`). So the judge requires *some* `key=` field, not one specific key.
+ *
+ * That distinction is load-bearing and was learned the expensive way IN THIS FILE.
+ * The first version pinned one required field per marker, derived from the lines I had
+ * happened to observe — and it was WRONG for `TEST_FILE_RESULT`, which really emits
+ * `TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed`. A rule demanding
+ * `TEST_FILE_RESULT status=` therefore (a) flags a correct recipe and (b) sends an
+ * agent to grep a string no real log contains. The emitters also legitimately vary
+ * their first field (`GATE_HELD_BY count=` and `entries=`; `AFFECTED_TESTS_RESULT
+ * status=` and `failed=`), so any one-key rule is form-blind by construction.
+ *
+ * CANONICAL_ANCHOR below is therefore only a SUGGESTION used in the violation message.
+ * It is never what the judge enforces.
+ */
+export const CANONICAL_ANCHOR: Readonly<Record<string, string>> = Object.freeze({
   GATE_HELD_BY: 'count=',
   GATE_PROMOTION: 'candidate=',
   AFFECTED_TESTS_RESULT: 'status=',
   AFFECTED_TESTS_FAILING_FILES: 'run=',
-  TEST_FILE_RESULT: 'status=',
+  TEST_FILE_RESULT: 'requested=',
 });
+
+/** A real machine line continues with a `key=` field; prose and test names do not. */
+const ANCHOR_FIELD = '[A-Za-z][A-Za-z0-9_]*=';
 
 export interface UnanchoredSite {
   readonly line: number;
   readonly marker: string;
-  readonly requiredAnchor: string;
+  readonly suggestedAnchor: string;
   readonly text: string;
 }
 
@@ -53,7 +72,7 @@ const MIN_PLAUSIBLE_CHARS = 2000;
  * markers here are prefixes of one another — but sort longest-first anyway so a future
  * marker cannot be shadowed by a shorter sibling.
  */
-const MARKERS = Object.keys(REQUIRED_ANCHOR).sort((a, b) => b.length - a.length);
+const MARKERS = Object.keys(CANONICAL_ANCHOR).sort((a, b) => b.length - a.length);
 
 export function judgeMachineLineGrepAnchors(markdown: string): MachineLineGrepVerdict {
   if (markdown.trim().length < MIN_PLAUSIBLE_CHARS) {
@@ -79,21 +98,26 @@ export function judgeMachineLineGrepAnchors(markdown: string): MachineLineGrepVe
     checkedLines += 1;
     for (const marker of MARKERS) {
       if (!text.includes(marker)) continue;
-      const requiredAnchor = REQUIRED_ANCHOR[marker]!;
       // Every occurrence must be anchored; one anchored use does not excuse a bare one.
-      const anchored = new RegExp(`${marker}\\s+${requiredAnchor}`, 'g');
+      const anchored = new RegExp(`${marker}\\s+${ANCHOR_FIELD}`, 'g');
       const occurrences = text.split(marker).length - 1;
       const anchoredCount = (text.match(anchored) ?? []).length;
       if (anchoredCount < occurrences) {
-        unanchoredSites.push({ line: index + 1, marker, requiredAnchor, text: text.trim() });
+        unanchoredSites.push({
+          line: index + 1,
+          marker,
+          suggestedAnchor: CANONICAL_ANCHOR[marker]!,
+          text: text.trim(),
+        });
       }
     }
   });
 
   const violations = unanchoredSites.map(
     (s) =>
-      `CLAUDE.md:${s.line} greps the bare marker \`${s.marker}\` — anchor it as ` +
-      `\`${s.marker} ${s.requiredAnchor}\`, which only a real emitted line carries. ` +
+      `CLAUDE.md:${s.line} greps the bare marker \`${s.marker}\` — follow it with the ` +
+      `key=value field a real emitted line carries, e.g. \`${s.marker} ${s.suggestedAnchor}\` ` +
+      `(any \`key=\` satisfies the rule; the emitters vary their first field). ` +
       `A bare grep also matches vitest TEST NAMES echoed into the same log (WI-37636), ` +
       `so it returns plausible prose where the honest answer is no match. Line: ${s.text}`,
   );

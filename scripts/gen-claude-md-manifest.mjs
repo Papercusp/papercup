@@ -61,8 +61,12 @@ const RANGES = [
   [124, 135, 'INV', '## Scheduling: no bare `setInterval`, no'],
   [136, 152, 'INS', '⚠ **`schedule:inventory` is PER-PROCESS,'],
   [153, 166, 'INS', '⚠ Federation was necessary, **not suffic'],
-  [167, 181, 'INV', '## Spawning: no unenrolled `detached` sp'],
-  [182, 196, 'INV', "live desktop window and peer agents' Xvf"],
+  // The boundary here was drawn mid-paragraph in P-002 (after L181, inside the "Never kill by
+  // name" block), which split ONE paragraph into two parts. Both sides classify INV, so no
+  // classification changed — but the block identity did, and blockSha is now load-bearing.
+  // Moved to the blank line at L180. assertRangesRespectBlocks() keeps the class from recurring.
+  [167, 180, 'INV', '## Spawning: no unenrolled `detached` sp'],
+  [181, 196, 'INV', '⛔ **Never kill by name or pattern.** `pk'],
   [197, 222, 'INV', '## Shared-lib singletons: pin through th'],
   [223, 282, 'INS', 'Measured (EI-19451658870832332): `@paper'],
   [283, 295, 'INV', '## Deployment model: desktop is the prod'],
@@ -133,6 +137,27 @@ const KIND = { INV: 'invariant', PTR: 'pointer', REC: 'recipe', INS: 'prose', EX
 const SCOPE = { INV: ['all'], PTR: ['all'], REC: ['all'], INS: [], EXP: [] };
 const RANK = { INV: 100, REC: 200, PTR: 300, EXP: 900, INS: 1000 };
 
+/**
+ * Blocks classified AFTER the RANGES bootstrap, keyed by content.
+ *
+ * RANGES is pinned to the snapshot it was drawn on and cannot classify text written since; this is
+ * where new and edited blocks land instead. Keyed by blockSha on purpose — a classification here
+ * attaches to the exact text it was made against, so an edit to that text does not silently inherit
+ * the old verdict, it comes back UNCLASSIFIED for a fresh look. Append-only: entries whose sha is no
+ * longer in the file are inert, and are reported as `departed` rather than quietly dropped.
+ */
+const CLASSIFIED = {
+  // 2026-08-10, WI-37636 — a peer anchored three gate-forensics greps on a field only a real
+  // machine line carries, so vitest test NAMES stop matching them as impostors. All three code
+  // blocks and both new warnings sit inside the L1085-1183 [INS] band and inherit prose from the
+  // paragraphs they replace (commit-discipline-git-sync-o-bash-3/4/5, all prose).
+  cbe4038edb3767ae: 'INS', // ```bash grep -o 'GATE_PROMOTION candidate=.*'
+  '213721f3ce9a76cf': 'INS', // "⚠ The ` candidate=` anchor is prophylactic here…"
+  '4d615c553e999816': 'INS', // ```bash grep -o 'AFFECTED_TESTS_FAILING_FILES run=.*'
+  '4b7c788b2032a7fe': 'INS', // ```bash grep -o 'GATE_HELD_BY count=.*'
+  '5db12b56770442ca': 'INS', // "⚠⚠ Keep the ` count=` in that grep…"
+};
+
 const sha16 = (s) => createHash('sha256').update(s).digest('hex').slice(0, 16);
 
 function slug(s, max = 48) {
@@ -171,6 +196,38 @@ function splitBlocks(lines, from, to) {
 const firstNonBlank = (lines, a, b) => (lines.slice(a - 1, b).find((l) => l.trim()) ?? '').trim();
 
 const sortedRanges = () => [...RANGES].sort((x, y) => x[0] - y[0]);
+
+/**
+ * A classification range must never end in the MIDDLE of a block.
+ *
+ * When it does, the block is emitted as two parts split at the range boundary rather than at the
+ * blank line — so its identity is an artifact of where the classification was drawn, not of the
+ * text. That was harmless while parts were addressed by line, and is not once `blockSha` carries
+ * the classification: the two halves have shas no whole-file reader will ever produce. Exactly one
+ * such boundary existed (after L181, inside "Never kill by name"); this keeps the class from
+ * returning as the ranges are re-drawn.
+ */
+export function rangeBoundaryProblems(lines, sorted) {
+  const blank = (n) => (lines[n - 1] ?? '').trim() === '';
+  const inFence = [];
+  let f = false;
+  for (const l of lines) { if (l.trim().startsWith('```')) f = !f; inFence.push(f); }
+
+  const out = [];
+  for (const [a, b, kind] of sorted) {
+    if (b >= lines.length) continue;
+    if (inFence[b - 1]) {
+      out.push(`L${a}-${b} [${kind}] ends INSIDE a fenced code block — the boundary splits code.`);
+    } else if (!blank(b) && !blank(b + 1)) {
+      out.push(
+        `L${a}-${b} [${kind}] ends mid-paragraph (L${b} and L${b + 1} are both non-blank), so the ` +
+          `block spanning it is emitted as two parts split at the range boundary. Move the boundary ` +
+          `to the blank line that ends the block.`,
+      );
+    }
+  }
+  return out;
+}
 
 /**
  * The classified parts, each carrying the raw block text it was cut from.
@@ -269,12 +326,16 @@ export function buildManifest(text, prior = null) {
   const lines = text.split('\n');
   const problems = [];
 
+  const fromCode = (code) => ({ kind: KIND[code], clientScope: SCOPE[code], projectRank: RANK[code], expiring: code === 'EXP' });
   const classBySha = prior
-    ? new Map(
-        prior.parts
+    ? new Map([
+        ...prior.parts
           .filter((p) => p.kind)
           .map((p) => [p.blockSha, { kind: p.kind, clientScope: p.clientScope, projectRank: p.projectRank, expiring: p.expiring }]),
-      )
+        // CLASSIFIED wins over the prior manifest: it is the hand-made verdict on text written
+        // since the bootstrap, and re-stating it every run is what keeps it auditable in source.
+        ...Object.entries(CLASSIFIED).map(([sha, code]) => [sha, fromCode(code)]),
+      ])
     : null;
 
   // ── structural checks on the RANGES bootstrap (only meaningful when bootstrapping) ──
@@ -299,6 +360,7 @@ export function buildManifest(text, prior = null) {
       const actual = firstNonBlank(lines, a, b).slice(0, fingerprint.length);
       if (actual !== fingerprint) problems.push(`L${a}-${b} [${kind}] fingerprint moved: expected ${JSON.stringify(fingerprint)}, reads ${JSON.stringify(actual)}`);
     }
+    problems.push(...rangeBoundaryProblems(lines, sorted));
   }
 
   // ── emit parts (raw block text dropped: see extractParts) ──

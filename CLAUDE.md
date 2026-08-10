@@ -1157,9 +1157,13 @@ Measured 2026-08-10 on `…-cand-a68d051e8fd8.log`: the bare recipe returned
 `GATE_HELD_BY / AFFECTED_TESTS_RESULT shape<ESC>[32m 28ms` and **all 6 matches were impostors —
 zero real machine lines existed.** That log was a legitimately GREEN run, where absence of
 `GATE_HELD_BY` is the *meaningful* signal (nothing held it); the impostor converts that absence into
-a non-empty, plausible-looking result. **Anchor every one of these greps on the field that only a
-real machine line carries** — `GATE_HELD_BY count=`, `AFFECTED_TESTS_RESULT status=`,
-`AFFECTED_TESTS_FAILING_FILES run=`, `TEST_FILE_RESULT status=` — never the bare marker. Same class
+a non-empty, plausible-looking result. **Anchor every one of these greps on the `key=value` field a
+real machine line always continues with** — `GATE_HELD_BY count=`, `AFFECTED_TESTS_RESULT status=`,
+`AFFECTED_TESTS_FAILING_FILES run=`, `GATE_PROMOTION candidate=`, `TEST_FILE_RESULT requested=` —
+never the bare marker. ⚠ Anchor on the SHAPE, not one spelling: the emitters legitimately vary
+their first field (`GATE_HELD_BY entries=`, `AFFECTED_TESTS_RESULT failed=`), so *any* `key=`
+works and pinning one specific key both flags correct recipes and sends you grepping a string no
+log contains — the mistake this rule's own first draft made about `TEST_FILE_RESULT`. Same class
 as the `[green-checkpoint]` suite-capture impersonation (WI-37605), but via the test NAME, so a fix
 aimed at log prefixes does not cover it. Tracked as WI-37636 (4 files, ~10 such names, including two
 `does NOT print the TEST_FILE_RESULT` tests whose names emit a match for the marker whose ABSENCE
