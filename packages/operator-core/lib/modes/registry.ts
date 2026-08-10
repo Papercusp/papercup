@@ -28,13 +28,27 @@ export interface ModeDef {
   id: string;
   axis: ModeAxis;
   /**
-   * An OVERLAY that implies the autonomy axis: entering it means "also mode:set
-   * auto if the autonomy axis is empty", and every guard that asks "is this
-   * session autonomous?" must count it. Modes on the `autonomy` axis imply it
-   * inherently and leave this unset — read the question through
-   * `modeImpliesAutonomy`, never by axis alone (goal-mode-2026-08-07 P-012).
+   * Modes this one IMPLIES — entering it enters these too (D-003).
+   *
+   * This is a WRITE instruction, not a note: `setMode` applies the closure
+   * itself, so `mode:set { mode:'goal' }` leaves the agent holding goal + auto +
+   * ideate whether or not anyone remembered a follow-up call. It is also the
+   * source of `modeImpliesAutonomy` — an overlay is autonomous exactly when it
+   * implies a mode on the `autonomy` axis.
+   *
+   * DERIVING BOTH FROM ONE FIELD IS THE POINT. Until 2026-08-10 these were two
+   * declarations: a boolean `impliesAutonomy` that guards read, and a sentence
+   * in the contract telling the agent to "also mode:set auto". They could
+   * disagree, and they did — every guard counted a GOAL session as autonomous
+   * while its autonomy axis was empty, because the only thing that ever wrote
+   * the row was an agent remembering to, across weeks and compactions. One
+   * field cannot drift from itself.
+   *
+   * Read the autonomy question through `modeImpliesAutonomy`, never by axis
+   * alone (goal-mode-2026-08-07 P-012); read the closure through
+   * `resolveImpliedModes`, never by walking this field (it is transitive).
    */
-  impliesAutonomy?: boolean;
+  implies?: readonly string[];
   /**
    * This mode is ABOUT something, and is meaningless without knowing what —
    * so entering it must resolve an `agent_modes.subject` (EI-20015592992797890).
@@ -117,7 +131,7 @@ itself isn't working is a legitimate combination.)`,
   {
     id: 'drain',
     axis: 'overlay',
-    impliesAutonomy: true,
+    implies: ['auto'],
     title: 'DRAIN — drive the queue to terminal',
     oneLiner: 'take a work-item backlog and drive every item to a terminal state; completion integrity over speed',
     contract: `## DRAIN mode — binding contract
@@ -131,8 +145,11 @@ canary items — a kind, a harness, oldest-first, or everything?"). Then: triage
 claim-spec (never hand-assignment) · monitor each wake · wind down with a
 residue report of what genuinely needs the owner. Completion integrity
 outranks burn-down speed — nothing goes terminal without evidence. DRAIN
-implies AUTO: if the autonomy axis is empty, also mode:set auto — a drain runs
-autonomously. (Overlay: stacks with anything, including IDEATE.)`,
+implies AUTO and you ALREADY hold it: entering this mode wrote the auto row for
+you (an autonomy axis you had already set — cold-auto, say — is left exactly as
+you set it). A drain runs autonomously; that is a statement about your current
+posture, not a follow-up call to remember. (Overlay: stacks with anything,
+including IDEATE.)`,
   },
   {
     id: 'grade',
@@ -162,7 +179,7 @@ score. (No self-grading: the tool refuses when you authored the row.)
   {
     id: 'goal',
     axis: 'overlay',
-    impliesAutonomy: true,
+    implies: ['auto', 'ideate'],
     requiresSubject: true,
     title: 'GOAL — own an outcome, not a queue',
     oneLiner:
@@ -256,9 +273,13 @@ clause prevents.
 REPORT on a standing cadence via coord:escalate / notifyAttention (desktop
 notifications are OFF): what moved, what it cost, what is owner-walled, and what
 you killed. Without it the owner learns goal state only by asking.
-GOAL implies AUTO: if the autonomy axis is empty, also mode:set auto — a goal
-agent that stops to ask cannot run for weeks. (Overlay: stacks with anything,
-including DRAIN, IDEATE and GRADE.)`,
+GOAL implies AUTO and IDEATE, and you ALREADY hold both: entering this mode
+wrote those rows for you (an autonomy axis you had already set — cold-auto, say
+— is left exactly as you set it). A goal agent that stops to ask cannot run for
+weeks, and one that only builds what it was handed is not managing a portfolio;
+both contracts are binding on you NOW and mode:set returned them — read them.
+This is a statement about your current posture, not a pair of follow-up calls to
+remember. (Overlay: stacks with anything, including DRAIN and GRADE.)`,
   },
 ];
 
@@ -282,20 +303,57 @@ export function axisKeyFor(def: ModeDef): string {
  * meant to outlive an owner sitting there?
  *
  * Two ways to qualify, and BOTH must be counted: a mode on the `autonomy` axis
- * (auto, cold-auto) qualifies inherently, and an overlay may declare
- * `impliesAutonomy` (drain, goal). Deriving it here is not tidiness — this
- * question was hardcoded at six call sites and three of them had already
- * drifted apart, each omitting `cold-auto` with no comment saying why. The
- * unguarded-halt sweep was one of them, so the single most autonomy-dependent
- * posture in the system was the one it did not sweep. A registry-derived
- * predicate means a new autonomous mode is counted everywhere the moment its
- * row lands, instead of depending on someone finding all six lists
- * (goal-mode-2026-08-07 P-012).
+ * (auto, cold-auto) qualifies inherently, and an overlay may IMPLY one (drain,
+ * goal — via `implies`). Deriving it here is not tidiness — this question was
+ * hardcoded at six call sites and three of them had already drifted apart, each
+ * omitting `cold-auto` with no comment saying why. The unguarded-halt sweep was
+ * one of them, so the single most autonomy-dependent posture in the system was
+ * the one it did not sweep. A registry-derived predicate means a new autonomous
+ * mode is counted everywhere the moment its row lands, instead of depending on
+ * someone finding all six lists (goal-mode-2026-08-07 P-012).
+ *
+ * D-003 tightened the second leg: it reads the SAME `implies` field the cascade
+ * writes from, so "guards treat this session as autonomous" and "this session
+ * actually holds an autonomy row" can no longer be separately true.
  */
 export function modeImpliesAutonomy(id: string): boolean {
   const def = modeById(id);
   if (!def) return false;
-  return def.axis === 'autonomy' || def.impliesAutonomy === true;
+  if (def.axis === 'autonomy') return true;
+  return resolveImpliedModes(id).some((m) => modeById(m)?.axis === 'autonomy');
+}
+
+/**
+ * The TRANSITIVE closure of `implies` for a mode, excluding the mode itself —
+ * the exact set `setMode` enters alongside it (D-003).
+ *
+ * Transitive because the alternative is a trap: a mode implying an overlay that
+ * itself implies `auto` would enter the overlay and silently skip the autonomy
+ * row, which is precisely the half-applied state this whole mechanism exists to
+ * make impossible. Cycle-safe (a `seen` set) so a mistaken A→B→A pair degrades
+ * to a finite set rather than hanging every mode write in the system; the
+ * registry test asserts no cycle exists in the first place.
+ *
+ * Order is breadth-first from the declaration, which is the order the modes are
+ * applied and reported in — so a caller reading the result sees `auto` before
+ * `ideate` for GOAL, matching how the contract states it. Unknown ids are
+ * dropped rather than thrown: a typo must not be able to fail an otherwise-valid
+ * mode change, and the registry test is what catches it.
+ */
+export function resolveImpliedModes(id: string): readonly string[] {
+  const root = modeById(id);
+  if (!root) return [];
+  const seen = new Set<string>([root.id]);
+  const out: string[] = [];
+  const queue = [...(root.implies ?? [])];
+  while (queue.length) {
+    const next = modeById(queue.shift() as string);
+    if (!next || seen.has(next.id)) continue;
+    seen.add(next.id);
+    out.push(next.id);
+    queue.push(...(next.implies ?? []));
+  }
+  return out;
 }
 
 /**

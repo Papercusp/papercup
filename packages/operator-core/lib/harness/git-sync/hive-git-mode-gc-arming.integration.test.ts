@@ -25,7 +25,7 @@ import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/sr
 import { insertHiveIfAbsent } from '../../hive-store';
 import { setPotGitMode, getPotGitMode } from './hive-git-mode';
 import {
-  getHiveGitGcRoutine,
+  getPotGitGcRoutine,
   DEFAULT_POT_GIT_GC_INTERVAL_SEC,
   POT_GIT_GC_TARGET,
 } from './hive-git-gc-routine';
@@ -74,13 +74,13 @@ describe('setPotGitMode — arms/disarms the hive-git gc routine (G-9, P-205)', 
   });
 
   it('a hive that never left legacy has no gc routine row', async () => {
-    expect(await getHiveGitGcRoutine(getOrgPg().sql, HIVE)).toBeNull();
+    expect(await getPotGitGcRoutine(getOrgPg().sql, HIVE)).toBeNull();
   });
 
   it('flipping off legacy arms the routine against the primary store', async () => {
     await setPotGitMode(WORKSPACE_ID, HIVE, 'bridged');
     expect(await getPotGitMode(WORKSPACE_ID, HIVE)).toBe('bridged');
-    const routine = await getHiveGitGcRoutine(getOrgPg().sql, HIVE);
+    const routine = await getPotGitGcRoutine(getOrgPg().sql, HIVE);
     expect(routine).not.toBeNull();
     expect(routine!.active).toBe(true);
     expect(routine!.tier).toBe('ephemeral');
@@ -94,7 +94,7 @@ describe('setPotGitMode — arms/disarms the hive-git gc routine (G-9, P-205)', 
 
   it('flipping back to legacy disarms in place — row + config survive', async () => {
     await setPotGitMode(WORKSPACE_ID, HIVE, 'legacy');
-    const routine = await getHiveGitGcRoutine(getOrgPg().sql, HIVE);
+    const routine = await getPotGitGcRoutine(getOrgPg().sql, HIVE);
     expect(routine).not.toBeNull();
     expect(routine!.active).toBe(false);
     expect(routine!.triggerConfig).toMatchObject({ repo_key: HIVE });
@@ -102,10 +102,10 @@ describe('setPotGitMode — arms/disarms the hive-git gc routine (G-9, P-205)', 
 
   it('re-arming after a legacy round-trip and disarming via a cleared setting', async () => {
     await setPotGitMode(WORKSPACE_ID, HIVE, 'p2p-only');
-    expect((await getHiveGitGcRoutine(getOrgPg().sql, HIVE))!.active).toBe(true);
+    expect((await getPotGitGcRoutine(getOrgPg().sql, HIVE))!.active).toBe(true);
     // Clearing the setting (mode: null → default-legacy) must also disarm.
     await setPotGitMode(WORKSPACE_ID, HIVE, null);
     expect(await getPotGitMode(WORKSPACE_ID, HIVE)).toBe('legacy');
-    expect((await getHiveGitGcRoutine(getOrgPg().sql, HIVE))!.active).toBe(false);
+    expect((await getPotGitGcRoutine(getOrgPg().sql, HIVE))!.active).toBe(false);
   });
 });

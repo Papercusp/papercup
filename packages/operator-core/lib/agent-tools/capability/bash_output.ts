@@ -11,10 +11,35 @@ import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { detectBufferingLastStage, getJob, readJobOutput, scratchDir, type BashJob } from './bash-jobs';
+import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
 import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
 import { getTaskByBashJobId } from '../../task-manager/store';
 import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
+
+/**
+ * Cap on the spill log we will read whole to classify a dead typecheck. A tsc
+ * log is small (apps/operator's 850-diagnostic run is ~200KB), so this only ever
+ * trips for something that is not the case we are classifying — and the retained
+ * in-memory tail is the safe fallback, since the OOM/abort signature is written
+ * LAST.
+ */
+const MAX_VERDICT_LOG_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The full job output, for verdict classification only. Falls back to the
+ * retained tail whenever the spill log is unreadable or implausibly large —
+ * never throws, because a failure to classify must degrade to "no verdict", not
+ * to a failed poll.
+ */
+function readJobLogForVerdict(job: BashJob): string {
+  try {
+    if (statSync(job.logPath).size > MAX_VERDICT_LOG_BYTES) return job.buffer;
+    return readFileSync(job.logPath, 'utf8');
+  } catch {
+    return job.buffer;
+  }
+}
 
 /** Tail this many bytes of a stranded job's log when the in-memory registry
  *  missed but the file survived on disk (EI-8855). */
@@ -464,6 +489,21 @@ export default defineTool({
     const fullChunk = readJobOutput(job, args.peek ?? false);
     const { output, error: filterError } = filterOutputLines(fullChunk, args.filter);
     const cpu = sampleJobCpu(job);
+    // EI-20057167830211785: a backgrounded `tsc` that DIED (OOM, signal, bad
+    // operand) emits a V8 dump and zero `error TS` lines, so every natural probe
+    // — a grep count, an eyeball of the tail, this tool's own `output` — reads
+    // exactly like a clean compile. The foreground paths already refuse that
+    // reading; a backgrounded one had nowhere to say it, and backgrounding is
+    // what agents are ROUTED to for any project too big for the ~50s foreground
+    // cap. Deliberately computed from the SPILL LOG, not from `output`: `output`
+    // is only the since-cursor chunk, so a caller that drained the log while the
+    // job ran would be classified against an empty string.
+    const deadTypecheck = backgroundTypecheckVerdict({
+      command: job.command,
+      status: job.status,
+      exitCode: job.exitCode,
+      log: readJobLogForVerdict(job),
+    });
     return {
       content: [
         {
@@ -478,10 +518,18 @@ export default defineTool({
             log_path: job.logPath,
             ...cpu,
             ...(filterError ? { filter_error: filterError } : {}),
+            ...(deadTypecheck
+              ? {
+                  typecheck_verdict: deadTypecheck.reason,
+                  headline: deadTypecheck.headline,
+                  advice: deadTypecheck.advice,
+                }
+              : {}),
             output,
           }),
         },
       ],
+      ...(deadTypecheck ? { isError: true } : {}),
     };
   },
 });

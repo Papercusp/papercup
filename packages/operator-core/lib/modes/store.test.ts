@@ -17,6 +17,11 @@ interface Row {
   set_by: string;
   owner_directed: boolean;
   set_at: string;
+  /* Modelled because GOAL's whole provenance chain hangs off it —
+     work_items.goal_id is stamped FROM agent_modes.subject. A mock that drops
+     the column answers "subject: null" to every question, which is
+     indistinguishable from the bug where the column is never written. */
+  subject: string | null;
 }
 
 /** In-memory agent_modes + agent_mode_changes behind a postgres.js-shaped tagged template. */
@@ -36,12 +41,33 @@ function mockSql() {
       return Promise.resolve([]);
     }
     if (text.includes('INSERT INTO harness_shared.agent_modes')) {
-      const [ws, owner, axis, mode, reason, setBy, ownerDirected] = vals as string[];
-      modes.set(key(ws, owner, axis), {
+      const [ws, owner, axis, mode, reason, setBy, ownerDirected, subject] = vals as string[];
+      const k = key(ws, owner, axis);
+      /* TWO different inserts hit this branch and they must NOT be modelled the
+         same way (D-003). The primary write is ON CONFLICT DO UPDATE — an upsert
+         that displaces the same-axis incumbent. The implication cascade is
+         ON CONFLICT DO NOTHING … RETURNING mode — "adopt this axis only if it is
+         free", whose whole purpose is that it CANNOT displace.
+         A mock that ignores the conflict clause returns a well-formed answer to
+         the question asked while doing the opposite of what PG would: it
+         overwrites on conflict (breaking the never-displace property this mock
+         is supposed to prove) and returns no RETURNING row (so the caller reads
+         a successful insert as a conflict). Both errors are invisible from a
+         green run — the row is there either way. */
+      const doNothing = text.includes('DO NOTHING');
+      if (doNothing && modes.has(k)) return Promise.resolve([]); // PK conflict: no write, no row
+      modes.set(k, {
         workspace_id: ws, owner_id: owner, axis_key: axis, mode,
         reason, set_by: setBy, owner_directed: Boolean(ownerDirected), set_at: '2026-07-05T00:00:00Z',
+        subject: subject ?? null,
       });
-      return Promise.resolve([]);
+      return Promise.resolve(doNothing ? [{ mode }] : []); // RETURNING mode
+    }
+    // The cascade's "who holds this axis instead" report read.
+    if (text.includes('SELECT mode FROM harness_shared.agent_modes')) {
+      const [ws, owner, axis] = vals as string[];
+      const row = modes.get(key(ws, owner, axis));
+      return Promise.resolve(row ? [{ mode: row.mode }] : []);
     }
     if (text.includes('DELETE FROM harness_shared.agent_modes')) {
       const [ws, owner, axis] = vals as string[];
@@ -169,7 +195,15 @@ describe('setMode semantics', () => {
     expect(res.ok).toBe(true);
     expect(res.switchedFrom).toBeNull(); // overlays stack — ideate survives
     const rows = await getModes(WS, ME, m.sql);
-    expect(rows.map((r) => r.mode).sort()).toEqual(['drain', 'ideate']);
+    // 'auto' is here because DRAIN implies it and the store now writes it (D-003) —
+    // this expectation moved from ['drain','ideate'] on purpose.
+    expect(rows.map((r) => r.mode).sort()).toEqual(['auto', 'drain', 'ideate']);
+    expect(res.implied).toEqual([{ mode: 'auto', status: 'set' }]);
+    // A peer-driven implication is still attributed to the peer, and a peer can
+    // no more arm sticky through an implication than through a direct set.
+    const auto = rows.find((r) => r.mode === 'auto')!;
+    expect(auto.setBy).toBe(PEER);
+    expect(auto.ownerDirected).toBe(false);
     const drain = rows.find((r) => r.mode === 'drain')!;
     expect(drain.setBy).toBe(PEER);
     expect(drain.ownerDirected).toBe(false); // peers can never arm sticky for others
@@ -284,5 +318,152 @@ describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified
     expect(res.ok).toBe(true);
     const rows = await getModes(WS, ME, m.sql);
     expect(rows[0].ownerDirected).toBe(false);
+  });
+});
+
+/**
+ * THE IMPLICATION CASCADE (D-003).
+ *
+ * [owner 2026-08-10] "make sure goal mode implies both auto and ideate mode."
+ * The mechanism is the deliverable: entering GOAL must LEAVE the agent holding
+ * auto + ideate whether or not anyone remembered a second call. These are
+ * properties of the STORE, not of the `mode:set` tool, because three doors enter
+ * a mode and only one of them is that tool.
+ *
+ * WHAT THIS SUITE CANNOT PROVE. The never-displace property rests on PG's
+ * `ON CONFLICT … DO NOTHING`, which mockSql models by hand — so green here means
+ * "the store asks for the right thing", not "PG does it". A live rolled-back
+ * round-trip is what closes that half; this file is deliberately not trusted for
+ * it.
+ */
+describe('implication cascade (D-003)', () => {
+  let m: ReturnType<typeof mockSql>;
+  beforeEach(() => { m = mockSql(); });
+
+  const enterGoal = (over: Partial<Parameters<typeof setMode>[0]> = {}) =>
+    setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'goal', enabled: true,
+      reason: 'owns goal g-1', setBy: ME, subject: 'g-1', sql: m.sql, ...over,
+    });
+
+  it('GOAL writes the auto AND ideate rows itself, and reports both', async () => {
+    const res = await enterGoal();
+    expect(res.ok).toBe(true);
+    expect(res.implied).toEqual([
+      { mode: 'auto', status: 'set' },
+      { mode: 'ideate', status: 'set' },
+    ]);
+    expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['auto', 'goal', 'ideate']);
+  });
+
+  it('audits every implied entry — "who put this agent in AUTO" answers "the goal cascade"', async () => {
+    await enterGoal();
+    expect(m.changes.map((c) => c.newMode).sort()).toEqual(['auto', 'goal', 'ideate']);
+    const autoChange = m.changes.find((c) => c.newMode === 'auto')!;
+    expect(autoChange.oldMode).toBeNull();
+    expect(String(autoChange.reason)).toContain("implied by 'goal'");
+  });
+
+  /**
+   * THE PROPERTY MOST WORTH GUARDING. cold-auto already satisfies "implies
+   * auto"; replacing it with plain auto would silently downgrade a posture the
+   * agent deliberately chose. An ordinary upsert WOULD have replaced it — which
+   * is precisely why the cascade is a DO NOTHING insert and not a setMode call.
+   */
+  it('NEVER displaces an occupied axis — cold-auto survives and is reported as holding it', async () => {
+    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'cold-auto', enabled: true, reason: 'unattended wakes', setBy: ME, sql: m.sql });
+    const res = await enterGoal();
+    expect(res.implied).toEqual([
+      { mode: 'auto', status: 'axis-held', by: 'cold-auto' },
+      { mode: 'ideate', status: 'set' },
+    ]);
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows.map((r) => r.mode).sort()).toEqual(['cold-auto', 'goal', 'ideate']);
+    // untouched, not merely present — a rewrite with the cascade's reason would
+    // still leave cold-auto "there" while destroying who set it and why.
+    expect(rows.find((r) => r.mode === 'cold-auto')!.reason).toBe('unattended wakes');
+  });
+
+  it('reports an implied mode the agent was already in as already-on, without a second write', async () => {
+    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'ideate', enabled: true, reason: 'was already ideating', setBy: ME, sql: m.sql });
+    const before = m.changes.length;
+    const res = await enterGoal();
+    expect(res.implied).toContainEqual({ mode: 'ideate', status: 'already-on' });
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows.find((r) => r.mode === 'ideate')!.reason).toBe('was already ideating');
+    expect(m.changes.length - before).toBe(2); // goal + auto only — ideate was not re-audited
+  });
+
+  /**
+   * THE REPAIR PATH — and the reason the cascade is not gated on "something
+   * changed". An agent whose auto row was cleared (a peer, a wipe) re-asserts
+   * its mode to fix it; if a no-op mode write skipped the cascade, that one
+   * natural call would be the one call that does nothing.
+   */
+  it('is IDEMPOTENT and REPAIRS: a no-op re-entry restores a missing implied row', async () => {
+    await enterGoal();
+    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: false, reason: 'a peer cleared it', setBy: ME, sql: m.sql });
+    expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['goal', 'ideate']);
+
+    const again = await enterGoal(); // identical args ⇒ the mode write itself is a noop
+    expect(again.noop).toBe(true);
+    expect(again.implied).toEqual([
+      { mode: 'auto', status: 'set' },
+      { mode: 'ideate', status: 'already-on' },
+    ]);
+    expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['auto', 'goal', 'ideate']);
+  });
+
+  /**
+   * NOT MIRRORED ON EXIT, on purpose: the agent may have been in AUTO before it
+   * ever entered GOAL, and revoking a posture the owner set independently is a
+   * destructive guess. "Entering this means entering those" ≠ "these are mine".
+   */
+  it('does NOT clear implied modes when the implying mode is turned off', async () => {
+    await enterGoal();
+    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'goal', enabled: false, reason: 'goal shipped', setBy: ME, sql: m.sql });
+    expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['auto', 'ideate']);
+  });
+
+  it('does not propagate the implying mode SUBJECT to the modes it implies', async () => {
+    await enterGoal();
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows.find((r) => r.mode === 'goal')!.subject).toBe('g-1');
+    expect(rows.find((r) => r.mode === 'auto')!.subject).toBeNull();
+  });
+
+  it("carries the implying write's ownerDirected onto implied rows, so a peer cannot clear an owner-directed GOAL's AUTO", async () => {
+    await enterGoal({ ownerDirected: true });
+    expect((await getModes(WS, ME, m.sql)).find((r) => r.mode === 'auto')!.ownerDirected).toBe(true);
+    const peerClear = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: false, reason: 'peer clears', setBy: PEER, sql: m.sql });
+    expect(peerClear.stickyConflict).toBe(true);
+  });
+
+  it('a mode with no implications reports none (no empty `implied` noise)', async () => {
+    const res = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'grade', enabled: true, reason: 'watch the gate', setBy: ME, sql: m.sql });
+    expect(res.implied).toBeUndefined();
+  });
+
+  /**
+   * A cascade write that fails must degrade LOUDLY. Silence is the half-applied
+   * state this whole mechanism exists to abolish: the agent would be in GOAL,
+   * be treated by every guard as autonomous, and hold no autonomy row.
+   */
+  it('reports a failed implied write instead of swallowing it — and never fails the applied primary', async () => {
+    let hits = 0;
+    const failing = ((first: unknown, ...vals: unknown[]) => {
+      const text = Array.isArray(first) && 'raw' in (first as object) ? (first as string[]).join(' ') : '';
+      if (text.includes('DO NOTHING') && ++hits === 1) return Promise.reject(new Error('deadlock detected'));
+      return (m.sql as unknown as (f: unknown, ...v: unknown[]) => unknown)(first, ...vals);
+    }) as unknown as Sql;
+    const res = await setMode({
+      workspaceId: WS, ownerId: ME, modeId: 'goal', enabled: true,
+      reason: 'owns goal g-1', setBy: ME, subject: 'g-1', sql: failing,
+    });
+    expect(res.ok).toBe(true); // the primary landed and is NOT rolled back
+    expect(res.implied).toEqual([
+      { mode: 'auto', status: 'failed', error: 'deadlock detected' },
+      { mode: 'ideate', status: 'set' },
+    ]);
   });
 });

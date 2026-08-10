@@ -33,6 +33,13 @@ const h = vi.hoisted(() => ({
       switchedFrom?: string | null;
       noop?: boolean;
       stickyConflict?: boolean;
+      // D-003. Optional on the ANNOTATION for the same reason stickyConflict is
+      // (see above): present-but-undefined in the default value would make it
+      // REQUIRED in the inferred type and strand every fixture that omits it.
+      // Declared here rather than cast at the call site so the fixture stays
+      // typechecked — an `as never` would silence exactly the check that catches
+      // this shape going stale (lint:mock-cast-escape).
+      implied?: { mode: string; status: string; by?: string; error?: string }[];
     }> => ({
       ok: true,
       mode: { id: 'auto' },
@@ -90,6 +97,7 @@ import setTool, {
   wakeSourceLostWarning,
   modeInstructionsFactKey,
   renderModeInstructionsFact,
+  renderImpliedNote,
 } from './set';
 import { ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 
@@ -506,5 +514,58 @@ describe('mode:set handler — callerIsOwnerAuthority wiring', () => {
     expect(h.sendMessage).toHaveBeenCalledTimes(1);
     const [, sendOpts] = h.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
     expect(sendOpts.to).toEqual([ME]);
+  });
+});
+
+/**
+ * REPORTING THE CASCADE (D-003).
+ *
+ * The store writes the implied rows; this layer's job is making them VISIBLE.
+ * An agent that cannot see it entered AUTO will still write "should I proceed?",
+ * which is the behaviour the implication exists to remove — so an unreported
+ * cascade is only half the fix.
+ */
+describe('implied-mode reporting', () => {
+  it('states the resulting posture, and distinguishes axis-held from already-on', () => {
+    const note = renderImpliedNote('goal', [
+      { mode: 'auto', status: 'axis-held', by: 'cold-auto' },
+      { mode: 'ideate', status: 'set' },
+    ]);
+    expect(note).toContain("'goal' IMPLIES auto + ideate");
+    // the distinction that matters: telling an agent in cold-auto that "auto is
+    // already on" would be telling it something false.
+    expect(note).toContain("'cold-auto' already holds that axis");
+    expect(note).toContain('You now hold: goal, ideate');
+    expect(note).not.toContain('auto,'); // auto is NOT among what it holds
+  });
+
+  it('flags a partial posture loudly and names the repair', () => {
+    const note = renderImpliedNote('goal', [
+      { mode: 'auto', status: 'failed', error: 'deadlock detected' },
+      { mode: 'ideate', status: 'set' },
+    ])!;
+    expect(note).toContain('FAILED: deadlock detected');
+    expect(note).toContain('re-run mode:set to repair it');
+  });
+
+  it('renders nothing for a mode that implies nothing', () => {
+    expect(renderImpliedNote('grade', [])).toBeNull();
+  });
+
+  it('returns the CONTRACTS of newly-entered modes on a self-set — they bind immediately', async () => {
+    h.setMode.mockResolvedValueOnce({
+      ok: true,
+      mode: { id: 'goal' },
+      implied: [
+        { mode: 'auto', status: 'set' },
+        { mode: 'ideate', status: 'already-on' },
+      ],
+    });
+    const out = parse(await run({ mode: 'goal', reason: 'owns g-1', subject: 'g-1' }));
+    expect(out.implied).toHaveLength(2);
+    expect(out.impliedNote).toContain('IMPLIES auto + ideate');
+    // ONLY the newly-entered one: the agent has already read the other's rules.
+    expect(Object.keys(out.impliedContracts)).toEqual(['auto']);
+    expect(out.impliedContracts.auto).toContain('AUTO mode');
   });
 });

@@ -277,14 +277,21 @@ export default defineTool({
 
     // ── 3. the agent ──────────────────────────────────────────────────────
     const rollback = async () => {
-      await setMode({
-        workspaceId,
-        ownerId,
-        modeId: 'goal',
-        enabled: false,
-        reason: 'launch failed — rolling back',
-        setBy: callerOwnerId ?? 'operator-ui',
-      }).catch(() => {});
+      /* D-003: entering GOAL also wrote the modes it IMPLIES (auto, ideate), so
+         a rollback that only clears 'goal' strands them on an ownerId that was
+         never spawned. Clear exactly what the cascade SET — never a mode it
+         merely found already there, which on a fresh ownerId is impossible but
+         on a re-used one would revoke a posture this call did not create. */
+      for (const modeId of ['goal', ...(modeRes.implied ?? []).filter((i) => i.status === 'set').map((i) => i.mode)]) {
+        await setMode({
+          workspaceId,
+          ownerId,
+          modeId,
+          enabled: false,
+          reason: 'launch failed — rolling back',
+          setBy: callerOwnerId ?? 'operator-ui',
+        }).catch(() => {});
+      }
       await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
     };
 

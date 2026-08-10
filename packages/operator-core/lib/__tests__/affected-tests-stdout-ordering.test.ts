@@ -26,7 +26,49 @@ import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
+
 import { writeAllSync, outSync, errSync } from '../../../../scripts/lib/sync-write.mjs';
+
+/**
+ * The dotted name of a call's callee (`console.log`, `process.stderr.write`), built
+ * from the AST rather than `getText()` so incidental whitespace/comments inside the
+ * property access cannot hide a call. Returns null for anything not rooted in a
+ * plain identifier (e.g. `obj[fn]()`).
+ */
+function calleeName(expr: ts.PropertyAccessExpression): string | null {
+  const parts: string[] = [expr.name.text];
+  let cur: ts.Expression = expr.expression;
+  while (ts.isPropertyAccessExpression(cur)) {
+    parts.unshift(cur.name.text);
+    cur = cur.expression;
+  }
+  if (!ts.isIdentifier(cur)) return null;
+  parts.unshift(cur.text);
+  return parts.join('.');
+}
+
+/**
+ * Every async-write CALL in `text`, by callee name. AST-based on purpose: a raw
+ * source regex cannot tell a call from the same tokens sitting in a comment or a
+ * string literal, and this rule is one whose own documentation naturally NAMES the
+ * calls it forbids. See the falsifiability test below.
+ */
+function findAsyncRunnerWrites(text: string): string[] {
+  const sf = ts.createSourceFile('affected-tests.mjs', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const hits: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const callee = calleeName(node.expression);
+      if (callee && (/^console\.(log|warn|error)$/.test(callee) || /^process\.(stdout|stderr)\.write$/.test(callee))) {
+        hits.push(callee);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return hits;
+}
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const SYNC_WRITE = resolve(REPO_ROOT, 'scripts/lib/sync-write.mjs');
@@ -189,7 +231,27 @@ describe('affected-tests.mjs uses the synchronous writer for its own output (EI-
     // stays ordered with inherit-mode child output. A reintroduced console.log /
     // console.warn / console.error / process.stdout.write / process.stderr.write
     // for the runner's own output re-opens the misattribution.
-    expect(source).not.toMatch(/console\.(log|warn|error)\(/);
-    expect(source).not.toMatch(/process\.(stdout|stderr)\.write\(/);
+    //
+    // Detected on the AST, not by a source regex. This rule is one whose own
+    // documentation naturally NAMES the calls it forbids, and a raw text match reads
+    // that prose — and any string literal — as live code. Not hypothetical: it
+    // red-lined the fleet's test:affected once already, when a COMMENT added to
+    // affected-tests.mjs explaining the pipe-truncation class (EI-20055889379250637)
+    // was scanned as a call. The invariant is about emitted OUTPUT, so the detector
+    // must look at calls, not text.
+    expect(findAsyncRunnerWrites(source)).toEqual([]);
+  });
+
+  it('the AST detector actually fires on a reintroduced call (falsifiability)', () => {
+    // A detector that can only ever answer "clean" is not a guard. Prove it flags the
+    // real calls while ignoring the identical tokens in a comment and a string.
+    const planted = [
+      '// console.log( and process.stdout.write( named in prose must NOT count',
+      'const doc = "console.error(also not a call)";',
+      'outSync(`fine`);',
+      'console.log(`real`);',
+      'process.stderr.write("real");',
+    ].join('\n');
+    expect(findAsyncRunnerWrites(planted).sort()).toEqual(['console.log', 'process.stderr.write']);
   });
 });

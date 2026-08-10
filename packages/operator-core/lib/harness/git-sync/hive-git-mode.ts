@@ -171,7 +171,7 @@ export async function setPotGitMode(
 
 /**
  * G-9 (P-205): THE mode-flip call site hive-git-gc-routine.ts names as the
- * owner of gc activation — off-legacy arms the hive-home's `system:hive-git-gc`
+ * owner of gc activation — off-legacy arms the pot-home's `system:pot-git-gc`
  * ephemeral routine; back-to-legacy (or a cleared setting) disarms it in place
  * (row + cadence config kept for re-activation; the action's own mode
  * self-gate stays as defense-in-depth, not the primary gate). Arms against the

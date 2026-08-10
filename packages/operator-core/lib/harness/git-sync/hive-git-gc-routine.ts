@@ -69,7 +69,7 @@ function routineId(installSlug: string, name: string): string {
 }
 
 /**
- * Upsert the hive-home's `system:hive-git-gc` ephemeral routine. Re-running is
+ * Upsert the pot-home's `system:pot-git-gc` ephemeral routine. Re-running is
  * idempotent (ON CONFLICT updates trigger_config/target_role/tier/active only —
  * never clobbers a human-edited `active` toggle on a bare re-materialize; pass
  * `active` explicitly to change it, e.g. from the mode-flip call site).

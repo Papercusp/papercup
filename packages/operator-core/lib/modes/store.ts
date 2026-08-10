@@ -19,7 +19,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { modeById, axisKeyFor, type ModeDef } from './registry';
+import { modeById, axisKeyFor, resolveImpliedModes, modeRequiresSubject, type ModeDef } from './registry';
 import { notifyAgentOrdersChanged } from '../agent-orders-notify';
 
 export interface ModeRow {
@@ -79,6 +79,30 @@ export interface SetModeOpts {
   sql?: Sql;
 }
 
+/**
+ * What the cascade did about ONE implied mode (D-003).
+ *
+ * Four outcomes, all reported rather than any being silent, because the whole
+ * point of the mechanism is that the agent can SEE what it now holds:
+ *   - `set`        — the axis was empty and this mode now occupies it;
+ *   - `already-on` — the agent was already in it (an idempotent re-entry);
+ *   - `axis-held`  — a DIFFERENT mode holds that axis and was left alone
+ *                    (`by` names it: cold-auto satisfies "implies auto", and
+ *                    replacing it with plain auto would be a downgrade nobody
+ *                    asked for);
+ *   - `skipped`    — refused on purpose; `error` says why.
+ *   - `failed`     — the write errored; `error` carries it.
+ */
+export type ImpliedModeStatus = 'set' | 'already-on' | 'axis-held' | 'skipped' | 'failed';
+
+export interface ImpliedModeOutcome {
+  mode: string;
+  status: ImpliedModeStatus;
+  /** The mode occupying that axis instead — only on `axis-held`. */
+  by?: string;
+  error?: string;
+}
+
 export interface SetModeResult {
   ok: boolean;
   /** The write was refused because the incumbent is owner-directed and the caller is a peer. */
@@ -88,6 +112,12 @@ export interface SetModeResult {
   /** True when the write changed nothing (already in / already out). */
   noop?: boolean;
   mode?: ModeDef;
+  /**
+   * The modes this one IMPLIES and what became of each (D-003). Present on any
+   * successful ENABLE of a mode that declares `implies` — including a `noop`
+   * re-entry, which is deliberately how a missing implied row gets REPAIRED.
+   */
+  implied?: ImpliedModeOutcome[];
   error?: string;
 }
 
@@ -177,6 +207,116 @@ async function audit(
 }
 
 /**
+ * ── THE IMPLICATION CASCADE (D-003) ─────────────────────────────────────────
+ *
+ * [owner 2026-08-10, interactive: "make sure goal mode implies both auto and
+ * ideate mode. Does that need to be added to the prompt or just part of the
+ * system?"] — Both, but THIS is the real fix. The contract used to end with
+ * "GOAL implies AUTO: if the autonomy axis is empty, also mode:set auto", i.e. an
+ * instruction to the agent to perform a second call. A directive that depends on
+ * an agent remembering to call a tool is exactly what gets dropped at a
+ * compaction — and every guard downstream (`modeImpliesAutonomy`) meanwhile
+ * treated the session as autonomous whether or not the row was ever written.
+ *
+ * WHY IT LIVES IN THE STORE AND NOT IN THE `mode:set` TOOL. Three doors enter a
+ * mode — the tool, `goals:start` (which mints a GOAL agent before it is even
+ * spawned), and `bootstrap-su.syncLaunchModeToRegistry` (the launch-flag sync) —
+ * and only one of them is the tool. Putting the cascade one layer down means a
+ * door cannot forget it, the same structural argument P-004's launch resolver
+ * won: the reliable mechanism is the one no caller has to remember.
+ *
+ * FILL AN EMPTY AXIS, NEVER DISPLACE. Expressed as a single INSERT … ON CONFLICT
+ * DO NOTHING rather than a read-then-`setMode`, for two reasons that are both
+ * about correctness, not brevity:
+ *   - ATOMIC. A check-then-write races another writer through the gap, and the
+ *     ordinary upsert would then DISPLACE what it found. DO NOTHING cannot.
+ *   - SEMANTICALLY DIFFERENT from `setMode`. "Enter this mode, replacing the
+ *     same-axis incumbent" and "adopt this mode only if that axis is free" are
+ *     genuinely different operations. cold-auto already satisfies "implies
+ *     auto"; overwriting it with plain auto would silently downgrade a posture
+ *     the agent (or owner) deliberately chose.
+ *
+ * NOT MIRRORED ON EXIT, on purpose. Leaving GOAL does not clear auto/ideate: the
+ * agent may well have been in AUTO before it ever entered GOAL, and revoking a
+ * posture the owner set independently is a destructive guess. The implication is
+ * "entering this means entering those", not "these belong to me".
+ */
+async function applyImpliedModes(
+  sql: Sql,
+  o: {
+    workspaceId: string;
+    ownerId: string;
+    modeId: string;
+    reason: string;
+    setBy: string;
+    ownerDirected: boolean;
+  },
+): Promise<ImpliedModeOutcome[]> {
+  const out: ImpliedModeOutcome[] = [];
+  for (const id of resolveImpliedModes(o.modeId)) {
+    const def = modeById(id);
+    if (!def) continue; // unreachable — resolveImpliedModes drops unknown ids
+    /* A mode that is ABOUT something cannot be implied: the cascade has no
+       subject to give it, and entering it unattributed is the exact silent
+       zeroing EI-20015592992797890 documents (work_items.goal_id stops stamping
+       while every surface still looks healthy). Refuse loudly instead. The
+       registry test asserts no such declaration exists, so this is the belt to
+       that braces. */
+    if (modeRequiresSubject(def.id)) {
+      out.push({
+        mode: def.id,
+        status: 'skipped',
+        error: `'${def.id}' requires a subject, which an implication cannot supply — declare it explicitly, not via implies`,
+      });
+      continue;
+    }
+    const axisKey = axisKeyFor(def);
+    const reason = `implied by '${o.modeId}' — ${o.reason}`;
+    try {
+      const inserted = await sql`
+        INSERT INTO harness_shared.agent_modes
+          (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject)
+        VALUES (${o.workspaceId}, ${o.ownerId}, ${axisKey}, ${def.id}, ${reason},
+                ${o.setBy}, ${o.ownerDirected}, now(), ${null})
+        ON CONFLICT (workspace_id, owner_id, axis_key) DO NOTHING
+        RETURNING mode`;
+      if (inserted.length) {
+        // Audited like any other transition: an implied entry is a real posture
+        // change and must be as traceable as a hand-set one — "who put this
+        // agent in AUTO" has to answer "the goal cascade", not nothing.
+        await audit(sql, {
+          workspaceId: o.workspaceId, ownerId: o.ownerId, axisKey,
+          oldMode: null, newMode: def.id, reason, setBy: o.setBy, ownerDirected: o.ownerDirected,
+        });
+        out.push({ mode: def.id, status: 'set' });
+        continue;
+      }
+      // The axis was already occupied. Read WHO for the report only — the write
+      // decision above was already made atomically, so this cannot race into a
+      // wrong action, only into a slightly stale label.
+      const held = await sql`
+        SELECT mode FROM harness_shared.agent_modes
+        WHERE workspace_id = ${o.workspaceId} AND owner_id = ${o.ownerId} AND axis_key = ${axisKey}
+        LIMIT 1`;
+      const by = held.length ? String((held[0] as { mode: unknown }).mode) : null;
+      out.push(
+        by && by !== def.id
+          ? { mode: def.id, status: 'axis-held', by }
+          : { mode: def.id, status: 'already-on' },
+      );
+    } catch (e) {
+      /* Fail-SOFT but LOUD. The primary mode change already landed and is
+         audited; failing it now would be worse than a partial application. But
+         an unreported miss is the silent half-state this mechanism exists to
+         abolish, so it is returned to the caller (and surfaced by mode:set)
+         rather than swallowed. */
+      out.push({ mode: def.id, status: 'failed', error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return out;
+}
+
+/**
  * Apply one mode transition with the axis + sticky semantics. See module doc.
  * All-or-nothing per call; never throws for semantic refusals (returns
  * stickyConflict / error), only for infrastructure failures.
@@ -245,7 +385,17 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
       incumbent.reason === opts.reason &&
       incumbent.subject === nextSubject
     ) {
-      return { ok: true, noop: true, mode: def };
+      /* D-003: a NOOP re-entry still cascades, and that is the point — this is
+         how a missing implied row gets REPAIRED. An agent whose auto row was
+         cleared by a peer (or a wipe) re-asserts GOAL and gets the posture back;
+         if the cascade were gated on "something changed", the one call an agent
+         would naturally make to fix it would be the one call that does nothing. */
+      const implied = await applyImpliedModes(sql, {
+        workspaceId: opts.workspaceId, ownerId: opts.ownerId, modeId: def.id,
+        reason: opts.reason, setBy: opts.setBy, ownerDirected,
+      });
+      if (implied.some((i) => i.status === 'set')) await notifyAgentOrdersChanged(opts.ownerId);
+      return { ok: true, noop: true, mode: def, ...(implied.length ? { implied } : {}) };
     }
   }
 
@@ -262,10 +412,17 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     workspaceId: opts.workspaceId, ownerId: opts.ownerId, axisKey,
     oldMode: incumbent?.mode ?? null, newMode: def.id, reason: opts.reason, setBy: opts.setBy, ownerDirected,
   });
+  // D-003: applied BEFORE the orders notify below, so the single push carries the
+  // whole posture — the primary mode and everything it implied — rather than the
+  // UI briefly rendering an agent in GOAL with an empty autonomy axis.
+  const implied = await applyImpliedModes(sql, {
+    workspaceId: opts.workspaceId, ownerId: opts.ownerId, modeId: def.id,
+    reason: opts.reason, setBy: opts.setBy, ownerDirected,
+  });
   // WI-6974: same as the clear branch — a set / auto-switch / reason-refresh is a
   // real orders change for THIS owner. Both `noop` early-returns above are already
   // past, so this never fires on a re-assert that wrote nothing.
   await notifyAgentOrdersChanged(opts.ownerId);
   const switchedFrom = incumbent && incumbent.mode !== def.id ? incumbent.mode : null;
-  return { ok: true, mode: def, switchedFrom };
+  return { ok: true, mode: def, switchedFrom, ...(implied.length ? { implied } : {}) };
 }

@@ -548,7 +548,29 @@ const D7_TAB_RE = /["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/g;
 // renamed hive-control-policy.ts -> pot-control-policy.ts while this regex still read
 // `hive-control`, the file silently fell OUT of the census and the next baseline re-seed
 // recorded that loss as normal. (WI-37687)
-const NAMED_CONTROL_SURFACES = /(PotHealthPane|PlanRail|LocalPotsControl|MugTab|KettleTab|AdvNowRunning|pot-control$)/;
+// Split by INTENT so a guard can tell a broken literal from a deliberately-absent one
+// (EI-20059308594618912). Before the split these were one alternation, and "this literal
+// matches nothing" was ambiguous: it meant EITHER the census had gone blind to a rename
+// (the hive-control bug above) OR the surface is retired and absent on purpose. Those need
+// opposite responses, so the distinction is declared here rather than guessed by the reader.
+//
+// LIVE: these name surfaces that exist today. A literal here matching NOTHING is a BUG —
+// the census has stopped seeing a file that still exists under a new name.
+const LIVE_CONTROL_SURFACES = [
+  'PotHealthPane', 'PlanRail', 'LocalPotsControl', 'MugTab', 'AdvNowRunning', 'pot-control$',
+];
+// TRIPWIRES: retired surfaces that must NOT exist. A literal here matching nothing is the
+// DESIRED state — it is armed to fire if the surface ever reappears. Do not "fix" one by
+// deleting it; that disarms the tripwire.
+const RETIRED_SURFACE_TRIPWIRES = ['KettleTab'];
+// Same alternatives as the single regex this replaces. `KettleTab` moves to the END of the
+// alternation, which cannot change behaviour here: the only use is `.test(base)`, a boolean,
+// and no caller reads a capture group — alternation order decides WHICH branch matched, never
+// WHETHER one did. (Verified after the split: the census reports the same 6 named-control
+// entries and `check-ungated-mug-kettle.mjs` still exits 0.)
+const NAMED_CONTROL_SURFACES = new RegExp(
+  `(${[...LIVE_CONTROL_SURFACES, ...RETIRED_SURFACE_TRIPWIRES].join('|')})`,
+);
 
 for (const abs of allFiles) {
   const r = rel(abs);

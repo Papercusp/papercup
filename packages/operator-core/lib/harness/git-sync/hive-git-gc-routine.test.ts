@@ -87,7 +87,7 @@ describe('getPotGitGcRoutine', () => {
         id: 'rt_shop_hive_pot_git_gc',
         workspace_id: 'ws-1',
         install_slug: 'shop-hive',
-        name: 'hive-git-gc',
+        name: 'pot-git-gc',
         trigger_kind: 'cron',
         trigger_config: { interval_sec: 3600 },
         target_role: POT_GIT_GC_TARGET,

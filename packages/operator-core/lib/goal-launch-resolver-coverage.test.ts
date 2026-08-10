@@ -39,6 +39,23 @@ const ALLOWLIST: Record<string, string> = {
     'no owner id to resolve goal context FROM — resolveGoalLaunch would return null on every call and ' +
     'the wiring would be ceremony. A GUI launch is not associated with a goal until it inherits one at ' +
     'bootstrap (D-008), and it is bounded by the ceiling from that point on.',
+  'behaviour-suite/runner-node.ts':
+    'The behaviour-battery harness. It launches throwaway agents to EXERCISE agent behaviour under test ' +
+    'fixtures; they do no goal work and must not consume a real goal ceiling. Binding them would also ' +
+    'make the suite fail for a reason that has nothing to do with the behaviour being measured.',
+  'endpoint-route/routes/agent-mcp/bootstrap-su.ts':
+    'The CHILD side, and the opposite direction of travel: reconstructPsuLaunchArgv REBUILDS the argv of a ' +
+    'session that has ALREADY booted, so it can be recorded as launch_argv. Nothing spawns. This is also ' +
+    'where an inherited goal context is WRITTEN onto the child (D-008) — it consumes goal lineage rather ' +
+    'than deciding a launch, so a ceiling check here would be checking a launch that already happened.',
+  'desktop-install/papercusp-files.ts':
+    'Not a launch at all: it GENERATES the installed `papercup` shell shim, whose text happens to contain ' +
+    'a psu exec line. Nothing spawns when this runs. The shim, when a human later runs it, is a GUI-style ' +
+    'launch with no launcher agent — the same case as launch-su.ts above.',
+  'endpoint-route/routes/desktop/docs-agent-ask.ts':
+    'The docs tutor. It opens a short-lived agent to answer a HUMAN question about the documentation, ' +
+    'launched from a desktop route with no launcher agent to resolve goal context from. It is not ' +
+    'portfolio work and must not be refused because a goal elsewhere is at its ceiling.',
   'p2p/delegated-spawn-honor.ts':
     'The HONORING side of a cross-machine spawn request. The goal, its settings and its ceilings live ' +
     'with the REQUESTER on another host, and are enforced there when its goal agent calls the launch ' +
@@ -47,9 +64,29 @@ const ALLOWLIST: Record<string, string> = {
 };
 
 const COMPOSERS = /\b(buildAgentLaunchCommand|memberLaunchCommand)\s*\(/;
-/** A hand-rolled psu argv: the launcher flags every psu command carries. */
+/** A hand-rolled psu argv: the flag every scripted psu launch carries. */
 const HAND_BUILT_ARGV = /--no-picker/;
 const RESOLVER = /\bresolveGoalLaunch(ForGoal)?\b/;
+
+/**
+ * Drop comment lines before detecting.
+ *
+ * Without this the guard reports four files that only MENTION `--no-picker` in
+ * prose (capability/terminal.ts, console-launcher.ts, bootstrap-su.ts,
+ * launch-agent.ts all discuss the flag without composing a launch). A guard whose
+ * failure list is mostly false positives gets its allowlist padded until the real
+ * entries are invisible — which is how an allowlist stops being a record of
+ * exceptions and becomes a way to silence the check.
+ */
+function stripComments(src: string): string {
+  return src
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim();
+      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+    })
+    .join('\n');
+}
 
 /** agent-launch-core DEFINES the composers; it is the floor, not a door. */
 const NOT_A_DOOR = new Set(['agent-launch-core.ts']);
@@ -71,7 +108,7 @@ function spawnSites(): string[] {
   for (const file of walk(LIB_ROOT)) {
     const rel = relative(LIB_ROOT, file).split(sep).join('/');
     if (NOT_A_DOOR.has(rel)) continue;
-    const src = readFileSync(file, 'utf8');
+    const src = stripComments(readFileSync(file, 'utf8'));
     if (COMPOSERS.test(src) || HAND_BUILT_ARGV.test(src)) sites.push(rel);
   }
   return sites.sort();

@@ -62,7 +62,10 @@ describe('spendForTargetRole', () => {
     for (const role of [
       'system:git-sync',
       'system:green-checkpoint',
-      'system:hive-git-gc',
+      // Renamed hive-git-gc -> pot-git-gc. The classification map moved with the
+      // rename; this expectation did not, so it asserted a role that no longer exists
+      // and silently got the 'unknown' fallback (EI-20060640525290316).
+      'system:pot-git-gc',
       'system:telemetry-retention',
       'system:cross-hive-outbox-drain',
       'system:precompute-derived-reads',

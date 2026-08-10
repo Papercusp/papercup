@@ -76,7 +76,10 @@ describe('left-rail pane coverage', () => {
     for (const role of [
       'system:git-sync',
       'system:green-checkpoint',
-      'system:hive-git-gc',
+      // Renamed hive-git-gc -> pot-git-gc; this expectation did not move with it, so
+      // it asserted a role that no longer exists and fell through to the 'Agents'
+      // default pane (EI-20060640525290316).
+      'system:pot-git-gc',
       'system:release-trigger',
     ]) {
       expect(paneFor(spendForTargetRole(role)), role).toBe('System');

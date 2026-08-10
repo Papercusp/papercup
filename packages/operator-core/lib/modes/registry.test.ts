@@ -16,7 +16,89 @@ import {
   modeById,
   modeImpliesAutonomy,
   autonomousModeIds,
+  modeRequiresSubject,
+  resolveImpliedModes,
 } from './registry';
+
+/**
+ * THE `implies` DECLARATION (D-003) — the field the cascade writes from and the
+ * autonomy predicate now derives from.
+ *
+ * The population is PINNED, not merely spot-checked. A guard that only asserts
+ * "goal implies auto" keeps passing after someone deletes `implies` from drain,
+ * and a guard that iterates whatever it finds passes vacuously over an empty
+ * set. Both failures look identical to a green run.
+ */
+describe('mode implications', () => {
+  const declaring = MODES.filter((m) => m.implies?.length);
+
+  it('pins the known-good population — the whole set, not a sample', () => {
+    expect(declaring.map((m) => m.id).sort()).toEqual(['drain', 'goal']);
+    expect(resolveImpliedModes('goal')).toEqual(['auto', 'ideate']);
+    expect(resolveImpliedModes('drain')).toEqual(['auto']);
+    expect(resolveImpliedModes('auto')).toEqual([]);
+    expect(resolveImpliedModes('nonexistent')).toEqual([]);
+  });
+
+  it('only ever names modes that exist', () => {
+    for (const m of declaring) {
+      for (const id of m.implies!) expect(modeById(id), `${m.id} implies '${id}'`).not.toBeNull();
+    }
+  });
+
+  /**
+   * A mode that is ABOUT something cannot be implied — the cascade has no
+   * subject to give it, and entering it unattributed silently zeroes the goal
+   * stamping and attribution paths (EI-20015592992797890). The store refuses at
+   * runtime; this is what stops the declaration existing at all.
+   */
+  it('never implies a mode that requires a subject', () => {
+    for (const m of declaring) {
+      for (const id of m.implies!) {
+        expect(modeRequiresSubject(id), `${m.id} implies subject-requiring '${id}'`).toBe(false);
+      }
+    }
+  });
+
+  it('is acyclic — the closure terminates and never contains the mode itself', () => {
+    for (const m of MODES) {
+      const closure = resolveImpliedModes(m.id);
+      expect(closure, m.id).not.toContain(m.id);
+      expect(new Set(closure).size, `${m.id} closure has duplicates`).toBe(closure.length);
+    }
+  });
+
+  /**
+   * D-003's OTHER half: the contract states the implication as a FACT about the
+   * agent's posture. The old wording — "if the autonomy axis is empty, also
+   * mode:set auto" — instructed the agent to perform the write, which is exactly
+   * the directive a compaction drops. If that phrasing comes back, the cascade
+   * and the prose disagree about who is responsible, and the prose loses.
+   */
+  it('states each implication in the contract as done, never as an instruction to go do it', () => {
+    for (const m of declaring) {
+      expect(m.contract, `${m.id} tells the agent to set the mode itself`).not.toMatch(/also mode:set/i);
+      for (const id of m.implies!) {
+        expect(m.contract.toLowerCase(), `${m.id} contract never mentions '${id}'`).toContain(id);
+      }
+    }
+  });
+
+  /**
+   * The derivation that makes drift impossible: `modeImpliesAutonomy` reads the
+   * same field the cascade writes from, so "guards treat this session as
+   * autonomous" and "this session actually holds an autonomy row" cannot be
+   * separately true — which they were, for every GOAL session, until D-003.
+   */
+  it('derives modeImpliesAutonomy from implies, for every overlay that declares one', () => {
+    for (const m of declaring) {
+      const impliesAnAutonomyMode = m.implies!.some((id) => modeById(id)?.axis === 'autonomy');
+      expect(modeImpliesAutonomy(m.id), m.id).toBe(impliesAnAutonomyMode);
+    }
+    // and the derived set still matches the standalone accessor
+    expect([...autonomousModeIds()].sort()).toEqual(['auto', 'cold-auto', 'drain', 'goal']);
+  });
+});
 
 describe('modeChipLabel', () => {
   it('renders a mode id as a chip label, hyphens as spaces', () => {
@@ -127,9 +209,14 @@ describe('GOAL mode', () => {
   it('is registered as a stackable overlay that implies AUTO', () => {
     expect(goal).not.toBeNull();
     expect(goal!.axis).toBe('overlay');
-    expect(goal!.impliesAutonomy).toBe(true);
-    // P-012: the implication has to be STATED in the contract too — the agent
-    // reading it is the one who has to also mode:set auto.
+    expect(modeImpliesAutonomy('goal')).toBe(true);
+    // D-003: the autonomy reading is DERIVED from the same `implies` the cascade
+    // writes from, so a session guards treat as autonomous is one that actually
+    // holds the row. The old boolean `impliesAutonomy` could disagree with the
+    // contract's "also mode:set auto" sentence; one field cannot.
+    expect(goal!.implies).toEqual(['auto', 'ideate']);
+    // P-012: the implication is STATED in the contract too — but as a FACT about
+    // the agent's current posture (D-003), never as a step for it to perform.
     expect(goal!.contract).toContain('GOAL implies AUTO');
   });
 

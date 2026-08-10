@@ -161,6 +161,47 @@ export function wakeSourceLostWarning(opts: {
   );
 }
 
+/**
+ * D-003's REPORTING half: say, in one line, what the agent now holds.
+ *
+ * The cascade is worth little if its effect is invisible — an agent that cannot
+ * see it entered AUTO will still write "should I proceed?", which is the exact
+ * behaviour the implication exists to remove. So the outcome is rendered as a
+ * statement of current posture ("you now hold …"), never as a suggestion.
+ *
+ * `axis-held` is spelled out rather than folded into "already": being left in
+ * COLD-AUTO when you asked for something implying AUTO is a real and useful
+ * distinction, and an agent reading "auto: already on" when it is actually in
+ * cold-auto has been told something false.
+ */
+export function renderImpliedNote(
+  modeId: string,
+  implied: readonly { mode: string; status: string; by?: string; error?: string }[],
+): string | null {
+  if (!implied.length) return null;
+  const parts = implied.map((i) => {
+    switch (i.status) {
+      case 'set': return `${i.mode} (entered now)`;
+      case 'already-on': return `${i.mode} (already on)`;
+      case 'axis-held': return `${i.mode} — NOT applied: '${i.by}' already holds that axis and satisfies it`;
+      case 'skipped': return `${i.mode} — SKIPPED: ${i.error ?? 'refused'}`;
+      default: return `${i.mode} — ⚠ FAILED: ${i.error ?? 'unknown error'}`;
+    }
+  });
+  const failed = implied.filter((i) => i.status === 'failed' || i.status === 'skipped');
+  const held = implied
+    .filter((i) => i.status === 'set' || i.status === 'already-on')
+    .map((i) => i.mode);
+  return (
+    `'${modeId}' IMPLIES ${implied.map((i) => i.mode).join(' + ')} — applied for you by the system, ` +
+    `not something to go do: ${parts.join('; ')}. ` +
+    (held.length ? `You now hold: ${[modeId, ...held].join(', ')}. Their contracts are binding on you NOW. ` : '') +
+    (failed.length
+      ? '⚠ The starred entries did NOT apply — you are in a partial posture; re-run mode:set to repair it (a re-entry is idempotent and repairs missing rows).'
+      : '')
+  ).trim();
+}
+
 export default defineTool({
   name: 'mode:set',
   profile: 'engineer',
@@ -182,6 +223,18 @@ export default defineTool({
       'mode:set → read the returned contract (self) · coord:orient re-injects active contracts each wake · mode:get { agent } ' +
       'to inspect anyone · exiting: mode:set { mode, enabled:false, reason }. A stickyConflict result means the incumbent is ' +
       'owner-directed: your reason was delivered as a REQUEST — do not retry, wait for the target/owner.',
+    /* UNCOUNTED by the prompt-weight budget (description + when/notWhen/chaining
+       only), and demand-loaded via tools:find — which is exactly where response
+       shape belongs: a caller needs it after deciding to call, not in every
+       system prompt. The 34-char breach that moved this here is the documented
+       failure mode for editing a live tool's description (P-011). */
+    returns:
+      'ok, mode, axis, target, enabled, noop, switchedFrom, stickyConflict; contract on a self-set enable. ' +
+      'IMPLIED MODES (D-003): a mode that implies others enters them FOR you — goal ⇒ auto + ideate, drain ⇒ auto — so ' +
+      '`implied[]` reports { mode, status: set | already-on | axis-held (by: the mode holding that axis, e.g. cold-auto, ' +
+      'left alone) | skipped | failed }, `impliedNote` states the resulting posture in one line, and `impliedContracts` ' +
+      'carries the contracts of newly-entered modes (self-set) — they are binding on you immediately, so read them. ' +
+      'A re-entry is idempotent and REPAIRS a missing implied row, which is the fix for a `failed` entry.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -434,6 +487,17 @@ export default defineTool({
                   : '')
               : '') +
             (res.ok && res.switchedFrom ? `\nAuto-switched from same-axis mode '${res.switchedFrom}'.` : '') +
+            /* D-003: a peer-set target learns about its implied modes HERE, and
+               gets their contracts too — it never sees the tool result, so
+               without this it would be silently bound by rules it was never
+               handed. Same reason the primary contract is attached below. */
+            (res.ok && res.implied?.length
+              ? `\n\n${renderImpliedNote(def.id, res.implied)}` +
+                res.implied
+                  .filter((i) => i.status === 'set')
+                  .map((i) => `\n\nBinding contract — '${i.mode}':\n\n${modeById(i.mode)?.contract ?? ''}`)
+                  .join('')
+              : '') +
             (res.ok && enabled ? `\nEffective from your NEXT turn. Binding contract:\n\n${def.contract}` : '') +
             (wakeWarning ? `\n\n${wakeWarning}` : ''),
           extra: { mode_change: { mode: def.id, enabled, applied: res.ok === true, stickyConflict: res.stickyConflict === true, by: ident.ownerId } },
@@ -482,6 +546,27 @@ export default defineTool({
       stickyConflict: res.stickyConflict ?? false,
       ...(res.stickyConflict ? { note: 'incumbent is owner-directed; your reason was delivered as a REQUEST — do not retry' } : {}),
       ...(res.ok && enabled && isSelf ? { contract: def.contract } : {}),
+      /* D-003 — the cascade is reported, never inferred. `impliedNote` is the
+         line an agent actually reads; `implied` is the machine-readable detail.
+         The CONTRACTS of newly-entered modes ride along on a self-set for the
+         same reason `contract` above does: the agent is now bound by rules it
+         has never read, and "read it NOW" only works if it is here. */
+      ...(res.implied?.length
+        ? {
+            implied: res.implied,
+            impliedNote: renderImpliedNote(def.id, res.implied),
+            ...(isSelf
+              ? {
+                  impliedContracts: Object.fromEntries(
+                    res.implied
+                      .filter((i) => i.status === 'set')
+                      .map((i) => [i.mode, modeById(i.mode)?.contract ?? ''])
+                      .filter(([, c]) => c),
+                  ),
+                }
+              : {}),
+          }
+        : {}),
       /* Reported so a caller can SEE the durability half landed. 'failed' is
          surfaced rather than swallowed: the mode still applied, but the
          instruction is now push-only and will not survive the agent's next

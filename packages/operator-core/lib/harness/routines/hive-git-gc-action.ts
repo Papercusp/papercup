@@ -74,9 +74,20 @@ registerSystemAction('pot-git-gc', potGitGcTick);
 
 /*
  * NO `hive-git-gc` ALIAS. It existed transiently during P-051 to cover the
- * bg-host restart window, and was deleted in the same change once the census
- * came back clean: platform-wide (ALL workspaces, not just this one) zero
+ * bg-host restart window, and was deleted in the same change once the ROUTINE-ROW
+ * census came back clean: platform-wide (ALL workspaces, not just this one) zero
  * `harness_shared.routines` rows target `system:hive-git-gc`. The name is only
  * ever reached through a row's `target_role` — there are no code callers — so
  * with no such row there is nothing left to alias. Pinned by a test.
+ *
+ * ⚠ "census" HERE MEANS THE DB-ROW CENSUS ONLY — a `SELECT ... FROM
+ * harness_shared.routines`. It is NOT the mug/kettle SOURCE census
+ * (`scripts/mug-kettle-surface-census.mjs` + the `lint:no-ungated-mug-kettle`
+ * ratchet), which scans source text and never reads a routine row. The two
+ * answer different questions, and conflating them has already misled one reader
+ * into thinking this note asserted a green ratchet. It did not, and the ratchet
+ * was in fact STALE across this rename: its baseline stayed keyed on the old
+ * name, which masked the new one (see D-044 — a name-keyed registry fails
+ * SILENTLY under a rename, and a ratchet cannot catch it because the count goes
+ * DOWN, never up). Re-keyed in `scripts/ungated-mug-kettle-baseline.json`.
  */
