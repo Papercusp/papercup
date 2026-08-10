@@ -37,6 +37,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { TripwireSchema } from './create';
 
@@ -126,14 +127,12 @@ export function validateProposal(p: GoalProposal): string[] {
     );
   }
   // A criterion that states no condition is the blank menu wearing a sentence.
-  // Cheap shape check only: this cannot judge substance, and deliberately does
-  // not try — it catches the placeholder, not the merely-weak.
-  const criterion = p.killCriterion.trim();
-  if (criterion.length < 12 || /^(tbd|n\/?a|none|unknown|todo)\b/i.test(criterion)) {
-    problems.push(
-      `killCriterion '${criterion}' states no abandonment condition — GOAL mode requires a concrete one at creation time, and it is the only thing that can ever stop this goal`,
-    );
-  }
+  // The rule itself lives in `killCriterionProblem` and is SHARED with
+  // `goals:update` (P-009): the owner can now set a criterion inline from the
+  // detail panel, and an edit door with its own copy of this check is exactly
+  // how you end up able to install a criterion this door would have refused.
+  const criterionProblem = killCriterionProblem(p.killCriterion);
+  if (criterionProblem) problems.push(criterionProblem);
   return problems;
 }
 

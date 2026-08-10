@@ -266,7 +266,11 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
       deployedSha: null,
       gate: { consecutiveReds: 0, ownership: { claimState: null } },
       changeInCandidate: { judgingSha: null },
-      verdictProvenance: { mainFastForwarded: false },
+      // The pair is ONE reading in two polarities, so they must stay consistent
+      // negations of each other or this fixture stops mirroring the resolver
+      // (EI-20046248345042252). `mainBehindStaging: true` is the tempting-to-misread
+      // one here: a buffer is the normal steady state, not a fault.
+      verdictProvenance: { mainFastForwarded: false, mainBehindStaging: true },
     };
     const out = stampStatePlane({
       payload,
@@ -291,7 +295,7 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
         deployedSha: 'abc',
         gate: { consecutiveReds: 1, ownership: { claimState: 'held' } },
         changeInCandidate: { judgingSha: 'def' },
-        verdictProvenance: { mainFastForwarded: true },
+        verdictProvenance: { mainFastForwarded: true, mainBehindStaging: false },
       },
       tool: DOOR,
       args: { path: 'apps/operator/x.ts' },

@@ -13,6 +13,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema } from './create';
 import { resolveGoalWorkspace } from './_workspace';
@@ -68,6 +69,32 @@ export default defineTool({
     parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
   }),
   async handler(args, ctx) {
+    // ── The criterion gate (P-009) ───────────────────────────────────────────
+    //
+    // BEFORE the read, because it needs no row and a refusal should cost
+    // nothing. `goals:propose` refuses a criterion that states no abandonment
+    // condition; until P-009 this door did not, so the edit path was a way to
+    // install a criterion the create path would have rejected. Both doors now
+    // call the SAME `killCriterionProblem` — sharing the rule rather than
+    // re-stating it is the item's hard constraint, since a second copy drifts
+    // silently and only ever in the permissive direction.
+    //
+    // A BLANK criterion is an explicit CLEAR, not a refusal, and is allowed
+    // through deliberately: a goal may be created with no criterion at all
+    // (WI-37604, owner-directed 2026-08-09), so refusing to clear one would
+    // make this door STRICTER than creation rather than equal to it. Clearing
+    // restores the panel's "nothing can stop this goal" alarm, which is the
+    // honest reading of the resulting state. It is normalised to null so the
+    // column holds an absence rather than whitespace that every reader has to
+    // re-trim before it reads as absent.
+    const criterionArg = args.killCriterion?.trim();
+    if (criterionArg) {
+      const problem = killCriterionProblem(criterionArg);
+      if (problem) {
+        return { data: null, degraded: true, degradedReasons: [problem] };
+      }
+    }
+
     const existing = await ctx.tx<
       Array<{
         title: string;
@@ -114,7 +141,13 @@ export default defineTool({
       status: args.status ?? prev.status,
       budgetCents: args.budgetCents ?? (prev.budget_cents === null ? null : Number(prev.budget_cents)),
       parentId: args.parentId === undefined ? prev.parent_id : args.parentId,
-      killCriterion: args.killCriterion ?? prev.kill_criterion ?? legacyCriterion,
+      // Omitted leaves it alone; a blank CLEARS it to null (see the gate above)
+      // rather than storing whitespace that every reader has to re-trim before
+      // it reads as absent — `killCriterionLine` and the board card both decide
+      // "missing" by trimming, so an untrimmed blank is already an absence
+      // wearing a value.
+      killCriterion:
+        criterionArg === undefined ? (prev.kill_criterion ?? legacyCriterion) : criterionArg || null,
       tripwires:
         args.tripwires === undefined
           ? prev.tripwires === null || prev.tripwires === undefined

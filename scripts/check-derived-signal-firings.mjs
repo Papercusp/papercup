@@ -88,10 +88,20 @@ export const WINDOW_DAYS = 14;
 /**
  * The date a bad verdict starts FAILING rather than reporting.
  *
- * Chosen, not inherited: the census only writes on the opt-in `include_coupling`
+ * Chosen, not inherited: the census only wrote on the opt-in `include_coupling`
  * branch, measured at ~11 calls per fortnight, so a window shorter than this
  * cannot accumulate enough runs for `never-armed` to mean anything. Moving this
  * date is a decision to record on the plan, not a knob to nudge when it goes red.
+ *
+ * ⚠ THE PREMISE ABOVE EXPIRED ON 2026-08-10 (D-098) — read the date with that in
+ * mind. `include_coupling` is now DEFAULT-ON, so the census rides the default
+ * presence path instead of an opt-in branch taken 11 times in its entire life. The
+ * ~11-per-fortnight rate this date was sized against is therefore obsolete, and
+ * 2026-09-13 is now far more conservative than intended rather than barely
+ * sufficient. Left UNCHANGED deliberately: it is a recorded decision, and the
+ * honest move is to re-derive it from the OBSERVED post-D-098 rate once real
+ * census rows exist — not to guess a new date from the same armchair the old one
+ * came from. Whoever does that: record it, and update this note with it.
  */
 export const REVIEW_BY = '2026-09-13';
 
@@ -101,13 +111,23 @@ export const REVIEW_BY = '2026-09-13';
  * re-read and re-justified rather than silently ageing out.
  */
 export const RULINGS = {
-  // `shared-file` reads `current_files`, which is documented in the derivation
-  // itself as "all but dead in practice" (119 live rows, zero populated,
-  // EI-18772330418885814). Its `starved` verdict is therefore EXPECTED and already
-  // known; it is kept because the relation is correct on the rare row that has the
-  // field. A ruling only suppresses FAILURE — the row is still reported every run,
-  // so the day it starts firing is visible too.
-  'shared-file': 'EI-18772330418885814 — reads current_files, a live field with no producer; kept because it is correct on the rare populated row.',
+  // EMPTY ON PURPOSE, and the emptiness is the healthy state: the detector
+  // currently suppresses NOTHING, so every bad verdict it reports is one somebody
+  // still has to answer for.
+  //
+  // Its only entry was `shared-file`, whose ruling read "kept because it is
+  // correct on the rare populated row" — the exact rationale D-093 overturned on
+  // 2026-08-10 when the relation was retired for producing ZERO edges in 14 days.
+  // Worth noticing what happened here: the ruling was written to explain away a
+  // PERMANENTLY starved signal, which is precisely the state this detector exists
+  // to surface. A suppression that can never expire is a signal that should have
+  // been deleted, so retiring the relation removed the need for the ruling rather
+  // than the other way round.
+  //
+  // ⚠ A FUTURE ENTRY MUST BE A RELATION THAT STILL EXISTS. The probe's
+  // "shipped ruling set names only relations that still exist" test fails on a key
+  // that has left DERIVED_COUPLING_RELATIONS — which is how this stale entry was
+  // caught rather than quietly outliving its signal.
 };
 
 export const FIRING_VERDICTS = ['firing', 'armed-silent', 'starved', 'never-armed', 'unobserved', 'no-data'];
@@ -121,9 +141,16 @@ export const FAILING_VERDICTS = ['never-armed', 'unobserved'];
  * ⚠ THIS IS A STATISTICAL-POWER FLOOR, NOT A TUNING KNOB, and it is this plan's own
  * precedent applied to itself: D-090 parked P-006 until 2026-08-16 because a 12×
  * rate jump on n=3 is indistinguishable from noise at the null rate. A review DATE
- * alone would make exactly that mistake here — the census writes only on the opt-in
+ * alone would make exactly that mistake here — the census wrote only on the opt-in
  * `include_coupling` branch (~11 calls per fortnight), so 2026-09-13 could arrive
  * with three census rows and red-pin the fleet on three samples.
+ *
+ * ⚠ That starvation is what D-098 fixed (default-ON, 2026-08-10), so this floor
+ * should now clear easily instead of being the binding constraint. KEEP IT ANYWAY:
+ * it is a floor, not a target, and it costs nothing when data is plentiful. Its
+ * whole value is on the day the rate collapses again — a regression that silently
+ * re-gates the census would otherwise arrive disguised as a confident verdict over
+ * three samples, which is exactly the shape this refuses to condemn on.
  *
  * `no-data` already refuses to interpret an EMPTY window; this refuses to CONDEMN a
  * nearly-empty one. It also absorbs the version-skew case for free: a relation added
