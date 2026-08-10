@@ -93,6 +93,71 @@ describe('classifyGuard — a mention is not enforcement', () => {
     expect(r.tier).toBe('gate');
   });
 
+  /* ── the REGISTRATION-ONLY tier (WI-37627, the ed2c4f36 gate red) ────────────
+   * These pin `repo-wide` at the classifyGuard level ON PURPOSE. The real-tree
+   * assertion further down also fails when this tier is broken, but only for as
+   * long as some guard is registration-ONLY — and the incident report notes that
+   * all 11 registrations pre-dating this tier ALSO carry a corpus mention, so
+   * their green was incidental. The moment `lint:no-ungated-mug-kettle` picks up
+   * a CI job or a test that names it, the real-tree signal goes quiet and the
+   * blind spot re-hides behind the same coincidence that hid it for months.
+   * These cases do not depend on the tree's contents at all.
+   */
+  it('credits a guard whose ONLY wiring is a REPO_WIDE_INVARIANT_GUARDS registration', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: scripts['lint:x'],
+      corpora: corpora({}), // named by NO gate, ci, test, hook or logic-test
+      repoWideRegistered: new Set(['lint:x']),
+    });
+    expect(r.blocking).toBe(true);
+    expect(r.tier).toBe('repo-wide');
+  });
+
+  // CONTROL for the case above: identical inputs, registration withdrawn. Without
+  // this, that test would also pass if `repo-wide` were unconditionally blocking.
+  it('CONTROL: the same guard, unregistered, is still reported as run by nothing', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: scripts['lint:x'],
+      corpora: corpora({}),
+      repoWideRegistered: new Set(),
+    });
+    expect(r.blocking).toBe(false);
+    expect(r.tier).toBe(null);
+  });
+
+  /* Guard names NEST in this repo — `lint:no-retired` is a prefix of
+   * `lint:no-retired-resurrection`, and BOTH are registered. The corpora axis
+   * matches by substring, so spelling this membership the same way would credit
+   * the shorter name off the longer one's registration and manufacture exactly
+   * the false green this checker exists to prevent. The implementation uses an
+   * exact Set lookup; this pins that choice, which is otherwise invisible.
+   */
+  it('does NOT credit a guard whose name is merely a PREFIX of a registered one', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: scripts['lint:x'],
+      corpora: corpora({}),
+      repoWideRegistered: new Set(['lint:x-strict']),
+    });
+    expect(r.blocking).toBe(false);
+  });
+
+  // The tier is appended AFTER the corpora so a guard that is both registered and
+  // named by a real gate leg keeps reporting the more specific tier — which is why
+  // adding this tier did not change how the 11 pre-existing registrations report.
+  it('keeps reporting the more specific tier for a guard that is BOTH registered and gate-run', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: scripts['lint:x'],
+      corpora: corpora({ gate: "'lint:x'" }),
+      repoWideRegistered: new Set(['lint:x']),
+    });
+    expect(r.tier).toBe('gate');
+    expect(r.tiers).toContain('repo-wide');
+  });
+
   it('finds a guard invoked by direct PATH rather than npm name', () => {
     // The under-claim this checker exists to avoid: several guards run from hooks by
     // script path and never by npm name, so searching for the name alone reports a

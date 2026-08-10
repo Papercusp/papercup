@@ -206,6 +206,29 @@ const SUSTAINED_HEALTHY_POLLS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SUS
  *  (WI-5456). A shed event lands the INSTANT a tick's probe crosses critical, which can be a beat before
  *  routine fires / the scheduler themselves cross FREEZE_SILENCE_S, so the window needs a little room. */
 const POOL_SHED_GRACE_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POOL_SHED_GRACE_S) || 120;
+/** EI-20025430746362695: the pool-shed suppression's ABSOLUTE BOUND. The shed explanation may excuse
+ *  staleness for at most this long; past it we restart regardless and say so loudly. An unbounded
+ *  suppression is exactly what turned this guardrail into a 53min fleet-wide outage (staleness climbed
+ *  1372→3173s across four passes with no escalation). */
+const POOL_SHED_MAX_SUPPRESS_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POOL_SHED_MAX_SUPPRESS_S) || 900;
+/** How long a suppression may hold before it stops being a log line nobody reads and becomes an
+ *  operator-visible alarm (still suppressing — this is the warning, not the bound above).
+ *
+ *  ⚠ Deliberately a DURATION, though the filing asked for ">2 consecutive passes": a pass count is
+ *  poll-cadence-dependent, so at POLL_MS=30s "2 passes" is 60s and would alarm on every ordinary brief
+ *  shed. The filing's author was counting the 10-min-throttled LOG LINES, not passes — the intent was
+ *  "minutes of silence", and a duration expresses that stably even if POLL_MS is retuned later. Same
+ *  class of trap as the WI-37501 circuit breaker that went arithmetically unreachable when its
+ *  threshold was expressed in units that moved underneath it. */
+const POOL_SHED_ALERT_AFTER_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POOL_SHED_ALERT_AFTER_S) || 300;
+/** The host's OWN liveness endpoint. `/api/health` is a deliberately ZERO-DEPENDENCY 200 (no DB, no
+ *  auth — see routes/misc/health.ts), which is what makes it the right discriminator here: PG pool
+ *  starvation cannot hang it, so a shed-but-alive host still answers, while a wedged event loop cannot
+ *  answer at all. A PG-touching probe would have collapsed the two cases this fix exists to separate. */
+const BGHOST_HEALTH_URL =
+  process.env.PAPERCUSP_BGHOST_WATCHDOG_HEALTH_URL || 'http://127.0.0.1:3271/api/health';
+const BGHOST_HEALTH_TIMEOUT_MS =
+  Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HEALTH_TIMEOUT_MS) || 5_000;
 /** EI-20029519971967372: the ABSOLUTE cap on how long demonstrated forward progress may extend the boot
  *  grace. Past this we restart even while progressing — a boot that has not finished in this long is a
  *  different, worse problem than a slow one, and an UNBOUNDED suppression is exactly what turned the
@@ -243,6 +266,16 @@ let consecutiveRestarts = 0;
 // (frozen-and-restarting, frozen-but-boot-grace-excused, or frozen-but-saturation-excused alike) — the
 // point is proof of CONTINUOUS good health, not merely "not judged frozen enough times, spread out".
 let healthyStreak = 0;
+/** EI-20025430746362695: the CURRENT pool-shed suppression streak — when it began (ms epoch, null = no
+ *  streak in flight), how many consecutive passes it has held, and whether we have already alarmed for
+ *  it. Reset wherever the suppression does not apply, so a later, unrelated shed starts a fresh bound. */
+let poolShedSuppressSinceMs = null;
+let poolShedSuppressPasses = 0;
+let poolShedAlerted = false;
+/** When the last shed-SUPPRESSED pass happened. The streak is judged broken by a GAP here rather than
+ *  by reset calls sprinkled across poll()'s many early-return paths — one place to get right instead of
+ *  six to remember, and self-healing if a new branch is added later. */
+let poolShedSuppressLastAtMs = 0;
 let logDirEnsured = false;
 const log = (m) => {
   const line = `[bghost-watchdog ${new Date().toISOString()}] ${m}`;
@@ -780,6 +813,67 @@ export function poolShedExplainsFreeze(idleSec, shedIdleSec, graceSec = POOL_SHE
   return shedIdleSec <= (idleSec ?? 0) + graceSec;
 }
 
+/** Does the host answer its own zero-dependency liveness endpoint RIGHT NOW (EI-20025430746362695)?
+ *
+ *  `true` = a response arrived, so the event loop turned — the ONLY positive evidence that a
+ *  shed-suppressed host is alive rather than wedged. Any HTTP status counts: a 500 still proves the
+ *  process is serving, and this is a liveness probe, not a health grade.
+ *  `false` = the probe completed and the host did not answer (timeout / connection refused) — the
+ *  wedged case that ran for 53 minutes crediting "shedding, not dead".
+ *  `null` = UNKNOWN, the probe itself could not be performed (no fetch, malformed URL).
+ *
+ *  Never throws. Callers must treat null and false ALIKE (decline to suppress) — see
+ *  `poolShedSuppressionHolds`. */
+export async function probeHostLiveness(url = BGHOST_HEALTH_URL, timeoutMs = BGHOST_HEALTH_TIMEOUT_MS, deps = {}) {
+  const doFetch = deps.fetch ?? globalThis.fetch;
+  if (typeof doFetch !== 'function') return { alive: null, why: 'no fetch implementation available' };
+  let signal;
+  try {
+    signal = AbortSignal.timeout(timeoutMs);
+  } catch {
+    signal = undefined;
+  }
+  try {
+    const res = await doFetch(url, { signal, method: 'GET' });
+    const status = typeof res?.status === 'number' ? res.status : 'unknown';
+    return { alive: true, why: `answered HTTP ${status} within ${timeoutMs}ms` };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // A TypeError from fetch here means the URL/agent is unusable (config fault), not that the host is
+    // wedged — report UNKNOWN so the log does not accuse a host we never actually reached. The DECISION
+    // is identical either way; only the diagnosis differs, and a wrong diagnosis is what costs the hours.
+    if (e instanceof TypeError) return { alive: null, why: `probe unusable: ${msg}` };
+    return { alive: false, why: `no response within ${timeoutMs}ms (${msg})` };
+  }
+}
+
+/** Pure (EI-20025430746362695): may the pool-shed explanation SUPPRESS a restart on this pass?
+ *
+ *  The original suppression asked one question — "was there a recent shed event?" — and answered
+ *  "don't restart" indefinitely. It had no way to tell alive-but-shedding (the case it was built for,
+ *  WI-37506) from wedged, and no bound, so it excused a genuinely dead ticker for ~53min while git-sync
+ *  and every routine were dead fleet-wide.
+ *
+ *  Three conditions now, ALL required:
+ *   - a recent shed event explains the staleness (`shedExplains`), and
+ *   - the host gave POSITIVE evidence of life (`hostAlive === true`). null/false both decline: the same
+ *     never-suppress-on-a-missing-signal asymmetry as `isFrozen` / `withinBootGrace` /
+ *     `bootProgressExtendsGrace`. Getting this wrong costs an outage; an unnecessary restart is cheap.
+ *   - the suppression has not already run past `maxSuppressSec`. An UNKNOWN duration does not consume
+ *     the budget, but it cannot extend it either — a bound you cannot measure is not a bound, so an
+ *     unmeasurable duration declines rather than suppressing forever. */
+export function poolShedSuppressionHolds(
+  shedExplains,
+  hostAlive,
+  suppressedForSec,
+  maxSuppressSec = POOL_SHED_MAX_SUPPRESS_S,
+) {
+  if (shedExplains !== true) return false;
+  if (hostAlive !== true) return false;
+  if (suppressedForSec == null || !Number.isFinite(suppressedForSec) || suppressedForSec < 0) return false;
+  return suppressedForSec < maxSuppressSec;
+}
+
 /** @param collateral snapshot from `readCollateral()` taken BEFORE the restart is issued (the cgroup is
  *  torn down by the restart, so it cannot be read afterwards); null = UNKNOWN, report nothing. */
 function restart(reason, collateral = null) {
@@ -872,12 +966,51 @@ async function poll() {
     // signals without the ticker being dead — see the file-header WI-37506 note).
     const shedIdleSec = await poolShedIdleSec(dbUrl);
     if (poolShedExplainsFreeze(idleSec, shedIdleSec)) {
-      const now = Date.now();
-      if (now - lastHeartbeat >= HEARTBEAT_MS) {
-        lastHeartbeat = now;
-        log(`explained by a critical PG-pool-shed guardrail event ${shedIdleSec}s ago (EI-9935/P-006/W4) — routine fires ${idleSec}s stale AND scheduler ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} stale, but the ticker is SHEDDING under pool starvation, not dead. NOT restarting (WI-37506).`);
+      const nowMs = Date.now();
+      // A gap of >3 polls means the previous streak ended (host recovered, or another branch handled the
+      // pass) — start a fresh bound rather than inheriting an old one.
+      if (poolShedSuppressSinceMs == null || nowMs - poolShedSuppressLastAtMs > POLL_MS * 3) {
+        poolShedSuppressSinceMs = nowMs;
+        poolShedSuppressPasses = 0;
+        poolShedAlerted = false;
       }
-      return;
+      const suppressedForSec = Math.round((nowMs - poolShedSuppressSinceMs) / 1000);
+      // EI-20025430746362695: the shed event alone is NOT evidence the ticker is alive. Ask the host
+      // directly, on an endpoint pool starvation cannot hang.
+      const liveness = await probeHostLiveness();
+      if (poolShedSuppressionHolds(true, liveness.alive, suppressedForSec)) {
+        poolShedSuppressPasses += 1;
+        poolShedSuppressLastAtMs = nowMs;
+        if (nowMs - lastHeartbeat >= HEARTBEAT_MS) {
+          lastHeartbeat = nowMs;
+          log(`explained by a critical PG-pool-shed guardrail event ${shedIdleSec}s ago (EI-9935/P-006/W4) — routine fires ${idleSec}s stale AND scheduler ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} stale, but the host ANSWERS ${BGHOST_HEALTH_URL} (${liveness.why}), so the ticker is SHEDDING under pool starvation, not dead. NOT restarting (WI-37506) — suppression held ${suppressedForSec}s of ${POOL_SHED_MAX_SUPPRESS_S}s max, ${poolShedSuppressPasses} passes.`);
+        }
+        // Visible, not just logged: the outage ran ~53min in silence because nothing escalated.
+        if (!poolShedAlerted && suppressedForSec >= POOL_SHED_ALERT_AFTER_S) {
+          poolShedAlerted = true;
+          const msg =
+            `⚠ ${UNIT}: the PG-pool-shed suppression has held for ${suppressedForSec}s (${poolShedSuppressPasses} passes) — routine fires ${idleSec}s stale. ` +
+            `The host IS answering ${BGHOST_HEALTH_URL}, so this is still judged shed-not-dead and NO restart has been issued, but a shed this long is its own problem ` +
+            `(EI-9935/P-006/W4 pool starvation). Hard bound: restarting anyway at ${POOL_SHED_MAX_SUPPRESS_S}s (EI-20025430746362695).`;
+          log(msg);
+          void alertFleet(msg);
+        }
+        return;
+      }
+      // The suppression DID NOT hold. Name which condition failed — the whole defect was a suppression
+      // that could only ever say "not restarting", so the declining path must be at least as loud.
+      const why =
+        liveness.alive !== true
+          ? `the host did NOT answer ${BGHOST_HEALTH_URL} (${liveness.why}) — "shedding, not dead" was never checked against the host itself, and that is exactly how a wedged ticker was excused for ~53min`
+          : `the suppression hit its ${POOL_SHED_MAX_SUPPRESS_S}s hard bound (held ${suppressedForSec}s across ${poolShedSuppressPasses} passes)`;
+      const msg =
+        `⚠ ${UNIT}: pool-shed suppression DECLINED — a shed event ${shedIdleSec}s ago would have explained the freeze, but ${why}. ` +
+        `Restarting (EI-20025430746362695).`;
+      log(msg);
+      void alertFleet(msg);
+      poolShedSuppressSinceMs = null;
+      poolShedSuppressPasses = 0;
+      poolShedAlerted = false;
     }
     // EI-20029519971967372: LAST suppression before the kill — is this a boot that is still WORKING?
     // Both PG signals go silent for a saturated boot exactly as they do for a dead one, so ask /proc
@@ -981,7 +1114,8 @@ function start() {
   log(
     `up — unit ${UNIT}, poll ${POLL_MS}ms, freeze-silence ${FREEZE_SILENCE_S}s, debounce ${DEBOUNCE_MS}ms (backoff x${BACKOFF_MULTIPLIER}, cap ${MAX_DEBOUNCE_MS}ms), ` +
       `boot-grace ${BOOT_GRACE_MS}ms (progress-extendable to ${BOOT_GRACE_MAX_MS}ms on >=${BOOT_PROGRESS_MIN_TICKS} CPU ticks per ${BOOT_PROGRESS_SAMPLE_MS}ms /proc sample), ` +
-      `alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr, pool-shed-grace ${POOL_SHED_GRACE_S}s; ` +
+      `alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, sustained-healthy ${SUSTAINED_HEALTHY_POLLS} polls, circuit cap ${MAX_RESTARTS_PER_HR}/hr, ` +
+      `pool-shed-grace ${POOL_SHED_GRACE_S}s (suppression requires a live ${BGHOST_HEALTH_URL} within ${BGHOST_HEALTH_TIMEOUT_MS}ms, alarms at ${POOL_SHED_ALERT_AFTER_S}s, hard bound ${POOL_SHED_MAX_SUPPRESS_S}s); ` +
       `signal=PG-routine-freshness (journald-independent); durable log ${LOG_FILE}`,
   );
   // WI-37501: a recurrence guard, not just a fix — if POLL_MS/BOOT_GRACE_MS/MAX_RESTARTS_HR are ever

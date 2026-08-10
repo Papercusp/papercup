@@ -1069,14 +1069,35 @@ for (const ws of affected) {
 }
 
 // Repo-wide invariant guards (see REPO_WIDE_INVARIANT_GUARDS). Appended AFTER the
-// per-workspace loop, and skipped when the owning workspace's full `test` task is
-// already queued — that suite already contains the guard, so adding it there would
-// just run the same assertions twice.
+// per-workspace loop.
+//
+// EI-20026978310669562 — this skip used to read `t.script === 'test' || t.script ===
+// guard.script`, justified as "that suite already contains the guard, so adding it
+// there would just run the same assertions twice". That premise was ASSUMED per guard
+// and true for only SOME of them, which made the skip a silent coverage hole with a
+// trigger nobody would connect to it: the guard stopped attaching the moment the HOST
+// workspace became affected for an unrelated reason. Measured — declaring
+// @papercusp/db-org et al. on operator-core (a dependency-graph change, nothing to do
+// with linting) pulled operator-core into the affected set for every libs/papercusp/**
+// path, so a migration .sql change silently stopped running
+// lint:migration-forward-compat: exactly the class WI-9573 wired this registry to
+// prevent, re-opened by a change three files away.
+//
+// So the premise is now DECLARED (`hostSuiteRatchet`) rather than assumed, and asserted
+// by affected-tests-repo-wide-invariant-guards.test.ts: a guard may only be skipped in
+// favour of the host suite if it NAMES the in-suite ratchet that re-runs it, and that
+// file must really exec it. A guard that declares nothing attaches unconditionally —
+// the fail-safe direction, since the narrow tasks are sub-second by design.
 for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   const ws = wsByName.get(guard.workspace);
   if (!ws?.scripts?.[guard.script]) continue;
   if (excludes.has(ws.name)) continue;
-  if (tasks.some((t) => t.ws.name === ws.name && (t.script === 'test' || t.script === guard.script))) continue;
+  // Dedupe the guard against ITSELF unconditionally: queueing the identical narrow task
+  // twice is pure waste and buys no coverage.
+  if (tasks.some((t) => t.ws.name === ws.name && t.script === guard.script)) continue;
+  // Defer to the host workspace's full suite ONLY where a named ratchet re-runs this
+  // invariant inside it.
+  if (guard.hostSuiteRatchet && tasks.some((t) => t.ws.name === ws.name && t.script === 'test')) continue;
   if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
   outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
   tasks.push({ ws, script: guard.script });
