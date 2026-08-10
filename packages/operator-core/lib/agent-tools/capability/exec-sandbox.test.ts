@@ -13,7 +13,7 @@
 import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeEach, vi } from 'vitest';
 import { FLEET_SANDBOX_DENY_READ } from '@papercusp/orchestrator';
 import {
   buildCapabilitySandboxCommand,
@@ -46,12 +46,31 @@ describe('capabilityBuildCacheWritePaths (EI-12725 — out-of-tree build caches 
   const cwd = join(root, 'repo');
   const bigDisk = join(root, 'bigdisk', 'cargo-target');
   const home = join(root, 'home');
+  const envCache = join(root, 'env-cargo-target');
+  const envCacheInsideCwd = join(cwd, 'inner-cargo-target');
   mkdirSync(join(cwd, 'papercusp-desktop', 'src-tauri'), { recursive: true });
   mkdirSync(bigDisk, { recursive: true });
   mkdirSync(home, { recursive: true });
+  mkdirSync(envCache, { recursive: true });
+  mkdirSync(envCacheInsideCwd, { recursive: true });
   symlinkSync(bigDisk, join(cwd, 'papercusp-desktop', 'src-tauri', 'target'));
 
-  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  // WI-37702: `cwd` and `homeDir` are parameters, but the FIRST candidate the
+  // function considers is `process.env.CARGO_TARGET_DIR` — ambient, and therefore
+  // outside the fixture's control. This dev box sets it (to a symlink that
+  // realpath's out to /mnt), which leaked a fourth path into every result and made
+  // the two exact-equality assertions below fail for reasons having nothing to do
+  // with the code under test — reddening `operator-core :: test` for every agent
+  // whose change merely selected this workspace. Unset it so the fixture is
+  // authoritative and the file actually holds the host-independence its header
+  // claims; the env leg is then covered DELIBERATELY by the two tests at the end
+  // of this block rather than by accident on whichever hosts happen to set it.
+  beforeEach(() => vi.stubEnv('CARGO_TARGET_DIR', undefined));
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
 
   it('resolves the SYMLINK to its real target — binding the link node would still write through to a read-only path', () => {
     const paths = capabilityBuildCacheWritePaths(cwd, home);
