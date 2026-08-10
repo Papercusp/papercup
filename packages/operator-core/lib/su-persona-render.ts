@@ -141,7 +141,6 @@ export async function applySuPromptOverlays(opts: {
   let promptText = opts.basePromptText;
 
   if (opts.agent === 'codex' && opts.launchContextText) {
-    // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
     const budgetModule = await import('./model-context-budget.mjs');
     promptText = budgetModule.appendCodexLaunchContextPrompt(promptText, opts.launchContextText);
   }

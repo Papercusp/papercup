@@ -173,7 +173,7 @@
  *   PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
 import { execFile, execFileSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { cpus, freemem, homedir, hostname, loadavg, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -999,6 +999,48 @@ function start() {
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
 }
 
-// Auto-start as the systemd unit (`node bghost-watchdog.mjs`). Tests set PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART=1
-// before importing to exercise the pure decision logic without the poll loop / network.
-if (process.env.PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART !== '1') start();
+/** Are we the process's ENTRYPOINT (`node bghost-watchdog.mjs`), as opposed to a module someone imported?
+ *
+ *  This used to be an OPT-OUT (`start()` unless PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART=1), which is the
+ *  wrong default for a module whose side effect is a process that runs `systemctl restart` against a
+ *  SHARED service: every importer had to remember the env var, and one that forgets silently gets a
+ *  SECOND live watchdog polling the real unit with its own independent debounce/circuit state. That is
+ *  not hypothetical — it happened to an agent importing `procTreeCpuTicks` for a one-off /proc probe on
+ *  2026-08-10, which started a real watchdog against papercup-bg-host and wrote to the durable log. The
+ *  guard is now correct-by-construction: importing this file can no longer start anything, whether or
+ *  not the importer knows the env var exists.
+ *
+ *  ⚠ The FALSE direction is the dangerous one — a guard that wrongly says "imported" under systemd would
+ *  leave bg-host with NO freeze recovery, silently. So: `node -e`/REPL (no argv[1]) is not-entrypoint;
+ *  an unresolvable path degrades to a plain string compare rather than guessing; and the
+ *  not-starting branch LOGS why, so a misfiring guard shows up in the journal instead of as silence. */
+function isDirectEntrypoint() {
+  const entry = process.argv[1];
+  if (!entry) return false; // `node -e "import(...)"`, a REPL, or a worker with no script entry
+  const self = fileURLToPath(import.meta.url);
+  const target = resolve(entry);
+  if (self === target) return true;
+  // Symlinked checkout / systemd ExecStart naming a link: compare real paths too.
+  try {
+    return realpathSync(self) === realpathSync(target);
+  } catch {
+    return false; // a path that cannot be resolved is not a match we are willing to assert
+  }
+}
+
+// Auto-start ONLY as the systemd unit's entrypoint. PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART=1 is still
+// honored as an explicit kill-switch (tests set it; it now belts-and-braces the guard rather than being
+// the only thing standing between an import and a live watchdog).
+if (process.env.PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART === '1') {
+  // deliberate opt-out — say nothing
+} else if (isDirectEntrypoint()) {
+  start();
+} else {
+  // Imported, not run. Never silent: if this branch is ever taken by the systemd unit, this line in the
+  // journal is what turns "bg-host lost its watchdog" from a mystery into a one-line diagnosis.
+  console.error(
+    `[bghost-watchdog] imported as a module — NOT auto-starting the poll loop ` +
+      `(entrypoint=${process.argv[1] ?? '<none>'}, module=${fileURLToPath(import.meta.url)}). ` +
+      `Run it directly to start the watchdog.`,
+  );
+}

@@ -63,10 +63,10 @@
   },
   "dependencies": {
     "@papercusp/linkable-edges": "file:../../libs/generic/linkable-edges",
-    "@papercusp/pubsub-substrate": "file:../../libs/generic/pubsub-substrate",
-    "@papercusp/test-config": "file:../../libs/test-config"
+    "@papercusp/pubsub-substrate": "file:../../libs/generic/pubsub-substrate"
   },
   "devDependencies": {
+    "@papercusp/test-config": "file:../../libs/test-config",
     "postgres": "^3.4.5",
     "vitest": "^4.1.4"
   }

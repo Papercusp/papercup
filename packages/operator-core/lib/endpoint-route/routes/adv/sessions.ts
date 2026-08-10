@@ -124,7 +124,6 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     import('../../../workspace-registry'),
     import('../../../role-launch-spec'),
     import('../../../session-port/service'),
-    // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
     import('../../../model-context-budget.mjs'),
     import('../../../session-port/store'),
   ]);

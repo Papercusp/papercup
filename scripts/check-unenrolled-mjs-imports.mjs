@@ -61,17 +61,9 @@ const CONFIG = 'tsconfig.declarations.json';
  */
 export const BASELINE = new Set([
   'apps/operator/lib/operator-discovery.test.ts -> apps/operator/scripts/operator-discovery.mjs',
-  'apps/operator/lib/psu-launcher-fork.integration.test.ts -> apps/operator/scripts/psu-launcher.mjs',
-  'apps/operator/lib/psu-launcher.test.ts -> apps/operator/scripts/psu-launcher.mjs',
-  'apps/operator/lib/psu-pty-host-turn.integration.test.ts -> apps/operator/scripts/psu-pty-host.mjs',
-  'apps/operator/lib/psu-pty-host.integration.test.ts -> apps/operator/scripts/psu-pty-host.mjs',
-  'apps/operator/lib/psu-pty-host.test.ts -> apps/operator/scripts/psu-pty-host.mjs',
   'apps/operator/lib/ptool.test.ts -> apps/operator/scripts/ptool.mjs',
-  'apps/operator/lib/tty-title-target.test.ts -> apps/operator/scripts/psu-launcher.mjs',
   'apps/operator/scripts/__tests__/bghost-watchdog.test.ts -> apps/operator/scripts/bghost-watchdog.mjs',
-  'apps/operator/scripts/__tests__/psu-supervisor-beat.test.ts -> apps/operator/scripts/psu-launcher.mjs',
   'apps/operator/scripts/check-vitest-mock-paths.test.ts -> apps/operator/scripts/check-vitest-mock-paths.mjs',
-  'apps/operator/scripts/psu-launcher-env-sanitize.test.ts -> apps/operator/scripts/psu-launcher.mjs',
 ]);
 
 /**

@@ -26,6 +26,7 @@
     "lint:vimock-export-strands": "node ../../scripts/check-vimock-export-strands.mjs",
     "lint:workspace-deps-complete": "node ../../scripts/check-workspace-deps-complete.mjs",
     "lint:no-ungated-mug-kettle": "node ../../scripts/check-ungated-mug-kettle.mjs",
+    "lint:green-checkpoint-tag": "node ../../scripts/check-green-checkpoint-tag.mjs",
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {

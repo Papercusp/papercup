@@ -94,6 +94,26 @@ export interface ResolveNudgeRecipientOpts {
   /** DI seams for unit tests. */
   listPresenceFn?: typeof listPresence;
   resolveSessionStatesFn?: typeof resolveSessionStates;
+  /** P-037 seam: is the Mug/Kettle tier still runnable? Defaults to the shared
+   *  predicate in pot/started.ts (loaded dynamically so a partially-mocked
+   *  './started' in a Scout test cannot strand this module at import time). */
+  mugKettleSystemEnabledFn?: () => Promise<boolean>;
+}
+
+/**
+ * P-037: is the Mug tier still runnable? Fail-CLOSED to `false` — an unreadable
+ * flag must not keep the Mug rung eligible, because a nudge routed to a Mug is
+ * a nudge NOT routed to a live su, and `wakeMug` is itself gated on the same
+ * predicate. Guessing `true` here would strand the nudge between two gates.
+ */
+async function tierRunnable(fn?: () => Promise<boolean>): Promise<boolean> {
+  try {
+    if (fn) return await fn();
+    const { mugKettleSystemEnabled } = await import('../pot/started');
+    return await mugKettleSystemEnabled();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -171,7 +191,14 @@ export async function resolveNudgeRecipient(
   };
 
   // 1 — the Mug, while the tier is still running.
-  if (opts.mugOwner && deliverable(opts.mugOwner)) {
+  //
+  // P-037: "while the tier is still running" is now ENFORCED, not assumed. It
+  // has to be, because `wakeMug` is gated on the same predicate: were this rung
+  // to pick a Mug after the retirement, `deliverScoutNudge` would early-return
+  // on it (a deliverable Mug needs no second recipient) while the delivery it
+  // returned on had already no-opped — losing the nudge between two gates, the
+  // one outcome worse than either the old behaviour or the new one.
+  if (opts.mugOwner && deliverable(opts.mugOwner) && (await tierRunnable(opts.mugKettleSystemEnabledFn))) {
     return {
       kind: 'mug',
       ownerId: opts.mugOwner,

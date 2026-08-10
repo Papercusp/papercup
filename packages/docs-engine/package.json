@@ -14,10 +14,12 @@
     "test": "vitest"
   },
   "dependencies": {
-    "@papercusp/test-config": "*",
     "js-yaml": "*",
     "remark": "*",
     "remark-gfm": "*",
     "remark-mdx": "*"
+  },
+  "devDependencies": {
+    "@papercusp/test-config": "*"
   }
 }

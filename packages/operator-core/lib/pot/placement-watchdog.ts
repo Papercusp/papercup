@@ -46,7 +46,7 @@ import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from '../work-items-stale-claims';
-import { listStartedPots } from './started';
+import { listStartedPots, mugKettleSystemEnabled } from './started';
 import { workItemCheckpointScope } from '../work-item-checkpoint';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { isClaimHoldParked } from '../work-items';
@@ -994,6 +994,24 @@ export interface MugWakeOptions {
  * diagnosable without making the stale id the only delivery route.
  */
 export async function wakeMug(opts: MugWakeOptions): Promise<void> {
+  // THE RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-037, D-027).
+  //
+  // This is the DELIVERY chokepoint for every Mug-directed nudge — six call
+  // sites across the pot placement sweeps and the three Scout watchdogs — and
+  // it is gated HERE rather than at any caller, because the callers do not
+  // share a gate to sit behind. The pot sweeps decide they have work via the
+  // ENGINE-gated `getPotStarted()`; the Scout sweeps decide via the UNGATED
+  // sibling `listStartedPots()`, which reads the very same `hive_started` row
+  // without consulting the flag. Gating the read instead would be the D-003
+  // trap: Scout SURVIVES this retirement, and its sweeps must keep running and
+  // keep routing through the P-034 ladder to a live su. What must stop is the
+  // delivery to a tier that no longer exists, and that is exactly this seam.
+  //
+  // Fail-CLOSED, matching `mugKettleSystemEnabled`'s own polarity: an
+  // unreadable flag resolves to retired. A false `true` re-animates a wake path
+  // into a slot no live agent drains; a false `false` leaves a deliberately
+  // retired tier retired.
+  if (!(await mugKettleSystemEnabled())) return;
   const metadata = {
     logicalAlias: MUG_COORD_SLOT,
     concreteOwnerId: opts.mugOwner,

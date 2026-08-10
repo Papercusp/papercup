@@ -29,10 +29,8 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "vitest": "^3.0.0",
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "@papercusp/test-config": "*"
+    "@papercusp/test-config": "*",
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0"
   }
 }

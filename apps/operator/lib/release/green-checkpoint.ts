@@ -6074,7 +6074,13 @@ export function realCheckpointDeps(
         // was being read as "this became the pin". Point at the GATE_PROMOTION trailer, and
         // state what its ABSENCE means, so a `head -1` reader is never left to infer.
         const header =
-          `[green-checkpoint] candidate=${candidateSha ?? 'unresolved'} ` +
+          // WI-37605: the RESOLVED tag, not a hardcoded literal. A real run is never under
+          // vitest, so this is byte-identical to what it always wrote; the change is that a
+          // verdict log written by a TEST driving the real write path now announces itself in
+          // its own first line instead of opening exactly like a genuine one. Nothing parses
+          // this header (verified: the only other `candidate=` writer is the GATE_PROMOTION
+          // trailer), so tagging it costs no reader.
+          `${orchestratorStdoutTag()} candidate=${candidateSha ?? 'unresolved'} ` +
           `base=${base ?? 'none'} written=${new Date().toISOString()} green=${green} ` +
           `promoted=see-GATE_PROMOTION (trailer at EOF; absent ⇒ this run never reached a promotion decision)\n`;
         // EI-19346606967082413: the ORCHESTRATOR transcript rides AHEAD of the suite stdout.

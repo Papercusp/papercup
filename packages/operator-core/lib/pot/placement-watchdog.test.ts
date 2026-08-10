@@ -4,15 +4,23 @@
  * dead/stalled cup), P-021 (cursed-item breaker mirrors replanStrikes), and
  * P-023 (reconcile "steer, don't dispatch" WITH the completion mandate).
  */
-import { describe, it, expect, vi } from 'vitest';
-const { wakeRecipients, sendMessage } = vi.hoisted(() => ({
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+const { wakeRecipients, sendMessage, getFlag } = vi.hoisted(() => ({
   wakeRecipients: vi
     .fn()
     .mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [], fanoutCapped: [] }),
   sendMessage: vi.fn().mockResolvedValue(undefined),
+  getFlag: vi.fn().mockResolvedValue(true),
 }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients }));
 vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage }));
+// Spread the original: this module also exports the flag-change bus and the
+// override store that other modules in the import graph wire up at load time.
+// Replacing the whole module would break them for a single stubbed reader.
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getFlag,
+}));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspaceId: string, fn: () => unknown) => fn() }));
 import {
   deriveCupLiveness,
@@ -50,6 +58,12 @@ const CFG: PlacementConfig = {
 const NOW = 1_000_000_000_000;
 
 describe('wakeMug (WI-2187 fresh-per-wake routing)', () => {
+  // The routing contract below is the behaviour WHILE the tier is runnable.
+  // Retirement (flag OFF) is asserted separately in the next describe.
+  beforeEach(() => {
+    getFlag.mockResolvedValue(true);
+  });
+
   it('direct-wakes the concrete owner and parks the stable role with both identities', async () => {
     await wakeMug({
       workspaceId: 'ws-1',
@@ -94,6 +108,78 @@ describe('wakeMug (WI-2187 fresh-per-wake routing)', () => {
         extra: { mugWake: expect.objectContaining({ concreteOwnerId: null }) },
       }),
     );
+  });
+});
+
+/**
+ * THE RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-037, D-027).
+ *
+ * `wakeMug` is the DELIVERY chokepoint for every Mug-directed nudge — six call
+ * sites across the pot placement sweeps and the three Scout watchdogs. Before
+ * this guard it consulted no flag at all, which made a documented premise false
+ * in two places at once:
+ *
+ *  - `scout/nudge-recipient.ts` says of its legacy leg: "when the tier is
+ *    finally gated OFF this call becomes a no-op and only the routed leg
+ *    remains." It did not become a no-op. It kept waking a stale Mug owner and
+ *    kept parking into `@role:mug`, a slot only a Mug drains.
+ *  - This plan's P-037 assumed the Stage-1 ENGINE gate covered the
+ *    scout-draft-review backstop. It does not, and cannot: that gate lives in
+ *    `getPotStarted()`, and the backstop never calls it — it reads the SAME
+ *    `hive_started` row through the UNGATED sibling accessor
+ *    `listStartedPots()`. Measured 2026-08-10: five Scout sweeps read the raw
+ *    row that way. What actually stopped the backstop in production was that
+ *    every one of the 81 `hive_started` rows happened to be 'false' — a mutable
+ *    data row any writer can flip back, not a gate.
+ *
+ * So the containment is asserted HERE, at the delivery seam, where it holds
+ * regardless of which accessor a caller used to decide it had work to do.
+ */
+describe('wakeMug — the retirement gate (P-037)', () => {
+  beforeEach(() => {
+    wakeRecipients.mockClear();
+    sendMessage.mockClear();
+  });
+
+  it('delivers NEITHER leg once the tier is retired (flag OFF)', async () => {
+    getFlag.mockResolvedValue(false);
+    await wakeMug({
+      workspaceId: 'ws-1',
+      mugOwner: 'stale-owner-123',
+      summary: 'Scout-draft review backstop: 3 drafts unreviewed',
+      source: 'scout-draft-review',
+      harnessSlug: 'papercusp',
+    });
+    expect(wakeRecipients).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  // CALIBRATION. Without this, the assertions above would also pass if the
+  // mocks were simply never reachable — the failure mode that makes a guard
+  // look strong while testing nothing.
+  it('CALIBRATION: the identical call still delivers both legs while the tier is enabled', async () => {
+    getFlag.mockResolvedValue(true);
+    await wakeMug({
+      workspaceId: 'ws-1',
+      mugOwner: 'stale-owner-123',
+      summary: 'Scout-draft review backstop: 3 drafts unreviewed',
+      source: 'scout-draft-review',
+      harnessSlug: 'papercusp',
+    });
+    expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('FAILS CLOSED: an unreadable flag is treated as retired, never as runnable', async () => {
+    getFlag.mockRejectedValue(new Error('flag backend unreachable'));
+    await wakeMug({
+      workspaceId: 'ws-1',
+      mugOwner: 'stale-owner-123',
+      summary: 'unreadable flag',
+      source: 'scout-draft-review',
+    });
+    expect(wakeRecipients).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 });
 

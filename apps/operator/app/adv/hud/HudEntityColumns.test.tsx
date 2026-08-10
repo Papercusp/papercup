@@ -319,3 +319,108 @@ describe('empty state is gated on CARDS, not on the count', () => {
     expect(screen.getByText('No goals yet.')).toBeTruthy();
   });
 });
+
+/**
+ * The `renderCardAction` seam (goals-tab-improvement-2026-08-09 P-016).
+ *
+ * Two claims, and both are the kind that a typecheck and a rendered screenshot
+ * BOTH pass while broken:
+ *
+ *   1. The action is a SIBLING of the card, never a descendant. The card is a
+ *      real <button> whenever it has a destination, and a button inside a
+ *      button is invalid HTML — browsers reparent it, so the inner click target
+ *      becomes unreliable in a way that looks fine until someone clicks it.
+ *      The `tagName` assertion below is load-bearing: without it, "not nested"
+ *      is also satisfied by a card that stopped being a button, which is the
+ *      one case where the nesting never mattered.
+ *   2. A board that supplies no action grows NO wrapper — the whole point of a
+ *      render prop over a flag. Plans and Work items must render the tree they
+ *      rendered before P-016 existed.
+ */
+describe('HudEntityColumns renderCardAction', () => {
+  it('puts the action BESIDE the card, not inside it', () => {
+    const { container } = renderCols(
+      {
+        onOpenCard: vi.fn(),
+        renderCardAction: () => (
+          <button type="button" data-testid="act">
+            Pause
+          </button>
+        ),
+      },
+      { items: [item({ id: 'WI-1', title: 'First' })], asks: [] },
+    );
+
+    const wrap = container.querySelector('.hud__card-wrap');
+    expect(wrap).toBeTruthy();
+    const body = wrap!.querySelector('.hud__card');
+    const action = screen.getByTestId('act');
+
+    // CONTROL: the card really is a <button>, which is the only reason the
+    // nesting claim below has any teeth.
+    expect(body!.tagName).toBe('BUTTON');
+    expect(body!.contains(action)).toBe(false);
+    // …but they are still one unit, so the action positions against the card.
+    expect(action.closest('.hud__card-wrap')).toBe(wrap);
+  });
+
+  it('grows no wrapper at all for a board that supplies no action', () => {
+    const { container } = renderCols(
+      { onOpenCard: vi.fn() },
+      { items: [item({ id: 'WI-1' })], asks: [] },
+    );
+    expect(container.querySelector('.hud__card-wrap')).toBeNull();
+    // CONTROL: the same board DOES grow one when an action is supplied, so the
+    // absence above is the omitted prop and not a missing class name.
+    cleanup();
+    const withAction = renderCols(
+      { onOpenCard: vi.fn(), renderCardAction: () => <span data-testid="act" /> },
+      { items: [item({ id: 'WI-1' })], asks: [] },
+    );
+    expect(withAction.container.querySelector('.hud__card-wrap')).toBeTruthy();
+  });
+
+  it('grows no wrapper for a card whose action renders null, while its neighbour keeps one', () => {
+    // The shape the Goals board actually needs: the `start-goal` ACTION CARD is
+    // not a goal, so it gets no pause button — but every real goal beside it
+    // must still get one. A blanket wrapper would put an empty action slot on
+    // the action card; a blanket skip would strip it from the real ones.
+    const { container } = renderCols(
+      {
+        onOpenCard: vi.fn(),
+        renderCardAction: (card) =>
+          card.id === 'WI-1' ? <button type="button" data-testid="act">Pause</button> : null,
+      },
+      {
+        items: [
+          item({ id: 'WI-1', title: 'A real goal' }),
+          item({ id: 'WI-2', title: 'The action card' }),
+        ],
+        asks: [],
+      },
+    );
+
+    expect(container.querySelectorAll('.hud__card').length).toBe(2);
+    expect(container.querySelectorAll('.hud__card-wrap').length).toBe(1);
+    expect(screen.getAllByTestId('act').length).toBe(1);
+  });
+
+  it('hands the whole card to the render prop, not just its id', () => {
+    // The host reads the goal's status off the query and keys it by id, so it
+    // needs the card — a bare id would force it to re-derive what the board
+    // already resolved (the WI-6742 re-derivation bug, one layer up).
+    const seen: Array<{ id: string; title: string }> = [];
+    renderCols(
+      {
+        onOpenCard: vi.fn(),
+        renderCardAction: (card) => {
+          seen.push({ id: card.id, title: card.title });
+          return null;
+        },
+      },
+      { items: [item({ id: 'WI-1', title: 'A real goal' })], asks: [] },
+    );
+
+    expect(seen).toContainEqual({ id: 'WI-1', title: 'A real goal' });
+  });
+});

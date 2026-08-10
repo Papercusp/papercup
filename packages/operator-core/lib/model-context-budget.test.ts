@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-// @ts-expect-error Canonical runtime module is plain ESM so the raw-node PSU launcher can share it.
 import * as modelContextBudget from './model-context-budget.mjs';
 
 const {

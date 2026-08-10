@@ -27,13 +27,13 @@
     "@papercusp/plugin-sdk": "*",
     "@papercusp/result-encoding": "*",
     "@papercusp/sse": "file:../../libs/generic/sse",
-    "@papercusp/test-config": "*",
     "@papercusp/tooldef": "*",
     "@papercusp/tooldef-http": "*",
     "postgres": "*",
     "zod": "*"
   },
   "devDependencies": {
+    "@papercusp/test-config": "*",
     "js-tiktoken": "*"
   },
   "peerDependencies": {

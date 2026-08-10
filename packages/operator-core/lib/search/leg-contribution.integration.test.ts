@@ -307,6 +307,11 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
       lexical: number[];
       fresh: number[];
       lexIdentical: number;
+      cascade: number[];
+      cascadeIdentical: number;
+      cascadeFired: number[];
+      onMs: number[];
+      offMs: number[];
       callsWeighted: number;
       callsTotal: number;
       unmeasurable: number;
@@ -322,7 +327,7 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
     const cellOf = (k: string) => {
       let c = cells.get(k);
       if (!c) {
-        c = { lexical: [], fresh: [], lexIdentical: 0, callsWeighted: 0, callsTotal: 0, unmeasurable: 0, lexicalEmpty: 0, lexicalFloored: 0, stage2Fired: 0, stage2Added: 0, reasons: new Set() };
+        c = { lexical: [], fresh: [], lexIdentical: 0, cascade: [], cascadeIdentical: 0, cascadeFired: [], onMs: [], offMs: [], callsWeighted: 0, callsTotal: 0, unmeasurable: 0, lexicalEmpty: 0, lexicalFloored: 0, stage2Fired: 0, stage2Added: 0, reasons: new Set() };
         cells.set(k, c);
       }
       return c;
@@ -334,8 +339,29 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
       cell.callsTotal += calls;
 
       const prod = await search(query, 'hybrid', RECENCY_PROD);
+      const tOnA = Date.now();
       const noFresh = await search(query, 'hybrid', RECENCY_NO_FRESH);
+      const onMs = Date.now() - tOnA;
       const semantic = await search(query, 'embeddings', RECENCY_NO_FRESH);
+      // WI-37622. The CASCADE arm. `stage2Added` above counts rows the cascade
+      // appended to the CANDIDATE POOL; it says nothing about whether any of
+      // them survived fusion onto the PAGE, and those are different claims.
+      // Only this one-knob comparison can answer the second — the lexical churn
+      // below cannot, because its off-arm is mode:'embeddings', which removes
+      // stage 1 AND stage 2 together.
+      const tOffA = Date.now();
+      const noCascade = await search(query, 'hybrid', RECENCY_NO_FRESH, { lexicalCascade: false });
+      const offMs = Date.now() - tOffA;
+      // WI-37622 item 2 — the COST, measured instead of asserted. Absolute
+      // latency on this box is meaningless (a loaded shared host, arms run
+      // sequentially); the DELTA between two arms of the SAME query in the SAME
+      // run is not. Record only when NEITHER arm retried: `search` backs off
+      // 250ms*attempt on a degraded result, so a retried arm is timing the
+      // rate governor rather than the cascade.
+      if (noFresh.attempts === 1 && noCascade.attempts === 1) {
+        cell.onMs.push(onMs);
+        cell.offMs.push(offMs);
+      }
 
       // ⚠ `legs.degraded` fires for TWO structurally different situations, and
       // conflating them is a BIAS, not a loss. The previous revision skipped on
@@ -397,12 +423,24 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
       }
 
       const [p, nf, se] = [idsOf(prod.results), idsOf(noFresh.results), idsOf(semantic.results)];
+      const nc = idsOf(noCascade.results);
       const lexicalChurn = minus(nf, se).length; // one knob: the lexical leg
       const freshChurn = minus(p, nf).length; // one knob: the fresh-window leg
+      const cascadeChurn = minus(nf, nc).length; // one knob: the cascade (fresh off in BOTH)
 
       cell.lexical.push(lexicalChurn);
       cell.fresh.push(freshChurn);
+      cell.cascade.push(cascadeChurn);
       if (lexicalChurn === 0) cell.lexIdentical += 1;
+      if (cascadeChurn === 0) cell.cascadeIdentical += 1;
+      // WI-37622. THE CONDITIONED STATISTIC, and it is the one to read. The
+      // unconditional median above is DILUTED by every query where stage 2
+      // never fired — those are 0 BY DEFINITION (the knob toggled nothing), not
+      // evidence of an inert cascade. Measured 02:44Z, owner-facing short: 8/20
+      // fired, 14/20 pages identical, unconditional median 0 — which reads as
+      // "does nothing" and is WRONG. Conditioned on firing, 6 of those 8
+      // changed the page.
+      if (lexLeg && lexLeg.stage2Added > 0) cell.cascadeFired.push(cascadeChurn);
       if (lexicalChurn > 0) cell.callsWeighted += calls;
     }
 
@@ -410,6 +448,10 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
     for (const [key, c] of [...cells.entries()].sort()) {
       const lex = describeDist(c.lexical);
       const fresh = describeDist(c.fresh);
+      const casc = describeDist(c.cascade);
+      const cf = describeDist(c.cascadeFired);
+      const on = describeDist(c.onMs);
+      const off = describeDist(c.offMs);
       const attempted = lex.n + c.unmeasurable;
       const zeroRate = lex.n === 0 ? 0 : (c.lexicalEmpty / lex.n) * 100;
       lines.push(
@@ -423,9 +465,25 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
           `      LEXICAL leg churn   median ${lex.median} (${asPct(lex.median)})  ` +
           `p25 ${lex.p25} / p75 ${lex.p75}  mean ${lex.mean.toFixed(1)}  ` +
           `| ${c.lexIdentical}/${lex.n} pages IDENTICAL without it\n` +
+          `      CASCADE page churn  median ${casc.median} (${asPct(casc.median)})  ` +
+          `p25 ${casc.p25} / p75 ${casc.p75}  mean ${casc.mean.toFixed(1)}  ` +
+          `| ${c.cascadeIdentical}/${casc.n} pages IDENTICAL without it\n` +
+          `      CASCADE (fired only) ${
+            cf.n === 0
+              ? 'stage 2 NEVER fired in this cell — the knob toggled nothing, so the row above is 0 BY DEFINITION'
+              : `median ${cf.median} (${asPct(cf.median)})  over ${cf.n} firing queries  ` +
+                `| ${cf.sorted.filter((v) => v > 0).length}/${cf.n} of FIRINGS changed the page`
+          }\n` +
+          `      CASCADE latency     ${
+            on.n === 0
+              ? 'no retry-free pairs — UNMEASURED, not zero'
+              : `ON median ${on.median}ms vs OFF median ${off.median}ms  ` +
+                `delta ${on.median - off.median >= 0 ? '+' : ''}${on.median - off.median}ms  over ${on.n} retry-free pairs`
+          }\n` +
           `      FRESH-window churn  median ${fresh.median} (${asPct(fresh.median)})  ` +
           `p25 ${fresh.p25} / p75 ${fresh.p75}  mean ${fresh.mean.toFixed(1)}\n` +
-          `      raw lexical churn: [${lex.sorted.join(' ')}]`,
+          `      raw lexical churn: [${lex.sorted.join(' ')}]\n` +
+          `      raw cascade churn: [${casc.sorted.join(' ')}]`,
       );
     }
 
@@ -438,6 +496,16 @@ describe.skipIf(skipReason !== null)('ranker-leg influence across the real query
         '  • LEXICAL churn = rows that change when the lexical leg is removed, holding the\n' +
         '    fresh-window leg off in BOTH arms. FRESH churn = rows that change when the\n' +
         '    fresh-window leg is added to production. Each is a ONE-knob comparison.\n' +
+        '  • CASCADE churn (WI-37622) = rows that change when `lexicalCascade:false` is set,\n' +
+        '    holding the fresh leg off in BOTH arms. It answers a question NEITHER of the\n' +
+        '    above can: `stage2Added` counts rows the cascade appended to the CANDIDATE\n' +
+        '    POOL, but reaching the pool is not reaching the PAGE. LEXICAL churn cannot\n' +
+        '    substitute — its off-arm removes stage 1 AND stage 2 together.\n' +
+        '  • ⚠ READ CASCADE CHURN AGAINST `stage2Fired`, NEVER ALONE. In a cell where\n' +
+        '    stage 2 never fired, cascade churn is 0 BY DEFINITION — the knob toggled\n' +
+        '    nothing — which is a mechanism that was never exercised, NOT evidence that\n' +
+        '    the cascade is inert. Only churn ~0 WHILE stage2Fired is high is a real\n' +
+        '    cost-without-benefit finding.\n' +
         '  • This is INFLUENCE, a CEILING on what improving that leg could affect. It is NOT\n' +
         '    correctness — there is no ground truth here, so it cannot say better or worse.\n' +
         '  • A query whose LEXICAL leg returned nothing is MEASURED (churn 0), never\n' +

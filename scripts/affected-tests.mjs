@@ -557,6 +557,14 @@ const OKF_SCAN_ROOTS = [
   'libs/papercusp/packages/harness/knowledge-packs/',
 ];
 
+// WI-37605. MIRRORS `GC_TAG_SOURCE_ROOTS` in scripts/check-green-checkpoint-tag.mjs — that guard
+// walks exactly these roots, so if its scan widens this must follow or the guard silently stops
+// firing on the new root. Mirrored rather than imported for the reason stated above: this router is
+// every agent's test-loop entry point, and a static import would let a load error in a lint script
+// hard-fail everyone's test:affected. The mirror is asserted equal to the real export by
+// affected-tests-repo-wide-invariant-guards.test.ts.
+const GC_TAG_SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
+
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
     workspace: '@papercusp/operator-core',
@@ -797,6 +805,34 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // census category too (`prompt|coding/mug|…md`), so .md counts — a new mug role prompt
     // is exactly the kind of quiet re-introduction this is for.
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) || f.endsWith('.md'),
+  },
+  {
+    // WI-37605 — the D-034 shape again, and this one straddles the boundary in BOTH
+    // directions, which is why neither workspace's own suite can hold it. The invariant
+    // ("no executable line hardcodes the green-checkpoint production tag") is violated in
+    // packages/operator-core (release-actions.ts, 24 sites) AND in apps/operator
+    // (green-checkpoint.ts, 13 sites). A guard hosted in operator-core is not selected when
+    // only green-checkpoint.ts changes — MEASURED and stated verbatim at the partial-index
+    // entry above: `--changed-paths apps/operator/lib/release/green-checkpoint.ts` ->
+    // AFFECTED_WS @papercusp/web. So the offender that produced the original report is
+    // exactly the one an unregistered guard would miss.
+    //
+    // The violation is expensive to discover late in the specific way this list cares about:
+    // it is invisible locally (it changes no behaviour and no test), and it surfaces as a
+    // TRIAGER misreading a verdict log mid-incident — the captured suite line is
+    // byte-identical to a real gate decision. Measured on the 4 newest verdict logs on
+    // 2026-08-10: 6 impostor lines each.
+    //
+    // Verified clean at wiring time (`node scripts/check-green-checkpoint-tag.mjs` -> exit 0),
+    // so registering it cannot red anyone's loop on pre-existing debt.
+    workspace: '@papercusp/operator-core',
+    // ~0.3s: a plain fs walk of two lib roots with a cheap `includes` pre-filter before the
+    // quote-aware scanner ever runs. The SCRIPT, not the vitest file — the narrow task only
+    // needs the ratchet; the discrimination controls that prove the detector works already
+    // run inside operator-core's own suite (green-checkpoint-tag-guard.test.ts).
+    script: 'lint:green-checkpoint-tag',
+    appliesTo: (f) =>
+      /\.[cm]?tsx?$/.test(f) && GC_TAG_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
   },
 ];
 

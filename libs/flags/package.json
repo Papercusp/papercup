@@ -33,10 +33,10 @@
     }
   },
   "dependencies": {
-    "@papercusp/module-singleton": "*",
-    "@papercusp/test-config": "*"
+    "@papercusp/module-singleton": "*"
   },
   "devDependencies": {
+    "@papercusp/test-config": "*",
     "vitest": "^4.1.7"
   },
   "peerDependencies": {

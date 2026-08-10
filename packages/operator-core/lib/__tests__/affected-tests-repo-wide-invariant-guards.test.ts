@@ -63,6 +63,9 @@ import {
   OKF_SCAN_ROOTS,
   isOkfScannedFile,
 } from '../../../../scripts/check-okf-conformance.mjs';
+// WI-37605 — same reason as the import above: the router MIRRORS this list rather than importing
+// it, so importing the ORIGINAL here is what keeps the mirror honest.
+import { GC_TAG_SOURCE_ROOTS } from '../../../../scripts/check-green-checkpoint-tag.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
@@ -481,5 +484,106 @@ describe('affected-tests: OKF frontmatter conformance guard (WI-35930)', () => {
       'the in-suite OKF ratchet must exist; the narrow task above does not run when ' +
         'operator-core is independently affected',
     ).toContain('check-okf-conformance.mjs');
+  });
+});
+
+/**
+ * WI-37605 — the D-034 shape straddling the boundary in BOTH directions.
+ *
+ * The invariant is "no executable line hardcodes the green-checkpoint production tag", and it was
+ * violated in operator-core (release-actions.ts, 24 sites) AND in apps/operator
+ * (green-checkpoint.ts, 13 sites). Its host workspace can only be one of the two, so whichever it
+ * is, the other side's offender escapes selection — and apps/operator is the side that produced
+ * the original report.
+ *
+ * Why it is worth every agent's edit budget: the violation changes no behaviour and breaks no
+ * test, so it is invisible locally. It surfaces as a TRIAGER misreading a verdict log mid-incident,
+ * because a captured suite line is byte-identical to a real gate decision.
+ */
+const GC_TAG_SCRIPT = 'lint:green-checkpoint-tag';
+const GC_TAG_TASK = `${HOST_WORKSPACE} :: ${GC_TAG_SCRIPT}`;
+
+/** Under a scanned root, routes to @papercusp/web — the measured escape case. */
+const GC_TAG_OUTSIDE_PATH = 'apps/operator/lib/release/green-checkpoint.ts';
+/** Under NO scanned root: the guard could never read it, so attaching would be pure cost. */
+const GC_TAG_UNSCANNED_PATH = 'libs/flags/src/types.ts';
+
+describe('affected-tests: green-checkpoint tag guard (WI-37605)', () => {
+  /** A REAL tracked TS file under `root`, or null. See the MIRROR test for why it must be real. */
+  function realTsFileUnder(root: string): string | null {
+    const res = spawnSync('git', ['ls-files', '--recurse-submodules', root], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 60_000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (res.status !== 0) return null;
+    return (res.stdout ?? '').split('\n').find((f) => /\.[cm]?tsx?$/.test(f)) ?? null;
+  }
+
+  it('attaches for a TS change outside the host workspace but inside a scanned root', () => {
+    expect(
+      dryTasks(GC_TAG_OUTSIDE_PATH),
+      `${GC_TAG_OUTSIDE_PATH} is inside the guard's scanned roots but routes to @papercusp/web, ` +
+        'so without this attachment a hardcoded production tag there gets ZERO local signal and ' +
+        'first appears as an impostor line in a verdict log someone is triaging under pressure',
+    ).toContain(GC_TAG_TASK);
+  });
+
+  it('does NOT double-run it when the host workspace is already affected', () => {
+    expect(dryTasks('packages/operator-core/lib/harness/routines/release-actions.ts')).not.toContain(
+      GC_TAG_TASK,
+    );
+  });
+
+  it('does NOT attach for a TS file outside every scanned root', () => {
+    expect(
+      dryTasks(GC_TAG_UNSCANNED_PATH),
+      'precision is part of the contract — over-firing spends every agent edit for a finding ' +
+        'that is impossible by construction',
+    ).not.toContain(GC_TAG_TASK);
+  });
+
+  it('MIRROR: every scanned root the real guard declares is actually COVERED', () => {
+    // The router hardcodes its own copy of GC_TAG_SOURCE_ROOTS. Asserting BEHAVIOUR per root
+    // (rather than list equality) also catches a root that is mirrored correctly but whose files
+    // route somewhere the attachment never fires from.
+    //
+    // ⚠ TWO TRAPS, both of which the first version of this test fell into:
+    //  1. The probe must be a REAL TRACKED FILE. The router maps a path to a workspace by PACKAGE
+    //     DIRECTORY, so a synthesized `<root>/__probe__.ts` matches no package, selects nothing,
+    //     and exits BEFORE the guard loop (WI-7013) — reading as "not wired" when the wiring is
+    //     fine. The partial-index block above documents this exact false negative; this test
+    //     reproduced it anyway, which is the argument for keeping the warning where it is.
+    //  2. "Covered" is a DISJUNCTION, not "attaches". For the root that IS inside the host
+    //     workspace, the attachment is deliberately SKIPPED to avoid double-running — that root
+    //     is covered by operator-core's own suite instead. Asserting `toContain` for every root
+    //     would therefore contradict the no-double-run rule the sibling tests pin.
+    for (const root of GC_TAG_SOURCE_ROOTS) {
+      const probe = realTsFileUnder(root);
+      if (!probe) continue; // gate-shaped checkouts carry 0/39 submodules (WI-6776) — skip, never red
+      const out = dryTasks(probe);
+      expect(
+        out.includes(GC_TAG_TASK) || out.includes(HOST_WORKSPACE),
+        `root "${root}" is declared by the guard but a real file there (${probe}) neither ` +
+          'attaches the guard task nor selects the host workspace whose suite runs it — so edits ' +
+          'under that root get no enforcement at all',
+      ).toBe(true);
+    }
+  });
+
+  it('keeps the guard script DEFINED, so the registration cannot be silently inert', () => {
+    // The specific false green this catches (WI-37454/WI-37445): affected-tests.mjs skips a
+    // registered-but-undeclared guard with a bare `continue`, so the guard runs NOWHERE while
+    // lint:guard-reachability still credits it as fully enforced.
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.[GC_TAG_SCRIPT],
+      `${HOST_WORKSPACE} must define "${GC_TAG_SCRIPT}" or the attachment is inert`,
+    ).toBeTruthy();
+    // Pointed at the SCRIPT, not the vitest file: the narrow task only needs the ratchet.
+    expect(pkg.scripts?.[GC_TAG_SCRIPT]).toContain('check-green-checkpoint-tag.mjs');
   });
 });

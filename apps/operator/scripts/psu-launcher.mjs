@@ -3767,7 +3767,19 @@ export function nativeCompactionEnv(agent) {
 export const KNOWN_CLOUD_ALIASES = ['opus', 'sonnet', 'haiku', 'fable', 'sol', 'terra', 'luna'];
 
 /** Native backend hint for unambiguous cloud model families. Unknown model ids
- * stay open-set and return null; explicit OMP remains valid for either family. */
+ * stay open-set and return null; explicit OMP remains valid for either family.
+ *
+ * ⚠ The `@returns` is load-bearing, not decoration (EI-19384804106131566). Left to
+ * inference, this union's MEMBER ORDER is not stable across tsc invocations that
+ * differ only in `outDir`: `gen:declarations` (outDir `.`) emitted
+ * `"codex" | "claude"` while `gen:declarations:check` (outDir a temp dir) emitted
+ * `"claude" | "codex"` from byte-identical sources, so the check reported this
+ * declaration permanently stale and no amount of regenerating converged. Pinning the
+ * order here makes the emit invariant. Do not remove it, and prefer an explicit
+ * `@returns` on any other exported function whose inferred return is a union.
+ *
+ * @returns {'codex' | 'claude' | null}
+ */
 export function cloudModelBackendHint(model) {
   if (!model) return null;
   const withoutEffort = String(model).trim().replace(/:(low|medium|high|xhigh|max)$/i, '');

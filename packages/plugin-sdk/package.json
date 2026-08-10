@@ -21,7 +21,9 @@
     }
   },
   "dependencies": {
-    "@papercusp/test-config": "*",
     "@papercusp/tooldef": "*"
+  },
+  "devDependencies": {
+    "@papercusp/test-config": "*"
   }
 }

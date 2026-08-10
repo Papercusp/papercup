@@ -19,6 +19,7 @@
     "react": "^18 || ^19"
   },
   "devDependencies": {
+    "@papercusp/test-config": "*",
     "@storybook/addon-docs": "^10.3.6",
     "@storybook/react-vite": "^10.3.6",
     "lost-pixel": "^3.22.0",
@@ -30,8 +31,5 @@
     "lostpixel": "lost-pixel",
     "lostpixel:update": "LOST_PIXEL_GENERATE_ONLY=1 lost-pixel",
     "test": "vitest run"
-  },
-  "dependencies": {
-    "@papercusp/test-config": "*"
   }
 }

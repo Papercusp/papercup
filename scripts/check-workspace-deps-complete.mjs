@@ -51,74 +51,48 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * repo-wide scan referenced in EI-9831 (54 edges). Fix an edge (declare the dependency +
  * `npm install` to regenerate package-lock.json) and REMOVE its entry here — that is how
  * this guard ratchets to zero. Do NOT add new entries.
+ *
+ * 2026-08-10 (EI-20026978310669562): burned down 58 -> 5. The 53 removed edges were declared
+ * in their importers' package.json and package-lock.json was regenerated in the same change.
+ *
+ * ⚠ 13 of those 53 were declared as **devDependencies**, not `dependencies`. The naive fix is
+ * to put every edge in `dependencies`; doing that here promoted ~200 packages out of dev-only
+ * in package-lock.json, because each of those 13 is `@papercusp/test-config` imported from
+ * nothing but that package's own `vitest.config.ts`. This guard deliberately EXCLUDES
+ * `*.test.ts`/`*.spec.ts` from its scan (see importsInWorkspace), which makes a config-file
+ * import look exactly like a production import — so the dep placement has to be decided from
+ * the IMPORTING FILE, not from the guard's output alone. Classify before you declare.
+ *
+ * THE REMAINING 5 ARE NOT ORDINARY BACKLOG — each resists the generic fix for a stated
+ * structural reason. Do not "just declare" them; read the reason first.
  */
 export const BASELINE = new Set([
-  '@papercup/marketplace-public-ui->@papercusp/test-config',
-  '@papercusp/agent-mcp->@papercusp/plugin-sdk',
-  '@papercusp/agent-mcp->@papercusp/test-config',
-  '@papercusp/backup->@papercusp/test-config',
-  '@papercusp/coordination->@papercusp/test-config',
-  '@papercusp/docs-engine->@papercusp/test-config',
-  '@papercusp/flags->@papercusp/test-config',
-  '@papercusp/host-platform->@papercusp/test-config',
-  '@papercusp/omp->@papercusp/test-config',
+  // ── (a) TRUE DEPENDENCY CYCLES ─────────────────────────────────────────────────────────
+  // Declaring these would close a loop: @papercusp/agent-mcp already declares
+  // @papercusp/operator-core, so operator-core->agent-mcp is a direct 2-cycle, and
+  // plugin-loader->agent-mcp closes a 3-hop cycle via operator-core->plugin-loader (declared
+  // 2026-08-10). Both were caught by INCREMENTAL cycle detection — checking each edge against
+  // the ORIGINAL graph passes plugin-loader->agent-mcp, because the edge that makes it a cycle
+  // is one being added in the SAME batch. Any future burn-down must re-check against the
+  // graph INCLUDING edges already accepted in that batch.
   '@papercusp/operator-core->@papercusp/agent-mcp',
-  '@papercusp/operator-core->@papercusp/backup',
-  '@papercusp/operator-core->@papercusp/coordination',
-  '@papercusp/operator-core->@papercusp/db-org',
-  '@papercusp/operator-core->@papercusp/desktop-ipc',
-  '@papercusp/operator-core->@papercusp/embedded-pg-discovery',
-  '@papercusp/operator-core->@papercusp/embedded-postgres-server',
-  '@papercusp/operator-core->@papercusp/fanout-resolver',
-  // ↓ BASELINE CORRECTION (EI-20028225708881148, 2026-08-10) — these 3 edges are NOT new.
-  // They existed all along and were SILENTLY DROPPED by the target-side root-workspace test
-  // (see loadLocalPackagesOnDisk above). Nothing was added to the repo; 3 pre-existing edges
-  // are finally being SEEN. That is a baseline CORRECTION, not a breach of the shrink-only
-  // rule — same precedent, and the same reasoning, as CLAUDE.md's module-singleton allowlist
-  // growing 14 -> 32 when its detector stopped being form-blind.
-  // Their targets are local packages that are not root workspaces, so the fix is NOT the
-  // generic `"<name>": "*"` advice below (see the failure message for why that breaks npm ci).
-  '@papercusp/operator-core->@papercusp/file-claim',
-  '@papercusp/operator-core->@papercusp/grid-core',
-  '@papercusp/operator-core->@papercusp/harness',
-  '@papercusp/operator-core->@papercusp/ipc-endpoint-server',
-  '@papercusp/operator-core->@papercusp/ipc-framing',
-  '@papercusp/operator-core->@papercusp/lexicon',
-  '@papercusp/operator-core->@papercusp/locks',
-  '@papercusp/operator-core->@papercusp/papercusp-shared',
-  '@papercusp/operator-core->@papercusp/plugin-loader',
-  '@papercusp/operator-core->@papercusp/plugin-sdk',
-  '@papercusp/operator-core->@papercusp/projection-index',
-  '@papercusp/operator-core->@papercusp/publish-auth',
-  '@papercusp/operator-core->@papercusp/rate-limit',
-  '@papercusp/operator-core->@papercusp/sse', // BASELINE CORRECTION — see note above
-  '@papercusp/operator-core->@papercusp/sync',
-  '@papercusp/operator-core->@papercusp/testing-shell',
-  '@papercusp/operator-core->@papercusp/tooldef',
-  '@papercusp/operator-core->@papercusp/tooldef-mcp',
-  '@papercusp/operator-vite->@papercusp/flags',
-  '@papercusp/operator-vite->@papercusp/grid-core',
-  '@papercusp/operator-vite->@papercusp/operator-core',
-  '@papercusp/operator-vite->@papercusp/p2p-voice',
-  '@papercusp/operator-vite->@papercusp/sse', // BASELINE CORRECTION — see note above
-  '@papercusp/operator-vite->@papercusp/sync',
-  '@papercusp/operator-vite->@papercusp/testing-shell',
-  '@papercusp/operator-vite->@papercusp/ui-primitives',
   '@papercusp/plugin-loader->@papercusp/agent-mcp',
-  '@papercusp/plugin-sdk->@papercusp/test-config',
-  '@papercusp/plugin-wit->@papercusp/test-config',
-  '@papercusp/sync->@papercusp/test-config',
-  '@papercusp/testing-shell->@papercusp/test-config',
-  '@papercusp/tooldef-mcp->@papercusp/test-config',
-  '@papercusp/web->@papercusp/agent-mcp',
-  '@papercusp/web->@papercusp/chat-protocol',
-  '@papercusp/web->@papercusp/embedded-postgres-server',
-  '@papercusp/web->@papercusp/p2p-voice',
-  '@papercusp/web->@papercusp/resource-profile',
-  '@papercusp/web->@papercusp/scheduled-registry',
-  '@papercusp/web->@papercusp/seed-bundle',
-  '@papercusp/web->@papercusp/testing-shell',
-  '@papercusp/web->@papercusp/tooldef',
+
+  // ── (b) TARGET IS NOT A ROOT WORKSPACE ─────────────────────────────────────────────────
+  // BASELINE CORRECTION (EI-20028225708881148, 2026-08-10) — these edges are NOT new. They
+  // existed all along and were SILENTLY DROPPED by the target-side root-workspace test (see
+  // loadLocalPackagesOnDisk above). Nothing was added to the repo; pre-existing edges are
+  // finally being SEEN. That is a baseline CORRECTION, not a breach of the shrink-only rule —
+  // same precedent as CLAUDE.md's module-singleton allowlist growing 14 -> 32 when its
+  // detector stopped being form-blind.
+  // Their targets are local packages that are NOT in root.workspaces, so the generic
+  // `"<name>": "*"` fix does NOT work: npm cannot resolve `*` to a local package it does not
+  // know is a workspace, so it goes to the registry and `npm ci` fails. Fixing these means
+  // either adding the target to root.workspaces or declaring a `file:` specifier — a
+  // different change with a different blast radius, tracked separately.
+  '@papercusp/operator-core->@papercusp/file-claim',
+  '@papercusp/operator-core->@papercusp/sse',
+  '@papercusp/operator-vite->@papercusp/sse',
 ]);
 
 function expandWorkspaces(patterns) {

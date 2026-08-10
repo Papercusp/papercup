@@ -151,8 +151,13 @@ export function installedModelContextWindow({ agent, model, home = homedir() }) 
  * `@param`/`@returns` below are what keep the emitted `.d.mts` honest — do not drop
  * them, and prefer them to removing the `= {}` (callers rely on the no-arg form).
  *
+ * The `| null` members are not defensive padding: the body coerces with
+ * `String(agent || 'claude')` / `POSITIVE(...)`, and real callers pass nulls
+ * straight through from DB rows. Typing them as `string | undefined` under-declares
+ * the runtime and reds `lint:tsc` at the CALLERS, not here.
+ *
  * @param {{
- *   agent?: string,
+ *   agent?: string | null,
  *   model?: string | null,
  *   home?: string,
  *   declaredWindow?: number | null,
@@ -193,14 +198,18 @@ export function estimatePromptTokens(text) {
  * note. Keep the explicit `@param`/`@returns`; without them the emitted `.d.mts`
  * types this bag as `{ home?: string }` and widens `window`/`level` to `any`/`string`.
  *
+ * Same `| null` note as above — every one of these reaches a `?? ''` / `||` /
+ * `POSITIVE()` coercion in the body, and callers pass DB-shaped nulls
+ * (`contextSize` is `'full' | 'trimmed' | null`, `promptText` is `string | null`).
+ *
  * @param {{
- *   agent?: string,
+ *   agent?: string | null,
  *   model?: string | null,
  *   home?: string,
- *   contextSize?: string,
- *   promptText?: string,
- *   additionalPromptText?: string,
- *   estimatedPromptTokens?: number,
+ *   contextSize?: string | null,
+ *   promptText?: string | null,
+ *   additionalPromptText?: string | null,
+ *   estimatedPromptTokens?: number | null,
  *   declaredWindow?: number | null,
  *   liveWindow?: number | null,
  * }} [opts]

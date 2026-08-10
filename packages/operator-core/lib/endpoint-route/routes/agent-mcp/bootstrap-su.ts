@@ -1419,7 +1419,6 @@ const post = defineTool({
     let launchContextText = '';
     if (launchContextPath) {
       try {
-        // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
         const budgetModule = await import('../../../model-context-budget.mjs');
         launchContextText = budgetModule.readLaunchContextText(launchContextPath);
       } catch (e: any) {
@@ -1452,7 +1451,6 @@ const post = defineTool({
       const [artifact, store, budgetModule] = await Promise.all([
         import('../../../session-port/artifact'),
         import('../../../session-port/store'),
-        // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
         import('../../../model-context-budget.mjs'),
       ]);
       const parsed = artifact.parsePortToken(portToken);
@@ -2021,7 +2019,6 @@ const post = defineTool({
 
     // Revalidate the fully assembled launch prompt before minting a pending
     // target identity. The imported history remains a separate user turn.
-    // @ts-expect-error Plain ESM is intentional: psu-launcher.mjs shares it.
     const { buildContextBudget } = await import('../../../model-context-budget.mjs');
     const contextBudget = buildContextBudget({
       agent,
