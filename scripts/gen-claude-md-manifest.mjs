@@ -170,12 +170,76 @@ function splitBlocks(lines, from, to) {
 
 const firstNonBlank = (lines, a, b) => (lines.slice(a - 1, b).find((l) => l.trim()) ?? '').trim();
 
+const sortedRanges = () => [...RANGES].sort((x, y) => x[0] - y[0]);
+
+/**
+ * The classified parts, each carrying the raw block text it was cut from.
+ *
+ * Exported so later phases address the SAME blocks the manifest does. P-015
+ * (rule/evidence separation) needs each block's text; a second copy of
+ * splitBlocks would drift from this one silently, and every partKey/blockSha it
+ * produced would then name a block that no longer exists here.
+ *
+ * `raw` is deliberately NOT carried into the manifest JSON: it is CLAUDE.md's
+ * own text, and copying 160KB of it into a committed artifact would create a
+ * second copy of the file that can disagree with the first. Downstream readers
+ * re-derive it from the source and check `blockSha`.
+ */
+export function extractParts(text) {
+  const lines = text.split('\n');
+
+  const heads = [];
+  lines.forEach((l, i) => {
+    if (l.startsWith('## ')) heads.push([i + 1, l.slice(3).trim()]);
+  });
+  const sectionOf = (n) => {
+    let cur = '(preamble)';
+    for (const [ln, t] of heads) {
+      if (ln <= n) cur = t;
+      else break;
+    }
+    return cur;
+  };
+
+  const parts = [];
+  const seen = new Set();
+  let ordinal = 0;
+  for (const [a, b, kind] of sortedRanges()) {
+    const section = sectionOf(a);
+    for (const blk of splitBlocks(lines, a, b)) {
+      const raw = blk.body.join('\n');
+      if (raw.trimStart().startsWith('## ')) continue; // headings are emitted by the projector
+      ordinal += 1;
+      const base = slug(`${slug(section, 28)}--${firstNonBlank(lines, blk.start, blk.end)}`);
+      let key = base || `part-${ordinal}`;
+      let n = 1;
+      while (seen.has(key)) key = `${base}-${++n}`;
+      seen.add(key);
+      const projects = SCOPE[kind].length > 0;
+      parts.push({
+        partKey: key,
+        ordinal,
+        kind: KIND[kind],
+        clientScope: SCOPE[kind],
+        targetSection: projects ? section : null,
+        projectRank: RANK[kind],
+        expiring: kind === 'EXP',
+        blockSha: sha16(raw),
+        chars: raw.length + 1,
+        lineHint: [blk.start, blk.end],
+        raw,
+      });
+    }
+  }
+  return parts;
+}
+
 export function buildManifest(text) {
   const lines = text.split('\n');
   const problems = [];
 
   // ── structural checks on the classification itself ──
-  const sorted = [...RANGES].sort((x, y) => x[0] - y[0]);
+  const sorted = sortedRanges();
   if (sorted[0][0] !== 1) problems.push(`ranges must start at line 1, start at ${sorted[0][0]}`);
   for (let i = 0; i < sorted.length - 1; i++) {
     const end = sorted[i][1];
@@ -199,49 +263,8 @@ export function buildManifest(text) {
     if (actual !== fingerprint) drifted.push({ range: [a, b], kind, expected: fingerprint, actual });
   }
 
-  // ── emit parts ──
-  const heads = [];
-  lines.forEach((l, i) => {
-    if (l.startsWith('## ')) heads.push([i + 1, l.slice(3).trim()]);
-  });
-  const sectionOf = (n) => {
-    let cur = '(preamble)';
-    for (const [ln, t] of heads) {
-      if (ln <= n) cur = t;
-      else break;
-    }
-    return cur;
-  };
-
-  const parts = [];
-  const seen = new Set();
-  let ordinal = 0;
-  for (const [a, b, kind] of sorted) {
-    const section = sectionOf(a);
-    for (const blk of splitBlocks(lines, a, b)) {
-      const raw = blk.body.join('\n');
-      if (raw.trimStart().startsWith('## ')) continue; // headings are emitted by the projector
-      ordinal += 1;
-      const base = slug(`${slug(section, 28)}--${firstNonBlank(lines, blk.start, blk.end)}`);
-      let key = base || `part-${ordinal}`;
-      let n = 1;
-      while (seen.has(key)) key = `${base}-${++n}`;
-      seen.add(key);
-      const projects = SCOPE[kind].length > 0;
-      parts.push({
-        partKey: key,
-        ordinal,
-        kind: KIND[kind],
-        clientScope: SCOPE[kind],
-        targetSection: projects ? section : null,
-        projectRank: RANK[kind],
-        expiring: kind === 'EXP',
-        blockSha: sha16(raw),
-        chars: raw.length + 1,
-        lineHint: [blk.start, blk.end],
-      });
-    }
-  }
+  // ── emit parts (raw block text dropped: see extractParts) ──
+  const parts = extractParts(text).map(({ raw: _raw, ...p }) => p);
 
   // ── invariants the loader depends on (mirrors migration 781's CHECK constraints) ──
   for (const p of parts) {
