@@ -28,7 +28,7 @@ import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
-import { getModeSubject } from '../../modes/store';
+import { resolveGoalContext } from '../../modes/goal-context';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
@@ -153,14 +153,20 @@ function hasDeclaredLineageTo(
  * Stamp a freshly-created work-item with the goal its creator is running.
  *
  * Returns the goal id when a stamp was written, `null` in every
- * not-applicable case — no workspace in scope, no owner, the creator is not in
- * GOAL mode, or the mode carries no subject. NONE of those are errors: most
- * work on this fleet is not goal-mode work, so a silent null is the common and
- * correct outcome.
+ * not-applicable case — no workspace in scope, no owner, or the creator is
+ * attached to no goal at all. NONE of those are errors: most work on this fleet
+ * is not goal work, so a silent null is the common and correct outcome.
  *
- * `getModeSubject` is deliberately the only read here. Resolving the goal any
- * other way — an argument, a plan lookup, a guess from the harness — would
+ * `resolveGoalContext` is deliberately the only read here. Resolving the goal
+ * any other way — an argument, a plan lookup, a guess from the harness — would
  * re-introduce exactly the self-report this mechanism replaces.
+ *
+ * It reads the RESOLVED context rather than the creator's goal-mode subject
+ * (goal-mode-hardening-2026-08-10 P-002, D-008). The mode subject alone answers
+ * only for the agent RUNNING the goal, so every item created by an agent that
+ * goal spawned stamped NULL: the goal agent's own handful of items counted and
+ * the fleet doing the work was invisible to the spend meter. The resolver adds
+ * the inherited leg without giving descendants GOAL mode.
  */
 async function stampGoalProvenance(
   workItem: WorkItem,
@@ -168,7 +174,7 @@ async function stampGoalProvenance(
   ownerId: string | undefined,
 ): Promise<string | null> {
   if (!workspaceId || workspaceId === '*' || !ownerId) return null;
-  const goalId = await getModeSubject(workspaceId, ownerId, 'goal');
+  const goalId = await resolveGoalContext(workspaceId, ownerId);
   if (!goalId) return null;
   const { sql } = getOrgPg();
   // Keyed on (harness_slug, feature_id) — the table's own identity, the same

@@ -37,6 +37,15 @@ export interface SessionBriefInput {
   /** Resolved home hive, if any. */
   potSlug?: string | null;
   /**
+   * The goal this session's work SERVES, inherited from its launcher at spawn
+   * (goal-mode-hardening-2026-08-10 P-002, D-008). NOT the same fact as being
+   * in GOAL mode — that lives in agent_modes and means the session RUNS the
+   * goal. A descendant carries this and never that, which is what lets goal
+   * provenance reach fleet members without turning them into portfolio
+   * managers. Omitted ⇒ untouched (see the COALESCE-keep below).
+   */
+  goalId?: string | null;
+  /**
    * The Claude/native session UUID, if the caller has it. declare-intent's context
    * carries only ownerId today, so this is usually null; reserved for the Phase-2
    * "continue where session <uuid> left off" lookup key.
@@ -54,6 +63,7 @@ export interface SessionBriefRecord {
   currentFiles: string[];
   harnessSlug: string | null;
   potSlug: string | null;
+  goalId: string | null;
   nativeSessionId: string | null;
   firstSeenAt: string;
   updatedAt: string;
@@ -80,7 +90,7 @@ export async function writeSessionBrief(
     await sql`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, owner_label, source, intent,
-         current_plan_slug, current_files, harness_slug, pot_slug,
+         current_plan_slug, current_files, harness_slug, pot_slug, goal_id,
          native_session_id, first_seen_at, updated_at)
       VALUES (
         ${identity.ownerId},
@@ -92,6 +102,7 @@ export async function writeSessionBrief(
         COALESCE(${filesJson}::text::jsonb, '[]'::jsonb),
         ${input.harnessSlug ?? null},
         ${input.potSlug ?? null},
+        ${input.goalId ?? null},
         ${input.nativeSessionId ?? null},
         now(), now()
       )
@@ -108,6 +119,11 @@ export async function writeSessionBrief(
         -- a previously-resolved value (mirrors coord_presence D-004).
         harness_slug      = COALESCE(EXCLUDED.harness_slug, harness_shared.session_briefs.harness_slug),
         pot_slug         = COALESCE(EXCLUDED.pot_slug, harness_shared.session_briefs.pot_slug),
+        -- Same populate-once-then-keep as the lanes above, and it matters more
+        -- here: goal context is written ONCE at launch, while presence/intent
+        -- writes fire constantly and all omit it. Plain assignment would erase
+        -- a descendant's goal on its very next heartbeat (D-008).
+        goal_id           = COALESCE(EXCLUDED.goal_id, harness_shared.session_briefs.goal_id),
         native_session_id = COALESCE(EXCLUDED.native_session_id, harness_shared.session_briefs.native_session_id),
         updated_at        = now()
     `;
@@ -127,6 +143,7 @@ function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
     currentFiles: Array.isArray(r.current_files) ? (r.current_files as string[]) : [],
     harnessSlug: (r.harness_slug as string | null) ?? null,
     potSlug: (r.pot_slug as string | null) ?? null,
+    goalId: (r.goal_id as string | null) ?? null,
     nativeSessionId: (r.native_session_id as string | null) ?? null,
     firstSeenAt: String(r.first_seen_at ?? ''),
     updatedAt: String(r.updated_at ?? ''),

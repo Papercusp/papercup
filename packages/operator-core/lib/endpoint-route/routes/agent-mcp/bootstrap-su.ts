@@ -1783,6 +1783,39 @@ const post = defineTool({
       } catch (e: any) {
         process.stderr.write(`[bootstrap-su] provenance fact assert failed (non-fatal): ${e?.message}\n`);
       }
+
+      // goal-mode-hardening-2026-08-10 P-002 / D-008: inherit the LAUNCHER's
+      // goal so this session's work stamps `work_items.goal_id`, WITHOUT giving
+      // it GOAL mode. Before this, only the agent RUNNING a goal stamped
+      // provenance, so a goal's fleet — the sessions doing the actual work —
+      // was invisible to its spend meter and its "what belongs to this goal?"
+      // view.
+      //
+      // THIS IS THE ONE SEAM, deliberately, and it is why no `--goal=<id>` flag
+      // exists. Every tool-driven psu launch already carries
+      // `--launched-by=<ownerId>` (capability:terminal injects it, launch-su and
+      // fleet:launch-on-plan compose it), so inheriting HERE covers every launch
+      // path that can spawn an agent at all — including ones added later, which
+      // a per-call-site flag would silently miss. That miss is the failure mode
+      // the flag design invites: a new spawn site composes argv, forgets one
+      // flag, and its descendants' work quietly leaves the goal.
+      //
+      // Reads the launcher's RESOLVED context, not its mode subject, so a child
+      // of a child inherits too (transitivity is the resolver's property).
+      try {
+        const { resolveGoalContext, setInheritedGoalContext } = await import('../../../modes/goal-context');
+        const inheritedGoal = await resolveGoalContext(workspace, launchedBy);
+        if (inheritedGoal) {
+          const wrote = await setInheritedGoalContext(workspace, sid, inheritedGoal);
+          if (!wrote) {
+            process.stderr.write(
+              `[bootstrap-su] goal-context inherit failed for ${sid} (goal ${inheritedGoal}) — its work will not stamp goal provenance\n`,
+            );
+          }
+        }
+      } catch (e: any) {
+        process.stderr.write(`[bootstrap-su] goal-context inherit failed (non-fatal): ${e?.message}\n`);
+      }
     }
 
     // WI-2185 / EI-19965557940158384 (launched-wake-immunity): a spawned fleet
