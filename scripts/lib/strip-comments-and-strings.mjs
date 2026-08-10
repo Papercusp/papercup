@@ -173,6 +173,49 @@ export function isLiveCodeAt(raw, masked, index) {
   return raw[index] === masked[index];
 }
 
+/**
+ * The first match of `re` in `raw` whose anchor is LIVE CODE, or null.
+ *
+ * ⚠ IT MUST SCAN PAST PHANTOMS, NOT STOP AT THE LEFTMOST MATCH — that is the whole reason this
+ * is a helper instead of one `re.exec` plus an `isLiveCodeAt` check at each call site. A single
+ * exec returns the LEFTMOST match; if that one happens to sit inside a string while a REAL
+ * occurrence follows it on the same line, testing only the leftmost rejects the line and the
+ * real hit is silently lost. That is a false NEGATIVE created by a fix aimed at false positives
+ * — the same trap already measured once here, where a real `vi.mock` call after a comment
+ * quoting the same shape was double-counted (check-full-replacement-mocks, 2 → 1).
+ *
+ * ⚠ IT TESTS THE FIRST NON-WHITESPACE CHARACTER, NOT `m.index`. Blanking replaces a character
+ * WITH A SPACE, so a blanked character and a real space are indistinguishable — and a pattern
+ * that opens with `^\s*` (every line-anchored rule here) puts exactly that ambiguous character
+ * at `m.index`. Testing it directly would report a match inside a template literal as live code
+ * and let the phantom straight through, which is the precise defect this module exists to stop.
+ *
+ * `re` is cloned with the `g` flag when it lacks one, so a caller's shared module-scope regex is
+ * never mutated and never carries `lastIndex` state between calls.
+ *
+ * @param {string} raw
+ * @param {string} masked  `raw` through stripCommentsAndStrings (length-preserving)
+ * @param {RegExp} re
+ * @returns {RegExpExecArray | null}
+ */
+export function firstLiveMatch(raw, masked, re) {
+  const scanner = re.flags.includes('g') ? new RegExp(re.source, re.flags) : new RegExp(re.source, `${re.flags}g`);
+  scanner.lastIndex = 0;
+  for (let m = scanner.exec(raw); m; m = scanner.exec(raw)) {
+    const end = m.index + m[0].length;
+    let anchor = -1;
+    for (let i = m.index; i < end; i++) {
+      if (!/\s/.test(raw[i])) {
+        anchor = i;
+        break;
+      }
+    }
+    if (anchor !== -1 && isLiveCodeAt(raw, masked, anchor)) return m;
+    if (m.index === scanner.lastIndex) scanner.lastIndex++; // zero-width match: do not spin
+  }
+  return null;
+}
+
 /** .ts and .tsx disagree only on `<T>expr` vs JSX, but they disagree HARD — guessing wrong
  *  mis-blanks real code, which is the failure this module exists to prevent. */
 function parseSource(text, fileName) {

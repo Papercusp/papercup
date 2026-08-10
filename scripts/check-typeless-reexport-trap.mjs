@@ -51,6 +51,7 @@
  *
  * THE FIX when it fires: add `"type": "module"` to the offending package's package.json.
  */
+import { firstLiveMatch, stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, relative, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,11 +84,23 @@ const SKIP_DIR = new Set(['node_modules', 'dist', 'build', '.next', 'coverage', 
 /** `export * from '…'` / `export { a, b } from '…'` — the shapes the lexer cannot follow. */
 const REEXPORT_RE = /^\s*export\s+(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*from\s*['"]([^'"]+)['"]/gm;
 
-/** Count re-export chains in one source text. Exported for tests. */
-export function countReexportChains(text) {
+/**
+ * Count re-export chains in one source text. Exported for tests.
+ *
+ * Counted over the MASKED text: `REEXPORT_RE` is `^`-anchored per line, and a multi-line
+ * template literal puts arbitrary text at a line start, so a doc string quoting
+ * `export * from '…'` was counted as a real chain (WI-37717). Masking strings is safe HERE
+ * precisely because this function only COUNTS — it never reads the captured specifier, and a
+ * real chain still matches with its quotes intact and blanks between them.
+ *
+ * @param {string} text
+ * @param {string} [fileName]
+ */
+export function countReexportChains(text, fileName) {
+  const scan = stripCommentsAndStrings(text, fileName);
   REEXPORT_RE.lastIndex = 0;
   let n = 0;
-  while (REEXPORT_RE.exec(text) !== null) n += 1;
+  while (REEXPORT_RE.exec(scan) !== null) n += 1;
   return n;
 }
 
@@ -96,13 +109,18 @@ export function countReexportChains(text) {
  * A default or namespace import (`import p from`, `import * as p from`) is NOT affected by
  * the lexer gap in the same way, so it is deliberately not matched. Exported for tests.
  */
-export function namedImportedPackages(text, candidateNames) {
+export function namedImportedPackages(text, candidateNames, fileName) {
   const found = new Set();
+  // MATCH ON RAW, VALIDATE THE ANCHOR. Unlike countReexportChains above, this pattern SPANS
+  // code and string content — the package NAME it is searching for sits inside the specifier —
+  // so masking strings would blank the very evidence and find nothing. Anchoring on the
+  // `import` keyword instead keeps a real import while rejecting one quoted inside a template.
+  const masked = stripCommentsAndStrings(text, fileName);
   for (const name of candidateNames) {
     const re = new RegExp(
       `import\\s*\\{[^}]*\\}\\s*from\\s*['"]${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:/[^'"]*)?['"]`,
     );
-    if (re.test(text)) found.add(name);
+    if (firstLiveMatch(text, masked, re)) found.add(name);
   }
   return found;
 }
@@ -207,7 +225,7 @@ export function scanWorkspace(root = ROOT) {
         continue;
       }
       // A typeless package contributes its re-export count; an ESM one cannot be a target.
-      if (!isEsm && text.includes('export')) chains += countReexportChains(text);
+      if (!isEsm && text.includes('export')) chains += countReexportChains(text, file);
       // Only an ESM consumer links through the lexer, and only an `import` line can trap.
       if (!isEsm || !text.includes('import')) continue;
       // Cheap substring pre-filter before the per-name regex — most files name none of them.
@@ -215,7 +233,7 @@ export function scanWorkspace(root = ROOT) {
       if (present.length === 0) continue;
       const rel = relative(root, file);
       const linked = LINKED_EXT.has(extname(file));
-      for (const target of namedImportedPackages(text, present)) {
+      for (const target of namedImportedPackages(text, present, file)) {
         namedImports.push({ pkg: target, file: rel, linked });
       }
     }

@@ -33,6 +33,7 @@
  *   node scripts/check-no-wire-compression.mjs             # scan, exit 1 on offenders
  *   node scripts/check-no-wire-compression.mjs --self-test # verify the matcher
  */
+import { firstLiveMatch, stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -93,20 +94,36 @@ const RULES = [
   },
 ];
 
-/** Lines that are prose, not code. Comments explain the ban; they must not trip it. */
-function isComment(line) {
-  const t = line.trim();
-  return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*');
-}
-
-export function scanSource(text) {
+/**
+ * MATCH ON RAW, VALIDATE THE ANCHOR AGAINST THE MASK — because THE RULES ABOVE DISAGREE WITH
+ * EACH OTHER about where their evidence lives, so no single mask can serve them all:
+ *   - `zlib-compressor` / `compression-stream` / `permessage-deflate` are pure CODE, and want
+ *     string literals masked away.
+ *   - `content-encoding-header` matches `'content-encoding': 'gzip'`, which lives ENTIRELY
+ *     inside string literals — masking them deletes the detector outright (a silent pass).
+ *   - `hono-compress` SPANS both: the `from` keyword is code, the specifier is a string.
+ * Asking instead whether each match's ANCHOR is live program text satisfies all three at once.
+ * A rule anchored on its own opening quote still fires on real code (delimiters are kept) but
+ * not on the same text nested inside a template literal, where that quote is itself blanked.
+ *
+ * This replaces a line-start `//`-prefix heuristic that recognised only a comment OPENING a
+ * line: a trailing comment, a block-comment body, and any template literal quoting a banned
+ * call all walked straight through it (WI-37717).
+ *
+ * @param {string} text
+ * @param {string} [fileName]  passed through to pick a ScriptKind; optional so existing
+ *        single-argument callers (this guard's own self-test) keep working.
+ */
+export function scanSource(text, fileName) {
   const hits = [];
   const lines = text.split('\n');
+  const masked = stripCommentsAndStrings(text, fileName).split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (isComment(line)) continue;
     for (const rule of RULES) {
-      if (rule.re.test(line)) hits.push({ line: i + 1, id: rule.id, hint: rule.hint, text: line.trim() });
+      if (firstLiveMatch(line, masked[i], rule.re)) {
+        hits.push({ line: i + 1, id: rule.id, hint: rule.hint, text: line.trim() });
+      }
     }
   }
   return hits;
@@ -183,7 +200,7 @@ function main() {
   }
   const offenders = [];
   for (const file of targets()) {
-    const hits = scanSource(readFileSync(file, 'utf8'));
+    const hits = scanSource(readFileSync(file, 'utf8'), file);
     for (const h of hits) offenders.push(`${relative(ROOT, file)}:${h.line}  [${h.id}] ${h.hint}\n      ${h.text}`);
   }
   if (offenders.length === 0) {
