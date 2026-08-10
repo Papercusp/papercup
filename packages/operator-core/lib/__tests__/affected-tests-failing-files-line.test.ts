@@ -361,13 +361,24 @@ describe('attributeFailedTask — `node --test` output is a SECOND runner format
     expect(parseNodeTestFailedFiles(green)).toEqual([]);
   });
 
-  it('ignores a `test at` line pointing at a non-test file, and dedupes repeats', () => {
-    const out = [
-      'test at test/a.test.js:1:1',
-      'test at test/a.test.js:9:1',
-      'test at src/helper.js:3:1',
-    ].join('\n');
+  it('dedupes repeats — several failures in one file name it once', () => {
+    const out = ['test at test/a.test.js:1:1', 'test at test/a.test.js:9:1'].join('\n');
     expect(parseNodeTestFailedFiles(out)).toEqual(['test/a.test.js']);
+  });
+
+  it('REGRESSION: captures unconventional suite naming — `@papercusp/cli` uses *.node-test.ts', () => {
+    // The first draft of the matcher reused VITEST_TEST_FILE_SOURCE, which demands a literal
+    // `.test.`/`.spec.` segment. `node-test.ts` is `-test`, not `.test`, so cli's failures kept
+    // reporting no-file-rows while the conventional `.test.js` case passed — the fix silently
+    // not applying to one of the three workspaces it claimed to cover. Bytes below are from a
+    // real `node --test --import tsx src/thing.node-test.ts` run.
+    const out = 'test at src/thing.node-test.ts:2:871\n✖ cli-style name fails (1ms)\n';
+    expect(parseNodeTestFailedFiles(out)).toEqual(['src/thing.node-test.ts']);
+  });
+
+  it('needs the `test at` anchor — a bare path mentioned in prose is not a failure', () => {
+    expect(parseNodeTestFailedFiles('see test/a.test.js:1:1 for context\n')).toEqual([]);
+    expect(parseNodeTestFailedFiles('  at Test.run (node:internal/test_runner/test:1201:25)\n')).toEqual([]);
   });
 });
 

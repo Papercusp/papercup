@@ -151,6 +151,20 @@ export function parseFailedTestFiles(text) {
  * path it carries is workspace-relative — the same shape vitest's rollup rows yield, so
  * callers need no normalisation.
  *
+ * ⚠ The path deliberately does NOT reuse {@link VITEST_TEST_FILE_SOURCE}, and that is the
+ * load-bearing decision here. That pattern demands a literal `.test.`/`.spec.` SEGMENT, but
+ * `@papercusp/cli` names its suites `src/**` + `/*.node-test.ts` — `-test`, not `.test`. The
+ * first draft of this function DID pin the vitest convention, and it silently reproduced the
+ * exact bug it exists to fix for one of the three workspaces in scope: measured, it returned
+ * [] for a real cli-shaped failure while the conventional `.test.js` worked. That is what a
+ * naming-convention assumption always looks like — correct on the case you sampled, empty on
+ * the one you did not, and an empty result here reads as "nothing failed", never as "my
+ * matcher is wrong".
+ *
+ * `test at ` plus a trailing `:line:col` is already a tight, failure-exclusive anchor, so the
+ * path only has to look like a JS/TS-family source file. A file-NAMING convention is not a
+ * property of the runner's output; the anchor is. Guard the anchor, not the fashion.
+ *
  * @param {string} text
  * @returns {string[]} workspace-relative paths, deduped; [] when none
  */
@@ -158,7 +172,10 @@ export function parseNodeTestFailedFiles(text) {
   if (!text) return [];
   const plain = stripVitestAnsi(text);
   const files = new Set();
-  const re = new RegExp(String.raw`^\s*test at\s+(${VITEST_TEST_FILE_SOURCE}):\d+:\d+\s*$`, 'gm');
+  // A fresh regex per call: a shared /g literal carries `lastIndex` state, and while
+  // `matchAll` happens to clone its argument, relying on that is a footgun for the next
+  // editor who reaches for `.exec()` on the same constant.
+  const re = /^\s*test at\s+(\S+\.[cm]?[jt]sx?):\d+:\d+\s*$/gm;
   for (const m of plain.matchAll(re)) files.add(m[1]);
   return [...files];
 }
