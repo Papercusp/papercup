@@ -468,6 +468,18 @@ export interface GoalPlanCard {
    *  and labelling this "plan progress" would overstate what the goal owns. */
   items: number;
   openItems: number;
+  /**
+   * True when the plan carries this goal's stamp (`harness_plans.goal_id`,
+   * migration 791) — i.e. it was CREATED by an agent working this goal, rather
+   * than merely being the source of some work item that is.
+   *
+   * The two are independent, and both matter: a stamped plan with `items: 0` is
+   * the normal state of a plan the goal just started, while an unstamped plan
+   * with items is work the goal inherited. The UI needs the flag because the
+   * counts alone cannot tell those apart — "0 open of 0" on a freshly-started
+   * plan reads as failure when it is simply new.
+   */
+  stamped: boolean;
   updatedAt: string | null;
 }
 
@@ -589,22 +601,70 @@ export async function resolveGoalDetail(args: {
     // JOIN is deliberate: a slug whose plan row is gone still returns a card
     // with a null title, because live work items pointing at a deleted plan is
     // exactly the state worth surfacing.
+    // Migration 791 adds the SECOND leg: a plan CREATED under this goal, stamped
+    // with `harness_plans.goal_id` from its creator's resolved goal context. The
+    // two legs answer different questions and a goal needs both —
+    //   derived  = "work on this goal came from that plan"  (may be a plan the goal
+    //              never created; stays true after the goal agent is long gone)
+    //   stamped  = "this goal's agent authored that plan"   (true from the instant
+    //              it is created, before any work item exists)
+    // — so this is a FULL OUTER JOIN, not a replacement. Dropping the derived leg
+    // would lose plans a goal inherited work from; dropping the stamped leg is the
+    // owner-reported bug (a brand-new goal's own plan showing nothing at all).
+    //
+    // The counts stay strictly the DERIVED ones: `items`/`openItems` mean "work
+    // items on this goal that came from this plan", and a stamped-only plan
+    // genuinely has zero of those. Coalescing them to the plan's own size here
+    // would silently change what the number means — that is why `stamped` ships
+    // as its own flag instead, so the UI can say "started by this goal" rather
+    // than render a misleading "0 of 0".
     const planRows = (await tx`
-      SELECT wi.source_plan_slug AS plan_slug,
-             wi.harness_slug,
+      WITH derived AS (
+        SELECT wi.source_plan_slug AS plan_slug,
+               wi.harness_slug,
+               COUNT(*) AS items,
+               COUNT(*) FILTER (WHERE wi.closed_ts IS NULL) AS open_items,
+               MAX(wi.updated_ts) AS updated_ms
+          FROM harness_shared.work_items wi
+         WHERE wi.goal_id = ${goalId}
+           AND wi.source_plan_slug IS NOT NULL
+         GROUP BY wi.source_plan_slug, wi.harness_slug
+      ),
+      stamped AS (
+        SELECT p.plan_slug, p.harness_slug
+          FROM harness_shared.harness_plans p
+         WHERE p.workspace_id = ${workspaceId}
+           AND p.goal_id = ${goalId}
+      ),
+      keys AS (
+        SELECT plan_slug, harness_slug FROM derived
+        UNION
+        SELECT plan_slug, harness_slug FROM stamped
+      )
+      SELECT k.plan_slug,
+             k.harness_slug,
              p.title, p.status, COALESCE(p.archived, false) AS archived,
-             COUNT(*) AS items,
-             COUNT(*) FILTER (WHERE wi.closed_ts IS NULL) AS open_items,
-             to_timestamp(MAX(wi.updated_ts) / 1000.0) AS updated_at
-        FROM harness_shared.work_items wi
+             COALESCE(d.items, 0) AS items,
+             COALESCE(d.open_items, 0) AS open_items,
+             (s.plan_slug IS NOT NULL) AS stamped,
+             to_timestamp(
+               COALESCE(d.updated_ms, EXTRACT(EPOCH FROM p.updated_at) * 1000)
+               / 1000.0
+             ) AS updated_at
+        FROM keys k
+        -- LEFT JOIN, deliberately: a slug whose plan row is gone still returns a
+        -- card with a null title, because live work items pointing at a deleted
+        -- plan is exactly the state worth surfacing.
         LEFT JOIN harness_shared.harness_plans p
                ON p.workspace_id = ${workspaceId}
-              AND p.harness_slug = wi.harness_slug
-              AND p.plan_slug = wi.source_plan_slug
-       WHERE wi.goal_id = ${goalId}
-         AND wi.source_plan_slug IS NOT NULL
-       GROUP BY wi.source_plan_slug, wi.harness_slug, p.title, p.status, p.archived
-       ORDER BY COUNT(*) FILTER (WHERE wi.closed_ts IS NULL) DESC, MAX(wi.updated_ts) DESC NULLS LAST
+              AND p.harness_slug = k.harness_slug
+              AND p.plan_slug = k.plan_slug
+        LEFT JOIN derived d
+               ON d.plan_slug = k.plan_slug AND d.harness_slug = k.harness_slug
+        LEFT JOIN stamped s
+               ON s.plan_slug = k.plan_slug AND s.harness_slug = k.harness_slug
+       ORDER BY COALESCE(d.open_items, 0) DESC,
+                COALESCE(d.updated_ms, EXTRACT(EPOCH FROM p.updated_at) * 1000) DESC NULLS LAST
     `) as unknown as Array<Record<string, unknown>>;
 
     // The agent(s) RUNNING this goal (P-018's conversation affordance). D-007:
@@ -761,6 +821,7 @@ export async function resolveGoalDetail(args: {
         archived: p.archived === true,
         items: num(p.items),
         openItems: num(p.open_items),
+        stamped: p.stamped === true,
         updatedAt: iso(p.updated_at as string | Date | null),
       })),
       /** The unbounded total, so the client can say "showing 25 of 31" instead of

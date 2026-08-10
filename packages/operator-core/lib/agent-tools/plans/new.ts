@@ -25,6 +25,7 @@ import { summarizeItemParse } from './item-parse-feedback';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
+import { stampPlanGoalProvenance } from '../../modes/goal-context';
 
 /**
  * A boolean flag that ALSO accepts the exact wire strings `'true'`/`'false'`.
@@ -481,6 +482,23 @@ export default defineTool({
     // on a managed harness. Operator-level plans (harness:'all') have no harness
     // slug and the ledger is per-harness, so skip those.
     if (harnessSlug) void emitPlanAuthored(harnessSlug, value.slug);
+
+    // Migration 791: link this plan to the goal its creator is working, if any.
+    // Without it a goal-mode agent's own plan is invisible on the goal page until
+    // some work item stamped with that goal happens to name it — which on a fresh
+    // goal is never, so the page reads as "the agent has done nothing".
+    // Best-effort and un-awaited for the same reason emitPlanAuthored is: the plan
+    // is already written, and provenance metadata must not fail a created plan.
+    // `result.scope` is the RESOLVED pair withPlanLock actually wrote the row with
+    // (resolvePlanScope collapses a member harness to its pot home). Using the
+    // caller's own harnessSlug here would miss on exactly the pot-scoped plans a
+    // goal creates, and miss SILENTLY — the UPDATE would match zero rows.
+    void stampPlanGoalProvenance({
+      workspaceId: result.scope.workspaceId,
+      harnessSlug: result.scope.harnessSlug,
+      planSlug: value.slug,
+      ownerId: (ctx as { ownerId?: string })?.ownerId,
+    });
 
     // Parse the just-written body so the caller gets item-parse feedback in the
     // SAME call — itemsParsed + the parsed items echoed (no follow-up plans:get)

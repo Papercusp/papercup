@@ -93,6 +93,13 @@ function PlanRow({ plan, nowMs }: { plan: GoalDetailPlanInput; nowMs: number }) 
   const age = agoText(plan.updatedAt, nowMs);
   const open = plan.openItems ?? 0;
   const total = plan.items ?? 0;
+  /* A plan this goal AUTHORED that has not yet produced a goal-stamped work
+     item. The counts are honest — they really are zero — but "0 open of 0 on
+     this goal" reads as "the agent did nothing", and this is the state EVERY
+     goal passes through in its first minutes, which is precisely when the owner
+     is looking. Say what actually happened instead. A stamped plan that HAS
+     items falls through to the counts, which are the more informative reading. */
+  const startedOnly = plan.stamped && total === 0;
   return (
     <li className="pc-peer" data-testid="goal-rail-plan" data-slug={plan.planSlug}>
       <span className="pc-peer__r1">
@@ -110,8 +117,8 @@ function PlanRow({ plan, nowMs }: { plan: GoalDetailPlanInput; nowMs: number }) 
             that came from the plan, NOT the plan's own size. Labelling it
             "plan progress" would overstate what the goal owns — the plan is
             very often much larger than its goal-stamped slice. */}
-        <span className="pc-peer__state">
-          {open} open of {total} on this goal
+        <span className="pc-peer__state" data-started-only={startedOnly ? 'true' : undefined}>
+          {startedOnly ? 'started by this goal' : `${open} open of ${total} on this goal`}
         </span>
         {age ? <span className="pc-peer__intent"> · {age}</span> : null}
       </span>

@@ -132,3 +132,52 @@ export async function resolveGoalContext(
   }
   return getInheritedGoalContext(workspaceId, ownerId, sql);
 }
+
+/**
+ * Stamp a NEWLY CREATED plan with the goal its creator is working (migration 791).
+ *
+ * WHY THIS EXISTS — owner-reported 2026-08-10: the goal popup showed the goal's work
+ * item but not the plan its agent had just created. That was not a rendering fault. A
+ * plan reached a goal by exactly one derivation: a goal-stamped work item whose
+ * `source_plan_slug` names it. That derivation is honest but structurally blind to the
+ * case that matters most on a young goal — the plan the goal's OWN agent authored,
+ * before any work item from it exists. Measured on the goal that reported it: one
+ * stamped work item, `source_plan_slug` NULL, and the just-started plan invisible.
+ * EVERY new goal begins in that state, so the rail was emptiest exactly while the owner
+ * was watching to see whether the agent had done anything.
+ *
+ * It is deliberately the SAME rule as `stampGoalProvenance` for work items, not a new
+ * one: written from the creator's RESOLVED goal context, never from an argument, so a
+ * plan cannot self-report its way onto a goal; and never over an existing stamp, so the
+ * first attribution wins and a later editor cannot re-parent someone else's plan.
+ *
+ * Best-effort BY DESIGN — provenance is metadata, and a plan that was successfully
+ * created must not be failed retroactively because its stamp could not be written. The
+ * caller therefore does not await a verdict it would have no way to act on.
+ */
+export async function stampPlanGoalProvenance(args: {
+  workspaceId: string | undefined;
+  harnessSlug: string | undefined;
+  planSlug: string;
+  ownerId: string | undefined;
+  sql?: Sql;
+}): Promise<string | null> {
+  const { workspaceId, harnessSlug, planSlug, ownerId } = args;
+  if (!workspaceId || workspaceId === '*' || !harnessSlug || !planSlug || !ownerId) return null;
+  try {
+    const goalId = await resolveGoalContext(workspaceId, ownerId, args.sql);
+    if (!goalId) return null;
+    const sql = args.sql ?? getOrgPg().sql;
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET goal_id = ${goalId}
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${harnessSlug}
+         AND plan_slug    = ${planSlug}
+         AND goal_id IS NULL
+    `;
+    return goalId;
+  } catch {
+    return null;
+  }
+}

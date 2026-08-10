@@ -122,6 +122,20 @@ export interface GoalDetailPlanInput {
   archived?: boolean | null;
   items?: number | null;
   openItems?: number | null;
+  /**
+   * The plan carries this goal's stamp (`harness_plans.goal_id`) — this goal's
+   * agent AUTHORED it, independently of whether any work item has come from it
+   * yet. See the resolver's `GoalPlanCard.stamped`.
+   *
+   * REQUIRED, not optional-with-a-default, and deliberately so: the counts are
+   * the DERIVED ones, so a freshly-started plan is a truthful `0 of 0`, which
+   * reads as failure exactly when the owner is watching to see whether the
+   * agent did anything. `stamped` is the only field that separates "new" from
+   * "nothing happened", so a construction site that omits it would silently
+   * reinstate the bug this flag exists to fix. The resolver always emits it;
+   * anything else building one of these has to say which it means.
+   */
+  stamped: boolean;
   updatedAt?: string | null;
 }
 
@@ -678,7 +692,12 @@ export function workRail(
 /** What a plan row shows as its name. A plan whose row no longer resolves keeps
  *  its slug and is MARKED — see the resolver's `GoalPlanCard` docblock: live
  *  work items pointing at a deleted plan is a state worth seeing, not hiding. */
-export function planLabel(plan: GoalDetailPlanInput): { text: string; missing: boolean } {
+export function planLabel(
+  /* Only the two fields it actually reads: a label helper has no business
+     requiring a whole rail row, and widening it to one would make every caller
+     supply fields the answer does not depend on. */
+  plan: Pick<GoalDetailPlanInput, 'planSlug' | 'title'>,
+): { text: string; missing: boolean } {
   const title = plan.title?.trim();
   if (title) return { text: title, missing: false };
   return { text: plan.planSlug, missing: true };
