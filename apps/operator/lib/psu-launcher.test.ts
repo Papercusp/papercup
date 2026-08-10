@@ -178,6 +178,9 @@ import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-schedule
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { ownerDesktopNotifyDenyFlag } from '@papercusp/orchestrator/owner-desktop-notify-deny';
 import { ACCOUNT_HEADER, OWNER_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
+// P-042: the registry half of the launch-mode seam asserted at the bottom of
+// this file — psu's parser is a hand-maintained literal that cannot see it.
+import { LAUNCHABLE_MODE_IDS } from '@papercusp/operator-core/lib/modes/registry';
 import { GATEWAY_CLIENT_AUTH_TOKEN as SERVER_GATEWAY_CLIENT_AUTH_TOKEN } from '@papercusp/operator-core/lib/inference-gateway/spawn-env';
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
 // WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
@@ -6121,5 +6124,73 @@ describe('omp context-injection hook wiring (omp-context-injection-parity-2026-0
     const without = suLaunchArgs('omp', { promptFile: '/p.md' }).args;
     expect(withHook.filter(a => !['--hook', '/h/hook.ts'].includes(a))).toEqual(without);
     for (const modelFlag of ['--model', '-m', '--models']) expect(withHook).not.toContain(modelFlag);
+  });
+});
+
+/**
+ * THE launch-su → psu SEAM (retire-mug-kettle-su-only-2026-08-09 P-042 / D-067).
+ *
+ * `launch-su.ts` composes argv TOKENS that this file's parser must accept, and
+ * the two share no code — a GUI launch crosses a process boundary as a string.
+ * That is the drift risk the unit tests on either side cannot see: launch-su's
+ * own suite proves it EMITS `--mode=drain`, and this proves psu ACCEPTS it and
+ * resolves the posture the GUI asked for. Neither alone closes the seam.
+ *
+ * The failure being guarded is silent and expensive: psu rejects an unknown mode
+ * by throwing before it records anything, so the terminal opens, prints one line
+ * and closes — and the caller still shows a SUCCESS toast (the same shape as the
+ * model/agent-pairing bug at NewSessionLauncher.tsx:467-477).
+ */
+describe('launch-time mode: the tokens launch-su emits are the tokens psu parses (P-042)', () => {
+  it('accepts --mode=drain and resolves DRAIN, which implies AUTO', () => {
+    const args = parseArgs(['--mode=drain']);
+    expect(args.mode).toBe('drain');
+    // DRAIN implies AUTO — psu forces it on rather than relying on the caller
+    // to pass both, which is why launch-su sends only the one flag.
+    expect(effectiveAutoMode(args)).toBe(true);
+  });
+
+  it('accepts the BOOLEAN --auto and resolves AUTO with no named mode', () => {
+    const args = parseArgs(['--auto']);
+    expect(args.mode).toBeNull();
+    expect(effectiveAutoMode(args)).toBe(true);
+  });
+
+  it('a launch with neither flag is NOT auto — the unchanged interactive default', () => {
+    const args = parseArgs([]);
+    expect(args.mode).toBeNull();
+    expect(effectiveAutoMode(args)).toBe(false);
+  });
+
+  /**
+   * THE FALSIFIER FOR launch-su's SPECIAL CASE. If someone "simplifies" that
+   * mapping to a uniform `--mode=<id>` for every launchable mode, AUTO breaks —
+   * and it breaks HERE, loudly, instead of at spawn time in a terminal nobody
+   * is watching. This test is the reason the special case may not be tidied away.
+   */
+  it('REJECTS --mode=auto — AUTO is a boolean flag, so the uniform mapping is wrong', () => {
+    expect(() => parseArgs(['--mode=auto'])).toThrow(/not recognized/);
+  });
+
+  it('rejects an unknown named mode rather than launching a plain session', () => {
+    expect(() => parseArgs(['--mode=definitely-not-a-mode'])).toThrow(/not recognized/);
+  });
+
+  /**
+   * Ties the two vocabularies together so ADDING a launchable mode cannot
+   * silently half-land. A new id in the registry reaches the GUI picker and
+   * launch-su's validator automatically (both read LAUNCHABLE_MODE_IDS) — but
+   * psu's parser is a hand-maintained literal in a .mjs file that neither can
+   * see. This fails the moment those disagree.
+   */
+  it('every registry-launchable mode is actually launchable through psu', () => {
+    for (const id of LAUNCHABLE_MODE_IDS) {
+      // The mapping launch-su applies: 'auto' is the boolean, everything else
+      // is a named mode.
+      const argv = id === 'auto' ? ['--auto'] : [`--mode=${id}`];
+      const args = parseArgs(argv);
+      expect(effectiveAutoMode(args)).toBe(true);
+      if (id !== 'auto') expect(args.mode).toBe(id);
+    }
   });
 });
