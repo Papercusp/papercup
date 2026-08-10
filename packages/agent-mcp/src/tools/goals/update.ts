@@ -43,8 +43,8 @@ export default defineTool({
       'a degraded result means burn continues — chase it with fleet:assignments / loop:status on the reported projects.',
     returns:
       '`stop` carries the fan-out report and is NOT symmetric — check its `status` before reading it. ' +
-      'STOP arm (paused/killed): `projectsStopped`, `projectsSkippedContributing`, `loopsStopped`, and ⚠ `unattributedActiveLoops` — active loops in this goal\'s own projects that could NOT be attributed to it and are STILL RUNNING. ' +
-      'RESUME arm (active): `projectsResumed`, `projectsSkippedContributing`, and ⚠ `loopsLeftDisarmed` — sessions attributed to this goal that are still not looping, deliberately NOT re-armed (they are routinely dead by resume time; new work re-forms from PLACEMENT instead). ' +
+      'STOP arm (paused/killed): `potsStopped`, `potsSkippedContributing`, `loopsStopped`, and ⚠ `unattributedActiveLoops` — active loops in this goal\'s own pots that could NOT be attributed to it and are STILL RUNNING. ' +
+      'RESUME arm (active): `potsResumed`, `potsSkippedContributing`, and ⚠ `loopsLeftDisarmed` — sessions attributed to this goal that are still not looping, deliberately NOT re-armed (they are routinely dead by resume time; new work re-forms from PLACEMENT instead). ' +
       '`timeWakeRestored` is always false: the pause DELETES the pot\'s declared time-wake row and its cadence is not reconstructible. ' +
       '`degraded` is true when either gap is non-zero — a caller that renders only `status` will be wrong, which is what these numbers exist to prevent.',
   },
@@ -244,11 +244,11 @@ export default defineTool({
     if (stop?.degraded) {
       degradedReasons.push(
         isStopReport(stop)
-          ? `goal ${args.status}, but ${stop.unattributedActiveLoops} active loop(s) in its projects could not be attributed to this goal and are STILL RUNNING`
+          ? `goal ${args.status}, but ${stop.unattributedActiveLoops} active loop(s) in its pots could not be attributed to this goal and are STILL RUNNING`
           : // The resume mirror: placement is open again, but the sessions that were
             // pursuing this goal are not looping and this resume deliberately did not
             // re-arm them (plan D-013). Work will re-form from placement, not from them.
-            `goal resumed and placement re-opened on ${stop.projectsResumed.length} project(s), but ${stop.loopsLeftDisarmed} attributed session loop(s) remain DISARMED and were not re-armed — new work re-forms from placement, the paused sessions do not come back`,
+            `goal resumed and placement re-opened on ${stop.potsResumed.length} pot(s), but ${stop.loopsLeftDisarmed} attributed session loop(s) remain DISARMED and were not re-armed — new work re-forms from placement, the paused sessions do not come back`,
       );
     }
 
