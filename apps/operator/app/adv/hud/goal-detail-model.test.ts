@@ -47,12 +47,28 @@ describe('tripwireBar', () => {
     const unread = tripwireBar({ metric: 'spend', label: 'Spend', threshold: 500, unit: 'usd' });
     expect(unread.tone).toBe('unread');
     expect(unread.pct).toBeNull();
+    expect(unread.measured).toBe(false);
     expect(unread.valueText).toBe('not measured yet — limit $500');
 
     const measuredZero = tripwireBar({ metric: 'spend', label: 'Spend', threshold: 500, current: 0, unit: 'usd' });
     expect(measuredZero.tone).toBe('ok');
     expect(measuredZero.pct).toBe(0);
+    expect(measuredZero.measured).toBe(true);
     expect(measuredZero.valueText).toBe('$0 of $500');
+  });
+
+  it('reports a reading with NO threshold as measured, even though its pct is null', () => {
+    // The trap this pins: `pct` is null for TWO unrelated reasons — nothing was
+    // measured, or there is no threshold to measure against. Deriving
+    // "unmeasured" from `pct == null` therefore mislabels a real reading as
+    // absent, which is the exact unknown-is-not-absent failure the `measured`
+    // field was added to prevent. If someone later "simplifies" `measured` away
+    // and re-derives it from `pct`, this test is what fails.
+    const noThreshold = tripwireBar({ metric: 'builds', label: 'Builds', threshold: 0, current: 12 });
+    expect(noThreshold.pct).toBeNull();
+    expect(noThreshold.measured).toBe(true);
+    expect(noThreshold.tone).toBe('ok');
+    expect(noThreshold.valueText).toBe('12');
   });
 
   it('warns in the last fifth and breaches at the limit', () => {

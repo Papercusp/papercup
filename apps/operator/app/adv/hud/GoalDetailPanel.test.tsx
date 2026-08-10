@@ -217,6 +217,45 @@ describe('GoalDetailPanel', () => {
     // from a real zero rather than a zero-width fill nobody can tell apart.
     expect(bars.querySelectorAll('.hud-goal__bar-fill')).toHaveLength(2);
     expect(bars.querySelectorAll('.hud-goal__bar-unread')).toHaveLength(1);
+
+    // The same distinction, machine-readable. Styling can be restyled away;
+    // this is the hook that survives it.
+    expect(bars.querySelectorAll('[data-measured="true"]')).toHaveLength(2);
+    expect(bars.querySelectorAll('[data-measured="false"]')).toHaveLength(1);
+  });
+
+  it('marks an UNMEASURED tripwire apart from one measured at zero, in the DOM', () => {
+    // P-002's core claim: "0 of 30" for a tripwire nobody wired up is
+    // indistinguishable from a real zero — and a real zero is the most
+    // REASSURING reading available, so the failure points at "nothing to worry
+    // about". Text alone is not enough to guard that: both bars render prose,
+    // and a future copy change could quietly collapse them back together. This
+    // asserts the distinction survives in a form automation can read.
+    renderPanel(
+      detail({
+        goal: {
+          id: 'goal-1',
+          title: 'g',
+          status: 'active',
+          killCriterion: 'stop at 30 days or $500',
+          tripwires: [
+            // Nobody has wired this up.
+            { metric: 'unwired', label: 'Unwired', threshold: 30, unit: 'days' },
+            // Genuinely measured, and the reading happens to be zero.
+            { metric: 'real-zero', label: 'Real zero', threshold: 30, current: 0, unit: 'days' },
+          ],
+        },
+      }),
+    );
+    const bars = screen.getByTestId('goal-tripwires');
+    const [unwired, realZero] = Array.from(bars.querySelectorAll('.hud-goal__bar'));
+
+    expect(unwired.getAttribute('data-measured')).toBe('false');
+    expect(realZero.getAttribute('data-measured')).toBe('true');
+
+    // …and they must not read the same to a human either.
+    expect(unwired.textContent).toContain('not measured yet');
+    expect(realZero.textContent).toContain('day 0 of 30');
   });
 
   it('KEEPS a closed project on the page, with its reason', () => {

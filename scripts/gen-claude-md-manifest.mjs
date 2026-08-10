@@ -185,8 +185,23 @@ const sortedRanges = () => [...RANGES].sort((x, y) => x[0] - y[0]);
  * second copy of the file that can disagree with the first. Downstream readers
  * re-derive it from the source and check `blockSha`.
  */
-export function extractParts(text) {
+export function extractParts(text, { classBySha = null } = {}) {
   const lines = text.split('\n');
+
+  // Classification comes from ONE of two sources, never both:
+  //   • classBySha — the committed manifest, keyed by CONTENT. Survives line movement.
+  //   • RANGES     — the P-002 bootstrap, keyed by LINE. Valid only at the snapshot it was drawn on.
+  // A block whose sha is unknown is left UNCLASSIFIED (kind null) and reported for review, never
+  // guessed: inheriting a neighbour's classification is the "renumbering" failure D-011 forbids.
+  //
+  // The whole tuple travels, not just `kind` — KIND maps both INS and EXP to 'prose', so a
+  // kind-only carry would silently lose `expiring` and collapse rank 900 into 1000.
+  const rangeCodeAt = (line) => {
+    for (const [a, b, code] of sortedRanges()) if (line >= a && line <= b) return code;
+    return null;
+  };
+  const fromRangeCode = (code) =>
+    code ? { kind: KIND[code], clientScope: SCOPE[code], projectRank: RANK[code], expiring: code === 'EXP' } : null;
 
   const heads = [];
   lines.forEach((l, i) => {
@@ -204,67 +219,103 @@ export function extractParts(text) {
   const parts = [];
   const seen = new Set();
   let ordinal = 0;
-  for (const [a, b, kind] of sortedRanges()) {
-    const section = sectionOf(a);
-    for (const blk of splitBlocks(lines, a, b)) {
-      const raw = blk.body.join('\n');
-      if (raw.trimStart().startsWith('## ')) continue; // headings are emitted by the projector
-      ordinal += 1;
-      const base = slug(`${slug(section, 28)}--${firstNonBlank(lines, blk.start, blk.end)}`);
-      let key = base || `part-${ordinal}`;
-      let n = 1;
-      while (seen.has(key)) key = `${base}-${++n}`;
-      seen.add(key);
-      const projects = SCOPE[kind].length > 0;
-      parts.push({
-        partKey: key,
-        ordinal,
-        kind: KIND[kind],
-        clientScope: SCOPE[kind],
-        targetSection: projects ? section : null,
-        projectRank: RANK[kind],
-        expiring: kind === 'EXP',
-        blockSha: sha16(raw),
-        chars: raw.length + 1,
-        lineHint: [blk.start, blk.end],
-        raw,
-      });
-    }
+  // Split the WHOLE file, not range by range. Ranges tile the file at blank-line
+  // boundaries, so this yields the same blocks — confirmed empirically at the
+  // re-anchor: 247 of 252 shas matched, and all 5 misses were genuinely edited text.
+  for (const blk of splitBlocks(lines, 1, lines.length)) {
+    const raw = blk.body.join('\n');
+    if (raw.trimStart().startsWith('## ')) continue; // headings are emitted by the projector
+    const blockSha = sha16(raw);
+    const cls = classBySha ? (classBySha.get(blockSha) ?? null) : fromRangeCode(rangeCodeAt(blk.start));
+    const section = sectionOf(blk.start);
+    ordinal += 1;
+    const base = slug(`${slug(section, 28)}--${firstNonBlank(lines, blk.start, blk.end)}`);
+    let key = base || `part-${ordinal}`;
+    let n = 1;
+    while (seen.has(key)) key = `${base}-${++n}`;
+    seen.add(key);
+    const scope = cls?.clientScope ?? [];
+    parts.push({
+      partKey: key,
+      ordinal,
+      kind: cls?.kind ?? null,
+      clientScope: scope,
+      // targetSection is POSITIONAL, so it is always recomputed — a block that moved under a
+      // different heading must project under the new one, even though its classification carried.
+      targetSection: scope.length ? section : null,
+      projectRank: cls?.projectRank ?? null,
+      expiring: cls?.expiring ?? false,
+      blockSha,
+      chars: raw.length + 1,
+      lineHint: [blk.start, blk.end],
+      raw,
+    });
   }
   return parts;
 }
 
-export function buildManifest(text) {
+/**
+ * @param text  current CLAUDE.md
+ * @param prior the committed manifest, or null to BOOTSTRAP the classification from RANGES.
+ *
+ * With a prior, classification is carried by content (blockSha), so a peer inserting a paragraph
+ * anywhere does NOT invalidate the blocks below it. Only genuinely new or edited blocks come back
+ * unclassified. The old check keyed on LINE position and so refused on movement alone: at the
+ * re-anchor it reported 30 drifted ranges and exit 1 while 247 of 252 blocks (98.0%) were
+ * byte-identical — a ~6x overstatement that would have made Phase 1b restart-prone, because this
+ * file moves daily (WI-37635 / D-011).
+ */
+export function buildManifest(text, prior = null) {
   const lines = text.split('\n');
   const problems = [];
 
-  // ── structural checks on the classification itself ──
-  const sorted = sortedRanges();
-  if (sorted[0][0] !== 1) problems.push(`ranges must start at line 1, start at ${sorted[0][0]}`);
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const end = sorted[i][1];
-    const next = sorted[i + 1][0];
-    if (next !== end + 1) {
-      problems.push(next > end + 1 ? `gap: lines ${end + 1}..${next - 1} unclassified` : `overlap at line ${next}`);
-    }
-  }
-  const lastLine = sorted[sorted.length - 1][1];
-  if (lastLine !== lines.length) {
-    problems.push(
-      `ranges end at line ${lastLine} but the file has ${lines.length} — ${lines.length - lastLine} line(s) unclassified. ` +
-        `CLAUDE.md has grown since classification; re-run P-002 over the new lines.`,
-    );
-  }
+  const classBySha = prior
+    ? new Map(
+        prior.parts
+          .filter((p) => p.kind)
+          .map((p) => [p.blockSha, { kind: p.kind, clientScope: p.clientScope, projectRank: p.projectRank, expiring: p.expiring }]),
+      )
+    : null;
 
-  // ── fingerprint check: has the text under each range moved? ──
-  const drifted = [];
-  for (const [a, b, kind, fingerprint] of sorted) {
-    const actual = firstNonBlank(lines, a, b).slice(0, fingerprint.length);
-    if (actual !== fingerprint) drifted.push({ range: [a, b], kind, expected: fingerprint, actual });
+  // ── structural checks on the RANGES bootstrap (only meaningful when bootstrapping) ──
+  if (!classBySha) {
+    const sorted = sortedRanges();
+    if (sorted[0][0] !== 1) problems.push(`ranges must start at line 1, start at ${sorted[0][0]}`);
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const end = sorted[i][1];
+      const next = sorted[i + 1][0];
+      if (next !== end + 1) {
+        problems.push(next > end + 1 ? `gap: lines ${end + 1}..${next - 1} unclassified` : `overlap at line ${next}`);
+      }
+    }
+    const lastLine = sorted[sorted.length - 1][1];
+    if (lastLine !== lines.length) {
+      problems.push(
+        `ranges end at line ${lastLine} but the file has ${lines.length} — ${lines.length - lastLine} line(s) unclassified. ` +
+          `The RANGES bootstrap is pinned to its snapshot; re-anchor from the committed manifest instead.`,
+      );
+    }
+    for (const [a, b, kind, fingerprint] of sorted) {
+      const actual = firstNonBlank(lines, a, b).slice(0, fingerprint.length);
+      if (actual !== fingerprint) problems.push(`L${a}-${b} [${kind}] fingerprint moved: expected ${JSON.stringify(fingerprint)}, reads ${JSON.stringify(actual)}`);
+    }
   }
 
   // ── emit parts (raw block text dropped: see extractParts) ──
-  const parts = extractParts(text).map(({ raw: _raw, ...p }) => p);
+  const withRaw = extractParts(text, { classBySha });
+  const parts = withRaw.map(({ raw: _raw, ...p }) => p);
+
+  // Blocks whose content the classification has never seen. NOT a line-drift signal.
+  const needsReview = parts.filter((p) => !p.kind).map((p) => ({
+    partKey: p.partKey,
+    blockSha: p.blockSha,
+    line: p.lineHint[0],
+    chars: p.chars,
+    head: (withRaw.find((w) => w.blockSha === p.blockSha)?.raw ?? '').split('\n')[0].slice(0, 88),
+  }));
+  // Classified blocks that are no longer anywhere in the file.
+  const liveShas = new Set(parts.map((p) => p.blockSha));
+  const departed = prior ? prior.parts.filter((p) => p.kind && !liveShas.has(p.blockSha)).map((p) => ({ partKey: p.partKey, blockSha: p.blockSha, kind: p.kind })) : [];
 
   // ── invariants the loader depends on (mirrors migration 781's CHECK constraints) ──
   for (const p of parts) {
@@ -274,9 +325,10 @@ export function buildManifest(text) {
 
   const byKind = {};
   for (const p of parts) {
-    byKind[p.kind] ??= { parts: 0, chars: 0 };
-    byKind[p.kind].parts += 1;
-    byKind[p.kind].chars += p.chars;
+    const k = p.kind ?? 'UNCLASSIFIED';
+    byKind[k] ??= { parts: 0, chars: 0 };
+    byKind[k].parts += 1;
+    byKind[k].chars += p.chars;
   }
   const projectedChars = parts.reduce((n, p) => n + (p.clientScope.length ? p.chars : 0), 0);
 
@@ -292,11 +344,12 @@ export function buildManifest(text) {
       snapshotBytes: Buffer.byteLength(text, 'utf8'),
       snapshotLines: lines.length,
       generatedBy: 'scripts/gen-claude-md-manifest.mjs (P-014, claude-md-projection-from-pg-2026-08-10)',
-      summary: { byKind, projectedChars, totalParts: parts.length },
+      summary: { byKind, projectedChars, totalParts: parts.length, needsReview: needsReview.length },
       parts,
     },
     problems,
-    drifted,
+    needsReview,
+    departed,
   };
 }
 

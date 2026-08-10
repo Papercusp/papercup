@@ -3465,7 +3465,15 @@ export function historicalFlakeAnnotations(
 export type GatePromotionReason = CheckpointResult['reason'] | 'superseded-by-refire';
 
 /** Render the trailer. Uppercase-token line, the same shape as GATE_HELD_BY /
- *  AFFECTED_TESTS_RESULT so it greps identically: `grep -o 'GATE_PROMOTION.*' <log> | tail -1`.
+ *  AFFECTED_TESTS_RESULT so it greps identically:
+ *  `grep -o 'GATE_PROMOTION candidate=.*' <log> | tail -1`.
+ *
+ *  ⚠ Keep the ` candidate=` anchor (WI-37636). A BARE `grep -o 'GATE_PROMOTION.*'` also
+ *  matches vitest TEST NAMES echoed into this same log — measured on GATE_HELD_BY /
+ *  AFFECTED_TESTS_RESULT, where `green-checkpoint.test.ts`'s own test name produced 6
+ *  impostor matches and 0 real ones. That directly destroys the property stated below:
+ *  an impostor turns a MEANINGFUL absence into a plausible-looking answer. Guarded by
+ *  `packages/operator-core/lib/doc-claims/machine-line-grep-anchors.test.ts`.
  *
  *  ABSENCE IS MEANINGFUL, and is the reason this is a TRAILER rather than a rewritten header:
  *  no GATE_PROMOTION line means the run never reached a promotion decision at all (killed,
