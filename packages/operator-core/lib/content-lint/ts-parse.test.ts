@@ -12,6 +12,7 @@
  * (a fixture that broke its own container would be self-defeating here).
  */
 import { describe, it, expect } from 'vitest';
+import ts from 'typescript';
 import { findTsParseError } from './ts-parse';
 import { tsParseDetector } from './registry';
 
@@ -167,6 +168,60 @@ describe('findTsParseError — duplicate modifiers (WI-37398)', () => {
     const hit = findTsParseError('x.ts', 'export export const a = 1;\nexport function f() {\n');
     expect(hit).not.toBeNull();
     expect(hit!.code).not.toBe(1030);
+  });
+});
+
+/**
+ * EI-19457229906581679 — the esbuild-fatal codes that live ABOVE the 2000 grammar bound.
+ *
+ * Measured 2026-08-10: a mid-edit duplicate `const startingAdvSessionId` in
+ * routes/adv/launch-su.ts failed bundle-host.sh (`✘ [ERROR] The symbol ... has already
+ * been declared`) and crash-looped papercup-staging-api until supervision gave up, with
+ * :3170 down fleet-wide. This detector — built for exactly that class — was silent: a
+ * redeclaration is an ECMAScript EARLY error, so phase 1 sees a clean parse, and phase 2's
+ * only finding is TS2451, discarded for being ≥ 2000.
+ *
+ * The two tests below are a matched pair and must stay that way: the fix is only correct
+ * if the esbuild-fatal code FIRES *and* the ordinary 2xxx noise stays SILENT. Either one
+ * alone would be satisfied by a wrong implementation (delete the filter, or delete the set).
+ */
+describe('findTsParseError — esbuild-fatal codes above the grammar bound', () => {
+  const DUPLICATE_CONST =
+    'export function f(ownerId: string) {\n  const sessionId = ownerId ? "a" : null;\n  const sessionId = ownerId ? "b" : null;\n  return sessionId;\n}\n';
+
+  it('catches a duplicate block-scoped declaration (TS2451) — esbuild refuses to bundle it', () => {
+    const hit = findTsParseError('launch-su.ts', DUPLICATE_CONST);
+    expect(hit, 'TS2451 breaks every bundling host; it must not be filtered as a type error').not.toBeNull();
+    expect(hit!.code).toBe(2451);
+    // TS reports TS2451 at BOTH conflicting declarations; the detector's earliest-wins rule
+    // therefore surfaces the FIRST one (line 2). Either position identifies the conflict —
+    // pinned here so a future change to that ordering is a deliberate decision, not a drift.
+    expect(hit!.line).toBe(2);
+    expect(hit!.reason).toMatch(/sessionId/);
+  });
+
+  it('confirms phase 1 alone cannot see it (this is why the grammar phase is load-bearing)', () => {
+    // If a future refactor drops the grammar phase, the case above would go silent again
+    // with no other test noticing. This pins WHY it is needed, not merely that it works.
+    const sf = ts.createSourceFile('launch-su.ts', DUPLICATE_CONST, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+    // `parseDiagnostics` is an INTERNAL property — cast exactly as ts-parse.ts itself does.
+    const parseDiagnostics = (sf as ts.SourceFile & { parseDiagnostics?: ts.Diagnostic[] }).parseDiagnostics;
+    expect(parseDiagnostics?.length, 'a redeclaration is an early error, not a parse error').toBe(0);
+  });
+
+  it('stays SILENT on ordinary code whose only 2xxx diagnostics come from noLib', () => {
+    // `noLib: true` reports TS2318 (no global Promise) / TS2584 (no console) here. Raising
+    // the bound instead of enumerating esbuild-fatal codes would quarantine this file —
+    // which is why the fix is an explicit set.
+    expect(
+      findTsParseError('ordinary.ts', 'export async function f() {\n  console.log(1);\n  return Promise.resolve(2);\n}\n'),
+    ).toBeNull();
+  });
+
+  it('does NOT flag a duplicate TYPE alias — erased before emit, and esbuild bundles it fine', () => {
+    // The nearest neighbour to TS2451 that must NOT be admitted: it reports 2xxx too, but
+    // types never reach the bundler, so quarantining it would be a false positive.
+    expect(findTsParseError('t.ts', 'type A = { x: number };\ntype A = { y: string };\nexport const v = 1;\n')).toBeNull();
   });
 });
 

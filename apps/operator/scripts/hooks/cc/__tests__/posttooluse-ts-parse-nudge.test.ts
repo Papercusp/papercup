@@ -142,6 +142,41 @@ describe('posttooluse-ts-parse-nudge', () => {
     expect(msg).toMatch(/bundle-host\.sh|ExecStartPre|WORKING TREE/);
   });
 
+  // EI-19457229906581679 — this guard existed on 2026-08-10 and stayed silent while a
+  // duplicate `const` crash-looped :3170 fleet-wide. The pair below is the whole fix: the
+  // esbuild-fatal code must FIRE, and the noLib noise sharing its 2xxx range must NOT.
+  it('FIRES on the 2026-08-10 duplicate-const outage shape (TS2451, above the grammar bound)', async () => {
+    const { nudgeFor } = await hookMod();
+    const ts = (await import('typescript')).default;
+    const msg = await nudgeFor('/repo/pkg/launch-su.ts', {
+      repoRoot: '/repo',
+      exists: () => true,
+      sizeOf: () => DUPLICATE_CONST_SHAPE.length,
+      readFile: () => DUPLICATE_CONST_SHAPE,
+      loadTs: async () => ts,
+    });
+    expect(msg, 'a redeclaration esbuild refuses must not be silently filtered as a type error').toBeTruthy();
+    expect(msg).toMatch(/does NOT PARSE/);
+    expect(msg).toMatch(/sessionId/);
+  });
+
+  it('stays SILENT on the noLib-only 2xxx noise the grammar phase raises itself', async () => {
+    const { nudgeFor } = await hookMod();
+    const ts = (await import('typescript')).default;
+    // `noLib: true` makes TS report TS2318 (no global Promise) and TS2584 (no console) for
+    // this perfectly ordinary file. Raising the bound instead of enumerating esbuild-fatal
+    // codes would nag on every async function in the repo.
+    const text = 'export async function f() {\n  console.log(1);\n  return Promise.resolve(2);\n}\n';
+    const msg = await nudgeFor('/repo/pkg/ordinary.ts', {
+      repoRoot: '/repo',
+      exists: () => true,
+      sizeOf: () => text.length,
+      readFile: () => text,
+      loadTs: async () => ts,
+    });
+    expect(msg, 'noLib artifacts must never produce a nudge').toBeNull();
+  });
+
   it('is SILENT on a clean file, a type error, and an unresolved import', async () => {
     const { nudgeFor } = await hookMod();
     const ts = (await import('typescript')).default;
