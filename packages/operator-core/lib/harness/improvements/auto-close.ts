@@ -54,7 +54,11 @@ import type { CompletionVerificationEvidence } from '../../coord-lifecycle/recor
  * still inside that recovery window. Forking it would let an agent claim an item the sweep is
  * about to retire — the very defect the floor was added to fix.
  */
-export { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources';
+// Imported AND re-exported: a bare `export { X } from '...'` re-export does NOT bind X in this
+// module's scope, and `decideAutoClose` below uses it directly (the membership test that decides
+// whether a quiet tick may close an item). Keep both lines together.
+import { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources';
+export { AUTO_CLOSE_ELIGIBLE_SOURCES };
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */
 export interface AutoCloseCandidate {
