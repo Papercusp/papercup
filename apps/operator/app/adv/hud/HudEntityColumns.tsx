@@ -145,6 +145,47 @@ function EntityCardBody({
               {overflow > 0 ? <span className="hud__chip">+{overflow}</span> : null}
             </span>
           ) : null}
+
+          {/* SUBDIRECTIVES (P-017, D-006 Q4 option A). Nested inside the parent
+              because a child steers this goal's agent rather than owning one, so
+              it "has no business sitting in a lane of its own".
+
+              Every element here is a <span>: this subtree can be inside a
+              <button> (see the Tag note above), and a button's content model is
+              phrasing content — a <ul>/<li> list would be invalid and browsers
+              would reparent it, which is the same defect P-016 hit with a nested
+              <button>.
+
+              These rows are deliberately INERT — no click target, no link. A
+              subdirective owns no session to open (D-006), so anything
+              activatable here would promise a destination that does not exist:
+              the exact mistake this file's own docblock was written about ("a
+              button that looks activatable but does nothing is worse than a card
+              that never claimed to be").
+
+              NO SPEND FIGURE, and none is available to render: one goal is one
+              agent is one bill, so a child has no separable spend (D-006). That
+              is why `HudSubGoal` carries no badges — the summing D-002 forbids
+              is unrepresentable here rather than merely untested. */}
+          {card.subGoals && card.subGoals.length > 0 ? (
+            <span className="hud__subs">
+              <span className="hud__subs-h">
+                {card.subGoals.length} subdirective{card.subGoals.length === 1 ? '' : 's'}
+              </span>
+              {card.subGoals.map((s) => (
+                <span
+                  key={s.id}
+                  className={`hud__sub${s.terminal ? ' hud__sub--done' : ''}`}
+                >
+                  <span className="hud__sub-mark" aria-hidden="true">
+                    ↳
+                  </span>
+                  <span className="hud__sub-title">{s.title}</span>
+                  <span className="hud__sub-status">{s.status}</span>
+                </span>
+              ))}
+            </span>
+          ) : null}
         </span>
       </span>
     </Tag>

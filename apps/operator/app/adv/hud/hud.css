@@ -633,6 +633,73 @@
   white-space: nowrap;
 }
 
+/* ── subdirectives, nested inside their parent goal card ───────────────────
+   goals-tab-improvement-2026-08-09 P-017 / D-006 Q4 option A.
+
+   The relationship is stated TWICE, on purpose: a counted header ("2
+   subdirectives") and the rule + ↳ marks. Indentation alone would leave the
+   nesting to be inferred from geometry, and a reader who reads it as a plain
+   list reads a directive as a peer of its goal — the exact misreading this item
+   exists to remove.
+
+   Every selector here targets a <span>. These live inside .hud__card, which is a
+   <button> whenever the board supplies a destination, and the HUD board ENFORCES
+   no display:flex/grid on a button selector (app/_lints/design-primitives.test.ts)
+   — so the flex lives on the inner rows, never on the card element itself. */
+.hud__subs {
+  display: block;
+  margin-top: 5px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+}
+
+.hud__subs-h {
+  display: block;
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+  letter-spacing: 0.02em;
+}
+
+.hud__sub {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--fg-mute);
+}
+
+.hud__sub-mark {
+  flex: none;
+  color: var(--fg-dim);
+}
+
+/* The one element allowed to consume the leftover width, so a long directive
+   ellipsises instead of pushing the status word out of the card. */
+.hud__sub-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud__sub-status {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--fg-dim);
+}
+
+/* A finished directive is struck through rather than removed: it is part of how
+   this goal got here, and hiding it would make the list of what steered the
+   agent silently incomplete. */
+.hud__sub--done .hud__sub-title {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
 /* The per-column truncation note. Reuses .hud__empty's muted centered
    treatment — it is the same kind of message (something about the column
    itself, not a card in it). */
@@ -1098,6 +1165,73 @@
   font-size: 10px;
   color: var(--fg-mute);
   line-height: 1.5;
+}
+
+/* ── subdirectives, in the detail popup (P-017) ───────────────────────────── */
+
+/* An inline destination inside a sentence: a real <button> for keyboard + AT,
+   styled as the link it reads as. Matches the sibling .hud-goal__close in using
+   an unstyled button rather than an <a> with no href. */
+.hud-goal__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.hud-goal__link:hover,
+.hud-goal__link:focus-visible {
+  color: var(--accent-strong);
+}
+
+/* A finished directive stays listed — see the component docblock. */
+.hud-goal__row-done {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.hud-goal__addsub {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.hud-goal__addsub-in {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 7px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.hud-goal__addsub-in:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hud-goal__addsub-go {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Disabled is the RESTING state here (the input starts empty), so it must read as
+   "nothing to submit yet" rather than as a broken control. */
+.hud-goal__addsub-go:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .hud-goal__empty {

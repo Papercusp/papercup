@@ -123,8 +123,25 @@ export interface GoalDetailAgentInput {
   setBy?: string | null;
 }
 
+/**
+ * A subdirective of the open goal (P-017 / D-006).
+ *
+ * id/title/status and nothing else. A child steers its parent's agent rather
+ * than owning one, so there is no separable spend, ceiling or session to carry —
+ * the absent fields are the decision, not an oversight.
+ */
+export interface GoalDetailSubGoalInput {
+  id: string;
+  title: string;
+  status: string;
+}
+
 export interface GoalDetailInput {
   goal: GoalDetailGoalInput | null;
+  /** Empty array = none; absent/null = a payload from before P-017. */
+  subGoals?: GoalDetailSubGoalInput[] | null;
+  /** Set only when the open goal is itself a subdirective. */
+  parent?: { id: string; title: string } | null;
   projects?: GoalDetailProjectInput[] | null;
   plans?: GoalDetailPlanInput[] | null;
   agents?: GoalDetailAgentInput[] | null;

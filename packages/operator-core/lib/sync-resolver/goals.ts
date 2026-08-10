@@ -392,8 +392,51 @@ export async function resolveGoalDetail(args: {
       .reduce((acc, p) => acc + p.spendUsd, 0);
     goal.openWorkItems = projects.reduce((acc, p) => acc + p.openWorkItems, 0);
 
+    /* SUBDIRECTIVES + the parent, for the popup's hierarchy section
+       (goals-tab-improvement-2026-08-09 P-017).
+
+       Deliberately NARROW — id/title/status only. No spend, no ceiling, no
+       counts: per D-006 one goal is one agent is one bill, so a child HAS no
+       separable spend, and selecting a column that looks like one would invite
+       the parent+children addition D-002 forbids. The columns are absent rather
+       than zeroed, because a rendered 0 reads as a measurement.
+
+       Ordered oldest-first: these are the directions the agent was pointed in,
+       and that sequence is the readable story of how the goal got here. */
+    const childRows = (await tx`
+      SELECT g.id, g.title, g.status
+        FROM harness_shared.goals g
+       WHERE g.workspace_id = ${workspaceId} AND g.parent_id = ${goalId}
+       ORDER BY g.created_at ASC
+       LIMIT 200
+    `) as unknown as Array<{ id: string; title: string | null; status: string | null }>;
+
+    /* The parent's TITLE, so a child's popup can name what it serves instead of
+       rendering a bare id the owner would have to go look up. Skipped entirely
+       when this goal has no parent. */
+    const parentId = (goalRow.parent_id as string | null) ?? null;
+    const [parentRow] = parentId
+      ? ((await tx`
+          SELECT g.id, g.title
+            FROM harness_shared.goals g
+           WHERE g.workspace_id = ${workspaceId} AND g.id = ${parentId}
+           LIMIT 1
+        `) as unknown as Array<{ id: string; title: string | null }>)
+      : [];
+
     return {
       goal,
+      /** Present and empty when this goal has none — never absent, so the panel
+       *  can tell "no subdirectives" from "this payload predates P-017". */
+      subGoals: childRows.map((c) => ({
+        id: String(c.id),
+        title: (c.title as string | null) ?? String(c.id),
+        status: String(c.status ?? '').toLowerCase(),
+      })),
+      /** Null unless this goal IS a subdirective. */
+      parent: parentRow
+        ? { id: String(parentRow.id), title: (parentRow.title as string | null) ?? String(parentRow.id) }
+        : null,
       projects,
       agents: agentRows.map((a) => ({
         ownerId: String(a.owner_id),

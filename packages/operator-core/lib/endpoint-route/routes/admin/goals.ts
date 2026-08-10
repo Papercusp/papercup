@@ -39,11 +39,28 @@ import { notifySyncInvalidate } from '../../../sync-sse';
 const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
 
 /**
- * `update` only. The Goals tab's controls are status moves and field edits, and
- * `goals:create` / `goals:propose` deliberately stay OUT: P-022's kickoff is a
- * CONVERSATIONAL flow the owner finishes in the composer, not a form this route posts.
+ * `update`, plus `create` RESTRICTED TO SUBDIRECTIVES (P-017).
+ *
+ * `goals:propose` still stays out, and so does creating a TOP-LEVEL goal: P-022's
+ * kickoff is a CONVERSATIONAL flow the owner finishes in the composer, not a form
+ * this route posts. A top-level goal must also arrive via `goals:start`, which
+ * spawns the agent that owns it in the same transaction — `goals:create` alone
+ * would leave "a goal that is never spawned … on the board as an outcome nobody
+ * owns" (start.ts's own docblock), which is why the create verb was excluded here
+ * in the first place.
+ *
+ * A SUBDIRECTIVE breaks that reasoning cleanly rather than bending it, and the
+ * difference is D-006's ruling, not a convenience: a child steers its PARENT's
+ * agent and must NOT get one of its own ("an implementation that gives a child its
+ * own agent … breaks this decision"). So there is no spawn to pair the row with and
+ * no kickoff conversation to have — the row IS the whole object. That also makes
+ * `goals:start` the WRONG tool for a child even though it accepts `parentId`:
+ * calling it would spawn the second agent D-006 forbids.
+ *
+ * The `parentId` guard in `dispatchWrite` is what keeps this narrow: without it,
+ * widening to `create` would quietly re-open the agentless top-level goal.
  */
-const WRITE_VERBS = new Set(['update']);
+const WRITE_VERBS = new Set(['update', 'create']);
 
 function unwrap(toolResult: { status: number; body: unknown }): Response {
   if (toolResult.status === 200) {
@@ -97,6 +114,31 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       { error: { code: 'invalid_json', message: 'request body must be JSON' } },
       { status: 400 },
     );
+  }
+
+  /* THE SUBDIRECTIVE GUARD (P-017 / D-006). `create` is reachable here ONLY for a
+     child, because only a child legitimately has no agent — see WRITE_VERBS above.
+     A parentless create would file a top-level goal that nothing spawns, i.e. an
+     outcome on the board that no agent owns, which is the failure `goals:start`
+     exists to make impossible.
+
+     Refused with the fix named, not a bare 403: the caller that trips this wants the
+     composer, and a refusal that does not say so reads as the feature being broken. */
+  if (verb === 'create') {
+    const parentId = body.parentId;
+    if (typeof parentId !== 'string' || parentId.trim() === '') {
+      return Response.json(
+        {
+          error: {
+            code: 'parent_required',
+            message:
+              'goals:create is reachable from the UI only for a SUBDIRECTIVE (D-006), which needs parentId. ' +
+              'A top-level goal must be started through the composer so its agent is spawned with it.',
+          },
+        },
+        { status: 400 },
+      );
+    }
   }
 
   const url = new URL(req.url);

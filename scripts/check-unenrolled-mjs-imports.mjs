@@ -62,7 +62,6 @@ const CONFIG = 'tsconfig.declarations.json';
 export const BASELINE = new Set([
   'apps/operator/lib/operator-discovery.test.ts -> apps/operator/scripts/operator-discovery.mjs',
   'apps/operator/lib/ptool.test.ts -> apps/operator/scripts/ptool.mjs',
-  'apps/operator/scripts/__tests__/bghost-watchdog.test.ts -> apps/operator/scripts/bghost-watchdog.mjs',
   'apps/operator/scripts/check-vitest-mock-paths.test.ts -> apps/operator/scripts/check-vitest-mock-paths.mjs',
 ]);
 

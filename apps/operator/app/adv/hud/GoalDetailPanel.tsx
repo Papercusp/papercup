@@ -401,6 +401,17 @@ export default function GoalDetailPanel({
             {/* ── 2. WAITING ON YOU ───────────────────────────────────────
                 Above projects and activity because it is the only section the
                 owner can ACT on — the rest is read-only reporting. */}
+            {/* ── 2b. SUBDIRECTIVES (P-017) ───────────────────────────────
+                Above "Waiting on you" on purpose: this section answers "what is
+                this agent pointed at", which frames every ask below it. */}
+            {goalId ? (
+              <SubGoalsSection
+                goalId={goalId}
+                subGoals={data?.subGoals}
+                parent={data?.parent}
+              />
+            ) : null}
+
             <section className="hud-goal__section">
               <h3 className="hud-goal__h">
                 Waiting on you

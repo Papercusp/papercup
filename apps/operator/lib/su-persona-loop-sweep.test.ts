@@ -34,7 +34,16 @@ describe('su/interactive personas steer recurrence onto the engine loop (B-LOOP-
       // ...naming /loop as the thing being replaced.
       expect(md, 'names /loop as the replaced mechanism').toContain('/loop');
       // D-007: scopes the rule to su/interactive, NOT the autonomous loop.
-      expect(lc, 'D-007: excludes the autonomous mug/cup/blender loop').toContain('mug/cup/blender');
+      // Anchored to the PROPERTY (this persona DISCLAIMS the autonomous loop), never to one
+      // spelling of it. This used to assert the literal 'mug/cup/blender'; the mug/cup/kettle
+      // tier is now retired behind `papercusp-mug-kettle-system`
+      // (retire-mug-kettle-su-only-2026-08-09, D-029) and Blender is the half that survives,
+      // so the personas no longer share that wording — but the EXCLUSION must still be stated.
+      // Falsifiable: deleting the disclaimer, or flipping it to a claim, fails this.
+      const flat = lc.replace(/\s+/g, ' ');
+      expect(flat, 'D-007: disclaims the autonomous loop').toMatch(
+        /not\**\s+the\s+autonomous[^.]{0,80}\bloop\b/,
+      );
     });
   }
 

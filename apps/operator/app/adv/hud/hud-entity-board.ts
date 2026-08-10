@@ -649,7 +649,23 @@ export function goalSpendLabel(goal: HudGoalInput): string {
   return `$${spend} / $${Math.round(goal.budgetCents / 100)}`;
 }
 
-export function toGoalCard(goal: HudGoalInput, nowMs: number): HudEntityCard {
+/** A goal row rendered as one of its parent's subdirectives (D-006). */
+export function toSubGoal(goal: HudGoalInput): HudSubGoal {
+  const status = (goal.status ?? '').toLowerCase();
+  return {
+    id: goal.id,
+    ref: goal.id.slice(0, 8),
+    title: goal.title?.trim() || goal.id,
+    status,
+    terminal: GOAL_TERMINAL_STATUSES.has(status),
+  };
+}
+
+export function toGoalCard(
+  goal: HudGoalInput,
+  nowMs: number,
+  subGoals: HudSubGoal[] = [],
+): HudEntityCard {
   const column = goalColumn(goal);
   const status = (goal.status ?? '').toLowerCase();
   const badges: HudBadge[] = [];
@@ -703,6 +719,7 @@ export function toGoalCard(goal: HudGoalInput, nowMs: number): HudEntityCard {
     badges,
     sinceSec: ageSec(goal.updatedAt, nowMs),
     sortKey: sortKeyFor(column, goal.updatedAt),
+    ...(subGoals.length > 0 ? { subGoals } : {}),
   };
 }
 
@@ -744,12 +761,72 @@ export function startGoalCard(opts: { goalCount: number }): HudEntityCard {
   };
 }
 
+/**
+ * Split the goal rows into the cards that get a lane and the subdirectives that
+ * get nested inside one (P-017 / D-006).
+ *
+ * A child is NOT lane-able: it steers its parent's agent rather than owning one,
+ * so it has "no independent life on the board". Before this, `buildGoalBoard`
+ * mapped every row through `toGoalCard`, which gave each child its own card in
+ * whatever lane its own status implied — exactly the independent life D-006
+ * forbids, and the reason a reader saw a directive and its goal as peers.
+ *
+ * ORPHANS ARE PROMOTED, NOT DROPPED. A child whose parent is absent from this
+ * set — outside the fetched window, filtered away, or deleted — has no card to
+ * nest inside, and silently discarding it would remove a real goal from the
+ * board with nothing saying so. It is rendered as a top-level card whose
+ * `context` states that its parent is not on the board, which is the honest
+ * reading and keeps every fetched row visible exactly once.
+ *
+ * Exported for the test: the partition is the whole D-006 mechanism, and it is
+ * worth asserting directly rather than only through a rendered board.
+ */
+export function partitionGoals(goals: HudGoalInput[]): {
+  roots: HudGoalInput[];
+  childrenByParent: Map<string, HudSubGoal[]>;
+  orphans: HudGoalInput[];
+} {
+  const present = new Set(goals.map((g) => g.id));
+  const roots: HudGoalInput[] = [];
+  const orphans: HudGoalInput[] = [];
+  const childrenByParent = new Map<string, HudSubGoal[]>();
+
+  for (const g of goals) {
+    const parentId = g.parentId ?? null;
+    // Self-parenting would nest a card inside itself and drop it from the board.
+    if (!parentId || parentId === g.id) {
+      roots.push(g);
+      continue;
+    }
+    if (!present.has(parentId)) {
+      orphans.push(g);
+      continue;
+    }
+    const list = childrenByParent.get(parentId);
+    if (list) list.push(toSubGoal(g));
+    else childrenByParent.set(parentId, [toSubGoal(g)]);
+  }
+  return { roots, childrenByParent, orphans };
+}
+
 export function buildGoalBoard(goals: HudGoalInput[], opts: HudEntityBuildOptions): HudEntityBoard {
-  const board = assemble(
-    goals.map((g) => toGoalCard(g, opts.nowMs)),
-    GOAL_COLUMN_EMPTY,
-    opts,
-  );
+  const { roots, childrenByParent, orphans } = partitionGoals(goals);
+
+  const cards = [
+    ...roots.map((g) => toGoalCard(g, opts.nowMs, childrenByParent.get(g.id) ?? [])),
+    ...orphans.map((g) => {
+      const card = toGoalCard(g, opts.nowMs, childrenByParent.get(g.id) ?? []);
+      return {
+        ...card,
+        // Says WHY this reads as a top-level card when it is really a child —
+        // without it the promotion would look like the flat rendering P-017 set
+        // out to remove.
+        context: 'Subdirective — its goal is not on this board',
+      };
+    }),
+  ];
+
+  const board = assemble(cards, GOAL_COLUMN_EMPTY, opts);
 
   /* While the owner is SEARCHING, the board shows matches and nothing else. An
      action card surviving the filter would sit among results it does not match

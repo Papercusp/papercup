@@ -316,12 +316,24 @@ try {
  * retracted D-071's claim that this repo had no graded metric — it always did).
  */
 function reportGradedMetrics(report: string, out: RelevanceEvalResult): void {
+  // ⚠ MIXED SCALES, deliberately rendered differently. nDCG/precision/recall are
+  // RATES (0..1); `accessoryAtK` is a COUNT of polluting rows — `metrics.ts:45`
+  // filters and returns `.length` with no division, and its docstring says so
+  // ("acc@5 … ≥ 2 flags a polluted query"). The first draft of this line printed
+  // it as `accessory 27.0000` beside three rates, which reads as a rate of 27 —
+  // i.e. as a broken metric. It is not: 27 of the top 30 rows scored ≤ 1.
+  //
+  // The ambiguity is invisible at the only place the repo currently asserts it,
+  // because KNOWLEDGE_PACK_ACCESSORY_CEILING is 0 and zero is zero on either
+  // scale. Anyone ratcheting a NONZERO accessory ceiling must read it as a count,
+  // or be wrong by a factor of k.
+  const graded = Math.min(out.k, out.grades.length);
   // console.LOG, not warn — see the note on the stage-isolation report below.
   console.log(
     `[P-015] ${report} — graded metrics @${out.k}: ` +
-      `nDCG ${out.ndcgAtK.toFixed(4)} · precision ${out.precisionAtK.toFixed(4)} · ` +
-      `accessory ${out.accessoryAtK.toFixed(4)}` +
+      `nDCG ${out.ndcgAtK.toFixed(4)} · precision ${out.precisionAtK.toFixed(4)}` +
       (out.recallAtK === null ? '' : ` · recall ${out.recallAtK.toFixed(4)}`) +
+      ` · accessory ${out.accessoryAtK}/${graded} rows (COUNT, not a rate)` +
       `\n         grades in rank order: [${out.grades.join(',')}]`,
   );
 }
