@@ -563,6 +563,56 @@ describe('fireLoopWake — cold-auto marker (su-cold-auto-mode-2026-07-03 P-003)
 
 const FULL_KICKOFF = ['🔁 Loop wake toward: goal G', '', 'Each wake:', '1. do things', '2. more things'].join('\n');
 
+/**
+ * EI-19501119110607678 — the measured staleness verdict has to REACH the reader, and
+ * has to sit next to the text it judges. P-017 already established that placement is
+ * the whole game here: the same caution filed away from the goal was ignored for
+ * ~14 hours across 171 fires.
+ */
+describe('renderLoopWakeText — the goal-staleness verdict rides both forms', () => {
+  const note = '## Next action\ncontinue the edit';
+  const STALE = '⚠⚠ THIS GOAL IS STALE — every work-item it names is already TERMINAL: EI-1 (done).';
+
+  it('SHORT form: the verdict lands directly beneath the arm-time goal line', () => {
+    const out = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 2,
+      checkpoint: note,
+      goalStalenessNote: STALE,
+    });
+    expect(out).toContain(STALE);
+    // Adjacency is the requirement, not mere presence: a reader must not be able to
+    // accept the goal before meeting the verdict on it.
+    const goalAt = out.indexOf('Arm-time goal');
+    expect(goalAt).toBeGreaterThan(-1);
+    expect(out.indexOf(STALE)).toBeGreaterThan(goalAt);
+    expect(out.slice(goalAt, out.indexOf(STALE))).not.toContain('\n\n');
+  });
+
+  it('FULL form: the verdict follows the kickoff immediately, because there the goal LEADS', () => {
+    const out = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 1,
+      checkpoint: note,
+      goalStalenessNote: STALE,
+    });
+    expect(out).toContain(STALE);
+    expect(out.indexOf(STALE)).toBeLessThan(out.indexOf('## Next action'));
+  });
+
+  it('renders NOTHING when there is no verdict — a healthy wake is unchanged', () => {
+    const withOut = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 2, checkpoint: note });
+    const withNull = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 2,
+      checkpoint: note,
+      goalStalenessNote: null,
+    });
+    expect(withNull).toBe(withOut);
+    expect(withOut).not.toContain('STALE');
+  });
+});
+
 describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
   const note = '## Next action\ncontinue the edit';
 

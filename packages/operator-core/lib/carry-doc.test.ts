@@ -34,7 +34,7 @@ const NOW = 1_800_000_000_000;
 function brief(over: Partial<CarryBrief> = {}): CarryBrief {
   return {
     ownerId: 'su-1',
-    loop: { harness: 'papercusp', active: true, intervalSec: 60, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW },
+    loop: { harness: 'papercusp', active: true, intervalSec: 60, goal: null, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW },
     heldItems: [],
     directives: [],
     directivesTotalOpen: 0,
@@ -97,6 +97,46 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(doc.sessionMode.loopActive).toBe(true);
     expect(doc.sessionMode.loopIntervalSec).toBe(60);
     expect(doc.sessionMode.modes).toEqual([{ mode: 'auto', ownerDirected: true, reason: 'owner set it' }]);
+  });
+
+  /**
+   * EI-20072281215342526 — the carry document printed the loop's INTERVAL and not its
+   * GOAL, so a respawned successor was told a loop existed but not what it was FOR.
+   * That asymmetry is the bug: the successor inherits its held work-items without the
+   * mission that generated them, and does not halt — it re-orients, sees unclaimed
+   * backlog, and confidently starts something else.
+   */
+  describe('the loop GOAL is carried — the mission, not just the cadence', () => {
+    const withGoal = (goal: string | null) => ({
+      ...base,
+      buildCarryBriefFn: async () =>
+        brief({
+          loop: { harness: 'papercusp', active: true, intervalSec: 60, goal, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW },
+        }),
+    });
+
+    it('carries the goal onto sessionMode and renders it VERBATIM', async () => {
+      const mission = 'Drive plan retire-mug-kettle-su-only-2026-08-09 (harness papercusp) to completion.';
+      const doc = await buildCarryDoc('su-1', withGoal(mission));
+      expect(doc.sessionMode.loopGoal).toBe(mission);
+      const text = renderCarryDoc(doc, NOW);
+      // Verbatim, not summarised: the successor's whole problem is that it holds no
+      // other copy of this text.
+      expect(text).toContain(mission);
+      expect(text).toContain('YOUR MISSION');
+      // It must still say the goal is frozen — carrying it more prominently without
+      // that caveat would just move the staleness problem into the carry document.
+      expect(text).toMatch(/frozen at arm time/);
+    });
+
+    it('renders NO mission line when the loop has no goal — never a blank one', async () => {
+      const doc = await buildCarryDoc('su-1', withGoal(null));
+      expect(doc.sessionMode.loopGoal).toBeNull();
+      const text = renderCarryDoc(doc, NOW);
+      expect(text).not.toContain('YOUR MISSION');
+      // The loop line itself is untouched.
+      expect(text).toContain('loop: ARMED (every 60s)');
+    });
   });
 
   it('a throwing brief build degrades to an empty brief, never throws', async () => {
@@ -596,7 +636,7 @@ describe('aging ladder / budget fit (P-011)', () => {
   it('over budget: the standing brief sheds FIRST to a pointer; always-keep sections survive; result fits B', () => {
     // A huge verbatim carry-note makes the brief the largest sheddable slot.
     const bigNote = '## Next\n' + 'X'.repeat(50_000);
-    const doc = fitDoc({ brief: brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, carryNote: bigNote, carryNoteUpdatedAtMs: NOW } }) });
+    const doc = fitDoc({ brief: brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, goal: null, carryNote: bigNote, carryNoteUpdatedAtMs: NOW } }) });
     const B = 40_000;
     const out = renderCarryDoc(doc, NOW, { budgetChars: B });
     expect(out.length).toBeLessThanOrEqual(B);
