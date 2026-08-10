@@ -1473,6 +1473,23 @@ export function recordSessionOwner(nativeSessionId, coordOwnerId, { home = homed
  * Never throws, and returns null when it captured nothing: a diagnostic
  * side-channel must never be able to fail a launch. Every failure degrades to
  * exactly the pre-WI-37841 behaviour.
+ *
+ * ⚠ `stream` is TYPED AS THE MINIMAL WRITABLE ON PURPOSE, not as
+ * `typeof process.stderr`. Inferring it from the default value narrows the
+ * generated declaration to `WriteStream & { fd: 2 }`, which no test double can
+ * satisfy — that would make the one DI seam here reachable only by a cast, and
+ * a seam you must lie to the compiler to use is not a seam. Everything this
+ * function needs is `write`.
+ *
+ * @param {string|null|undefined} ownerId the PRE-PINNED coord owner id
+ * @param {{
+ *   home?: string,
+ *   maxBytes?: number,
+ *   stream?: { write: (chunk: any, encoding?: any, cb?: any) => boolean },
+ *   argv?: string[],
+ *   now?: () => Date,
+ * }} [opts]
+ * @returns {{ path: string, uninstall: () => void } | null}
  */
 export function installBootLogCapture(
   ownerId,
