@@ -35,13 +35,29 @@
  * ones, not lookalikes — a second vocabulary would drift the two popups apart
  * on the first restyle of either.
  *
- * ⚠ It borrows the SHAPE, not a composer — see D-011. Mimicking a chat popup
- * invites the reader to expect one, so the absence has to be deliberate and
- * stated: a goal is not a correspondent. There is nothing to send TO. What IS
- * addressable is the AGENT running the goal, and that conversation already has
- * a home — so the vitals band offers a route into it (`onOpenAgent`) rather
- * than growing a second chat surface here, which is what D-005 ("generalize
- * OperatorChat... never fork a second chat renderer") forbids.
+ * IT BORROWS THE CONVERSATION TOO — see D-011 (which RETRACTED an earlier
+ * ruling of mine; if you are reading that one, it is superseded).
+ *
+ * The retracted version said this popup should get the shape but no composer,
+ * because "a goal is not a correspondent — there is nothing to send TO", and
+ * offered a button routing out to the sessions popup instead. The premise was
+ * sound and the conclusion did not follow. Mimicking a chat popup invites the
+ * reader to expect a composer, and the owner's report is that expectation
+ * arriving exactly as predicted: "I dont see a place to chat with the agent in
+ * the goal popup like I do in the conversation popup". The reasoning had
+ * treated "who is the message addressed to" as the design question when the
+ * real one was "what does the reader expect to be able to do here". The goal's
+ * AGENT is addressable, it is already on this very payload (`agents[]`), and
+ * routing the owner elsewhere made this popup a dead end for the one action it
+ * most obviously suggests.
+ *
+ * So the conversation is EMBEDDED, and embedded by REUSE: the same
+ * `LiveSessionChat` the sessions popup renders, fed by the same
+ * `useOwnerSessionChat` wiring. That is what keeps D-005 ("generalize
+ * OperatorChat... never fork a second chat renderer") satisfied — the rule was
+ * never "do not put a chat here", it was "do not build a SECOND one".
+ * `onOpenAgent` survives as a secondary "open full-size" affordance, because
+ * the embedded chat is width-constrained beside the work rail.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
@@ -49,6 +65,10 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '@/app/harness/Modal';
 import { Tooltip } from '@/app/harness/Tooltip';
 import GoalWorkRail from './GoalWorkRail';
+/* D-011: the goal popup hosts the SAME conversation the sessions popup does —
+   the same renderer, fed by the same extracted wiring. Not a second chat. */
+import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
+import { useOwnerSessionChat } from '@/app/_components/chat/use-owner-session-chat';
 // The conversation popup's own control vocabulary (pc-ctl-band, pc-zone,
 // pc-peers). Imported rather than re-declared so P-018's "mimic" is literally
 // the same CSS — see the docblock.
@@ -187,6 +207,15 @@ export default function GoalDetailPanel({
   const agents = data?.agents ?? [];
   const primaryAgent = agents[0] ?? null;
 
+  /* D-011: the live conversation with the agent running this goal. Passing null
+     when there is no agent is what keeps the hook from resolving a session or
+     opening a stream — an agent-less goal must render a plain statement, never
+     an inert composer that looks live and can reach nobody. */
+  const chat = useOwnerSessionChat(primaryAgent?.ownerId ?? null);
+  /* Only a MOUNTED transcript claims height. Every other state (no agent,
+     resolving, no session, error) is a single line. */
+  const chatLive = Boolean(primaryAgent && chat.resolved && chat.streamUrl);
+
   return (
     <Modal
       open={open}
@@ -274,14 +303,17 @@ export default function GoalDetailPanel({
                  exactly that reason (it is a green-checkpoint LEG, so this is
                  a fleet-wide red, not a style nit). FleetPeersRail carries the
                  same note over the same decision. */
-              <Tooltip label={`Open the conversation of the agent running this goal (${primaryAgent.ownerId})`} side="bottom">
+              <Tooltip
+                label={`Open this conversation full-size in the sessions popup (${primaryAgent.ownerId})`}
+                side="bottom"
+              >
                 <button
                   type="button"
                   className="pc-button"
                   data-testid="goal-open-agent"
                   onClick={() => onOpenAgent(primaryAgent.ownerId)}
                 >
-                  Open agent
+                  Open full-size
                 </button>
               </Tooltip>
             ) : null}
@@ -480,6 +512,62 @@ export default function GoalDetailPanel({
                 Close
               </button>
             </footer>
+          </div>
+
+          {/* ── THE LIVE CONVERSATION (D-011) ──────────────────────────────────
+              A SIBLING of the scrolling body, not a child of it — for the same
+              reason the rail is: a transcript has its own scroll, and nesting
+              one inside another is the layout that makes a chat feel broken.
+              As siblings, goal detail scrolls above while the composer stays
+              pinned at the bottom of the popup, which is where the owner
+              expects it from the conversation popup.
+
+              This renders the SAME `LiveSessionChat` the sessions popup does,
+              fed by the same `useOwnerSessionChat` wiring (D-005: never fork a
+              second chat renderer).
+
+              The region only claims its share of the height when a live chat is
+              actually mounted; every other state is one line, and reserving 46%
+              of the popup to say "no agent" would push the goal's own detail
+              off screen to display an absence. */}
+          <div
+            data-testid="goal-chat"
+            style={{
+              flex: chatLive ? '0 0 46%' : '0 0 auto',
+              minHeight: chatLive ? 220 : undefined,
+              minWidth: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              borderTop: '1px solid var(--border)',
+            }}
+          >
+            {!primaryAgent ? (
+              /* D-011: a plain statement, never an inert composer. A composer
+                 that looks live and can reach nobody is worse than none. */
+              <p className="hud__state" data-testid="goal-chat-no-agent">
+                No agent is running this goal yet, so there is no conversation to
+                show. Starting a goal launches the agent that owns it.
+              </p>
+            ) : chat.resolving ? (
+              <p className="hud__state">Finding this agent&rsquo;s conversation…</p>
+            ) : chat.resolveError ? (
+              <p className="hud__state hud__state--error" data-testid="goal-chat-error">
+                Could not load the conversation: {chat.resolveError}
+              </p>
+            ) : !chat.resolved ? (
+              <p className="hud__state" data-testid="goal-chat-no-session">
+                No recent Claude session found for this agent.
+              </p>
+            ) : chat.streamUrl ? (
+              <LiveSessionChat
+                streamUrl={chat.streamUrl}
+                sessionOwnerId={primaryAgent.ownerId}
+                agentName={primaryAgent.ownerId}
+                onSend={chat.send}
+                sending={chat.sending}
+                sendError={chat.sendError}
+              />
+            ) : null}
           </div>
         </div>
 

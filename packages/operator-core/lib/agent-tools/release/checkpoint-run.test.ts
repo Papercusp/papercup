@@ -944,3 +944,79 @@ describe('release:checkpoint-run routes to the state plane (P-002)', () => {
     }
   });
 });
+
+/**
+ * EI-20025784115349280 — the gate must be proved by the SPAWN, not by the reply.
+ *
+ * A tool that returns a refusal payload while still creating the systemd unit has fixed
+ * nothing: the ~55min suite is running either way, and the caller is merely better informed
+ * about a slot it can no longer get back. So the load-bearing assertion in every case below
+ * is whether `launchDetachedCheckpoint` — the only path to a unit — was called at all.
+ */
+describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349280)', () => {
+  const MINE = 'packages/operator-core/lib/mine.ts';
+  const LAUNCHED_OK = {
+    launched: true,
+    unit: 'papercup-green-checkpoint-manual',
+    argv: [],
+    logPath: '/tmp/papercup-green-checkpoint-manual.log',
+  };
+  const REFUSAL = {
+    refuse: true,
+    proceedReason: null,
+    candidate: 'aaaaaaaaaaaa',
+    tip: 'ffffffffffff',
+    quietCutSec: 240,
+    blockedPaths: [{ path: MINE, commits: ['bbb1111 my just-landed fix'], eligibleInSec: 120 }],
+    waitSec: 120,
+  };
+
+  const mockLaunch = (over: Record<string, unknown> = {}) => {
+    const launchSpy = vi.fn(async () => LAUNCHED_OK);
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+      ...over,
+    }));
+    return launchSpy;
+  };
+
+  it('creates NO systemd unit when the run would exclude the declared paths', async () => {
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => REFUSAL) });
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: [MINE] }, MAKE_CTX())) as never);
+
+    // THE assertion this whole change exists for: the gate slot was never taken.
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'would_exclude_declared_paths',
+      wait_sec: 120,
+      blocked_paths: [{ path: MINE, eligibleInSec: 120 }],
+    });
+    // A refusal without a stated way forward gets routed around rather than followed.
+    expect(String(b.note)).toMatch(/waitForEligibility:true/);
+    expect(String(b.note)).toMatch(/force:true/);
+  });
+
+  it('CONTROL: launches normally when the gate does not fire', async () => {
+    const launchSpy = mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => ({ ...REFUSAL, refuse: false, proceedReason: 'declared-paths-in-candidate' })) });
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: [MINE] }, MAKE_CTX())) as never);
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect(b.ok).toBe(true);
+  });
+
+  it('force:true bypasses the gate and launches', async () => {
+    // Deliberately NOT mocking the assessor: under `force` the real one short-circuits before
+    // it touches git or systemd, so this exercises the actual wiring rather than a stand-in.
+    const launchSpy = mockLaunch();
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: [MINE], force: true }, MAKE_CTX())) as never);
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect(b.ok).toBe(true);
+    expect(b.reason).toBeUndefined();
+  });
+});

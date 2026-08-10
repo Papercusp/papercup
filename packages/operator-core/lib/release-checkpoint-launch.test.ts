@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // WI-4957: launchDetachedCheckpoint's DEFAULT `cancelStaleAwaits` param is the real
 // cancelStaleCheckpointAwaits, which lazily requires events/await/engine → a real PG pool.
 // Every test in this file EXCEPT the WI-4957 ones below injects no 5th param, so without
@@ -1570,5 +1570,184 @@ describe('defaultReadLogTail drops the partial first line on a SEEKED read (WI-7
 
   it('degrades to null on an unreadable path, preserving the best-effort contract', () => {
     expect(defaultReadLogTail(join(tmpdir(), 'wi7296-does-not-exist', 'nope.log'))).toBeNull();
+  });
+});
+
+/**
+ * EI-20025784115349280 — the PRE-LAUNCH exclusion gate.
+ *
+ * The defect: every value the post-launch "this run will not see your file" warning is made
+ * of is computed ~29 lines BEFORE `spawnFn` runs, so the tool could always have known — and
+ * told the caller — while not-starting was still an option. It reported it only once the
+ * ~55min suite already held the gate's one serial slot.
+ *
+ * These cases are written the way this rail has to be judged: the REFUSAL is one test and
+ * every FAIL-OPEN path is its own, because a guard that refuses too eagerly wedges the
+ * fleet's only manual verdict lever — strictly worse than the wasted suite it prevents. The
+ * CONTROL case is what stops this suite from passing against a guard that refuses everything.
+ */
+describe('assessPreLaunchExclusion (EI-20025784115349280)', () => {
+  const NOW = () => Math.floor(Date.now() / 1000);
+  const TIP = 'ffffffffffffffffffffffffffffffffffffffff';
+  const CAND = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const MINE = 'packages/operator-core/lib/mine.ts';
+
+  let savedQuiet: string | undefined;
+  beforeEach(() => {
+    savedQuiet = process.env.PAPERCUSP_QUIET_CUT_SEC;
+    process.env.PAPERCUSP_QUIET_CUT_SEC = '240';
+  });
+  afterEach(() => {
+    if (savedQuiet === undefined) delete process.env.PAPERCUSP_QUIET_CUT_SEC;
+    else process.env.PAPERCUSP_QUIET_CUT_SEC = savedQuiet;
+  });
+
+  /** Drives `currentCheckpointCandidate` + `excludedCommitsSync` only — containment is
+   *  injected separately, which is what keeps this fake small enough to read. */
+  const gitFake = (excluded: { sha: string; agoSec: number; subject: string }[], cut = true) =>
+    vi.fn((cmd: string, args: string[]) => {
+      const ok = (stdout: string) => ({ status: 0, stdout, stderr: '' });
+      const fail = () => ({ status: 1, stdout: '', stderr: '' });
+      if (cmd !== 'git') return fail();
+      const a = args.slice(2).join(' '); // drop the leading `-C <root>`
+      if (a === 'rev-parse HEAD') return ok(TIP);
+      // Tip 1s old ⇒ inside the quiet window ⇒ the cut steps back to CAND.
+      if (a.startsWith('show -s --format=%ct')) return ok(String(NOW() - (cut ? 1 : 10_000)));
+      if (a.startsWith('rev-list -1 --before=@')) return ok(CAND);
+      if (a === 'rev-parse --verify ready') return fail(); // no `ready` ref in this fixture
+      if (a.startsWith('log --no-decorate --format='))
+        return ok(excluded.map((e) => `${e.sha}\x1f${NOW() - e.agoSec}\x1f${e.subject}`).join('\n'));
+      return fail();
+    });
+
+  type Containment = Awaited<ReturnType<typeof checkpointCandidateContainment>>;
+  const containment = (over: Partial<Containment>) =>
+    (async () => ({
+      candidateSha: CAND,
+      tipSha: TIP,
+      source: 'caller-supplied' as const,
+      included: [],
+      missing: [],
+      unknown: [],
+      paths: [],
+      excludedCommitsTouchingYourFiles: [],
+      testImplSplitRisk: { detected: false, includedTests: [], missingImpl: [] },
+      warning: null,
+      ...over,
+    })) as unknown as typeof checkpointCandidateContainment;
+
+  /** The exact shape the filing's falsifiable check names: a declared path carried ONLY by a
+   *  commit newer than the quiet cut. */
+  const EXCLUDED_MINE: Partial<Containment> = {
+    missing: [MINE],
+    paths: [{ path: MINE, inCandidate: false, reason: 'newer-commit', unknownReason: null }],
+    excludedCommitsTouchingYourFiles: [{ path: MINE, commits: ['bbb1111 my just-landed fix'] }],
+  };
+
+  const assess = (over: Parameters<typeof assessPreLaunchExclusion>[0] = {}) =>
+    assessPreLaunchExclusion({
+      paths: [MINE],
+      root: '/tree',
+      activeRun: () => false,
+      execFn: gitFake([{ sha: 'bbb1111', agoSec: 120, subject: 'my just-landed fix' }]),
+      containmentFn: containment(EXCLUDED_MINE),
+      ...over,
+    });
+
+  it('REFUSES when a declared path is carried only by a commit the quiet cut excluded', async () => {
+    const v = await assess();
+    expect(v.refuse).toBe(true);
+    expect(v.proceedReason).toBeNull();
+    // 240s window, commit 120s old ⇒ eligible in 120s. The wait IS the deliverable: the
+    // refusal's whole claim is "seconds, not a 55-minute suite".
+    expect(v.waitSec).toBe(120);
+    expect(v.blockedPaths).toEqual([{ path: MINE, commits: ['bbb1111 my just-landed fix'], eligibleInSec: 120 }]);
+    // The text must leave a MOVE, not just a fact — both exits, named, with the cost of each.
+    const note = renderPreLaunchRefusal(v);
+    expect(note).toMatch(/waitForEligibility:true/);
+    expect(note).toMatch(/force:true/);
+    expect(note).toMatch(/120s/);
+  });
+
+  /* ---- fail-open paths. Each gets its own case: a guard is only as trustworthy as the
+     conditions under which it declines to fire. ---- */
+
+  it('CONTROL: launches when the candidate DOES carry every declared path', async () => {
+    const v = await assess({
+      containmentFn: containment({
+        included: [MINE],
+        paths: [{ path: MINE, inCandidate: true, reason: null, unknownReason: null }],
+      }),
+    });
+    expect(v.refuse).toBe(false);
+    expect(v.proceedReason).toBe('declared-paths-in-candidate');
+  });
+
+  it("launches on an UNCOMMITTED miss — waiting cannot fix it, and the dirt may be a peer's", async () => {
+    const v = await assess({
+      containmentFn: containment({
+        missing: [MINE],
+        paths: [{ path: MINE, inCandidate: false, reason: 'uncommitted', unknownReason: null }],
+        excludedCommitsTouchingYourFiles: [{ path: MINE, commits: ['bbb1111 my just-landed fix'] }],
+      }),
+    });
+    expect(v.refuse).toBe(false);
+    expect(v.proceedReason).toBe('exclusion-undecidable');
+  });
+
+  it('launches when NO excluded commit names the path — the literal-exclusion requirement', async () => {
+    const v = await assess({
+      containmentFn: containment({
+        missing: [MINE],
+        paths: EXCLUDED_MINE.paths,
+        excludedCommitsTouchingYourFiles: [],
+      }),
+    });
+    expect(v.refuse).toBe(false);
+    expect(v.proceedReason).toBe('exclusion-undecidable');
+  });
+
+  it('launches when the blocking commit has no computable eligibility', async () => {
+    // The excluded-commit window does not contain the sha containment named, so the wait is
+    // unknown — and an unknown wait must never harden into a refusal.
+    const v = await assess({ execFn: gitFake([{ sha: 'c0ffee0', agoSec: 120, subject: 'someone else' }]) });
+    expect(v.refuse).toBe(false);
+    expect(v.proceedReason).toBe('exclusion-undecidable');
+  });
+
+  it('launches when the wait would exceed the cap — a refusal may only ever mean "wait briefly"', async () => {
+    process.env.PAPERCUSP_QUIET_CUT_SEC = '600';
+    const v = await assess({ execFn: gitFake([{ sha: 'bbb1111', agoSec: 100, subject: 'my just-landed fix' }]) });
+    expect(v.refuse).toBe(false);
+    expect(v.proceedReason).toBe('wait-exceeds-cap');
+    expect(v.waitSec).toBe(500);
+    expect(v.waitSec!).toBeGreaterThan(PRELAUNCH_EXCLUSION_MAX_WAIT_SEC);
+  });
+
+  it('launches when the commit is ALREADY eligible — the run re-resolves and will pick it up', async () => {
+    const v = await assess({ execFn: gitFake([{ sha: 'bbb1111', agoSec: 900, subject: 'my just-landed fix' }]) });
+    expect(v.refuse).toBe(false);
+    expect(v.proceedReason).toBe('ages-in-at-launch');
+  });
+
+  it('launches when nothing was cut (candidate === tip)', async () => {
+    const v = await assess({ execFn: gitFake([], false) });
+    expect(v.refuse).toBe(false);
+    expect(v.proceedReason).toBe('no-quiet-cut');
+  });
+
+  it('launches when a run is already in flight — already_running is the more actionable answer', async () => {
+    const v = await assess({ activeRun: () => true });
+    expect(v.refuse).toBe(false);
+    expect(v.proceedReason).toBe('run-already-active');
+  });
+
+  it('does no git work at all without declared paths, and none under force', async () => {
+    const execFn = gitFake([{ sha: 'bbb1111', agoSec: 120, subject: 'x' }]);
+    expect((await assess({ paths: [], execFn })).proceedReason).toBe('no-declared-paths');
+    expect((await assess({ force: true, execFn })).proceedReason).toBe('forced');
+    // The inferred working-tree set is the whole fleet's dirt and attributes to nobody, so an
+    // undeclared call must not even resolve a candidate.
+    expect(execFn).not.toHaveBeenCalled();
   });
 });
