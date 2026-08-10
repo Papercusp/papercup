@@ -149,6 +149,113 @@ describe('defineTool', () => {
     expect(result.error?.code).toBe('role_not_allowed');
   });
 
+  /**
+   * EI-20087434994864624 (+7 duplicate filings on 2026-08-10 alone) — a NESTED failure
+   * must teach the shape it needs.
+   *
+   * The full-schema dump above is bounded at 1,800 chars. When the failing field sits
+   * several levels down behind a union, that bound lands long before it — so the error is
+   * simultaneously too long (context burn) and too short (never reaches the answer). Eight
+   * agents independently burned ~3 round-trips each on coord:send's `body[].couldNotDetermine`,
+   * and the only way any of them extracted the shape was sending a deliberate `[{}]` to make
+   * the validator enumerate the required keys.
+   *
+   * The fixture below is that exact shape: `body` is a union of a string and an array of
+   * sections, and the section field is an array of objects.
+   */
+  describe('nested failing-field schema (EI-20087434994864624)', () => {
+    const defineNestedProbe = () =>
+      defineTool({
+        name: 'operator:nested_hint_probe',
+        description: 'nested-field schema-hint probe',
+        capability: 'operator:scan',
+        requirePrincipal: false,
+        agentRoles: ['operator'],
+        args: z.object({
+          to: z.array(z.string()),
+          body: z.union([
+            z.string(),
+            z.array(
+              z.object({
+                text: z.string(),
+                // The field that defeated eight agents: an array of objects, where the
+                // object's key list is the thing you actually need and cannot see.
+                couldNotDetermine: z
+                  .array(z.object({ what: z.string(), why: z.string().optional() }))
+                  .optional(),
+              }),
+            ),
+          ]),
+        }),
+        async handler() {
+          return { content: [{ type: 'text', text: 'should not run' }] };
+        },
+      });
+
+    const dispatch = async (args: unknown) => {
+      defineNestedProbe();
+      const tool = lookupByMcpName('operator:nested_hint_probe')!;
+      return dispatchProjectedTool(tool, 'operator:nested_hint_probe', args, {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
+        workspaceId: 'default',
+        role: 'operator',
+        runId: 'run_T',
+      }, {});
+    };
+
+    it('names the accepted keys of the PARENT object when a nested leaf fails', async () => {
+      // Exactly the call that failed in the wild: the caller guessed the item shape.
+      const result = await dispatch({
+        to: ['peer'],
+        body: [{ text: 'hi', couldNotDetermine: [{}] }],
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.error?.message).toContain('invalid_args:');
+      // THE POINT: the error carries the failing OBJECT's schema, so `what` is discoverable
+      // without a probe. Rendering the leaf instead would give a useless {"type":"string"}.
+      expect(result.error?.message).toContain('the field(s) that failed, in full:');
+      expect(result.error?.message).toContain('"what"');
+      // The label locates it, with array hops collapsed to [] so it reads as a path.
+      expect(result.error?.message).toContain('body[].couldNotDetermine[]');
+    });
+
+    it('resolves the path THROUGH a union branch, which is why the flat dump could not', async () => {
+      const result = await dispatch({
+        to: ['peer'],
+        // `body` is string | section[]; the failing path only exists in the second branch.
+        body: [{ text: 'hi', couldNotDetermine: ['a plain string, not an object'] }],
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.error?.message).toContain('the field(s) that failed, in full:');
+      expect(result.error?.message).toContain('"what"');
+    });
+
+    it('FALSIFIABILITY: a top-level failure still gets the full dump, not the narrowed hint', async () => {
+      // Depth-1 paths are already reachable in the flat dump, so the narrowing must NOT
+      // engage — otherwise this change would hide information rather than focus it.
+      const result = await dispatch({ to: 'not-an-array', body: 'fine' });
+
+      expect(result.ok).toBe(false);
+      expect(result.error?.message).toContain('full args schema:');
+      expect(result.error?.message).not.toContain('the field(s) that failed, in full:');
+    });
+
+    it('stays BOUNDED — the narrowed hint is far smaller than the dump it replaces', async () => {
+      const result = await dispatch({
+        to: ['peer'],
+        body: [{ text: 'hi', couldNotDetermine: [{}] }],
+      });
+      const hint = result.error?.message?.split('the field(s) that failed, in full:')[1] ?? '';
+      expect(hint.length).toBeGreaterThan(0);
+      expect(hint.length).toBeLessThan(1800);
+    });
+  });
+
   it('appends the FULL args schema to invalid_args failures (P-004, code-run-batch-adoption)', async () => {
     defineTool({
       name: 'operator:schema_hint_probe',
