@@ -432,7 +432,16 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // above — "migrate it to the full stripper" is a REGRESSION, and its own header says so.
     'check-generic-first.mjs',
     'check-github-identity-terms.mjs',
-    'check-migration-fixture-drift.mjs',
+    // check-migration-fixture-drift.mjs was REMOVED here on 2026-08-10 (WI-37717). It scans
+    // TWO surfaces and both are now masked: migration .sql text via stripSqlComments (inside
+    // extractIntroducedColumns — the input is definitionally SQL, so no extension dispatch is
+    // needed) and .ts fixture text via stripCommentsOnly(text, relPath). Unmasked it was wrong
+    // in BOTH directions, measured on the real corpus: 5 phantom columns off a commented-out
+    // ALTER TABLE (563-memory-federation-capture-triggers.sql), and — the costlier one — 7 of
+    // 14 real columns dropped on 299-scheduled-plans-schedule-fields.sql, because a statement
+    // ends at the first `;` and prose in an interior comment supplied one early.
+    // ⚠ comments ONLY, never stripCommentsAndStrings: these fixtures hold their CREATE TABLE
+    // inside a template literal, so blanking strings takes the guard silently 100% inert.
     'check-no-box-identity.mjs',
     'check-no-cdn-egress.mjs',
     'check-no-control-bytes.mjs',

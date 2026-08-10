@@ -54,6 +54,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR_REL = 'libs/papercusp/libs/db/sql';
 
@@ -212,6 +214,21 @@ export function findAlterTableAddColumns(sqlText, schema = 'harness_shared') {
  * `{ table, column }` pairs (deduplicated).
  */
 export function extractIntroducedColumns(sqlText, schema = 'harness_shared') {
+  // Mask SQL comments FIRST — this input is definitionally a migration file, so the
+  // dispatch is unconditional (no filename needed). Measured on the real sql/ dir, the
+  // unmasked scan was wrong in BOTH directions:
+  //   • PHANTOM — `563-memory-federation-capture-triggers.sql` line 18 is a commented-out
+  //     `-- ALTER TABLE harness_shared.memory_canonical`, off which the raw scan harvested
+  //     5 columns that no migration ever introduced.
+  //   • FALSE NEGATIVE (the worse one) — findAlterTableAddColumns ends a statement at the
+  //     first `;`, and English prose in an interior comment routinely contains one
+  //     ("...the schedule deactivates; the plan is NOT deleted."). That truncates the
+  //     statement mid-way, so every ADD COLUMN after the comment is invisible. Measured on
+  //     `299-scheduled-plans-schedule-fields.sql`: 7 of its 14 introduced columns were
+  //     silently dropped (scheduled_at, expires_at, tzid, template_slug, run_seq, outcome,
+  //     result_summary) — i.e. the guard under-reported by half on a live migration.
+  // Blanking is length-preserving, so every offset/index below is unaffected.
+  sqlText = stripSqlComments(sqlText);
   const seen = new Set();
   const out = [];
   const add = (table, column) => {
@@ -266,8 +283,16 @@ export function findFixtureGaps(table, column, deps = {}) {
   for (const relPath of files) {
     const text = readFile(root, relPath);
     if (text === null) continue;
-    if (!text.includes(table)) continue; // cheap pre-filter before the regex scan
-    for (const t of findCreateTables(text)) {
+    if (!text.includes(table)) continue; // cheap pre-filter BEFORE the parse below
+    // Mask TS comments so a commented-out fixture cannot be read as a live one. Extension
+    // dispatch via relPath (.ts) — NOT the SQL path, and NOT stripCommentsAndStrings: these
+    // fixtures hold their `CREATE TABLE` INSIDE a template literal, so blanking strings
+    // would take the guard 100% inert (measured: 477 live fixture tables found across 267
+    // files with comments-only masking; blanking strings finds none).
+    // Measured today: 0 of 763 tracked fixtures currently mint a phantom this way, so this
+    // is prophylactic rather than a live-bug fix — a false gap here accuses an unrelated
+    // agent of drift they did not cause, which is the exact harm this guard exists to stop.
+    for (const t of findCreateTables(stripCommentsOnly(text, relPath))) {
       if (t.table !== table) continue;
       if (!t.columns.includes(column)) gaps.push(relPath);
     }

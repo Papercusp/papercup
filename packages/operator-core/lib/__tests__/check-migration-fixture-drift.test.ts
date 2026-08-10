@@ -227,3 +227,75 @@ describe('splitTopLevelClauses / columnNamesFromClauses', () => {
     expect(columnNamesFromClauses(clauses)).toEqual(['a', 'b']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Comment masking (WI-37717). These are POSITIVE CONTROLS: each one fails on the
+// pre-masking code. The corpus-level check they back up ("does the real sql/ dir
+// change?") cannot stand in for them — a no-diff run is equally consistent with
+// "the fix works" and "nothing in the corpus exercises it".
+// ---------------------------------------------------------------------------
+describe('comment masking', () => {
+  it('does not mint a phantom column from a COMMENTED-OUT ALTER TABLE', () => {
+    // The shape found live in 563-memory-federation-capture-triggers.sql, where a
+    // commented-out statement yielded 5 columns no migration ever introduced.
+    const sql = `
+-- ALTER TABLE harness_shared.memory_canonical
+--   ADD COLUMN IF NOT EXISTS harness_slug text,
+--   ADD COLUMN IF NOT EXISTS origin text;
+ALTER TABLE harness_shared.memory_canonical
+  ADD COLUMN IF NOT EXISTS real_column text;
+`;
+    expect(extractIntroducedColumns(sql)).toEqual([{ table: 'memory_canonical', column: 'real_column' }]);
+  });
+
+  it('still finds ADD COLUMNs that follow a SEMICOLON INSIDE an interior comment', () => {
+    // The false-NEGATIVE direction, and the costlier one: a statement is terminated at
+    // the first `;`, and ordinary English prose in a column comment supplies one. Live
+    // instance: 299-scheduled-plans-schedule-fields.sql reported 7 of its 14 columns.
+    const sql = `
+ALTER TABLE harness_shared.harness_plans
+  ADD COLUMN IF NOT EXISTS schedule jsonb,
+  -- on expiry the schedule deactivates; the plan is NOT deleted.
+  ADD COLUMN IF NOT EXISTS expires_at timestamptz,
+  ADD COLUMN IF NOT EXISTS tzid text;
+`;
+    expect(extractIntroducedColumns(sql)).toEqual([
+      { table: 'harness_plans', column: 'schedule' },
+      { table: 'harness_plans', column: 'expires_at' },
+      { table: 'harness_plans', column: 'tzid' },
+    ]);
+  });
+
+  it('does not read a COMMENTED-OUT fixture as a live one', () => {
+    const gaps = findFixtureGaps('event_awaits', 'root_id', {
+      root: '/repo',
+      files: ['packages/x/store.integration.test.ts'],
+      // The only CREATE TABLE here is commented out, so there is no live fixture to be
+      // stale — reporting it would accuse an unrelated agent of drift they did not cause.
+      readFile: () => `
+        // await sql\`CREATE TABLE harness_shared.event_awaits (
+        //   id bigint PRIMARY KEY,
+        //   subscriber_id text NOT NULL
+        // )\`;
+      `,
+    });
+    expect(gaps).toEqual([]);
+  });
+
+  it('still sees a LIVE fixture inside a template literal (masking must not blank strings)', () => {
+    // Tripwire: swapping stripCommentsOnly for stripCommentsAndStrings would blank the
+    // SQL these fixtures live in and take the guard silently 100% inert.
+    const gaps = findFixtureGaps('event_awaits', 'root_id', {
+      root: '/repo',
+      files: ['packages/x/store.integration.test.ts'],
+      readFile: () => `
+        // a preceding comment that must not disturb the scan
+        await sql\`CREATE TABLE harness_shared.event_awaits (
+          id bigint PRIMARY KEY,
+          subscriber_id text NOT NULL
+        )\`;
+      `,
+    });
+    expect(gaps).toEqual(['packages/x/store.integration.test.ts']);
+  });
+});
