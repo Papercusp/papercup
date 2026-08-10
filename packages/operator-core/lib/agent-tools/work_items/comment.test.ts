@@ -9,11 +9,29 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../work-items', () => ({
-  commentWorkItem: vi.fn(),
-  getWorkItem: vi.fn(),
-  isSettledWorkItemState: (s: string | null | undefined) => !!s && ['resolved', 'closed', 'done', 'passed', 'deprecated'].includes(s),
-}));
+/**
+ * Only the two IO functions are stubbed; `isSettledWorkItemState` is the REAL
+ * predicate, taken from the module under test's own writer.
+ *
+ * It used to be a hand-copied list — `['resolved','closed','done','passed','deprecated']`
+ * — which had silently DRIFTED from `SETTLED_WORK_ITEM_STATES` (work-items.ts:1913):
+ * the real set also contains `'dropped'`. That drift made this file assert the
+ * OPPOSITE of production for every dropped item, and it under-tested the EI-8837
+ * completion hint in the same direction for as long as it existed. Caught only
+ * because EI-20027532687512023's nudge points filers at `dropped` specifically.
+ *
+ * Re-copying the list with `'dropped'` appended would fix this instance and leave
+ * the trap armed for the next state the vocabulary gains, so the mock derives the
+ * predicate instead — it cannot drift from the writer again.
+ */
+vi.mock('../../work-items', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../work-items')>();
+  return {
+    commentWorkItem: vi.fn(),
+    getWorkItem: vi.fn(),
+    isSettledWorkItemState: actual.isSettledWorkItemState,
+  };
+});
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 
 import { commentWorkItem, getWorkItem } from '../../work-items';
@@ -97,6 +115,79 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
       const b = await body({ id: 'WI-1', body: 'fully fixed and verified.' });
       expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
       expect(b.results[0].hint).toBeUndefined();
+    });
+  });
+
+  describe('EI-20027532687512023: retraction-shaped post on a still-open item gets a DROP nudge', () => {
+    beforeEach(() => cmtM.mockResolvedValue({ id: 'post-1' } as never));
+
+    /**
+     * THE CALIBRATION CASE — the VERBATIM opening of the real retraction that
+     * caused this bug (harness_shared.coord_thread_posts id=56789, posted
+     * 2026-08-10T01:12:46.652Z on issue-thread-EI-20026000903745625). Twelve
+     * minutes after this text landed, scheduler:get_next served that item as the
+     * harness's #1 critical.
+     *
+     * Pinned to the MEASURED string rather than phrasing invented alongside the
+     * regex: a predicate tested only against examples its own author wrote is
+     * calibrated to itself, and would pass just as happily while missing every
+     * retraction a real filer writes.
+     */
+    it('MATCHES the real measured retraction text that this bug was filed for', async () => {
+      getM.mockResolvedValue({ id: 'EI-1', state: 'open' } as never);
+      const b = await body({
+        id: 'EI-1',
+        body: "## ⚠⚠ RETRACTION BY THE FILER — this item's central premise is WRONG. Do not act on it as written.",
+      });
+      expect(b.results[0].hint).toEqual(expect.stringContaining("state:'dropped'"));
+    });
+
+    it('the nudge names the QUEUE consequence, not just the verb', async () => {
+      getM.mockResolvedValue({ id: 'EI-1', state: 'open' } as never);
+      const b = await body({ id: 'EI-1', body: 'Retracting this — my analysis was wrong.' });
+      // The whole failure was that a retraction is invisible to routing, so the
+      // hint has to say THAT, or it reads as optional bookkeeping.
+      expect(b.results[0].hint).toEqual(expect.stringContaining('scheduler:get_next'));
+      expect(b.results[0].hint).toEqual(expect.stringContaining('ORIGINAL SEVERITY'));
+    });
+
+    it('the SAME retraction on an ALREADY-terminal item carries no hint', async () => {
+      getM.mockResolvedValue({ id: 'EI-1', state: 'dropped' } as never);
+      const b = await body({ id: 'EI-1', body: 'Retracting this — the premise is wrong.' });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-1' });
+      expect(b.results[0].hint).toBeUndefined();
+    });
+
+    /**
+     * Precedence: a retraction that also carries completion-ish wording must get
+     * the RETRACTION hint. The completion hint points at work_items:complete,
+     * which would record a false completion on an item whose author has just
+     * disproved its premise — the wrong verb in the expensive direction.
+     */
+    it('retraction WINS over completion when a post matches both predicates', async () => {
+      getM.mockResolvedValue({ id: 'EI-1', state: 'open' } as never);
+      const b = await body({
+        id: 'EI-1',
+        body: 'I retract this. Ready to close — the finding was wrong, and all tests are green so done.',
+      });
+      expect(b.results[0].hint).toEqual(expect.stringContaining("state:'dropped'"));
+      expect(b.results[0].hint).not.toEqual(expect.stringContaining('work_items:complete'));
+    });
+
+    /**
+     * THE CONTROL. Without this, every assertion above would pass just as well
+     * against a regex matching /./ — the predicate has to be shown REFUSING
+     * something, and the realistic false positive is an ordinary correction of
+     * one detail on an item that remains entirely valid.
+     */
+    it('an ordinary mid-thread correction does NOT nudge, and never even looks the item up', async () => {
+      const b = await body({
+        id: 'EI-1',
+        body: 'Correction: the timeout is 480s, not 240s as I said above. Rest of the diagnosis stands.',
+      });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-1' });
+      expect(b.results[0].hint).toBeUndefined();
+      expect(getM).not.toHaveBeenCalled();
     });
   });
 });

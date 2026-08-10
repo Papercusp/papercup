@@ -188,12 +188,26 @@ export default defineTool({
         const post = await commentWorkItem(it.id, it.body, ident.ownerId, { harness: it.harness ?? args.harness });
         if (!post) return { ok: false as const, id: it.id, error: `work_item '${it.id}' not found` };
         let hint: string | undefined;
-        if (COMPLETION_LIKE_RE.test(it.body)) {
+        // ONE state lookup serves BOTH predicates (EI-8837 completion,
+        // EI-20027532687512023 retraction) — the shapes are mutually exclusive
+        // in practice and the lookup is the only cost worth avoiding.
+        //
+        // Retraction WINS when a post somehow matches both. A correction that
+        // also carries completion-ish wording is far likelier to be WITHDRAWING
+        // the item than finishing it, and handing a retracting filer the
+        // completion hint would point them at work_items:complete — the exact
+        // wrong verb, and one that would record a false completion on an item
+        // whose premise its own author just disproved.
+        const retractionLike = RETRACTION_LIKE_RE.test(it.body);
+        const completionLike = !retractionLike && COMPLETION_LIKE_RE.test(it.body);
+        if (retractionLike || completionLike) {
           // Best-effort only: never let the state re-lookup fail the comment
           // that already landed.
           try {
             const wi = await getWorkItem(it.id, it.harness ?? args.harness);
-            if (wi && !isSettledWorkItemState(wi.state)) hint = COMPLETION_STATE_HINT;
+            if (wi && !isSettledWorkItemState(wi.state)) {
+              hint = retractionLike ? RETRACTION_STATE_HINT : COMPLETION_STATE_HINT;
+            }
           } catch {
             /* the comment already succeeded — swallow */
           }

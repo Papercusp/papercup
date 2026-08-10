@@ -11,14 +11,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const pausePotState = vi.hoisted(() => vi.fn(async () => ({})));
+const resumePotState = vi.hoisted(() => vi.fn(async () => ({})));
 const deactivateLoop = vi.hoisted(() => vi.fn(async () => true));
 const projectsForGoal = vi.hoisted(() => vi.fn());
-const sqlRows = vi.hoisted(() => ({ owners: [] as string[], unattributed: 0 }));
+const sqlRows = vi.hoisted(() => ({
+  owners: [] as string[],
+  unattributed: 0,
+  /** Attributed loops currently DISARMED — what the resume reports and leaves alone. */
+  disarmed: 0,
+}));
 
 /**
  * A tagged-template stand-in for postgres.js that answers by which table the query
  * names. Deliberately not a full fake: the assertions here are about WHICH rows the
  * policy acts on, not about SQL generation.
+ *
+ * The two `routines` counts are told apart by their guard, not by call order: the
+ * stop counts what is STILL RUNNING (`active = TRUE`), the resume counts what is
+ * still DISARMED (`active = FALSE`). Keying on order instead would let the two
+ * fixtures silently swap and still pass.
  */
 const sql = vi.hoisted(() => {
   const fn = (strings: TemplateStringsArray) => {
@@ -27,7 +38,10 @@ const sql = vi.hoisted(() => {
       return Promise.resolve(sqlRows.owners.map((o) => ({ owner_id: o })));
     }
     if (text.includes('routines')) {
-      return Promise.resolve([{ n: String(sqlRows.unattributed) }]);
+      const disarmedQuery = text.includes('active = FALSE');
+      return Promise.resolve([
+        { n: String(disarmedQuery ? sqlRows.disarmed : sqlRows.unattributed) },
+      ]);
     }
     return Promise.resolve([]);
   };
@@ -43,7 +57,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql }),
   projectsForGoal,
 }));
-vi.mock('../pot/pause-core', () => ({ pausePotState }));
+vi.mock('../pot/pause-core', () => ({ pausePotState, resumePotState }));
 vi.mock('../harness/routines/loop', () => ({
   deactivateLoop,
   loopRoutineName: (ownerId: string) => `loop-${ownerId}`,
