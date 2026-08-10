@@ -43,9 +43,9 @@ export function productionSpawnHydrationDeps(): SpawnHydrationDeps {
     // (default on, P-009). FAIL-SOFT: a flag-read fault or a null dossier ⇒ no section
     // (the agent falls back to its read tools). computeCupWakeDossier needs a concrete
     // workspaceId — the spawn paths thread it; activeWorkspaceId() is the safety floor.
-    getDossier: async ({ harness, workItemId, workspaceId }) => {
+    getDossier: async ({ harness, workItemId, workspaceId, role }) => {
       if (!(await getFlag(FLAGS.CUP_WAKE_DOSSIER, 'system'))) return null;
-      return computeCupWakeDossier({ workspaceId: workspaceId ?? activeWorkspaceId(), harness, workItemId });
+      return computeCupWakeDossier({ workspaceId: workspaceId ?? activeWorkspaceId(), harness, workItemId, role });
     },
   };
 }

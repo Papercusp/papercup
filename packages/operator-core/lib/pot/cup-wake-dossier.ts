@@ -24,6 +24,9 @@
  * (no Date.now / Math.random), so it unit-tests with no DB and renders stable bytes.
  */
 import type { WorkItem, WorkItemDetail } from '../work-items';
+// Type-only (erased at runtime), so the standing-facts fold below keeps its
+// DYNAMIC import of ../agent-facts/store — no new runtime dependency.
+import type { FactSelector } from '../agent-facts/store';
 
 /** A live pot peer in the roster snapshot (D-008), projected from a presence row. */
 export interface CupRosterPeer {
@@ -212,6 +215,13 @@ export interface ComputeCupWakeDossierInput {
   workspaceId: string;
   harness: string;
   workItemId: string;
+  /**
+   * The SPAWNING agent's role, threaded from the spawn seam (EI-20089384158051187).
+   * Selects the `role` leg of the standing-facts fold. OMITTED ⇒ that leg is skipped
+   * entirely — folding facts for a role the agent is not is strictly worse than
+   * folding none, so this never falls back to a guess.
+   */
+  role?: string;
   caps?: Partial<CupDossierCaps>;
   /** Injected for tests; defaults read PG. */
   deps?: Partial<CupDossierDeps>;
@@ -225,7 +235,7 @@ export interface ComputeCupWakeDossierInput {
  */
 export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): Promise<string | null> {
   const deps = { ...defaultDeps(), ...input.deps };
-  const { harness, workItemId, workspaceId } = input;
+  const { harness, workItemId, workspaceId, role } = input;
 
   // CORE: prefer the detail (item + links + topics); if the detail read throws, fall
   // back to the bare item so the dossier still renders its header. Both null ⇒ no dossier.
@@ -262,20 +272,21 @@ export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): 
   const rosterP = deps.listRoster(workspaceId).catch(() => [] as CupRosterPeer[]);
 
   // STANDING FACTS (L1c) — fail-soft: a facts outage never blocks the dossier.
+  //
+  // The `role` leg is threaded from the spawn seam, NOT hardcoded (EI-20089384158051187).
+  // It used to read `scopeRef: 'cup'` unconditionally, which matched ZERO rows on every
+  // spawn — no role:cup fact has ever existed — while the facts for the role actually
+  // being spawned (role:su had 12) were never folded. The bug was invisible because the
+  // leg is fail-soft and an empty fold renders identically to "this agent has no facts".
+  // When the role is unknown we OMIT the leg rather than guess.
+  const factSelectors: FactSelector[] = [
+    { scope: 'workspace' },
+    ...(role ? [{ scope: 'role' as const, scopeRef: role }] : []),
+    { scope: 'harness', scopeRef: harness },
+    { scope: 'work_item', scopeRef: workItemId },
+  ];
   const factsFoldP = import('../agent-facts/store')
-    .then(async (m) =>
-      m.renderFactsFold(
-        await m.foldFacts(
-          [
-            { scope: 'workspace' },
-            { scope: 'role', scopeRef: 'cup' },
-            { scope: 'harness', scopeRef: harness },
-            { scope: 'work_item', scopeRef: workItemId },
-          ],
-          { workspaceId },
-        ),
-      ),
-    )
+    .then(async (m) => m.renderFactsFold(await m.foldFacts(factSelectors, { workspaceId })))
     .catch(() => '');
 
   // BACKGROUND RECALL (L1d, mug-memory-hybrid) — the cup translation of the Mug's

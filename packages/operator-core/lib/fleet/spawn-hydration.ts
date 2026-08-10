@@ -101,6 +101,9 @@ export interface SpawnHydrationDeps {
     harness: string;
     workItemId: string;
     workspaceId?: string;
+    /** The spawnee's role, for the dossier's standing-facts `role` leg
+     *  (EI-20089384158051187). Absent ⇒ that leg is skipped, never guessed. */
+    role?: string;
   }) => Promise<string | null>;
 }
 
@@ -179,7 +182,7 @@ export async function assembleSpawnHydration(input: SpawnHydrationInput): Promis
     safe(
       'dossier',
       deps.getDossier && workItemId
-        ? () => deps.getDossier!({ harness, workItemId, workspaceId })
+        ? () => deps.getDossier!({ harness, workItemId, workspaceId, role })
         : undefined,
     ),
   ]);

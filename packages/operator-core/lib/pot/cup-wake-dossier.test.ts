@@ -16,6 +16,18 @@ import type { WorkItem, WorkItemDetail } from '../work-items';
 const mockBuildMemoryContextBlock = vi.fn().mockResolvedValue(null);
 vi.mock('../memory/injection', () => ({ buildMemoryContextBlock: mockBuildMemoryContextBlock }));
 
+// EI-20089384158051187: the standing-facts fold's `role` leg must be the SPAWNING
+// role, never a hardcoded one. We capture the selectors `foldFacts` is called with.
+// The factory SPREADS the original module rather than returning only these two
+// exports — returning a partial factory is how a mock strands some other consumer
+// of the same module and turns a green typecheck into a red tree.
+const mockFoldFacts = vi.fn().mockResolvedValue([]);
+vi.mock('../agent-facts/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-facts/store')>()),
+  foldFacts: mockFoldFacts,
+  renderFactsFold: () => '',
+}));
+
 function wi(over: Partial<WorkItem> = {}): WorkItem {
   return {
     id: 'WI-1',
@@ -135,6 +147,39 @@ describe('renderCupDossier (pure)', () => {
   it('omits the memoryFold section when absent (no empty heading)', () => {
     const s = renderCupDossier({ item: wi() });
     expect(s).not.toContain('Background recall');
+  });
+});
+
+describe('standing-facts role leg (EI-20089384158051187)', () => {
+  const base = { workspaceId: 'ws', harness: 'papercup', workItemId: 'WI-1' };
+  const liveDeps = {
+    getDetail: async () => null,
+    getItem: async () => wi(),
+    listRoster: async () => [] as CupRosterPeer[],
+  };
+  const roleLegs = () =>
+    (mockFoldFacts.mock.calls.at(-1)?.[0] ?? []).filter(
+      (s: { scope: string }) => s.scope === 'role',
+    );
+
+  afterEach(() => mockFoldFacts.mockClear());
+
+  it('folds the SPAWNING role, not a hardcoded one', async () => {
+    await computeCupWakeDossier({ ...base, role: 'su', deps: liveDeps });
+    expect(roleLegs()).toEqual([{ scope: 'role', scopeRef: 'su' }]);
+  });
+
+  it('OMITS the role leg entirely when the role is unknown (never guesses)', async () => {
+    await computeCupWakeDossier({ ...base, deps: liveDeps });
+    expect(roleLegs()).toEqual([]);
+  });
+
+  it('still folds the workspace / harness / work_item legs regardless of role', async () => {
+    await computeCupWakeDossier({ ...base, role: 'mug', deps: liveDeps });
+    const scopes = (mockFoldFacts.mock.calls.at(-1)?.[0] ?? []).map(
+      (s: { scope: string }) => s.scope,
+    );
+    expect(scopes).toEqual(['workspace', 'role', 'harness', 'work_item']);
   });
 });
 
