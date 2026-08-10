@@ -98,9 +98,16 @@ export async function collectReleaseDeployStalenessSignals(opts: {
     const installSlug = opts.installSlug ?? (process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug());
     const snap = await gitPipelineSnapshot(installSlug);
     const status = computeDeployStatus(snap);
+    // EI-20101010229759029: this collector is the SECOND consumer of the decider, and it
+    // built the same deployedAt-age-only input — so it filed the same false finding on its
+    // own path. It only REPORTS on the condition (the sweep owns the clock), so it reads
+    // the watermark rather than ticking it; an unresolvable read degrades to the fallback,
+    // which labels itself inferred.
+    const { readGreenDeployableSince } = await import('../../release-deploy-staleness-watchdog');
     const verdict = evaluateDeployStaleness({
       state: status.state,
       deployedAtMs: status.deploy.deployedAtMs,
+      greenDeployableSinceMs: await readGreenDeployableSince(installSlug),
       now: opts.now ?? Date.now(),
       thresholdMs: thresholdSec * 1_000,
     });

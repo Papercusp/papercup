@@ -78,20 +78,57 @@ export interface DeployStalenessInput {
    *  unknown) means either nothing is pending or something ELSE already explains
    *  the delay, so this watchdog stays out of their way. */
   state: DeployStateKind;
-  /** Epoch ms the live :3070 was last deployed, or null if unresolvable (treated
-   *  as maximally stale — an unknown deploy time is never assumed fresh). */
+  /** Epoch ms the live :3070 was last deployed, or null if unresolvable. Since
+   *  EI-20101010229759029 this is only the FALLBACK clock (see below). */
   deployedAtMs: number | null;
+  /**
+   * EI-20101010229759029 — epoch ms at which the pipeline ENTERED `green-deployable`
+   * (the transition watermark `recordGreenDeployableTransition` keeps), or null when
+   * unresolvable.
+   *
+   * THIS is the clock the threshold is actually about. The decider's question is
+   * "how long has green code been deployable but not live", and `deployedAtMs` age
+   * cannot answer it: that clock also runs during RED-GATE windows, when nothing was
+   * deployable at all. Measured live 2026-08-10: a 6h red gate went green, the state
+   * flipped to `green-deployable`, and `now - deployedAtMs` was ALREADY 5h — so the
+   * watchdog fired instantly, reported "deployable but NOT live for 5h", and pulled an
+   * agent into diagnosing a wedge that did not exist. The real wait was ~3 MINUTES.
+   *
+   * That defeats the 3h default's own documented rationale ("well past the ≤15-min
+   * auto-deploy cadence — wide enough to absorb a slow/retrying checkpoint without
+   * false-alarming"): after any red window longer than the threshold, the alarm is
+   * pre-tripped before auto-serve gets a single chance to ship.
+   */
+  greenDeployableSinceMs?: number | null;
   /** epoch ms "now" — injected so the decider is deterministic in tests. */
   now: number;
   thresholdMs: number;
 }
 
+/** WHICH clock produced `ageMs` — a measured wait vs. the inferred fallback. */
+export type DeployStalenessAgeBasis = 'green-deployable-since' | 'deployed-at-fallback';
+
 export interface DeployStalenessVerdict {
   stale: boolean;
   /** Human-readable reason — becomes the alert body / the "why not" for a healthy read. */
   reason: string;
-  /** Age of `deployedAtMs` in ms, when resolvable (null when deployedAtMs itself is null). */
+  /** How long the condition has held, in ms (null when nothing was measurable). */
   ageMs: number | null;
+  /**
+   * EI-20101010229759029: which clock `ageMs` came from. 'green-deployable-since' is a
+   * MEASURED wait; 'deployed-at-fallback' is an UPPER BOUND that also ran while the gate
+   * was red. A reader rendering the age MUST NOT present the fallback as measured — the
+   * whole cost of this bug was an inferred number read as an observation.
+   */
+  ageBasis?: DeployStalenessAgeBasis | null;
+}
+
+/** Compact duration for alert prose — hours once past 1h, minutes below it (a fresh
+ *  watermark otherwise renders a useless "0h" under a small/env-overridden threshold). */
+function formatAge(ms: number): string {
+  const hours = ms / 3_600_000;
+  if (hours >= 1) return `${Math.round(hours)}h`;
+  return `${Math.max(1, Math.round(ms / 60_000))}m`;
 }
 
 /**
@@ -102,35 +139,158 @@ export interface DeployStalenessVerdict {
  * SHOULD be shipping is not a healthy silence).
  */
 export function evaluateDeployStaleness(input: DeployStalenessInput): DeployStalenessVerdict {
-  if (input.thresholdMs <= 0) return { stale: false, reason: 'kill switch (thresholdMs <= 0)', ageMs: null };
+  if (input.thresholdMs <= 0)
+    return { stale: false, reason: 'kill switch (thresholdMs <= 0)', ageMs: null, ageBasis: null };
   if (input.state !== 'green-deployable') {
-    return { stale: false, reason: `pipeline state is '${input.state}', not green-deployable`, ageMs: null };
+    return {
+      stale: false,
+      reason: `pipeline state is '${input.state}', not green-deployable`,
+      ageMs: null,
+      ageBasis: null,
+    };
   }
-  if (input.deployedAtMs == null || !Number.isFinite(input.deployedAtMs)) {
+
+  // EI-20101010229759029: prefer the CONDITION's own clock; fall back to deployedAt age
+  // only when the watermark is unresolvable — and say so downstream, never silently.
+  const since = input.greenDeployableSinceMs;
+  const haveWatermark = since != null && Number.isFinite(since);
+  const haveDeployedAt = input.deployedAtMs != null && Number.isFinite(input.deployedAtMs);
+
+  if (!haveWatermark && !haveDeployedAt) {
     return {
       stale: true,
       reason:
-        'green pin is deployable but the live deploy timestamp is unresolvable (null) — cannot confirm ' +
-        'the pipeline is actually shipping; treating an unknown deploy time as stale rather than assuming health.',
+        'green pin is deployable but BOTH clocks are unresolvable (no deployable-since watermark and a null ' +
+        'live deploy timestamp) — cannot confirm the pipeline is actually shipping; treating an unknown wait ' +
+        'as stale rather than assuming health.',
       ageMs: null,
+      ageBasis: null,
     };
   }
-  const ageMs = input.now - input.deployedAtMs;
-  if (ageMs < input.thresholdMs) {
-    return { stale: false, reason: `deployedAt age ${Math.round(ageMs / 3_600_000)}h is under the threshold`, ageMs };
-  }
-  const ageHours = Math.round(ageMs / 3_600_000);
+
+  const ageBasis: DeployStalenessAgeBasis = haveWatermark ? 'green-deployable-since' : 'deployed-at-fallback';
+  const ageMs = input.now - (haveWatermark ? (since as number) : (input.deployedAtMs as number));
   const thresholdHours = Math.max(1, Math.round(input.thresholdMs / 3_600_000));
+
+  if (ageMs < input.thresholdMs) {
+    return {
+      stale: false,
+      reason: haveWatermark
+        ? `green code has been deployable for ${formatAge(ageMs)} — under the ${thresholdHours}h threshold`
+        : `deployedAt age ${formatAge(ageMs)} is under the threshold (no deployable-since watermark; inferred)`,
+      ageMs,
+      ageBasis,
+    };
+  }
+
+  if (!haveWatermark) {
+    // The honest rendering of the fallback: an upper bound, explicitly not a measured wait.
+    return {
+      stale: true,
+      reason:
+        `green pin is deployable but the deployable-since watermark is unresolvable, so this age is measured ` +
+        `from the LAST DEPLOY (${formatAge(ageMs)}) — an UPPER BOUND that also runs while the gate is red, ` +
+        `NOT a measured wait. It is >= the ${thresholdHours}h threshold, but treat the duration as inferred: ` +
+        `check the gate's own red/green history for this window before concluding the pipeline is wedged.`,
+      ageMs,
+      ageBasis,
+    };
+  }
+
   return {
     stale: true,
     reason:
-      `green pin has been deployable-but-not-live for ${ageHours}h (>= the ${thresholdHours}h threshold) — ` +
+      `green pin has been deployable-but-not-live for ${formatAge(ageMs)} (>= the ${thresholdHours}h threshold) — ` +
       `the release-trigger routine (documented ≤15-min cadence) should have shipped it long ago. Either the ` +
       `pipeline is genuinely wedged (check routines:list for release-trigger/green-checkpoint health) or the ` +
       `deployedAt field itself is stale/lying (compare against the release checkout's actual git state ` +
       `on disk before assuming a real stall).`,
     ageMs,
+    ageBasis,
   };
+}
+
+// ── the green-deployable transition watermark (EI-20101010229759029) ───────────
+
+/** `operator_settings` KV key for the deployable-since watermark. Keyed by install
+ *  slug ALONE — the same scope as this watchdog's `harness_escalations` latch row, and
+ *  the scope the read-only collector (`release-deploy-staleness-detect.ts`) can build
+ *  without a workspaceId it deliberately does not carry. */
+function greenSinceKey(installSlug: string): string {
+  return `release_deploy_green_deployable_since:${installSlug}`;
+}
+
+function parseWatermark(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * READ the deployable-since watermark without touching it — for consumers that only
+ * report on the condition (the improvement collector) rather than tick it.
+ */
+export async function readGreenDeployableSince(installSlug: string): Promise<number | null> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = await sql<{ value?: string }[]>`
+      SELECT value FROM harness_shared.operator_settings WHERE key = ${greenSinceKey(installSlug)} LIMIT 1`;
+    return parseWatermark((rows[0] as { value?: string } | undefined)?.value);
+  } catch {
+    return null; // fail-soft: an unreadable watermark degrades to the labelled fallback clock
+  }
+}
+
+/**
+ * TICK the watermark and return the effective deployable-since epoch ms.
+ *
+ * The sweep owns this clock: while the pipeline sits in `green-deployable` the FIRST
+ * observation of the current contiguous run is retained; any other state ends the run and
+ * clears it, so re-entry always starts a fresh clock. Accuracy is therefore one sweep tick
+ * (~30s) against a 3h default threshold.
+ *
+ * Reuses the existing `operator_settings` KV + its `ON CONFLICT (key)` upsert (the home of
+ * `hive_started` / the overwatch control bits) — no migration, per the storage policy.
+ *
+ * The clearing DELETE matches zero rows on a routinely-healthy tick, exactly like
+ * `clearDeployStalenessAlarm`'s UPDATE — a PK-indexed no-op, not a per-tick cost worth
+ * avoiding. Fail-soft: any KV failure returns null, and a null degrades to the FALLBACK
+ * clock, which labels itself as inferred rather than pretending to be measured.
+ */
+export async function recordGreenDeployableTransition(opts: {
+  workspaceId: string;
+  installSlug: string;
+  state: DeployStateKind;
+  now: number;
+}): Promise<number | null> {
+  const { workspaceId, installSlug, state, now } = opts;
+  const key = greenSinceKey(installSlug);
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    if (state !== 'green-deployable') {
+      await sql`DELETE FROM harness_shared.operator_settings WHERE key = ${key}`;
+      return null;
+    }
+    const rows = await sql<{ value?: string }[]>`
+      SELECT value FROM harness_shared.operator_settings WHERE key = ${key} LIMIT 1`;
+    const prev = parseWatermark((rows[0] as { value?: string } | undefined)?.value);
+    if (prev != null) return prev;
+    // First tick of this run (or a repair of a garbage value). Two sweeps racing the entry
+    // tick can differ by at most one tick, and the later value only ever makes the watchdog
+    // MORE conservative (younger age ⇒ less likely to fire) — the safe direction for a bug
+    // whose entire cost was false alarms.
+    await sql`
+      INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
+      VALUES (${key}, ${String(now)}, ${'epoch ms the release pipeline entered green-deployable (EI-20101010229759029)'}, ${now}, ${workspaceId})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
+    return now;
+  } catch (e) {
+    console.warn(
+      `[release-deploy-staleness] deployable-since watermark failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+    );
+    return null;
+  }
 }
 
 // ── the PG sweep ────────────────────────────────────────────────────────────────
@@ -186,7 +346,15 @@ async function raiseDeployStalenessAlarm(opts: {
     if (existing.length > 0 && existing[0].escalation != null) return false; // already paged this episode
 
     const ageHours = verdict.ageMs != null ? Math.round(verdict.ageMs / 3_600_000) : null;
-    const ageText = ageHours != null ? `${ageHours}h` : 'an unknown length of time';
+    // EI-20101010229759029: the broadcast's own summary line was the sentence that read
+    // FALSE ("deployable but NOT live for 5h" when the real wait was ~3 minutes). Never
+    // state a fallback age as an observation — the qualifier travels with the number.
+    const ageText =
+      verdict.ageMs == null
+        ? 'an unknown length of time'
+        : verdict.ageBasis === 'deployed-at-fallback'
+          ? `an unmeasured time (last deploy was ${formatAge(verdict.ageMs)} ago — an upper bound, not the wait)`
+          : formatAge(verdict.ageMs);
 
     try {
       const { notifyAttention } = await import('./attention-notify');
@@ -301,9 +469,18 @@ export async function releaseDeployStalenessSweep(opts: {
   try {
     const snap = await gitPipelineSnapshot(installSlug);
     const status = computeDeployStatus(snap);
+    // EI-20101010229759029: tick the condition's own clock BEFORE deciding — entering
+    // green-deployable starts it, leaving it (a shipped pin, a red gate) clears it.
+    const greenDeployableSinceMs = await recordGreenDeployableTransition({
+      workspaceId,
+      installSlug,
+      state: status.state,
+      now,
+    });
     const verdict = evaluateDeployStaleness({
       state: status.state,
       deployedAtMs: status.deploy.deployedAtMs,
+      greenDeployableSinceMs,
       now,
       thresholdMs: thresholdSec * 1_000,
     });
