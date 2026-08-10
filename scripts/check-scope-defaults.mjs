@@ -37,6 +37,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STRICT = process.argv.includes('--strict');
@@ -187,12 +188,16 @@ for (const line of lines) {
   if (isTestFile(file)) continue;
   if (FILE_ALLOW.has(file)) continue;
 
-  const dm = content.match(OP_LITERAL_RE);
+  // Match against the COMMENT-MASKED line (1-based lineno → 0-based idx). If the hit
+  // survives masking it is real code; if it vanishes it was prose. Falling back to the raw
+  // line when the file could not be read keeps a read failure from silently emptying the
+  // report — an unreadable file must not look clean.
+  const maskedLine = maskedLines(file)[lineno - 1] ?? content;
+  const dm = maskedLine.match(OP_LITERAL_RE);
   if (!dm) continue;
-  if (isCommentMatch(content, dm.index)) continue;
 
   // The immediate LHS identifier must name a scope value (not, e.g., `role ?? 'operator'`).
-  const lhs = content.slice(0, dm.index).match(LHS_TOKEN_RE)?.[1] ?? '';
+  const lhs = maskedLine.slice(0, dm.index).match(LHS_TOKEN_RE)?.[1] ?? '';
   if (!SCOPE_LHS_RE.test(lhs)) continue;
 
   // marker on the hit line, or on the line directly above (1-based lineno → 0-based idx).

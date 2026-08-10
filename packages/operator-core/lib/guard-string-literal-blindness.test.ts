@@ -447,7 +447,14 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // absent from the cases table. Its own --self-test pins that: the four STRING positive
     // controls fail loudly if anyone swaps in the full stripper.
     'check-okf-conformance.mjs',
-    'check-scope-defaults.mjs',
+    // check-scope-defaults.mjs was REMOVED here on 2026-08-10 (WI-37717). It always DID mask
+    // comments, but with a hand-rolled per-line heuristic this classifier cannot see — the
+    // documented mis-ranking shape (see the note above this set). It now imports
+    // stripCommentsOnly, so it ranks `shared`. Strings stay unmasked deliberately: the scanned
+    // expression `?? 'default'` IS a string literal, so a string-masking stripper would blind
+    // it entirely. The heuristic it replaced was also WRONG in the false-negative direction —
+    // it treated any earlier `//` as a comment start without checking for strings, so
+    // `const u = 'https://x.com'; const ws = scope ?? 'default';` reported nothing.
     'check-shell-syntax.mjs',
     'check-smart-quotes.mjs',
     'check-sql-guidance-justified.mjs',
