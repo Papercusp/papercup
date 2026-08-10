@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Duplex, PassThrough } from 'node:stream';
 import { execFileSync } from 'node:child_process';
-import { serveUploadPack, fetchOverDuplex } from './fetch-transport';
+import { serveUploadPack, fetchOverDuplex, formatExtTransportUrl } from './fetch-transport';
 import { scopeRepoPath, type ScopeId } from './scope-repo';
 import { authorizeScopeRepoServe } from './scope-serve-gate';
 
@@ -175,3 +175,79 @@ describe('fetchOverDuplex — pre-destroyed duplex (WI-3496)', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
+
+/**
+ * WI-37735 — the ext:: command line is SPACE-SPLIT by git.
+ *
+ * These assert the escaping RULES; that git actually reconstructs the tokens
+ * from them is proved end-to-end (real `git fetch`, real upload-pack, bridge
+ * under a directory whose name has a space) in fetch-transport.integration.test.ts.
+ * Both halves are needed: this file cannot prove git agrees with us, and the
+ * integration test alone would not pin the percent-first ordering.
+ */
+describe('formatExtTransportUrl — git ext:: token escaping (WI-37735)', () => {
+  it('leaves space-free tokens exactly as they were', () => {
+    expect(formatExtTransportUrl(['node', '/opt/pc/git-ext-bridge.mjs', '/tmp/x/s.sock'])).toBe(
+      'ext::node /opt/pc/git-ext-bridge.mjs /tmp/x/s.sock',
+    );
+  });
+
+  it("escapes a space inside a token as git's literal-space sequence '% '", () => {
+    // The exact shape that shipped broken: the packaged macOS app's own path.
+    const bridge = '/Applications/Papercusp GUI.app/Contents/Resources/sidecar/git-ext-bridge.mjs';
+    const url = formatExtTransportUrl(['node', bridge, '/tmp/s.sock']);
+    expect(url).toBe(
+      'ext::node /Applications/Papercusp% GUI.app/Contents/Resources/sidecar/git-ext-bridge.mjs /tmp/s.sock',
+    );
+    // Splitting on UNESCAPED spaces (what git does) must yield 3 tokens, not 4.
+    expect(splitExtCommandLikeGit(url.slice('ext::'.length))).toEqual([
+      'node',
+      bridge,
+      '/tmp/s.sock',
+    ]);
+  });
+
+  it('escapes percent BEFORE space, so a literal % can never forge an escape', () => {
+    // '%' first: ' ' -> '% ' would otherwise be re-escaped into '%% '.
+    expect(formatExtTransportUrl(['a b'])).toBe('ext::a% b');
+    expect(formatExtTransportUrl(['100%'])).toBe('ext::100%%');
+    // A path that literally contains git's own escape sequences round-trips.
+    const nasty = '/tmp/od%d 50%/%s %G bridge.mjs';
+    const url = formatExtTransportUrl(['node', nasty]);
+    expect(splitExtCommandLikeGit(url.slice('ext::'.length))).toEqual(['node', nasty]);
+  });
+
+  it('never emits a bare % that git would read as a %s/%S/%G/%V directive', () => {
+    const url = formatExtTransportUrl(['node', '/tmp/%s%G%V/bridge.mjs']);
+    // Every % in the output is part of '%%' or '% ' — no directive survives.
+    expect(url.replace(/%%/g, '').replace(/% /g, '')).not.toContain('%');
+  });
+});
+
+/**
+ * Reference decoder for git's ext:: command parsing (git-remote-ext(1)): split
+ * on UNESCAPED spaces, with '% ' a literal space and '%%' a literal percent.
+ * Deliberately written from the manpage rather than from the escaper, so the
+ * tests above are a round-trip against the SPEC and not against themselves.
+ */
+function splitExtCommandLikeGit(cmd: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (c === '%' && cmd[i + 1] === ' ') {
+      cur += ' ';
+      i++;
+    } else if (c === '%' && cmd[i + 1] === '%') {
+      cur += '%';
+      i++;
+    } else if (c === ' ') {
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  out.push(cur);
+  return out;
+}

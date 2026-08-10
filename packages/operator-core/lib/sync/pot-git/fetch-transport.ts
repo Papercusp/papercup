@@ -43,6 +43,41 @@ import { type ScopeRepoServeGrant, isIssuedScopeServeGrant } from './scope-serve
 /** The ext:: bridge helper git execs on the client (a real on-disk node script). */
 const EXT_BRIDGE_PATH = join(dirname(fileURLToPath(import.meta.url)), 'git-ext-bridge.mjs');
 
+/**
+ * Escape ONE literal argv token for git's `ext::` command line.
+ *
+ * git-remote-ext(1): "Command and arguments are separated by an unescaped
+ * space", with `'% '` meaning a literal space and `%%` a literal percent sign.
+ * Percent MUST be escaped first — doing spaces first would then re-escape the
+ * `%` this function just introduced, turning `% ` into `%% `.
+ */
+function escapeExtToken(token: string): string {
+  return token.replace(/%/g, '%%').replace(/ /g, '% ');
+}
+
+/**
+ * Build an `ext::` transport URL from LITERAL argv tokens, escaped so git
+ * reconstructs them exactly (see {@link escapeExtToken}).
+ *
+ * ## Why this exists (WI-37735 — shipped, then found on a real 0.0.14 install)
+ *
+ * The url used to be a plain template string, guarded only by a comment
+ * asserting that "EXT_BRIDGE_PATH/sockPath live under tmp/dist dirs with no
+ * spaces, so a plain command is safe". That is true of the dev tree and false
+ * of every real macOS install: the bridge sits beside THIS module, and a
+ * packaged app's own default location is `/Applications/Papercusp GUI.app/…`.
+ * git split the command at that space, handed `node` the prefix alone, and the
+ * ref-announce receive-fetch died `Cannot find module '/Applications/Papercusp'`
+ * on every tick — self-retrying forever, so pot-git replication simply never
+ * converged on macOS.
+ *
+ * The class is "any install path containing a space", not "/Applications", so
+ * the escape is applied to every token rather than to one known prefix.
+ */
+export function formatExtTransportUrl(argv: readonly string[]): string {
+  return `ext::${argv.map(escapeExtToken).join(' ')}`;
+}
+
 /** Protomux protocol id for the per-fetch git streams (the wiring opens one
  *  channel of this protocol per in-flight fetch, keyed by the hive topic). */
 export const POT_GIT_PROTOCOL = 'papercusp/pot-git';
@@ -717,9 +752,11 @@ export function fetchOverDuplex(
           server.listen(sockPath, () => r());
         });
         if (settled) return;
-        // ext:: command tokens are space-split by git — EXT_BRIDGE_PATH/sockPath
-        // live under tmp/dist dirs with no spaces, so a plain command is safe.
-        const url = `ext::node ${EXT_BRIDGE_PATH} ${sockPath}`;
+        // ext:: command tokens are space-split by git, and BOTH paths below can
+        // contain a space on a real install (WI-37735: the bridge sits beside
+        // this module, i.e. inside `/Applications/Papercusp GUI.app/…` on every
+        // macOS install). formatExtTransportUrl escapes them for git.
+        const url = formatExtTransportUrl(['node', EXT_BRIDGE_PATH, sockPath]);
         // The ext helper is a plain `node` grandchild whose STDOUT *is* the git
         // pkt-line channel — so it must boot vanilla. Strip any injected loader
         // (NODE_OPTIONS / tsx --import|--require) that would print startup noise

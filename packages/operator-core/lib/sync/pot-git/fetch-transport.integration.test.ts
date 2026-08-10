@@ -14,9 +14,10 @@ import { rm } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile } from 'node:fs/promises';
 import {
   defaultRunGit,
   ensurePotGitRepo,
@@ -28,6 +29,7 @@ import {
   fetchOverDuplex,
   fetchPeerNamespace,
   peerNamespaceRefspec,
+  formatExtTransportUrl,
 } from './fetch-transport';
 
 function devicePubkey(): string {
@@ -166,6 +168,61 @@ describe('pot-git fetch transport (real upload-pack ↔ fetch over a duplex)', (
     await vi.waitFor(() => expect(stalled.destroyed, 'the duplex was never released').toBe(true), {
       timeout: 5_000,
     });
+  });
+
+  /**
+   * WI-37735 recurrence guard — the ONE end-to-end proof, because the dev tree
+   * can never expose this bug on its own.
+   *
+   * The client half hands git an `ext::` command line, and git splits it on
+   * UNESCAPED spaces. The bridge script lives beside fetch-transport.ts, so its
+   * path is space-free in this repo and space-BEARING on every real macOS
+   * install (`/Applications/Papercusp GUI.app/…`). 0.0.14 shipped with the
+   * unescaped form and every ref-announce receive-fetch on macOS died
+   * `Cannot find module '/Applications/Papercusp'`.
+   *
+   * The negative control is the load-bearing half: without it this test passes
+   * with the escaping reverted, since nothing else here has a space in its path
+   * — which is exactly how the defect reached users.
+   */
+  it('WI-37735: fetches through a bridge whose path contains a space (and the unescaped form still breaks)', async () => {
+    const spacedDir = join(root, 'Papercusp GUI.app', 'Contents', 'Resources', 'sidecar');
+    await mkdir(spacedDir, { recursive: true });
+    const spacedBridge = join(spacedDir, 'git-ext-bridge.mjs');
+    await copyFile(join(dirname(fileURLToPath(import.meta.url)), 'git-ext-bridge.mjs'), spacedBridge);
+
+    const mirror = await ensurePotGitRepo('hive-x', 'repo-1-spaced-mirror');
+    const head = await readNamespaceRef(serverRepo, devA, 'refs/heads/work');
+    expect(head, 'server namespace head must exist for this fetch to mean anything').toBeTruthy();
+    expect(await readNamespaceRef(mirror, devA, 'refs/heads/work')).toBeNull();
+
+    const gitFetch = (url: string) =>
+      defaultRunGit(
+        [
+          '-c',
+          'protocol.ext.allow=always',
+          '-c',
+          'protocol.version=2',
+          'fetch',
+          '--no-write-fetch-head',
+          url,
+          peerNamespaceRefspec(devA),
+        ],
+        mirror,
+        { timeoutMs: 30_000 },
+      );
+
+    // NEGATIVE CONTROL: the exact string 0.0.14 shipped.
+    const unescaped = await gitFetch(`ext::node ${spacedBridge} ${sockPath}`);
+    expect(unescaped.code, 'the unescaped form must still fail, or this test proves nothing').not.toBe(0);
+    expect(unescaped.stderr).toMatch(/Cannot find module/);
+    expect(await readNamespaceRef(mirror, devA, 'refs/heads/work')).toBeNull();
+
+    // THE FIX: same paths, escaped for git.
+    const escaped = await gitFetch(formatExtTransportUrl(['node', spacedBridge, sockPath]));
+    expect(escaped.code, escaped.stderr).toBe(0);
+    expect(escaped.stderr).not.toMatch(/Cannot find module/);
+    expect(await readNamespaceRef(mirror, devA, 'refs/heads/work')).toBe(head);
   });
 
   it('serveUploadPack refuses a repo outside the pot-git root (defense in depth)', async () => {
