@@ -501,7 +501,8 @@ export async function produceLogSnapshot(
   ownLog: OwnLog,
   opts: { now: number; schemaVersion: number; maxChunkBytes?: number },
 ): Promise<ProduceSnapshotResult> {
-  const coversUpTo = ownLog.length;
+  // Re-anchored after the read by the ANCHOR CONVERGENCE below (WI-37526), so `let`.
+  let coversUpTo = ownLog.length;
   if (coversUpTo === 0) return { appended: false, coversUpTo: 0, rowCount: 0, chunkCount: 0 };
 
   // Read the history with a bounded PIPELINE, not one awaited `get` at a time.
@@ -529,8 +530,14 @@ export async function produceLogSnapshot(
   // `20.1G memory peak` and killed it with SIGABRT ~110s in. Peak retention is now
   // (live keys + one window of SNAPSHOT_READ_CONCURRENCY blocks). See `SnapshotRowFolder`.
   const folder = new SnapshotRowFolder();
-  for (let start = 0; start < coversUpTo; start += SNAPSHOT_READ_CONCURRENCY) {
-    const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, coversUpTo);
+
+  /**
+   * Fold `[from, to)` into the folder. Factored out of the main loop so the ANCHOR
+   * CONVERGENCE below can reuse it for the (tiny) delta that arrives mid-read.
+   */
+  const foldRange = async (from: number, to: number): Promise<void> => {
+  for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
+    const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
     const window = await Promise.all(
       Array.from({ length: end - start }, (_, k) => ownLog.get(start + k)),
     );
@@ -562,6 +569,42 @@ export async function produceLogSnapshot(
     // against the read itself, and it does not change what is folded or in what order.
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
+  };
+
+  await foldRange(0, coversUpTo);
+  let foldedUpTo = coversUpTo;
+
+  // ── ANCHOR CONVERGENCE (WI-37526) ────────────────────────────────────────────
+  //
+  // The set's anchor MUST equal the index the chunks actually land at, because the
+  // reader locates a set STRICTLY by span: `verifySnapshotSet` reads chunk j at
+  // `coversUpTo + j` (read-merge.ts:437) and, on a miss, seeks BACKWARD past
+  // `coversUpTo` (read-merge.ts:558) — so a set that lands even ONE block late is
+  // not merely hard to find, it is unfindable forever.
+  //
+  // Capturing `coversUpTo = ownLog.length` before an O(history) read and appending
+  // after it breaks that invariant whenever ANY op is appended meanwhile. MEASURED
+  // 2026-08-10 on the live 1.23M-block log: the read took 43.7s, 55 ops arrived in
+  // that window, and all 45 chunks landed at [1232912, 1232957) while carrying
+  // `coversUpTo=1232857`. Every chunk was present, readable and correctly tagged —
+  // and `findLatestCompleteSnapshot` still reported `none-in-window`, so
+  // `computeSparseFrom` returned 0 and the seed guard refused a full-history seed.
+  // That is the whole of P-014's "sparse cut degrades to full history", and it is
+  // why the failure looked intermittent: a FAST snapshot (28s, run h) races fewer
+  // appends and sometimes lands at offset 0 by luck, which reads as success.
+  //
+  // So: fold the delta that arrived during the read and re-anchor to the new tail.
+  // Cost is the delta, not the history (55 ops against 1.23M). Folding a prior
+  // snapshot op is explicitly idempotent (`SnapshotRowFolder.add`), so re-folding a
+  // previous attempt's orphaned chunks is safe.
+  const MAX_CONVERGE_PASSES = 8;
+  for (let pass = 0; pass < MAX_CONVERGE_PASSES && ownLog.length > foldedUpTo; pass++) {
+    const target = ownLog.length;
+    await foldRange(foldedUpTo, target);
+    foldedUpTo = target;
+  }
+  coversUpTo = foldedUpTo;
+
   // EI-1688: `now` (= the snapshot ts) GCs tombstones past the horizon at production —
   // the same argument `buildSnapshotOps` passes for the non-streaming path.
   const rows = folder.finish({ now: opts.now });
@@ -577,6 +620,31 @@ export async function produceLogSnapshot(
   // [coversUpTo, coversUpTo + N) — the reader recognizes the set by that span and
   // only seeds a cursor once every chunk is present (crash-consistency guard).
   await ownLog.appendBatch(snapshotOps);
+
+  // ── VERIFY THE ANCHOR HELD ───────────────────────────────────────────────────
+  //
+  // Convergence shrinks the race window from the whole read (~44s) to the gap
+  // between the last length read and the append, but does not close it: a writer
+  // can still interleave. Reporting `appended: true` for a set the reader can never
+  // find is the failure mode that cost ~6 cut attempts across several sessions —
+  // the producer claimed success and the consequence surfaced 40+ minutes later as
+  // a misleading "no complete snapshot within the reader scan window". A snapshot
+  // that cannot be located is not a snapshot, so this FAILS LOUDLY instead.
+  const anchorOp = await ownLog.get(coversUpTo);
+  const anchorCovers = isSnapshotOp(anchorOp)
+    ? (anchorOp.value as SnapshotPayload | undefined)?.coversUpTo
+    : undefined;
+  if (anchorCovers !== coversUpTo) {
+    throw new Error(
+      `[snapshot] anchor race: appended a ${snapshotOps.length}-chunk set for coversUpTo=${coversUpTo}, ` +
+        `but index ${coversUpTo} does not hold chunk 0 of that set (found ` +
+        `${isSnapshotOp(anchorOp) ? `a snapshot for coversUpTo=${String(anchorCovers)}` : `a non-snapshot op`}). ` +
+        `A concurrent append displaced the set, and the reader locates a set only at ` +
+        `[coversUpTo, coversUpTo+chunkCount) — so it would be unfindable. Refusing to report ` +
+        `success; retry the snapshot when the own log is quieter (WI-37526).`,
+    );
+  }
+
   const rowCount = snapshotOps.reduce(
     (sum, op) => sum + (op.value as SnapshotPayload).rows.length,
     0,

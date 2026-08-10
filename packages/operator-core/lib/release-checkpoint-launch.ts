@@ -1036,6 +1036,187 @@ export async function checkpointCandidateContainment(args: {
 }
 
 /**
+ * EI-20025784115349280 — the PRE-LAUNCH form of the containment check above.
+ *
+ * `checkpointCandidateContainment` answers "does the candidate carry my files?" AFTER the
+ * ~55min suite is already committed: `launchDetachedCheckpoint` builds `willJudge` (candidate,
+ * excluded commits, per-commit eligibility) and then spawns ~29 lines later, so every value the
+ * warning is made of provably exists BEFORE the process starts. Reporting it afterwards makes
+ * the caller the one who has to act on it, at the one moment acting is most expensive — the
+ * run is already burning the gate's only serial slot.
+ *
+ * So this asks the same question BEFORE the spawn and, in one narrow case, refuses.
+ *
+ * THE REFUSAL IS DELIBERATELY NARROW, because a false refusal wedges the fleet's only manual
+ * verdict lever during exactly the incidents when it is needed — a far worse failure than the
+ * wasted suite it prevents. Every one of these must hold:
+ *
+ *  1. The caller DECLARED `paths`. No declaration ⇒ today's behaviour, untouched. The inferred
+ *     working-tree set is the whole fleet's dirty files and attributes to nobody, so it can
+ *     warn but must never gate.
+ *  2. The path is missing for reason `newer-commit` ONLY — i.e. it IS committed and HEAD's blob
+ *     matches the tree, so the sole thing between this caller and a candidate carrying it is
+ *     quiet-cut AGE. `uncommitted` is excluded on purpose: waiting does not fix it (git-sync
+ *     must run first) and, on a tree ~100 agents edit, the dirty content is as likely a peer's.
+ *     `absent`/`unknown` are excluded because they mean undecidable, and undecidable must launch.
+ *  3. A real excluded commit in `candidate..tip` is NAMED as touching that path. This is the
+ *     literal-exclusion requirement: a verdict backed by a commit you can `git show`, never the
+ *     content-comparison heuristic whose false positives this repo has paid for repeatedly.
+ *  4. The wait is BOUNDED and known (`maxWaitSec`). This is what makes the rail safe rather
+ *     than merely well-intentioned: the refusal can only ever say "wait N seconds", never
+ *     "no". An excluded commit ages into eligibility by construction, so the caller is always
+ *     seconds-to-minutes from the candidate they actually want — against a ~55min suite judging
+ *     content they did not declare. A wait we cannot compute, or one past the cap, LAUNCHES.
+ *
+ * Note (3) still cannot prove the excluded commit is the CALLER'S — git-sync commits the whole
+ * tree under one identity, so no commit is attributable (see `markerAtCommit`). It does not have
+ * to: the claim is only that the run would judge a version of a file the caller declared which
+ * differs from the committed one, which is true whoever wrote it, and is exactly the condition
+ * under which a red is not evidence about the declared change.
+ *
+ * Ordering: an in-flight run short-circuits this. No spawn happens then anyway, so refusing for
+ * exclusion would only mask `already_running`, which is the more actionable answer.
+ */
+export const PRELAUNCH_EXCLUSION_MAX_WAIT_SEC = 300;
+
+/** Why the gate is NOT refusing. Enumerated so a caller (and a test) can branch on the
+ *  fail-open PATH rather than infer it from an absence — every value here means "launch". */
+export type PreLaunchProceedReason =
+  | 'forced'
+  | 'no-declared-paths'
+  | 'run-already-active'
+  | 'candidate-unresolved'
+  | 'no-quiet-cut'
+  | 'declared-paths-in-candidate'
+  | 'ages-in-at-launch'
+  | 'exclusion-undecidable'
+  | 'wait-exceeds-cap';
+
+export interface PreLaunchExclusion {
+  /** true ⇒ do NOT spawn. False for every undecidable case, by construction. */
+  refuse: boolean;
+  /** Null exactly when `refuse` is true. */
+  proceedReason: PreLaunchProceedReason | null;
+  candidate: string | null;
+  tip: string | null;
+  quietCutSec: number | null;
+  /** Declared paths the predicted candidate provably does not carry, each with the excluded
+   *  commits that actually touch it and when the last of them ages into eligibility. */
+  blockedPaths: { path: string; commits: string[]; eligibleInSec: number }[];
+  /** Seconds until EVERY commit blocking a declared path is quiet-cut eligible. */
+  waitSec: number | null;
+}
+
+export async function assessPreLaunchExclusion(args: {
+  paths?: string[];
+  force?: boolean;
+  root?: string;
+  execFn?: ExecSyncLike;
+  maxWaitSec?: number;
+  /** Injectable for tests; defaults to the real systemd probe. */
+  activeRun?: (root: string, execFn: ExecSyncLike) => boolean;
+}): Promise<PreLaunchExclusion> {
+  const open = (proceedReason: PreLaunchProceedReason, rest: Partial<PreLaunchExclusion> = {}): PreLaunchExclusion => ({
+    refuse: false,
+    proceedReason,
+    candidate: null,
+    tip: null,
+    quietCutSec: null,
+    blockedPaths: [],
+    waitSec: null,
+    ...rest,
+  });
+
+  if (args.force) return open('forced');
+  const declared = (args.paths ?? []).map((p) => String(p ?? '').trim()).filter(Boolean);
+  if (!declared.length) return open('no-declared-paths');
+
+  const root = args.root ?? integrationRoot();
+  const execFn = args.execFn ?? defaultExecSync;
+
+  const isActive = args.activeRun ?? ((r: string, e: ExecSyncLike) => checkActiveCheckpointRun(r, e).active);
+  if (isActive(root, execFn)) return open('run-already-active');
+
+  const current = currentCheckpointCandidate(root, execFn);
+  const candidate = current.current_candidate;
+  const tip = current.current_head;
+  const quietCutSec = current.quiet_cut_sec;
+  if (!candidate || !tip) return open('candidate-unresolved', { candidate, tip, quietCutSec });
+  // Nothing was cut, so nothing can be excluded.
+  if (candidate === tip) return open('no-quiet-cut', { candidate, tip, quietCutSec });
+
+  const containment = await checkpointCandidateContainment({
+    root,
+    candidateSha: candidate,
+    tipSha: tip,
+    paths: declared,
+    execFn,
+  });
+
+  const verdictFor = new Map(containment.paths.map((p) => [p.path, p]));
+  const commitsFor = new Map(containment.excludedCommitsTouchingYourFiles.map((e) => [e.path, e.commits]));
+  // `excludedCommitsTouchingPath` returns `--oneline` rows ("<abbrev> <subject>") and
+  // `excludedCommitsSync` reports `%h` for the same window in the same repo, so the row's
+  // leading token is that sha. A row we cannot join to an eligibility is a wait we cannot
+  // compute — which fails OPEN below, never into a refusal.
+  const excluded = excludedCommitsSync(root, candidate, tip, quietCutSec, execFn);
+  const eligibilityOf = (row: string): number | null =>
+    excluded.find((e) => e.sha && row.startsWith(e.sha))?.eligibleInSec ?? null;
+
+  const blockedPaths: PreLaunchExclusion['blockedPaths'] = [];
+  for (const path of declared) {
+    const verdict = verdictFor.get(path);
+    if (!verdict || verdict.inCandidate !== false || verdict.reason !== 'newer-commit') continue;
+    const commits = commitsFor.get(path) ?? [];
+    if (!commits.length) continue;
+    const secs = commits.map(eligibilityOf);
+    if (secs.some((s) => s === null)) continue;
+    blockedPaths.push({ path, commits, eligibleInSec: Math.max(...(secs as number[])) });
+  }
+
+  if (!blockedPaths.length) {
+    const allIn = containment.included.length > 0 && containment.missing.length === 0;
+    return open(allIn ? 'declared-paths-in-candidate' : 'exclusion-undecidable', { candidate, tip, quietCutSec });
+  }
+
+  const waitSec = Math.max(...blockedPaths.map((b) => b.eligibleInSec));
+  const shape = { candidate, tip, quietCutSec, blockedPaths, waitSec };
+  // Already eligible: the detached run re-resolves its OWN candidate ~1-2s from now and will
+  // pick these up. Refusing here would block a launch that was about to be correct.
+  if (waitSec <= 0) return open('ages-in-at-launch', shape);
+  if (waitSec > (args.maxWaitSec ?? PRELAUNCH_EXCLUSION_MAX_WAIT_SEC)) return open('wait-exceeds-cap', shape);
+  return { refuse: true, proceedReason: null, ...shape };
+}
+
+/**
+ * The refusal text. Pure + exported for the same reason `renderContainmentWarning` is: the
+ * PHRASING is the deliverable, and it must not require a repo or a systemd unit to test.
+ *
+ * It has one job the warning it replaces could not do — leave the reader with a MOVE rather
+ * than a fact. So it never ends on the exclusion; it ends on the two exits, and it says what
+ * each costs, because a refusal whose alternative is unclear is read as an obstacle and routed
+ * around (that is precisely how a live auto-refire was killed on 2026-07-27).
+ */
+export function renderPreLaunchRefusal(v: PreLaunchExclusion): string {
+  const paths = v.blockedPaths.map((b) => b.path);
+  const list = `${paths.slice(0, 6).join(', ')}${paths.length > 6 ? ` (+${paths.length - 6} more)` : ''}`;
+  const commits = v.blockedPaths.flatMap((b) => b.commits).slice(0, 4);
+  return (
+    `NOT launched — this run would NOT have judged ${paths.length} file(s) you declared: ${list}. ` +
+    `The quiet cut puts the candidate at ${v.candidate?.slice(0, 12) ?? 'unknown'} while those files are carried by ` +
+    `commit(s) newer than it: ${commits.join(' | ')}${v.blockedPaths.flatMap((b) => b.commits).length > 4 ? ' | …' : ''}. ` +
+    'This is a LITERAL exclusion — those commits are in `candidate..tip` and touch those paths — not the ' +
+    'content-comparison heuristic, and the files are COMMITTED (nothing for git-sync to do). A suite fired now ' +
+    `would spend ~55 min judging an older version of your declared files, and its red would not be evidence ` +
+    'about your change. Nothing was spawned, so nothing was wasted and the gate slot is still free.\n' +
+    `TWO EXITS: waitForEligibility:true — sleep ~${v.waitSec}s (until those commits age into the quiet window) ` +
+    'and then launch, which is what a caller in this position almost always wants; or force:true — launch now ' +
+    'and judge the older candidate anyway (correct when you need ANY fresh verdict more than a verdict on these ' +
+    'files, e.g. greening a red gate that is blocking the fleet).'
+  );
+}
+
+/**
  * The warning text. Kept pure + exported so the PHRASING — which is the entire
  * deliverable of P-004 — is unit-testable without a repo, a systemd unit, or a launch.
  *

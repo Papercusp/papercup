@@ -1044,6 +1044,36 @@ filename timestamp is the WRITE time, not the run's start. Observed 2026-08-02: 
 already re-fired onto a newer tip. Reading it as the in-flight candidate is a guaranteed
 one-pass-stale answer.
 
+⚠⚠ **`green=` in that header is the SUITE's verdict and says NOTHING about whether the candidate
+PROMOTED — the `GATE_PROMOTION` trailer at EOF is what answers that.** The header is written by the
+suite dep at suite-end, while EVERY promotion decision (the four held gates, the fast-forward, a
+longest-green-prefix salvage, an in-process refire that abandons the candidate) is taken
+*afterwards*, by `runGreenCheckpoint` — so the header physically cannot carry the outcome, and a
+`head -1` showing `green=true` was routinely read as "this became the pin".
+
+```bash
+grep -o 'GATE_PROMOTION.*' <log> | tail -1
+# GATE_PROMOTION candidate=33cd2bfebec8 green=true promoted=false reason=perf-held
+```
+
+Two readings that are easy to get wrong. **ABSENCE IS MEANINGFUL:** no `GATE_PROMOTION` line means
+the run never reached a promotion decision at all — killed, crashed, or still in flight — a third
+state the header alone could not express (and the reason this is a trailer rather than a rewritten
+header, which would have converted that state into a confident wrong answer). **And `promoted` is
+the ACTUAL fast-forward, not a restatement of `reason`:** `reason=advanced promoted=false` is a real
+state — `advance()` is FF-only and declined — that used to be entirely invisible.
+
+Why it exists (EI-20014356905761236): 2026-08-09 ~21:53Z, one question about candidate
+`33cd2bfebec8` drew three different answers from three authoritative surfaces — this log said
+`green=true`, `release:deploy` said `skipped-locked`, and gate_health's `observedCandidate` still
+named an older red. Six tool calls to reconcile, and `main` had not moved. The missing datum was
+never the VERDICT; it was whether the verdict COUNTED.
+
+⚠ A log written BEFORE this lands has neither the trailer nor the header's
+`promoted=see-GATE_PROMOTION` pointer — its bare `green=<bool>` header is the older shape above, so
+absence of a trailer on an old log means "pre-dates the fix", not "never reached a decision". Check
+the header for the pointer before reading absence as a signal.
+
 ⚠ **`AFFECTED_TESTS_RESULT failed=N` counts TASKS (workspaces), not FILES — never derive your work
 list from it.** It names how many workspace test-tasks went red (`@papercusp/operator-core :: test`),
 so ONE task routinely hides a dozen files. Measured three times in one night: `failed=2` vs 3 distinct

@@ -26,10 +26,12 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import {
+  assessPreLaunchExclusion,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   checkpointCandidateContainment,
   classifyReplaceRequest,
   launchDetachedCheckpoint,
+  renderPreLaunchRefusal,
   REPLACE_STALE_MIN_AGE_SEC,
 } from '../../release-checkpoint-launch';
 import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
@@ -128,7 +130,13 @@ export default defineTool({
       .array(z.string())
       .optional()
       .describe(
-        'Repo-relative files your change touches. The reply then reports callerEditsInCandidate { included, missing } — whether the commit this run judges actually CARRIES them, so a red you get back is unambiguously about your code. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed.',
+        'Repo-relative files your change touches. The reply then reports callerEditsInCandidate { included, missing } — whether the commit this run judges actually CARRIES them, so a red you get back is unambiguously about your code. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed — and it is also what arms the pre-launch refusal (reason:would_exclude_declared_paths), which declines to spend a ~55min suite on a candidate that provably lacks these files.',
+      ),
+    waitForEligibility: z
+      .boolean()
+      .optional()
+      .describe(
+        'EI-20025784115349280: when the pre-launch check would refuse with would_exclude_declared_paths, SLEEP until the commits carrying your declared paths age into the quiet-cut window (wait_sec in that refusal, always ≤300s), then launch — instead of returning. Usually what you want after "I just fixed the reds": it trades a bounded wait for a verdict that actually judges your files. The call blocks for that long; the gate slot stays FREE meanwhile, which is the whole gain over firing first. Ignored unless the refusal would fire.',
       ),
   }),
   async handler(args, ctx) {
@@ -244,6 +252,45 @@ export default defineTool({
           ],
         };
       }
+    }
+    // EI-20025784115349280: the containment verdict below (L~479) is assembled ENTIRELY from
+    // values `launchDetachedCheckpoint` computes ~29 lines BEFORE it spawns — so when the answer
+    // is "this run will not judge the files you declared", we already knew it while the cheapest
+    // possible action (not starting) was still available, and reported it only once the ~55min
+    // suite held the gate's serial slot. Ask it here instead, and refuse in the one narrow case
+    // where the wait is short, bounded, and provably resolves the exclusion.
+    //
+    // Fails OPEN in every ambiguous direction (see assessPreLaunchExclusion's contract): no
+    // declared paths, a run already in flight, an unresolved candidate, an undecidable or
+    // uncommitted miss, or a wait we cannot compute all LAUNCH. `force` skips it entirely.
+    const preflight = await assessPreLaunchExclusion({ paths: args.paths, force: args.force });
+    if (preflight.refuse) {
+      if (!args.waitForEligibility) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                reason: 'would_exclude_declared_paths',
+                candidate: preflight.candidate,
+                tip: preflight.tip,
+                quiet_cut_sec: preflight.quietCutSec,
+                wait_sec: preflight.waitSec,
+                blocked_paths: preflight.blockedPaths,
+                note: renderPreLaunchRefusal(preflight),
+              }),
+            },
+          ],
+        };
+      }
+      // The caller chose to wait. Sleeping HERE — before the spawn — is the whole point: the
+      // gate's serial slot stays free for the duration, which is exactly what firing first and
+      // discovering the exclusion afterwards cannot give back. +2s crosses the quiet-window
+      // boundary rather than landing exactly on it (the cut is an age test at second
+      // granularity, so an exact-boundary wake can still round the wrong way).
+      await new Promise((r) => setTimeout(r, (preflight.waitSec! + 2) * 1000));
     }
     const result = await launchDetachedCheckpoint({ force: args.force, replaceStale: args.replaceStale });
     // WI-6962: the host could not be asked whether a run is in flight, so we refused rather

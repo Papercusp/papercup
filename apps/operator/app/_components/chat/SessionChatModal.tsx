@@ -45,7 +45,18 @@ import { Tooltip } from '../../harness/Tooltip';
 import { OperatorChat } from '../OperatorChat';
 import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
 import { mapSessionTimeline } from './session-transcript-mapping';
-import { mergeSentEchoes, recordSentEcho, settleSentEcho, useSentEchoes } from './sent-message-echo';
+import { mergeSentEchoes, useSentEchoes } from './sent-message-echo';
+/* D-011: the session resolve, the SSE url builder and the send state machine
+   were extracted here so the goal popup can host this same conversation
+   without forking any of them. Re-exported below for the existing importers. */
+import {
+  deliveryFromSendResponse,
+  resolveOwnerClaudeSession,
+  sendToSessionOwner,
+  useOwnerSessionChat,
+  type SendDelivery,
+  type SessionListRow,
+} from './use-owner-session-chat';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
@@ -124,12 +135,17 @@ interface RosterPayload {
   starting?: HudRosterEntry[];
 }
 
-interface SessionListRow {
-  source_kind: string;
-  session_id: string;
-  active?: boolean;
-  last_ts: string | null;
-}
+/* Moved to `use-owner-session-chat` (D-011) and re-exported here: nothing
+   outside this file imported them, but the names are referenced from comments
+   in HudView/PostureActions and from tests, and a chat surface is the natural
+   place to look for them. */
+export {
+  deliveryFromSendResponse,
+  resolveOwnerClaudeSession,
+  sendToSessionOwner,
+  type SendDelivery,
+  type SessionListRow,
+};
 
 const BANNER_STYLE: React.CSSProperties = {
   padding: '6px 10px',
@@ -408,97 +424,6 @@ function isFullscreenElement(el: Element | null): boolean {
   return document.fullscreenElement === el;
 }
 
-/** Resolve the most relevant CLAUDE session for this owner via the existing
- *  sessions:list admin proxy. Exported for tests. */
-export async function resolveOwnerClaudeSession(ownerId: string): Promise<SessionListRow | null> {
-  const r = await fetch('/api/admin/coordination/sessions/list', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ owner: ownerId, limit: 10 }),
-  });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`sessions:list → ${r.status}: ${text.slice(0, 200)}`);
-  let body: { sessions?: SessionListRow[] };
-  try {
-    body = JSON.parse(text) as { sessions?: SessionListRow[] };
-  } catch {
-    throw new Error('sessions:list returned a non-JSON response');
-  }
-  const sessions = body.sessions ?? [];
-  // Prefer the live/active fallback row (EI-11403), else the newest indexed
-  // claude session — sessions:list is already newest-first.
-  return (
-    sessions.find((s) => s.source_kind === 'claude' && s.active) ??
-    sessions.find((s) => s.source_kind === 'claude') ??
-    null
-  );
-}
-
-/**
- * What actually happened to a sent message — P-002 (the wake-mode correctness
- * bug).
- *
- * The old banner said "Sent — the agent is woken if it's live" unconditionally,
- * which is not a claim this code was ever in a position to make. Two routine
- * states make it false:
- *   - the agent is in `coord:wake-mode` MANUAL, where wakes are STAGED for the
- *     owner to release rather than delivered. The message is real and queued,
- *     but the agent is not working on it and will not until released;
- *   - no live session picked the wake up at all (`recipient_absent`).
- * Both reported as unqualified success, which is the worst kind of wrong: the
- * human walks away believing they have asked for something.
- *
- * Rather than pre-reading wake-mode and guessing, we report what the send
- * RESPONSE says — the authority on what the platform did with it. That also
- * catches the absent case for free, which a wake-mode pre-check would not.
- */
-export type SendDelivery =
-  | { kind: 'woken'; count: number }
-  | { kind: 'staged' }
-  | { kind: 'absent' }
-  | { kind: 'queued' };
-
-/** Read the delivery outcome out of a coord:send response. PURE → unit-tested. */
-export function deliveryFromSendResponse(body: unknown): SendDelivery {
-  const first = (body as { results?: Array<Record<string, unknown>> } | null)?.results?.[0];
-  if (!first) return { kind: 'queued' };
-  const wake = first.wake as { woken?: number; staged?: number | boolean } | undefined;
-  if (wake) {
-    if (typeof wake.woken === 'number' && wake.woken > 0) return { kind: 'woken', count: wake.woken };
-    // A staged wake is the manual-mode case: accepted, held for release.
-    if (wake.staged) return { kind: 'staged' };
-  }
-  if (first.recipient_absent === true) return { kind: 'absent' };
-  if (first.staged === true) return { kind: 'staged' };
-  // Delivered to the inbox with no wake attempted/reported — it will be read at
-  // the agent's next turn. Honest middle ground, not a claim of attention.
-  return { kind: 'queued' };
-}
-
-/** Send a live message to the session's owner. Exported for tests. */
-export async function sendToSessionOwner(ownerId: string, body: string): Promise<SendDelivery> {
-  const r = await fetch('/api/admin/coord/send', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      to: [ownerId],
-      summary: body.length > 80 ? `${body.slice(0, 77)}…` : body,
-      body,
-      wake: 'required',
-    }),
-  });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`coord:send → ${r.status}: ${text.slice(0, 200)}`);
-  // A non-JSON 200 is not a failure to report to the user — the message WAS
-  // accepted; we simply cannot characterise the delivery. Degrade to the
-  // weakest honest claim rather than inventing a stronger one.
-  try {
-    return deliveryFromSendResponse(JSON.parse(text));
-  } catch {
-    return { kind: 'queued' };
-  }
-}
-
 /**
  * Badge tone → the P-003 vocabulary's State-pill tone class.
  *
@@ -758,8 +683,12 @@ function SessionStateHeader({
 
 /** The live half — only mounted once a streamUrl exists, so the shared
  *  useAgentThinkingStream hook never opens its harness-run-log default URL
- *  (it only skips that when `streamUrl` is already truthy at call time). */
-function LiveSessionChat({
+ *  (it only skips that when `streamUrl` is already truthy at call time).
+ *
+ *  EXPORTED (D-011) so the goal popup renders THIS component rather than a
+ *  second chat renderer of its own — the fork D-005 forbids. Pair it with
+ *  `useOwnerSessionChat`, which supplies every prop below. */
+export function LiveSessionChat({
   streamUrl,
   sessionOwnerId,
   agentName,
@@ -1092,13 +1021,20 @@ export default function SessionChatModal({
    */
   onSelectPeer?: (ownerId: string) => void;
 }) {
-  const [resolved, setResolved] = useState<SessionListRow | null>(null);
-  const [resolveError, setResolveError] = useState<string | null>(null);
-  const [resolving, setResolving] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-  // P-002: the DELIVERY OUTCOME, not a boolean. `null` = nothing sent yet.
-  const [sentOk, setSentOk] = useState<SendDelivery | null>(null);
+  /* The session resolve, the SSE url and the send state machine all live in
+     `use-owner-session-chat` (D-011) so the goal popup can host the same
+     conversation without forking any of it. `sentOk` is still the DELIVERY
+     OUTCOME rather than a boolean (P-002); `null` = nothing sent yet. */
+  const {
+    resolved,
+    resolveError,
+    resolving,
+    streamUrl,
+    send: handleSend,
+    sending,
+    sendError,
+    sentOk,
+  } = useOwnerSessionChat(sessionOwnerId, { focusSessionId, focusTerm, focusAnchorTs });
 
   const open = sessionOwnerId !== null;
   // P-008: this owner's pending coord-escalation(s) with named options — the
@@ -1131,94 +1067,6 @@ export default function SessionChatModal({
         .slice(0, PENDING_CARDS_MAX),
     [attentionItems, sessionOwnerId],
   );
-
-  useEffect(() => {
-    setResolved(null);
-    setResolveError(null);
-    setSendError(null);
-    setSentOk(null);
-    if (!sessionOwnerId) return;
-    let cancelled = false;
-    setResolving(true);
-    resolveOwnerClaudeSession(sessionOwnerId)
-      .then((s) => {
-        if (!cancelled) setResolved(s);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setResolveError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setResolving(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionOwnerId]);
-
-  const streamUrl = useMemo(() => {
-    if (!sessionOwnerId || !resolved) return null;
-    /* A search deep-link streams the session the MATCH is in, not the owner's
-       latest — see `focusSessionId`. When they differ the target is by
-       definition an earlier link in the respawn chain and therefore ended, so
-       it also needs `ended=1` below to reach the rematerialize-from-archive
-       fallback (EI-16982); `resolved.active` describes the LATEST session and
-       would say otherwise. */
-    const streamSessionId = focusSessionId || resolved.session_id;
-    const isEarlierSession = streamSessionId !== resolved.session_id;
-    const p = new URLSearchParams({ sessionId: streamSessionId, owner: sessionOwnerId });
-    // EI-16982: an ended session's on-disk transcript is routinely GC'd within
-    // ~2h of archiving (session-dir-gc.ts); the backend already has a
-    // rematerialize-from-archive fallback (WI-3990) gated on `ended=1`, but it
-    // silently never fires unless the caller passes it. `resolved.active` is
-    // the server-stamped liveness we already have in hand here — reuse it
-    // rather than inventing a new signal.
-    if (resolved.active === false || isEarlierSession) p.set('ended', '1');
-    /* Search deep-link (owner ask 2026-08-02, part b). THIS is what makes
-       opening on the match possible at all — without it the route backfills
-       the TAIL, and a search hit is almost never in the tail: search indexes
-       the session's whole history (`harness_shared.session_turns`) while the
-       tail is a bounded recent window. Measured 2026-08-02 before this was
-       wired: a modal opened from a real hit held 8 messages and the matched
-       text appeared in none of them, so no amount of client-side scrolling
-       could have found it.
-
-       `find` + `anchorTs` are the route's EXISTING contract
-       (session-anchor-window.ts, agents-pill-inactive-search-2026-07-09
-       P-005): it streams the whole transcript through a bounded collector and
-       returns a window CENTERED on the matched entry, then emits an `anchor`
-       event naming it. AgentInspectorModal already consumes exactly this —
-       this modal simply never passed the params, so a capability that shipped
-       in July sat unused.
-
-       Both are omitted when there is no deep-link, which leaves every
-       non-search open on the unchanged tail backfill. */
-    if (focusTerm) p.set('find', focusTerm);
-    if (focusAnchorTs) p.set('anchorTs', focusAnchorTs);
-    return `/api/adv/session/thinking?${p.toString()}`;
-  }, [sessionOwnerId, resolved, focusTerm, focusAnchorTs, focusSessionId]);
-
-  const handleSend = (text: string) => {
-    if (!sessionOwnerId) return;
-    setSendError(null);
-    setSentOk(null);
-    setSending(true);
-    /* P-002: record the send BEFORE awaiting it, so the message appears in the
-       transcript the instant you hit enter rather than a round-trip later. The
-       optimism is settled either way below — a failed send un-renders (the error
-       banner is what reports it), because a message that never left must not sit
-       in the conversation looking like part of it. */
-    const echoId = recordSentEcho(sessionOwnerId, text);
-    sendToSessionOwner(sessionOwnerId, text)
-      .then((delivery) => {
-        setSentOk(delivery);
-        settleSentEcho(sessionOwnerId, echoId, 'sent');
-      })
-      .catch((e: unknown) => {
-        setSendError(e instanceof Error ? e.message : String(e));
-        settleSentEcho(sessionOwnerId, echoId, 'failed');
-      })
-      .finally(() => setSending(false));
-  };
 
   // gui-chat-session-controls-2026-07-25 P-002: the bottom-of-chat action
   // bar's context bag. Concrete actions (posture P-004, grade P-005, session

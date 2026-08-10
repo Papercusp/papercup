@@ -25,6 +25,11 @@
 // the coverage structural instead of another thing to remember.
 import '../../search/configure-search-defaults';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
+// WI-37603: every `embedding` leg below runs through this. Without it an HNSW
+// scan stops at `hnsw.ef_search` (40) and silently returns fewer rows than the
+// engine's `candidateLimit = limit * 3` asked for — measured 40 rows for a
+// 600-row request on the live 302k-row corpus.
+import { withIterativeScan } from './hnsw-iterative-scan';
 
 /** Standard ts_headline options for all four surfaces. */
 const HEADLINE_OPTS =
@@ -418,7 +423,7 @@ const decisions: SearchSource = {
     });
   },
   async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
-    const rows = (await sql`
+    const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT harness_slug, line_hash, verb, args, iso,
              1 - (body_embedding <=> ${qVec}::vector) AS sim,
              ts_headline('english',
@@ -431,7 +436,7 @@ const decisions: SearchSource = {
          AND body_embedding IS NOT NULL
     ORDER BY body_embedding <=> ${qVec}::vector
        LIMIT ${limit}
-    `) as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; sim: number; highlight: string }>;
+    `)) as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; sim: number; highlight: string }>;
     return rows.map((r) => {
       const body = `${r.verb} ${r.args}`.trim();
       return {
@@ -574,7 +579,7 @@ const workItem: SearchSource = {
    * predicate, not just this one — it is a registry-wide decision, not a local one.
    */
   async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
-    const rows = (await sql`
+    const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT issue_id, scope, title, body, kind, state, severity,
              coalesce(updated_at, created_at) AS updated_at,
              1 - (embedding <=> ${qVec}::vector) AS sim,
@@ -589,7 +594,7 @@ const workItem: SearchSource = {
          AND embedding IS NOT NULL
     ORDER BY embedding <=> ${qVec}::vector
        LIMIT ${limit}
-    `) as unknown as Array<{
+    `)) as unknown as Array<{
       issue_id: string;
       scope: string;
       title: string;
@@ -739,7 +744,12 @@ const sessionTurn: SearchSource = {
     // fails the whole query before any predicate runs.
     const { turnChunksAvailable } = await import('../../search/turn-chunk-sync');
     const withChunks = await turnChunksAvailable(p.sql);
-    const rows = (await p.sql`
+    // WI-37603. The outer tag is the TRANSACTION handle (iterative scan on);
+    // the nested `p.sql` fragments below stay on the outer handle, which is
+    // safe because a postgres.js fragment is a lazy builder — only the outer
+    // query executes. The cascade-quality integration test exercises this exact
+    // leg end-to-end, so a fragment-provenance problem fails loudly there.
+    const rows = (await withIterativeScan(p.sql, (sql) => sql`
       WITH scored AS (
         -- ⚠ EACH BRANCH IS PARENTHESIZED ON PURPOSE. Without the parens the
         -- trailing ORDER BY / LIMIT binds to the WHOLE union rather than to its
@@ -805,7 +815,7 @@ const sessionTurn: SearchSource = {
          AND st.turn_idx     = b.turn_idx
     ORDER BY b.sim DESC
        LIMIT ${p.limit}
-    `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; sim: number; highlight: string }>;
+    `)) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; sim: number; highlight: string }>;
     return rows.map((r) => ({
       key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,
       score: r.sim,
