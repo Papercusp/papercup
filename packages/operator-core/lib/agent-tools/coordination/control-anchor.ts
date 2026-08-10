@@ -116,6 +116,54 @@ interface ScopeClaimRow {
   harness_slug: string;
   plan_slug: string;
   item_id: string;
+  /**
+   * Is the coordination LEASE still in force (`expires_ts > now`)? False means
+   * the lease lapsed — peers may take the item — but NOT that this agent stopped
+   * working it. See the query in `buildControlAnchorState` for why self-scope
+   * deliberately keeps a lapsed row.
+   */
+  lease_valid: boolean;
+}
+
+/** What the claim rows say this agent's own lane is. */
+export interface DerivedClaimScope {
+  harness: string | null;
+  plan: string | null;
+  items: string[];
+  /** Items whose coordination lease has lapsed — still ours, but re-claim before editing. */
+  lapsed: string[];
+}
+
+/**
+ * Derive an agent's OWN plan lane from its claim rows. Pure so the rule is
+ * testable without PG — the guard that matters is the regression below.
+ *
+ * `briefPlanSlug` (the session brief's durable current plan) wins when set;
+ * otherwise the lane is inferred from the claims themselves, which is what lets
+ * a respawned agent recover its mission when the brief has not been rewritten
+ * yet.
+ *
+ * ⚠ A LAPSED LEASE IS STILL OUR LANE. Rows arrive here unfiltered by
+ * `expires_ts` on purpose (see the query in `buildControlAnchorState`): expiry
+ * governs whether a PEER may take the item, not whether WE were working it.
+ * Dropping lapsed rows here is what made a live agent's mission vanish
+ * mid-flight (2026-08-10).
+ */
+export function deriveClaimScope(
+  claims: readonly ScopeClaimRow[],
+  briefPlanSlug: string | null | undefined,
+  briefHarnessSlug: string | null | undefined,
+): DerivedClaimScope {
+  const planClaims = briefPlanSlug
+    ? claims.filter((c) => c.plan_slug === briefPlanSlug)
+    : claims.filter((c) => c.plan_slug === (claims[0]?.plan_slug ?? null));
+  const chosen = planClaims[0] ?? claims[0] ?? null;
+  return {
+    harness: briefHarnessSlug ?? chosen?.harness_slug ?? null,
+    plan: briefPlanSlug ?? chosen?.plan_slug ?? null,
+    items: planClaims.map((c) => c.item_id),
+    lapsed: planClaims.filter((c) => !c.lease_valid).map((c) => c.item_id),
+  };
 }
 
 function cap(value: string | null | undefined): string | null {
@@ -440,13 +488,36 @@ export async function buildControlAnchorState(
     opts.loop === undefined ? getLoopStatus(ownerId, { sql }) : Promise.resolve(opts.loop),
     latestFleetMembership(workspaceId, ownerId, sql),
     getSessionBrief({ ownerId }),
+    // ⚠ NO `expires_ts > clock_timestamp()` FILTER HERE — deliberately.
+    //
+    // `plan_item_claims` is a TTL'd coordination LEASE (default ttl_sec 1200 =
+    // 20 min). Expiry answers "may a PEER take this item?" — it does NOT answer
+    // "what is this agent working on". Filtering self-scope by it made an
+    // agent's own mission evaporate 20 minutes into working a single item.
+    //
+    // Measured 2026-08-10: a session driving plan
+    // retire-mug-kettle-su-only-2026-08-09 respawned and reported
+    // `scope: { plan: null, items: [] }`. Its P-034 claim row was still there,
+    // unreleased — the lease had simply lapsed 13h earlier. Both symptoms came
+    // from this one predicate: `items` emptied, and `plan` then fell through
+    // `chosen?.plan_slug` to null. The agent lost its mission and asked the
+    // owner which plan it was on.
+    //
+    // Reading a lapsed row here CANNOT steal a peer's work: the primary key is
+    // (workspace_id, harness_slug, plan_slug, item_id), one row per item, and a
+    // peer's claim overwrites `owner`. So a surviving row still owned by US
+    // means nobody else took it. Rows are DELETED on release, so presence means
+    // claimed-and-never-released.
+    //
+    // `lease_valid` is carried so callers can tell "mine, lease live" from
+    // "mine, lease lapsed — re-claim before editing".
     sql<ScopeClaimRow[]>`
-      SELECT harness_slug, plan_slug, item_id
+      SELECT harness_slug, plan_slug, item_id,
+             expires_ts > clock_timestamp() AS lease_valid
         FROM harness_shared.plan_item_claims
        WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
          AND owner = ${ownerId}
-         AND expires_ts > clock_timestamp()
-       ORDER BY plan_slug, item_id
+       ORDER BY (expires_ts > clock_timestamp()) DESC, plan_slug, item_id
     `,
     // WI-7302 part 2: the forward-looking wake-source leg. Best-effort — on any
     // failure this resolves to an empty map and `wakeSource` is simply absent
@@ -456,10 +527,7 @@ export async function buildControlAnchorState(
       () => new Map<string, SelfWakeSignals>(),
     ),
   ]);
-  const planClaims = brief?.currentPlanSlug
-    ? claims.filter((c) => c.plan_slug === brief.currentPlanSlug)
-    : claims;
-  const chosen = planClaims[0] ?? claims[0] ?? null;
+  const derived = deriveClaimScope(claims, brief?.currentPlanSlug, brief?.harnessSlug);
   const fleet = membership?.fleetSlug;
   const source = brief?.source?.toLowerCase() ?? '';
   const route: ControlAnchorState['route'] = fleet
@@ -475,9 +543,9 @@ export async function buildControlAnchorState(
     route,
     scope: {
       workspace: workspaceId,
-      harness: brief?.harnessSlug ?? chosen?.harness_slug ?? null,
-      plan: brief?.currentPlanSlug ?? chosen?.plan_slug ?? null,
-      items: planClaims.map((c) => c.item_id),
+      harness: derived.harness,
+      plan: derived.plan,
+      items: derived.items,
     },
   });
 }
