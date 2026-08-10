@@ -244,3 +244,59 @@ describe('unit-coverage decisions (WI-6149 D-010 item 4)', () => {
     expect(codes).toEqual(['episodic-oneshot', 'system-scope-unit', 'transient-unit-name', 'unit-not-installed']);
   });
 });
+
+/**
+ * EI-20067982007251440 — the RECOVERY PATH for a critical unit must itself be
+ * supervised.
+ *
+ * `papercup-bg-host-watchdog` is the only out-of-process recovery bg-host has:
+ * the in-process supervision reconciler runs INSIDE bg-host and freezes with it,
+ * so when the DBOS ticker wedges, the watchdog is the sole actor that can act.
+ * Measured 2026-08-10: it restarted a frozen bg-host at 11:00:30Z, while that
+ * same freeze had halted git-sync, every scheduled routine, and the release gate
+ * fleet-wide. It was absent from the registry, so nothing would have reported it
+ * if the watchman itself had stopped.
+ */
+describe('EI-20067982007251440 — bg-host-watchdog supervision', () => {
+  const entry = () => SUPERVISED_PROCESSES.find((e) => e.name === 'bg-host-watchdog');
+
+  it("registers bg-host's out-of-process recovery, so its silence is visible", () => {
+    expect(
+      entry(),
+      'bg-host-watchdog is missing from SUPERVISED_PROCESSES. It is the ONLY actor that can ' +
+        'recover a frozen bg-host (the in-process reconciler freezes with it), so removing it ' +
+        'from the registry means a dead watchman is reported by nothing, and the next ticker ' +
+        'freeze halts git-sync + all routines + the release gate fleet-wide with no recovery.',
+    ).toBeDefined();
+    expect(entry()?.unit).toBe('papercup-bg-host-watchdog');
+    expect(entry()?.layer).toBe('systemd-user');
+  });
+
+  it('is NOT episodic — it is a persistent poller, so `inactive` really is down', () => {
+    // Guards the D-010 item-4 hazard in the other direction: mislabelling this
+    // episodic would make a genuinely-stopped watchdog read as "normally idle".
+    expect(entry()?.episodic ?? false).toBe(false);
+  });
+
+  it('keeps autoRestart:true — `Restart=always` does NOT cover an administratively STOPPED unit', () => {
+    // THE REGRESSION THIS EXISTS TO CATCH: a future edit "harmonizing" this entry
+    // with the `bg-host` row directly above it, whose comment says a registry
+    // lever is redundant because systemd is already `Restart=always`. That
+    // rationale does not transfer. `Restart=always` fires on EXIT; a unit that was
+    // stopped (or whose start was never re-attempted) stays down indefinitely and
+    // is indistinguishable from healthy at the process level. WI-5376 is the
+    // precedent, not a hypothetical: the federation gate's timer was externally
+    // stopped TWICE with no systemd-logged stop client, silently meaning "the gate
+    // never runs again" until a human noticed. Restarting THIS unit is safe and
+    // idempotent (stateless poller, own 8/hr circuit breaker + 5min debounce), and
+    // WI-5378's isAdministrativelyPaused still honours a deliberate disable/mask.
+    expect(
+      entry()?.autoRestart,
+      'bg-host-watchdog must keep autoRestart:true. If you flipped this to match the bg-host ' +
+        'entry above ("already Restart=always at the systemd level"), that reasoning does not ' +
+        'transfer: Restart=always fires on process EXIT and does nothing for a STOPPED unit — ' +
+        'the exact way WI-5376 lost the federation gate timer twice, silently. A deliberate ' +
+        'pause is still respected via `systemctl --user disable --now papercup-bg-host-watchdog`.',
+    ).toBe(true);
+  });
+});

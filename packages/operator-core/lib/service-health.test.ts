@@ -287,6 +287,12 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
     expect(supervisedProcesses().map((e) => e.name).sort()).toEqual(
       [
         'bg-host',
+        // EI-20067982007251440 — bg-host's ONLY out-of-process recovery (the
+        // in-process reconciler runs inside bg-host and freezes with it). Unlike
+        // the entries above it is auto-restartable: `Restart=always` covers a
+        // crash, not an administratively STOPPED unit. See its registry comment
+        // and the dedicated guards in service-health-unit-coverage.test.ts.
+        'bg-host-watchdog',
         'operator',
         'staging-api',
         'inference-gateway',

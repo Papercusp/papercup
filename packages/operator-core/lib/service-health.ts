@@ -859,6 +859,34 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // Already Restart=always at the systemd level (R4-1 drop-ins) — registry
   // entry is report-only/verify per the plan, not a second restart lever.
   { name: 'bg-host', layer: 'systemd-user', unit: 'papercup-bg-host', criticality: 'critical', autoRestart: false },
+  // EI-20067982007251440: bg-host's ONLY out-of-process recovery — and until now the
+  // one supervised-adjacent unit nobody supervised. `bghost-watchdog.mjs` restarts
+  // bg-host on ticker-silence (240s); the in-process reconciler CANNOT do that job,
+  // because it runs INSIDE bg-host and freezes with it. Measured 2026-08-10: the
+  // watchdog restarted a frozen bg-host at 11:00:30Z — while the same freeze had
+  // halted git-sync, every scheduled routine, and the release gate fleet-wide. If
+  // this watchdog is dark, that freeze has NO automatic recovery and nothing says so.
+  //
+  // `criticality: 'critical'` NOT because its own downtime breaks anything — bg-host
+  // runs fine without it — but because its silence is a fleet-level EXPOSURE: the next
+  // freeze goes unrecovered until a human happens to notice (~25min + luck, 2026-08-10).
+  // A reader seeing this row down needs "act now", which 'important' under-states.
+  //
+  // ⚠ `autoRestart: true` DELIBERATELY DIVERGES from the `bg-host` entry directly
+  // above, whose rationale ("already Restart=always, so a registry lever would be a
+  // second restarter") does NOT transfer — and the difference is the whole point of
+  // this entry. `Restart=always` fires on EXIT. It does nothing for a unit that was
+  // administratively STOPPED, which stays down forever and looks identical to healthy
+  // from every process-level view. That is not hypothetical: WI-5376 records the
+  // federation gate's timer being externally stopped TWICE with no systemd-logged stop
+  // client, silently meaning "the gate never runs again" until a human noticed. This
+  // unit is the same shape and a worse blast radius, so it follows the
+  // `live-federation-gate-timer` precedent (autoRestart: true), not the bg-host one.
+  // Restarting it is safe + idempotent: it is a stateless poller with its own circuit
+  // breaker (8/hr) and 5min debounce, so a restart re-polls rather than re-running a
+  // job, and WI-5378's `isAdministrativelyPaused` still honours a deliberate pause
+  // (`systemctl --user disable --now papercup-bg-host-watchdog`) as report-only.
+  { name: 'bg-host-watchdog', layer: 'systemd-user', unit: 'papercup-bg-host-watchdog', criticality: 'critical', autoRestart: true },
   { name: 'operator', layer: 'systemd-user', unit: 'papercup-dev-api', criticality: 'critical', autoRestart: true }, // :3070
   { name: 'staging-api', layer: 'systemd-user', unit: 'papercup-staging-api', criticality: 'important', autoRestart: true }, // :3170
   // Folds the bespoke inference-gateway-watchdog's intent in; the watchdog
