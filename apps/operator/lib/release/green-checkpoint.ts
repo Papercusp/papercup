@@ -1077,7 +1077,61 @@ export function extractFailingTests(out: string): string[] {
   for (const m of clean.matchAll(/^\s*FAIL\s+(\S+)/gm)) set.add(m[1]);
   for (const m of clean.matchAll(/^\s*❯\s+(\S+)\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/gm)) set.add(m[1]);
   for (const m of clean.matchAll(/>>>\s+(\S+)\s+FAILED\b/g)) set.add(m[1]);
+  // EI-20092765275570648: the affected runner's OWN authoritative failing-task list
+  // (`N non-quarantined task(s) failed:` followed by `  - <workspace> :: <script>` per
+  // task — scripts/affected-tests.mjs L1601-1602). Without this matcher the only thing
+  // a non-test task failure contributed to the signature was the bare WORKSPACE name,
+  // scraped from the retry marker `>>> <ws> FAILED` above — and a bare workspace name
+  // is neither a {workspace,file} pair nor a NON_TEST_GATE_SCRIPTS key, so the
+  // stale-candidate rescue had nothing to re-run and recorded `classification=unknown
+  // autoRefire=false`. A TEST red self-healed when the tree moved past it; a red held
+  // by a workspace-scoped LINT task could not, and froze `main` until a human noticed
+  // (2026-08-10: 4 consecutive reds, ~3.4h, `main` 87+ commits behind, on a guard whose
+  // fix was already in tip). The task id is self-describing — it names both the
+  // workspace and the script — so it needs no registry entry to be re-runnable.
+  //
+  // The workspace entry is deliberately NOT removed as subsumed: tryLongestGreenPrefix
+  // localizes the red by matching WORKSPACE names against this signature (~L3409), so
+  // dropping it would trade one rescue for another. Subsumption is applied where the
+  // rescue decision is made instead — see nonTestGateIdsFrom.
+  //
+  // Anchored to the whole line, so the sibling `  - <ws> :: <script> (no-file-rows)`
+  // prose line does not double-count, and a stray `- a :: b` bullet elsewhere in a
+  // multi-MB log degrades to TODAY's behaviour rather than to a wrong rescue: an entry
+  // that is neither a registry id nor a `lint:` task fails nonTestGateIdsFrom's
+  // every()-check, which yields no rescue at all.
+  //
+  // Anchored to THAT BLOCK, never matched log-wide. The identical `  - <ws> :: <script>`
+  // bullet shape is also used at STARTUP to print the run's PLANNED task list
+  // (affected-tests.mjs L1210), so a log-wide match reads every scheduled task as
+  // failing: measured against the incident log, 16 planned tasks against 1 real failure.
+  // That is not merely noisy — most planned tasks are `test` scripts, so the extra
+  // entries would defeat nonTestGateIdsFrom's every()-check and leave the rescue exactly
+  // as dead as it was before, while looking fixed.
+  const lines = clean.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s*\d+\s+non-quarantined task\(s\) failed:\s*$/.test(lines[i])) continue;
+    // Consume the contiguous bullet run that follows the header, and stop at the first
+    // line that is not one (a blank line, or the `0 failing test file(s)` section).
+    for (let j = i + 1; j < lines.length; j++) {
+      const bullet = /^\s*-\s+(\S+)\s+::\s+(\S+)\s*$/.exec(lines[j]);
+      if (!bullet) break;
+      set.add(bullet[1] + TASK_ID_SEP + bullet[2]);
+    }
+  }
   return [...set].sort().slice(0, 50);
+}
+
+/** The separator in the affected runner's task id (`<workspace> :: <script>`). */
+const TASK_ID_SEP = ' :: ';
+
+/** The affected runner's stable task id — `<workspace> :: <script>` (e.g.
+ *  `@papercusp/operator-core :: lint:no-ungated-mug-kettle`). Parsed back out of a
+ *  `failingTests` entry by the rescue path, so the shape has ONE definition shared by
+ *  the extractor, the eligibility check, and the runner (EI-20092765275570648). */
+export function parseFailingTaskId(entry: string): { workspace: string; script: string } | null {
+  const m = /^(\S+)\s+::\s+(\S+)$/.exec(entry.trim());
+  return m ? { workspace: m[1], script: m[2] } : null;
 }
 
 /** A `failingTests` entry that plausibly names a vitest test FILE (matches the shared
@@ -2015,8 +2069,62 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
  *  `[]` when the red is not gate-only (nothing for this path to do; the caller's
  *  existing file-based or default handling applies unchanged). */
 export function nonTestGateIdsFrom(failingTests: string[] | undefined): string[] {
-  const ids = failingTests ?? [];
-  return ids.length > 0 && ids.every((id) => id in NON_TEST_GATE_SCRIPTS) ? ids : [];
+  const all = failingTests ?? [];
+  // EI-20092765275570648: a workspace-scoped task id (`<ws> :: <script>`) names the same
+  // failure as the bare `<ws>` entry the retry marker contributes, only precisely. The
+  // extractor keeps BOTH (the bare name is load-bearing for tryLongestGreenPrefix), so
+  // drop the subsumed workspace here — otherwise the every()-check below sees a
+  // workspace name that is not a gate id and declines a rescue that is in fact fully
+  // specified. This is the whole reason a lint-held red could never self-heal.
+  const subsumed = new Set(
+    all.map((e) => parseFailingTaskId(e)?.workspace).filter((w): w is string => w !== undefined),
+  );
+  const ids = all.filter((e) => !subsumed.has(e));
+  return ids.length > 0 && ids.every(isRerunnableGateEntry) ? ids : [];
+}
+
+/** Is this `failingTests` entry something the tip rescue can re-run on its own?
+ *
+ *  Two admissible shapes, and nothing else — an unmapped signature is never guessed at:
+ *   - a `NON_TEST_GATE_SCRIPTS` key (`lint:tsc`, …), resolved through the registry;
+ *   - a self-describing `<workspace> :: lint:<name>` task id, which needs no registry
+ *     entry because it already names the workspace AND the script to run there.
+ *
+ *  The `lint:` restriction is the registry header's own bar, applied to the unregistered
+ *  case: one fast, deterministic, repo-wide script that is cheap to re-verify at tip. A
+ *  `test` task is excluded because it belongs to the FILE-based rescue (runTestsAtRef),
+ *  and a `build`/other task is excluded for the same reason the registry omits
+ *  `@papercusp/operator-vite` — heavier and less clean to re-verify, so it keeps today's
+ *  plain-red behaviour rather than being guessed at. */
+export function isRerunnableGateEntry(entry: string): boolean {
+  if (entry in NON_TEST_GATE_SCRIPTS) return true;
+  const task = parseFailingTaskId(entry);
+  return task !== null && task.script.startsWith('lint:');
+}
+
+/** Resolve rescue-eligible entries to the npm invocations that re-verify them at tip.
+ *
+ *  A registry id expands to its root script(s) (`workspace: null` — run at the repo
+ *  root, as it always has). A `<ws> :: <script>` task id runs that script IN its
+ *  workspace (`npm run <script> -w <ws>`), which is what makes a workspace-scoped lint
+ *  leg re-runnable without a registry entry of its own (EI-20092765275570648).
+ *
+ *  De-duplicated on the resolved (workspace, script) pair, so two entries that expand to
+ *  the same invocation run it once. Pure + exported so the invocation SHAPE is asserted
+ *  by tests rather than only by a live gate run. */
+export function resolveGateRuns(gateIds: readonly string[]): { script: string; workspace: string | null }[] {
+  const runs = new Map<string, { script: string; workspace: string | null }>();
+  for (const id of gateIds) {
+    const task = parseFailingTaskId(id);
+    if (task) {
+      runs.set(JSON.stringify([task.workspace, task.script]), { script: task.script, workspace: task.workspace });
+      continue;
+    }
+    for (const script of NON_TEST_GATE_SCRIPTS[id] ?? []) {
+      runs.set(JSON.stringify([null, script]), { script, workspace: null });
+    }
+  }
+  return [...runs.values()];
 }
 
 /* ── deploy-staleness alarm ───────────────────────────────────────────────────
@@ -6390,14 +6498,22 @@ export function realCheckpointDeps(
       await this.setupTree(ref);
       const verifiedHead = await revParse(cfg.checkpointRoot, 'HEAD').catch(() => 'unresolved');
       const headNote = `verified-head=${verifiedHead.slice(0, 12)} (requested ${ref.slice(0, 12)})`;
-      const scripts = [...new Set(gateIds.flatMap((id) => NON_TEST_GATE_SCRIPTS[id] ?? []))];
+      // EI-20092765275570648: two admissible entry shapes (see isRerunnableGateEntry) —
+      // a registry id expands to its root script(s); a `<ws> :: <script>` task id runs
+      // that script IN its workspace, which is how a workspace-scoped lint leg becomes
+      // re-runnable at tip without needing a registry entry of its own. De-duplicated on
+      // the resolved (workspace, script) pair so two entries naming the same script run
+      // it once.
+      const runs = resolveGateRuns(gateIds);
       const env = buildGreenCheckpointEnv(null);
       const summaries: string[] = [headNote];
-      for (const script of scripts) {
-        const r = await exec('npm', ['run', script], { cwd: cfg.checkpointRoot, env, allowNonZero: true }).catch(
+      for (const { script, workspace } of runs) {
+        const label = workspace ? `${workspace} :: ${script}` : script;
+        const args = workspace ? ['run', script, '-w', workspace] : ['run', script];
+        const r = await exec('npm', args, { cwd: cfg.checkpointRoot, env, allowNonZero: true }).catch(
           (e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }),
         );
-        summaries.push(`${script}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
+        summaries.push(`${label}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
         if (r.code !== 0) return { pass: false, summary: summaries.join('; ') };
       }
       return { pass: true, summary: summaries.join('; ') };

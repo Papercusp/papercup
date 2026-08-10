@@ -23,6 +23,9 @@ import {
   splitTipFailuresPerFile,
   TIP_SPLIT_MAX_FILES,
   nonTestGateIdsFrom,
+  parseFailingTaskId,
+  isRerunnableGateEntry,
+  resolveGateRuns,
   describeSkippedRetriage,
   NON_TEST_GATE_SCRIPTS,
   autoRefireCapFromEnv,
@@ -1949,6 +1952,156 @@ describe('runGreenCheckpoint', () => {
       expect(nonTestGateIdsFrom(['lint:identity-leak', '@papercusp/web'])).toEqual([]);
       expect(nonTestGateIdsFrom(['@papercusp/operator-vite'])).toEqual([]);
       expect(nonTestGateIdsFrom(['package.json-unreadable'])).toEqual([]);
+    });
+  });
+
+  /**
+   * EI-20092765275570648. A red held by a workspace-scoped LINT task could never be
+   * measured for staleness, so it could never auto-refire, so it froze `main` until a
+   * human noticed — while an otherwise-identical red held by a TEST file self-healed.
+   *
+   * The break was a lossy signature: the affected runner names the failing task exactly
+   * (`<ws> :: <script>`), but extractFailingTests could only match the retry marker
+   * `>>> <ws> FAILED`, so all that survived was a bare WORKSPACE name — neither a
+   * {workspace,file} pair nor a NON_TEST_GATE_SCRIPTS key, hence `classification=unknown
+   * autoRefire=false` and an unmeasured red.
+   *
+   * Fixtures below are verbatim from the 2026-08-10 incident log
+   * (…-base-9263da0694d2-cand-c758381fc674.log L12595/L12727-12728).
+   */
+  describe('EI-20092765275570648: a workspace-scoped lint red is re-runnable at tip (pure)', () => {
+    const INCIDENT_TASK = '@papercusp/operator-core :: lint:no-ungated-mug-kettle';
+    // Verbatim shape, in the REAL order the runner emits it. The leading PLANNED-task
+    // list is load-bearing in this fixture, not scenery: affected-tests.mjs prints the
+    // run's schedule (L1210) with the SAME `  - <ws> :: <script>` bullet the failure list
+    // uses (L1602). A first cut of this fix matched that bullet log-wide and swept in all
+    // 16 planned tasks — which, being mostly `test` scripts, would have defeated the
+    // every()-check and left the rescue dead while every hand-built fixture stayed green.
+    // Any fixture without a planned-task list cannot catch that, so it stays here.
+    const INCIDENT_OUTPUT = [
+      'tasks:',
+      '  - @papercupai/operator-docs :: test',
+      '  - @papercusp/web :: test',
+      '  - @papercusp/web :: lint:el-tools',
+      '  - @papercusp/operator-core :: test',
+      '  - @papercusp/operator-core :: lint:no-retired',
+      '  - @papercusp/operator-core :: lint:no-ungated-mug-kettle',
+      '',
+      '>>> @papercusp/operator-core :: npm run lint:no-ungated-mug-kettle',
+      '>>> @papercusp/operator-core FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)',
+      '',
+      '1 non-quarantined task(s) failed:',
+      '  - @papercusp/operator-core :: lint:no-ungated-mug-kettle',
+      '',
+      '0 failing test file(s) — the per-FILE break set (the failed=1 above counts TASKS, not files):',
+      '1 failed task(s) could NOT be attributed to files — their failures are REAL but unnamed here:',
+      '  - @papercusp/operator-core :: lint:no-ungated-mug-kettle (no-file-rows)',
+    ].join('\n');
+
+    it('extracts the runner-named TASK id, not just the bare workspace from the retry marker', () => {
+      const failing = extractFailingTests(INCIDENT_OUTPUT);
+      expect(failing).toContain(INCIDENT_TASK);
+      // The bare workspace is deliberately RETAINED: tryLongestGreenPrefix localizes a red
+      // by matching workspace names against this signature, so removing it as "subsumed"
+      // would trade one rescue for another.
+      expect(failing).toContain('@papercusp/operator-core');
+      // The `(no-file-rows)` prose sibling must not double-count as a second task.
+      expect(failing.filter((f) => f.includes('lint:no-ungated-mug-kettle'))).toEqual([INCIDENT_TASK]);
+    });
+
+    it('captures ONLY the failed task — never the run\'s PLANNED task list, which shares the bullet shape', () => {
+      const failing = extractFailingTests(INCIDENT_OUTPUT);
+      const tasks = failing.filter((f) => f.includes(' :: '));
+      // Exactly one task id: the one that actually failed. The 5 other scheduled tasks in
+      // the fixture (incl. `@papercusp/web :: lint:el-tools`, itself a lint task that WOULD
+      // have looked rescue-eligible) must not appear.
+      expect(tasks).toEqual([INCIDENT_TASK]);
+      expect(failing).not.toContain('@papercusp/web :: lint:el-tools');
+      expect(failing).not.toContain('@papercusp/operator-core :: test');
+    });
+
+    it('THE REGRESSION: the incident signature now yields a rescue instead of an unmeasured red', () => {
+      // Exactly what the gate held on. Before the fix this returned [] — no gate ids, no
+      // tip re-run, `main` frozen.
+      expect(nonTestGateIdsFrom(extractFailingTests(INCIDENT_OUTPUT))).toEqual([INCIDENT_TASK]);
+    });
+
+    it('documents the bug this closes: the signature the gate ACTUALLY had rescues nothing', () => {
+      // This is verbatim what the 2026-08-10 gate held on — the bare workspace scraped from
+      // the retry marker, with the runner's own task id dropped on the floor. It is still
+      // un-rescuable today (correctly: a workspace name names no script to run), which is
+      // exactly why capturing the task id is the load-bearing half of the fix and not a
+      // cosmetic signature improvement.
+      expect(nonTestGateIdsFrom(['@papercusp/operator-core'])).toEqual([]);
+    });
+
+    it('drops the workspace entry the task id subsumes, so the every()-check is not defeated by it', () => {
+      expect(nonTestGateIdsFrom(['@papercusp/operator-core', INCIDENT_TASK])).toEqual([INCIDENT_TASK]);
+      // An UNRELATED workspace is not subsumed and still declines the rescue.
+      expect(nonTestGateIdsFrom(['@papercusp/web', INCIDENT_TASK])).toEqual([]);
+    });
+
+    it('mixes with registry gate ids', () => {
+      expect(nonTestGateIdsFrom(['lint:tsc', INCIDENT_TASK])).toEqual(['lint:tsc', INCIDENT_TASK]);
+    });
+
+    it('admits ONLY lint tasks — a test/build task is never guessed at', () => {
+      expect(isRerunnableGateEntry(INCIDENT_TASK)).toBe(true);
+      expect(isRerunnableGateEntry('lint:tsc')).toBe(true);
+      // A `test` task belongs to the FILE-based rescue (runTestsAtRef), not this one.
+      expect(isRerunnableGateEntry('@papercusp/web :: test')).toBe(false);
+      expect(isRerunnableGateEntry('@papercusp/web :: build')).toBe(false);
+      expect(isRerunnableGateEntry('@papercusp/web')).toBe(false);
+      expect(nonTestGateIdsFrom(['@papercusp/web :: test'])).toEqual([]);
+    });
+
+    it('parses the task id shape, and rejects anything that is not one', () => {
+      expect(parseFailingTaskId(INCIDENT_TASK)).toEqual({
+        workspace: '@papercusp/operator-core',
+        script: 'lint:no-ungated-mug-kettle',
+      });
+      expect(parseFailingTaskId('lint:tsc')).toBeNull();
+      expect(parseFailingTaskId('@papercusp/web')).toBeNull();
+      expect(parseFailingTaskId('src/a.test.ts')).toBeNull();
+    });
+
+    it('resolves to a WORKSPACE-scoped npm invocation (a root-only run would not re-verify it)', () => {
+      expect(resolveGateRuns([INCIDENT_TASK])).toEqual([
+        { script: 'lint:no-ungated-mug-kettle', workspace: '@papercusp/operator-core' },
+      ]);
+      // A registry id keeps running at the repo ROOT, exactly as before.
+      expect(resolveGateRuns(['lint:tsc'])).toEqual([{ script: 'lint:tsc', workspace: null }]);
+      // A registry id fanning out to several scripts is unchanged.
+      expect(resolveGateRuns(['lint:identity-leak'])).toEqual(
+        NON_TEST_GATE_SCRIPTS['lint:identity-leak'].map((script) => ({ script, workspace: null })),
+      );
+    });
+
+    it('against the REAL 1.5MB incident log (when still on disk), extracts the 1 failure and none of the 16 planned tasks', () => {
+      // A hand-built fixture cannot prove this — the first cut of the fix passed every
+      // fixture and still swept in 16 planned tasks from the genuine article. Skipped
+      // rather than failed when the log has aged out, so this never becomes a flake.
+      const log = join(
+        process.env.HOME ?? '',
+        '.papercusp/checkpoint-logs',
+        '2026-08-10T18-34-37-011Z-base-9263da0694d2-cand-c758381fc674.log',
+      );
+      let raw: string;
+      try {
+        raw = readFileSync(log, 'utf8');
+      } catch {
+        return; // log rotated away — the fixture tests above still cover the shape
+      }
+      const failing = extractFailingTests(raw);
+      expect(failing.filter((f) => f.includes(' :: '))).toEqual([INCIDENT_TASK]);
+      expect(nonTestGateIdsFrom(failing)).toEqual([INCIDENT_TASK]);
+    });
+
+    it('de-duplicates entries that resolve to the same invocation', () => {
+      expect(resolveGateRuns([INCIDENT_TASK, INCIDENT_TASK])).toHaveLength(1);
+      expect(resolveGateRuns(['lint:tsc', 'lint:tsc'])).toEqual([{ script: 'lint:tsc', workspace: null }]);
+      // Same script name in two different workspaces is NOT a duplicate.
+      expect(resolveGateRuns(['@papercusp/a :: lint:x', '@papercusp/b :: lint:x'])).toHaveLength(2);
     });
   });
 
