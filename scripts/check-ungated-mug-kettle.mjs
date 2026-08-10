@@ -1,0 +1,283 @@
+#!/usr/bin/env node
+/**
+ * lint:no-ungated-mug-kettle — the RECURRENCE GUARD for the mug/kettle/cup retirement.
+ * plan `retire-mug-kettle-su-only-2026-08-09` · P-016, seeded from P-005's census.
+ *
+ * WHAT IT FAILS ON: a NEW mug/kettle/cup entry point that is not behind the
+ * MUG_KETTLE_SYSTEM gate. It is a RATCHET, not a retrofit demand — the existing
+ * population is baselined, so this never asks anyone to go gate 200 pre-existing
+ * sites; it asks that the NEXT one added be gated.
+ *
+ * ── TWO DETECTOR FAMILIES, AND WHY THE SECOND ONE EXISTS ──────────────────────
+ *
+ * (A) THE CENSUS (`scripts/mug-kettle-surface-census.mjs --json`). Re-used, not
+ *     re-implemented: it owns 8 detectors (system-action, spawn-role, blueprint-launch,
+ *     tool, flag, prompt, ui, wake) and this guard shells out to it so there is exactly
+ *     ONE implementation of them. It runs in ~3s.
+ *
+ * (B) ROLE-PARAMETERIZED DOORS — added HERE because the census structurally cannot
+ *     see them, and the gap is not academic. MEASURED 2026-08-10 against the live
+ *     census output: it returns **0 findings** for BOTH
+ *       · `endpoint-route/routes/agent-mcp/bootstrap-role.ts`  (the console door, D-022)
+ *       · `endpoint-route/routes/harness/spawn.ts`             (the spawn door,   D-018)
+ *     i.e. for 2 of the 3 spawn doors this plan gated. It sees `fleet/operator-spawn.ts`
+ *     ONLY because that file happens to contain literal `role: 'cup'` strings.
+ *
+ *     The reason is structural: every census detector keys on the role NAME appearing
+ *     as a literal in source. In these doors the role arrives as DATA — `body.role`,
+ *     `url.searchParams.get('role')` — so there is no literal to match, and a scan that
+ *     looks for one is blind to the entire class BY CONSTRUCTION. That blind spot is
+ *     exactly how the console door survived P-013's sweep and had to be found by hand
+ *     (D-022): P-013 checked "is spawn-by-name covered?", found a doc asserting the
+ *     surface had "exactly TWO doors" with both gated, and stopped.
+ *
+ *     So membership here is derived from the PROPERTY that defines the danger —
+ *     *can this site turn a role NAME into a running process?* — never from a keyword.
+ *     A door qualifies when it BOTH takes a role from input AND reaches a launch
+ *     primitive. Add a fourth door tomorrow that reads `payload.agentRole` and execs a
+ *     launcher, and it is caught without anyone updating a list of role spellings.
+ *
+ * ── WHAT COUNTS AS GATED ──────────────────────────────────────────────────────
+ * The file must reference the canonical predicate `isRetiredTierRole` (or the
+ * `RETIRED_TIER_ROLES` set / `mugKettleSystemEnabled` / `refuseIfMugKettleRetired`).
+ * Deliberately the PREDICATE and not a string match on 'mug' — bootstrap-role.ts:204
+ * makes the same point in its own comment, so that a future rename of the roles cannot
+ * silently disarm every gate at once.
+ *
+ * ── USAGE ─────────────────────────────────────────────────────────────────────
+ *   node scripts/check-ungated-mug-kettle.mjs              # the guard (exit 1 = new ungated door)
+ *   node scripts/check-ungated-mug-kettle.mjs --list       # measured population (re-seed the baseline from THIS, never a hand grep)
+ *   node scripts/check-ungated-mug-kettle.mjs --json
+ *   node scripts/check-ungated-mug-kettle.mjs --check-file <path>   # ONE file — the falsifiability seam
+ *
+ * `--check-file` exists so falsifiability can be proven with a COPY-OUT mutation
+ * (`scripts/mutation-probe.sh`) instead of mutating this shared tree, where git-sync
+ * commits every few minutes and an exclusive lock does NOT pause it
+ * (EI-19450431506682666).
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const BASELINE_PATH = path.join(REPO_ROOT, 'scripts', 'ungated-mug-kettle-baseline.json');
+const CENSUS = path.join(REPO_ROOT, 'scripts', 'mug-kettle-surface-census.mjs');
+
+const SCAN_ROOTS = ['packages', 'libs', 'apps', 'scripts'];
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', 'target', '_retired']);
+const CODE_EXT = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.jsx']);
+const isTestFile = (p) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(p) || p.includes(`${path.sep}__tests__${path.sep}`);
+
+/** This guard must not inventory ITSELF — its doc comment names every shape it hunts. */
+const SELF_FILE = fileURLToPath(import.meta.url);
+
+/* ── (B) role-parameterized door detection ─────────────────────────────────────
+ * A door needs BOTH halves. Either alone is common and harmless: plenty of files
+ * read a `role` for authorization, and plenty spawn things with a fixed role.
+ */
+
+/** The role is DATA, not a literal — the half the census cannot see. */
+const ROLE_FROM_INPUT = [
+  /\bbody\.role\b/,
+  /\bsearchParams\.get\(\s*['"`]role['"`]/,
+  /\bparams\.role\b/,
+  /\bquery\.role\b/,
+  /\brole\s*[:=]\s*(?:body|req|input|args|opts|params|url|payload|msg)\b/,
+  /\brole\s*=\s*[^;'"`\n]*\.(?:role|childRole|agentRole)\b/,
+  /--role=\$\{/,
+];
+
+/** …and it reaches something that actually starts a process / launches a blueprint. */
+const REACHES_LAUNCH = [
+  /\bspawnAgentInHarness\b/,
+  /\bfireLaunchBlueprint\b/,
+  /\bbootstrapRole\b/,
+  /\blaunchAgent\b/,
+  /\binvokeOnce\b/,
+  /\bexecFile(?:Sync)?\s*\(/,
+  /\bspawn(?:Sync)?\s*\(/,
+  /\bpsu\b.*--role/,
+  /['"`]\/api\/harness\/[^'"`]*\/invoke['"`]/,
+];
+
+/** Gated = references the canonical PREDICATE (never a raw 'mug' string match). */
+const GATE_SYMBOLS = [
+  'isRetiredTierRole',
+  'RETIRED_TIER_ROLES',
+  'mugKettleSystemEnabled',
+  'refuseIfMugKettleRetired',
+  'MUG_KETTLE_SYSTEM',
+];
+
+const isGated = (src) => GATE_SYMBOLS.some((s) => src.includes(s));
+
+function firstMatchLine(src, regexes) {
+  for (const re of regexes) {
+    const m = re.exec(src);
+    if (m) return { line: src.slice(0, m.index).split('\n').length, snippet: m[0].slice(0, 60) };
+  }
+  return null;
+}
+
+/** Does this ONE file contain a role-parameterized door? Returns a finding or null. */
+export function inspectFile(abs, src) {
+  const roleHit = firstMatchLine(src, ROLE_FROM_INPUT);
+  if (!roleHit) return null;
+  const launchHit = firstMatchLine(src, REACHES_LAUNCH);
+  if (!launchHit) return null;
+  return {
+    category: 'role-door',
+    subject: path.basename(abs, path.extname(abs)),
+    file: path.relative(REPO_ROOT, abs),
+    line: roleHit.line,
+    detail: `role from input (${roleHit.snippet.trim()}) reaching a launch primitive (${launchHit.snippet.trim()})`,
+    gated: isGated(src),
+  };
+}
+
+function walk(dir, acc) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return acc; }
+  for (const e of entries) {
+    const abs = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.has(e.name) || /^dist(-|$)/.test(e.name)) continue;
+      walk(abs, acc);
+    } else if (CODE_EXT.has(path.extname(e.name)) && !isTestFile(abs) && abs !== SELF_FILE) {
+      acc.push(abs);
+    }
+  }
+  return acc;
+}
+
+function collectRoleDoors() {
+  const files = [];
+  for (const root of SCAN_ROOTS) walk(path.join(REPO_ROOT, root), files);
+  const out = [];
+  for (const abs of files) {
+    let src;
+    try { src = fs.readFileSync(abs, 'utf8'); } catch { continue; }
+    const f = inspectFile(abs, src);
+    if (f) out.push(f);
+  }
+  return out;
+}
+
+function collectCensus() {
+  const raw = execFileSync('node', [CENSUS, '--json'], {
+    cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+  });
+  const census = JSON.parse(raw);
+  return (census.findings ?? [])
+    // `retired` = already under _retired/. `substrate` = D-003 population (b): the su
+    // system itself runs on these, so gating them breaks loop:arm — inventory, never gate.
+    .filter((f) => !f.retired && !f.substrate)
+    .map((f) => {
+      let gated = false;
+      try { gated = isGated(fs.readFileSync(path.join(REPO_ROOT, f.file), 'utf8')); } catch { /* file may be generated/absent */ }
+      return { category: f.category, subject: f.subject, file: f.file, line: f.line, detail: f.detail, gated };
+    });
+}
+
+/** Line numbers drift under every unrelated edit, so they are NOT part of identity. */
+const keyOf = (f) => `${f.category}|${f.subject}|${f.file}`;
+
+function loadBaseline() {
+  if (!fs.existsSync(BASELINE_PATH)) return { keys: new Set(), raw: null };
+  const raw = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
+  return { keys: new Set(raw.entries ?? []), raw };
+}
+
+/* ── main ─────────────────────────────────────────────────────────────────────── */
+
+const argv = process.argv.slice(2);
+const has = (f) => argv.includes(f);
+const valOf = (f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : null; };
+
+// --check-file: single-file mode, the mutation-probe seam.
+const checkFile = valOf('--check-file');
+if (checkFile) {
+  const abs = path.isAbsolute(checkFile) ? checkFile : path.join(REPO_ROOT, checkFile);
+  let src;
+  try { src = fs.readFileSync(abs, 'utf8'); } catch (err) {
+    console.error(`check-ungated-mug-kettle: cannot read ${checkFile}: ${err.message}`);
+    process.exit(2);
+  }
+  const f = inspectFile(abs, src);
+  if (!f) {
+    console.log(`no role-parameterized door detected in ${checkFile} — nothing to gate`);
+    process.exit(0);
+  }
+  if (f.gated) {
+    console.log(`GATED  ${checkFile}:${f.line}  ${f.detail}`);
+    process.exit(0);
+  }
+  console.error(`UNGATED ROLE-DOOR  ${checkFile}:${f.line}`);
+  console.error(`  ${f.detail}`);
+  console.error(`  This site can turn a role NAME into a running process and does not reference`);
+  console.error(`  the retirement predicate. Gate it: isRetiredTierRole(role) + mugKettleSystemEnabled().`);
+  process.exit(1);
+}
+
+const findings = [...collectCensus(), ...collectRoleDoors()];
+const roleDoors = findings.filter((f) => f.category === 'role-door');
+
+if (has('--list')) {
+  // The baseline is re-seeded from THIS, never from a hand-run grep (CLAUDE.md).
+  console.log(JSON.stringify({ entries: findings.map(keyOf).sort() }, null, 2));
+  process.exit(0);
+}
+
+const { keys: baseline, raw: baselineRaw } = loadBaseline();
+const novel = findings.filter((f) => !baseline.has(keyOf(f)));
+const offenders = novel.filter((f) => !f.gated);
+const newlyGated = novel.filter((f) => f.gated);
+const stale = [...baseline].filter((k) => !findings.some((f) => keyOf(f) === k));
+
+if (has('--json')) {
+  console.log(JSON.stringify({
+    total: findings.length,
+    roleDoors: roleDoors.length,
+    roleDoorsUngated: roleDoors.filter((f) => !f.gated).map(keyOf),
+    baselineSize: baseline.size,
+    offenders, newlyGated, stale,
+  }, null, 2));
+  process.exit(offenders.length ? 1 : 0);
+}
+
+console.log(`mug/kettle entry points: ${findings.length} live+non-substrate ` +
+  `(${roleDoors.length} role-parameterized door(s), ${roleDoors.filter((f) => f.gated).length} gated)`);
+console.log(`baseline: ${baseline.size} known${baselineRaw?.generatedAt ? ` (seeded ${baselineRaw.generatedAt})` : ''}`);
+
+if (newlyGated.length) {
+  console.log(`\n${newlyGated.length} new entry point(s), correctly GATED — add to the baseline when convenient:`);
+  for (const f of newlyGated.slice(0, 10)) console.log(`  ✓ ${f.category} ${f.subject}  ${f.file}:${f.line}`);
+}
+
+if (stale.length) {
+  // Shrink-only: a baseline entry that no longer exists is GOOD (a surface was retired).
+  console.log(`\n${stale.length} baseline entr(y|ies) no longer present — the surface shrank. Prune with --list.`);
+}
+
+if (offenders.length) {
+  console.error(`\n✖ ${offenders.length} NEW UNGATED mug/kettle entry point(s):\n`);
+  for (const f of offenders) {
+    console.error(`  ${f.category}  ${f.subject}`);
+    console.error(`    ${f.file}:${f.line}`);
+    console.error(`    ${f.detail}`);
+  }
+  console.error(`\nThe mug/kettle/cup tier is RETIRED behind FLAGS.MUG_KETTLE_SYSTEM (default OFF).`);
+  console.error(`A new entry point must refuse when the flag is off:`);
+  console.error(`    import { isRetiredTierRole } from '<...>/pot/retired-tier-roles';`);
+  console.error(`    import { mugKettleSystemEnabled } from '<...>/pot/started';`);
+  console.error(`    if (isRetiredTierRole(role) && !(await mugKettleSystemEnabled())) return <refusal>;`);
+  console.error(`\nIf this site is genuinely SHARED SUBSTRATE the su system runs on (D-003 population (b)),`);
+  console.error(`it belongs in the census's SUBSTRATE_SYMBOLS — not in this baseline.`);
+  console.error(`Plan: retire-mug-kettle-su-only-2026-08-09 (D-017/D-018/D-019/D-020/D-021/D-022).`);
+  process.exit(1);
+}
+
+console.log('\n✓ no new ungated mug/kettle entry points');
+process.exit(0);

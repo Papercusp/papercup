@@ -13,6 +13,21 @@ let shouldAlert: (consecutiveRestarts: number, alertAfter?: number) => boolean;
 let shouldClearStrikes: (healthyStreak: number, sustainedPolls?: number) => boolean;
 let maxReachableRestartsPerHr: (bootGraceMs?: number, pollMs?: number) => number;
 let poolShedExplainsFreeze: (idleSec: number | null, shedIdleSec: number | null, graceSec?: number) => boolean;
+let bootProgressExtendsGrace: (
+  activeForSec: number | null | undefined,
+  cpuTicksDelta: number | null | undefined,
+  bootGraceMs?: number,
+  bootGraceMaxMs?: number,
+  minTicks?: number,
+) => boolean;
+let procTreeCpuTicks: (
+  rootPid: number,
+  deps?: {
+    readFile?: (p: string, enc: string) => string;
+    readDir?: (p: string) => string[];
+    maxPids?: number;
+  },
+) => number | null;
 let alertFleet: (
   summary: string,
   deps?: {
@@ -57,6 +72,8 @@ beforeAll(async () => {
     shouldClearStrikes,
     maxReachableRestartsPerHr,
     poolShedExplainsFreeze,
+    bootProgressExtendsGrace,
+    procTreeCpuTicks,
     alertFleet,
     circuitOpenMessage,
     parseCgroupProcs,
@@ -645,6 +662,169 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
         readFile: (p: string) => (p.endsWith('cgroup.procs') ? '100\n' : 'node\0/usr/lib/Papercusp GUI/serve.mjs\0'),
       });
       expect(res!.desktop).toBe(1);
+    });
+  });
+
+  /**
+   * EI-20029519971967372: the fixed 480s boot grace is SHORTER than a cold boot on the current
+   * 1.23M-block own log, so the watchdog killed a healthy, progressing boot every ~8 min forever —
+   * bg-host was unrecoverable-by-restart. Both PG signals the watchdog reads go silent for a saturated
+   * boot exactly as they do for a dead process, so the fix gives it a signal that separates them:
+   * out-of-process forward progress, two-sample, bounded by an absolute cap.
+   */
+  describe('bootProgressExtendsGrace — progress-aware boot grace (EI-20029519971967372)', () => {
+    const GRACE = 8 * 60_000; // 480s plain grace
+    const CAP = 45 * 60_000; // absolute cap
+    const MIN = 50; // ticks/sample
+
+    it('extends the grace for the MEASURED failure: past 480s, tree burning ~99% of a core', () => {
+      // The live numbers from the filing: unit active 500s (past grace), +493 ticks in the 5s sample.
+      expect(bootProgressExtendsGrace(500, 493, GRACE, CAP, MIN)).toBe(true);
+    });
+
+    it('does NOT extend when the tree is idle — a boot that has stopped working is a freeze', () => {
+      expect(bootProgressExtendsGrace(500, 0, GRACE, CAP, MIN)).toBe(false);
+      expect(bootProgressExtendsGrace(500, MIN - 1, GRACE, CAP, MIN)).toBe(false);
+    });
+
+    it('treats exactly minTicks as progress (boundary is inclusive)', () => {
+      expect(bootProgressExtendsGrace(500, MIN, GRACE, CAP, MIN)).toBe(true);
+    });
+
+    /**
+     * THE BOUND. Taken from the sibling failure EI-20025430746362695, where the pool-shed suppression
+     * had no upper limit and excused staleness climbing 1372 -> 3173s across four passes, turning a
+     * guardrail into a ~53min fleet-wide outage. A suppression that never expires is not a safer
+     * suppression — past the cap we restart even while the process is demonstrably working.
+     */
+    it('STOPS extending at the absolute cap, however hard the process is working', () => {
+      expect(bootProgressExtendsGrace(CAP / 1000, 100_000, GRACE, CAP, MIN)).toBe(false);
+      expect(bootProgressExtendsGrace(CAP / 1000 + 600, 100_000, GRACE, CAP, MIN)).toBe(false);
+    });
+
+    it('defers to the plain boot grace below its window (not this check’s job)', () => {
+      expect(bootProgressExtendsGrace(120, 493, GRACE, CAP, MIN)).toBe(false);
+      expect(bootProgressExtendsGrace(GRACE / 1000 - 1, 493, GRACE, CAP, MIN)).toBe(false);
+    });
+
+    /**
+     * The never-infer-from-a-missing-signal asymmetry this whole file is built on (isFrozen,
+     * withinBootGrace, poolShedExplainsFreeze all share it): UNKNOWN must never manufacture
+     * suppression. A negative delta is UNKNOWN too — it means the tree changed identity under us
+     * (restart / pid reuse), not that it went idle.
+     */
+    it('grants nothing on an UNKNOWN progress reading', () => {
+      expect(bootProgressExtendsGrace(500, null, GRACE, CAP, MIN)).toBe(false);
+      expect(bootProgressExtendsGrace(500, undefined, GRACE, CAP, MIN)).toBe(false);
+      expect(bootProgressExtendsGrace(500, Number.NaN, GRACE, CAP, MIN)).toBe(false);
+      expect(bootProgressExtendsGrace(500, -400, GRACE, CAP, MIN)).toBe(false);
+    });
+
+    it('grants nothing on an UNKNOWN active-for reading', () => {
+      expect(bootProgressExtendsGrace(null, 493, GRACE, CAP, MIN)).toBe(false);
+      expect(bootProgressExtendsGrace(undefined, 493, GRACE, CAP, MIN)).toBe(false);
+      expect(bootProgressExtendsGrace(-5, 493, GRACE, CAP, MIN)).toBe(false);
+    });
+  });
+
+  /**
+   * EI-20029519971967372: the progress reading has to come from /proc, because the process it describes
+   * is too saturated to report on itself (an in-process beat is silenced by exactly the condition it
+   * would report). Two shapes are load-bearing and each has a control below: sum the WHOLE TREE (MainPID
+   * is a wrapper at utime=0 — measuring it alone says "idle"), and parse /proc/<pid>/stat after the LAST
+   * ')' (comm may contain spaces and parens).
+   */
+  describe('procTreeCpuTicks — out-of-process progress signal (EI-20029519971967372)', () => {
+    /** Build a /proc/<pid>/stat line. Fields 14/15 are utime/stime; everything before them is padding. */
+    const stat = (pid: number, comm: string, utime: number, stime: number) =>
+      `${pid} (${comm}) S 1 ${pid} ${pid} 0 -1 4194560 100 0 0 0 ${utime} ${stime} 0 0 20 0 12 0 999\n`;
+
+    /** A fake /proc: pid -> { comm, utime, stime, children }. */
+    const fakeProc = (table: Record<number, { comm: string; utime: number; stime: number; children?: number[] }>) => ({
+      readFile: (p: string) => {
+        let m = /^\/proc\/(\d+)\/stat$/.exec(p);
+        if (m) {
+          const e = table[Number(m[1])];
+          if (!e) throw new Error('ENOENT');
+          return stat(Number(m[1]), e.comm, e.utime, e.stime);
+        }
+        m = /^\/proc\/(\d+)\/task\/\d+\/children$/.exec(p);
+        if (m) {
+          const e = table[Number(m[1])];
+          if (!e) throw new Error('ENOENT');
+          return (e.children ?? []).join(' ');
+        }
+        throw new Error('ENOENT');
+      },
+      readDir: (p: string) => {
+        const m = /^\/proc\/(\d+)\/task$/.exec(p);
+        if (!m || !table[Number(m[1])]) throw new Error('ENOENT');
+        return [m[1]]; // one thread per process is enough to reach `children`
+      },
+    });
+
+    /**
+     * THE WRAPPER TRAP, as measured: MainPID sat at utime=0/RSS 82MB while the real listener child burned
+     * a full core. A probe that reads MainPID alone reports "idle" — the exact false exoneration this
+     * signal exists to avoid. Summing the tree makes picking the right child unnecessary.
+     */
+    it('sums the whole tree, so a zero-CPU MainPID wrapper does not read as idle', () => {
+      const proc = fakeProc({
+        100: { comm: 'node', utime: 0, stime: 0, children: [200] }, // the wrapper
+        200: { comm: 'node', utime: 400, stime: 93 }, // the real worker
+      });
+      expect(procTreeCpuTicks(100, proc)).toBe(493);
+      // ...and the control: the wrapper alone is indistinguishable from an idle process.
+      expect(procTreeCpuTicks(200, proc)).toBe(493);
+      const wrapperOnly = fakeProc({ 100: { comm: 'node', utime: 0, stime: 0 } });
+      expect(procTreeCpuTicks(100, wrapperOnly)).toBe(0);
+    });
+
+    it('walks descendants transitively', () => {
+      const proc = fakeProc({
+        1: { comm: 'a', utime: 1, stime: 1, children: [2] },
+        2: { comm: 'b', utime: 10, stime: 0, children: [3] },
+        3: { comm: 'c', utime: 100, stime: 8 },
+      });
+      expect(procTreeCpuTicks(1, proc)).toBe(120);
+    });
+
+    /** The classic /proc/stat parsing trap: comm is parenthesised and may contain spaces AND parens. */
+    it('parses a comm containing spaces and parentheses', () => {
+      const proc = fakeProc({ 7: { comm: 'weird (name) here', utime: 30, stime: 12 } });
+      expect(procTreeCpuTicks(7, proc)).toBe(42);
+    });
+
+    it('returns UNKNOWN (null) when the root itself is unreadable', () => {
+      expect(procTreeCpuTicks(999, fakeProc({}))).toBeNull();
+      expect(procTreeCpuTicks(0, fakeProc({}))).toBeNull();
+      expect(procTreeCpuTicks(Number.NaN, fakeProc({}))).toBeNull();
+    });
+
+    /** A descendant exiting mid-walk is ordinary, not a measurement fault — it must not poison the sum. */
+    it('skips a descendant that vanishes mid-walk instead of going UNKNOWN', () => {
+      const proc = fakeProc({
+        1: { comm: 'a', utime: 5, stime: 5, children: [2, 404] }, // 404 is not in the table
+        2: { comm: 'b', utime: 20, stime: 0 },
+      });
+      expect(procTreeCpuTicks(1, proc)).toBe(30);
+    });
+
+    it('terminates on a cyclic/self-referential children graph', () => {
+      const proc = fakeProc({
+        1: { comm: 'a', utime: 1, stime: 0, children: [2] },
+        2: { comm: 'b', utime: 2, stime: 0, children: [1, 2] }, // points back at both
+      });
+      expect(procTreeCpuTicks(1, proc)).toBe(3); // each pid counted exactly once
+    });
+
+    it('honours the maxPids bound on a pathological tree', () => {
+      const table: Record<number, { comm: string; utime: number; stime: number; children?: number[] }> = {};
+      for (let i = 1; i <= 100; i += 1) table[i] = { comm: 'p', utime: 1, stime: 0, children: [i + 1] };
+      table[101] = { comm: 'p', utime: 1, stime: 0 };
+      const capped = procTreeCpuTicks(1, { ...fakeProc(table), maxPids: 10 })!;
+      expect(capped).toBeLessThanOrEqual(10);
+      expect(procTreeCpuTicks(1, fakeProc(table))).toBe(101);
     });
   });
 });

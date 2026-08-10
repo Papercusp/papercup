@@ -173,7 +173,7 @@
  *   PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
 import { execFile, execFileSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { cpus, freemem, homedir, hostname, loadavg, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -329,6 +329,126 @@ export function shouldRestart(idleSec, schedSec, freezeSilenceS = FREEZE_SILENCE
  *  never invents suppression from a missing signal, mirroring `isFrozen`'s null-is-never-frozen asymmetry). */
 export function withinBootGrace(activeForSec, bootGraceMs = BOOT_GRACE_MS) {
   return activeForSec != null && activeForSec >= 0 && activeForSec * 1000 < bootGraceMs;
+}
+
+/** Pure progress-aware boot-grace verdict (EI-20029519971967372): may DEMONSTRATED forward progress
+ *  extend the boot grace past `bootGraceMs`? True only when ALL of:
+ *    - the unit is past the plain grace but still inside the absolute cap (so this can only ever extend
+ *      a BOOT window — it can never excuse a steady-state freeze), and
+ *    - `cpuTicksDelta` is a NUMBER at or above `minTicks` (positive evidence of work being done).
+ *  null/undefined/negative `cpuTicksDelta` is UNKNOWN and grants NOTHING — a /proc read fault, a pid
+ *  reused mid-sample, or a tree that shrank must never manufacture suppression from a missing signal
+ *  (the same asymmetry as `isFrozen` / `withinBootGrace` / `poolShedExplainsFreeze`). Likewise an
+ *  unknown `activeForSec`: if we cannot say we are in the boot window, we are not. */
+export function bootProgressExtendsGrace(
+  activeForSec,
+  cpuTicksDelta,
+  bootGraceMs = BOOT_GRACE_MS,
+  bootGraceMaxMs = BOOT_GRACE_MAX_MS,
+  minTicks = BOOT_PROGRESS_MIN_TICKS,
+) {
+  if (activeForSec == null || !Number.isFinite(activeForSec) || activeForSec < 0) return false;
+  const activeMs = activeForSec * 1000;
+  if (activeMs < bootGraceMs) return false; // plain boot grace already covers this — not our case
+  if (activeMs >= bootGraceMaxMs) return false; // past the absolute cap: restart even while progressing
+  if (cpuTicksDelta == null || !Number.isFinite(cpuTicksDelta) || cpuTicksDelta < 0) return false;
+  return cpuTicksDelta >= minTicks;
+}
+
+/** Sum utime+stime (clock ticks) across `rootPid` AND every descendant, read straight from /proc.
+ *
+ *  Two deliberate shapes (EI-20029519971967372):
+ *   - THE WHOLE TREE, because the unit's MainPID is only a wrapper (utime=0) while the real work runs in
+ *     a listener child; summing means never having to pick the right pid.
+ *   - Children come from /proc/<pid>/task/<tid>/children — PID-anchored, so unlike a `pgrep -f` pattern
+ *     it cannot match a peer agent's diagnostic shell that happens to contain the same string.
+ *
+ *  Returns null (UNKNOWN) only when the ROOT's own stat is unreadable. A descendant that vanishes
+ *  mid-walk is normal (processes exit) and is skipped, not escalated to UNKNOWN. Bounded by `maxPids` so
+ *  a pathological tree can never stall the poll loop. */
+export function procTreeCpuTicks(rootPid, deps = {}) {
+  const readFile = deps.readFile ?? readFileSync;
+  const readDir = deps.readDir ?? readdirSync;
+  const maxPids = deps.maxPids ?? 512;
+  if (!Number.isFinite(rootPid) || rootPid <= 0) return null;
+
+  /** utime (field 14) + stime (field 15) of /proc/<pid>/stat, or null if unreadable/unparseable. The
+   *  comm field (2) is parenthesised and may itself contain spaces AND parens, so field splitting must
+   *  start after the LAST ')' — the classic /proc/stat parsing trap. */
+  const ticksOf = (pid) => {
+    let raw;
+    try {
+      raw = String(readFile(`/proc/${pid}/stat`, 'utf8'));
+    } catch {
+      return null;
+    }
+    const close = raw.lastIndexOf(')');
+    if (close < 0) return null;
+    const fields = raw.slice(close + 2).trim().split(/\s+/); // fields[0] is field 3 (state)
+    const utime = Number(fields[11]); // field 14
+    const stime = Number(fields[12]); // field 15
+    if (!Number.isFinite(utime) || !Number.isFinite(stime)) return null;
+    return utime + stime;
+  };
+
+  const rootTicks = ticksOf(rootPid);
+  if (rootTicks == null) return null; // the root itself is gone/unreadable ⇒ genuinely UNKNOWN
+
+  let total = rootTicks;
+  const seen = new Set([rootPid]);
+  const stack = [rootPid];
+  while (stack.length > 0 && seen.size < maxPids) {
+    const pid = stack.pop();
+    let tids;
+    try {
+      tids = readDir(`/proc/${pid}/task`);
+    } catch {
+      continue; // exited mid-walk — ordinary, not UNKNOWN
+    }
+    for (const tid of tids) {
+      let kids;
+      try {
+        kids = String(readFile(`/proc/${pid}/task/${tid}/children`, 'utf8')).trim();
+      } catch {
+        continue;
+      }
+      if (!kids) continue;
+      for (const tok of kids.split(/\s+/)) {
+        const child = Number(tok);
+        if (!Number.isFinite(child) || child <= 0 || seen.has(child)) continue;
+        seen.add(child);
+        const t = ticksOf(child);
+        if (t != null) total += t;
+        stack.push(child);
+        if (seen.size >= maxPids) break;
+      }
+    }
+  }
+  return total;
+}
+
+/** The unit's MainPID, or null if systemd cannot tell us (never active, read fault, or 0). */
+async function unitMainPid() {
+  const r = await sh('systemctl', ['--user', 'show', UNIT, '-p', 'MainPID', '--value']);
+  if (r.err) return null;
+  const pid = Number(r.stdout.trim());
+  return Number.isFinite(pid) && pid > 0 ? pid : null;
+}
+
+/** TWO-SAMPLE CPU delta (ticks) over the unit's whole process tree — the only honest way to ask "is this
+ *  process doing work RIGHT NOW". A single sample cannot answer it (that is the `top -n1` 0.0% artifact,
+ *  EI-20017779937060288). Returns null (UNKNOWN) on any read fault, and also on a NEGATIVE delta, which
+ *  means the tree changed identity under us (a restart / pid reuse) rather than that it went idle. */
+async function bootProgressTicks(sampleMs = BOOT_PROGRESS_SAMPLE_MS, deps = {}) {
+  const pid = deps.mainPid ?? (await unitMainPid());
+  if (pid == null) return null;
+  const before = procTreeCpuTicks(pid, deps);
+  if (before == null) return null;
+  await new Promise((r) => setTimeout(r, sampleMs));
+  const after = procTreeCpuTicks(pid, deps);
+  if (after == null) return null;
+  const delta = after - before;
+  return delta >= 0 ? delta : null;
 }
 
 /** How long (seconds) the unit has been in its CURRENT active generation — from systemd's own
@@ -758,6 +878,35 @@ async function poll() {
         log(`explained by a critical PG-pool-shed guardrail event ${shedIdleSec}s ago (EI-9935/P-006/W4) — routine fires ${idleSec}s stale AND scheduler ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} stale, but the ticker is SHEDDING under pool starvation, not dead. NOT restarting (WI-37506).`);
       }
       return;
+    }
+    // EI-20029519971967372: LAST suppression before the kill — is this a boot that is still WORKING?
+    // Both PG signals go silent for a saturated boot exactly as they do for a dead one, so ask /proc
+    // instead: a two-sample CPU delta over the unit's whole process tree. Placed here (rather than beside
+    // the plain boot-grace check) so the sample is only paid when we were otherwise about to restart.
+    // Bounded by BOOT_GRACE_MAX_MS — past that we kill anyway, loudly, because an unbounded suppression
+    // is how the sibling pool-shed guardrail became a 53min outage (EI-20025430746362695).
+    const progressTicks = await bootProgressTicks();
+    if (bootProgressExtendsGrace(activeForSec, progressTicks)) {
+      const now = Date.now();
+      if (now - lastHeartbeat >= HEARTBEAT_MS) {
+        lastHeartbeat = now;
+        log(
+          `boot STILL PROGRESSING (unit active ${Math.round(activeForSec)}s, past the ${Math.round(BOOT_GRACE_MS / 1000)}s plain grace but under the ${Math.round(BOOT_GRACE_MAX_MS / 1000)}s cap) — ` +
+            `process tree burned ${progressTicks} CPU ticks in ${Math.round(BOOT_PROGRESS_SAMPLE_MS / 1000)}s (>= ${BOOT_PROGRESS_MIN_TICKS}), so routine fires ${idleSec}s stale AND scheduler ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} stale is BOOT SATURATION, not a freeze. NOT restarting (EI-20029519971967372).`,
+        );
+      }
+      return;
+    }
+    // Past the cap while still progressing is its own alarm: we are about to kill a process that is
+    // demonstrably working, because it has had long enough. Say so — this is the case an operator must
+    // see, and the one the bounded-suppression design deliberately does not hide.
+    if (activeForSec != null && activeForSec * 1000 >= BOOT_GRACE_MAX_MS && progressTicks != null && progressTicks >= BOOT_PROGRESS_MIN_TICKS) {
+      const msg =
+        `⚠ ${UNIT} boot exceeded the ${Math.round(BOOT_GRACE_MAX_MS / 1000)}s progress-extended boot grace and is STILL burning CPU ` +
+        `(${progressTicks} ticks/${Math.round(BOOT_PROGRESS_SAMPLE_MS / 1000)}s) after ${Math.round(activeForSec)}s active — restarting anyway (bounded suppression, EI-20029519971967372). ` +
+        `A boot this slow is a different problem than a slow boot: check own-log length.`;
+      log(msg);
+      void alertFleet(msg);
     }
     // Snapshot the cgroup BEFORE restarting — the restart tears it down, so this is unreadable after.
     // Fail-soft (null ⇒ report nothing) and deliberately off the decision path: `restart()` is called
