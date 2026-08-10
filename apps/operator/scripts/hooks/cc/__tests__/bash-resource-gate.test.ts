@@ -3050,6 +3050,16 @@ describe('sanctioned in-tree scratch exemption (EI-19372138838008750)', () => {
     expect(reason).toMatch(scratchRemedy);
   });
 
+  // EI-19304149823089876 asked for this explicitly: the working mechanism was
+  // never named at the point of failure, so the message routed agents toward the
+  // two paths that cannot work.
+  it('names `code:run` as the other working route for a repo-importing probe', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo hi > packages/operator-core/lib/evil.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('code:run');
+  });
+
   it('names the in-tree scratch location in the interpreter-write deny', () => {
     const reason = denyReason(
       runGate(

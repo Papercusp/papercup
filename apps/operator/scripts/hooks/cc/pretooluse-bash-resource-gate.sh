@@ -2337,7 +2337,14 @@ def _canonical_tree_root():
         return None
 
 
-# EI-19372138838008750 — the ONE sanctioned scratch location INSIDE the tree.
+# EI-19372138838008750 / EI-19304149823089876 — the ONE sanctioned scratch
+# location INSIDE the tree.
+#
+# Two independent reports, same mechanism. The second enumerated all three dead
+# ends it hit in a row: a relative import from /tmp (resolves against /tmp), an
+# absolute one (its own `pg` import then fails), and copying the script into the
+# tree so resolution works (denied here — correctly). That is the whole space of
+# obvious moves, so an agent mid-verification had nowhere legal to land.
 #
 # This guard exists because a raw shell write into the tree skips the file-lock
 # hook and can be swept into a commit by git-sync. NEITHER hazard can reach
@@ -2395,9 +2402,10 @@ _SCRATCH_REMEDY = (
     'Genuinely a scratch/log file? Write it outside the tree '
     '(~/.papercusp/scratch or /tmp). But if it must IMPORT repo modules (the '
     'usual tsx/node probe), neither of those can resolve them — there is no repo '
-    '`node_modules` above either — so write it under `.papercusp/scratch/` INSIDE '
-    'the tree instead: that path is gitignored, is exempt from this guard, and '
-    'resolves workspace imports normally. '
+    '`node_modules` above either — so either run it through `code:run` (executes '
+    'in-tree with the tool namespace available), or write it under '
+    '`.papercusp/scratch/` INSIDE the tree: that path is gitignored, is exempt '
+    'from this guard, and resolves workspace imports normally. '
 )
 
 
