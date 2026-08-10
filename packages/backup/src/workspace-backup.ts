@@ -251,7 +251,7 @@ export class WorkspaceBackup {
     // crash-resume replays the degradation instead of silently recovering to a
     // clean 'ok': the cached step result is the only record a resumed workflow
     // sees of what the dump did.
-    const dumpOutcome: { ok: boolean; error: string | null } = await steps.runStep(
+    const dumpOutcome: { ok: boolean; error: string | null } | undefined = await steps.runStep(
       'backup-pre-snapshot-hook',
       () =>
         runPreSnapshotHook({
@@ -304,7 +304,19 @@ export class WorkspaceBackup {
       // only rewrites 'running' (unaffected), while system-health derives
       // lastOkAtMs from status='ok' — so its existing BACKUP_STALE_MS warn
       // finally fires instead of being fed a lie.
-      const dumpDegraded = !dumpOutcome.ok;
+      // Only a POSITIVE report of failure marks the row degraded. An absent or
+      // malformed step result means "we do not know", and a workflow RESUMED
+      // across the deploy that introduced this step legitimately replays a
+      // cached `undefined` from the old code — dereferencing that threw.
+      //
+      // Fail-open here is deliberate, and is the same lesson this bug taught
+      // one level up: the status column must not be the load-bearing detector.
+      // The artifact-freshness probe in papercup-backup-health-check.sh is what
+      // actually guards this class, keyed on the dump's mtime rather than on
+      // any status anyone remembered to write. So an unknown outcome does not
+      // fabricate an alarm here, and a genuinely dead dump is still caught
+      // there.
+      const dumpDegraded = dumpOutcome?.ok === false;
       await steps.runStep('backup-record-result', async () => {
         await sql`
           UPDATE harness_shared.backup_snapshots

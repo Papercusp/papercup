@@ -190,8 +190,14 @@ export default function BackupsTab() {
     }
   }, [lastRestoredPath, askConfirm]);
 
+  // 'degraded' is offerable: the kopia snapshot succeeded and its file tree is
+  // fully restorable — only the DB dump inside it is stale
+  // (EI-20109034777197353). Excluding it would withdraw every recent recovery
+  // option at exactly the moment something is already wrong, which is worse
+  // than restoring a tree with an old database. The option is LABELLED instead,
+  // so the choice is informed rather than hidden.
   const restoreOptions = useMemo(
-    () => snapshots.filter((s) => s.kopiaSnapshotId && s.status === 'ok'),
+    () => snapshots.filter((s) => s.kopiaSnapshotId && (s.status === 'ok' || s.status === 'degraded')),
     [snapshots],
   );
 
@@ -288,7 +294,7 @@ export default function BackupsTab() {
             { value: '_unset', label: '— pick a snapshot —' },
             ...restoreOptions.map((s) => ({
               value: s.kopiaSnapshotId ?? '',
-              label: `${s.startedAt.replace('T', ' ').slice(0, 19)} · ${s.triggerReason} · ${fmtBytes(s.bytesAdded ?? 0)}`,
+              label: `${s.startedAt.replace('T', ' ').slice(0, 19)} · ${s.triggerReason} · ${fmtBytes(s.bytesAdded ?? 0)}${s.status === 'degraded' ? ' · ⚠ STALE DB DUMP' : ''}`,
             })),
           ]}
         />

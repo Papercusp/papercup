@@ -439,4 +439,42 @@ describe('degraded pre-snapshot dump must not record status=ok (EI-2010903477719
     expect(status).toBe('ok');
     expect(errorText).toBeNull();
   });
+
+  it('does NOT fabricate degraded from an absent step result (a resumed pre-deploy workflow)', async () => {
+    // A DBOS workflow resumed across the deploy that added this step replays a
+    // cached `undefined` from the old code. That means "unknown", not "failed":
+    // only a positive { ok:false } marks degraded. Dereferencing it also used
+    // to throw outright, taking the whole snapshot down with it.
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: unknown, ...values: unknown[]) => {
+      if (Array.isArray(strings)) queries.push({ text: (strings as string[]).join('?'), values });
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    configureBackupStepRunner({
+      runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        if (name === 'backup-record-result') return fn();
+        const canned: Record<string, unknown> = {
+          'backup-insert-row': { id: 7, startedAtMs: 1000 },
+          'backup-pre-snapshot-hook': undefined, // the legacy cached value
+          'backup-kopia-create': {
+            snapshotId: 'kopia-xyz', bytesAdded: 11, bytesTotal: 22, durationMs: 5,
+          },
+        };
+        return canned[name] as T;
+      },
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+    vi.spyOn(w, 'ensureRepo').mockResolvedValue(undefined);
+    await expect(w.snapshot('interval')).resolves.toMatchObject({ kopiaSnapshotId: 'kopia-xyz' });
+    const update = queries.find(
+      (q) => /UPDATE harness_shared\.backup_snapshots/.test(q.text) && /kopia_snapshot_id/.test(q.text),
+    );
+    expect(update!.values[1]).toBe('ok');
+  });
 });
