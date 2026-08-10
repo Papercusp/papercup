@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
-// PotHealthPane — WI-4778 (frozen v2 mockup): the full-height "what the Mug +
-// Kettle decide from" view that replaces the chat body while 🫖 is on. Pins:
-// the three reused sync queries (floorView + snapshot + liveness — no parallel
-// data path), the chips digest, the ☕ Mug cards (frontier / cups / placements
-// & capacity / escalations & steering incl. the WI-4778 carryNote + capacity
-// floor-view extension), the 🌡 Kettle cards (health panels / anomalies→action
-// / cross-monitor / observations), and the honest empty/loading states.
+// PotHealthPane — REBUILT for the su-only era (retire-mug-kettle-su-only-2026-08-09
+// P-018..P-021, design D-032). Pins the three questions the pane now answers —
+// what the pot is POINTED AT (goals), who is DRIVING (su agents), and whether it
+// is WORKING (throughput + attention) — plus the two rulings that are easiest to
+// undo by accident:
+//
+//   1. liveness comes from `fleet.status`'s `sessionState`, NOT from a heartbeat
+//      (the "warm-dead" case below is the regression guard, and it is the whole
+//      reason the pane was rebuilt rather than patched);
+//   2. the goals section is ONE `goals.list` — never a per-goal `goals.detail`
+//      fan-out.
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -25,199 +29,218 @@ import { PotHealthPane } from './PotHealthPane';
 
 const NOW = Date.now();
 
-function seedSnapshot(overrides: Record<string, unknown> = {}) {
-  h.queries['overwatch.snapshot'] = {
-    data: [
-      {
-        potSlug: 'papercusp',
-        wokeBy: 'timer',
-        queen: {
-          started: true,
-          lastWakeAt: new Date(NOW - 2 * 60_000).toISOString(),
-          stalled: false,
-          cadenceOk: true,
-          workingTracked: 2,
-          nextFireAt: null,
-          coordOwner: null,
-          consecutiveZeroTokenWakes: 0,
-        },
-        bees: { running: 3, completed: 7, churning: 0, deadClaims: 0, invalidModelFailures: 0 },
-        workFeed: { frontier: 5, autoEligibleStuck: 0, deadRoutines: 0, blockedStranded: 0 },
-        tokens: {
-          pausedBuckets: [],
-          gatewayFailovers: 0,
-          gw429s: 0,
-          accountsAvailable: 4,
-          gatewayWedged: false,
-          gatewaySustainedThrottle: false,
-          gatewayAdmissionStarved: false,
-        },
-        plans: { active: 2, stalledItems: 0, agingEscalations: 1 },
-        observations: { laneCount: 3, recentByRole: { queen: 1, worker: 2 } },
-        crossMonitor: { queenAlive: true, overwatchAlive: true },
-        ownerSteering: { pauseNewWork: false, pausedUntil: null, eligiblePlans: [] },
-        anomalies: [
-          {
-            kind: 'gateway-throttle',
-            severity: 'warning',
-            subject: 'gateway',
-            detail: '4 accounts at their 7-day wall',
-            suggestedAction: { type: 'escalate' },
-          },
-        ],
-        ...overrides,
-      },
-    ],
-  };
-  h.queries['overwatch.liveness'] = {
-    data: [{ lastRunAt: new Date(NOW - 40_000).toISOString(), alive: true }],
+function seedGoals(goals: unknown[] = [defaultGoal()]) {
+  h.queries['goals.list'] = {
+    data: [{ goals, portfolioSpendUsd: 412.5, portfolioProjects: 3 }],
   };
 }
 
-function seedFloor(overrides: Record<string, unknown> = {}) {
-  h.queries['mugBrief.floorView'] = {
-    data: [
-      {
-        potSlug: 'papercusp',
-        computedAt: NOW,
-        cups: [
-          { id: 'cup-a49e', doing: 'WI-4662 fleet-spec live e2e verify', load: 2, alive: true },
-          { id: 'cup-12d7', doing: null, load: 0, alive: false },
-        ],
-        frontier: [
-          { id: 'WI-4665', title: 'Durable CTRL anchor', view: 'work-item', harness: 'papercusp' },
-        ],
-        frontierTotal: 3,
-        frontierBlocked: 2,
-        frontierQuarantined: 1,
-        openPlacements: { recovering: 1, stranded: 0, workingTracked: 2 },
-        escalations: [{ id: 'escalation:m1', severity: 'critical', summary: 'WI-4655 stranded' }],
-        steering: {
-          directive: 'Focus the sidebar revival',
-          pauseNewWork: false,
-          pausedUntil: null,
-          eligiblePlans: ['operator-chat-sidebar-revival'],
-        },
-        capacity: {
-          factor: 0.62,
-          dispatchBudget: 5,
-          utilizationPct: 38,
-          paused: false,
-          advice: 'place broadly',
-        },
-        carryNote: { at: NOW - 5 * 60_000, note: 'resume major-bug lane after canary' },
-        ...overrides,
-      },
+function defaultGoal(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'G-1',
+    title: 'Ship the desktop beta',
+    status: 'active',
+    killCriterion: 'Stop when the beta has 20 external installs.',
+    tripwires: [
+      { metric: 'spend', label: 'spend', threshold: 500, current: 310, unit: 'usd' },
+      // No `current` — this one must render as UNREAD, never as a healthy zero.
+      { metric: 'installs', label: 'installs', threshold: 20 },
     ],
+    budgetCents: 50_000,
+    spendUsd: 310,
+    spendRecentUsd: 70,
+    spendRecentWindowDays: 7,
+    openWorkItems: 9,
+    needsHuman: 2,
+    projectCount: 3,
+    lastActivityAt: new Date(NOW - 3 * 60 * 60_000).toISOString(),
+    ...overrides,
   };
 }
 
-describe('PotHealthPane (WI-4778)', () => {
-  beforeEach(() => {
-    h.queries = {};
-    h.queryNames = [];
-    // Pin the clock to the fixture's NOW (WI-5506): compactAge() defaults to
-    // the REAL Date.now() at render time, not a mocked clock — under a fast
-    // run the gap between module-load NOW and this test's render/assert stays
-    // under a rounding boundary (e.g. 40s->41s), but under heavy fleet load
-    // enough wall-clock time can pass to tip a relative-age assertion over
-    // that boundary and flake. Freezing time removes the whole class of
-    // wall-clock-vs-fixed-NOW flakes for every relative-age assertion here.
-    vi.useFakeTimers({ now: NOW });
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-    cleanup();
-  });
+function seedAgents(rows: unknown[]) {
+  h.queries['fleet.status'] = { data: rows };
+}
 
-  it('reads the three REUSED sync queries — no parallel data path', () => {
-    seedSnapshot();
-    seedFloor();
+function agent(overrides: Record<string, unknown> = {}) {
+  return {
+    ownerId: 'su-aaaa',
+    label: 'su · aaaa',
+    role: 'su',
+    intent: 'rebuilding the pot health pane',
+    planSlug: 'retire-mug-kettle-su-only-2026-08-09',
+    potSlug: 'papercusp',
+    fleetSlug: null,
+    fleetRole: null,
+    sessionState: 'live',
+    lastActiveSecAgo: 45,
+    ...overrides,
+  };
+}
+
+function seedThroughput() {
+  h.queries['workItems.stats'] = {
+    data: [
+      { kind: 'bug', state: 'open', n: 12, terminal: false },
+      { kind: 'change', state: 'done', n: 40, terminal: true },
+      { kind: 'task', state: 'wip', n: 3, terminal: false },
+    ],
+  };
+  h.queries['workItems.delta24h'] = {
+    data: [
+      { kind: 'bug', opened: 4, closed: 6 },
+      { kind: 'change', opened: 2, closed: 1 },
+    ],
+  };
+  h.queries['plans.attentionCounts'] = {
+    data: [{ decisionItems: 2, decisionPlans: 1, alerts: 0, total: 3 }],
+  };
+  h.queries['usage.spend'] = {
+    data: [{ h1: { spendUsd: 1.25, calls: 30 }, h24: { spendUsd: 42.5, calls: 900 } }],
+  };
+}
+
+function seedAll() {
+  seedGoals();
+  seedAgents([agent()]);
+  seedThroughput();
+}
+
+beforeEach(() => {
+  h.queries = {};
+  h.queryNames = [];
+});
+afterEach(cleanup);
+
+describe('PotHealthPane (su-only rebuild — P-018..P-021 / D-032)', () => {
+  it('reads only REUSED sync queries — no parallel data path, and no retired mug/kettle brief', () => {
+    seedAll();
     render(<PotHealthPane />);
-    expect(h.queryNames).toContain('mugBrief.floorView');
-    expect(h.queryNames).toContain('overwatch.snapshot');
-    expect(h.queryNames).toContain('overwatch.liveness');
+
+    expect(new Set(h.queryNames)).toEqual(
+      new Set([
+        'goals.list',
+        'fleet.status',
+        'workItems.stats',
+        'workItems.delta24h',
+        'plans.attentionCounts',
+        'usage.spend',
+      ]),
+    );
+    // The retired tier's briefs must not come back.
+    expect(h.queryNames).not.toContain('mugBrief.floorView');
+    expect(h.queryNames).not.toContain('overwatch.snapshot');
+    expect(h.queryNames).not.toContain('overwatch.liveness');
+  });
+
+  it('does NOT fan out a goals.detail per goal — the goals section is one query', () => {
+    seedGoals([defaultGoal(), defaultGoal({ id: 'G-2', title: 'Second goal' })]);
+    seedAgents([agent()]);
+    seedThroughput();
+    render(<PotHealthPane />);
+
+    expect(h.queryNames).not.toContain('goals.detail');
+    expect(h.queryNames.filter((q) => q === 'goals.list')).toHaveLength(1);
   });
 
   it('renders a loading placeholder while every query is cold', () => {
     render(<PotHealthPane />);
-    expect(screen.getByText('Loading pot health…')).toBeTruthy();
+    expect(screen.getByText(/loading pot health/i)).toBeTruthy();
   });
 
-  it('chips digest: Mug/Kettle ages, working, ready, accounts, need-you', () => {
-    seedSnapshot();
-    seedFloor();
+  it('GOALS: renders the kill criterion, the ceiling, and the goal meta', () => {
+    seedAll();
     render(<PotHealthPane />);
-    expect(screen.getByText('Mug 2m')).toBeTruthy();
-    expect(screen.getByText('Kettle 40s')).toBeTruthy();
-    expect(screen.getByText('3 working')).toBeTruthy();
-    expect(screen.getByText('5 ready')).toBeTruthy();
-    // Appears in the chips AND the kettle tokens kv — both are correct.
-    expect(screen.getAllByText('4 accounts up').length).toBeGreaterThan(0);
-    // 1 warning anomaly + 1 aging escalation + 1 open floor escalation = 3.
-    expect(screen.getByText('3 need you')).toBeTruthy();
+
+    expect(screen.getByText('Stop when the beta has 20 external installs.')).toBeTruthy();
+    expect(screen.getByText('$310 of $500')).toBeTruthy();
+    expect(screen.getByText(/3 projects · 9 open · 2 need you/)).toBeTruthy();
   });
 
-  it('☕ Mug section (below the Kettle — owner order 2026-07-14) renders her REAL floor: frontier, cups, placements & capacity, escalations & steering + carry-note', () => {
-    seedSnapshot();
-    seedFloor();
+  it('GOALS: a goal with NO kill criterion says so loudly — nothing can stop it', () => {
+    seedGoals([defaultGoal({ killCriterion: null })]);
+    seedAgents([agent()]);
+    seedThroughput();
     render(<PotHealthPane />);
-    // Section rubric.
-    expect(screen.getByText('What the Mug looks at')).toBeTruthy();
-    // Frontier card: rows + honest counts.
-    expect(screen.getByText('WI-4665')).toBeTruthy();
-    expect(screen.getByText('3 ready · 2 blocked · 1 quarantined')).toBeTruthy();
-    expect(screen.getByText('+2 more in rank order')).toBeTruthy();
-    // Cups card.
-    expect(screen.getByText('cup-a49e')).toBeTruthy();
-    expect(screen.getByText('idle')).toBeTruthy();
-    // Placements & capacity (the WI-4778 floor-view extension).
-    expect(screen.getByText('2 working · 1 recovering · 0 stranded')).toBeTruthy();
-    expect(screen.getByText('62% headroom · 38% used')).toBeTruthy();
-    expect(screen.getByText('5 spare cup slots')).toBeTruthy();
-    expect(screen.getByText('place broadly')).toBeTruthy();
-    // Escalations & steering + the carry-note.
-    expect(screen.getByText(/WI-4655 stranded/)).toBeTruthy();
-    expect(screen.getByText(/Focus the sidebar revival/)).toBeTruthy();
-    expect(screen.getByText(/resume major-bug lane after canary/)).toBeTruthy();
+
+    expect(screen.getByText(/no kill criterion was set/i)).toBeTruthy();
   });
 
-  it('a dark gateway renders the honest no-capacity line, never a fake meter', () => {
-    seedSnapshot();
-    seedFloor({ capacity: null, carryNote: null });
+  it('GOALS: an UNMEASURED tripwire renders as unread, never as a healthy zero', () => {
+    seedAll();
     render(<PotHealthPane />);
-    expect(screen.getByText('no capacity read (gateway unreachable)')).toBeTruthy();
-    expect(screen.queryByText(/carry-note:/)).toBeNull();
+
+    // The measured one shows its reading...
+    expect(screen.getByText('$310 of $500')).toBeTruthy();
+    // ...and the unmeasured one refuses to render a 0 it never took.
+    expect(screen.getByText(/not measured yet/i)).toBeTruthy();
+    expect(screen.queryByText('0 of 20')).toBeNull();
   });
 
-  it('🌡 Kettle section renders its REAL brief: health panels, anomalies→action, cross-monitor, observations', () => {
-    seedSnapshot();
-    seedFloor();
+  it('SU AGENTS: renders sessionState as the liveness verdict', () => {
+    seedGoals();
+    seedAgents([agent({ sessionState: 'live' })]);
+    seedThroughput();
     render(<PotHealthPane />);
-    expect(screen.getByText('What the Kettle looks at')).toBeTruthy();
-    // Health panels (kv rows off the real brief fields).
-    expect(screen.getByText(/on cadence · woke 2m ago · driving 2/)).toBeTruthy();
-    expect(screen.getByText('3 running · 7 completed · 0 churning · 0 dead claims')).toBeTruthy();
-    expect(screen.getByText('5 ready · 0 stuck · 0 dead routines · 0 stranded')).toBeTruthy();
-    expect(screen.getAllByText('4 accounts up').length).toBeGreaterThan(0);
-    expect(screen.getByText('2 active · 0 stalled items · 1 aging escalations')).toBeTruthy();
-    // Anomalies with the suggested-action chip.
-    expect(screen.getByText(/4 accounts at their 7-day wall/)).toBeTruthy();
-    expect(screen.getByText('ESCALATE')).toBeTruthy();
-    // Cross-monitor & wake.
-    expect(screen.getByText(/yes · last run 40s ago/)).toBeTruthy();
-    expect(screen.getByText('timer')).toBeTruthy();
-    expect(screen.getByText('new work allowed')).toBeTruthy();
-    // Observations by role.
-    expect(screen.getByText('3 recorded')).toBeTruthy();
-    expect(screen.getByText('queen')).toBeTruthy();
+
+    expect(screen.getByText('su · aaaa')).toBeTruthy();
+    expect(screen.getByText('live')).toBeTruthy();
+    expect(screen.getByText('rebuilding the pot health pane')).toBeTruthy();
   });
 
-  it('anomaly-free kettle renders the healthy empty state', () => {
-    seedSnapshot({ anomalies: [] });
-    seedFloor({ escalations: [] });
+  /**
+   * THE REGRESSION GUARD for the reason this pane was rebuilt.
+   *
+   * A warm-dead session keeps beating — `lastActiveSecAgo` is small — while the
+   * shared oracle has already ruled `sessionState: 'ended'`. Any liveness
+   * derived from recency (the old pane's `live.alive`, or `PresenceRail`'s
+   * heartbeat rule) renders this agent as healthy and green. It must not.
+   */
+  it('SU AGENTS: a WARM-DEAD agent (fresh heartbeat, sessionState ended) is not shown as healthy', () => {
+    seedGoals();
+    seedAgents([agent({ sessionState: 'ended', lastActiveSecAgo: 3 })]);
+    seedThroughput();
+    const { container } = render(<PotHealthPane />);
+
+    expect(screen.getByText('ended')).toBeTruthy();
+    // Its dot must carry the dead tone, and no live tone anywhere in the row.
+    const row = container.querySelector('.op-ph-agent');
+    expect(row).toBeTruthy();
+    expect(row?.querySelector('.op-pot-dot.bad')).toBeTruthy();
+    expect(row?.querySelector('.op-pot-dot.ok')).toBeNull();
+    // And it must not be counted among the drivers.
+    expect(screen.getByText('0 driving')).toBeTruthy();
+  });
+
+  it('SU AGENTS: an ABSENT verdict reads as unknown, not as live', () => {
+    seedGoals();
+    seedAgents([agent({ sessionState: null })]);
+    seedThroughput();
+    const { container } = render(<PotHealthPane />);
+
+    expect(screen.getByText('unknown')).toBeTruthy();
+    expect(container.querySelector('.op-ph-agent .op-pot-dot.ok')).toBeNull();
+  });
+
+  it('THROUGHPUT: renders open work, 24h movement, attention and spend', () => {
+    seedAll();
     render(<PotHealthPane />);
-    expect(screen.getByText('none — system healthy')).toBeTruthy();
-    expect(screen.getByText('no open escalations')).toBeTruthy();
+
+    // open = the non-terminal rows only (12 + 3), never the done ones.
+    expect(screen.getByText('15 items')).toBeTruthy();
+    expect(screen.getByText('6 opened · 7 closed')).toBeTruthy();
+    expect(screen.getByText('2 items · 1 plans')).toBeTruthy();
+    expect(screen.getByText(/\$1\.25 last hour · \$42\.50 last 24h \(900 calls\)/)).toBeTruthy();
+    expect(screen.getByText(/\$412\.50 across 3 projects/)).toBeTruthy();
+  });
+
+  it('honest empty states: no goals steering, nobody driving', () => {
+    seedGoals([]);
+    seedAgents([]);
+    seedThroughput();
+    render(<PotHealthPane />);
+
+    expect(screen.getByText(/nothing is steering this pot/i)).toBeTruthy();
+    expect(screen.getByText(/nobody is driving this pot/i)).toBeTruthy();
   });
 });

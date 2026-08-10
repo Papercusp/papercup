@@ -27592,6 +27592,9 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 .op-pot-dot.ok {
   background: var(--good);
 }
+.op-pot-dot.warn {
+  background: var(--warn);
+}
 .op-pot-dot.bad {
   background: transparent;
   border: 1.5px solid color-mix(in srgb, var(--bad), var(--fg-mute) 35%);
@@ -27667,73 +27670,17 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   border: 1px solid color-mix(in srgb, var(--bad), transparent 65%);
 }
 
-.op-pot-chip.nudge {
-  color: color-mix(in srgb, var(--warn), var(--fg) 35%);
-  background: color-mix(in srgb, var(--warn), transparent 90%);
-  border: 1px solid color-mix(in srgb, var(--warn), transparent 68%);
-}
+/* `.nudge` / `.obs` were the Kettle's suggested-action tones and went with it
+   (P-018). `.esc` stays — escalation is not Kettle-specific. */
 
-.op-pot-chip.obs {
-  color: var(--accent-soft);
-  background: rgb(from var(--accent-strong) r g b / 0.10);
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.30);
-}
-
-/* Cup rows — mockup .cup-row: ☕ glyph, mono id, doing with the WI id in
-   accent mono, bordered load chip, trailing heartbeat dot; idle rows dim. */
-.op-pot-cup {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 5px 8px;
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.op-pot-cup:hover { background: rgba(255, 255, 255, 0.03); }
-
-.op-pot-cup-glyph { flex: none; font-size: 12px; }
-
-.op-pot-cup-id {
-  flex: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--fg);
-}
-
-.op-pot-cup-doing {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-mute);
-}
-
+/* The cup-row idioms (.op-pot-cup*, ☕ glyph + load chip) were REMOVED with the
+   nursery-cup tier they rendered (retire-mug-kettle-su-only-2026-08-09 P-018).
+   `.op-pot-wi` survives — it is the generic accent-mono work-item id, not a
+   cup-specific rule. */
 .op-pot-wi {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;
   color: var(--accent-soft);
-}
-
-.op-pot-cup-load {
-  flex: none;
-  padding: 1px 5px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  color: var(--fg-mute);
-  font-variant-numeric: tabular-nums;
-}
-
-.op-pot-cup .op-pot-dot { align-self: center; }
-
-.op-pot-cup.idle .op-pot-cup-id,
-.op-pot-cup.idle .op-pot-cup-doing {
-  color: var(--fg-mute);
-  opacity: 0.75;
 }
 
 /* Ranked queue rows — mockup .q-row: mono rank, accent WI id, ink title. */
@@ -27783,34 +27730,11 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   font-size: 11px;
 }
 
-.op-pot-recovering {
-  color: color-mix(in srgb, var(--warn), var(--fg) 30%);
-  font-weight: 600;
-}
-
-/* Steering — mockup .steer: dashed accent box, italic quote, fact row with
-   the pause verdict in --good. */
-.op-pot-steering {
-  padding: 8px 10px;
-  border: 1px dashed color-mix(in srgb, var(--accent-strong), transparent 55%);
-  border-radius: 10px;
-  background: rgb(from var(--accent-strong) r g b / 0.09);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.op-pot-directive { color: var(--fg); font-style: italic; }
-
-.op-pot-steer-facts {
-  margin-top: 5px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  font-size: 10.5px;
-  color: var(--fg-mute);
-}
-
-.op-pot-steer-facts b { color: var(--good); font-weight: 650; }
+/* `.op-pot-recovering` (a placement's recovering count) and the `.op-pot-steer*`
+   / `.op-pot-directive` steering box were the Mug's owner-steering readout and
+   were REMOVED with her (retire-mug-kettle-su-only-2026-08-09 P-018). Owner
+   steering of an su is a GOAL now — its kill criterion and tripwires — which
+   the pane renders in the goals section, not as a separate directive box. */
 
 .op-pot-empty { color: var(--fg-mute); font-size: 11.5px; }
 
@@ -27999,14 +27923,115 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 
 .op-ph-v .op-pot-dot { flex: none; }
 
-.op-ph-steering { margin-top: 2px; }
-
-.op-ph-carry {
-  margin-top: 4px;
-  color: var(--fg-mute);
-  font-size: 10.5px;
-  font-style: italic;
+/* The kill criterion — the headline of a goal card, so it reads as prose above
+   the kv grid rather than as one more label→value row. A goal with NO criterion
+   is the case worth shouting about (nothing can ever stop it), so `.missing`
+   escalates to the warn token instead of quietly rendering an empty line. */
+.op-ph-kill {
+  color: var(--fg-dim);
+  font-size: 11.5px;
   overflow-wrap: anywhere;
+}
+
+.op-ph-kill.missing {
+  color: var(--warn);
+}
+
+/* Tripwire bars. A bar measures CONSUMPTION TOWARD A CEILING (goal-mode
+   2026-08-07 D-022), so a fuller bar is always the worse reading. */
+.op-ph-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.op-ph-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 7rem) 1fr max-content;
+  align-items: center;
+  column-gap: 8px;
+  font-size: 10.5px;
+}
+
+.op-ph-bar-label {
+  color: var(--fg-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-ph-bar {
+  position: relative;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+
+.op-ph-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--good);
+}
+
+.op-ph-bar.warn .op-ph-bar-fill { background: var(--warn); }
+.op-ph-bar.breached .op-ph-bar-fill { background: var(--bad); }
+
+/* UNREAD is not zero. A tripwire nobody has measured gets a hatched-empty
+   track and no fill at all, so it can never be misread as a healthy 0%. */
+.op-ph-bar.unread {
+  border: 1px dashed color-mix(in srgb, var(--fg-mute), transparent 55%);
+  background: transparent;
+}
+
+.op-ph-bar-value {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Agent rows — one line per su agent: liveness dot, id, verdict, lane, intent,
+   age. The intent column is the elastic one; everything else is intrinsic. */
+.op-ph-agents { gap: 4px; }
+
+.op-ph-agent {
+  display: grid;
+  grid-template-columns: max-content minmax(0, max-content) max-content minmax(0, max-content) minmax(0, 1fr) max-content;
+  align-items: baseline;
+  column-gap: 7px;
+  font-size: 11px;
+}
+
+.op-ph-agent .op-pot-dot {
+  align-self: center;
+}
+
+.op-ph-agent-id {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.op-ph-agent-state,
+.op-ph-agent-lane,
+.op-ph-agent-age {
+  color: var(--fg-mute);
+}
+
+.op-ph-agent-intent,
+.op-ph-agent-lane,
+.op-ph-agent-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-ph-agent-intent {
+  color: var(--fg-dim);
+}
+
+.op-ph-agent-age {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Render boundaries (WI-6668) ──────────────────────────────────────────────

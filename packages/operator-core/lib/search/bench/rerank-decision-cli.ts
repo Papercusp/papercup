@@ -275,7 +275,7 @@ async function main(): Promise<void> {
             if (o.attempted && o.reason) engine = o.reason;
           },
         });
-        const treatmentKeys = reranked.map((h) => h.key);
+        const treatmentKeys = reranked.map(hitId);
         const treatmentRank = rankOf(treatmentKeys, s.targetId);
 
         const ndcgControl: Record<number, number> = {};
