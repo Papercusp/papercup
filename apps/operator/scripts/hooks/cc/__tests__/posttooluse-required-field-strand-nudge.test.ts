@@ -59,7 +59,7 @@ describe('required-field-strand nudge — fires on the real trap', () => {
     expect(out).toContain('Foo.name');
     expect(out).toContain('new required field');
     // It must point at the detector, since KNOWING TO RUN IT is the entire gap.
-    expect(out).toContain('lint:required-field-strands:typecheck');
+    expect(out).toContain('check-required-field-strands.mjs --typecheck');
   });
 
   it('FIRES when an existing field is tightened optional -> required', async () => {
