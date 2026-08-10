@@ -210,6 +210,15 @@ export function splitArgs(masked, openParenIdx) {
  *
  * Exported so a test can feed it controls — including a deliberately-wrong control that
  * MUST be flagged, which is what proves the detector can still fail.
+ *
+ * @param {string} src        raw source text
+ * @param {string} [fileName] real path, used ONLY to pick a ScriptKind for the parse.
+ *        OPTIONAL, and the brackets are load-bearing: `gen:declarations` emits the .d.mts
+ *        straight from this JSDoc, so writing `@param {string} fileName` would declare it
+ *        REQUIRED and break every caller that passes a bare source string — which is what
+ *        the 9 single-argument control cases in this guard's test do, by design. The shared
+ *        stripper handles an omitted fileName by parsing both ways, so omitting it is
+ *        correct-but-slower, never wrong.
  */
 export function findUnthreadedApplies(src, fileName) {
   const masked = stripCommentsAndStrings(src, fileName);
