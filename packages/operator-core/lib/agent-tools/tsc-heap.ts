@@ -51,12 +51,34 @@ export const TSC_HEAP_MB = Number(process.env.PAPERCUSP_TSC_HEAP_MB) || 8192;
  * A second copy is never appended: that would depend on last-wins rather than
  * being explicit.
  */
+const HEAP_PIN_RE = /--max-old-space-size(?:=|\s+)(\d+)/;
+
+/**
+ * The V8 old-space pin (MB) expressed in a string, or `null` if it carries none.
+ *
+ * Accepts anything the pin can textually appear in — a NODE_OPTIONS value, or a
+ * whole shell command (`NODE_OPTIONS=--max-old-space-size=8192 npx tsc …`, or a
+ * direct `node --max-old-space-size=8192 …`). It is a TEXTUAL read, deliberately:
+ * both forms end up as the same child-process ceiling, so both should answer the
+ * same question, and a caller asking "is this compile pinned?" does not care
+ * which spelling was used.
+ *
+ * Exported so a caller that must not MUTATE the command (capability:bash, which
+ * runs a command the agent composed) can still tell whether a pin is present and
+ * say so — without keeping a second copy of this regex that could drift from the
+ * one `withTscHeap` enforces with.
+ */
+export function parseHeapPinMb(source: string | undefined): number | null {
+  const found = HEAP_PIN_RE.exec(source ?? '');
+  return found ? Number(found[1]) : null;
+}
+
 export function withTscHeap(existingNodeOptions: string | undefined): string {
   const existing = existingNodeOptions ?? '';
-  const pinned = /--max-old-space-size(?:=|\s+)(\d+)/.exec(existing);
-  if (!pinned) return `${existing} --max-old-space-size=${TSC_HEAP_MB}`.trim();
-  if (Number(pinned[1]) >= TSC_HEAP_MB) return existing;
-  return existing.replace(/--max-old-space-size(?:=|\s+)\d+/, `--max-old-space-size=${TSC_HEAP_MB}`);
+  const pinned = parseHeapPinMb(existing);
+  if (pinned === null) return `${existing} --max-old-space-size=${TSC_HEAP_MB}`.trim();
+  if (pinned >= TSC_HEAP_MB) return existing;
+  return existing.replace(HEAP_PIN_RE, `--max-old-space-size=${TSC_HEAP_MB}`);
 }
 
 /** The `env` overlay for a tsc spawn — just the NODE_OPTIONS pin, so a caller can
