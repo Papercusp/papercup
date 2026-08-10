@@ -60,8 +60,19 @@ export default function GoalComposer({
    */
   harnessSlug: string | null;
   onClose: () => void;
-  /** Called with the new goal id once the agent is actually running. */
-  onStarted: (goalId: string) => void;
+  /**
+   * Called once the agent is actually running, with the new goal id AND the
+   * ownerId of the agent that was spawned for it.
+   *
+   * EI-20049126246088530: the SECOND argument is load-bearing, not decoration.
+   * `goals:start` already returns the new agent's ownerId (start.ts:353
+   * `agent_owner_id`, parsed into `GoalStartResult.agentOwnerId`), and dropping
+   * it here is what left a goal's agent showing "No recent Claude session found
+   * for this agent" for its whole boot window: the caller could not seed
+   * `pendingLaunch`, so SessionChatModal's `launchedByThisView` was always
+   * false. Null when the response omitted it — callers must handle that.
+   */
+  onStarted: (goalId: string, agentOwnerId: string | null) => void;
 }) {
   const [draft, setDraft] = useState<GoalComposerDraft>(EMPTY);
   const [errors, setErrors] = useState<Partial<Record<keyof GoalComposerDraft, string>>>({});
@@ -93,7 +104,7 @@ export default function GoalComposer({
     try {
       const res = await postGoalStart(validated.args, { workspaceId, harnessSlug });
       if (res.ok) {
-        onStarted(res.goalId);
+        onStarted(res.goalId, res.agentOwnerId);
         onClose();
       } else {
         setFailure(res.error);

@@ -415,7 +415,7 @@ describe('rerankRows — the generic core', () => {
     { id: 'r3', text: 't3', q: 0.1 },
     { id: 'r4', text: 't4', q: 0.05 },
   ];
-  type Outcome = { attempted: boolean; reason?: string };
+  type Outcome = { attempted: boolean; reason?: string; engine?: string | null; scored?: number };
   const opts = (over: Record<string, unknown> = {}) => ({
     limit: rows.length,
     id: (r: Row) => r.id,
@@ -478,6 +478,96 @@ describe('rerankRows — the generic core', () => {
     await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
     expect(seen).toHaveLength(1);
     expect(seen[0].attempted).toBe(true);
+  });
+
+  /**
+   * WI-37670 — the failure this whole callback exists to catch, and the ONE
+   * case it used to miss. An engine resolves, `rankWithReranker` returns
+   * normally, and the cross-encoder scored NOTHING: the rows are retrieval
+   * order, byte-identical to a disabled reranker, and the old contract reported
+   * `attempted: true, reason: 'local'` — an honest-looking success.
+   *
+   * Measured 2026-08-10: 238/238 queries of the WI-37653 bench looked exactly
+   * like that, because four concurrent calls serialize on ONE inference thread,
+   * so each call's wall clock is ~4x its own compute and every one blew the
+   * budget. Only a separate "did the order ever move" guard caught it.
+   */
+  describe('a stage that ran but scored NOTHING is a non-engagement, not a success', () => {
+    /** `rankWithReranker` returning input order after reporting a degrade. */
+    const degradingWith = (degradeReason?: string) =>
+      vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, o) => {
+        (o as { onRerankStage?: (i: unknown) => void }).onRerankStage?.({
+          scored: 0,
+          total: docs.length,
+          ...(degradeReason ? { degradeReason } : {}),
+        });
+        return docs.map((d) => d.row);
+      });
+
+    it('reports NOT attempted, names the reason, and still names the engine', async () => {
+      degradingWith('timeout');
+      const seen: Outcome[] = [];
+      const out = await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+      expect(out.map((r) => r.id)).toEqual(['r1', 'r2', 'r3', 'r4']); // retrieval order
+      expect(seen).toEqual([
+        { attempted: false, reason: 'degraded:timeout', engine: 'local', scored: 0 },
+      ]);
+    });
+
+    it('falls back to a generic reason when the library named none', async () => {
+      degradingWith(undefined);
+      const seen: Outcome[] = [];
+      await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+      expect(seen[0].reason).toBe('degraded:no-rows-scored');
+    });
+
+    /**
+     * CONTROL 1 — a stage that DID score must still report attempted. Without
+     * it, the assertions above pass against an implementation that reports every
+     * call as degraded, which is the same bug with the sign flipped: a bench
+     * would then void every valid run instead of publishing every void one.
+     */
+    it('a stage that scored rows reports attempted WITH its count', async () => {
+      vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, o) => {
+        (o as { onRerankStage?: (i: unknown) => void }).onRerankStage?.({
+          scored: docs.length,
+          total: docs.length,
+        });
+        return docs.map((d) => d.row);
+      });
+      const seen: Outcome[] = [];
+      await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+      expect(seen).toEqual([{ attempted: true, reason: 'local', engine: 'local', scored: 4 }]);
+    });
+
+    /**
+     * CONTROL 2 — a PARTIAL degrade is still an engagement. Flipping on "some
+     * pairs were dropped" would void runs that produced a real reordering.
+     */
+    it('a PARTIAL score is still attempted', async () => {
+      vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, o) => {
+        (o as { onRerankStage?: (i: unknown) => void }).onRerankStage?.({
+          scored: 1,
+          total: docs.length,
+        });
+        return docs.map((d) => d.row);
+      });
+      const seen: Outcome[] = [];
+      await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+      expect(seen).toEqual([{ attempted: true, reason: 'local', engine: 'local', scored: 1 }]);
+    });
+
+    /**
+     * A search-core build that predates `onRerankStage` reports nothing at all.
+     * That is UNKNOWN, not zero — reading it as zero would flip every call on
+     * such a build to a phantom degrade.
+     */
+    it('a search-core that never calls onRerankStage keeps the old attempted reading', async () => {
+      vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) => docs.map((d) => d.row));
+      const seen: Outcome[] = [];
+      await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
+      expect(seen).toEqual([{ attempted: true, reason: 'local', engine: 'local' }]);
+    });
   });
 
   it('≤1 row → vacuous, so no engine is resolved and it says so', async () => {

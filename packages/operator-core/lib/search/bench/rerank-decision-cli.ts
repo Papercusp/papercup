@@ -131,7 +131,13 @@ interface Outcome {
   ndcgTreatment: Record<number, number>;
   orderMoved: boolean;
   attempted: boolean;
-  /** When !attempted: 'nothing-to-reorder' (benign) | 'no-engine' | 'threw:*'. */
+  /**
+   * When !attempted: 'nothing-to-reorder' (benign) | 'no-engine' | 'threw:*' |
+   * 'degraded:*' — the last being an engine that resolved and then scored
+   * NOTHING (WI-37670), most often `degraded:timeout`. That one is the reason
+   * this run type can silently measure a disabled reranker, so it must never be
+   * folded in with the benign skip.
+   */
   skipReason: string | null;
   engine: string | null;
 }
@@ -306,7 +312,11 @@ async function main(): Promise<void> {
           rerankTimeoutMs: 10_000,
           onOutcome: (o) => {
             attempted = o.attempted;
-            if (o.attempted && o.reason) engine = o.reason;
+            // The engine is recorded even on a DEGRADE (WI-37670): "resolved
+            // `local` but scored nothing" and "no engine at all" are different
+            // failures, and a run that cannot tell them apart cannot say which.
+            if (o.engine) engine = o.engine;
+            else if (o.attempted && o.reason) engine = o.reason;
             if (!o.attempted) skipReason = o.reason ?? 'unknown';
           },
         });

@@ -1098,9 +1098,20 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         workspaceId={goalWorkspaceId}
         harnessSlug={harnessSlug}
         onClose={() => void setGoalComposerOpen(null)}
-        onStarted={(goalId) => {
+        onStarted={(goalId, agentOwnerId) => {
           void setGoalComposerOpen(null);
           void setGoalFilter(goalId);
+          // EI-20049126246088530: seed the SAME zero-latency launch signal the
+          // /adv launch path already sets (setPendingLaunch above). Without it a
+          // goal's agent has NEITHER leg of SessionChatModal's `startingUp`:
+          // `startingEntry` is null because listStartingTerminalLaunches filters
+          // `WHERE display = 'terminal'` and the console-spawn path that goals
+          // use never stamps a display; and `launchedByThisView` was false
+          // because this callback dropped the ownerId that `goals:start` had
+          // already returned. So the modal fell straight through to "No recent
+          // Claude session found for this agent" for the agent's whole boot
+          // window — while the agent was in fact alive and working.
+          if (agentOwnerId) setPendingLaunch({ ownerId: agentOwnerId, startedAtMs: Date.now() });
         }}
       />
       {/* WI-6742: the ask's own popup, for asks that are not ABOUT a work item

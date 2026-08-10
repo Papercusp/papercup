@@ -78,9 +78,24 @@ export const RERANK_MAX_CANDIDATES = 24;
  *
  * SIZED FROM THE MEASUREMENT, not guessed. At the {@link RERANK_MAX_CANDIDATES}
  * cap the worst case is 24 × ~45ms ≈ 1.1s on this box, and P-001 found a laptop
- * runs ~1.5–2× slower ⇒ ≈ 2.2s. 4s leaves ~1.8× headroom over that worst case,
- * so a HEALTHY rerank — even a slow laptop at the cap — never trips it, and only
- * genuine pathology does.
+ * runs ~1.5–2× slower ⇒ ≈ 2.2s. 4s leaves ~1.8× headroom over that worst case.
+ *
+ * ⚠⚠ THAT HEADROOM IS PER-CALL AND DIVIDES BY IN-FLIGHT CONCURRENCY — this
+ * block used to conclude "so a HEALTHY rerank never trips it, and only genuine
+ * pathology does", which is FALSE above ~4 concurrent callers (WI-37676). The
+ * sizing argument prices this call's COMPUTE against a WALL-CLOCK bound, while
+ * the scorer is a SINGLE serialized inference thread — one worker thread
+ * (`local-reranker-worker.ts` holds a module-singleton `_worker`) or the main
+ * thread on its inline fallback. N concurrent calls therefore each wait ~N ×
+ * their own compute. Measured 2026-08-10 at the cap, 24 pairs:
+ *
+ *     concurrency 1 → 1951ms   ·   2 → 1617/1880ms   ·   4 → up to 3363ms
+ *
+ * i.e. four concurrent prose searches already spend 84% of this budget, and
+ * five or six exceed it — at which point EVERY in-flight search degrades to RRF
+ * order simultaneously. It is a CORRELATED failure, so it will not present as
+ * flakiness. Do not read a green single-call latency measurement as evidence
+ * that this bound is safe under load; the fix is tracked on WI-37676.
  *
  * DELIBERATELY TIGHTER than the library backstop (20s) and than the sidecar
  * client's 15s retry budget, because those bound a HANG while this bounds a
@@ -292,14 +307,34 @@ export async function rerankRows<T>(
      * help", and the natural next action is to abandon the feature. A benchmark
      * must be able to VOID such a run rather than publish it.
      *
-     * ⚠ `attempted: true` means an engine resolved and `rankWithReranker`
-     * returned without throwing. It does NOT prove every pair was scored — the
-     * library's own per-pair fail-safe can degrade to retrieval order inside a
-     * successful call, and that is invisible from here. Treat it as necessary,
-     * not sufficient: a caller that needs certainty should ALSO check that the
-     * order actually moved somewhere across its sample.
+     * `attempted: true` means the stage actually RANKED — an engine resolved,
+     * the call returned, and the cross-encoder scored at least one row. A call
+     * that resolved an engine but scored NOTHING (the library's fail-safe
+     * passthrough: a timeout, an engine outage, unusable scores) reports
+     * `attempted: false` with `reason: 'degraded:<why>'` and `scored: 0`, and
+     * still names the `engine` that was resolved — because the returned rows are
+     * the input order either way, and a caller measuring the reranker's effect
+     * must be able to tell those apart.
+     *
+     * ⚠ HISTORY (WI-37670). This used to report `attempted: true` for any call
+     * that did not throw, which made a TOTAL degrade indistinguishable from a
+     * healthy rerank that changed nothing. Measured 2026-08-10: the WI-37653
+     * bench got `attempted:true, reason:'local'` on 238/238 queries while the
+     * stage had scored zero rows on every one of them — the run was only saved
+     * by a separate "did the order ever move" guard the bench happened to have.
+     *
+     * ⚠ Still necessary-not-sufficient in the PARTIAL case: `scored` between 1
+     * and `rows.length` means some pairs degraded inside a successful call. A
+     * caller needing certainty should compare `scored` against `rows.length`.
      */
-    onOutcome?: (outcome: { attempted: boolean; reason?: string }) => void;
+    onOutcome?: (outcome: {
+      attempted: boolean;
+      reason?: string;
+      /** The resolved engine, recorded even when the stage then degraded. */
+      engine?: string | null;
+      /** Rows the cross-encoder scored. 0 ⇒ the returned order is retrieval order. */
+      scored?: number;
+    }) => void;
   },
 ): Promise<T[]> {
   // Nothing to reorder → no engine resolution, no rerank import.
@@ -316,6 +351,12 @@ export async function rerankRows<T>(
       return rows.slice(0, opts.limit);
     }
     const { rankWithReranker } = await import('@papercusp/search-core');
+    // Held in a ref rather than a bare `let`: TypeScript's control-flow analysis
+    // does not see writes made inside the callback below, so a plain local would
+    // be narrowed to `null` (then `never`) at every read site.
+    const stage: { info: { scored: number; total: number; degradeReason?: string } | null } = {
+      info: null,
+    };
     const ordered = await rankWithReranker<T>(
       query,
       rows.map((row) => ({
@@ -333,9 +374,31 @@ export async function rerankRows<T>(
           : { engine: 'local' as const, scorer: resolved.scorer }),
         // Generic relevance rerank: no e-commerce instruction / LLM pass.
         ...(opts.qualityScore ? { qualityScore: opts.qualityScore } : {}),
+        onRerankStage: (info) => {
+          stage.info = info;
+        },
       },
     );
-    opts.onOutcome?.({ attempted: true, reason: resolved.engine });
+    // A call that scored NOTHING returned retrieval order — report it as a
+    // non-engagement with its reason, not as a successful rerank (WI-37670).
+    // `stage === null` means the search-core build in this process predates
+    // onRerankStage; that is unknown, not zero, so it keeps the old reading.
+    const scored: number | null = stage.info === null ? null : stage.info.scored;
+    if (scored === 0) {
+      opts.onOutcome?.({
+        attempted: false,
+        reason: `degraded:${stage.info?.degradeReason ?? 'no-rows-scored'}`,
+        engine: resolved.engine,
+        scored: 0,
+      });
+      return ordered;
+    }
+    opts.onOutcome?.({
+      attempted: true,
+      reason: resolved.engine,
+      engine: resolved.engine,
+      ...(scored === null ? {} : { scored }),
+    });
     return ordered;
   } catch (err) {
     // Engine unresolvable, lib/dep unavailable, or a throw that got past the
