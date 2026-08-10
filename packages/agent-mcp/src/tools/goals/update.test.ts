@@ -75,10 +75,21 @@ describe('goals:update — partial writes preserve untouched state', () => {
   });
 
   it('revising the kill criterion does NOT clear previously reported spend', async () => {
-    existingRow!.kill_criterion = 'old';
+    // ⚠ THE INCOMING CRITERION MUST BE ≥ KILL_CRITERION_MIN_CHARS (12) — do not
+    // shorten these fixtures back to 'old'/'new'. The handler validates
+    // `killCriterion` through the shared `killCriterionProblem` and returns
+    // `degraded` BEFORE issuing the UPDATE, so a stub criterion makes
+    // `updateCall()` undefined and this test dies on `.params of undefined` —
+    // a failure that reads like a broken mock rather than a rejected input.
+    // Only the INCOMING value is validated; `existingRow.kill_criterion` is a
+    // prior DB value that is read back, never re-checked.
+    existingRow!.kill_criterion = 'no paying user after 2 weeks';
     existingRow!.metadata = { spentCents: 999 };
-    await tool.handler(tool.args.parse({ id: 'g1', killCriterion: 'new' }) as never, CTX() as never);
-    expect(writtenCriterion()).toBe('new');
+    await tool.handler(
+      tool.args.parse({ id: 'g1', killCriterion: 'no repeat purchase after 30 days' }) as never,
+      CTX() as never,
+    );
+    expect(writtenCriterion()).toBe('no repeat purchase after 30 days');
     expect(writtenMetadata()).toEqual({ spentCents: 999 });
   });
 
