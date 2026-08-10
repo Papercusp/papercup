@@ -27,6 +27,30 @@ let syncResult: { data: unknown[] | null; loading: boolean; error: unknown } = {
   error: null,
 };
 
+/* P-018 put the rail's open-state in the URL (`hudgoalrail`), which is the
+   repo's rule for anything user-meaningful — so the panel now needs nuqs. Same
+   local stand-in the other component suites use (OperatorChatSidebar,
+   PlansPane): a real adapter would drag the router in for a param whose only
+   job here is to flip a boolean. */
+vi.mock('nuqs', async () => {
+  const React = await import('react');
+  return {
+    parseAsBoolean: {
+      withDefault(defaultValue: boolean) {
+        return { defaultValue };
+      },
+    },
+    useQueryState(_key: string, parser?: { defaultValue?: boolean }) {
+      const [value, setValue] = React.useState(parser?.defaultValue ?? null);
+      const set = React.useCallback((next: unknown) => {
+        setValue(typeof next === 'function' ? (next as (p: unknown) => boolean)(value) : (next as boolean));
+        return Promise.resolve(new URLSearchParams());
+      }, [value]);
+      return [value, set];
+    },
+  };
+});
+
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
     syncCalls.push(opts);
@@ -242,6 +266,148 @@ describe('GoalDetailPanel', () => {
     syncResult = { data: null, loading: false, error: new Error('boom') };
     render(<GoalDetailPanel goalId="goal-1" workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
     expect(document.body.textContent).toContain('Could not load this goal');
+  });
+
+  /* ── P-018: the SessionChatModal frame ──────────────────────────────────
+     What only a DOM can prove here is STRUCTURE, not content: the vitals band
+     and the rail have to sit OUTSIDE the scrolling body, or they scroll away
+     with it and the "glance" the band exists to provide is gone exactly when
+     the reader has scrolled down to look for detail. */
+  it('puts the vitals band OUTSIDE the scrolling body, not inside it', () => {
+    renderPanel(detail());
+    const vitals = screen.getByTestId('goal-vitals');
+    const body = screen.getByTestId('goal-detail');
+    expect(vitals).toBeTruthy();
+    // The bug this pins is a one-line nesting slip that looks identical on a
+    // short goal and breaks completely on a long one.
+    expect(body.contains(vitals)).toBe(false);
+    expect(screen.getByTestId('goal-detail-modal').contains(vitals)).toBe(true);
+  });
+
+  it('leads the band with status, the stopping condition and spend-vs-ceiling', () => {
+    renderPanel(detail());
+    const vitals = screen.getByTestId('goal-vitals');
+    expect(vitals.textContent).toContain('active');
+    expect(vitals.textContent).toContain('Stop if no paying user by day 30.');
+    expect(vitals.textContent).toContain('$310');
+  });
+
+  it('renders the status ONCE — the band owns it, the header no longer repeats it', () => {
+    renderPanel(detail({ goal: { status: 'paused' } as never }));
+    // Two copies of one status is how a stale one goes unnoticed. Asserted as
+    // "the band has it, the title row does not" rather than by counting DOM
+    // nodes, which is what the status word is actually claimed to be.
+    expect(screen.getByTestId('goal-vitals').textContent).toContain('paused');
+    const titleRow = document.body.querySelector('.hud-goal__title-row') as HTMLElement;
+    expect(titleRow).toBeTruthy();
+    expect(titleRow.textContent).not.toContain('paused');
+  });
+
+  /* ── P-018/D-011: the conversation affordance is a ROUTE, never a composer ── */
+  it('offers no composer — the popup borrows the chat shape, not a chat', () => {
+    renderPanel(detail(), { onOpenAgent: () => {} });
+    expect(document.body.querySelector('textarea')).toBeNull();
+    expect(document.body.textContent).not.toContain('Send');
+  });
+
+  it('routes to the goal’s agent when there IS one, and renders no dead button when there is not', () => {
+    const seen: string[] = [];
+    const { unmount } = renderPanel(
+      detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }),
+      { onOpenAgent: (id: string) => seen.push(id) },
+    );
+    fireEvent.click(screen.getByTestId('goal-open-agent'));
+    expect(seen).toEqual(['su-abc']);
+    unmount();
+    cleanup();
+
+    // No agent stamped on the goal ⇒ the control is ABSENT, not present-and-inert.
+    renderPanel(detail({ agents: [] }), { onOpenAgent: () => {} });
+    expect(screen.queryByTestId('goal-open-agent')).toBeNull();
+    cleanup();
+
+    // Host cannot route ⇒ also absent. WI-6742's dead-button shape.
+    renderPanel(detail({ agents: [{ ownerId: 'su-abc' }] }));
+    expect(screen.queryByTestId('goal-open-agent')).toBeNull();
+  });
+
+  /* ── P-019: the work rail ──────────────────────────────────────────────── */
+  it('seats the rail as a SIBLING of the body so it does not scroll away', () => {
+    renderPanel(detail());
+    const rail = screen.getByTestId('goal-work-rail');
+    expect(screen.getByTestId('goal-detail').contains(rail)).toBe(false);
+    expect(screen.getByTestId('goal-detail-modal').contains(rail)).toBe(true);
+  });
+
+  it('lists the goal’s plans and work items, showing an overlapping item ONCE', () => {
+    renderPanel(
+      detail({
+        plans: [
+          { planSlug: 'ship-it', harnessSlug: 'papercusp', title: 'Ship it', items: 4, openItems: 2 },
+        ],
+        waitingOnYou: [{ id: 'WI-1', title: 'Needs a decision', harnessSlug: 'papercusp' }],
+        activity: [
+          { id: 'WI-1', title: 'Needs a decision', harnessSlug: 'papercusp', status: 'open' },
+          { id: 'WI-2', title: 'In flight', harnessSlug: 'papercusp', status: 'wip' },
+        ],
+      }),
+    );
+    const rail = screen.getByTestId('goal-work-rail');
+    expect(rail.textContent).toContain('Ship it');
+    // The dedupe, asserted where the reader actually sees it: WI-1 arrives in
+    // BOTH waitingOnYou and activity, and must render exactly one row.
+    const rows = Array.from(rail.querySelectorAll('[data-testid="goal-rail-item"]'));
+    expect(rows.filter((r) => r.getAttribute('data-id') === 'WI-1')).toHaveLength(1);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('rail rows reuse the panel’s EXISTING work-item route, not a second one', () => {
+    const opened: string[] = [];
+    renderPanel(detail({ activity: [{ id: 'WI-7', title: 'Openable', status: 'wip' }] }), {
+      onOpenWorkItem: (id: string) => opened.push(id),
+    });
+    const row = screen
+      .getByTestId('goal-work-rail')
+      .querySelector('[data-testid="goal-rail-item"][data-id="WI-7"]') as HTMLElement;
+    fireEvent.click(row);
+    expect(opened).toEqual(['WI-7']);
+  });
+
+  it('says WHY the rail is empty instead of rendering bare headings', () => {
+    // D-010: this is the LIVE state of every goal in this workspace today, so
+    // it is the state most likely to be seen — not an edge case.
+    renderPanel(detail());
+    const rail = screen.getByTestId('goal-work-rail');
+    expect(screen.getByTestId('goal-rail-empty')).toBeTruthy();
+    // Three empty section headings read as a panel that failed to load.
+    expect(rail.querySelectorAll('.pc-peers__cap')).toHaveLength(0);
+    expect(rail.textContent).toContain('Nothing is under this goal yet');
+  });
+
+  it('the toggle actually hides the rail', () => {
+    renderPanel(detail());
+    expect(screen.queryByTestId('goal-work-rail')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('goal-rail-toggle'));
+    expect(screen.queryByTestId('goal-work-rail')).toBeNull();
+  });
+
+  it('does not total the plan rows into a goal-wide figure (D-002/D-021)', () => {
+    renderPanel(
+      detail({
+        plans: [
+          { planSlug: 'a', harnessSlug: 'h', title: 'A', items: 3, openItems: 2 },
+          { planSlug: 'b', harnessSlug: 'h', title: 'B', items: 4, openItems: 3 },
+        ],
+      }),
+    );
+    const rail = screen.getByTestId('goal-work-rail');
+    // 2+3=5 and 3+4=7 must appear nowhere: these figures deliberately do not
+    // sum, and a parent/child layout is the one that most tempts a reader to
+    // add them. The per-row counts themselves stay visible.
+    expect(rail.textContent).toContain('2 open of 3 on this goal');
+    expect(rail.textContent).toContain('3 open of 4 on this goal');
+    expect(rail.textContent).not.toMatch(/\b5 open\b/);
+    expect(rail.textContent).not.toMatch(/\b7 (open|total)\b/);
   });
 
   it('closing clears the selection', () => {

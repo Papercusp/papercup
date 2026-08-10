@@ -100,9 +100,34 @@ export interface GoalDetailSpendDayInput {
   costUsd?: number | null;
 }
 
+/** One derived plan row for the work rail (P-019). Shape mirrors the resolver's
+ *  `GoalPlanCard` — see D-010 for WHY a goal's plans are derived through its
+ *  stamped work items rather than through its projects' harnesses. */
+export interface GoalDetailPlanInput {
+  planSlug: string;
+  harnessSlug: string;
+  title?: string | null;
+  status?: string | null;
+  archived?: boolean | null;
+  items?: number | null;
+  openItems?: number | null;
+  updatedAt?: string | null;
+}
+
+/** An agent RUNNING this goal — `agent_modes.subject`, the marker D-007 found
+ *  already existed. A list, not a scalar: D-006 makes one the normal case, but
+ *  a goal carrying two stamps is a coordination fault worth seeing. */
+export interface GoalDetailAgentInput {
+  ownerId: string;
+  setAt?: string | null;
+  setBy?: string | null;
+}
+
 export interface GoalDetailInput {
   goal: GoalDetailGoalInput | null;
   projects?: GoalDetailProjectInput[] | null;
+  plans?: GoalDetailPlanInput[] | null;
+  agents?: GoalDetailAgentInput[] | null;
   waitingOnYou?: GoalDetailWaitingInput[] | null;
   activity?: GoalDetailActivityInput[] | null;
   spendByDay?: GoalDetailSpendDayInput[] | null;
@@ -369,4 +394,106 @@ export function ceilingLine(goal: GoalDetailGoalInput | null): {
     pct: Math.max(0, Math.min(100, Math.round((spend / ceiling) * 100))),
     over: spend >= ceiling,
   };
+}
+
+/* ── The work rail (P-019) ─────────────────────────────────────────────────
+   The goal popup's side panel: the goal's PLANS and its WORK ITEMS, mimicking
+   the fleet-peers rail the owner pointed at ("the way we have the sidepanel for
+   the fleet members, we can mimic that design").
+
+   Derived here, not in the component, for the same reason `fleet-peers.ts` is a
+   module beside `FleetPeersRail`: every rule about what appears and in what
+   order is a decision worth pinning with a test, and a rail that computes its
+   own grouping inline can only be checked by rendering it.
+
+   ⚠ THE DEDUPE IS THE POINT, not a tidy-up. `waitingOnYou` and `activity` are
+   two reads of the SAME work_items rows — the resolver filters the first to
+   `needsHuman` and leaves the second unfiltered — so an item parked on the owner
+   appears in BOTH. Rendering them as separate sections without subtracting
+   would show that item twice, and a rail whose whole job is "what is under this
+   goal" must not let the reader count one thing as two. */
+
+export type GoalWorkTone = 'needs-you' | 'open' | 'closed';
+
+export interface GoalWorkRailItem {
+  id: string;
+  title: string;
+  harnessSlug: string | null;
+  tone: GoalWorkTone;
+  /** The row's meta line: state word + age. Composed here so the row component
+   *  stays presentational. */
+  metaText: string;
+}
+
+export interface GoalWorkRail {
+  plans: GoalDetailPlanInput[];
+  needsYou: GoalWorkRailItem[];
+  open: GoalWorkRailItem[];
+  closed: GoalWorkRailItem[];
+  /** Nothing at all is under this goal — no plans, no items. The rail renders
+   *  ONE sentence saying so instead of three empty headings, which read as a
+   *  panel that failed to load rather than a goal nothing has touched yet.
+   *  D-010: this is the LIVE state of every goal in this workspace today, so it
+   *  is the state most likely to be seen — not an edge case. */
+  empty: boolean;
+}
+
+function railMeta(state: string, iso: string | null | undefined, nowMs: number): string {
+  const age = agoText(iso, nowMs);
+  return age ? `${state} · ${age}` : state;
+}
+
+export function workRail(
+  data: GoalDetailInput | null | undefined,
+  nowMs: number,
+): GoalWorkRail {
+  const plans = (data?.plans ?? []).filter((p) => p != null && Boolean(p.planSlug));
+  const waiting = data?.waitingOnYou ?? [];
+  const activity = data?.activity ?? [];
+
+  const needsYouIds = new Set(waiting.map((w) => w.id));
+  const needsYou: GoalWorkRailItem[] = waiting.map((w) => ({
+    id: w.id,
+    title: w.title,
+    harnessSlug: w.harnessSlug ?? null,
+    tone: 'needs-you',
+    metaText: railMeta('needs you', w.updatedAt, nowMs),
+  }));
+
+  const open: GoalWorkRailItem[] = [];
+  const closed: GoalWorkRailItem[] = [];
+  for (const a of activity) {
+    // See the dedupe note above — never render a needs-you item a second time.
+    if (needsYouIds.has(a.id)) continue;
+    const isClosed = a.closedAt != null;
+    (isClosed ? closed : open).push({
+      id: a.id,
+      title: a.title,
+      harnessSlug: a.harnessSlug ?? null,
+      tone: isClosed ? 'closed' : 'open',
+      metaText: railMeta(
+        isClosed ? 'closed' : (a.status ?? 'open'),
+        isClosed ? a.closedAt : a.updatedAt,
+        nowMs,
+      ),
+    });
+  }
+
+  return {
+    plans,
+    needsYou,
+    open,
+    closed,
+    empty:
+      plans.length === 0 && needsYou.length === 0 && open.length === 0 && closed.length === 0,
+  };
+}
+
+/** What a plan row shows as its name. A plan whose row no longer resolves keeps
+ *  its slug and is MARKED — see the resolver's `GoalPlanCard` docblock: live
+ *  work items pointing at a deleted plan is a state worth seeing, not hiding. */
+export function planLabel(plan: GoalDetailPlanInput): { text: string; missing: boolean } {
+  const title = plan.title?.trim();
+  if (title) return { text: title, missing: false };
+  return { text: plan.planSlug, missing: true };
 }

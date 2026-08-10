@@ -349,8 +349,10 @@ export { LVIEWS as LEARNING_VIEWS };
  * `catalog`/`views` are injectable ONLY so the guard test can prove the
  * detector reds on the real pre-fix catalog rather than on a synthetic one —
  * production callers pass nothing. Deliberately checks the UNFILTERED catalog:
- * a flag-gated view (see {@link TESTING_ONLY_VIEWS}) is hidden on purpose and
- * still reachable when its flag is on, which is not this defect.
+ * a flag-gated view (see {@link TESTING_ONLY_VIEWS} and
+ * {@link MUG_KETTLE_VIEWS}, both folded together by {@link hiddenViews}) is
+ * hidden on purpose and still reachable when its flag is on, which is not this
+ * defect.
  */
 export function orphanedLearningViews(
   catalog: typeof STAGES = STAGES,
@@ -385,11 +387,43 @@ export function orphanedLearningViews(
  *  flag-ON path is byte-identical to what shipped before the gate. */
 const TESTING_ONLY_VIEWS: ReadonlySet<LView> = new Set<LView>(["gym"]);
 
-function visibleStages(testingOn: boolean): typeof STAGES {
-  if (testingOn) return STAGES;
+/** Views hidden while the Mug/Kettle tier is retired (FLAGS.MUG_KETTLE_SYSTEM,
+ *  DEFAULT OFF — retire-mug-kettle-su-only-2026-08-09 P-012 / D-020).
+ *
+ *  `wake-efficiency` is MugWakeEfficiencyPanel, whose own header calls it "the
+ *  ad-hoc LIVE-Mug read": it renders `learning.mugWakeEfficiency`, the live
+ *  Mug's per-wake cache-hit ratio and turns/wake. With the tier retired there
+ *  are no wakes, so the view is a permanently empty pane for a system that
+ *  cannot run.
+ *
+ *  ⚠ Deliberately NOT here, though a filename scan would sweep both in (D-020):
+ *  `red-queen` and `frontier`. RedQueenPanel is the SELF-HEALING drill — "Red
+ *  Queen" is the evolutionary arms-race term, not the Mug — and
+ *  packages/operator-core/lib/red-queen/ has zero references to wakeMug,
+ *  getPotStarted, pot/wake or kettle; FrontierPanel renders the learning-loop
+ *  lane grid. Both belong to the learning system D-001 keeps INTACT, and hiding
+ *  them with the Mug would be a regression, not a retirement. */
+const MUG_KETTLE_VIEWS: ReadonlySet<LView> = new Set<LView>(["wake-efficiency"]);
+
+/** The one rule both the nav filter and the render degradation read.
+ *
+ *  Deriving them separately is how the two lists drift — the same defect
+ *  {@link orphanedLearningViews} exists to catch between LVIEWS and STAGES, one
+ *  level down. A view hidden from the nav but still rendered by a stale
+ *  `?lview=` is not a smaller bug than the reverse. */
+function hiddenViews(testingOn: boolean, mugKettleOn: boolean): ReadonlySet<LView> {
+  const hidden = new Set<LView>();
+  if (!testingOn) for (const v of TESTING_ONLY_VIEWS) hidden.add(v);
+  if (!mugKettleOn) for (const v of MUG_KETTLE_VIEWS) hidden.add(v);
+  return hidden;
+}
+
+function visibleStages(testingOn: boolean, mugKettleOn: boolean): typeof STAGES {
+  const hidden = hiddenViews(testingOn, mugKettleOn);
+  if (hidden.size === 0) return STAGES;
   return STAGES.map((stage) => ({
     ...stage,
-    views: stage.views.filter((candidate) => !TESTING_ONLY_VIEWS.has(candidate.id)),
+    views: stage.views.filter((candidate) => !hidden.has(candidate.id)),
     // A stage whose every view is gated would render an empty pane rather than
     // disappear, so drop it — today none is (Improve keeps Ideas + Backlog).
   })).filter((stage) => stage.views.length > 0);
@@ -545,14 +579,20 @@ export default function LearningTab() {
   // param left in the URL when the flag is turned off — lands on the default
   // view instead of rendering a pane the tab no longer offers.
   const testingOn = useFlag(FLAGS.TESTING);
-  const stages = useMemo(() => visibleStages(testingOn), [testingOn]);
+  // Same treatment for the Mug/Kettle tier (see MUG_KETTLE_VIEWS): a stale
+  // `?lview=wake-efficiency` must land on the default rather than render the
+  // live-Mug read for a tier that cannot run.
+  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  const stages = useMemo(
+    () => visibleStages(testingOn, mugKettleOn),
+    [testingOn, mugKettleOn],
+  );
   const requestedView: LView = (LVIEWS as readonly string[]).includes(lview)
     ? (lview as LView)
     : "improvements";
-  const view: LView =
-    !testingOn && TESTING_ONLY_VIEWS.has(requestedView)
-      ? "improvements"
-      : requestedView;
+  const view: LView = hiddenViews(testingOn, mugKettleOn).has(requestedView)
+    ? "improvements"
+    : requestedView;
 
   // P-003: keep the URL naming the view actually on screen. Two ways it can
   // lie, and BOTH resolve here rather than in a per-case special: a retired id

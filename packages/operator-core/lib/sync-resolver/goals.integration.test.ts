@@ -114,8 +114,13 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  // CASCADE because `harness_plans` is FK-referenced (plan assertions/items);
+  // this is a throwaway per-file testcontainer, so cascading is exactly right
+  // and the alternative — enumerating every referencing table here — rots the
+  // moment someone adds another one.
   await sql`TRUNCATE harness_shared.goals, harness_shared.goal_projects,
-                     harness_shared.work_items, harness_shared.agent_usage_samples`;
+                     harness_shared.work_items, harness_shared.agent_usage_samples,
+                     harness_shared.harness_plans, harness_shared.agent_modes CASCADE`;
 });
 
 async function goal(over: { killCriterion?: string | null; tripwires?: unknown } = {}): Promise<void> {
@@ -178,6 +183,46 @@ async function workItem(
 const CLOSED_AT = Date.parse('2026-08-03T12:00:00Z');
 function closedItem(id: string, updatedTs = CLOSED_AT): Promise<void> {
   return workItem(id, { status: 'done', closedTs: CLOSED_AT, updatedTs });
+}
+
+/* ── P-019/D-010 fixtures ────────────────────────────────────────────────
+   A work item that CAME FROM a plan. `source_plan_slug` is the only column
+   tying a work item to a plan, and it is the entire basis of the goal→plan
+   derivation — see D-010 for why the projects-based alternative is rejected. */
+async function planItem(
+  id: string,
+  planSlug: string,
+  over: { harness?: string; closedTs?: number | null; status?: string; updatedTs?: number } = {},
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, title, status, item_kind, workspace_id, goal_id,
+       source_plan_slug, created_ts, updated_ts, closed_ts, payload)
+    VALUES (${over.harness ?? 'alpha'}, ${id}, ${`item ${id}`}, ${over.status ?? 'open'}, 'task',
+            ${WS}, ${GOAL}, ${planSlug}, 0, ${over.updatedTs ?? 1_700_000_000_000},
+            ${over.closedTs ?? null}, ${sql.json({} as never)})
+  `;
+}
+
+async function plan(
+  planSlug: string,
+  over: { harness?: string; title?: string; status?: string; archived?: boolean } = {},
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, title, status, archived)
+    VALUES (${WS}, ${over.harness ?? 'alpha'}, ${planSlug}, ${over.title ?? `Plan ${planSlug}`},
+            ${over.status ?? 'ready'}, ${over.archived ?? false})
+  `;
+}
+
+/** The goal↔agent marker (D-007): `agent_modes.subject`, no dedicated column. */
+async function agentOnGoal(ownerId: string, subject: string = GOAL): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.agent_modes
+      (workspace_id, owner_id, axis_key, mode, reason, set_by, subject)
+    VALUES (${WS}, ${ownerId}, 'overlay:goal', 'goal', 'test', 'operator-ui', ${subject})
+  `;
 }
 
 async function usage(slug: string, tsMs: number, costUsd: number): Promise<void> {
@@ -281,6 +326,88 @@ describe('goals.* resolvers against real SQL', () => {
     expect(out.projects.find((p) => p.harnessSlug === 'beta')?.removedAt).not.toBeNull();
     // ...but a removed project must not inflate the ACTIVE count.
     expect(out.goal.projectCount).toBe(1);
+  });
+
+  /* ── P-019/D-010: plans, DERIVED through stamped work items ────────────── */
+  it('derives plans from the goal’s work items — and never from its projects’ harnesses', async () => {
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await project('alpha');
+    await plan('ship-it', { title: 'Ship it' });
+    // A plan in the SAME harness that no goal-stamped item came from. The
+    // rejected derivation (every plan in a linked project's harness) would
+    // return this one; the adopted one must not.
+    await plan('unrelated', { title: 'Unrelated work' });
+    await planItem('WI-a', 'ship-it');
+    await planItem('WI-b', 'ship-it', { status: 'done', closedTs: CLOSED_AT });
+    await workItem('WI-noplan'); // no source_plan_slug ⇒ contributes no plan row
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      plans: Array<{ planSlug: string; title: string | null; items: number; openItems: number }>;
+    };
+
+    expect(out.plans.map((p) => p.planSlug)).toEqual(['ship-it']);
+    expect(out.plans[0]).toMatchObject({ title: 'Ship it', items: 2, openItems: 1 });
+  });
+
+  it('keeps a plan whose row is GONE, carrying a null title rather than dropping it', async () => {
+    // Live work items pointing at a deleted plan is the state worth SEEING —
+    // an INNER JOIN here would silently hide it.
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await planItem('WI-orphan', 'deleted-plan');
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      plans: Array<{ planSlug: string; title: string | null; archived: boolean }>;
+    };
+    expect(out.plans).toHaveLength(1);
+    expect(out.plans[0]).toMatchObject({ planSlug: 'deleted-plan', title: null, archived: false });
+  });
+
+  it('does not borrow another tenant’s plan row for the title', async () => {
+    // The plan join is the one place a wrong scope reads as merely "a nicer
+    // label" instead of an error — hence the explicit case.
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await planItem('WI-a', 'ship-it');
+    await sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status, archived)
+      VALUES ('some-other-workspace', 'alpha', 'ship-it', 'OTHER TENANT PLAN', 'ready', false)
+    `;
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      plans: Array<{ title: string | null }>;
+    };
+    expect(out.plans[0]?.title).toBeNull();
+  });
+
+  /* ── P-018/D-007: the goal↔agent pairing ───────────────────────────────── */
+  it('returns the agent RUNNING this goal, and only that goal', async () => {
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await agentOnGoal('su-mine');
+    await agentOnGoal('su-someone-elses', 'a-different-goal');
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      agents: Array<{ ownerId: string; setBy: string | null }>;
+    };
+    expect(out.agents.map((a) => a.ownerId)).toEqual(['su-mine']);
+    expect(out.agents[0]?.setBy).toBe('operator-ui');
+  });
+
+  it('surfaces BOTH stamps when two agents claim one goal rather than collapsing to one', async () => {
+    // D-006 makes one the normal case; two is a coordination fault, and a
+    // resolver that returned a scalar would hide it.
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await agentOnGoal('su-one');
+    await agentOnGoal('su-two');
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      agents: Array<{ ownerId: string }>;
+    };
+    expect(out.agents.map((a) => a.ownerId).sort()).toEqual(['su-one', 'su-two']);
   });
 
   it('returns { goal: null } for a goal that does not exist', async () => {

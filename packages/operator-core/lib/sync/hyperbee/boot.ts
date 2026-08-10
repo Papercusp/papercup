@@ -2821,6 +2821,37 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * a silent failure would leave the cut believing it has a head snapshot it does not
    * have — the exact silent-degrade D-012 traced.
    */
+  /**
+   * WI-37553 / EI-20019309044931698 — force this process's just-appended blocks out of the
+   * RocksDB memtable into SSTs, so a SEPARATE read-only open (the seed cutter's) can see
+   * them. `store.storage.flush()` bottoms out in `rocks.flush()` (hypercore-storage
+   * index.js:766-767), the RocksDB memtable->SST flush.
+   *
+   * Corestore ships no TypeScript types for its internal storage handle, so the shape is
+   * narrowed at the boundary — the same `.storage.readOnly` guard corestore itself applies
+   * before flushing (corestore/index.js:312).
+   *
+   * DELIBERATELY LOUD when the handle is missing. Silently skipping would re-create the
+   * exact silent degrade this exists to remove — the cutter would be told `appended: true`
+   * and then read a store without the snapshot — and it would do so invisibly on a future
+   * corestore upgrade that renames the accessor. A loud failure is recoverable; a silent
+   * one costs a 52-minute release cut to discover.
+   */
+  async function flushStoreForExternalReaders(): Promise<void> {
+    const storage = (store as unknown as { storage?: { readOnly?: boolean; flush?: () => Promise<void> } })
+      .storage;
+    if (!storage || typeof storage.flush !== 'function') {
+      throw new Error(
+        `[substrate] cannot flush the corestore for ${opts.workspaceId}::${opts.harnessSlug} before answering an ` +
+          'on-demand head-snapshot request: store.storage.flush is not available (corestore internals moved?). ' +
+          'Refusing to report a head snapshot the caller may not be able to read — see EI-20019309044931698.',
+      );
+    }
+    // A read-only store cannot have unflushed writes of ours, so there is nothing to do.
+    if (storage.readOnly) return;
+    await storage.flush();
+  }
+
   async function servicePendingHeadSnapshot(): Promise<void> {
     if (!pendingHeadSnapshot) return;
     const waiter = pendingHeadSnapshot;
@@ -2888,6 +2919,27 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       } catch {
         // observability must never abort the merge pass
       }
+      // WI-37553 / EI-20019309044931698 — FLUSH BEFORE ANSWERING `appended: true`.
+      //
+      // The only caller of this on-demand path is the seed CUTTER, which appends a head
+      // snapshot here and then opens this SAME store READ-ONLY, from a separate process,
+      // seconds later. A read-only RocksDB open sees FLUSHED SSTs — never this process's
+      // memtable — so the freshest blocks, i.e. the snapshot chunks we just wrote, are
+      // precisely the ones it cannot see.
+      //
+      // Measured 2026-08-09: a COMPLETE, in-window 44-chunk set read as ABSENT to that
+      // open (0 read timeouts, 24ms slowest get — the blocks were not slow, they were not
+      // in the view). computeSparseFrom therefore fell back to "ship FULL history" and
+      // seed-degradation-guard refused a 5.62 GB seed ~52 minutes into a release cut. Note
+      // the guard's printed remedy ("append a fresh head snapshot") is actively
+      // counter-productive against this: the FRESHER the snapshot, the LESS likely it is
+      // flushed.
+      //
+      // Answering `appended: true` while the data is invisible to the caller IS the silent
+      // degrade this function's doc comment already forbids — just one layer below where
+      // D-012 saw it. So the flush is INSIDE the try: if it fails, the requester is
+      // rejected rather than told it has a head snapshot it cannot read.
+      if (snap.appended) await flushStoreForExternalReaders();
       waiter.resolve(snap);
     } catch (e) {
       waiter.reject(e);

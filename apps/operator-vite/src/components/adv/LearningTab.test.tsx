@@ -591,10 +591,21 @@ import { FLAGS, FLAG_DEFAULTS } from "@papercusp/flags";
 
 /** Arm/disarm FLAGS.TESTING — the Gym view's gate (WI-6315). Flags live in a
  *  MODULE-level store, so any suite that arms it must disarm it or the flag
- *  leaks into every later test in the file; the top-level beforeEach disarms. */
+ *  leaks into every later test in the file; the top-level beforeEach disarms.
+ *
+ *  ⚠ MUG_KETTLE_SYSTEM is pinned ON in the baseline, deliberately. It derives
+ *  DEFAULT OFF (a DARK_FLAGS 'cutover' entry — retire-mug-kettle-su-only-
+ *  2026-08-09), so seeding straight from FLAG_DEFAULTS retires the tier under
+ *  every test in this file and hides the `wake-efficiency` view. That does not
+ *  read as a gate working: it reads as "Wake efficiency" vanishing from the
+ *  Verify tab row, so a test whose subject is the ROW COMPOSITION starts
+ *  asserting the retirement instead (D-020's quiet vi.mock trap, and exactly
+ *  how this suite failed when the gate landed). This file describes the rail
+ *  with the tier available; the gate's own OFF behaviour is covered by the
+ *  "Mug/Kettle tier gate" block below, which turns it off explicitly. */
 const setTestingFlag = (on: boolean) =>
   setFlagPayload({
-    flags: { ...FLAG_DEFAULTS, [FLAGS.TESTING]: on },
+    flags: { ...FLAG_DEFAULTS, [FLAGS.MUG_KETTLE_SYSTEM]: true, [FLAGS.TESTING]: on },
     evaluatedAt: Date.now(),
     source: "override",
   });
@@ -794,6 +805,85 @@ describe("LearningTab — Improvements view (default)", () => {
     // Assert the merged pane itself rather than a tab that correctly no
     // longer exists.
     expect(screen.getByLabelText("Where these came from")).toBeTruthy();
+    });
+  });
+
+  /** The Mug/Kettle tier gate (retire-mug-kettle-su-only-2026-08-09 P-012 /
+   *  D-020). `wake-efficiency` is the live-Mug read, so it goes dark with the
+   *  tier; the drill panels beside it explicitly DO NOT, and that half is the
+   *  half worth pinning. */
+  describe("Mug/Kettle tier gating (FLAGS.MUG_KETTLE_SYSTEM)", () => {
+    // setTestingFlag pins the tier ON (see its comment), so this suite's ambient
+    // state is tier-available and every case here opts OUT explicitly.
+    const setMugKettleFlag = (on: boolean) =>
+      setFlagPayload({
+        flags: { ...FLAG_DEFAULTS, [FLAGS.MUG_KETTLE_SYSTEM]: on },
+        evaluatedAt: Date.now(),
+        source: "override",
+      });
+
+    afterEach(() => {
+      setTestingFlag(false);
+    });
+
+    // `?lview=benchmark` selects the VERIFY stage, which is the row Wake
+    // efficiency lives on. Without it the view-tab strip on screen belongs to
+    // Improve, every queryByRole below returns null whatever the flag says, and
+    // the gate looks proven while nothing was measured — the vacuous pass the
+    // calibration control caught when these were first written.
+    const renderVerifyRow = () => {
+      nuqsState.lview = "benchmark";
+      render(<LearningTab />);
+    };
+
+    it("hides the Wake efficiency view while the tier is retired", () => {
+      setMugKettleFlag(false);
+      renderVerifyRow();
+      expect(screen.queryByRole("tab", { name: "Wake efficiency" })).toBeNull();
+      // The row itself is on screen — otherwise the assertion above is vacuous.
+      expect(screen.getByRole("tab", { name: "EKG" })).toBeTruthy();
+    });
+
+    // The calibration control for the case above: without it, a wrong tab NAME
+    // or an unrendered row would make queryByRole return null for the wrong
+    // reason and the gate would look proven while doing nothing.
+    it("shows Wake efficiency again when the testing flag is on", () => {
+      setMugKettleFlag(true);
+      renderVerifyRow();
+      expect(screen.getByRole("tab", { name: "Wake efficiency" })).toBeTruthy();
+    });
+
+    it("redirects a stale ?lview=wake-efficiency deep-link to the default view", () => {
+      setMugKettleFlag(false);
+      nuqsState.lview = "wake-efficiency";
+      render(<LearningTab />);
+      expect(screen.queryByRole("tab", { name: "Wake efficiency" })).toBeNull();
+      expect(
+        screen.getByRole("tab", { name: "Improve" }).getAttribute("aria-selected"),
+      ).toBe("true");
+    });
+
+    /** D-020, pinned as a test because the mistake is attractive and silent.
+     *
+     *  P-012's own file list told an implementer to gate RedQueenPanel and
+     *  FrontierPanel alongside the Mug ones, and a filename scan agrees ("Red
+     *  Queen" contains a tier token; both sit in the same directory). Both are
+     *  wrong: "Red Queen" is the evolutionary arms-race term for the SELF-HEALING
+     *  DRILL — packages/operator-core/lib/red-queen/ has zero references to
+     *  wakeMug, getPotStarted, pot/wake or kettle — and Frontier renders the
+     *  learning-loop lane grid. Both belong to the learning system D-001 keeps
+     *  INTACT.
+     *
+     *  Hiding them would be a REGRESSION that looks like progress, and nothing
+     *  else in the suite would notice: the tab simply stops being offered. */
+    it("does NOT hide the Red Queen or Frontier views — they are the learning system, not the Mug (D-020)", () => {
+      setMugKettleFlag(false);
+      renderVerifyRow();
+      expect(screen.getByRole("tab", { name: "Red Queen" })).toBeTruthy();
+      expect(screen.getByRole("tab", { name: "Frontier" })).toBeTruthy();
+      // ...in the same render in which the Mug view IS gone, so this cannot pass
+      // by the gate simply never having engaged.
+      expect(screen.queryByRole("tab", { name: "Wake efficiency" })).toBeNull();
     });
   });
 

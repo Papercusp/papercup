@@ -11,6 +11,7 @@ import {
   filterTscOutputToPaths,
   clampForegroundTimeoutMs,
   foregroundTimeoutHint,
+  deadTypecheckVerdict,
   FOREGROUND_TIMEOUT_CEILING_MS,
   MCP_TRANSPORT_CAP_MS,
 } from './inspect';
@@ -209,5 +210,82 @@ describe('foregroundTimeoutHint — actionable hint on a clamped timeout (EI-607
     expect(foregroundTimeoutHint('completed', FOREGROUND_TIMEOUT_CEILING_MS)).toBe('');
     expect(foregroundTimeoutHint('failed', FOREGROUND_TIMEOUT_CEILING_MS)).toBe('');
     expect(foregroundTimeoutHint('killed', FOREGROUND_TIMEOUT_CEILING_MS)).toBe('');
+  });
+});
+
+/**
+ * EI-20019651513530828 / EI-20013137550825704 — a typecheck that DIED must never be
+ * reportable as clean.
+ *
+ * The fixture is the real captured output: tsc OOMs before emitting a single
+ * diagnostic, so the log contains zero `error TS####` lines. That is byte-for-byte
+ * what a clean compile produces, which is the whole defect.
+ */
+const OOM_OUTPUT = [
+  '',
+  '<--- Last few GCs --->',
+  '[3903:0x7f2c] 79183 ms: Mark-Compact (reduce) 4082.7 (4104.7) -> 4071.3 (4090.0) MB',
+  '',
+  'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory',
+  'Aborted (core dumped)',
+].join('\n');
+
+describe('deadTypecheckVerdict — a crashed typecheck is never a pass', () => {
+  it('returns null for a genuinely clean run (CALIBRATION — must not cry wolf)', () => {
+    expect(deadTypecheckVerdict({ exitCode: 0, status: 'completed', output: '', parsedErrors: 0 })).toBeNull();
+  });
+
+  it('returns null for ordinary type errors — nonzero exit WITH diagnostics is a real result', () => {
+    expect(
+      deadTypecheckVerdict({
+        exitCode: 1,
+        status: 'completed',
+        output: "src/a.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.",
+        parsedErrors: 1,
+      }),
+    ).toBeNull();
+  });
+
+  it('flags the real OOM as out-of-memory, with the heap remedy', () => {
+    const v = deadTypecheckVerdict({ exitCode: 134, status: 'failed', output: OOM_OUTPUT, parsedErrors: 0 });
+    expect(v).not.toBeNull();
+    expect(v!.reason).toBe('typecheck_died_out_of_memory');
+    expect(v!.headline).toContain('MEASURED NOTHING');
+    expect(v!.advice).toContain('max-old-space-size');
+  });
+
+  it('detects the OOM by exit 134 alone, when the trace was truncated away', () => {
+    // Output spills to a log on large runs, so the heap banner is often NOT in the
+    // buffer the tool still holds. The exit code has to be sufficient on its own.
+    const v = deadTypecheckVerdict({ exitCode: 134, status: 'failed', output: '', parsedErrors: 0 });
+    expect(v?.reason).toBe('typecheck_died_out_of_memory');
+  });
+
+  it('detects the OOM by its message alone, when the exit code was lost', () => {
+    const v = deadTypecheckVerdict({ exitCode: null, status: 'failed', output: OOM_OUTPUT, parsedErrors: 0 });
+    expect(v?.reason).toBe('typecheck_died_out_of_memory');
+  });
+
+  it('flags a timeout that produced no diagnostics, and points at a detached re-run', () => {
+    const v = deadTypecheckVerdict({ exitCode: null, status: 'timed_out', output: '', parsedErrors: 0 });
+    expect(v?.reason).toBe('typecheck_timed_out_without_diagnostics');
+    expect(v?.advice).toContain('run_in_background');
+  });
+
+  it('flags any other nonzero exit with no diagnostics (a bad operand, a missing tsconfig)', () => {
+    const v = deadTypecheckVerdict({ exitCode: 2, status: 'completed', output: 'nonsense', parsedErrors: 0 });
+    expect(v?.reason).toBe('typecheck_died_without_diagnostics');
+  });
+
+  it('PRE-FIX CONTROL: the OOM output really is indistinguishable from clean to the filter', () => {
+    // This is what made the bug invisible and is why the guard cannot be derived from
+    // the output alone: the crashed run yields the SAME zero the old code turned into
+    // "(no tsc errors in the specified paths)". If this ever stops being 0, the fixture
+    // has drifted and the tests above are no longer reproducing the real failure.
+    const f = filterTscOutputToPaths(OOM_OUTPUT, ['packages/operator-core/lib/x.ts']);
+    expect(f.totalErrors).toBe(0);
+    expect(f.matchedLines).toEqual([]);
+    // ...yet the run must still be judged dead, on the exit code / banner instead.
+    expect(deadTypecheckVerdict({ exitCode: 134, status: 'failed', output: OOM_OUTPUT, parsedErrors: f.totalErrors })).not.toBeNull();
   });
 });

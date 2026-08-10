@@ -774,6 +774,38 @@ export function classifyInjectionClient(c: {
   return 'ok';
 }
 
+/**
+ * Severity order for rolling several verdicts (a client's own, plus one per
+ * port) into the one the panel shows.
+ *
+ * `idle` sits BELOW `ok` deliberately: it means "no sessions, nothing to
+ * conclude", so it must never win over a port that actually reported. `drift`
+ * outranks `never-observed` because drift is actionable now, whereas a
+ * never-observed port is a known gap someone is already expected to close.
+ */
+const INJECTION_VERDICT_SEVERITY: Record<InjectionClientVerdict, number> = {
+  idle: 0,
+  ok: 1,
+  'never-observed': 2,
+  drift: 3,
+  regressed: 4,
+};
+
+/**
+ * The worst of several injection verdicts. Empty input is `idle` — no verdicts
+ * is no evidence, which is the same reading as no sessions and must not
+ * degrade to a confident `ok`.
+ */
+export function worstInjectionVerdict(
+  verdicts: readonly InjectionClientVerdict[],
+): InjectionClientVerdict {
+  let worst: InjectionClientVerdict = 'idle';
+  for (const v of verdicts) {
+    if (INJECTION_VERDICT_SEVERITY[v] > INJECTION_VERDICT_SEVERITY[worst]) worst = v;
+  }
+  return worst;
+}
+
 export function contextInjectionStatus(d: ContextInjectionHealth): PanelStatus {
   let worst: PanelStatus = 'ok';
   for (const c of d.clients) {

@@ -335,8 +335,12 @@ function unexpectedNonzeroLetterSpacingUnder(root: string): string[] {
   } catch {
     return offenders;
   }
-  const nonzeroLetterSpacingRe =
-    /\b(?:letter-spacing|letterSpacing)\s*:\s*(?:['"])?(?!0(?:\s*(?:[;,'"}]|!important)|\s*$))[0-9.]+(?:em|px|rem)?(?:['"])?/gm;
+  // ONE definition, shared with the edit-time nudge hook (EI-20023819609804890). The
+  // pattern is NOT inlined here any more: posttooluse-css-design-primitives-nudge.mjs
+  // needs the identical matcher, and a hand-copied second regex would drift — the
+  // negative lookahead below is exactly what separates a banned `0.04em` from the
+  // required `letter-spacing: 0`. Fresh instance per call: `/g` is stateful.
+  const nonzeroLetterSpacingRe = makeNonzeroLetterSpacingRe();
   for (const file of files) {
     const content = readCode(file);
     const matches = [...content.matchAll(nonzeroLetterSpacingRe)];

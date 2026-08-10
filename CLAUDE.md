@@ -669,6 +669,33 @@ restarts a ~55min suite clock. This cost ~2h of the 2026-07-27 fleet-wide `facts
 outage (EI-18797292094433710): two wakes re-fired the gate while *every* candidate already
 carried the fix.
 
+⚠⚠ **THE PREMISE UNDER EVERY RECIPE BELOW: the candidate is cut from your LOCAL `staging`,
+NOT from `origin/staging`. The gate never fetches — so PUSHING IS NOT A GATE PRECONDITION.**
+
+`green-checkpoint.ts:3466-3468` resolves it as `revParse(cfg.integrationRoot,
+cfg.integrationBranch)`, and `integrationBranch` defaults to the literal `'staging'`
+(`release-config.ts:131-132`). There is no `git fetch` anywhere in that file's 6,950 lines, and
+its only three `origin/` mentions are prose about GitHub Actions' `origin/main` base-ref default
+(two comments and one log string) — none resolves a candidate. The CLI path (`:6792`, `:6802`) cuts the same way. So the
+hop that matters for containment is **COMMIT** (git-sync's local commit); the push to origin is
+a separate, later concern that no containment test below depends on.
+
+Get this wrong and every recipe below still *runs*, but answers about the wrong object: an
+unpushed commit reads as "not in the candidate", the push leg looks like the thing blocking you,
+and the natural next move is either to wait for a push that was never blocking or to fire a
+manual `release:checkpoint-run` that **discards a live auto-refire rescue** and costs a ~55min
+suite.
+
+⚠ This section documented containment in enormous detail for months while never stating this
+premise, and the cost landed on 2026-08-09 (WI-37590, EI-20022093720663793): **two agents
+independently assumed `origin/staging`**, and one broadcast gating advice built on it to three
+peers mid-incident before retracting it. Note the specific trap — their independent agreement
+*felt* like corroboration when both had merely inherited the same unstated convention.
+**Corroboration requires independent EVIDENCE, not independent recall.** The claim in this box
+is now pinned to the code by
+`packages/operator-core/lib/doc-claims/gate-candidate-ref.test.ts`, so a gate that legitimately
+starts reading a remote ref fails there and forces this text to be updated with it.
+
 ⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged. Skipping this is the
 expensive mistake, and no amount of care in the steps below can recover from it.**
 
@@ -1203,6 +1230,42 @@ result. **Ask the run's own bookkeeping instead, never the kernel's process tabl
 → `gate.checkpointRunInFlight` (`active`/`candidate`/`startedAtMs`/`elapsedSec`); or the
 `inFlightRetriage` marker in `harness_shared.routines` directly (query at the top of the section
 above). (EI-19422230833209442, EI-19422359235363577)
+
+⚠⚠ **`systemctl --user is-active papercup-green-checkpoint-manual-1fxzuva` does NOT tell you that
+YOUR run is alive — that unit name is a FIXED string reused by every fire** (EI-13624, EI-6544). A
+peer's freshly-launched run therefore wears the byte-identical unit name, and `is-active` answers
+`active` *truthfully, about a different run*. This fails in the direction that wastes the most time:
+you keep waiting on a verdict that already landed, so nothing looks wrong — there is no error, just
+a true answer to a question you did not ask. **Compare `ExecMainPID` against the pid your own launch
+reported; it is the only field that separates one fire from the next:**
+
+```bash
+systemctl --user show papercup-green-checkpoint-manual-1fxzuva.service -p ActiveState -p ExecMainPID
+```
+
+Measured 2026-08-10T00:35Z: `ActiveState=active` with `ExecMainPID=3347263`, while the run that
+agent had launched was pid `953011` and had already recorded `green:false reason:not-green` **an
+hour earlier**. Its own carried note read *"my run is in flight — re-check with `is-active`"*, a
+check that stayed true, about the wrong subject, for the whole hour. The `/tmp` log has the same
+defect: the `…-manual-1fxzuva.log` symlink is re-pointed on each fire, so it follows the newest run
+rather than yours — read the timestamped filename, or better, the verdict's own
+`~/.papercusp/checkpoint-logs/<ts>-base-<sha>-cand-<sha>.log`, which names its candidate.
+
+⚠ **Read the pid comparison ASYMMETRICALLY — it is conclusive in only one direction.** A pid that
+DIFFERS from your launch's is proof the active run is **not yours**; act on that. A pid that MATCHES
+is *not* proof that it is, because pids are recycled too — PID wrap happens ~daily on this box under
+fleet load, which is the same reason `processes:kill` refuses to target a bare pid and takes a
+`taskId` instead. For a positive identification anchor to the run's own bookkeeping, which is unique
+per run: the **candidate sha** it reports, the `inFlightRetriage` marker, or the verdict log's
+`…-cand-<sha>.log` filename. In practice the negative is the one you need — it is what tells you to
+stop waiting.
+
+This is the same class as the `pgrep` trap above and as reading `skipped-locked` as a lost tick:
+**a NAME the system legitimately recycles is not an IDENTITY** — and note that the fix for one
+recycled identifier (the unit name) reached for another recycled identifier (the pid), which is how
+this family survives being documented. When writing a note-to-self or a carried check, ask whether
+its identifier could be reused by something that is not your subject; if it can, the check is a trap
+for whoever reads it next, and that is usually you.
 
 ## Server-side edits and the two-port model — no hot-reload
 

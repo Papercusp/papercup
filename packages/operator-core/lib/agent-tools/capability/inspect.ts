@@ -37,6 +37,7 @@ import {
 } from './bash-jobs';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { resolveCapabilityBaseDir } from './base-dir';
+import { TSC_HEAP_MB, tscHeapEnv } from '../tsc-heap';
 
 /**
  * A repo-relative path token safe to embed literally in a `bash -c` command: a
@@ -151,6 +152,83 @@ export function resolveTypecheckCwd(
  * exported so the (output-only, non-security) filter is unit-tested. `onlyPaths` is
  * NEVER part of the executed command — purely a post-process of the output.
  */
+/**
+ * Classify a typecheck run that emitted ZERO diagnostics: did it pass, or did it DIE?
+ *
+ * WHY (EI-20019651513530828 / EI-20013137550825704, both measured 2026-08-09): a
+ * `tsc` that OOMs (operator-core is ~9k files and overflows node's default ~4GB
+ * old-space) is killed by V8 BEFORE it emits a single diagnostic. Every probe an
+ * agent naturally runs on that output then reads as clean:
+ *
+ *     grep -c "error TS" <log>        -> 0
+ *     grep "<my changed file>" <log>  -> (nothing)
+ *
+ * Both are the SAME output a genuinely clean compile produces, so the natural
+ * conclusion is "my change is fine" — reached having verified nothing. One agent
+ * got to within one step of recording "operator-core typechecks clean with the new
+ * required field", on precisely the question (does a new REQUIRED field strand
+ * construction sites in files I never touched?) that this repo flags as the classic
+ * silent breaker.
+ *
+ * Same family as the zero-work false greens already guarded elsewhere (`tsc -p .`
+ * checking zero files; `test:affected` selecting zero suites; a `-t` filter matching
+ * zero tests) — but reached by a CRASH rather than by selecting nothing, which is
+ * why those guards never caught it.
+ *
+ * Returns null when the run is entitled to be read as clean; otherwise the verdict
+ * to surface. Pure + exported so the classification is unit-tested against captured
+ * output rather than by inducing a real OOM.
+ */
+export function deadTypecheckVerdict(run: {
+  exitCode: number | null;
+  status: string;
+  output: string;
+  parsedErrors: number;
+}): { reason: string; headline: string; advice: string } | null {
+  // tsc exits nonzero WITH diagnostics for ordinary type errors — that is a real
+  // result, not a dead run. Only silence plus failure is suspect.
+  if (run.parsedErrors > 0) return null;
+  const clean = run.exitCode === 0 && run.status === 'completed';
+  if (clean) return null;
+
+  const out = run.output ?? '';
+  const oom =
+    /JavaScript heap out of memory|Ineffective mark-compacts near heap limit|FATAL ERROR:.*heap/i.test(out) ||
+    // SIGABRT — how V8 terminates on heap exhaustion once it gives up.
+    run.exitCode === 134 ||
+    /Aborted \(core dumped\)/i.test(out);
+
+  if (oom) {
+    return {
+      reason: 'typecheck_died_out_of_memory',
+      headline:
+        '🚨 THIS RUN MEASURED NOTHING — tsc ran out of heap and was killed before emitting any diagnostics. ' +
+        'Zero errors here does NOT mean your code typechecks.',
+      advice:
+        `Re-run with a larger heap: NODE_OPTIONS=--max-old-space-size=${TSC_HEAP_MB} (or \`npm run lint:tsc -- --files=<your files>\`, ` +
+        'which pins it for you). This tool now sets that heap itself, so an OOM here means the target needs more than the current ceiling.',
+    };
+  }
+  if (run.status === 'timed_out') {
+    return {
+      reason: 'typecheck_timed_out_without_diagnostics',
+      headline:
+        '🚨 THIS RUN MEASURED NOTHING — the typecheck was killed at its timeout before emitting any diagnostics. ' +
+        'Zero errors here does NOT mean your code typechecks.',
+      advice: 'Re-run detached: capability:inspect { …same args…, run_in_background: true }, then poll capability:bash_output.',
+    };
+  }
+  return {
+    reason: 'typecheck_died_without_diagnostics',
+    headline:
+      `🚨 THIS RUN MEASURED NOTHING — tsc exited ${run.exitCode ?? 'null'} without emitting any diagnostics. ` +
+      'Zero errors here does NOT mean your code typechecks.',
+    advice:
+      'Read the head of the output for the real cause (a bad --project operand, a missing tsconfig, or a crash). ' +
+      'A nonzero exit with no diagnostics is never a pass.',
+  };
+}
+
 export function filterTscOutputToPaths(
   output: string,
   onlyPaths: string[],
@@ -295,10 +373,16 @@ export default defineTool({
     // Reuse the capability:bash OS sandbox (P-022/D-008) on the operator-side exec.
     const sandboxEnabled = await capabilityExecSandboxEnabled();
 
+    // EI-20019651513530828: pin the tsc child's heap. operator-core overflows node's
+    // DEFAULT ~4GB old-space and is killed BEFORE emitting any diagnostics, which reads
+    // as a clean compile to every natural probe. Typecheck only — a suite run has its
+    // own memory profile and is not the measured failure.
+    const execEnv = args.check === 'typecheck' ? tscHeapEnv() : undefined;
+
     if (args.run_in_background) {
       // Background is uncapped by the MCP transport (returns a bash_id immediately), so it
       // honors the full requested timeout.
-      const job = startBackground({ command, cwd, stateDir: ctx.stateDir, sandboxEnabled }, requestedTimeoutMs);
+      const job = startBackground({ command, cwd, stateDir: ctx.stateDir, sandboxEnabled, env: execEnv }, requestedTimeoutMs);
       return {
         content: [
           {
@@ -323,7 +407,7 @@ export default defineTool({
     // request_timeout (the friction on large packages like operator-core).
     const timeoutMs = clampForegroundTimeoutMs(requestedTimeoutMs);
     const r = await runForeground(
-      { command, cwd, stateDir: ctx.stateDir, onChunk: (chunk) => ctx.emit('output', chunk), sandboxEnabled },
+      { command, cwd, stateDir: ctx.stateDir, onChunk: (chunk) => ctx.emit('output', chunk), sandboxEnabled, env: execEnv },
       ctx.signal,
       timeoutMs,
     );
@@ -333,18 +417,45 @@ export default defineTool({
     // the answer to "did MY change add a NEW error". Output post-process only.
     if (args.check === 'typecheck' && args.onlyPaths && args.onlyPaths.length > 0) {
       const f = filterTscOutputToPaths(r.output, args.onlyPaths);
+      // EI-20019651513530828: a DEAD run reaches here with totalErrors 0, so the filter
+      // finds nothing and the body below would assert "(no tsc errors in the specified
+      // paths)" — a clean verdict from a compile that never ran. Decide that FIRST.
+      const dead = deadTypecheckVerdict({
+        exitCode: r.exitCode,
+        status: r.status,
+        output: r.output,
+        parsedErrors: f.totalErrors,
+      });
       const summary =
         `${args.check} · exit ${r.exitCode ?? 'null'}` +
         (r.status !== 'completed' ? ` (${r.status})` : '') +
         ` · ${(r.durationMs / 1000).toFixed(1)}s · onlyPaths(${args.onlyPaths.length}): ` +
-        `${f.matchedErrors} matching error(s) of ${f.totalErrors} total` +
+        (dead
+          ? 'NO VERDICT — the run died (see below)'
+          : `${f.matchedErrors} matching error(s) of ${f.totalErrors} total`) +
         (r.truncated ? ` · ⚠ output truncated (${r.totalBytes} bytes) → ${r.logPath}; the filter saw the head only` : '');
-      const body = f.matchedLines.length > 0 ? f.matchedLines.join('\n') : '(no tsc errors in the specified paths)';
+      const body = dead
+        ? `${dead.headline}\n${dead.advice}\nreason: ${dead.reason}\n\n--- raw output ---\n${r.output || '(no output)'}`
+        : f.matchedLines.length > 0
+          ? f.matchedLines.join('\n')
+          : '(no tsc errors in the specified paths)';
       return {
         content: [{ type: 'text' as const, text: `${cwdCorrectionNote}${summary}${foregroundTimeoutHint(r.status, timeoutMs)}\n${body}` }],
-        isError: false,
+        isError: dead !== null,
       };
     }
+
+    // Unfiltered typecheck: the same false green, one step earlier. `(no output)` or a
+    // truncated OOM trace reads as "nothing to report" unless the death is NAMED.
+    const deadUnfiltered =
+      args.check === 'typecheck'
+        ? deadTypecheckVerdict({
+            exitCode: r.exitCode,
+            status: r.status,
+            output: r.output,
+            parsedErrors: filterTscOutputToPaths(r.output, []).totalErrors,
+          })
+        : null;
 
     const header =
       `${args.check} · exit ${r.exitCode ?? 'null'}` +
@@ -352,9 +463,20 @@ export default defineTool({
       ` · ${(r.durationMs / 1000).toFixed(1)}s · ${command} · cwd ${cwd}` +
       (r.truncated ? ` · output spilled (${r.totalBytes} bytes) → ${r.logPath}` : '');
 
+    const deadBanner = deadUnfiltered
+      ? `\n${deadUnfiltered.headline}\n${deadUnfiltered.advice}\nreason: ${deadUnfiltered.reason}`
+      : '';
+
     return {
-      content: [{ type: 'text' as const, text: `${cwdCorrectionNote}${header}${foregroundTimeoutHint(r.status, timeoutMs)}\n${r.output || '(no output)'}` }],
-      isError: r.status === 'failed' && r.exitCode === null,
+      content: [
+        {
+          type: 'text' as const,
+          text: `${cwdCorrectionNote}${header}${deadBanner}${foregroundTimeoutHint(r.status, timeoutMs)}\n${r.output || '(no output)'}`,
+        },
+      ],
+      // A crash that produced no diagnostics is an ERROR, not a quiet pass. This used to
+      // require exitCode === null, so an OOM (exit 134) was not flagged at all.
+      isError: deadUnfiltered !== null || (r.status === 'failed' && r.exitCode === null),
     };
   },
 });

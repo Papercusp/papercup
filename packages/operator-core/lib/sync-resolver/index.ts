@@ -1021,6 +1021,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       'harness_shared.goal_projects',
       'harness_shared.work_items',
       'harness_shared.agent_usage_samples',
+      // P-019/D-010: the plans rail joins harness_plans for each derived plan's
+      // title + status. Without this a plan renamed or archived after the panel
+      // opened keeps rendering its old label — the row list is invalidated by
+      // work_items above, but the JOINED columns come from here.
+      'harness_shared.harness_plans',
+      // P-018/D-007: the goal↔agent pairing lives in `agent_modes.subject`, so
+      // an agent started on (or stopped off) this goal must repaint the popup's
+      // conversation affordance.
+      'harness_shared.agent_modes',
     ],
     argsSchema: z.object({
       workspaceId: z.string().default('default'),

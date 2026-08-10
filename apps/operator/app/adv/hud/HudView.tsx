@@ -1048,6 +1048,11 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         nowMs={nowMs}
         onClose={() => void setGoalFilter(null)}
         onOpenWorkItem={(id) => void setOpenItemId(id)}
+        /* P-018/D-011: the goal popup's ONE conversation affordance. It routes
+           into the SAME `hudsession` popup the sessions pane opens rather than
+           growing a chat surface of its own — D-005, never fork a second chat
+           renderer. `setOpenOwner` is that route, already owned here. */
+        onOpenAgent={(ownerId) => void setOpenOwner(ownerId)}
       />
       {/* P-015: the ORIGIN of a goal, opposite the panel above which is its
           destination. Submitting spawns the GOAL-mode agent (D-008), so on

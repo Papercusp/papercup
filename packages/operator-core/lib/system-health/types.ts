@@ -955,6 +955,22 @@ export type InjectionClientVerdict =
   /** Sessions ran, nothing recorded, and this client HAS a baseline. Real. */
   | 'regressed';
 
+/**
+ * One (client, port) cell of the panel — the grain an outage is visible at.
+ *
+ * A per-client total cannot express "turn-start is dead but mid-turn is fine":
+ * the working port's traffic keeps `events` healthy and the dead one never
+ * surfaces. That masking is why a real turn-start failure
+ * (EI-20001110634702380) closed cause-undetermined, and why the row carries its
+ * own `everObserved` — a port with no baseline is a known gap, never a page.
+ */
+export interface ContextInjectionPortRow {
+  port: string;
+  events: number;
+  everObserved: boolean;
+  verdict: InjectionClientVerdict;
+}
+
 export interface ContextInjectionClientRow {
   client: string;
   sessions: number;
@@ -963,7 +979,14 @@ export interface ContextInjectionClientRow {
   unknownTool: number;
   driftTools: string[];
   everObserved: boolean;
+  /**
+   * This client's verdict, rolled up as the WORST of its ports (and its own
+   * client-level reading). Rolling up rather than reporting the client total
+   * directly is what makes a single dead port able to move the panel at all.
+   */
   verdict: InjectionClientVerdict;
+  /** One entry per injection port, always present — see ContextInjectionPortRow. */
+  ports: ContextInjectionPortRow[];
 }
 
 export interface ContextInjectionHealth {

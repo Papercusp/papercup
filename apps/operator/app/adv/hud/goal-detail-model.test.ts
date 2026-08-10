@@ -12,9 +12,12 @@ import {
   ceilingLine,
   killCriterionLine,
   partitionProjects,
+  planLabel,
   spendStack,
   tripwireBar,
   tripwireBars,
+  workRail,
+  type GoalDetailInput,
   type GoalDetailProjectInput,
 } from './goal-detail-model';
 
@@ -243,5 +246,110 @@ describe('agoText', () => {
     expect(agoText(null, now)).toBeNull();
     expect(agoText(undefined, now)).toBeNull();
     expect(agoText('not a date', now)).toBeNull();
+  });
+});
+
+/* ── The work rail (goals-tab-improvement-2026-08-09 P-019) ────────────────
+   Same bar as the cases above: each of these is a way a plausible rail is
+   silently WRONG rather than obviously broken. */
+describe('workRail', () => {
+  const NOW = Date.parse('2026-08-10T00:00:00Z');
+  const iso = (minsAgo: number) => new Date(NOW - minsAgo * 60_000).toISOString();
+
+  /** The shape that matters: an item parked on the owner is returned by BOTH
+   *  `waitingOnYou` and `activity`, because the resolver reads the same rows
+   *  twice with different filters. */
+  const overlapping: GoalDetailInput = {
+    goal: null,
+    waitingOnYou: [{ id: 'WI-1', title: 'Needs a decision', harnessSlug: 'papercusp', updatedAt: iso(5) }],
+    activity: [
+      { id: 'WI-1', title: 'Needs a decision', harnessSlug: 'papercusp', status: 'open', updatedAt: iso(5) },
+      { id: 'WI-2', title: 'In flight', harnessSlug: 'papercusp', status: 'wip', updatedAt: iso(10) },
+      { id: 'WI-3', title: 'Finished', harnessSlug: 'papercusp', closedAt: iso(60), updatedAt: iso(60) },
+    ],
+  };
+
+  it('never shows one item twice — a needs-you item is SUBTRACTED from open', () => {
+    const rail = workRail(overlapping, NOW);
+    expect(rail.needsYou.map((i) => i.id)).toEqual(['WI-1']);
+    // The bug this pins: WI-1 also arrives in `activity`, so a rail that simply
+    // renders both lists shows it under "Needs you" AND "Open" and the reader
+    // counts one item as two.
+    expect(rail.open.map((i) => i.id)).toEqual(['WI-2']);
+    expect(rail.closed.map((i) => i.id)).toEqual(['WI-3']);
+
+    const everyId = [...rail.needsYou, ...rail.open, ...rail.closed].map((i) => i.id);
+    expect(everyId).toEqual([...new Set(everyId)]);
+  });
+
+  it('splits closed from open by closedAt, not by the status word', () => {
+    // A closed item can still carry a non-terminal `status` string; the
+    // timestamp is the fact, the word is a label.
+    const rail = workRail(
+      {
+        goal: null,
+        activity: [{ id: 'WI-9', title: 'Closed but labelled open', status: 'open', closedAt: iso(1) }],
+      },
+      NOW,
+    );
+    expect(rail.open).toHaveLength(0);
+    expect(rail.closed.map((i) => i.id)).toEqual(['WI-9']);
+    expect(rail.closed[0]!.metaText).toContain('closed');
+  });
+
+  it('reports EMPTY only when there is nothing at all — not merely no plans', () => {
+    expect(workRail({ goal: null }, NOW).empty).toBe(true);
+    expect(workRail(null, NOW).empty).toBe(true);
+    // Items but no plans is NOT empty: the rail has rows to show, and rendering
+    // the "nothing is under this goal" sentence over them would be a lie.
+    expect(workRail(overlapping, NOW).empty).toBe(false);
+    expect(
+      workRail({ goal: null, plans: [{ planSlug: 'p', harnessSlug: 'h' }] }, NOW).empty,
+    ).toBe(false);
+  });
+
+  it('drops a plan row with no slug rather than rendering a nameless card', () => {
+    const rail = workRail(
+      {
+        goal: null,
+        plans: [
+          { planSlug: '', harnessSlug: 'h' },
+          { planSlug: 'real-plan', harnessSlug: 'h' },
+        ],
+      },
+      NOW,
+    );
+    expect(rail.plans.map((p) => p.planSlug)).toEqual(['real-plan']);
+  });
+
+  it('carries the age into the meta line, and omits it when unknown', () => {
+    const rail = workRail(
+      {
+        goal: null,
+        activity: [
+          { id: 'A', title: 'aged', status: 'wip', updatedAt: iso(30) },
+          { id: 'B', title: 'no timestamp', status: 'wip' },
+        ],
+      },
+      NOW,
+    );
+    expect(rail.open[0]!.metaText).toMatch(/wip · /);
+    // No fabricated "just now" for a row nothing has dated.
+    expect(rail.open[1]!.metaText).toBe('wip');
+  });
+});
+
+describe('planLabel', () => {
+  it('marks a plan whose row no longer resolves instead of passing its slug off as a title', () => {
+    expect(planLabel({ planSlug: 'my-plan', harnessSlug: 'h', title: 'My Plan' })).toEqual({
+      text: 'My Plan',
+      missing: false,
+    });
+    // The state worth SEEING: live work items pointing at a plan that is gone.
+    expect(planLabel({ planSlug: 'my-plan', harnessSlug: 'h', title: null })).toEqual({
+      text: 'my-plan',
+      missing: true,
+    });
+    expect(planLabel({ planSlug: 'my-plan', harnessSlug: 'h', title: '   ' }).missing).toBe(true);
   });
 });

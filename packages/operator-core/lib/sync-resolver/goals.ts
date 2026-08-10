@@ -336,6 +336,26 @@ export async function resolveGoalDetail(args: {
        ORDER BY COUNT(*) FILTER (WHERE wi.closed_ts IS NULL) DESC, MAX(wi.updated_ts) DESC NULLS LAST
     `) as unknown as Array<Record<string, unknown>>;
 
+    // The agent(s) RUNNING this goal (P-018's conversation affordance). D-007:
+    // the goal↔agent marker is `agent_modes.subject` — no dedicated column and
+    // no migration was ever needed. `goals:start` writes this row, so the goal
+    // popup can offer the ONE honest conversation affordance available to it:
+    // a route to the agent's existing conversation, never a composer of its own
+    // (see GoalDetailPanel's docblock and D-011).
+    //
+    // D-006 makes this a single agent in practice (one directed agent = one
+    // goal), but it is returned as a LIST rather than a scalar: collapsing it
+    // would silently hide a second stamp, and a goal with two agents is a
+    // coordination fault worth SEEING rather than a row to discard.
+    const agentRows = (await tx`
+      SELECT am.owner_id, am.set_at, am.set_by
+        FROM harness_shared.agent_modes am
+       WHERE am.workspace_id = ${workspaceId}
+         AND am.mode = 'goal'
+         AND am.subject = ${goalId}
+       ORDER BY am.set_at DESC
+    `) as unknown as Array<Record<string, unknown>>;
+
     // Spend by day, stacked by project — the shape the chart wants, computed
     // once here rather than bucketed client-side over a raw sample list.
     const spendByDay = (await tx`
@@ -375,6 +395,21 @@ export async function resolveGoalDetail(args: {
     return {
       goal,
       projects,
+      agents: agentRows.map((a) => ({
+        ownerId: String(a.owner_id),
+        setAt: iso(a.set_at as string | Date | null),
+        setBy: (a.set_by as string | null) ?? null,
+      })),
+      plans: planRows.map((p) => ({
+        planSlug: String(p.plan_slug),
+        harnessSlug: String(p.harness_slug),
+        title: (p.title as string | null) ?? null,
+        status: (p.status as string | null) ?? null,
+        archived: p.archived === true,
+        items: num(p.items),
+        openItems: num(p.open_items),
+        updatedAt: iso(p.updated_at as string | Date | null),
+      })),
       waitingOnYou: waiting.map((w) => ({
         id: String(w.id),
         title: String(w.title),

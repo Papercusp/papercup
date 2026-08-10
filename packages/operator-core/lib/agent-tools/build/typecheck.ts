@@ -72,6 +72,7 @@ import {
   syntaxBrokenFiles,
 } from '../../tsc-diagnostics';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { tscHeapEnv } from '../tsc-heap';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
@@ -232,6 +233,10 @@ export function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
+      // EI-20019651513530828: without a pinned heap this OOMs on operator-core
+      // (~9k files vs node's default ~4GB old-space) and is killed BEFORE emitting
+      // any diagnostics — which parses as zero errors, i.e. a clean pass.
+      env: { ...process.env, ...tscHeapEnv() },
     });
     const timer = setTimeout(() => {
       killProcessTree(child, 'SIGTERM');

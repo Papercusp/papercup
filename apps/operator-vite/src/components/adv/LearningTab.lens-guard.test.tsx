@@ -141,10 +141,18 @@ import { FLAGS, FLAG_DEFAULTS } from "@papercusp/flags";
 
 /** The Gym view is gated behind FLAGS.TESTING (WI-6315) — without it the tab
  *  degrades `?lview=gym` to the default view, and a guard that did not arm the
- *  flag would silently audit the WRONG component while reporting on "gym". */
+ *  flag would silently audit the WRONG component while reporting on "gym".
+ *
+ *  MUG_KETTLE_SYSTEM is pinned ON for the identical reason, one gate later: it
+ *  derives DEFAULT OFF (retire-mug-kettle-su-only-2026-08-09), so seeding from
+ *  FLAG_DEFAULTS degrades `?lview=wake-efficiency` to the default view — and
+ *  this guard would then audit the IMPROVEMENTS pane while reporting on
+ *  "wake-efficiency", the precise failure the comment above already warns
+ *  about. It is a lens audit, so a silently-substituted component makes the
+ *  verdict wrong rather than absent. */
 const setTestingFlag = (on: boolean) =>
   setFlagPayload({
-    flags: { ...FLAG_DEFAULTS, [FLAGS.TESTING]: on },
+    flags: { ...FLAG_DEFAULTS, [FLAGS.MUG_KETTLE_SYSTEM]: true, [FLAGS.TESTING]: on },
     evaluatedAt: Date.now(),
     source: "override",
   });
