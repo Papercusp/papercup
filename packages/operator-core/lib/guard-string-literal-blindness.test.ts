@@ -201,8 +201,21 @@ describe('migrated guards do not mint phantom offenders from tokens quoted in pr
  * Masked, the honest number is 31. (EI-20045405992394901.)
  */
 const SHARED_STRIPPER = /strip-comments-and-strings\.mjs/;
-/** Any comment stripper, ANY spelling and ANY binding form — `stripSqlComments`, `const stripComments = …`. */
-const NAMED_STRIPPER = /\bstrip[A-Za-z]*Comments?\b/;
+/**
+ * Any comment stripper, ANY spelling and ANY binding form — `stripSqlComments`,
+ * `const stripComments = …`, `maskCommentsAndStrings`, `blankStringLiterals`.
+ *
+ * ⚠ THE VERB SET IS LOAD-BEARING, and the old `strip`-only rule proves why: this comment
+ * already CLAIMED "ANY spelling" while matching only /strip[A-Za-z]*Comments?/, and
+ * `check-no-unthreaded-apply.mjs` sat in the corpus the whole time calling its private lexer
+ * `maskCommentsAndStrings`. One name-specific regex gave TWO wrong answers about that file:
+ * it read as masking NOTHING, so it landed in SCANS_UNMASKED_SOURCE (false — it did mask)
+ * while escaping this shrink-only baseline (false — it was a copy-paste of the exact defect,
+ * regex-blind included). A guard-of-guards that classifies by NAME cannot see a synonym, and
+ * "any spelling" in a comment is not a rule. Widened 2026-08-10 (WI-37717).
+ */
+const NAMED_STRIPPER =
+  /\b(?:strip|mask|blank|scrub|elide|redact)[A-Za-z]*(?:Comments?|Strings?|Literals?|Bodies)\b/;
 /** The two copy-pasted regexes themselves, matched as literal text — they are the defect. */
 const NAIVE_BLOCK_RE = String.raw`\/\*[\s\S]*?\*\/`;
 const NAIVE_LINE_RE = String.raw`\/\/.*$`;
@@ -343,7 +356,6 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     'check-no-retired-imports.mjs',
     'check-no-self-referential-export.mjs',
     'check-no-unenrolled-detached-spawn.mjs',
-    'check-no-unthreaded-apply.mjs',
     'check-no-wire-compression.mjs',
     'check-okf-conformance.mjs',
     'check-scope-defaults.mjs',

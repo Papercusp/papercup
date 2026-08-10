@@ -79,6 +79,8 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
+
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
 /**
@@ -150,50 +152,30 @@ function* walk(dir) {
 }
 
 /**
- * Blank out line comments, block comments and string/template literals, preserving length
- * and newlines so byte offsets and line numbers stay exact.
+ * The masking this guard depends on comes from the SHARED stripper
+ * (`scripts/lib/strip-comments-and-strings.mjs`), not a private lexer.
  *
- * This is not tidiness. Prose describing a rule is textually identical to the rule being
- * applied, so a doc comment naming `applyOpVia(lookup, op)` — of which this file's own
- * header has several — would otherwise be scanned as a real call site. That failure has
- * fired repeatedly in this repo (a doc comment about a SQL bug pulled a SQL-free file into
- * a SQL linter's scope), including on guards written to prevent it.
+ * WHY THE PRIVATE COPY HAD TO GO. Prose describing a rule is textually identical to the rule
+ * being applied — a doc comment naming `applyOpVia(lookup, op)`, of which this file's own
+ * header has several, would otherwise scan as a real call site. The hand-rolled lexer that
+ * lived here got comments and strings right but had NO regex-literal handling, so the quote
+ * in an ordinary `/['"]/` opened a phantom string that ran to end-of-line and DELETED
+ * whatever followed it — including a real call site. Telling a regex from a division needs
+ * a parser, which is exactly what the shared module delegates to TypeScript.
+ *
+ * IT WAS ALSO INVISIBLE TO THE GUARD-OF-GUARDS, and that is the part worth remembering.
+ * `guard-string-literal-blindness.test.ts` classifies a guard by looking for a stripper NAMED
+ * `strip*Comments*`. This one was called `maskCommentsAndStrings`, so the file read as masking
+ * NOTHING: it sat in SCANS_UNMASKED_SOURCE (false — it did mask) while escaping the
+ * hand-rolled shrink-only baseline (false — it was a copy-paste of the exact defect). One
+ * name-specific regex, two wrong answers, inside the registry built to prevent this class.
+ * The classifier is widened alongside this migration so the next `mask*` spelling cannot hide.
+ *
+ * BEHAVIOUR NOTE: the shared stripper KEEPS string delimiters (`''`) where the private one
+ * blanked them entirely. That fixes a latent arity bug — `splitArgs` drops an empty first
+ * argument, so a call whose FIRST argument was a string literal used to be counted one
+ * argument short and could be reported unthreaded when it was not.
  */
-export function maskCommentsAndStrings(src) {
-  let out = '';
-  let i = 0;
-  const n = src.length;
-  const keep = (ch) => (ch === '\n' ? '\n' : ' ');
-  while (i < n) {
-    const two = src.slice(i, i + 2);
-    if (two === '//') {
-      while (i < n && src[i] !== '\n') { out += keep(src[i]); i++; }
-      continue;
-    }
-    if (two === '/*') {
-      const end = src.indexOf('*/', i + 2);
-      const stop = end === -1 ? n : end + 2;
-      while (i < stop) { out += keep(src[i]); i++; }
-      continue;
-    }
-    const ch = src[i];
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch;
-      out += ' ';
-      i++;
-      while (i < n) {
-        if (src[i] === '\\') { out += '  '.slice(0, 2); i += 2; continue; }
-        if (src[i] === quote) { out += ' '; i++; break; }
-        out += keep(src[i]);
-        i++;
-      }
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
 
 /**
  * Split a call's argument list at TOP-LEVEL commas only, so an object literal or a nested
@@ -229,8 +211,8 @@ export function splitArgs(masked, openParenIdx) {
  * Exported so a test can feed it controls — including a deliberately-wrong control that
  * MUST be flagged, which is what proves the detector can still fail.
  */
-export function findUnthreadedApplies(src) {
-  const masked = maskCommentsAndStrings(src);
+export function findUnthreadedApplies(src, fileName) {
+  const masked = stripCommentsAndStrings(src, fileName);
   const hits = [];
   const CALL = /\bapplyOpVia\s*\(/g;
   let m;
@@ -271,7 +253,7 @@ function main() {
         continue;
       }
       if (!src.includes('applyOpVia')) continue;
-      const hits = findUnthreadedApplies(src);
+      const hits = findUnthreadedApplies(src, file);
       if (hits.length) found.set(relative(base, file), hits);
     }
   }

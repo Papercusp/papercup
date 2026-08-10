@@ -29,7 +29,10 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { findUnthreadedApplies, maskCommentsAndStrings, splitArgs } from '../../../../scripts/check-no-unthreaded-apply.mjs';
+import { findUnthreadedApplies, splitArgs } from '../../../../scripts/check-no-unthreaded-apply.mjs';
+// The guard no longer carries a private masker — it imports the shared stripper, whose own
+// length/line-fidelity properties are proven in guard-string-literal-blindness.test.ts.
+import { stripCommentsAndStrings } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
 const GUARD = join(REPO_ROOT, 'scripts', 'check-no-unthreaded-apply.mjs');
@@ -153,11 +156,25 @@ describe('findUnthreadedApplies — controls (proves the detector can still fail
 });
 
 describe('helpers', () => {
-  it('maskCommentsAndStrings preserves length and newlines so line numbers stay exact', () => {
+  it('the shared stripper preserves length and newlines so line numbers stay exact', () => {
     const src = 'a\n// comment\nb';
-    const masked = maskCommentsAndStrings(src);
+    const masked = stripCommentsAndStrings(src, 'x.ts');
     expect(masked).toHaveLength(src.length);
     expect(masked.split('\n')).toHaveLength(src.split('\n').length);
+  });
+
+  it('a regex literal containing a quote no longer erases the call site after it', () => {
+    // The private lexer this guard used to carry treated the quote in /['"]/ as opening a
+    // string, swallowing the rest of the line — so a REAL call site after one vanished.
+    // This is the defect that motivated the migration; it must stay dead.
+    const src = `const q = /['"]/; applyOpVia(lookup, op);`;
+    expect(findUnthreadedApplies(src, 'x.ts')).toHaveLength(1);
+  });
+
+  it('a call whose FIRST argument is a string literal is not counted one argument short', () => {
+    // Blanking string DELIMITERS (the old behaviour) made the first arg empty, and splitArgs
+    // drops an empty leading arg — so a 3-arg call read as 2 and was reported unthreaded.
+    expect(findUnthreadedApplies(`applyOpVia('reg', op, thread);`, 'x.ts')).toHaveLength(0);
   });
 
   it('splitArgs returns null on unbalanced parens rather than a confident wrong arity', () => {
