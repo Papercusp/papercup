@@ -118,7 +118,7 @@ beforeEach(async () => {
   // this is a throwaway per-file testcontainer, so cascading is exactly right
   // and the alternative — enumerating every referencing table here — rots the
   // moment someone adds another one.
-  await sql`TRUNCATE harness_shared.goals, harness_shared.goal_projects,
+  await sql`TRUNCATE harness_shared.goals, harness_shared.goal_pots,
                      harness_shared.work_items, harness_shared.agent_usage_samples,
                      harness_shared.harness_plans, harness_shared.agent_modes CASCADE`;
 });
@@ -133,13 +133,13 @@ async function goal(over: { killCriterion?: string | null; tripwires?: unknown }
   `;
 }
 
-async function project(
+async function pot(
   slug: string,
   over: { role?: string; removedAt?: string | null; killCriterion?: string | null } = {},
 ): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.goal_projects (workspace_id, goal_id, harness_slug, role,
-                                              added_at, removed_at, kill_criterion, note)
+    INSERT INTO harness_shared.goal_pots (workspace_id, goal_id, harness_slug, role,
+                                          added_at, removed_at, kill_criterion, note)
     VALUES (${WS}, ${GOAL}, ${slug}, ${over.role ?? 'owner'}, now(),
             ${over.removedAt ?? null}, ${over.killCriterion ?? 'ship or stop'}, 'a note')
   `;
@@ -239,7 +239,7 @@ describe('goals.* resolvers against real SQL', () => {
     // mocked test on this path was green at the same moment.
     const { resolveGoalsList } = await import('./goals');
     await goal();
-    await project('alpha');
+    await pot('alpha');
     await workItem('WI-1');
     await closedItem('WI-2');
     await workItem('WI-3', { needsHuman: true });
@@ -253,13 +253,13 @@ describe('goals.* resolvers against real SQL', () => {
     // them parked on the owner. A wrong closed-column would count all three.
     expect(g.openWorkItems).toBe(2);
     expect(g.needsHuman).toBe(1);
-    expect(g.projectCount).toBe(1);
+    expect(g.potCount).toBe(1);
   });
 
   it('resolveGoalDetail RUNS and returns every section the detail view reads', async () => {
     const { resolveGoalDetail } = await import('./goals');
     await goal();
-    await project('alpha');
+    await pot('alpha');
     await workItem('WI-open');
     await workItem('WI-wall', { needsHuman: true });
     await usage('alpha', Date.parse('2026-08-01T10:00:00Z'), 3);
@@ -275,7 +275,7 @@ describe('goals.* resolvers against real SQL', () => {
     };
 
     expect(out.goal?.id).toBe(GOAL);
-    expect(out.projects).toHaveLength(1);
+    expect(out.pots).toHaveLength(1);
     expect(out.waitingOnYou.map((w) => w.id)).toEqual(['WI-wall']);
     expect(out.activity).toHaveLength(2);
     expect(out.spendByDay.map((d) => d.day)).toEqual(['2026-08-01', '2026-08-02']);
@@ -322,7 +322,7 @@ describe('goals.* resolvers against real SQL', () => {
     const { resolveGoalDetail } = await import('./goals');
     const updated = Date.parse('2026-08-05T09:30:00Z');
     await goal();
-    await project('alpha');
+    await pot('alpha');
     await closedItem('WI-done', updated);
 
     const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
@@ -347,24 +347,24 @@ describe('goals.* resolvers against real SQL', () => {
     // the other half of that decision, so it is pinned on both sides.
     const { resolveGoalDetail } = await import('./goals');
     await goal();
-    await project('alpha');
-    await project('beta', { role: 'contributing', removedAt: new Date().toISOString() });
+    await pot('alpha');
+    await pot('beta', { role: 'contributing', removedAt: new Date().toISOString() });
 
     const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
-      goal: { projectCount: number };
+      goal: { potCount: number };
       projects: Array<{ harnessSlug: string; removedAt: string | null }>;
     };
-    expect(out.projects.map((p) => p.harnessSlug).sort()).toEqual(['alpha', 'beta']);
-    expect(out.projects.find((p) => p.harnessSlug === 'beta')?.removedAt).not.toBeNull();
+    expect(out.pots.map((p) => p.harnessSlug).sort()).toEqual(['alpha', 'beta']);
+    expect(out.pots.find((p) => p.harnessSlug === 'beta')?.removedAt).not.toBeNull();
     // ...but a removed project must not inflate the ACTIVE count.
-    expect(out.goal.projectCount).toBe(1);
+    expect(out.goal.potCount).toBe(1);
   });
 
   /* ── P-019/D-010: plans, DERIVED through stamped work items ────────────── */
   it('derives plans from the goal’s work items — and never from its projects’ harnesses', async () => {
     const { resolveGoalDetail } = await import('./goals');
     await goal();
-    await project('alpha');
+    await pot('alpha');
     await plan('ship-it', { title: 'Ship it' });
     // A plan in the SAME harness that no goal-stamped item came from. The
     // rejected derivation (every plan in a linked project's harness) would
