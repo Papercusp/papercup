@@ -43,12 +43,20 @@ export interface DiskAlarmPolicy {
   /** Flag when free inodes drop below this fraction of total (0–1). Skipped on
    *  filesystems that do not report inodes (totalInodes === 0, e.g. btrfs). */
   freeInodesPctMin: number;
+  /** CRITICAL tier (EI-20090527288494606): below this fraction, a breach stops
+   *  being "getting full" and becomes "writes are about to fail" — it escalates
+   *  to a human instead of only toasting. Must be TIGHTER than freePctMin. */
+  criticalFreePctMin: number;
+  /** …or below this absolute byte floor. Must be TIGHTER than freeBytesMin. */
+  criticalFreeBytesMin: number;
 }
 
 export const DEFAULT_DISK_POLICY: DiskAlarmPolicy = {
   freePctMin: 0.1, // 10%
   freeBytesMin: 5 * GIB,
   freeInodesPctMin: 0.05, // 5%
+  criticalFreePctMin: 0.02, // 2%
+  criticalFreeBytesMin: 2 * GIB,
 };
 
 export function diskPolicyFromEnv(): DiskAlarmPolicy {
@@ -56,6 +64,10 @@ export function diskPolicyFromEnv(): DiskAlarmPolicy {
     freePctMin: envNum('PAPERCUSP_DISK_ALARM_FREE_PCT', DEFAULT_DISK_POLICY.freePctMin * 100) / 100,
     freeBytesMin: envNum('PAPERCUSP_DISK_ALARM_FREE_GB', DEFAULT_DISK_POLICY.freeBytesMin / GIB) * GIB,
     freeInodesPctMin: envNum('PAPERCUSP_DISK_ALARM_FREE_INODES_PCT', DEFAULT_DISK_POLICY.freeInodesPctMin * 100) / 100,
+    criticalFreePctMin:
+      envNum('PAPERCUSP_DISK_ALARM_CRITICAL_PCT', DEFAULT_DISK_POLICY.criticalFreePctMin * 100) / 100,
+    criticalFreeBytesMin:
+      envNum('PAPERCUSP_DISK_ALARM_CRITICAL_GB', DEFAULT_DISK_POLICY.criticalFreeBytesMin / GIB) * GIB,
   };
 }
 
@@ -88,9 +100,14 @@ export interface DiskSnapshot {
 
 export type DiskBreachKind = 'low-bytes' | 'low-inodes';
 
+/** 'warning' = getting full (toast only). 'critical' = writes are about to fail
+ *  (escalates to a human). See EI-20090527288494606. */
+export type DiskBreachSeverity = 'warning' | 'critical';
+
 export interface DiskBreach {
   path: string;
   kinds: DiskBreachKind[];
+  severity: DiskBreachSeverity;
   freeBytes: number;
   totalBytes: number;
   freePct: number;
@@ -109,9 +126,15 @@ export function detectLowSpace(snapshots: DiskSnapshot[], policy: DiskAlarmPolic
     if (s.freeBytes < policy.freeBytesMin || s.freePct < policy.freePctMin) kinds.push('low-bytes');
     if (s.totalInodes > 0 && s.freeInodesPct < policy.freeInodesPctMin) kinds.push('low-inodes');
     if (kinds.length > 0) {
+      // Severity is a BYTES question only: an inode shortage is real but does not
+      // mean the next multi-GB write dies mid-copy, which is what the critical tier
+      // exists to escalate.
+      const critical =
+        s.freeBytes < policy.criticalFreeBytesMin || s.freePct < policy.criticalFreePctMin;
       out.push({
         path: s.path,
         kinds,
+        severity: critical ? 'critical' : 'warning',
         freeBytes: s.freeBytes,
         totalBytes: s.totalBytes,
         freePct: s.freePct,
@@ -159,6 +182,70 @@ export interface DiskAlarmDeps {
   sample?: () => Promise<DiskSnapshot[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
   emitToast?: (t: { level: string; message: string; description: string }) => Promise<void>;
+  /** Injectable for tests — defaults to notifyAttention (mobile push + desktop
+   *  native notification + a durable attention_notifications row). */
+  escalate?: (t: { title: string; body: string }) => Promise<void>;
+  /** Injectable for tests — the persistent cross-restart cooldown floor. */
+  recentlyEscalated?: () => Promise<boolean>;
+}
+
+/**
+ * How often a still-critical filesystem may re-ping a human. The alarm TICKS
+ * every 30min; without this floor a disk that stays full escalates 48×/day and
+ * the human learns to ignore it — which is the same dead channel this escalation
+ * exists to replace, just louder.
+ */
+const ESCALATE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+
+const ESCALATION_TITLE = 'Disk critically low';
+
+/**
+ * Cross-restart dedup floor: has a critical-disk escalation fired within the
+ * cooldown, in THIS or a PRIOR operator process? Reads the persistent
+ * `attention_notifications` rail that notifyAttention itself writes (the same
+ * shape hive-owner-key-health uses against toast_log), so suppression survives
+ * a restart rather than resetting with an in-memory flag.
+ *
+ * Fail-OPEN: any error returns false → the escalation proceeds. A missed
+ * suppression costs one extra ping; failing closed could swallow the alert that
+ * says the box is about to stop working.
+ */
+async function defaultRecentlyEscalated(): Promise<boolean> {
+  try {
+    const { sql } = getOrgPg();
+    const cutoffIso = new Date(Date.now() - ESCALATE_COOLDOWN_MS).toISOString();
+    const rows = await sql/* sql */ `
+      select 1
+        from harness_shared.attention_notifications
+       where title = ${ESCALATION_TITLE}
+         and created_at > ${cutoffIso}::timestamptz
+       limit 1`;
+    return rows.length > 0;
+  } catch {
+    return false; // fail-open — never swallow a real "the disk is full" alert
+  }
+}
+
+async function defaultEscalate(t: { title: string; body: string }): Promise<void> {
+  const { notifyAttention } = await import('../attention-notify');
+  await notifyAttention({
+    kind: 'intervention',
+    title: t.title,
+    body: t.body,
+    importance: 'urgent',
+  });
+}
+
+/** Build the human-facing escalation body. Pure — unit-testable. */
+export function formatDiskEscalation(critical: DiskBreach[]): { title: string; body: string } {
+  const worst = [...critical].sort((a, b) => a.freePct - b.freePct)[0];
+  const others = critical.length > 1 ? ` (+${critical.length - 1} more)` : '';
+  return {
+    title: ESCALATION_TITLE,
+    body:
+      `${worst.path}: ${fmtGb(worst.freeBytes)} free (${(worst.freePct * 100).toFixed(1)}% of ${fmtGb(worst.totalBytes)})${others}. ` +
+      `Builds and writes will start failing mid-operation. Free space now.`,
+  };
 }
 
 async function defaultSample(): Promise<DiskSnapshot[]> {
@@ -218,16 +305,18 @@ async function defaultEmitToast(t: { level: string; message: string; description
 export async function runDiskSpaceAlarmOnce(
   deps: DiskAlarmDeps = {},
   policy: DiskAlarmPolicy = diskPolicyFromEnv(),
-): Promise<{ checked: number; breaches: DiskBreach[] }> {
+): Promise<{ checked: number; breaches: DiskBreach[]; escalated: boolean }> {
   const sample = deps.sample ?? defaultSample;
   const emitToast = deps.emitToast ?? defaultEmitToast;
+  const escalate = deps.escalate ?? defaultEscalate;
+  const recentlyEscalated = deps.recentlyEscalated ?? defaultRecentlyEscalated;
 
   let snapshots: DiskSnapshot[] = [];
   try {
     snapshots = await sample();
   } catch (err) {
     console.warn(`[disk-space-alarm] sample skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`);
-    return { checked: 0, breaches: [] };
+    return { checked: 0, breaches: [], escalated: false };
   }
 
   const breaches = detectLowSpace(snapshots, policy);
@@ -238,5 +327,23 @@ export async function runDiskSpaceAlarmOnce(
       console.warn(`[disk-space-alarm] toast emit failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
     }
   }
-  return { checked: snapshots.length, breaches };
+
+  // CRITICAL tier (EI-20090527288494606): the toast above is a UI-only surface —
+  // it fired 318 times over 8 days while this box sat under 1% free and NOTHING
+  // consumed it, so the condition was only ever discovered by a build dying
+  // mid-copy. A critical breach must reach a human on a rail that leaves a
+  // durable record. Best-effort + never throws, exactly like the toast.
+  let escalated = false;
+  const critical = breaches.filter((b) => b.severity === 'critical');
+  if (critical.length > 0) {
+    try {
+      if (!(await recentlyEscalated())) {
+        await escalate(formatDiskEscalation(critical));
+        escalated = true;
+      }
+    } catch (err) {
+      console.warn(`[disk-space-alarm] escalation failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
+    }
+  }
+  return { checked: snapshots.length, breaches, escalated };
 }

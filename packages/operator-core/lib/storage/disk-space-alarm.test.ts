@@ -65,8 +65,43 @@ describe('detectLowSpace', () => {
   });
 
   it('honors a custom policy', () => {
-    const strict: DiskAlarmPolicy = { freePctMin: 0.6, freeBytesMin: 0, freeInodesPctMin: 0 };
+    const strict: DiskAlarmPolicy = {
+      freePctMin: 0.6,
+      freeBytesMin: 0,
+      freeInodesPctMin: 0,
+      criticalFreePctMin: 0,
+      criticalFreeBytesMin: 0,
+    };
     expect(detectLowSpace([snap()], strict)[0].kinds).toEqual(['low-bytes']); // 50% < 60%
+  });
+});
+
+// EI-20090527288494606: the warning tier is a UI toast nobody consumes. Severity is
+// what decides whether a human is actually reached, so it needs its own guards.
+describe('detectLowSpace severity tiering', () => {
+  it('marks a merely-low filesystem as warning, NOT critical', () => {
+    // 8% free of 500 GB = 40 GB — under the 10% warn floor, well over both critical floors.
+    const b = detectLowSpace([snap({ totalBytes: 500 * GIB, freeBytes: 40 * GIB, freePct: 0.08 })]);
+    expect(b[0].severity).toBe('warning');
+  });
+
+  it('marks a filesystem under the critical % floor as critical', () => {
+    // The condition measured on this box: 17.6 GB free of 1875.7 GB = 0.9% — a huge
+    // disk that is nowhere near the absolute byte floor but is proportionally doomed.
+    const b = detectLowSpace([snap({ totalBytes: 1875.7 * GIB, freeBytes: 17.6 * GIB, freePct: 0.0094 })]);
+    expect(b[0].severity).toBe('critical');
+  });
+
+  it('marks a filesystem under the critical BYTE floor as critical even at a healthy percentage', () => {
+    // Small disk: 1 GB free of 20 GB = 5%. Over the 2% floor, under the 2 GB floor.
+    const b = detectLowSpace([snap({ totalBytes: 20 * GIB, freeBytes: 1 * GIB, freePct: 0.05 })]);
+    expect(b[0].severity).toBe('critical');
+  });
+
+  it('does NOT escalate on an inode-only breach (bytes are what kill a write mid-copy)', () => {
+    const b = detectLowSpace([snap({ totalInodes: 1_000_000, freeInodes: 30_000, freeInodesPct: 0.03 })]);
+    expect(b[0].kinds).toEqual(['low-inodes']);
+    expect(b[0].severity).toBe('warning');
   });
 });
 
@@ -110,16 +145,81 @@ describe('formatDiskAlarmToast', () => {
 });
 
 describe('runDiskSpaceAlarmOnce', () => {
+  // Every case below injects BOTH escalation deps. A critical-tier breach otherwise
+  // falls through to the real notifyAttention (defaultRecentlyEscalated fails OPEN on
+  // a missing DB, by design) — i.e. a unit test firing a live push.
+  const noEscalate = {
+    escalate: async (_t: { title: string; body: string }) => {},
+    recentlyEscalated: async () => false,
+  };
+
   it('emits exactly one toast when a filesystem breaches, and returns the breaches', async () => {
     const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
     const res = await runDiskSpaceAlarmOnce({
       sample: async () => [snap({ path: '/ws', freeBytes: 1 * GIB, freePct: 1 / 500 }), snap({ path: '/tmp' })],
       emitToast,
+      ...noEscalate,
     });
     expect(res.checked).toBe(2);
     expect(res.breaches.map((b) => b.path)).toEqual(['/ws']);
     expect(emitToast).toHaveBeenCalledTimes(1);
     expect(emitToast.mock.calls[0][0].level).toBe('warning');
+  });
+
+  it('escalates a CRITICAL breach to a human, once', async () => {
+    const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
+    const res = await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ path: '/ws', totalBytes: 1875 * GIB, freeBytes: 17 * GIB, freePct: 0.009 })],
+      emitToast: async () => {},
+      escalate,
+      recentlyEscalated: async () => false,
+    });
+    expect(res.escalated).toBe(true);
+    expect(escalate).toHaveBeenCalledTimes(1);
+    expect(escalate.mock.calls[0][0].body).toContain('/ws');
+  });
+
+  it('does NOT escalate a warning-tier breach (toast only — the pre-existing behaviour)', async () => {
+    const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
+    const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
+    const res = await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ path: '/ws', totalBytes: 500 * GIB, freeBytes: 40 * GIB, freePct: 0.08 })],
+      emitToast,
+      escalate,
+      recentlyEscalated: async () => false,
+    });
+    expect(emitToast).toHaveBeenCalledTimes(1); // still toasts
+    expect(escalate).not.toHaveBeenCalled();
+    expect(res.escalated).toBe(false);
+  });
+
+  it('suppresses a repeat escalation inside the cooldown window', async () => {
+    const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
+    const res = await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ path: '/ws', totalBytes: 1875 * GIB, freeBytes: 17 * GIB, freePct: 0.009 })],
+      emitToast: async () => {},
+      escalate,
+      recentlyEscalated: async () => true, // already pinged within the window
+    });
+    expect(escalate).not.toHaveBeenCalled();
+    expect(res.escalated).toBe(false);
+    expect(res.breaches).toHaveLength(1); // still detected + toasted, just not re-pinged
+  });
+
+  it('never throws when the escalation rail itself fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ path: '/ws', totalBytes: 1875 * GIB, freeBytes: 17 * GIB, freePct: 0.009 })],
+      emitToast: async () => {},
+      escalate: async () => {
+        throw new Error('push rail down');
+      },
+      recentlyEscalated: async () => false,
+    });
+    expect(res.escalated).toBe(false);
+    expect(res.breaches).toHaveLength(1); // detection survives a dead delivery rail
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('emits NO toast when every filesystem is healthy', async () => {
@@ -138,7 +238,7 @@ describe('runDiskSpaceAlarmOnce', () => {
       },
       emitToast,
     });
-    expect(res).toEqual({ checked: 0, breaches: [] });
+    expect(res).toEqual({ checked: 0, breaches: [], escalated: false });
     expect(emitToast).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();

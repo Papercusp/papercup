@@ -794,8 +794,9 @@ async function diskSpaceAlarmTick(): Promise<void> {
     if (shouldShedHeavyTick('disk-space-alarm')) return;
     const r = await runDiskSpaceAlarmOnce();
     if (r.breaches.length > 0) {
+      const crit = r.breaches.filter((b) => b.severity === 'critical').length;
       console.log(
-        `[disk-space-alarm] ${r.breaches.length} filesystem(s) low: ${r.breaches.map((b) => `${b.path}=${(b.freePct * 100).toFixed(1)}%`).join(', ')}`,
+        `[disk-space-alarm] ${r.breaches.length} filesystem(s) low${crit > 0 ? ` (${crit} CRITICAL${r.escalated ? ', escalated' : ', within cooldown'})` : ''}: ${r.breaches.map((b) => `${b.path}=${(b.freePct * 100).toFixed(1)}%`).join(', ')}`,
       );
     }
   }, { name: 'disk-space-alarm' });
