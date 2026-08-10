@@ -106,6 +106,16 @@ function isTestFile(file) {
 //
 // Strings stay UNMASKED deliberately: the matched expression is `DEFAULT 'default'`, whose
 // operative token IS a string literal, so a string-masking stripper would blind this guard.
+//
+// KNOWN, DELIBERATE LIMITATION (measured, not assumed). Because strings stay unmasked and a
+// dollar-quoted body IS a string to the outer parser, a `--` comment written INSIDE a
+// `$$ … $$` function body is not recognised as a comment, so prose there can still be
+// reported. The old per-line heuristic happened to suppress that shape — but only as a side
+// effect of the same string-blindness that was silently eating REAL findings at top level, so
+// this is a deliberate trade of a rare, visible false positive for a silent false negative.
+// Recognising it properly needs the body re-lexed as nested SQL; not worth it until it bites.
+// If it does bite, the `allow-scope-default` marker is the escape hatch, and the durable fix
+// belongs in collectSqlRanges (recurse into dollar-quoted bodies), not here.
 const maskedLinesCache = new Map();
 function maskedLines(file) {
   if (!maskedLinesCache.has(file)) {

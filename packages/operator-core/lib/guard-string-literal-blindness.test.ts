@@ -460,7 +460,16 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     'check-sql-guidance-justified.mjs',
     'check-systemd-startlimit-placement.mjs',
     'check-vacuous-negative-assertions.mjs',
-    'check-workspace-default-sql.mjs',
+    // check-workspace-default-sql.mjs was REMOVED here on 2026-08-10 (WI-37717 /
+    // EI-20073035509369492). Same PARTIAL-mask shape as its siblings above: it now imports
+    // stripCommentsOnly and passes the real path, so masking DISPATCHES per file — this guard
+    // scans both `.sql` migrations and `.ts` runtime DDL. Strings stay unmasked because the
+    // matched token IS a string literal (`DEFAULT 'default'`).
+    // It was the last of the three hand-rolled string-blind comment tests: any earlier `--` or
+    // `//` counted as a comment start even inside a literal, so
+    //   INSERT INTO t VALUES ('a--b'), (workspace_id ... DEFAULT 'default')
+    // reported NOTHING. The SQL path it needed did not exist until this WI added it — the
+    // shared stripper was a TypeScript parser that returned SQL completely unmasked.
     'lint-tsc-workspaces.mjs',
   ]);
 
