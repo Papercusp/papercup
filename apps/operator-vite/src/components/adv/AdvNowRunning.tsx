@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Square, Play, AlertTriangle } from 'lucide-react';
-import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
+import { Square, Play } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@papercusp/flags/client';
@@ -26,14 +25,20 @@ interface HiveControlRow {
   started: boolean;
 }
 
-/** Human label for the nudge — pluralized. Exported for unit tests. */
-export function waitingLabel(n: number): string {
-  return `${n} plan${n === 1 ? '' : 's'} waiting`;
-}
-
 /**
  * Harness status bar above the tab strip — now purely the hive Start/Stop
- * control + the "N plans waiting" nudge.
+ * control.
+ *
+ * The "N plans waiting" nudge USED to live here; it was removed 2026-08-10 by
+ * owner directive ([owner 2026-08-10] "remove the 'plans waiting' button and
+ * 'pots running' button", plan retire-mug-kettle-su-only-2026-08-09 P-075). It
+ * was a pot-tier affordance: it only ever rendered while the pot was STOPPED,
+ * and its whole proposition was "started plans are waiting for a running pot to
+ * pick them up" — which is the retired autonomous tier (D-010). Its
+ * server-side `plans.waitingCount` aggregate was retired in the same change
+ * rather than left as a live query feeding nothing; if a waiting-plans surface
+ * is ever wanted again it should be re-derived for the su/GOAL model, not
+ * restored from here.
  *
  * The per-agent run pills + the "Active — N agents running" label USED to live
  * here; they were removed once the unified, workspace-wide agent roster shipped
@@ -71,12 +76,6 @@ export default function AdvNowRunning({ slug }: Props) {
   // this flag if it doesn't.
   const [awaitingAgent, setAwaitingAgent] = useState(false);
 
-  // Navigation targets for the nudge — jump to the Plans tab filtered to the
-  // Running bucket (= started plans).
-  const [, setAdvTab] = useQueryState('tab', parseAsString);
-  const [, setPlansView] = useQueryState('view', parseAsString);
-  const [, setPlanBuckets] = useQueryState('pBuckets', parseAsArrayOf(parseAsString));
-
   // The registered hive. The hive control tools key on the HIVE's home slug, not
   // the selected harness; `started` is the bar's active/paused state, live via
   // the pot:start / pot:pause invalidation.
@@ -87,26 +86,6 @@ export default function AdvNowRunning({ slug }: Props) {
   // Active = the persisted per-hive started bit, or a just-clicked Start. Per-
   // agent liveness now lives in the unified header roster, not here.
   const effectivelyAlive = started || awaitingAgent;
-  const stopped = !effectivelyAlive;
-
-  // While the hive is paused, count started-but-unpicked plans for the "N plans
-  // waiting" nudge — push-driven via the plans.waitingCount aggregate (a
-  // started plan needs a *running* harness to pick it up, so when the harness
-  // is stopped these plans are "waiting" — nothing is eligible to advance
-  // them). A started hive is already working them, so the query is disabled
-  // in that state (no fetch). This used to fetch the WHOLE `plans.list` feed
-  // just to count rows client-side (~700KB on a route that renders no plan
-  // list, EI-19409535742567802); the aggregate rides the same server-side
-  // cachedRead entry and returns one integer instead (precedent:
-  // plans.attentionCounts / WI-5955).
-  const { data: waitingCountData } = useSyncQuery({
-    queryName: 'plans.waitingCount',
-    args: { harness_slugs: slug ? [slug] : [] },
-    enabled: !!slug && stopped,
-  });
-  const waitingCount = stopped
-    ? ((waitingCountData as Array<{ count: number }> | undefined)?.[0]?.count ?? 0)
-    : 0;
 
   // Safety net: clear the optimistic "just started" flag after 20s (by then the
   // real started bit has arrived via the hive.controlState invalidation, or the
@@ -152,12 +131,6 @@ export default function AdvNowRunning({ slug }: Props) {
     }
   }, [askConfirm, hive]);
 
-  const showWaitingPlans = useCallback(() => {
-    void setAdvTab('plans');
-    void setPlansView('plans');
-    void setPlanBuckets(['running']);
-  }, [setAdvTab, setPlansView, setPlanBuckets]);
-
   if (!slug) return null;
 
   const isLoading = hiveData === undefined && !awaitingAgent;
@@ -167,21 +140,6 @@ export default function AdvNowRunning({ slug }: Props) {
     <>
     {confirmEl}
     <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label={`${t('pot')} status`}>
-      {/* Nudge: started plans exist but the harness isn't running to pick
-          them up. Click → Plans tab, Running filter. */}
-      {!effectivelyAlive && waitingCount > 0 && (
-        <Tooltip label={`These plans are started but the ${t('pot', { lower: true })} isn't running — click to view them`}>
-          <button
-            type="button"
-            className="pc-advshell__action pc-advshell__action--waiting"
-            onClick={showWaitingPlans}
-          >
-            <AlertTriangle size={11} aria-hidden />
-            {waitingLabel(waitingCount)}
-          </button>
-        </Tooltip>
-      )}
-
       {/* Start (when paused) / Stop (when started) — THE hive control.
           Hidden when no hive is registered, and Start is additionally hidden
           while the tier is retired (D-010); Stop below is NOT gated (D-017). */}
