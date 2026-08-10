@@ -274,6 +274,45 @@ export interface EnforceActiveRoutinesResult extends RoutineValidationResult {
  * itself (not "a harness got deleted", the drift class this guard targets), so it keeps
  * logging FATAL every time until a human fixes the row directly.
  */
+/**
+ * The auto-deactivate UPDATE, extracted behind a `sql` seam for ONE reason: so the
+ * recurrence guard can PREPARE the PRODUCTION statement against real Postgres instead
+ * of a hand-copied duplicate that drifts away from it. Do not inline this back.
+ *
+ * WI-37757: the uncast version of this statement could not PREPARE at all
+ * ('could not determine data type of parameter $N'), which meant this function's
+ * entire self-silencing design — documented at length in the header comment above —
+ * had never once worked in production. The unit tests mock `sql`, so a statement that
+ * fails at PREPARE time is invisible to them BY CONSTRUCTION; only a real-Postgres
+ * test can see it. That is the whole justification for this seam.
+ */
+export async function pauseUnregisteredRoutine(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  r: { workspaceId: string; installSlug: string; routineName: string },
+): Promise<Array<{ name: string }>> {
+  return await sql<Array<{ name: string }>>`
+    UPDATE harness_shared.routines
+       SET active = false,
+           metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+             'pause', jsonb_build_object(
+               'reason', 'auto-deactivated: install_slug targets an unregistered harness (routine-validation recurrence guard, EI-18678269428596559)',
+               'pausedBy', 'routine-validation:enforce',
+               -- WI-37757 — THE ::bigint CAST IS LOAD-BEARING, do not remove it.
+               -- jsonb_build_object takes "any" arguments, so Postgres cannot infer a
+               -- type for a bare parameter here; uncast, the statement fails to PREPARE
+               -- and takes the whole UPDATE down with it. Measured live 2026-08-10:
+               -- 3 routine rows still active, never paused since the guard shipped,
+               -- re-logging FATAL on every boot of every worker.
+               'pausedAtMs', ${Date.now()}::bigint
+             )
+           ),
+           updated_at = now()
+     WHERE workspace_id = ${r.workspaceId} AND install_slug = ${r.installSlug}
+       AND name = ${r.routineName} AND active = true
+    RETURNING name
+  `;
+}
+
 export async function enforceActiveRoutines(workspaceId?: string): Promise<EnforceActiveRoutinesResult> {
   const ws = workspaceId ?? activeWorkspaceId();
   const result = await validateActiveRoutines(ws, { silent: true });
@@ -289,21 +328,7 @@ export async function enforceActiveRoutines(workspaceId?: string): Promise<Enfor
       }
       let updatedRows: Array<{ name: string }>;
       try {
-        updatedRows = await sql<Array<{ name: string }>>`
-          UPDATE harness_shared.routines
-             SET active = false,
-                 metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
-                   'pause', jsonb_build_object(
-                     'reason', 'auto-deactivated: install_slug targets an unregistered harness (routine-validation recurrence guard, EI-18678269428596559)',
-                     'pausedBy', 'routine-validation:enforce',
-                     'pausedAtMs', ${Date.now()}
-                   )
-                 ),
-                 updated_at = now()
-           WHERE workspace_id = ${r.workspaceId} AND install_slug = ${r.installSlug}
-             AND name = ${r.routineName} AND active = true
-          RETURNING name
-        `;
+        updatedRows = await pauseUnregisteredRoutine(sql, r);
       } catch (e) {
         console.error(
           `[routine-validation] auto-deactivate FAILED for ${r.installSlug}/${r.routineName}: ` +
