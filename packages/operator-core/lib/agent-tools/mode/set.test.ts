@@ -45,9 +45,13 @@ const h = vi.hoisted(() => ({
   getLoopStatus: vi.fn(async (_ownerId: string) => null as { active: boolean } | null),
   assertFact: vi.fn(async (_input: unknown) => ({ ok: true })),
   retractFact: vi.fn(async (_args: unknown) => true),
+  // EI-20015592992797890: set.ts reads the INCUMBENT subject before refusing a
+  // subject-requiring mode, so this binding must exist on the mock or the named
+  // import breaks at module load rather than in a test.
+  getModeSubject: vi.fn(async (..._args: unknown[]) => null as string | null),
 }));
 
-vi.mock('../../modes/store', () => ({ setMode: h.setMode }));
+vi.mock('../../modes/store', () => ({ setMode: h.setMode, getModeSubject: h.getModeSubject }));
 // Partial mock on purpose: set.ts uses only getLoopStatus from this module, and a real
 // import would drag the org-PG client into a unit test.
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: h.getLoopStatus }));
@@ -104,6 +108,71 @@ beforeEach(() => {
   h.getLoopStatus.mockClear().mockResolvedValue(null);
   h.assertFact.mockClear().mockResolvedValue({ ok: true });
   h.retractFact.mockClear().mockResolvedValue(true);
+  h.getModeSubject.mockClear().mockResolvedValue(null);
+});
+
+/* ── a subject-requiring mode cannot be entered unattributed (EI-20015592992797890)
+   `agent_modes.subject` is what every downstream consumer joins on:
+   work_items._create-core stamps `work_items.goal_id` FROM it, and the goal stop
+   attributes sessions BY it. An unset subject therefore does not error — it
+   silently zeroes BOTH while every surface still reads healthy. That is what was
+   measured live: ONE mode='goal' row, subject NULL, and a stop mechanism that was
+   built, wired, green and inert.
+
+   goals:start and goals:create both stamp it (rolling back / reporting when they
+   cannot). This tool was the one door that admitted `goal` with no way to supply
+   one — so the guard belongs HERE, and it is anchored on ModeDef.requiresSubject
+   rather than on the id 'goal', so the next subject-requiring mode is covered
+   without anyone remembering to widen a string match. ── */
+describe('mode:set — a subject-requiring mode must resolve a subject', () => {
+  it('REFUSES goal mode with no subject supplied and none incumbent', async () => {
+    const res = parse(await run({ mode: 'goal', reason: 'own the outcome' }));
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/requires a subject/);
+    // The refusal must name the way OUT, not just the problem.
+    expect(res.fix).toMatch(/goals:start/);
+    // and must not have written anything
+    expect(h.setMode).not.toHaveBeenCalled();
+  });
+
+  it('ACCEPTS goal mode when the subject is supplied, and threads it to the store', async () => {
+    const res = parse(await run({ mode: 'goal', reason: 'own it', subject: 'goal-abc' }));
+    expect(res.ok).toBe(true);
+    expect(h.setMode).toHaveBeenCalledTimes(1);
+    expect(h.setMode.mock.calls[0][0]).toMatchObject({ modeId: 'goal', subject: 'goal-abc' });
+  });
+
+  it('ACCEPTS a reason-only re-registration when a subject is already incumbent, and PRESERVES it', async () => {
+    h.getModeSubject.mockResolvedValue('goal-existing');
+    const res = parse(await run({ mode: 'goal', reason: 're-registering after compaction' }));
+    expect(res.ok).toBe(true);
+    // Tri-state: `subject` must be ABSENT, not null — passing null would CLEAR
+    // the incumbent, re-creating the unattributed row this guard exists to stop.
+    expect(h.setMode.mock.calls[0][0]).not.toHaveProperty('subject');
+  });
+
+  it('fails CLOSED when the incumbent read throws', async () => {
+    h.getModeSubject.mockRejectedValue(new Error('pg down'));
+    const res = parse(await run({ mode: 'goal', reason: 'own it' }));
+    expect(res.ok).toBe(false);
+    expect(h.setMode).not.toHaveBeenCalled();
+  });
+
+  it('does NOT gate EXITING the mode — you can always leave', async () => {
+    const res = parse(await run({ mode: 'goal', reason: 'done', enabled: false }));
+    expect(res.ok).toBe(true);
+    expect(h.setMode).toHaveBeenCalledTimes(1);
+  });
+
+  /* CONTROL. Without this, every assertion above would still pass if the guard
+     rejected EVERY mode — the check would look strict while actually being
+     broken, and the suite could not tell the difference. */
+  it('CONTROL: a mode that requires no subject is unaffected', async () => {
+    const res = parse(await run({ mode: 'auto', reason: 'act, do not ask' }));
+    expect(res.ok).toBe(true);
+    expect(h.getModeSubject).not.toHaveBeenCalled();
+    expect(h.setMode.mock.calls[0][0]).not.toHaveProperty('subject');
+  });
 });
 
 /* ── `instructions`: scope that outlives its delivery (plan D-002) ────────────

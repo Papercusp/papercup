@@ -116,7 +116,9 @@ describe('CLAUDE.md machine-line grep anchors', () => {
 
     it('the corpus anchors every machine-line grep recipe it prescribes', () => {
       const verdict = judgeMachineLineGrepAnchors(source);
-      expect(verdict.violations.map((v) => `${SUBJECT_LABEL}:${v.line} — ${v.message}`)).toEqual([]);
+      // `violations` is string[] here (unlike retired-surfaces', which are objects), so
+      // the subject is prefixed onto each rather than read off a `.line` field.
+      expect(verdict.violations.map((v) => `${SUBJECT_LABEL} — ${v}`)).toEqual([]);
       expect(verdict.ok).toBe(true);
     });
 

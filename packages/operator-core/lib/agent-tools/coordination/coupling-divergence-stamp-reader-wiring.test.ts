@@ -21,11 +21,23 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const couplingSourcesFor = vi.fn(() => ({}));
+/** The subset of `couplingSourcesFor`'s options these tests assert on. */
+type SourcesOpts = {
+  selfOwnerId: string;
+  rosterOwnerIds: string[];
+  coordinationDomain?: string;
+  harnessSlug?: string;
+  workspaceId?: string;
+};
+
+// NOTE: the parameter is declared even though the body ignores it. A bare
+// `vi.fn(() => ({}))` types `mock.calls` as an EMPTY tuple, so `calls[0][0]`
+// is a compile error (TS2493) — invisible to vitest, which is type-blind.
+const couplingSourcesFor = vi.fn((_opts: SourcesOpts) => ({}));
 const lockCoordinationDomain = vi.fn(() => '/repo/root');
 
 vi.mock('./coupling-sources', () => ({
-  couplingSourcesFor: (...args: unknown[]) => couplingSourcesFor(...(args as [])),
+  couplingSourcesFor: (opts: SourcesOpts) => couplingSourcesFor(opts),
 }));
 vi.mock('../locks/coordination-domain', () => ({
   lockCoordinationDomain: () => lockCoordinationDomain(),
@@ -44,8 +56,7 @@ vi.mock('../../coord/couplings', () => ({
 
 const { readPeerRelations } = await import('./coupling-divergence-stamp');
 
-const firstCallOpts = () =>
-  couplingSourcesFor.mock.calls[0]?.[0] as { coordinationDomain?: string } | undefined;
+const firstCallOpts = (): SourcesOpts | undefined => couplingSourcesFor.mock.calls[0]?.[0];
 
 describe('EI-20042650315152947 — the send path must request the lock-hold source', () => {
   beforeEach(() => {

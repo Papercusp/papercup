@@ -24,8 +24,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
-import { modeById, MODES, modeImpliesAutonomy } from '../../modes/registry';
-import { setMode } from '../../modes/store';
+import { modeById, MODES, modeImpliesAutonomy, modeRequiresSubject } from '../../modes/registry';
+import { setMode, getModeSubject } from '../../modes/store';
 import { assertFact, retractFact, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getLoopStatus } from '../../harness/routines/loop';
@@ -196,6 +196,15 @@ export default defineTool({
       .describe(
         `SCOPE INSTRUCTIONS that must survive compaction — e.g. drain "all bugs except the ones related to the p2p features". Delivered with the mode change AND asserted as a standing fact on the target (key '${MODE_INSTRUCTIONS_KEY_PREFIX}<mode>'), so it is re-injected VERBATIM on every wake until the mode is turned off, which retracts it. Clipped at ${FACT_BODY_MAX_CHARS} chars. Use \`reason\` for WHY the mode changed; use this for WHAT the mode is scoped to.`,
       ),
+    subject: z
+      .string()
+      .max(200)
+      .optional()
+      .describe(
+        'WHAT this mode is about — required for a subject-requiring mode (goal: the harness_shared.goals.id). ' +
+          'Omit to leave an incumbent subject untouched. Prefer goals:start / goals:create, which open the goal ' +
+          'AND stamp this atomically; pass it here only when re-registering a mode whose goal already exists.',
+      ),
     enabled: z.boolean().optional().describe('default true; false ⇒ exit the mode'),
     agent: z.string().max(120).optional().describe('target ownerId (exact, e.g. su-…); omit for yourself'),
     ownerDirected: z
@@ -219,9 +228,59 @@ export default defineTool({
     // context), so this is a tool-layer-VERIFIED check, not a trusted claim.
     const callerIsOwnerAuthority = ident.ownerId === ADMIN_COORD_UI_OWNER;
     const ownerAuthorized = isSelf || callerIsOwnerAuthority;
+    const workspaceId = ident.workspaceId ?? 'default';
+
+    /* EI-20015592992797890 — the door that could enter GOAL mode unattributed.
+       `subject` is what every downstream consumer joins on (work_items.goal_id is
+       stamped FROM it; the goal stop attributes sessions BY it), and it is
+       tri-state in the store: `undefined` PRESERVES the incumbent. So the check
+       is on the RESULTING row, not on the argument — a reason-only
+       re-registration of an already-attributed session must keep working, which
+       is why this reads the incumbent before refusing.
+
+       Measured cause: goals:start and goals:create both stamp the subject (and
+       roll back / report when they cannot), while this tool admitted `goal` with
+       no way to supply one. The result was not an error but SILENCE — one live
+       mode='goal' row with subject NULL, which zeroed both the stamping path and
+       the stop path while every surface looked healthy. */
+    const supplied = args.subject?.trim() || null;
+    if (enabled && modeRequiresSubject(def.id)) {
+      let effective = supplied;
+      if (!effective) {
+        // Fail CLOSED: a read error must not admit an unattributed entry, since
+        // that is the exact silent state this guard exists to prevent.
+        try {
+          effective = await getModeSubject(workspaceId, target, def.id);
+        } catch {
+          effective = null;
+        }
+      }
+      if (!effective) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: `mode '${def.id}' requires a subject`,
+                detail:
+                  `'${def.id}' is ABOUT something, and nothing downstream works without knowing what: ` +
+                  'work_items.goal_id is stamped from agent_modes.subject and the goal stop attributes ' +
+                  'sessions by it, so entering the mode with no subject does not fail — it silently ' +
+                  'zeroes both while every surface still looks healthy (EI-20015592992797890).',
+                fix:
+                  `Use goals:start (opens the goal AND spawns its agent already in ${def.id} mode) or ` +
+                  `goals:create, both of which stamp the subject atomically. Pass subject:'<goals.id>' here ` +
+                  'ONLY to re-register a mode whose goal already exists.',
+              }),
+            },
+          ],
+        };
+      }
+    }
 
     const res = await setMode({
-      workspaceId: ident.workspaceId ?? 'default',
+      workspaceId,
       ownerId: target,
       modeId: def.id,
       enabled,
@@ -229,6 +288,8 @@ export default defineTool({
       setBy: ident.ownerId,
       ownerDirected: args.ownerDirected,
       callerIsOwnerAuthority,
+      // Tri-state: omitted ⇒ leave the incumbent's subject untouched.
+      ...(supplied ? { subject: supplied } : {}),
     });
     const control = res.ok && !res.noop
       ? await refreshControlAnchorAfterMutation({

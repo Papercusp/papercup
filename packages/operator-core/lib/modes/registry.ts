@@ -35,6 +35,22 @@ export interface ModeDef {
    * `modeImpliesAutonomy`, never by axis alone (goal-mode-2026-08-07 P-012).
    */
   impliesAutonomy?: boolean;
+  /**
+   * This mode is ABOUT something, and is meaningless without knowing what —
+   * so entering it must resolve an `agent_modes.subject` (EI-20015592992797890).
+   *
+   * Read it through `modeRequiresSubject`, never by matching the mode id, for
+   * the reason the sibling flag above exists: the property is what defines
+   * membership, and a guard anchored to a spelling silently stops covering the
+   * next mode that joins the set.
+   *
+   * WHY IT IS ENFORCED AT THE DOOR. `subject` is what every downstream consumer
+   * joins on — `work_items._create-core` stamps `work_items.goal_id` FROM it and
+   * the goal stop attributes sessions BY it — so an unset subject does not fail
+   * loudly, it silently zeroes both. A goal-mode session that cannot name its
+   * goal defeats the consumers rather than erroring for them.
+   */
+  requiresSubject?: boolean;
   title: string;
   /** The one-liner for the always-present index (P-008). Keep it ONE line. */
   oneLiner: string;
@@ -147,6 +163,7 @@ score. (No self-grading: the tool refuses when you authored the row.)
     id: 'goal',
     axis: 'overlay',
     impliesAutonomy: true,
+    requiresSubject: true,
     title: 'GOAL — own an outcome, not a queue',
     oneLiner:
       'own a goal end-to-end: create the projects/plans/fleets that reach it, reallocate on evidence, kill on written criteria',
@@ -279,6 +296,25 @@ export function modeImpliesAutonomy(id: string): boolean {
   const def = modeById(id);
   if (!def) return false;
   return def.axis === 'autonomy' || def.impliesAutonomy === true;
+}
+
+/**
+ * Does entering this mode require an `agent_modes.subject`? — the read half of
+ * `ModeDef.requiresSubject`, and the ONE place the question is answered.
+ *
+ * Deliberately mirrors `modeImpliesAutonomy` above: an unknown id is `false`,
+ * so a caller that cannot resolve the mode never blocks on a requirement it
+ * could not verify.
+ */
+export function modeRequiresSubject(id: string): boolean {
+  const def = modeById(id);
+  if (!def) return false;
+  return def.requiresSubject === true;
+}
+
+/** Every registered mode id that requires a subject. */
+export function subjectRequiringModeIds(): readonly string[] {
+  return MODES.filter((m) => m.requiresSubject === true).map((m) => m.id);
 }
 
 /** Every registered mode id that implies an autonomy posture. */

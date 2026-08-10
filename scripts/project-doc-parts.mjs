@@ -72,19 +72,39 @@ export const CORPUS_FILE = 'packages/operator-core/lib/doc-projection/claude-md-
  * appears to make. Verified: the three guards report identical counters with and
  * without it.
  */
-export const CORPUS_BANNER = [
-  '<!--',
-  '  GENERATED FILE — DO NOT EDIT, and do not treat it as documentation to read.',
-  '',
-  '  It is the full CLAUDE.md corpus (every part, projected and unprojected alike)',
-  '  composed from harness_shared.harness_doc_parts, which is canonical. It exists so',
-  '  the doc-claims guards can judge the WHOLE corpus without a database: the client',
-  '  files carry only the projected minority, so pointing those guards at CLAUDE.md',
-  '  after the cutover would leave them judging a fraction of what they judge today.',
-  '',
-  '  Written by scripts/project-doc-parts.mjs. Edit the rows, never this file.',
-  '-->',
-].join('\n');
+export function corpusBanner({ parts, blocks, sourceSha } = {}) {
+  return [
+    '<!--',
+    '  GENERATED FILE — DO NOT EDIT, and do not treat it as documentation to read.',
+    '',
+    '  It is the full CLAUDE.md corpus (every part, projected and unprojected alike)',
+    '  composed from harness_shared.harness_doc_parts, which is canonical. It exists so',
+    '  the doc-claims guards can judge the WHOLE corpus without a database: the client',
+    '  files carry only the projected minority, so pointing those guards at CLAUDE.md',
+    '  after the cutover would leave them judging a fraction of what they judge today.',
+    '',
+    '  Written by scripts/project-doc-parts.mjs. Edit the rows, never this file.',
+    '',
+    '  PROVENANCE — machine-read by doc-corpus.test.ts, which fails if the source sha',
+    '  here disagrees with the part manifest. That is the drift alarm: this file, the',
+    '  manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,',
+    '  and regenerating any one of them alone silently desynchronises the set.',
+    `  corpus-parts: ${parts ?? 'unknown'}`,
+    `  corpus-blocks: ${blocks ?? 'unknown'}`,
+    `  source-sha256: ${sourceSha ?? 'unknown'}`,
+    '-->',
+  ].join('\n');
+}
+
+/** Parse the provenance a corpus file carries. Returns nulls rather than throwing. */
+export function readCorpusProvenance(text) {
+  const num = (k) => {
+    const m = text.match(new RegExp(`^\\s*${k}:\\s*(\\d+)\\s*$`, 'm'));
+    return m ? Number(m[1]) : null;
+  };
+  const sha = text.match(/^\s*source-sha256:\s*([0-9a-f]{64})\s*$/m);
+  return { parts: num('corpus-parts'), blocks: num('corpus-blocks'), sourceSha: sha ? sha[1] : null };
+}
 
 /**
  * How many cut parts the spill pointer ENUMERATES before it stops naming them.
@@ -455,7 +475,7 @@ export async function readAllParts(client, docId) {
  * on purpose. What IS asserted is the property that matters here — that the corpus
  * yields at least as many judged claims as the file it replaced (see doc-corpus.test.ts).
  */
-export function composeCorpus(allParts, { banner = CORPUS_BANNER } = {}) {
+export function composeCorpus(allParts, { banner = true, sourceSha = null } = {}) {
   const byKey = new Map(allParts.map((p) => [p.part_key, p]));
   const blocks = [];
   for (const p of allParts) {
@@ -466,8 +486,9 @@ export function composeCorpus(allParts, { banner = CORPUS_BANNER } = {}) {
       target_section: p.target_section,
     });
   }
-  const text = assemble(blocks);
-  return { text: banner ? `${banner}\n\n${text}` : text, blocks: blocks.length };
+  const body = assemble(blocks);
+  const head = banner ? corpusBanner({ parts: allParts.length, blocks: blocks.length, sourceSha }) : null;
+  return { text: head ? `${head}\n\n${body}` : body, blocks: blocks.length, parts: allParts.length };
 }
 
 export async function readDocRow(client, docId) {
@@ -545,7 +566,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // writing it destroys nothing — and P-004 cannot land without it, since it is
     // the location the doc-claims guards are being re-pointed at.
     const allParts = await readAllParts(client, docId);
-    const corpus = composeCorpus(allParts);
+    const corpus = composeCorpus(allParts, { sourceSha: doc.generated_from_sha ?? doc.content_hash ?? null });
     const corpusPath = resolve(ROOT, CORPUS_FILE);
     const corpusOnDisk = existsSync(corpusPath) ? readFileSync(corpusPath, 'utf8') : null;
     console.log(`\n  ${CORPUS_FILE}`);

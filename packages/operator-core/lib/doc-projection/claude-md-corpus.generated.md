@@ -8,6 +8,14 @@
   after the cutover would leave them judging a fraction of what they judge today.
 
   Written by scripts/project-doc-parts.mjs. Edit the rows, never this file.
+
+  PROVENANCE — machine-read by doc-corpus.test.ts, which fails if the source sha
+  here disagrees with the part manifest. That is the drift alarm: this file, the
+  manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
+  and regenerating any one of them alone silently desynchronises the set.
+  corpus-parts: 288
+  corpus-blocks: 253
+  source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
 # Papercup — agent guide
