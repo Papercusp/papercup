@@ -229,11 +229,21 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- follow-up): every test in work-items-claim-issue-scope-reread.integration.test.ts
       -- was red for this reason, including ones unrelated to that item's own fix.
       closed_ts,
-      -- migration 721 (WI-6934) appends "lane" LAST here too (CREATE OR REPLACE VIEW only
-      -- permits adding columns at the end, which is why 721 puts it last and why it must
-      -- stay last here). Issue-family reads that go through this view need it for the same
-      -- reason the base table does — see the lane column comment above.
-      lane
+      -- migration 721 (WI-6934) appends "lane" here too (CREATE OR REPLACE VIEW only
+      -- permits adding columns at the END, which is why 721 appends rather than inserts).
+      -- Issue-family reads that go through this view need it for the same reason the base
+      -- table does — see the lane column comment above.
+      lane,
+      -- WI-37711 / migration 790 appends "goal_id" after it, so it goes last here too.
+      -- ⚠ THIS IS THE THIRD COPY (EI-10489): an engineer_issues column addition must land in
+      -- the prod migration, the app-side ISSUE_COLS allowlist, AND this fixture — three
+      -- independently-maintained lists with no compile-time or lint check tying them
+      -- together. Migration 790 and ISSUE_COLS landed without this one, so EVERY integration
+      -- test reaching listIssues died on a bare 'column "goal_id" does not exist' — an error
+      -- that names the COLUMN and never the stale fixture, and test:affected cannot select
+      -- this file because the migration diff never touches it. Found 2026-08-10 (WI-37774)
+      -- when 11/11 of a BRAND-NEW test file failed for a reason unrelated to what it tested.
+      goal_id
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;
