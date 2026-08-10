@@ -187,6 +187,13 @@ const RULES: ReadonlyArray<{
       // requireAllowedOriginOr403 CSRF backstop. See admin/mode.ts's own
       // doc-comment.
       { method: 'POST', path: '/admin/mode/:verb', auth: VTL },
+      // The Goals tab's WRITE half posts from that same cookie-less loopback
+      // webview as its /admin/mode/:verb sibling immediately above — which
+      // admin/goals.ts is explicitly modelled on — so the same EI-338
+      // HTTP-fallback rationale and the same requireAllowedOriginOr403 CSRF
+      // backstop apply (declared at admin/goals.ts:131, guard applied in its
+      // dispatch handler). See that route file's own doc-comment.
+      { method: 'POST', path: '/admin/goals/:verb', auth: VTL },
       // Owner-Inbox reply delivery (owner-inbox-single-pane-2026-07-17 P-006):
       // invoked from the same cookie-less loopback webview as its
       // /admin/coord/:verb sibling above, so the same VTL posture. Because the

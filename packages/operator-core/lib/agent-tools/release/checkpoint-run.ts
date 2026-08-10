@@ -264,6 +264,34 @@ export default defineTool({
     // declared paths, a run already in flight, an unresolved candidate, an undecidable or
     // uncommitted miss, or a wait we cannot compute all LAUNCH. `force` skips it entirely.
     const preflight = await assessPreLaunchExclusion({ paths: args.paths, force: args.force });
+    // WI-37618: the refusal below is returned to the CALLER and recorded NOWHERE else.
+    // `tool_invocations` keeps only transport metadata and `output_ref` is a reference, not a
+    // body, so a refusal was indistinguishable in the ledger from a call that spent a ~55min
+    // suite — and a FALSE refusal, the one failure mode that would wedge the fleet's only manual
+    // verdict lever, left nothing behind to audit. Stamp the outcome through ctx.metadata, which
+    // MERGES with the transport keys rather than replacing them (verified against live rows:
+    // handler-emitted childFailureCount/effectiveStatus sit alongside requestOrigin/uiClientId).
+    //
+    // `passed` is stamped too, carrying its `proceedReason`, for two reasons. The refusal rate
+    // needs a DENOMINATOR — without one, "the gate never fires" and "the gate never fires
+    // WRONGLY" are the same observation. And the fail-open paths are not equivalent:
+    // 'declared-paths-in-candidate' means the gate ASSESSED and allowed, while
+    // 'exclusion-undecidable' / 'candidate-unresolved' mean it could not assess at all.
+    // Collapsing those into one bare 'passed' would rebuild the exact ambiguity this fixes.
+    ctx.metadata?.({
+      preLaunchExclusion: preflight.refuse ? (args.waitForEligibility ? 'waited' : 'refused') : 'passed',
+      ...(preflight.refuse
+        ? {
+            preLaunchCandidate: preflight.candidate,
+            preLaunchTip: preflight.tip,
+            preLaunchWaitSec: preflight.waitSec,
+            preLaunchBlockedPaths: preflight.blockedPaths.map((b) => ({
+              path: b.path,
+              eligibleInSec: b.eligibleInSec,
+            })),
+          }
+        : { preLaunchProceedReason: preflight.proceedReason }),
+    });
     if (preflight.refuse) {
       if (!args.waitForEligibility) {
         return {

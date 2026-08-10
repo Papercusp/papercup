@@ -42,6 +42,7 @@ import HudBoard from './HudBoard';
 import HudEntityColumns from './HudEntityColumns';
 import GoalComposer from './GoalComposer';
 import GoalDetailPanel from './GoalDetailPanel';
+import GoalStatusControl from './GoalStatusControl';
 import { workItemIdForCard, type HudEntityCard } from './hud-entity-board';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import {
@@ -752,6 +753,34 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      Clicking the SAME goal again clears the selection, so the filter is
      reversible from the card that set it — otherwise the only way out of a
      scoped board is hand-editing the URL. */
+  /* P-016 — the per-card pause/resume lever.
+     Status comes from the QUERY, not the card model: `HudEntityCard` is a presentational
+     projection with no status field, and adding one just to drive a control would put a
+     second copy of the goal's state on screen that could disagree with the pill in the
+     popup. One store, read twice. */
+  const goalStatusById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const g of goalsQuery.data?.[0]?.goals ?? []) {
+      if (g.id) m.set(g.id, String(g.status ?? ''));
+    }
+    return m;
+  }, [goalsQuery.data]);
+
+  const renderGoalCardAction = useCallback(
+    (card: HudEntityCard) => {
+      /* The board's one non-goal card carries no status and nothing to steer. Gated on
+         the DECLARED intent, never on pattern-matching the id — that re-derivation is
+         exactly what WI-6742 fixed. */
+      if (card.open?.kind === 'start-goal') return null;
+      const status = goalStatusById.get(card.id);
+      if (!status) return null;
+      /* CARD variant: the reversible pair only. Closing a goal is a decision that
+         belongs in the popup, next to the kill criterion that justifies it. */
+      return <GoalStatusControl goalId={card.id} status={status} variant="card" />;
+    },
+    [goalStatusById],
+  );
+
   const onOpenGoalCard = useCallback(
     (card: HudEntityCard) => {
       /* P-015: the board's one non-goal card. Its intent is DECLARED
@@ -878,6 +907,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         notice={goalFilter ? `Selected goal ${goalFilter} — click its card again to deselect.` : null}
         noun="goals"
         onOpenCard={onOpenGoalCard}
+        renderCardAction={renderGoalCardAction}
       />
     ) : tab === 'plans' ? (
       <HudEntityColumns

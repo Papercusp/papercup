@@ -1717,6 +1717,56 @@ The natural next action is to conclude a job died and re-run it. Use
 NAME, so argv cannot fool it at all), or `kill -0 <pid>`
 (EI-19446554284039165).
 
+> ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
+> chars**, so a longer binary name never matches. This one is well-behaved —
+> measured 2026-08-10, `pgrep -x qemu-system-x86_64` (18 chars) prints
+> *"pattern that searches for process name longer than 15 characters will result
+> in zero matches"* and exits 1, rather than silently returning nothing. Match
+> the truncated comm instead (`pgrep -x qemu-system-x86`), or use `-f`.
+
+✅ **"Is this process actually DOING WORK right now?" — two-sample `/proc` delta,
+never a single-shot reading.** Every single-shot CPU probe answers a *different*
+question than the one you are asking, and each fails toward a false "idle":
+`ps -o %cpu` is a **process-lifetime average** (measured: 208% on a VM whose
+instantaneous load was 200% — right here only by coincidence, and badly wrong
+for anything whose load has changed), and any first-iteration sampler has no
+prior sample to difference against. CPU usage *is* a delta; ask for one:
+
+```bash
+P=<pid>                       # USER_HZ=100, so 500 ticks per core per 5s
+t() { awk '{i=index($0,") ");split(substr($0,i+2),f," ");print f[12]+f[13]}' /proc/$P/stat; }
+A=$(t); sleep 5; B=$(t); echo "$((B-A)) ticks/5s => $(echo "scale=2;($B-$A)/500" | bc) cores"
+# per-thread: same arithmetic over /proc/$P/task/*/stat   (tid == pid => the MAIN thread)
+```
+
+⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
+service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
+work runs in a child, so measuring it alone reports "idle" about a process
+burning a full core. That trap cost a critical (EI-20029519971967372: the
+bg-host freeze watchdog killed a healthy boot every ~8 min because it had no
+way to tell "saturated and working" from "dead"). Walk children via
+`/proc/<pid>/task/<tid>/children` — **pid-anchored, so unlike a `pgrep -f`
+pattern it cannot self-match a peer's diagnostic shell**. Working
+implementation to copy: `procTreeCpuTicks` in
+`apps/operator/scripts/bghost-watchdog.mjs`.
+
+⚠ A corollary worth knowing before you design one: **a liveness/progress beat
+emitted BY the process being judged cannot report on main-thread saturation** —
+`await` yields to the microtask queue, not the event loop, so a saturated Node
+main thread stops every `setInterval`/`setTimeout` while looking perfectly
+asynchronous. The beat goes missing exactly when it is the thing you need.
+Observe from OUTSIDE (`/proc`), where a saturated process cannot suppress its
+own signal.
+
+⚠ EI-20017779937060288 reports that `top -b -n1 -H` prints **0.0% for every
+thread** (a first-iteration artifact). **That did NOT reproduce** — re-measured
+2026-08-10 against the same pid at the same load, `top -b -n1 -H` reported 99.9%
+on exactly the 2 hot threads of 13 and 0.0% on the idle ones, agreeing with the
+`/proc` delta above. Treat `top -n1` as usable here; the two-sample `/proc`
+recipe is still the one to reach for, because it needs no column-index guess
+(`%CPU` is field **9** in `-H` output, not 8 — field 8 is the state column, and
+misreading it yields a whole column of `S` that looks like data).
+
 ⚠ **Waiting on the right PID isn't enough for an `npm run <target>` you
 launched detached — the PID you can grab immediately is usually the WRAPPER,
 not the real work, and a wrapper-PID wait returns exit 0 while the job is

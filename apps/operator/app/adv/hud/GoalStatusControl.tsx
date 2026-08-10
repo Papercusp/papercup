@@ -196,7 +196,7 @@ export default function GoalStatusControl({
       {!isTerminal ? (
         <button
           type="button"
-          className="pc-ctl-btn"
+          className="pc-ctl-act"
           data-testid="goal-pause-resume"
           disabled={busy}
           aria-label={isPaused ? 'Resume this goal' : 'Pause this goal'}
@@ -219,7 +219,7 @@ export default function GoalStatusControl({
         <>
           <button
             type="button"
-            className="pc-ctl-btn"
+            className="pc-ctl-act"
             data-testid="goal-achieved"
             disabled={busy}
             onClick={() => void close('achieved')}
@@ -228,7 +228,10 @@ export default function GoalStatusControl({
           </button>
           <button
             type="button"
-            className="pc-ctl-btn pc-ctl-btn--danger"
+            /* No bespoke "danger" variant: `.pc-ctl-act` ships only --ghost/--primary, and
+               a class with no CSS behind it is a silent no-op that READS like styling.
+               The confirm dialog carries `destructive`, which is where the weight belongs. */
+            className="pc-ctl-act"
             data-testid="goal-kill"
             disabled={busy}
             onClick={() => void close('killed')}
@@ -241,7 +244,7 @@ export default function GoalStatusControl({
       {variant === 'panel' && isTerminal ? (
         <button
           type="button"
-          className="pc-ctl-btn"
+          className="pc-ctl-act"
           data-testid="goal-reopen"
           disabled={busy}
           title="Re-open placement and put this goal back in play"

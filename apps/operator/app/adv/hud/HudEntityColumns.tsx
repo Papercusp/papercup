@@ -28,7 +28,7 @@
  * sidebar) and OperatorChat already open, never a second renderer.
  */
 
-import { memo } from 'react';
+import { memo, type ReactNode } from 'react';
 import { RowBoundary, SectionBoundary } from '@/app/_components/RenderBoundary';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { formatAge, type HudBadge } from './hud-board-model';
@@ -55,9 +55,11 @@ const MAX_CHIPS = 4;
 function EntityCard({
   card,
   onOpen,
+  renderAction,
 }: {
   card: HudEntityCard;
   onOpen?: (card: HudEntityCard) => void;
+  renderAction?: (card: HudEntityCard) => ReactNode;
 }) {
   const chips = card.badges.slice(0, MAX_CHIPS);
   const overflow = card.badges.length - chips.length;
@@ -65,6 +67,39 @@ function EntityCard({
   // session card's `type="button"` + className shape is mirrored exactly so the
   // two boards keep looking identical without a parallel style set.
   const Tag = onOpen ? 'button' : 'div';
+
+  const action = renderAction?.(card);
+  // A card-level ACTION cannot live INSIDE the card (P-016): the card is itself a
+  // <button> whenever it has a destination, and a button inside a button is invalid
+  // HTML — browsers reparent it, and the inner click target becomes unreliable. So the
+  // action is a SIBLING under a positioning wrapper, and the wrapper only exists when
+  // a board actually supplies one. Boards that do not (Plans, Work items) render the
+  // exact same tree as before, so this adds no layout surface to surfaces that never
+  // asked for it.
+  if (action) {
+    return (
+      <span className="hud__card-wrap">
+        <EntityCardBody card={card} onOpen={onOpen} chips={chips} overflow={overflow} Tag={Tag} />
+        <span className="hud__card-actions">{action}</span>
+      </span>
+    );
+  }
+  return <EntityCardBody card={card} onOpen={onOpen} chips={chips} overflow={overflow} Tag={Tag} />;
+}
+
+function EntityCardBody({
+  card,
+  onOpen,
+  chips,
+  overflow,
+  Tag,
+}: {
+  card: HudEntityCard;
+  onOpen?: (card: HudEntityCard) => void;
+  chips: HudBadge[];
+  overflow: number;
+  Tag: 'button' | 'div';
+}) {
   return (
     <Tag
       className={`hud__card hud__card--${card.column} hud__card--entity`}
@@ -128,6 +163,7 @@ function EntityCard({
 const MemoEntityCard = memo(function SafeEntityCard(props: {
   card: HudEntityCard;
   onOpen?: (card: HudEntityCard) => void;
+  renderAction?: (card: HudEntityCard) => ReactNode;
 }) {
   return (
     /* Optional-chained on purpose: the label is computed OUTSIDE the boundary
@@ -181,6 +217,16 @@ export interface HudEntityColumnsProps {
    * given board's cards belong to.
    */
   onOpenCard?: (card: HudEntityCard) => void;
+  /**
+   * Render a per-card ACTION (P-016) — a control that acts on the entity WITHOUT
+   * navigating to it. Supplied only by the Goals board today (pause/resume).
+   *
+   * A render prop rather than a flag because the action is host-specific: the control
+   * needs the goal's status and its own write path, neither of which this presentational
+   * file should know about. Omitted ⇒ the card tree is byte-identical to before, so the
+   * boards with no action grow no wrapper.
+   */
+  renderCardAction?: (card: HudEntityCard) => ReactNode;
 }
 
 export default function HudEntityColumns({
@@ -195,6 +241,7 @@ export default function HudEntityColumns({
   noun,
   notice = null,
   onOpenCard,
+  renderCardAction,
 }: HudEntityColumnsProps) {
   const visibleColumns = focusColumn
     ? board.columns.filter((c) => c.id === focusColumn)
@@ -292,7 +339,12 @@ export default function HudEntityColumns({
                   ) : (
                     <>
                       {c.cards.map((card) => (
-                        <MemoEntityCard key={card.id} card={card} onOpen={onOpenCard} />
+                        <MemoEntityCard
+                          key={card.id}
+                          card={card}
+                          onOpen={onOpenCard}
+                          renderAction={renderCardAction}
+                        />
                       ))}
                       {/* A truncated column says so. The cap is a render bound;
                           pretending the column holds 60 items when it holds 400
