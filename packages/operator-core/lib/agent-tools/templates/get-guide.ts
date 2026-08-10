@@ -14,7 +14,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveTemplateListing, fetchTemplateGuide } from '../../cupboard/templates';
-import { resolveLocalTemplate, readLocalGuide } from '../../cupboard/template-store';
+import { resolveLocalTemplateWithShadows, readLocalGuide } from '../../cupboard/template-store';
 import { resolveGenericLibsRoot } from '../../cupboard/generic-libs-root';
 
 const ok = (payload: Record<string, unknown>) => ({
