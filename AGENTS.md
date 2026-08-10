@@ -263,11 +263,19 @@ work in the tree. Merge conflicts go to a `merge-resolver` agent, not you. From
 auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 
-> ⚠ **`git blame` on this repo never tells you who wrote a change — never trust it
-> for attribution, especially in an escalation.** git-sync commits the whole tree
-> under one identity, so blame is a false-positive generator, not a dead end —
-> trusting it once sent a false blocker accusation to the owner ("confirmed by git
-> blame: 
+> ⚠ **Neither `git blame` NOR a commit's SUBJECT is evidence about a change in this
+> repo — never cite either, least of all in an escalation.** git-sync sweeps the WHOLE
+> tree on a schedule, commits it under ONE identity, and labels it with whatever
+> agent/plan context happened to be current. So blame names the wrong person, and the
+> subject describes the sweeping agent's INTENT, not the diff. Both are false-positive
+> generators, not dead ends.
+>
+> **Which commit carries your change → `git log -1 -- <path>`. NOT `git rev-parse HEAD`:
+> the tip is routinely a DIFFERENT commit from the same sweep, so quoting it attributes
+> your work to a stranger's diff. Whether a sha someone cites really carries a change →
+> `git show --stat <sha>`, or grep the file.** For authorship, use the commissioning
+> work-item/plan-item or a timestamp-correlated `sessions:search`; if neither resolves,
+> say "not attributable" — never name a person.
 
 > 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
 > `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not

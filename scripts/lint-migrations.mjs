@@ -174,8 +174,8 @@ export function findRawTxControl(sqlText) {
  * guarded, so a human check will keep missing it — hence a lint.
  *
  * The FIX SHAPE is a DO-block that renames only when the old name exists and the
- * new one does not (see 592). Because `stripSqlBodies` removes dollar-quoted
- * bodies, a rename inside a `DO $$ … $$` block is invisible here and passes,
+ * new one does not (see 592). Because this check masks dollar-quoted bodies
+ * (`maskSealingBodies`), a rename inside a `DO $$ … $$` block is invisible here and passes,
  * while a bare top-level one is caught — which is exactly the intended contract.
  * `ALTER INDEX IF EXISTS … RENAME TO` is genuinely guarded (the IF EXISTS binds
  * to the index itself) and is correctly not flagged.

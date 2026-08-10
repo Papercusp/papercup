@@ -558,15 +558,38 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > and for the same reason: on a swept tree, identity is decidable where working-tree
 > status is not.
 
-> ⚠ **`git blame` on this repo never tells you who wrote a change — never trust it
-> for attribution, especially in an escalation.** git-sync commits the whole tree
-> under one identity, so blame is a false-positive generator, not a dead end —
-> trusting it once sent a false blocker accusation to the owner ("confirmed by git
-> blame: YOUR migration") for an agent's own incomplete work (WI-5111). Recover
-> authorship from the commissioning work-item/plan-item or a timestamp-correlated
-> `sessions:search`; if neither resolves, say "not attributable" — never name a
-> person. Full runbook:
-> [attributing-a-change-despite-git-sync-squash](/internal/docs/agent-insights/attributing-a-change-despite-git-sync-squash).
+> ⚠ **Neither `git blame` NOR a commit's SUBJECT is evidence about a change in this
+> repo — never cite either, least of all in an escalation.** git-sync sweeps the WHOLE
+> tree on a schedule, commits it under ONE identity, and labels it with whatever
+> agent/plan context happened to be current. So blame names the wrong person, and the
+> subject describes the sweeping agent's INTENT, not the diff. Both are false-positive
+> generators, not dead ends.
+>
+> **Which commit carries your change → `git log -1 -- <path>`. NOT `git rev-parse HEAD`:
+> the tip is routinely a DIFFERENT commit from the same sweep, so quoting it attributes
+> your work to a stranger's diff. Whether a sha someone cites really carries a change →
+> `git show --stat <sha>`, or grep the file.** For authorship, use the commissioning
+> work-item/plan-item or a timestamp-correlated `sessions:search`; if neither resolves,
+> say "not attributable" — never name a person.THE BLAME CASE: a release-fixer sent a false blocker accusation to the OWNER
+("confirmed by git blame: YOUR migration") for an agent's own incomplete work (WI-5111).
+
+THE SUBJECT/SHA CASES, both 2026-08-10 (EI-20091120781966310):
+· 83c96a8027's subject named AppImage webkit self-containment and contained three
+  unrelated pot-git transport files; the real AppImage fix sat under subjects reading
+  `chore(git-sync): auto-commit`. The filer nearly RETRACTED a true claim over it.
+· During the same day's gate incident an agent cited `rev-parse HEAD` (594e98c704) as
+  "my commit". It carried none of their work — that was in e2ff7006d2, a different
+  commit from the SAME sweep, whose own subject described unrelated UI work. Two more
+  agents propagated the wrong sha before it was retracted, and a third mis-attributed
+  a census delta to a commit that touched none of the relevant files.
+
+WHY IT IS WORSE THAN AN ORDINARY WRONG CITATION: bad evidence for a TRUE claim is the
+nastiest shape, because both the original citation AND the naive correction are wrong.
+Only reading the diff settles it — which is why the rule prescribes a command per
+question rather than "be careful".
+
+Full runbook:
+[attributing-a-change-despite-git-sync-squash](/internal/docs/agent-insights/attributing-a-change-despite-git-sync-squash).
 
 > 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
 > `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not
