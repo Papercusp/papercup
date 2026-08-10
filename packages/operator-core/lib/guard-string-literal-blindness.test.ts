@@ -443,6 +443,21 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // cannot pass probeStringLiteralBlindness and is correctly absent from the cases table
     // above — "migrate it to the full stripper" is a REGRESSION, and its own header says so.
     'check-generic-first.mjs',
+    // check-github-identity-terms.mjs STAYS (audited 2026-08-10, WI-37717) — and this entry is
+    // the "exposure considered" kind, not the "needs a stripper" kind. Its corpus is `.md`/`.mdx`
+    // under the docs root ONLY: there is no code file in it, so comment/string masking is not
+    // merely unnecessary but UNDEFINED — the prose IS the detection target, and the shared
+    // stripper is a TS/SQL parser with no markdown path. Importing it here would be a no-op at
+    // best and would blank a URL tail at worst. There is nothing to migrate.
+    // The phantom class IS real here, in its prose-specific form: the guard quotes the banned
+    // phrasing in its own header, so a doc that must SAY the wrong phrase to correct it trips it.
+    // Measured: all 3 near-miss lines in the corpus sit in spec/distribution.mdx — the single
+    // hard-coded exclusion — so the ONLY doc explaining the identity split survived purely by
+    // being named in the lint's source. A second such doc had no recourse but a code change.
+    // Fixed the right way for a prose guard: an in-place `github-identity-justified: <reason>`
+    // marker (same convention as `sql-snippet-justified:`), bare-marker-rejected, 3-line
+    // lookback, pinned by __tests__/check-github-identity-terms.test.ts. Prose can now justify
+    // itself without editing code — which is the actual defect a stripper could never have fixed.
     'check-github-identity-terms.mjs',
     // check-migration-fixture-drift.mjs was REMOVED here on 2026-08-10 (WI-37717). It scans
     // TWO surfaces and both are now masked: migration .sql text via stripSqlComments (inside

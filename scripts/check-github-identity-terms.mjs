@@ -17,10 +17,32 @@
  *     `Papercusp/papercusp`, …). `papercupai` has active admin membership in it.
  *
  * This is a doc/prose guard (regex, not a live API call — keep it hermetic and
- * fast): it fails if any tracked doc describes `papercupai` as a GitHub org or
- * organization. The canonical explanation lives in ONE place —
+ * fast): it fails if a doc under the docs root describes `papercupai` as a GitHub
+ * org or organization. The canonical explanation lives in ONE place —
  * apps/operator-docs/src/content/docs/spec/distribution.mdx, "Canonical GitHub
  * identity" callout — link to it instead of re-describing the identities.
+ *
+ * CORPUS: `.md`/`.mdx` under DOCS_PREFIX only — deliberately NOT "every tracked
+ * doc", despite what this header said until 2026-08-10. Widening it re-scans
+ * apps/operator/public/internal/docs/**, which is BUILD OUTPUT (the rendered
+ * projection of these same files), so every offender would be reported twice and
+ * "fixed" in a directory whose edits are discarded (EI-18760552901594056).
+ *
+ * ESCAPE HATCH (WI-37717). A doc that must SAY the wrong phrase in order to
+ * correct it is the guard's own phantom-offender class — this guard quotes the
+ * banned shape in its own header, which is exactly why its own source is on the
+ * exclusion list below. Until 2026-08-10 the only way to write such a doc was to
+ * hard-code its path HERE, i.e. prose could only justify itself by editing code.
+ * Now it can say so in place, on the line or within 3 lines above:
+ *
+ *     github-identity-justified: correcting the record — quoting the wrong phrasing
+ *
+ * A bare marker with no reason after the colon is rejected: "justify" is the whole
+ * rule, so an empty marker is just a mute button. (Same convention, and the same
+ * reasoning, as `sql-snippet-justified:` in check-sql-guidance-justified.mjs.)
+ * The two whole-file exclusions stay: spec/distribution.mdx is the canonical
+ * correction end-to-end, so per-line markers there would be noise, and this
+ * script cannot annotate itself.
  *
  * The sibling functional guard for the CODE side of this bug (the
  * FIRST_PARTY_ORG constant itself) lives in the papercusp-registry repo:
@@ -58,6 +80,31 @@ const isExcluded = (f) =>
   f === 'apps/operator-docs/src/content/docs/spec/distribution.mdx' ||
   f === 'scripts/check-github-identity-terms.mjs';
 
+/** The justification marker; everything after the colon is the reason. */
+export const MARKER_RE = /github-identity-justified:[ \t]*(\S.*)$/i;
+/** How many lines above the offending line may carry the marker. */
+export const MARKER_LOOKBACK = 3;
+
+/**
+ * PURE: the offending lines in one doc's text. Both `main()` and `--self-test`
+ * call this, so a control cannot drift from the code it pins.
+ *
+ * @param {string} text
+ * @returns {Array<{ line: number, text: string }>}
+ */
+export function findOffenders(text) {
+  const lines = text.split('\n');
+  const offenders = [];
+  lines.forEach((line, i) => {
+    if (!BAD_PATTERNS.some((re) => re.test(line))) return;
+    // Justified in place? The marker may sit on this line or just above it.
+    const window = lines.slice(Math.max(0, i - MARKER_LOOKBACK), i + 1);
+    if (window.some((l) => MARKER_RE.test(l))) return;
+    offenders.push({ line: i + 1, text: line.trim() });
+  });
+  return offenders;
+}
+
 function main() {
   const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
     .split('\n')
@@ -74,15 +121,7 @@ function main() {
     } catch {
       continue;
     }
-    const lines = text.split('\n');
-    lines.forEach((line, i) => {
-      for (const re of BAD_PATTERNS) {
-        if (re.test(line)) {
-          offenders.push({ file: f, line: i + 1, text: line.trim() });
-          break;
-        }
-      }
-    });
+    for (const o of findOffenders(text)) offenders.push({ file: f, ...o });
   }
 
   if (offenders.length > 0) {
@@ -99,4 +138,48 @@ function main() {
   console.log('✓ no doc describes papercupai as a GitHub org/organization.');
 }
 
-main();
+// Import-safe: the scan runs only when this file is the entrypoint, so a test can
+// import findOffenders without the scan (and its process.exit) firing on import.
+const RUN_AS_MAIN = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (RUN_AS_MAIN && process.argv.includes('--self-test')) {
+  // [FALSIFIES] = gives the WRONG answer without the escape hatch this added.
+  // [ANCHOR]    = passes before AND after; pins that the hatch did not defeat the
+  //               guard. Do not "tidy" the anchors away for looking redundant.
+  const cases = [
+    ['[ANCHOR] the plain offending phrasing still fails', 'The papercupai org owns the repos.', 1],
+    ['[ANCHOR] the inverse word order still fails', 'Members of the organization papercupai can publish.', 1],
+    ['[ANCHOR] an innocent mention of the user is clean', 'The `papercupai` user is the maintainer login.', 0],
+    [
+      '[FALSIFIES] a doc correcting the record can justify itself in place',
+      'github-identity-justified: correcting the record — quoting the wrong phrasing\nAny doc calling it the papercupai org is describing something that cannot exist.',
+      0,
+    ],
+    [
+      '[FALSIFIES] the marker also counts on the SAME line',
+      'Do not say "the papercupai org". github-identity-justified: shows the banned phrasing',
+      0,
+    ],
+    [
+      '[ANCHOR] a BARE marker with no reason does not silence it (an empty marker is a mute button)',
+      'github-identity-justified:\nThe papercupai org owns the repos.',
+      1,
+    ],
+    [
+      '[ANCHOR] a marker further than the lookback does not reach',
+      ['github-identity-justified: too far above', '', '', '', 'The papercupai org owns the repos.'].join('\n'),
+      1,
+    ],
+  ];
+  let failed = 0;
+  for (const [name, text, expected] of cases) {
+    const got = findOffenders(text).length;
+    const ok = got === expected;
+    if (!ok) failed++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${name} (expected ${expected}, got ${got})`);
+  }
+  console.log(`\n--self-test: ${cases.length - failed}/${cases.length} passed`);
+  process.exit(failed ? 1 : 0);
+}
+
+if (RUN_AS_MAIN) main();
