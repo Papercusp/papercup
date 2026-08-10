@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   decideAutoClose,
   processAutoClose,
+  AUTO_CLOSE_ELIGIBLE_SOURCES,
   type AutoCloseCandidate,
   type AutoCloseTickContext,
   type AutoCloseDeps,
@@ -17,9 +18,12 @@ import type { RedTestRun } from './red-test-green-resolve';
 const NOW = 1_700_000_000_000;
 const THREE_H_AGO = NOW - 3 * 60 * 60 * 1000;
 
+// NOTE: the base fixture is a `smoke-fail` key, NOT `red-test`. red-test was REMOVED from
+// AUTO_CLOSE_ELIGIBLE_SOURCES (P-003) — it is absence-INELIGIBLE now, so it can no longer
+// stand in as the generic "eligible source" example these guard tests need.
 const baseCandidate: AutoCloseCandidate = {
   issueId: 'EI-1',
-  watchdogKey: 'red-test:packages/x/foo.test.ts',
+  watchdogKey: 'smoke-fail:papercusp',
   state: 'open',
   assignee: null,
   createdAtMs: THREE_H_AGO,
@@ -71,7 +75,7 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
   });
 
   it('accepts every eligible source and rejects an unlisted one', () => {
-    for (const src of ['red-test', 'repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift', 'perf-regression', 'routine-failure']) {
+    for (const src of ['repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift', 'perf-regression', 'routine-failure']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(true);
     }
     // service-down is deliberately excluded: its P-004 freshness gate SKIPS collection
@@ -82,6 +86,27 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
     for (const src of ['service-down', 'orphaned-dispatch', 'insight-staleness']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(false);
     }
+  });
+
+  it('P-003: NEVER absence-closes a red-test signal — a quiet tick means "nobody ran it", not "it passes"', () => {
+    // The regression this pins (EI-11141, template-supply-chain-repair-2026-08-10 P-003):
+    // templates/papercusp-desktop-app/checks/composition-integrity.test.ts last RAN
+    // 2026-07-27 and was flipped `resolved` on 2026-08-02 — with ZERO 'pass' rows in all
+    // of test_runs history. Its import (@papercusp/template-kit) was still unresolvable at
+    // the close and stayed broken 8 more days. The runs stopped because NO vitest config
+    // owns templates/**/checks/*.test.ts, not because anything got fixed.
+    //
+    // red-test is unique among the collectors: its input is a LOG OF EXTERNALLY-TRIGGERED
+    // RUNS, not a live re-derivation of the condition, so it cannot tell a fixed test from
+    // an unrun one. Its true-recovery case is served by the POSITIVE-evidence path
+    // (resolveProvenGreenRedTests) instead, which demands N recorded greens.
+    const d = decideAutoClose(
+      { ...baseCandidate, watchdogKey: 'red-test:templates/papercusp-desktop-app/checks/composition-integrity.test.ts' },
+      baseCtx,
+    );
+    expect(d).toMatchObject({ close: false, reason: 'ineligible-source' });
+    // ...and it is genuinely gone from the allowlist, not merely failing some other guard.
+    expect(AUTO_CLOSE_ELIGIBLE_SOURCES.has('red-test')).toBe(false);
   });
 
   it('EI-18143028205990222: CLOSES a perf-regression SLO signal (e.g. dispatch-orphan-rate) once absent', () => {
@@ -137,15 +162,19 @@ describe('processAutoClose — flag gate + orchestration', () => {
     process.env[FLAG_ENV] = '1';
     const closed: string[] = [];
     const issues = [
-      mkIssue({ id: 'EI-close', watchdogKey: 'red-test:gone.test.ts' }), // → closes
+      mkIssue({ id: 'EI-close', watchdogKey: 'smoke-fail:gone' }), // → closes
       mkIssue({ id: 'EI-firing', watchdogKey: 'repeated-tool-error:hot:structural' }), // still firing
       // EI-7317: assigned but the dispatch already resolved (not in inFlightDispatchIds
       // below) — an abandoned assignment, not active work → closes too.
-      mkIssue({ id: 'EI-abandoned-assigned', watchdogKey: 'red-test:owned.test.ts', assignee: 'su-z' }),
+      mkIssue({ id: 'EI-abandoned-assigned', watchdogKey: 'smoke-fail:owned', assignee: 'su-z' }),
       // Genuinely active work: assigned AND a live in-flight dispatch row → stays blocked.
       mkIssue({ id: 'EI-inflight', watchdogKey: 'stalled-feature:papercup', assignee: 'su-active' }),
-      mkIssue({ id: 'EI-new', watchdogKey: 'red-test:fresh.test.ts', createdAt: new Date(NOW - 5 * 60_000).toISOString() }), // too new
+      mkIssue({ id: 'EI-new', watchdogKey: 'smoke-fail:fresh', createdAt: new Date(NOW - 5 * 60_000).toISOString() }), // too new
       mkIssue({ id: 'EI-ineligible', watchdogKey: 'service-down:operator' }), // ineligible source
+      // P-003: a red-test key is now absence-INELIGIBLE — it must survive this sweep even
+      // though its signal is absent, old enough, unassigned and organic. Only the
+      // positive-green path may retire it.
+      mkIssue({ id: 'EI-redtest', watchdogKey: 'red-test:never-ran.test.ts' }),
       mkIssue({ id: 'EI-nokey' }), // no watchdogKey → pre-filtered out
     ];
     const deps: AutoCloseDeps = {
@@ -164,7 +193,7 @@ describe('processAutoClose — flag gate + orchestration', () => {
     process.env[FLAG_ENV] = '1';
     const closed: string[] = [];
     const deps: AutoCloseDeps = {
-      listOpen: async () => [mkIssue({ id: 'EI-close', watchdogKey: 'red-test:gone.test.ts' })],
+      listOpen: async () => [mkIssue({ id: 'EI-close', watchdogKey: 'smoke-fail:gone' })],
       recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 2 }), // < 6
       inFlightDispatchIds: async () => new Set(),
       close: async (id) => { closed.push(id); },
@@ -338,7 +367,7 @@ describe('processAutoClose — P-007 green-run resolution', () => {
     expect(cap.resolved).toEqual([]);
   });
 
-  it('is fail-soft: a test_runs read error yields no green resolution and never aborts the sweep', async () => {
+  it('is fail-soft: a test_runs read error resolves nothing, closes nothing, and never aborts the sweep', async () => {
     process.env[FLAG_ENV] = '1';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); // the read error is EXPECTED
     const cap: GreenCapture = { resolved: [] };
@@ -346,22 +375,29 @@ describe('processAutoClose — P-007 green-run resolution', () => {
     const deps = greenDeps({}, cap, {
       listOpen: async () => [mkIssue({ id: 'EI-green', watchdogKey: 'red-test:packages/x/foo.test.ts' })],
       recentRedTestRuns: async () => { throw new Error('pg down'); },
-      // signal absent + enough ticks → the absence path still runs and closes it
       recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
       close: async (id) => { closed.push(id); },
     });
     const out = await processAutoClose('ws', {}, deps);
     expect(cap.resolved).toEqual([]);
-    expect(closed).toEqual(['EI-green']); // fell through to absence close; sweep not aborted
-    expect(out.map((o) => o.issueId)).toEqual(['EI-green']);
+    // P-003: this test used to assert `closed === ['EI-green']` with the comment "fell
+    // through to absence close". That fallback was the bug, not the fail-soft behaviour:
+    // losing the ability to READ green evidence is not evidence of green. Failing soft
+    // means "resolve nothing and keep sweeping", NOT "close it on the weaker signal" —
+    // that is failing OPEN. A red-test EI now survives a green-read outage untouched.
+    expect(closed).toEqual([]);
+    expect(out).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[watchdog-green-resolve]'), expect.stringContaining('pg down'));
     warn.mockRestore();
   });
 
-  it('does nothing green when the green deps are not injected (pre-P-007 backward compat)', async () => {
+  it('P-003: with the green deps NOT injected, a red-test EI is left alone (never absence-closed)', async () => {
     process.env[FLAG_ENV] = '1';
     const closed: string[] = [];
-    // No recentRedTestRuns / resolveGreen → the green pass is a no-op; only the absence path acts.
+    // No recentRedTestRuns / resolveGreen → the green pass is a no-op. Previously the
+    // absence path then closed the item anyway; now there is NO path that retires a
+    // red-test EI without positive green evidence, so a caller that cannot supply that
+    // evidence simply leaves it open.
     const deps: AutoCloseDeps = {
       listOpen: async () => [mkIssue({ id: 'EI-green', watchdogKey: 'red-test:packages/x/foo.test.ts' })],
       recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
@@ -370,7 +406,7 @@ describe('processAutoClose — P-007 green-run resolution', () => {
       nowMs: () => NOW,
     };
     const out = await processAutoClose('ws', {}, deps);
-    expect(closed).toEqual(['EI-green']); // absence-closed as before (no green resolution path)
-    expect(out.map((o) => o.issueId)).toEqual(['EI-green']);
+    expect(closed).toEqual([]);
+    expect(out).toEqual([]);
   });
 });

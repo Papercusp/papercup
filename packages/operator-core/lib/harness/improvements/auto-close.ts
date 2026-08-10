@@ -47,7 +47,26 @@ import type { CompletionVerificationEvidence } from '../../coord-lifecycle/recor
  * never mistaken for a resolution.
  */
 export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
-  'red-test',
+  // ⛔ 'red-test' is DELIBERATELY ABSENT — do not re-add it (template-supply-chain-repair
+  // 2026-08-10 P-003). It is the one source whose input is a LOG OF EXTERNALLY-TRIGGERED
+  // EVENTS (`harness_shared.test_runs`) rather than a live re-derivation of the condition.
+  // Every other entry here re-evaluates its own predicate each tick (a DB query, a claim
+  // table, a routine's `active` flag), so a quiet tick genuinely means "the condition is
+  // gone". For red-test a quiet tick means only "nobody RAN this test" — the collector
+  // cannot distinguish a test that was fixed from one that was dropped from its suite,
+  // renamed, left un-owned by any vitest config, or whose checkout disappeared.
+  //
+  // Measured case (EI-11141, templates/papercusp-desktop-app/checks/composition-integrity
+  // .test.ts): last run 2026-07-27, `resolved` 2026-08-02, and ZERO 'pass' rows in ALL of
+  // test_runs history — the named import (@papercusp/template-kit) was still unresolvable
+  // when the item was closed, and stayed broken for another 8 days. Its runs stopped
+  // because NO vitest config owns templates/**/checks/*.test.ts (testing:run answers
+  // TEST_FILE_ROUTE_ERROR), not because anything was fixed.
+  //
+  // Removing it costs nothing: red-test is also the ONLY source with a POSITIVE-evidence
+  // resolution path (`resolveProvenGreenRedTests`, P-007), which resolves a genuinely-fixed
+  // test on N consecutive recorded greens and attaches them as real completion evidence.
+  // Absence-closing it was strictly the weaker, unfalsifiable half of that pair.
   'repeated-tool-error',
   'stalled-feature',
   'unresolved-escalation',
