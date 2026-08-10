@@ -238,15 +238,23 @@ function selfTest() {
     }
   };
 
-  const root = '/repo';
+  // A SYNTHETIC root for the pure-function checks below — this script's REAL
+  // root is derived per-invocation by findRepoRoot(filePath), never from here.
+  // Kept under /tmp because that is what a fake path should look like, and
+  // because the class-wide portability ratchet
+  // (__tests__/hook-repo-root-portability.test.ts) is a TEXTUAL scan for
+  // `const <root-ish> = '/abs/path'` — it cannot tell a fixture from an
+  // operating root, and a bare '/repo' here tripped it and red-pinned the
+  // @papercusp/web suite. Machine-global prefixes are exempt by design there.
+  const root = '/tmp/pc-selftest-repo';
   check(
     'scans operator app css',
-    isCandidateFile(root, '/repo/apps/operator/app/adv/hud/hud.css'),
+    isCandidateFile(root, '/tmp/pc-selftest-repo/apps/operator/app/adv/hud/hud.css'),
   );
-  check('scans operator-vite src', isCandidateFile(root, '/repo/apps/operator-vite/src/a.tsx'));
-  check('skips test files', !isCandidateFile(root, '/repo/apps/operator/app/a.test.tsx'));
-  check('skips unscanned dirs', !isCandidateFile(root, '/repo/packages/operator-core/a.ts'));
-  check('skips non-source', !isCandidateFile(root, '/repo/apps/operator/app/a.md'));
+  check('scans operator-vite src', isCandidateFile(root, '/tmp/pc-selftest-repo/apps/operator-vite/src/a.tsx'));
+  check('skips test files', !isCandidateFile(root, '/tmp/pc-selftest-repo/apps/operator/app/a.test.tsx'));
+  check('skips unscanned dirs', !isCandidateFile(root, '/tmp/pc-selftest-repo/packages/operator-core/a.ts'));
+  check('skips non-source', !isCandidateFile(root, '/tmp/pc-selftest-repo/apps/operator/app/a.md'));
   check('skips outside repo', !isCandidateFile(root, '/elsewhere/a.css'));
 
   // Only NET-NEW offenders count.

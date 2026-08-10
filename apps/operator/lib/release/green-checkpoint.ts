@@ -3446,6 +3446,65 @@ export function historicalFlakeAnnotations(
     : '';
 }
 
+/** EI-20014356905761236: why a run's persisted verdict log needs a PROMOTION line at all.
+ *
+ *  The log's header states `green=<bool>` and structurally CANNOT state whether that verdict
+ *  promoted. The header is written by the suite dep (`realCheckpointDeps.runGreen`) at
+ *  suite-end, while EVERY promotion decision — the four held gates, the fast-forward, a
+ *  longest-green-prefix salvage, an in-process refire that abandons this candidate — is taken
+ *  afterwards, by `runGreenCheckpoint`. So `head -1` on a 1.4MB log yielded `green=true` with
+ *  nothing separating "this became the pin" from "this went green and was HELD", and no field
+ *  at all for "this pass was superseded by a refire".
+ *
+ *  Measured 2026-08-09 ~21:53Z: one question about one candidate (33cd2bfebec8) drew three
+ *  different answers from three authoritative surfaces — this log said `green=true`,
+ *  `release:deploy` said `skipped-locked`, and gate_health's `observedCandidate` still named an
+ *  older red — and reconciling them took six tool calls. `main` had not moved. The missing
+ *  datum was never the VERDICT; it was whether the verdict COUNTED.
+ */
+export type GatePromotionReason = CheckpointResult['reason'] | 'superseded-by-refire';
+
+/** Render the trailer. Uppercase-token line, the same shape as GATE_HELD_BY /
+ *  AFFECTED_TESTS_RESULT so it greps identically: `grep -o 'GATE_PROMOTION.*' <log> | tail -1`.
+ *
+ *  ABSENCE IS MEANINGFUL, and is the reason this is a TRAILER rather than a rewritten header:
+ *  no GATE_PROMOTION line means the run never reached a promotion decision at all (killed,
+ *  crashed, or still in flight) — a third reading the old header could not express, and one
+ *  that rewriting the header in place would have silently converted into a confident wrong
+ *  answer. `promoted` is the ACTUAL fast-forward outcome, not a restatement of `reason`:
+ *  reason='advanced' with promoted=false is a real state (`advance()` declined the FF) and
+ *  used to be invisible.
+ */
+export function formatGatePromotionTrailer(v: {
+  candidate: string;
+  green: boolean | null;
+  promoted: boolean;
+  reason: GatePromotionReason;
+  advancedTo?: string | null;
+}): string {
+  const to = v.advancedTo ? ` advancedTo=${v.advancedTo.slice(0, 12)}` : '';
+  return `\nGATE_PROMOTION candidate=${v.candidate.slice(0, 12)} green=${v.green} promoted=${v.promoted} reason=${v.reason}${to}\n`;
+}
+
+/** Append the promotion trailer to THIS pass's verdict log. Best-effort and fail-soft — the
+ *  same contract as the header write it completes ("the gate verdict must not depend on
+ *  logging"), so a stamp failure is logged and never thrown. Called once per PASS: a stale-red
+ *  refire recurses in-process with its own log file, so each pass stamps its own record rather
+ *  than the outermost pass speaking for candidates it abandoned.
+ */
+export function stampGatePromotion(
+  logPath: string | undefined,
+  v: Parameters<typeof formatGatePromotionTrailer>[0],
+  log?: (s: string) => void,
+): void {
+  if (!logPath) return;
+  try {
+    appendFileSync(logPath, formatGatePromotionTrailer(v));
+  } catch (e) {
+    log?.(`warn: GATE_PROMOTION trailer not stamped on ${logPath}: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 export async function runGreenCheckpoint(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -3723,6 +3782,12 @@ export async function runGreenCheckpoint(
     cfg.checkpointRoot,
     lastReady,
   );
+  // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
+  // not, because every decision that settles it is taken below this line. Stamp it at each
+  // disposition site, so the log records not just the verdict but whether it counted. See
+  // formatGatePromotionTrailer for why this is a trailer and not a header field.
+  const stampPromotion = (promoted: boolean, reason: GatePromotionReason, advancedTo?: string | null) =>
+    stampGatePromotion(logPath, { candidate, green, promoted, reason, advancedTo }, (s) => deps.log(s));
   // load-flake-isolation-2026-06-23: runGreen may have ABSORBED a load-flake — the
   // affected suite went red under the gate's 8-fork load, but every originally-failing
   // FILE then PASSED on an isolated single-concurrency re-run, so it reported green=true
@@ -4068,6 +4133,10 @@ export async function runGreenCheckpoint(
         // — if the refire below dies partway through, this completed pass's verdict survives
         // instead of gate_health freezing on whatever it held before this run even started.
         await deps.recordVerdict?.(buildNotGreenResult(retriage)).catch(() => {});
+        // EI-20014356905761236: this pass is ABANDONING `candidate` for `tip`. Say so in this
+        // pass's own log — it is the one artifact naming the discarded candidate, and "which
+        // sha was this run judging" is the question the marker had to be invented to answer.
+        stampPromotion(false, 'superseded-by-refire');
         return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
       }
     } else {
@@ -4119,6 +4188,9 @@ export async function runGreenCheckpoint(
           // WI-37490: same as the test-file rescue arm above — record this pass's own
           // verdict before recursing, so a refire that dies leaves it recorded.
           await deps.recordVerdict?.(buildNotGreenResult(retriage)).catch(() => {});
+          // EI-20014356905761236: same as the test-file rescue arm — this pass is abandoning
+          // `candidate`, so its own log must record that rather than ending on a bare red.
+          stampPromotion(false, 'superseded-by-refire');
           return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
         }
       }
@@ -4234,7 +4306,12 @@ export async function runGreenCheckpoint(
       await deps
         .setupTree(candidate)
         .catch((e) => deps.log(`warn: restore checkpoint tree to ${candidate.slice(0, 8)} after prefix-salvage: ${e}`));
-      if (partial) return partial;
+      if (partial) {
+        // EI-20014356905761236: a prefix salvage DID promote — `main` moved, just not to this
+        // (red) tip. Without this the log's `green=false` reads as "nothing shipped".
+        stampPromotion(partial.advanced, partial.reason, partial.advancedTo);
+        return partial;
+      }
     }
 
     // Deploy-staleness alarm: a held gate is loud, but a PIN that never moves is silent.
@@ -4253,6 +4330,7 @@ export async function runGreenCheckpoint(
       }
     }
 
+    stampPromotion(false, 'not-green');
     return {
       advanced: false,
       candidate,
@@ -4283,7 +4361,8 @@ export async function runGreenCheckpoint(
       await deps
         .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} perf-degraded`, perf.summary)
         .catch(() => {});
-      return { advanced: false, candidate, from: lastReady, green: true, reason: 'perf-held', summary: perf.summary };
+      stampPromotion(false, 'perf-held');
+      return { advanced: false, candidate, from: lastReady, green: true, reason: 'perf-held', summary: perf.summary, ...(logPath ? { logPath } : {}) };
     }
   }
 
@@ -4315,7 +4394,8 @@ export async function runGreenCheckpoint(
       await deps
         .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} ${held}`, desktopPerf.summary)
         .catch(() => {});
-      return { advanced: false, candidate, from: lastReady, green: true, reason: 'desktop-perf-held', summary: desktopPerf.summary };
+      stampPromotion(false, 'desktop-perf-held');
+      return { advanced: false, candidate, from: lastReady, green: true, reason: 'desktop-perf-held', summary: desktopPerf.summary, ...(logPath ? { logPath } : {}) };
     }
   }
 
@@ -4334,7 +4414,8 @@ export async function runGreenCheckpoint(
       await deps
         .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} delta-unproven`, delta.summary)
         .catch(() => {});
-      return { advanced: false, candidate, from: lastReady, green: true, reason: 'delta-held', summary: delta.summary };
+      stampPromotion(false, 'delta-held');
+      return { advanced: false, candidate, from: lastReady, green: true, reason: 'delta-held', summary: delta.summary, ...(logPath ? { logPath } : {}) };
     }
   }
 
@@ -4351,6 +4432,7 @@ export async function runGreenCheckpoint(
       await deps
         .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} cupboard prod storefront polluted`, cupboardHygiene.summary)
         .catch(() => {});
+      stampPromotion(false, 'cupboard-hygiene-held');
       return {
         advanced: false,
         candidate,
@@ -4358,6 +4440,7 @@ export async function runGreenCheckpoint(
         green: true,
         reason: 'cupboard-hygiene-held',
         summary: cupboardHygiene.summary,
+        ...(logPath ? { logPath } : {}),
       };
     }
   }
@@ -4410,6 +4493,11 @@ export async function runGreenCheckpoint(
       deps.log(`warn: release:green emit failed: ${e instanceof Error ? e.message : e}`);
     }
   }
+  // EI-20014356905761236: the POSITIVE case, and the one that makes the trailer's absence
+  // readable. `promoted` is `adv.advanced`, not a restatement of reason='advanced' — a run
+  // that reached here with the fast-forward declined is exactly the silent state this log
+  // could not express.
+  stampPromotion(adv.advanced, 'advanced', adv.advanced ? candidate : null);
   return {
     advanced: adv.advanced,
     candidate,
@@ -4419,6 +4507,7 @@ export async function runGreenCheckpoint(
     summary,
     ...(flakeSuspects?.length ? { flakeSuspects } : {}),
     ...(deps.runId ? { runId: deps.runId } : {}),
+    ...(logPath ? { logPath } : {}),
   };
 }
 
@@ -5979,9 +6068,15 @@ export function realCheckpointDeps(
         // EI-18832272104497819: state this run's OWN verdict in the header. The body
         // carries only captured fixture markers (defanged below), so without this the
         // file that claims to be the run's record never states how the run went.
+        // EI-20014356905761236: `green=` is THIS SUITE'S verdict and nothing more. Whether it
+        // PROMOTED is decided later, by runGreenCheckpoint (held gates / fast-forward / prefix
+        // salvage / refire), so this line physically cannot carry it — and a bare `green=true`
+        // was being read as "this became the pin". Point at the GATE_PROMOTION trailer, and
+        // state what its ABSENCE means, so a `head -1` reader is never left to infer.
         const header =
           `[green-checkpoint] candidate=${candidateSha ?? 'unresolved'} ` +
-          `base=${base ?? 'none'} written=${new Date().toISOString()} green=${green}\n`;
+          `base=${base ?? 'none'} written=${new Date().toISOString()} green=${green} ` +
+          `promoted=see-GATE_PROMOTION (trailer at EOF; absent ⇒ this run never reached a promotion decision)\n`;
         // EI-19346606967082413: the ORCHESTRATOR transcript rides AHEAD of the suite stdout.
         // Without this call the file records only what the SUITE printed, never what the gate
         // DECIDED — and a SCHEDULER-fired run redirects its stdout nowhere (only a manual run

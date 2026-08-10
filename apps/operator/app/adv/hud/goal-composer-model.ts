@@ -2,20 +2,33 @@
  * The "+ Start a goal" composer's non-visual half (goals-tab-improvement-2026-08-09 P-015).
  *
  * Validation and the POST live here, apart from the JSX, because both are
- * behaviour worth pinning and neither needs a DOM: the required-field rule is
- * the ONLY place GOAL mode's "kill criterion and ceiling at creation" contract
- * can now be enforced (the conversational kickoff that used to carry it was
- * deleted with the rail), and the response parse is a two-layer envelope that
- * has already been hand-rolled once per caller.
+ * behaviour worth pinning and neither needs a DOM: the shape of what counts as
+ * a submittable draft is worth stating once, and the response parse is a
+ * two-layer envelope that has already been hand-rolled once per caller.
+ *
+ * ONLY `title` IS REQUIRED. [owner 2026-08-09, interactive, verbatim]
+ * "when creating a new goal the 'kill this if' and 'ceiling' should not be
+ * required properties". This reverses the original P-015 rule, which made both
+ * mandatory here on the reasoning that the form was the last place GOAL mode's
+ * "kill criterion and ceiling at creation" contract could be enforced. The
+ * owner has overruled that trade: a goal you cannot start until you have
+ * invented a kill condition is a goal you do not start. `goals:start` accepts
+ * both as optional (its zod args are `.optional()`, and `buildGoalKickoffBrief`
+ * renders "none declared" lines rather than a fabricated $0.00), so the client
+ * and server now agree.
  */
 
 /** What the form collects, before it becomes tool args. */
 export interface GoalComposerDraft {
-  /** The outcome, stated so its achievement is checkable. */
+  /** The outcome, stated so its achievement is checkable. REQUIRED. */
   title: string;
-  /** The written condition under which the goal is abandoned. */
+  /** The written condition under which the goal is abandoned. Optional; "" = not declared. */
   killCriterion: string;
-  /** The spend ceiling AS TYPED, in dollars — "500", "500.00", "$500". */
+  /**
+   * The spend ceiling AS TYPED, in dollars — "500", "500.00", "$500".
+   * Optional; "" = no ceiling declared. A NON-empty value must still parse:
+   * see `validateGoalDraft`.
+   */
   ceiling: string;
   /** Optional longer statement: what winning looks like, scope, constraints. */
   body?: string;
@@ -23,8 +36,10 @@ export interface GoalComposerDraft {
 
 export interface GoalStartArgs {
   title: string;
-  killCriterion: string;
-  budgetCents: number;
+  /** Omitted entirely when not declared — never sent as "" or null. */
+  killCriterion?: string;
+  /** Omitted entirely when not declared — never sent as 0, which would read as a $0 ceiling. */
+  budgetCents?: number;
   body?: string;
 }
 
@@ -49,28 +64,35 @@ export function ceilingToCents(raw: string): number | null {
 }
 
 /**
- * The required-field rule, stated once.
+ * The submittability rule, stated once: TITLE ONLY.
  *
- * Kill criterion and ceiling are NOT optional here even though
- * `harness_shared.goals` allows both to be null — `goals:create` has to permit
- * a bare row (an agent recording a goal it was handed), but a goal STARTED
- * from this form spawns an autonomous agent, and an autonomous agent with no
- * written stopping condition and no declared ceiling is the thing GOAL mode's
- * contract exists to prevent. `goals:start` rejects the call too; this makes
- * the refusal legible in the form instead of arriving as a server error.
+ * Kill criterion and ceiling are optional per the owner directive in this
+ * file's header. Two distinctions this function is careful about, because
+ * "optional" is easy to over-apply:
+ *
+ * 1. EMPTY is accepted; MALFORMED is still refused. An empty ceiling means "no
+ *    ceiling declared" and is fine. A ceiling of "abc" or "-5" is a typo, and
+ *    accepting it by silently dropping it would discard a constraint the owner
+ *    DID give — the exact mirror of fabricating one they did not. So a
+ *    non-empty ceiling must parse.
+ * 2. An undeclared field is OMITTED from the args, never sent as "" or 0.
+ *    `budgetCents: 0` would read downstream as a deliberate $0 ceiling — an
+ *    instant-kill budget — rather than as "the owner did not set one". This is
+ *    why `GoalStartArgs` uses optional keys rather than nullable values.
  */
 export function validateGoalDraft(draft: GoalComposerDraft): GoalDraftValidation {
   const errors: Partial<Record<keyof GoalComposerDraft, string>> = {};
   const title = draft.title.trim();
   const killCriterion = draft.killCriterion.trim();
-  const cents = ceilingToCents(draft.ceiling);
+  const ceilingRaw = draft.ceiling.trim();
+  // Only parse when something was typed: `null` from an EMPTY string means "not
+  // declared", but from a NON-empty one it means "unparseable" — same value,
+  // opposite dispositions, so the emptiness test has to come first.
+  const cents = ceilingRaw ? ceilingToCents(ceilingRaw) : null;
 
   if (!title) errors.title = 'State the outcome — what does winning look like?';
-  if (!killCriterion) errors.killCriterion = 'Required: the condition under which you abandon this.';
-  if (cents === null) {
-    errors.ceiling = draft.ceiling.trim()
-      ? 'Enter an amount in dollars, e.g. 500 or 500.00.'
-      : 'Required: the spend ceiling actuals are reported against.';
+  if (ceilingRaw && cents === null) {
+    errors.ceiling = 'Enter an amount in dollars, e.g. 500 or 500.00 — or leave it blank for no ceiling.';
   }
 
   if (Object.keys(errors).length) return { ok: false, errors };
@@ -78,8 +100,8 @@ export function validateGoalDraft(draft: GoalComposerDraft): GoalDraftValidation
     ok: true,
     args: {
       title,
-      killCriterion,
-      budgetCents: cents as number,
+      ...(killCriterion ? { killCriterion } : {}),
+      ...(cents === null ? {} : { budgetCents: cents }),
       ...(draft.body?.trim() ? { body: draft.body.trim() } : {}),
     },
   };

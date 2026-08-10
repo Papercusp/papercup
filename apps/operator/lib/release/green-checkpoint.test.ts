@@ -70,6 +70,7 @@ import {
   SELF_WATCHDOG_MS,
   isNothingToGate,
   realCheckpointDeps,
+  formatGatePromotionTrailer,
   recordOrchestratorLine,
   resetOrchestratorLog,
   renderOrchestratorTranscript,
@@ -4796,5 +4797,111 @@ describe('WI-37527: the typecheck banner must not out-claim its evidence', () =>
     // And the reason it is wrong is not the wording but the INDIFFERENCE to evidence:
     // the same constant is emitted for output carrying no tsc diagnostic at all.
     expect(/error TS\d+/.test(oom)).toBe(false);
+  });
+});
+
+/**
+ * EI-20014356905761236 — the verdict log must state whether its verdict COUNTED.
+ *
+ * The incident (2026-08-09 ~21:53Z): one question about one candidate (33cd2bfebec8) drew
+ * three different answers from three authoritative surfaces — the persisted verdict log said
+ * `green=true`, `release:deploy` said `skipped-locked`, and gate_health's `observedCandidate`
+ * still named an older red. Reconciling them took six tool calls, and `main` had not moved.
+ * The missing datum was never the VERDICT; it was whether the verdict PROMOTED.
+ *
+ * The header physically cannot carry it: it is written by the suite dep at suite-end, while
+ * every promotion decision (held gates / fast-forward / prefix salvage / refire) is taken
+ * afterwards by runGreenCheckpoint. Hence a trailer, stamped per disposition.
+ *
+ * These pin the BEHAVIOUR — "the log distinguishes promoted from merely green" — not the
+ * wording of any one line. The third case is the falsifiability control.
+ */
+describe('EI-20014356905761236: the verdict log records whether its verdict promoted', () => {
+  const trailer = (logPath: string): string =>
+    (readFileSync(logPath, 'utf8').match(/GATE_PROMOTION.*/g) ?? []).at(-1) ?? '';
+
+  /** stubDeps' runGreen reports no logPath; give the run a real file to stamp. */
+  const withLog = (deps: CheckpointDeps, green: boolean, logPath: string): CheckpointDeps => {
+    writeFileSync(logPath, `[green-checkpoint] candidate=... green=${green} promoted=see-GATE_PROMOTION\n`);
+    return {
+      ...deps,
+      runGreen: async () => ({ green, summary: green ? 'all pass' : '3 failed', logPath }),
+    };
+  };
+
+  it('⭐ a GREEN candidate that is HELD says promoted=false, with the reason that held it', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logPath = join(repo, 'verdict-held.log');
+    const deps = withLog(stubDeps(true).deps, true, logPath);
+    deps.perfGate = async () => ({ action: 'block', summary: 'perf BLOCK' });
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({ green: true, advanced: false, reason: 'perf-held' });
+    expect(await revParse(repo, 'ready')).toBe(c1); // the pin genuinely did not move
+    // THE POINT: the log itself now separates the two, so `green=true` in the header can no
+    // longer be read as "this became the pin".
+    expect(trailer(logPath)).toContain('green=true');
+    expect(trailer(logPath)).toContain('promoted=false');
+    expect(trailer(logPath)).toContain('reason=perf-held');
+    // ...and a held verdict points AT that log, or the trailer is unreachable from the tool
+    // surface that reports the hold (a held result used to carry no logPath at all).
+    expect(r.logPath).toBe(logPath);
+  });
+
+  it('a candidate that really did become the pin says promoted=true (the positive control)', async () => {
+    // Without this, a stamp that never fired on the happy path would be indistinguishable
+    // from a working one: every observed log would simply say promoted=false.
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('a', '2', 'c2');
+    const logPath = join(repo, 'verdict-advanced.log');
+    const deps = withLog(stubDeps(true).deps, true, logPath);
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({ green: true, advanced: true, reason: 'advanced' });
+    expect(await revParse(repo, 'ready')).toBe(c2);
+    expect(trailer(logPath)).toContain('promoted=true');
+    expect(trailer(logPath)).toContain(`advancedTo=${c2.slice(0, 12)}`);
+  });
+
+  it('⭐ promoted reflects the ACTUAL fast-forward — not `green`, and not `reason`', async () => {
+    // THE FALSIFIABILITY CONTROL. green===true and reason==='advanced' while the advance
+    // itself declined, so deriving `promoted` from either would report true here. That silent
+    // "reason=advanced but main never moved" state is the class of confident-wrong reading
+    // this trailer exists to kill — a re-derivation from green/reason reds THIS test while
+    // still passing the two above.
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logPath = join(repo, 'verdict-declined.log');
+    const deps = withLog(stubDeps(true).deps, true, logPath);
+    deps.advance = async () => ({ advanced: false, from: c1 });
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({ green: true, advanced: false, reason: 'advanced' });
+    expect(trailer(logPath)).toContain('green=true');
+    expect(trailer(logPath)).toContain('reason=advanced');
+    expect(trailer(logPath)).toContain('promoted=false');
+    expect(trailer(logPath)).not.toContain('advancedTo=');
+  });
+
+  it('renders one greppable line, in the house GATE_HELD_BY / AFFECTED_TESTS_RESULT shape', () => {
+    const line = formatGatePromotionTrailer({
+      candidate: 'a'.repeat(40),
+      green: true,
+      promoted: true,
+      reason: 'advanced',
+      advancedTo: 'b'.repeat(40),
+    });
+    // `grep -o 'GATE_PROMOTION.*'` must return the whole record, so it cannot wrap.
+    expect(line.trim().split('\n')).toHaveLength(1);
+    expect(line.trim()).toBe(
+      'GATE_PROMOTION candidate=aaaaaaaaaaaa green=true promoted=true reason=advanced advancedTo=bbbbbbbbbbbb',
+    );
   });
 });

@@ -76,40 +76,67 @@ describe('validateGoalDraft', () => {
     expect('body' in v.args).toBe(false);
   });
 
-  it('REFUSES a goal with no kill criterion', () => {
+  // ── kill criterion + ceiling are OPTIONAL [owner 2026-08-09] ──────────────
+  // These four replace the "REFUSES a goal with no kill criterion / no ceiling"
+  // pair. The owner overruled that rule from the live product; a goal you
+  // cannot start until you have invented a kill condition is one you do not
+  // start.
+
+  it('ACCEPTS a goal with no kill criterion, and OMITS the key entirely', () => {
     const v = validateGoalDraft({ ...DRAFT, killCriterion: '   ' });
-    expect(v.ok).toBe(false);
-    if (v.ok) return;
-    expect(v.errors.killCriterion).toBeTruthy();
-  });
-
-  it('REFUSES a goal with no ceiling, and says which kind of wrong it is', () => {
-    const missing = validateGoalDraft({ ...DRAFT, ceiling: '' });
-    expect(missing.ok).toBe(false);
-    if (missing.ok) return;
-    expect(missing.errors.ceiling).toContain('Required');
-
-    // A typo is a DIFFERENT failure from an omission, and telling them apart is
-    // the difference between "you forgot this" and "I could not read that".
-    const unparseable = validateGoalDraft({ ...DRAFT, ceiling: 'about five hundred' });
-    expect(unparseable.ok).toBe(false);
-    if (unparseable.ok) return;
-    expect(unparseable.errors.ceiling).toContain('dollars');
-  });
-
-  it('reports EVERY missing field at once, not just the first', () => {
-    // Revealing them one at a time turns one correction into three round trips.
-    const v = validateGoalDraft({ title: '', killCriterion: '', ceiling: '' });
-    expect(v.ok).toBe(false);
-    if (v.ok) return;
-    expect(Object.keys(v.errors).sort()).toEqual(['ceiling', 'killCriterion', 'title']);
-  });
-
-  it('accepts a ZERO ceiling — it is a declared limit, not a missing one', () => {
-    const v = validateGoalDraft({ ...DRAFT, ceiling: '0' });
     expect(v.ok).toBe(true);
     if (!v.ok) return;
-    expect(v.args.budgetCents).toBe(0);
+    // Omitted, not ''. An empty string would render downstream as a declared-
+    // but-blank kill condition rather than as "none declared".
+    expect('killCriterion' in v.args).toBe(false);
+  });
+
+  it('ACCEPTS a goal with no ceiling, and OMITS the key entirely', () => {
+    const v = validateGoalDraft({ ...DRAFT, ceiling: '' });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect('budgetCents' in v.args).toBe(false);
+  });
+
+  it('ACCEPTS a title-only draft — the outcome is the one required field', () => {
+    const v = validateGoalDraft({ title: 'Ship a paid app', killCriterion: '', ceiling: '' });
+    expect(v.ok).toBe(true);
+    if (!v.ok) return;
+    expect(v.args).toEqual({ title: 'Ship a paid app' });
+  });
+
+  it('STILL refuses a MALFORMED ceiling — blank is a choice, a typo is not', () => {
+    // The distinction the optional-ness must not erase: accepting "about five
+    // hundred" by silently dropping it would discard a constraint the owner DID
+    // give, which is the mirror image of fabricating one they did not.
+    const v = validateGoalDraft({ ...DRAFT, ceiling: 'about five hundred' });
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(v.errors.ceiling).toContain('dollars');
+    // ...and it points at the way out, so the owner is not stuck guessing.
+    expect(v.errors.ceiling).toContain('blank');
+  });
+
+  it('refuses an EMPTY TITLE and nothing else — title is now the only floor', () => {
+    const v = validateGoalDraft({ title: '   ', killCriterion: '', ceiling: '' });
+    expect(v.ok).toBe(false);
+    if (v.ok) return;
+    expect(Object.keys(v.errors)).toEqual(['title']);
+  });
+
+  it('distinguishes a DECLARED $0 ceiling from an ABSENT one', () => {
+    // The load-bearing case for optionality: both "0" and "" produce a null from
+    // ceilingToCents, and collapsing them would turn "no ceiling set" into an
+    // instant-kill $0 budget. Same value, opposite meanings.
+    const zero = validateGoalDraft({ ...DRAFT, ceiling: '0' });
+    expect(zero.ok).toBe(true);
+    if (!zero.ok) return;
+    expect(zero.args.budgetCents).toBe(0);
+
+    const absent = validateGoalDraft({ ...DRAFT, ceiling: '' });
+    expect(absent.ok).toBe(true);
+    if (!absent.ok) return;
+    expect(absent.args.budgetCents).toBeUndefined();
   });
 });
 

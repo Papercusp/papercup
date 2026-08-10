@@ -11,11 +11,16 @@
  * conversational kickoff (a prompt template seeded into the chat composer),
  * which the rail deletion took with it.
  *
- * THREE FIELDS, TWO OF THEM REQUIRED. GOAL mode's contract mandates a kill
- * criterion and a spend ceiling at creation. The conversational kickoff used to
- * be where that got asked; with it gone, this form is the only place the
- * requirement can be enforced, which is why they are not "optional but
- * encouraged" here even though the columns are nullable.
+ * ONE REQUIRED FIELD: the outcome. Kill criterion and ceiling are OPTIONAL
+ * [owner 2026-08-09, interactive]: "when creating a new goal the 'kill this if'
+ * and 'ceiling' should not be required properties". An earlier version of this
+ * form made both mandatory — see goal-composer-model.ts's header for why that
+ * was reversed and what the client/server now agree on.
+ *
+ * They are still ASKED, and still first, because a goal that carries them is a
+ * better goal. The change is that an owner who has not decided yet can start
+ * anyway instead of being blocked at the door. Blank means "not declared" and
+ * is carried as an ABSENT field, never as $0 or "".
  *
  * The agent-proposes-a-goal flow (`goals:propose` → GoalProposalCard) is a
  * SEPARATE, still-live path and is not replaced by this.
@@ -135,7 +140,7 @@ export default function GoalComposer({
         </label>
 
         <label className="hud-goal-composer__field">
-          <span className="hud-goal-composer__label">Kill this if</span>
+          <span className="hud-goal-composer__label">Kill this if (optional)</span>
           <input
             className="hud-goal-composer__input"
             data-testid="goal-composer-kill"
@@ -149,7 +154,7 @@ export default function GoalComposer({
         </label>
 
         <label className="hud-goal-composer__field">
-          <span className="hud-goal-composer__label">Ceiling (USD)</span>
+          <span className="hud-goal-composer__label">Ceiling (USD, optional)</span>
           <input
             className="hud-goal-composer__input"
             data-testid="goal-composer-ceiling"

@@ -220,6 +220,44 @@ MODE_REPORT_PREFIX_RE = re.compile(
     re.I,
 )
 
+# EI-20015101086472548 — the residual WI-37384's fix could not catch. That fix made
+# a grant VERB necessary, which killed the bare-mention class ("drain mode throws a
+# 400"). But necessary is not sufficient: the verb can be present and still not be
+# addressed to you. Measured live 2026-08-09, the owner typed a UI spec ending
+#
+#     "...and NO BUTTONS TO SWITCH TO DRAIN MODE ETC."
+#
+# i.e. "do not put drain-mode switching buttons in this popup" — and it registered
+# ownerDirected DRAIN, which also implies AUTO, suspending the ask-first gate and
+# installing a mission flatly contrary to the review-and-stop the owner had just
+# asked for. "switch to" satisfied MODE_GRANT_VERB; none of the report frames above
+# fire on a prefix like "and NO BUTTONS TO ".
+#
+# Three ways a real grant verb is NOT a grant, all decided on the LOCAL prefix —
+# the span since the last sentence break, so an earlier unrelated clause cannot
+# suppress a genuine later grant:
+#   1. NEGATED       — "no buttons to switch to drain mode", "don't go into auto mode"
+#   2. UI OBJECT     — the verb governs a control, not you: "a toggle to enter ideate mode"
+#   3. NOUN USAGE    — a determiner sits directly on the verb: "the switch to drain mode"
+#
+# Same asymmetry as above: these are deliberately allowed to cost a real grant now
+# and then. Missing one costs the owner a second sentence; a false one silently
+# removes every confirmation gate.
+MODE_NOT_ADDRESSED_TO_YOU_RES = (
+    re.compile(
+        r"(?:\b(?:no|not|never|without|avoid|stop|remove|hide|disable|delete|drop|prevent)\b"
+        r"|\w+n['’]t\b|\binstead\s+of\b|\brather\s+than\b)[^.!?;]{0,40}\Z",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:button|pill|toggle|link|menu|option|tab|checkbox|switch|banner|card|"
+        r"control|affordance|shortcut|icon|dropdown)s?\b[^.!?;]{0,25}\Z",
+        re.I,
+    ),
+    re.compile(r"\b(?:an?|the|this|that|any|each|every)\s+\Z", re.I),
+)
+
+
 # A genuine interrogative opener. Two exclusions, both load-bearing:
 #   - `can|could|would|will you ...` is a polite REQUEST ("can you go into auto
 #     mode"), i.e. a real grant, not a question about one.
