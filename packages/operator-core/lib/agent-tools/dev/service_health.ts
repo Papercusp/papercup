@@ -74,6 +74,27 @@ export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
    *  window, retry" instead of "the service is down / under load". */
   recentRestartNote?: string;
   /**
+   * EI-20093902925801178: systemd's OWN monotonic restart count for this unit
+   * (`NRestarts`), read straight from the OS. THE trustworthy restart signal in
+   * this payload — `restartsLast10m` beside it is written by the reconciler
+   * routine inside `papercup-bg-host` and read here in the OPERATOR process,
+   * where that Map is always empty, so it reads 0 no matter what happened.
+   * Measured 2026-08-10: this field was 4 while `restartsLast10m` said 0.
+   *
+   * Lifetime-cumulative, not windowed — a nonzero value is not by itself an
+   * incident. Read it WITH `secondsSinceStart`: a high count plus a very short
+   * uptime is a live crash-loop. Omitted when systemd did not report it.
+   */
+  nRestarts?: number;
+  /**
+   * EI-20093902925801178: present exactly when this entry's reconciler-derived
+   * counters (`restartsLast10m`, `lastRestartAt`, `consecutiveProbeFailures`,
+   * `flapState`) measured NOTHING in this process and are therefore
+   * zero-defaults. Plain-language, because the failure mode is a reader
+   * treating those zeros as evidence of health.
+   */
+  flapCountersNote?: string;
+  /**
    * EI-18700974567040702: ground-truth liveness for a systemd-user unit, read
    * directly from `probeServiceStart`'s `ActiveState`. `true` = systemd reports
    * `active`; `false` = systemd reports something else; omitted = not a
@@ -164,6 +185,24 @@ export async function overlaySystemdRestartRecency(
         activeState: info.activeState,
         healthy,
         ...(episodic ? { episodic: true } : {}),
+        // EI-20093902925801178: systemd's own restart counter, from the same
+        // `systemctl show` this probe already made. The one restart number in
+        // this payload that is not hostage to which process is answering.
+        ...(info.nRestarts !== undefined ? { nRestarts: info.nRestarts } : {}),
+        // ...and say so out loud when the reconciler counters are zero-defaults
+        // rather than measurements. Scoped to systemd-user: a node-child entry
+        // is legitimately un-tracked by this reconciler and gets its real
+        // respawn state from its own spawn module's overlay, so flagging those
+        // would be noise that trains readers to ignore the flag.
+        ...(entry.flapObserved || entry.layer !== "systemd-user"
+          ? {}
+          : {
+              flapCountersNote:
+                `restartsLast10m/lastRestartAt/flapState for ${entry.name} measured NOTHING in this ` +
+                `process and are zero-defaults — the supervision reconciler populates them only ` +
+                `inside papercup-bg-host. Do NOT read flapState:'ok' here as healthy. Use ` +
+                `nRestarts (systemd ground truth) with secondsSinceStart instead.`,
+            }),
       };
       if (!active || info.secondsSinceStart === undefined) return stated;
       const withRecency: SupervisionStatusEntryWithRecency = {
