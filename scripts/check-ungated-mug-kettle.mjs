@@ -65,6 +65,7 @@ import { fileURLToPath } from 'node:url';
 // followed by process.exit() truncates through a pipe (measured: ~8 KiB survives), and
 // --list is the documented way to RE-SEED the baseline — a truncated re-seed would
 // silently shrink it. See scripts/check-undrained-stdout-exit.mjs.
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { writeStdoutSync } from './lib/write-stdout-sync.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -144,6 +145,17 @@ function firstMatchLine(src, regexes) {
 
 /** Does this ONE file contain a role-parameterized door? Returns a finding or null. */
 export function inspectFile(abs, src) {
+  // CODE ONLY, both halves. Measured under WI-37717: this file's OWN header discusses
+  // the detection ("the role arrives as DATA — `body.role`, `url.searchParams.get('role')`")
+  // and that prose matches ROLE_FROM_INPUT, so a file that merely explains the rule reads
+  // as a door. The gated half needs the mask even more: `isGated` is a substring test, so
+  // a comment that just NAMES the predicate ("this is not behind mugKettleSystemEnabled")
+  // scored the file as gated — a false NEGATIVE, the direction that loses a real finding.
+  //
+  // stripCommentsOnly, not stripCommentsAndStrings: one ROLE_FROM_INPUT pattern REQUIRES a
+  // string literal (`'…/invoke'`, `'…/bootstrap-role'`), so masking strings would delete a
+  // detector rather than sharpen it. Length-preserving, so `roleHit.line` stays correct.
+  src = stripCommentsOnly(src, abs);
   const roleHit = firstMatchLine(src, ROLE_FROM_INPUT);
   if (!roleHit) return null;
   const launchHit = firstMatchLine(src, REACHES_LAUNCH);
@@ -203,7 +215,15 @@ function collectCensus() {
     .filter((f) => !f.retired && !f.substrate)
     .map((f) => {
       let gated = false;
-      try { gated = isGated(fs.readFileSync(path.join(REPO_ROOT, f.file), 'utf8')); } catch { /* file may be generated/absent */ }
+      // Masked for the same reason as inspectFile: a gate symbol NAMED in a comment is
+      // not a gate, and counting it as one is a false negative (WI-37717). The
+      // self-exclusion two lines up exists because this file's own prose scored it
+      // "gated" — that workaround is now redundant here, kept only so removing it is a
+      // separate, separately-verified change.
+      try {
+        const raw = fs.readFileSync(path.join(REPO_ROOT, f.file), 'utf8');
+        gated = isGated(stripCommentsOnly(raw, f.file));
+      } catch { /* file may be generated/absent */ }
       return { category: f.category, subject: f.subject, file: f.file, line: f.line, detail: f.detail, gated };
     });
 }
