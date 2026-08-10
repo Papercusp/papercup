@@ -28,6 +28,10 @@ vi.mock('../locks/resource-lock-guard', () => ({ guardResource: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: vi.fn(() => ({ unref: vi.fn() })) }));
 // EI-11137: the systemd truth-check that decides genuine-vs-phantom coalesce.
 vi.mock('./systemd-service-probe', () => ({ probeServiceStart: vi.fn() }));
+// EI-18661647550414959: the pre-kill "can this tree actually boot?" check. Mocked so
+// the suite never shells out to systemctl; its own logic is covered in
+// restart-preflight.test.ts. The default (set in beforeEach) is a clean tree.
+vi.mock('./restart-preflight', () => ({ preflightRestartTarget: vi.fn() }));
 // EI-18198340374286980: the audit_log writer — asserted directly in the new
 // authorize-arg tests below, and must never make a real restart fail if it
 // throws (fire-and-forget), so every OTHER test gets a working no-op stub.
