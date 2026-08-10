@@ -74,6 +74,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /** Where the DERIVED relation vocabulary actually lives. */
@@ -199,17 +201,21 @@ export function isPastReview(reviewBy, now) {
  * caller must treat [] as an error, never as "no relations to check".
  */
 export function parseDeclaredRelations(source) {
-  const m = /DERIVED_COUPLING_RELATIONS\s*=\s*\[([\s\S]*?)\]\s*as\s+const/.exec(String(source ?? ''));
-  if (!m) return [];
-  const out = [];
   // Comment lines inside the array carry quoted prose (the `same-fleet` tombstone
   // quotes the owner verbatim), so strip comments BEFORE harvesting string
   // literals — otherwise a retired relation named in a comment reads as declared.
-  const body = m[1]
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map((l) => l.replace(/\/\/.*$/, ''))
-    .join('\n');
+  //
+  // COMMENTS ONLY: the relation names ARE the string literals we harvest, so masking
+  // strings would return []. Via the shared stripper rather than a private regex pair:
+  // that pair reads `/*` inside a `//` comment or a string (a glob like `lib/*.mjs`) as
+  // an open block comment and deletes to the next `*/`, which measurably deleted 119
+  // lines of live code elsewhere in scripts/ (EI-20045405992394901). It is also
+  // length-preserving, so the extraction offsets below are unchanged.
+  const text = stripCommentsOnly(String(source ?? ''), 'couplings.ts');
+  const m = /DERIVED_COUPLING_RELATIONS\s*=\s*\[([\s\S]*?)\]\s*as\s+const/.exec(text);
+  if (!m) return [];
+  const out = [];
+  const body = m[1];
   for (const lit of body.matchAll(/'([^']+)'|"([^"]+)"/g)) {
     const v = (lit[1] ?? lit[2] ?? '').trim();
     if (v) out.push(v);

@@ -192,20 +192,68 @@ describe('migrated guards do not mint phantom offenders from tokens quoted in pr
   }
 });
 
+/**
+ * Classification of one guard script, from its own source with ITS comments masked.
+ *
+ * Masking first is not a nicety: v1 of this census keyed on `.ts` appearing anywhere in the
+ * script and counted 44 unmasked guards, because nearly every guard's header comment NAMES
+ * the `.ts` files it scans. The classifier had the exact defect it was built to measure.
+ * Masked, the honest number is 31. (EI-20045405992394901.)
+ */
+const SHARED_STRIPPER = /strip-comments-and-strings\.mjs/;
+/** Any comment stripper, ANY spelling and ANY binding form — `stripSqlComments`, `const stripComments = …`. */
+const NAMED_STRIPPER = /\bstrip[A-Za-z]*Comments?\b/;
+/** The two copy-pasted regexes themselves, matched as literal text — they are the defect. */
+const NAIVE_BLOCK_RE = String.raw`\/\*[\s\S]*?\*\/`;
+const NAIVE_LINE_RE = String.raw`\/\/.*$`;
+const PARSES_AST = /from\s*['"]typescript['"]|ts\.createSourceFile|@babel\/parser|\bacorn\b|ts-morph/;
+const SCANS_CODE_FILES = /\.tsx?['"`]|\.mjs['"`]|\.jsx['"`]|\.cts['"`]|\.mts['"`]/;
+const TEXT_MATCHES = /\.test\s*\(|\.match(All)?\s*\(|\.includes\s*\(|\.exec\s*\(/;
+const READS_FILES = /readFileSync|execFileSync\s*\(\s*['"](rg|grep)['"]/;
+
+type Masking = 'shared' | 'hand-rolled' | 'ast' | 'unmasked';
+
+function classifyMasking(maskedSource: string): Masking {
+  if (SHARED_STRIPPER.test(maskedSource)) return 'shared';
+  if (
+    NAMED_STRIPPER.test(maskedSource) ||
+    maskedSource.includes(NAIVE_BLOCK_RE) ||
+    maskedSource.includes(NAIVE_LINE_RE)
+  ) {
+    return 'hand-rolled';
+  }
+  if (PARSES_AST.test(maskedSource)) return 'ast';
+  return 'unmasked';
+}
+
+function maskedSourceOf(file: string): string {
+  return stripCommentsOnly(readFileSync(join(SCRIPTS_DIR, file), 'utf8'), file);
+}
+
+const ALL_SCRIPTS = () => readdirSync(SCRIPTS_DIR).filter((f) => f.endsWith('.mjs')).sort();
+const GUARD_SCRIPTS = () => readdirSync(SCRIPTS_DIR).filter((f) => /^(check|lint)-.*\.mjs$/.test(f)).sort();
+
 describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
   /**
-   * Scripts that still define a PRIVATE comment stripper instead of importing the shared one.
+   * Scripts that still hand-roll a comment stripper instead of importing the shared one.
    *
    * This list may SHRINK, never GROW. Removing an entry = migrating that guard (verify first
    * whether its token is legitimately string-resident — see the header note). Adding one means
    * a new copy-paste of the exact defect that froze the fleet gate; import the shared module
    * from `scripts/lib/strip-comments-and-strings.mjs` instead.
    *
+   * Entries that are NOT JS/TS and so cannot use the shared module (it is a TypeScript parse):
+   *   check-assert-integrity.mjs        — shell `#` comments
+   *   check-partial-index-alignment.mjs — SQL `--` comments (already length-preserving)
+   *   lint-migrations.mjs               — SQL
+   *   check-unenrolled-mjs-imports.mjs  — strips `//` out of JSONC before JSON.parse
+   *
    * `check-timer-classification.mjs` is on this list holding a CORRECT private copy (it is the
    * donor the shared module was lifted from). It should collapse into the import, but was left
    * alone deliberately: it was the live subject of an in-flight gate incident when this landed.
    */
   const BASELINE = new Set([
+    'check-assert-integrity.mjs',
     'check-declared-consumed.mjs',
     'check-drop-database-force.mjs',
     'check-lint-guard-reachability.mjs',
@@ -214,25 +262,22 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     'check-no-raw-block-edge.mjs',
     'check-no-raw-install-slug-filter.mjs',
     'check-no-retired-style.mjs',
+    'check-partial-index-alignment.mjs',
     'check-timer-classification.mjs',
     'check-unbounded-inbox-read.mjs',
+    'check-unenrolled-mjs-imports.mjs',
     'check-workspace-deps-complete.mjs',
+    'lint-migrations.mjs',
   ]);
 
-  const DEFINES_PRIVATE_STRIPPER = /^(export\s+)?function\s+stripComments/m;
-
-  function measurePopulation(): string[] {
-    return readdirSync(SCRIPTS_DIR)
-      .filter((f) => f.endsWith('.mjs'))
-      .filter((f) => DEFINES_PRIVATE_STRIPPER.test(readFileSync(join(SCRIPTS_DIR, f), 'utf8')))
-      .sort();
-  }
+  const measurePopulation = (): string[] =>
+    ALL_SCRIPTS().filter((f) => classifyMasking(maskedSourceOf(f)) === 'hand-rolled');
 
   it('no NEW script hand-rolls its own comment stripper', () => {
     const added = measurePopulation().filter((f) => !BASELINE.has(f));
     expect(
       added,
-      `These scripts define a private stripComments instead of importing scripts/lib/strip-comments-and-strings.mjs. ` +
+      `These scripts hand-roll a comment stripper instead of importing scripts/lib/strip-comments-and-strings.mjs. ` +
         `That copy-paste IS the root cause of the phantom-offender class (EI-19991116787260658).`,
     ).toEqual([]);
   });
@@ -243,14 +288,148 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     expect(stale, 'Already-migrated scripts still listed in BASELINE — remove them.').toEqual([]);
   });
 
-  it('the guards migrated by EI-19991116787260658 have NOT regressed to a private copy', () => {
+  it('the guards migrated to the shared stripper have NOT regressed to a private copy', () => {
     const migrated = [
       'check-no-eager-execfile-promisify.mjs',
       'check-no-module-scope-flag-subscribe.mjs',
       'check-no-raw-agent-spawn.mjs',
       'check-no-raw-setinterval.mjs',
+      // EI-20045405992394901 — both were invisible to the name+form-specific predecessor rule.
+      'lint-affected-gate.mjs',
+      'check-derived-signal-firings.mjs',
     ];
     const regressed = migrated.filter((f) => measurePopulation().includes(f));
     expect(regressed, 'These were migrated to the shared stripper and must not re-declare one.').toEqual([]);
+  });
+});
+
+/**
+ * EI-20045405992394901 — the population this suite could not see.
+ *
+ * Every rule above asks HOW a guard strips. A guard that strips NOTHING declares no stripper,
+ * matches no rule, and is perfectly invisible — while being MORE exposed than the hand-rollers,
+ * not less. `scripts/mug-kettle-surface-census.mjs` scanned raw source at all 9 detector sites,
+ * reported a JSX comment as a new ungated entry point, and red-pinned the fleet gate on a
+ * comment — fully compliant with this file the whole time.
+ *
+ * So this registry anchors on the PROPERTY (does it scan source it never masked?), not the
+ * SPELLING. The control block below fails against the old name-specific rule on purpose: a
+ * widening with no control is silently narrowed back the first time someone tidies it.
+ */
+describe('guards that scan UNMASKED source are visible, and the population is SHRINK-ONLY', () => {
+  /**
+   * check-/lint- guards that read JS/TS source and text-match against it without masking
+   * comments or strings first. May SHRINK, never GROW.
+   *
+   * Being on this list is not automatically a bug — a guard whose token cannot appear in prose
+   * is safe, and some (check-no-nul-in-source, check-no-control-bytes, check-smart-quotes) are
+   * BYTE-level checks where masking would defeat the purpose. It is a declaration that the
+   * exposure was considered. To remove an entry: import the shared module, or move to an AST
+   * parse. To add one: don't — mask the source instead.
+   */
+  const SCANS_UNMASKED_SOURCE = new Set([
+    'check-constant-conditional.mjs',
+    'check-env-feature-gates.mjs',
+    'check-explicit-presence.mjs',
+    'check-full-replacement-mocks.mjs',
+    'check-generic-first.mjs',
+    'check-github-identity-terms.mjs',
+    'check-migration-fixture-drift.mjs',
+    'check-no-box-identity.mjs',
+    'check-no-cdn-egress.mjs',
+    'check-no-control-bytes.mjs',
+    'check-no-hand-rolled-module-pin.mjs',
+    'check-no-identity-literals.mjs',
+    'check-no-nul-in-source.mjs',
+    'check-no-restart-imports.mjs',
+    'check-no-retired-imports.mjs',
+    'check-no-self-referential-export.mjs',
+    'check-no-sql-json.mjs',
+    'check-no-unenrolled-detached-spawn.mjs',
+    'check-no-unthreaded-apply.mjs',
+    'check-no-wire-compression.mjs',
+    'check-okf-conformance.mjs',
+    'check-scope-defaults.mjs',
+    'check-shell-syntax.mjs',
+    'check-smart-quotes.mjs',
+    'check-sql-guidance-justified.mjs',
+    'check-systemd-startlimit-placement.mjs',
+    'check-typeless-reexport-trap.mjs',
+    'check-ungated-mug-kettle.mjs',
+    'check-vacuous-negative-assertions.mjs',
+    'check-workspace-default-sql.mjs',
+    'lint-tsc-workspaces.mjs',
+  ]);
+
+  const measureUnmasked = (): string[] =>
+    GUARD_SCRIPTS().filter((f) => {
+      const masked = maskedSourceOf(f);
+      if (!(SCANS_CODE_FILES.test(masked) && TEXT_MATCHES.test(masked) && READS_FILES.test(masked))) return false;
+      return classifyMasking(masked) === 'unmasked';
+    });
+
+  it('no NEW guard text-matches code tokens against source it never masked', () => {
+    const added = measureUnmasked().filter((f) => !SCANS_UNMASKED_SOURCE.has(f));
+    expect(
+      added,
+      `These guards scan JS/TS source and text-match against it WITHOUT masking comments or strings. ` +
+        `A guard's error message quotes the very token it detects, so prose that discusses the rule ` +
+        `mints phantom offenders and reds the gate on a comment (EI-20045405992394901). Import ` +
+        `stripCommentsOnly / stripCommentsAndStrings from scripts/lib/strip-comments-and-strings.mjs.`,
+    ).toEqual([]);
+  });
+
+  it('the unmasked baseline does not carry entries that already mask (it must stay honest)', () => {
+    const stale = [...SCANS_UNMASKED_SOURCE].filter((f) => !measureUnmasked().includes(f));
+    expect(stale, 'These guards now mask their source — remove them from SCANS_UNMASKED_SOURCE.').toEqual([]);
+  });
+
+  // CONTROL. The rule this replaced was `/^(export\s+)?function\s+stripComments/m` — it keyed on
+  // one SPELLING in one BINDING FORM. Each fixture below is a real shape found in scripts/ that
+  // the old rule scored as clean. If someone narrows the classifier back, these fail.
+  describe('CONTROL: the widened rule catches what the name-specific rule missed', () => {
+    const OLD_RULE = /^(export\s+)?function\s+stripComments/m;
+    const cases: Array<[string, string, Masking]> = [
+      [
+        'a stripper bound with const, not declared as a function (was in lint-affected-gate.mjs)',
+        `const stripComments = (src) => src.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');`,
+        'hand-rolled',
+      ],
+      [
+        'the naive regexes inlined with no named function at all (was in check-derived-signal-firings.mjs)',
+        `const body = m[1].replace(/\\/\\*[\\s\\S]*?\\*\\//g, '').split('\\n');`,
+        'hand-rolled',
+      ],
+      [
+        'a stripper for another language, so another name (check-partial-index-alignment.mjs)',
+        `const stripSqlComments = (s) => s.replace(/--[^\\n]*/g, ' ');`,
+        'hand-rolled',
+      ],
+      [
+        'a guard that strips NOTHING — invisible to every HOW-shaped rule',
+        `const src = readFileSync(f, 'utf8'); if (src.includes('setInterval(')) fail(f);`,
+        'unmasked',
+      ],
+    ];
+
+    for (const [name, fixture, expected] of cases) {
+      it(name, () => {
+        expect(OLD_RULE.test(fixture), 'CONTROL IS VACUOUS: the old rule already caught this').toBe(false);
+        expect(classifyMasking(fixture)).toBe(expected);
+      });
+    }
+
+    it('and still recognises the shape the old rule DID catch (no coverage was traded away)', () => {
+      const fixture = `function stripComments(src) { return src; }`;
+      expect(OLD_RULE.test(fixture)).toBe(true);
+      expect(classifyMasking(fixture)).toBe('hand-rolled');
+    });
+
+    it('importing the shared module outranks every other signal', () => {
+      // A migrated guard that still MENTIONS a stripper name must classify as `shared`, or
+      // migrating a file would move it from one baseline to the other instead of off both.
+      const fixture = `import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';`;
+      expect(classifyMasking(fixture)).toBe('shared');
+    });
   });
 });
