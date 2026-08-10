@@ -7,7 +7,11 @@
 set -uo pipefail
 
 GOAL='make-a-website-displaying-images-of-pandas-aa0205'
-URL="http://127.0.0.1:${VERIFY_TAURI_PORT}/adv?ws=papercusp-workspace&slug=papercusp&tab=hud&hudtab=goals&hudgoal=${GOAL}"
+# hudgoalsessions=true FORCES the zone open, so the DOM contract is provable
+# regardless of which seating the width picks. Without it the room-aware default
+# (`param ?? !isNarrow`) legitimately keeps it closed below 1480px, and a first
+# run read that correct behaviour as a mount failure.
+URL="http://127.0.0.1:${VERIFY_TAURI_PORT}/adv?ws=papercusp-workspace&slug=papercusp&tab=hud&hudtab=goals&hudgoal=${GOAL}&hudgoalsessions=true"
 
 # ── Widen the window BEFORE navigating ──────────────────────────────────────
 # The rig's window opens at 1280x800, and at that width EVERY zone past the
@@ -17,7 +21,18 @@ URL="http://127.0.0.1:${VERIFY_TAURI_PORT}/adv?ws=papercusp-workspace&slug=paper
 # like a mount failure. Xvfb's screen is 1920x1080, and at 1920 the ladder seats
 # Sessions (rung 1480) and Work as real COLUMNS, which is the path under test.
 echo "=== widening the window so the zones seat as columns ==="
-WID="$(DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool search --name 'Papercusp Operator' 2>/dev/null | tail -1)"
+# The X window's name is NOT the webview's document.title (which is what
+# `probe` prints), so searching for 'Papercusp Operator' finds nothing — the
+# first run did exactly that and silently fell through to the 1280 path. Try
+# the real identifiers in order and report which one answered.
+WID=""
+for strategy in "--class papercusp" "--classname papercusp" "--name .+"; do
+  # shellcheck disable=SC2086
+  CAND="$(DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool search --onlyvisible $strategy 2>/dev/null | tail -1)"
+  if [ -n "$CAND" ]; then WID="$CAND"; echo "window found via: xdotool search $strategy -> $WID"; break; fi
+done
+[ -z "$WID" ] && echo "no strategy matched; windows on this display:" && \
+  DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool search --onlyvisible --name '' 2>/dev/null | head
 if [ -n "$WID" ]; then
   DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool windowsize "$WID" 1920 1040
   DISPLAY="$VERIFY_TAURI_DISPLAY" xdotool windowmove "$WID" 0 0
@@ -62,6 +77,11 @@ tauri-agent-tools eval --pid "$VERIFY_TAURI_PID" '
     // A zone nested INSIDE the conversation would still render and still be
     // "left of work" at some widths; this is the layout contract itself.
     siblingOfChat: !!(chat && sessions) && !chat.contains(sessions) && !sessions.contains(chat),
+    // Which SEATING the ladder picked. Reported, never assumed: the geometry
+    // claim below is only meaningful in "column" mode, since both zones sit at
+    // right:0 when they overlay.
+    seating: sessions ? (getComputedStyle(sessions).position === "absolute" ? "overlay" : "column") : null,
+    viewport: window.innerWidth + "x" + window.innerHeight,
     width: r ? Math.round(r.width) : null,
     height: r ? Math.round(r.height) : null,
     title: q("[data-testid=\"goal-sessions-zone-title\"]")?.textContent?.trim() ?? null,

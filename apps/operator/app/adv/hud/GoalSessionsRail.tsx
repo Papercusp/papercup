@@ -53,7 +53,21 @@ function SessionRow({
         <span className="pc-peer__dot" data-col={row.column} aria-hidden="true" />
         <FleetRoleGlyph role={row.isLead ? 'leader' : 'member'} className="pc-peer__glyph" />
         <span className="pc-peer__handle">{row.handle}</span>
-        {row.agentPaneKind === 'cup' ? <span className="pc-peer__kind">cup</span> : null}
+        {/* NO `cup` pane-kind badge here, deliberately — FleetPeersRail has one
+            and this rail otherwise mimics it line for line.
+
+            The Mug/Kettle/cup nursery tier is RETIRED (`papercusp-mug-kettle-
+            system`, default-OFF *is* the delivered end state; `cup:spawn`
+            refuses), so nothing can create a cup any more. A brand-new surface
+            that renders a badge for it propagates a retired concept into code
+            written after its retirement — and it read to the mug/kettle surface
+            guard as a new ungated entry point, which is the correct reading of
+            a new file naming that surface even though this was only ever a
+            display badge. The honest fix is not to baseline the entry or to
+            argue the guard down: it is to not ship the retired concept.
+
+            Historical rows can still carry agentPaneKind 'cup'; they render as
+            ordinary sessions, which is what they are. */}
         {row.contextPct != null ? (
           /* null is NOT 0 — an unmeasured context rendered as 0% reads as
              "plenty of room left", so an unsampled session shows nothing. */
