@@ -260,6 +260,63 @@ describe('dev/sql allowlist — adversarial split / CTE / comment / dollar-quote
     expect(isDataModifying('SELECT 1 -- DROP TABLE t')).toBe(false);
   });
 
+  /*
+   * SECURITY CONTRACT for isDataModifying (EI-20073035509369492).
+   *
+   * `stripNoise` was a private character-scanner until 2026-08-10, when it was migrated onto the
+   * canonical shared SQL mask. This table is the adversarial differential that justified that
+   * migration, kept as a COMMITTED test — because the risk a consolidation introduces is that a
+   * future edit to the SHARED module silently weakens a security boundary that lives elsewhere.
+   *
+   * It deliberately asserts the VERDICT, not the mask's output. Whatever implements the masking,
+   * a write must never reach `dev:pg_query` disguised as a read — so if the shared module is ever
+   * loosened, this fails HERE, at the boundary, rather than only in the stripper's unit tests.
+   *
+   * The `true` rows are the ones that matter: each is a mutation hidden behind an allowed leading
+   * keyword. A regression flipping one to `false` is a write-smuggling hole, not a cosmetic diff.
+   */
+  const MUTATIONS_THAT_MUST_BE_CAUGHT: [string, string][] = [
+    ['bare mutation', 'DELETE FROM t'],
+    ['data-modifying CTE behind an allowed WITH', 'WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x'],
+    ['EXPLAIN ANALYZE wrapping a mutation', 'EXPLAIN ANALYZE UPDATE t SET a=1'],
+    ['writable CTE spliced after a benign one', 'WITH a AS (SELECT 1), b AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM b'],
+    ['mutation after a line comment', '-- just a note\nDELETE FROM t'],
+    ['mutation after a block comment', '/* note */ DROP TABLE t'],
+    ['mutation after a string literal', "SELECT 'hello'; DELETE FROM t"],
+    ['mutation after a dollar-quoted body', 'SELECT $$ body $$; TRUNCATE t'],
+    ['keyword split across a newline', 'SELECT 1;\nDELETE\nFROM t'],
+    ['mutation after a doubled-quote escape', "SELECT 'it''s'; DELETE FROM t"],
+    ['mutation after a NESTED block comment', '/* outer /* inner */ */ DELETE FROM t'],
+    ['mutation after a tagged dollar body', 'SELECT $tag$ x $tag$; ALTER TABLE t ADD COLUMN c int'],
+    ['GRANT after a quoted identifier', 'SELECT * FROM "x"; GRANT ALL ON t TO u'],
+  ];
+
+  const READS_THAT_MUST_NOT_BE_FLAGGED: [string, string][] = [
+    ['keyword only inside a string', "SELECT 'DELETE FROM t' AS note"],
+    ['keyword only in a line comment', 'SELECT 1 -- DELETE FROM t'],
+    ['keyword only in a block comment', 'SELECT 1 /* DROP TABLE t */'],
+    ['keyword only in a dollar body', 'SELECT $$ DELETE FROM t $$'],
+    ['keyword only in a tagged dollar body', 'SELECT $q$ TRUNCATE t $q$'],
+    ['keyword as a quoted identifier', 'SELECT * FROM "delete"'],
+    ['keyword inside a doubled-quote string', "SELECT 'a''DELETE''b'"],
+    ['ordinary read', "SELECT id FROM harness_shared.work_items WHERE state = 'open'"],
+    ['keyword as a substring, not a token', 'SELECT deleted_at FROM t WHERE created_at > now()'],
+  ];
+
+  it.each(MUTATIONS_THAT_MUST_BE_CAUGHT)(
+    '(c) SECURITY: catches a mutation hidden as — %s',
+    (_label, sql) => {
+      expect(isDataModifying(sql)).toBe(true);
+    },
+  );
+
+  it.each(READS_THAT_MUST_NOT_BE_FLAGGED)(
+    '(c) SECURITY: does not flag a legitimate read — %s',
+    (_label, sql) => {
+      expect(isDataModifying(sql)).toBe(false);
+    },
+  );
+
   // (d) dollar-quoted body. A naive splitter would mis-count the `;` inside
   // `$$;$$`; the dollar-quote-aware splitter must keep it in one statement so
   // the trailing real DROP is correctly isolated and rejected.
