@@ -72,17 +72,11 @@ const potGitGcTick = async (ctx: SystemActionCtx) => {
  */
 registerSystemAction('pot-git-gc', potGitGcTick);
 
-/**
- * TRANSITIONAL ALIAS — delete once no `harness_shared.routines` row targets it.
- *
- * The three live rows were migrated to `system:pot-git-gc` in the same change,
- * but `papercup-bg-host` has NO hot-reload: it runs the staging tree from
- * process start, so between the row UPDATE and its restart the executor is
- * still resolving the OLD target. Registering both names makes that window a
- * no-op instead of an hourly unresolved-action tick, in EITHER order.
- *
- * Not a back-compat shim for callers (there are none — the name is only ever
- * reached through a routine row's `target_role`), so it is removable by a
- * one-line delete the moment the row census is clean.
+/*
+ * NO `hive-git-gc` ALIAS. It existed transiently during P-051 to cover the
+ * bg-host restart window, and was deleted in the same change once the census
+ * came back clean: platform-wide (ALL workspaces, not just this one) zero
+ * `harness_shared.routines` rows target `system:hive-git-gc`. The name is only
+ * ever reached through a row's `target_role` — there are no code callers — so
+ * with no such row there is nothing left to alias. Pinned by a test.
  */
-registerSystemAction('hive-git-gc', potGitGcTick);

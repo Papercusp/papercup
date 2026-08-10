@@ -114,13 +114,12 @@ describe('system:hive-git-gc', () => {
    * quiet no-op tick, and an unread config key falls back to `installSlug`,
    * which is *usually* the same value and so hides the bug on most rows.
    */
-  it('is ALSO registered under the pre-rename `hive-git-gc` target (transitional alias)', async () => {
-    getHiveGitModeMock.mockResolvedValue('bridged');
-    // Same function object: rows still targeting the old name during the
-    // bg-host restart window run identical code, not a divergent copy.
-    expect(getSystemAction('hive-git-gc')).toBe(getSystemAction('pot-git-gc'));
-    await getSystemAction('hive-git-gc')!(ctx({ pot_home_slug: 'shop-hive', repo_key: 'repo-1' }));
-    expect(gcMock).toHaveBeenCalledTimes(1);
+  it('is registered ONLY under the renamed target — the transitional alias is gone', () => {
+    expect(getSystemAction('pot-git-gc')).toBeTypeOf('function');
+    // The alias was deleted once the row census came back clean platform-wide.
+    // Re-adding it silently would let a stale `system:hive-git-gc` row keep
+    // resolving, which is precisely the half-finished rename this pins shut.
+    expect(getSystemAction('hive-git-gc')).toBeUndefined();
   });
 
   it('still honours the pre-rename `hive_home_slug` config key', async () => {
