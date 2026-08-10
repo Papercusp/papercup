@@ -123,13 +123,18 @@ beforeEach(async () => {
                      harness_shared.harness_plans, harness_shared.agent_modes CASCADE`;
 });
 
-async function goal(over: { killCriterion?: string | null; tripwires?: unknown } = {}): Promise<void> {
+async function goal(
+  over: { killCriterion?: string | null; tripwires?: unknown; launchSettings?: unknown } = {},
+): Promise<void> {
   await sql`
     INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, body, status,
-                                      budget_cents, kill_criterion, tripwires, created_at, updated_at)
+                                      budget_cents, kill_criterion, tripwires, launch_settings,
+                                      created_at, updated_at)
     VALUES (${GOAL}, ${WS}, 'papercusp', 'Ship the thing', 'body', 'active', 50000,
             ${over.killCriterion === undefined ? 'Stop at day 30' : over.killCriterion},
-            ${sql.json((over.tripwires ?? []) as never)}, now(), now())
+            ${sql.json((over.tripwires ?? []) as never)},
+            ${over.launchSettings === undefined ? null : sql.json(over.launchSettings as never)},
+            now(), now())
   `;
 }
 
@@ -280,6 +285,61 @@ describe('goals.* resolvers against real SQL', () => {
     expect(out.activity).toHaveLength(2);
     expect(out.spendByDay.map((d) => d.day)).toEqual(['2026-08-01', '2026-08-02']);
     expect(out.spendLabel).toBe('fleet spend');
+  });
+
+  /**
+   * LAUNCH SETTINGS on the detail payload (goal-mode-hardening P-005).
+   *
+   * Against real SQL because the whole point of this file: the column is read
+   * inside the existing goal SELECT, and a wrong column name throws at RUNTIME
+   * ONLY — every mocked test on this path would stay green.
+   */
+  it('carries the goal’s launch settings, parsed, with the editor’s option lists', async () => {
+    const { resolveGoalDetail } = await import('./goals');
+    await goal({ launchSettings: { maxAgents: 3, defaults: { model: 'sonnet' } } });
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      launchSettings: { maxAgents?: number; defaults?: { model?: string } } | null;
+      launchSettingsInvalid: string | null;
+      launchSettingsOptions: { agent?: readonly string[] };
+    };
+
+    expect(out.launchSettings).toEqual({ maxAgents: 3, defaults: { model: 'sonnet' } });
+    expect(out.launchSettingsInvalid).toBeNull();
+    // Shipped from the schema's own constants so the editor cannot offer a value
+    // the write refuses (D-011). Asserted as non-empty rather than by literal
+    // membership: the point is that the list ARRIVES, not what is in it today.
+    expect(out.launchSettingsOptions.agent?.length).toBeGreaterThan(0);
+  });
+
+  it('reports an UNREADABLE settings document instead of rendering it as “none”', async () => {
+    // The two states look identical on the page and mean opposite things: no
+    // settings is a deliberate absence of a ceiling, while an unparseable
+    // document means the owner's ceiling is NOT being enforced. Fail-open is
+    // correct (see the store's header) — silent fail-open is not.
+    const { resolveGoalDetail } = await import('./goals');
+    await goal({ launchSettings: { maxAgents: -5 } });
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      launchSettings: unknown;
+      launchSettingsInvalid: string | null;
+    };
+
+    expect(out.launchSettings).toBeNull();
+    expect(out.launchSettingsInvalid).toContain('invalid');
+  });
+
+  it('reports no settings as null, which is the launch default and not an error', async () => {
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      launchSettings: unknown;
+      launchSettingsInvalid: string | null;
+    };
+
+    expect(out.launchSettings).toBeNull();
+    expect(out.launchSettingsInvalid).toBeNull();
   });
 
   it('counts waiting-on-you UNBOUNDED while capping the rows it returns', async () => {

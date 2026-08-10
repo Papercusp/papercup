@@ -209,3 +209,82 @@ describe('goals:update — closing a goal', () => {
     expect(tool.args.safeParse({ id: '' }).success).toBe(false);
   });
 });
+
+/**
+ * LAUNCH SETTINGS (goal-mode-hardening-2026-08-10 P-005 wiring P-004's store).
+ *
+ * These are D-005's two BINDING ceilings — the machine-enforced replacement for
+ * the capacity preflight D-004 removed — so the failure that matters here is a
+ * write that reports success without landing: an owner who lowers a ceiling and
+ * is told it saved will not check again.
+ */
+describe('goals:update — per-goal launch settings', () => {
+  /* Matches the UPDATE that SETS the column, not any statement mentioning it —
+     the handler's read-back SELECT names `launch_settings` too, so a bare
+     substring match reports a write on every call and the omitted-field test
+     passes for the wrong reason. */
+  const settingsWrite = () => calls.find((c) => /UPDATE[\s\S]*SET[\s\S]*launch_settings/.test(c.sql));
+
+  it('does not touch the column when the field is omitted', () => {
+    // The whole tool is partial-by-construction; a settings write on every
+    // unrelated update would clear a ceiling by reporting spend.
+    return tool
+      .handler(tool.args.parse({ id: 'g1', spentCents: 5 }) as never, CTX() as never)
+      .then(() => {
+        expect(settingsWrite()).toBeUndefined();
+      });
+  });
+
+  it('writes the document when given one', async () => {
+    await tool.handler(
+      tool.args.parse({
+        id: 'g1',
+        launchSettings: { maxAgents: 3, defaults: { model: 'sonnet' } },
+      }) as never,
+      CTX() as never,
+    );
+    const w = settingsWrite();
+    expect(w).toBeDefined();
+    expect(JSON.parse(w!.params[0] as string)).toEqual({ maxAgents: 3, defaults: { model: 'sonnet' } });
+  });
+
+  it('clears the column on an explicit null', async () => {
+    // Explicit null is how "back to unlimited" is expressed — distinct from
+    // omitted, exactly as parentId and tripwires are.
+    await tool.handler(
+      tool.args.parse({ id: 'g1', launchSettings: null }) as never,
+      CTX() as never,
+    );
+    expect(settingsWrite()!.params[0]).toBeNull();
+  });
+
+  it('refuses a ceiling of 0 at the door — it would forbid every launch', () => {
+    expect(tool.args.safeParse({ id: 'g1', launchSettings: { maxAgents: 0 } }).success).toBe(false);
+  });
+
+  it('refuses an unknown key rather than accepting a typo that pins nothing', () => {
+    // The store's schema is `.strict()` for this reason: a silently-accepted
+    // `maxAgent` reads back as "the setting is there" while the launch ignores it.
+    expect(
+      tool.args.safeParse({ id: 'g1', launchSettings: { maxAgent: 3 } }).success,
+    ).toBe(false);
+  });
+
+  it('refuses an agent outside the schema’s closed set', () => {
+    expect(
+      tool.args.safeParse({ id: 'g1', launchSettings: { defaults: { agent: 'gpt' } } }).success,
+    ).toBe(false);
+  });
+
+  it('reports a failed settings write as degraded instead of returning a clean ok', async () => {
+    // The handler gets a document the arg schema would have refused, which is
+    // reachable when a caller invokes the handler directly. It must NOT come
+    // back looking like a saved ceiling.
+    const res = (await tool.handler(
+      { id: 'g1', launchSettings: { maxAgents: -1 } } as never,
+      CTX() as never,
+    )) as { degraded?: boolean; degradedReasons?: string[] };
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons?.join(' ')).toContain('launch settings NOT saved');
+  });
+});
