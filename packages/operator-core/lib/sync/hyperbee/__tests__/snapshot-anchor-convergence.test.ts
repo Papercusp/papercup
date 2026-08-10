@@ -96,7 +96,7 @@ async function produceWithoutConverging(log: ReturnType<typeof makeGrowingLog>) 
     ts: 1_700_000_100_000,
     schema_version: 1,
   });
-  await log.appendBatch(ops as AnyOp[]);
+  await log.appendBatch(ops);
   return { coversUpTo, chunkCount: ops.length };
 }
 

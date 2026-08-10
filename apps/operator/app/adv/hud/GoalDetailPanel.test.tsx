@@ -102,6 +102,10 @@ vi.mock('@/app/_components/chat/SessionChatModal', () => ({
 beforeEach(() => {
   syncCalls.length = 0;
   syncResult = { data: null, loading: false, error: null };
+  // Default: no session resolved, so a test that does not opt in gets the
+  // inert-chat baseline rather than another test's leftover state.
+  chatState = {};
+  chatSends.length = 0;
   if (!Element.prototype.hasPointerCapture) {
     Element.prototype.hasPointerCapture = () => false;
     Element.prototype.setPointerCapture = () => {};
@@ -341,11 +345,60 @@ describe('GoalDetailPanel', () => {
     expect(titleRow.textContent).not.toContain('paused');
   });
 
-  /* ── P-018/D-011: the conversation affordance is a ROUTE, never a composer ── */
-  it('offers no composer — the popup borrows the chat shape, not a chat', () => {
-    renderPanel(detail(), { onOpenAgent: () => {} });
+  /* ── D-011 (the RETRACTION): the popup EMBEDS the conversation ─────────────
+     These replace an `offers no composer` test that encoded the retracted
+     ruling. Note it kept PASSING after the composer was added, because jsdom
+     never resolved a session — so it was asserting an absence produced by the
+     test environment rather than by the design. */
+
+  it('EMBEDS the live conversation for the goal’s agent, reusing LiveSessionChat', () => {
+    chatState = { resolved: { session_id: 's1', source_kind: 'claude' }, streamUrl: '/api/adv/session/thinking?x=1' };
+    renderPanel(detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }), {
+      onOpenAgent: () => {},
+    });
+    const chat = screen.getByTestId('live-chat');
+    // Wired to THIS goal's agent and THIS stream — not merely present.
+    expect(chat.getAttribute('data-owner')).toBe('su-abc');
+    expect(chat.getAttribute('data-stream')).toBe('/api/adv/session/thinking?x=1');
+    // The composer the owner reported missing.
+    expect(document.body.querySelector('textarea')).not.toBeNull();
+  });
+
+  it('sends through the SHARED wiring rather than a second send path', () => {
+    chatState = { resolved: { session_id: 's1', source_kind: 'claude' }, streamUrl: '/s' };
+    renderPanel(detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }), {
+      onOpenAgent: () => {},
+    });
+    fireEvent.click(screen.getByText('Send'));
+    expect(chatSends).toEqual(['hello']);
+  });
+
+  it('renders a plain statement and NO composer when no agent runs the goal', () => {
+    // D-011: "a composer that looks live and can reach nobody is worse than
+    // none." Unlike the test this replaced, the absence here is caused by the
+    // component's own branch — the hook is mocked as resolvable.
+    chatState = { resolved: { session_id: 's1', source_kind: 'claude' }, streamUrl: '/s' };
+    renderPanel(detail({ agents: [] }), { onOpenAgent: () => {} });
+    expect(screen.getByTestId('goal-chat-no-agent')).toBeTruthy();
+    expect(screen.queryByTestId('live-chat')).toBeNull();
     expect(document.body.querySelector('textarea')).toBeNull();
-    expect(document.body.textContent).not.toContain('Send');
+  });
+
+  it('says so, without a composer, when the agent has no recent session', () => {
+    chatState = { resolved: null, streamUrl: null };
+    renderPanel(detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }), {
+      onOpenAgent: () => {},
+    });
+    expect(screen.getByTestId('goal-chat-no-session')).toBeTruthy();
+    expect(document.body.querySelector('textarea')).toBeNull();
+  });
+
+  it('surfaces a resolve FAILURE instead of an empty chat that looks idle', () => {
+    chatState = { resolveError: 'sessions:list → 500', resolved: null, streamUrl: null };
+    renderPanel(detail({ agents: [{ ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' }] }), {
+      onOpenAgent: () => {},
+    });
+    expect(screen.getByTestId('goal-chat-error').textContent).toContain('sessions:list → 500');
   });
 
   it('routes to the goal’s agent when there IS one, and renders no dead button when there is not', () => {
