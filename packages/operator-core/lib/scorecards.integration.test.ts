@@ -43,7 +43,7 @@ vi.mock('@papercusp/db-org', async () => {
 });
 
 const { builtInCriterionKeysForRubric, listScorecards, scorecardTrend } = await import('./scorecards');
-const { createIssue } = await import('./issues-engineer');
+const { createIssue, issueRef, linkIssue } = await import('./issues-engineer');
 const { proposeRubric } = await import('./rubrics');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
 const { resolveLocalRubric } = await import('./cupboard/rubric-store');
@@ -57,6 +57,22 @@ const CRITERIA = [
   { key: 'ideation-quality', title: 'Ideation quality', model: 'good ideas', method: 'grade ideas', driftMarkers: 'stale ideas' },
   { key: 'watchdog-determinism', title: 'Watchdog determinism', model: 'deterministic [instrumentKey: none]', method: 'replay', driftMarkers: 'flaky red-tests' },
 ];
+
+// P-010 supersession fixture — a SEPARATE rubric so the counts/series the tests
+// above assert are untouched, and deliberately dated a day EARLIER so the
+// unfiltered newest-first listing just gains a tail.
+//
+// The shape is the real defect, not a synthetic one: a grade is filed, later
+// found to be a MISREADING, and a correction is filed. Both then sat in the
+// series, so the correction moved the trend twice — once for the reading now
+// known to be wrong, again for the right one. Here the wrong reading is the
+// OLDEST sample, which is what makes it visible: it anchors `first`, so the
+// trend reports an "improvement" that is purely an artifact of the correction.
+const RUBRIC_SUPERSEDE = 'test-supersession';
+const SUPERSEDE_KEY = 'grading-honesty';
+const supersede: { original: string; correction: string; independent: string } = {
+  original: '', correction: '', independent: '',
+};
 
 /** File a scorecard via the real write path, then pin its created_at deterministically. */
 async function fileScorecard(
@@ -129,6 +145,31 @@ describe('listScorecards (P-013) — real PG', () => {
       title: 'free-text obs', kind: 'change', topics: [OBSERVATION_TOPIC], createdBy: 'cup',
       payload: { observation: { kind: 'friction', scope: 'papercusp', refs: [] } },
     });
+
+    // ── P-010 supersession fixture (see RUBRIC_SUPERSEDE above). Seeded WITHOUT
+    //    the `revises` edge: the test files it mid-way so the same trend can be
+    //    read before and after, which is what proves the exclusion is
+    //    load-bearing rather than coincidental.
+    await proposeRubric({
+      rubricId: RUBRIC_SUPERSEDE,
+      characteristic: 'hive-coordination',
+      title: 'Test supersession',
+      criteria: [{ key: SUPERSEDE_KEY, title: 'Grading honesty', model: 'grades reflect reality', method: 'compare to source', driftMarkers: 'uncorrected misreadings' }],
+      status: 'active',
+      by: 'su-test',
+    });
+    supersede.original = await fileScorecard(db, {
+      id: 'supersede-original', rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', createdAt: '2026-06-19T10:00:00.000Z',
+      ratings: { [SUPERSEDE_KEY]: { rating: 'broken', evidence: 'ORIGINAL — the evidence was misread' } },
+    });
+    supersede.correction = await fileScorecard(db, {
+      id: 'supersede-correction', rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', createdAt: '2026-06-19T11:00:00.000Z',
+      ratings: { [SUPERSEDE_KEY]: { rating: 'healthy', evidence: 'CORRECTION — re-read the source; it was fine all along' } },
+    });
+    supersede.independent = await fileScorecard(db, {
+      id: 'supersede-independent', rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', createdAt: '2026-06-19T12:00:00.000Z',
+      ratings: { [SUPERSEDE_KEY]: { rating: 'healthy', evidence: 'a genuinely separate later observation' } },
+    });
   }, 120_000);
 
   afterAll(async () => {
@@ -138,7 +179,11 @@ describe('listScorecards (P-013) — real PG', () => {
   it('returns only rubric-graded scorecards (free-text observations excluded), newest-first', async () => {
     const rows = await listScorecards({});
     const ids = rows.map((r) => r.rubricRef);
-    expect(rows.length).toBe(4); // complete + partial + generic + unknown-rubric; free-text excluded
+    // complete + partial + generic + unknown-rubric + the 3 supersession fixtures
+    // (06-19); free-text excluded. NOTE listScorecards is the raw READ surface and
+    // is deliberately supersession-blind — the exclusion belongs to the TREND, so
+    // all 3 appear here even after the `revises` edge is filed.
+    expect(rows.length).toBe(7);
     expect(ids.every((r) => typeof r === 'string' && r.length > 0)).toBe(true);
     // created_at DESC: complete(12:00) > generic(11:00) > partial(10:00) > unknown(09:00)
     expect(rows.map((r) => r.createdAt)).toEqual([
@@ -146,6 +191,9 @@ describe('listScorecards (P-013) — real PG', () => {
       '2026-06-20T11:00:00.000Z',
       '2026-06-20T10:00:00.000Z',
       '2026-06-20T09:00:00.000Z',
+      '2026-06-19T12:00:00.000Z',
+      '2026-06-19T11:00:00.000Z',
+      '2026-06-19T10:00:00.000Z',
     ]);
   });
 
@@ -281,5 +329,42 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(e2e.series!.map((p) => p.rating)).toEqual(['degraded', 'healthy', 'broken']);
     expect(e2e.series!.every((p) => p.n === 1)).toBe(true);
     expect(e2e.direction).toBe('worsening');
+  });
+
+  // ── P-010: a re-grade must not move the trend twice.
+  //
+  // Read the SAME trend before and after filing the `revises` edge. The "before"
+  // half is the falsifier: without it, an assertion that the corrected trend is
+  // `stable` proves nothing, because it would also pass if the fixture had simply
+  // never been improving. What makes the defect real is that the direction FLIPS —
+  // the reported "improvement" was entirely an artifact of correcting a bad grade.
+  it('scorecardTrend: a `revises` correction supersedes the grade it corrects, and the direction it faked goes with it (P-010)', async () => {
+    const before = await scorecardTrend({ rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', includeSeries: true });
+    expect(before.scorecardCount).toBe(3);
+    expect(before.supersededExcluded).toBe(0); // nothing revised yet — the field is honest at zero, not absent
+    const beforeCriterion = before.criteria.find((c) => c.criterion === SUPERSEDE_KEY)!;
+    expect(beforeCriterion.series!.map((p) => p.rating)).toEqual(['broken', 'healthy']); // RLE: healthy(11:00)+healthy(12:00) collapse into one run
+    expect(beforeCriterion.count).toBe(3);
+    expect(beforeCriterion.direction).toBe('improving'); // ← the artifact: driven entirely by the misreading it later corrected
+    expect(before.window).toEqual({ from: '2026-06-19T10:00:00.000Z', to: '2026-06-19T12:00:00.000Z' });
+
+    // The correction declares what it corrects. src = the reviser, dst = the superseded.
+    await linkIssue(supersede.correction, issueRef(supersede.original), 'revises', 'su-test');
+
+    const after = await scorecardTrend({ rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', includeSeries: true });
+    expect(after.scorecardCount).toBe(2); // counts only what actually fed the series
+    expect(after.supersededExcluded).toBe(1); // …and says so, rather than dropping it silently
+    const afterCriterion = after.criteria.find((c) => c.criterion === SUPERSEDE_KEY)!;
+    expect(afterCriterion.count).toBe(2);
+    expect(afterCriterion.series!.map((p) => p.rating)).toEqual(['healthy']); // the misreading is gone from the series
+    expect(afterCriterion.first).toEqual({ rating: 'healthy', at: '2026-06-19T11:00:00.000Z' });
+    expect(afterCriterion.direction).toBe('stable'); // ← the whole point: no phantom improvement
+    expect(afterCriterion.distribution).toEqual({ healthy: 2 });
+    // The excluded sample also stops anchoring the reported window.
+    expect(after.window).toEqual({ from: '2026-06-19T11:00:00.000Z', to: '2026-06-19T12:00:00.000Z' });
+
+    // Only the REVISED one drops — a correction chain must not take its own corrections with it.
+    expect(after.criteria.find((c) => c.criterion === SUPERSEDE_KEY)!.latest)
+      .toEqual({ rating: 'healthy', at: '2026-06-19T12:00:00.000Z' });
   });
 });
