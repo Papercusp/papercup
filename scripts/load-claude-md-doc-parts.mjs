@@ -108,13 +108,19 @@ export function buildDocPartRows(text, manifest, ruleEvidence) {
       // Corpus-only prose keeps the block WHOLE. Splitting it would buy nothing —
       // the separation exists to decide what reaches CLAUDE.md, and this never does —
       // while fragmenting a narrative that Phase 3 moves into agent-insights intact.
+      //
+      // It DOES carry its section, though. This used to be a hard `null`, which was the
+      // same defect as gen-claude-md-manifest's (D-015): the section is known and was
+      // thrown away, leaving the corpus with no headings and `retired-surfaces` — which
+      // finds its subject BY HEADING — judging zero claims while reporting a found
+      // section. Phase 3 also moves this prose into agent-insights BY SECTION.
       rows.push({
         part_key: mp.partKey,
         kind: mp.kind,
         body: block.raw,
         ordinal: mp.ordinal,
         client_scope: [],
-        target_section: null,
+        target_section: mp.targetSection ?? null,
         project_rank: mp.projectRank ?? 1000,
       });
       continue;
@@ -131,13 +137,16 @@ export function buildDocPartRows(text, manifest, ruleEvidence) {
     });
 
     if (evidence.trim()) {
+      // The evidence half carries its rule's section for the same two reasons as above.
+      // It never projects (empty client_scope), so this cannot widen what reaches a
+      // client file; it only stops the corpus losing the heading its rule sits under.
       rows.push({
         part_key: `${mp.partKey}${EVIDENCE_SUFFIX}`,
         kind: 'prose',
         body: evidence,
         ordinal: mp.ordinal,
         client_scope: [],
-        target_section: null,
+        target_section: mp.targetSection ?? null,
         project_rank: mp.projectRank ?? 1000,
       });
     }
