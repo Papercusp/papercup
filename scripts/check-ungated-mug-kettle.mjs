@@ -49,11 +49,18 @@
  *   node scripts/check-ungated-mug-kettle.mjs --list       # measured population (re-seed the baseline from THIS, never a hand grep)
  *   node scripts/check-ungated-mug-kettle.mjs --json
  *   node scripts/check-ungated-mug-kettle.mjs --check-file <path>   # ONE file — the falsifiability seam
+ *   node scripts/check-ungated-mug-kettle.mjs --check-file <path> --full   # …incl. census families
  *
  * `--check-file` exists so falsifiability can be proven with a COPY-OUT mutation
  * (`scripts/mutation-probe.sh`) instead of mutating this shared tree, where git-sync
  * commits every few minutes and an exclusive lock does NOT pause it
  * (EI-19450431506682666).
+ *
+ * ⚠ `--check-file` ALONE INSPECTS ONE FAMILY: role-doors. It is fast and works
+ * out-of-tree (which is what the copy-out probe needs), but it cannot see the eight
+ * census families. `--full` adds them, at the cost of the ~33s whole-tree census, and
+ * only for a path INSIDE the repo. Neither mode may report a clean bill for a family it
+ * did not inspect — see the scope note on the --check-file branch (EI-20093615847114656).
  */
 
 import fs from 'node:fs';
@@ -252,28 +259,88 @@ const has = (f) => argv.includes(f);
 const valOf = (f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : null; };
 
 // --check-file: single-file mode, the mutation-probe seam.
+//
+// ⚠ SCOPE — stated in the OUTPUT, not only here, because a scope note only the author
+// reads is not a scope note. This branch returns BEFORE `collectCensus()` below, so it
+// sees the role-door family and nothing else. It used to answer
+// `no role-parameterized door detected in X — nothing to gate`, exit 0 — a verdict about
+// the FILE phrased from one family's evidence. That is a false green, and it fires
+// exactly when someone is under pressure: a red gate leg names a file, the natural next
+// move is to scope the guard to that file, and the guard answers clean. It was measured
+// answering "nothing to gate" (exit 0) on the very file the FULL guard was failing on,
+// and on libs/flags/src/types.ts, which carries 31 `flag|…` surfaces in the baseline; a
+// peer issued a retraction off that green (EI-20093615847114656). The absence of a
+// finding was being reported as a positive verdict — the same shape as
+// EI-19947254836762793 (zero substrate rows read as "the substrate is fine").
+//
+// The rule this encodes: A VERDICT MAY NEVER BE BROADER THAN WHAT IT MEASURED. So the
+// no-finding path names the families it did NOT inspect, and --full actually inspects
+// them. Exit codes for every pre-existing invocation are unchanged, because
+// scripts/mutation-probe.sh reads the guard's exit code as its verdict.
 const checkFile = valOf('--check-file');
 if (checkFile) {
+  const wantFull = has('--full');
   const abs = path.isAbsolute(checkFile) ? checkFile : path.join(REPO_ROOT, checkFile);
   let src;
   try { src = fs.readFileSync(abs, 'utf8'); } catch (err) {
     console.error(`check-ungated-mug-kettle: cannot read ${checkFile}: ${err.message}`);
     process.exit(2);
   }
-  const f = inspectFile(abs, src);
-  if (!f) {
-    console.log(`no role-parameterized door detected in ${checkFile} — nothing to gate`);
-    process.exit(0);
+
+  // The census walks SCAN_ROOTS under REPO_ROOT, so it structurally CANNOT see a
+  // copy-out probe in /tmp. Answering "no census surfaces" for such a path would
+  // reintroduce this very bug one level up — an UNMEASURABLE thing reported as
+  // measured-clean — so --full REFUSES rather than answers. Role-door detection is
+  // path-independent, which is why the probe seam keeps working without --full.
+  const rel = path.relative(REPO_ROOT, abs);
+  const inTree = !rel.startsWith('..') && !path.isAbsolute(rel);
+  if (wantFull && !inTree) {
+    console.error(`check-ungated-mug-kettle: --full cannot inspect ${checkFile} — it is outside the repo,`);
+    console.error(`  and the census only walks [${SCAN_ROOTS.join(', ')}] under ${REPO_ROOT}.`);
+    console.error(`  Refusing rather than reporting a clean bill for files it cannot see.`);
+    console.error(`  Drop --full for the copy-out mutation probe (role-doors work out-of-tree).`);
+    process.exit(2);
   }
-  if (f.gated) {
-    console.log(`GATED  ${checkFile}:${f.line}  ${f.detail}`);
-    process.exit(0);
+
+  const CENSUS_FAMILIES = 'ui, tool, flag, spawn-role, prompt, wake, system-action, blueprint-launch';
+  const roleDoor = inspectFile(abs, src);
+
+  if (roleDoor && roleDoor.gated) {
+    console.log(`GATED  ${checkFile}:${roleDoor.line}  ${roleDoor.detail}`);
+  } else if (roleDoor) {
+    console.error(`UNGATED ROLE-DOOR  ${checkFile}:${roleDoor.line}`);
+    console.error(`  ${roleDoor.detail}`);
+    console.error(`  This site can turn a role NAME into a running process and does not reference`);
+    console.error(`  the retirement predicate. Gate it: isRetiredTierRole(role) + mugKettleSystemEnabled().`);
+  } else {
+    console.log(`no role-parameterized door detected in ${checkFile}`);
   }
-  console.error(`UNGATED ROLE-DOOR  ${checkFile}:${f.line}`);
-  console.error(`  ${f.detail}`);
-  console.error(`  This site can turn a role NAME into a running process and does not reference`);
-  console.error(`  the retirement predicate. Gate it: isRetiredTierRole(role) + mugKettleSystemEnabled().`);
-  process.exit(1);
+
+  let censusOffenders = [];
+  if (!wantFull) {
+    // NOT "nothing to gate". This is the whole fix: say what was not looked at.
+    console.log(`⚠ NOT A CLEAN BILL — only the role-door family was checked.`);
+    console.log(`  NOT inspected here: ${CENSUS_FAMILIES}.`);
+    console.log(`  Re-run with --full for those, or run the full guard (npm run lint:no-ungated-mug-kettle).`);
+  } else {
+    const hits = collectCensus().filter((f) => f.file === rel);
+    const { keys: baselineKeys } = loadBaseline();
+    censusOffenders = hits.filter((f) => !f.gated && !baselineKeys.has(keyOf(f)));
+    if (hits.length) {
+      console.log(`census surfaces in ${checkFile}: ${hits.length}`);
+      for (const f of hits) {
+        const mark = f.gated ? 'GATED   ' : baselineKeys.has(keyOf(f)) ? 'BASELINE' : '✖ NEW   ';
+        console.log(`  ${mark} ${f.category} ${f.subject}  :${f.line}`);
+      }
+    } else {
+      console.log(`no census surfaces in ${checkFile} (checked: ${CENSUS_FAMILIES})`);
+    }
+    if (censusOffenders.length) {
+      console.error(`\n✖ ${censusOffenders.length} NEW UNGATED census surface(s) in ${checkFile}.`);
+    }
+  }
+
+  process.exit((roleDoor && !roleDoor.gated) || censusOffenders.length ? 1 : 0);
 }
 
 const findings = [...collectCensus(), ...collectRoleDoors()];
