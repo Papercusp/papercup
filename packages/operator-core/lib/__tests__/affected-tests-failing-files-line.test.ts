@@ -37,6 +37,7 @@ import {
   attributeFailedTask,
   renderFailingFilesSummary,
   parseFailedTestFiles,
+  parseNodeTestFailedFiles,
   transformCulpritsFrom,
   AFFECTED_TESTS_FAILING_FILES_TOKEN,
   FAILING_FILES_LINE_MAX_ENTRIES,
@@ -287,6 +288,86 @@ describe('attributeFailedTask — a red task never contributes nothing', () => {
       const a = attributeFailedTask(c);
       expect(a.entries.length + a.unattributed.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('attributeFailedTask — `node --test` output is a SECOND runner format (EI-20095409199430877)', () => {
+  /**
+   * VERBATIM bytes from run 3655179-735cdb19, the run that made this a bug: the task was
+   * reported `unattributed / no-file-rows` — the reason documented as "a worker crash, an
+   * OOM, a spawn error" — while its own captured output named the file and line in plain
+   * text. Copied from the surviving log, not retyped from the incident report's prose.
+   */
+  const REAL_NODE_TEST_FAILURE = [
+    'ℹ fail 1',
+    '',
+    '✖ failing tests:',
+    '',
+    'test at test/build-desktop-sidecar-lock.test.js:11:1',
+    '✖ every cargo build closes the sidecar flock fd before sccache can daemonize (3.437277ms)',
+    '  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:',
+    '',
+    '  0 !== 2',
+    '',
+  ].join('\n');
+
+  it('names the file a red `node --test` task printed, instead of reporting it unattributable', () => {
+    const a = attributeFailedTask({
+      workspace: '@papercusp/desktop',
+      task: '@papercusp/desktop :: test',
+      captured: true,
+      output: REAL_NODE_TEST_FAILURE,
+    });
+    expect(a.unattributed).toEqual([]);
+    expect(a.entries).toEqual([
+      { workspace: '@papercusp/desktop', file: 'test/build-desktop-sidecar-lock.test.js' },
+    ]);
+  });
+
+  it('unions BOTH runner formats — a task chaining vitest and node --test loses neither', () => {
+    const a = attributeFailedTask({
+      workspace: 'w',
+      task: 'w :: test',
+      captured: true,
+      output: [
+        ' ❯ lib/release/green-checkpoint-real-deps.test.ts (12 tests | 2 failed) 812ms',
+        'FAIL  app/adv/create/PreviewPanel.test.tsx',
+        REAL_NODE_TEST_FAILURE,
+      ].join('\n'),
+    });
+    expect(a.unattributed).toEqual([]);
+    expect(a.entries.map((e) => e.file).sort()).toEqual([
+      'app/adv/create/PreviewPanel.test.tsx',
+      'lib/release/green-checkpoint-real-deps.test.ts',
+      'test/build-desktop-sidecar-lock.test.js',
+    ]);
+  });
+
+  it('FALSIFIABILITY: a genuinely silent red still reports no-file-rows — the parser has not been widened into always-succeeding', () => {
+    const a = attributeFailedTask({
+      workspace: 'w',
+      task: 'w :: test',
+      captured: true,
+      output: 'Error: Worker terminated due to reaching memory limit: JS heap out of memory\n',
+    });
+    expect(a.entries).toEqual([]);
+    expect(a.unattributed).toEqual([{ task: 'w :: test', reason: 'no-file-rows' }]);
+  });
+
+  it('does NOT attribute a PASSING run: `test at` is failure-exclusive, verified against emitted bytes', () => {
+    // A green node --test run prints per-file ✔ rows and a summary, and NO `test at` line —
+    // that exclusivity is the property the matcher leans on, so it is pinned here.
+    const green = ['✔ alpha passes (1.9ms)', 'ℹ tests 2', 'ℹ pass 2', 'ℹ fail 0'].join('\n');
+    expect(parseNodeTestFailedFiles(green)).toEqual([]);
+  });
+
+  it('ignores a `test at` line pointing at a non-test file, and dedupes repeats', () => {
+    const out = [
+      'test at test/a.test.js:1:1',
+      'test at test/a.test.js:9:1',
+      'test at src/helper.js:3:1',
+    ].join('\n');
+    expect(parseNodeTestFailedFiles(out)).toEqual(['test/a.test.js']);
   });
 });
 
