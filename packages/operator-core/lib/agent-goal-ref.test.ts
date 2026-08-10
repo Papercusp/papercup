@@ -263,3 +263,97 @@ describe('resolveAgentGoal — total by construction (P-026 rule f)', () => {
     expect(resolveAgentGoal({ workItems: [{ id: 'WI-1' }] })!.declaredAt).toBeNull();
   });
 });
+
+/**
+ * EI-20073149682963544. The self lens reads plan-item claims whose TTL has lapsed
+ * (so an agent stops losing its own goal 20 minutes in), which is only safe
+ * because the lapse can be SAID. These pin the saying.
+ *
+ * The three-state input is the subtle part: `leaseValid` is `true` (measured warm),
+ * `false` (measured cold), or ABSENT (never measured — the peer lens filters in
+ * SQL). Collapsing absent into cold would mark every peer goal cold, the exact
+ * inversion of the honesty this field exists for.
+ */
+describe('leaseCold — a lapsed lease is disclosed, never silently dropped or overstated', () => {
+  const cold = { planSlug: 'plan-a', itemId: 'P-001', leaseValid: false };
+  const warm = { planSlug: 'plan-a', itemId: 'P-002', leaseValid: true };
+  const unmeasured = { planSlug: 'plan-a', itemId: 'P-003' };
+
+  it('true when the goal IS the cold claim', () => {
+    expect(resolveAgentGoal({ planItems: [cold] })!.leaseCold).toBe(true);
+  });
+
+  it('false for a measured-warm claim', () => {
+    expect(resolveAgentGoal({ planItems: [warm] })!.leaseCold).toBe(false);
+  });
+
+  it('ABSENT IS NOT COLD — an unmeasured lease reads warm, not stale', () => {
+    // This is the peer lens's shape. It filtered lapsed rows out in SQL, so every
+    // row it produces is live by construction and carries no flag.
+    expect(resolveAgentGoal({ planItems: [unmeasured] })!.leaseCold).toBe(false);
+  });
+
+  it('false when the answer names no plan-item claim at all', () => {
+    const g = resolveAgentGoal({ workItems: [{ id: 'WI-1' }], planItems: [cold] })!;
+    // The work-item outranks the claim, so the cold claim is not what the reader
+    // would act on — it lands in `competing`, and the goal itself is not cold.
+    expect(g.ref).toBe('WI-1');
+    expect(g.leaseCold).toBe(false);
+    expect(g.competing).toContain('plan-a#P-001');
+  });
+
+  it('TRUE through the corroboration edge — the claim named by the answer is cold', () => {
+    // The headline is a work-item, but the plan-item claim is part of THIS answer
+    // (`corroboratedBy`), and it is the one a reader would re-take before editing.
+    const g = resolveAgentGoal({
+      workItems: [{ id: 'WI-1' }],
+      planItems: [cold],
+      links: [{ workItemId: 'WI-1', planItemRef: 'plan-a#P-001' }],
+    })!;
+    expect(g.corroboratedBy).toBe('plan-a#P-001');
+    expect(g.leaseCold).toBe(true);
+  });
+
+  it('a warm corroborating claim leaves the goal warm', () => {
+    const g = resolveAgentGoal({
+      workItems: [{ id: 'WI-1' }],
+      planItems: [warm],
+      links: [{ workItemId: 'WI-1', planItemRef: 'plan-a#P-002' }],
+    })!;
+    expect(g.corroboratedBy).toBe('plan-a#P-002');
+    expect(g.leaseCold).toBe(false);
+  });
+
+  it('a LIVE claim outranks a cold one that was acquired later', () => {
+    // `ttl_sec` is per-claim, so acquired-later does not mean expires-later; a
+    // recency-only sort would answer with the weaker hold.
+    const g = resolveAgentGoal({
+      planItems: [
+        { ...cold, acquiredTs: '2026-08-10T12:00:00Z' },
+        { ...warm, acquiredTs: '2026-08-09T12:00:00Z' },
+      ],
+    })!;
+    expect(g.ref).toBe('plan-a#P-002');
+    expect(g.leaseCold).toBe(false);
+  });
+
+  it('falls back to the cold claim when EVERY lease is cold — a cold goal beats no goal', () => {
+    const g = resolveAgentGoal({
+      planItems: [
+        { planSlug: 'plan-a', itemId: 'P-001', leaseValid: false, acquiredTs: '2026-08-09T12:00:00Z' },
+        { planSlug: 'plan-a', itemId: 'P-009', leaseValid: false, acquiredTs: '2026-08-10T12:00:00Z' },
+      ],
+    })!;
+    expect(g.ref).toBe('plan-a#P-009'); // newest of the cold set
+    expect(g.leaseCold).toBe(true);
+  });
+
+  it('stays clock-free: the SAME input gives the SAME answer regardless of when it runs', () => {
+    // `leaseCold` is derived from an INPUT boolean, never from a clock read here.
+    const input = { planItems: [cold] };
+    const a = resolveAgentGoal(input)!;
+    const b = resolveAgentGoal(input)!;
+    expect(a).toEqual(b);
+    expect(a.leaseCold).toBe(true);
+  });
+});
