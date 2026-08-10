@@ -17,7 +17,9 @@ const H = vi.hoisted(() => {
     frontmatterStatus: string | null;
     /** WI-5825 regression override: force the next UPDATE to match 0 rows. */
     forceNoMatch: boolean;
-  } = { txCalls: [], frontmatterStatus: 'ready', forceNoMatch: false };
+    /** P-047: is the retired op_status axis still writable (flag ON)? */
+    mugKettleOn: boolean;
+  } = { txCalls: [], frontmatterStatus: 'ready', forceNoMatch: false, mugKettleOn: true };
   const tx = (strings: readonly string[], ...values: unknown[]) => {
     state.txCalls.push({ strings, values });
     // WI-5825 regression hook: force the UPDATE to match 0 rows.
@@ -53,6 +55,26 @@ vi.mock('../source', async (orig) => {
     })),
   };
 });
+
+// P-047 (retire-mug-kettle-su-only-2026-08-09): plans:start's op_status write is
+// now gated on the Mug/Kettle retirement flag. PIN it — a real
+// `mugKettleSystemEnabled` here reaches the flags server (this suite has no DB),
+// resolves fail-CLOSED to retired, and would turn every "the UPDATE runs"
+// assertion below into a false red about a write that is merely gated off.
+// Default ON so the pre-retirement contract stays asserted verbatim; the retired
+// branch flips it explicitly in its own describe block.
+vi.mock('../../../pot/started', async (orig) => {
+  const actual = await orig<typeof import('../../../pot/started')>();
+  return { ...actual, mugKettleSystemEnabled: vi.fn(async () => H.state.mugKettleOn) };
+});
+
+// plans:start fires promotePlanItems fire-and-forget after the start. Stub it so
+// the suite needs no work_items database — and so the P-047 block below can
+// assert promotion STILL runs with the op_status write gated off (previously it
+// ran for real and its failure was swallowed by the handler's own .catch()).
+vi.mock('../../../plan-workitem-promotion-run', () => ({
+  promotePlanItems: vi.fn(async () => ({ promoted: 0, flagOff: false })),
+}));
 
 // Auto-approve runs inside withPlanLock after a successful start — stub it to
 // a no-op so the proceed-case test doesn't need the real lock side-database.
@@ -90,6 +112,7 @@ beforeEach(() => {
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
   H.state.forceNoMatch = false;
+  H.state.mugKettleOn = true;
 });
 
 /**
@@ -158,5 +181,56 @@ describe('plans:start terminal guard', () => {
     // ...and crucially it is NOT reported as started, so the `plan started` demand
     // event (which fires on transitioned:true) cannot fire on a write that missed.
     expect(res.data.results[0]).not.toMatchObject({ status: 'started' });
+  });
+});
+
+/**
+ * P-047 / D-010 — the OPERATIONAL axis (op_status) retires with the Mug/Kettle
+ * tier, and this is the half that actually matters: op_status does not ENABLE
+ * anything for su, it RESERVES the plan's items from scheduler self-selection
+ * (`reservedPlanLaneExclusionSql`) for a dispatcher that no longer runs. So the
+ * contract is asymmetric and both halves need pinning: the WRITE must not
+ * happen, and everything else the verb does — approval and, above all,
+ * promotion — must still happen. A gate that also stopped promotion would be
+ * the P-044 mistake ("the cut was backwards"): the su queue would never fill.
+ */
+describe('plans:start — the retired op_status axis (P-047)', () => {
+  beforeEach(() => {
+    H.state.mugKettleOn = false;
+  });
+
+  it('writes NO op_status while the tier is retired — and says so instead of claiming a start', async () => {
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    // The whole point: no UPDATE reached harness_plans.
+    expect(() => opStatusUpdate()).toThrow(/the write never ran/);
+    // Reporting `status:'started'` on a row that carries nothing is the WI-5825
+    // "announced a start that never happened" bug wearing a flag.
+    expect(res.data.results[0]).toMatchObject({ ok: true, status: null, opStatusRetired: true });
+    // transitioned MUST stay false, or the `plan started` demand event fires at
+    // the retired Queen for a transition that did not occur. This is the trap in
+    // the retired branch: prev_op_status mirrors the CURRENT value there, so a
+    // never-started plan scores `null !== 'started'` unless axisLive gates it.
+    expect(res.data.results[0]).toMatchObject({ transitioned: false });
+  });
+
+  it('still detects plan_not_found — the retired branch reads the SAME key the write used', async () => {
+    H.state.forceNoMatch = true;
+    const res = await run({ slug: 'ghost-plan' });
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'plan_not_found' });
+  });
+
+  it('KEEPS promoting items into work_items — the gate is on the write, never on the mechanism', async () => {
+    const { promotePlanItems } = await import('../../../plan-workitem-promotion-run');
+    await run({ slug: 'live-plan-2026-06-02' });
+    // Fire-and-forget inside the handler (`void import(...)`), so wait for it
+    // rather than asserting synchronously on a promise nobody awaited.
+    await vi.waitFor(() => expect(promotePlanItems).toHaveBeenCalled());
+    expect(vi.mocked(promotePlanItems).mock.calls[0][0]).toMatchObject({
+      planSlug: 'live-plan-2026-06-02',
+      workspaceId: 'ws-of-harness',
+    });
   });
 });

@@ -13,7 +13,7 @@
  * Pausing a plan that was never started returns { notStarted: true }.
  *
  * ⚠ DELIBERATELY **NOT** GATED by the Mug/Kettle retirement, unlike its sibling
- * `plans:start` (retire-mug-kettle-su-only-2026-08-09 P-047 / D-056). Do not
+ * `plans:start` (retire-mug-kettle-su-only-2026-08-09 P-047 / D-061). Do not
  * "finish the job" by adding `refuseIfMugKettleRetired` here — that would be the
  * backwards cut, twice over:
  *

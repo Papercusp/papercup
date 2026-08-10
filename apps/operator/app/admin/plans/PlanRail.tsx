@@ -447,7 +447,7 @@ function PlanRow({
   //
   // ASYMMETRIC ON PURPOSE — the PAUSE half survives for an ALREADY-started plan
   // (`isStarted`), mirroring the server (plans:pause is deliberately un-gated,
-  // D-056): the DBOS frontier still reads op_status='started', so hiding pause
+  // D-061): the DBOS frontier still reads op_status='started', so hiding pause
   // too would freeze every pre-P-047 started plan dispatchable with no off
   // switch. It is self-extinguishing — once a plan is paused or cleared the
   // button never returns, because Start cannot be reached while the tier is

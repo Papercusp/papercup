@@ -1708,7 +1708,15 @@ export interface PlanStartRefusal {
 export interface PlanStartOk {
   slug: string;
   harnessSlug: string;
-  status: string;
+  /**
+   * NULL while the OPERATIONAL axis is retired (P-047): the plan is approved and
+   * its items promoted, but no op_status was written, so there is no started
+   * state to report. Reporting 'started' there would be the WI-5825 "announced a
+   * start that never happened" bug wearing a feature flag.
+   */
+  status: string | null;
+  /** Present (and true) only on that retired path — see `status`. */
+  opStatusRetired?: true;
 }
 
 export function isPlanStartRefusal(r: unknown): r is PlanStartRefusal {

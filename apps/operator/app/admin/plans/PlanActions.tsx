@@ -30,6 +30,8 @@ import { Modal } from '@/app/harness/Modal';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import { useLexicon } from '@/lib/useLexicon';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import {
   addPlanDecision,
@@ -121,6 +123,8 @@ export default function PlanActions({
   const [demotePending, setDemotePending] = useState(false);
 
   const isStarted = startStatus === 'started';
+  // P-047: op_status is the retired OPERATIONAL axis; see the Start/Pause button below.
+  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
   // The lifecycle bucket drives which primary action shows: draft →
   // Approve (no start), ready → Start + Demote, running → Pause,
   // shipped/rejected → none. Derived from the same bucketOf the rail uses.
@@ -265,7 +269,13 @@ export default function PlanActions({
           {approvePending ? 'Approving…' : '✓ Approve Plan'}
         </button></Tooltip>
       ) : null}
-      {bucket === 'ready' || bucket === 'running' ? (
+      {/* retire-mug-kettle-su-only-2026-08-09 P-047 / D-010 — the SECOND owner-facing
+          writer of the retired op_status axis (PlanRail's inline toggle is the other;
+          `startPlan` has exactly these two callers). Same asymmetry as there and as the
+          server: START goes, PAUSE survives for an already-started plan, because the
+          DBOS frontier still reads op_status='started' and is not gated, so pause is
+          the only remaining way to take a pre-P-047 plan out of its dispatch. */}
+      {(bucket === 'ready' || bucket === 'running') && (mugKettleOn || isStarted) ? (
         <Tooltip label={isStarted ? 'Pause plan — orchestrator stops picking new features' : 'Start plan — orchestrator picks features from this plan'}><button
           type="button"
           className={`pc-plan-actions__btn pc-plan-actions__btn--start${isStarted ? ' pc-plan-actions__btn--started' : ''}`}

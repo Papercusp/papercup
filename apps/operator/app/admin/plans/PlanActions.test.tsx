@@ -60,6 +60,20 @@ vi.mock('./plans-api', async (importOriginal) => ({
   IMPORTANCE_LEVELS: ['urgent', 'high', 'normal', 'low'],
 }));
 
+/**
+ * P-047 (retire-mug-kettle-su-only-2026-08-09): the Start half of the Start/Pause
+ * button is gated on FLAGS.MUG_KETTLE_SYSTEM, whose default is OFF — so the
+ * unmocked useFlag fallback (FLAG_DEFAULTS) would hide Start and red every
+ * assertion below with a signature naming neither the flag nor the gate. Pin the
+ * tier ON for the pre-retirement contract; the retired shape has its own block at
+ * the foot of this file.
+ */
+const F = vi.hoisted(() => ({ mugKettleOn: true }));
+vi.mock('@/lib/flag-hooks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/flag-hooks')>()),
+  useFlag: (key: string) => (key === 'papercusp-mug-kettle-system' ? F.mugKettleOn : true),
+}));
+
 import PlanActions, { previewNextDecisionId, previewNextItemId, writeError, parseRefList } from './PlanActions';
 
 describe('previewNextDecisionId / previewNextItemId', () => {
@@ -104,7 +118,7 @@ describe('PlanActions component', () => {
     );
     return cb;
   }
-  beforeEach(() => { vi.clearAllMocks(); approveMock.mockResolvedValue({ ok: true }); });
+  beforeEach(() => { vi.clearAllMocks(); approveMock.mockResolvedValue({ ok: true }); F.mugKettleOn = true; });
   afterEach(cleanup);
 
   it('shows Approve for a draft (no Start)', () => {
@@ -120,6 +134,29 @@ describe('PlanActions component', () => {
   });
 
   it('shows Pause for a started plan', () => {
+    renderActions({ planStatus: 'ready', startStatus: 'started' });
+    expect(screen.getByRole('button', { name: /Pause Plan/ })).toBeTruthy();
+  });
+
+  // ── P-047: the retired OPERATIONAL axis ──────────────────────────────────
+  // op_status does not ENABLE anything for su — it RESERVES the plan's items
+  // from scheduler self-selection for a dispatcher that no longer runs (D-010),
+  // so a press of Start here strands that plan's lane silently. Start goes;
+  // PAUSE STAYS, because the DBOS frontier still reads op_status='started' and
+  // is not gated, making pause the only remaining off switch for a plan started
+  // before this landed. Deleting the asymmetry is the tempting "cleanup" — it
+  // would leave those plans dispatchable forever.
+  it('retired tier: no Start button for a ready plan', () => {
+    F.mugKettleOn = false;
+    renderActions({ planStatus: 'ready' });
+    expect(screen.queryByRole('button', { name: /Start Plan/ })).toBeNull();
+    // The rest of the action bar is untouched — this gate is about one axis,
+    // not about disabling plan management.
+    expect(screen.getByRole('button', { name: /Demote to Draft/ })).toBeTruthy();
+  });
+
+  it('retired tier: KEEPS Pause for an already-started plan', () => {
+    F.mugKettleOn = false;
     renderActions({ planStatus: 'ready', startStatus: 'started' });
     expect(screen.getByRole('button', { name: /Pause Plan/ })).toBeTruthy();
   });
