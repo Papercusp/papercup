@@ -2142,14 +2142,44 @@ describe('formatDeadRoutinesSummary — magnitude + consequence (EI-200456914514
     const s = formatDeadRoutinesSummary({
       deadRoutines: 101,
       deadRoutinesInScope: 151,
+      deadRoutinesDistinct: 9,
       deadRoutineNames: ['git-sync', 'green-checkpoint', 'pr-poll'],
       deadRoutineCriticalNames: ['git-sync', 'green-checkpoint'],
     });
     expect(s).toContain('101 of 151');            // the ratio, not a bare count
     expect(s).toContain('FROZEN');                 // >=50% of the engine is a freeze, say so
-    expect(s).toContain('(+98 more)');             // the cap is disclosed, never silent
+    // ⚠ 6, not 98: the remainder is counted in DISTINCT names (9 distinct − 3 named), never
+    // rows − names. The row count is 101 only because one row exists per install.
+    expect(s).toContain('(+6 more)');
     expect(s).toContain('git-sync');
     expect(s).toContain('NOTHING in the shared tree is being committed');
+  });
+
+  it('discloses the unit when one routine is dead across many installs', () => {
+    // The live shape that makes this necessary: git-sync is 59 rows (one per install), so a
+    // row count of 59 reads as "59 different routines died" when exactly ONE routine did.
+    const s = formatDeadRoutinesSummary({
+      deadRoutines: 59, deadRoutinesInScope: 144, deadRoutinesDistinct: 1,
+      deadRoutineNames: ['git-sync'], deadRoutineCriticalNames: ['git-sync'],
+    });
+    expect(s).toContain('59 of 144 dead routine(s) overdue >10m (1 distinct)');
+    expect(s).not.toContain('more)');   // 1 distinct, 1 named ⇒ nothing withheld
+  });
+
+  it('omits the distinct note when rows and distinct routines agree (nothing to disambiguate)', () => {
+    const s = formatDeadRoutinesSummary({
+      deadRoutines: 3, deadRoutinesInScope: 144, deadRoutinesDistinct: 3,
+      deadRoutineNames: ['pr-poll', 'a', 'b'],
+    });
+    expect(s).not.toContain('distinct');
+  });
+
+  it('never mixes units: says nothing about a remainder when the distinct count was not observed', () => {
+    const s = formatDeadRoutinesSummary({
+      deadRoutines: 101, deadRoutinesInScope: 151, deadRoutineNames: ['git-sync'],
+    });
+    expect(s).toContain('101 of 151');
+    expect(s).not.toContain('more)');   // no distinct count ⇒ no guess
   });
 
   it('still classifies as the dead-routines signature — the substring dedup depends on', () => {

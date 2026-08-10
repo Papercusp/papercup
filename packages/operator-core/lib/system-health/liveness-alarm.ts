@@ -939,6 +939,13 @@ export function formatDeadRoutinesSummary(wf: {
   const hasDenominator = typeof total === 'number' && total > 0 && count <= total;
   const population = hasDenominator ? `${count} of ${total}` : `${count}`;
   const named = wf.deadRoutineNames ?? [];
+  // Disclose the UNIT when rows and distinct routines diverge: "59 of 144 dead routine(s)" reads
+  // as 59 different routines, when it can equally be ONE routine dead across 59 installs. Those
+  // are very different incidents and the reader cannot tell them apart from a row count alone.
+  const distinctNote =
+    typeof wf.deadRoutinesDistinct === 'number' && wf.deadRoutinesDistinct !== count
+      ? ` (${wf.deadRoutinesDistinct} distinct)`
+      : '';
   // ⚠ UNIT DISCIPLINE: `deadRoutines` counts ROWS (one per install — git-sync alone is 59 here)
   // while `deadRoutineNames` is DEDUPED. Subtracting one from the other would announce
   // "+134 more" when 2 more distinct routines exist. Count the remainder in distinct names, and
@@ -955,7 +962,7 @@ export function formatDeadRoutinesSummary(wf: {
     : critical.length > 0
       ? ` Fleet-blocking: ${critical.join(', ')}.`
       : '';
-  return `${population} dead routine(s) overdue >10m${names} — the routine engine is ${frozen ? 'FROZEN' : 'starved'}.${consequence}`;
+  return `${population} dead routine(s) overdue >10m${distinctNote}${names} — the routine engine is ${frozen ? 'FROZEN' : 'starved'}.${consequence}`;
 }
 
 /**
