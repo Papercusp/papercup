@@ -113,6 +113,23 @@ export interface MaterializeTemplateInput {
    * just-created dir).
    */
   createHarness: () => Promise<{ slug: string; path: string }>;
+  /**
+   * COMPENSATION for a failure AFTER createHarness committed (WI-37768). Optional:
+   * omit it and the pre-existing behaviour is unchanged (the pot is left behind).
+   *
+   * createHarness is the first DURABLE step — it writes a registry row and an on-disk
+   * dir. Anything that throws after it used to strand that pot, and because the slug
+   * is now taken, the caller's natural recovery (retry with identical args) is the one
+   * path that provably CANNOT work: pot:create answers slug_exists forever. Measured
+   * 2026-08-10 when a PgBouncer `write CONNECTION_CLOSED` landed mid-call.
+   *
+   * So: roll the pot back and let the retry succeed. Rollback is best-effort BY
+   * DESIGN — the failure that triggered it is frequently the very thing that makes
+   * the rollback fail too (a dropped PG connection cannot be used to un-write). Its
+   * outcome is therefore REPORTED on the rethrown error rather than swallowed, so the
+   * caller can tell "retry will now work" from "the slug is still taken".
+   */
+  rollbackHarness?: (created: { slug: string; path: string }) => Promise<void>;
 }
 
 export interface CloneSourceDeps {
@@ -188,9 +205,62 @@ export async function materializeTemplateCore(
     // Source acquired (no durable side effect yet) → now create the harness, then
     // overlay the template onto it.
     const created = await input.createHarness();
-    const filesCopied = await overlayTemplateFiles(srcDir, created.path);
-    return { slug: created.slug, path: created.path, filesCopied };
+    // From here on the pot EXISTS. Every later failure must compensate, or it
+    // strands the slug and blocks its own retry (WI-37768).
+    try {
+      const filesCopied = await overlayTemplateFiles(srcDir, created.path);
+      return { slug: created.slug, path: created.path, filesCopied };
+    } catch (e) {
+      throw await compensateCreatedHarness(e, created, input.rollbackHarness);
+    }
   } finally {
     await cleanup().catch(() => {});
+  }
+}
+
+/**
+ * Roll back a committed harness after a later step failed, and fold the rollback's
+ * OUTCOME into the error the caller sees (WI-37768).
+ *
+ * Exported because `templates:new-app` needs the identical treatment for the steps it
+ * runs after materializeTemplateCore returns — one implementation, so the two call
+ * sites cannot drift into reporting the same situation differently.
+ *
+ * Never throws a rollback failure over the original error: the original is the cause,
+ * the rollback outcome is context. Reporting it the other way round would hide why the
+ * call failed behind a secondary symptom.
+ */
+export async function compensateCreatedHarness(
+  cause: unknown,
+  created: { slug: string; path: string },
+  rollbackHarness?: (created: { slug: string; path: string }) => Promise<void>,
+): Promise<Error> {
+  const base = cause instanceof Error ? cause.message : String(cause);
+  const status = cause instanceof MaterializeTemplateError ? cause.status : 500;
+
+  if (!rollbackHarness) {
+    return new MaterializeTemplateError(
+      `${base} — the pot "${created.slug}" WAS created before this failure and has NOT been rolled back ` +
+        `(no rollback was wired), so retrying with the same slug will fail with slug_exists. ` +
+        `Recover with pot:obliterate { slug: "${created.slug}", confirm: true }, or retry under a different slug.`,
+      status,
+    );
+  }
+
+  try {
+    await rollbackHarness(created);
+    return new MaterializeTemplateError(
+      `${base} — the pot "${created.slug}" was created before this failure and HAS BEEN ROLLED BACK, ` +
+        `so retrying with the same slug is safe.`,
+      status,
+    );
+  } catch (rollbackError) {
+    const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+    return new MaterializeTemplateError(
+      `${base} — the pot "${created.slug}" was created before this failure and ROLLBACK ALSO FAILED ` +
+        `(${detail.slice(0, 200)}), so the slug is still taken and retrying with it will fail with slug_exists. ` +
+        `Recover with pot:obliterate { slug: "${created.slug}", confirm: true }, or retry under a different slug.`,
+      status,
+    );
   }
 }

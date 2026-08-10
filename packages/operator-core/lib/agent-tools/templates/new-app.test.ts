@@ -200,3 +200,113 @@ describe('composeNewApp', () => {
     expect(payload.error).not.toContain('unknown error');
   });
 });
+
+/**
+ * WI-37768 — pot:create is the first DURABLE step. Anything that throws after it used
+ * to strand the slug, which made the caller's natural recovery (retry, same args) the
+ * one move that provably could not work: pot:create answers slug_exists forever.
+ *
+ * Measured 2026-08-10: a PgBouncer `write CONNECTION_CLOSED` mid-call, then an
+ * identical retry rejected with 422 slug_exists.
+ */
+describe('composeNewApp — compensating rollback after a durable create (WI-37768)', () => {
+  /** An inner whose pot:create succeeds; obliterate is recorded (and can be made to fail). */
+  function rollbackInner(opts: { failObliterate?: boolean; createThrows?: unknown } = {}) {
+    const calls: Array<{ name: string; args: any }> = [];
+    const inner = vi.fn(async (name: string, args: any) => {
+      calls.push({ name, args });
+      if (name === 'pot:create') {
+        if (opts.createThrows !== undefined) throw opts.createThrows;
+        const path = join(scratch, 'apps', args.slug);
+        mkdirSync(path, { recursive: true });
+        return { ok: true, slug: args.slug, path };
+      }
+      if (name === 'pot:obliterate') {
+        if (opts.failObliterate) return { ok: false, error: 'schema drop blocked' };
+        return { ok: true, slug: args.slug, obliterated: true };
+      }
+      if (name === 'agent_chats:create') return { id: 'chat-abc' };
+      if (name === 'agent_chats:send_message') return { ok: true };
+      throw new Error(`unexpected inner call: ${name}`);
+    });
+    return { inner, calls };
+  }
+
+  /** Deps whose source dir does not exist → the OVERLAY throws, after pot:create committed. */
+  function overlayFailingDeps(): NewAppDeps {
+    return baseDeps({
+      resolveSource: (async () => ({
+        listing: { id: LISTING.id, ref: REF, title: LISTING.title },
+        guide: GUIDE.guide,
+        guideTruncated: false,
+        guideBranch: GUIDE.branch,
+        acquireSourceDir: async () => ({
+          srcDir: join(scratch, 'does-not-exist'),
+          cleanup: async () => {},
+        }),
+      })) as NewAppDeps['resolveSource'],
+    });
+  }
+
+  it('rolls the pot back when a step AFTER pot:create fails, so the retry is unblocked', async () => {
+    const { inner, calls } = rollbackInner();
+    const result = await composeNewApp(baseArgs(), inner, overlayFailingDeps());
+    const payload = parse(result);
+
+    expect(payload.ok).toBe(false);
+    // The pot really was obliterated — the point of the fix, not just a nicer message.
+    expect(calls.map((c) => c.name)).toEqual(['pot:create', 'pot:obliterate']);
+    expect(calls[1].args).toMatchObject({ slug: 'my-app', confirm: true });
+    // And the caller is TOLD the retry is now safe, rather than having to infer it.
+    expect(payload.error).toContain('ROLLED BACK');
+    expect(payload.error).toContain('retrying with the same slug is safe');
+  });
+
+  it('rolls back when pot:create itself THROWS (the observed PgBouncer failure)', async () => {
+    // pot:create commits its registry row before it finishes, so a throw can leave a
+    // pot behind with the caller holding no result at all.
+    const { inner, calls } = rollbackInner({
+      createThrows: new Error('write CONNECTION_CLOSED 127.0.0.1:6432'),
+    });
+    const result = await composeNewApp(baseArgs(), inner, baseDeps());
+    const payload = parse(result);
+
+    expect(payload.ok).toBe(false);
+    expect(calls.map((c) => c.name)).toEqual(['pot:create', 'pot:obliterate']);
+    expect(payload.error).toContain('CONNECTION_CLOSED');
+    expect(payload.error).toContain('ROLLED BACK');
+  });
+
+  it('NEVER rolls back on slug_exists — that pot belongs to an earlier call', async () => {
+    // The one case where compensating would destroy a project this call never created.
+    // If this test ever goes green while an obliterate is dispatched, the fix has become
+    // a data-loss bug.
+    const { inner, calls } = rollbackInner({
+      createThrows: new Error("slug_exists: A harness 'my-app' already exists in this workspace."),
+    });
+    const result = await composeNewApp(baseArgs(), inner, baseDeps());
+    const payload = parse(result);
+
+    expect(payload).toMatchObject({ ok: false, status: 422 });
+    expect(calls.map((c) => c.name)).toEqual(['pot:create']);
+    expect(inner).not.toHaveBeenCalledWith('pot:obliterate', expect.anything());
+    // ...and it says why retrying unchanged is pointless, which the bare passthrough did not.
+    expect(payload.error).toContain('RETRYING THIS CALL UNCHANGED CANNOT SUCCEED');
+    expect(payload.error).toContain('pot:obliterate');
+  });
+
+  it('reports honestly when the rollback ALSO fails (the slug is still taken)', async () => {
+    // The failure that triggers a rollback is often the same thing that breaks it — a
+    // dropped PG connection cannot be used to un-write. Saying "rolled back" here would
+    // send the caller into a retry that cannot succeed.
+    const { inner, calls } = rollbackInner({ failObliterate: true });
+    const result = await composeNewApp(baseArgs(), inner, overlayFailingDeps());
+    const payload = parse(result);
+
+    expect(payload.ok).toBe(false);
+    expect(calls.map((c) => c.name)).toEqual(['pot:create', 'pot:obliterate']);
+    expect(payload.error).toContain('ROLLBACK ALSO FAILED');
+    expect(payload.error).toContain('still taken');
+    expect(payload.error).not.toContain('is safe');
+  });
+});

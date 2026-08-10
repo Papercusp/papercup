@@ -28,6 +28,7 @@ import { resolveTemplateListing, fetchTemplateGuide } from '../../cupboard/templ
 import { resolveLocalTemplate, readLocalGuide } from '../../cupboard/template-store';
 import {
   materializeTemplateCore,
+  compensateCreatedHarness,
   cloneSourceAcquire,
   localSourceAcquire,
   MaterializeTemplateError,
@@ -68,6 +69,40 @@ function kickoffMessage(
     ? '\n\n[GUIDE.md truncated here — read the full GUIDE.md in the repo for the rest.]'
     : '';
   return `${head}\n\nFollow the template's build guide below (honor its MUST/SHOULD/FREE tiers):\n\n---\n${guide}${trunc}`;
+}
+
+/**
+ * Is this failure "the slug is already taken"? (WI-37768)
+ *
+ * Load-bearing: it is the ONE pot:create failure we must never compensate, because the
+ * pot under that slug belongs to an earlier call and rolling it back would destroy a
+ * project this call never created. Matched on the message because pot:create reports it
+ * as a `slug_exists:` code inside a string envelope, not as a typed error.
+ */
+function isSlugExists(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /slug_exists|already exists/i.test(msg);
+}
+
+/**
+ * The slug is taken — say what that MEANS and how to get out of it (WI-37768).
+ *
+ * The bare passthrough ("pot:create failed: slug_exists: A harness 'x' already exists")
+ * is true but useless at the moment it matters most: right after a failed run, when the
+ * caller's instinct is to retry with the same args. That retry is the one move that
+ * provably cannot work, and nothing in the old message said so.
+ */
+function slugExistsError(slug: string, cause: unknown): MaterializeTemplateError {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new MaterializeTemplateError(
+    `pot:create failed: ${detail}\n\n` +
+      `The slug "${slug}" is already taken, so RETRYING THIS CALL UNCHANGED CANNOT SUCCEED. ` +
+      `If a previous templates:new-app run failed partway and left this pot behind, it is now ` +
+      `inspectable — check it before assuming it is empty: an existing pot may hold real work. ` +
+      `To discard a known-stranded one: pot:obliterate { slug: "${slug}", confirm: true } ` +
+      `(irreversible). Otherwise re-run under a different slug.`,
+    422,
+  );
 }
 
 export interface NewAppArgs {
@@ -137,11 +172,28 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
 
   const parentDir = args.parentDir?.trim() || deps.defaultParentDir();
 
+  // WI-37768: pot:create is the first DURABLE step, so anything that throws after it
+  // strands the slug and blocks the retry. Roll the pot back — it was created by THIS
+  // call, seconds ago, and nothing else has touched it, which is what makes
+  // obliterating it a compensating transaction rather than destruction.
+  const rollbackHarness = async ({ slug }: { slug: string }) => {
+    const raw = await inner('pot:obliterate', { slug, confirm: true });
+    const r = raw as { ok?: boolean; error?: string };
+    // pot:obliterate is itself atomic (it rolls back rather than half-clear), so an
+    // ok:false means the slug is still taken — surface that, do not assume.
+    if (!r?.ok) {
+      throw new Error(
+        typeof raw === 'string' ? raw : (r?.error ?? 'pot:obliterate did not report ok'),
+      );
+    }
+  };
+
   let materialized: MaterializeTemplateResult;
   try {
     materialized = await materializeTemplateCore({
       ref: src.listing.ref,
       acquireSourceDir: src.acquireSourceDir,
+      rollbackHarness,
       createHarness: async () => {
         // Create the app AS ITS OWN pot (hive home), NOT a standalone coding
         // harness — so it is PLAN-CAPABLE from birth. Plans are Hive-scoped
@@ -155,11 +207,26 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
         // per materialized app — the owner publishes later). The template
         // overlays on top; overlayTemplateFiles protects .papercusp/blueprint.yaml
         // so the pot's own hive blueprint survives.
-        const raw = await inner('pot:create', {
-          slug: args.slug,
-          parentDir,
-          repoRemote: 'local-only',
-        });
+        let raw: unknown;
+        try {
+          raw = await inner('pot:create', {
+            slug: args.slug,
+            parentDir,
+            repoRemote: 'local-only',
+          });
+        } catch (e) {
+          // pot:create THREW rather than returning a result — so we cannot know how far
+          // it got, and it commits its registry row before it finishes (this is the
+          // failure actually observed: a PgBouncer `write CONNECTION_CLOSED` mid-call,
+          // 2026-08-10, WI-37768).
+          //
+          // A slug_exists throw is the ONE case we must never compensate: the pot under
+          // that slug belongs to some EARLIER call, and obliterating it would destroy
+          // someone else's project. Every other error means the slug was free when this
+          // call started, so anything now sitting under it was created by US.
+          if (isSlugExists(e)) throw slugExistsError(args.slug, e);
+          throw await compensateCreatedHarness(e, { slug: args.slug, path: '' }, rollbackHarness);
+        }
         const r = raw as { ok?: boolean; slug?: string; path?: string; error?: string; message?: string };
         if (!r?.ok || !r.path || !r.slug) {
           // A THROWN sub-handler arrives as the framework's `handler_error: …`
@@ -176,6 +243,7 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
                 : raw
                   ? JSON.stringify(raw).slice(0, 300)
                   : 'unknown error';
+          if (isSlugExists(detail)) throw slugExistsError(args.slug, detail);
           throw new MaterializeTemplateError(`pot:create failed: ${detail}`, 422);
         }
         return { slug: r.slug, path: r.path };
