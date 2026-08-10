@@ -44,8 +44,27 @@
  * is a wedged agent.
  */
 
-/** Matches memory_recall_stats.surface vocabulary. */
-export type InjectionPort = 'turn-start' | 'mid-turn';
+/**
+ * The injection PORTS, as ONE source of truth. Matches memory_recall_stats.surface
+ * vocabulary.
+ *
+ * ⚠⚠ EVERY PORT LISTED HERE MUST HAVE A PRODUCTION WRITER, or this vocabulary
+ * lies. Until WI-37597 only `mid-turn` did: `recordInjectionCoverage` was called
+ * from `mid-turn-context.ts` and nowhere else, so `context_injection_coverage`
+ * had never held a single `turn-start` row for any client — while this type
+ * cheerfully declared the value, and the reader below blended both ports into one
+ * per-client number that healthy mid-turn traffic kept green.
+ *
+ * A turn-start outage was therefore STRUCTURALLY invisible, not merely unlikely —
+ * the same shape as the defect this whole plan exists to fix (D-005 §1: a
+ * Claude-only deriveQuery made non-Claude rows impossible rather than rare), and
+ * the reason EI-20001110634702380 closed cause-undetermined.
+ *
+ * So: adding a port here OBLIGES you to add its writer in the same change.
+ * `injection-delivery-coverage.test.ts` fails if a port has no writer.
+ */
+export const INJECTION_PORTS = ['turn-start', 'mid-turn'] as const;
+export type InjectionPort = (typeof INJECTION_PORTS)[number];
 
 export type InjectionDeliveryOutcome =
   /** The injection ran and returned context. */
@@ -172,11 +191,37 @@ export type InjectionClient = (typeof INJECTION_CLIENTS)[number];
  */
 const SESSION_CORPUS_NAMESPACE = 'default';
 
+/**
+ * One (client, port) cell — the grain at which an outage is actually visible.
+ *
+ * Reporting only the per-client total is what made a turn-start outage
+ * undetectable: a client whose turn-start port has gone completely silent still
+ * shows healthy `events` as long as its mid-turn port is working, so the failure
+ * is MASKED by the traffic of the port that still works. Every field here exists
+ * to be read per port, never summed back up.
+ */
+export interface PortInjectionCoverage {
+  port: InjectionPort;
+  /** Coverage events recorded for this port in the window. */
+  events: number;
+  byOutcome: Record<InjectionDeliveryOutcome, number>;
+  /** Tool names behind `unknown-tool` on this port — the actionable drift. */
+  driftTools: string[];
+  /**
+   * Has THIS PORT ever produced a row for this client, at any time? Per-port for
+   * the same reason the client-level flag exists: a port with no baseline gives
+   * no evidence its writer is deployed, so it can never be a REGRESSION — only a
+   * known gap. This is what stops the turn-start writer's own rollout from
+   * paging every client the moment the reader learns to look for it.
+   */
+  everObserved: boolean;
+}
+
 export interface ClientInjectionCoverage {
   client: string;
   /** Sessions seen for this client in the window — the DENOMINATOR. */
   sessions: number;
-  /** Coverage events recorded in the window. */
+  /** Coverage events recorded in the window, ACROSS ALL PORTS. */
   events: number;
   byOutcome: Record<InjectionDeliveryOutcome, number>;
   /** Tool names behind `unknown-tool` — the actionable drift, named. */
@@ -187,6 +232,28 @@ export interface ClientInjectionCoverage {
    * it can never be a REGRESSION — only a known gap. See the status function.
    */
   everObserved: boolean;
+  /**
+   * Per-port breakdown — ALWAYS one entry per INJECTION_PORTS, in that order,
+   * present even when the port recorded nothing. A missing entry and a zeroed
+   * entry read identically to a consumer looping over what it was given, and the
+   * zeroed one is the whole signal here, so absence is never an option.
+   */
+  ports: PortInjectionCoverage[];
+}
+
+/** A window row as the numerator query returns it (one per client/port/outcome/tool). */
+export interface CoverageWindowRow {
+  client: string;
+  port: string;
+  outcome: string;
+  tool: string;
+  n: number;
+}
+
+/** A baseline row — this (client, port) has been observed at some point, ever. */
+export interface CoverageEverRow {
+  client: string;
+  port: string;
 }
 
 export interface InjectionDeliveryCoverageReading {
@@ -232,51 +299,96 @@ export async function readInjectionDeliveryCoverage(opts: {
      GROUP BY 1
   `;
 
-  // Numerator — real tenant.
-  const windowRows = await sql<
-    { client: string; outcome: string; tool: string; n: number }[]
-  >`
-    SELECT client, outcome, tool, sum(n)::int AS n
+  // Numerator — real tenant. GROUPED BY PORT: without `port` in the grouping the
+  // two ports are summed before anything can compare them, and a dead port is
+  // arithmetically indistinguishable from a quiet one.
+  const windowRows = await sql<CoverageWindowRow[]>`
+    SELECT client, port, outcome, tool, sum(n)::int AS n
       FROM harness_shared.context_injection_coverage
      WHERE workspace_id = ${opts.workspaceId}
        AND day >= (now() - (${windowHours}::text || ' hours')::interval)::date
-     GROUP BY 1, 2, 3
+     GROUP BY 1, 2, 3, 4
   `;
 
-  // Baseline — has this client EVER been observed, at any time?
-  const everRows = await sql<{ client: string }[]>`
-    SELECT DISTINCT client
+  // Baseline — has this (client, PORT) EVER been observed, at any time?
+  const everRows = await sql<CoverageEverRow[]>`
+    SELECT DISTINCT client, port
       FROM harness_shared.context_injection_coverage
      WHERE workspace_id = ${opts.workspaceId}
   `;
-  const ever = new Set(everRows.map((r) => r.client));
 
   const sessionsBy = new Map(sessionRows.map((r) => [r.client, Number(r.sessions) || 0]));
 
-  const out: ClientInjectionCoverage[] = clients.map((client) => {
-    const byOutcome = ZERO_OUTCOMES();
-    const driftTools: string[] = [];
-    let events = 0;
-    for (const r of windowRows) {
-      if (r.client !== client) continue;
-      const n = Number(r.n) || 0;
-      events += n;
-      if (r.outcome in byOutcome) byOutcome[r.outcome as InjectionDeliveryOutcome] += n;
-      if (r.outcome === 'unknown-tool' && r.tool) driftTools.push(r.tool);
-    }
+  return {
+    windowHours,
+    ...foldInjectionCoverage({ clients, windowRows, everRows, sessionsBy }),
+  };
+}
+
+/**
+ * Fold raw rows into the per-client / per-port reading. PURE — no I/O.
+ *
+ * Extracted from the reader so the property that actually matters can be tested
+ * without a database: mid-turn traffic must NEVER make the turn-start port look
+ * observed. That is the exact masking this module shipped with, and no unit test
+ * could reach it while the folding lived inside a function whose first statement
+ * opens a PG connection.
+ */
+export function foldInjectionCoverage(input: {
+  clients: readonly string[];
+  windowRows: readonly CoverageWindowRow[];
+  everRows: readonly CoverageEverRow[];
+  sessionsBy: ReadonlyMap<string, number>;
+}): { clients: ClientInjectionCoverage[]; totalEvents: number } {
+  // Keyed on client AND port together — keying on either alone is precisely the
+  // blend this function exists to prevent.
+  const ever = new Set(input.everRows.map((r) => `${r.client}\x00${r.port}`));
+
+  const out: ClientInjectionCoverage[] = input.clients.map((client) => {
+    const clientOutcomes = ZERO_OUTCOMES();
+    const clientDrift: string[] = [];
+    let clientEvents = 0;
+
+    const ports: PortInjectionCoverage[] = INJECTION_PORTS.map((port) => {
+      const byOutcome = ZERO_OUTCOMES();
+      const driftTools: string[] = [];
+      let events = 0;
+      for (const r of input.windowRows) {
+        if (r.client !== client || r.port !== port) continue;
+        const n = Number(r.n) || 0;
+        events += n;
+        if (r.outcome in byOutcome) byOutcome[r.outcome as InjectionDeliveryOutcome] += n;
+        if (r.outcome === 'unknown-tool' && r.tool) driftTools.push(r.tool);
+      }
+      // Roll the port up into the client totals, so the two views cannot drift
+      // apart the way two independently-computed sums would.
+      clientEvents += events;
+      for (const k of Object.keys(byOutcome) as InjectionDeliveryOutcome[]) {
+        clientOutcomes[k] += byOutcome[k];
+      }
+      clientDrift.push(...driftTools);
+      return {
+        port,
+        events,
+        byOutcome,
+        driftTools: [...new Set(driftTools)].sort(),
+        everObserved: ever.has(`${client}\x00${port}`),
+      };
+    });
+
     return {
       client,
-      sessions: sessionsBy.get(client) ?? 0,
-      events,
-      byOutcome,
-      driftTools: [...new Set(driftTools)].sort(),
-      everObserved: ever.has(client),
+      sessions: input.sessionsBy.get(client) ?? 0,
+      events: clientEvents,
+      byOutcome: clientOutcomes,
+      driftTools: [...new Set(clientDrift)].sort(),
+      // Client-level baseline stays ANY-port on purpose: it answers "has this
+      // client's recording path ever worked at all", which the per-port flags
+      // then refine.
+      everObserved: ports.some((p) => p.everObserved),
+      ports,
     };
   });
 
-  return {
-    windowHours,
-    clients: out,
-    totalEvents: out.reduce((a, c) => a + c.events, 0),
-  };
+  return { clients: out, totalEvents: out.reduce((a, c) => a + c.events, 0) };
 }

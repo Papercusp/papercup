@@ -864,3 +864,135 @@ describe('derive-miss leaves a trace (D-005 §3b)', () => {
     ).toBeGreaterThan(0);
   });
 });
+
+describe('papercusp MCP vocabulary — the 97% of drift-alarm noise (WI-37589)', () => {
+  // Measured 2026-08-09 from context_injection_coverage: 79 distinct
+  // mcp__papercusp-su__* tools, 2,424 calls/day deriving nothing. After
+  // WI-37587 fixed claude's NATIVE tools this WAS the remaining noise floor,
+  // and an alarm that is ~100% noise cannot show a real drift event.
+  describe('both spellings resolve to one entry', () => {
+    it('resolves the CLIENT-MANGLED name a hook actually sends', () => {
+      expect(deriveQuery('mcp__papercusp-su__dev_pg_query', { sql: 'SELECT 1 FROM plans' })).toBe(
+        'SELECT 1 FROM plans',
+      );
+    });
+    it('resolves the COLON name, which is what tools:invoke carries', () => {
+      expect(deriveQuery('dev:pg_query', { sql: 'SELECT 1 FROM plans' })).toBe(
+        'SELECT 1 FROM plans',
+      );
+    });
+    it('capability:bash mirrors claude Bash exactly — same fields, same em-dash', () => {
+      const args = { command: 'rg foo', description: 'find foo' };
+      expect(deriveQuery('mcp__papercusp-su__capability_bash', args)).toBe(
+        deriveQuery('Bash', args),
+      );
+    });
+  });
+
+  describe('tools:invoke recurses — its own args are the WRONG reading', () => {
+    // The single biggest miss in the vocabulary (423 calls/day, 17% of the MCP
+    // namespace). Its args are { name, args }: reading THOSE embeds the literal
+    // string "dev:pg_query" plus a JSON blob, so the only correct reading is
+    // the inner tool's own entry.
+    it('derives from the INNER tool, not from name/args', () => {
+      const q = deriveQuery('mcp__papercusp-su__tools_invoke', {
+        name: 'dev:pg_query',
+        args: { sql: 'SELECT count(*) FROM harness_shared.work_items' },
+      });
+      expect(q).toBe('SELECT count(*) FROM harness_shared.work_items');
+      // The dispatcher's own field values must not leak into the query.
+      expect(q).not.toContain('dev:pg_query');
+    });
+    it('an inner tool that carries no signal is no-signal, NOT unknown-tool', () => {
+      expect(
+        deriveQueryDetailed('tools:invoke', { name: 'work_items:get', args: { id: 'WI-1' } }),
+      ).toEqual({ query: '', miss: 'no-signal' });
+    });
+    it('an UNMAPPED inner tool is reported under the INNER name, not the dispatcher', () => {
+      // Reporting "tools:invoke is unmapped" would put a perfectly mapped tool
+      // in the drift list and point nobody at the real gap.
+      const d = deriveQueryDetailed('mcp__papercusp-su__tools_invoke', {
+        name: 'brand:new_verb',
+        args: { query: 'x' },
+      });
+      expect(d.miss).toBe('unknown-tool');
+      expect(d.missTool).toBe('brand:new_verb');
+    });
+    it('surfaces that inner name in unknownTools, which is what the alarm reads', () => {
+      const { unknownTools } = deriveBatchQueryDetailed([
+        {
+          tool: 'mcp__papercusp-su__tools_invoke',
+          toolInput: JSON.stringify({ name: 'brand:new_verb', args: {} }),
+        },
+      ]);
+      expect(unknownTools).toEqual(['brand:new_verb']);
+      expect(unknownTools).not.toContain('mcp__papercusp-su__tools_invoke');
+    });
+    it('a dispatch through a dispatch terminates instead of recursing', () => {
+      expect(
+        deriveQueryDetailed('tools:invoke', {
+          name: 'tools:invoke',
+          args: { name: 'tools:invoke', args: {} },
+        }),
+      ).toEqual({ query: '', miss: 'no-signal' });
+    });
+  });
+
+  describe('NEGATIVE CONTROLS — the ways a wrong mapping would be worse than none', () => {
+    // A wrong field name derives '' and classifies 'no-signal', which is
+    // INDISTINGUISHABLE from a deliberate omission — so it silently converts a
+    // working alarm into permanent quiet. These are the shapes that would do it.
+    it('a THIRD-PARTY mcp tool does not borrow an omp entry with the same suffix', () => {
+      // `mcp__some-server__read` must NOT resolve to omp's `read` spec. If the
+      // prefix guard is dropped this returns '' (from omp's path/file_path,
+      // which this payload lacks) and reads as a deliberate omission.
+      const d = deriveQueryDetailed('mcp__some-server__read', { path: '/x/y.ts' });
+      expect(d.miss).toBe('unknown-tool');
+    });
+    it('the bare omp `read` still works — the control for the control', () => {
+      // Without this, the assertion above would also pass if `read` had simply
+      // been deleted from the vocabulary.
+      expect(deriveQuery('read', { path: '/x/y.ts' })).toBe('/x/y.ts');
+    });
+    it('an unmapped papercusp tool stays LOUD rather than being blanket-silenced', () => {
+      // The ~60 calls/day tail is deliberately still 'unknown-tool': that floor
+      // is what makes a genuinely new tool arriving at 100+/day visible.
+      expect(deriveQueryDetailed('mcp__papercusp-su__brand_new_verb', { query: 'x' })).toEqual({
+        query: '',
+        miss: 'unknown-tool',
+      });
+    });
+    it('bookkeeping tools are no-signal, so the alarm cannot read them as drift', () => {
+      for (const tool of [
+        'mcp__papercusp-su__loop_checkpoint',
+        'mcp__papercusp-su__work_items_complete',
+        'mcp__papercusp-su__coord_send',
+        'mcp__papercusp-su__plans_get',
+      ]) {
+        expect(deriveQueryDetailed(tool, { id: 'WI-1', body: 'done' }).miss).toBe('no-signal');
+      }
+    });
+    it('never embeds an opaque identifier as a recall query', () => {
+      // The concrete refutation of deriving this vocabulary from the defineTool
+      // registry: the schema would happily map work_items:get -> id and
+      // plans:get -> slug, and an id retrieves on token overlap with unrelated
+      // records. An ANTI-signal is worse than no signal.
+      expect(deriveQuery('mcp__papercusp-su__work_items_get', { id: 'WI-37589' })).toBe('');
+      expect(deriveQuery('mcp__papercusp-su__plans_get', { slug: 'some-plan-2026' })).toBe('');
+    });
+    it('coord:orient drops `intent` on purpose — orient already recalls on it', () => {
+      // Mapping it would re-embed the same string and inject the same records
+      // twice in one turn. Strong signal, deliberately not taken HERE.
+      expect(deriveQuery('mcp__papercusp-su__coord_orient', { intent: 'fix the gate' })).toBe('');
+    });
+    it('does not embed unbounded bodies — code:run takes title/description, not script', () => {
+      const q = deriveQuery('mcp__papercusp-su__code_run', {
+        title: 'count claimable',
+        description: 'burn-down probe',
+        script: 'const secret = "sk-do-not-embed-me";',
+      });
+      expect(q).toBe('count claimable burn-down probe');
+      expect(q).not.toContain('sk-do-not-embed-me');
+    });
+  });
+});

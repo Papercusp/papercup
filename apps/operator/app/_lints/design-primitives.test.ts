@@ -21,6 +21,13 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { relative, resolve, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+// The banned-letter-spacing matcher lives in a plain .mjs so the edit-time nudge hook
+// (which runs under bare `node`, detached from any TS loader) can import the SAME
+// definition instead of forking the regex. See letter-spacing-pattern.mjs for why that
+// mattered: hud.css red-pinned the fleet 3x on this one rule, and prose comments in the
+// file failed to prevent the 3rd.
+import { nonzeroLetterSpacingRe as makeNonzeroLetterSpacingRe } from './letter-spacing-pattern.mjs';
+
 const OPERATOR_ROOT = resolve(__dirname, '../..');
 const APPS_ROOT = resolve(OPERATOR_ROOT, '..');
 

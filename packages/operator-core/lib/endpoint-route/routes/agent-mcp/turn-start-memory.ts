@@ -124,6 +124,45 @@ const turnStartMemory = defineTool({
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
 
+      /**
+       * WI-37597: report THIS port's delivery coverage.
+       *
+       * Until this existed, `recordInjectionCoverage` was called from
+       * `mid-turn-context.ts` and nowhere else, so `context_injection_coverage`
+       * had never held a single `turn-start` row — for any client, ever. The
+       * detector built to answer "is this client being served context?" was
+       * therefore blind to a turn-start outage by construction, which is why
+       * EI-20001110634702380 (a real turn-start injection failure) closed
+       * cause-undetermined.
+       *
+       * Fail-silent and never awaited, exactly like the rest of this path: this
+       * runs inside a hook-serving request whose whole contract is that it must
+       * never cost the agent's turn. Losing a counter is a rounding error;
+       * surfacing an error into a turn is a wedged agent.
+       */
+      const recordCoverage = (outcome: 'recalled' | 'no-recall' | 'no-signal'): void => {
+        void (async () => {
+          try {
+            const { recordInjectionCoverage } = await import(
+              '../../../memory/injection-delivery-coverage'
+            );
+            await recordInjectionCoverage([
+              {
+                port: 'turn-start',
+                outcome,
+                // Same contract as the memory_recall_stats `client` field: a
+                // caller that sends none records '' (unattributed) rather than
+                // being defaulted to a client name it might not be.
+                client: typeof body.client === 'string' && body.client ? body.client : '',
+                workspaceId,
+              },
+            ]);
+          } catch {
+            /* swallow — see the fail-silent note above. */
+          }
+        })();
+      };
+
       const controlPromise = (async (): Promise<string> => {
         try {
           const { consumePendingControlTransition, renderControlTransitionContext } = await import(
@@ -137,7 +176,13 @@ const turnStartMemory = defineTool({
       })();
 
       const memoryPromise = (async (): Promise<string> => {
-        if (body.memoryEnabled === false) return '';
+        if (body.memoryEnabled === false) {
+          // The port fired and the caller opted out — a real reading, and NOT
+          // an outage. Recording nothing here would make a client that always
+          // disables memory indistinguishable from one whose hook is dead.
+          recordCoverage('no-signal');
+          return '';
+        }
         try {
           const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { stripInjectedChrome }] =
             await Promise.all([
@@ -175,7 +220,7 @@ const turnStartMemory = defineTool({
           // turn in this corpus) loses its on-topic hits entirely. See plan decision
           // D-047. Do not wire this without re-running that measurement.
           const agentSignals = await signalsPromise;
-          return (
+          const block =
             (await buildMemoryContextBlock({
               userId: user?.id ?? null,
               workspaceId,
@@ -200,9 +245,19 @@ const turnStartMemory = defineTool({
               },
               budgetChars: TURN_START_BUDGET_CHARS,
               heading: 'Relevant memory (turn-start delta)',
-            })) ?? ''
-          );
+            })) ?? '';
+          // `no-signal` is reserved for a prompt that carried nothing to
+          // retrieve ON — chrome-stripped to empty. A non-empty query that
+          // simply matched nothing is `no-recall`: healthy quiet, and a
+          // genuinely different reading from "we never asked".
+          recordCoverage(block ? 'recalled' : queryText ? 'no-recall' : 'no-signal');
+          return block;
         } catch {
+          // Deliberately record NOTHING on a throw. The outcome vocabulary has
+          // no failure value, and the two candidates both LIE: 'no-recall'
+          // means healthy quiet and would hide the fault outright. Recording
+          // nothing leaves this turn absent from the numerator, which is what
+          // the outage detector already reads as broken — the honest answer.
           return '';
         }
       })();

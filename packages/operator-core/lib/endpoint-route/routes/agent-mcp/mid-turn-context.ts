@@ -161,6 +161,26 @@ export interface DerivedQuery {
   query: string;
   /** null = a real signal was derived. */
   miss: DeriveMiss | null;
+  /**
+   * The tool the miss is ABOUT, when that is not the tool that was called.
+   * Only `tools:invoke` produces this: it dispatches, so an unmapped INNER tool
+   * must be reported under the inner name or the drift alarm names a dispatcher
+   * that is perfectly well mapped and points nobody at the real gap (WI-37589).
+   */
+  missTool?: string;
+}
+
+/** The tool_input as an object, or null — a JSON string is parsed, anything else rejected. */
+function asRecord(input: unknown): Record<string, unknown> | null {
+  if (typeof input === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(input);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return input && typeof input === 'object' ? (input as Record<string, unknown>) : null;
 }
 
 type ToolQuerySpec = {
@@ -346,6 +366,216 @@ export const TOOL_QUERY_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
   report_finding: { fields: [] },
 };
 
+/** The one MCP tool whose signal is not in its OWN arguments — see {@link PAPERCUSP_TOOL_VOCABULARY}. */
+const TOOLS_INVOKE = 'tools:invoke';
+
+/**
+ * THE PAPERCUSP MCP VOCABULARY — keyed by the tool's REAL colon name (WI-37589).
+ *
+ * Separate from the table above for one structural reason, not for tidiness: a
+ * client mangles these names (`dev:pg_query` -> `mcp__papercusp-su__dev_pg_query`,
+ * every ':' -> '_'), so the key an incoming call arrives under is NOT the key
+ * `tools:invoke` carries for the same tool. Keying on the colon form and
+ * resolving BOTH spellings to it is what lets the recursion below share one
+ * table with direct calls instead of maintaining two.
+ *
+ * ── WHY THIS EXISTS ──
+ * Measured 2026-08-09 (context_injection_coverage, workspace papercusp-workspace,
+ * outcome='unknown-tool'): 79 distinct `mcp__papercusp-su__*` tools, 2,424
+ * calls/day deriving NOTHING — i.e. after WI-37587 fixed claude's NATIVE tools,
+ * the MCP namespace was still ~97% of the remaining drift-alarm noise. An alarm
+ * whose output is ~100% noise is functionally OFF: a genuine future drift event
+ * is unfindable in it.
+ *
+ * ── PROVENANCE: FIELD NAMES MEASURED FROM REAL CALLS, NOT FROM SCHEMAS ──
+ * Every field below was read off `harness_shared.tool_invocations.args_json`
+ * over a 3-day window — the keys agents ACTUALLY pass, ranked by frequency —
+ * not from the `defineTool` schema. That distinction matters here: a schema
+ * lists every OPTIONAL arg, so it cannot tell you which ones callers really
+ * populate, and it cannot tell you which carry signal at all.
+ *
+ * ── WHY NOT DERIVE THIS FROM THE TOOL REGISTRY (the obvious idea; REFUTED) ──
+ * WI-37589 proposed auto-deriving the vocabulary from `defineTool` schemas so it
+ * could never drift. Measuring the population refutes it: the registry supplies
+ * field NAMES but not the signal-vs-bookkeeping judgement, which is the whole
+ * problem. Auto-derivation would map `work_items:get` -> `id` and embed
+ * "WI-37589" as a recall query, `plans:get` -> `slug`, `coord:ack` -> `msg_id`.
+ * Those are not weak signals, they are ANTI-signals: opaque identifiers that
+ * retrieve on token overlap with unrelated records. A generic prefix-probe over
+ * {query, sql, command, ...} fails the same way from the other side — it is a
+ * guess about names, and a WRONG name derives '' and classifies 'no-signal',
+ * indistinguishable from a deliberate omission (see the asymmetry above).
+ *
+ * ── THE TAIL IS DELIBERATELY LEFT LOUD ──
+ * These entries cover ~2,364 of the 2,424 measured calls (~97.5%). The residue
+ * is ~60 calls/day across ~40 tools called once each. That residue stays
+ * 'unknown-tool' ON PURPOSE: with the floor at ~60/day a genuinely new tool
+ * arriving at 100+/day is now VISIBLE, which is the alarm doing its job. A
+ * blanket `mcp__*` -> no-signal rule would have silenced the floor AND the
+ * signal together, permanently.
+ *
+ * ⚠ EVERY `fields: []` HERE IS A NO-SIGNAL DECLARATION, NOT AN UNMEASURED ONE.
+ * It carries none of the guessed-field-name risk, because there is no field
+ * name in it to be wrong. It says only "this tool was looked at and carries no
+ * INVESTIGATION signal" — bookkeeping the agent is writing, not a question it
+ * is asking. Recalling on an agent's own checkpoint/completion prose would also
+ * be circular: that text is downstream of the work, not a search for it.
+ */
+export const PAPERCUSP_TOOL_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
+  // ── SIGNAL: the agent is interrogating the system ──
+  // The richest recall signal anywhere in this file: an agent's actual SQL.
+  'dev:pg_query': { fields: ['sql', 'describe'] },
+  // Exact analogue of claude's `Bash` — same two fields, same em-dash join.
+  'capability:bash': { fields: ['command', 'description'], join: ' — ' },
+  'capability:read': { fields: ['file_path'] },
+  'capability:git': { fields: ['args'] },
+  'testing:run': { fields: ['files', 'testNamePattern'] },
+  'build:typecheck': { fields: ['project', 'files'] },
+  'dev:pipeline_position': { fields: ['path'] },
+  // A literal search query the agent typed — the strongest signal class.
+  'tools:find': { fields: ['query', 'intent'] },
+  'docs:search': { fields: ['query'] },
+  'search:fulltext': { fields: ['query'] },
+  'memory:search': { fields: ['query'] },
+  'sessions:search': { fields: ['query'] },
+  'work_items:search': { fields: ['query'] },
+  'fleet:invariant': { fields: ['description', 'sql'], join: ' — ' },
+  // `title`/`description` are the agent's own words for the problem it is
+  // looking at. `script` and `body` are deliberately NOT here — unbounded
+  // bodies, on the same argument that excludes claude's `new_string`.
+  'code:run': { fields: ['title', 'description'] },
+  'improvements:capture': { fields: ['title'] },
+  'work_items:create': { fields: ['title'] },
+
+  // ── NO SIGNAL: bookkeeping the agent WRITES, not a question it asks ──
+  'loop:checkpoint': { fields: [] },
+  'loop:status': { fields: [] },
+  'loop:arm': { fields: [] },
+  'loop:end': { fields: [] },
+  // ⚠ `intent` IS strong signal — and is deliberately dropped anyway: orient
+  // ALREADY runs its own memory recall on that exact string, so deriving it
+  // here would re-embed the same query and inject the same records twice.
+  'coord:orient': { fields: [] },
+  'coord:send': { fields: [] },
+  'coord:inbox': { fields: [] },
+  'coord:presence': { fields: [] },
+  'coord:glance': { fields: [] },
+  'coord:thread': { fields: [] },
+  'coord:read': { fields: [] },
+  'coord:ack': { fields: [] },
+  'coord:whoami': { fields: [] },
+  'coord:ask-owner': { fields: [] },
+  'work_items:get': { fields: [] },
+  'work_items:checkpoint': { fields: [] },
+  'work_items:complete': { fields: [] },
+  'work_items:comment': { fields: [] },
+  'work_items:list': { fields: [] },
+  'work_items:claim': { fields: [] },
+  'work_items:claim_next': { fields: [] },
+  'work_items:claimable': { fields: [] },
+  'work_items:release': { fields: [] },
+  'work_items:set_state': { fields: [] },
+  'work_items:update': { fields: [] },
+  'work_items:link': { fields: [] },
+  'plans:get': { fields: [] },
+  'plans:get-item': { fields: [] },
+  'plans:items': { fields: [] },
+  'plans:list': { fields: [] },
+  'plans:new': { fields: [] },
+  'plans:add-item': { fields: [] },
+  'plans:add-decision': { fields: [] },
+  'plans:set-decision-body': { fields: [] },
+  'plans:set-status': { fields: [] },
+  'plans:set-now': { fields: [] },
+  'facts:assert': { fields: [] },
+  'facts:list': { fields: [] },
+  'facts:retract': { fields: [] },
+  'memory:remember': { fields: [] },
+  'sessions:read': { fields: [] },
+  'sessions:timeline': { fields: [] },
+  'session:request-compaction': { fields: [] },
+  'scheduler:get_next': { fields: [] },
+  'state:read': { fields: [] },
+  'mode:set': { fields: [] },
+  'locks:list': { fields: [] },
+  'locks:queue': { fields: [] },
+  'fleet:leader-brief': { fields: [] },
+  'fleet:status': { fields: [] },
+  'fleet:wind-down': { fields: [] },
+  'db:migrate': { fields: [] },
+  'db:next-migration': { fields: [] },
+  'conversations:get': { fields: [] },
+  'conversations:post': { fields: [] },
+  'activity:recent': { fields: [] },
+  'journal:recent': { fields: [] },
+  'release:deploy': { fields: [] },
+  'gateway:status': { fields: [] },
+  // `capability:bash_output` reads a job's log; `filter` is a bare regex like
+  // "ERROR". A lone regex retrieves on a token that carries no topic — the
+  // same argument that keeps codex's `update_goal.status` unmapped.
+  'capability:bash_output': { fields: [] },
+  // Handled by RECURSION, not by fields — see deriveQueryDetailed. Present so
+  // the name resolves to a KNOWN tool rather than falling through to the alarm.
+  [TOOLS_INVOKE]: { fields: [] },
+};
+
+/**
+ * Mangled spelling -> colon name, built from the table above so it cannot drift.
+ *
+ * Inverting a mangled name in general is AMBIGUOUS (`work_items_get` could be
+ * `work_items:get` or `work:items_get`), which is exactly why this is built
+ * FORWARD from the declared set instead of parsed. A collision would make one
+ * of two declared tools silently unreachable, so it throws at module load
+ * rather than resolving to whichever happened to be inserted last.
+ */
+const MANGLED_TO_COLON: ReadonlyMap<string, string> = (() => {
+  const map = new Map<string, string>();
+  for (const colon of Object.keys(PAPERCUSP_TOOL_VOCABULARY)) {
+    const mangled = colon.replace(/:/g, '_');
+    const prior = map.get(mangled);
+    if (prior && prior !== colon) {
+      throw new Error(
+        `mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`,
+      );
+    }
+    map.set(mangled, colon);
+  }
+  return map;
+})();
+
+/**
+ * Resolve a spec for a tool name in EITHER spelling.
+ *
+ * ⚠ The `mcp__` guard is load-bearing, not decoration. Stripping the server
+ * prefix off any name would let a THIRD-PARTY MCP tool collide with this file's
+ * lowercase omp entries — `mcp__some-server__read` would resolve to omp's
+ * `read: { fields: ['path','file_path'] }` and derive from fields it does not
+ * have. That is the "a wrong mapping is worse than none" failure, so the
+ * papercusp table is consulted ONLY for mcp-prefixed names, and the bare
+ * lowercase client tools can never reach it.
+ */
+function specFor(tool: string): ToolQuerySpec | undefined {
+  const direct = TOOL_QUERY_VOCABULARY[tool];
+  if (direct) return direct;
+  // `tools:invoke` hands us the inner tool under its real colon name.
+  const byColon = PAPERCUSP_TOOL_VOCABULARY[tool];
+  if (byColon) return byColon;
+  if (!tool.startsWith('mcp__')) return undefined;
+  // Prefix is `mcp__<server>__`; a server name may contain '-' but never '__'.
+  const end = tool.indexOf('__', 'mcp__'.length);
+  if (end < 0) return undefined;
+  const colon = MANGLED_TO_COLON.get(tool.slice(end + 2));
+  return colon ? PAPERCUSP_TOOL_VOCABULARY[colon] : undefined;
+}
+
+/** Normalize either spelling to the colon name, for the recursion's own guard. */
+function colonNameFor(tool: string): string {
+  if (PAPERCUSP_TOOL_VOCABULARY[tool]) return tool;
+  if (!tool.startsWith('mcp__')) return tool;
+  const end = tool.indexOf('__', 'mcp__'.length);
+  return end < 0 ? tool : (MANGLED_TO_COLON.get(tool.slice(end + 2)) ?? tool);
+}
+
 /**
  * Derive the recall query from the tool call, and say WHY when there is none.
  *
@@ -357,7 +587,7 @@ export const TOOL_QUERY_VOCABULARY: Readonly<Record<string, ToolQuerySpec>> = {
  * blob of JSON.
  */
 export function deriveQueryDetailed(tool: string, input: unknown): DerivedQuery {
-  const spec = TOOL_QUERY_VOCABULARY[tool];
+  const spec = specFor(tool);
   // Not in the vocabulary at all. Either a client we have not mapped or a new
   // tool on one we have — the case that must stay VISIBLE, because it is the
   // one that silently zeroed codex and omp for the life of this endpoint.
@@ -365,6 +595,28 @@ export function deriveQueryDetailed(tool: string, input: unknown): DerivedQuery 
 
   const done = (text: string): DerivedQuery =>
     text ? { query: text, miss: null } : { query: '', miss: 'no-signal' };
+
+  // ── `tools:invoke` DISPATCHES: the signal is the INNER call, never its own args ──
+  // Measured 2026-08-09 it is the single biggest miss in the whole vocabulary
+  // (423 calls/day, 17% of the MCP namespace), and its own two arguments are
+  // `name` + `args`. Reading THOSE would embed the literal string
+  // "dev:pg_query" plus a JSON blob — so the only correct reading is to ask the
+  // inner tool's own entry, which is why this recurses rather than listing
+  // fields. An inner tool we do not know stays 'unknown-tool' and is reported
+  // UNDER ITS OWN NAME (`missTool`), because "tools:invoke is unmapped" would
+  // be both false and un-actionable.
+  if (colonNameFor(tool) === TOOLS_INVOKE) {
+    const io = asRecord(input);
+    if (!io) return { query: '', miss: 'no-signal' };
+    const innerName = str(io.name);
+    if (!innerName) return { query: '', miss: 'no-signal' };
+    // A dispatch through a dispatch is not a shape this system produces; treat
+    // it as no-signal rather than recursing, so a malformed or hostile payload
+    // cannot drive unbounded recursion on a path that must never cost a turn.
+    if (colonNameFor(innerName) === TOOLS_INVOKE) return { query: '', miss: 'no-signal' };
+    const inner = deriveQueryDetailed(innerName, io.args);
+    return inner.miss === 'unknown-tool' ? { ...inner, missTool: innerName } : inner;
+  }
 
   // The hook clamps tool_input to a string before sending, so accept either the
   // structured object (unit tests, future callers) or that clamped JSON text.
@@ -490,8 +742,11 @@ export function deriveBatchQueryDetailed(calls: BatchCall[]): DerivedBatch {
   const noSignal = new Set<string>();
   for (const call of [...calls].reverse()) {
     const tool = (call.tool ?? '').trim();
-    const { query: q, miss } = deriveQueryDetailed(tool, call.toolInput);
-    if (miss === 'unknown-tool') unknown.add(tool || '(empty)');
+    const { query: q, miss, missTool } = deriveQueryDetailed(tool, call.toolInput);
+    // `missTool` names the INNER tool of a `tools:invoke` dispatch. Reporting
+    // the dispatcher instead would put a mapped tool in the drift list and
+    // point nobody at the tool that is actually unmapped (WI-37589).
+    if (miss === 'unknown-tool') unknown.add(missTool || tool || '(empty)');
     else if (miss === 'no-signal') noSignal.add(tool);
     if (!q) continue;
     const response = str(call.toolResponse);
@@ -517,12 +772,13 @@ export function deriveBatchQuery(calls: BatchCall[]): string {
  * instead of two that can drift apart.
  */
 function singleCallDetail(tool: string, input: unknown): DerivedBatch {
-  const { query, miss } = deriveQueryDetailed(tool, input);
+  const { query, miss, missTool } = deriveQueryDetailed(tool, input);
   return {
     query,
     // An empty tool name still has to be countable, or the most likely
-    // malformed-payload case is the one that stays invisible.
-    unknownTools: miss === 'unknown-tool' ? [tool || '(empty)'] : [],
+    // malformed-payload case is the one that stays invisible. `missTool` is the
+    // `tools:invoke` inner-name case — see deriveBatchQueryDetailed.
+    unknownTools: miss === 'unknown-tool' ? [missTool || tool || '(empty)'] : [],
     noSignalTools: miss === 'no-signal' ? [tool] : [],
   };
 }

@@ -64,6 +64,7 @@ import type {
   ToolEfficiencyHealth,
   ContextInjectionHealth,
   ContextInjectionClientRow,
+  ContextInjectionPortRow,
   ToolEfficiencyRating,
   LoopsHealth,
   CoordinationHealth,
@@ -99,6 +100,7 @@ import {
   coordinationStatus,
   memoryStatus,
   classifyInjectionClient,
+  worstInjectionVerdict,
   contextInjectionStatus,
   reconcilePausedQueen,
   QUEEN_STALL_MS,
@@ -2503,6 +2505,27 @@ async function collectContextInjection(ctx: HealthCtx): Promise<HealthPanel<Cont
 
     const clients: ContextInjectionClientRow[] = reading.clients.map((c) => {
       const unknownTool = c.byOutcome['unknown-tool'];
+      // Classify each PORT with the same rule as a client — the question is
+      // identical ("sessions ran; did this thing record anything, and has it
+      // ever?"), only the denominator differs. Reusing the classifier keeps the
+      // never-alarm-without-a-baseline guarantee true per port for free.
+      const ports: ContextInjectionPortRow[] = c.ports.map((p) => ({
+        port: p.port,
+        events: p.events,
+        everObserved: p.everObserved,
+        verdict: classifyInjectionClient({
+          sessions: c.sessions,
+          events: p.events,
+          unknownTool: p.byOutcome['unknown-tool'],
+          everObserved: p.everObserved,
+        }),
+      }));
+      const clientVerdict = classifyInjectionClient({
+        sessions: c.sessions,
+        events: c.events,
+        unknownTool,
+        everObserved: c.everObserved,
+      });
       return {
         client: c.client,
         sessions: c.sessions,
@@ -2511,12 +2534,12 @@ async function collectContextInjection(ctx: HealthCtx): Promise<HealthPanel<Cont
         unknownTool,
         driftTools: c.driftTools,
         everObserved: c.everObserved,
-        verdict: classifyInjectionClient({
-          sessions: c.sessions,
-          events: c.events,
-          unknownTool,
-          everObserved: c.everObserved,
-        }),
+        // WORST of the client reading and every port. Without this roll-up a
+        // client whose turn-start port is dead still reports 'ok' on the
+        // strength of its mid-turn traffic — the masking this panel existed
+        // for a day without noticing.
+        verdict: worstInjectionVerdict([clientVerdict, ...ports.map((p) => p.verdict)]),
+        ports,
       };
     });
 
@@ -2534,9 +2557,20 @@ async function collectContextInjection(ctx: HealthCtx): Promise<HealthPanel<Cont
     };
     const status = contextInjectionStatus(data);
 
-    const regressed = clients.filter((c) => c.verdict === 'regressed').map((c) => c.client);
+    // Name the PORT when only some of a client's ports carry the verdict. A bare
+    // "claude stopped delivering context" while claude's mid-turn is perfectly
+    // healthy points the reader at the wrong layer, and the whole reason this
+    // panel now reads per-port is that one dead port used to be unsayable.
+    const label = (c: ContextInjectionClientRow, verdict: string): string => {
+      const hit = c.ports.filter((p) => p.verdict === verdict).map((p) => p.port);
+      return hit.length > 0 && hit.length < c.ports.length ? `${c.client} (${hit.join(', ')})` : c.client;
+    };
+
+    const regressed = clients.filter((c) => c.verdict === 'regressed').map((c) => label(c, 'regressed'));
     const drifting = clients.filter((c) => c.verdict === 'drift');
-    const never = clients.filter((c) => c.verdict === 'never-observed').map((c) => c.client);
+    const never = clients
+      .filter((c) => c.verdict === 'never-observed')
+      .map((c) => label(c, 'never-observed'));
 
     let summary: string;
     if (recordingPathSuspect) {

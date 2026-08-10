@@ -284,6 +284,46 @@ describe.skipIf(skipReason !== null)('two-stage lexical cascade — page QUALITY
     expect(checked.length, 'no band could be probed at all').toBeGreaterThan(0);
   }, 300_000);
 
+  /**
+   * THE INSTRUMENT CONTROL, and it is not optional.
+   *
+   * The report below leans on a `BEYOND` count — "the unfloored semantic ranker
+   * places this row below PROBE_LIMIT" — and reads a high one as a FINDING about
+   * the cascade. That reading is only valid if the probe can recover a score at
+   * all. A probe that returns nothing, or returns rows carrying no
+   * `rankerScores.embeddings`, produces BEYOND = 100% for every row ever passed
+   * to it, which is indistinguishable from "the cascade introduces semantically
+   * distant rows" while being a statement about the harness instead.
+   *
+   * That failure would be silent and would read as a strong result — the exact
+   * shape of a measurement that is well-formed, confident, and wrong. So the
+   * instrument is falsified explicitly, not assumed to work because the numbers
+   * look plausible.
+   */
+  it('INSTRUMENT CONTROL: the deep unfloored probe really recovers cosines (else every BEYOND is an artifact)', async () => {
+    const { search, sampled } = ctx!;
+    const pick = sampled.find((s) => s.band === 'mid(3-14)') ?? sampled[0]!;
+    const probe = await search(pick.query, { kind: 'probe' });
+    const scored = probe.results.filter((h) => typeof h.rankerScores?.embeddings === 'number');
+    const cos = scored.map((h) => h.rankerScores!.embeddings!).sort((a, b) => b - a);
+    console.log(
+      `[WI-37599] instrument control on "${clip(pick.query)}" — probe depth ${PROBE_LIMIT}: ` +
+        `${probe.results.length} rows returned, ${scored.length} carry rankerScores.embeddings ` +
+        `(semantic leg candidates=${probe.legs?.semantic.candidates ?? 0}); ` +
+        `cosine range ${f3(cos[cos.length - 1] ?? NaN)}..${f3(cos[0] ?? NaN)}`,
+    );
+    expect(
+      probe.results.length,
+      `the deep probe returned ${probe.results.length} rows — it is not reaching past the page, ` +
+        'so every BEYOND count is an instrument artifact rather than a finding',
+    ).toBeGreaterThan(HIT_LIMIT);
+    expect(
+      scored.length,
+      'the probe returned rows but NONE carry a cosine — it cannot recover a score, ' +
+        'so BEYOND means "the probe is broken", not "the semantic ranker places this row deep"',
+    ).toBeGreaterThan(0);
+  }, 300_000);
+
   it('compares the cosine of INTRODUCED vs DISPLACED rows, per band and surface', async () => {
     const { search, sampled } = ctx!;
     type Cell = {
