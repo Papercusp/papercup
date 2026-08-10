@@ -31,6 +31,7 @@ import {
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 import { isLaunchAccountValue } from '../../../agent-config-constants';
+import { isLaunchableMode, LAUNCHABLE_MODE_IDS } from '../../../modes/registry';
 import { activeWorkspaceId } from '../../../workspace-registry';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
@@ -89,6 +90,16 @@ const launchSu = defineTool({
       // simply could not express it, which is why a GUI fleet launch could only
       // ever open N windows.
       headless?: boolean;
+      // retire-mug-kettle-su-only-2026-08-09 P-042 (D-067): the launch-time
+      // MODE. Until this, AUTO and DRAIN were reachable only by typing them to
+      // an already-running session — psu had the flags and bootstrap-su
+      // registered them durably, but no GUI surface could express either.
+      //
+      // ONE field, not a `mode` + `auto` pair: a session launches in exactly one
+      // posture, and the pair makes `{auto:false, mode:'drain'}` expressible.
+      // Values come from the modes registry (LAUNCHABLE_MODE_IDS), never a
+      // literal list — see the mapping note at the argv push below.
+      mode?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -145,6 +156,25 @@ const launchSu = defineTool({
     const account = body.account?.trim() || null;
     if (account && !isLaunchAccountValue(account)) {
       return json({ status: 'error', error: 'invalid account' }, 400);
+    }
+
+    // P-042 / D-067: validate the launch mode against the modes REGISTRY, not a
+    // local literal. psu-launcher.mjs and bootstrap-su.ts each already carry a
+    // hardcoded copy of this vocabulary; a third one here would be the copy that
+    // drifts, and it would fail in the worst direction — the GUI offering a mode
+    // psu refuses, which exits 0 after printing one line, so the caller shows a
+    // SUCCESS toast for a session that never started.
+    const launchMode = body.mode?.trim() || null;
+    if (launchMode && !isLaunchableMode(launchMode)) {
+      return json(
+        {
+          status: 'error',
+          error:
+            `mode must be one of ${LAUNCHABLE_MODE_IDS.join('|')} ` +
+            `(got ${launchMode.slice(0, 32)})`,
+        },
+        400,
+      );
     }
 
     // Resolve the fleet to a SLUG before composing argv. `--fleet=<slug>` is the
@@ -277,6 +307,25 @@ const launchSu = defineTool({
     // implies --no-picker (already passed). Pushed LAST so the argv is otherwise
     // byte-identical to a headed launch — the two paths differ by exactly this flag.
     if (body.headless) psuArgs.push('--headless');
+    // P-042 / D-067 — the launch MODE, mapped onto psu's two shapes:
+    //
+    //   'auto'  → `--auto`        (a BOOLEAN flag)
+    //   others  → `--mode=<id>`   (a NAMED mode; today only 'drain')
+    //
+    // The special case is load-bearing, not cosmetic. `--mode=auto` would make
+    // psu forward `{mode:'auto'}` to bootstrap-su, which refuses any named mode
+    // but 'drain' with a 400 — so the naive uniform mapping breaks the very
+    // posture this feature exists to deliver. AUTO rides the boolean all the way
+    // down (effectiveAutoMode → `{auto:true}` → syncLaunchModeToRegistry).
+    //
+    // Nothing more is needed to make the mode DURABLE: bootstrap-su already
+    // writes the agent_modes row on the way up. Deliberately NOT delivered via
+    // `kickoff` — a machine-injected turn is classified VERIFIED AGENT-ORIGIN, so
+    // the provenance hook would not register the flip, leaving a mode that LOOKS
+    // active in the transcript but is invisible to peers and dropped at the next
+    // compaction (this plan's D-066).
+    if (launchMode === 'auto') psuArgs.push('--auto');
+    else if (launchMode) psuArgs.push(`--mode=${launchMode}`);
 
     // Deferred (D-006): record a pending "workbench launch" instead of spawning a
     // terminal. The pui reactively opens a work-area pane that RUNS `launch_argv`

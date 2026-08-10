@@ -338,6 +338,22 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       harness_slug TEXT NOT NULL DEFAULT 'papercup',
       plan_slug    TEXT NOT NULL,
       status       TEXT,
+      -- Same drift class as the terminal_reason/authority/closed_ts block below
+      -- (EI-20099366410545026), but on a THIRD table and reached through a READ,
+      -- not a write. claimFeatureRow's plan-item reservation subquery in
+      -- work-items.ts (FROM harness_shared.harness_plans p) selects p.op_status
+      -- -- migration 122's OPERATIONAL axis, which plans:start writes while
+      -- deliberately leaving the 'status' lifecycle column alone -- and the
+      -- blockedBy dependency check on the same table (alias bp) reads bp.items
+      -- (migration 128). Neither is in this rig's original 4-column slice, so
+      -- both 42703 the moment a claim runs. The op_status reference landed
+      -- 2026-08-03 and stayed INVISIBLE until the terminal_reason fix
+      -- (d73e40ae88) unblocked the rig far enough to reach the claim path -- a
+      -- LAYERED drift, where each fix reveals the next missing column one whole
+      -- test cycle later. Real columns are text NULL and jsonb NULL; the rig
+      -- never asserts on either value, they only need to EXIST.
+      op_status    TEXT,
+      items        JSONB,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
     CREATE TABLE harness_shared.plan_item_claims (

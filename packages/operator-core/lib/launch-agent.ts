@@ -56,6 +56,24 @@ export interface LaunchAgentOpts extends LaunchOpts {
    * Omitted/false keeps the historical behaviour exactly (a visible terminal).
    */
   headless?: boolean;
+  /**
+   * retire-mug-kettle-su-only-2026-08-09 P-042 (D-067) — the launch-time MODE.
+   *
+   * Before this, AUTO and DRAIN could only be entered by TYPING them to a
+   * session that was already running: psu had `--auto` / `--mode=drain` and
+   * bootstrap-su registered both durably, but no GUI surface could express
+   * either. With the Mug/Kettle tier retired, su + its modes are how the app is
+   * driven, so "launch a session that is already in DRAIN" had no route at all.
+   *
+   * One field, not a `mode` + `auto` pair — a session launches in exactly one
+   * posture. Values are the modes registry's `LAUNCHABLE_MODE_IDS`; launch-su
+   * validates against the same list and maps it onto psu's argv (`'auto'` is a
+   * boolean flag, named modes take `--mode=`).
+   *
+   * Omitted/null keeps the historical behaviour exactly: a plain interactive
+   * session in the default ask-first posture.
+   */
+  mode?: string | null;
 }
 
 export interface LaunchAgentResult {
@@ -131,6 +149,9 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     // WI-6505. Null-safe like the options above: an omitted flag is "not
     // supplied", which launch-su treats as a headed launch.
     headless: opts.headless ?? false,
+    // P-042 / D-067. Null-safe like the options above: omitted is "not
+    // supplied", which launch-su treats as the default ask-first posture.
+    mode: opts.mode ?? null,
   });
   let lastError = 'no spawn path available';
   for (const url of launchSuEndpoints()) {

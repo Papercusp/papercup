@@ -65,6 +65,35 @@ export interface ModeDef {
    * goal defeats the consumers rather than erroring for them.
    */
   requiresSubject?: boolean;
+  /**
+   * This mode can be requested AT LAUNCH, before the session exists — psu has a
+   * flag for it and `bootstrap-su` registers it durably on the way up.
+   *
+   * Read it through `isLaunchableMode` / `LAUNCHABLE_MODE_IDS`, never by
+   * matching ids, for the same reason as the two flags above: the property
+   * defines the set, so a guard anchored to a spelling silently stops covering
+   * the next mode that joins it.
+   *
+   * WHY THIS FLAG EXISTS (retire-mug-kettle-su-only-2026-08-09 D-067). The
+   * launch-time mode vocabulary was hardcoded in TWO places that cannot see
+   * each other — `psu-launcher.mjs` (argv parsing) and `bootstrap-su.ts`
+   * (body validation) — and adding the GUI path was about to make it FOUR.
+   * Four copies of a list that must agree is a drift generator, and the
+   * failure is silent in the worst direction: a GUI offering a mode the
+   * launcher refuses produces a terminal that flashes one error line and
+   * closes, with a SUCCESS toast (the exact shape of the model/agent-pairing
+   * bug at NewSessionLauncher.tsx:467-477).
+   *
+   * NOT launchable, and deliberately so: `goal` requires a subject and has its
+   * own atomic surface (GoalComposer); `ideate` / `grade` / `test` /
+   * `cold-auto` have no psu flag, so offering them would promise something the
+   * launcher cannot execute.
+   *
+   * ⚠ AUTO is launchable via psu's BOOLEAN `--auto`, not via `--mode=auto`
+   * (which bootstrap-su rejects with a 400). Callers mapping this set onto
+   * argv must special-case it — see `launch-su.ts`.
+   */
+  launchable?: boolean;
   title: string;
   /** The one-liner for the always-present index (P-008). Keep it ONE line. */
   oneLiner: string;
@@ -76,6 +105,8 @@ export const MODES: readonly ModeDef[] = [
   {
     id: 'auto',
     axis: 'autonomy',
+    // psu `--auto` (a boolean flag, NOT `--mode=auto`).
+    launchable: true,
     title: 'AUTO — act, don’t ask',
     oneLiner: 'act on your own judgment, replace questions with disclosures, arm a loop for open-ended work',
     contract: `## AUTO mode — binding contract
@@ -132,6 +163,9 @@ itself isn't working is a legitimate combination.)`,
     id: 'drain',
     axis: 'overlay',
     implies: ['auto'],
+    // psu `--mode=drain` (drain-mode-2026-07-03 P-003). DRAIN implies AUTO, and
+    // psu's effectiveAutoMode() already forces --auto on for it.
+    launchable: true,
     title: 'DRAIN — drive the queue to terminal',
     oneLiner: 'take a work-item backlog and drive every item to a terminal state; completion integrity over speed',
     contract: `## DRAIN mode — binding contract
@@ -467,6 +501,30 @@ export function modeRequiresSubject(id: string): boolean {
 /** Every registered mode id that requires a subject. */
 export function subjectRequiringModeIds(): readonly string[] {
   return MODES.filter((m) => m.requiresSubject === true).map((m) => m.id);
+}
+
+/**
+ * The modes a caller may request AT LAUNCH — see `ModeDef.launchable`.
+ *
+ * This is the ONE list. `launch-su` validates against it and the GUI picker
+ * renders from it, so a mode becoming launchable is a one-line registry change
+ * that reaches both, and a mode that is NOT launchable cannot be offered by a
+ * surface that forgot to check.
+ */
+export const LAUNCHABLE_MODE_IDS: readonly string[] = MODES.filter((m) => m.launchable === true).map(
+  (m) => m.id,
+);
+
+/** Whether `id` may be requested at launch. The membership test — never match ids. */
+export function isLaunchableMode(id: string): boolean {
+  const def = modeById(id);
+  if (!def) return false;
+  return def.launchable === true;
+}
+
+/** The launchable modes as full defs, in registry order — for rendering a picker. */
+export function launchableModes(): readonly ModeDef[] {
+  return MODES.filter((m) => m.launchable === true);
 }
 
 /** Every registered mode id that implies an autonomy posture. */

@@ -44,6 +44,59 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 
 /**
+ * EI-20099413453852234 — declare the caller's intent for the item it just claimed.
+ *
+ * This tool CLAIMS an item but used to leave the claimant's declared intent untouched,
+ * so from the instant of the claim `coord_presence` held a live claim beside a stale
+ * intent and presence computed `intentDivergent: true` for an agent that was actively
+ * mid-implementation. Peers use exactly that signal to judge whether a claim is real:
+ * one read it and offered to take an item out from under its holder, who was mid-fix on
+ * that very item. An agent in a get_next loop re-claims every wake, so its intent was
+ * stale BY CONSTRUCTION unless it remembered a second, entirely optional call each time.
+ * The divergence is also invisible from INSIDE the agent that causes it and visible only
+ * to peers — the worst shape for a self-correcting signal — so it is fixed HERE, at the
+ * claim, rather than left to per-agent discipline.
+ *
+ * ⚠ READ-MODIFY-WRITE, DELIBERATELY — do not "simplify" this to a bare write.
+ * `PgPresenceStore.write()`'s ON CONFLICT sets `current_plan_slug = EXCLUDED.current_plan_slug`,
+ * a BARE assignment, so a write that OMITS it CLEARS it. A naive `writePresence(ident,
+ * { intent })` would therefore wipe the declared plan slug of every self-pulling agent on
+ * every claim — strictly worse than the stale intent it set out to fix. Every OTHER field
+ * is safe to omit: `currentFiles` is COALESCEd against the existing row, `agentRole` /
+ * `potSlug` / `capabilityTags` are populate-once-then-keep, and `host` / `pid` / `tty`
+ * reset-then-repopulate from the psu supervisor beat by design.
+ *
+ * Fail-soft, like the `cancelClaimableAwaits` call it sits beside: the claim is already
+ * COMMITTED by the time this runs, so dropping the caller's result over a presence hiccup
+ * would be far worse than a stale intent.
+ */
+async function declareIntentForClaim(
+  identity: AgentIdentity,
+  workItem: unknown,
+  harnessSlug?: string | null,
+): Promise<void> {
+  const wi = workItem as { id?: string | null; title?: string | null } | null;
+  const id = typeof wi?.id === 'string' && wi.id.length > 0 ? wi.id : null;
+  if (!id) return;
+  const prev = await getPresence(identity.ownerId).catch(() => null);
+  // Never clobber an intent the caller set DELIBERATELY for this same item: a re-pull of
+  // an item you already declared should keep your richer wording, not flatten it to the
+  // generated form. Also makes the write idempotent across repeated claims of one item.
+  if (prev?.intent && prev.intent.includes(id)) return;
+  const title = typeof wi?.title === 'string' ? wi.title.trim() : '';
+  const clipped = title.length > 120 ? `${title.slice(0, 119)}…` : title;
+  await writePresence(
+    identity,
+    {
+      intent: clipped ? `${id}: ${clipped}` : id,
+      // The one field that MUST be carried — see the ON CONFLICT note above.
+      currentPlanSlug: prev?.currentPlanSlug ?? null,
+    },
+    harnessSlug ?? null,
+  );
+}
+
+/**
  * P-006/P-007 (composable-event-awaits-2026-07-11): the idle-puller recipe, delivered at
  * the exact moment it applies — an EMPTY pull. Retires the ~60s idle re-poll cadence:
  * park on ONE await over the canonical `work-item:claimable` key (P-007 dual-emit — it
@@ -877,6 +930,11 @@ export default defineTool({
     // never break the claim path (fails soft, like the recall port above).
     if (res?.workItem) {
       await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
+      // EI-20099413453852234: the same idle -> working transition also makes the caller's
+      // DECLARED INTENT stale, which peers read as "this holder isn't really working it".
+      // Declared here rather than left to the agent, for the reasons on the helper. Same
+      // fail-soft posture as the cancel above — the claim is already committed.
+      await declareIntentForClaim(ident, res.workItem, args.harness).catch(() => {});
     }
     // EI-16057: on a MISS ONLY, resolve `harness` against the registry before deciding
     // between "genuinely drained" (fleetScopedMiss / missDiagnosis below) and "the
