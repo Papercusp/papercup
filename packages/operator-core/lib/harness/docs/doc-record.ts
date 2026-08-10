@@ -154,6 +154,34 @@ export interface UpsertDocInput {
   status?: DocStatus;
   statusDetail?: string | null;
   title?: string | null;
+  /**
+   * The doc's canonical prose — the WHOLE .mdx text, frontmatter included (P-008 / D-025).
+   *
+   * PG is canonical for authored docs and the .mdx file is a projection of THIS value, so
+   * `content` is the authored source and not a cache of the file. `content_hash` and the
+   * `frontmatter` index are DERIVED here rather than accepted from the caller, because a
+   * caller that updated one and forgot the others is how the three silently disagree.
+   *
+   * OMIT to leave existing prose untouched. That is the common case: most callers of this
+   * writer (the anchor path, the freshness sweep, the doc-steward) are updating METADATA
+   * and hold no opinion about the body — and a metadata upsert that blanked the prose
+   * would be catastrophic, so an absent `content` must mean "unchanged", never "empty".
+   */
+  content?: string | null;
+}
+
+const sha256 = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
+
+/**
+ * The derived frontmatter index stored alongside the prose.
+ *
+ * Returns null for a doc with no frontmatter, or frontmatter that does not parse — the
+ * prose is still canonical in those cases and only the INDEX is unavailable, so a parse
+ * failure must not fail the write.
+ */
+export function deriveFrontmatterIndex(content: string): Record<string, unknown> | null {
+  const parsed = parseFrontmatterBlock(content);
+  return parsed.present && parsed.ok && parsed.data ? parsed.data : null;
 }
 
 /**
@@ -167,12 +195,20 @@ export async function upsertDocRecord(input: UpsertDocInput): Promise<HarnessDoc
   const ws = await resolveWorkspaceForHarness(input.harnessSlug, input.workspaceId);
   const base: 'manual' | 'generated' = input.source === 'manual' ? 'manual' : 'generated';
   const insertOverlay = input.overlay ?? null;
+  // null (not '') when absent, so the SQL below can distinguish "leave the prose alone"
+  // from "the prose is empty". The column is NOT NULL DEFAULT '', hence the COALESCE on
+  // insert and the parameter-vs-column COALESCE on conflict.
+  const content = input.content ?? null;
+  const contentHash = content === null ? null : sha256(content);
+  const frontmatter = content === null ? null : deriveFrontmatterIndex(content);
+  const frontmatterJson = frontmatter === null ? null : JSON.stringify(frontmatter);
   const { sql } = getOrgPg();
   const rows = await sql<DocRow[]>`
     INSERT INTO harness_shared.harness_docs
       (workspace_id, harness_slug, doc_id, source, subject_ref, anchor_paths,
        generated_from_sha, last_verified_sha, last_verified_at, overlay,
-       status, status_detail, status_checked_at, title)
+       status, status_detail, status_checked_at, title,
+       content, content_hash, frontmatter)
     VALUES (
       ${ws}, ${input.harnessSlug}, ${input.docId},
       ${insertOverlay !== null ? 'augmented' : base},
@@ -180,7 +216,8 @@ export async function upsertDocRecord(input: UpsertDocInput): Promise<HarnessDoc
       ${input.anchorPaths ?? []}::text[],
       ${input.generatedFromSha ?? null}, ${input.lastVerifiedSha ?? null}, ${input.lastVerifiedAt ?? null},
       ${insertOverlay},
-      ${input.status ?? 'untracked'}, ${input.statusDetail ?? null}, now(), ${input.title ?? null}
+      ${input.status ?? 'untracked'}, ${input.statusDetail ?? null}, now(), ${input.title ?? null},
+      COALESCE(${content}::text, ''), COALESCE(${contentHash}::text, ''), ${frontmatterJson}::jsonb
     )
     ON CONFLICT (workspace_id, harness_slug, doc_id) DO UPDATE SET
       source = CASE WHEN harness_shared.harness_docs.overlay IS NOT NULL THEN 'augmented' ELSE ${base} END,
@@ -192,7 +229,27 @@ export async function upsertDocRecord(input: UpsertDocInput): Promise<HarnessDoc
       status = EXCLUDED.status,
       status_detail = EXCLUDED.status_detail,
       status_checked_at = now(),
-      title = COALESCE(EXCLUDED.title, harness_shared.harness_docs.title)
+      title = COALESCE(EXCLUDED.title, harness_shared.harness_docs.title),
+      -- Prose, and the two values derived from it. Two guards, both deliberate:
+      --
+      --   1. COALESCE on the PARAMETER, not on EXCLUDED. EXCLUDED.content is the
+      --      already-defaulted empty string from the INSERT list above, so keying off it
+      --      would blank the prose on every metadata-only upsert -- the catastrophic
+      --      reading of "absent".
+      --   2. A composed row is NEVER touched. For those docs harness_doc_parts is
+      --      canonical and the content column is scripts/project-doc-parts.mjs's cached
+      --      output (D-010); letting a metadata upsert write prose there would corrupt
+      --      the cache that projector's overwrite guard trusts to recognise its own
+      --      output. This writer only ever authors the authored side of that split.
+      content = CASE WHEN harness_shared.harness_docs.content_mode = 'composed'
+                     THEN harness_shared.harness_docs.content
+                     ELSE COALESCE(${content}::text, harness_shared.harness_docs.content) END,
+      content_hash = CASE WHEN harness_shared.harness_docs.content_mode = 'composed'
+                     THEN harness_shared.harness_docs.content_hash
+                     ELSE COALESCE(${contentHash}::text, harness_shared.harness_docs.content_hash) END,
+      frontmatter = CASE WHEN harness_shared.harness_docs.content_mode = 'composed'
+                     THEN harness_shared.harness_docs.frontmatter
+                     ELSE COALESCE(${frontmatterJson}::jsonb, harness_shared.harness_docs.frontmatter) END
     RETURNING *`;
   return rowToRecord(rows[0]);
 }
