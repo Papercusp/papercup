@@ -37,6 +37,7 @@ import {
   attributeFailedTask,
   renderFailingFilesSummary,
   parseFailedTestFiles,
+  transformCulpritsFrom,
   AFFECTED_TESTS_FAILING_FILES_TOKEN,
   FAILING_FILES_LINE_MAX_ENTRIES,
 } from '../../../../scripts/lib/vitest-summary.mjs';
@@ -67,6 +68,8 @@ function parseLine(line: string) {
     truncated: scalar('truncated') === 'true',
     files: json('files') as Array<{ workspace: string; file: string }> | null,
     unattributed: json('unattributed') as Array<{ task: string; reason: string }> | null,
+    transformCulpritCount: Number(scalar('transformCulpritCount')),
+    transformCulprits: json('transformCulprits') as string[] | null,
   };
 }
 
@@ -374,5 +377,163 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
 
   it('greps for the token via the shared constant, so a rename cannot desync', () => {
     expect(AFFECTED_TESTS_FAILING_FILES_TOKEN).toBe('AFFECTED_TESTS_FAILING_FILES');
+  });
+});
+
+/**
+ * WI-37607 — a PARSE failure in one module reds every test file that imports it, and the run
+ * reported that as an ordinary, fully-attributed break set.
+ *
+ * The fixture below is VERBATIM from a real run log
+ * (/tmp/papercusp-affected-tests-465313-5f9da4f2.log, 2026-08-09 21:24:47) rather than
+ * hand-rolled — including esbuild's `File:` echo, which repeats the culprit path WITHOUT an
+ * `ERROR:` marker and is the exact shape that double-counts a naive matcher.
+ *
+ * ⚠ ONE substitution: the absolute checkout prefix was replaced with `/w/repo`. Pasting the log
+ * verbatim would have committed the build box's home path into shipped source, which reds the
+ * green-checkpoint identity-lint leg and freezes `main` for the whole fleet. Every property the
+ * parser actually depends on — the `Transform failed with N error` header, the
+ * `path:line:col: ERROR: msg` shape, the `Plugin:` line and the ERROR-less `File:` echo — is
+ * untouched. Worth noting that reaching for a verbatim fixture is what introduced the leak.
+ *
+ * THE CONTROL THAT MATTERS is 'a transform failure coexists with FULLY attributed files'. The
+ * fix first proposed for this item discriminated only the `no-file-rows` reason — which never
+ * fires here, because vitest DOES emit FAIL/rollup rows for a file whose import graph fails to
+ * parse. That fix would have read as correct, changed nothing about the measured incident, and
+ * left `coverage=complete` stamped on 21 innocent files.
+ */
+const REAL_TRANSFORM_OUTPUT = [
+  'Error: Transform failed with 1 error:',
+  '/w/repo/packages/operator-core/lib/sync/hyperbee/log-snapshot.ts:592:0: ERROR: Unexpected end of file',
+  '  Plugin: vite:esbuild',
+  '  File: /w/repo/packages/operator-core/lib/sync/hyperbee/log-snapshot.ts:592:0',
+  ' FAIL  lib/cell-falsifier-reality.test.ts [ lib/cell-falsifier-reality.test.ts ]',
+  ' FAIL  lib/sync/hyperbee/shipped-seed-artifact.test.ts [ lib/sync/hyperbee/shipped-seed-artifact.test.ts ]',
+  ' ❯ lib/sync/hyperbee/__tests__/multi-peer-scale.test.ts (0 test)',
+].join('\n');
+
+const CULPRIT =
+  '/w/repo/packages/operator-core/lib/sync/hyperbee/log-snapshot.ts:592:0';
+
+describe('WI-37607 — transform-casualty attribution', () => {
+  describe('transformCulpritsFrom — the detector, on real esbuild output', () => {
+    it('names the culprit module exactly once despite the File: echo line', () => {
+      expect(transformCulpritsFrom(REAL_TRANSFORM_OUTPUT)).toEqual([CULPRIT]);
+    });
+
+    it('CALIBRATION: an ordinary red with no parse failure yields no culprits', () => {
+      // Without this, every assertion above is satisfiable by a detector that always fires.
+      const ordinaryRed = ' FAIL  lib/a.test.ts [ lib/a.test.ts ]\n  AssertionError: expected 1 to be 2';
+      expect(transformCulpritsFrom(ordinaryRed)).toEqual([]);
+    });
+
+    it('sees through ANSI colour, which real gate output always carries', () => {
+      const coloured = REAL_TRANSFORM_OUTPUT.replace('ERROR:', '\u001b[31mERROR:\u001b[39m');
+      expect(transformCulpritsFrom(coloured)).toEqual([CULPRIT]);
+    });
+  });
+
+  describe('attributeFailedTask — culprits are independent of attribution', () => {
+    it('THE CONTROL: a transform failure coexists with FULLY attributed files', () => {
+      const a = attributeFailedTask({
+        workspace: '@papercusp/operator-core',
+        task: '@papercusp/operator-core :: test',
+        captured: true,
+        output: REAL_TRANSFORM_OUTPUT,
+      });
+      // Files ARE attributed and NOTHING is unattributed — the measured shape.
+      expect(a.entries.length).toBeGreaterThan(0);
+      expect(a.unattributed).toEqual([]);
+      // ...yet the culprit is still reported. A fix keyed off `unattributed` misses this.
+      expect(a.transformCulprits).toEqual([CULPRIT]);
+    });
+
+    it('reports reason=transform (not no-file-rows) when the collapse beat the reporter', () => {
+      const noRows = REAL_TRANSFORM_OUTPUT.split('\n')
+        .filter((l) => !/FAIL|❯/.test(l))
+        .join('\n');
+      const a = attributeFailedTask({ workspace: 'w', task: 'w :: test', captured: true, output: noRows });
+      expect(a.entries).toEqual([]);
+      expect(a.unattributed).toEqual([{ task: 'w :: test', reason: 'transform' }]);
+    });
+
+    it('CALIBRATION: a rowless red with no parse failure keeps reason=no-file-rows', () => {
+      const a = attributeFailedTask({ workspace: 'w', task: 'w :: test', captured: true, output: 'worker crashed' });
+      expect(a.unattributed).toEqual([{ task: 'w :: test', reason: 'no-file-rows' }]);
+      expect(a.transformCulprits).toEqual([]);
+    });
+
+    it('an uncaptured run reports no culprits rather than claiming none exist', () => {
+      const a = attributeFailedTask({ workspace: 'w', task: 'w :: test', captured: false });
+      expect(a.transformCulprits).toEqual([]);
+      expect(a.unattributed).toEqual([{ task: 'w :: test', reason: 'no-captured-output' }]);
+    });
+  });
+
+  describe('formatFailingFilesLine — a THIRD axis, orthogonal to coverage', () => {
+    it('carries the culprits while leaving coverage=complete untouched', () => {
+      const p = parseLine(
+        formatFailingFilesLine({
+          runToken: 't',
+          entries: [{ workspace: 'w', file: 'a.test.ts' }],
+          transformCulprits: [CULPRIT],
+        }),
+      );
+      // coverage keeps its DOCUMENTED meaning — green-checkpoint and CLAUDE.md consume these
+      // four values, so a parse failure must not be smuggled in as a 5th.
+      expect(p.coverage).toBe('complete');
+      expect(p.fileCount).toBe(1);
+      expect(p.transformCulpritCount).toBe(1);
+      expect(p.transformCulprits).toEqual([CULPRIT]);
+    });
+
+    it('a clean break set reports zero culprits, never a missing field', () => {
+      const p = parseLine(formatFailingFilesLine({ runToken: 't', entries: [{ workspace: 'w', file: 'a.test.ts' }] }));
+      expect(p.transformCulpritCount).toBe(0);
+      expect(p.transformCulprits).toEqual([]);
+      // The pre-existing payloads must still parse — a third adjacent JSON array is exactly
+      // the kind of addition that silently breaks a positional log reader.
+      expect(p.files).toEqual([{ workspace: 'w', file: 'a.test.ts' }]);
+      expect(p.unattributed).toEqual([]);
+    });
+
+    it('deduplicates culprits repeated per importing worker', () => {
+      const p = parseLine(formatFailingFilesLine({ runToken: 't', transformCulprits: [CULPRIT, CULPRIT, CULPRIT] }));
+      expect(p.transformCulprits).toEqual([CULPRIT]);
+    });
+  });
+
+  describe('renderFailingFilesSummary — the warning must be read BEFORE the list', () => {
+    const rendered = (transformCulprits: string[]) =>
+      renderFailingFilesSummary({
+        runToken: 't',
+        failedTaskCount: 1,
+        entries: [{ workspace: 'w', file: 'a.test.ts' }],
+        transformCulprits,
+      });
+
+    it('puts the parse-failure block ahead of the per-file list', () => {
+      const block = rendered([CULPRIT]).join('\n');
+      const warnAt = block.indexOf('PARSE (transform) FAILURE DETECTED');
+      const listAt = block.indexOf('failing test file(s)');
+      expect(warnAt).toBeGreaterThanOrEqual(0);
+      // Ordering IS the fix: CLAUDE.md tells triagers to read `coverage` before `files`, so a
+      // caveat printed after the list is read after the wrong conclusion has already formed.
+      expect(warnAt).toBeLessThan(listAt);
+    });
+
+    it('names the culprit and says plainly that the listed files are casualties', () => {
+      const block = rendered([CULPRIT]).join('\n');
+      expect(block).toContain(CULPRIT);
+      expect(block).toContain('CASUALTIES');
+      // The precise misreading this exists to prevent.
+      expect(block).toMatch(/coverage[\s\S]*NOT whether those files are themselves broken/);
+    });
+
+    it('CALIBRATION: an ordinary red prints no such block at all', () => {
+      const block = rendered([]).join('\n');
+      expect(block).not.toContain('PARSE (transform) FAILURE DETECTED');
+      expect(block).toContain('failing test file(s)');
+    });
   });
 });

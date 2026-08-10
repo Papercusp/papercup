@@ -123,6 +123,55 @@ export function parseFailedTestFiles(text) {
   return [...files];
 }
 
+/**
+ * The esbuild TRANSFORM (parse) failures named in a run's own output.
+ *
+ * MOVED HERE from scripts/test-files.mjs (WI-37607) so the two runners share ONE detector
+ * rather than one runner having it and the other not — the same consolidation this module's
+ * header already argues for, and the exact gap that made this move necessary: `test:file`
+ * has told callers `cause=transform` since EI-19462803905923939, while `test:affected` — the
+ * runner CLAUDE.md's "Tests after editing" actually prescribes — had no detection at all.
+ * test-files.mjs re-exports it, so its own callers and tests are unchanged.
+ *
+ * ⚠ Strip ANSI FIRST (EI-18819483316574031). Every matcher here is line-anchored and vitest
+ * emits SGR codes around the payload; a sibling detector in this very file was dead in
+ * production for weeks because it matched only on clean text.
+ *
+ * @param {string} output combined stdout+stderr of a vitest invocation
+ * @returns {{ file: string, line: number, col: number, message: string }[]} empty when none
+ */
+export function parseTransformFailure(output) {
+  const plain = stripVitestAnsi(output ?? '');
+  if (!/Transform failed with \d+ error/.test(plain)) return [];
+  const locations = [];
+  const seen = new Set();
+  // esbuild prints `<path>:<line>:<col>: ERROR: <message>`. Its sibling `File: <path>:<line>:<col>`
+  // line carries no `ERROR:` and is deliberately NOT matched — it would double-count every entry.
+  const re = /^\s*(\S[^\n]*?):(\d+):(\d+):\s*ERROR:\s*(.+?)\s*$/gm;
+  let match;
+  while ((match = re.exec(plain)) !== null) {
+    const key = `${match[1]}:${match[2]}:${match[3]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    locations.push({ file: match[1], line: Number(match[2]), col: Number(match[3]), message: match[4] });
+  }
+  return locations;
+}
+
+/**
+ * The distinct CULPRIT MODULES of a run's parse failures — deduped, one entry per file
+ * regardless of how many times esbuild reprinted it (it reprints per importing worker, so a
+ * single broken module yields dozens of identical locations in a real log).
+ *
+ * @param {string} output combined stdout+stderr of a vitest invocation
+ * @returns {string[]} `path:line:col` strings, deduped, in first-seen order
+ */
+export function transformCulpritsFrom(output) {
+  const seen = new Set();
+  for (const loc of parseTransformFailure(output)) seen.add(`${loc.file}:${loc.line}:${loc.col}`);
+  return [...seen];
+}
+
 /** The greppable token that opens the per-FILE break-set line. Exported so a consumer
  *  greps a shared constant instead of a hand-typed copy that can drift from the emitter. */
 export const AFFECTED_TESTS_FAILING_FILES_TOKEN = 'AFFECTED_TESTS_FAILING_FILES';
@@ -153,16 +202,30 @@ export const FAILING_FILES_LINE_MAX_ENTRIES = 400;
  * task exists. `coverage=unattributed` means "tasks failed and NONE of them could be
  * attributed" — the case a bare empty array would have silently mis-reported as clean.
  *
+ * ⚠⚠ `transformCulprits` is a THIRD, ORTHOGONAL axis — deliberately not folded into `coverage`
+ * (WI-37607). `coverage` answers "were the failed tasks attributed to files"; it does NOT answer
+ * "are the listed files actually broken", and on a parse failure those two come apart completely:
+ * measured 2026-08-09, a single unparseable module produced `coverage=complete fileCount=21
+ * unattributedCount=0` where all 21 were casualties of a peer's mid-write. Adding a 5th `coverage`
+ * value was rejected because green-checkpoint and CLAUDE.md both consume the documented four, and
+ * silently changing what `complete` means is the same class of error as the one being fixed.
+ *
+ * There is deliberately NO `cause=` field here. A parse failure being PRESENT is provable from the
+ * output; its being the SOLE cause of every listed file is not — and inventing a confident cause
+ * taxonomy is precisely how a well-formed line came to overstate what it knew.
+ *
  * @param {{
  *   runToken: string,
  *   entries?: Array<{ workspace: string, file: string }>,
  *   unattributed?: Array<{ task: string, reason: string }>,
+ *   transformCulprits?: string[],
  * }} args
  * @returns {string}
  */
-export function formatFailingFilesLine({ runToken, entries = [], unattributed = [] }) {
+export function formatFailingFilesLine({ runToken, entries = [], unattributed = [], transformCulprits = [] }) {
   const files = [...entries];
   const unattr = [...unattributed];
+  const culprits = [...new Set(transformCulprits)];
   const coverage =
     files.length === 0 && unattr.length === 0
       ? 'none'
@@ -176,7 +239,9 @@ export function formatFailingFilesLine({ runToken, entries = [], unattributed = 
   return (
     `${AFFECTED_TESTS_FAILING_FILES_TOKEN} run=${runToken} coverage=${coverage} ` +
     `fileCount=${files.length} unattributedCount=${unattr.length} truncated=${truncated} ` +
-    `files=${JSON.stringify(shown)} unattributed=${JSON.stringify(unattr)}`
+    `transformCulpritCount=${culprits.length} ` +
+    `files=${JSON.stringify(shown)} unattributed=${JSON.stringify(unattr)} ` +
+    `transformCulprits=${JSON.stringify(culprits)}`
   );
 }
 
@@ -189,18 +254,40 @@ export function formatFailingFilesLine({ runToken, entries = [], unattributed = 
  *   - `no-captured-output` — an interactive TTY run inherited stdio, so there is no text
  *     to parse. The failure is real; attribution was never possible.
  *   - `no-file-rows`      — captured output with no FAIL/rollup rows: a worker crash, an
- *     OOM, a spawn error, a transform failure before the reporter ran.
+ *     OOM, a spawn error.
+ *   - `transform`         — no FAIL/rollup rows AND a parse failure is present, i.e. the
+ *     collapse happened before the reporter ran. Split out of `no-file-rows` (WI-37607):
+ *     this docstring used to name a transform failure as one of that reason's causes, which
+ *     made a peer's mid-edit read identically to an OOM.
  *   - `non-vitest`        — cargo and friends; this parser cannot speak for them.
+ *
+ * ⚠ `transformCulprits` is returned INDEPENDENTLY of whether files were attributed, and that
+ * independence is the point (WI-37607). Measured on the real logs: a module that fails to
+ * parse still produces FAIL/rollup rows for every test file that transitively imports it, so
+ * the common case is `entries.length === 21, unattributed.length === 0` — fully attributed,
+ * `coverage=complete`, and every one of those 21 a CASUALTY of one broken module. Reading the
+ * culprit set off the `unattributed` reason alone would therefore miss exactly the case this
+ * was built for.
  *
  * @param {{ workspace: string, task: string, captured: boolean, output?: string }} args
  * @returns {{ entries: Array<{ workspace: string, file: string }>,
- *             unattributed: Array<{ task: string, reason: string }> }}
+ *             unattributed: Array<{ task: string, reason: string }>,
+ *             transformCulprits: string[] }}
  */
 export function attributeFailedTask({ workspace, task, captured, output = '' }) {
-  if (!captured) return { entries: [], unattributed: [{ task, reason: 'no-captured-output' }] };
+  if (!captured) {
+    return { entries: [], unattributed: [{ task, reason: 'no-captured-output' }], transformCulprits: [] };
+  }
+  const transformCulprits = transformCulpritsFrom(output);
   const files = parseFailedTestFiles(output);
-  if (files.length === 0) return { entries: [], unattributed: [{ task, reason: 'no-file-rows' }] };
-  return { entries: files.map((file) => ({ workspace, file })), unattributed: [] };
+  if (files.length === 0) {
+    return {
+      entries: [],
+      unattributed: [{ task, reason: transformCulprits.length > 0 ? 'transform' : 'no-file-rows' }],
+      transformCulprits,
+    };
+  }
+  return { entries: files.map((file) => ({ workspace, file })), unattributed: [], transformCulprits };
 }
 
 /**
@@ -214,19 +301,47 @@ export function attributeFailedTask({ workspace, task, captured, output = '' }) 
  * broken exactly when needed. This module's own history has that shape twice over
  * (EI-18819483316574031: a parser dead in production while its tests passed).
  *
+ * The transform-casualty block leads DELIBERATELY (WI-37607). CLAUDE.md instructs triagers to
+ * "read `coverage` before `files`", so on a parse failure the most authoritative-looking token in
+ * the whole summary — `coverage=complete` — is the one most likely to be trusted about a question
+ * it does not answer. A warning printed AFTER the list would be read after the damage.
+ *
  * @param {{
  *   runToken: string,
  *   failedTaskCount: number,
  *   entries?: Array<{ workspace: string, file: string }>,
  *   unattributed?: Array<{ task: string, reason: string }>,
+ *   transformCulprits?: string[],
  * }} args
  * @returns {string[]}
  */
-export function renderFailingFilesSummary({ runToken, failedTaskCount, entries = [], unattributed = [] }) {
-  const lines = [
+export function renderFailingFilesSummary({
+  runToken,
+  failedTaskCount,
+  entries = [],
+  unattributed = [],
+  transformCulprits = [],
+}) {
+  const culprits = [...new Set(transformCulprits)];
+  const lines = [];
+  if (culprits.length > 0) {
+    lines.push(
+      `\n⚠⚠ PARSE (transform) FAILURE DETECTED — cause=transform. Culprit module(s):`,
+      ...culprits.map((c) => `     ${c}`),
+      `  A module in the import graph failed to PARSE, so EVERY test file that transitively imports`,
+      `  it fails too. Treat the ${entries.length} file(s) below as CASUALTIES of the module(s) above`,
+      `  until proven otherwise — not as ${entries.length} independent breaks.`,
+      `  ⚠ \`coverage\` below can still read \`complete\`: it reports whether each failed TASK was`,
+      `    attributed to files, NOT whether those files are themselves broken. On a parse failure`,
+      `    those two questions come apart, and coverage answers only the first.`,
+      `  On this shared tree this is usually a PEER MID-EDIT: re-run in a minute and check the`,
+      `  culprit's \`git status\` BEFORE investigating anything in the list below.`,
+    );
+  }
+  lines.push(
     `\n${entries.length} failing test file(s) — the per-FILE break set ` +
       `(the failed=${failedTaskCount} above counts TASKS, not files):`,
-  ];
+  );
   for (const e of entries) lines.push(`  - ${e.workspace} :: ${e.file}`);
   if (unattributed.length) {
     lines.push(
@@ -235,7 +350,7 @@ export function renderFailingFilesSummary({ runToken, failedTaskCount, entries =
     );
     for (const u of unattributed) lines.push(`  - ${u.task} (${u.reason})`);
   }
-  lines.push(formatFailingFilesLine({ runToken, entries, unattributed }));
+  lines.push(formatFailingFilesLine({ runToken, entries, unattributed, transformCulprits: culprits }));
   return lines;
 }
 

@@ -25,7 +25,31 @@
  * one thing nothing else does: it notices FROM THE DIFF that you just made the specific
  * kind of edit that strands mockers, and names the small set of files to run. Re-deriving
  * "would it actually throw" here would be a second, worse vitest — and unnecessary,
- * because RUNNING the named tests is itself the decisive answer.
+ * because RUNNING the named tests is USUALLY the decisive answer.
+ *
+ * ⚠ USUALLY, NOT ALWAYS — a GREEN run of a named test is not proof (EI-20017608270017874).
+ * The strand has two shapes with opposite loudness, and this guard's "just run them" advice
+ * is only decisive for the loud one:
+ *
+ *   LOUD  — the test fails to COLLECT. Unmissable; running it settles the question.
+ *   QUIET — the module under test wraps its body in a fail-soft try/catch. The missing-export
+ *           error is SWALLOWED, the function returns its empty accumulator, and assertions
+ *           then run against `[]` while still reading as tests of real behaviour.
+ *
+ * Measured 2026-08-09 adding `mugKettleSystemEnabled` to pot/started.ts: watchdog.test.ts took
+ * the loud shape, while watchdog-paused-recovery.test.ts took the quiet one — `pausedPotRecoverySweep`
+ * caught the error, console.warn'd, and four assertions ran against an empty sweep result. That
+ * instance surfaced only incidentally (those assertions happened to expect non-empty output, and
+ * vitest-fail-on-console caught one warn). NEITHER is structural: an `expect(result).toEqual([])`
+ * — the ordinary shape of a "should not act" / gating test, and the single most likely kind to be
+ * vacuously satisfied by a module that errored before acting at all — would have PASSED, silently,
+ * testing nothing.
+ *
+ * So a fail-soft consumer converts this class from a collection failure into a false green, which
+ * is why the findings output tells you to check WHAT a passing named test actually asserted rather
+ * than stopping at the pass. Detecting the quiet shape mechanically is NOT attempted here: it needs
+ * "does this module swallow its own errors", which is a judgement call about fail-soft code, and a
+ * wrong guess in either direction is worse than the caveat.
  *
  * That is also why the mere ADDITION is never a failure: adding an export is normal and
  * usually harmless. Advisory by default — it cannot false-block the fleet.
@@ -221,6 +245,47 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
 }
 
 /** `git ls-files` for the test corpus. */
+/**
+ * The findings verdict.
+ *
+ * Extracted (like its formatNoFindings sibling) so the ADVICE is unit-testable rather than
+ * only reachable by driving the whole script against real git history. The non-vacuous-pass
+ * caveat below is the reason that matters: it is the one piece of this output that tells you
+ * a GREEN result can still be wrong, so it is exactly the line a future tidy-up would drop
+ * as noise. A test now fails if it does.
+ */
+export function formatFindings(findings) {
+  const out = [
+    '⚠ RUNTIME EXPORT ADDED to a module that tests mock by ENUMERATION.',
+    '  `npm run test:affected` CANNOT select these — your diff touches the module,',
+    '  while the file that breaks names it only inside a string literal.\n',
+  ];
+  const toRun = new Set();
+  for (const f of findings) {
+    out.push(`  ${f.file}  (+${f.added.join(', ')})`);
+    for (const m of f.mockers) {
+      out.push(`    ↳ ${m.path}:${m.line}  vi.mock('${m.spec}', () => ({ … }))`);
+      toRun.add(m.path);
+    }
+  }
+  out.push(
+    '\n  Run them now, while it is still your turn:',
+    `    npm run test:file -- ${[...toRun].join(' ')}`,
+    '\n  ⚠ A GREEN run of these is NOT proof (EI-20017608270017874). If the module under',
+    '    test wraps its body in a fail-soft try/catch, the missing-export error is',
+    '    SWALLOWED and the function returns an empty result — so assertions still run,',
+    '    against nothing, and a "should not act" case like expect(x).toEqual([]) PASSES',
+    '    vacuously. Measured: watchdog-paused-recovery.test.ts took exactly that shape.',
+    '    For each file above that PASSED, confirm it asserted something non-vacuous —',
+    '    a mocked call was actually made, or a non-empty result came back.',
+    '\n  If one breaks, prefer the import-actual spread over adding the name by hand:',
+    "    vi.mock('<spec>', async (importOriginal) => ({ ...(await importOriginal()), … }))",
+    '  ⚠ That conversion is NOT always mechanical — spreading loads the REAL module, so its',
+    '    transitive imports load too and can strand a DIFFERENT bare mock in the same file.',
+  );
+  return out.join('\n');
+}
+
 function gitTestFiles() {
   const out = git(['ls-files', '*.test.ts', '*.test.tsx', '*.spec.ts', '*.spec.tsx'], { allowFail: true });
   return (out ?? '').split('\n').filter(Boolean);
@@ -319,23 +384,7 @@ function main() {
     process.exit(0);
   }
 
-  console.log('⚠ RUNTIME EXPORT ADDED to a module that tests mock by ENUMERATION.');
-  console.log('  `npm run test:affected` CANNOT select these — your diff touches the module,');
-  console.log('  while the file that breaks names it only inside a string literal.\n');
-  const toRun = new Set();
-  for (const f of findings) {
-    console.log(`  ${f.file}  (+${f.added.join(', ')})`);
-    for (const m of f.mockers) {
-      console.log(`    ↳ ${m.path}:${m.line}  vi.mock('${m.spec}', () => ({ … }))`);
-      toRun.add(m.path);
-    }
-  }
-  console.log('\n  Run them now, while it is still your turn:');
-  console.log(`    npm run test:file -- ${[...toRun].join(' ')}`);
-  console.log('\n  If one breaks, prefer the import-actual spread over adding the name by hand:');
-  console.log("    vi.mock('<spec>', async (importOriginal) => ({ ...(await importOriginal()), … }))");
-  console.log('  ⚠ That conversion is NOT always mechanical — spreading loads the REAL module, so its');
-  console.log('    transitive imports load too and can strand a DIFFERENT bare mock in the same file.');
+  console.log(formatFindings(findings));
   process.exit(0);
 }
 

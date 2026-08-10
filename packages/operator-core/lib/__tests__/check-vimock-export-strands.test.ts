@@ -26,6 +26,7 @@ import {
   findEnumeratingMockers,
   moduleKeyFor,
   formatNoFindings,
+  formatFindings,
   // @ts-expect-error — untyped .mjs guard script, imported for its pure helpers.
 } from '../../../../scripts/check-vimock-export-strands.mjs';
 
@@ -137,6 +138,50 @@ describe('moduleKeyFor / formatNoFindings', () => {
 
   it('reports a genuine pass when files were actually compared', () => {
     expect(formatNoFindings(['a.ts'], 'HEAD')).toMatch(/^✓/);
+  });
+});
+
+describe('formatFindings — the advice an agent actually acts on', () => {
+  const FINDINGS = [
+    {
+      file: 'packages/operator-core/lib/pot/started.ts',
+      added: ['mugKettleSystemEnabled'],
+      mockers: [
+        { path: 'packages/operator-core/lib/pot/watchdog-paused-recovery.test.ts', line: 16, spec: './started' },
+      ],
+    },
+  ];
+
+  it('names the changed module, the mocking file and the command to run it', () => {
+    const out = formatFindings(FINDINGS) as string;
+    expect(out).toMatch(/mugKettleSystemEnabled/);
+    expect(out).toMatch(/watchdog-paused-recovery\.test\.ts/);
+    expect(out).toMatch(/npm run test:file --/);
+  });
+
+  it('warns that a GREEN run is NOT proof — the quiet fail-soft shape (EI-20017608270017874)', () => {
+    // The whole point of this guard is "you would not have known to run these". But RUNNING
+    // them is only decisive for the LOUD shape (fails to collect). When the module under test
+    // swallows its own errors, the missing-export error is caught, the function returns an
+    // empty accumulator, and a `expect(x).toEqual([])` "should not act" case PASSES while
+    // asserting nothing — measured on watchdog-paused-recovery.test.ts, 2026-08-09.
+    //
+    // This assertion exists because that caveat is the first line a tidy-up would delete as
+    // noise: it is the only part of the output that says a PASS can still be wrong.
+    const out = formatFindings(FINDINGS) as string;
+    expect(out).toMatch(/GREEN run of these is NOT proof/);
+    expect(out).toMatch(/fail-soft try\/catch/);
+    expect(out).toMatch(/non-vacuous/);
+  });
+
+  it('CONTROL — the caveat is unconditional, not attached to any particular module', () => {
+    // A caveat that only fires for the one module it was discovered on would be worse than
+    // none: it would read as "this module is special" when the property is about fail-soft
+    // consumers generally.
+    const other = formatFindings([
+      { file: 'packages/x/lib/other.ts', added: ['someExport'], mockers: [{ path: 'packages/x/lib/o.test.ts', line: 1, spec: './other' }] },
+    ]) as string;
+    expect(other).toMatch(/GREEN run of these is NOT proof/);
   });
 });
 

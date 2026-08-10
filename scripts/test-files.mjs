@@ -16,7 +16,13 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
-import { stripVitestAnsi } from './lib/vitest-summary.mjs';
+import { stripVitestAnsi, parseTransformFailure } from './lib/vitest-summary.mjs';
+
+// Re-exported so this module's own callers and tests (packages/operator-core/lib/__tests__/
+// test-file-router.test.ts) keep importing it from here unchanged. The IMPLEMENTATION moved to
+// lib/vitest-summary.mjs (WI-37607) so `test:affected` can share the one detector instead of
+// having none — see that function's header for why the split existed and what it cost.
+export { parseTransformFailure };
 import { peekFsMutexSync } from './lib/fs-mutex.mjs';
 import { repoLockName } from './npm-install-safe.mjs';
 
@@ -352,33 +358,10 @@ export function warnIfInstallInFlight(label) {
  * file has a syntax error that "your file is fine" would just swap one confident false statement
  * for another.
  *
- * @param {string} output combined stdout+stderr of a `vitest list` invocation
- * @returns {{ file: string, line: number, col: number, message: string }[]} empty when none
+ * ⚠ THE IMPLEMENTATION NOW LIVES IN `lib/vitest-summary.mjs` and is re-exported at the top of this
+ * file (WI-37607). The docblock above is kept here because it records WHY the detector exists and
+ * what the misattribution cost — context a reader of this runner still needs.
  */
-export function parseTransformFailure(output) {
-  // Strip ANSI FIRST — same lesson as EI-18819483316574031, where a sibling detector matched only
-  // on clean text and therefore never fired once on real (coloured) vitest output.
-  const plain = stripVitestAnsi(output ?? '');
-  if (!/Transform failed with \d+ error/.test(plain)) return [];
-  const locations = [];
-  const seen = new Set();
-  // esbuild prints `<path>:<line>:<col>: ERROR: <message>`. Its sibling `File: <path>:<line>:<col>`
-  // line carries no `ERROR:` and is deliberately NOT matched — it would double-count every entry.
-  const re = /^\s*(\S[^\n]*?):(\d+):(\d+):\s*ERROR:\s*(.+?)\s*$/gm;
-  let match;
-  while ((match = re.exec(plain)) !== null) {
-    const key = `${match[1]}:${match[2]}:${match[3]}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    locations.push({
-      file: match[1],
-      line: Number(match[2]),
-      col: Number(match[3]),
-      message: match[4],
-    });
-  }
-  return locations;
-}
 
 /**
  * EI-19467022057492490 — the sibling gap `transformFailureMarker` above leaves open. That fix

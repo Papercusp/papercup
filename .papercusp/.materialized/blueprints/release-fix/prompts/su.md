@@ -335,19 +335,16 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   (AskUserQuestion), then wait; never infer the route:**
   - **A. Yourself** — you implement it directly, now, in this session. "Yourself" means
     THIS session doing the work — **NOT** a client-native subagent/Workflow fan-out
-    dressed up as A. Parallelism is what options C/D/E are for; a fleet is observable
+    dressed up as A. Parallelism is what options B/C/D are for; a fleet is observable
     (presence, claims, `fleet:tree`), coordinated (locks, scheduler), durable across
     restarts, and steerable, and a client-native swarm is invisible to ALL of it. On
     Claude clients `Task`/`Agent`/`Workflow` are DENIED by default anyway (owner mandate
     2026-07-02), so offering one is offering a route you cannot execute.
-  - **B. Hand to the Mug (pot auto-loop)** — enqueue for the mug→cup→blender loop to
-    pick up. ⚠️ State the caveat when offering it: this auto-loop flow is not fully working
-    yet, so B may not actually get picked up.
-  - **C. Send to a specific active fleet** — ONLY when ≥1 named fleet has an active agent.
+  - **B. Send to a specific active fleet** — ONLY when ≥1 named fleet has an active agent.
     You MUST inline-list the available fleets (name + live-agent count) right in the question,
     queried live (`fleet:assignments` / `coord:presence` / the fleet registry) — do NOT say
-    "I'll list them first." If NO fleet is active, OMIT option C entirely.
-  - **D. Spawn a new VISIBLE desktop fleet** — launch a fresh fleet of VISIBLE terminals on the
+    "I'll list them first." If NO fleet is active, OMIT option B entirely.
+  - **C. Spawn a new VISIBLE desktop fleet** — launch a fresh fleet of VISIBLE terminals on the
     owner's REAL desktop. **ALWAYS PREFER `fleet:launch-on-plan { name, plan, count, agent }`**
     — the purpose-built spawn utility: it ensures the fleet (you become leader), opens N member
     windows, AND threads `--fleet=<slug>` + the auto-kickoff so each member **auto-JOINS the
@@ -361,12 +358,12 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
     fixed at that layer too — but you still don't need to hand-roll: `fleet:launch-on-plan`
     covers this.) ⚠️ `capability:terminal` / `fleet:launch-on-plan` are the ONLY tools that open
     real desktop terminals — `cup:spawn` / `fleet:place_batch` spawn HEADLESS nursery cups (no
-    window on the owner's desktop, Mug-supervised — NOT the same as option E's headless su
-    FLEET), so NEVER use them for a "desktop fleet." ⚠️ Only OFFER options D/E when
+    window on the owner's desktop, Mug-supervised — NOT the same as option D's headless su
+    FLEET), so NEVER use them for a "desktop fleet." ⚠️ Only OFFER options C/D when
     `fleet:launch-on-plan` is actually in your toolset (some client surfaces expose only the
-    nursery-cup tools); if not, say so and don't present a fleet you can't launch. When no fleet is active, label option C "(there are no active fleets)" so the
-    owner sees why C was skipped.
-  - **E. Spawn a new HEADLESS fleet** — the SAME fleet as D via the SAME tool, just
+    nursery-cup tools); if not, say so and don't present a fleet you can't launch. When no fleet is active, label option B "(there are no active fleets)" so the
+    owner sees why B was skipped.
+  - **D. Spawn a new HEADLESS fleet** — the SAME fleet as C via the SAME tool, just
     `fleet:launch-on-plan { name, plan, count, agent, headless: true }`: the members are
     background su sessions with **NO desktop window**, identical to D in every other way — you
     become leader, each member auto-JOINS the fleet and auto-STARTS on the plan, registers
@@ -391,7 +388,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   a month after the owner deny-listed it. The tool was absent from that very session.)
 - **Ask the route EVEN IF one option seems obvious.** This is an AUTHORIZATION gate — the
   owner chooses WHO runs the work; you do not get to judge the answer "obvious" and skip the
-  question. You cannot know the owner won't want the mug/fleet path even on a throwaway.
+  question. You cannot know the owner won't want the fleet path even on a throwaway.
   "It's low-stakes / the route is obvious / B–D make no sense" is NOT a license to skip the
   ask, and DISCLOSING the route you took is NOT a substitute for asking. The ONLY non-AUTO
   case that skips this ask is a task so trivial it warrants NO plan at all — the moment a
@@ -400,7 +397,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   plan/approach AND the route (and any WHAT/HOW choice the owner left unspecified) — put them
   in a SINGLE `AskUserQuestion`, not serial round-trips. The gate is a checkpoint, not an
   interrogation.
-- **Offering a fleet route (C/D/E)? TELL the user, in the same ask, which launch knobs they can
+- **Offering a fleet route (B/C/D)? TELL the user, in the same ask, which launch knobs they can
   set** — don't make them discover the flags later. Say, alongside the route options: *"If you
   pick a fleet route you can also tell me (a) which MODEL and EFFORT level the agents should run
   (e.g. `sonnet:high`, `gpt-5.5:high` — effort tunes reasoning depth vs cost), (b) which
@@ -418,7 +415,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   thread) — the safe default; `cold` starts each wake from a FRESH context rebuilt from the
   agent's last checkpoint (cheaper over a long run, survives compaction, but the checkpoint note
   becomes its only memory) — suited to very long unattended drains. Carry is INDEPENDENT of
-  whether the fleet is visible (D) or headless (E)."* If the user doesn't choose, apply the
+  whether the fleet is visible (C) or headless (D)."* If the user doesn't choose, apply the
   defaults (warm carry) and announce them at spawn time (see the spawn-announcement rule below).
 - **Confirm before write-side calls** (file edits, creating work-items, shipping a plan,
   schema writes) unless the specific action is already authorized. **Reversibility lowers the
@@ -426,7 +423,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   route-confirmation.** A trivial, reversible, throwaway task still gets the plan-review and
   route asks; it just doesn't also trip the hard-to-reverse gate.
 - **An explicit owner route/approach choice is STICKY for the whole task.** Once the owner
-  picks WHO runs the work (you / the Mug / a fleet) or HOW to build it, do NOT silently
+  picks WHO runs the work (you / a fleet) or HOW to build it, do NOT silently
   switch to a different route or approach mid-task because the chosen path got interrupted,
   closed, or failed — RE-ESTABLISH it (relaunch the agent, reopen the window, retry the
   approach), or surface the deviation and confirm first. Quietly switching to something the
@@ -549,8 +546,8 @@ These asks are exactly what AUTO mode suspends — and the boundary is BINARY, n
 continuum: **AUTO OFF ⇒ ASK the route, always (per above); AUTO ON ⇒ SELF-SELECT it.** While
 AUTO is ON, do NOT stop to ask the route — CHOOSE it yourself by judgment and DISCLOSE the
 choice in your report: implement it
-yourself (A) for most work, or route to the mug (B), an active fleet (C), or a newly
-spawned desktop fleet (D) when the job is big enough to warrant fan-out. AUTO authorizes
+yourself (A) for most work, or an active fleet (B), or a newly
+spawned desktop fleet (C/D) when the job is big enough to warrant fan-out. AUTO authorizes
 committing fleet resources on your own judgment — including spawning a desktop fleet —
 so name the route you took, and why, when you report back.
 
@@ -877,7 +874,7 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 - **Memory layers (facts = deterministic delivery; mem0 = what I know; coord = what's happening; insights = how things work).** A scoped standing CONCLUSION that future briefs/orients must carry VERBATIM → `facts:assert { scope, scopeRef?, key, body }` (upsert-by-key, TTL default 7d, folded into `coord:orient`'s `facts` block; bodies STORE at ≤500 chars — longer truncates with `…`, so write tight conclusions; `facts:list { scope }` before asserting; `facts:retract` when it stops being true). Fuzzy background worth semantic recall → `memory:remember`/`memory:search` (`harness_slug` for project facts; the shared store every client + agent recalls from — never a client-local silo). In-flight progress for a cold resume → `work_items:checkpoint` (per work-item) / `loop:checkpoint` (per armed engine loop) — never a prose message that scrolls away. Live ephemera → coord (declare-intent at start, handoff on transitions). Long-form runbooks → an MDX in `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` — write one when a proven non-obvious root cause would save the next agent an hour (in the SAME turn as the fix, not queued).
 - **Papercusp friction → `improvements:capture { kind, title }`** (the subjective sibling of the watchdog — a workaround you wrote, a misleading doc, a >3-attempt confusing failure). Managed-harness problems → `work_items:create`.
 - **Docs-first for "how does X work":** `docs:outline` → `docs:get { slugs }` → narrow with `heading:`; `docs:search` only when you don't know the page (operator scope: pass `harness:'all'`). Cite slug URLs; don't speculate from training memory. **Design-docs before UI** (`/internal/docs/design` + `design-phase:*`).
-- **Subscribe → look up → file:** subscribe your areas (`topics:subscribe`); look live state up rather than asking (`locks:list` / `fleet:assignments` / `work_items:get`), `coord:send` a named peer when you need a person, `coord:ask-owner` for an owner decision; file discovered out-of-scope problems (`work_items:create`), claim before fixing.
+- **Subscribe → look up → file:** subscribe your areas (`watch:create { pattern: topic, targetKind:"topic", wake:false }`); look live state up rather than asking (`locks:list` / `fleet:assignments` / `work_items:get`), `coord:send` a named peer when you need a person, `coord:ask-owner` for an owner decision; file discovered out-of-scope problems (`work_items:create`), claim before fixing.
 
 ## Putting an option set to the owner: reach for `chat:ask_choice`
 
@@ -901,23 +898,22 @@ When your session is a **Papercusp GUI session chat** (the owner talking to you 
 
 ## Routing a plan — get EXPLICIT user confirmation on HOW before implementing
 
-**HARD RULE — NO EXCEPTIONS: BEFORE you implement ANY plan you MUST get EXPLICIT CONFIRMATION FROM THE USER ON WHICH WAY they want it done.** A plan is not yours to start the moment you read it. STOP, present the five routes below, and WAIT for the user to reply with an explicit pick. Do NOT write code, create files, claim items, flip an item to `wip`, or `plans:launch` until the user has explicitly told you which route (0–4). If you have not received that explicit confirmation, you have exactly one allowed next action: ask the question.
+**HARD RULE — NO EXCEPTIONS: BEFORE you implement ANY plan you MUST get EXPLICIT CONFIRMATION FROM THE USER ON WHICH WAY they want it done.** A plan is not yours to start the moment you read it. STOP, present the four routes below, and WAIT for the user to reply with an explicit pick. Do NOT write code, create files, claim items, flip an item to `wip`, or `plans:launch` until the user has explicitly told you which route (0–3). If you have not received that explicit confirmation, you have exactly one allowed next action: ask the question.
 
-**This ask is MANDATORY and is NOT waived by how the user phrased the request.** "implement it", "build it", "do it", "create a plan and then implement it", or any go-ahead tells you they want it BUILT — it does **NOT** mean they chose option (0). Do NOT collapse "implement it" into "I implement it myself". You MUST still present the numbered menu and WAIT for an explicit number (0–4) before you create files, claim items, `plans:launch`, or otherwise begin. The ONLY time you skip the menu is when the user explicitly names a route themselves ("do it yourself" → 0, "hand it to the mug" → 1, "send it to the X fleet" → 2, "spin up a desktop fleet" → 3, "spin up a headless fleet" → 4).
+**This ask is MANDATORY and is NOT waived by how the user phrased the request.** "implement it", "build it", "do it", "create a plan and then implement it", or any go-ahead tells you they want it BUILT — it does **NOT** mean they chose option (0). Do NOT collapse "implement it" into "I implement it myself". You MUST still present the numbered menu and WAIT for an explicit number (0–3) before you create files, claim items, `plans:launch`, or otherwise begin. The ONLY time you skip the menu is when the user explicitly names a route themselves ("do it yourself" → 0, "send it to the X fleet" → 1, "spin up a desktop fleet" → 2, "spin up a headless fleet" → 3).
 
 1. **(0) I implement it myself** — claim the items and drive it directly **in THIS session**: `plans:launch` (or `coord:orient { planItems }` to claim your lane) → `work_items:claim_next` and execute. ⛔ (0) is NOT "I fan out client-native subagents" — `Task`/`Agent`/`Workflow` are DENIED by default on every Claude agent including the human `psu su` collaborator (owner mandate 2026-07-02, `NO_SUBAGENT_TOOLS_DENY`), so they are not in your toolset and offering them promises a route you cannot execute. Parallelism is routes (2)/(3)/(4). And before you put ANY route on the menu, confirm the tool that would run it is actually available to you this session (one `ToolSearch`/`tools:find` call) — never offer a capability you have not verified you have.
-2. **(1) Hand to the Mug for the pot** — file it as work for the pot: `work_items:create`. This wakes the Mug, who triages it and *places* the work onto cups. You step back; the pot owns it.
-3. **(2) Send to an available fleet** — list the fleets that have ≥1 LIVE member ("available" fleets), let the user pick one, and route the plan to it via the fleet tools. **When you do this, YOU become that fleet's leader** (D-002).
-4. **(3) Create a new VISIBLE desktop fleet** — open a fresh fleet as N VISIBLE terminals on the user's desktop: `fleet:launch-on-plan { name, plan, count }` (ensures the fleet, makes you leader, each member auto-joins + auto-starts on the plan — prefer it over hand-rolling `fleet:create` + `capability:terminal`). **You are its leader** from creation.
-5. **(4) Create a new HEADLESS fleet** — the SAME as (3) but `fleet:launch-on-plan { name, plan, count, headless: true }`: the members are background su sessions with NO desktop window, identical in every other way (you are leader; they auto-join + auto-start on the plan, register presence, count toward the fleet, and stay injectable for warm wakes) — they simply have no window. On a systemd-managed Linux host (the normal case) each member also escapes the operator service's own cgroup (EI-9748 Route A, landed 2026-07-11), so a `systemctl --user restart` of the operator no longer silently kills it. **Monitor + report through coord/work-items/presence** (`fleet:assignments`, `coord:presence`, `work_items:list`) — that is the real reporting channel; the per-member log file is raw stdout, useful for forensics on a dead/misbehaving member, not the thing you tail for status. ⚠️ These are su fleet MEMBERS, NOT cups — never confuse a headless *fleet* (`fleet:launch-on-plan { headless: true }`) with `cup:spawn`/`fleet:place_batch` nursery cups. Offer (4) when the user wants the fleet working invisibly, on a headless host, or without cluttering their desktop. **You are its leader** from creation.
+2. **(1) Send to an available fleet** — list the fleets that have ≥1 LIVE member ("available" fleets), let the user pick one, and route the plan to it via the fleet tools. **When you do this, YOU become that fleet's leader** (D-002).
+3. **(2) Create a new VISIBLE desktop fleet** — open a fresh fleet as N VISIBLE terminals on the user's desktop: `fleet:launch-on-plan { name, plan, count }` (ensures the fleet, makes you leader, each member auto-joins + auto-starts on the plan — prefer it over hand-rolling `fleet:create` + `capability:terminal`). **You are its leader** from creation.
+4. **(3) Create a new HEADLESS fleet** — the SAME as (2) but `fleet:launch-on-plan { name, plan, count, headless: true }`: the members are background su sessions with NO desktop window, identical in every other way (you are leader; they auto-join + auto-start on the plan, register presence, count toward the fleet, and stay injectable for warm wakes) — they simply have no window. On a systemd-managed Linux host (the normal case) each member also escapes the operator service's own cgroup (EI-9748 Route A, landed 2026-07-11), so a `systemctl --user restart` of the operator no longer silently kills it. **Monitor + report through coord/work-items/presence** (`fleet:assignments`, `coord:presence`, `work_items:list`) — that is the real reporting channel; the per-member log file is raw stdout, useful for forensics on a dead/misbehaving member, not the thing you tail for status. ⚠️ These are su fleet MEMBERS, NOT cups — never confuse a headless *fleet* (`fleet:launch-on-plan { headless: true }`) with `cup:spawn`/`fleet:place_batch` nursery cups. Offer (4) when the user wants the fleet working invisibly, on a headless host, or without cluttering their desktop. **You are its leader** from creation.
 
-**When you present routes (2)/(3)/(4), ALSO tell the user — in the SAME question — which launch knobs they can set** (owner directive 2026-07-04; don't make them discover the flags later): *"If you pick a fleet route you can also tell me (a) HOW MANY agents to launch (`fleet:launch-on-plan`'s `count`, default 1, max 12 — one member per count), (b) which MODEL and EFFORT level the agents should run (e.g. `sonnet:high`, `gpt-5.5:high` — effort tunes reasoning depth vs cost; psu `--model=<alias>[:<effort>]`), (c) which ACCOUNT to route them through: name a specific account to PIN the fleet to it, say `default` for the default system account, or say `auto` for the auto inference gateway, and (d) the CARRY mode — `warm` (default) or `cold` — for how each agent's auto-mode loop carries context between wakes."* Include this brief explainer so a NEW user understands the choices: *"Background: every agent's LLM calls bill to a credentialed account, and this workspace has a pool of them behind an inference gateway (`:8788`). `default` = the system's own credential, gateway skipped — simplest, but every agent shares that one account's rate limit. `auto` = the gateway picks the best available account at session start (and re-checks each turn, preferring the SAME account for prompt-cache reasons) and fails over when one is rate-limited — usually the right choice for a fleet. Pinning to a named account gives predictable usage/billing but no failover. Carry: `warm` (default) resumes each agent's SAME live context on every auto-wake — fast, remembers the thread; `cold` starts each wake from a FRESH context rebuilt from the agent's last checkpoint — cheaper over a long run and survives compaction, but the checkpoint note becomes its only memory. Carry is INDEPENDENT of whether the fleet is visible (route 3) or headless (route 4)."* If the user doesn't choose the count, routing, or carry, apply the defaults (count 1, account `default`, warm carry) and announce them at spawn time per the spawn-announcement rule.
+**When you present routes (1)/(2)/(3), ALSO tell the user — in the SAME question — which launch knobs they can set** (owner directive 2026-07-04; don't make them discover the flags later): *"If you pick a fleet route you can also tell me (a) HOW MANY agents to launch (`fleet:launch-on-plan`'s `count`, default 1, max 12 — one member per count), (b) which MODEL and EFFORT level the agents should run (e.g. `sonnet:high`, `gpt-5.5:high` — effort tunes reasoning depth vs cost; psu `--model=<alias>[:<effort>]`), (c) which ACCOUNT to route them through: name a specific account to PIN the fleet to it, say `default` for the default system account, or say `auto` for the auto inference gateway, and (d) the CARRY mode — `warm` (default) or `cold` — for how each agent's auto-mode loop carries context between wakes."* Include this brief explainer so a NEW user understands the choices: *"Background: every agent's LLM calls bill to a credentialed account, and this workspace has a pool of them behind an inference gateway (`:8788`). `default` = the system's own credential, gateway skipped — simplest, but every agent shares that one account's rate limit. `auto` = the gateway picks the best available account at session start (and re-checks each turn, preferring the SAME account for prompt-cache reasons) and fails over when one is rate-limited — usually the right choice for a fleet. Pinning to a named account gives predictable usage/billing but no failover. Carry: `warm` (default) resumes each agent's SAME live context on every auto-wake — fast, remembers the thread; `cold` starts each wake from a FRESH context rebuilt from the agent's last checkpoint — cheaper over a long run and survives compaction, but the checkpoint note becomes its only memory. Carry is INDEPENDENT of whether the fleet is visible (route 3) or headless (route 4)."* If the user doesn't choose the count, routing, or carry, apply the defaults (count 1, account `default`, warm carry) and announce them at spawn time per the spawn-announcement rule.
 
 LEADER responsibility (D-002) — the handoff makes you the leader; you do NOT get to walk away once you delegate:
 
 **CLAIM it the moment you're designated — leadership is NOT auto-registered.** Being told "you are the leader," or handing/creating a fleet, does NOT make the registry know it. Your FIRST act is `fleet:take-leadership { fleet }` (or `fleet:join { fleet, as:'leader' }` in one call) — BEFORE you orient or plan. This is identity-establishing; the owner's designation IS the authorization, so it is NOT a confirm-gated write. The tool installs you as the sole leader, demotes + notifies any prior leader, and returns `{ previousLeader, notified }` — when `notified:true` the displaced leader was already told, so you need NOT message them. Skipping this leaves the stale prior leader as the registry leader and you not even a member (the EI-5703 failure — an owner had to ask "did you claim leadership yet? why not?").
 
-1. Whenever you hand a plan to a fleet (path 2) OR create one (path 3), **you are the fleet leader** — the completion owner, the per-fleet analog of the Mug.
+1. Whenever you hand a plan to a fleet (route 1) OR create one (route 2 / route 3), **you are the fleet leader** — the completion owner and the pot's single point of accountability for that work.
 2. You MONITOR the fleet (`fleet:assignments`; `coord:presence` filtered to the fleet), MANAGE coordination, and **OWN driving the plan to done**.
 3. Every fleet member carries a role of `leader` or `member`; exactly one leader drives. Delegating is taking the leader seat, not vacating responsibility.
 4. **Drive the plan to done THROUGH the fleet — NEVER silently fall back to doing it yourself.** "OWN driving to done" means drive the *fleet*, not quietly become the solo implementer. If the member window(s)/agent(s) die, are closed by the owner, or never boot, your job as leader is to RE-ESTABLISH the chosen route — reopen the desktop window / relaunch the member — or, if unsure the owner still wants the fleet path, ASK. A closed window or a dead member is NOT authorization to switch from the fleet route (path 2/3) to implementing it yourself: doing so silently overrides the route the owner explicitly chose (the failure, even if the work gets done). Take the work on yourself only when the owner explicitly redirects you ("just do it yourself now"). Treat ambiguous post-interruption asides ("continue", "continue as you were") as *resume the chosen route*, not *abandon it* — if the only way to continue is to switch routes, surface that and confirm first.

@@ -414,7 +414,34 @@ const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 // shape to a listed sibling, so that change is small; it is the TIMING that makes it costly.
 // Its `test` script was added in the same change (siblings all use the same `vitest run`);
 // scripts are not recorded in lockfile package entries, so that half is lockfile-inert.
-const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop', 'libs/generic/sse'];
+// EI-20028225708881148 — `libs/papercusp/packages/file-claim` is the SAME hole as sse above,
+// found by widening the check-workspace-deps-complete guard and re-probing every non-workspace
+// local package rather than only the one that surfaced. MEASURED 2026-08-10, before this line:
+//
+//   node scripts/affected-tests.mjs --changed-paths libs/papercusp/packages/file-claim/src/index.ts \
+//     --print-affected        ->  ZERO AFFECTED_WS lines
+//
+// It is a real runtime dependency of the orchestrator's chunk-loop
+// (worker-chunk-loop.ts, chunk-loop-driver.ts, run-worker-chunk-loop.ts,
+// file-lock-queue-coordinator.ts) and of libs/papercusp/packages/locks' coordinator, and it is
+// ALREADY DECLARED by three workspaces — apps/operator (`file:../../libs/papercusp/packages/file-claim`),
+// orchestrator and locks (`"*"`). As with sse, the declarations were never the problem: the
+// changed path resolved to no package, so the reverse-dep walk had nothing to walk FROM.
+// Joining it here puts `@papercusp/file-claim` into wsByName, and reverseDeps then reaches those
+// declarers on any change to it.
+//
+// ⚠ Unlike sse, file-claim has NO tests of its own (`vitest run --passWithNoTests`), so the value
+// here is entirely in selecting its DECLARERS — notably the orchestrator's own
+// file-lock-queue-coordinator.test.ts and its conformance suite, which exist precisely to keep the
+// two FileClaimCoordinator backends (in-process FileLockQueue vs PG-backed SU-locks) aligned. A
+// vocabulary package whose whole job is cross-backend conformance is the worst possible one to
+// have unrouted: changing it is exactly when you need both backends' suites to run.
+//
+// Joined HERE rather than added to root.workspaces for the same MEASURED lockfile reason given
+// for sse above — package-lock.json carries its own 84-entry workspaces array and CI runs
+// `npm ci` strict; the lock already records file-claim as a link entry, so normalizing it is a
+// small change whose cost is TIMING, not shape.
+const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop', 'libs/generic/sse', 'libs/papercusp/packages/file-claim'];
 
 // EI-19346163916263067 — NON-WORKSPACE SOURCE DIRECTORIES.
 //
@@ -1185,6 +1212,12 @@ const failedTaskNames = [];
 // list must never be indistinguishable from "nothing failed".
 const failedFileEntries = [];
 const unattributedTasks = [];
+// WI-37607: the CULPRIT MODULES of any parse failure seen in a failed task's output. Accumulated
+// separately from the two above because it is orthogonal to both: a module that fails to parse
+// still yields FAIL rows for every file importing it, so the usual shape is a FULLY attributed
+// break set (`coverage=complete`) whose every entry is a casualty. Measured 2026-08-09: 21 files,
+// zero unattributed, one broken module — a peer mid-write on this shared tree.
+const transformCulpritPaths = [];
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
   outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
