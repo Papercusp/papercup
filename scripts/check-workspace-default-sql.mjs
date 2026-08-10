@@ -42,6 +42,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STRICT = process.argv.includes('--strict');
@@ -87,16 +88,36 @@ function isTestFile(file) {
   );
 }
 
-// A match inside a `--` (SQL) or `//` (TS) line-comment, or a `*` doc-comment line, is prose.
-function isCommentMatch(content, idx) {
-  const trimmed = content.trimStart();
-  if (trimmed.startsWith('--') || trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) {
-    return true;
+// WI-37717 / EI-20073035509369492: comment-masking moved off a hand-rolled per-line heuristic
+// onto the shared stripper, which now has a SQL path and dispatches on extension — this guard
+// scans BOTH `.sql` migrations and `.ts` runtime DDL, so per-file dispatch is exactly what it
+// needs and the call site needs to know nothing about which language it is looking at.
+//
+// The heuristic this replaces was blind to strings in BOTH languages: it took any earlier `--`
+// or `//` as a comment start without checking whether it sat inside a literal, so
+//   INSERT INTO t VALUES ('a--b'), (workspace_id DEFAULT 'default')
+// suppressed the whole line. That is the FALSE-NEGATIVE direction — the finding silently
+// vanishes rather than showing up as noise — which is why it survived unnoticed.
+//
+// It was also wrong on three PostgreSQL specifics a per-line test cannot see at all: dollar-
+// quoted function bodies (`$$ … $$`) that contain `--` freely, NESTED block comments, and the
+// doubled `''` escape. Those live in the shared module now, pinned by
+// packages/operator-core/lib/sql-comment-stripper.test.ts.
+//
+// Strings stay UNMASKED deliberately: the matched expression is `DEFAULT 'default'`, whose
+// operative token IS a string literal, so a string-masking stripper would blind this guard.
+const maskedLinesCache = new Map();
+function maskedLines(file) {
+  if (!maskedLinesCache.has(file)) {
+    try {
+      // Pass the real path — that is what selects the SQL vs TypeScript path.
+      const raw = readFileSync(join(ROOT, file), 'utf8');
+      maskedLinesCache.set(file, stripCommentsOnly(raw, file).split('\n'));
+    } catch {
+      maskedLinesCache.set(file, []);
+    }
   }
-  const before = content.slice(0, idx);
-  const sqlComment = before.indexOf('--');
-  const tsComment = before.indexOf('//');
-  return (sqlComment >= 0 && sqlComment < idx) || (tsComment >= 0 && tsComment < idx);
+  return maskedLinesCache.get(file);
 }
 
 let raw = '';
@@ -142,10 +163,13 @@ for (const line of raw.split('\n')) {
   if (isTestFile(file)) continue;
   if (FILE_ALLOW.has(file)) continue;
 
-  const dm = content.match(DEFAULT_DEFAULT_RE);
+  // Match against the COMMENT-MASKED line (1-based lineno → 0-based idx). Surviving the mask
+  // means real code; vanishing means it was prose. Fall back to the raw line if the file could
+  // not be read, so a read failure cannot silently empty the report.
+  const maskedLine = maskedLines(file)[lineno - 1] ?? content;
+  const dm = maskedLine.match(DEFAULT_DEFAULT_RE);
   if (!dm) continue;
-  if (!WORKSPACE_COL_RE.test(content)) continue; // a non-scope column defaulting to 'default'
-  if (isCommentMatch(content, dm.index)) continue;
+  if (!WORKSPACE_COL_RE.test(maskedLine)) continue; // a non-scope column defaulting to 'default'
 
   const aboveLine = fileLines(file)[lineno - 2] ?? '';
   if (content.includes(ALLOW_MARKER) || aboveLine.includes(ALLOW_MARKER)) continue;

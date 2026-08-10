@@ -24,7 +24,12 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import HudEntityColumns from './HudEntityColumns';
-import { buildWorkItemBoard, type HudWorkItemInput } from './hud-entity-board';
+import {
+  buildGoalBoard,
+  buildWorkItemBoard,
+  goalsTruncationNotice,
+  type HudWorkItemInput,
+} from './hud-entity-board';
 import type { HudAsk } from './hud-board-model';
 
 vi.mock('@/app/harness/Tooltip', () => ({
