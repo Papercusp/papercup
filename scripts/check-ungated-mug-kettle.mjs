@@ -212,7 +212,15 @@ function collectCensus() {
     .filter((f) => f.file !== selfRel && !f.file.endsWith('ungated-mug-kettle-baseline.json'))
     // `retired` = already under _retired/. `substrate` = D-003 population (b): the su
     // system itself runs on these, so gating them breaks loop:arm — inventory, never gate.
-    .filter((f) => !f.retired && !f.substrate)
+    // `display` = a UI site that NAMES a tier token without offering a route into it (a
+    // read-only badge on a pane the roster already returned). Marked by D7 in the census,
+    // filtered HERE rather than there, because the census inventories and this file
+    // decides what fails. There is nothing to gate at such a site: refusing to RENDER
+    // what a live pane already is would hide state, not withhold a capability — and
+    // treating it as an offender is what froze `main` for an hour on a copy of a badge
+    // line whose original had already been absorbed into the baseline below
+    // (EI-20091394509538630).
+    .filter((f) => !f.retired && !f.substrate && !f.display)
     .map((f) => {
       let gated = false;
       // Masked for the same reason as inspectFile: a gate symbol NAMED in a comment is

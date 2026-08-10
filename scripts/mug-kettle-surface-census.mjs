@@ -536,6 +536,60 @@ for (const abs of allFiles) {
 const D7_TAB_RE = /["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/g;
 
 /**
+ * OFFERS vs MERELY DISPLAYS — the split the third D7 branch could not make, and the
+ * reason it red-pinned the fleet gate on a read-only badge (EI-20091394509538630).
+ *
+ * That branch fires on ANY quoted tier token in a .tsx whose basename matches
+ * Sidebar|Tab|Rail|Nav, and then asserts the token "mounts a tier tab" — a claim about
+ * the token's ROLE, made without ever looking at its position. Measured on the live
+ * population, 3 of its 4 findings mount nothing:
+ *   · FleetPeersRail:69 / GoalSessionsRail:56 — `agentPaneKind === 'cup' ? <span>cup</span>`
+ *   · AdvEvalsTab:1305                        — `sub={… ? 'mug' : \`mug · ${age}s\`}`
+ * and only LeftSidebar:159 (`{ id: 'queen', render: () => <MugTab/> }`) is the shape the
+ * detector was built for.
+ *
+ * WHY IT MATTERS, beyond noise: the second of those two identical badge lines is what
+ * froze `main` for over an hour. The first had already been absorbed into the baseline,
+ * so the guard was in the state its own header warns about — noise rubber-stamped as
+ * population — and the next COPY of that line then read as a novel ungated entry point.
+ *
+ * THE PROPERTY, stated so it survives a rename (the same discipline check-ungated's
+ * role-door family states for itself): the retirement gates what can OFFER A ROUTE INTO
+ * the tier. An equality test against a role token READS a value the roster already
+ * returned; it cannot bring a pane into being, and refusing it would hide what a live
+ * pane IS rather than gate a capability. A tab IDENTITY — an id/key/value a router or
+ * tab strip can select — can. So membership keys on the token's position, never on its
+ * presence.
+ *
+ * ⚠ These findings are still INVENTORIED, marked `display: true` rather than dropped:
+ * the census's job is the census, and `check-ungated-mug-kettle.mjs` is where a finding
+ * decides the gate. That is the same seam `retired` and `substrate` already use — a
+ * census that stopped SEEING these would be a real loss of recall, and would also make
+ * this change invisible to the comment-blindness suite's population CONTROL.
+ */
+const D7_DECL_RE =
+  /(?:\b(?:id|key|tab|tabId|value|kind|name|slug|pane|view|route|to|href)\s*[:=]\s*|[[,(]\s*)["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/;
+
+/**
+ * The other half of OFFERS, and a recall GAIN rather than a trade: a file that renders
+ * `<MugTab/>` is mounting the tier whether or not a quoted token happens to sit nearby.
+ * `LeftSidebar` is caught today only by the `id: 'queen'` string beside it — had the id
+ * been a constant, the mount itself was invisible. Resolved through `namesTier`, so the
+ * homonym/exclusion rulings above apply here too (`AnimatedPapercuspCup` stays out).
+ */
+const D7_JSX_RE = /<\s*([A-Z][A-Za-z0-9_]*)/g;
+
+/** Does this file OFFER a route into the tier? Returns how, or null (display-only). */
+function offersTierRoute(src) {
+  const decl = D7_DECL_RE.exec(src);
+  if (decl) return `declares tab identity (${decl[0].replace(/\s+/g, ' ').trim().slice(0, 40)})`;
+  for (const m of src.matchAll(D7_JSX_RE)) {
+    if (namesTier(m[1])) return `mounts <${m[1]}>`;
+  }
+  return null;
+}
+
+/**
  * Control surfaces the plan names explicitly (D-009/D-010): the buttons that drive
  * pot/plan start-stop. Named because their filenames carry no tier token at all
  * (`PlanRail`, `AdvNowRunning`, `pot-control`) — a token scan alone would miss them,
@@ -585,8 +639,17 @@ for (const abs of allFiles) {
     add('ui', abs, 0, base, 'component file named for the retiring tier',
       { matchedToken: namesTier(base), tabTokens: tabHits.length });
   } else if (/\.tsx$/.test(r) && tabHits.length > 0 && /(LeftSidebar|Sidebar|Tab|Rail|Nav)/.test(base)) {
-    add('ui', abs, tabHits[0].index, base,
-      `mounts tier tab token(s): ${[...new Set(tabHits.map((h) => h[1]))].join(', ')}`);
+    const tokens = [...new Set(tabHits.map((h) => h[1]))].join(', ');
+    const offers = offersTierRoute(src);
+    if (offers) {
+      add('ui', abs, tabHits[0].index, base, `mounts tier tab token(s): ${tokens} — ${offers}`);
+    } else {
+      add('ui', abs, tabHits[0].index, base,
+        `displays tier token(s): ${tokens} — no tab identity declared and no tier component ` +
+        'mounted, so this READS a value the roster already returned rather than offering a ' +
+        'route into the tier (see D7_DECL_RE)',
+        { display: true });
+    }
   }
 }
 
