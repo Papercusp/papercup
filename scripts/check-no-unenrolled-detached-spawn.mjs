@@ -28,6 +28,7 @@
  * is a durably verified property rather than green-on-a-clean-tree (the same
  * discipline check-no-raw-agent-spawn.mjs applies to its own bypass predicate).
  */
+import { stripCommentsAndStrings, stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -141,18 +142,21 @@ const ENROLMENT_IMPORTS = [
  * @returns {boolean}
  */
 export function isUnenrolledDetachedSpawn(relPath, source) {
-  if (!/detached:\s*true/.test(source)) return false;
-  // A comment mentioning `detached: true` (several files explain the flag at
-  // length) is not a spawn. Require it inside an object literal alongside a real
-  // spawn call in the same file.
-  const hasSpawnCall = /\b(spawn|childSpawn|spawnFn)\s*\(/.test(source);
-  if (!hasSpawnCall) return false;
-  const codeLines = source
-    .split('\n')
-    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
-    .join('\n');
-  if (!/detached:\s*true/.test(codeLines)) return false;
-  if (ENROLMENT_IMPORTS.some((m) => source.includes(m))) return false;
+  // DETECTION is on CODE. `detached: true` and the spawn call are both program text, so the
+  // strings mask is unambiguously right — and it replaces a hand-rolled line filter that only
+  // recognised a comment OPENING a line, so a trailing `// ... detached: true` or any block-comment
+  // body not starting with `*` walked straight through it, as did a template literal quoting a
+  // spawn (WI-37717).
+  const code = stripCommentsAndStrings(source, relPath);
+  if (!/detached:\s*true/.test(code)) return false;
+  if (!/\b(spawn|childSpawn|spawnFn)\s*\(/.test(code)) return false;
+  // The EXEMPTION needs the OTHER mask: it reads a string VALUE — the enrolment module SPECIFIER
+  // — so `stripCommentsAndStrings` would blank the very evidence and score every file
+  // unenrolled (mass false POSITIVES). Masking nothing is the opposite failure and the worse
+  // one: a COMMENT that merely NAMES managed-spawn buys an exemption the file never earned, a
+  // false NEGATIVE, the direction that silently loses real findings.
+  const prose = stripCommentsOnly(source, relPath);
+  if (ENROLMENT_IMPORTS.some((m) => prose.includes(m))) return false;
   return !ALLOWLIST.has(relPath);
 }
 

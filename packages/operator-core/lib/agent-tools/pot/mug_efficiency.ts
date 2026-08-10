@@ -15,6 +15,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { mugWakeEfficiency } from '../../pot/mug-wake-efficiency';
+import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';
 
 export default defineTool({
   name: 'pot:mug_efficiency',
