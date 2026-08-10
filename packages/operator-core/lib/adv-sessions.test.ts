@@ -48,6 +48,61 @@ describe('adv_sessions birth timestamp (WI-6589)', () => {
   });
 });
 
+/**
+ * WI-37743 — `adoptStartingTerminalLaunch` COMPLETES a launcher's own starting
+ * row instead of inserting a duplicate beside it. Its entire safety rests on
+ * three conjuncts in one WHERE clause, so they are guarded here.
+ *
+ * Source-level, like the birth-timestamp guards above and for the same reason:
+ * the failure this prevents is a row-SELECTION bug, and a unit test that seeds
+ * its own rows proves only that the statement runs — it cannot show which rows
+ * a weakened predicate would ALSO have matched. Dropping `session_id IS NULL`
+ * is the dangerous one: the UPDATE would then overwrite the session_id of a
+ * LIVE session's row, silently re-pointing the board at the wrong process. That
+ * is invisible to a behavioural test that never seeds a live row to be stolen.
+ */
+describe('adoptStartingTerminalLaunch is narrowly guarded (WI-37743)', () => {
+  const adopt = (() => {
+    const from = SOURCE.indexOf('export async function adoptStartingTerminalLaunch');
+    expect(from).toBeGreaterThan(-1);
+    const stmt = SOURCE.slice(from);
+    return stmt.slice(0, stmt.indexOf('RETURNING id'));
+  })();
+
+  it('only ever touches a row that has NO session yet', () => {
+    // Without this, adopting steals a live session's row.
+    expect(adopt).toMatch(/AND session_id IS NULL/);
+  });
+
+  it('only ever touches a row that has not ended', () => {
+    // A reconciler-stamped row is a CLOSED launch; completing it would resurrect it.
+    expect(adopt).toMatch(/AND ended_at IS NULL/);
+  });
+
+  it('only ever touches a terminal-launch row, never a workbench/console row', () => {
+    expect(adopt).toMatch(/AND display = \$\{DISPLAY_TERMINAL_LAUNCH\}/);
+  });
+
+  it('is pinned to one explicit row id — never a predicate-only match', () => {
+    // The caller resolves WHICH precursor (newest wins); this statement must not
+    // widen that to "any starting row for this owner".
+    expect(adopt).toMatch(/WHERE id = \$\{opts\.id\}/);
+  });
+
+  it('COALESCEs the optional columns so adopting cannot blank existing values', () => {
+    // The launcher's row already carries plan_slug/label/cwd; a plain assignment
+    // would null them out whenever bootstrap happens not to pass one.
+    for (const col of ['plan_slug', 'label', 'cwd', 'mode', 'launch_argv']) {
+      expect(adopt).toMatch(new RegExp(`${col}\\s*=\\s*COALESCE\\(`));
+    }
+  });
+
+  it('assigns session_id unconditionally — it is the whole point of adopting', () => {
+    // COALESCE here would make the adopt a no-op on the column that matters.
+    expect(adopt).toMatch(/SET session_id = \$\{opts\.sessionId\}/);
+  });
+});
+
 describe('toIsoTimestamp', () => {
   it('passes Date objects through to ISO', () => {
     const value = new Date('2026-05-24T20:38:01.608Z');

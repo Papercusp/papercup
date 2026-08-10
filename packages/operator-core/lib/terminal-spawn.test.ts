@@ -404,8 +404,15 @@ describe('spawnInTerminal early-exit probe', () => {
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
     child.emit('exit', 1, null);
+    // Let the awaiting code resume so the flush listener is actually attached —
+    // an 'end' emitted before that would be missed and the flush would sit out
+    // its full grace instead (which is what this test caught the first time).
+    await vi.advanceTimersByTimeAsync(0);
     child.stderr?.emit('data', 'Cannot open display: :99\n');
     child.stderr?.emit('end');
+    // Backstop: even if the fast path were missed, the bounded grace must end
+    // the wait — this assertion must never be able to hang.
+    await vi.advanceTimersByTimeAsync(STDERR_FLUSH_GRACE_MS);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.stderr).toContain('Cannot open display');

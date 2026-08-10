@@ -48,7 +48,15 @@ vi.mock('../../../terminal-spawn', async (importOriginal) => {
     spawnInTerminal: (o: any) => spawnInTerminalMock(o),
   };
 });
-vi.mock('../../../console-spawn', () => ({
+// `keepWindowOpenOnFailure` stays REAL (importOriginal) for the same reason
+// `shellEscape` does below: it is a pure string builder, and the headed
+// one-liner these tests assert on is only meaningful if it is the one the route
+// would actually run. Mocking the module WHOLESALE — as this did before
+// WI-37743 — replaces every export, so a newly imported one silently becomes
+// `undefined` and the headed path dies with a TypeError that looks nothing like
+// the missing-mock it is.
+vi.mock('../../../console-spawn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../console-spawn')>()),
   spawnHeadless: (o: any) => spawnHeadlessMock(o),
 }));
 vi.mock('../../../console-launcher', () => ({
@@ -104,6 +112,19 @@ function headedOneliner(): string {
 function headlessOneliner(): string {
   return spawnHeadlessMock.mock.calls[0]![0].envelope.greetingCmd;
 }
+/**
+ * The psu command line INSIDE the headed one-liner's keep-open wrapper (WI-37743),
+ * unwrapped back to what the shell will actually eval — so it can still be
+ * compared token-for-token with the headless form, which needs no wrapper.
+ * Throws rather than returning something plausible if the wrapper is missing:
+ * losing it is the regression this whole file is guarding.
+ */
+function headedPsuCommand(): string {
+  const oneliner = headedOneliner();
+  const m = /^\(eval '(.*)'\); __papercusp_greeting_rc=/s.exec(oneliner);
+  if (!m) throw new Error(`headed one-liner is not in keep-open form: ${oneliner}`);
+  return m[1]!.replace(/'\\''/g, "'"); // undo shellEscape's quote-splicing
+}
 /** `--owner-id=su-<uuid>` is freshly minted per launch, so normalise it to diff two argvs. */
 const normaliseOwner = (s: string): string => s.replace(/--owner-id=su-[0-9a-f-]+/i, '--owner-id=<pinned>');
 
@@ -146,10 +167,13 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
    */
   it('the headless argv is the headed argv plus exactly one trailing token', async () => {
     await launch({ harness_slug: 'papercusp', plan_slug: 'some-plan', model: 'sonnet', headless: false });
-    const headed = normaliseOwner(headedOneliner());
+    // Compare the psu COMMANDS, not the one-liners: since WI-37743 the headed
+    // one is wrapped to keep the window open on failure, while headless (no
+    // window) keeps the bare `exec`. The argv parity claim is about psu's argv.
+    const headed = normaliseOwner(headedPsuCommand());
     vi.clearAllMocks();
     await launch({ harness_slug: 'papercusp', plan_slug: 'some-plan', model: 'sonnet', headless: true });
-    const headless = normaliseOwner(headlessOneliner());
+    const headless = normaliseOwner(headlessOneliner()).replace(/^exec /, '');
 
     // Every token goes through the REAL shellEscape, so the appended flag is quoted.
     expect(headless).toBe(`${headed} '--headless'`);
@@ -169,6 +193,48 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     expect(String(json.error)).toContain('boom: died at boot');
     // The failure must NOT be papered over by quietly opening a window instead.
     expect(spawnInTerminalMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * WI-37743. The headed one-liner used to be a bare `exec <psu …>`, so psu
+   * REPLACED the shell: any boot refusal — the 409 this bug actually was, a bad
+   * operator URL, a missing token — closed the window the same instant it
+   * printed the reason. The owner saw a terminal flash and a session stuck on
+   * "Starting up", and recovering the message that had been on screen all along
+   * cost a session of process archaeology.
+   *
+   * The three properties below are what make the failure readable, and each is
+   * independently losable by a well-meaning edit.
+   */
+  it('the headed one-liner keeps the window open when psu exits non-zero', async () => {
+    await launch({ headless: false });
+    const cmd = headedOneliner();
+
+    // (1) psu is EVAL'd in a subshell, not exec'd — an exec leaves no shell to
+    //     return to, so nothing after it can ever run.
+    expect(cmd).toMatch(/^\(eval '/);
+    expect(cmd).not.toMatch(/^exec /);
+
+    // (2) the separators are `;`, never `&&` — with `&&` a non-zero psu exit
+    //     short-circuits past the banner AND the trailing shell, which is
+    //     precisely the failure case the window is being held open FOR.
+    expect(cmd).toContain("'); __papercusp_greeting_rc=$?;");
+    expect(cmd).not.toMatch(/&&\s*exec/);
+
+    // (3) a trailing interactive login shell is what actually holds it open.
+    expect(cmd).toMatch(/exec "\$\{SHELL:-\/bin\/bash\}" -l\s*$/);
+  });
+
+  it('the HEADLESS one-liner keeps the bare exec (no window to hold open)', async () => {
+    // The mirror of the test above, and not a redundant restatement of it: the
+    // keep-open wrapper ends in `exec "$SHELL" -l`, which in a headless child
+    // would leave an immortal login shell behind after psu exits instead of
+    // letting the process finish. The wrapper belongs to the WINDOW, not to psu.
+    await launch({ headless: true });
+    const cmd = headlessOneliner();
+    expect(cmd).toMatch(/^exec /);
+    expect(cmd).not.toContain('__papercusp_greeting_rc');
+    expect(cmd).not.toContain('SHELL:-/bin/bash');
   });
 
   it('carries the fleet flag into a headless launch (the GUI fleet-launch row’s case)', async () => {
