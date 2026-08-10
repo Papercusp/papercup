@@ -6,10 +6,12 @@
  * pins the wire contract: validation, routing, D-004 response shape, lazy
  * per-model:kind embedder memoization, and loopback-only binding.
  */
-import { isCoherentTarget } from '@papercusp/rerank';
+import { getRerankWorkerState, isCoherentTarget } from '@papercusp/rerank';
+import { getWorkerState as getMemoryWorkerState } from '@papercusp/memory';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createEmbedSidecarServer,
+  defaultWorkerStates,
   resolveWarmModels,
   resolveWarmRerankers,
   validateEmbedRequest,
@@ -113,6 +115,85 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(isCoherentTarget(body.rerankExecution)).toBe(true);
     // Default host, no PAPERCUSP_RERANK_DEVICE ⇒ the CPU pair, both halves.
     expect(body.rerankExecution).toMatchObject({ device: 'cpu', dtype: 'q8' });
+  });
+
+  // WI-37696. Both worker modules fall back to INLINE main-thread work when their
+  // thread is unavailable, and each has a `disabled` latch that is permanent once
+  // tripped. Because the fallback returns identical values, tripping it produces no
+  // error, no log and no exit code — the sidecar keeps answering 200 while the one
+  // thing it exists for (a warm model OFF the request thread) is silently gone. This
+  // is the only place that state is observable, so a missing `workers` block is a
+  // real regression, not a cosmetic one.
+  it('GET /healthz reports the embedder + reranker worker breakers (the only runtime signal a tripped latch has)', async () => {
+    await boot();
+    const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as {
+      workers: { embedder: Record<string, unknown>; reranker: Record<string, unknown> };
+    };
+
+    // Both halves must be present. Reporting one and not the other is the silent
+    // half of the defect: whichever is missing can latch off unnoticed.
+    for (const state of [body.workers.embedder, body.workers.reranker]) {
+      expect(state).toMatchObject({
+        alive: expect.any(Boolean),
+        // The field to alert on — cold-but-healthy must read `false`, never absent,
+        // so a monitor can tell "not tripped" from "not reported".
+        disabled: false,
+        pendingCount: expect.any(Number),
+        keepAlive: expect.any(Boolean),
+      });
+    }
+  });
+
+  // The mis-mapping guard. Both real getters return the SAME SHAPE and both read
+  // cold under fake builders, so `reranker: getEmbedderWorkerState()` — an easy
+  // copy-paste — passes every assertion written against the real ones (measured:
+  // that mutant survived this suite before the `workerStates` seam existed).
+  // Injecting distinguishable readings is the only thing that separates them.
+  //
+  // It also pins the half that actually matters operationally: a TRIPPED latch
+  // has to reach the wire. `disabled: true` here is a permanently degraded
+  // sidecar — inline forward passes blocking the request loop — on a process
+  // that still answers 200, so if this value did not propagate there would be
+  // no signal anywhere.
+  it('maps each worker breaker to its OWN module, and propagates a tripped latch to the wire', async () => {
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders: fakeBuilders,
+      warmAtBoot: false,
+      log: () => {},
+      workerStates: {
+        embedder: () => ({ alive: true, disabled: false, pendingCount: 11, keepAlive: true }),
+        reranker: () => ({ alive: false, disabled: true, pendingCount: 22, keepAlive: false }),
+      },
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+
+    const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as {
+      workers: { embedder: Record<string, unknown>; reranker: Record<string, unknown> };
+    };
+
+    expect(body.workers.embedder).toEqual({
+      alive: true,
+      disabled: false,
+      pendingCount: 11,
+      keepAlive: true,
+    });
+    expect(body.workers.reranker).toEqual({
+      alive: false,
+      disabled: true,
+      pendingCount: 22,
+      keepAlive: false,
+    });
+  });
+
+  // ...and the companion the test above CANNOT provide. Injecting readers proves
+  // the mapping given readers, so it is blind to a DEFAULT pointed at the wrong
+  // module — which is the production path. Pinning each default by identity is
+  // what closes that: measured, `reranker: getEmbedderWorkerState` survived the
+  // injected-reader test and fails here.
+  it('wires each DEFAULT reader to its own package (the production path the injected test cannot see)', () => {
+    expect(defaultWorkerStates.embedder).toBe(getMemoryWorkerState);
+    expect(defaultWorkerStates.reranker).toBe(getRerankWorkerState);
   });
 
   it('GET /healthz ADVERTISES every route it serves (EI-19314150478401738)', async () => {

@@ -309,7 +309,15 @@ export function _injectWorkerCrashForTest(err: Error): boolean {
 }
 
 /**
- * Diagnostics for /api/health and the loop-monitor dashboard.
+ * Diagnostics, surfaced by `GET /api/health/deep` as its `cpuWorker` block
+ * (`endpoint-route/routes/misc/health-deep.ts` → `readCpuWorker`).
+ *
+ * That consumer is the point of this function, not a nicety: `disabled` latches
+ * PERMANENTLY and the caller falls back to inline `JSON.stringify`, so a tripped
+ * breaker emits byte-identical output with no error and no log — invisible
+ * unless something reads it. It went unread for exactly that reason until
+ * WI-37696; if you remove the last caller, this function is dead and the
+ * breaker is silent again.
  *
  * `keepAlive` reports whether the worker is currently holding the event loop
  * open; read it in the SAME snapshot as `pendingCount` — asserting the two in

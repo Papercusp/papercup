@@ -13,7 +13,8 @@
  *              →  { scores: number[], runtime, modelRev }
  *   GET  /healthz →  { ok, pid, uptimeMs, capabilities: string[],
  *                      models: { '<model>:<kind>': state },
- *                      rerankExecution: { device, dtype, why } }
+ *                      rerankExecution: { device, dtype, why },
+ *                      workers: { embedder: state, reranker: state } }
  *
  * `capabilities` lists every route THIS BUILD serves ("POST /rerank", ...),
  * derived from the route table itself. A sidecar outlives the code that talks
@@ -68,12 +69,14 @@ import {
   HARRIER_MODEL,
   LOCAL_EMBEDDER_MODEL,
   SIDECAR_MAX_TEXT_CHARS,
+  getWorkerState as getEmbedderWorkerState,
   type GemmaEmbedKind,
 } from '@papercusp/memory';
 import {
   FAST_RERANKER_MODEL,
   LOCAL_RERANKER_MODEL,
   activeExecutionTarget,
+  getRerankWorkerState,
   loadCrossEncoder,
   scoreCrossEncoder,
 } from '@papercusp/rerank';
@@ -359,7 +362,46 @@ export interface EmbedSidecarOptions {
   cacheMax?: number;
   /** Max embeds in flight (default EMBED_SIDECAR_CONCURRENCY_ENV, else 1). */
   concurrency?: number;
+  /**
+   * Worker-breaker readers for /healthz (WI-37696). Defaults to the real module
+   * getters; a test injects distinguishable ones.
+   *
+   * A seam rather than a direct call because the two real states are STRUCTURALLY
+   * IDENTICAL and both read cold under injected fake builders — so with direct
+   * calls, wiring `reranker` to the embedder's getter passes every assertion that
+   * can be written (measured: that exact mutant survived the suite). The seam is
+   * what makes the embedder→embedder mis-mapping, and a tripped latch reaching
+   * the wire, testable at all.
+   */
+  workerStates?: WorkerStateReaders;
 }
+
+/** The two worker breakers this process owns; shape-compatible with both modules' getters. */
+export interface WorkerBreakerState {
+  alive: boolean;
+  /** Latched permanently after repeated failure ⇒ inline fallback forever. The alert field. */
+  disabled: boolean;
+  pendingCount: number;
+  keepAlive: boolean;
+}
+
+export interface WorkerStateReaders {
+  embedder: () => WorkerBreakerState;
+  reranker: () => WorkerBreakerState;
+}
+
+/**
+ * The PRODUCTION wiring — what /healthz reports when nothing is injected.
+ *
+ * Exported so it can be pinned by identity: an injected-reader test proves the
+ * mapping GIVEN readers and therefore cannot see a default pointed at the wrong
+ * module, which is the copy-paste this pair invites (both getters are named
+ * alike, take no arguments, and return the same shape).
+ */
+export const defaultWorkerStates: WorkerStateReaders = {
+  embedder: getEmbedderWorkerState,
+  reranker: getRerankWorkerState,
+};
 
 export interface EmbedSidecarHandle {
   server: http.Server;
@@ -403,6 +445,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   const builders = opts.builders ?? defaultBuilders;
   const rerankBuilders = opts.rerankBuilders ?? defaultRerankBuilders;
   const log = opts.log ?? ((line: string) => console.log(line));
+  const workerStates = opts.workerStates ?? defaultWorkerStates;
   const port = opts.port ?? Number(process.env[EMBED_SIDECAR_PORT_ENV] ?? EMBED_SIDECAR_DEFAULT_PORT);
   const startedAt = Date.now();
 
@@ -665,6 +708,32 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         // is fail-safe by design), so this is where that shows up. Before the
         // first load it reports the host's resolved target. See plan D-006.
         rerankExecution: activeExecutionTarget(),
+        // WI-37696: the two worker-thread crash-breakers THIS process owns.
+        //
+        // Both the embedder (@papercusp/memory) and the cross-encoder
+        // (@papercusp/rerank) run their model in a persistent worker thread and
+        // fall back to INLINE main-thread work when it is unavailable. Each has
+        // a `disabled` latch that, once tripped, is permanent for the process —
+        // and because the fallback returns identical values, tripping it emits
+        // no error, no log line and no exit code. The sidecar keeps answering
+        // 200 while the one thing it exists for (a warm model OFF the request
+        // thread) is silently gone, and every /rerank then blocks this loop for
+        // the duration of a forward pass.
+        //
+        // This is the correct process to report it from: the state is module-
+        // global, these workers spawn HERE (not in the operator host), and the
+        // getters are imported from the SAME bare specifier the embedders and
+        // rerankers above use, so this reads the live module record rather than
+        // a second, pristine copy. `disabled: true` is the field to alert on.
+        //
+        // Report-only — `ok` stays true. A fallen-back sidecar is degraded, not
+        // down; it still returns correct vectors and scores, so failing the
+        // health check would tell a supervisor to restart a process that is
+        // serving every request correctly.
+        workers: {
+          embedder: workerStates.embedder(),
+          reranker: workerStates.reranker(),
+        },
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
         concurrency,
       });

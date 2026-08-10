@@ -24,6 +24,7 @@ import { dbosLaunchesHere } from '../../../background-workers';
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { getMemoryBackend } from '../../../memory/backend';
 import { currentLoopLag, loopPressure } from '../../../event-loop-lag-monitor';
+import { getCpuWorkerState } from '../../../cpu-task-worker';
 
 export type ProbeStatus = 'ok' | 'disabled' | 'down';
 
@@ -122,6 +123,55 @@ export function readLoopLag(): LoopLagReading {
   };
 }
 
+export interface CpuWorkerReading {
+  /** A worker thread currently exists (it is spawned lazily, on first offload). */
+  alive: boolean;
+  /**
+   * The crash-breaker has LATCHED: this process has permanently stopped
+   * offloading and every serialization now runs inline. The one field to alert
+   * on — see the WHY on `readCpuWorker`.
+   */
+  disabled: boolean;
+  pendingCount: number;
+  /** Batch size at/above which work is offloaded (for reading the two counts). */
+  minItems: number;
+  keepAlive: boolean;
+  /** Crashes since the last request the worker actually served (breaker trips at 3). */
+  consecutiveCrashes: number;
+}
+
+/**
+ * WI-37696: the CPU-offload crash-breaker, made observable.
+ *
+ * `cpu-task-worker.ts` exists to keep large JSON serialization off the main
+ * thread — inline it costs 30-50ms/tick of event-loop lag. It also has a sync
+ * fallback, and that combination is what makes its breaker dangerous: when
+ * `disabled` latches, the process keeps emitting BYTE-IDENTICAL responses with
+ * no error, no log line and no exit code. The offload simply goes away —
+ * permanently, and re-introducing exactly the lag the module was written to
+ * remove. "Silent + permanent" is strictly harder to triage than "loud +
+ * intermittent", and until this wiring NOTHING read `getCpuWorkerState()` at
+ * all (its own doc comment claimed this endpoint and the loop-monitor
+ * dashboard; neither actually called it).
+ *
+ * Answered for THIS PROCESS on purpose. The state is module-global to the host
+ * that runs the worker, so only the host serving this request can report it —
+ * and `cpu-task-worker` is genuinely loaded here (`rest-query.ts`,
+ * `sync-read-audit.ts`). The SIBLING breakers in `@papercusp/memory` and
+ * `@papercusp/rerank` are deliberately NOT reported here: those workers spawn in
+ * the embed-sidecar process, so importing them into this handler would load a
+ * module this host never uses and report a pristine `disabled: false` — a false
+ * all-clear, which is a worse outcome than no signal. They are surfaced by the
+ * sidecar's own `/healthz`.
+ *
+ * Report-only, exactly like `readLoopLag` above: an offload that fell back is
+ * DEGRADED, not unserviceable. Gating readiness on it would hand a supervisor a
+ * reason to restart a host that is serving correct responses.
+ */
+export function readCpuWorker(): CpuWorkerReading {
+  return getCpuWorkerState();
+}
+
 export default defineTool({
   method: 'GET',
   path: '/health/deep',
@@ -149,6 +199,8 @@ export default defineTool({
     ]);
     // Synchronous, cheap (a native histogram read) — no deadline race needed.
     const loopLag = readLoopLag();
+    // Same: a plain module-state snapshot, no I/O.
+    const cpuWorker = readCpuWorker();
 
     const ready = computeDeepReadiness({
       dbosEnabled,
@@ -158,7 +210,7 @@ export default defineTool({
     });
 
     return Response.json(
-      { ok: ready, ready, dbos, dbosEnabled, pg, memory, loopLag, ts: new Date().toISOString() },
+      { ok: ready, ready, dbos, dbosEnabled, pg, memory, loopLag, cpuWorker, ts: new Date().toISOString() },
       { status: ready ? 200 : 503 },
     );
   },
