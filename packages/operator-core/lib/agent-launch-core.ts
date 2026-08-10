@@ -323,6 +323,22 @@ export interface MemberLaunchOpts {
    *  launches with no plan — members pull via their claim spec, so `--plan` is omitted. */
   plan?: string;
   headless?: boolean;
+  /**
+   * psu --owner-id: PRE-PIN this launch's coord identity instead of letting
+   * bootstrap-su mint one. Same flag, same semantics and same FRESH-LAUNCH-ONLY
+   * rule as buildAgentLaunchCommand's `ownerId` — see that option's doc for why a
+   * resume/fork must never carry one (this composer only ever builds fresh
+   * launches, so there is no resume case to guard here).
+   *
+   * goal-mode-hardening P-009 (NOT the leader-compaction-reseed P-009 that other
+   * comments in fleet_registry/launch-on-plan.ts refer to): `leader:'spawn'` must
+   * write the fleet row naming its leader BEFORE that leader exists, which is
+   * exactly the "state a spawner keys pre-spawn" case the flag was added for.
+   * Without it the fleet would have to be created under the CALLER and leadership
+   * relayed after boot, leaving a window — permanent if the spawn never boots — in
+   * which the registry says the caller leads a fleet it asked not to lead.
+   */
+  ownerId?: string;
   account?: string;
   workspace?: string;
   role?: string;
@@ -536,6 +552,11 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
     '--no-picker',
     `--fleet=${identifier('fleet', opts.fleetSlug)}`,
     `--agent=${identifier('agent', opts.agent)}`,
+    // Pre-pinned coord identity, emitted in the SAME slot buildAgentLaunchCommand
+    // uses (after --agent, before --harness) so the two composers stay
+    // argv-comparable — the property that lets a GUI launch and a tool launch be
+    // diffed against each other when one of them misbehaves.
+    ...(opts.ownerId ? [`--owner-id=${identifier('ownerId', opts.ownerId)}`] : []),
     `--harness=${identifier('harness', opts.harness)}`,
   ];
   // P-003: `plan` is optional — a pure claim-spec fleet (launched without a plan)

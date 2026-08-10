@@ -33,6 +33,7 @@
  * (server-side) AND Windows (WI-3289: relayed to the desktop shell's Tauri
  * console_launch over the sync-bus bridge — the desktop window must be open).
  */
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -932,6 +933,12 @@ export default defineTool({
       .describe(
         "Launch the members HEADLESS — background su sessions with NO desktop window (default false = visible terminals). Same su members (NOT cups), same leader-led contract, they register presence + count toward the fleet, auto-start on the plan, and stay injectable for warm loop:arm wakes; they just have no window and log to a file you can tail. EI-9748 FIXED (2026-07-11, live): on a systemd-managed Linux host (the normal case), each headless member is spawned via `systemd-run --user --scope`, which places it in a transient scope that is a SIBLING of the operator API's own service in the systemd --user cgroup tree — NOT a descendant — so `systemctl --user restart` of papercup-dev-api/papercup-staging-api (KillMode=control-group) cannot reap it; a headless member now survives those restarts just like a visible one. RESIDUAL CAVEAT: on a host with no `systemd-run` on PATH (macOS, a bare/non-systemd container), the spawn falls back to a plain detached child that DOES still share the operator process's cgroup and CAN be silently SIGTERM-killed by a restart of that service — a killed member's log says so. Headless is safe to prefer by default on Linux dev hosts; on a non-systemd host, prefer visible for anything that must survive hours unattended, or check on the fleet more often. Orthogonal to `carry`.",
       ),
+    leader: z
+      .enum(['caller', 'spawn'])
+      .optional()
+      .describe(
+        "WHO LEADS the fleet (default 'caller' — you become leader, the historical behavior). 'spawn' launches a FRESH agent to lead it and leaves you out of the fleet entirely: use it when you must NOT be the leader — a GOAL-mode portfolio manager delegating a plan, where leading a plan fleet yourself is the same mistake as implementing it. Replaces the two-hop relay (launch an agent, brief it to call this tool itself) with one call. The spawned leader's coord identity is PRE-PINNED, so the fleet row names its real leader from the first write and there is never a window where you are recorded as leading. It is opened BEFORE any member, and if it fails to open the whole launch ABORTS with zero members — members draining a queue with no leader watching is worse than no fleet. The leader gets the same agent/model/account/carry/headless treatment as the members unless you say otherwise, plus the standing leader brief.",
+      ),
     carry: z
       .enum(['warm', 'cold'])
       .optional()
@@ -1270,34 +1277,72 @@ export default defineTool({
     // caller's presence — same path as fleet:create.
     const fleetSlug = fleetSlugFromName(args.name);
     let leaderRole = 'leader';
+    // NOTE ON THE NAME `P-009` IN THIS FILE: the comments below about the compaction-cap
+    // re-seed belong to a DIFFERENT plan's P-009. The `leader:'spawn'` work is
+    // goal-mode-hardening P-009 (D-013) and is always spelled out in full. Two unrelated
+    // changes share the bare id; do not read them as one.
     // P-009: the compaction-cap re-seed applied when launching INTO leadership (null unless
     // the caller was a member launching a fleet, i.e. stuck at the 300k member cap).
     let leaderReseed: Awaited<ReturnType<typeof reseedLeaderCompactionLimit>> = null;
+    // ── goal-mode-hardening P-009 / D-013: who leads ─────────────────────────────
+    // 'spawn' means a FRESH agent leads and the caller stays out of the fleet. Its coord
+    // identity is minted HERE, before the fleet row is written, so the row names its real
+    // leader from the first write — the "state a spawner keys pre-spawn" case `psu
+    // --owner-id` exists for (the same pattern goals:start uses). The rejected alternative
+    // was to create the fleet under the caller and relay leadership after boot: that leaves
+    // a window in which the registry says the caller leads, and if the spawned agent never
+    // boots the window never closes — silently, because every write succeeded.
+    const wantsSpawnedLeader = args.leader === 'spawn';
+    const spawnedLeaderOwnerId = wantsSpawnedLeader ? `su-${randomUUID()}` : null;
+    // Set when 'spawn' was asked for but the fleet ALREADY existed: it has a leader
+    // already, and installing a second one is not a top-up, it is a coup. Reported.
+    let leaderSpawnSkipped: string | null = null;
     try {
-      const { record } = await createFleetIfAbsent({
+      const { record, created } = await createFleetIfAbsent({
         workspaceId,
         fleetSlug,
         title: args.name,
         owner: ownerId,
-        leaderOwnerId: ownerId,
+        leaderOwnerId: spawnedLeaderOwnerId ?? ownerId,
       });
+      if (wantsSpawnedLeader && !created) {
+        // Idempotency beats the flag: a relaunch/top-up of an existing fleet must not
+        // mint a rival leader. Fall back to the ordinary join path for this call.
+        leaderSpawnSkipped =
+          `\`leader:'spawn'\` was IGNORED: fleet \`${fleetSlug}\` already exists and is led by ` +
+          `\`${record.leaderOwnerId ?? 'nobody'}\`, so no second leader was spawned — this call ` +
+          `only tops up members. To replace the leader, use fleet:take-leadership (or let the ` +
+          `existing one keep leading); to get a spawned leader, launch under a NEW fleet name.`;
+      }
       leaderRole = fleetRoleFor(record.leaderOwnerId, ownerId);
       await heartbeatPresence(identity);
-      await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
-      // P-009 (incl. via launch): now that presence marks the caller this fleet's leader, lift a
-      // stuck 300k member-cap seed to the leader default (400k on [1m]). Auto-only (no explicit
-      // leader contextSize/limit arg on this door), and precise — it no-ops unless the caller was
-      // exactly at the member cap (an established leader stays put). Best-effort inside the helper.
-      if (leaderRole === 'leader') leaderReseed = await reseedLeaderCompactionLimit(ownerId);
-      // Recolor the caller's live window to the fleet's bound scheme — every other
-      // membership entry point (fleet:create / fleet:join / fleet:take-leadership)
-      // does this; a leader whose window keeps its old color while the members open
-      // in the fleet scheme is the bug, not a variant. Best-effort: a no-op for
-      // non-psu-hosted callers, never throws.
-      await recolorCallerTerminal(ownerId, record);
+      // A spawned-leader launch deliberately leaves the CALLER out of the fleet: no presence
+      // label, no leader compaction re-seed, no window recolor. The caller is the delegator,
+      // not a participant — labelling it here is exactly the "you are leading a fleet you
+      // asked not to lead" state this mode exists to prevent. Skipped only when a leader was
+      // actually spawned; the ignored case above falls through to the normal join.
+      if (wantsSpawnedLeader && created) {
+        leaderRole = 'delegator';
+      } else {
+        await setPresenceFleet(workspaceId, ownerId, fleetSlug, leaderRole);
+        // P-009 (incl. via launch): now that presence marks the caller this fleet's leader, lift a
+        // stuck 300k member-cap seed to the leader default (400k on [1m]). Auto-only (no explicit
+        // leader contextSize/limit arg on this door), and precise — it no-ops unless the caller was
+        // exactly at the member cap (an established leader stays put). Best-effort inside the helper.
+        if (leaderRole === 'leader') leaderReseed = await reseedLeaderCompactionLimit(ownerId);
+        // Recolor the caller's live window to the fleet's bound scheme — every other
+        // membership entry point (fleet:create / fleet:join / fleet:take-leadership)
+        // does this; a leader whose window keeps its old color while the members open
+        // in the fleet scheme is the bug, not a variant. Best-effort: a no-op for
+        // non-psu-hosted callers, never throws.
+        await recolorCallerTerminal(ownerId, record);
+      }
     } catch (e: any) {
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
     }
+    // True only when this call must actually open a leader terminal (asked for, and the
+    // fleet was newly created rather than joined).
+    const spawningLeader = wantsSpawnedLeader && leaderSpawnSkipped === null;
 
     // #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08) + EI-7671 + EI-10409: set the
     // fleet-level claim spec BEFORE any member terminal opens — scoping every member's
