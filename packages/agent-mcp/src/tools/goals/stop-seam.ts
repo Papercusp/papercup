@@ -33,12 +33,31 @@
  * caller read "paused" as "burn stopped" is the bug, not the fix.
  */
 
+/**
+ * The statuses that WIND A GOAL DOWN — one name for the set, so widening it is a
+ * single edit rather than five unions that can drift apart.
+ *
+ * `achieved` belongs here for the same reason `killed` does: both are TERMINAL, and
+ * there is provably LESS left to do after success than after abandonment (WI-37832).
+ * It was absent until 2026-08-10, which made the status you set when a goal SUCCEEDS
+ * the one status that did nothing — pots left ungated, attributed loops left armed
+ * and burning against a completed outcome, while the FAILURE status cleaned all of it
+ * up. Measured at the time: goal `make-a-website-…-aa0205` sat `achieved` for 2h38m
+ * owning pot `panda-gallery` (goal_pots role='owner', removed_at NULL) with its
+ * attributed session's engine loop still `active = true`.
+ *
+ * The one edge case — a session that has MOVED ON having its loop disarmed — is real
+ * and self-correcting: a loop belongs to a session, so a session with other work
+ * re-arms. (WI-37615 D-013 declines to auto-re-arm on resume for the same reason.)
+ */
+export type StoppingStatus = 'paused' | 'killed' | 'achieved';
+
 /** What a goal stop did, per pot and in total. Every field is a MEASUREMENT, not an intent. */
 export interface GoalStopReport {
   /** The goal whose status moved. */
   goalId: string;
-  /** The status it moved INTO — only 'paused' and 'killed' fan out. */
-  status: 'paused' | 'killed';
+  /** The status it moved INTO — 'paused', 'killed' and 'achieved' all fan out. */
+  status: StoppingStatus;
   /**
    * Pots whose placement was gated, i.e. those this goal is the `owner` of.
    * A `contributing` link is deliberately NOT stopped: that pot is driven by
@@ -113,14 +132,14 @@ export type GoalTransitionReport = GoalStopReport | GoalResumeReport;
 export interface GoalTransitionInput {
   goalId: string;
   workspaceId: string;
-  /** The status the goal moved INTO. Only these three fan out. */
-  status: 'paused' | 'killed' | 'active';
+  /** The status the goal moved INTO. Only these four fan out. */
+  status: StoppingStatus | 'active';
   /** The agent performing the transition, for the audit trail. */
   actor?: string | null;
 }
 
 /** @deprecated Narrower alias kept only so existing call sites keep reading naturally. */
-export type GoalStopInput = GoalTransitionInput & { status: 'paused' | 'killed' };
+export type GoalStopInput = GoalTransitionInput & { status: StoppingStatus };
 
 export type GoalTransitionExecutor = (input: GoalTransitionInput) => Promise<GoalTransitionReport>;
 
@@ -144,9 +163,17 @@ export function getGoalTransitionExecutor(): GoalTransitionExecutor | undefined 
   return executor;
 }
 
+/**
+ * The one membership list. Every guard below reads it rather than repeating the
+ * literals, so adding a status is a single edit and the guards CANNOT disagree with
+ * each other — the drift that let `achieved` be a first-class member of
+ * `GOAL_STATUSES` while being invisible to this seam (WI-37832).
+ */
+const STOPPING_STATUSES: readonly StoppingStatus[] = ['paused', 'killed', 'achieved'];
+
 /** A goal status that triggers the stop fan-out. */
-export function isStoppingStatus(status: string): status is 'paused' | 'killed' {
-  return status === 'paused' || status === 'killed';
+export function isStoppingStatus(status: string): status is StoppingStatus {
+  return (STOPPING_STATUSES as readonly string[]).includes(status);
 }
 
 /** A goal status that triggers the resume fan-out (WI-37615). */
@@ -155,11 +182,11 @@ export function isResumingStatus(status: string): status is 'active' {
 }
 
 /** Any status that fans out at all — the union of the two above. */
-export function isTransitioningStatus(status: string): status is 'paused' | 'killed' | 'active' {
+export function isTransitioningStatus(status: string): status is StoppingStatus | 'active' {
   return isStoppingStatus(status) || isResumingStatus(status);
 }
 
 /** Narrow a transition report to the stop arm. */
 export function isStopReport(r: GoalTransitionReport): r is GoalStopReport {
-  return r.status === 'paused' || r.status === 'killed';
+  return isStoppingStatus(r.status);
 }
