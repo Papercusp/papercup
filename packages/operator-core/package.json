@@ -21,6 +21,7 @@
     "lint:no-unthreaded-apply": "node ../../scripts/check-no-unthreaded-apply.mjs",
     "lint:okf-conformance": "tsx ../../scripts/check-okf-conformance.mjs",
     "lint:drop-database-force": "node ../../scripts/check-drop-database-force.mjs",
+    "lint:js-syntax": "node ../../scripts/check-js-syntax.mjs",
     "lint:no-retired": "node ../../scripts/check-no-retired-imports.mjs",
     "lint:no-retired-resurrection": "node ../../scripts/check-retired-resurrection.mjs",
     "lint:vimock-export-strands": "node ../../scripts/check-vimock-export-strands.mjs",

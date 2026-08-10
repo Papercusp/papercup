@@ -161,8 +161,23 @@ export interface TripwireBar {
   label: string;
   /** `$310 of $500`, `day 12 of 30`, `12 of 30 builds`. */
   valueText: string;
-  /** 0-100, clamped. Null when nothing has measured this yet. */
+  /**
+   * 0-100, clamped. Null when there is no bar to fill — which happens for TWO
+   * different reasons: nothing has measured this yet, OR there is a reading but
+   * no usable threshold to measure it against.
+   *
+   * So `pct == null` is NOT "unmeasured", and must never be used to answer that
+   * question. Read `measured` instead.
+   */
   pct: number | null;
+  /**
+   * Did anyone actually take a reading? This is the ONE field that separates
+   * "unmeasured" from "measured at zero" — the distinction this whole surface
+   * exists to preserve — and it is stated explicitly rather than left to be
+   * re-derived from `pct` or `tone`, because both have other reasons to take
+   * the value a caller would read as absent.
+   */
+  measured: boolean;
   tone: TripwireTone;
   /** Hover text spelling out what crossing this bar means. */
   title: string;
@@ -232,7 +247,7 @@ export function tripwireBar(t: GoalDetailTripwire): TripwireBar {
         ? `${label}: no reading has been taken yet`
         : `${label}: ${valueText}`;
 
-  return { key: t.metric, label, valueText, pct, tone, title };
+  return { key: t.metric, label, valueText, pct, measured: hasCurrent, tone, title };
 }
 
 /** Every tripwire on the goal, in author order. Empty is the NORMAL case — a

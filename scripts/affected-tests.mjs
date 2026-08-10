@@ -843,6 +843,39 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) =>
       /\.[cm]?tsx?$/.test(f) && GC_TAG_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
   },
+  {
+    // EI-20035436440627349 — the D-034 shape at its most literal: an unparseable module
+    // does not break the workspace it lives in, it breaks every workspace that imports
+    // it, and THIS FILE plus its scripts/lib/*.mjs helpers are themselves .mjs, so a
+    // broken one corrupts the selection mechanism the other guards are chosen by.
+    //
+    // WHY IT EARNS A SLOT rather than being left to whoever runs a suite next: one
+    // unparseable module reds every test file that transitively imports it; all of them
+    // produce real FAIL rows; all attribute cleanly to a file; so the runner stamps its
+    // most CONFIDENT label — `coverage=complete` — over a list of entirely innocent
+    // files, with the culprit absent. `transformCulpritCount` (WI-37607) names the
+    // culprit but only downstream, after a peer has already paid for the triage.
+    //
+    // Measured 2026-08-10, the incident that prompted it: a regex pasted verbatim into
+    // a JSDoc block contained the comment terminator, making
+    // scripts/lib/strip-comments-and-strings.mjs unparseable tree-wide. Caught by a
+    // peer before git-sync swept it, so no broken commit landed — the window, not the
+    // commit, is what this closes.
+    workspace: '@papercusp/operator-core',
+    // ~1.7-2.1s over 3 warm runs: 277 tracked .mjs through a parallel `node --check`
+    // pool. Same order as lint:no-retired (~1.39s), which is accepted here.
+    script: 'lint:js-syntax',
+    // NO hostSuiteRatchet ON PURPOSE. Declaring one would skip this guard exactly when
+    // operator-core's full suite runs — i.e. on the biggest changesets — and the whole
+    // point is that a parse break is tree-wide and instant. Unconditional attach is the
+    // fail-safe direction this list documents above.
+    //
+    // .mjs ONLY. `.js`/`.cjs` would pull in large vendored bundles (the desktop
+    // sidecar's monaco) whose baseline is unmeasured; the .mjs baseline was measured
+    // clean FIRST (277/277 parse, exit 0 at wiring time), which is what lets this ship
+    // ENFORCING instead of as a ratchet carrying debt.
+    appliesTo: (f) => f.endsWith('.mjs'),
+  },
 ];
 
 const workspaces = [

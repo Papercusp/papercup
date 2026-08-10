@@ -645,7 +645,16 @@ function RowButton({
 
 function TripwireRow({ bar }: { bar: TripwireBar }) {
   return (
-    <li className={`hud-goal__bar hud-goal__bar--${bar.tone}`} title={bar.title}>
+    <li
+      className={`hud-goal__bar hud-goal__bar--${bar.tone}`}
+      title={bar.title}
+      /* The machine-readable half of the same distinction the styling makes:
+         a tripwire nobody has wired up must be tellable from one measured at
+         zero WITHOUT reading pixels or parsing prose. Driven by `measured`,
+         never by `pct` — pct is also null for a reading with no threshold,
+         which is measured. */
+      data-measured={bar.measured ? 'true' : 'false'}
+    >
       <span className="hud-goal__bar-label">{bar.label}</span>
       <span className="hud-goal__bar-track">
         {/* An unread tripwire gets NO fill at all — not a zero-width one. A
