@@ -1,11 +1,30 @@
 /**
- * plans:start — mark a plan as started so the orchestrator picks its features.
+ * plans:start — approve a plan and promote its items into work_items.
  *
  * Per plans-central-harness-ux-2026-05-26 Phase 1 P-002.
  *
+ * ⚠ THE op_status WRITE IS GATED (retire-mug-kettle-su-only-2026-08-09 P-047 /
+ * D-010). op_status ('started' | 'paused') is the OPERATIONAL axis — the
+ * "pickable by the orchestrator" bit — and it retires with the Mug/Kettle tier.
+ * While `FLAGS.MUG_KETTLE_SYSTEM` is OFF (the DELIVERED state, polarity inverted
+ * per D-016) this tool does everything it always did EXCEPT write op_status:
+ * terminal check, start gate, draft→'ready' auto-approve, and `promotePlanItems`
+ * all still run. The verb is NOT refused, deliberately — promotion is what fills
+ * the su queue, and gating the mechanism instead of the writer is exactly why
+ * P-044 was dropped ("the cut was backwards").
+ *
+ * WHY THE WRITE IS THE HARMFUL HALF: op_status does not ENABLE anything for su.
+ * `reservedPlanLaneExclusionSql` (work-items.ts) RESERVES a started/paused plan's
+ * items FROM scheduler self-selection, because a DISPATCHER is meant to hand them
+ * out. Retire the dispatcher and leave the writer, and every newly-started plan
+ * silently strands its own items — reserved for nobody, presenting as "the queue
+ * is empty". The READER half (dropping the op_status leg for already-reserved
+ * plans) is P-048, deliberately NOT done here: D-055 measured 34 items across 6
+ * plans behind it and requires the DBOS frontier to be settled in the same change.
+ *
  * Sets op_status='started' on the plan's harness_shared.harness_plans row
  * (operational columns folded in from the retired harness_plan_status table —
- * plans-pg-canonical-migration-2026-06-03).
+ * plans-pg-canonical-migration-2026-06-03) when the tier IS enabled.
  * If the plan was previously paused or done it is re-activated.
  * Starting an already-started plan is a no-op (idempotent).
  *
@@ -13,6 +32,8 @@
  * op_status transition (`transitioned: true` — not the idempotent re-start) a
  * `coord:emit` lifecycle notification fires to the plan's watchers. The Queen's
  * default wake subscription rides the same tool event (lib/hive/wake-defaults).
+ * With the tier retired nothing transitions, so the demand event stays silent —
+ * correct, since its subscriber is the retired Queen.
  */
 
 import { z } from 'zod';
@@ -26,6 +47,7 @@ import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
 import { checkPlanStartable } from './plan-start-gate';
+import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 const argsSchema = z.object({
@@ -39,9 +61,9 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:start',
   description:
-    "Mark a plan as started so the orchestrator will pick features promoted from it. Starting is itself the approval signal — a still-draft plan is auto-advanced to 'ready'. Starting an already-started plan is a no-op. Use plans:pause to suspend work without losing started state.",
+    "Approve a plan and promote its items into work-items. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. While papercusp-mug-kettle-system is OFF the retired op_status axis is not written.",
   guidance: {
-    when: "User clicks 'Start Plan' in the harness UI, or an agent is asked to begin work on a specific plan.",
+    when: 'An agent is asked to begin work on a specific plan — this promotes its items into work-items.',
     notWhen:
       'The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.',
     chaining: 'plans:list to find the slug, then plans:start { slug }.',
@@ -129,26 +151,48 @@ export default defineTool({
           return { ok: false as const, harnessSlug, ...gate.refusal };
         }
 
-        const rows = await withWorkspace(startWorkspaceId, async (tx) => {
-          return tx<{ op_status: string; op_updated_at: string; prev_op_status: string | null }[]>`
-            UPDATE harness_shared.harness_plans AS p
-               SET op_status     = 'started',
-                   op_started_at = COALESCE(p.op_started_at, ${now}),
-                   op_updated_at = ${now}
-              FROM (
-                SELECT plan_slug, op_status AS prev_op_status
+        // P-047 / D-010: the op_status axis retires with the Mug/Kettle tier.
+        // Fail-CLOSED via mugKettleSystemEnabled (an unreadable flag resolves to
+        // retired) — a false `true` re-reserves a plan's items for a dispatcher
+        // that is not running, which is the failure this gate exists to stop.
+        const axisLive = await mugKettleSystemEnabled();
+
+        type StartRow = { op_status: string | null; op_updated_at: string | null; prev_op_status: string | null };
+        // RETIRED branch: READ the row instead of writing it, on the SAME
+        // (workspace, harness, slug) key the UPDATE used — so the plan_not_found
+        // detection below (WI-5825) keeps working identically. `prev_op_status`
+        // mirrors the current value, so `transitioned` is false by construction.
+        const rows: StartRow[] = !axisLive
+          ? await withWorkspace(startWorkspaceId, async (tx) => {
+              return tx<StartRow[]>`
+                SELECT op_status, op_updated_at, op_status AS prev_op_status
                   FROM harness_shared.harness_plans
                  WHERE workspace_id = ${startWorkspaceId}
                    AND harness_slug = ${harnessSlug}
                    AND plan_slug    = ${slug}
-                   FOR UPDATE
-              ) prev
-             WHERE p.workspace_id = ${startWorkspaceId}
-               AND p.harness_slug = ${harnessSlug}
-               AND p.plan_slug    = prev.plan_slug
-            RETURNING p.op_status, p.op_updated_at, prev.prev_op_status
-          `;
-        });
+                 LIMIT 1
+              `;
+            })
+          : await withWorkspace(startWorkspaceId, async (tx) => {
+              return tx<StartRow[]>`
+                UPDATE harness_shared.harness_plans AS p
+                   SET op_status     = 'started',
+                       op_started_at = COALESCE(p.op_started_at, ${now}),
+                       op_updated_at = ${now}
+                  FROM (
+                    SELECT plan_slug, op_status AS prev_op_status
+                      FROM harness_shared.harness_plans
+                     WHERE workspace_id = ${startWorkspaceId}
+                       AND harness_slug = ${harnessSlug}
+                       AND plan_slug    = ${slug}
+                       FOR UPDATE
+                  ) prev
+                 WHERE p.workspace_id = ${startWorkspaceId}
+                   AND p.harness_slug = ${harnessSlug}
+                   AND p.plan_slug    = prev.plan_slug
+                RETURNING p.op_status, p.op_updated_at, prev.prev_op_status
+              `;
+            });
 
         const row = rows[0];
         // WI-5825: 0 rows means no such plan in this (workspace, harness) —
@@ -166,7 +210,11 @@ export default defineTool({
             message: `no plan '${slug}' in ${startWorkspaceId}/${harnessSlug}`,
           };
         }
-        const transitioned = row.prev_op_status !== 'started';
+        // `axisLive &&` is load-bearing, not belt-and-braces: in the retired
+        // branch prev_op_status is the row's CURRENT value, so a never-started
+        // plan would otherwise score `null !== 'started'` = transitioned and fire
+        // the demand event for a start that never happened.
+        const transitioned = axisLive && row.prev_op_status !== 'started';
 
         if (transitioned) {
           void Promise.all([
@@ -226,11 +274,24 @@ export default defineTool({
           ok: true as const,
           slug,
           harnessSlug,
-          status: 'started',
+          // NOT 'started' while retired — reporting a status the row does not
+          // carry is precisely the "announced a start that never happened" bug
+          // WI-5825 fixed one layer down.
+          status: axisLive ? 'started' : null,
           updatedAt: row?.op_updated_at,
           autoApproved,
           transitioned,
           previousOpStatus: row?.prev_op_status ?? null,
+          ...(axisLive
+            ? {}
+            : {
+                opStatusRetired: true as const,
+                message:
+                  'Plan approved and its items promoted. The operational started axis is RETIRED ' +
+                  '(papercusp-mug-kettle-system is OFF, the delivered state), so op_status was not ' +
+                  'written — su agents self-select these items via scheduler:get_next instead of ' +
+                  'waiting for a dispatcher. Flip the flag ON in /admin/features to restore it.',
+              }),
         };
       },
       { keyOf: (slug) => ({ slug }) },

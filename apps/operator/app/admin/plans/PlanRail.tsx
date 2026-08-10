@@ -35,6 +35,8 @@ import { applyPlanFilters, OWNER_VIEWS, type OwnerView } from './plan-filtering'
 import { comparePlans, PLAN_SORT_IDS, type PlanSort } from './plan-sorting';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useLexicon } from '@/lib/useLexicon';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 
 /** Imperative handle PlansClient uses for J/K keyboard navigation. */
 export interface PlanRailHandle {
@@ -438,7 +440,20 @@ function PlanRow({
   // must be approved first (no start button), and shipped/rejected are
   // terminal. So the inline toggle shows only for ready + running.
   const bucket = bucketOf(plan);
-  const showStartToggle = bucket === 'ready' || bucket === 'running';
+  // retire-mug-kettle-su-only-2026-08-09 P-047 / D-010, owner-directed:
+  // "its just the start/stopped functionality that made them 'pickable' for the
+  // mug that we no longer need and the gui buttons driving that functionality."
+  // op_status is that axis, and this button is its only owner-facing writer.
+  //
+  // ASYMMETRIC ON PURPOSE — the PAUSE half survives for an ALREADY-started plan
+  // (`isStarted`), mirroring the server (plans:pause is deliberately un-gated,
+  // D-056): the DBOS frontier still reads op_status='started', so hiding pause
+  // too would freeze every pre-P-047 started plan dispatchable with no off
+  // switch. It is self-extinguishing — once a plan is paused or cleared the
+  // button never returns, because Start cannot be reached while the tier is
+  // retired. A 'paused' plan correctly shows nothing (isStarted is false).
+  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  const showStartToggle = (bucket === 'ready' || bucket === 'running') && (mugKettleOn || isStarted);
 
   return (
     <li

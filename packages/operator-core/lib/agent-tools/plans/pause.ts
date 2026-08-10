@@ -11,6 +11,27 @@
  * re-started via plans:start.
  *
  * Pausing a plan that was never started returns { notStarted: true }.
+ *
+ * ⚠ DELIBERATELY **NOT** GATED by the Mug/Kettle retirement, unlike its sibling
+ * `plans:start` (retire-mug-kettle-su-only-2026-08-09 P-047 / D-056). Do not
+ * "finish the job" by adding `refuseIfMugKettleRetired` here — that would be the
+ * backwards cut, twice over:
+ *
+ *  1. THIS VERB CANNOT ENTER THE RETIRED AXIS. The `AND op_status IS NOT NULL`
+ *     guard below means it only ever rewrites a row ALREADY on the axis; it can
+ *     move a plan from 'started' to 'paused', never from null to anything. P-047
+ *     retires the axis by stopping new ENTRIES (plans:start), and this is an EXIT.
+ *  2. IT IS A STOPPER, and _mug-kettle-gate.ts's own scope note excludes stoppers
+ *     for exactly this reason: "refusing a stop is never the safe direction". The
+ *     DBOS orchestrator frontier (dbos/orchestrator-loop.ts) still reads
+ *     op_status='started' and is NOT gated by the retirement, so pause remains the
+ *     only lever that removes an already-started plan from its dispatch. Gate this
+ *     and the plans started before P-047 landed are frozen dispatchable with no
+ *     off switch.
+ *
+ * What pause does NOT do is UN-reserve: 'paused' is still a reserving value in
+ * `reservedPlanLaneExclusionSql`. Lifting the reservation on already-started
+ * plans is P-048's reader-side change, gated on D-055.
  */
 
 import { z } from 'zod';
