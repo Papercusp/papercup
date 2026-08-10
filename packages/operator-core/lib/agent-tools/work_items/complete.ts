@@ -379,6 +379,51 @@ export function unresolvedPathsInCompletion(
   return missing.length > 0 ? { missing } : undefined;
 }
 
+/**
+ * EI-19455334047866968 / EI-19411072468868467: gather EVERY prose field the caller
+ * actually wrote into this completion, for the dangling-ref scan.
+ *
+ * Reads the RAW record, not `CompletionVerificationEvidence` — `deferred`, `coordNotes`,
+ * `whatLanded` and `migrations` are NOT on that type, so scanning the evidence alone would
+ * silently miss them. `deferred` is the highest-risk field in the whole record: it is where
+ * a completion cites the follow-up item it just minted, which is precisely the moment an id
+ * is written from a guess rather than from a returned value. EI-19411072468868467 measured
+ * exactly that — the phantom sat in `summary` AND `deferred`.
+ *
+ * Falls back to the gate evidence per-field, because a bare-STRING completion is coerced
+ * into `{ summary }` and the raw record's other fields are then genuinely absent.
+ *
+ * PURE — unit-tested without PG, like its path-shaped sibling above.
+ */
+export function completionRefBody(
+  completion: unknown,
+  evidence?: CompletionVerificationEvidence | undefined,
+): string {
+  const rec = (completion ?? {}) as {
+    summary?: unknown;
+    testsRun?: unknown;
+    testResult?: unknown;
+    coordNotes?: unknown;
+    whatLanded?: unknown;
+    deferred?: unknown;
+    migrations?: unknown;
+  };
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
+  const arr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+
+  return [
+    str(rec.summary) ?? evidence?.summary,
+    str(rec.testsRun) ?? evidence?.testsRun,
+    str(rec.testResult) ?? evidence?.testResult,
+    str(rec.coordNotes),
+    ...arr(rec.whatLanded),
+    ...arr(rec.deferred),
+    ...arr(rec.migrations),
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 /** Cheap, bounded repair of a path that does not exist. Returns undefined when unsure. */
 function suggestExistingPath(
   declaredPath: string,
@@ -1016,19 +1061,20 @@ async function completeOne(
   // identically to a real one. Measured on this very surface: a completion said "Filed
   // separately as EI-19455206485565591" when the real filing was EI-19455262557905604.
   //
-  // Scans the caller's own narrative fields — `summary` carries the cross-reference
-  // sentence, and testsRun/testResult routinely cite the item a run was verified against.
+  // Scans EVERY prose field the caller actually wrote, off the raw record rather than the
+  // gate evidence — `deferred` and `coordNotes` are NOT part of CompletionVerificationEvidence,
+  // and scanning only the evidence would miss them. That is not hypothetical: the independently
+  // filed EI-19411072468868467 measured this exact defect with the phantom id in `summary` AND
+  // `deferred` ("wrote EI-19408968252646575, the real one was EI-19411045952024591"), and
+  // prescribed precisely this warn-not-refuse remedy over `summary`/`deferred`/`coordNotes`.
+  // `deferred` is the highest-risk field of all: it is where a completion cites the follow-up
+  // item it just minted, which is the exact moment the id is written from a guess.
+  //
   // Best-effort + fail-open: the completion is already recorded, so a check that cannot
   // answer stays silent rather than manufacturing an accusation.
   let unresolvedRefsWarningText: string | undefined;
   try {
-    const refBody = [
-      completionEvidenceForGate?.summary,
-      completionEvidenceForGate?.testsRun,
-      completionEvidenceForGate?.testResult,
-    ]
-      .filter(Boolean)
-      .join('\n');
+    const refBody = completionRefBody(it.completion, completionEvidenceForGate);
     const unresolvedRefs = await unresolvedRefsInBody(refBody, { known: [it.id] });
     if (unresolvedRefs) unresolvedRefsWarningText = unresolvedRefsWarning(it.id, unresolvedRefs.missing);
   } catch {

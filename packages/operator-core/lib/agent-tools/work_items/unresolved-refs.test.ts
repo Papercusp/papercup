@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { unresolvedRefsInBody, unresolvedRefsWarning, MAX_REFS_PROBED } from './unresolved-refs';
+import { completionRefBody } from './complete';
 
 /** A probe where only the listed ids exist. */
 const probeWith = (...existing: string[]) => {
@@ -113,6 +114,53 @@ describe('unresolvedRefsInBody', () => {
     const probe = probeWith();
     expect(await unresolvedRefsInBody('EI-1', { probe, max: 0 })).toBeUndefined();
     expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+describe('completionRefBody — WHICH fields feed the scan', () => {
+  // The regression this exists to prevent: scanning only CompletionVerificationEvidence
+  // (summary/testsRun/testResult) and silently missing the fields where the measured
+  // phantoms actually landed.
+  it('includes deferred — the field EI-19411072468868467 measured the phantom in', () => {
+    const body = completionRefBody({ summary: 'done', deferred: ['follow-up filed as EI-19408968252646575'] });
+    expect(body).toContain('EI-19408968252646575');
+  });
+
+  it('includes coordNotes, whatLanded and migrations', () => {
+    const body = completionRefBody({
+      summary: 's',
+      coordNotes: 'told the fleet via EI-1',
+      whatLanded: ['landed EI-2'],
+      migrations: ['790 supersedes EI-3'],
+    });
+    for (const id of ['EI-1', 'EI-2', 'EI-3']) expect(body).toContain(id);
+  });
+
+  it('carries every scanned field through to the ref scan end-to-end', async () => {
+    const probe = probeWith(); // nothing exists
+    const body = completionRefBody({
+      summary: 'closes EI-1',
+      testsRun: 'suite for EI-2',
+      testResult: 'green, see EI-3',
+      coordNotes: 'notified on EI-4',
+      whatLanded: ['EI-5'],
+      deferred: ['EI-6'],
+    });
+    const out = await unresolvedRefsInBody(body, { probe, max: 50 });
+    expect(out?.missing).toEqual(['EI-1', 'EI-2', 'EI-3', 'EI-4', 'EI-5', 'EI-6']);
+  });
+
+  it('falls back to gate evidence when the raw record was a coerced bare string', () => {
+    // A bare-string completion coerces to { summary } only, so the other raw fields are
+    // genuinely absent and the evidence is the only place the prose survives.
+    const body = completionRefBody({ summary: 'coerced' }, { testsRun: 'ran against EI-9' } as never);
+    expect(body).toContain('EI-9');
+  });
+
+  it('survives a malformed record without throwing', () => {
+    for (const bad of [null, undefined, 'a string', 42, { deferred: 'not-an-array', whatLanded: [1, 2] }]) {
+      expect(() => completionRefBody(bad)).not.toThrow();
+    }
   });
 });
 
