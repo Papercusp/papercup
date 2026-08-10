@@ -17,6 +17,7 @@ import { describeStoreIdentityMismatch } from '@papercusp/db-org';
 import {
   annotateStoreIdentitySuspectResult,
   looksLikeNotFoundVerdict,
+  mayAnnotateResultText,
   type StoreIdentitySuspectDeps,
   type StoreIdentitySuspectResult,
 } from './store-identity-suspect';
@@ -142,6 +143,41 @@ describe('store-identity suspect annotation (EI-19415249247575123)', () => {
 
       expect(text).toBe(NOT_FOUND_BODY);
       expect(() => JSON.parse(text)).not.toThrow();
+      expect(annotated._meta?.storeIdentitySuspect).toBeDefined();
+    });
+  });
+
+  /**
+   * WI-37843. Who is spared the prose is decided by mayAnnotateResultText, and the
+   * property that matters is that it keys off WHY the door was skipped rather than
+   * WHETHER it was.
+   *
+   * The regression this prevents is silent in the expensive direction: the host used
+   * to pass `!skipResultDoor`, so the moment a MODEL-FACING tool took the door
+   * exemption it also stopped being told its `not_found` might be coming from the
+   * wrong database. coord:orient is that tool, and a session bootstrap is the worst
+   * possible place to lose that warning — the agent goes on to act on the empty
+   * answer. Nothing would have failed; the banner would just quietly stop appearing.
+   */
+  describe('door-skip REASON decides prose, not the fact of skipping (WI-37843)', () => {
+    it('spares a programmatic caller, and ONLY a programmatic caller', () => {
+      expect(mayAnnotateResultText('programmatic-caller')).toBe(false);
+      expect(mayAnnotateResultText('oversize-by-design')).toBe(true);
+      expect(mayAnnotateResultText(undefined)).toBe(true);
+    });
+
+    it('an oversize-by-design (model-facing) result still receives the wrong-database banner', () => {
+      // The end-to-end property, not just the predicate: a tool exempted from the
+      // door for SIZE must still be warned, because a model reads this body.
+      const annotated = annotateStoreIdentitySuspectResult(
+        textResult(NOT_FOUND_BODY),
+        mayAnnotateResultText('oversize-by-design'),
+        latched,
+      );
+      const text = (annotated.content[0] as { text: string }).text;
+
+      expect(text).not.toBe(NOT_FOUND_BODY);
+      expect(text).toContain(NOT_FOUND_BODY);
       expect(annotated._meta?.storeIdentitySuspect).toBeDefined();
     });
   });

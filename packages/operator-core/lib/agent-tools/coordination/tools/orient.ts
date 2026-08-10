@@ -1930,6 +1930,23 @@ export default defineTool({
     standard: (data, sctx) => shapeOrient(data, sctx.tier as 'standard'),
     trimmed: (data, sctx) => shapeOrient(data, sctx.tier as 'trimmed'),
   },
+  // WI-37843 [owner 2026-08-10]: "this is a very important tool that is only
+  // called once at session start. remove the limit entirely."
+  //
+  // These two are ONE change, and either alone is a half-fix — orient was cut
+  // TWICE, by independent mechanisms, and removing only the one you can see
+  // leaves the other still cutting:
+  //   - the per-result door truncated 1140 of 1140 calls (100%), spilling the
+  //     remainder to scratch for the agent to page back;
+  //   - the payload-tier ceiling had ALREADY force-shaped it before the door
+  //     ever ran, and that loss is worse: never serialized, so unrecoverable.
+  // See ORIENT_PAYLOAD_TIER_CEILING_CHARS above for the measurements.
+  //
+  // 'oversize-by-design', NOT 'programmatic-caller': orient's reader is a MODEL,
+  // so it must keep the prose annotations (the store-identity wrong-database
+  // warning above all) that a hook-parsed body has to be spared.
+  skipResultDoor: 'oversize-by-design',
+  payloadTierCeilingChars: ORIENT_PAYLOAD_TIER_CEILING_CHARS,
   async handler(args, ctx) {
     // Soft identity resolve — orient is a READ; a bare loopback caller without an
     // attributable coord identity still gets a (fleet-wide) orientation.
