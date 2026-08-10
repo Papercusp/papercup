@@ -23,6 +23,7 @@
  */
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { firstLiveMatch, stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
@@ -70,20 +71,26 @@ export function findOffendersInText(f, text) {
   if (!text.includes('_retired/') && !text.includes('plugins/orchestrator/spawn')) {
     return offenders;
   }
-  text.split('\n').forEach((line, i) => {
-    // WI-6730: skip comment lines. `RETIRED_IMPORT` keys on the word `from`, so
-    // ordinary PROSE about this very policy — "a read from `_retired/` is a read
-    // by something deliberately not deployed" — matches it. That is a comment,
-    // not an import. The pre-existing `f === 'scripts/check-no-retired-imports.mjs'`
-    // self-exclusion below is the same bug papered over one file at a time; this
-    // closes the class instead, so the next doc that discusses the retirement
-    // boundary does not red the build. Same idiom as
-    // check-no-unenrolled-detached-spawn.mjs, which strips comments before matching.
-    if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) return;
-    if (RETIRED_IMPORT.test(line)) {
+  // WI-6730 skipped comment LINES, because `RETIRED_IMPORT` keys on the word `from`, so ordinary
+  // prose about this very policy matches it. WI-37717: that line-start test saw only a comment
+  // OPENING a line — a trailing comment, a block-comment body, and above all a TEMPLATE LITERAL
+  // quoting an import all walked straight through it, and this repo's prompt/doc sources embed
+  // code examples routinely.
+  //
+  // Neither stripper alone fixes it: both patterns SPAN code and string content (the `from`
+  // keyword is code, the `_retired/` specifier it needs is inside the string), so masking
+  // strings deletes the evidence while masking comments leaves the template standing. So match
+  // on RAW and ask whether the match's ANCHOR — the `from`/`import`/`require`/`fetch` keyword —
+  // is live program text. Its specifier being a string is expected; a keyword that is itself
+  // string or comment content never was an import.
+  const masked = stripCommentsAndStrings(text, f);
+  const rawLines = text.split('\n');
+  const maskedLines = masked.split('\n');
+  rawLines.forEach((line, i) => {
+    if (firstLiveMatch(line, maskedLines[i], RETIRED_IMPORT)) {
       offenders.push(`${f}:${i + 1}  [imports a _retired/ module]  ${line.trim().slice(0, 100)}`);
     }
-    if (DEAD_SPAWN_FETCH.test(line)) {
+    if (firstLiveMatch(line, maskedLines[i], DEAD_SPAWN_FETCH)) {
       offenders.push(`${f}:${i + 1}  [retired /api/plugins/orchestrator/spawn fetch]  ${line.trim().slice(0, 100)}`);
     }
   });
