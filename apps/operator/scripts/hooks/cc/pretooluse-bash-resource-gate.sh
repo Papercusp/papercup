@@ -2337,6 +2337,70 @@ def _canonical_tree_root():
         return None
 
 
+# EI-19372138838008750 — the ONE sanctioned scratch location INSIDE the tree.
+#
+# This guard exists because a raw shell write into the tree skips the file-lock
+# hook and can be swept into a commit by git-sync. NEITHER hazard can reach
+# `<tree>/.papercusp/scratch/`: it is gitignored (`.gitignore` carries
+# `**/.papercusp/scratch/`), so git-sync can never commit anything under it, and
+# a throwaway probe no peer edits has no lock worth contending for.
+#
+# Exempting it is what makes this guard's OWN remediation followable. The advice
+# was "write it outside the tree (~/.papercusp/scratch or /tmp)" — but the single
+# most common scratch case on this repo, a tsx/node probe that IMPORTS repo
+# modules, cannot run from either: module resolution walks up from the FILE's
+# directory, and neither location has a repo `node_modules` above it. Measured
+# 2026-08-10: a probe under `~/.papercusp/scratch` dies with MODULE_NOT_FOUND.
+# So the guard denied the only location that works and recommended two that
+# don't, and the agent hit that wall mid-verification with no legal move.
+#
+# ⚠ `/tmp` can LOOK viable: a stray `/tmp/node_modules` (a full dependency tree
+# left there on 2026-08-09) silently satisfies those imports for as long as it
+# survives. That is an artifact, not a guarantee — it masks the failure until
+# someone cleans it up, and a probe verified against it breaks with no code
+# change. Do not treat a passing /tmp probe as evidence that /tmp works.
+def _sanctioned_scratch_roots(canon):
+    if not canon:
+        return ()
+    base = os.path.join(canon, '.papercusp', 'scratch')
+    roots = [base]
+    try:
+        _real = os.path.realpath(base)
+        if _real != base:
+            roots.append(_real)
+    except Exception:
+        pass
+    return tuple(roots)
+
+
+def _is_sanctioned_scratch(resolved, canon):
+    """True only for a path STRICTLY UNDER <tree>/.papercusp/scratch/.
+
+    Strictly-under is deliberate: the directory itself is not a write target,
+    and requiring the separator stops a sibling like `.papercusp/scratchpad`
+    from inheriting the exemption by prefix.
+    """
+    if not resolved:
+        return False
+    for _root in _sanctioned_scratch_roots(canon):
+        if resolved.startswith(_root + os.sep):
+            return True
+    return False
+
+
+# The scratch remedy BOTH write-guards hand back. Kept as ONE constant so the
+# two call sites cannot drift apart — the same reason the cd-resolution note is
+# shared rather than duplicated.
+_SCRATCH_REMEDY = (
+    'Genuinely a scratch/log file? Write it outside the tree '
+    '(~/.papercusp/scratch or /tmp). But if it must IMPORT repo modules (the '
+    'usual tsx/node probe), neither of those can resolve them — there is no repo '
+    '`node_modules` above either — so write it under `.papercusp/scratch/` INSIDE '
+    'the tree instead: that path is gitignored, is exempt from this guard, and '
+    'resolves workspace imports normally. '
+)
+
+
 # EI-18760311552821358: a `NAME:PATH` target is a REMOTE/CONTAINER destination
 # (`docker cp local.sh container:/tmp/c.sh`, `scp`/`rsync` `host:/path` — the
 # `\bcp\b` scan above matches the `cp` inside `docker cp` too, so this leg
@@ -2767,7 +2831,8 @@ def _shell_write_guard():
     for _raw, _construct, _at in _targets:
         _effective_cwd = _effective_cwd_before(_at, _cwd, _clean, _has_paren)
         _resolved = _resolve_write_target(_raw, _effective_cwd)
-        if _resolved and (_resolved == _canon or _resolved.startswith(_canon + os.sep)):
+        if (_resolved and (_resolved == _canon or _resolved.startswith(_canon + os.sep))
+                and not _is_sanctioned_scratch(_resolved, _canon)):
             # Hand the normalized text + match offset to deny() so the reason
             # shows WHAT was matched, not just where it resolved to
             # (EI-19421518638516187).
