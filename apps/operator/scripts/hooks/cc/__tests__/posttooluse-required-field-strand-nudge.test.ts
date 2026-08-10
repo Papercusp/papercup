@@ -16,7 +16,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 // __dirname = <repo>/apps/operator/scripts/hooks/cc/__tests__ — six levels down.
 const ROOT = resolve(__dirname, '../../../../../..');
@@ -140,6 +142,83 @@ describe('required-field-strand nudge — stays silent when it should', () => {
     expect(hook.isCandidateFile('a/b.tsx')).toBe(true);
     expect(hook.isCandidateFile('a/b.d.ts')).toBe(false);
     expect(hook.isCandidateFile('a/b.mjs')).toBe(false);
+  });
+});
+
+/**
+ * EI-20097325488507587 — the nudge fired correctly and then handed over a verification
+ * that silently verified nothing.
+ *
+ * WHY THIS ONE IS END-TO-END AND THE REST ARE NOT: the property under test is not
+ * "the message contains the right substring" but "the command this hook emits still
+ * finds the addition AFTER git-sync commits the edit". That is a claim about a
+ * different process, run at a later time, against a mutated repository — no assertion
+ * over the message text can reach it, which is exactly why four successive filings
+ * (EI-19377892307939503, EI-19396116936287206, EI-20095543794921181, this one) each
+ * fixed a narrower slice of "the check went green having verified nothing" and left
+ * the next slice live.
+ *
+ * The CONTROL leg is load-bearing, not decoration: it runs the OLD unpinned
+ * prescription against the identical repository state and asserts it still prints a
+ * green naming only the peer's file. Without it, a passing test would be consistent
+ * with the scenario having quietly stopped reproducing, which is the failure mode this
+ * whole class is made of.
+ */
+describe('required-field-strand nudge — the emitted command survives a git-sync sweep', () => {
+  it('finds the addition after the edit is swept into HEAD, where the unpinned form goes green', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'rfs-sweep-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: tmp, encoding: 'utf8' });
+      const lib = join(tmp, 'packages/operator-core/lib');
+      mkdirSync(lib, { recursive: true });
+      mkdirSync(join(tmp, 'scripts'), { recursive: true });
+      // The REAL detector, copied at test time so it cannot drift from the one that ships.
+      copyFileSync(resolve(ROOT, 'scripts/check-required-field-strands.mjs'), join(tmp, 'scripts/check-required-field-strands.mjs'));
+      // `typescript` must resolve from the copy; a stub lint-tsc stands in for the
+      // typecheck leg, which is NOT what this test is about (it asserts DETECTION).
+      symlinkSync(resolve(ROOT, 'node_modules'), join(tmp, 'node_modules'));
+      writeFileSync(join(tmp, 'scripts/lint-tsc.mjs'), 'process.exit(0);\n');
+
+      writeFileSync(join(lib, 'mine.ts'), 'export interface Mine { id: string }\n');
+      writeFileSync(join(lib, 'peer.ts'), 'export interface Peer { id: string }\n');
+      git('init', '-q', '.');
+      git('config', 'user.email', 't@t.t');
+      git('config', 'user.name', 't');
+      git('add', '-A');
+      git('commit', '-qm', 'base');
+
+      // 1. The author adds a required field. 2. The hook fires milliseconds later.
+      writeFileSync(join(lib, 'mine.ts'), 'export interface Mine { id: string; hasListing: boolean }\n');
+      const hookOut = execFileSync('node', [HOOK], {
+        cwd: tmp,
+        encoding: 'utf8',
+        input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: join(lib, 'mine.ts') } }),
+      });
+      const advisory = JSON.parse(hookOut).hookSpecificOutput.additionalContext as string;
+      const emitted = advisory.split('\n').find((l) => l.includes('check-required-field-strands.mjs'))!.trim();
+      expect(emitted).toContain('--typecheck');
+
+      // 3. git-sync sweeps the edit into HEAD. 4. A peer leaves unrelated churn dirty.
+      git('add', '-A');
+      git('commit', '-qm', 'git-sync sweep');
+      writeFileSync(join(lib, 'peer.ts'), 'export interface Peer { id: string }\nexport interface Peer2 { id: string }\n');
+
+      // CONTROL: the unpinned form this hook used to prescribe. It must STILL go green
+      // naming only the peer's file — otherwise the scenario stopped reproducing and
+      // the positive leg below proves nothing.
+      const control = execFileSync('node', ['scripts/check-required-field-strands.mjs', '--typecheck'], { cwd: tmp, encoding: 'utf8' });
+      expect(control).toContain('✓ no required fields added');
+      expect(control).toContain('peer.ts');
+      expect(control).not.toContain('hasListing');
+
+      // The command the hook actually emitted, run as emitted, against that swept tree.
+      const [bin, ...args] = emitted.split(/\s+/);
+      const after = execFileSync(bin, args, { cwd: tmp, encoding: 'utf8' });
+      expect(after).toContain('REQUIRED-FIELD ADDITION');
+      expect(after).toContain('Mine.hasListing');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

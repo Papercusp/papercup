@@ -171,8 +171,18 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
     // Naming the COUNT was not enough. A count is unfalsifiable by the one person who
     // could catch the mistake — the author, who knows which file carries their change.
     // Listing the files lets them see in one glance that theirs is not among them.
+    //
+    // EI-20097325488507587: when EVERY named file turned out identical to `base`, this
+    // run compared nothing — and leading with ✓ makes the invalidation below read as a
+    // caveat on a pass rather than as the verdict. The exit code already said
+    // EXIT_NOT_CHECKED; the HEADLINE has to agree with it, because the headline is what
+    // a reader acts on. Same reasoning as the zero-files branch below, which was already
+    // fixed this way — this is the per-file form that survived it.
+    const nothingProved = provedNothing({ examinedFiles: files, identicalFiles, declared });
     const lines = [
-      `✓ no required fields added to exported types (${files.length} file(s) examined vs ${base})`,
+      nothingProved
+        ? `⚠ NOT CHECKED — ${files.length} named file(s) are byte-identical to ${base}, so nothing was compared.`
+        : `✓ no required fields added to exported types (${files.length} file(s) examined vs ${base})`,
       ...files.map((f) => `    ${f}`),
     ];
     if (!declared) {
