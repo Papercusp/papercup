@@ -2848,13 +2848,14 @@ def _shell_write_guard():
                 'Write tool instead — they claim the lock and validate the worktree for '
                 'you (for a copy: Read the source, then Write the destination). '
                 '%s'
-                'Genuinely a scratch/log file? Write it outside the tree '
-                '(~/.papercusp/scratch or /tmp). NOTHING in this Bash call ran — the whole '
+                '%s'
+                'NOTHING in this Bash call ran — the whole '
                 'command was rejected before execution (EI-18760311552821358), including '
                 'any earlier statement in a `&&`/`;`-chained compound command (e.g. a '
                 'leading heredoc write) — re-issue the whole command after fixing the '
                 'target, do not assume an earlier part of it already ran.'
-                % (_construct, _raw, _relative_target_cd_note(_raw, _at, _clean, _has_paren))
+                % (_construct, _raw, _relative_target_cd_note(_raw, _at, _clean, _has_paren),
+                   _SCRATCH_REMEDY)
             )
         # EI-19966359020779598 — `_resolve_write_target` bailed on `_raw`
         # because it carries an expansion marker ($/`/~/*/?/[), the same
@@ -3474,7 +3475,8 @@ def _payload_literal_tree_path(body, canon, cwd):
                     if not _looks_like_path_candidate(cand):
                         continue
                     resolved = _resolve_write_target(cand, cwd)
-                    if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
+                    if (resolved and (resolved == canon or resolved.startswith(canon + os.sep))
+                            and not _is_sanctioned_scratch(resolved, canon)):
                         return cand
         for _m in _QUOTED_LITERAL_RE.finditer(_span):
             raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
@@ -3507,7 +3509,8 @@ def _payload_literal_tree_path(body, canon, cwd):
                 if not _looks_like_path_candidate(cand):
                     continue
                 resolved = _resolve_write_target(cand, cwd)
-                if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
+                if (resolved and (resolved == canon or resolved.startswith(canon + os.sep))
+                        and not _is_sanctioned_scratch(resolved, canon)):
                     return cand
     return None
 
@@ -3589,12 +3592,12 @@ def _interpreter_write_guard():
                 'Edit or Write tool instead — they claim the lock and validate the worktree '
                 'for you (for a copy: Read the source, then Write the destination). '
                 '%s'
-                'Genuinely a scratch/log file? Write it outside the tree '
-                '(~/.papercusp/scratch or /tmp).'
+                '%s'
                 % (
                     _interp,
                     _hit,
                     _relative_target_cd_note(_hit, _interp_m.start(), _clean, _has_paren),
+                    _SCRATCH_REMEDY,
                 )
             )
         elif _has_computed_write_path(_body):
