@@ -30,8 +30,18 @@ const POT_DIR = join(REPO, 'packages/operator-core/lib/pot');
 const SEARCH_ROOTS = ['packages', 'apps', 'libs', 'scripts'];
 const CODE_EXT = ['.ts', '.tsx', '.mts', '.mjs'];
 
-/** Previously measured, recorded in P-056's item text. A mismatch is signal, not noise. */
-const EXPECTED_EXTERNAL_IMPORTERS = 60;
+/**
+ * Previously measured, recorded in P-056's item text. A mismatch is signal, not noise.
+ *
+ * RECONCILED 2026-08-10 from 60 → 57. The tree did NOT drift; the two runs used different
+ * universes. P-056's 60 counted three `.papercusp/scratch/wi-chat-*.ts` files that import
+ * `lib/pot/cup-wake-dossier` via a bare `@papercusp/...` specifier. Those are UNTRACKED and
+ * GITIGNORED (.gitignore:129, a recursive glob over .papercusp/scratch), not shipping source, so they
+ * must not hold a symbol back from retirement. 57 + those 3 = 60 exactly.
+ * The gap changes ZERO keep/move verdicts: their only symbol, `computeCupWakeDossier`, is
+ * KEEP regardless on an independent real importer (lib/fleet/spawn-hydration-deps.ts).
+ */
+const EXPECTED_EXTERNAL_IMPORTERS = 57;
 
 const args = process.argv.slice(2);
 const outPath = args.includes('--json') ? args[args.indexOf('--json') + 1] : null;
@@ -46,7 +56,19 @@ function walk(dir, acc = []) {
     return acc;
   }
   for (const e of entries) {
-    if (e.name === 'node_modules' || e.name === '.git' || e.name === 'dist' || e.name === 'build') continue;
+    // BUILD OUTPUT IS NOT SOURCE. `dist-host` is the one that actually bit: an exact-match
+    // skip on 'dist' let apps/operator/dist-host/hono-host.mjs through, and a bundle inlines
+    // the whole tree — so every pot symbol appears there and a dead symbol reads as live.
+    // Prefix-match dist*, and drop the gitignored scratch tree for the same reason (its
+    // untracked files were what made the earlier importer count read 60 instead of 57).
+    if (
+      e.name === 'node_modules' ||
+      e.name === '.git' ||
+      e.name.startsWith('dist') ||
+      e.name === 'build' ||
+      e.name === '.papercusp'
+    )
+      continue;
     const full = join(dir, e.name);
     if (e.isDirectory()) walk(full, acc);
     else if (CODE_EXT.some((x) => e.name.endsWith(x))) acc.push(full);
@@ -117,8 +139,28 @@ const allFiles = SEARCH_ROOTS.flatMap((r) => walk(join(REPO, r)));
 const importersBySymbol = new Map();
 const externalImporterFiles = new Set();
 const externalTestImporterFiles = new Set();
+/** pot module (repo-relative) -> Set(external file that dynamically imports it) */
+const dynamicImportersByModule = new Map();
+const externalDynamicImporterFiles = new Set();
+const externalTestDynamicImporterFiles = new Set();
 
 const IMPORT_RE = /(?:import|export)\s+(type\s+)?([\s\S]*?)\s*from\s*['"]([^'"]+)['"]/g;
+
+/**
+ * DYNAMIC imports — `await import('../pot/x')` / `require('../pot/x')`.
+ *
+ * These are INVISIBLE to the static clause above, and this repo uses fail-soft dynamic
+ * imports deliberately (the cup-wake-dossier mem0 wiring is one). That makes them the
+ * single most dangerous blind spot in a keep-vs-move list: a symbol reached ONLY
+ * dynamically looks unreferenced, gets classified MOVE, and breaks at RUNTIME — inside a
+ * fail-soft catch, so it degrades silently instead of throwing. A static-only census would
+ * hand P-057 a list that is wrong in exactly the direction nothing detects.
+ *
+ * A dynamic import names a MODULE, not a symbol, so we cannot attribute it to one export.
+ * We therefore flag every symbol defined in a dynamically-imported module and let P-057
+ * treat those as review-required rather than free to move.
+ */
+const DYNAMIC_RE = /(?:\bimport|\brequire)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 
 for (const f of allFiles) {
   if (inPot(f)) continue; // internal to lib/pot — not an external consumer
@@ -144,16 +186,36 @@ for (const f of allFiles) {
       importersBySymbol.get(n).add(rel);
     }
   }
+
+  for (const m of src.matchAll(DYNAMIC_RE)) {
+    const target = resolveSpecifier(f, m[1]);
+    if (!target || !inPot(target)) continue;
+    const rel = relative(REPO, f);
+    const mod = relative(REPO, target);
+    if (!dynamicImportersByModule.has(mod)) dynamicImportersByModule.set(mod, new Set());
+    dynamicImportersByModule.get(mod).add(rel);
+    // NOT added to externalImporterFiles: that set is the STATIC-importer baseline the
+    // self-check compares against P-056's recorded figure. Folding dynamic importers into
+    // it silently changes the denominator and turns the self-check into noise (observed:
+    // it read 83 vs 57 and looked like tree drift when it was my own conflation).
+    if (isTest(f)) externalTestDynamicImporterFiles.add(rel);
+    else externalDynamicImporterFiles.add(rel);
+  }
 }
 
 // ── classify ────────────────────────────────────────────────────────────────
 const keep = [];
 const move = [];
+const moveNeedsReview = [];
 for (const [symbol, files] of [...exportsBySymbol].sort((a, b) => a[0].localeCompare(b[0]))) {
   const importers = [...(importersBySymbol.get(symbol) ?? [])].sort();
   const nonTest = importers.filter((i) => !isTest(i));
-  const row = { symbol, definedIn: [...files].sort(), importers, externalNonTestImporters: nonTest.length };
+  const definedIn = [...files].sort();
+  const dynamicImporters = [...new Set(definedIn.flatMap((d) => [...(dynamicImportersByModule.get(d) ?? [])]))].sort();
+  const row = { symbol, definedIn, importers, externalNonTestImporters: nonTest.length };
+  if (dynamicImporters.length) row.dynamicImporters = dynamicImporters;
   if (nonTest.length > 0) keep.push(row);
+  else if (dynamicImporters.length > 0) moveNeedsReview.push(row);
   else move.push(row);
 }
 
@@ -169,9 +231,15 @@ const artifact = {
     exportedSymbols: exportsBySymbol.size,
     keep: keep.length,
     move: move.length,
+    moveNeedsReview: moveNeedsReview.length,
+    dynamicallyImportedPotModules: dynamicImportersByModule.size,
     externalNonTestImporterFiles: externalImporterFiles.size,
     externalTestImporterFiles: externalTestImporterFiles.size,
+    externalNonTestDynamicImporterFiles: externalDynamicImporterFiles.size,
+    externalTestDynamicImporterFiles: externalTestDynamicImporterFiles.size,
   },
+  methodRisk:
+    'HAND-ROLLED REGEX IMPORT WALKER. A prior dependency audit in this repo (2026-07-20) found exactly this technique UNDER-REPORTS imports — it missed a standard static import and falsely flagged live packages as orphans. Under-reporting is the DANGEROUS direction here: it inflates MOVE, and moving a still-imported symbol breaks the tree. Treat `move` as a CANDIDATE list requiring a second independent method (knip unused-exports, or gitnexus.query call-graph) before P-057 executes it. `keep` is the safe direction — a symbol proven to have an importer is not going to lose one by being measured badly.',
   selfCheck: {
     expectedExternalNonTestImporters: EXPECTED_EXTERNAL_IMPORTERS,
     actual: externalImporterFiles.size,
@@ -179,8 +247,12 @@ const artifact = {
     note: 'P-056 recorded 60 non-test files outside lib/pot importing from it (2026-08-10). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list.',
   },
   keep,
+  moveNeedsReview,
   move,
   externalNonTestImporterFiles: [...externalImporterFiles].sort(),
+  dynamicallyImportedPotModules: Object.fromEntries(
+    [...dynamicImportersByModule].sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => [k, [...v].sort()]),
+  ),
 };
 
 if (outPath) writeFileSync(resolve(REPO, outPath), JSON.stringify(artifact, null, 2) + '\n');
@@ -190,8 +262,11 @@ if (!quiet) {
   console.log(`pot source files (non-test): ${c.potSourceFiles}`);
   console.log(`exported symbols:            ${c.exportedSymbols}`);
   console.log(`  KEEP (live substrate):     ${c.keep}`);
+  console.log(`  MOVE-NEEDS-REVIEW (dyn):   ${c.moveNeedsReview}`);
   console.log(`  MOVE (retire with tier):   ${c.move}`);
-  console.log(`external non-test importers: ${c.externalNonTestImporterFiles}  (test files: ${c.externalTestImporterFiles})`);
+  console.log(`dynamically-imported pot modules: ${c.dynamicallyImportedPotModules}`);
+  console.log(`external non-test importers: ${c.externalNonTestImporterFiles} static  (test: ${c.externalTestImporterFiles})`);
+  console.log(`                             ${c.externalNonTestDynamicImporterFiles} dynamic (test: ${c.externalTestDynamicImporterFiles})`);
   console.log(
     `SELF-CHECK vs P-056's recorded 60: ${artifact.selfCheck.matches ? 'MATCH' : `MISMATCH (got ${artifact.selfCheck.actual})`}`,
   );
