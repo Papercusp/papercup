@@ -360,37 +360,45 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const outIdx = argv.indexOf('--out');
   const out = outIdx >= 0 ? resolve(argv[outIdx + 1]) : DEFAULT_OUT;
 
+  // --bootstrap re-derives the classification from the line-anchored RANGES. That is valid ONLY
+  // at the snapshot RANGES was drawn on; every other run carries classification by content.
+  const bootstrap = argv.includes('--bootstrap');
   const text = readFileSync(SOURCE, 'utf8');
-  const { manifest, problems, drifted } = buildManifest(text);
+  const prior = bootstrap ? null : JSON.parse(readFileSync(out, 'utf8'));
+  const { manifest, problems, needsReview, departed } = buildManifest(text, prior);
   const { byKind, projectedChars, totalParts } = manifest.summary;
 
   console.log(`gen-claude-md-manifest: ${totalParts} parts from ${manifest.snapshotChars} chars ` +
-              `(${manifest.snapshotBytes} bytes) / ${manifest.snapshotLines} lines`);
-  for (const k of ['invariant', 'pointer', 'recipe', 'prose']) {
+              `(${manifest.snapshotBytes} bytes) / ${manifest.snapshotLines} lines` +
+              `${bootstrap ? '  [bootstrap: classifying from RANGES]' : ''}`);
+  for (const k of ['invariant', 'pointer', 'recipe', 'prose', 'UNCLASSIFIED']) {
     const v = byKind[k] ?? { parts: 0, chars: 0 };
+    if (!v.parts && k === 'UNCLASSIFIED') continue;
     const pct = ((100 * v.chars) / manifest.snapshotChars).toFixed(1);
-    console.log(`  ${k.padEnd(10)} ${String(v.parts).padStart(3)} parts  ${String(v.chars).padStart(7)} chars  (${pct}%)`);
+    console.log(`  ${k.padEnd(12)} ${String(v.parts).padStart(3)} parts  ${String(v.chars).padStart(7)} chars  (${pct}%)`);
   }
-  console.log(`  projected  ${projectedChars} chars (${((100 * projectedChars) / manifest.snapshotChars).toFixed(1)}%)`);
+  console.log(`  projected    ${projectedChars} chars (${((100 * projectedChars) / manifest.snapshotChars).toFixed(1)}%)`);
 
-  if (drifted.length) {
-    console.error(`\n✗ ${drifted.length} range(s) DRIFTED — the text under them is not what was classified.`);
-    console.error('  Re-review these against the P-002 map before loading; do NOT just renumber them.');
-    for (const d of drifted.slice(0, 12)) {
-      console.error(`   L${d.range[0]}-${d.range[1]} [${d.kind}]`);
-      console.error(`     classified: ${JSON.stringify(d.expected)}`);
-      console.error(`     now reads : ${JSON.stringify(d.actual)}`);
-    }
-    if (drifted.length > 12) console.error(`   ... and ${drifted.length - 12} more`);
+  if (departed.length) {
+    console.log(`\nℹ ${departed.length} classified block(s) no longer present (edited or removed) — their classification retires with them:`);
+    for (const d of departed.slice(0, 10)) console.log(`   ${d.kind.padEnd(9)} ${d.partKey}`);
+    if (departed.length > 10) console.log(`   ... and ${departed.length - 10} more`);
+  }
+  if (needsReview.length) {
+    console.error(`\n✗ ${needsReview.length} block(s) UNCLASSIFIED — new or edited text the classification has never seen.`);
+    console.error('  Classify each against the P-002 map, then re-run. Do NOT let them inherit a neighbour:');
+    console.error('  a block that merely MOVED keeps its sha and never appears here, so anything listed is genuinely new text.');
+    for (const n of needsReview.slice(0, 15)) console.error(`   L${String(n.line).padStart(4)} ${n.blockSha}  ${n.head}`);
+    if (needsReview.length > 15) console.error(`   ... and ${needsReview.length - 15} more`);
   }
   for (const p of problems) console.error(`✗ ${p}`);
 
-  const bad = drifted.length > 0 || problems.length > 0;
+  const bad = needsReview.length > 0 || problems.length > 0;
   if (!checkOnly && !bad) {
     writeFileSync(out, `${JSON.stringify(manifest, null, 1)}\n`);
     console.log(`\n✓ wrote ${out}`);
   } else if (!checkOnly && bad) {
-    console.error('\n✗ refusing to write a manifest built on a drifted or incomplete classification.');
+    console.error('\n✗ refusing to write a manifest built on an incomplete classification.');
   } else if (!bad) {
     console.log('\n✓ classification is current (--check: nothing written)');
   }
