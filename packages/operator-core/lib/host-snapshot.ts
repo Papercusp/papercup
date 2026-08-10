@@ -56,10 +56,36 @@ export const PSI_CACHE_MS = 5_000;
  * is the only guaranteed field because a clock read cannot fail.
  */
 export interface HostSnapshot {
-  /** Current instant, ISO-8601 UTC with milliseconds. Replaces the 586 bare
+  /** Current instant, ISO-8601 **UTC** with milliseconds. Replaces the 586 bare
    *  `date` / `date -u` reads: every other format the corpus asks for (`+%s`,
-   *  `+%H:%M:%SZ`, `+%FT%TZ`, …) is a pure rendering of this same instant. */
+   *  `+%H:%M:%SZ`, `+%FT%TZ`, …) is a pure rendering of this same instant.
+   *
+   *  ⚠ It is UTC, and a bare `date` prints LOCAL — so this field is NOT a
+   *  like-for-like swap for the reads it replaces, and the substitution changes
+   *  timezone silently. That mismatch has repeatedly manufactured a phantom
+   *  staleness gap: every filesystem timestamp an agent compares this against
+   *  (`ls -la`, `stat`, journald) renders in LOCAL time, so on this UTC-4 box a
+   *  file written one minute ago reads four hours stale, and "the job never
+   *  wrote to it" is the natural — and wrong — conclusion. Compare against
+   *  {@link nowLocal} instead, which is rendered in the SAME zone those tools
+   *  print in. (EI-20086558925351815, filed 6× before the field existed.) */
   now: string;
+  /**
+   * The same instant rendered in the HOST'S LOCAL zone, in the shape `ls -la` /
+   * `stat` print — `2026-08-10 14:05:44 EDT (UTC-04:00)`.
+   *
+   * This exists so the comparison an agent actually performs is correct BY
+   * DEFAULT, rather than correct only if it remembers to convert. The zone
+   * abbreviation and explicit offset are both carried because the offset is what
+   * makes the arithmetic checkable and the abbreviation is what appears in
+   * `date` output.
+   *
+   * Always present: unlike the other optional legs, this is not a measurement
+   * that can be unavailable — it is a rendering of `now`, and the fallback path
+   * still yields the offset. An ABSENT local time would leave exactly the
+   * ambiguity this field was added to remove.
+   */
+  nowLocal: string;
   /**
    * The MACHINE's logical core count — the `nproc` answer, and the denominator
    * that makes {@link load} readable.
@@ -130,7 +156,10 @@ export function resetHostSnapshotCache(): void {
  */
 export function getHostSnapshot(): HostSnapshot {
   const nowMs = Date.now();
-  const snap: HostSnapshot = { now: new Date(nowMs).toISOString() };
+  const snap: HostSnapshot = {
+    now: new Date(nowMs).toISOString(),
+    nowLocal: renderLocalNow(nowMs),
+  };
 
   try {
     const n = cpus().length;
@@ -168,4 +197,43 @@ export function getHostSnapshot(): HostSnapshot {
 
 function round2(n: number): number {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+/**
+ * Render `nowMs` in the host's local zone, in the shape the filesystem tools an
+ * agent compares against actually print: `2026-08-10 14:05:44 EDT (UTC-04:00)`.
+ *
+ * Deliberately built from the local getters (`getHours()` &c.) rather than
+ * `toISOString()`, whose every field is UTC — reusing it here would reproduce the
+ * exact bug this renders around.
+ *
+ * Never throws. Only the zone ABBREVIATION can fail (it needs full-ICU); the
+ * numeric offset comes from `getTimezoneOffset()`, which cannot. So the degraded
+ * result still carries the offset — the part that makes the arithmetic checkable
+ * — and merely omits the name.
+ */
+function renderLocalNow(nowMs: number): string {
+  const d = new Date(nowMs);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const wall =
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+
+  // getTimezoneOffset() is minutes to ADD to local to reach UTC, i.e. the sign is
+  // inverted from the ±HH:MM convention every tool prints. UTC-4 reports +240.
+  const offsetMin = -d.getTimezoneOffset();
+  const sign = offsetMin < 0 ? '-' : '+';
+  const absMin = Math.abs(offsetMin);
+  const offset = `UTC${sign}${pad(Math.floor(absMin / 60))}:${pad(absMin % 60)}`;
+
+  let zone: string | undefined;
+  try {
+    zone = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
+      .formatToParts(d)
+      .find((p) => p.type === 'timeZoneName')?.value;
+  } catch {
+    /* no full-ICU — the offset below still carries the checkable part */
+  }
+
+  return `${wall}${zone ? ` ${zone}` : ''} (${offset})`;
 }

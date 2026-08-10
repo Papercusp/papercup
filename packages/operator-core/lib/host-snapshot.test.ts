@@ -136,3 +136,60 @@ describe('getHostSnapshot', () => {
     expect(getHostSnapshot().now).toBeTruthy();
   });
 });
+
+/**
+ * `nowLocal` (EI-20086558925351815). `now` is UTC; every filesystem timestamp an
+ * agent compares it against (`ls -la`, `stat`, journald) renders LOCAL, so on a
+ * UTC-4 box a file written a minute ago reads four hours stale and "the job never
+ * wrote to it" is the natural, wrong conclusion. It was filed 6× before the field
+ * existed.
+ *
+ * Per this file's D-028 doctrine, presence is not the property worth pinning — a
+ * WRONG local time is far more dangerous than a missing one, because it looks
+ * like an answer. So the load-bearing test below reconstructs the instant from
+ * the rendered wall-clock + the rendered offset and requires it to equal `now`.
+ * That is what fails on a sign inversion, which is the live hazard here:
+ * `getTimezoneOffset()` returns +240 for UTC-4, inverted from the ±HH:MM
+ * convention every tool prints, so getting it backwards yields a perfectly
+ * well-formed timestamp that is off by twice the offset.
+ */
+describe('getHostSnapshot().nowLocal', () => {
+  beforeEach(() => {
+    psiRead = () => 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0';
+    resetHostSnapshotCache();
+  });
+
+  it('renders the wall clock with a zone and an explicit ±HH:MM offset', () => {
+    expect(getHostSnapshot().nowLocal).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}( [A-Za-z0-9+\-]+)? \(UTC[+-]\d{2}:\d{2}\)$/,
+    );
+  });
+
+  it('describes the SAME instant as `now` — the sign-inversion falsifier', () => {
+    const { now, nowLocal } = getHostSnapshot();
+
+    const m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}).*\(UTC([+-])(\d{2}):(\d{2})\)$/.exec(nowLocal);
+    expect(m, `nowLocal did not parse: ${nowLocal}`).not.toBeNull();
+    const [, date, time, sign, offHh, offMm] = m!;
+
+    // Reconstruct UTC from what was RENDERED. If the offset sign were inverted,
+    // this lands 2x the offset away from `now` and the assertion fails.
+    const reconstructedMs = Date.parse(`${date}T${time}${sign}${offHh}:${offMm}`);
+    expect(Number.isNaN(reconstructedMs)).toBe(false);
+
+    // `now` carries ms and nowLocal is second-resolution, so allow the truncation
+    // (and a tick, since the two fields are rendered from one captured nowMs).
+    expect(Math.abs(reconstructedMs - Date.parse(now))).toBeLessThan(2000);
+  });
+
+  it('is present even when every optional leg is unavailable', () => {
+    psiRead = () => {
+      throw new Error('boom');
+    };
+    resetHostSnapshotCache();
+    // An ABSENT local time would leave exactly the ambiguity the field removes,
+    // so it is required rather than optional — unlike the measurement legs, it
+    // is a rendering of `now` and has nothing to be unavailable about.
+    expect(getHostSnapshot().nowLocal).toBeTruthy();
+  });
+});
