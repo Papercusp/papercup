@@ -120,6 +120,8 @@ import AgentOrders from '../sessions/AgentOrders';
 import AgentDossier from '../sessions/AgentDossier';
 import FleetPeersRail from '@/app/_components/chat/FleetPeersRail';
 import { deriveFleetPeers } from '@/app/_components/chat/fleet-peers';
+import GoalSessionsRail from './GoalSessionsRail';
+import { deriveGoalSessions } from './goal-sessions';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import type { RosterEntry } from '../sessions/SessionsRosterView';
 // pc-dossier__* — AgentDossier's stylesheet, imported the same way
@@ -313,29 +315,82 @@ const PEERS_OVERLAY_STYLE: React.CSSProperties = {
   zIndex: 7,
 };
 
+/* ── P-024 [owner 2026-08-10]: SESSIONS — who is working on this goal ───────
+   "just put the pane on the right side, to the left of the 'WORK — what sits
+   under this goal' pane. And when you implement the design mimic the design of
+   the fleet leader/fleet member pane in the conversation popup."
+
+   Hence PEERS_WIDTH exactly, not a width of its own: the owner asked for that
+   pane's design, and the rows ARE that pane's rows (the same `pc-peer` two-line
+   shape, the same COLUMN_WORD state words, imported rather than restated). A
+   near-miss width is what would make it read as an imitation of the fleet rail
+   instead of the same pane answering a different question. */
+const SESSIONS_WIDTH = PEERS_WIDTH;
+
+const SESSIONS_SIDE_STYLE: React.CSSProperties = {
+  flex: `0 0 ${SESSIONS_WIDTH}px`,
+  width: SESSIONS_WIDTH,
+  minWidth: 0,
+  minHeight: 0,
+  overflowY: 'auto',
+};
+
+const SESSIONS_OVERLAY_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  bottom: 0,
+  right: 0,
+  width: 'min(280px, 88vw)',
+  background: 'var(--bg-popover, #0d1829)',
+  boxShadow: '-8px 0 24px rgba(0,0,0,0.35)',
+  overflowY: 'auto',
+  /* BELOW the work rail's 5, because the right-edge zones stack in the order
+     they sit as columns and this one is now the INNERMOST of the four
+     (Sessions 4 │ Work 5 │ Activity 6 │ Fleet 7). Giving it 5 like the rail
+     would have two drawers tie on a narrow window, where the winner is DOM
+     order rather than the layout's own rule. */
+  zIndex: 4,
+};
+
 /* ── The give-way ladder ────────────────────────────────────────────────────
-   SIX zones cannot all be columns on an ordinary display, so each one names the
-   viewport below which it can no longer HONESTLY seat as a column, and overlays
-   instead. The numbers are derived, not chosen: the popup is
+   SEVEN zones cannot all be columns on an ordinary display, so each one names
+   the viewport below which it can no longer HONESTLY seat as a column, and
+   overlays instead. The numbers are derived, not chosen: the popup is
    `880 + (seated rail columns)` wide, capped at 97vw, where the 880 already
-   covers the band, the brief and a ~540px conversation.
+   covers the band, the brief and a ~540px conversation, and every seated column
+   costs its own width + a 16px seam:
 
-     all six seated   880+288+304+316+264 = 2052 ⇒ needs ~2115px of viewport
-     without Fleet    880+288+304+316     = 1788 ⇒ needs ~1845
-     also w/o Orders  880    +304+316     = 1500 ⇒ needs ~1547
+     Orders 288 │ Work 304 │ Activity 316 │ Fleet 264 │ Sessions 264
 
-   So the ladder is Fleet → Orders → Activity → Brief (1100) → Work (900): the
-   most SITUATIONAL zone yields first and the goal's own two survive longest,
-   because this is the goal popup — the reader came here for the goal, and the
-   borrowed rails are context around it.
+     all seven seated  880+288+304+316+264+264 = 2316 ⇒ needs ~2388px of viewport
+     without Fleet     880+288+304+316    +264 = 2052 ⇒ needs ~2115
+     also w/o Orders   880    +304+316    +264 = 1764 ⇒ needs ~1818
+     also w/o Activity 880    +304        +264 = 1448 ⇒ needs ~1493
+
+   (⇒ = total ÷ 0.97, the vw cap; each query then rounds DOWN to a clean number
+   so the breakpoint fires slightly before the arithmetic demands it.)
+
+   So the ladder is Fleet → Orders → Activity → Sessions → Brief (1100) →
+   Work (900): the most SITUATIONAL zone yields first and the goal's OWN zones
+   survive longest, because this is the goal popup — the reader came here for
+   the goal, and the borrowed rails are context around it. Sessions sits inside
+   the three borrowed ones (it is about THIS goal, not about the agent in
+   general) and outside Brief and Work (those are the goal itself and what sits
+   under it; who is working on it is the next question, not the first).
 
    ⚠ These are far wider than the sessions popup's equivalents (1400/1180/860)
    and that is correct rather than a transcription slip: there, three zones
-   compete for the width; here, six do. Copying those numbers across would seat
-   columns that do not fit and crush the conversation to nothing. */
-const PEERS_NARROW_MEDIA_QUERY = '(max-width: 2100px)';
-const ORDERS_NARROW_MEDIA_QUERY = '(max-width: 1840px)';
-const DOSSIER_NARROW_MEDIA_QUERY = '(max-width: 1540px)';
+   compete for the width; here, seven do. Copying those numbers across would
+   seat columns that do not fit and crush the conversation to nothing.
+
+   ⚠ Adding P-024's zone moved the three EXISTING rungs up by its 264px — a
+   breakpoint is a statement about the whole seated set, so a new column that
+   left them untouched would seat seven columns in the width six needed and
+   crush the conversation at exactly the widths the ladder claims are safe. */
+const PEERS_NARROW_MEDIA_QUERY = '(max-width: 2380px)';
+const ORDERS_NARROW_MEDIA_QUERY = '(max-width: 2100px)';
+const DOSSIER_NARROW_MEDIA_QUERY = '(max-width: 1810px)';
+const SESSIONS_NARROW_MEDIA_QUERY = '(max-width: 1480px)';
 
 /** Same matchMedia + effect shape SessionChatModal uses for its own rails.
  *
@@ -509,6 +564,36 @@ export default function GoalDetailPanel({
     return deriveFleetPeers(payload.active ?? [], agentOwnerId, { nowMs });
   }, [roster.data, agentOwnerId, nowMs]);
 
+  /* P-024: the SESSIONS model, off the SAME roster row the dossier and the
+     fleet rail already read — a third reader, not a third fetch.
+
+     Two deliberate differences from `fleetPeers` above:
+
+     1. It is fed `active` AND `pending`. A session that is still launching is
+        already working this goal in every sense the reader cares about, and the
+        derivation keeps ENDED ones on purpose (a finished test agent is
+        evidence the testing happened), so filtering the payload down to the
+        live set here would silently defeat both.
+     2. It takes EVERY stamped ownerId, not just `agentOwnerId`. D-006's
+        "one directed agent" is the normal case, not a guarantee — the resolver
+        surfaces a second stamp rather than hiding it, and membership leg 2
+        walks the fleets of the stamped set, so passing only the primary would
+        drop a second agent's whole fleet from the answer to "who is working on
+        this goal".
+
+     null when the goal has no agent stamp at all: the five sections exist to
+     report COVERAGE GAPS in a goal that is running, and a goal that has not
+     started has no gaps to report — the popup already says so in the
+     conversation region, and an all-empty rail beside that sentence would be
+     saying it a sixth time. */
+  const goalSessions = useMemo(() => {
+    const payload = roster.data?.[0];
+    const stamped = agents.map((a) => a.ownerId).filter((id): id is string => Boolean(id));
+    if (!payload || stamped.length === 0) return null;
+    const entries = [...(payload.active ?? []), ...(payload.pending ?? [])];
+    return deriveGoalSessions(entries, stamped, { nowMs });
+  }, [roster.data, agents, nowMs]);
+
   /* ROOM-AWARE defaults (`param ?? !isNarrow`), the pattern the sessions popup
      already uses for these same two rails — NOT `withDefault(true)`. With six
      zones competing, defaulting them open would stack two or three overlay
@@ -530,11 +615,23 @@ export default function GoalDetailPanel({
   const [peersParam, setPeersOpen] = useQueryState('hudgoalfleet', parseAsBoolean);
   const peersOpen = peersParam ?? !isPeersNarrow;
 
+  /* P-024: room-aware like the three above rather than `withDefault(true)`.
+     It is the seventh zone competing for the width, so a hard default-open
+     would put a drawer over the conversation on any ordinary display. */
+  const isSessionsNarrow = useIsNarrowViewport(SESSIONS_NARROW_MEDIA_QUERY);
+  const [sessionsParam, setSessionsOpen] = useQueryState('hudgoalsessions', parseAsBoolean);
+  const sessionsOpen = sessionsParam ?? !isSessionsNarrow;
+
   const ordersVisible = open && ordersOpen && Boolean(agentOwnerId);
   const dossierVisible = open && dossierOpen && Boolean(agentOwnerId);
   /* Unlike the other two this also needs a MODEL: an agent in no fleet has no
      peers to show, so there is nothing to seat. */
   const peersVisible = open && peersOpen && Boolean(agentOwnerId) && fleetPeers != null;
+  /* Same model gate as the fleet rail, for the same reason — nothing to seat.
+     NOT gated on `agentOwnerId`: the model already requires a stamp, and this
+     zone describes the GOAL rather than the agent, so a goal whose agent has
+     since ended still has sessions worth showing. */
+  const sessionsVisible = open && sessionsOpen && goalSessions != null;
 
   /* ── P-023: maximize, the sessions popup's own pair ───────────────────────
      Its own URL key (`hudgoalmax`, never the sessions popup's `chatMax`): both
@@ -565,7 +662,11 @@ export default function GoalDetailPanel({
   const borrowedColumns =
     (ordersVisible && !isOrdersNarrow ? ORDERS_WIDTH + 16 : 0) +
     (dossierVisible && !isDossierNarrow ? DOSSIER_WIDTH + 16 : 0) +
-    (peersVisible && !isPeersNarrow ? PEERS_WIDTH + 16 : 0);
+    (peersVisible && !isPeersNarrow ? PEERS_WIDTH + 16 : 0) +
+    /* P-024. Same "only while actually SEATED" test as its four neighbours:
+       widening the popup for a zone that is overlaying would grow it for a
+       column taking no width. */
+    (sessionsVisible && !isSessionsNarrow ? SESSIONS_WIDTH + 16 : 0);
 
   return (
     <Modal
@@ -804,8 +905,9 @@ export default function GoalDetailPanel({
                 {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
               </button>
             </Tooltip>
-            {/* P-022/P-021: the zone toggles, in the SAME left-to-right order
-                as the zones they move — Orders, Brief, Work, Activity, Fleet.
+            {/* P-022/P-021/P-024: the zone toggles, in the SAME left-to-right
+                order as the zones they move — Orders, Brief, Sessions, Work,
+                Activity, Fleet.
                 A toggle row whose order contradicts the layout makes the reader
                 hunt for which button moves which column.
 
