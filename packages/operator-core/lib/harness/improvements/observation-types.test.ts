@@ -201,6 +201,51 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect((out as Record<string, unknown>).learnings).toBeUndefined();
   });
 
+  // goal-mode-rubric-v2-2026-08-10 P-009. These guard a SILENT failure mode, not a
+  // loud one: this parse is an allowlist, so a field added to the zod schema + the
+  // interface but NOT taught here persists to payload.observation and then reads
+  // back undefined forever. Nothing throws; the data is simply invisible, which is
+  // exactly how the five v1 goal-mode-e2e scorecards ended up unattributable.
+  it('round-trips the graded subject (the drill parameter binding)', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'goal-mode-e2e',
+      subject: {
+        kind: 'agent-run',
+        ref: 'su-12b70e95-84ce-4ea0-b546-8a692cdc949c',
+        windowStart: '2026-08-10T00:00:00.000Z',
+        windowEnd: '2026-08-10T23:59:59.000Z',
+      },
+    });
+    expect(out?.subject).toEqual({
+      kind: 'agent-run',
+      ref: 'su-12b70e95-84ce-4ea0-b546-8a692cdc949c',
+      windowStart: '2026-08-10T00:00:00.000Z',
+      windowEnd: '2026-08-10T23:59:59.000Z',
+    });
+  });
+
+  it('keeps a subject that carries only ref (window + kind are optional)', () => {
+    const out = asStructuredObservation({ subject: { ref: 'WI-37831' } });
+    expect(out?.subject).toEqual({ ref: 'WI-37831' });
+  });
+
+  it('DROPS a subject with no usable ref rather than half-keeping it', () => {
+    // A subject block that cannot say WHAT it graded is worse than none: it reads
+    // as "identity recorded" to every consumer while answering nothing.
+    for (const bad of [{ kind: 'agent-run' }, { ref: '' }, { ref: '   ' }, { ref: 42 }]) {
+      expect(asStructuredObservation({ rubricRef: 'r', subject: bad })?.subject).toBeUndefined();
+    }
+    expect(asStructuredObservation({ rubricRef: 'r', subject: 'su-123' })?.subject).toBeUndefined();
+    expect(asStructuredObservation({ rubricRef: 'r', subject: ['su-123'] })?.subject).toBeUndefined();
+  });
+
+  it('drops unknown keys INSIDE subject (the allowlist holds one level down too)', () => {
+    const out = asStructuredObservation({
+      subject: { ref: 'su-1', runId: 'nope', notes: 'also nope' },
+    });
+    expect(out?.subject).toEqual({ ref: 'su-1' });
+  });
+
   it('drops malformed ratings entries but keeps the valid ones', () => {
     const out = asStructuredObservation({
       ratings: { good: { rating: 'healthy', evidence: 'e' }, missingEvidence: { rating: 'healthy' }, junk: 5 },

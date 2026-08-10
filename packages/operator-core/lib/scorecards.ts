@@ -26,6 +26,7 @@ import {
   asStructuredObservation,
   normalizeScorecardRatings,
   type ObservationRatings,
+  type ObservationSubject,
   type ScorecardRatingRubric,
 } from './harness/improvements/observation-types';
 import { issuesScopeWorkspace, issuesOutLinksMany, type IssueOutLink } from './issues-engineer';
@@ -224,6 +225,14 @@ export interface ScorecardRow {
   createdBy: string | null;
   /** The hive the observation came FROM (the grouping axis), when set. */
   sourceHive?: string;
+  /**
+   * WHAT this scorecard graded, when the emitter said so (P-009): the drill
+   * parameter binding `{ ref, kind?, windowStart?, windowEnd? }`. For a per-RUN
+   * rubric this is the identity that makes a scorecard attributable to its run and
+   * re-runnable from its own record. Absent on every pre-P-009 scorecard — treat
+   * absence as "not recorded", never as "graded nothing".
+   */
+  subject?: ObservationSubject;
   /** The rubric graded against (a `rubrics.rubric_id`). */
   rubricRef: string;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
@@ -445,6 +454,13 @@ export interface ListScorecardsFilter {
   rubricRef?: string;
   /** Restrict to scorecards from one source-hive. */
   sourceHive?: string;
+  /**
+   * Restrict to scorecards grading ONE subject — `payload.observation.subject.ref`
+   * (goal-mode-rubric-v2-2026-08-10 P-009). The per-RUN axis: `sourceHive` answers
+   * which POT, this answers which RUN/agent/item. Without it a per-run rubric's
+   * scorecards can only be listed in bulk and told apart by reading prose.
+   */
+  subjectRef?: string;
   /** Only scorecards filed at/after this ISO timestamp (the time-window). */
   since?: string;
   /** Max rows (newest-first). Default 100, max 500. */
@@ -530,6 +546,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
        AND payload -> 'observation' ->> 'rubricRef' IS NOT NULL
        AND ${filter.rubricRef ? sql`payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : sql`TRUE`}
        AND ${filter.sourceHive ? sql`payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : sql`TRUE`}
+       AND ${filter.subjectRef ? sql`payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : sql`TRUE`}
        AND ${filter.since ? sql`created_at >= ${filter.since}` : sql`TRUE`}
        AND ${filter.includeSynthesized ? sql`TRUE` : sql`payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}
      ORDER BY created_at DESC
@@ -622,6 +639,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       createdAt: tsIso(row.created_at),
       createdBy: row.created_by,
       ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
+      ...(observation.subject ? { subject: observation.subject } : {}),
       rubricRef: observation.rubricRef,
       ratings,
       nKeys: ratedKeys.size,

@@ -44,6 +44,12 @@ export default defineTool({
       .optional()
       .describe('restrict to one rubric, e.g. "pot-coordination-health"; omit for all rubric-graded scorecards'),
     sourceHive: z.string().optional().describe('restrict to scorecards from one source-hive'),
+    subjectRef: z
+      .string()
+      .optional()
+      .describe(
+        'restrict to scorecards GRADING one subject (observation.subject.ref) — the per-RUN axis: an agent ownerId, session id, WI-/EI- id, plan or pot slug. Use for a per-run rubric (e.g. goal-mode-e2e) where sourceHive only says which pot. Absent on pre-2026-08-10 scorecards, which recorded no subject.',
+      ),
     since: z
       .string()
       .optional()
@@ -61,6 +67,7 @@ export default defineTool({
     const scorecards = await listScorecards({
       rubricRef: args.rubricRef,
       sourceHive: args.sourceHive,
+      subjectRef: args.subjectRef,
       since: args.since,
       limit: args.limit,
       includeSynthesized: args.includeSynthesized,
