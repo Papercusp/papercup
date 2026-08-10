@@ -39,6 +39,7 @@ import { getOrgPg, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org'
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
+import { extractGoalWorkItemIds } from './loop-goal-staleness';
 import { recordLoopTransition } from './loop-transition-log';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 // Import from the dependency-free automatic-tool-names.ts, NOT from
@@ -198,9 +199,12 @@ export const GATED_LOOP_WAKE_ADDENDUM = [
  * non-fatally.
  */
 export function detectDrivenWorkItemId(goal: string): string | null {
-  const matches = String(goal ?? '').match(/\b(?:WI|EI|F)-\d+\b/gi);
-  if (!matches || matches.length === 0) return null;
-  const distinct = [...new Set(matches.map((m) => m.toUpperCase()))];
+  // ⚠ EXTRACTION IS SHARED with the goal-staleness check (loop-goal-staleness.ts),
+  // not re-implemented here. The two ask different questions — "which ONE item does
+  // this loop drive?" vs "are the items this goal names still open?" — but off the
+  // same notion of what a work-item id looks like, and two regexes obliged to agree
+  // are two regexes that eventually disagree.
+  const distinct = extractGoalWorkItemIds(goal);
   return distinct.length === 1 ? distinct[0] : null;
 }
 
@@ -266,6 +270,19 @@ export interface MaterializeLoopInput {
   intervalSec: number;
   /** The wakeup prompt the fire delivers (payload_template.kickoff). */
   kickoff: string;
+  /**
+   * The loop's GOAL, stored structurally (payload_template.goal) rather than only
+   * embedded in the rendered `kickoff`.
+   *
+   * EI-20072281215342526: the mission WAS durable in the kickoff prose, but reachable
+   * only by rendering that prose on a loop FIRE. A carry-respawn is a different wake
+   * path, so a successor got the held work-items and not the mission that generated
+   * them — and `loop:status`, the one place an agent would look up "what am I meant to
+   * be doing", could not answer either. Optional so an older caller (or a loop armed
+   * with no goal) leaves payload_template byte-identical, same convention as
+   * carry/continuation/mode above.
+   */
+  goal?: string | null;
   /** Optional cost-cap in cents — B-LOOP-3 auto-pauses the loop on breach. */
   costCapCents?: number | null;
   /** Optional dead-man bounds (loop-wake-rate-limit-robustness P2a) — auto-pause the loop after
@@ -335,6 +352,16 @@ export async function materializeLoop(
   // WI-5345: same convention for mode — only stamp 'monitor'; a default 'work' loop's
   // payload_template stays byte-identical to today.
   if (input.mode === 'monitor') payloadTemplate.mode = 'monitor';
+  // EI-20072281215342526: persist the GOAL as its own field.
+  //
+  // It was previously recoverable only by reading it back out of the rendered
+  // `kickoff` prose, which is why the mission became unfindable after a carry-respawn:
+  // `loop:status` could not report it, and a respawn renders the kickoff on a
+  // different wake path entirely, so the ONE durable copy of "what am I supposed to be
+  // doing" reached the successor through no channel at all. Storing it structurally is
+  // what lets every reader answer that question without parsing prose.
+  const goalText = typeof input.goal === 'string' ? input.goal.trim() : '';
+  if (goalText) payloadTemplate.goal = goalText;
 
   const name = loopRoutineName(input.ownerId);
   const desiredId = loopRoutineId(input.harnessSlug, input.ownerId);
@@ -560,6 +587,24 @@ export interface LoopStatus {
    *  — a leader had no way to tell "wedged in a pure-monitor loop" from "healthy work loop,
    *  between items" without this. */
   mode: 'work' | 'monitor';
+  /**
+   * The loop's GOAL text, or null for a loop armed without one (or armed before this
+   * field existed — those keep only the kickoff prose and cannot be back-filled).
+   *
+   * EI-20072281215342526 — WHY THIS EXISTS. An AUTO agent's mission lived ONLY inside
+   * the rendered wake kickoff. A carry-respawn delivers no kickoff, so a successor
+   * inherited its held work-items WITHOUT the mission that generated them, could not
+   * tell a mission-held item from an ambient claim, and — the expensive part — did not
+   * halt: it re-oriented, saw unclaimed backlog, and started doing something else,
+   * confidently. `loop:status` was the obvious place to look the mission up and
+   * returned everything EXCEPT the goal.
+   *
+   * ⚠ FROZEN AT ARM TIME, NOT LIVE STATE. It is the least current thing in any payload
+   * that carries it (the carry-note is rewritten every turn; work-item state is live),
+   * so a reader must treat it as orientation and the checkpoint as the action — see
+   * `loop-goal-staleness.ts`, which measures rather than merely cautions.
+   */
+  goal: string | null;
   /** Total delivered fires so far (metadata.fire_count) — for a cold loop this is the wakeCount
    *  cadence counter (a RECYCLE lands every Nth). 0 when never fired / not tracked.
    *  ⚠ EI-16202: this is FIRE history, not ARM history — calling loop:arm to (re-)arm an
