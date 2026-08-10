@@ -124,15 +124,22 @@ official v1 mechanism that closes them:
   links it as
   `"@papercusp/pot-app-seam": "file:../<mirror-clone>/pot-app-seam"`.
   Canonical: `libs/generic/pot-app-seam` in the monorepo.
-- **Mirror sync is guarded** (P-027): the canonical monorepo carries
-  `scripts/templates-mirror-sync.mjs`, which diffs the canonical tree —
-  every template dir, this README, and the vendored packages
-  (`template-kit/`, `pot-app-seam/`) — against a local
-  mirror clone. Check mode (`npm run mirror:check` in the monorepo's
-  `templates/`) exits non-zero on ANY drift, and the publish tooling
-  refuses to publish official listings while red; `--push`
-  (`npm run mirror:push`) applies the sync and pushes the mirror. The
-  published mirror therefore never silently trails the canonical tree.
+- **Mirror sync is NOT guarded today — sync it by hand and verify by hand.**
+  ⚠ This bullet previously described `scripts/templates-mirror-sync.mjs`, a
+  `npm run mirror:check` that "exits non-zero on ANY drift", a `npm run
+  mirror:push`, and publish tooling that "refuses to publish official listings
+  while red". **None of that exists** — no such script, no such npm scripts, no
+  such publish gate (verified 2026-08-10, WI-37775). The text was aspirational
+  and read as a guarantee, which is worse than no text: it invited maintainers
+  to trust a drift check that never ran, and the mirror duly went stale and
+  pre-rename.
+
+  Until a real sync tool lands, treat mirror publishing as MANUAL: after
+  changing any template dir, this README, or a vendored package
+  (`template-kit/`, `pot-app-seam/`), push the changed dirs to
+  [Papercusp/templates](https://github.com/Papercusp/templates) yourself and
+  diff them before re-publishing a listing. Assume the mirror trails the
+  canonical tree unless you just checked.
 - **Other component packages** (`@papercusp/sync`, `@papercusp/ui-primitives`,
   …) are not published to npm either and are NOT vendored (they have runtime
   deps or platform coupling the mirror can't carry). The official v1
