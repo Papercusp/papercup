@@ -146,7 +146,6 @@ function ensureWorker(): Promise<void> {
       }) => {
         if (msg.kind === 'ready') {
           initialized = true;
-          _consecutiveCrashes = 0;
           syncWorkerRef();
           resolveReady();
           return;
@@ -157,6 +156,11 @@ function ensureWorker(): Promise<void> {
         _pending.delete(msg.id);
         syncWorkerRef();
         if (msg.kind === 'serialize_ok') {
+          // Reset the crash run on a SERVED REQUEST, not on a successful
+          // spawn: a worker that spawns cleanly and then dies on every
+          // message would reset the counter each cycle and the breaker would
+          // never trip — which is the one case it exists for.
+          _consecutiveCrashes = 0;
           p.resolve({ json: msg.json ?? null });
         } else {
           p.reject(new Error(msg.error ?? 'cpu-task worker error'));
