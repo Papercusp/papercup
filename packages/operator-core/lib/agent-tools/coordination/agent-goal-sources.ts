@@ -91,14 +91,40 @@ export const GOAL_LEG_CAP = 20;
  * FAIL-SOFT PER LEG: a dead source contributes nothing while the others still
  * land, so a broken links table costs corroboration rather than the whole goal.
  */
-export async function readGoalCandidates(ownerId: string): Promise<GoalCandidates> {
-  return (await readGoalLegs(ownerId)).candidates;
+export async function readGoalCandidates(ownerId: string, lens: GoalLens): Promise<GoalCandidates> {
+  return (await readGoalLegs(ownerId, lens)).candidates;
 }
+
+/**
+ * WHOSE GOAL IS BEING READ — and it is a REQUIRED argument on every seam below,
+ * deliberately.
+ *
+ * The two audiences need OPPOSITE handling of a lapsed plan-item claim, and this
+ * file shipped with one policy silently applied to both (EI-20073149682963544): the
+ * expiry filter that is right for `peer` quietly deleted an agent's OWN goal 20
+ * minutes in (`plan_item_claims.ttl_sec` default 1200), while the sibling
+ * work-item leg — same function, no expiry — kept answering. The two legs of "what
+ * am I doing" disagreed by construction.
+ *
+ * A DEFAULT would have re-armed exactly that trap: the next caller inherits
+ * whichever audience the default happened to encode and nothing says it chose. So
+ * there is no default. Adding a caller forces the author to name the audience,
+ * which is the one thing the original author never had to do.
+ *
+ * · `self` — the agent asking about itself. It KNOWS it is still working, so a
+ *   lapsed lease is a cold lease, never absent work. Lapsed rows are READ and
+ *   disclosed via `leaseValid`/`ResolvedGoal.leaseCold`.
+ * · `peer` — anyone asking about someone else. A lapsed claim genuinely may be
+ *   historical and the reader cannot know, so it stays filtered out in SQL. This
+ *   is the pre-existing behaviour, preserved exactly.
+ */
+export type GoalLens = 'self' | 'peer';
 
 /** Internal: the candidates PLUS the claim prose, gathered in one pass so
  *  {@link fetchHolderGoalRecord} needs no second round-trip. */
 async function readGoalLegs(
   ownerId: string,
+  lens: GoalLens,
 ): Promise<{ candidates: GoalCandidates; planItems: readonly HeldPlanItemRow[] }> {
   const owner = (ownerId ?? '').trim();
   if (!owner || !coordHasPgFastPath()) return { candidates: {}, planItems: [] };
@@ -115,7 +141,7 @@ async function readGoalLegs(
 
   const [workItems, planItems, fleet, override] = await Promise.all([
     settle(() => readHeldWorkItems(sql, ws, owner), [] as HeldWorkItem[]),
-    settle(() => readHeldPlanItems(sql, ws, owner), [] as HeldPlanItemRow[]),
+    settle(() => readHeldPlanItems(sql, ws, owner, lens), [] as HeldPlanItemRow[]),
     settle(() => readFleetMission(sql, ws, owner), null as HeldFleet | null),
     settle(() => readGoalOverride(owner), null as GoalCandidates['override']),
   ]);
@@ -148,20 +174,52 @@ async function readHeldWorkItems(sql: Sql, ws: string, owner: string): Promise<H
 }
 
 /**
- * ⚠ LIVE CLAIMS ONLY (`expires_ts > now()`), for the reason `fetchHolderGoal`
- * already states: an expired claim's goal is a historical record, and rendering
- * it is the "stale value reads as current" defect one layer below `stale`.
+ * The plan-item claim leg, read through the caller's {@link GoalLens}.
+ *
+ * ⚠ `peer` KEEPS THE LIVE-ONLY FILTER, for the reason `fetchHolderGoal` already
+ * states: an expired claim's goal is a historical record, and rendering it is the
+ * "stale value reads as current" defect one layer below `stale`.
+ *
+ * ⚠⚠ `self` DELIBERATELY READS LAPSED ROWS, and the reason it is SAFE is the
+ * table's shape, not optimism. `plan_item_claims`' PK is `(workspace_id,
+ * harness_slug, plan_slug, item_id)` — ONE row per item — rows are DELETED on
+ * release, and a peer taking the item OVERWRITES `owner`. So a surviving row still
+ * owned by us proves nobody else took it: reading it back cannot steal work, it
+ * can only restore the goal we already had. What the lapse genuinely costs is the
+ * FENCE, and that is disclosed rather than hidden — `lease_valid` rides out on
+ * every row and becomes `ResolvedGoal.leaseCold`.
+ *
+ * ⚠ THE ORDER BY IS LOAD-BEARING UNDER THE CAP. With lapsed rows admitted, a
+ * long-lived agent can hold more than {@link GOAL_LEG_CAP} claims, and a plain
+ * recency sort would let stale rows evict the live ones inside the LIMIT — turning
+ * a fix for a vanishing goal into a new way to lose it. Valid leases sort first, so
+ * the cap sheds cold rows before warm ones.
  */
-async function readHeldPlanItems(sql: Sql, ws: string, owner: string): Promise<HeldPlanItemRow[]> {
+async function readHeldPlanItems(
+  sql: Sql,
+  ws: string,
+  owner: string,
+  lens: GoalLens,
+): Promise<HeldPlanItemRow[]> {
+  const includeLapsed = lens === 'self';
   const rows = await sql<
-    { plan_slug: string; item_id: string; acquired_ts: string | null; intent: string | null }[]
+    {
+      plan_slug: string;
+      item_id: string;
+      acquired_ts: string | null;
+      intent: string | null;
+      lease_valid: boolean | null;
+    }[]
   >`
-    SELECT plan_slug, item_id, acquired_ts::text AS acquired_ts, intent
+    SELECT plan_slug, item_id, acquired_ts::text AS acquired_ts, intent,
+           (expires_ts > clock_timestamp()) AS lease_valid
       FROM harness_shared.plan_item_claims
      WHERE workspace_id = ${ws}
        AND owner = ${owner}
-       AND expires_ts > now()
-     ORDER BY last_activity_ts DESC NULLS LAST, item_id ASC
+       AND (${includeLapsed} OR expires_ts > clock_timestamp())
+     ORDER BY (expires_ts > clock_timestamp()) DESC,
+              last_activity_ts DESC NULLS LAST,
+              item_id ASC
      LIMIT ${GOAL_LEG_CAP}`;
   return rows
     .filter((r) => r.plan_slug && r.item_id)
@@ -170,6 +228,10 @@ async function readHeldPlanItems(sql: Sql, ws: string, owner: string): Promise<H
       itemId: r.item_id,
       acquiredTs: r.acquired_ts,
       intent: r.intent,
+      // Only the self lens MEASURES this. The peer lens filtered in SQL, so every
+      // row it returns is live by construction and must carry `undefined` — see
+      // `HeldPlanItem.leaseValid`: absent is a third state, not a `false`.
+      leaseValid: includeLapsed ? r.lease_valid !== false : undefined,
     }));
 }
 
@@ -258,10 +320,19 @@ async function readImplementsLinks(
  * consumers render as absent — never as a fabricated goal, and (D-056)
  * deliberately the same answer a reader gets for a holder whose goal it may not
  * read, so a refusal cannot be used as a probe oracle.
+ *
+ * ⚠ `lens` IS THE CALLER'S TO DECIDE AND CANNOT BE INFERRED HERE. This resolver
+ * serves both audiences — `coord:goal` answers about `args.ownerId ?? me`, so the
+ * SAME function call is a self-read or a peer-read depending on an argument this
+ * layer never sees. Baking in either policy would be wrong half the time; only the
+ * call site knows whose goal it is asking for. See {@link GoalLens}.
  */
-export async function resolveOwnerGoal(ownerId: string): Promise<ResolvedGoal | null> {
+export async function resolveOwnerGoal(
+  ownerId: string,
+  lens: GoalLens,
+): Promise<ResolvedGoal | null> {
   try {
-    return resolveAgentGoal((await readGoalLegs(ownerId)).candidates);
+    return resolveAgentGoal((await readGoalLegs(ownerId, lens)).candidates);
   } catch {
     return null;
   }
@@ -291,7 +362,10 @@ export async function resolveOwnerGoal(ownerId: string): Promise<ResolvedGoal | 
  */
 export async function fetchHolderGoalRecord(ownerId: string): Promise<HolderGoalRecord | null> {
   try {
-    const { candidates, planItems } = await readGoalLegs(ownerId);
+    // PEER by definition: this is the HOLDER view — someone else reading whoever
+    // holds a lock/claim they are blocked on. A lapsed claim stays filtered out
+    // here, exactly as before this seam existed (EI-20073149682963544).
+    const { candidates, planItems } = await readGoalLegs(ownerId, 'peer');
     const goal = resolveAgentGoal(candidates);
     if (!goal) return null;
 

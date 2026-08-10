@@ -112,6 +112,16 @@ export interface HeldPlanItem {
   itemId: string;
   /** `acquired_ts`. */
   acquiredTs?: string | null;
+  /**
+   * Whether the claim's TTL lease is still in the future.
+   *
+   * ⚠ `undefined` MEANS NOT MEASURED, AND THAT IS A THIRD STATE, NOT A `false`.
+   * The peer lens filters to live claims in SQL, so every row it produces is valid
+   * by construction and carries no flag; only the self lens, which deliberately
+   * reads lapsed rows, measures it. Collapsing absent into `false` would mark every
+   * peer goal cold — the precise inversion of the honesty this field exists for.
+   */
+  leaseValid?: boolean;
 }
 
 /** The fleet this owner belongs to. A mission, not a task — hence last. */
@@ -169,6 +179,27 @@ export interface ResolvedGoal {
   competing: string[];
   /** Axis 1, hoisted. */
   agreement: GoalAgreement;
+  /**
+   * The plan-item claim this answer names has LAPSED its TTL lease — the goal is
+   * still yours, but the lease is cold and must be re-taken before you edit.
+   *
+   * ONE RULE: true when the answer names a plan-item claim (as `ref`, or as the
+   * `corroboratedBy` edge) whose `leaseValid` is explicitly `false`. False when the
+   * answer names no plan-item claim at all, and false when the lease was never
+   * measured — see {@link HeldPlanItem.leaseValid} for why absent ≠ cold.
+   *
+   * ⚠ THIS FIELD IS WHY DROPPING THE EXPIRY FILTER IS SAFE. The self lens reads
+   * lapsed claims so an agent stops losing its own goal after 20 minutes
+   * (`plan_item_claims.ttl_sec` default 1200); without a way to SAY the lease is
+   * cold, that fix would trade a silent disappearance for a silent overstatement —
+   * a lapsed claim rendered as an exclusive hold. The original expiry filter's
+   * stated reason ("a stale value reads as current") is honoured by disclosing the
+   * staleness, not by deleting the row.
+   *
+   * Clock-free like the rest of this module: the boolean is an INPUT, measured by
+   * the SQL that read the row, never derived from a clock here.
+   */
+  leaseCold: boolean;
 }
 
 /**
@@ -246,6 +277,15 @@ export function resolveAgentGoal(candidates: GoalCandidates): ResolvedGoal | nul
   for (const p of planItems) allRefs.add(planItemRef(p.planSlug, p.itemId)!);
   if (fleetRef) allRefs.add(fleetRef);
 
+  // Lease state, keyed by the ref form the answer actually names. Only rows the
+  // caller MEASURED land here (`leaseValid === false`), so an unmeasured peer read
+  // can never colour an answer cold — see `HeldPlanItem.leaseValid`.
+  const coldPlanRefs = new Set(
+    planItems
+      .filter((p) => p.leaseValid === false)
+      .map((p) => planItemRef(p.planSlug, p.itemId)!),
+  );
+
   const finish = (
     ref: string,
     source: GoalSource,
@@ -272,6 +312,10 @@ export function resolveAgentGoal(candidates: GoalCandidates): ResolvedGoal | nul
       corroboratedBy,
       competing,
       agreement: corroboratedBy ? 'corroborated' : competing.length > 0 ? 'divergent' : 'sole',
+      // The answer's OWN claim, whether it arrived as the headline or as the
+      // corroborating edge — in both readings the named plan-item claim is the one
+      // the reader would act on, so both must be able to say "re-claim first".
+      leaseCold: coldPlanRefs.has(ref) || (corroboratedBy != null && coldPlanRefs.has(corroboratedBy)),
     };
   };
 
@@ -309,7 +353,14 @@ export function resolveAgentGoal(candidates: GoalCandidates): ResolvedGoal | nul
   // (0 of 19 owners), so it is a real fallback rather than a hot path — but it
   // is the leg a plan-only agent depends on entirely, so it is not optional.
   if (planItems.length > 0) {
-    const newest = byRecency(planItems, (r) => r.acquiredTs, (r) => `${r.planSlug}#${r.itemId}`)[0]!;
+    // A LIVE lease outranks a cold one before recency is consulted. Both are the
+    // agent's own work, but only one is still fenced against a peer taking it, so
+    // answering with the cold claim when a live one exists would name the weaker
+    // hold. Recency alone cannot express this: `ttl_sec` is per-claim, so a claim
+    // acquired LATER can expire EARLIER. Held here rather than left to the caller's
+    // ORDER BY, so the rule survives a caller that reads the rows in any order.
+    const ranked = byRecency(planItems, (r) => r.acquiredTs, (r) => `${r.planSlug}#${r.itemId}`);
+    const newest = ranked.find((p) => p.leaseValid !== false) ?? ranked[0]!;
     return finish(
       planItemRef(newest.planSlug, newest.itemId)!,
       'plan-item',

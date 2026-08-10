@@ -258,7 +258,10 @@ export type AgentGoalRehydrator = (ownerId: string) => Promise<string | null>;
  */
 async function defaultGoalRehydrator(ownerId: string): Promise<string | null> {
   const { resolveOwnerGoal } = await import('./agent-tools/coordination/agent-goal-sources');
-  return (await resolveOwnerGoal(ownerId))?.ref ?? null;
+  // SELF: this stamps the goal onto the calling agent's OWN tool invocation, so a
+  // lapsed plan-item lease must not erase what it is working on (the stamp would
+  // read `null` — "declared nothing" — for an agent 20 minutes into one item).
+  return (await resolveOwnerGoal(ownerId, 'self'))?.ref ?? null;
 }
 
 let rehydrateGoal: AgentGoalRehydrator = defaultGoalRehydrator;

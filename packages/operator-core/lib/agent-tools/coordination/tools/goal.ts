@@ -25,7 +25,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
-import { resolveOwnerGoal } from '../agent-goal-sources';
+import { resolveOwnerGoal, type GoalLens } from '../agent-goal-sources';
 
 export default defineTool({
   name: 'coord:goal',
@@ -52,7 +52,17 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const ownerId = (args.ownerId ?? '').trim() || identity.ownerId;
-    const goal = await resolveOwnerGoal(ownerId);
+    /**
+     * ⚠ THE LENS IS DECIDED HERE BECAUSE ONLY HERE IS IT KNOWABLE. This one tool
+     * answers BOTH audiences off the same resolver — omit `ownerId` and it is a
+     * self-read, name a peer and it is a peer-read — so the resolver cannot pick
+     * a policy for lapsed plan-item claims on its own (EI-20073149682963544).
+     * Asking about yourself surfaces a lapsed lease as COLD (you know you are
+     * still working); asking about someone else keeps it filtered, because a
+     * lapsed claim of theirs may genuinely be history.
+     */
+    const lens: GoalLens = ownerId === identity.ownerId ? 'self' : 'peer';
+    const goal = await resolveOwnerGoal(ownerId, lens);
 
     return {
       content: [
@@ -99,11 +109,27 @@ export default defineTool({
              * `summary` already point.
              */
             goalAgreement: goal?.agreement ?? null,
+            /**
+             * Hoisted for the same reason `goalRef` and `goalAgreement` are: it is
+             * ACTIONABLE ("re-claim before you edit"), and a reader who branches on
+             * the flat fields must not have to reach into `goal` to find the one
+             * caveat that changes what they should do next.
+             *
+             * ⚠ ONLY EVER TRUE ON A SELF-READ. The peer lens filters lapsed claims
+             * out in SQL, so `false` there means "no lapsed claim was looked for",
+             * not "their lease is warm" — which is why the self path is the only
+             * one that can honestly say `true`.
+             */
+            goalLeaseCold: goal?.leaseCold ?? false,
             goal,
             // Prose for a human-facing surface. `goal`/`goalRef` stay branchable
             // because prose cannot be branched on.
             summary: goal
-              ? `${ownerId} → ${goal.ref} (${goal.source}, ${goal.agreement})`
+              ? `${ownerId} → ${goal.ref} (${goal.source}, ${goal.agreement})${
+                  goal.leaseCold
+                    ? ' — ⚠ lease COLD: the plan-item claim behind this goal has passed its TTL. The work is still yours (nobody else took the row), but the fence is gone — re-claim before editing.'
+                    : ''
+                }`
               : `${ownerId} holds no work-item, plan-item claim or fleet mission, so there is no goal to report. That is an honest "nothing declared", not a failed read.`,
           }),
         },
