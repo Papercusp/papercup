@@ -72,6 +72,12 @@ function SessionRow({
     </>
   );
 
+  /* On the <li> in BOTH branches, never on the inner button. A row that is a
+     button and a row that is not are different ELEMENTS, so hanging the test
+     hooks on the inner one would make `[data-testid=goal-session-row]` select a
+     <button> here and an <li> there — and any selector combining it with
+     `[data-member]` would then silently match nothing in one of the two
+     states. The wrapper is the row; what is inside it is a rendering detail. */
   const common = {
     'data-testid': 'goal-session-row',
     'data-owner': row.ownerId,
@@ -80,18 +86,19 @@ function SessionRow({
        agent is evidence the testing happened. The mark is an attribute so the
        styling stays in CSS and the row keeps the board's own state word. */
     'data-ended': row.ended ? 'true' : undefined,
+    className: isMember ? 'pc-peers__nest' : undefined,
   } as const;
 
   if (!onSelect) {
     return (
-      <li className={`pc-peer${isMember ? ' pc-peer--nested' : ''}`} {...common} title={row.reason}>
-        {body}
+      <li {...common} title={row.reason}>
+        <span className="pc-peer">{body}</span>
       </li>
     );
   }
 
   return (
-    <li className={isMember ? 'pc-peer--nested' : undefined}>
+    <li {...common}>
       {/* The shared Tooltip primitive, NOT a `title=` attribute — a native title
           is unreachable by keyboard and on touch, and `lint:design-primitives`
           fails a title on a <button> for exactly that reason.
@@ -103,7 +110,6 @@ function SessionRow({
           type="button"
           className="pc-peer pc-peer--btn"
           onClick={() => onSelect(row.ownerId)}
-          {...common}
           /* Spells out the DESTINATION: the visible row is a handle and a state
              word, neither of which says that pressing it opens a conversation. */
           aria-label={`Open ${row.handle}'s conversation — ${row.reason}`}

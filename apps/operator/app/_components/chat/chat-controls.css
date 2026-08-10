@@ -1264,6 +1264,17 @@
   border-left: 1px solid var(--pc-zone-rule);
 }
 
+/* The goal popup's SESSIONS rail (P-024, who is working on this goal). A right
+ * zone like the three above, and now the INNERMOST of them — the owner placed
+ * it "to the left of the WORK pane" — so it owns the seam against the
+ * conversation while `--work` keeps owning the seam against it. Each right zone
+ * drawing only its OWN left edge is what keeps the count of rules equal to the
+ * count of gaps however many of them are open. Declared here beside its
+ * siblings for the token-scoping reason above. */
+.pc-zone--sessions {
+  border-left: 1px solid var(--pc-zone-rule);
+}
+
 .pc-peers {
   display: flex;
   flex-direction: column;
@@ -1458,6 +1469,33 @@
 }
 .pc-peer__state {
   color: var(--fg-dim);
+}
+
+/* ── P-024: the goal Sessions rail's two additions ──────────────────────────
+   Both live here rather than in hud.css because they extend THIS block's row —
+   the rail borrows `pc-peer` wholesale on the owner's instruction to mimic the
+   fleet pane, and a second stylesheet redefining half of a row is how the two
+   drift into looking almost alike. */
+
+/* A fleet MEMBER, indented under its lead. The indent is on the <li> WRAPPER,
+   never on `.pc-peer` itself: the row is a full-width button whose hover and
+   focus ring must keep spanning the rail, and padding it in would shrink the
+   hit target and leave the focus outline floating off the row's own edge. */
+.pc-peers__nest {
+  padding-left: 11px;
+  /* The elbow. A border rather than a glyph so it cannot be read aloud by a
+     screen reader as content — the nesting is already carried semantically by
+     the row order and the lead/member glyph. */
+  border-left: 1px solid var(--border);
+  margin-left: 8px;
+}
+
+/* The session's INTENT, trailing the state word on the second line. Inherits
+   `.pc-peer__r2`'s ellipsis, so a long intent truncates instead of wrapping the
+   row to two lines and breaking the rail's even rhythm. Dimmer than the state
+   word beside it: the state is the row's verdict, the intent is its detail. */
+.pc-peer__intent {
+  color: var(--fg-mute);
 }
 
 /* State is carried by the DOT's colour and by the word beside it, never colour

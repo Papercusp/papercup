@@ -940,6 +940,19 @@ export default function GoalDetailPanel({
               onToggle={() => void setBriefOpen(!briefOpen)}
               data-testid="goal-brief-toggle"
             />
+            {/* P-024. Gated on the MODEL, like Fleet — a goal with no agent
+                stamp has no sessions to seat, and a toggle that opens nothing
+                is the dead control WI-6742 filed against this popup. */}
+            {goalSessions ? (
+              <PanelToggleButton
+                label="Sessions"
+                describe="who’s working on this goal"
+                side="right"
+                open={sessionsOpen}
+                onToggle={() => void setSessionsOpen(!sessionsOpen)}
+                data-testid="goal-sessions-toggle"
+              />
+            ) : null}
             <PanelToggleButton
               label="Work"
               describe="plans and work items"
@@ -1308,6 +1321,37 @@ export default function GoalDetailPanel({
           </div>
           </div>
         </div>
+
+        {/* ── SESSIONS (P-024) — who is working on this goal ────────────────
+            [owner 2026-08-10] "just put the pane on the right side, to the left
+            of the 'WORK — what sits under this goal' pane" — so it is the FIRST
+            of the right-edge zones in DOM order, which is what puts it
+            immediately left of Work and keeps the tab sequence agreeing with
+            the visual order (never a CSS `order` trick).
+
+            Reading order is now:
+              Orders │ Brief │ conversation │ Sessions │ Work │ Activity │ Fleet
+            which keeps the outermost-is-most-general rule intact: WHO is on the
+            goal sits inside the agent's own Activity and Fleet, and outside the
+            goal's Work — you ask who is on it before you ask what they have
+            broken it into.
+
+            `onSelectSession` routes through the host's existing `onOpenAgent`,
+            the same destination the Fleet rail's rows use, so a session row
+            lands in the sessions popup rather than inventing a second one. */}
+        {sessionsVisible && goalSessions ? (
+          <div
+            className="pc-zone pc-zone--sessions"
+            data-testid="goal-sessions-rail"
+            style={isSessionsNarrow ? SESSIONS_OVERLAY_STYLE : SESSIONS_SIDE_STYLE}
+          >
+            <GoalSessionsRail
+              model={goalSessions}
+              onSelectSession={onOpenAgent}
+              onClose={() => void setSessionsOpen(false)}
+            />
+          </div>
+        ) : null}
 
         {/* ── THE WORK RAIL (P-019) ──────────────────────────────────────────
             A SIBLING of the body column, never a child of it — the same layout
