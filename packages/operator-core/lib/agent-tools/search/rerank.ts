@@ -80,22 +80,42 @@ export const RERANK_MAX_CANDIDATES = 24;
  * cap the worst case is 24 × ~45ms ≈ 1.1s on this box, and P-001 found a laptop
  * runs ~1.5–2× slower ⇒ ≈ 2.2s. 4s leaves ~1.8× headroom over that worst case.
  *
- * ⚠⚠ THAT HEADROOM IS PER-CALL AND DIVIDES BY IN-FLIGHT CONCURRENCY — this
- * block used to conclude "so a HEALTHY rerank never trips it, and only genuine
- * pathology does", which is FALSE above ~4 concurrent callers (WI-37676). The
- * sizing argument prices this call's COMPUTE against a WALL-CLOCK bound, while
- * the scorer is a SINGLE serialized inference thread — one worker thread
- * (`local-reranker-worker.ts` holds a module-singleton `_worker`) or the main
- * thread on its inline fallback. N concurrent calls therefore each wait ~N ×
- * their own compute. Measured 2026-08-10 at the cap, 24 pairs:
+ * ⚠⚠ THAT HEADROOM IS PER-CALL, AND THE SCORER IS SHARED — this block used to
+ * conclude "so a HEALTHY rerank never trips it, and only genuine pathology
+ * does", which is FALSE the moment two searches overlap (WI-37676). The sizing
+ * argument prices ONE call's COMPUTE against a WALL-CLOCK bound while the
+ * in-process scorer is a single serialized resource, so N concurrent callers
+ * each wait ~N × their own compute. Measured 2026-08-10 over the real worker
+ * path, at the cap (24 pairs) and again at 100:
  *
- *     concurrency 1 → 1951ms   ·   2 → 1617/1880ms   ·   4 → up to 3363ms
+ *     concurrency    1      2      4      8
+ *     per-call     1.00x  2.04x  3.98x  7.68x   of the solo wall clock
+ *     throughput   30.9   30.3   31.1   32.2    pairs/s
  *
- * i.e. four concurrent prose searches already spend 84% of this budget, and
- * five or six exceed it — at which point EVERY in-flight search degrades to RRF
- * order simultaneously. It is a CORRELATED failure, so it will not present as
- * flakiness. Do not read a green single-call latency measurement as evidence
- * that this bound is safe under load; the fix is tracked on WI-37676.
+ * Latency is exactly linear in the number of callers and aggregate throughput is
+ * FLAT — concurrency buys nothing here. So five-plus concurrent prose searches
+ * used to blow this budget together and EVERY in-flight search degraded to RRF
+ * order at the same moment, each after spending its full 4s. A correlated
+ * failure, which is why it never presented as flakiness.
+ *
+ * ⚠ Do not trust an older note quoting `1 → 1951ms · 2 → 1617/1880 · 4 → 3363`.
+ * Those were real numbers off the INLINE fallback, recorded as a property of the
+ * worker path — the worker never came up in a standalone script (WI-37680), so
+ * the path that ships had never actually been measured.
+ *
+ * ✅ FIXED (WI-37676): `@papercusp/rerank`'s `scorer-gate.ts` admits callers to
+ * the shared scorer one at a time and REFUSES, at ~1ms, any call its measured
+ * cost estimate says cannot finish inside the caller's `timeoutMs`. Since
+ * concurrency bought no throughput, serializing costs nothing. Measured
+ * end-to-end at this cap and this budget, 8 concurrent searches:
+ *
+ *     before: 0/8 reranked — all 8 spent the full 4000ms, wall 5957ms
+ *     after:  5/8 reranked (686…3446ms), 3/8 shed in 1ms, wall 3446ms
+ *
+ * A shed reports `onDegrade('timeout')`, not `scoring-failed`: the engine is
+ * healthy, the budget was not there. Still do not read a green single-call
+ * latency measurement as evidence this bound is safe under load — what makes it
+ * safe now is the gate, not the headroom.
  *
  * DELIBERATELY TIGHTER than the library backstop (20s) and than the sidecar
  * client's 15s retry budget, because those bound a HANG while this bounds a

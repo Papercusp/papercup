@@ -1,6 +1,6 @@
 {
   "$comment": "BASELINE for lint:no-ungated-mug-kettle (plan retire-mug-kettle-su-only-2026-08-09, P-016).",
-  "generatedAt": "2026-08-10T08:05:31.555Z",
+  "generatedAt": "2026-08-10T08:23:08.381Z",
   "plan": "retire-mug-kettle-su-only-2026-08-09",
   "item": "P-016",
   "rule": "SHRINK-ONLY. This records the UNGATED mug/kettle/cup surface as it existed when the retirement landed, so the guard can fail on the NEXT ungated addition without demanding a retrofit of ~150 pre-existing sites. NEVER append to it to silence a new finding - gate the new site instead. An entry that disappears is GOOD (that surface was retired or gated); prune it.",
@@ -12,6 +12,7 @@
     "role-door|psu-launcher|apps/operator/scripts/psu-launcher.mjs": "UPSTREAM OF A GATE: `psu --role=<role>` takes roleFlow -> POST /api/agent-mcp/console/bootstrap-role, the D-022 chokepoint. NOTE this is the door P-013 missed entirely; it is exempt because the gate sits at bootstrap-role, not because it is harmless."
   },
   "entries": [
+    "blueprint-launch|POT_BLUEPRINT_ID|packages/operator-core/lib/agent-tools/pot/_create.ts",
     "blueprint-launch|POT_BLUEPRINT_ID|packages/operator-core/lib/agent-tools/pot/wake.ts",
     "blueprint-launch|POT_BLUEPRINT_ID|packages/operator-core/lib/events/await/wake-executor.ts",
     "blueprint-launch|POT_BLUEPRINT_ID|packages/operator-core/lib/pot/urgent-wake.ts",
