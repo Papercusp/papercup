@@ -88,8 +88,8 @@ export function connectScriptPg(opts?: {
 /** Env var names carrying a Postgres URL, in the order operator-core checks them. */
 export const PG_URL_ENV_VARS: string[];
 /**
- * Env vars that mean "this process owns a dedicated/hermetic PG" — either suppresses the
- * `.env.local` step, because the whole point of both is that the ambient dev database is
- * NOT the one to talk to.
+ * Env vars that mean "this process owns a dedicated/hermetic PG". Either one suppresses
+ * the `.env.local` step, because the whole point of both levers is that the ambient dev
+ * database is NOT the one to talk to.
  */
 export const PG_ISOLATION_ENV_VARS: string[];

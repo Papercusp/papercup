@@ -24,11 +24,11 @@ export type ComponentTier = "A" | "B" | "C";
 export type ComponentKind = "package" | "pattern";
 
 export interface ComponentSource {
-  /** GitHub repo slug (`Papercusp/hive-app-seam`) when the component has its own repo. */
+  /** GitHub repo slug (`Papercusp/pot-app-seam`) when the component has its own repo. */
   repo?: string;
   /** Repo-relative path of the canonical source / reference implementation. */
   path?: string;
-  /** npm package name when consumable as a workspace dep (`@papercusp/hive-app-seam`). */
+  /** npm package name when consumable as a workspace dep (`@papercusp/pot-app-seam`). */
   package?: string;
 }
 

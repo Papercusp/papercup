@@ -12,7 +12,7 @@ describe("COMPONENT_CATALOG", () => {
   it("covers the P-004 component set", () => {
     const ids = COMPONENT_CATALOG.map((m) => m.id);
     for (const required of [
-      "hive-app-seam",
+      "pot-app-seam",
       "tauri-shell",
       "embedded-postgres-server",
       "tauri-release-kit",
@@ -25,6 +25,6 @@ describe("COMPONENT_CATALOG", () => {
 
   it("tier-B components are exactly the seam disciplines (D-002)", () => {
     const tierB = COMPONENT_CATALOG.filter((m) => m.tier === "B").map((m) => m.id).sort();
-    expect(tierB).toEqual(["hive-app-seam", "typed-contracts"]);
+    expect(tierB).toEqual(["pot-app-seam", "typed-contracts"]);
   });
 });

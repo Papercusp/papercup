@@ -164,7 +164,7 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
       "dock-workbench",
       "embedded-pg-discovery",
       "embedded-postgres-server",
-      "hive-app-seam",
+      "pot-app-seam",
       "hono-host",
       "lexicon",
       "papergrid",

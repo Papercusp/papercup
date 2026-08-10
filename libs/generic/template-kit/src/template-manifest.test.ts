@@ -22,7 +22,7 @@ function valid(): TemplateManifest {
     scope: "aspect",
     category: "data",
     summary: "A test template.",
-    components: [{ id: "hive-app-seam", version: "0.1.0" }],
+    components: [{ id: "pot-app-seam", version: "0.1.0" }],
     contracts: ["my-contract"],
     decisionPoints: [{ id: "a-choice", prompt: "Pick something." }],
     composesWith: ["another-template"],
@@ -69,7 +69,7 @@ describe("validateTemplateManifest", () => {
     expect(validateTemplateManifest({ ...valid(), components: "nope" }).errors).toContain(
       "components: required array of { id, version }",
     );
-    expect(validateTemplateManifest({ ...valid(), components: ["hive-app-seam"] }).errors).toContain(
+    expect(validateTemplateManifest({ ...valid(), components: ["pot-app-seam"] }).errors).toContain(
       "components[0]: must be an object { id, version }",
     );
     const dup = { ...valid(), components: [{ id: "x", version: "1.0.0" }, { id: "x", version: "1.0.0" }] };
@@ -119,13 +119,13 @@ describe("parseTemplateManifest", () => {
 describe("validateTemplateAgainstCatalog", () => {
   const catalog: ComponentManifest[] = [
     {
-      id: "hive-app-seam",
+      id: "pot-app-seam",
       version: "0.1.0",
       tier: "B",
       kind: "package",
       provides: ["hive-bootstrap"],
       composesWith: [],
-      source: { package: "@papercusp/hive-app-seam" },
+      source: { package: "@papercusp/pot-app-seam" },
       tests: "npm test",
       summary: "seam",
     },
@@ -139,14 +139,14 @@ describe("validateTemplateAgainstCatalog", () => {
     const m = {
       ...valid(),
       components: [
-        { id: "hive-app-seam", version: "0.0.9" },
+        { id: "pot-app-seam", version: "0.0.9" },
         { id: "ghost-component", version: "1.0.0" },
       ],
     };
     const { ok, errors } = validateTemplateAgainstCatalog(m, catalog);
     expect(ok).toBe(false);
     expect(errors).toContain(
-      "'my-template' pins 'hive-app-seam@0.0.9' but the catalog has 0.1.0 (stale pin — update the template or the catalog)",
+      "'my-template' pins 'pot-app-seam@0.0.9' but the catalog has 0.1.0 (stale pin — update the template or the catalog)",
     );
     expect(errors).toContain("'my-template' references unknown component 'ghost-component'");
   });
@@ -169,7 +169,7 @@ describe("REFERENCE_TEMPLATES (the retro-fitted quartermaster manifests — P-00
 
   it("the ops-hives aspect carries both Tier B components; the shell carries the chassis", () => {
     expect(PAPERCUSP_OPS_HIVES_TEMPLATE.components.map((c) => c.id).sort()).toEqual(
-      ["hive-app-seam", "typed-contracts"],
+      ["pot-app-seam", "typed-contracts"],
     );
     expect(TAURI_DESKTOP_SHELL_TEMPLATE.components.map((c) => c.id).sort()).toEqual(
       ["embedded-postgres-server", "hono-host", "tauri-release-kit", "tauri-shell"],

@@ -6,13 +6,13 @@ import {
 } from "./component-manifest.js";
 
 const GOOD = {
-  id: "hive-app-seam",
+  id: "pot-app-seam",
   version: "0.1.0",
   tier: "B",
   kind: "package",
   provides: ["hive-bootstrap"],
   composesWith: ["typed-contracts"],
-  source: { repo: "Papercusp/hive-app-seam", package: "@papercusp/hive-app-seam" },
+  source: { repo: "Papercusp/pot-app-seam", package: "@papercusp/pot-app-seam" },
   tests: "npm test",
   summary: "The one app-hive seam.",
 };
@@ -21,7 +21,7 @@ describe("validateComponentManifest", () => {
   it("accepts a well-formed manifest (guide optional)", () => {
     expect(validateComponentManifest(GOOD)).toEqual({ ok: true, errors: [] });
     expect(validateComponentManifest({ ...GOOD, guide: "agent-insights/x" }).ok).toBe(true);
-    expect(parseComponentManifest(GOOD).id).toBe("hive-app-seam");
+    expect(parseComponentManifest(GOOD).id).toBe("pot-app-seam");
   });
 
   it("rejects non-objects outright", () => {
@@ -65,7 +65,7 @@ describe("validateComponentManifest", () => {
 
 describe("validateCatalog", () => {
   it("accepts entries with unique ids and resolvable composesWith", () => {
-    const other = { ...GOOD, id: "typed-contracts", composesWith: ["hive-app-seam"] };
+    const other = { ...GOOD, id: "typed-contracts", composesWith: ["pot-app-seam"] };
     expect(validateCatalog([GOOD, other])).toEqual({ ok: true, errors: [] });
   });
 
@@ -76,9 +76,9 @@ describe("validateCatalog", () => {
     expect(ok).toBe(false);
     expect(errors).toEqual(
       expect.arrayContaining([
-        "entry[1]: duplicate id 'hive-app-seam'",
+        "entry[1]: duplicate id 'pot-app-seam'",
         "'solo' composesWith unknown component 'nowhere'",
-        "'hive-app-seam' composesWith unknown component 'typed-contracts'",
+        "'pot-app-seam' composesWith unknown component 'typed-contracts'",
       ]),
     );
   });
