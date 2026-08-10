@@ -603,12 +603,26 @@ export async function adoptStartingTerminalLaunch(opts: {
   }
 }
 
-export async function setAdvSessionPid(id: number, pid: number | null): Promise<void> {
+/**
+ * Stamp the spawn result onto an already-written row.
+ *
+ * `terminalBin` is optional and COALESCE'd (WI-37743): a caller that writes its
+ * starting row BEFORE spawning — which is the only ordering that lets
+ * {@link adoptStartingTerminalLaunch} work at all, since a booting psu races
+ * the launcher — has no pid or terminal yet, and fills both in here once the
+ * spawn returns. Omitting it must never blank a value another writer set.
+ */
+export async function setAdvSessionPid(
+  id: number,
+  pid: number | null,
+  terminalBin?: string | null,
+): Promise<void> {
   try {
     const { sql } = getOrgPg();
     await sql`
       UPDATE harness_shared.adv_sessions
-         SET pid = ${pid}
+         SET pid = ${pid},
+             terminal_bin = COALESCE(${terminalBin ?? null}, terminal_bin)
        WHERE id = ${id}
          AND workspace_id = ${activeWorkspaceId()}
     `;

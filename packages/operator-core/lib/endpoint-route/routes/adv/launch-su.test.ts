@@ -75,9 +75,20 @@ vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'defaul
 vi.mock('../../../interactive-safety-floor', () => ({
   checkInteractiveSafetyFloor: vi.fn(async () => ({ ok: true as const })),
 }));
+// WI-37743: setAdvSessionPid / markAdvSessionEnded are stubbed for the same
+// reason recordAdvSession is. The route now writes its row BEFORE the spawn and
+// stamps/closes it after, so both are on the hot path — and because this mock
+// spreads importOriginal, anything NOT named here resolves to the REAL PG
+// writer. That would reach `getOrgPg()` with no database, whose failure path
+// console.warn's, and operator-core's vitest is fail-on-console: a route unit
+// test would go red for touching a DB it has no business touching.
+const setAdvSessionPidMock = vi.fn(async () => {});
+const markAdvSessionEndedMock = vi.fn(async () => {});
 vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()),
   DISPLAY_TERMINAL_LAUNCH: 'terminal',
   recordAdvSession: vi.fn(async () => 7 as number | null),
+  setAdvSessionPid: (...a: unknown[]) => setAdvSessionPidMock(...(a as [])),
+  markAdvSessionEnded: (...a: unknown[]) => markAdvSessionEndedMock(...(a as [])),
 }));
 // Returns a PROMISE: the route fires it as `void notifySyncInvalidate(...).catch(...)`,
 // so a bare vi.fn() (undefined) throws inside the handler.

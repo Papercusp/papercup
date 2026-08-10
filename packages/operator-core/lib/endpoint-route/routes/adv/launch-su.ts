@@ -22,7 +22,12 @@ import { isSuAgent, isSuContextSize, type SuAgent, type SuContextSize } from '..
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
-import { DISPLAY_TERMINAL_LAUNCH, recordAdvSession } from '../../../adv-sessions';
+import {
+  DISPLAY_TERMINAL_LAUNCH,
+  markAdvSessionEnded,
+  recordAdvSession,
+  setAdvSessionPid,
+} from '../../../adv-sessions';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 import { isLaunchAccountValue } from '../../../agent-config-constants';
@@ -318,6 +323,57 @@ const launchSu = defineTool({
     // login shell behind instead of letting the child exit.
     const oneliner = `exec ${psuCommand}`;
 
+    // ⚠ WI-37743 — THIS ROW IS WRITTEN BEFORE THE SPAWN, AND THE ORDER IS THE
+    // WHOLE POINT. Do not move it back below.
+    //
+    // psu's first act on boot is to call bootstrap-su with this pre-pinned owner
+    // id. bootstrap-su ADOPTS this row (adoptStartingTerminalLaunch) instead of
+    // inserting a second one — but it can only adopt a row that already EXISTS.
+    // While this write lived after the spawn, psu regularly won the race:
+    // measured 2026-08-10, psu registered at 15:54:16.294 and this row was not
+    // born until 15:54:17.933, so the adopt found nothing, bootstrap-su took its
+    // INSERT fallback, and the launch ended with TWO live rows for one session
+    // (14707 + 14708, same session_id). Writing it first removes the race
+    // outright; tuning the post-spawn delay would only out-run it, and the
+    // spawn's early-exit probe legitimately takes up to EARLY_EXIT_PROBE_MS.
+    //
+    // WI-6376 (owner ask 2026-07-25: sessions must show up on the board "whether
+    // or not they are launched with the new session button or if they are
+    // launched with the psu utility"). Recording it here also gets the card onto
+    // the board a beat sooner, since the roster is presence-primary and the boot
+    // window is short.
+    //
+    // display=DISPLAY_TERMINAL_LAUNCH, never 'workbench': that value is D-006's
+    // pui pane queue, and a terminal launch already has its own terminal. This
+    // row is read by listStartingTerminalLaunches into the roster's `starting`
+    // tier, which the pui does not consume.
+    //
+    // pid/terminalBin are NOT known yet — they are stamped on by
+    // setAdvSessionPid once the spawn returns (and the row is closed out if the
+    // spawn fails), so nothing downstream loses a field by this reordering.
+    //
+    // Best-effort: a bookkeeping miss must not turn a successful launch into a
+    // reported failure.
+    const startingAdvSessionId = ownerId
+      ? await recordAdvSession({
+          planSlug: plan,
+          agent,
+          role: kickoffKind === 'new-plan' ? 'planner' : null,
+          mode: 'console',
+          cwd: null, // psu cds itself from --harness/--plan
+          label: plan ? `${agent} · ${plan}` : agent,
+          coordOwnerId: ownerId,
+          pid: null,
+          terminalBin: null,
+          display: DISPLAY_TERMINAL_LAUNCH,
+          launchArgv: psuArgs,
+        }).catch(() => null)
+      : null;
+    // Push the new row to open boards immediately rather than waiting for the
+    // next roster poll — the boot window is short, and a card that appears late
+    // is the same defect in miniature.
+    if (startingAdvSessionId != null) void notifySyncInvalidate('roster').catch(() => {});
+
     // WI-6505 — the two spawn shapes, normalized to ONE result so everything
     // below (the early-exit warning, the adv_sessions row, the response) stays a
     // single code path rather than forking per mode.
@@ -416,7 +472,22 @@ const launchSu = defineTool({
       spawned = r.ok ? r : { ok: false, error: r.error };
     }
     if (!spawned.ok) {
+      // The starting row now predates the spawn, so a failed spawn would strand
+      // it as a phantom "starting" card forever. Close it out. (Before the
+      // reorder this path wrote no row at all, so a failed launch showed as
+      // NOTHING on the board — this is strictly more honest, not just tidier.)
+      if (startingAdvSessionId != null) {
+        void markAdvSessionEnded(startingAdvSessionId, null, 'cleanup').catch(() => {});
+      }
       return json({ status: 'error', error: spawned.error }, 500);
+    }
+    // Stamp on what only the spawn knew. Best-effort for the same reason the
+    // insert is: the terminal is already running, so a bookkeeping miss must not
+    // turn a successful launch into a reported failure.
+    if (startingAdvSessionId != null) {
+      void setAdvSessionPid(startingAdvSessionId, spawned.pid ?? null, spawned.terminal ?? null).catch(
+        () => {},
+      );
     }
     // EI-18696184925888288: `ok` here only means the OS spawn call didn't
     // throw — it cannot confirm a window actually opened or that psu ever
