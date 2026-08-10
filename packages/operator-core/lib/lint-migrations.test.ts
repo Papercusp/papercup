@@ -11,8 +11,9 @@ import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// eslint-disable-next-line import/no-relative-packages
+import { stripSqlCommentsAndStrings } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 import {
-  stripSqlBodies,
   findRawTxControl,
   findUnguardedConstraintRename,
   findUnguardedReslug,
@@ -25,27 +26,65 @@ import {
   // eslint-disable-next-line import/no-relative-packages
 } from '../../../scripts/lint-migrations.mjs';
 
-describe('stripSqlBodies', () => {
-  it('removes dollar-quoted bodies (anonymous and tagged)', () => {
-    const sql = [
-      'CREATE FUNCTION f() RETURNS trigger AS $$',
-      'BEGIN',
-      '  RETURN NEW;',
-      'END;',
-      '$$ LANGUAGE plpgsql;',
-      'CREATE FUNCTION g() AS $body$ BEGIN; COMMIT; $body$ LANGUAGE sql;',
-    ].join('\n');
-    const stripped = stripSqlBodies(sql);
-    expect(stripped).not.toContain('RETURN NEW');
-    expect(stripped).not.toContain('COMMIT');
-    expect(stripped).toContain('CREATE FUNCTION');
+/*
+ * PER-CALL-SITE DOLLAR-QUOTE MASKING (WI-37800).
+ *
+ * These replace unit tests of the old private `stripSqlBodies`, and they are deliberately
+ * written against the EXPORTED DETECTORS rather than a mask function: the bug this file now
+ * pins was never in a stripper's output, it was in WHICH stripper each detector called.
+ * Testing the helper could not have caught it — every mask involved was individually correct.
+ *
+ * Each `PROVES FIX` case was verified to FAIL against the real pre-change entrypoint
+ * (commit 69118503, extracted and run out-of-tree) before being written here. The
+ * `preserved` cases passed before and after, and exist so the fix cannot regress into
+ * over-correction.
+ */
+describe('per-call-site dollar-quote masking', () => {
+  // The tag regex was /^\$[A-Za-z_]*\$/ — no DIGITS — so `$mig377$` was not recognised as a
+  // dollar quote at all and its body stayed live for every detector.
+  it('PROVES FIX: a COMMIT inside a DIGIT-tagged body is not top-level tx control', () => {
+    expect(findRawTxControl('DO $mig377$\nBEGIN\n  COMMIT;\nEND\n$mig377$;')).toEqual([]);
   });
 
-  it('removes line comments, block comments, and quoted strings', () => {
-    const sql = "-- BEGIN;\n/* COMMIT; */\nINSERT INTO t VALUES ('BEGIN;');\n";
-    const stripped = stripSqlBodies(sql);
-    expect(stripped).not.toContain('BEGIN');
-    expect(stripped).not.toContain('COMMIT');
+  it('PROVES FIX: an in-DO rename is the documented FIX shape, not a violation', () => {
+    expect(
+      findUnguardedConstraintRename('DO $mig1$\nBEGIN\n  ALTER TABLE t RENAME CONSTRAINT a TO b;\nEND\n$mig1$;'),
+    ).toEqual([]);
+  });
+
+  it('preserved: a top-level rename is still caught', () => {
+    expect(findUnguardedConstraintRename('ALTER TABLE IF EXISTS t RENAME CONSTRAINT a TO b;')).toHaveLength(1);
+  });
+
+  // The false NEGATIVE the split exists to close: sealing every body hides real DDL.
+  it('PROVES FIX: an in-DO unique-constraint swap is caught under a LETTER tag', () => {
+    const sql =
+      'DO $mig$\nBEGIN\n  ALTER TABLE t DROP CONSTRAINT t_ident;\n' +
+      '  ALTER TABLE t ADD CONSTRAINT t_ident UNIQUE (a, b);\nEND\n$mig$;';
+    expect(findUniqueIndexShapeSwap(sql)).toHaveLength(1);
+  });
+
+  it('preserved: migration 377 (DIGIT tag) is still caught — now by design, not by accident', () => {
+    const sql =
+      'DO $mig377$\nBEGIN\n  ALTER TABLE t DROP CONSTRAINT t_ident;\n' +
+      '  ALTER TABLE t ADD CONSTRAINT t_ident UNIQUE (a, b);\nEND\n$mig377$;';
+    expect(findUniqueIndexShapeSwap(sql)).toHaveLength(1);
+  });
+
+  /*
+   * The near-miss this pins. findUnguardedReslug looks like it wants bodies live for the same
+   * reason findUniqueIndexShapeSwap does — a reslug inside a body really executes. It does not,
+   * because it DISARMS itself on a guard token found anywhere in the FILE. Unsealing bodies was
+   * measured on 382-operator-issue-scope-removal.sql to find MORE offences (2, not 1) and report
+   * NONE, because an unrelated DELETE inside a trigger body read as a dedup guard for a
+   * top-level UPDATE it has nothing to do with.
+   */
+  it('a DELETE inside a function body must NOT disarm a top-level unguarded reslug', () => {
+    const sql =
+      "UPDATE harness_shared.work_items SET harness_slug = 'operator:x' WHERE harness_slug = '';\n" +
+      'CREATE FUNCTION f() RETURNS trigger AS $fn$\nBEGIN\n' +
+      '  DELETE FROM harness_shared.work_items WHERE id = 1;\nEND\n$fn$ LANGUAGE plpgsql;';
+    expect(findUnguardedReslug(sql)).toHaveLength(1);
   });
 });
 
@@ -476,11 +515,11 @@ describe('findLiteralTenantDefault', () => {
   // The load-bearing reason this scans RAW text while its siblings scan stripped
   // text: the real ALTERs live inside a DO $$ … $$ body, so a stripped scan sees
   // NOTHING and passes. That false green is the whole bug.
-  it('still catches it despite the DO-block body (why it does not use stripSqlBodies)', () => {
+  it('still catches it despite the DO-block body (why it scans raw text)', () => {
     const sql = `DO $$ BEGIN
       EXECUTE format('ALTER VIEW %I.messages ALTER COLUMN workspace_id SET DEFAULT %L', s, 'default');
     END $$;`;
-    expect(stripSqlBodies(sql)).not.toMatch(/workspace_id/); // the body is gone …
+    expect(stripSqlCommentsAndStrings(sql)).not.toMatch(/workspace_id/); // a sealing mask loses it …
     expect(findLiteralTenantDefault(sql)).toHaveLength(1); // … but the lint still sees it
   });
 

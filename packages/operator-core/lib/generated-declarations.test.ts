@@ -71,7 +71,9 @@ describe('generated .d.mts declarations', () => {
     // hold even for the undocumented modules — which makes them a good canary for
     // "did the emit silently collapse".
     const migrations = readDeclaration('scripts/lint-migrations.d.mts');
-    expect(migrations, 'lint-migrations return types collapsed').toMatch(/stripSqlBodies\([^)]*\):\s*string;/);
+    expect(migrations, 'lint-migrations return types collapsed').toMatch(
+      /findRawTxControl\([^)]*\):\s*string\[\];/,
+    );
     expect(migrations, 'const literal types collapsed').toMatch(/ENFORCED_FROM:\s*\d+/);
   });
 

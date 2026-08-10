@@ -209,11 +209,22 @@ export function findUnguardedReslug(sqlText) {
   // WHERE). Capture the SET clause up to WHERE/RETURNING/; and require harness_slug to be
   // assigned inside it.
   //
-  // BODIES LIVE: a reslug UPDATE inside a `DO` block really executes, so sealing bodies
-  // would be a false negative on a crash-loop guard. It is symmetric — the GUARD forms
-  // (`DELETE FROM work_items`, `NOT EXISTS`) are read from the same masked text, so a
-  // guarded in-body reslug still reads as guarded.
-  const stripped = maskLiveBodies(sqlText);
+  // SEALED — and this is the one call site where the obvious answer is WRONG, so it is
+  // measured rather than reasoned (WI-37800).
+  //
+  // A reslug UPDATE inside a body really executes, so "see inside bodies" looks right here
+  // exactly as it is right for findUniqueIndexShapeSwap. It is not, because THIS check is not
+  // a pure detector: it detects an offence and then DISARMS ITSELF on a guard token found
+  // ANYWHERE IN THE FILE (`hasDedupDelete` / `guardedUpdate` below are file-scoped). Unsealing
+  // bodies therefore widens the GUARD faster than it widens the offence.
+  //
+  // Measured on 382-operator-issue-scope-removal.sql: with bodies live the check finds MORE
+  // offences (2 reslug UPDATEs, not 1) and then reports NONE, because an unrelated
+  // `DELETE FROM harness_shared.work_items` inside a trigger-function body reads as a dedup
+  // guard for a top-level UPDATE 48 lines earlier that it has nothing to do with. A safety lint
+  // that a stray token in unrelated body code can switch off is worse than one with a known
+  // blind spot, so bodies stay sealed until the guard is scope-aware (tracked separately).
+  const stripped = maskSealingBodies(sqlText);
   const re =
     /UPDATE\s+[\w".]*\bwork_items\b\s+(?:AS\s+\w+\s+)?SET\b([\s\S]*?)(?:\bWHERE\b|\bRETURNING\b|;)/gi;
   const reslugs = [];
@@ -254,7 +265,7 @@ export function findUnguardedReslug(sqlText) {
  * minutes; the literal default turned it into weeks of invisible corruption.
  *
  * Scans RAW text, deliberately UNLIKE its siblings: these ALTERs live inside the
- * per-schema `DO $$ … $$` loop that `stripSqlBodies` removes, so a stripped scan
+ * per-schema `DO $$ … $$` loop that a body-sealing mask removes, so such a scan
  * would see nothing and pass — the exact false-green this lint exists to prevent.
  *
  * The FIX SHAPE is to drop the literal and let the writer stamp the column
