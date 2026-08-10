@@ -78,6 +78,17 @@ export interface GoalSummaryRow {
    */
   lastActivityAt: string | null;
   potCount: number;
+  /**
+   * WHICH pots those are — a BOUNDED SAMPLE, capped at POT_SAMPLE_LIMIT
+   * (goals-tab-improvement-2026-08-09 P-007, D-022).
+   *
+   * ⚠ NOT A TOTAL, and the difference is the whole reason it is a separate
+   * field from `potCount`. `pots.length` is the number of names the query was
+   * willing to carry, not the number of pots the goal has; a reader that counts
+   * it reports a confident wrong number the moment a goal passes the cap. Read
+   * `potCount` for the count and this for the names.
+   */
+  pots: GoalPotChip[];
   /** Open work-items stamped to this goal — the "is anything moving" signal. */
   openWorkItems: number;
   /** Items parked on the owner. The rail's "waiting on you" count. */
@@ -120,6 +131,33 @@ export interface GoalSummaryRow {
  * card and the detail panel disagreed about the same goal.
  */
 export const SPEND_RECENT_WINDOW_DAYS = 7;
+
+/**
+ * How many pot names the LIST query samples per goal (P-007/D-022).
+ *
+ * A SAMPLE, never the total. `potCount` remains the authoritative count and the
+ * client renders overflow from the difference — the whole point of capping here
+ * is that a goal with forty pots costs this hot read the same as one with two.
+ * Six because the card's chip row is itself capped and a sample smaller than the
+ * cap would make the overflow marker fire on goals that could have been shown
+ * whole.
+ */
+export const POT_SAMPLE_LIMIT = 6;
+
+/** One pot serving a goal, as the LIST query samples it (P-007/D-022). */
+export interface GoalPotChip {
+  harnessSlug: string;
+  /** 'owner' | 'contributing' as stored; owner pots sort first. */
+  role: string | null;
+  /**
+   * How many live goals this same pot serves — D-021's visible face.
+   *
+   * 1 is the ordinary case. Anything higher means this pot's spend is billed in
+   * full against several goals, so the surface MUST say so rather than let a
+   * reader add two goals' costs together as if they were independent.
+   */
+  servesGoals: number;
+}
 
 const SPEND_RECENT_WINDOW_MS = SPEND_RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
@@ -219,6 +257,39 @@ export async function resolveGoalsList(args: {
              (SELECT COUNT(*) FROM harness_shared.goal_pots gp
                WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
                  AND gp.removed_at IS NULL) AS pot_count,
+             -- A BOUNDED SAMPLE of which pots those are (P-007/D-022), so the
+             -- card can name them instead of rendering a bare count. Capped in
+             -- SQL rather than fetched whole and sliced in the client: the cap
+             -- is what keeps this a fixed-cost column on a read that runs every
+             -- HUD tick. pot_count above stays the authoritative TOTAL -- this
+             -- array is deliberately NOT it, and the client must not count it.
+             -- Owner pots sort first: the reader's question is "whose goal is
+             -- this" before "who else is helping".
+             (SELECT COALESCE(
+                       json_agg(json_build_object(
+                         'harnessSlug', p.harness_slug,
+                         'role', p.role,
+                         'servesGoals', p.serves_goals
+                       ) ORDER BY p.rank, p.harness_slug),
+                       '[]'::json)
+                FROM (
+                  SELECT gp.harness_slug,
+                         gp.role,
+                         CASE WHEN gp.role = 'owner' THEN 0 ELSE 1 END AS rank,
+                         -- D-021's visible face: how many LIVE goals this same
+                         -- pot serves. A pot on two goals bills its spend in
+                         -- full to EACH, so a chip that hid this would invite
+                         -- the reader to add two goals costs together.
+                         (SELECT COUNT(*) FROM harness_shared.goal_pots sib
+                           WHERE sib.workspace_id = gp.workspace_id
+                             AND sib.harness_slug = gp.harness_slug
+                             AND sib.removed_at IS NULL) AS serves_goals
+                    FROM harness_shared.goal_pots gp
+                   WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
+                     AND gp.removed_at IS NULL
+                   ORDER BY rank, gp.harness_slug
+                   LIMIT ${POT_SAMPLE_LIMIT}
+                ) p) AS pots,
              (SELECT COUNT(*) FROM harness_shared.work_items wi
                WHERE wi.goal_id = g.id AND wi.closed_ts IS NULL) AS open_work_items,
              (SELECT COUNT(*) FROM harness_shared.work_items wi
