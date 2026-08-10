@@ -41,6 +41,7 @@ import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveGoalLaunch } from '../../goal-launch-settings';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import {
   buildAgentLaunchCommand,
@@ -332,11 +333,37 @@ export default defineTool({
     // absent) `members` falls each remaining agent back to the flat args — the common
     // case is one identical command for all `count`. A resume/fork is a single session,
     // so `members` never applies (rejected above): every clone shares one command.
+    // ── Per-goal launch settings + ceilings (P-004/D-009) ─────────────────────
+    // Resolved from the CALLER, not from an argument: if this agent is working
+    // under a goal (running it, or having inherited it — D-008), its spawns
+    // belong to that goal and are bound by the goal's ceilings. `count` is passed
+    // whole so an over-large batch is refused once here rather than part-way
+    // through, leaving half a fleet running against a breached ceiling.
+    const goalLaunch = await resolveGoalLaunch({
+      workspaceId,
+      launcherOwnerId: callerOwnerId ?? '',
+      role: args.role ?? null,
+      fleetSlug,
+      count,
+      requested: {
+        ...(args.agent ? { agent: args.agent as 'claude' | 'codex' | 'omp' } : {}),
+        ...(args.account ? { account: args.account } : {}),
+        ...(args.model ? { model: args.model } : {}),
+      },
+    });
+    if (goalLaunch.refusal) return err(goalLaunch.refusal.message);
+
     const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
     const flatBase: FleetMemberDefaults = {
-      agent: args.agent ?? 'claude',
-      account: args.account ?? undefined,
-      model: args.model ?? undefined,
+      // The goal's effective profile is the BASE; an explicit per-member spec
+      // still wins via foldMemberSpec below, which is the intended order —
+      // settings are the goal's standing policy, not an override of a choice the
+      // caller just made for one member.
+      agent: goalLaunch.effective.agent ?? args.agent ?? 'claude',
+      account: goalLaunch.effective.account ?? args.account ?? undefined,
+      model: goalLaunch.effective.model ?? args.model ?? undefined,
+      effort: goalLaunch.effective.effort ?? undefined,
+      contextSize: goalLaunch.effective.contextSize ?? undefined,
       headless: args.headless || undefined,
       extraArgs: args.extraArgs ?? undefined,
     };

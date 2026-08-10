@@ -42,6 +42,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { buildAgentLaunchCommand, injectLaunchedByArg } from '../../agent-launch-core';
+import { resolveGoalLaunchForGoal } from '../../goal-launch-settings';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setMode } from '../../modes/store';
 
@@ -302,15 +303,39 @@ export default defineTool({
       return err(`Could not prepare the launch (nothing spawned, goal rolled back): ${(e as Error)?.message ?? e}`);
     }
 
+    // P-004/D-009: the goal's own launch settings apply to the goal's own agent.
+    // This door uses the EXPLICIT-goal resolver rather than the launcher-derived
+    // one because at this moment the goal is the SUBJECT of the launch and not
+    // yet anybody's inherited context — resolveGoalContext(caller) correctly
+    // returns null here. Fresh goals normally carry no settings yet (this is
+    // where they are born), so the fold is usually a no-op; it matters when an
+    // owner has edited the settings and the goal agent is being relaunched.
+    const goalLaunch = await resolveGoalLaunchForGoal({
+      workspaceId,
+      goalId: id,
+      role: 'goal',
+      requested: {
+        ...(args.agent ? { agent: args.agent as 'claude' | 'codex' | 'omp' } : {}),
+        ...(args.account ? { account: args.account } : {}),
+        ...(args.model ? { model: args.model } : {}),
+      },
+    });
+    if (goalLaunch.refusal) {
+      await rollback();
+      return err(goalLaunch.refusal.message);
+    }
+
     let command: string;
     try {
       command = buildAgentLaunchCommand({
         mode: 'fresh',
-        agent: args.agent ?? 'claude',
+        agent: goalLaunch.effective.agent ?? args.agent ?? 'claude',
         harness: installSlug,
         ownerId,
-        account: args.account ?? null,
-        model: args.model ?? null,
+        account: goalLaunch.effective.account ?? args.account ?? null,
+        model: goalLaunch.effective.model ?? args.model ?? null,
+        effort: goalLaunch.effective.effort ?? null,
+        contextSize: goalLaunch.effective.contextSize ?? null,
         headless: !!args.headless,
       });
     } catch (e) {

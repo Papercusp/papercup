@@ -94,6 +94,7 @@ import {
   type MemberSpec,
 } from '../../agent-launch-core';
 export type { MemberLaunchOpts } from '../../agent-launch-core';
+import { resolveGoalLaunch } from '../../goal-launch-settings';
 // type-only: the runtime call is a LAZY dynamic import in the handler (the promotion failsafe),
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
@@ -2224,10 +2225,35 @@ export default defineTool({
     // member's OWN spec folds over (D-001 precedence: member > fleet > system). Before
     // this, every member necessarily shared one command apart from --launch-context;
     // now `members[i]` can differ in model/effort/account/limit/role/lane/anything.
+    // ── Per-goal launch settings + the D-005 ceilings (P-004/D-009) ───────────
+    // Resolved from the LEADER, not from an argument: a fleet launched by an
+    // agent working under a goal is that goal's fleet, and every member counts
+    // against BOTH the goal's total and this fleet's own cap — which is the whole
+    // point of D-005's two composing ceilings. `openCount` (post-capacity-clamp)
+    // is passed whole so an over-large fleet is refused once, here, rather than
+    // part-way through spawning.
+    const goalLaunch = await resolveGoalLaunch({
+      workspaceId,
+      launcherOwnerId: ownerId,
+      role: args.role?.trim() || null,
+      fleetSlug,
+      count: openCount,
+      requested: {
+        ...(effAgent ? { agent: effAgent as 'claude' | 'codex' | 'omp' } : {}),
+        ...(effAccount ? { account: effAccount } : {}),
+        ...(effModel ? { model: effModel } : {}),
+        ...(args.carry ? { carry: args.carry } : {}),
+        ...(args.contextSize ? { contextSize: args.contextSize } : {}),
+      },
+    });
+    if (goalLaunch.refusal) {
+      return err(goalLaunch.refusal.message);
+    }
+
     const fleetDefaults: FleetMemberDefaults = {
-      agent: effAgent,
+      agent: (goalLaunch.effective.agent as typeof effAgent) ?? effAgent,
       headless: args.headless || undefined,
-      account: effAccount,
+      account: goalLaunch.effective.account ?? effAccount,
       workspace: args.workspace?.trim() || undefined,
       role: args.role?.trim() || undefined,
       model: effModel,
