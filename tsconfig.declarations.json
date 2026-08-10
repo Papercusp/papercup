@@ -72,6 +72,7 @@
     "scripts/lib/quarantine.mjs",
     "scripts/lib/sync-write.mjs",
     "scripts/lib/vitest-summary.mjs",
+    "scripts/lib/test-runner-classes.mjs",
     "scripts/proc-guard.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
     "scripts/lib/identity-leak-patterns.mjs",

@@ -70,6 +70,19 @@ export const STANDALONE_PACKAGE_DIRS = [
  * distinction has already cost two wrong regexes here (the esbuild trailing colon, and node's
  * `test at` anchor), because a reformatted quote produces a plausible matcher that silently never
  * matches, and an empty parse result reads as "nothing failed" rather than "my matcher is wrong".
+ *
+ * @typedef {object} RunnerClassSpec
+ * @property {boolean} attributable whether attributeFailedTask can name a FILE for this runner
+ * @property {string} detail what the parser keys on, or why no parser is possible
+ * @property {string} [fixture] REQUIRED when attributable: verbatim real output from the runner
+ * @property {string} [expectFile] REQUIRED when attributable: the path `fixture` must yield
+ *
+ * Typed as a Record rather than left to inference so that the optional pair stays reachable on
+ * every member. Inference produces a union in which the unattributable entries simply lack the
+ * keys, which makes the guard unable to even ASK whether a fixture is present — the check would
+ * fail to compile instead of failing loudly at the one moment it matters.
+ *
+ * @type {Record<string, RunnerClassSpec>}
  */
 export const RUNNER_CLASSES = {
   vitest: {
