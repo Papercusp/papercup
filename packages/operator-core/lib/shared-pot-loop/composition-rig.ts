@@ -498,7 +498,32 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       ADD COLUMN IF NOT EXISTS terminal_completion_ref text;
     ALTER TABLE harness_shared.harness_features_consolidated
       ADD COLUMN IF NOT EXISTS terminal_owner text,
-      ADD COLUMN IF NOT EXISTS terminal_completion_ref text;
+      ADD COLUMN IF NOT EXISTS terminal_completion_ref text,
+      -- Same drift class, next instance (EI-20094613443189011): migration 638
+      -- (unify-workitem-status) added terminal_reason to the base work_items
+      -- table, and setWorkItemState's terminal path WRITES it -- the close leg
+      -- (work-items.ts, "SET terminal_reason = ...") and the reopen leg, which
+      -- resets it to NULL. UNLIKE every other column in this block, it appears
+      -- in NO read column list (it is absent from FEATURE_COLS), so no SELECT
+      -- ever reveals its absence: the rig boots clean and 42703s only once a
+      -- close/reopen actually runs. That is why it surfaced as 18 failures deep
+      -- inside shared-pot-loop tests instead of at setupCellSchema time, and it
+      -- is why the rig-columns-exist-in-real-schema guard cannot catch this
+      -- direction of drift. The rig never asserts on the value; it only needs to
+      -- EXIST. Real column is text NULL.
+      ADD COLUMN IF NOT EXISTS terminal_reason text,
+      -- Same class, and the reason the terminal_reason fix ALONE left this rig
+      -- red: the engineer_issues block above already ADDs authority (mig 677-era)
+      -- and closed_ts (mig 698) -- but ONLY to the issue-family table. The
+      -- feature-family projection writes them too: harness-features.ts's
+      -- writeToPg INSERT column list carries terminal_owner,
+      -- terminal_completion_ref, terminal_reason, authority, closed_ts as one
+      -- contiguous group. Adding a column to the issue side and not the feature
+      -- side is the single most repeated shape of this drift. Real columns are
+      -- text NULL and bigint NULL (epoch ms, the *_ts convention -- do NOT
+      -- "fix" closed_ts to timestamptz to match the *_at columns).
+      ADD COLUMN IF NOT EXISTS authority text,
+      ADD COLUMN IF NOT EXISTS closed_ts bigint;
   `);
 
   // WI-1644: mirror migration 374's structural cutover (P-010 work-item
