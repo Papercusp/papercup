@@ -36,7 +36,31 @@
  * rationale as its sibling `idle-tx-warning.ts`.
  */
 
+import type { ResultDoorSkipReason } from '@papercusp/tooldef';
 import { describeStoreIdentityMismatch, storeIdentityViolation } from '@papercusp/db-org';
+
+/**
+ * May prose be APPENDED to this tool's result body?
+ *
+ * WI-37843. This used to be spelled `!projected.skipResultDoor` at the call
+ * site, which quietly asserted that "skips the size door" implies "cannot
+ * accept prose". Those are different properties, and once a MODEL-FACING tool
+ * needed the door exemption (coord:orient, whose full payload is the point),
+ * the conflation started suppressing a warning its reader most needs — a
+ * bootstrap read is exactly where "this not_found may be a correct answer from
+ * the WRONG database" changes what the agent does next.
+ *
+ * Only a PROGRAMMATIC consumer needs a byte-clean body: it `json.loads`s the
+ * raw text, so any appended prose makes the parse throw and the caller fails
+ * open silently (EI-19386201256023240). Everyone else — doored or not — is a
+ * model, and gets the prose.
+ *
+ * Named and exported rather than inlined so the rule is assertable on its own,
+ * without standing up the MCP handler to observe it.
+ */
+export function mayAnnotateResultText(skipResultDoor: ResultDoorSkipReason | undefined): boolean {
+  return skipResultDoor !== 'programmatic-caller';
+}
 
 /** The minimal result shape this module touches (mirrors result-door.ts's doorable type). */
 export interface StoreIdentitySuspectResult {

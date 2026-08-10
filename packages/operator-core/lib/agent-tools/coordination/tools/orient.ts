@@ -1787,6 +1787,27 @@ export function assembleOrientOutput(legs: {
   };
 }
 
+/**
+ * WI-37843 [owner 2026-08-10]. orient's payload-tier hard ceiling — 30k tokens
+ * at ~4 chars/token — replacing the shared 30,000-CHAR default for this tool.
+ *
+ * MEASURED before the change (workspace-scoped, 7d): the result-door truncated
+ * 1140 of 1140 orient calls — 100% — and the payload-tier ceiling had already
+ * clamped them first (p99 29,908 of 30,000 chars: a clamp signature, not a
+ * distribution). Unshaped, orient measured 16,472 tokens. So the session's one
+ * bootstrap read was arriving at 1,500 of ~16,472 tokens (~9%), on the turn —
+ * often post-compaction — when an agent can least afford to spend follow-up
+ * round-trips reconstructing what orient had already fetched for it.
+ *
+ * Why a RAISED ceiling rather than none: past the MCP CLIENT's own result cap
+ * the client rejects the result and dumps it to a file the caller must page
+ * back in — the coord:orient 59.8KB overflow (WI-2859) that put this ceiling
+ * here in the first place. Unshaped orient has historically reached ~43k tokens
+ * (the 2026-07-01 fleet incident), so the valve is not theoretical: above this
+ * the trimmed shaper still force-applies. A safety valve, not a target.
+ */
+export const ORIENT_PAYLOAD_TIER_CEILING_CHARS = 120_000;
+
 export default defineTool({
   name: 'coord:orient',
   description:
