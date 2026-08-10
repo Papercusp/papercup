@@ -235,10 +235,19 @@ export function cutOrder(a, b) {
 }
 
 /** The banner every projected file opens with. */
+/**
+ * The phrase that identifies a file as OUR OUTPUT rather than anyone's source.
+ *
+ * Exported because the LOADER imports it to refuse re-ingesting a projection (P-013).
+ * Sharing the constant is what keeps the two sides from drifting: an edit to the banner
+ * wording cannot silently blind that guard, because there is only one string.
+ */
+export const PROJECTION_MARKER = 'Projected from Postgres: harness_shared.harness_doc_parts';
+
 export function projectionBanner({ client, file, reader, docId }) {
   return [
     `<!-- GENERATED FILE — DO NOT EDIT BY HAND. -->`,
-    `<!-- Projected from Postgres: harness_shared.harness_doc_parts (doc_id=${docId}, client=${client}). -->`,
+    `<!-- ${PROJECTION_MARKER} (doc_id=${docId}, client=${client}). -->`,
     ``,
     `> ⚠ **${file} is GENERATED — editing it here does nothing durable.** ${reader} reads this file`,
     `> off disk, which is the only reason it exists (the canonical content is in Postgres:`,
@@ -711,9 +720,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           `    ✗ REFUSING to overwrite ${spec.file}: on-disk bytes are neither the source the parts were\n` +
             `      loaded from nor a projection we wrote — somebody edited it (live ${verdict.live.slice(0, 16)};\n` +
             `      on record: ${expected}).\n` +
-            `      Writing would erase that edit. Re-run the loader against the current file first:\n` +
-            `        node scripts/gen-claude-md-manifest.mjs && node scripts/split-claude-md-rule-evidence.mjs\n` +
-            `        node scripts/load-claude-md-doc-parts.mjs --execute`,
+            `      Writing would erase that edit, so this refusal is correct — RESOLVE IT BY HAND:\n` +
+            `      diff the file against the parts, move anything worth keeping INTO the parts\n` +
+            `      (harness_shared.harness_doc_parts), then re-run this projector.\n` +
+            `      ⛔ Do NOT "fix" this by re-running the loader over the file. Post-cutover this\n` +
+            `         file is our OUTPUT and carries only the projected subset, so re-ingesting it\n` +
+            `         TOMBSTONES every unprojected prose part — the whole corpus. The loader now\n` +
+            `         refuses that (P-013), and the refusal is the guard, not an obstacle.`,
         );
         failed = true;
       } else if (missing.length) {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { buildDocPartRows, checkSnapshotAgreement, EVIDENCE_SUFFIX, ruleAndEvidence } from '../../../../scripts/load-claude-md-doc-parts.mjs';
+import { buildDocPartRows, checkSnapshotAgreement, EVIDENCE_SUFFIX, reingestVerdict, REINGEST_TOMBSTONE_FRACTION, ruleAndEvidence } from '../../../../scripts/load-claude-md-doc-parts.mjs';
+// @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
+import { projectionBanner, PROJECTION_MARKER } from '../../../../scripts/project-doc-parts.mjs';
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
 import { buildRuleEvidence } from '../../../../scripts/split-claude-md-rule-evidence.mjs';
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
@@ -148,5 +150,81 @@ describe('checkSnapshotAgreement — refuses to load against drifted text', () =
     const verdict = checkSnapshotAgreement(edited, manifest, ruleEvidence);
     expect(verdict.agreed).toBe(false);
     expect(verdict.disagree.length).toBe(2);
+  });
+});
+
+describe('P-013 — the direction of truth must not run backwards (EI-20056839855434108)', () => {
+  const live = ['rule.a', 'rule.a#evidence', 'rule.b', 'rule.b#evidence', 'prose.c'];
+  const codes = (rs: { code: string }[]) => rs.map((r) => r.code);
+
+  it('CALIBRATION — a genuine bootstrap (no doc row yet) loads freely', () => {
+    // The guard must not brick the case it exists to protect: a NEW doc_id has no
+    // canonical parts, so there is no direction for it to run backwards.
+    const v = reingestVerdict({ text: '# hand-authored\n', contentMode: null, livePartKeys: [], incomingPartKeys: live });
+    expect(v.ok).toBe(true);
+    expect(v.refusals).toEqual([]);
+  });
+
+  it('CALIBRATION — re-loading the same part set into a non-composed doc is allowed', () => {
+    const v = reingestVerdict({ text: '# hand-authored\n', contentMode: 'authored', livePartKeys: live, incomingPartKeys: live });
+    expect(v.ok).toBe(true);
+  });
+
+  it('THE HAZARD — ingesting the projector\'s own output is refused, and --force cannot lift it', () => {
+    // The real shape: post-cutover CLAUDE.md carries only the PROJECTED parts, so a
+    // re-ingest tombstones every prose part. This is the one refusal no flag lifts —
+    // there is no reading under which a projection is its own source.
+    const projected = `${projectionBanner({ client: 'claude', file: 'CLAUDE.md', reader: 'Claude Code', docId: 'claude-md' })}\n\n# rules\n`;
+    const v = reingestVerdict({
+      text: projected,
+      contentMode: 'composed',
+      livePartKeys: live,
+      incomingPartKeys: ['rule.a', 'rule.b'],
+      force: true,
+      acceptTombstones: 3,
+    });
+    expect(v.ok).toBe(false);
+    expect(codes(v.blocking)).toContain('source-is-a-projection');
+  });
+
+  it('the marker comes FROM the projector, so the banner and the guard cannot drift apart', () => {
+    // Reword the banner and this fails, instead of silently blinding the guard above.
+    expect(projectionBanner({ client: 'claude', file: 'CLAUDE.md', reader: 'Claude Code', docId: 'claude-md' }))
+      .toContain(PROJECTION_MARKER);
+  });
+
+  it('a composed doc refuses a hand-authored source too — content_mode is the rule, not the banner', () => {
+    // Belt and braces: a file with no banner at all still cannot be source for a doc
+    // whose parts are canonical (migration 781 / D-010).
+    const v = reingestVerdict({ text: '# no banner here\n', contentMode: 'composed', livePartKeys: live, incomingPartKeys: live });
+    expect(v.ok).toBe(false);
+    expect(codes(v.blocking)).toEqual(['doc-is-composed']);
+  });
+
+  it('...and THAT refusal IS forcible, because a deliberate re-bootstrap is a real operation', () => {
+    const v = reingestVerdict({ text: '# no banner here\n', contentMode: 'composed', livePartKeys: live, incomingPartKeys: live, force: true });
+    expect(v.ok).toBe(true);
+    expect(codes(v.refusals)).toEqual(['doc-is-composed']); // still REPORTED, just not blocking
+  });
+
+  it('BLAST RADIUS — force alone cannot wipe the corpus; the count has to be stated', () => {
+    // Forcing answers "yes, re-ingest" — never "yes, and I know how much is about to
+    // disappear". This is the guard that would have caught the 171-part wipe.
+    const wipe = { text: '# no banner\n', contentMode: 'composed', livePartKeys: live, incomingPartKeys: ['rule.a'], force: true };
+    const refused = reingestVerdict(wipe);
+    expect(refused.ok).toBe(false);
+    expect(codes(refused.blocking)).toEqual(['blast-radius']);
+    expect(refused.tombstoned).toEqual(['rule.a#evidence', 'rule.b', 'rule.b#evidence', 'prose.c']);
+
+    // Stating the exact count unlocks it; a wrong count does not.
+    expect(reingestVerdict({ ...wipe, acceptTombstones: 3 }).ok).toBe(false);
+    expect(reingestVerdict({ ...wipe, acceptTombstones: 4 }).ok).toBe(true);
+  });
+
+  it('a small removal stays under the threshold, so ordinary edits are not gated', () => {
+    const many = Array.from({ length: 100 }, (_, i) => `p.${i}`);
+    const v = reingestVerdict({ text: '# x\n', contentMode: 'authored', livePartKeys: many, incomingPartKeys: many.slice(0, 95) });
+    expect(v.fraction).toBeLessThanOrEqual(REINGEST_TOMBSTONE_FRACTION);
+    expect(v.ok).toBe(true);
   });
 });

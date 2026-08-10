@@ -34,6 +34,9 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { extractParts } from './gen-claude-md-manifest.mjs';
+// Imported, not re-spelled: the loader must refuse to ingest the projector's own output,
+// and a copy of the phrase here could drift out of agreement with the banner it matches.
+import { PROJECTION_MARKER } from './project-doc-parts.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -188,6 +191,83 @@ export function checkSnapshotAgreement(text, manifest, ruleEvidence) {
   return { live, agreed: disagree.length === 0, disagree };
 }
 
+/**
+ * The fraction of live parts a re-ingest may tombstone before it must be stated out loud.
+ *
+ * Not a tuning knob: it separates "an edit removed a few blocks" from "this load is
+ * describing a different document than the one in the database".
+ */
+export const REINGEST_TOMBSTONE_FRACTION = 0.1;
+
+/**
+ * May this text be ingested AS SOURCE for this doc? (P-013 / EI-20056839855434108.)
+ *
+ * `checkSnapshotAgreement` above answers a different and weaker question — "do the text
+ * and the two artifacts describe the same file?" — which is INTERNAL CONSISTENCY, not
+ * provenance. Regenerating the artifacts makes it agree with ANY file, including this
+ * pipeline's own output, so on its own it cannot stop the direction of truth running
+ * backwards. That is not hypothetical: post-cutover CLAUDE.md holds only the 113
+ * PROJECTED parts, so re-ingesting it tombstones the 171 prose parts that are the corpus
+ * — and, until this guard existed, the projector's own refusal message recommended the
+ * three commands that do it.
+ *
+ * The rule is the one migration 781 / D-010 already wrote down as a column, applied to
+ * the side that was missing it: when `content_mode='composed'` the PARTS are canonical
+ * and the file is derived, so the file is not a source and may not be read as one. The
+ * projector enforces this going out; this enforces it coming in.
+ *
+ * A doc with no row yet (a genuine bootstrap of a NEW doc_id) is unaffected — it has no
+ * canonical parts to run backwards over.
+ */
+export function reingestVerdict({
+  text = '',
+  contentMode = null,
+  livePartKeys = [],
+  incomingPartKeys = [],
+  force = false,
+  acceptTombstones = null,
+  projectionMarker = PROJECTION_MARKER,
+} = {}) {
+  const incoming = new Set(incomingPartKeys);
+  const tombstoned = livePartKeys.filter((k) => !incoming.has(k));
+  const fraction = livePartKeys.length ? tombstoned.length / livePartKeys.length : 0;
+  const refusals = [];
+
+  if (projectionMarker && text.includes(projectionMarker)) {
+    refusals.push({
+      code: 'source-is-a-projection',
+      detail:
+        'the source file carries the projection banner, so it is this pipeline\'s OUTPUT, not anyone\'s source. ' +
+        'Loading it would reduce the rows to whatever survived the last projection.',
+      forcible: false,
+    });
+  }
+  if (contentMode === 'composed') {
+    refusals.push({
+      code: 'doc-is-composed',
+      detail:
+        'harness_docs.content_mode=\'composed\' means the PARTS are canonical and this file is derived from them ' +
+        '(migration 781 / D-010). Edit the parts in Postgres; a file cannot be the source of its own source.',
+      forcible: true,
+    });
+  }
+  // Checked even under --force: forcing answers "yes, re-ingest", never "yes, and I know
+  // how much you are about to remove". The count must be stated, so an accident is loud.
+  if (tombstoned.length && fraction > REINGEST_TOMBSTONE_FRACTION && acceptTombstones !== tombstoned.length) {
+    refusals.push({
+      code: 'blast-radius',
+      detail:
+        `this load would tombstone ${tombstoned.length} of ${livePartKeys.length} live part(s) ` +
+        `(${(fraction * 100).toFixed(1)}%, over the ${(REINGEST_TOMBSTONE_FRACTION * 100).toFixed(0)}% threshold). ` +
+        `Re-run with --accept-tombstones=${tombstoned.length} if that is genuinely intended.`,
+      forcible: false,
+    });
+  }
+
+  const blocking = refusals.filter((r) => !(force && r.forcible));
+  return { ok: blocking.length === 0, refusals, blocking, tombstoned, fraction };
+}
+
 async function connect() {
   let discoveryError = null;
   const url =
@@ -217,9 +297,35 @@ async function connect() {
   return client;
 }
 
-async function writeRows(client, rows, docId, text) {
+async function writeRows(client, rows, docId, text, { force = false, acceptTombstones = null } = {}) {
   await client.query('BEGIN');
   try {
+    // P-013 — inside the transaction on purpose: the live part set and content_mode are
+    // exactly what the verdict is about, so reading them outside would leave a window in
+    // which a peer's write lands between the check and the tombstone sweep.
+    const { rows: docRows } = await client.query(
+      `SELECT content_mode FROM harness_shared.harness_docs
+        WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3 FOR UPDATE`,
+      [WORKSPACE_ID, HARNESS_SLUG, docId],
+    );
+    const { rows: liveRows } = await client.query(
+      `SELECT part_key FROM harness_shared.harness_doc_parts
+        WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3 AND tombstone = false`,
+      [WORKSPACE_ID, HARNESS_SLUG, docId],
+    );
+    const verdict = reingestVerdict({
+      text,
+      contentMode: docRows[0]?.content_mode ?? null,
+      livePartKeys: liveRows.map((r) => r.part_key),
+      incomingPartKeys: rows.map((r) => r.part_key),
+      force,
+      acceptTombstones,
+    });
+    if (!verdict.ok) {
+      await client.query('ROLLBACK');
+      return { refused: verdict };
+    }
+
     // The parent doc must exist and must declare itself COMPOSED, or the parts are
     // not canonical and a reader would trust `content` instead (migration 781).
     // `generated_from_sha` records WHICH text these parts were read out of; it is what
@@ -261,7 +367,7 @@ async function writeRows(client, rows, docId, text) {
       [WORKSPACE_ID, HARNESS_SLUG, docId, rows.map((r) => r.part_key)],
     );
     await client.query('COMMIT');
-    return { retired };
+    return { retired, refused: null };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -284,6 +390,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error('  classifications describe different prose. Regenerate both artifacts first:');
     console.error('    node scripts/gen-claude-md-manifest.mjs');
     console.error('    node scripts/split-claude-md-rule-evidence.mjs');
+    console.error('');
+    console.error('  ⛔ BUT FIRST ask WHY they disagree. If this doc has been cut over, the file is');
+    console.error('     this pipeline\'s OUTPUT and regenerating the artifacts from it only teaches');
+    console.error('     them to agree with a projection — the load is then refused anyway (P-013),');
+    console.error('     and the regenerated manifest has overwritten a tracked artifact for nothing.');
     process.exit(1);
   }
   console.log('  snapshot       manifest + rule-evidence agree with the live file ✓');
@@ -306,7 +417,28 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   const client = await connect();
   try {
-    const { retired } = await writeRows(client, rows, manifest.docId, text);
+    const { retired, refused } = await writeRows(client, rows, manifest.docId, text, {
+      force: argv.includes('--force-reingest'),
+      acceptTombstones: (() => {
+        const raw = argv.find((a) => a.startsWith('--accept-tombstones='))?.split('=')[1];
+        return raw === undefined ? null : Number(raw);
+      })(),
+    });
+    if (refused) {
+      console.error(`\n✗ REFUSING to load — this would run the direction of truth BACKWARDS:`);
+      for (const r of refused.blocking) console.error(`   • [${r.code}] ${r.detail}`);
+      if (refused.tombstoned.length) {
+        console.error(
+          `   Blast radius: ${refused.tombstoned.length} live part(s) would be tombstoned ` +
+            `(${(refused.fraction * 100).toFixed(1)}%), e.g. ${refused.tombstoned.slice(0, 5).join(', ')}`,
+        );
+      }
+      console.error(
+        `   To change a rule, edit its PART in harness_shared.harness_doc_parts and re-project.\n` +
+          `   This loader is the one-time BOOTSTRAP (P-003); after cutover the file is output, not source.`,
+      );
+      process.exit(1);
+    }
     console.log(`\n✓ loaded ${rows.length} part(s) into ${WORKSPACE_ID}/${HARNESS_SLUG}/${manifest.docId}${retired ? ` (${retired} stale part(s) tombstoned)` : ''}`);
   } finally {
     await client.end();
