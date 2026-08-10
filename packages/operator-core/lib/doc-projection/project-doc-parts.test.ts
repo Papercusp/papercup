@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 // ⚠ ONE LINE, deliberately. `@ts-expect-error` suppresses the NEXT LINE only, and on a
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
@@ -176,6 +176,51 @@ describe('determinism — P-012 depends on this, and so does git-sync not churni
   it('repeated projection of unchanged rows is byte-identical', () => {
     const runs = new Set([1, 2, 3].map(() => projectClient(parts, { ...CLIENT, budget: 100_000 }).text));
     expect(runs.size).toBe(1);
+  });
+
+  it('the output does not depend on the CLOCK — the churn mode P-012 actually names', () => {
+    // The two tests above re-project within the same millisecond, so a timestamp in the
+    // banner would sail through both while making git-sync commit the file on every
+    // tick forever. Move the clock a year and a half instead: the output is a pure
+    // function of the ROWS, or it is not.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const t0 = new Date().toISOString();
+      const a = projectClient(parts, { ...CLIENT, budget: 100_000 }).text;
+      // A budget that forces a cut, so the spill block is exercised too — it is
+      // generated at projection time and is the other place a clock could leak in.
+      const aCut = projectClient(parts, { ...CLIENT, budget: 900 }).text;
+
+      vi.setSystemTime(new Date('2027-06-15T12:34:56Z'));
+      const t1 = new Date().toISOString();
+      // CONTROL for the control: if setSystemTime silently did nothing, the assertions
+      // below would pass for the wrong reason — a green that proves nothing.
+      expect(t1).not.toBe(t0);
+
+      expect(projectClient(parts, { ...CLIENT, budget: 100_000 }).text).toBe(a);
+      expect(projectClient(parts, { ...CLIENT, budget: 900 }).text).toBe(aCut);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('CONTROL — that probe genuinely detects a clock leak, so its green is not vacuous', () => {
+    // Without this, "the output did not change when I moved the clock" is equally
+    // consistent with "the fake timers never took". The mutant is built HERE rather than
+    // by editing projectionBanner: mutating the shared tree to prove a guard falsifiable
+    // is what the sweep race makes unsafe — git-sync commits the whole tree every few
+    // minutes and can capture the mutant even when nothing goes wrong.
+    vi.useFakeTimers();
+    try {
+      const clockLeaked = () => assemble(parts, { banner: `<!-- generated ${new Date().toISOString()} -->` });
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const before = clockLeaked();
+      vi.setSystemTime(new Date('2027-06-15T12:34:56Z'));
+      expect(clockLeaked()).not.toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('parts sharing an ordinal are ordered by part_key, never by input order', () => {
