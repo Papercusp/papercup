@@ -756,14 +756,38 @@ export function lintTscScopeFromArgv(argv: string[]): "update" | "update:files" 
  * the `process.on('exit')` hook that prints it is not.
  *
  * `status` is derived from the exit code the gate actually exited with, never from a
- * separately-tracked variable that could drift out of sync with it.
- * @param {{ label: string, scope: string, code: number }} input
+ * separately-tracked verdict variable that could drift out of sync with it.
+ *
+ * `nothingTypechecked` is the ONE deliberate exception, and it is a REFINEMENT of the
+ * failure, never the verdict itself (EI-20072775668558359). The exit code alone genuinely
+ * cannot separate the two ways this gate exits 1:
+ *
+ *   - a real REGRESSION — files were compiled and some sit above baseline;
+ *   - NOTHING WAS TYPECHECKED — every `--files=` path lies outside this project, so the
+ *     gate compiled none of them and has no verdict to give.
+ *
+ * Reporting the second as `status=regressed` is a false alarm in the machine-readable
+ * field, which is the one a caller greps. It fails in both directions: read literally it
+ * sends someone hunting a type error that does not exist, and once learned as "regressed
+ * here can mean nothing ran" it corrodes the token that must stay trustworthy when a
+ * regression IS real. Most edits in this repo are NOT in operator-core, so a `--files=` run
+ * naming out-of-scope paths is a common shape, not an exotic one.
+ *
+ * The drift the original note warns about is still excluded: `nothingTypechecked` cannot
+ * make a FAILING run look clean (a truthy value is only consulted when `code !== 0`, and
+ * `code === 0` still reports `clean` unconditionally), and it is set at the same site that
+ * computes `fatal` and calls `process.exit(1)` — so the flag and the exit cannot disagree
+ * without that one branch being wrong about itself. Pinned by
+ * packages/operator-core/lib/lint-tsc.test.ts.
+ *
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code }: {
+export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked }: {
     label: string;
     scope: string;
     code: number;
+    nothingTypechecked?: boolean;
 }): string;
 export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
     root: any;

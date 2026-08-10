@@ -54,6 +54,7 @@ function loopStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
     carry: 'warm',
     continuation: 'settle',
     mode: 'work',
+    goal: null,
     fireCount: 1,
     firesSinceArm: 1,
     parked: false,

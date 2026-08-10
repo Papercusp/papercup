@@ -310,6 +310,7 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     carry: 'warm',
     continuation: 'settle',
     mode: 'work',
+    goal: null,
     fireCount: 2,
     firesSinceArm: 2,
     parked: false,
