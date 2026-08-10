@@ -21,18 +21,35 @@
  * itself.
  *
  * ── Where these rows come from, and why it is not obvious ──────────────────
- * WORK ITEMS are a direct read: `work_items.goal_id`. PLANS are DERIVED —
- * `harness_plans` carries no goal link at all, so a plan reaches this rail only
- * because a work item stamped with this goal came from it (D-010). Do not
- * "improve" that into listing the plans of the goal's projects: a harness holds
- * hundreds of plans and that would render a whole plan directory under a
- * one-day-old goal.
+ * WORK ITEMS are a direct read: `work_items.goal_id`. PLANS arrive by EITHER of
+ * two legs (D-010): DERIVED — a work item stamped with this goal came from that
+ * plan — or STAMPED — the plan itself carries `harness_plans.goal_id`
+ * (migration 791), which is how a plan the goal just started shows up before it
+ * has produced any work item. Do not "improve" that into listing the plans of
+ * the goal's projects: a harness holds hundreds of plans and that would render a
+ * whole plan directory under a one-day-old goal.
  *
- * ⚠ EMPTY IS THE COMMON CASE TODAY, not an edge case (D-010): no work item in
- * this workspace carries a goal stamp yet, so every real goal renders the empty
- * state. That is why it is one explicit sentence about the goal rather than
- * three bare headings — three empty sections read as a panel that failed to
- * load, which is the misreading this rail can least afford.
+ * ⚠ This block USED TO SAY "harness_plans carries no goal link at all". That
+ * was true before migration 791 and is now FALSE. It was still being read as
+ * current on 2026-08-10 and nearly produced a "missing" goal→plan link being
+ * rebuilt when the link already existed. Do not reintroduce it.
+ *
+ * ⚠ EMPTY IS STILL A COMMON CASE (D-010), so the empty state is one explicit
+ * sentence about the goal rather than three bare headings — three empty
+ * sections read as a panel that failed to load, which is the misreading this
+ * rail can least afford.
+ *
+ * The REASON has moved, though, and the distinction matters if you are
+ * debugging an empty rail. This used to say "no work item in this workspace
+ * carries a goal stamp yet"; goal-stamped work items DO exist now. What is
+ * still typically zero is goal-stamped items that also carry a
+ * `source_plan_slug` — and it is that pairing, not the stamp alone, that feeds
+ * the DERIVED plan leg. So an empty PLANS section usually means "no stamped
+ * item came from a plan", not "no goal stamps exist".
+ *
+ * Deliberately no counts here: a comment quoting a measurement goes stale the
+ * moment the next commit lands, silently and with no guard. Measure it when you
+ * need it, against harness_shared.work_items.
  */
 import { useMemo } from 'react';
 import type { GoalDetailPlanInput, GoalWorkRail as GoalWorkRailModel, GoalWorkRailItem } from './goal-detail-model';

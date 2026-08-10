@@ -604,6 +604,39 @@ describe('goals.* resolvers against real SQL', () => {
     expect(out.agents.map((a) => a.ownerId).sort()).toEqual(['su-one', 'su-two']);
   });
 
+  it('the LIST carries the same agents as the detail, so the HUD Goals tab can filter by agent id', async () => {
+    // hud-unified-search-filter-2026-08-10 P-006. The board and the popup must
+    // answer "who is on this goal" identically — they read the same
+    // agent_modes predicate, and this is what stops them drifting apart.
+    // Two agents again, for the same reason the detail test uses two: a
+    // resolver that collapsed to a scalar would hide the coordination fault.
+    const { resolveGoalsList } = await import('./goals');
+    await goal();
+    await agentOnGoal('su-one');
+    await agentOnGoal('su-two');
+
+    const out = (await resolveGoalsList({ workspaceId: WS })) as {
+      goals: Array<{ id: string; agents: Array<{ ownerId: string }> }>;
+    };
+    const row = out.goals.find((g) => g.id === GOAL);
+    expect(row).toBeDefined();
+    expect(row!.agents.map((a) => a.ownerId).sort()).toEqual(['su-one', 'su-two']);
+  });
+
+  it('a goal with NO agent gets an empty list, never null — the board maps over it', async () => {
+    // The subselect COALESCEs to '[]'. If that ever regressed to SQL NULL the
+    // Goals tab would throw on `.map` and take the whole board down over a
+    // filter, so the empty case is pinned separately from the populated one.
+    const { resolveGoalsList } = await import('./goals');
+    await goal();
+
+    const out = (await resolveGoalsList({ workspaceId: WS })) as {
+      goals: Array<{ id: string; agents: Array<{ ownerId: string }> }>;
+    };
+    const row = out.goals.find((g) => g.id === GOAL);
+    expect(row!.agents).toEqual([]);
+  });
+
   it('returns { goal: null } for a goal that does not exist', async () => {
     const { resolveGoalDetail } = await import('./goals');
     const out = (await resolveGoalDetail({ workspaceId: WS, goalId: 'nope' })) as { goal: null };

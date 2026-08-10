@@ -471,11 +471,18 @@ export interface GoalPotCard {
 /**
  * One PLAN associated with a goal (goals-tab-improvement-2026-08-09 P-019).
  *
- * ⚠ Read D-010 before changing how this is derived. A goal has NO direct plan
- * link — `harness_plans` carries no `goal_id` and there is no join table — so
- * this is DERIVED, and only one derivation is honest: a plan serves a goal iff a
- * work item STAMPED with that goal came from that plan
- * (`work_items.goal_id` → `work_items.source_plan_slug`).
+ * ⚠ Read D-010 before changing how this is derived. A plan reaches this list by
+ * EITHER of two legs, and the query below is a UNION of exactly those:
+ *   DERIVED — a work item STAMPED with this goal came from that plan
+ *             (`work_items.goal_id` → `work_items.source_plan_slug`).
+ *   STAMPED — the plan itself carries `harness_plans.goal_id` (migration 791).
+ *
+ * ⚠ This paragraph USED TO SAY "harness_plans carries no goal_id and there is
+ * no join table". That was true before migration 791 and is now FALSE — the
+ * column exists, this resolver reads it, and the `stamped` field below is
+ * documented off it. The stale wording survived the migration and was still
+ * being read as current on 2026-08-10, when it nearly caused a goal→plan link
+ * that already exists to be "rebuilt". Do not reintroduce it.
  *
  * The tempting alternative — every plan in a harness that `goal_pots` links
  * to the goal — is REJECTED and must not be reintroduced: a harness holds
