@@ -465,11 +465,10 @@ export function evaluateLivenessAlarm(
   //    starved/frozen). Sharper than the stale-snapshot signal when the tick lives.
   const wf = health.panels.workFeed?.data;
   if (wf && wf.deadRoutines > 0) {
-    const names = wf.deadRoutineNames?.length ? `: ${wf.deadRoutineNames.slice(0, 4).join(', ')}` : '';
     signals.push({
       key: 'dead-routines',
       severity: 'blocker',
-      summary: `${wf.deadRoutines} dead routine(s) overdue >10m${names} — the routine engine is starved.`,
+      summary: formatDeadRoutinesSummary(wf),
     });
   }
 
@@ -901,6 +900,59 @@ const PANEL_LABEL_TO_KEY: Record<string, PanelKey> = {
 };
 
 /**
+ * EI-20045691451471399 — the engine-starvation summary line. PURE (no clock, no DB) so the
+ * exact operator-facing wording is unit-testable.
+ *
+ * ## What the old one-liner got wrong
+ *
+ * It rendered `${count} dead routine(s) overdue >10m: ${first 4 by overdue-seconds}`. Against a
+ * TOTAL engine freeze that produced, verbatim, *"1 dead routine(s) overdue >10m: pr-poll — the
+ * routine engine is starved"* while every durable routine — git-sync included — was stopped. Two
+ * independent defects stack there:
+ *
+ *  - **No denominator.** "1" and "101" both read as "some routines are late". "101 of 151" reads
+ *    as an engine freeze and nothing else. The ratio is what makes the magnitude legible, so it
+ *    is printed whenever the denominator was actually observed — and never invented when it
+ *    wasn't (an unobserved denominator falls back to the bare count rather than guessing).
+ *  - **Ordering by overdue-seconds, presented as severity.** For a frozen engine, "most overdue"
+ *    is decided by cron phase, so it is arbitrary — it put `pr-poll` first by seconds and left
+ *    `git-sync` unnamed. An operator reading that triages "what is pr-poll, does it matter?"
+ *    (answer: barely) instead of "the commit pipeline is down fleet-wide".
+ *
+ * ⚠ The literal substring `dead routine(s)` is LOAD-BEARING, not stylistic: `deriveSignatureFromSummary`
+ * classifies this signal by matching /dead routine\(s\)/ against the summary, and that is the
+ * fallback dedup identity for legacy escalation rows written before EI-2146 stamped an explicit
+ * `livenessSignature`. Reword it away and those rows stop classifying — they would never
+ * auto-resolve, and the backlog sweep would silently skip them. Keep the phrase.
+ */
+export function formatDeadRoutinesSummary(wf: {
+  deadRoutines: number;
+  deadRoutineNames?: string[];
+  deadRoutinesInScope?: number;
+  deadRoutineCriticalNames?: string[];
+}): string {
+  const count = wf.deadRoutines;
+  const total = wf.deadRoutinesInScope;
+  // Only claim a ratio when the denominator was observed AND is consistent with the numerator;
+  // an absent or nonsensical scope count degrades to the bare count rather than a made-up one.
+  const hasDenominator = typeof total === 'number' && total > 0 && count <= total;
+  const population = hasDenominator ? `${count} of ${total}` : `${count}`;
+  const named = wf.deadRoutineNames ?? [];
+  const unnamed = Math.max(0, count - named.length);
+  const names = named.length ? `: ${named.join(', ')}${unnamed > 0 ? ` (+${unnamed} more)` : ''}` : '';
+  // Half the durable engine overdue is no longer "some routines are late" — say the stronger word.
+  const frozen = hasDenominator && count / (total as number) >= 0.5;
+  const critical = wf.deadRoutineCriticalNames ?? [];
+  const consequence = critical.includes('git-sync')
+    ? ' git-sync is among them, so NOTHING in the shared tree is being committed — the release gate ' +
+      'will keep re-judging a candidate that structurally cannot contain anyone\'s fix.'
+    : critical.length > 0
+      ? ` Fleet-blocking: ${critical.join(', ')}.`
+      : '';
+  return `${population} dead routine(s) overdue >10m${names} — the routine engine is ${frozen ? 'FROZEN' : 'starved'}.${consequence}`;
+}
+
+/**
  * Derive a signal's stable signature from an escalation summary — the fallback
  * for LEGACY records written before EI-2146 (which carry no explicit signature),
  * so the one-time backlog sweep can classify and auto-resolve the existing pile.
@@ -1243,7 +1295,11 @@ async function defaultReverifyDeadRoutines(ws: string, now: number): Promise<str
     const { sql } = getOrgPg();
     const potSlug = resolvePotHomeSlug(undefined, undefined);
     const overdueMs = await resolveDeadRoutineOverdueMs(sql, potSlug, now);
-    return await readDeadRoutines(sql, overdueMs);
+    // EI-20045691451471399: `readDeadRoutines` now returns a census (count + bounded exemplars)
+    // rather than a bare name list. Only the EMPTY/NON-EMPTY distinction is consumed here, and
+    // `names` is empty exactly when `count` is 0 (the census returns early on zero rows), so
+    // this keeps the fresh-re-read semantics byte-identical.
+    return (await readDeadRoutines(sql, overdueMs)).names;
   } catch {
     return null;
   }
