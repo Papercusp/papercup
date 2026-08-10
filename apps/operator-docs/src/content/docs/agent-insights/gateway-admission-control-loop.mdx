@@ -17,6 +17,17 @@ generated:
   at: 2026-06-22
 ---
 
+:::caution[The SOURCE half of this loop is retired — the SINK half is live]
+`QUEEN_CAPACITY_DISPATCH` clamps **Mug `fleet:place_batch`** placement, and both the Mug and
+`fleet:place_batch` were **retired 2026-08-09**
+([canonical account](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)). So the
+inflow-reduction half described below **no longer fires** — nothing places cups to clamp.
+
+The **sink** half (gateway priority tiers, `getSpawnHeadroom`, the concurrency ceiling) is
+unchanged and still governs live launches. Do not read this page as evidence that inflow is
+still being throttled at the source: today it is not.
+:::
+
 ## The core idea
 
 When the inference pool is capacity-scarce (accounts at their 5h/7d caps or short-term-throttled), two

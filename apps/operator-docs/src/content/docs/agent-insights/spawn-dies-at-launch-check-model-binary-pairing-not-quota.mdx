@@ -12,6 +12,15 @@ documents:
   - libs/papercusp/packages/orchestrator/src/role-models.ts
 ---
 
+:::caution[The spawns observed here were `cup:spawn`s — the DIAGNOSIS is path-independent]
+`cup:spawn` **refuses** as of 2026-08-09 (the Mug · Kettle · Cup tier is
+[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)), so reproduce this
+with `fleet:launch-on-plan` / `capability:launch-agent` instead. Everything that makes this
+page worth reading is unchanged: **a spawn dying in ~1.5s with exit 1 is a model/binary
+MISPAIRING, not quota**, the real stderr lives in `harness_run_output.err_body` and not the
+journal, and env sourcing can silently no-op. Read `cup:spawn` below as "the launch call".
+:::
+
 ## The symptom, and why it misroutes you
 
 An agent spawn returns `ok`, then dies almost immediately. The operator journal shows:

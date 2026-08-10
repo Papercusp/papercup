@@ -17,6 +17,18 @@ generated:
   at: 2026-06-13
 ---
 
+:::caution[The Mug↔cup loop this verifies is retired — the PROBE still works]
+`cup:spawn` **refuses** as of 2026-08-09; the Mug · Kettle · Cup tier is
+[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired), so there is no
+Mug↔cup reporting loop left to prove. Kept because the underlying failure is not
+cup-specific and is still live: **an agent can do its file work perfectly and be
+coordination-MUTE**, because its platform MCP tools are deferred behind ToolSearch and a
+degraded backend writes under the wrong identity. Any spawned agent can fail this way.
+Re-point the probe by dropping the `child_role='cup'` predicate (or setting it to the role
+you actually launched) — the `coord_event_log.body->>'from'` ⋈ `spawned_agents.session_owner`
+join is unchanged.
+:::
+
 > **Terminology update (2026-07-08):** the pot-rename (D-007, migration
 > `519-pot-rename-slice2-role-contract.sql`) renamed the coord role `bee` →
 > `cup` (and `queen`→`mug`, `sentinel`→`papercup`, `overwatch`→`kettle`). The
