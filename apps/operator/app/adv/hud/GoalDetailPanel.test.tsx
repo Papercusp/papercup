@@ -18,7 +18,20 @@
  */
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 import type { GoalDetailInput } from './goal-detail-model';
+
+/* P-023: the popup's two expand buttons reach the DESKTOP shell for full
+   SCREEN. Mocked to spies so this suite asserts the panel's BRANCH (which
+   mechanism it reaches for) — the module's own ownership/soft-fail contract is
+   covered by desktop-window-fullscreen.test.ts, and the real one dynamically
+   imports @tauri-apps, which jsdom cannot resolve. */
+const desktopFs = vi.hoisted(() => ({
+  isDesktopShell: vi.fn(() => false),
+  enterDesktopWindowFullscreen: vi.fn(async () => ({ active: true, owned: true })),
+  exitDesktopWindowFullscreen: vi.fn(async () => {}),
+}));
+vi.mock('@/lib/desktop-window-fullscreen', () => desktopFs);
 
 const syncCalls: Array<{ queryName: string; args?: Record<string, unknown>; enabled?: boolean }> = [];
 let syncResult: { data: unknown[] | null; loading: boolean; error: unknown } = {
@@ -34,26 +47,22 @@ let syncResult: { data: unknown[] | null; loading: boolean; error: unknown } = {
    job here is to flip a boolean. */
 vi.mock('nuqs', async () => {
   const React = await import('react');
-  /* P-021: the panel now mounts AgentOrders and AgentDossier, whose shared
-     `useRailCollapse` reaches for `parseAsString` — so a mock carrying only
-     `parseAsBoolean` throws "No parseAsString export is defined" from inside
-     the render path. Both parsers are therefore built by ONE factory rather
-     than enumerated: the failure mode of this mock is that it silently lags the
+  /* The parsers come from the SHARED mock (`@papercusp/test-config/nuqs-mock`),
+     which carries every parser nuqs exports and is itself pinned against the
+     installed package — the fix for EI-8821's whole class.
+
+     This file used to hand-roll them, with a comment predicting exactly how
+     that fails: "the failure mode of this mock is that it silently lags the
      component's parser vocabulary, and the next parser added would otherwise
-     break it the same way again. */
-  const parser = <T,>() => ({
-    withDefault(defaultValue: T) {
-      return { defaultValue };
-    },
-  });
+     break it the same way again". It then did, twice — `parseAsStringEnum` when
+     P-009 landed, and `parseAsStringLiteral` when P-023 gave this popup the
+     sessions popup's maximize hook. Spreading the shared set ends the sequence.
+
+     `useQueryState` stays LOCAL: these tests need a real React state store so a
+     toggle click re-renders, where the shared factory's store lives outside
+     React and would leave the panel showing the pre-click value. */
   return {
-    parseAsBoolean: parser<boolean>(),
-    parseAsString: parser<string>(),
-    /* P-009's ends editors take a THIRD parser shape: `parseAsStringEnum` is
-       CALLED with its member list and returns the parser, where the two above
-       are parsers already. Mocking it as a bare `parser<string>()` would throw
-       "parseAsStringEnum is not a function" from inside the render path. */
-    parseAsStringEnum: <T,>(_values: readonly T[]) => parser<T>(),
+    ...nuqsParsers,
     useQueryState(_key: string, p?: { defaultValue?: unknown }) {
       /* Explicit <unknown>: inferring from `p?.defaultValue ?? null` widens the
          state to `{} | null`, and the setter below then rejects the `unknown`
@@ -908,6 +917,123 @@ describe('GoalDetailPanel', () => {
         'agentOrders.byOwner',
         'goals.detail',
       ]);
+    });
+
+    /* ── P-023: the sessions popup's hide + expand controls ──────────────────
+       [owner 2026-08-10] "mimic the design used in the equivalent popup in the
+       sessions tab for the hide and expand buttons instead of how it is
+       currently 'hide order hide brief etc.'"
+
+       The grammar itself is pinned once, in PanelToggleButton.test.tsx. What is
+       only provable HERE is that this popup's five toggles actually reach it —
+       with the right `side` per zone, which no shared-component test can know —
+       and that the expand pair exists and is wired. Nested inside the P-021
+       block for its `withAgent`/`rosterRows`/`inFleet` fixtures. */
+    describe('P-023: panel toggles + the expand pair', () => {
+      it('names the panel and never the verb — the label is identical open and closed', () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        /* The owner-reported defect, exactly: these five used to read "Hide
+           orders" / "Hide brief" / "Hide work" … while open, so every press
+           re-widened the button under the cursor and shifted the rest of the
+           row. Asserted on the VISIBLE text, which is what was complained
+           about — the `aria-label` below is the half that SHOULD carry a verb. */
+        const ids = [
+          'goal-orders-toggle',
+          'goal-brief-toggle',
+          'goal-rail-toggle',
+          'goal-activity-toggle',
+          'goal-fleet-toggle',
+        ];
+        const before = ids.map((id) => screen.getByTestId(id).textContent);
+        expect(before).toEqual(['Orders', 'Brief', 'Work', 'Activity', 'Fleet']);
+        for (const id of ids) fireEvent.click(screen.getByTestId(id));
+        // Same five words after every one of them has been pressed.
+        expect(ids.map((id) => screen.getByTestId(id).textContent)).toEqual(before);
+      });
+
+      it('points each chevron at the edge its own zone moves toward', () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        const dir = (id: string) =>
+          screen.getByTestId(id).querySelector('svg')?.classList.contains('lucide-chevron-left')
+            ? 'left'
+            : 'right';
+        /* All five start OPEN (the wide-viewport default), so the left-edge
+           zones close leftward and the right-edge ones close rightward. A toggle
+           wired with the wrong `side` renders a chevron pointing away from its
+           own panel — plausible-looking, and invisible to a test that only
+           clicks the button and asserts the zone unmounted. */
+        expect(dir('goal-orders-toggle')).toBe('left');
+        expect(dir('goal-brief-toggle')).toBe('left');
+        expect(dir('goal-rail-toggle')).toBe('right');
+        expect(dir('goal-activity-toggle')).toBe('right');
+        expect(dir('goal-fleet-toggle')).toBe('right');
+      });
+
+      it('keeps the Hide/Show verb where a screen reader can reach it', () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        const btn = screen.getByTestId('goal-brief-toggle');
+        expect(btn.getAttribute('aria-label')).toBe('Hide the goal brief');
+        expect(btn.getAttribute('aria-pressed')).toBe('true');
+        fireEvent.click(btn);
+        expect(screen.getByTestId('goal-brief-toggle').getAttribute('aria-label')).toBe(
+          'Show the goal brief',
+        );
+        expect(screen.getByTestId('goal-brief-toggle').getAttribute('aria-pressed')).toBe('false');
+      });
+
+      it('offers BOTH expand modes, and they are not the same control', () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        const win = screen.getByTestId('goal-full-window');
+        const scr = screen.getByTestId('goal-full-screen');
+        // Distinct affordances, not one duplicated: full WINDOW and full SCREEN
+        // are different modes on the desktop, which is why there are two.
+        expect(win.getAttribute('aria-label')).toBe('Full window');
+        expect(scr.getAttribute('aria-label')).toBe('Full screen');
+        expect(win.getAttribute('aria-pressed')).toBe('false');
+      });
+
+      it('full window maximizes the popup and grows the ✕ that maximize makes necessary', () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        /* Unmaximized, the Modal's backdrop and Esc are the exits, so a ✕ would
+           be a third one. Maximized, the popup COVERS the backdrop — without
+           this control there is no way out but the expand buttons themselves. */
+        expect(screen.queryByTestId('goal-close')).toBeNull();
+        fireEvent.click(screen.getByTestId('goal-full-window'));
+        expect(screen.getByTestId('goal-full-window').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('goal-full-window').getAttribute('aria-label')).toBe(
+          'Exit full window',
+        );
+        expect(screen.getByTestId('goal-close')).toBeTruthy();
+      });
+
+      it('full screen falls back to full WINDOW when the host cannot paint us fullscreen', async () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        /* jsdom implements no Fullscreen API, which is the same shape as a
+           webview with it switched off: the hook must land on the
+           bigger-we-still-have rather than doing nothing. A dead "make it
+           bigger" button is the worse failure — and this is the branch the
+           sessions popup was filed against. */
+        fireEvent.click(screen.getByTestId('goal-full-screen'));
+        await screen.findByTestId('goal-close');
+        expect(screen.getByTestId('goal-full-window').getAttribute('aria-pressed')).toBe('true');
+      });
+
+      it('does not gate the expand pair on there being an agent', () => {
+        rosterRows(inFleet);
+        renderPanel(detail({ agents: [] }));
+        /* The three BORROWED toggles are absent without an agent (asserted
+           above) — but maximize acts on the POPUP, which exists either way.
+           Hiding it here would be the mirror of the WI-6742 dead-control bug:
+           a live control missing rather than a dead one present. */
+        expect(screen.getByTestId('goal-full-window')).toBeTruthy();
+        expect(screen.getByTestId('goal-full-screen')).toBeTruthy();
+      });
     });
   });
 

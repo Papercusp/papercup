@@ -554,33 +554,67 @@ export default function GoalDetailPanel({
     <Modal
       open={open}
       onOpenChange={(o) => {
-        if (!o) onClose();
+        if (!o) closePanel();
       }}
       title={goal?.title?.trim() || goalId || 'Goal'}
       description="Goal detail"
       srOnlyTitle
+      /* P-023: while the browser is painting this popup fullscreen, Esc is the
+         user's way OUT of fullscreen — the UA consumes it and never dispatches
+         the keydown. Leaving the dialog's own Esc handler armed means one press
+         both drops fullscreen and closes the goal, so the popup disappears when
+         the reader only asked for a smaller window. (The desktop path has its
+         own Esc handler inside the hook, for the mirror-image reason.) */
+      closeOnEscape={!screenActive}
+      wrapStyle={maximized ? { padding: 0 } : undefined}
       /* The conversation popup's own frame: flex column, no padding of its own
          (the bands and body own their spacing), and a width that grows to seat
          the rail instead of squeezing the body. */
-      contentStyle={{
-        /* P-021: the borrowed zones widen the popup on the same terms the work
-           rail already does — only while they are actually seated as columns.
-           The 97vw cap is what keeps the arithmetic honest on a display too
-           narrow for everything the breakpoints allowed. */
-        width: `min(${880 + railColumns + borrowedColumns}px, ${railColumns + borrowedColumns > 0 ? 97 : 92}vw)`,
-        height: 'min(80vh, 820px)',
-        padding: 0,
-        display: 'flex',
-        flexDirection: 'column',
-      }}
+      contentStyle={
+        maximized
+          ? {
+              // Fill the app window edge to edge. `100dvh` rather than `100vh`
+              // so a mobile/overlay browser chrome bar cannot push the
+              // conversation's composer below the fold.
+              width: '100vw',
+              maxWidth: 'none',
+              height: '100dvh',
+              maxHeight: '100dvh',
+              borderRadius: 0,
+              padding: 0,
+              display: 'flex',
+              flexDirection: 'column',
+            }
+          : {
+              /* P-021: the borrowed zones widen the popup on the same terms the
+                 work rail already does — only while they are actually seated as
+                 columns. The 97vw cap is what keeps the arithmetic honest on a
+                 display too narrow for everything the breakpoints allowed. */
+              width: `min(${880 + railColumns + borrowedColumns}px, ${railColumns + borrowedColumns > 0 ? 97 : 92}vw)`,
+              height: 'min(80vh, 820px)',
+              padding: 0,
+              display: 'flex',
+              flexDirection: 'column',
+            }
+      }
     >
       <div
+        /* D-007's rule, borrowed with the hook: the fullscreen target is the
+           container that holds EVERY zone, so a panel added later is included
+           by construction. Pointing it at the centre column instead would drop
+           all five rails the moment the reader hit full screen. */
+        ref={popupRef}
         style={{
           flex: 1,
           minHeight: 0,
           display: 'flex',
           flexDirection: 'row',
           position: 'relative',
+          // A DOM-fullscreened element is transparent by default (the UA paints
+          // only ::backdrop, black), so without this the zones would sit on bare
+          // black instead of the popup's surface. Scoped to the browser
+          // mechanism: on the desktop path nothing is lifted out of the page.
+          ...(screenMechanism === 'document' ? { background: 'var(--bg-popover, #0d1829)' } : null),
         }}
         data-testid="goal-detail-modal"
       >
@@ -702,70 +736,136 @@ export default function GoalDetailPanel({
                 </button>
               </Tooltip>
             ) : null}
+            {/* ── P-023: the EXPAND pair, ahead of the zone toggles ──────────
+                [owner 2026-08-10] this popup should carry the sessions popup's
+                "hide and expand buttons". These are that popup's two, verbatim
+                in behavior (the shared hook) and in look (icon-only, tooltip,
+                the same compact toolbar button) — full WINDOW and full SCREEN
+                are genuinely different modes on the desktop, which is why there
+                are two and not one.
+
+                They lead the trailing cluster the way they lead the sessions
+                popup's toolbar: they act on the WHOLE popup, where every toggle
+                after them acts on one zone inside it.
+
+                Tooltip, NOT a `title=` attribute: these are ICON-ONLY, so the
+                hover text is the only place their meaning is written for a
+                sighted user — and `lint:design-primitives` fails a title on a
+                <button> because a native title is unreachable by keyboard and
+                on touch. Same note as "Open full-size" above. */}
+            <Tooltip
+              label={goalMax === 'window' ? 'Exit full window' : 'Fill the app window with this goal'}
+              side="bottom"
+              align="end"
+            >
+              <button
+                type="button"
+                className="pc-button"
+                onClick={toggleWindow}
+                aria-pressed={goalMax === 'window'}
+                aria-label={goalMax === 'window' ? 'Exit full window' : 'Full window'}
+                data-testid="goal-full-window"
+                style={PANEL_TOOLBAR_BUTTON_STYLE}
+              >
+                {goalMax === 'window' ? <Minimize2 size={12} aria-hidden="true" /> : <Maximize2 size={12} aria-hidden="true" />}
+              </button>
+            </Tooltip>
+            <Tooltip
+              label={screenActive ? 'Exit full screen' : 'Fill the whole screen with this goal'}
+              side="bottom"
+              align="end"
+            >
+              <button
+                type="button"
+                className="pc-button"
+                onClick={toggleScreen}
+                aria-pressed={screenActive}
+                aria-label={screenActive ? 'Exit full screen' : 'Full screen'}
+                data-testid="goal-full-screen"
+                style={PANEL_TOOLBAR_BUTTON_STYLE}
+              >
+                {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
+              </button>
+            </Tooltip>
             {/* P-022/P-021: the zone toggles, in the SAME left-to-right order
                 as the zones they move — Orders, Brief, Work, Activity, Fleet.
                 A toggle row whose order contradicts the layout makes the reader
                 hunt for which button moves which column.
+
+                P-023: each one is the sessions popup's PanelToggleButton, so the
+                label stays CONSTANT and a chevron carries the verb — `side` is
+                the edge the zone opens from, and the chevron follows the motion
+                from there. The old labels swapped text on click ("Orders" →
+                "Hide orders"), which re-widened the button under the reader's
+                cursor and made five controls shuffle sideways on every press.
 
                 The three borrowed toggles render only when there is an agent to
                 describe, and Fleet only when that agent is actually in a fleet:
                 a control for a zone that cannot open is a dead button, which is
                 the defect WI-6742 filed against this very popup. */}
             {agentOwnerId ? (
-              <button
-                type="button"
-                className="pc-button"
-                onClick={() => void setOrdersOpen(!ordersOpen)}
-                aria-pressed={ordersOpen}
-                aria-label={ordersOpen ? 'Hide the agent’s orders' : 'Show the agent’s orders'}
+              <PanelToggleButton
+                label="Orders"
+                describe="the agent’s orders"
+                side="left"
+                open={ordersOpen}
+                onToggle={() => void setOrdersOpen(!ordersOpen)}
                 data-testid="goal-orders-toggle"
-              >
-                {ordersOpen ? 'Hide orders' : 'Orders'}
-              </button>
+              />
             ) : null}
-            <button
-              type="button"
-              className="pc-button"
-              onClick={() => void setBriefOpen(!briefOpen)}
-              aria-pressed={briefOpen}
-              aria-label={briefOpen ? 'Hide the goal brief' : 'Show the goal brief'}
+            <PanelToggleButton
+              label="Brief"
+              describe="the goal brief"
+              side="left"
+              open={briefOpen}
+              onToggle={() => void setBriefOpen(!briefOpen)}
               data-testid="goal-brief-toggle"
-            >
-              {briefOpen ? 'Hide brief' : 'Brief'}
-            </button>
-            <button
-              type="button"
-              className="pc-button"
-              onClick={() => void setRailOpen(!railOpen)}
-              aria-pressed={railOpen}
-              aria-label={railOpen ? 'Hide plans and work items' : 'Show plans and work items'}
+            />
+            <PanelToggleButton
+              label="Work"
+              describe="plans and work items"
+              side="right"
+              open={railOpen}
+              onToggle={() => void setRailOpen(!railOpen)}
               data-testid="goal-rail-toggle"
-            >
-              {railOpen ? 'Hide work' : 'Work'}
-            </button>
+            />
             {agentOwnerId ? (
-              <button
-                type="button"
-                className="pc-button"
-                onClick={() => void setDossierOpen(!dossierOpen)}
-                aria-pressed={dossierOpen}
-                aria-label={dossierOpen ? 'Hide agent activity' : 'Show agent activity'}
+              <PanelToggleButton
+                label="Activity"
+                describe="agent activity"
+                side="right"
+                open={dossierOpen}
+                onToggle={() => void setDossierOpen(!dossierOpen)}
                 data-testid="goal-activity-toggle"
-              >
-                {dossierOpen ? 'Hide activity' : 'Activity'}
-              </button>
+              />
             ) : null}
             {agentOwnerId && fleetPeers ? (
-              <button
-                type="button"
-                className="pc-button"
-                onClick={() => void setPeersOpen(!peersOpen)}
-                aria-pressed={peersOpen}
-                aria-label={peersOpen ? 'Hide fleet peers' : 'Show fleet peers'}
+              <PanelToggleButton
+                label="Fleet"
+                describe="fleet peers"
+                side="right"
+                open={peersOpen}
+                onToggle={() => void setPeersOpen(!peersOpen)}
                 data-testid="goal-fleet-toggle"
-              >
-                {peersOpen ? 'Hide fleet' : 'Fleet'}
-              </button>
+              />
+            ) : null}
+            {/* Maximized covers the backdrop, and in full screen Esc is spoken
+                for — so without an explicit ✕ there is no way out of this popup
+                but the two expand buttons. (Unmaximized, the Modal's own
+                backdrop and Esc are the exits, so it would be a third one.) */}
+            {maximized ? (
+              <Tooltip label="Close goal" side="bottom" align="end">
+                <button
+                  type="button"
+                  className="pc-button"
+                  onClick={closePanel}
+                  aria-label="Close goal"
+                  data-testid="goal-close"
+                  style={PANEL_TOOLBAR_BUTTON_STYLE}
+                >
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </Tooltip>
             ) : null}
           </div>
 
