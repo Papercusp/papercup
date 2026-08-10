@@ -183,7 +183,7 @@
     "ui|RedQueenPanel|apps/operator-vite/src/components/adv/RedQueenPanel.tsx",
     "ui|SharePotDialog|apps/operator/app/harness/SharePotDialog.tsx",
     "ui|WorkbenchPotDirectoryPanel|apps/operator-vite/src/components/workbench/WorkbenchPotDirectoryPanel.tsx",
-    "ui|hive-control|apps/operator-vite/src/components/adv/hive-control.ts",
+    "ui|pot-control|apps/operator-vite/src/components/adv/pot-control.ts",
     "ui|pot-customization|apps/operator-vite/src/routes/settings/pot-customization.tsx",
     "wake|declarePotTimeWake|packages/operator-core/lib/agent-tools/pot/_create.ts",
     "wake|declarePotTimeWake|packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
