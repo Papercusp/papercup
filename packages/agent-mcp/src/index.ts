@@ -228,6 +228,7 @@ export {
   type GoalStopInput,
   type GoalStopReport,
   type GoalResumeReport,
+  type StoppingStatus,
 } from './tools/goals/stop-seam';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
