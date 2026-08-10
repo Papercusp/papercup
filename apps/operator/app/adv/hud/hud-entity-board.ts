@@ -556,7 +556,7 @@ function matchesQuery(
     title: string;
     context: string | null;
     subGoals?: HudSubGoal[];
-    identity?: HudCardIdentity;
+    identity?: HudCardIdentity | HudCardIdentity[];
   },
   q: string,
 ): boolean {

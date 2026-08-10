@@ -28,6 +28,7 @@ import {
   goalSpendLabel,
   identityMatches,
   toGoalCard,
+  toPlanCard,
   GOAL_START_CARD_ID,
   GOAL_START_COLUMN,
   GOAL_TERMINAL_STATUSES,
@@ -1397,13 +1398,67 @@ describe('identityMatches', () => {
   it('an empty needle matches nothing, so it can never widen a search', () => {
     expect(identityMatches({ ownerId: FULL }, '')).toBe(false);
   });
+
+  it('searches EVERY identity in a list, not just the first', () => {
+    // A goal can carry more than one agent, and resolveGoalDetail returns the
+    // list precisely so a second stamp stays visible. Matching only [0] would
+    // hide the second agent from search — the bug that comment guards against.
+    const two = [{ ownerId: 'su-aaaaaaaa-1111' }, { ownerId: 'su-bbbbbbbb-2222' }];
+    expect(identityMatches(two, 'su-bbbbbbbb')).toBe(true);
+    expect(identityMatches(two, 'su-aaaaaaaa')).toBe(true);
+    expect(identityMatches(two, 'su-cccccccc')).toBe(false);
+    expect(identityMatches([], 'su-aaaaaaaa')).toBe(false);
+  });
+});
+
+describe('plan + goal cards carry identity (P-006)', () => {
+  // Local, matching the file's existing convention — `goal()` is defined per
+  // describe block here rather than hoisted to module scope.
+  function goal(over: Partial<HudGoalInput> = {}): HudGoalInput {
+    return { id: 'g1', title: 'Ship a paid app', status: 'active', ...over };
+  }
+
+  it('a plan card takes its identity from harness_plans.owner', () => {
+    const card = toPlanCard(
+      { slug: 'p1', status: 'active', owner: 'su-12b70e95-84ce-4ea0-b546-8a692cdc949c' },
+      NOW,
+    );
+    expect(identityMatches(card.identity, 'su-12b70')).toBe(true);
+  });
+
+  it('an OWNERLESS plan does not fall back to its harness', () => {
+    // The fabrication D-003 forbids: filtering by an agent id would otherwise
+    // return every plan in that agent's harness and look like it worked.
+    const card = toPlanCard({ slug: 'p1', status: 'active', harnessSlug: 'papercusp' }, NOW);
+    expect(card.identity).toBeUndefined();
+    expect(identityMatches(card.identity, 'papercusp')).toBe(false);
+  });
+
+  it('a goal card carries ALL its agents', () => {
+    const card = toGoalCard(
+      goal({ agents: [{ ownerId: 'su-12b70e95-1111' }, { ownerId: 'su-0056be10-2222' }] }),
+      NOW,
+    );
+    expect(identityMatches(card.identity, 'su-0056be10')).toBe(true);
+    expect(identityMatches(card.identity, 'su-12b70')).toBe(true);
+  });
+
+  it('a goal with no agents has undefined identity, not an empty list', () => {
+    expect(toGoalCard(goal({ agents: [] }), NOW).identity).toBeUndefined();
+    expect(toGoalCard(goal({}), NOW).identity).toBeUndefined();
+  });
 });
 
 describe('work-item cards carry identity so the Work items tab filters by agent', () => {
   it('populates ownerId + agentHandle from the assignee', () => {
     const card = toWorkItemCard(item({ assignee: 'su-12b70e95-84ce-4ea0-b546-8a692cdc949c' }), NOW);
-    expect(card.identity?.ownerId).toBe('su-12b70e95-84ce-4ea0-b546-8a692cdc949c');
-    expect(card.identity?.agentHandle).toBe('su-12b70e95');
+    // A work item has exactly ONE assignee, so its identity is the scalar arm
+    // of the union — pinned explicitly, since a list here would mean the
+    // builder started guessing at additional owners.
+    expect(Array.isArray(card.identity)).toBe(false);
+    const one = card.identity as { ownerId?: string; agentHandle?: string } | undefined;
+    expect(one?.ownerId).toBe('su-12b70e95-84ce-4ea0-b546-8a692cdc949c');
+    expect(one?.agentHandle).toBe('su-12b70e95');
     expect(identityMatches(card.identity, 'su-12b70')).toBe(true);
   });
 
