@@ -107,12 +107,31 @@ function isWorkerEntry(source: string): boolean {
   return bindings.includes('workerData') || bindings.includes('parentPort');
 }
 
+/**
+ * Comments stripped first.
+ *
+ * A prose line or a commented-out import that MENTIONS an extensionless
+ * specifier is not an import — and this very file's header quotes the banned
+ * form, which is the classic tell that a text-based rule is about to flag its
+ * own documentation. (Test files are excluded from the scan, so that case
+ * cannot bite here; a commented-out import inside a real worker entry still
+ * could.) Same reason worker-scripts-bundled.test.ts strips comments before
+ * asking "is this staged" rather than "is this discussed".
+ */
+function executableText(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join('\n');
+}
+
 /** Relative specifiers only — bare/`node:` ones are resolved by node itself. */
 function relativeImportsWithoutExtension(source: string): string[] {
   const out: string[] = [];
   // Static `from '…'` plus dynamic `import('…')`; both resolve on the worker thread.
   const re = /(?:from|import)\s*\(?\s*['"](\.[^'"]*)['"]/g;
-  for (const m of source.matchAll(re)) {
+  for (const m of executableText(source).matchAll(re)) {
     const spec = m[1];
     if (!/\.(ts|tsx|mjs|cjs|js|jsx|json|node)$/.test(spec)) out.push(spec);
   }
@@ -147,6 +166,12 @@ describe('worker entries are loadable by plain node (no loader hooks)', () => {
     expect(relativeImportsWithoutExtension(`} from './event-loop-sentinel.ts';`)).toEqual([]);
     expect(relativeImportsWithoutExtension(`await import('./late.js')`)).toEqual([]);
     expect(relativeImportsWithoutExtension(`await import('./late')`)).toEqual(['./late']);
+
+    // Prose and dead code are not imports.
+    expect(
+      relativeImportsWithoutExtension(`// } from './commented-out';\n/* from './blocked' */`),
+      'a commented-out specifier must not be reported as a live import',
+    ).toEqual([]);
   });
 
   it('CONTROL: the scan actually found worker entries', () => {
