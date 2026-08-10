@@ -1,0 +1,174 @@
+/**
+ * psu-launch-log.test.ts — WI-37841.
+ *
+ * The invariant under test is not "these functions work" but "the writer and the
+ * reader cannot disagree about WHERE the evidence is". A failed HUD launch leaves
+ * exactly one artifact, written by psu-launcher.mjs (bare node) and read by the
+ * operator (TypeScript); if those two ever derive different paths the system
+ * reports "the launch left no diagnostic" while the diagnostic sits on disk. That
+ * failure is silent in both directions, which is why the path derivation is a
+ * single shared module and why the drift guard at the bottom of this file exists.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync, existsSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+
+import {
+  PSU_LAUNCH_LOG_DIRNAME,
+  PSU_LAUNCH_LOG_TTL_MS,
+  psuLaunchLogRoot,
+  psuLaunchLogPath,
+  prunePsuLaunchLogs,
+  readPsuLaunchLogTail,
+  ensurePsuLaunchLogPath,
+} from './psu-launch-log.mjs';
+
+let home: string;
+
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), 'psu-launch-log-'));
+});
+afterEach(() => {
+  rmSync(home, { recursive: true, force: true });
+});
+
+const OWNER = 'su-b053c5b3-8059-4a12-b17f-8225a3dcb6a4';
+
+describe('psuLaunchLogPath', () => {
+  it('derives a per-owner file under ~/.papercusp/<dirname>', () => {
+    expect(psuLaunchLogPath(OWNER, { home })).toBe(
+      join(home, '.papercusp', PSU_LAUNCH_LOG_DIRNAME, `${OWNER}.log`),
+    );
+    expect(psuLaunchLogRoot(home)).toBe(join(home, '.papercusp', PSU_LAUNCH_LOG_DIRNAME));
+  });
+
+  it('is PURE — asking for a path creates nothing', () => {
+    // The readers call this on a display path. If merely asking the question
+    // created a directory, a roster poll would litter the filesystem.
+    psuLaunchLogPath(OWNER, { home });
+    expect(existsSync(psuLaunchLogRoot(home))).toBe(false);
+  });
+
+  it('gives each launch its own file, so no launch can read another one', () => {
+    // Owner ids are minted per launch; this is what makes truncate-on-open safe
+    // and what stops a stale diagnostic being reported for a fresh failure.
+    expect(psuLaunchLogPath('su-aaa', { home })).not.toBe(psuLaunchLogPath('su-bbb', { home }));
+  });
+
+  describe('rejects an owner id it cannot safely make a path from', () => {
+    // SECURITY, not tidiness: this value becomes a path segment AND is
+    // interpolated into a shell one-liner by launch-su's receipt path.
+    it.each([
+      ['traversal', '../../../../etc/passwd'],
+      ['a slash', 'su-abc/def'],
+      ['a shell metacharacter', 'su-abc;rm -rf /'],
+      ['a quote', "su-abc'"],
+      ['a space', 'su abc'],
+      ['a newline', 'su-abc\nrm'],
+      ['empty', ''],
+      ['null', null],
+      ['undefined', undefined],
+      ['a non-string', 12345 as unknown as string],
+      ['over-long', 'a'.repeat(129)],
+    ])('%s', (_label, bad) => {
+      expect(psuLaunchLogPath(bad as string | null | undefined, { home })).toBeNull();
+      expect(ensurePsuLaunchLogPath(bad as string | null | undefined, { home })).toBeNull();
+    });
+
+    it('accepts the real minted shape (su-<uuid>)', () => {
+      expect(psuLaunchLogPath(OWNER, { home })).not.toBeNull();
+    });
+  });
+});
+
+describe('readPsuLaunchLogTail', () => {
+  it('distinguishes NO LOG (null) from A LOG THAT SAID NOTHING (empty string)', () => {
+    // The whole point of the distinction: null means "we captured nothing, so
+    // say nothing and fall back to the generic banner", while '' means "the
+    // launch ran and printed nothing" — itself a finding. Collapsing them would
+    // make a silent launch indistinguishable from an un-instrumented one.
+    expect(readPsuLaunchLogTail(OWNER, { home })).toBeNull();
+
+    const file = ensurePsuLaunchLogPath(OWNER, { home })!;
+    writeFileSync(file, '   \n  ');
+    expect(readPsuLaunchLogTail(OWNER, { home })).toBe('');
+  });
+
+  it('returns the TAIL, not the head — the failure is the last thing printed', () => {
+    const file = ensurePsuLaunchLogPath(OWNER, { home })!;
+    writeFileSync(file, `${'boot chatter\n'.repeat(200)}psu: the actual reason it died\n`);
+    const tail = readPsuLaunchLogTail(OWNER, { home, chars: 60 })!;
+    expect(tail).toContain('psu: the actual reason it died');
+    expect(tail.length).toBeLessThanOrEqual(60);
+  });
+
+  it('never throws on an unreadable path — it is read on a display path', () => {
+    // A directory where a file should be: readFileSync throws EISDIR.
+    mkdirSync(join(psuLaunchLogRoot(home), `${OWNER}.log`), { recursive: true });
+    expect(readPsuLaunchLogTail(OWNER, { home })).toBeNull();
+  });
+
+  it('returns null for a rejected owner id rather than reaching outside the dir', () => {
+    expect(readPsuLaunchLogTail('../../etc/passwd', { home })).toBeNull();
+  });
+});
+
+describe('prunePsuLaunchLogs', () => {
+  it('removes logs past the TTL and keeps fresh ones', () => {
+    const dir = psuLaunchLogRoot(home);
+    mkdirSync(dir, { recursive: true });
+    const stale = join(dir, 'su-stale.log');
+    const fresh = join(dir, 'su-fresh.log');
+    writeFileSync(stale, 'old');
+    writeFileSync(fresh, 'new');
+    const longAgo = (Date.now() - PSU_LAUNCH_LOG_TTL_MS * 2) / 1000;
+    utimesSync(stale, longAgo, longAgo);
+
+    expect(prunePsuLaunchLogs({ home })).toBe(1);
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('ignores non-log files and a missing directory, and never throws', () => {
+    expect(prunePsuLaunchLogs({ home })).toBe(0); // no directory at all
+
+    const dir = psuLaunchLogRoot(home);
+    mkdirSync(dir, { recursive: true });
+    const notALog = join(dir, 'README.txt');
+    writeFileSync(notALog, 'x');
+    const longAgo = (Date.now() - PSU_LAUNCH_LOG_TTL_MS * 2) / 1000;
+    utimesSync(notALog, longAgo, longAgo);
+
+    expect(prunePsuLaunchLogs({ home })).toBe(0);
+    expect(existsSync(notALog)).toBe(true);
+  });
+});
+
+describe('ensurePsuLaunchLogPath', () => {
+  it('creates the directory (the WRITER seam) and returns the same path as the pure reader', () => {
+    const written = ensurePsuLaunchLogPath(OWNER, { home });
+    expect(written).toBe(psuLaunchLogPath(OWNER, { home }));
+    expect(existsSync(psuLaunchLogRoot(home))).toBe(true);
+    expect(readdirSync(psuLaunchLogRoot(home))).toEqual([]); // the dir, not the file
+  });
+});
+
+/*
+ * ⚠ THE WRITER↔READER AGREEMENT IS NOT ASSERTED HERE, DELIBERATELY.
+ *
+ * The invariant that actually matters — psu-launcher.mjs WRITES the file
+ * adv-roster.ts READS — is only provable by EXECUTION: a source-text check that
+ * each file mentions 'psu-launch-log.mjs' cannot tell an import from a comment,
+ * and would keep passing while one side quietly derived a different path (the
+ * exact silent-drift failure this module exists to prevent). So each half is
+ * pinned where it can actually be run:
+ *
+ *   • WRITER → apps/operator/scripts/psu-launcher-boot-log.test.ts, which runs
+ *     installBootLogCapture against a temp home and asserts the file it created
+ *     is byte-identical to psuLaunchLogPath()'s answer.
+ *   • RECEIPT → launch-su.test.ts, which drives the real route and asserts the
+ *     tee target inside the emitted shell one-liner is psuLaunchLogPath(ownerId)
+ *     for the owner the route actually minted.
+ */

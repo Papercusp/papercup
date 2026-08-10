@@ -1073,6 +1073,14 @@ export default function SessionChatModal({
   // stays false until the roster says otherwise, so the honest "starting up"
   // copy still leads for a launch that is genuinely still booting.
   const launchFailed = startingEntry?.launchFailed === true;
+  // WI-37841: WHY it failed, in psu's own words. Server-captured (the boot log
+  // psu-launcher tees into), because the reason is printed inside the spawned
+  // window and no client can ever see it. Trimmed to a couple of lines here —
+  // this is a banner, not a log viewer; the full file is on disk for an agent.
+  const launchFailureHint =
+    launchFailed && typeof startingEntry?.launchFailureHint === 'string'
+      ? startingEntry.launchFailureHint.trim()
+      : '';
 
   // When the boot window started, for the did-not-come-online fallback below.
   // The caller's launch moment wins when we have it (it is the earlier and more
@@ -1600,7 +1608,37 @@ export default function SessionChatModal({
                 // (its terminal process is gone and it never registered). That is
                 // evidence, so this is stated flatly and immediately, with no
                 // "may have" hedge and no 60s wait for a timer to guess it.
-                'This session’s launch failed — its terminal closed before the session came online. Try launching it again.'
+                //
+                // WI-37841: and when we captured what psu printed on its way out,
+                // SHOW IT. Without the cause this banner could only ever say "the
+                // terminal closed" plus "try again" — advice that cannot work when
+                // the failure is deterministic, and which twice sent the owner to
+                // retry a launch that failed identically every time. The retry
+                // suggestion is therefore dropped whenever a cause is present:
+                // with a reason on screen, "try again" is noise at best.
+                (
+                  <>
+                    <div>
+                      This session’s launch failed — its terminal closed before the session came
+                      online.{launchFailureHint ? '' : ' Try launching it again.'}
+                    </div>
+                    {launchFailureHint ? (
+                      <div
+                        data-testid="session-chat-launch-failure-hint"
+                        style={{
+                          marginTop: 4,
+                          fontSize: 10,
+                          fontFamily: 'var(--font-mono, monospace)',
+                          color: 'var(--fg-mute)',
+                          overflowWrap: 'anywhere',
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {launchFailureHint}
+                      </div>
+                    ) : null}
+                  </>
+                )
               : startupTimedOut
                 ? rosterUnreadable
                   ? "Can't reach the operator to check on this session — this looks like a connection problem, not a failed launch. Relaunching won't help until it's back."
