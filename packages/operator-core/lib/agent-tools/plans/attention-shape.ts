@@ -22,8 +22,10 @@ export const ATTENTION_TIER_CAPS = {
 
 type AttentionTierName = keyof typeof ATTENTION_TIER_CAPS;
 
+import { clipWithMarker } from "./shape-clip";
+
 const clip = (s: unknown, n: number): string | null =>
-  typeof s === "string" ? (s.length > n ? `${s.slice(0, n - 1)}…` : s) : null;
+  typeof s === "string" ? clipWithMarker(s, n) : null;
 
 /** Most → least urgent; unknown ranks as 'normal'. */
 const IMPORTANCE_ORDER = ["urgent", "high", "normal", "low"] as const;

@@ -27,6 +27,7 @@
     "@papercusp/lexicon": "file:../../libs/generic/lexicon",
     "@papercusp/operator-core": "file:../../packages/operator-core",
     "@papercusp/p2p-voice": "file:../../libs/generic/p2p-voice",
+    "@papercusp/sse": "file:../../libs/generic/sse",
     "@papercusp/sync": "file:../../libs/generic/sync",
     "@papercusp/testing-shell": "file:../../libs/testing-shell",
     "@papercusp/ui-primitives": "file:../../libs/generic/ui-primitives",

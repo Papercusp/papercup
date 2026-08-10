@@ -1,0 +1,175 @@
+/**
+ * shape-clip.ts — self-describing truncation for the plans:* payload-tier shapers
+ * (EI-20038981829684213).
+ *
+ * ## The class
+ *
+ * `libs/generic/tooldef/src/payload-tier.ts` already fixed this once
+ * (EI-19447969329510166): a clipped string MUST ANNOUNCE ITS OWN CLIPPING, IN
+ * BAND, because a bare `…` occurs constantly inside real content and so a
+ * truncated value is indistinguishable from a complete one. That fix landed on
+ * the GENERIC projector. The four tool-local plans shapers — get / items /
+ * attention / list — each carry their own copy of the pre-fix idiom
+ * (`s.slice(0, n - 1) + "…"`) and were never brought along.
+ *
+ * ## Why a sibling flag is not enough
+ *
+ * Each shaper does stamp a sibling marker (`body_truncated`, `text_truncated`,
+ * `prose_truncated`). A sibling is strippable: the measured failure was
+ *
+ *     plans:get { slug, heading:'Decisions', projection:{ pick:['results[].section.body'] } }
+ *
+ * which selects the value and drops the flag that qualifies it. That also
+ * blinds the result door, whose upstream-truncation detector scans the
+ * SERIALIZED TEXT for marker field names (result-door.ts:380) — so the door
+ * then reports "No upstream truncation marker was detected" on a payload that
+ * was truncated. An in-band marker cannot be separated from the value it
+ * qualifies by any projection, which is the whole point of putting it there.
+ *
+ * ## Why records, not chars, for a section body
+ *
+ * `heading:'Decisions'` returns one section as ONE STRING. Clipping it at a
+ * fixed char count lands mid-ledger, and the retained prefix is N whole,
+ * well-formed decisions — nothing about four complete `### D-NNN` blocks looks
+ * cut off. Measured on `retire-mug-kettle-su-only-2026-08-09`: a 98,941-char /
+ * 30-record Decisions section, capped to 6,000 chars at the trimmed tier,
+ * yielded D-001..D-004 while `counts.decisions` said 30. The load-bearing
+ * decisions on that plan were D-020 and D-030.
+ *
+ * So a record-structured body is cut at a RECORD BOUNDARY and the marker states
+ * the count in the units the reader cares about ("showing 4 of 30"), not in
+ * chars. A char count cannot answer "am I missing a ruling?"; a record count
+ * can.
+ *
+ * The recovery pointer is deliberately `payloadTier:'full'` — the one exit that
+ * actually resolves for this layer. (payload-tier.ts's own marker points at
+ * `_projection.cursor`, which these shapers do not emit; advertising a pointer
+ * that does not resolve is worse than none, because it becomes a lie the reader
+ * trusts.)
+ */
+
+/** The recovery pointer these shapers can honestly offer. */
+export const SHAPE_RECOVER_HINT = 'payloadTier:"full"';
+
+/**
+ * Below this cap the marker is charged against a budget small enough that the
+ * recovery hint would crowd out the content it is meant to qualify — a 50-char
+ * marker on `plans:items`' 120-char text cap is 42% of the field. The COMPACT
+ * form drops the hint and keeps the load-bearing half: that the value is
+ * incomplete, and by how much.
+ */
+const COMPACT_MARKER_BELOW = 200;
+
+/**
+ * In-band marker for a clipped string. Square-bracket form + a greppable
+ * `TRUNCATED` matches the house convention in payload-tier.ts. Both forms carry
+ * the word, so one grep finds either.
+ */
+export function clipMarker(
+  omittedChars: number,
+  recover: string = SHAPE_RECOVER_HINT,
+  compact = false,
+): string {
+  return compact
+    ? `…[+${omittedChars} chars TRUNCATED]`
+    : `…[TRUNCATED +${omittedChars} chars — recover: ${recover}]`;
+}
+
+/**
+ * Clip `s` so the RESULT — marker included — is at most `n` chars, and so the
+ * result says so in band.
+ *
+ * The marker's own length depends on the omitted count, which depends on how
+ * much we keep: sizing the reserve against the worst case (the whole string
+ * omitted) makes the final marker never longer than the reserve, so one pass
+ * always fits. No iteration needed.
+ */
+export function clipWithMarker(s: string, n: number, recover: string = SHAPE_RECOVER_HINT): string {
+  if (s.length <= n) return s;
+  const compact = n < COMPACT_MARKER_BELOW;
+  const reserve = clipMarker(s.length, recover, compact).length;
+  // Degenerate cap (smaller than a marker): still never return a silent clip —
+  // an unmarked truncation is the exact failure this module exists to prevent.
+  if (n <= reserve) return clipMarker(s.length, recover, true);
+  const keep = n - reserve;
+  return `${s.slice(0, keep)}${clipMarker(s.length - keep, recover, compact)}`;
+}
+
+/** Start offsets of every `### ` record in a markdown body. */
+function recordOffsets(body: string): number[] {
+  const offsets: number[] = [];
+  const re = /^### /gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) offsets.push(m.index);
+  return offsets;
+}
+
+function recordMarker(shown: number, total: number, omittedChars: number): string {
+  return (
+    `…[TRUNCATED — showing ${shown} of ${total} "###" records, ` +
+    `+${omittedChars} chars — recover: ${SHAPE_RECOVER_HINT}]`
+  );
+}
+
+export interface ClippedSection {
+  body: string;
+  truncated: boolean;
+  /** Length of the ORIGINAL body, before any clip. */
+  fullChars: number;
+  /** Present only for a record-structured body that was cut. */
+  recordsShown?: number;
+  recordsTotal?: number;
+}
+
+/**
+ * Clip one heading-narrowed section body to `n` chars.
+ *
+ * A body with 2+ `### ` records is cut at a record BOUNDARY, never mid-record,
+ * and its marker reports records rather than chars. Anything else falls back to
+ * {@link clipWithMarker}. Either way the marker rides IN BAND.
+ */
+export function clipSectionBody(body: string, n: number): ClippedSection {
+  const fullChars = body.length;
+  if (fullChars <= n) return { body, truncated: false, fullChars };
+
+  const offsets = recordOffsets(body);
+  const total = offsets.length;
+
+  if (total >= 2) {
+    // Reserve against the worst case, as in clipWithMarker.
+    const reserve = recordMarker(total, total, fullChars).length;
+    const budget = n - reserve;
+    // Largest record boundary that still fits. offsets[0] is the head preamble's
+    // end; cutting there would show ZERO records, so require at least one.
+    let cutAt = -1;
+    let shown = 0;
+    for (let i = 1; i < offsets.length; i++) {
+      if (offsets[i]! <= budget) {
+        cutAt = offsets[i]!;
+        shown = i;
+      } else break;
+    }
+    if (cutAt > 0) {
+      const kept = body.slice(0, cutAt);
+      return {
+        body: `${kept}${recordMarker(shown, total, fullChars - cutAt)}`,
+        truncated: true,
+        fullChars,
+        recordsShown: shown,
+        recordsTotal: total,
+      };
+    }
+    // The FIRST record alone overruns the budget — a boundary cut would show
+    // nothing. Fall back to a char clip, but still report the record counts so
+    // the caller learns it is seeing 0 complete records of `total`.
+    return {
+      body: clipWithMarker(body, n),
+      truncated: true,
+      fullChars,
+      recordsShown: 0,
+      recordsTotal: total,
+    };
+  }
+
+  return { body: clipWithMarker(body, n), truncated: true, fullChars };
+}

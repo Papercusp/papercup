@@ -4,9 +4,11 @@
 // scripts/check-fixed-but-open.mjs and regenerate.
 /**
  * Classify ONE citation of `id` on `content`.
- *   'comment' — the line is prose about the change (the evidence-bearing shape)
- *   'literal' — the id sits inside quotes, i.e. it is DATA (fixture rows, id arrays)
- *   'code'    — anything else
+ *   'comment'   — the line is prose about the change (the evidence-bearing shape)
+ *   'assertion' — a committed guard asserting the id appears in output the code PRODUCED
+ *                 (see `assertsProducedValue`). Evidence, despite being quoted.
+ *   'literal'   — the id sits inside quotes, i.e. it is DATA (fixture rows, id arrays)
+ *   'code'      — anything else
  *
  * ⚠ The return type is DECLARED, not inferred, and that is load-bearing for
  * `gen:declarations:check`. `generate()` unlinks the existing declarations before running tsc
@@ -19,9 +21,9 @@
  *
  * @param {string} content
  * @param {string} id
- * @returns {'comment' | 'literal' | 'code'}
+ * @returns {'comment' | 'assertion' | 'literal' | 'code'}
  */
-export function classifyCitation(content: string, id: string): "comment" | "literal" | "code";
+export function classifyCitation(content: string, id: string): "comment" | "assertion" | "literal" | "code";
 /**
  * Tier an id by the strength of its citation evidence.
  *
@@ -29,13 +31,31 @@ export function classifyCitation(content: string, id: string): "comment" | "lite
  * distinguished from fixture scaffolding, so it drops to 'weak' no matter how it reads elsewhere.
  * This is the filter that removed the measured EI-100 false positive.
  *
- * @param {{ contexts: Set<string>, inTest: boolean, everLiteral: boolean }} rec
+ * ⚠ An assertion does NOT override this veto, and that restraint was measured, not assumed.
+ * The WI-5332 fix (2026-08-10) stops an assertion from *triggering* the veto — an assertion is
+ * not fixture data — but an earlier draft went further and let `hasAssertion` outrank it. Running
+ * that draft over the real tree promoted EI-100, the original documented false positive, straight
+ * back to `guard`. Two measured shapes defeat any line-scoped rule:
+ *
+ *   expect(w).toContain('EI-100');                    ← claim.blocked-warning.test.ts:101, where
+ *     the id was fed IN five lines earlier by `mockResolvedValue([{ ref: 'EI-100' }])`. The
+ *     round-trip is real; it just does not fit on one line, so the subject check cannot see it.
+ *
+ *   expect(html).not.toContain('EI-100');             ← release-history-integration.test.ts:259,
+ *     an assertion of ABSENCE — the id is scrubbed FROM output, the opposite of evidence.
+ *
+ * The asymmetry decides it: a false negative leaves a fixed item in a lower tier where a human
+ * still reads it, while a false positive recommends closing a LIVE item. So affirmative evidence
+ * gets an id OUT of the veto's blast radius only when nothing else quotes it as data.
+ *
+ * @param {{ contexts: Set<string>, inTest: boolean, everLiteral: boolean, hasAssertion?: boolean }} rec
  * @returns {'guard' | 'source-comment' | 'weak'}
  */
 export function tierFor(rec: {
     contexts: Set<string>;
     inTest: boolean;
     everLiteral: boolean;
+    hasAssertion?: boolean;
 }): "guard" | "source-comment" | "weak";
 /**
  * A citation can name an item as STILL OUTSTANDING rather than as fixed — a third false-positive

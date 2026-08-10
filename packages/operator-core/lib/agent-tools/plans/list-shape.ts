@@ -23,8 +23,10 @@ export const PLANS_LIST_TIER_CAPS = {
 
 type ListTier = keyof typeof PLANS_LIST_TIER_CAPS;
 
+import { clipWithMarker } from "./shape-clip";
+
 const clip = (s: unknown, n: number): string | null =>
-  typeof s === "string" ? (s.length > n ? `${s.slice(0, n - 1)}…` : s) : null;
+  typeof s === "string" ? clipWithMarker(s, n) : null;
 
 /** Item statuses an agent can still act on — everything but done/dropped. */
 const CLOSED_ITEM_STATUSES = new Set(["done", "dropped"]);

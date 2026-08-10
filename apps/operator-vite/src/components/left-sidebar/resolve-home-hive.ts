@@ -4,8 +4,7 @@
  * `isHome` row wins, else the first `kind:'hive'` project, else the first
  * steering row, else '' (callers guard the empty case).
  *
- * Extracted from the retired MugTab (WI-4778 — the Mug/Kettle rail tabs moved
- * to `_retired/mug-kettle-rail-tabs/`) because the live `useModelOverride`
+ * Extracted from MugTab (WI-4778) because the live `useModelOverride`
  * hook (Papercup tab) resolves the same home slug. Structural param types on
  * purpose: both callers read the same wire rows through their own narrow row
  * interfaces.

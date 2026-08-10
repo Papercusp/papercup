@@ -1,0 +1,127 @@
+# Burning down undeclared workspace dep edges
+URL: /internal/docs/agent-insights/burning-down-undeclared-workspace-dep-edges
+
+How to shrink check-workspace-deps-complete's BASELINE without shipping a dependency cycle, mis-declaring dev-only packages as production deps, or waiting for a quiet box you never needed.
+
+`scripts/check-workspace-deps-complete.mjs` holds a shrink-to-empty `BASELINE` of
+`importer->imported` edges: places where a workspace imports `@papercusp/*` without declaring
+it. Each entry is a consumer that `scripts/affected-tests.mjs` cannot see, so a change to the
+imported package does **not** select the importer's tests. That is a latent version of the
+2026-08-09 incident where the fleet gate sat frozen \~2h20m.
+
+This page is the method. It was written after taking the BASELINE from **58 to 5**
+(EI-20026978310669562); every warning below is something that actually fired.
+
+## Take the denominator from the guard, never from a grep
+
+The guard prints its offender set as JSON with `--list`. Parse **that**.
+
+A hand-rolled `@papercusp/[a-z0-9-]+->@papercusp/[a-z0-9-]+` regex returns **57** where the
+guard says **58**. The missing edge is `@papercup/marketplace-public-ui->@papercusp/test-config`
+— a *different scope*, `@papercup` with no "s". Same form-blind class as the module-singleton
+detector described in `CLAUDE.md`: the measurement matched a spelling instead of the thing.
+
+## Cycle detection must be INCREMENTAL
+
+Before declaring `importer -> imported`, check that `imported` cannot already reach `importer`.
+The trap is that checking each edge against the **original** graph is unsound for a batch:
+
+```
+operator-core -> plugin-loader      (being added)     ─┐
+plugin-loader -> agent-mcp          (being added)      ├─ together: a 3-hop cycle
+agent-mcp     -> operator-core      (already declared) ─┘
+```
+
+Neither new edge is a cycle *in isolation*. Accept greedily and **mutate the graph as you go**,
+so every later check sees the edges already accepted in the same batch. Measured: the
+non-incremental check found 1 cycle, the incremental one found 2. The second would have shipped.
+
+## Decide `dependencies` vs `devDependencies` from the IMPORTING FILE
+
+The guard deliberately skips `*.test.ts` / `*.spec.ts` (see `importsInWorkspace`) because
+test-only imports do not gate the reverse-dep walk. A consequence that is easy to miss: a
+**dev-time config** import is not a test file, so it survives the filter and appears in the
+guard's output looking exactly like a production import.
+
+Of 53 edges, 13 were `@papercusp/test-config` imported from nothing but that package's own
+`vitest.config.ts`. Declaring all 53 as `dependencies` stripped `"dev": true` from \~200
+`package-lock.json` entries — i.e. it promoted a pile of dev-only tooling into production
+installs.
+
+Classify **per edge**, from the files that actually import it. `test-config` is never a
+production dep; `testing-shell` genuinely is one (real source and UI import it), so you cannot
+decide this by package name either.
+
+## You do not need a quiet box — use `--package-lock-only`
+
+The item this work came from advised batching edges and waiting for a quiet window, because
+`npm run install:safe` rewrites `node_modules/.bin` under every concurrent agent's in-flight
+vitest run. That caution is real for a normal install and **does not apply here**:
+
+* Every edge target is *already* symlinked into root `node_modules` (verified: 0 of 35 missing).
+  These declarations change bookkeeping, not what is on disk.
+* So `node scripts/npm-install-safe.mjs install --package-lock-only` regenerates the lock
+  **without writing `node_modules` at all**. No peer's test run is disturbed.
+
+Two wakes were deferred waiting for a calm box that was never required.
+
+### The desync window is smaller than it looks
+
+Between editing `package.json` and regenerating the lock, the two disagree and `npm ci` fails.
+Worth knowing exactly who is exposed:
+
+* **`green-checkpoint` does not run `npm ci` anywhere** — the fleet-freezing local gate is not
+  sensitive to this at all.
+* Only `.github/workflows/*.yml` runs `npm ci --legacy-peer-deps`.
+
+Keep the window tight by doing the edit and the regeneration in **one** command, and hold
+`git-sync:papercusp` if you can get it. Do not block on that lock: it is `advisory`, git-sync
+takes it for its own sweeps, and `wait: { max_drain_sec }` only drains *shared* holders, so it
+will not block behind git-sync's exclusive hold.
+
+## Verify with a FALSIFIABLE routing probe
+
+"The importer now appears in `--print-affected`" is **not** evidence. Many importers are already
+reachable through some other path, so that check can pass without your edge doing anything.
+
+Compare against the before-graph:
+
+```bash
+INTRO=$(git log --format=%H -S'@papercusp/lexicon' -- packages/operator-core/package.json | head -1)
+# build the declared-dep graph at $INTRO~1 and at HEAD, then test reachability in both
+```
+
+Measured across four sample probes, three went `UNREACHABLE -> REACHABLE`
+(`operator-core->lexicon`, `operator-core->backup`, `operator-vite->ui-primitives`) — but
+`web->p2p-voice` was **already reachable**, so that one probe would have "confirmed" success
+while proving nothing.
+
+⚠ **Limit worth stating rather than glossing:** submodule packages (`test-config`,
+`testing-shell`, `libs/generic/sync`) have no `package.json` in the *superproject* at any ref,
+so a `git show`-based before/after computation is silent about them. That is a gap in the
+verification, not a pass.
+
+## What the remaining 5 are
+
+They are not ordinary backlog; each resists the generic fix:
+
+| edge                                                                    | why                                                                                                           |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `operator-core->agent-mcp`                                              | true 2-cycle — `agent-mcp` declares `operator-core`                                                           |
+| `plugin-loader->agent-mcp`                                              | closes a 3-hop cycle (see above)                                                                              |
+| `operator-core->file-claim`, `operator-core->sse`, `operator-vite->sse` | target is not a root workspace, so `"*"` cannot resolve locally — npm goes to the registry and `npm ci` fails |
+
+For the last three the fix is either adding the target to `root.workspaces` or using a `file:`
+specifier — a different change with a different blast radius.
+
+## Checklist
+
+1. `--list` → parse the guard's JSON. Do not re-derive with a regex.
+2. Drop edges whose target is not a root workspace.
+3. Cycle-check **incrementally**, mutating the graph as you accept.
+4. Match each importer's dominant spec style (`"*"` vs `file:../../…`).
+5. Split `dependencies` / `devDependencies` by the importing file.
+6. Edit + `install --package-lock-only` in one command; verify **both** dep maps mirror the lock.
+7. `npm run doctor:deps` — every declared dep must resolve on disk.
+8. Falsifiable before/after reachability probe.
+9. Shrink `BASELINE` in the same change, and document any edge you leave behind.

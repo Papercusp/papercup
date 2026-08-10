@@ -63,49 +63,52 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * import look exactly like a production import — so the dep placement has to be decided from
  * the IMPORTING FILE, not from the guard's output alone. Classify before you declare.
  *
- * THE REMAINING 5 ARE NOT ORDINARY BACKLOG — each resists the generic fix for a stated
- * structural reason. Do not "just declare" them; read the reason first.
+ * THE BASELINE IS NOW EMPTY (2026-08-10, WI-37624). This guard is a pure never-regress
+ * ratchet: any entry appearing here again is a REGRESSION, not backlog.
  */
 export const BASELINE = new Set([
-  // ── (a) TRUE DEPENDENCY CYCLES ─────────────────────────────────────────────────────────
-  // Declaring these would close a loop: @papercusp/agent-mcp already declares
-  // @papercusp/operator-core, so operator-core->agent-mcp is a direct 2-cycle, and
-  // plugin-loader->agent-mcp closes a 3-hop cycle via operator-core->plugin-loader (declared
-  // 2026-08-10). Both were caught by INCREMENTAL cycle detection — checking each edge against
-  // the ORIGINAL graph passes plugin-loader->agent-mcp, because the edge that makes it a cycle
-  // is one being added in the SAME batch. Any future burn-down must re-check against the
-  // graph INCLUDING edges already accepted in that batch.
-  '@papercusp/operator-core->@papercusp/agent-mcp',
-  '@papercusp/plugin-loader->@papercusp/agent-mcp',
-
-  // ── (b) TARGET IS NOT A ROOT WORKSPACE ─────────────────────────────────────────────────
-  // BASELINE CORRECTION (EI-20028225708881148, 2026-08-10) — these edges are NOT new. They
-  // existed all along and were SILENTLY DROPPED by the target-side root-workspace test (see
-  // loadLocalPackagesOnDisk above). Nothing was added to the repo; pre-existing edges are
-  // finally being SEEN. That is a baseline CORRECTION, not a breach of the shrink-only rule —
-  // same precedent as CLAUDE.md's module-singleton allowlist growing 14 -> 32 when its
-  // detector stopped being form-blind.
-  // Their targets are local packages that are NOT in root.workspaces, so the generic
-  // `"<name>": "*"` fix does NOT work: npm cannot resolve `*` to a local package it does not
-  // know is a workspace, so it goes to the registry and `npm ci` fails. Fixing these means
-  // either adding the target to root.workspaces or declaring a `file:` specifier — a
-  // different change with a different blast radius, tracked separately.
-  '@papercusp/operator-core->@papercusp/file-claim',
-  '@papercusp/operator-core->@papercusp/sse',
-  '@papercusp/operator-vite->@papercusp/sse',
+  // EMPTY — and it must stay that way. Shrink-to-empty reached 2026-08-10 (WI-37624).
+  //
+  // The last 5 edges were closed after their two stated blockers were MEASURED, and BOTH
+  // turned out to be false. Recorded here because each is the kind of plausible claim that
+  // would otherwise be re-derived and re-believed by the next reader:
+  //
+  //   (a) CLAIMED: "declaring these closes a dependency CYCLE, so it's a design question."
+  //       A cycle is harmless to BOTH consumers of this graph, verified:
+  //         - affected-tests.mjs walks reverse-deps with a visited set (`if (!affected.has(d))`),
+  //           so a cycle terminates — it cannot loop or overrun.
+  //         - npm resolves cyclic WORKSPACE deps by symlinking. `npm install --package-lock-only`
+  //           accepted operator-core<->agent-mcp AND the 3-hop
+  //           plugin-loader->agent-mcp->operator-core->plugin-loader cycle, exit 0.
+  //       The IMPORT cycle already existed in the code. Declaring it only makes the graph
+  //       honest; leaving it undeclared never prevented a cycle, it just hid one.
+  //
+  //   (b) CLAIMED: "`*` cannot resolve a non-root-workspace target, so `npm ci` breaks."
+  //       Falsified by the tree itself: `"@papercusp/sse": "*"` was ALREADY in use by 5
+  //       packages (flags, agent-chat, tooldef-http, sync, desktop-ipc), and file-claim by 2
+  //       (orchestrator, locks). These 3 were declared with `file:` specifiers regardless, to
+  //       match what apps/operator and packages/agent-mcp already use for the SAME targets.
+  //
+  // ⚠ DECLARING A NEW EDGE? DIFF THE AFFECTED SET IN BOTH DIRECTIONS. Widening this graph can
+  // SUPPRESS behaviour keyed on a workspace NOT being affected — that is exactly how
+  // EI-20026978310669562 silently detached repo-wide invariant guards. Measured for THIS batch:
+  // operator-core->agent-mcp did suppress 3 standalone guard tasks (chunk-safe,
+  // partial-index-alignment, drop-database-force) for packages/agent-mcp paths — and that is
+  // CORRECT: all 3 declare a hostSuiteRatchet into operator-core, whose `:: test` task was
+  // GAINED in the same diff. No guard lacking a ratchet was suppressed.
 ]);
 
-function expandWorkspaces(patterns) {
+function expandWorkspaces(patterns, root = ROOT) {
   const out = [];
   for (const p of patterns) {
     if (p.includes('*')) {
       const base = p.replace(/\/\*$/, '');
-      if (!existsSync(join(ROOT, base))) continue;
-      for (const entry of readdirSync(join(ROOT, base))) {
+      if (!existsSync(join(root, base))) continue;
+      for (const entry of readdirSync(join(root, base))) {
         const dir = `${base}/${entry}`;
-        if (existsSync(join(ROOT, dir, 'package.json'))) out.push(dir);
+        if (existsSync(join(root, dir, 'package.json'))) out.push(dir);
       }
-    } else if (existsSync(join(ROOT, p, 'package.json'))) {
+    } else if (existsSync(join(root, p, 'package.json'))) {
       out.push(p);
     }
   }
@@ -148,7 +151,7 @@ const WALK_SKIP_DIRS = new Set([
  * probe would miss them). The tree is the same everywhere; node_modules is not.
  * Cost is negligible and was measured, not assumed: 2611 dirs / 118 package.json in 0.15s.
  */
-export function loadLocalPackagesOnDisk() {
+export function loadLocalPackagesOnDisk(root = ROOT) {
   const byName = new Map();
   const walk = (abs, rel, depth) => {
     if (depth > 6) return;
@@ -172,23 +175,23 @@ export function loadLocalPackagesOnDisk() {
       walk(join(abs, e.name), rel ? `${rel}/${e.name}` : e.name, depth + 1);
     }
   };
-  walk(ROOT, '', 0);
+  walk(root, '', 0);
   return byName;
 }
 
-function loadWorkspaces() {
-  const rootPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-  const wsDirs = expandWorkspaces(rootPkg.workspaces);
+function loadWorkspaces(root = ROOT) {
+  const rootPkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const wsDirs = expandWorkspaces(rootPkg.workspaces, root);
   const byDir = new Map();
   const byName = new Map();
   for (const dir of wsDirs) {
-    const pkg = JSON.parse(readFileSync(join(ROOT, dir, 'package.json'), 'utf8'));
+    const pkg = JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8'));
     byDir.set(dir, pkg);
     if (pkg.name) byName.set(pkg.name, { dir, pkg });
   }
   // Root workspaces WIN on a name collision (@papercusp/desktop resolves to two dirs on
   // disk); the workspace copy is the one npm and affected-tests.mjs actually resolve.
-  const localByName = loadLocalPackagesOnDisk();
+  const localByName = loadLocalPackagesOnDisk(root);
   for (const [name, meta] of byName) localByName.set(name, meta);
   return { byDir, byName, localByName };
 }
@@ -202,7 +205,7 @@ function stripComments(text) {
 }
 
 /** Local @papercusp/* imports found in one workspace's TS/TSX source (excludes tests/dist/node_modules). */
-function importsInWorkspace(dir) {
+function importsInWorkspace(dir, root = ROOT) {
   let files = '';
   try {
     files = execFileSync(
@@ -215,7 +218,7 @@ function importsInWorkspace(dir) {
         '--exclude-dir=dist',
         '--exclude-dir=.next',
         String.raw`@papercusp/`,
-        join(ROOT, dir),
+        join(root, dir),
       ],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     ).trim();
@@ -239,11 +242,11 @@ function importsInWorkspace(dir) {
 }
 
 /** Scan every workspace for undeclared local @papercusp/* imports. Returns [{ importer, imported, edge }]. */
-export function findOffenders() {
-  const { byDir, byName, localByName } = loadWorkspaces();
+export function findOffenders(root = ROOT) {
+  const { byDir, byName, localByName } = loadWorkspaces(root);
   const offenders = [];
   for (const [dir, pkg] of byDir) {
-    const imported = importsInWorkspace(dir);
+    const imported = importsInWorkspace(dir, root);
     if (imported.size === 0) continue;
     const declared = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
     for (const importedName of imported) {

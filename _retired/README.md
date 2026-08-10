@@ -41,14 +41,19 @@ convention.
   (design-simplification-2026-07-09 P-008, owner decision D2). The design-system
   primitives + the dock ENGINE in `apps/operator/app/harness/` stay live — `/adv`
   and `/workbench` are built on them. Restore: `harness-dashboard/RESTORE.md`.
-- `mug-kettle-rail-tabs/` — the left-rail Mug (queen) steering tab + Kettle
-  (overwatch) supervisor tab and their private sub-components (MugHeartbeat,
-  ModelTiersOverride, ThrottleSection, AutonomySurfacing, HiveSteeringTree).
-  Retired 2026-07-14 (WI-4778, owner decision: Papercup is the ONE persona —
-  no Mug/Kettle surfaces; their decision INPUTS render in the chat sidebar's
-  full-height Pot Health view instead). `ModelOverride`/`useModelOverride`
-  stay live (PapercupTab), `resolveHomeHive` extracted to
-  `left-sidebar/resolve-home-hive.ts`. Restore: `mug-kettle-rail-tabs/RESTORE.md`.
+- ⚠ `mug-kettle-rail-tabs/` — **NOT HERE. This directory does not exist, and never
+  did in the end state.** Corrected 2026-08-10 (verified: whole-repo `find` returns
+  nothing, `git ls-files` matches 0 paths). The left-rail Mug (queen) steering tab +
+  Kettle (overwatch) supervisor tab were retired 2026-07-14 (WI-4778) but were then
+  **RESTORED by owner ask** and are today **GATED, not moved**: `MugTab.tsx`,
+  `OverwatchTab.tsx` and `MugHeartbeat.tsx` are live, tested files in
+  `apps/operator-vite/src/components/left-sidebar/`, hidden behind
+  `papercusp-mug-kettle-system` (`LeftSidebar.tsx:292`; the `queen`/`overwatch` TABS
+  entries at :159/:160). Default-OFF is the delivered end state — but **a GATE IS NOT
+  A `_retired/` MOVE**: extend and test that code normally. See
+  `agent-insights/mug-kettle-cup-tier-is-retired` and plan
+  `retire-mug-kettle-su-only-2026-08-09` (D-020, D-029). No restore point — nothing
+  was moved; flip the flag at `/admin/features` to see the tabs.
 - `inbox-pane/` — the chat sidebar's human Inbox face (`InboxPane.tsx`, `?opcv=inbox`).
   Retired 2026-07-26 (`hud-consolidation-2026-07-26` D-001, owner decision: every
   ask it surfaced now opens as a HUD conversation instead, gated on P-002 first

@@ -125,10 +125,56 @@ function submodulePaths(cwd) {
 }
 
 /**
+ * Does `content` assert that a value PRODUCED BY the system under test contains/equals `id`?
+ *
+ * This separates the two opposite things that both look like "the id sits inside quotes", and
+ * getting it wrong is what made the detector under-tier WI-5332 (a genuine already-fixed item)
+ * into the bucket its own report labels "likely FIXTURE data":
+ *
+ *   expect(exhaustedEvents()[0]!.message).toContain('WI-5332');   ← GUARD. The id appears only as
+ *     the EXPECTED value, asserted against output the code emitted. A committed test pinning the
+ *     fix's own message is the strongest already-fixed evidence there is.
+ *
+ *   expect(encodeScopedRef(null, 'WI-1')).toBe('WI-1');           ← FIXTURE. The id is ALSO an
+ *     INPUT — a synthetic value round-tripped through an encoder. Says nothing about WI-1.
+ *
+ * So "inside an expect()" is NOT the discriminator; both lines satisfy it. The discriminator is
+ * whether the id ALSO appears in the assertion's SUBJECT (everything left of `.toXxx(`). We split
+ * on the matcher rather than paren-matching the expect() call — adequate here and far harder to
+ * get subtly wrong than a hand-rolled balanced-paren scan.
+ *
+ * ⚠ Deliberately NOT handled: an id standing alone as a test-block name, `it('WI-1234', ...)`.
+ * That shape was searched for in this tree on 2026-08-10 and returned ZERO hits, so there is no
+ * measured case to anchor it to. Adding a branch for it would be inventing a shape.
+ *
+ * @param {string} content
+ * @param {string} id
+ * @returns {boolean}
+ */
+function assertsProducedValue(content, id) {
+  const esc = id.replace('-', '\\-');
+  const matcher = new RegExp(
+    `\\.(?:toContain|toBe|toMatch|toEqual|toStrictEqual|toHaveBeenCalledWith)\\(\\s*['"\`]${esc}['"\`]`,
+  );
+  const hit = matcher.exec(content);
+  if (!hit) return false;
+  const subject = content.slice(0, hit.index);
+  if (!subject.includes('expect(')) return false;
+  // A NEGATED assertion says the id must NOT appear — the id is being scrubbed FROM output, which
+  // is the opposite of "the fix emits it". Measured: release-history-integration.test.ts:259
+  // `expect(html).not.toContain('EI-100')`, on the original false-positive id.
+  if (/\.not\s*$/.test(subject) || /\.not\./.test(subject)) return false;
+  // The id also appears left of the matcher => it was fed IN, not just asserted about.
+  return !new RegExp(`['"\`]${esc}['"\`]`).test(subject);
+}
+
+/**
  * Classify ONE citation of `id` on `content`.
- *   'comment' — the line is prose about the change (the evidence-bearing shape)
- *   'literal' — the id sits inside quotes, i.e. it is DATA (fixture rows, id arrays)
- *   'code'    — anything else
+ *   'comment'   — the line is prose about the change (the evidence-bearing shape)
+ *   'assertion' — a committed guard asserting the id appears in output the code PRODUCED
+ *                 (see `assertsProducedValue`). Evidence, despite being quoted.
+ *   'literal'   — the id sits inside quotes, i.e. it is DATA (fixture rows, id arrays)
+ *   'code'      — anything else
  *
  * ⚠ The return type is DECLARED, not inferred, and that is load-bearing for
  * `gen:declarations:check`. `generate()` unlinks the existing declarations before running tsc
@@ -141,10 +187,11 @@ function submodulePaths(cwd) {
  *
  * @param {string} content
  * @param {string} id
- * @returns {'comment' | 'literal' | 'code'}
+ * @returns {'comment' | 'assertion' | 'literal' | 'code'}
  */
 export function classifyCitation(content, id) {
   if (COMMENT_LINE_RE.test(content)) return 'comment';
+  if (assertsProducedValue(content, id)) return 'assertion';
   const quoted = new RegExp(`['"\`]${id.replace('-', '\\-')}['"\`]`);
   if (quoted.test(content)) return 'literal';
   return 'code';
@@ -178,13 +225,29 @@ function scanCitations() {
       for (const id of new Set(ids)) {
         let rec = cited.get(id);
         if (!rec) {
-          rec = { contexts: new Set(), inTest: false, everLiteral: false, samples: [] };
+          rec = {
+            contexts: new Set(),
+            inTest: false,
+            everLiteral: false,
+            hasAssertion: false,
+            vetoedBy: null,
+            samples: [],
+          };
           cited.set(id, rec);
         }
         const ctx = classifyCitation(content, id);
         rec.contexts.add(ctx);
         if (ctx === 'literal') rec.everLiteral = true;
-        if (ctx === 'comment' && isTest) rec.inTest = true;
+        if (ctx === 'assertion' && isTest) rec.hasAssertion = true;
+        if ((ctx === 'comment' || ctx === 'assertion') && isTest) rec.inTest = true;
+        // AUDITABILITY: the literal that trips the veto is the one citation `samples` drops, so a
+        // `weak` verdict used to arrive with its grounds withheld — three strong-looking guard
+        // citations and no visible reason for the demotion. Keep the FIRST one so the report can
+        // show what it demoted on. (Measured on WI-5332: the hidden line was an assertion, not
+        // fixture data at all, which is how the misclassification stayed invisible.)
+        if (ctx === 'literal' && !rec.vetoedBy) {
+          rec.vetoedBy = { file: displayPath, line: Number(lineNo), text: content.trim().slice(0, 160) };
+        }
         if (rec.samples.length < 3 && ctx !== 'literal') {
           rec.samples.push({ file: displayPath, line: Number(lineNo), text: content.trim().slice(0, 160), ctx });
         }
@@ -201,7 +264,24 @@ function scanCitations() {
  * distinguished from fixture scaffolding, so it drops to 'weak' no matter how it reads elsewhere.
  * This is the filter that removed the measured EI-100 false positive.
  *
- * @param {{ contexts: Set<string>, inTest: boolean, everLiteral: boolean }} rec
+ * ⚠ An assertion does NOT override this veto, and that restraint was measured, not assumed.
+ * The WI-5332 fix (2026-08-10) stops an assertion from *triggering* the veto — an assertion is
+ * not fixture data — but an earlier draft went further and let `hasAssertion` outrank it. Running
+ * that draft over the real tree promoted EI-100, the original documented false positive, straight
+ * back to `guard`. Two measured shapes defeat any line-scoped rule:
+ *
+ *   expect(w).toContain('EI-100');                    ← claim.blocked-warning.test.ts:101, where
+ *     the id was fed IN five lines earlier by `mockResolvedValue([{ ref: 'EI-100' }])`. The
+ *     round-trip is real; it just does not fit on one line, so the subject check cannot see it.
+ *
+ *   expect(html).not.toContain('EI-100');             ← release-history-integration.test.ts:259,
+ *     an assertion of ABSENCE — the id is scrubbed FROM output, the opposite of evidence.
+ *
+ * The asymmetry decides it: a false negative leaves a fixed item in a lower tier where a human
+ * still reads it, while a false positive recommends closing a LIVE item. So affirmative evidence
+ * gets an id OUT of the veto's blast radius only when nothing else quotes it as data.
+ *
+ * @param {{ contexts: Set<string>, inTest: boolean, everLiteral: boolean, hasAssertion?: boolean }} rec
  * @returns {'guard' | 'source-comment' | 'weak'}
  */
 export function tierFor(rec) {
@@ -261,9 +341,9 @@ function renderText(report, args) {
   lines.push(`  ids cited in committed src : ${counts.citedIds}`);
   lines.push(`  CANDIDATES                 : ${counts.candidates}`);
   lines.push('');
-  lines.push(`    guard          ${String(counts.byTier.guard).padStart(4)}  cited in a test/guard COMMENT, never used as data`);
+  lines.push(`    guard          ${String(counts.byTier.guard).padStart(4)}  cited in a test/guard COMMENT, or ASSERTED against code-produced output`);
   lines.push(`    source-comment ${String(counts.byTier['source-comment']).padStart(4)}  cited in a source COMMENT, never used as data`);
-  lines.push(`    weak           ${String(counts.byTier.weak).padStart(4)}  used as a string literal somewhere — likely FIXTURE data`);
+  lines.push(`    weak           ${String(counts.byTier.weak).padStart(4)}  used as a string literal somewhere — likely FIXTURE data (the ⊘ line says which)`);
   lines.push('');
 
   const shown = candidates.slice(0, args.limit);
@@ -272,6 +352,13 @@ function renderText(report, args) {
     lines.push(`[${c.tier}] ${c.id}  (${c.item_kind}/${c.severity ?? '-'}, opened ${c.created})${flag}`);
     lines.push(`    ${c.title.slice(0, 96)}`);
     for (const s of c.samples) lines.push(`    ↳ ${s.file}:${s.line}  ${s.text}`);
+    // Show the grounds for a demotion. Without this a `weak` verdict arrives beside three
+    // strong-looking guard citations with nothing explaining the gap, and the only way to audit
+    // it is to re-grep by hand — which is how this tool's own misclassification of WI-5332 went
+    // unnoticed. Only meaningful when the veto actually decided the tier.
+    if (c.tier === 'weak' && c.vetoedBy) {
+      lines.push(`    ⊘ demoted by literal use: ${c.vetoedBy.file}:${c.vetoedBy.line}  ${c.vetoedBy.text}`);
+    }
     lines.push('');
   }
   if (candidates.length > shown.length) {
@@ -313,6 +400,10 @@ async function main() {
       // Annotated, never filtered — see CITED_AS_OUTSTANDING_RE.
       citedAsOutstanding: rec.samples.some((s) => CITED_AS_OUTSTANDING_RE.test(s.text)),
       samples: rec.samples,
+      // The citation that caused a `weak` verdict, so the demotion is auditable from the JSON
+      // alone. null on a non-demoted row. Emitted for every tier because a `guard` row that ALSO
+      // has literal use is exactly the ambiguous case a reader may want to eyeball.
+      vetoedBy: rec.vetoedBy,
     });
   }
 

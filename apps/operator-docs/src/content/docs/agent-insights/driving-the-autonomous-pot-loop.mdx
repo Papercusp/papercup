@@ -3,7 +3,7 @@ title: Driving the autonomous pot loop — health-check + schema runbook
 description: The 6-link health-check, exact tool names/args, force-tick + reset-circuit commands, a verified schema cheat-sheet, and the bg-host-drops-MCP→psql gotcha for any agent monitoring/improving the autonomous pot loop.
 discovered: 2026-07-01
 tags: [autonomous-loop, pot, scout, mug, overwatch, runbook, schema]
-status: active
+status: superseded
 documents:
   - packages/operator-core/lib/overwatch/loop.ts
   - packages/operator-core/lib/overwatch/scorecard-backstop.ts
@@ -17,6 +17,25 @@ generated:
   by: agent
   at: 2026-07-01
 ---
+
+:::danger[SUPERSEDED — this loop no longer runs. Do not use it as a health-check runbook.]
+The `mug ─► cup` forward half described below was **retired 2026-08-09** (owner-directed).
+While `papercusp-mug-kettle-system` is OFF — the delivered end state, not a pending flip —
+no Mug wakes, no cup can be spawned, and **Links 3 and 4 of the 6-link check below can
+never be green**. An agent set on "monitor the loop until it's reliable" is monitoring
+something that is off on purpose. See
+[the Mug · Kettle · Cup tier is retired](/agent-insights/mug-kettle-cup-tier-is-retired).
+
+**What survives, and is still accurate:** Scout (and Blender) run UNGATED, so the
+`observation ─► scout ─► route` half of the diagram is live. The schema cheat-sheet, the
+tool names/args, the force-tick and reset-circuit commands, and the
+bg-host-drops-MCP→psql gotcha are all still correct and are why this page is kept rather
+than deleted. Scout's three Mug-consuming watchdogs were retargeted to deliver to a live
+su instead (plan `retire-mug-kettle-su-only-2026-08-09`, P-034).
+
+**What replaced the driving half:** su + GOAL mode. `loop:arm` + `coord:orient` is the
+cadence wake; `fleet:launch-on-plan` is the placement mechanism.
+:::
 
 The autonomous **pot loop** is Papercusp dogfooding itself: the system generates its own
 work, places it, does it, and learns from it — with no human in the cycle. If you are the

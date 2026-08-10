@@ -14,6 +14,8 @@
  * with the escape hatches.
  */
 
+import { clipWithMarker } from "./shape-clip";
+
 export const PLANS_ITEMS_TIER_CAPS = {
   trimmed: { rows: 60, text: 120, phase: 48 },
   standard: { rows: 150, text: 280, phase: 80 },
@@ -22,7 +24,7 @@ export const PLANS_ITEMS_TIER_CAPS = {
 type ItemsTier = keyof typeof PLANS_ITEMS_TIER_CAPS;
 
 const clip = (s: unknown, n: number): string | null =>
-  typeof s === "string" ? (s.length > n ? `${s.slice(0, n - 1)}…` : s) : null;
+  typeof s === "string" ? clipWithMarker(s, n) : null;
 
 /** True when `clip(s, n)` actually cut `s` short. EI-18762253154342502: the
  *  result-door's own `detectInnerTruncationMarkers` scans a spilled result's

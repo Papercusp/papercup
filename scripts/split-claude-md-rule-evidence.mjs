@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractParts } from './gen-claude-md-manifest.mjs';
+import { AUTHORED } from './claude-md-authored-pairs.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE = process.env.PAPERCUSP_CLAUDE_MD ?? resolve(ROOT, 'CLAUDE.md');
@@ -51,16 +52,17 @@ const DEFAULT_OUT = resolve(ROOT, 'packages/operator-core/lib/doc-projection/cla
  * full text intact under `rule`, which loses nothing and is visible in the counts.
  */
 export const TELLS = [
-  ['measured', /\b[Mm]easured\b/],
-  ['observed', /\b[Oo]bserved\b/],
-  ['verified', /\b[Vv]erified\b/],
-  ['confirmed', /\bconfirm(?:ed|s)\b/i],
-  ['reproduced', /\breproduc(?:ed|es)\b/i],
-  ['traced', /\btraced\b/i],
-  ['corroborated', /\bcorroborat/i],
   ['artifact-id', /\b(?:EI|WI)-\d+/],
   ['date', /\b20\d\d-\d\d-\d\d\b/],
-  ['incident-cost', /\b(?:cost|costs|burned)\b/i],
+  ['clock-time', /\b\d{2}:\d{2}(?::\d{2})?Z\b/],
+  // An observation VERB is a tell only in citation position: opening a sentence or
+  // a parenthetical, or sitting adjacent to a date. Bare word-matching on these
+  // verbs was measured to misfire badly — "covers only the conditions it
+  // reproduced" and "until 2026-08-03 a timer could be missing" are RULE prose,
+  // and matching them pushed 51 blocks into needs-authoring that have no evidence
+  // clause to separate at all.
+  ['cited-observation', /(?:^|\n\s*|[(\[—–]\s*|[.!?:]\s+)(?:Measured|Observed|Verified|Confirmed|Reproduced|Traced|Corroborated)\b/],
+  ['dated-observation', /\b(?:measured|observed|verified|confirmed|corroborated)\b[^.\n]{0,30}\b(?:20\d\d-\d\d-\d\d|live)\b/i],
 ];
 
 export const tellsIn = (text) => TELLS.filter(([, re]) => re.test(text)).map(([k]) => k);
@@ -78,7 +80,14 @@ export const tellsIn = (text) => TELLS.filter(([, re]) => re.test(text)).map(([k
 export function maskUncuttable(raw) {
   let m = raw;
   const blank = (s) => ' '.repeat(s.length);
-  // Order matters: fences first (they can contain every other shape).
+  // Blockquote markers first. A sentence ending at a line break inside a `>`
+  // block is followed by "\n> ", so the next character the segmenter sees is '>'
+  // rather than the sentence-initial capital it looks for — every one of the 13
+  // blockquote blocks reported ZERO sentence boundaries because of this, which
+  // read as "unsplittable prose" when the real cause was the quote marker.
+  // Blanking is length-preserving, so offsets stay valid in the original text.
+  m = m.replace(/^[ \t]*>[ \t]?/gm, blank);
+  // Order matters: fences next (they can contain every other shape).
   m = m.replace(/```[\s\S]*?```/g, blank);
   m = m.replace(/`[^`\n]*`/g, blank);
   // Bold runs — the known mis-cut was a bold lede containing '?', which a naive
@@ -134,12 +143,72 @@ export function splitRuleEvidence(raw) {
   return null;
 }
 
+/**
+ * CITATIONS — the load-bearing referents a block cites: work-item/insight ids,
+ * dates, clock times, and backticked identifiers (tools, files, flags, columns).
+ *
+ * These exist so P-017 can verify an AUTHORED pair mechanically. A `split` pair
+ * is loss-free by arithmetic; an `authored` pair is new prose, and "no rule was
+ * dropped" would otherwise be a 55-block judgement call. Requiring
+ * citations(original) ⊆ citations(rule + evidence) does not prove the prose is
+ * faithful, but it does falsify the failure that actually matters here: quietly
+ * dropping the EI-id, the date, or the tool name that let a reader re-derive the
+ * claim. Re-authoring that keeps every referent can still be wrong; re-authoring
+ * that loses one is wrong by construction.
+ */
+export function citationsIn(text) {
+  // CLAUDE.md is hard-wrapped, so an inline code span routinely straddles a line
+  // break. A newline-excluding span pattern cannot match those, and the damage is
+  // not merely a miss: the scanner resumes at the unmatched span's CLOSING backtick
+  // and pairs it with the next OPENING one, minting citations out of the PROSE
+  // between two code spans ("(or", "can NEVER exit from an agent shell:"). Those
+  // phantoms are then "dropped" by any faithful re-authoring, so the guard fires on
+  // correct work while the real referent inside the wrapped span goes unchecked —
+  // wrong in both directions at once.
+  //
+  // Unwrapping first fixes both: spans become single-line and match, and the
+  // phantom pairings disappear. Offsets are not preserved here and need not be —
+  // this returns a SET of referents, never a position (unlike `maskUncuttable`,
+  // whose length preservation is load-bearing).
+  // FENCES FIRST, before unwrapping. In markdown a ``` fence outranks inline
+  // spans, and its three backticks are not a span delimiter at all — leaving them
+  // in front of the inline scanner unbalances every pairing that follows, which is
+  // the same off-by-one cascade as the single-char span above, arriving by a third
+  // route. Fence BODIES are dropped rather than mined: they are verbatim command
+  // text, identical on both sides of any faithful re-authoring, so nothing is lost
+  // by not treating them as citations.
+  const defenced = text.replace(/^[ \t]*(?:>[ \t]?)?```[\s\S]*?^[ \t]*(?:>[ \t]?)?```/gm, ' ');
+  const flat = defenced.replace(/\n[ \t]*(?:>[ \t]?)?/g, ' ');
+  const out = new Set();
+  for (const m of flat.matchAll(/\b(?:EI|WI|F|P|D)-\d+/g)) out.add(m[0]);
+  for (const m of flat.matchAll(/\b20\d\d-\d\d-\d\d\b/g)) out.add(m[0]);
+  for (const m of flat.matchAll(/\b\d{2}:\d{2}(?::\d{2})?Z\b/g)) out.add(m[0]);
+  // Match SINGLE-character spans too, even though none is ever recorded as a
+  // citation. Matching and recording are different jobs: a span the pattern skips
+  // leaves its two backticks unconsumed, so the scanner pairs them with the NEXT
+  // span's and every pairing after it is off by one — one `;`, `S` or `❯` in a
+  // block turns the rest of that block into phantom citations. Consume everything,
+  // then decide what is worth keeping.
+  for (const m of flat.matchAll(/`([^`\n]+)`/g)) {
+    const c = m[1].trim().replace(/\s+/g, ' ');
+    if (c.length >= 2 && /[A-Za-z0-9]/.test(c)) out.add(c);
+  }
+  return out;
+}
+
+/** Citations present in the original but missing from the authored pair. */
+export function droppedCitations(original, authoredText) {
+  const have = citationsIn(authoredText);
+  return [...citationsIn(original)].filter((c) => !have.has(c));
+}
+
 const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 
-export function buildRuleEvidence(text) {
+export function buildRuleEvidence(text, authored = AUTHORED) {
   const parts = extractParts(text);
   const pairs = [];
-  const summary = { total: parts.length, clean: 0, split: 0, needsAuthoring: 0 };
+  const problems = [];
+  const summary = { total: parts.length, clean: 0, split: 0, authored: 0, needsAuthoring: 0 };
 
   for (const p of parts) {
     const tells = tellsIn(p.raw);
@@ -153,10 +222,21 @@ export function buildRuleEvidence(text) {
     if (cut) {
       summary.split += 1;
       pairs.push({ ...base, mode: 'split', splitOffset: cut.splitOffset });
-    } else {
-      summary.needsAuthoring += 1;
-      pairs.push({ ...base, mode: 'needs-authoring', splitOffset: null });
+      continue;
     }
+    // Hand-authored pairs are keyed by CONTENT, so a block that merely moves keeps
+    // its pair, and a block that is EDITED loses it and returns to needs-authoring
+    // rather than silently carrying a pair written against text that no longer exists.
+    const hand = authored[p.blockSha];
+    if (hand) {
+      const dropped = droppedCitations(p.raw, `${hand.rule}\n${hand.evidence}`);
+      if (dropped.length) problems.push(`${p.partKey}: authored pair drops ${dropped.length} citation(s): ${dropped.slice(0, 5).join(', ')}`);
+      summary.authored += 1;
+      pairs.push({ ...base, mode: 'authored', splitOffset: null, rule: hand.rule, evidence: hand.evidence, droppedCitations: dropped });
+      continue;
+    }
+    summary.needsAuthoring += 1;
+    pairs.push({ ...base, mode: 'needs-authoring', splitOffset: null });
   }
 
   return {
@@ -164,6 +244,7 @@ export function buildRuleEvidence(text) {
     source: { sha256: sha256(text), chars: text.length, lines: text.split('\n').length },
     tellSet: TELLS.map(([k]) => k),
     summary,
+    problems,
     pairs,
   };
 }
@@ -174,15 +255,40 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const out = outIdx >= 0 ? resolve(argv[outIdx + 1]) : DEFAULT_OUT;
   const text = readFileSync(SOURCE, 'utf8');
   const artifact = buildRuleEvidence(text);
-  const { total, clean, split, needsAuthoring } = artifact.summary;
-  const entangled = split + needsAuthoring;
+  const { total, clean, split, authored, needsAuthoring } = artifact.summary;
+  const entangled = split + authored + needsAuthoring;
 
   console.log(`split-claude-md-rule-evidence: ${total} blocks from ${SOURCE}`);
-  console.log(`  sha256        ${artifact.source.sha256.slice(0, 16)}  (${artifact.source.chars} chars / ${artifact.source.lines} lines)`);
-  console.log(`  clean         ${String(clean).padStart(3)}  (no evidence tell — rule stands alone)`);
-  console.log(`  split         ${String(split).padStart(3)}  (cut losslessly at a sentence boundary)`);
-  console.log(`  needsAuthoring${String(needsAuthoring).padStart(3)}  (rule and evidence share a clause)`);
-  console.log(`  entangled     ${String(entangled).padStart(3)}  = split + needsAuthoring`);
+  console.log(`  sha256         ${artifact.source.sha256.slice(0, 16)}  (${artifact.source.chars} chars / ${artifact.source.lines} lines)`);
+  console.log(`  clean          ${String(clean).padStart(3)}  (no evidence tell — rule stands alone)`);
+  console.log(`  split          ${String(split).padStart(3)}  (cut losslessly at a sentence boundary)`);
+  console.log(`  authored       ${String(authored).padStart(3)}  (hand-written pair, citations preserved)`);
+  console.log(`  needsAuthoring ${String(needsAuthoring).padStart(3)}  (rule and evidence share a clause — still to do)`);
+  console.log(`  entangled      ${String(entangled).padStart(3)}  = split + authored + needsAuthoring`);
+
+  // Every `split` pair must reconstruct its block exactly. This is the property the
+  // whole byte-offset design exists to give P-017, so it is asserted at generation
+  // time rather than trusted: a segmenter change that broke it would otherwise ship
+  // a plausible-looking artifact whose pairs silently lose text.
+  const parts = extractParts(text);
+  const bySha = new Map(parts.map((p) => [p.blockSha, p.raw]));
+  let checked = 0;
+  for (const pair of artifact.pairs) {
+    if (pair.mode !== 'split') continue;
+    const raw = bySha.get(pair.blockSha);
+    if (raw.slice(0, pair.splitOffset) + raw.slice(pair.splitOffset) !== raw) {
+      artifact.problems.push(`${pair.partKey}: split does not reconstruct its block`);
+    }
+    checked += 1;
+  }
+  console.log(`\n  reconstruction ${checked}/${split} split pair(s) verified loss-free`);
+
+  if (artifact.problems.length) {
+    console.error(`\n✗ ${artifact.problems.length} problem(s):`);
+    for (const p of artifact.problems.slice(0, 15)) console.error(`   ${p}`);
+    console.error('\n✗ refusing to write an artifact that loses content.');
+    process.exit(1);
+  }
 
   if (argv.includes('--check')) {
     console.log('\n✓ --check: nothing written');

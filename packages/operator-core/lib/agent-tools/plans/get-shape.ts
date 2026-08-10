@@ -10,7 +10,15 @@
  *
  * Shape contract (D-004): nothing is silently dropped — every cut carries a
  * count + a fetch-pointer, and `payloadTier:'full'` restores today's body.
+ *
+ * EI-20038981829684213: "carries a count" used to mean a SIBLING field, which a
+ * `projection.pick` of the value alone strips — taking the door's marker scan
+ * with it. Every cut here now also announces itself IN BAND via ./shape-clip,
+ * and a record-structured section body is cut at a record boundary and counted
+ * in records rather than chars.
  */
+
+import { clipSectionBody, clipWithMarker } from "./shape-clip";
 
 const CAPS = {
   trimmed: {
@@ -31,8 +39,7 @@ const CAPS = {
 
 type TierName = keyof typeof CAPS;
 
-const clip = (s: string, n: number): string =>
-  s.length > n ? `${s.slice(0, n - 1)}…` : s;
+const clip = clipWithMarker;
 
 /** Tier-project one bulk result ({ ok:true, slug, … }). Errors pass through. */
 function shapeResult(res: unknown, tier: TierName): unknown {
@@ -52,7 +59,10 @@ function shapeResult(res: unknown, tier: TierName): unknown {
       'read one section via plans:get { heading } (sectionIndex lists headings), or payloadTier:"full"';
   }
 
-  // heading-narrowed reads still carry one section body — bound it the same way.
+  // Heading-narrowed reads carry one section body. This is the read that serves
+  // `heading:'Decisions'` — a RECORD LEDGER in a single string — so it is cut at
+  // a `### ` boundary and counted in records, never mid-record at a char count
+  // (EI-20038981829684213: 30 decisions became a plausible-looking D-001..D-004).
   const section = r.section as { body?: unknown } | null | undefined;
   if (
     section &&
@@ -60,11 +70,15 @@ function shapeResult(res: unknown, tier: TierName): unknown {
     typeof section.body === "string" &&
     section.body.length > c.sectionBody
   ) {
+    const cut = clipSectionBody(section.body, c.sectionBody);
     out.section = {
       ...section,
-      body: clip(section.body, c.sectionBody),
+      body: cut.body,
       body_truncated: true,
-      body_full_chars: section.body.length,
+      body_full_chars: cut.fullChars,
+      ...(cut.recordsTotal != null
+        ? { body_records_shown: cut.recordsShown, body_records_total: cut.recordsTotal }
+        : {}),
     };
   }
 

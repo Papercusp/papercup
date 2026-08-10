@@ -20,11 +20,17 @@ import {
 } from '../../../scripts/check-fixed-but-open.mjs';
 
 /** Build the aggregate record shape `tierFor` consumes. */
-function rec(opts: { contexts: string[]; inTest?: boolean; everLiteral?: boolean }) {
+function rec(opts: {
+  contexts: string[];
+  inTest?: boolean;
+  everLiteral?: boolean;
+  hasAssertion?: boolean;
+}) {
   return {
     contexts: new Set(opts.contexts),
     inTest: opts.inTest ?? false,
     everLiteral: opts.everLiteral ?? false,
+    hasAssertion: opts.hasAssertion ?? false,
     samples: [],
   };
 }
@@ -65,6 +71,62 @@ describe('classifyCitation — measured citation shapes', () => {
   });
 });
 
+/**
+ * The correction measured on WI-5332 (2026-08-10). A quoted id can be the OPPOSITE of fixture
+ * data — a guard asserting that output the code PRODUCED names the item. The original classifier
+ * called both 'literal', so `tierFor`'s veto filed genuine already-fixed items under "likely
+ * FIXTURE data". WI-5332 was fixed 2026-07-19 and was still being served by scheduler:get_next
+ * three weeks later because of it.
+ *
+ * The pairs below are the whole point: members differ ONLY in whether the id is also an INPUT.
+ */
+describe('classifyCitation — asserted output vs data round-trip (both are quoted ids)', () => {
+  it('reads an assertion about code-PRODUCED output as evidence, not as data', () => {
+    // packages/operator-core/lib/sync/hyperbee/__tests__/boot.test.ts:2321 (verbatim) — the exact
+    // line that demoted WI-5332, and it is the strongest evidence in the whole candidate set.
+    const line = "    expect(exhaustedEvents()[0]!.message).toContain('WI-5332');";
+    expect(classifyCitation(line, 'WI-5332')).toBe('assertion');
+  });
+
+  it('reads an assertion on captured stderr as evidence', () => {
+    // apps/operator-vite/src/__tests__/vite-build-singleflight.test.ts:139 (verbatim)
+    const line = "    expect(stderr()).toContain('EI-9836');";
+    expect(classifyCitation(line, 'EI-9836')).toBe('assertion');
+  });
+
+  it('NEGATIVE CONTROL: a ROUND-TRIP, where the id is also an INPUT, stays fixture data', () => {
+    // apps/operator/app/_components/chat/chat-ref-popup-params.test.ts:30 (verbatim). This is the
+    // trap: it is inside an expect() and asserts equality, yet WI-1 is a synthetic value fed
+    // through an encoder. "Inside an expect()" is NOT the discriminator; being absent from the
+    // assertion's SUBJECT is. A classifier that returns 'assertion' here would re-file every
+    // fixture round-trip as proof of a fix.
+    const line = "    expect(encodeScopedRef(null, 'WI-1')).toBe('WI-1');";
+    expect(classifyCitation(line, 'WI-1')).toBe('literal');
+  });
+
+  it('NEGATIVE CONTROL: a fixture array is untouched by the assertion branch', () => {
+    // apps/operator/lib/release/release-content-scrub.test.ts:139 (verbatim)
+    const line = "    workItemIds: ['WI-1'],";
+    expect(classifyCitation(line, 'WI-1')).toBe('literal');
+  });
+
+  it('NEGATIVE CONTROL: a bare matcher with no expect() subject is not an assertion', () => {
+    // Guards the `subject.includes('expect(')` condition specifically — without it, any
+    // `.toBe('WI-1')`-shaped text would qualify.
+    const line = "  const shape = { matcher: 'x' }.toBe;  // not an assertion";
+    expect(classifyCitation(line, 'WI-9999')).toBe('code');
+  });
+
+  it('NEGATIVE CONTROL: a NEGATED assertion is not evidence — it asserts the id is ABSENT', () => {
+    // apps/operator/lib/release/release-history-integration.test.ts:259 (verbatim). This one
+    // caught a real regression: an earlier draft classified it 'assertion' and promoted EI-100,
+    // the original documented false positive, back to `guard`. Asserting an id is scrubbed FROM
+    // output is the opposite of asserting a fix emits it.
+    const line = "    expect(html).not.toContain('EI-100');";
+    expect(classifyCitation(line, 'EI-100')).toBe('literal');
+  });
+});
+
 describe('tierFor — string-literal use DOMINATES', () => {
   it('demotes an id used as data anywhere to weak, even when also comment-cited in a test', () => {
     // This is the EI-100 case and the single most important behaviour here: without the
@@ -75,6 +137,26 @@ describe('tierFor — string-literal use DOMINATES', () => {
 
   it('CALIBRATION: the same record WITHOUT literal use is guard — so the veto, not the shape, demoted it', () => {
     expect(tierFor(rec({ contexts: ['comment'], inTest: true }))).toBe('guard');
+  });
+
+  it('REGRESSION GUARD: an assertion does NOT override the veto when the id is ALSO fixture data', () => {
+    // The EI-100 shape after the WI-5332 change. It has a genuine guard-looking assertion
+    // (`expect(w).toContain('EI-100')`) AND genuine fixture literals elsewhere. A draft that let
+    // hasAssertion outrank everLiteral promoted it to `guard` against the real tree. The
+    // round-trip that makes that assertion meaningless spans FIVE lines, so no line-scoped
+    // classifier can see it — which is exactly why the veto has to keep winning here.
+    expect(
+      tierFor(rec({ contexts: ['comment', 'assertion', 'literal'], inTest: true, everLiteral: true, hasAssertion: true })),
+    ).toBe('weak');
+  });
+
+  it('CALIBRATION: the SAME record with no fixture literal is guard — proving the veto did the demoting', () => {
+    // This is the WI-5332 shape: an assertion + a guard comment, and nothing quoting the id as
+    // data. Paired with the case above, the two differ ONLY in everLiteral, so a classifier that
+    // returned the same tier for both would be visibly broken rather than plausibly conservative.
+    expect(
+      tierFor(rec({ contexts: ['comment', 'assertion'], inTest: true, hasAssertion: true })),
+    ).toBe('guard');
   });
 
   it('rates a source-file comment below a test/guard comment', () => {

@@ -22,7 +22,8 @@
  * a defect. The mechanism is the invariant; the backlog is not.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -118,18 +119,53 @@ describe('check-workspace-deps-complete: target-side scope (EI-20028225708881148
     expect(unbaselined).toEqual([]);
   });
 
-  it('reports the target kind, because the remedy differs by kind', async () => {
-    // A non-workspace target must NOT be "fixed" with `"<name>": "*"`: package-lock.json
-    // carries its own workspaces array and CI runs `npm ci` strict, so npm would resolve the
-    // name from the registry for a private package and break the install. The failure
-    // message branches on this flag, so the flag has to exist and be populated.
+  it('reports the target kind for BOTH kinds, because the remedy differs by kind', async () => {
+    // The failure message branches on `targetIsWorkspace`, so both branches must be
+    // populated correctly.
+    //
+    // ⚠ THIS TEST IS HERMETIC ON PURPOSE — it builds its own fixture tree instead of reading
+    // the repo's live offenders. It used to open with `expect(findOffenders().length)
+    // .toBeGreaterThan(0)` against the real repo, which is precisely what this file's own
+    // header forbids: "a test asserting the continued existence of a defect". It passed only
+    // while the repo still carried undeclared edges, and went red the moment the backlog
+    // reached ZERO (WI-37624, 2026-08-10) — punishing the fix it exists to protect. A fixture
+    // also tests strictly MORE: the old form could only assert `typeof === 'boolean'` over
+    // whatever the tree happened to contain, and would have passed with every offender on the
+    // same branch.
     const { findOffenders } = await import(SCRIPT);
-    const offenders: Array<{ edge: string; targetIsWorkspace: boolean; targetDir: string | null }> =
-      findOffenders();
-    expect(offenders.length).toBeGreaterThan(0);
-    for (const o of offenders) {
-      expect(typeof o.targetIsWorkspace).toBe('boolean');
-      expect(o.targetDir === null || typeof o.targetDir === 'string').toBe(true);
+    const root = mkdtempSync(join(tmpdir(), 'wsdeps-target-kind-'));
+    try {
+      const write = (rel: string, body: unknown) => {
+        mkdirSync(dirname(join(root, rel)), { recursive: true });
+        writeFileSync(join(root, rel), typeof body === 'string' ? body : JSON.stringify(body));
+      };
+      // Two targets that differ ONLY in root-workspace membership.
+      write('package.json', { name: 'fixture-root', workspaces: ['pkgs/importer', 'pkgs/ws-target'] });
+      write('pkgs/importer/package.json', { name: '@papercusp/importer' }); // declares NEITHER
+      write('pkgs/ws-target/package.json', { name: '@papercusp/ws-target' }); // IS a workspace
+      write('loose/package.json', { name: '@papercusp/loose-target' }); // on disk, NOT a workspace
+      write(
+        'pkgs/importer/src/a.ts',
+        "import { a } from '@papercusp/ws-target';\nimport { b } from '@papercusp/loose-target';\nexport const x = [a, b];\n",
+      );
+
+      const offenders: Array<{ edge: string; targetIsWorkspace: boolean; targetDir: string | null }> =
+        findOffenders(root);
+      const byEdge = new Map(offenders.map((o) => [o.edge, o]));
+
+      const ws = byEdge.get('@papercusp/importer->@papercusp/ws-target');
+      const loose = byEdge.get('@papercusp/importer->@papercusp/loose-target');
+      expect(ws, `workspace-target edge missing; saw ${[...byEdge.keys()].join(', ')}`).toBeDefined();
+      expect(loose, `non-workspace-target edge missing; saw ${[...byEdge.keys()].join(', ')}`).toBeDefined();
+
+      // The discriminating assertion: the flag must actually SEPARATE the two kinds. A
+      // constant `true`/`false` implementation fails here, where the old test could not.
+      expect(ws!.targetIsWorkspace).toBe(true);
+      expect(loose!.targetIsWorkspace).toBe(false);
+      expect(ws!.targetDir).toBe('pkgs/ws-target');
+      expect(loose!.targetDir).toBe('loose');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

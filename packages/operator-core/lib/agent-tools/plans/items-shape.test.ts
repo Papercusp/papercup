@@ -65,8 +65,15 @@ describe('shapePlansItems — text_truncated marker (EI-18762253154342502)', () 
       'trimmed',
     ) as { items: Record<string, unknown>[] };
     expect(out.items[0].text_truncated).toBe(true);
-    expect((out.items[0].text as string).endsWith('…')).toBe(true);
-    expect((out.items[0].text as string).length).toBe(PLANS_ITEMS_TIER_CAPS.trimmed.text);
+    // EI-20038981829684213: the clip announces itself IN BAND, not only via the
+    // sibling flag above — a `projection.pick` of the value alone strips the
+    // sibling, and the marker has to survive that. The marker is variable-length
+    // (it carries the omitted count), so the result is bounded BY the cap rather
+    // than exactly equal to it.
+    expect((out.items[0].text as string)).toContain('TRUNCATED');
+    expect((out.items[0].text as string).length).toBeLessThanOrEqual(
+      PLANS_ITEMS_TIER_CAPS.trimmed.text,
+    );
   });
 
   it('stamps text_truncated:false when item.text fits under the cap untouched', () => {

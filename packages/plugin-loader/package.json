@@ -36,6 +36,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@papercusp/agent-mcp": "*",
     "@papercusp/plugin-loader-core": "*",
     "@papercusp/plugin-sdk": "*",
     "@papercusp/scheduled-registry": "*"

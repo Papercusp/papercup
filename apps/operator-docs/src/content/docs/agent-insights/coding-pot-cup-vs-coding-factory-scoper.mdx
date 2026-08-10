@@ -3,7 +3,7 @@ title: "coding-pot `cup` (self-pulls a claim-spec) vs coding-factory `scoper` (g
 description: "Papercusp has TWO distinct coding execution models that share the cup:spawn chokepoint, and agents repeatedly conflate their work units. The coding POT is a mug + self-pulling `cup`s: the Mug steers a cup with a versioned claim-spec (scheduler:set_claim_spec) and the cup PULLS its own next item via scheduler:get_next. The coding-FACTORY is the OPPOSITE — a PUSH pipeline (scoper→architect→worker→validator→documenter→curator, driven by a director's spine) where each role is HANDED a FEATURE_ID by the orchestrator (NEXT_SCOPER/NEXT_ARCHITECT/… all carry extras:[\"FEATURE_ID={feature}\"]) and NEVER calls get_next. The exact observed failure: an agent spawned role=\"scoper\" and set claim-specs on it to test the coding-pot handoff — but a scoper never self-pulls, so the claim-spec is INERT and (lacking a pushed FEATURE_ID) the scoper has nothing to do. For a claim-spec self-pulling worker the role is \"cup\", NEVER scoper. operator-spawn now REFUSES a factory pipeline role spawned with no pushed-feature context and points at role=\"cup\"; set_claim_spec WARNS when its beeId resolves to a non-self-pulling role."
 discovered: 2026-06-23
 tags: [coding-pot, coding-factory, cup, scoper, mug, claim-spec, scheduler, get_next, fleet-spawn, blueprint, push-vs-pull, role-confusion]
-status: active
+status: superseded
 documents:
   - libs/papercusp/packages/harness/blueprints/cup/blueprint.yaml
   - libs/papercusp/packages/harness/blueprints/coding-factory/blueprint.yaml
@@ -19,6 +19,30 @@ generated:
   by: agent
   at: 2026-06-23
 ---
+
+:::danger[SUPERSEDED — BOTH models on this page are gone; neither `cup` nor `scoper` can be spawned]
+The coding-**pot** half (a Mug steering self-pulling `cup`s with a versioned claim-spec) was
+**retired 2026-08-09**, owner-directed. While `papercusp-mug-kettle-system` is OFF — the
+delivered end state, not a pending flip — `cup:spawn` REFUSES and no Mug exists to set or
+steer a claim-spec. See
+[the Mug · Kettle · Cup tier is retired](/agent-insights/mug-kettle-cup-tier-is-retired).
+
+The coding-**factory** half was already dormant when this page was written (see the note
+below about it being "revived"), so the advice it originally gave — *"use the coding-pot
+`cup` instead"* — now points at a second dead option. **Do not follow this page's
+recommendation.**
+
+**What to do instead:** a claim-spec self-pulling worker is now an **su fleet member**.
+`fleet:launch-on-plan { name, plan, count, headless? }` launches them, they pull with
+`scheduler:get_next`, and you steer them by claim-SPEC exactly as the Mug steered cups —
+the pull model this page describes survived; only its worker substrate and its supervisor
+were replaced.
+
+**Why this page is kept:** the push-vs-pull distinction is the genuinely transferable idea,
+and the `role`-confusion failure it documents recurs whenever a pushed-pipeline role is
+handed a claim-spec. The spawn-time guards described in *The durable guards* are still in
+the tree.
+:::
 
 ## The mistake this prevents
 

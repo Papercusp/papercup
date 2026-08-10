@@ -24,6 +24,13 @@ P-008 — the same statement is also folded into the rubric itself, appended ont
 the `generation-parity` criterion's `method` field via `rubrics:amend`, so it
 travels with the live rubric object, not just this doc.)
 
+* ⚠ **Three of the sibling rubrics named below now grade a RETIRED tier.**
+  `mug-pot-coordination-health`, `cup-lifecycle-durability` and
+  `kettle-supervision-health` cover the Mug · Kettle · Cup tier, retired
+  2026-08-09 ([details](/agent-insights/mug-kettle-cup-tier-is-retired)) — so they
+  have no live subject to grade and a low/absent score from them is expected, not a
+  regression. **This runbook's own subject is unaffected:** Scout and Blender survive
+  UNGATED and the learning pipeline it grades is fully live.
 * **Scope.** This rubric grades ONLY the scout/blender learning pipeline
   (ideation → routing → grading → learning). It does **not** grade Mug/Pot
   placement, Cup lifecycle/restart durability, Kettle supervision,
