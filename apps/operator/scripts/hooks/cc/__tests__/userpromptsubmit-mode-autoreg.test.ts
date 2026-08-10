@@ -236,6 +236,56 @@ describe('owner-granted mode auto-registration', () => {
     }
   });
 
+  // EI-20015101086472548 — the residual WI-37384 could not catch. That fix made a
+  // grant VERB necessary; these all HAVE one and still are not grants, because the
+  // verb is negated, governs a UI control, or is used as a noun. The first entry is
+  // the prompt measured live on 2026-08-09 (it registered ownerDirected DRAIN, which
+  // implies AUTO, off a sentence asking for FEWER drain-mode buttons).
+  it('EI-20015101086472548: a grant verb that is not addressed to you is not a grant', async () => {
+    for (const phrase of [
+      'it should popup the same conversation popup as the sessions tab, just with extra plans for the plan and work items like I suggested, and NO BUTTONS TO SWITCH TO DRAIN MODE ETC.',
+      "don't go into auto mode",
+      'do not switch to drain mode',
+      'never put yourself in auto mode',
+      'remove the button that switches to drain mode',
+      'we need a toggle to enter ideate mode',
+      'the switch to drain mode is mislabelled',
+      'add a pill to go into auto mode on the sessions tab',
+      'finish this without going into drain mode',
+      'rename the "go into ideate mode" menu item',
+    ]) {
+      bodies = [];
+      fs.rmSync(join(home, '.papercusp', 'mode-autoreg'), { recursive: true, force: true });
+      const r = await submit(phrase);
+      expect(modeCalls(), `must NOT grant: ${phrase}`).toHaveLength(0);
+      expect(r.context).toContain('OWNER (interactive)');
+      expect(r.context, `must NOT grant: ${phrase}`).not.toContain('⟦mode⟧');
+    }
+  });
+
+  // The counterpart control. The suppressors read only the LOCAL clause, so a
+  // negation or UI noun in an EARLIER sentence must not swallow a real grant that
+  // follows it — otherwise the fix above would trade a false grant for a silent
+  // false miss, which is the same class of bug pointing the other way.
+  it('EI-20015101086472548: an earlier clause does not suppress a genuine later grant', async () => {
+    for (const [phrase, mode] of [
+      ["don't worry about the tests. go into drain mode", 'drain'],
+      // A UI noun in an EARLIER sentence must not reach across the break. (Note a
+      // trouble word like "broken" anywhere in the prefix DOES still suppress —
+      // that is MODE_REPORT_PREFIX_RE's deliberate whole-prefix scan from WI-37384,
+      // and loosening it to a local clause would trade this guard for more grants,
+      // the dangerous direction.)
+      ['the drain mode pill is misaligned. switch to ideate mode', 'ideate'],
+      ['no rush on the UI work — put yourself in auto mode', 'auto'],
+    ] as const) {
+      bodies = [];
+      fs.rmSync(join(home, '.papercusp', 'mode-autoreg'), { recursive: true, force: true });
+      await submit(phrase);
+      expect(modeCalls(), `must grant: ${phrase}`).toHaveLength(1);
+      expect(modeCalls()[0].arguments, `must grant: ${phrase}`).toMatchObject({ mode, enabled: true });
+    }
+  });
+
   // Turning a mode OFF on a false positive is safe; failing to turn one off is
   // not. So the report/question suppressors must NOT reach the exit branch.
   it('WI-37384: suppressors do not weaken EXIT — a hedged exit still de-registers', async () => {

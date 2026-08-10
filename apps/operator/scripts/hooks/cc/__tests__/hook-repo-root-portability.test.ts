@@ -50,7 +50,26 @@ const ROOT_ISH = /(ROOT|REPO|WORKSPACE|CHECKOUT|TREE_?BASE)/i;
  */
 export function findHardcodedRootAssignments(text: string): string[] {
   const out: string[] = [];
+  // A `selfTest()` body is FIXTURE code: its root is a synthetic tree handed to a pure
+  // helper (`isCandidateFile(root, '/repo/a.css')`), never the root the script operates
+  // on — so it cannot produce the fail-open this guard exists to prevent. Scanning it
+  // reported a false offender the moment the 8th nudge script grew a self-test, which
+  // would have red-pinned the fleet gate on correct code (WI-37593, 2026-08-09).
+  //
+  // The block ends at the first COLUMN-0 `}`. Deliberately not brace-counting: a brace
+  // inside a string literal would miscount, and the dangerous direction is silent —
+  // an unbalanced count never re-enables scanning, disabling the guard for the whole
+  // REST of the file. A column-0 close is guaranteed by prettier for a top-level fn.
+  let inSelfTest = false;
   for (const raw of text.split('\n')) {
+    if (inSelfTest) {
+      if (/^\}/.test(raw)) inSelfTest = false;
+      continue;
+    }
+    if (/^\s*(?:async\s+)?function\s+selfTest\s*\(/.test(raw)) {
+      inSelfTest = true;
+      continue;
+    }
     // `const X = '/abs/path'` / let / var, single or double quoted.
     const m = /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*['"](\/[^'"]*)['"]/.exec(raw);
     if (!m) continue;
@@ -110,6 +129,35 @@ describe('guard scripts derive their repo root (WI-10811)', () => {
     expect(findHardcodedRootAssignments(`const DEFAULT_PROC_ROOT = '/proc';`)).toEqual([]);
     // A non-root-ish identifier is out of scope — this guard is deliberately narrow.
     expect(findHardcodedRootAssignments(`const LOGFILE = '/some/abs/log';`)).toEqual([]);
+  });
+
+  it('skips a selfTest fixture root — but RESUMES scanning after the block', () => {
+    // One assertion, three properties. The third is the one that matters: if the
+    // block-end detection ever breaks, the guard silently stops scanning the REST of
+    // the file and every later offender goes unreported — a green that means "it
+    // stopped checking". LATE_ROOT is the canary for exactly that.
+    const src = [
+      `const EARLY_ROOT = '/hardcoded/before';`,
+      `function selfTest() {`,
+      `  const root = '/repo';`,
+      `  check('scans', isCandidateFile(root, '/repo/a.css'));`,
+      `}`,
+      `const LATE_ROOT = '/hardcoded/after';`,
+    ].join('\n');
+    expect(findHardcodedRootAssignments(src)).toEqual([
+      'EARLY_ROOT = /hardcoded/before',
+      'LATE_ROOT = /hardcoded/after',
+    ]);
+  });
+
+  it('calibration: the real 8th nudge script is clean — the false positive is gone', () => {
+    // The concrete file that regressed the ratchet (WI-37593): its selfTest binds
+    // `const root = '/repo'`, which is fixture data, not the root it operates on.
+    const nudge = resolve(
+      ROOT,
+      'apps/operator/scripts/hooks/cc/posttooluse-css-design-primitives-nudge.mjs',
+    );
+    expect(findHardcodedRootAssignments(readFileSync(nudge, 'utf8'))).toEqual([]);
   });
 
   it('calibration: the file WI-10811 fixed is clean, so a pass here is meaningful', () => {

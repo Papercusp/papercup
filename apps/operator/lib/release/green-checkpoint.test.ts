@@ -4879,7 +4879,9 @@ describe('EI-20014356905761236: the verdict log records whether its verdict prom
     await commit('a', '2', 'c2');
     const logPath = join(repo, 'verdict-declined.log');
     const deps = withLog(stubDeps(true).deps, true, logPath);
-    deps.advance = async () => ({ advanced: false, from: c1 });
+    // The real decline: `advance` is FF-only, so a candidate that is not a descendant of
+    // the current pin comes back advanced:false / not-fast-forward.
+    deps.advance = async (candidate) => ({ advanced: false, from: c1, to: candidate, reason: 'not-fast-forward' });
 
     const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 

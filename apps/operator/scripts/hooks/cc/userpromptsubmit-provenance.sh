@@ -273,10 +273,21 @@ MODE_QUESTION_RE = re.compile(
 
 
 def _strip_code(text):
-    """Drop fenced blocks and backtick spans so a PASTED log or error that
-    happens to contain the words cannot arm a mode."""
+    """Drop fenced blocks, backtick spans and QUOTED spans so a PASTED log, or a
+    phrase the owner is NAMING rather than saying, cannot arm a mode.
+
+    Quotes were added for EI-20015101086472548: `rename the "go into ideate mode"
+    menu item` carries a textbook grant frame, but the quotes are precisely how the
+    owner marks it as a STRING being discussed — a label to rename — rather than an
+    instruction. Same reasoning as the code fences already stripped here, and the
+    existing `here is the log: ```go into auto mode``` ` control is the same shape.
+
+    Both straight and curly pairs, since the owner's editor may substitute either."""
     text = re.sub(r"```.*?```", " ", text, flags=re.S)
-    return re.sub(r"`[^`]*`", " ", text)
+    text = re.sub(r"`[^`]*`", " ", text)
+    text = re.sub(r'"[^"\n]*"', " ", text)
+    text = re.sub(r"[“][^”\n]*[”]", " ", text)
+    return re.sub(r"[‘][^’\n]*[’]", " ", text)
 
 
 def _detect_mode_directive(text):
@@ -291,8 +302,26 @@ def _detect_mode_directive(text):
         return None
     for mode_id, rx in MODE_ENTER_RES:
         m = rx.search(scan)
-        if m and not MODE_REPORT_PREFIX_RE.search(scan[:m.start()]):
-            return (mode_id, True)
+        if not m:
+            continue
+        prefix = scan[:m.start()]
+        if MODE_REPORT_PREFIX_RE.search(prefix):
+            continue
+        # EI-20015101086472548: the verb is there, but is it aimed at YOU? Judged on
+        # the local CLAUSE only, so an earlier "don't worry about X. go into drain
+        # mode" still grants.
+        #
+        # Clause, not sentence: commas and dashes count as breaks. Without them a
+        # quantifier binds far too widely — "no rush on the UI work — put yourself
+        # in auto mode" reads its "no" as negating the grant and silently misses it.
+        # This stays correct for the measured case, where the negation and the verb
+        # sit in the SAME comma-clause ("..., and NO BUTTONS TO switch to drain
+        # mode"). The plain hyphen is deliberately NOT a break: it appears inside
+        # ordinary words, and every extra break can only ADD grants.
+        local = re.split(r"[.!?;,—–]", prefix)[-1]
+        if any(sup.search(local) for sup in MODE_NOT_ADDRESSED_TO_YOU_RES):
+            continue
+        return (mode_id, True)
     return None
 
 

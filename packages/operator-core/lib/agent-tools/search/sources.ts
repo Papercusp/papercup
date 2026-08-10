@@ -233,7 +233,7 @@ const escalations: SearchSource = {
     });
   },
   async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
-    const rows = (await sql`
+    const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT harness_slug, phase, escalation, supervisor_notes,
              1 - (body_embedding <=> ${qVec}::vector) AS sim,
              ts_headline('english',
@@ -246,7 +246,7 @@ const escalations: SearchSource = {
          AND body_embedding IS NOT NULL
     ORDER BY body_embedding <=> ${qVec}::vector
        LIMIT ${limit}
-    `) as unknown as Array<{ harness_slug: string; phase: string; escalation: string | null; supervisor_notes: string | null; sim: number; highlight: string }>;
+    `)) as unknown as Array<{ harness_slug: string; phase: string; escalation: string | null; supervisor_notes: string | null; sim: number; highlight: string }>;
     return rows.map((r) => {
       const body = `${r.escalation ?? ''}\n${r.supervisor_notes ?? ''}`.trim();
       return {
@@ -296,7 +296,7 @@ const brainstorm: SearchSource = {
     }));
   },
   async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
-    const rows = (await sql`
+    const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT harness_slug, phase, content,
              1 - (content_embedding <=> ${qVec}::vector) AS sim,
              ts_headline('english', content,
@@ -308,7 +308,7 @@ const brainstorm: SearchSource = {
          AND content_embedding IS NOT NULL
     ORDER BY content_embedding <=> ${qVec}::vector
        LIMIT ${limit}
-    `) as unknown as Array<{ harness_slug: string; phase: string; content: string; sim: number; highlight: string }>;
+    `)) as unknown as Array<{ harness_slug: string; phase: string; content: string; sim: number; highlight: string }>;
     return rows.map((r) => ({
       key: `brainstorm:${r.harness_slug}:${r.phase}`,
       score: r.sim,
@@ -356,7 +356,7 @@ const turns: SearchSource = {
     }));
   },
   async embedding({ sql, query, workspaceId, limit, qVec }): Promise<Listing> {
-    const rows = (await sql`
+    const rows = (await withIterativeScan(sql, (sql) => sql`
       SELECT t.id, t.role, t.text,
              1 - (t.text_embedding <=> ${qVec}::vector) AS sim,
              ts_headline('english', t.text,
@@ -368,7 +368,7 @@ const turns: SearchSource = {
          AND t.text_embedding IS NOT NULL
     ORDER BY t.text_embedding <=> ${qVec}::vector
        LIMIT ${limit}
-    `) as unknown as Array<{ id: string; role: string; text: string; sim: number; highlight: string }>;
+    `)) as unknown as Array<{ id: string; role: string; text: string; sim: number; highlight: string }>;
     return rows.map((r) => ({
       key: `turns:${r.id}`,
       score: r.sim,
