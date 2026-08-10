@@ -210,6 +210,9 @@ interface RawGoal {
   body: string | null;
   status: string;
   parent_id: string | null;
+  /** json_agg output from the agents subselect — `unknown` because it arrives
+   *  as parsed JSON from pg and is narrowed in toSummary, not trusted here. */
+  agents: unknown;
   kill_criterion: string | null;
   tripwires: unknown;
   budget_cents: string | null;
