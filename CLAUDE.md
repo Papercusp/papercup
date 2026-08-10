@@ -582,10 +582,14 @@ for anything whose load has changed), and any first-iteration sampler has no
 prior sample to difference against. CPU usage *is* a delta; ask for one:
 
 ```bash
-P=<pid>                       # USER_HZ=100, so 500 ticks per core per 5s
-t() { awk '{i=index($0,") ");split(substr($0,i+2),f," ");print f[12]+f[13]}' /proc/$P/stat; }
-A=$(t); sleep 5; B=$(t); echo "$((B-A)) ticks/5s => $(echo "scale=2;($B-$A)/500" | bc) cores"
-# per-thread: same arithmetic over /proc/$P/task/*/stat   (tid == pid => the MAIN thread)
+ROOT=<pid>        # CLK_TCK=100 => 100 ticks = 1 core-second
+# Sum fields 14-17 = utime+stime+CUTIME+CSTIME over the LIVE TREE. Dropping the c* pair makes a
+# fork-and-reap tree (vitest, npm test) read NEGATIVE or near-zero -- a confident false "idle".
+kids(){ local a=$1 f=$1 n; for _ in 1 2 3 4 5 6; do n=; for p in $f; do n="$n $(pgrep -P $p 2>/dev/null)"; done; [ -z "${n// /}" ] && break; a="$a $n"; f=$n; done; echo $a; }
+t(){ local s=0 v; for p in $(kids $ROOT); do v=$(awk '{i=index($0,") ");split(substr($0,i+2),f," ");print f[12]+f[13]+f[14]+f[15]}' /proc/$p/stat 2>/dev/null); s=$((s+${v:-0})); done; echo $s; }
+A=$(t); S=$(date +%s.%N); sleep 5; B=$(t); E=$(date +%s.%N)
+echo "scale=2;($B-$A)/100/($E-$S)" | bc   # cores -- divide by MEASURED elapsed, never the sleep
+# per-thread: same arithmetic over /proc/$ROOT/task/*/stat   (tid == pid => the MAIN thread)
 ```
 
 ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
