@@ -223,8 +223,35 @@ export function buildPairsForQuery(q: GoldQuery, pool: readonly PoolDoc[]): Judg
 // Judging
 // =============================================================================
 
+/**
+ * The minimal shape judging needs: an id, a query, and one document.
+ *
+ * Deliberately WITHOUT `goldRelevant`. The judged-pair path (this file) has a
+ * gold label to agree or disagree with; the labelled-relevance pass
+ * (`labelled-relevance.ts`) is PRODUCING the labels and has none. Both call the
+ * same judge through this shape, so the frozen contract — model, rubric,
+ * prompt, pass bar — is one definition rather than two that drift.
+ */
+export interface JudgeableDoc {
+  /** Stable id for this (query, document) judgement. */
+  pairId: string;
+  query: string;
+  docId: string;
+  docText: string;
+}
+
+/** What the judge returned, with no reference to any gold label. */
+export interface JudgeVerdict {
+  /** Judge score on the relevance axis, 0..5. */
+  relevance: number;
+  /** Judge's binary call at {@link RELEVANCE_PASS_BAR}. */
+  judgedRelevant: boolean;
+  judgeCostUsd: number;
+  judgeNotes?: string;
+}
+
 /** Synthesize the minimal one-turn RunSummary `judgeRun` consumes. */
-export function synthesizePairRun(pair: JudgedPair, judgeModel: string): RunSummary {
+export function synthesizePairRun(pair: JudgeableDoc, judgeModel: string): RunSummary {
   const now = new Date();
   return {
     runId: `p038-${pair.pairId}`,
@@ -259,12 +286,19 @@ export function synthesizePairRun(pair: JudgedPair, judgeModel: string): RunSumm
   };
 }
 
-export async function judgePair(
-  pair: JudgedPair,
+/**
+ * Judge ONE (query, document) pair on the frozen `search-relevance.v1` rubric.
+ *
+ * This is the whole judging primitive: everything above it in this file is
+ * gold-comparison arithmetic, and everything the labelled pass adds is
+ * retrieval and scoring. Nothing here knows what "correct" is.
+ */
+export async function judgeRelevance(
+  pair: JudgeableDoc,
   llm: LlmCallFn,
   judgeModel: string = JUDGE_AGREEMENT_MODEL,
   temperature?: number,
-): Promise<PairOutcome> {
+): Promise<JudgeVerdict> {
   const run = synthesizePairRun(pair, judgeModel);
   const judge = await judgeRun(
     {
@@ -286,14 +320,28 @@ export async function judgePair(
   );
 
   const relevance = judge.scores.relevance ?? 0;
-  const judgedRelevant = relevance >= RELEVANCE_PASS_BAR;
   return {
-    ...pair,
     relevance,
-    judgedRelevant,
-    agrees: judgedRelevant === pair.goldRelevant,
+    judgedRelevant: relevance >= RELEVANCE_PASS_BAR,
     judgeCostUsd: judge.costUsd,
     ...(judge.notes ? { judgeNotes: judge.notes } : {}),
+  };
+}
+
+export async function judgePair(
+  pair: JudgedPair,
+  llm: LlmCallFn,
+  judgeModel: string = JUDGE_AGREEMENT_MODEL,
+  temperature?: number,
+): Promise<PairOutcome> {
+  const verdict = await judgeRelevance(pair, llm, judgeModel, temperature);
+  return {
+    ...pair,
+    relevance: verdict.relevance,
+    judgedRelevant: verdict.judgedRelevant,
+    agrees: verdict.judgedRelevant === pair.goldRelevant,
+    judgeCostUsd: verdict.judgeCostUsd,
+    ...(verdict.judgeNotes ? { judgeNotes: verdict.judgeNotes } : {}),
   };
 }
 

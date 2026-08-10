@@ -296,6 +296,25 @@ async function resolveProseRerankEngine(): Promise<ResolvedRerankEngine | null> 
  * where slicing to the page here would starve the filters the over-fetch exists
  * to feed.
  */
+/**
+ * What the Stage B reranker actually did on one call — the measurement seam
+ * described on `rerankRows`' `onOutcome` below.
+ *
+ * Named and exported because a MEASURING caller (a bench, an A/B arm) needs to
+ * report it alongside its numbers: the fail-soft contract returns the input
+ * order on every degrade path, which is byte-identical to a rerank-disabled
+ * control, so a run that silently lost its engine otherwise publishes a
+ * confident null instead of voiding itself (WI-37670).
+ */
+export interface RerankStageOutcome {
+  attempted: boolean;
+  reason?: string;
+  /** The resolved engine, recorded even when the stage then degraded. */
+  engine?: string | null;
+  /** Rows the cross-encoder scored. 0 ⇒ the returned order is retrieval order. */
+  scored?: number;
+}
+
 export async function rerankRows<T>(
   query: string,
   rows: readonly T[],
@@ -347,14 +366,7 @@ export async function rerankRows<T>(
      * and `rows.length` means some pairs degraded inside a successful call. A
      * caller needing certainty should compare `scored` against `rows.length`.
      */
-    onOutcome?: (outcome: {
-      attempted: boolean;
-      reason?: string;
-      /** The resolved engine, recorded even when the stage then degraded. */
-      engine?: string | null;
-      /** Rows the cross-encoder scored. 0 ⇒ the returned order is retrieval order. */
-      scored?: number;
-    }) => void;
+    onOutcome?: (outcome: RerankStageOutcome) => void;
   },
 ): Promise<T[]> {
   // Nothing to reorder → no engine resolution, no rerank import.
@@ -463,6 +475,13 @@ export async function rerankProseHits(
      * for the rest of their work — never equal to it.
      */
     rerankTimeoutMs?: number;
+    /**
+     * Observe whether the stage actually ranked — see {@link RerankStageOutcome}.
+     * Interactive surfaces ignore this; a caller MEASURING the reranker's effect
+     * must read it, because a total degrade returns the retrieval order and is
+     * otherwise indistinguishable from a healthy rerank that changed nothing.
+     */
+    onOutcome?: (outcome: RerankStageOutcome) => void;
   },
 ): Promise<SearchHit[]> {
   return await rerankRows<SearchHit>(query, hits, {
@@ -472,6 +491,7 @@ export async function rerankProseHits(
     // Within a rerank-score bucket, keep the higher RRF/BM25 hit first.
     qualityScore: (hit) => hit.score,
     rerankTimeoutMs: opts?.rerankTimeoutMs ?? PROSE_RERANK_TIMEOUT_MS,
+    ...(opts?.onOutcome ? { onOutcome: opts.onOutcome } : {}),
   });
 }
 
