@@ -107,8 +107,35 @@ NEW_BLUEPRINTS_DIR=""
 NEW_SQL_DIR=""
 trap 'rm -f "$TMPFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"' EXIT
 
+# EI-20093985382484201: A BUNDLE FAILURE MUST NOT TAKE THE SERVICE DOWN.
+# ExecStartPre runs this on EVERY restart against the LIVE shared tree, which
+# many agents edit continuously — so that tree is INVALID for the seconds
+# between two keystrokes of any multi-part edit. Before this guard a transient
+# syntax error made ExecStartPre exit non-zero, systemd refused to start the
+# unit, and Restart=always + RestartSec=5 re-bundled the same broken tree every
+# 5s (~14s CPU per attempt). Measured 2026-08-10: ONE unescaped apostrophe in a
+# tool `description:` string took :3170 down fleet-wide for ~52s across 4
+# attempts — the SECOND such outage that day, a different typo by a different
+# agent. The typo is unremarkable and WILL recur; the outage is the defect.
+#
+# The fallback is cheap ONLY because of the atomic swap above (EI-9413):
+# esbuild writes $TMPFILE and we rename it into place, so a FAILED build leaves
+# the last-known-good $OUTFILE byte-intact on disk. We just boot it.
+#
+# Deliberately LOUD, never silent. Serving a stale bundle is its own hazard —
+# an agent can verify against code that is not what is on disk — so we write
+# $STALE_MARKER and /api/health surfaces it (see
+# packages/operator-core/lib/bundle-staleness.ts). A VISIBLY-stale service is
+# strictly better than a down one; an INVISIBLY-stale one is worse than both.
+STALE_MARKER="$(dirname "$OUTFILE")/.bundle-stale.json"
+BUILD_LOG="$OUTFILE.build-error.log"
+
 echo "→ esbuild-bundling $ENTRY → $OUTFILE (plain-node host entry, no tsx loader)"
-(
+bundle_rc=0
+# `if ! ( … )` rather than a bare call: `set -e` would otherwise kill the script
+# at precisely the failure this block exists to survive. Output is captured to a
+# file so it can be BOTH echoed to the journal and parsed into the marker.
+if ! (
   flock -w 120 9 || { echo "ERROR: timed out waiting for bundle lock $LOCKFILE (another build stuck?)"; exit 1; }
   npx --yes esbuild@0.25.0 "$ENTRY" \
     --bundle --platform=node --format=esm --target=node22 \
@@ -118,8 +145,33 @@ echo "→ esbuild-bundling $ENTRY → $OUTFILE (plain-node host entry, no tsx lo
     --log-limit=20 \
     "${HOST_EXTERNALS[@]}"
   mv -f "$TMPFILE" "$OUTFILE"
-) 9>"$LOCKFILE"
+) 9>"$LOCKFILE" >"$BUILD_LOG" 2>&1; then
+  bundle_rc=1
+fi
+cat "$BUILD_LOG"
 
+if [[ $bundle_rc -ne 0 ]]; then
+  if [[ -f "$OUTFILE" ]]; then
+    node "$SCRIPT_DIR/write-bundle-stale-marker.mjs" \
+      "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$BUILD_LOG" || true
+    echo "🚨 ERROR: bundling $ENTRY FAILED — the esbuild error is above."
+    echo "🚨 FALLING BACK to the last-known-good bundle already on disk:"
+    echo "🚨   $OUTFILE (built $(date -r "$OUTFILE" -Iseconds 2>/dev/null || echo unknown))"
+    echo "🚨 The service STARTS, but on STALE CODE. /api/health reports bundleStale."
+    echo "🚨 Marker: $STALE_MARKER — fix the source error and restart to clear it."
+    # NOTHING else on disk is touched. The blueprints/, sql/ and worker-script
+    # publishes below are SKIPPED so dist-host/ stays exactly as the last
+    # SUCCESSFUL build left it — a coherent bundle+assets set, rather than a
+    # stale bundle sitting beside assets freshly published from a newer tree.
+    exit 0
+  fi
+  echo "ERROR: bundling $ENTRY failed and there is NO previous bundle at $OUTFILE"
+  echo "       to fall back to. Refusing to start rather than exec a missing entrypoint."
+  exit 1
+fi
+
+# Success: the running code matches the tree again, so retract any stale claim.
+rm -f "$STALE_MARKER"
 echo "✓ bundled: $(du -h "$OUTFILE" | cut -f1) $OUTFILE"
 
 # @papercusp/locks is bundled into the host graph, so its su-lock-store resolves
