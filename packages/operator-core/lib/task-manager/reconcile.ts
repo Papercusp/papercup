@@ -22,6 +22,7 @@ import {
   type TaskRow,
   type TaskState,
 } from './types';
+import { isConsoleWindowScope } from './scope-class';
 import type { ExemptReason, ProcessScope } from './scope-class';
 
 /** One process as the scanner observed it. */
@@ -112,6 +113,21 @@ export interface ReconcileResult {
    * never "kill these".
    */
   abandonedWindow: ResidueGroup[];
+  /**
+   * A desktop terminal window WE opened for a human (`papercup-console-*.scope`).
+   *
+   * Its own class because it is structurally incapable of being anything else:
+   * `spawnConsole` hardcodes `taskScope: null`, so the scope can never acquire a
+   * ledger row, and `console-spawn.ts` is allowlisted from enrolment BY DESIGN
+   * ("the window is the unit of control"). Counted as `unaccounted` it produced a
+   * permanent alarm that could never clear no matter what anyone fixed — 7 scopes
+   * / 14 processes on this box, re-notified every 30 minutes (EI-20106565311448967).
+   *
+   * REPORT-ONLY, and it is NOT persisted as residue: `unaccounted`'s contract is
+   * "someone bypassed the chokepoint", and a console did the opposite — it took the
+   * documented route. Reads "a human has a window open", never "an escape".
+   */
+  consoleWindow: ResidueGroup[];
   /** A papercusp-tree process outside our slice — the owner's own terminal, a
    *  peer's session. Visible, never controlled: visibility != control. */
   foreign: ResidueGroup[];
@@ -341,12 +357,17 @@ export function reconcile(
   // cmdline filter would have moved these into the scan and STILL reported zero.
   const unaccountedProcs: ScannedProcess[] = [];
   const abandonedWindowProcs: ScannedProcess[] = [];
+  const consoleWindowProcs: ScannedProcess[] = [];
   const foreignProcs: ScannedProcess[] = [];
   for (const p of kernel) {
     if (claimedPids.has(p.pid)) continue;
     const scope = scopeUnitOf(p);
     if (scope && claimedScopes.has(scope)) continue;
     if (p.scope === 'abandoned-window') abandonedWindowProcs.push(p);
+    // Before the `owned` test, because a console scope IS owned — that is exactly why
+    // it fell through to `unaccounted` and stuck there. Checked by scope NAME, which
+    // only our own builder mints; `scopeUnitOf` cannot see it (it resolves `pc-*` only).
+    else if (isConsoleWindowScope(p.cgroupPath)) consoleWindowProcs.push(p);
     else if (p.owned || scope) unaccountedProcs.push(p);
     else foreignProcs.push(p);
   }
@@ -357,6 +378,7 @@ export function reconcile(
     endedUnobserved,
     unaccounted: groupResidue(unaccountedProcs),
     abandonedWindow: groupResidue(abandonedWindowProcs),
+    consoleWindow: groupResidue(consoleWindowProcs),
     foreign: groupResidue(foreignProcs),
     overdue,
     tooYoung,
@@ -385,6 +407,11 @@ export function summarizeReconcile(r: ReconcileResult): {
    *  separately so it can never be read as either "exempt" or a bypass. */
   abandonedWindow: number;
   abandonedWindowPids: number;
+  /** Human-owned desktop terminal windows + the processes they hold. Counted so the
+   *  class stays VISIBLE (visibility != alarm) without re-entering `unaccounted`,
+   *  whose nonzero count is what the 30-minute notifier fires on. */
+  consoleWindow: number;
+  consoleWindowPids: number;
   foreign: number;
   overdue: number;
   tooYoung: number;
@@ -397,6 +424,8 @@ export function summarizeReconcile(r: ReconcileResult): {
     unaccountedPids: r.unaccounted.reduce((n, g) => n + g.pids.length, 0),
     abandonedWindow: r.abandonedWindow.length,
     abandonedWindowPids: r.abandonedWindow.reduce((n, g) => n + g.pids.length, 0),
+    consoleWindow: r.consoleWindow.length,
+    consoleWindowPids: r.consoleWindow.reduce((n, g) => n + g.pids.length, 0),
     foreign: r.foreign.length,
     overdue: r.overdue.length,
     tooYoung: r.tooYoung.length,

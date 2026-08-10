@@ -112,6 +112,55 @@ export function isTerminalWindowScope(cgroupPath: string): boolean {
   return VTE_SCOPE_RE.test(segs[segs.length - 1] ?? '');
 }
 
+/**
+ * The scope prefix `console-spawn.ts` mints for a desktop terminal window
+ * (`buildScopedSpawnArgv(bin, args, label, 'papercup-console', probes, null)`).
+ *
+ * ⚠ Deliberately NOT `papercup-headless-`. The two come out of the same builder and
+ * differ in one argument, but they are opposites here: `spawnHeadless` passes a real
+ * `taskScope` and IS enrolled, and its `papercup-headless-…` fallback name appears
+ * exactly when the caller passed none — the P-009 gap this file's header calls "the
+ * number the pane should have been showing in red all along". Exempting that prefix
+ * too would delete the one signal the residue census exists to raise.
+ */
+export const CONSOLE_SCOPE_PREFIX = 'papercup-console-';
+
+/**
+ * Is this cgroup a desktop terminal window WE opened for a human?
+ *
+ * ── WHY THIS IS NOT AN `ExemptReason`, AND NOT PART OF `classifyScope` ───────
+ *
+ * A console scope is placed INSIDE `papercusp.slice`, so `classifyScope` short-circuits
+ * on `owned` before any exemption is considered — and that short-circuit is correct and
+ * must stay: a process in our slice is ours regardless of its name. The console is not
+ * an exception to ownership. It is ours AND accounted for by a different accountant —
+ * the window — exactly as `systemd-unit` already argues for `.service` leaves.
+ *
+ * What was missing is that nothing downstream knew it. `scopeUnitOf` returns non-null
+ * only for `pc-<taskId>.scope`, so a console fell through the residue split's
+ * `owned || scope` test into `unaccounted` and stayed there forever: `spawnConsole`
+ * hardcodes `taskScope: null`, so it can NEVER acquire a ledger row to be reconciled
+ * against. Measured on this box 2026-08-10 — 7 console scopes holding 14 processes,
+ * re-notified every 30 minutes, the same never-clearing alarm `managed-spawn.ts`
+ * documents at its `wireExit` header (EI-20106565311448967).
+ *
+ * The name is trustworthy evidence of provenance for the same reason WI-37509 trusts
+ * `pc-<taskId>.scope`: only our own builder mints it, so it is a free local
+ * discriminator that needs no /proc read.
+ *
+ * Guard allowlist correspondence: `console-spawn.ts` — "spawnConsole opens a desktop
+ * TERMINAL for a human (window is the unit of control); spawnHeadless IS enrolled".
+ * This is the RUNTIME half of that same intent; `human-terminal` above is the half
+ * that only ever reached windows living under GNOME Terminal's own slice.
+ *
+ * Accepts a bare leaf name as well as a full path (a one-segment path is its leaf).
+ */
+export function isConsoleWindowScope(cgroupPath: string): boolean {
+  const segs = segments(cgroupPath);
+  const leaf = segs[segs.length - 1] ?? '';
+  return leaf.startsWith(CONSOLE_SCOPE_PREFIX) && leaf.endsWith('.scope');
+}
+
 export interface ClassifyScopeOptions {
   /**
    * Is the terminal window that owns this scope still open? `undefined`/`null` mean
