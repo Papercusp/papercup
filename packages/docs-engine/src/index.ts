@@ -32,6 +32,7 @@ export {
   evaluateOkfTrust,
   okfTrustBanner,
   okfTrustIsNotable,
+  isRetiredDocStatus,
   isMachineVerifier,
   type OkfFrontmatter,
   type OkfTrust,

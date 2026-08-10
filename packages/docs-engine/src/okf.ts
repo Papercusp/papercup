@@ -108,16 +108,33 @@ export function okfTrustIsNotable(t: OkfTrust): boolean {
 /**
  * `status:` values that assert the doc is RETIRED.
  *
- * Deliberately a one-value set, from a measured corpus rather than a guess: the
- * 859 docs carry `active` (561), `superseded` (28), `current` (25), `draft` (1).
- * Only `superseded` claims the doc has been replaced. `draft` says INCOMPLETE,
- * which is a different warning and would be a different banner — one doc is not
- * a population to design one against, so it is left alone rather than folded in
- * under a name that does not mean it.
+ * NOT a fresh vocabulary — it is the one `insights-index.ts` has always encoded
+ * inline (`isVisible`: `s !== 'retired' && s !== 'superseded'`), pinned by
+ * `insights-index.test.ts`'s complementary `LIVE_STATUSES` allowlist
+ * (active/current/draft/review/wip). That predicate is now DEFINED here and
+ * imported there, so the curated-index surface and the docs:search/docs:get
+ * surface cannot answer differently about the same doc.
  *
- * Widening this is a one-line change; every consumer reads through it.
+ * Two surfaces disagreeing about which docs are retired is the precise defect
+ * this change exists to close, so a second copy of the list would have
+ * reintroduced it one layer down.
+ *
+ * `draft` is deliberately NOT here: it says INCOMPLETE, not REPLACED, and
+ * `insights-index` treats it as live. `retired` currently matches zero docs
+ * (measured: active 561, superseded 28, current 25, draft 1) and is carried
+ * anyway because the existing predicate carries it.
  */
-const RETIRED_STATUSES = new Set(['superseded']);
+const RETIRED_STATUSES = new Set(['superseded', 'retired']);
+
+/**
+ * Is this authored `status:` a retirement claim? Case/padding tolerant.
+ *
+ * THE shared definition — `insights-index.ts` hides these from the curated
+ * index, and the read surfaces banner them. Same input, same answer.
+ */
+export function isRetiredDocStatus(status: string | undefined): boolean {
+  return status !== undefined && RETIRED_STATUSES.has(status.trim().toLowerCase());
+}
 
 /**
  * Machine-vs-human verifier classification.

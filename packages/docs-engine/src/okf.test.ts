@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 import {
   evaluateOkfTrust,
   isMachineVerifier,
+  isRetiredDocStatus,
   normalizeOkfDate,
   okfFromObject,
   okfTrustBanner,
@@ -223,6 +224,21 @@ describe('status: superseded — an AUTHORED retirement, not a fabricated verdic
       expect(okfTrustIsNotable(t)).toBe(false);
       expect(okfTrustBanner(t)).toBeNull();
     }
+  });
+
+  it('agrees with insights-index\'s LIVE/retired vocabulary, value for value', () => {
+    // The whole point of the shared predicate: these two surfaces must not be
+    // able to disagree about whether a given doc is retired. LIVE_STATUSES is
+    // insights-index.test.ts's allowlist; the retired pair is its `isVisible`.
+    for (const live of ['active', 'current', 'draft', 'review', 'wip']) {
+      expect(isRetiredDocStatus(live)).toBe(false);
+    }
+    for (const dead of ['retired', 'superseded']) {
+      expect(isRetiredDocStatus(dead)).toBe(true);
+      expect(evaluateOkfTrust({ status: dead }, NOW).superseded).toBe(true);
+    }
+    expect(isRetiredDocStatus(undefined)).toBe(false);
+    expect(isRetiredDocStatus('  SUPERSEDED ')).toBe(true);
   });
 
   it('carries an UNRECOGNISED status verbatim without asserting anything about it', () => {

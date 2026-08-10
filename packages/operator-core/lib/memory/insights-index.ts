@@ -22,6 +22,7 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { isRetiredDocStatus } from '@papercusp/docs-engine';
 
 export interface InsightEntry {
   slug: string;
@@ -105,9 +106,17 @@ export function parseFrontmatter(
   return out;
 }
 
+/**
+ * Hidden from the curated index exactly when the read surfaces banner it as
+ * retired — ONE definition, imported, not a second copy of the same two strings.
+ *
+ * These used to be independent: this predicate hid `superseded` docs from the
+ * launch-context index while `docs:search`/`docs:get` returned the same doc as an
+ * ordinary hit with no label at all, so which agents saw the retirement depended
+ * on which surface they happened to use (EI-20057596071021992).
+ */
 function isVisible(status: string): boolean {
-  const s = status.toLowerCase();
-  return s !== 'retired' && s !== 'superseded';
+  return !isRetiredDocStatus(status);
 }
 
 /**
