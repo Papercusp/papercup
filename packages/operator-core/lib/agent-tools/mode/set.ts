@@ -206,7 +206,12 @@ export default defineTool({
   name: 'mode:set',
   profile: 'engineer',
   description:
-    'Enter/exit an official session mode (auto | cold-auto | ideate | drain | grade | goal) for yourself or a peer. ' +
+    // DERIVED, never hand-listed: this sentence spelled its own mode list and
+    // had already fallen behind the registry (it omitted `test` the moment TEST
+    // landed, and `goal` before that). MODE_IDS is the same array that builds
+    // the `mode` z.enum below, so the description cannot disagree with what the
+    // argument actually accepts (goal-mode-hardening-2026-08-10 P-008).
+    `Enter/exit an official session mode (${MODE_IDS.join(' | ')}) for yourself or a peer. ` +
     '{ mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); ' +
     'cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed ' +
     'incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the ' +
