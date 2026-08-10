@@ -429,3 +429,70 @@ describe('HudEntityColumns renderCardAction', () => {
     expect(seen).toContainEqual({ id: 'WI-1', title: 'A real goal' });
   });
 });
+
+/* ── the goal board's two DOM-only contracts ─────────────────────────────────
+   Both exist because the pieces were verified SEPARATELY and the JOIN was not —
+   the same shape as this file's founding defect (two correct components, one
+   broken join). The pots chip had a unit test for its label and an integration
+   test for its SQL, and nothing proving a card actually renders it; the
+   truncation notice had a unit test for its sentence and nothing proving it
+   reaches the screen. Neither could be observed on live data: every goal in the
+   workspace has zero pots, and the cap needs 100+ goals to bind. */
+describe('the goal board', () => {
+  const goalCols = (goals: Parameters<typeof buildGoalBoard>[0], notice: string | null = null) =>
+    render(
+      <HudEntityColumns
+        board={buildGoalBoard(goals, { nowMs: NOW })}
+        focusColumn={null}
+        onFocusColumn={vi.fn()}
+        emptyLabel="No goals yet."
+        notice={notice}
+        noun="goals"
+      />,
+    );
+
+  it('renders the pots chip on a card, NAMING the pots (P-007)', () => {
+    goalCols([
+      {
+        id: 'g1',
+        title: 'Ship the thing',
+        status: 'active',
+        potCount: 3,
+        pots: [{ harnessSlug: 'alpha' }, { harnessSlug: 'beta' }],
+      },
+    ]);
+    // The point of P-007: not "3 pots" but WHICH.
+    expect(document.body.textContent).toContain('alpha, beta +1');
+    expect(document.body.textContent).not.toContain('3 pots');
+  });
+
+  it('marks a SHARED pot on the card, where D-021 says the reader must see it', () => {
+    goalCols([
+      {
+        id: 'g1',
+        title: 'Ship the thing',
+        status: 'active',
+        potCount: 1,
+        pots: [{ harnessSlug: 'alpha', servesGoals: 2 }],
+      },
+    ]);
+    expect(document.body.textContent).toContain('alpha · shared');
+  });
+
+  it('shows the truncation notice on a board that HAS cards (EI-20080280064869122)', () => {
+    // Asserting it on an EMPTY board would prove nothing — the empty state has
+    // its own branch. The defect being guarded is a FULL-looking board that is
+    // silently a prefix, so the notice must survive cards being present.
+    goalCols(
+      [{ id: 'g1', title: 'Ship the thing', status: 'active' }],
+      goalsTruncationNotice(100, 214),
+    );
+    expect(document.body.textContent).toContain('Showing 100 of 214 goals');
+    expect(screen.getByText(/Showing 100 of 214 goals/).getAttribute('role')).toBe('status');
+  });
+
+  it('renders NO notice when nothing is hidden — paired control for the above', () => {
+    goalCols([{ id: 'g1', title: 'Ship the thing', status: 'active' }], goalsTruncationNotice(4, 4));
+    expect(document.body.textContent).not.toContain('Showing');
+  });
+});
