@@ -45,9 +45,13 @@ const SCRIPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../scri
 
 describe('stripCommentsAndStrings', () => {
   it('empties string contents while KEEPING delimiters, so nothing concatenates across the removal', () => {
-    expect(stripCommentsAndStrings(`const a = 'setInterval(';\nconst b = 2;`)).toBe(
-      "const a = '';\nconst b = 2;",
-    );
+    // Blanked with spaces rather than deleted: the output is the same LENGTH as the input, so
+    // offsets and line numbers in the stripped text still address the source (EI-20064929206355679).
+    const src = `const a = 'setInterval(';\nconst b = 2;`;
+    const out = stripCommentsAndStrings(src, 'a.ts');
+    expect(out).toBe(`const a = '            ';\nconst b = 2;`);
+    expect(out).toHaveLength(src.length);
+    expect(out).not.toContain('setInterval(');
   });
 
   it('does not let `//` inside a string start a comment (the mutual-escaping case)', () => {
@@ -63,6 +67,74 @@ describe('stripCommentsAndStrings', () => {
 
   it('PRESERVES ${...} template expressions as CODE — dropping them would trade a false positive for a false negative', () => {
     expect(stripCommentsAndStrings('const s = `a ${setInterval(fn)} b`;')).toContain('setInterval(fn)');
+  });
+});
+
+// Each of these pairs a DECLINE with a FIRE in the SAME fixture. A stripper that returns nothing
+// useful would satisfy every "does not contain" assertion on its own, so "it didn't flag" is only
+// evidence when the same input proves it still CAN flag. (EI-20064929206355679: the pre-AST lexer
+// carried all four defects below; each was measured against the real tree before being fixed.)
+describe('the lexer defects an AST parse removes', () => {
+  const detects = (src: string, name = 'a.ts') => /\bsetInterval\s*\(/.test(stripCommentsAndStrings(src, name));
+
+  it('a regex literal containing a quote does not erase the code after it', () => {
+    // OLD: the `'` in /['"]/ opened a phantom string that ran to the newline, DELETING the rest
+    // of the line — a real call site on that line vanished, and the newline was eaten too.
+    const src = `const RE = /['"]/; setInterval(fn, 1000);\n`;
+    expect(detects(src)).toBe(true); // FIRES on the real offender...
+    expect(detects(`const RE = /['"]/; const msg = 'setInterval(';\n`)).toBe(false); // ...and declines on the quoted one
+  });
+
+  it('keeps line numbers true across a block comment (they used to shift UP)', () => {
+    // OLD: block comments were deleted NEWLINES AND ALL, so every later line moved up and any
+    // caller counting lines in the stripped text reported the wrong one.
+    const src = ['/* one', '   two', '   three */', 'setInterval(fn);', ''].join('\n');
+    const out = stripCommentsAndStrings(src, 'a.ts');
+    expect(out.split('\n')).toHaveLength(src.split('\n').length);
+    expect(out.split('\n').findIndex((l) => l.includes('setInterval('))).toBe(3);
+  });
+
+  it('an `^`-anchored /m detector still sees a declaration that follows a block comment', () => {
+    // The line-collapse above was not cosmetic: gluing lines together breaks `^`.
+    const src = '/* note\n   note */\nconst run = promisify(execFile);\n';
+    expect(/^(export\s+)?(const|let)\s+\w+\s*=\s*promisify\(\s*execFile\w*\s*\)/m.test(stripCommentsAndStrings(src, 'a.ts'))).toBe(true);
+  });
+
+  it('blanks a regex BODY, where a guard is most likely to quote its own token', () => {
+    expect(detects('const RE = /\\bsetInterval\\s*\\(/;\n')).toBe(false);
+    expect(detects('const RE = /\\bsetInterval\\s*\\(/;\nsetInterval(fn);\n')).toBe(true);
+  });
+
+  it('survives astral emoji before a literal (UTF-16 code units, not code points)', () => {
+    // Splitting by code POINT desynchronises every offset after an emoji and mis-blanks real code.
+    const src = `const icon = '🚨';\nsetInterval(fn);\n`;
+    const out = stripCommentsAndStrings(src, 'a.ts');
+    expect(out).toHaveLength(src.length);
+    expect(out).toContain('setInterval(fn);');
+  });
+});
+
+describe('stripCommentsOnly is regex-aware too (the phantom that reached the census)', () => {
+  it('still blanks a comment that FOLLOWS a regex containing a quote', () => {
+    // OLD: the quote opened a phantom string that never closed, so from there to EOF no comment
+    // was blanked. Measured: it put a `role: 'cup'` read out of a doc comment into the
+    // mug/kettle surface census.
+    const src = `const RE = /'/;\nconst live = 'kept';\n// role: 'cup'\n`;
+    const out = stripCommentsOnly(src, 'a.ts');
+    expect(out).not.toContain("role: 'cup'"); // the comment is gone...
+    expect(out).toContain("const live = 'kept'"); // ...and string VALUES are still readable
+  });
+
+  it('blanks a JSX {/* ... */} comment — trailing trivia, which leading-only trivia scanning misses', () => {
+    const src = 'const A = () => (<div>{/* role: kettle */}<b/></div>);\n';
+    const out = stripCommentsOnly(src, 'a.tsx');
+    expect(out).not.toContain('role: kettle');
+    expect(out).toContain('<b/>');
+  });
+
+  it('leaves JSX TEXT alone — `//` in a URL is content, not a comment', () => {
+    const src = 'const A = () => (<p>see https://x/y and role: kettle</p>);\n';
+    expect(stripCommentsOnly(src, 'a.tsx')).toContain('role: kettle');
   });
 });
 
