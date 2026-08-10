@@ -426,6 +426,21 @@ export default defineTool({
           // P-008 soft-band advisory: created fine, but these OPEN items are
           // semantically close — check them before splitting the work.
           ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),
+          // EI-20075667133396690: goal attribution, and its failure. This row is
+          // REBUILT from an allowlist rather than spread from `res`, so a new core
+          // outcome field reaches the agent only if it is named here — `goalId` was
+          // returned by the core since P-002 and never surfaced for exactly that
+          // reason. `goalStampError` means the item was created but its goal
+          // attribution was NOT recorded (see _create-core.ts): a fail-open that is
+          // now visible instead of silent.
+          ...(res.goalId !== undefined ? { goalId: res.goalId } : {}),
+          ...(res.goalStampError !== undefined
+            ? {
+                goalStampError:
+                  `filed, but goal attribution was NOT recorded — this item will not count ` +
+                  `toward its goal's spend/rollup: ${res.goalStampError}`,
+              }
+            : {}),
         };
       },
       { keyOf: (spec) => ({ title: spec.title }) },
