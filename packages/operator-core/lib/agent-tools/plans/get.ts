@@ -130,7 +130,7 @@ export function boundDecisionBodies<T extends { body: string }>(
  *  blocks so headings inside ``` aren't treated as section breaks. Powers the
  *  section index (mode meta/sections) + the `heading` narrowing without pulling
  *  the full prose. */
-function splitSections(md: string): Array<PlanSection & { body: string }> {
+export function splitSections(md: string): Array<PlanSection & { body: string }> {
   const lines = md.split("\n");
   const out: Array<PlanSection & { body: string }> = [];
   let cur: (PlanSection & { body: string }) | null = null;
@@ -167,16 +167,79 @@ function splitSections(md: string): Array<PlanSection & { body: string }> {
   return out;
 }
 
-function findSection(
+/** Split ONE section body into its level-3 (`###`) subsections, tracking fenced
+ *  code blocks so `###` lines inside ``` aren't treated as subsection breaks.
+ *  Prose before the first `###` is not a subsection and is dropped.
+ *
+ *  Only used by the `heading` LOOKUP fallback below — deliberately NOT folded
+ *  into splitSections(), so the section index, `counts.sections` and every
+ *  existing payload stay byte-identical. */
+function splitSubsections(
+  body: string,
+): Array<PlanSection & { body: string }> {
+  const out: Array<PlanSection & { body: string }> = [];
+  let cur: (PlanSection & { body: string }) | null = null;
+  let buf: string[] = [];
+  let inFence = false;
+  const flush = () => {
+    if (cur) {
+      cur.body = buf.join("\n").trim();
+      cur.chars = cur.body.length;
+      out.push(cur);
+    }
+  };
+  for (const line of body.split("\n")) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      if (cur) buf.push(line);
+      continue;
+    }
+    const m = !inFence ? /^###\s+(.*)$/.exec(line) : null;
+    if (m) {
+      flush();
+      buf = [];
+      cur = { heading: (m[1] ?? "").trim(), level: 3, chars: 0, body: "" };
+    } else if (cur) {
+      buf.push(line);
+    }
+  }
+  flush();
+  return out;
+}
+
+/**
+ * Resolve `heading` to a section — level 1/2 first, then level-3 subsections.
+ *
+ * EI-19459526252132133: decisions are `### D-NNN` subsections of `## Decisions`,
+ * and splitSections indexes levels 1-2 only, so ONE decision was unreachable by
+ * any read. `plans:add-decision`, `plans:ratify-decision` and
+ * `plans:set-decision-body` all address a decision BY ID, so the store could be
+ * written by id and not read back by id — the whole `## Decisions` section was
+ * the smallest readable unit, and on a mature plan that section is exactly what
+ * overflows the result door (measured: 16 decisions cut mid-D-002; a 30-decision
+ * plan yielded D-001..D-004 while counts said 30). The truncation is honest
+ * about WHAT it dropped (./shape-clip) but there was no call that recovers it.
+ *
+ * The fallback runs only when the level-1/2 lookup MISSES, so an existing call
+ * can never change meaning: a plan with a `## Decisions` section still resolves
+ * to that section, never to a subsection that happens to share the substring.
+ */
+export function findSection(
   sections: Array<PlanSection & { body: string }>,
   heading: string,
 ): (PlanSection & { body: string }) | null {
   const want = heading.trim().toLowerCase();
-  return (
-    sections.find((s) => s.heading.toLowerCase() === want) ??
-    sections.find((s) => s.heading.toLowerCase().includes(want)) ??
-    null
-  );
+  const match = (list: Array<PlanSection & { body: string }>) =>
+    list.find((s) => s.heading.toLowerCase() === want) ??
+    list.find((s) => s.heading.toLowerCase().includes(want)) ??
+    null;
+
+  const top = match(sections);
+  if (top) return top;
+
+  // Flattened in section order so an ambiguous substring resolves to the first
+  // match by document position — the same rule the level-1/2 lookup uses.
+  return match(sections.flatMap((s) => splitSubsections(s.body)));
 }
 
 /**

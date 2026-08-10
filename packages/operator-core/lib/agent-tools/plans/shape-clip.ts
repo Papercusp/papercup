@@ -104,10 +104,53 @@ function recordOffsets(body: string): number[] {
   return offsets;
 }
 
-function recordMarker(shown: number, total: number, omittedChars: number): string {
+/**
+ * Longest record heading quoted in a marker. Bounds the marker so the reserve
+ * below stays a worst case, keeping clipSectionBody single-pass.
+ */
+const RECOVER_HEADING_MAX = 48;
+
+/**
+ * The heading text of the `### ` record starting at `offset`, clipped to
+ * {@link RECOVER_HEADING_MAX}.
+ *
+ * Clipping it keeps the pointer HONEST rather than approximate: the `heading`
+ * lookup in plans/get.ts matches by substring, so a PREFIX of a record heading
+ * resolves to that record. A shortened pointer is still a working call.
+ */
+function recordHeadingAt(body: string, offset: number): string {
+  const line = body.slice(offset).split("\n", 1)[0] ?? "";
+  const text = line.replace(/^###\s+/, "").trim();
+  return text.length > RECOVER_HEADING_MAX
+    ? text.slice(0, RECOVER_HEADING_MAX).trim()
+    : text;
+}
+
+/**
+ * EI-19459526252132133: `payloadTier:"full"` is the honest exit for a clipped
+ * FIELD, but for a record-structured section it is the wrong size of answer —
+ * on the measured 98,941-char Decisions section it re-serves all 30 records to
+ * recover one, which overflows the door again. Now that plans:get resolves
+ * `heading` to a `### ` subsection, ONE record is addressable, so the marker
+ * names the first record the reader is actually missing. Still per the module
+ * rule above: this pointer is advertised only because it now resolves.
+ */
+function recordRecoverHint(heading: string): string {
+  return `plans:get { heading:"${heading}" } for one record, or ${SHAPE_RECOVER_HINT}`;
+}
+
+function recordMarker(
+  shown: number,
+  total: number,
+  omittedChars: number,
+  firstOmittedHeading?: string,
+): string {
+  const recover = firstOmittedHeading
+    ? recordRecoverHint(firstOmittedHeading)
+    : SHAPE_RECOVER_HINT;
   return (
     `…[TRUNCATED — showing ${shown} of ${total} "###" records, ` +
-    `+${omittedChars} chars — recover: ${SHAPE_RECOVER_HINT}]`
+    `+${omittedChars} chars — recover: ${recover}]`
   );
 }
 
@@ -136,8 +179,15 @@ export function clipSectionBody(body: string, n: number): ClippedSection {
   const total = offsets.length;
 
   if (total >= 2) {
-    // Reserve against the worst case, as in clipWithMarker.
-    const reserve = recordMarker(total, total, fullChars).length;
+    // Reserve against the worst case, as in clipWithMarker — the quoted heading
+    // is bounded by RECOVER_HEADING_MAX, so a full-length placeholder makes the
+    // reserve an upper bound on every marker this call can emit.
+    const reserve = recordMarker(
+      total,
+      total,
+      fullChars,
+      "x".repeat(RECOVER_HEADING_MAX),
+    ).length;
     const budget = n - reserve;
     // Largest record boundary that still fits. offsets[0] is the head preamble's
     // end; cutting there would show ZERO records, so require at least one.
@@ -152,7 +202,9 @@ export function clipSectionBody(body: string, n: number): ClippedSection {
     if (cutAt > 0) {
       const kept = body.slice(0, cutAt);
       return {
-        body: `${kept}${recordMarker(shown, total, fullChars - cutAt)}`,
+        // `cutAt` IS the start of the first omitted record — the one the reader
+        // is missing, and so the one worth naming.
+        body: `${kept}${recordMarker(shown, total, fullChars - cutAt, recordHeadingAt(body, cutAt))}`,
         truncated: true,
         fullChars,
         recordsShown: shown,
@@ -163,7 +215,10 @@ export function clipSectionBody(body: string, n: number): ClippedSection {
     // nothing. Fall back to a char clip, but still report the record counts so
     // the caller learns it is seeing 0 complete records of `total`.
     return {
-      body: clipWithMarker(body, n),
+      // Zero complete records survive, so the record the reader most needs is
+      // the FIRST one — name it rather than falling back to the whole-payload
+      // exit that re-serves all `total` records to recover one.
+      body: clipWithMarker(body, n, recordRecoverHint(recordHeadingAt(body, offsets[0]!))),
       truncated: true,
       fullChars,
       recordsShown: 0,
