@@ -67,9 +67,9 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { ndcgAtK } from '@papercusp/search-core';
-import { runHybridSearch } from '@papercusp/search';
+import { runHybridSearch, type SearchHit } from '@papercusp/search';
 
-import { rerankRows } from '../../agent-tools/search/rerank';
+import { rerankRows, rerankText } from '../../agent-tools/search/rerank';
 import { SEARCH_SOURCES } from '../../agent-tools/search/sources';
 import { resolveBackfillEmbedder } from '../embed-backfill';
 import {
@@ -144,15 +144,35 @@ function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
+/**
+ * Hit identity. `SearchHit` has no `key` — that lives on the RankedItem the
+ * engine fuses over — so identity here is the source-qualified id, which is
+ * what `sources.ts` builds its own fusion key from.
+ */
+function hitId(h: SearchHit): string {
+  return `${h.source}:${h.source_id}`;
+}
+
 function rankOf(keys: readonly string[], targetId: string): number | null {
   const i = keys.indexOf(`work_item:${targetId}`);
   return i >= 0 ? i : null;
 }
 
 async function main(): Promise<void> {
-  const sql = await getOrgPg();
-  const embedderResolved = await resolveBackfillEmbedder();
-  const embedder = embedderResolved?.embed ?? null;
+  const { sql } = getOrgPg();
+  const resolved = await resolveBackfillEmbedder();
+  if (resolved.mode === 'disabled') {
+    // Refusing beats measuring: with no embedder the run degrades to BM25-only,
+    // which changes the candidate pool the reranker is scored on. That is a
+    // DIFFERENT experiment reported under this one's name.
+    console.error(
+      `VOID — embedder disabled (${resolved.reason ?? 'no reason given'}). The pool would be ` +
+        `BM25-only, so the measured reranker effect would not be the production one.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const embedder = resolved.embed;
 
   console.log(`# WI-37653 — reranker INTEGRATION benchmark\n`);
   console.log(
@@ -232,21 +252,23 @@ async function main(): Promise<void> {
           filters: {},
         } as never);
 
-        const pool = (results ?? []) as Array<{ key: string; text?: string; score?: number }>;
+        const pool: SearchHit[] = results ?? [];
         if (pool.length === 0) continue;
 
-        const controlKeys = pool.map((h) => h.key);
+        const controlKeys = pool.map(hitId);
         const controlRank = rankOf(controlKeys, s.targetId);
 
         let attempted = false;
         let engine: string | null = null;
         // limit = pool.length: REORDER without cutting. The cut is applied
         // afterwards, per-k, so one rerank call serves the whole sweep.
-        const reranked = await rerankRows(s.query, pool, {
+        const reranked = await rerankRows<SearchHit>(s.query, pool, {
           limit: pool.length,
-          id: (r) => r.key,
-          text: (r) => r.text ?? r.key,
-          qualityScore: (r) => r.score ?? 0,
+          id: hitId,
+          // `rerankText` is the SAME match-centred text production scores on.
+          // Hand-rolling this would measure a reranker nobody ships.
+          text: rerankText,
+          qualityScore: (r) => r.score,
           rerankTimeoutMs: 10_000,
           onOutcome: (o) => {
             attempted = o.attempted;

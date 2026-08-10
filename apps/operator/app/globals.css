@@ -27814,19 +27814,23 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 
 .op-pot-empty { color: var(--fg-mute); font-size: 11.5px; }
 
-/* ── Pot Health full-height pane (WI-4778; WI-4789 design pass) ──────────────
-   Replaces the chat body while the header 🫖 toggle is on. One scroll: the 🌡
-   Kettle section stacked over the ☕ Mug section. Reuses the op-pot-* row/
-   chip/dot idioms above; only pane-scoped layout lives here. Section hues
-   ride the SEMANTIC status tokens (design docs § tokens — never hardcode a
-   palette literal): Mug = --warn (the amber family the retired queen rail
-   tab used), Kettle = --bad (the retired overwatch red) — used ONLY for the
-   section rubric + card rail; everything else stays the app's blue-frost
-   neutrals, flat per the design docs (no gradients, no glows, no lifts). ── */
+/* ── Pot Health full-height pane (WI-4778; rebuilt P-018..P-021 / D-032) ─────
+   Replaces the chat body while the header Pot Health toggle is on. One scroll:
+   GOALS (what the pot is pointed at) over SU AGENTS (who is driving) over
+   THROUGHPUT (is it working). Reuses the op-pot-* row/chip/dot idioms above;
+   only pane-scoped layout lives here.
+
+   Section hues ride the SEMANTIC tokens (design docs § tokens — never a palette
+   literal) and IDENTIFY ONLY, they never signal: --good/--warn/--bad stay
+   reserved for the dots and bars that carry actual health, so a healthy section
+   never reads as an alarm. The retired --ph-mug/--ph-ket pair (amber = Mug, red
+   = Kettle) is gone with the tier it identified; using --bad as resting section
+   chrome was exactly the "hue that looks like a status" trap. ── */
 
 .op-ph {
-  --ph-mug: var(--warn);
-  --ph-ket: var(--bad);
+  --ph-goal: var(--accent);
+  --ph-agent: var(--accent-soft);
+  --ph-flow: var(--accent-cool);
   min-height: 0;
   flex: 1 1 auto;
   display: flex;
@@ -27913,14 +27917,15 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 
 .op-ph-sec:first-child { margin-top: 0; }
 
-/* Mug/Kettle IDENTITY is carried by the hued icon + a low-opacity section
-   rule — never a STATUS colour as resting chrome. Reserving --good/--warn/--bad
-   for the dots + chips (actual health) means a healthy Kettle section no longer
-   reads as an all-red alarm; the hue only IDENTIFIES, it never signals. */
-.op-ph-sec.mug { border-bottom-color: color-mix(in oklab, var(--ph-mug), transparent 72%); }
-.op-ph-sec.ket { border-bottom-color: color-mix(in oklab, var(--ph-ket), transparent 72%); }
-.op-ph-sec.mug > svg { color: var(--ph-mug); }
-.op-ph-sec.ket > svg { color: var(--ph-ket); }
+/* Section IDENTITY is carried by the hued icon + a low-opacity section rule —
+   never a STATUS colour as resting chrome (see the token note at the top of
+   this block). The hue only IDENTIFIES; it never signals. */
+.op-ph-sec.goal { border-bottom-color: color-mix(in oklab, var(--ph-goal), transparent 72%); }
+.op-ph-sec.agent { border-bottom-color: color-mix(in oklab, var(--ph-agent), transparent 72%); }
+.op-ph-sec.flow { border-bottom-color: color-mix(in oklab, var(--ph-flow), transparent 72%); }
+.op-ph-sec.goal > svg { color: var(--ph-goal); }
+.op-ph-sec.agent > svg { color: var(--ph-agent); }
+.op-ph-sec.flow > svg { color: var(--ph-flow); }
 
 .op-ph-sec-d {
   margin-left: auto;
@@ -27942,10 +27947,11 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   padding: 8px 10px;
 }
 
-/* Softer identity rail (was transparent 35%) — quiet enough to identify the
-   card's section without competing with the sev-stripe idiom inside it. */
-.op-ph-card.mug { border-left: 3px solid color-mix(in srgb, var(--ph-mug), transparent 55%); }
-.op-ph-card.ket { border-left: 3px solid color-mix(in srgb, var(--ph-ket), transparent 55%); }
+/* Softer identity rail — quiet enough to identify the card's section without
+   competing with the sev-stripe idiom inside it. */
+.op-ph-card.goal { border-left: 3px solid color-mix(in srgb, var(--ph-goal), transparent 55%); }
+.op-ph-card.agent { border-left: 3px solid color-mix(in srgb, var(--ph-agent), transparent 55%); }
+.op-ph-card.flow { border-left: 3px solid color-mix(in srgb, var(--ph-flow), transparent 55%); }
 
 /* Card title — the mid-level scan anchor. Brighter (--fg-dim) and a hair
    larger (10px) than the old 9.5px/--fg-mute so the eye catches which card is
