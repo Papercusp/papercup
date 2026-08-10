@@ -86,6 +86,18 @@ const MIN_RESTORABLE_DUMP_BYTES = 10_000;
 const PG_DUMP_TIMEOUT_MS = 15 * 60_000;
 const GIB = 1024n * 1024n * 1024n;
 
+/**
+ * Multiple of the previous dump's size to require free. The new `.tmp` and the
+ * previous dump coexist for the length of the run (the rename is the last
+ * step), so 2x is the floor for correctness; the third covers growth between
+ * snapshots.
+ */
+const DUMP_SIZE_HEADROOM_FACTOR = 3n;
+/** Budget when no previous dump exists to measure (first run in a workspace). */
+const MIN_DUMP_BUDGET_BYTES = 2n * GIB;
+/** Never drive the filesystem to literal zero, however small the dump is. */
+const FILESYSTEM_SAFETY_MARGIN_BYTES = 1n * GIB;
+
 export interface PreSnapshotHookResult {
   ok: boolean;
   bytes?: number;
@@ -93,17 +105,36 @@ export interface PreSnapshotHookResult {
 }
 
 /**
- * Keep enough space to finish a dump and leave the host recoverable. The
- * percentage keeps this usable on smaller desktop disks; the 100GiB ceiling
- * prevents an unnecessarily large reserve on workstation volumes.
+ * Space the dump needs, plus a margin — sized to the WORK, never to the disk.
+ *
+ * The previous implementation asked for 10% of TOTAL CAPACITY (floor 10GiB,
+ * ceiling 100GiB). On any large volume that saturates at the 100GiB ceiling,
+ * so writing a 1.7GB dump demanded 100GiB free — a ~60x margin that a busy
+ * 2TB disk never satisfies. The result was NOT a noisy alarm but a SILENT
+ * one: the guard meant to protect the backup disabled it outright, hourly,
+ * for 26 hours (EI-20109034777197353), because a reserve derived from disk
+ * size has no relationship to the thing being reserved FOR.
+ *
+ * Sized from the previous dump instead: it is by far the best predictor of
+ * the next one. The factor covers the fact that the new `.tmp` is written
+ * while the previous dump still exists (so both are on disk at once) plus
+ * room for growth; the floor covers a fresh workspace with no prior artifact
+ * to measure; the margin keeps the filesystem off zero regardless.
+ *
+ * Being too PERMISSIVE here is the recoverable direction — `dumpPg` handles
+ * ENOSPC and unlinks its partial `.tmp`. Being too restrictive silently ends
+ * backups, which is the failure this function caused.
+ *
+ * @param recentDumpBytes size of the most recent successful dump, or null when
+ *   none exists yet.
  */
-function requiredFreeBytes(totalBytes: bigint): bigint {
-  const tenPercent = totalBytes / 10n;
-  return tenPercent < 10n * GIB
-    ? 10n * GIB
-    : tenPercent > 100n * GIB
-      ? 100n * GIB
-      : tenPercent;
+export function requiredFreeBytes(recentDumpBytes: bigint | null): bigint {
+  const projected =
+    recentDumpBytes !== null && recentDumpBytes > 0n
+      ? recentDumpBytes * DUMP_SIZE_HEADROOM_FACTOR
+      : MIN_DUMP_BUDGET_BYTES;
+  const need = projected < MIN_DUMP_BUDGET_BYTES ? MIN_DUMP_BUDGET_BYTES : projected;
+  return need + FILESYSTEM_SAFETY_MARGIN_BYTES;
 }
 
 /**
@@ -152,18 +183,32 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
     await appendFile(logPath, `[${new Date().toISOString()}] ${msg}\n`).catch(() => {});
   };
 
+  const outPath = join(dumpDir, 'pg-embedded.sql.gz');
+
+  // A leftover `.tmp` from a crashed or timed-out run is never useful input,
+  // and its bytes are exactly the bytes the next dump needs. Reclaim it BEFORE
+  // measuring free space rather than leaving it to `dumpPg`: when the check
+  // below refuses, `dumpPg` never runs, so the orphan outlives every skip and
+  // is re-captured by every snapshot. A 164MB orphan survived 26h of skips
+  // that way (EI-20109034777197353).
+  await unlink(`${outPath}.tmp`).catch(() => {});
+
   // The dump is written beside the workspace, not in the Kopia repository.
-  // Refuse before spawning pg_dump when that filesystem is already in its
-  // emergency reserve. This prevents backup work from turning low space into
-  // an unrecoverable ENOSPC incident.
+  // Refuse before spawning pg_dump when that filesystem cannot fit the dump —
+  // sized to the dump's own need, never to disk capacity (see
+  // requiredFreeBytes). This keeps backup work from turning low space into an
+  // unrecoverable ENOSPC incident without disabling backups outright.
   try {
+    const previousDumpBytes = await stat(outPath).then(
+      (s) => BigInt(s.size),
+      () => null,
+    );
     const fs = await statfs(ctx.workspaceRoot);
     const blockSize = BigInt(fs.bsize);
     const freeBytes = blockSize * BigInt(fs.bavail);
-    const totalBytes = blockSize * BigInt(fs.blocks);
-    const reserveBytes = requiredFreeBytes(totalBytes);
+    const reserveBytes = requiredFreeBytes(previousDumpBytes);
     if (freeBytes < reserveBytes) {
-      const error = `insufficient free space (${freeBytes} available; ${reserveBytes} reserve)`;
+      const error = `insufficient free space (${freeBytes} available; ${reserveBytes} needed for a dump of ${previousDumpBytes ?? 'unknown'} bytes)`;
       await log(`pg SKIP: ${error}`);
       await log('hook done (degraded)');
       return { ok: false, error };
@@ -184,7 +229,7 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
     user: parsed.username || 'postgres',
     password: decodeURIComponent(parsed.password || 'postgres'),
     database: decodeURIComponent(parsed.pathname.replace(/^\//, '')) || 'papercusp',
-    outPath: join(dumpDir, 'pg-embedded.sql.gz'),
+    outPath,
     log,
   });
 
