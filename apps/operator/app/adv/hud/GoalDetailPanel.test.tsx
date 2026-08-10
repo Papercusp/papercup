@@ -6,7 +6,7 @@
  * only a DOM can prove — and what this suite therefore pins — are the four
  * claims the surface makes that a passing model test would not catch:
  *
- *   1. A KILLED project is still on the page. This is the one the item calls
+ *   1. A KILLED pot is still on the page. This is the one the item calls
  *      out: dropping it is a one-word change (`.filter(p => !p.removed)`) that
  *      every model test still passes, and the page then only ever shows growth.
  *   2. An unmeasured tripwire does not render as a filled bar.
@@ -156,7 +156,7 @@ function detail(over: Partial<GoalDetailInput> = {}): GoalDetailInput {
       budgetCents: 50_000,
       ...over.goal,
     },
-    projects: [],
+    pots: [],
     waitingOnYou: [],
     activity: [],
     spendByDay: [],
@@ -284,13 +284,13 @@ describe('GoalDetailPanel', () => {
     expect(realZero.textContent).toContain('day 0 of 30');
   });
 
-  it('KEEPS a closed project on the page, with its reason', () => {
+  it('KEEPS a closed pot on the page, with its reason', () => {
     // The invariant the item singles out. A `.filter(p => !p.removed)` in the
     // component would leave every model test green and delete the only
     // evidence that the agent closes things.
     renderPanel(
       detail({
-        projects: [
+        pots: [
           { harnessSlug: 'alpha', role: 'owner', killCriterion: 'ship by day 14', servesGoals: 1 },
           {
             harnessSlug: 'beta',
@@ -303,28 +303,28 @@ describe('GoalDetailPanel', () => {
         ],
       }),
     );
-    expect(screen.getByTestId('goal-projects').textContent).toContain('alpha');
+    expect(screen.getByTestId('goal-pots').textContent).toContain('alpha');
 
-    const closed = screen.getByTestId('goal-projects-closed');
+    const closed = screen.getByTestId('goal-pots-closed');
     expect(closed.textContent).toContain('beta');
     expect(closed.textContent).toContain('no traction after two weeks');
     expect(closed.querySelector('.hud-goal__proj--removed')).toBeTruthy();
   });
 
-  it('shows each project its OWN kill criterion and the shared badge', () => {
+  it('shows each pot its OWN kill criterion and the shared badge', () => {
     renderPanel(
       detail({
-        projects: [
+        pots: [
           { harnessSlug: 'alpha', role: 'owner', killCriterion: 'ship by day 14', servesGoals: 3 },
           { harnessSlug: 'gamma', role: 'contributing', servesGoals: 1 },
         ],
       }),
     );
-    const grid = screen.getByTestId('goal-projects');
+    const grid = screen.getByTestId('goal-pots');
     expect(grid.textContent).toContain('ship by day 14');
     expect(grid.textContent).toContain('shared with 2 other goals');
-    // Clause 4 requires one per project — its absence is surfaced, not hidden.
-    expect(grid.textContent).toContain('No kill criterion for this project');
+    // Clause 4 requires one per pot — its absence is surfaced, not hidden.
+    expect(grid.textContent).toContain('No kill criterion for this pot');
   });
 
   it('lists waiting-on-you above activity and opens an item', () => {
@@ -348,7 +348,7 @@ describe('GoalDetailPanel', () => {
   });
 
   it('carries the do-not-sum caveat next to the spend chart', () => {
-    // D-021: a shared project counts in full against every goal it serves, so
+    // D-021: a shared pot counts in full against every goal it serves, so
     // these figures do not add up. This is the section most likely to be
     // screenshotted, so the caveat travels with it.
     renderPanel(

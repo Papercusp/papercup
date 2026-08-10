@@ -2,10 +2,10 @@
  * Policy tests for the goal stop fan-out (EI-20013729460455061).
  *
  * The safety property in `does not disarm loops it cannot attribute` is the one
- * that matters most: a goal's owned project is routinely `papercusp` itself, where
+ * that matters most: a goal’s owned pot is routinely `papercusp` itself, where
  * dozens of unrelated su sessions hold active engine loops. If scope were ever
  * widened from "sessions attributed to this goal" to "loops in this goal's
- * projects", a single label change would become a fleet-wide kill switch. That test
+ * pots", a single label change would become a fleet-wide kill switch. That test
  * fails if anyone makes that change.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const pausePotState = vi.hoisted(() => vi.fn(async () => ({})));
 const resumePotState = vi.hoisted(() => vi.fn(async () => ({})));
 const deactivateLoop = vi.hoisted(() => vi.fn(async () => true));
-const projectsForGoal = vi.hoisted(() => vi.fn());
+const potsForGoal = vi.hoisted(() => vi.fn());
 const sqlRows = vi.hoisted(() => ({
   owners: [] as string[],
   unattributed: 0,
@@ -55,7 +55,7 @@ const sql = vi.hoisted(() => {
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getOrgPg: () => ({ sql }),
-  projectsForGoal,
+  potsForGoal,
 }));
 vi.mock('../pot/pause-core', () => ({ pausePotState, resumePotState }));
 vi.mock('../harness/routines/loop', () => ({
@@ -88,34 +88,34 @@ beforeEach(() => {
   sqlRows.owners = [];
   sqlRows.unattributed = 0;
   sqlRows.disarmed = 0;
-  projectsForGoal.mockResolvedValue([]);
+  potsForGoal.mockResolvedValue([]);
 });
 
 describe('executeGoalStop', () => {
-  it('gates placement on projects the goal OWNS', async () => {
-    projectsForGoal.mockResolvedValue([link('pot-a', 'owner'), link('pot-b', 'owner')]);
+  it('gates placement on pots the goal OWNS', async () => {
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner'), link('pot-b', 'owner')]);
 
     const report = await run();
 
-    expect(report.projectsStopped).toEqual(['pot-a', 'pot-b']);
+    expect(report.potsStopped).toEqual(['pot-a', 'pot-b']);
     expect(pausePotState).toHaveBeenCalledTimes(2);
     expect(pausePotState).toHaveBeenCalledWith(expect.anything(), 'ws', 'pot-a');
   });
 
-  it('SPARES a project it merely contributes to — that project is another goal\'s to stop', async () => {
-    projectsForGoal.mockResolvedValue([link('mine', 'owner'), link('shared', 'contributing')]);
+  it('SPARES a pot it merely contributes to — that pot is another goal\'s to stop', async () => {
+    potsForGoal.mockResolvedValue([link('mine', 'owner'), link('shared', 'contributing')]);
 
     const report = await run();
 
-    expect(report.projectsStopped).toEqual(['mine']);
-    expect(report.projectsSkippedContributing).toEqual(['shared']);
-    // The load-bearing assertion: the contributing project was never touched.
+    expect(report.potsStopped).toEqual(['mine']);
+    expect(report.potsSkippedContributing).toEqual(['shared']);
+    // The load-bearing assertion: the contributing pot was never touched.
     expect(pausePotState).toHaveBeenCalledTimes(1);
     expect(pausePotState).not.toHaveBeenCalledWith(expect.anything(), 'ws', 'shared');
   });
 
   it('disarms the loops of sessions ATTRIBUTED to this goal', async () => {
-    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
     sqlRows.owners = ['su-1', 'su-2'];
 
     const report = await run();
@@ -125,7 +125,7 @@ describe('executeGoalStop', () => {
   });
 
   it('does not count a session that had no armed loop as stopped', async () => {
-    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
     sqlRows.owners = ['su-1', 'su-2'];
     // deactivateLoop is guarded `AND active = TRUE`; false means "nothing was armed".
     deactivateLoop.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
@@ -137,11 +137,11 @@ describe('executeGoalStop', () => {
 
   /**
    * THE SAFETY PROPERTY. Three unrelated su loops are active in the goal's own
-   * project and NONE is attributed to the goal. The stop must disarm zero of them
+   * pot and NONE is attributed to the goal. The stop must disarm zero of them
    * and say so — never silently, and never by widening scope to the harness.
    */
   it('does NOT disarm loops it cannot attribute to the goal, and reports them as still running', async () => {
-    projectsForGoal.mockResolvedValue([link('papercusp', 'owner')]);
+    potsForGoal.mockResolvedValue([link('papercusp', 'owner')]);
     sqlRows.owners = []; // no GOAL-mode session for this goal
     sqlRows.unattributed = 3; // but three su loops are live in that harness
 
@@ -155,7 +155,7 @@ describe('executeGoalStop', () => {
   });
 
   it('is NOT degraded when nothing is left burning', async () => {
-    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
     sqlRows.owners = ['su-1'];
     sqlRows.unattributed = 0;
 
@@ -165,10 +165,10 @@ describe('executeGoalStop', () => {
     expect(report.unattributedActiveLoops).toBe(0);
   });
 
-  it('handles a goal with no linked projects without touching anything', async () => {
+  it('handles a goal with no linked pots without touching anything', async () => {
     const report = await run();
 
-    expect(report.projectsStopped).toEqual([]);
+    expect(report.potsStopped).toEqual([]);
     expect(pausePotState).not.toHaveBeenCalled();
     expect(report.degraded).toBe(false);
   });
@@ -182,25 +182,25 @@ describe('executeGoalStop', () => {
  * marks itself `deliberate` so no watchdog undoes it.
  */
 describe('executeGoalResume', () => {
-  it('re-opens placement on projects the goal OWNS', async () => {
-    projectsForGoal.mockResolvedValue([link('pot-a', 'owner'), link('pot-b', 'owner')]);
+  it('re-opens placement on pots the goal OWNS', async () => {
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner'), link('pot-b', 'owner')]);
 
     const report = await resume();
 
-    expect(report.projectsResumed).toEqual(['pot-a', 'pot-b']);
+    expect(report.potsResumed).toEqual(['pot-a', 'pot-b']);
     expect(resumePotState).toHaveBeenCalledTimes(2);
     // No `sql` first argument — resumePotState needs none (pausePotState takes one only
     // for clearPotTimeWake). Asserted positionally so a signature drift is caught here.
     expect(resumePotState).toHaveBeenCalledWith('ws', 'pot-a');
   });
 
-  it('SPARES a project it merely contributes to, exactly as the stop does', async () => {
-    projectsForGoal.mockResolvedValue([link('mine', 'owner'), link('shared', 'contributing')]);
+  it('SPARES a pot it merely contributes to, exactly as the stop does', async () => {
+    potsForGoal.mockResolvedValue([link('mine', 'owner'), link('shared', 'contributing')]);
 
     const report = await resume();
 
-    expect(report.projectsResumed).toEqual(['mine']);
-    expect(report.projectsSkippedContributing).toEqual(['shared']);
+    expect(report.potsResumed).toEqual(['mine']);
+    expect(report.potsSkippedContributing).toEqual(['shared']);
     expect(resumePotState).toHaveBeenCalledTimes(1);
     expect(resumePotState).not.toHaveBeenCalledWith('ws', 'shared');
   });
@@ -211,7 +211,7 @@ describe('executeGoalResume', () => {
    * "active" as "running" and is wrong in the same way the stop's caller would be.
    */
   it('does NOT re-arm disarmed loops, and reports them so "active" cannot read as "running"', async () => {
-    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
     sqlRows.owners = ['su-1', 'su-2'];
     sqlRows.disarmed = 2;
 
@@ -223,7 +223,7 @@ describe('executeGoalResume', () => {
   });
 
   it('is NOT degraded when no attributed loop is left disarmed', async () => {
-    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
     sqlRows.owners = ['su-1'];
     sqlRows.disarmed = 0;
 
@@ -234,7 +234,7 @@ describe('executeGoalResume', () => {
   });
 
   it('never claims to have restored the time wake — the pause deleted its cadence', async () => {
-    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
 
     expect((await resume()).timeWakeRestored).toBe(false);
   });
@@ -251,7 +251,7 @@ describe('executeGoalTransition routing', () => {
   const transition = (status: 'paused' | 'killed' | 'active') =>
     executeGoalTransition({ goalId: 'g1', workspaceId: 'ws', status, actor: 'su-test' });
 
-  beforeEach(() => projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]));
+  beforeEach(() => potsForGoal.mockResolvedValue([link('pot-a', 'owner')]));
 
   it('routes "active" to the RESUME arm — the WI-37615 no-op', async () => {
     const report = await transition('active');
