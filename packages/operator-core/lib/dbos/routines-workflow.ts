@@ -1148,8 +1148,13 @@ async function routinesTickImpl(): Promise<void> {
   // (source 'tsc-new-file-red'). Fail-soft: a missing/corrupt store files nothing.
   await DBOS.runStep(
     async () => {
-      const { tscRedSweep } = await import('../harness/routines/tsc-red-sweep');
-      const results = await tscRedSweep();
+      const { tscRedSweep, resolveClearedTscReds } = await import('../harness/routines/tsc-red-sweep');
+      // EI-20064603102922814 — RETRACT before filing. Filing without retracting made every
+      // open item in this lane false: measured 2026-08-10, 5 of 5 were already fixed, 4 of
+      // them for ~30h, each still reading as a live severity:major fleet-gate blocker. The
+      // retraction is a separate pass rather than a step inside tscRedSweep so the two have
+      // independent failure domains — a DB-side resolve failure must not cost us a filing.
+      const results = [...(await resolveClearedTscReds()), ...(await tscRedSweep())];
       for (const r of results) {
         if (r.outcome === 'debounced') continue;
         console.warn(
