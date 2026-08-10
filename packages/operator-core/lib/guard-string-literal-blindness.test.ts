@@ -333,11 +333,17 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
    * a new copy-paste of the exact defect that froze the fleet gate; import the shared module
    * from `scripts/lib/strip-comments-and-strings.mjs` instead.
    *
-   * Entries that are NOT JS/TS and so cannot use the shared module (it is a TypeScript parse):
+   * Entries that are NOT JS/TS and so cannot use the shared module:
    *   check-assert-integrity.mjs        — shell `#` comments
-   *   check-partial-index-alignment.mjs — SQL `--` comments (already length-preserving)
-   *   lint-migrations.mjs               — SQL
    *   check-unenrolled-mjs-imports.mjs  — strips `//` out of JSONC before JSON.parse
+   *
+   * ⚠ "SQL cannot use the shared module" WAS listed here as a reason and is now FALSE: the
+   * module grew a SQL path (stripSqlComments / stripSqlCommentsAndStrings, dispatched by
+   * isSqlFile) on 2026-08-10, so `--`, nestable block comments, $tag$ bodies and quoted
+   * identifiers are all covered. check-partial-index-alignment.mjs was migrated onto it and
+   * REMOVED from this list the same day (EI-20073035509369492). The two SQL entries that
+   * remain — check-migration-forward-compat.mjs and lint-migrations.mjs — are therefore
+   * un-migrated WORK, not exempt-by-language; do not read their presence as "cannot".
    *
    * `check-timer-classification.mjs` is on this list holding a CORRECT private copy (it is the
    * donor the shared module was lifted from). It should collapse into the import, but was left
@@ -353,7 +359,12 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     'check-no-raw-block-edge.mjs',
     'check-no-raw-install-slug-filter.mjs',
     'check-no-retired-style.mjs',
-    'check-partial-index-alignment.mjs',
+    // check-partial-index-alignment.mjs was REMOVED here on 2026-08-10 (EI-20073035509369492):
+    // it now imports stripSqlComments. Its private copy handled `--` only, so a `--` inside a
+    // quoted identifier was blanked as a comment — and blanking LIVE CODE can erase the very
+    // presence guard the lint looks for, reporting an aligned query as a violation.
+    // Comments only, strings intact: the key it matches on (`->> 'reviewBy'`) IS a string
+    // literal, so the strings variant would take the detector silently 100% inert.
     'check-timer-classification.mjs',
     'check-unbounded-inbox-read.mjs',
     'check-unenrolled-mjs-imports.mjs',

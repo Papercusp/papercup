@@ -71,6 +71,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isLiveCodeAt, stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..');
 
@@ -167,14 +169,34 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * offset arithmetic reports the wrong line — which is worse than no line at all, since it
  * sends the reader to an innocent neighbouring statement.
  *
+ * THE TAG IS MATCHED AGAINST MASKED SOURCE. Measured 2026-08-10: the bare regex fires on the
+ * word `sql` in PROSE whenever a doc comment mentions it in a markdown code span, because the
+ * span's CLOSING backtick supplies the backtick the pattern wants. `gc-plan-runs.ts` says
+ * "`sql` is a seam." in its header, and that one comment minted a 427-char "SQL statement"
+ * consisting of the file's imports and an interface declaration. Across the corpus that was
+ * 61 phantom statements in 33 files (950 -> 889), several of which were 100% phantom.
+ *
+ * The harm is a FALSE POSITIVE the moment swallowed TypeScript happens to contain a comparison
+ * on a guarded key — the phantom body is arbitrary source, not SQL — plus nonsense line
+ * attribution, since offsets inside a phantom point wherever the swallow ended up. It also
+ * inflates the reassuring "N SQL statements scanned" line this lint prints on success.
+ *
+ * Comments only (`stripCommentsOnly`), never `stripCommentsAndStrings`: the corpus IS template
+ * literals, and blanking string content would blank the SQL this lint exists to read.
+ *
  * @param {string} src - TypeScript/JavaScript source text
+ * @param {string} [fileName] - real path, used only to pick a ScriptKind for the mask parse
  * @returns {Array<{ text: string, srcIndex: number[] }>} one entry per sql template literal
  */
-export function extractSqlTemplates(src) {
+export function extractSqlTemplates(src, fileName) {
   const out = [];
+  const masked = stripCommentsOnly(src, fileName);
   const tag = /\bsql\s*(?:<[^`>]*>)?\s*`/g;
   let m;
   while ((m = tag.exec(src))) {
+    // A tag inside a comment is prose, not code. Scan the RAW source for the body so every
+    // srcIndex still addresses the real file; the mask decides only whether to start at all.
+    if (!isLiveCodeAt(src, masked, m.index)) continue;
     const start = m.index + m[0].length;
     let i = start;
     let depth = 0;
@@ -215,12 +237,6 @@ export function extractSqlTemplates(src) {
   return out;
 }
 
-/**
- * Blank out SQL line comments so a comment ABOUT the expression is never mistaken for a use.
- * Replaced with spaces rather than removed so every offset stays valid against `srcIndex`.
- */
-const stripSqlComments = (s) => s.replace(/--[^\n]*/g, (c) => ' '.repeat(c.length));
-
 /* ------------------------------------------------------------------ the check */
 
 /**
@@ -232,6 +248,14 @@ const stripSqlComments = (s) => s.replace(/--[^\n]*/g, (c) => ' '.repeat(c.lengt
  * @returns {number[]} offsets into `sqlText` of each comparison lacking the presence guard
  */
 export function findMisalignedUses(sqlText, { col, key }) {
+  // Shared SQL mask (EI-20073035509369492). The private one this replaced handled `--` only;
+  // the shared one also closes block comments, nestable block comments, $tag$ bodies, and —
+  // the direction that actually bit here — a `--` INSIDE a quoted identifier, which the old
+  // regex blanked as a comment. Blanking live code can erase the presence guard itself and
+  // report a correctly-aligned query as a violation.
+  //
+  // Comments only, strings INTACT: the key this lint matches on (`->> 'reviewBy'`) IS a string
+  // literal, so stripSqlCommentsAndStrings would take this detector silently 100% inert.
   const text = stripSqlComments(sqlText);
   const accessor = `(?:\\w+\\.)?${escapeRe(col)}\\s*->>\\s*'${escapeRe(key)}'`;
 
@@ -339,7 +363,7 @@ function main() {
       // (store.integration.test.ts was exactly that).
       if (src.includes(SELF_BASENAME)) continue;
 
-      for (const tpl of extractSqlTemplates(src)) {
+      for (const tpl of extractSqlTemplates(src, file)) {
         statementsScanned++;
         for (const idx of indexes) {
           for (const off of findMisalignedUses(tpl.text, idx)) {
