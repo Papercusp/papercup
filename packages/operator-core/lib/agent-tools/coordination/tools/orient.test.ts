@@ -1356,6 +1356,96 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       });
     });
 
+    // ── EI-20108229813877389 regression guards.
+    //
+    // The test ABOVE mocks `claims` as an ARRAY. That shape is real, but it is
+    // the `full` payload tier — which is NOT what orient's own
+    // `fleet:assignments` call receives. The shaper collapses per-agent
+    // `claims[]` to a COUNT at the trimmed AND standard tiers
+    // (assignments-shape.ts:51,101), and trimmed is the default. So the green
+    // test above asserted an output the production path could never produce,
+    // while the leg threw a TypeError on EVERY real call and this leg's
+    // `withBoundedTimeout` fallback turned it into a clean `planNow: null` —
+    // indistinguishable from "this plan has no Now". These two cases pin the
+    // shapes that actually reach orient.
+    it('TRIMMED tier (claims collapsed to a COUNT): still folds Now + nextActionable, and reports myClaims as null-with-a-reason rather than a false empty', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => ({
+          ok: true,
+          summary: { agents: 1 },
+          // The production shape: assignments-shape.ts emits `claims.length`.
+          agents: [{ agentId: 'me', isSelf: true, declaredPlanSlug: null, claims: 2, load: 2 }],
+        }),
+        'plans:get': () => ({
+          results: [
+            {
+              now: { state: 'authored', next: 'first free member claims P-001' },
+              items: [
+                { id: 'P-002', text: 'Orient-first bootstrap', phase: 'Phase 1', effectiveStatus: 'todo', unresolvedBlockers: [], needsHuman: false },
+              ],
+            },
+          ],
+        }),
+      });
+      const r = await composeOrient({ planSlug: 'kickoff-prompt-absorption-2026-07-17', harness: 'h' }, call, 'me');
+      // The leg must SURVIVE the collapsed shape — these three fields are the
+      // whole point of the bootstrap and were being lost with it.
+      expect(r.planNow?.state).toBe('authored');
+      expect(r.planNow?.next).toBe('first free member claims P-001');
+      expect(r.planNow?.nextActionable).toEqual({ id: 'P-002', title: 'Orient-first bootstrap', phase: 'Phase 1' });
+      expect(r.planNow?.status).toBeUndefined(); // resolved, not degraded
+      // `null`, NEVER `[]` — an empty array here says "I hold nothing in this
+      // plan" to a caller holding 2 claims, trading a crash for a false zero.
+      expect(r.planNow?.myClaims).toBeNull();
+      expect(r.planNow?.myClaimsUnavailable).toMatch(/collapsed claims\[\] to a count \(2\)/);
+    });
+
+    it('a caller that omits `harness` still gets planNow — the inner plans:get is scoped, not refused', async () => {
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => ({
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: 'me', isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        }),
+        'plans:get': () => ({ results: [{ now: { state: 'authored', next: 'go' }, items: [] }] }),
+      });
+      // No `harness` — the common plan-bound path. Before the fix this made the
+      // inner plans:get refuse with `harness_required`, which the fallback then
+      // swallowed into a bare null.
+      const r = await composeOrient({ planSlug: 'kickoff-prompt-absorption-2026-07-17' }, call, 'me');
+      expect(r.planNow?.state).toBe('authored');
+      const planGet = calls.find(
+        (c) => c.name === 'plans:get' && (c.args as { slug?: string }).slug === 'kickoff-prompt-absorption-2026-07-17',
+      )!;
+      expect((planGet.args as { harness?: string }).harness).toBe('all');
+    });
+
+    it('a DEGRADED leg reports status:unknown in band — never a bare null that reads as "no Now"', async () => {
+      // bounded-timeout legitimately warns on degrade; assert it, don't trip
+      // vitest-fail-on-console.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => ({
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: 'me', isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        }),
+        'plans:get': () => {
+          throw new Error('plans:get exploded');
+        },
+      });
+      const r = await composeOrient({ planSlug: 'kickoff-prompt-absorption-2026-07-17', harness: 'h' }, call, 'me');
+      expect(r.planNow?.status).toBe('unknown');
+      expect(r.planNow?.why).toMatch(/exploded/);
+      // The sibling fields mean NOT MEASURED here, never "empty".
+      expect(r.planNow?.state).toBeNull();
+      expect(r.planNow?.myClaims).toBeNull();
+      warnSpy.mockRestore();
+    });
+
     it('no planSlug + no declaredPlanSlug on the self row: planNow is null and plans:get is never called', async () => {
       const { call, calls } = fakeCall({ ...CORE });
       const r = await composeOrient({}, call, 'me');
@@ -1390,7 +1480,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(calls.some((c) => c.name === 'plans:get')).toBe(false);
     });
 
-    it('a plans:get failure degrades planNow to null instead of throwing (best-effort)', async () => {
+    it('a plans:get failure degrades planNow WITHOUT throwing — and says so in band (best-effort)', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { call } = fakeCall({
         ...CORE,
@@ -1399,7 +1489,13 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         },
       });
       const r = await composeOrient({ planSlug: 'whatever', harness: 'h' }, call, 'me');
-      expect(r.planNow).toBeNull();
+      // EI-20108229813877389 CHANGED THIS CONTRACT DELIBERATELY. This used to
+      // assert `planNow === null`, which is exactly what let two independent
+      // defects hide: a swallowed failure was byte-identical to "this plan has
+      // no Now", so the leg could be dead in production for an unknown length
+      // of time with a green suite. The failure must now be BRANCHABLE.
+      expect(r.planNow?.status).toBe('unknown');
+      expect(r.planNow?.why).toMatch(/plan store unavailable/);
       expect(r.ok).toBe(true); // orientation as a whole still succeeds
       warnSpy.mockRestore();
     });

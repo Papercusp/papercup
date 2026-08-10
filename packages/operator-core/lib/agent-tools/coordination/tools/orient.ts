@@ -295,7 +295,20 @@ export interface OrientResult {
     state: string | null;
     next: string | null;
     nextActionable: { id: string; title: string; phase: string | null } | null;
-    myClaims: string[];
+    /** The caller's own claimed item ids WITHIN this plan. `null` — never `[]` —
+     *  when the claim ROWS were not derivable, because an empty array is
+     *  indistinguishable from "I hold nothing in this plan", which is a false
+     *  zero for a caller who in fact holds claims. `myClaimsUnavailable` says
+     *  why (EI-20108229813877389). */
+    myClaims: string[] | null;
+    myClaimsUnavailable?: string;
+    /** Set ONLY when this leg could not resolve the plan (timeout or error).
+     *  Every sibling field is then null and means NOT MEASURED — never
+     *  "empty". Before EI-20108229813877389 a failure degraded to a bare
+     *  `null` planNow, which read exactly like "this plan has no Now": two
+     *  independent defects hid behind that for an unknown length of time. */
+    status?: 'unknown';
+    why?: string;
   } | null;
   /** Reusable code:run recipes relevant to `intent`/`memoryQuery` (recipes:search) —
    *  compact identity/similarity plus the exact authority-preserving runArgs.
@@ -1194,17 +1207,30 @@ export async function composeOrient(
     type SelfAgentRow = {
       isSelf?: boolean;
       declaredPlanSlug?: string | null;
-      claims?: Array<{ planSlug: string | null; id: string | null }>;
+      // EI-20108229813877389: NOT `Array<…>`. `me` comes from
+      // fleet:assignments, whose payload shaper COLLAPSES per-agent `claims[]`
+      // (16 fields/claim — "the fat") to `claims: <count>` at the trimmed AND
+      // standard tiers (assignments-shape.ts:51,101); only `full` keeps the
+      // rows. Declaring the array here was a TYPE LIE that made the compiler
+      // bless `.filter()` on a number — the runtime TypeError was then
+      // swallowed by this leg's fallback. Keep the union honest so the next
+      // consumer is forced to narrow.
+      claims?: number | Array<{ planSlug: string | null; id: string | null }>;
     };
     const meAgentsForPlan = (me as { agents?: SelfAgentRow[] } | undefined)?.agents ?? [];
     const selfRow = meAgentsForPlan.find((a) => a.isSelf);
+    const effectivePlanSlug: string | null = args.planSlug ?? selfRow?.declaredPlanSlug ?? null;
     const planNowResult = await withBoundedTimeout(
       (async () => {
-        const effectivePlanSlug: string | null = args.planSlug ?? selfRow?.declaredPlanSlug ?? null;
         if (!effectivePlanSlug) return null;
         const planRes = (await call('plans:get', {
           slug: effectivePlanSlug,
-          ...(args.harness ? { harness: args.harness } : {}),
+          // EI-20108229813877389: `plans:get` REFUSES with `harness_required`
+          // when given no harness, and this leg's fallback swallowed that
+          // refusal into a bare null — so the common plan-bound caller that
+          // omits `harness` silently lost the whole leg. 'all' is the
+          // documented cross-harness scope and resolves a plan by slug.
+          harness: args.harness ?? 'all',
         })) as
           | {
               results?: Array<{
@@ -1229,9 +1255,17 @@ export async function composeOrient(
               (it.unresolvedBlockers?.length ?? 0) === 0 &&
               !it.needsHuman,
           ) ?? null;
-        const myClaims = (selfRow?.claims ?? [])
-          .filter((c) => c.planSlug === effectivePlanSlug && c.id)
-          .map((c) => c.id as string);
+        // EI-20108229813877389: narrow before filtering — see SelfAgentRow.
+        // A collapsed count MUST NOT become `myClaims: []`: that would trade a
+        // loud crash for a silent FALSE ZERO ("I hold nothing in this plan")
+        // in a caller that holds claims. Report null + the reason instead.
+        const rawClaims: unknown = selfRow?.claims;
+        const claimRows = Array.isArray(rawClaims)
+          ? (rawClaims as Array<{ planSlug: string | null; id: string | null }>)
+          : null;
+        const myClaims = claimRows
+          ? claimRows.filter((c) => c?.planSlug === effectivePlanSlug && c?.id).map((c) => c.id as string)
+          : null;
         return {
           planSlug: effectivePlanSlug,
           state: p.now?.state ?? null,
@@ -1240,6 +1274,14 @@ export async function composeOrient(
             ? { id: nextActionableItem.id, title: nextActionableItem.text, phase: nextActionableItem.phase ?? null }
             : null,
           myClaims,
+          ...(claimRows
+            ? {}
+            : {
+                myClaimsUnavailable:
+                  typeof rawClaims === 'number'
+                    ? `fleet:assignments collapsed claims[] to a count (${rawClaims}) at this payload tier — re-read with payloadTier:'full' for the rows`
+                    : 'the assignments self-row carried no claim rows at this payload tier',
+              }),
         };
       })(),
       {
@@ -1248,7 +1290,26 @@ export async function composeOrient(
         label: 'orient:planNow',
       },
     );
-    result.planNow = planNowResult.value;
+    // EI-20108229813877389: surface a degraded leg IN BAND. A bare `null` here
+    // is indistinguishable from "this plan has no Now", which is precisely how
+    // two independent defects went unnoticed — the console.warn goes to the
+    // server log that no agent reads, while the caller sees a clean null.
+    result.planNow =
+      planNowResult.degraded && effectivePlanSlug
+        ? {
+            planSlug: effectivePlanSlug,
+            state: null,
+            next: null,
+            nextActionable: null,
+            myClaims: null,
+            status: 'unknown' as const,
+            why:
+              planNowResult.errorMessage ??
+              (planNowResult.reason === 'timeout'
+                ? `the planNow leg exceeded ${ORIENT_FLEET_LEG_TIMEOUT_MS}ms`
+                : 'the planNow leg degraded'),
+          }
+        : planNowResult.value;
   }
 
   // ── fleet legs (full mode only) — the caller's fleet was resolved ONCE above
