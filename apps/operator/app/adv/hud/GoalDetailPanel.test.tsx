@@ -934,6 +934,120 @@ describe('GoalDetailPanel', () => {
       ]);
     });
 
+    /* ── P-024: the SESSIONS zone ────────────────────────────────────────────
+       [owner 2026-08-10] "just put the pane on the right side, to the left of
+       the 'WORK — what sits under this goal' pane."
+
+       The grouping, ordering and classification are covered exhaustively in
+       goal-sessions.test.ts. What only THIS suite can prove is the seam between
+       the panel and that derivation — which roster rows the panel actually
+       hands it, and where the result is seated. Every case below is a
+       one-expression regression that leaves a plausible-looking rail on screen,
+       which is exactly the class a passing model test cannot see. Nested inside
+       the P-021 block for its `withAgent`/`rosterEntry` fixtures. */
+    describe('P-024: the sessions zone', () => {
+      /** `rosterRows` sets `active` only; the panel reads BOTH legs. */
+      function rosterLegs(legs: {
+        active?: Array<Record<string, unknown>>;
+        pending?: Array<Record<string, unknown>>;
+      }) {
+        rosterResult = { data: [legs], loading: false, error: null };
+      }
+      const owners = () =>
+        screen.queryAllByTestId('goal-session-row').map((n) => n.getAttribute('data-owner'));
+
+      it('seats the zone IMMEDIATELY left of the work rail, not merely somewhere before it', () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        /* The owner's placement was specific, and "somewhere to the left" is
+           satisfied by seating it against the conversation with Work three
+           columns away. Asserted as ADJACENCY so that a later zone inserted
+           between the two fails here rather than silently re-reading the
+           instruction. Both zones are open in this fixture, so the sibling
+           relation is the real one and not an artefact of a closed neighbour. */
+        expect(screen.getByTestId('goal-sessions-rail').nextElementSibling).toBe(
+          screen.getByTestId('goal-work-rail'),
+        );
+      });
+
+      it('counts a session that is still LAUNCHING — the pending leg, not just the live one', () => {
+        /* `payload.active ?? []` is the natural thing to write here (it is what
+           the fleet rail beside it does) and it silently drops every agent that
+           has been spawned but has not yet taken a turn — precisely the window
+           in which a reader opens this popup to ask whether the goal is moving.
+           The rail would render, correctly shaped, one row short. */
+        rosterLegs({
+          active: [rosterEntry({ ownerId: 'su-abc', fleetSlug: 'fleet-x' })],
+          /* In the goal's fleet, so it is genuinely ON the goal by membership
+             leg 2 — a launching MEMBER, which is what `pending` mostly holds.
+             (A pending row that is neither stamped nor in the fleet is
+             correctly absent, and an earlier draft of this test asserted
+             exactly that and failed: worth stating, because "pending rows are
+             dropped" and "this pending row does not belong" produce the same
+             empty rail and only one of them is a bug.) */
+          pending: [
+            rosterEntry({ ownerId: 'su-booting', label: 'su · booting', fleetSlug: 'fleet-x' }),
+          ],
+        });
+        renderPanel(withAgent());
+        expect(owners()).toContain('su-booting');
+      });
+
+      it('keeps a SECOND stamped agent’s fleet, not just the primary’s', () => {
+        /* D-006's "one directed agent" is the normal case, not a guarantee — the
+           resolver surfaces a second stamp rather than hiding it. Passing only
+           `agentOwnerId` (which is `agents[0]`, and is what the dossier and the
+           fleet rail beside this one legitimately use) drops the second agent's
+           WHOLE FLEET from the answer to "who is working on this goal", because
+           membership leg 2 walks the fleets of the stamped set. */
+        rosterLegs({
+          active: [
+            rosterEntry({ ownerId: 'su-abc', fleetSlug: 'fleet-x' }),
+            rosterEntry({ ownerId: 'su-def', fleetSlug: 'fleet-y' }),
+            // Stamped by NEITHER. It is on the goal only because it shares
+            // fleet-y with the second stamped agent.
+            rosterEntry({ ownerId: 'su-member-y', fleetSlug: 'fleet-y' }),
+          ],
+        });
+        renderPanel(
+          detail({
+            agents: [
+              { ownerId: 'su-abc', setAt: null, setBy: 'operator-ui' },
+              { ownerId: 'su-def', setAt: null, setBy: 'operator-ui' },
+            ],
+          }),
+        );
+        expect(owners()).toContain('su-member-y');
+      });
+
+      it('closing it leaves the conversation and both neighbours mounted', () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        fireEvent.click(screen.getByTestId('goal-sessions-toggle'));
+        expect(screen.queryByTestId('goal-sessions-rail')).toBeNull();
+        // The point of the toggle is room for the conversation, so it survives —
+        // as do the zones on either side, which a mis-scoped visibility test
+        // would take down with it.
+        expect(screen.getByTestId('goal-chat')).toBeTruthy();
+        expect(screen.getByTestId('goal-work-rail')).toBeTruthy();
+      });
+
+      it('adds NO query of its own — it is a third reader of the roster row', () => {
+        rosterRows(inFleet);
+        renderPanel(withAgent());
+        /* The reuse-first claim for this zone specifically. `useSyncQuery`
+           caches by {queryName, args}, so deriving the sessions model from the
+           row the dossier and fleet rail already hold costs nothing; a
+           panel-level fetch added for it would appear here as a fifth name. */
+        expect([...new Set(syncCalls.map((c) => c.queryName))].sort()).toEqual([
+          'advRoster.list',
+          'agentDetail.byOwner',
+          'agentOrders.byOwner',
+          'goals.detail',
+        ]);
+      });
+    });
+
     /* ── P-023: the sessions popup's hide + expand controls ──────────────────
        [owner 2026-08-10] "mimic the design used in the equivalent popup in the
        sessions tab for the hide and expand buttons instead of how it is
@@ -956,12 +1070,13 @@ describe('GoalDetailPanel', () => {
         const ids = [
           'goal-orders-toggle',
           'goal-brief-toggle',
+          'goal-sessions-toggle',
           'goal-rail-toggle',
           'goal-activity-toggle',
           'goal-fleet-toggle',
         ];
         const before = ids.map((id) => screen.getByTestId(id).textContent);
-        expect(before).toEqual(['Orders', 'Brief', 'Work', 'Activity', 'Fleet']);
+        expect(before).toEqual(['Orders', 'Brief', 'Sessions', 'Work', 'Activity', 'Fleet']);
         for (const id of ids) fireEvent.click(screen.getByTestId(id));
         // Same five words after every one of them has been pressed.
         expect(ids.map((id) => screen.getByTestId(id).textContent)).toEqual(before);
@@ -981,6 +1096,7 @@ describe('GoalDetailPanel', () => {
            clicks the button and asserts the zone unmounted. */
         expect(dir('goal-orders-toggle')).toBe('left');
         expect(dir('goal-brief-toggle')).toBe('left');
+        expect(dir('goal-sessions-toggle')).toBe('right');
         expect(dir('goal-rail-toggle')).toBe('right');
         expect(dir('goal-activity-toggle')).toBe('right');
         expect(dir('goal-fleet-toggle')).toBe('right');
