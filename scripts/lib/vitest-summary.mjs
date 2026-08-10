@@ -367,6 +367,13 @@ export function formatFailingFilesLine({ runToken, entries = [], unattributed = 
  *     ⚠ Read this as "no PARSER spoke for it", not "the output named nothing" — those came
  *     apart for `node --test` workspaces until EI-20095409199430877, where output naming the
  *     failing file in plain text still reported this reason and read as an infra crash.
+ *     ⚠ Two runner classes in this repo still land here LEGITIMATELY, and knowing which they
+ *     are turns a misleading reason into an expected one: `astro check` (the two docs
+ *     workspaces) and bespoke `node scripts/*.mjs` task scripts (`@papercusp/web`'s
+ *     `lint:el-tools` / `test:el-suite`). Both are DECLARED as unattributable in
+ *     scripts/lib/test-runner-classes.mjs, so this is a known boundary rather than a blind
+ *     spot — if a task from any OTHER workspace reports `no-file-rows`, the infra causes above
+ *     really are the candidates.
  *   - `transform`         — no FAIL/rollup rows AND a parse failure is present, i.e. the
  *     collapse happened before the reporter ran. Split out of `no-file-rows` (WI-37607):
  *     this docstring used to name a transform failure as one of that reason's causes, which
