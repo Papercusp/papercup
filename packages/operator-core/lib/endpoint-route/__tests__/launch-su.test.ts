@@ -4,13 +4,18 @@
  * shell-injection-sensitive bits). spawn / fs / os are mocked so no
  * terminal is actually opened.
  *
- * spawnInTerminal (terminal-spawn.ts) now does a short post-spawn liveness
- * re-check (EI-18696184925888288) — fake timers drive it deterministically
- * (advanced past its delay in `callPost`) and `process.kill` is mocked to
- * report the spawned pid as alive by default, so existing assertions in this
- * file see the same `status:'ok'`, no-`warning` shape as before. The
- * dedicated "silent launch failure" describe block below flips that mock to
- * exercise the new `warning` field.
+ * spawnInTerminal (terminal-spawn.ts) does a post-spawn EARLY-EXIT probe
+ * (EI-18696184925888288, WI-37743): it awaits `watchEarlyExit`, which subscribes
+ * to the child's 'exit'/'error' rather than sleeping and then polling
+ * `process.kill(pid, 0)`. Two consequences this file depends on:
+ *   1. the `spawn` stand-in must be a real EventEmitter (see makeChild below) —
+ *      a plain object has no `.on()` and fails the probe at subscribe time;
+ *   2. a simulated death must EMIT an exit inside the probe window; making
+ *      `process.kill` throw simulates nothing, because the probe never calls it.
+ * Fake timers drive it deterministically (advanced past EARLY_EXIT_PROBE_MS in
+ * `callPost`), so the assertions here see the same `status:'ok'`, no-`warning`
+ * shape as before. The "silent launch failure" block flips `spawnDiesImmediately`
+ * to exercise the `warning` field.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
@@ -32,13 +37,53 @@ import { DISPLAY_TERMINAL_LAUNCH } from '../../adv-sessions';
 // (86 lines, zero imports), so the genuine implementation is both safe to load and the
 // thing we actually want exercised — mocking it would assert a stub instead.
 import '../../mcp-base-url';
+import { EventEmitter } from 'node:events';
+// Imported rather than hardcoded so the fake-clock advance in `callPost` cannot
+// drift from the probe it has to outlast — a literal here silently under-advances
+// the moment either constant is retuned, which reads as a hang, not a stale test.
+// EARLY_EXIT_PROBE_MS resolves through the console-spawn mock below, which spreads
+// the real module, so it is the genuine value.
+import { EARLY_EXIT_PROBE_MS } from '../../console-spawn';
+import { STDERR_FLUSH_GRACE_MS } from '../../terminal-spawn';
 
-const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
+/**
+ * spawnInTerminal's early-exit probe is EVENT-DRIVEN (it awaits `watchEarlyExit`,
+ * which subscribes to the child's 'exit'/'error'), so the child this mock returns
+ * MUST be a real EventEmitter. The previous stand-in was a plain object literal
+ * with no `.on()`; against the event-driven probe that throws at subscribe time,
+ * the route's spawn arm reports `ok:false`, and EVERY terminal-path test in this
+ * file 500s. (The headless tests kept passing throughout — they mock
+ * `spawnHeadless` and never reach terminal-spawn — which is the tell that the
+ * break was in this mock's SHAPE, not in the route.)
+ *
+ * Death is therefore simulated by EMITTING an exit inside the probe window, not
+ * by making `process.kill` throw: the probe no longer consults `process.kill` at
+ * all, so the old ESRCH trick silently stopped simulating anything.
+ */
+type FakeChild = EventEmitter & { pid?: number; unref: () => void };
+
+/** Flipped by the "silent launch failure" tests; reset in beforeEach. */
+let spawnDiesImmediately = false;
+
+function makeChild(): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  child.pid = 4242;
+  child.unref = () => {};
+  if (spawnDiesImmediately) {
+    // Well inside EARLY_EXIT_PROBE_MS, so the probe observes the exit rather
+    // than timing out into a `likelyOpened` verdict. Driven by the fake clock
+    // that `callPost` advances, so it stays deterministic.
+    setTimeout(() => child.emit('exit', 1, null), 10);
+  }
+  return child;
+}
+
+const spawnMock = vi.fn((_bin?: string, _args?: string[], _opts?: unknown): FakeChild => makeChild());
 const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-  return { ...actual, spawn: spawnMock };
+  return { ...actual, spawn: (...a: Parameters<typeof spawnMock>) => spawnMock(...a) };
 });
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
@@ -156,10 +201,12 @@ async function callPost(body: unknown): Promise<Response> {
     body: JSON.stringify(body),
   });
   const resPromise = route.handler(req, CTX);
-  // Flush spawnInTerminal's post-spawn liveness-check delay (default 400ms,
-  // EI-18696184925888288) if this call took the live-spawn path — a no-op for
-  // paths that never spawn (validation rejections, defer_spawn).
-  await vi.advanceTimersByTimeAsync(500);
+  // Flush spawnInTerminal's post-spawn early-exit probe if this call took the
+  // live-spawn path — a no-op for paths that never spawn (validation rejections,
+  // defer_spawn). Must outlast the probe itself PLUS the stderr flush that runs
+  // only on the not-opened branch, or the route's promise never settles and the
+  // test sits until vitest's 60s cap.
+  await vi.advanceTimersByTimeAsync(EARLY_EXIT_PROBE_MS + STDERR_FLUSH_GRACE_MS + 100);
   return resPromise;
 }
 
@@ -204,9 +251,10 @@ function lastOneliner(): string {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
-  // Default: the spawned pid stays alive past the liveness-check beat, i.e.
-  // the "normal" success path — no `warning` on the response. Individual
-  // tests in the "silent launch failure" block override this.
+  // Default: the spawned child survives the early-exit probe, i.e. the "normal"
+  // success path — no `warning` on the response. Individual tests in the
+  // "silent launch failure" block flip this.
+  spawnDiesImmediately = false;
   killSpy.mockReturnValue(true);
 });
 
@@ -444,9 +492,7 @@ describe('launch-su', () => {
   // display) — the OS spawn call not throwing is not proof a window opened.
   describe('silent launch failure (spawned process exits almost immediately)', () => {
     it('still returns status:ok (the syscall genuinely succeeded) but adds a warning', async () => {
-      killSpy.mockImplementation(() => {
-        throw new Error('ESRCH');
-      });
+      spawnDiesImmediately = true;
       const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
       expect(res.status).toBe(200);
       const json = await res.json();
@@ -465,9 +511,7 @@ describe('launch-su', () => {
     });
 
     it('the deferred (workbench) path never spawns, so it is unaffected (no warning possible)', async () => {
-      killSpy.mockImplementation(() => {
-        throw new Error('ESRCH');
-      });
+      spawnDiesImmediately = true;
       const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan', defer_spawn: true });
       const json = await res.json();
       expect(json.status).toBe('ok');

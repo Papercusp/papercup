@@ -10,23 +10,57 @@
  *   - silent launch failure (EI-18696184925888288) → ok:true + a `warning`
  *     when the spawned process exits almost immediately.
  *
- * spawnInTerminal (terminal-spawn.ts) now does a short post-spawn liveness
- * re-check — fake timers drive it deterministically (advanced in `callPost`)
- * and `process.kill` is mocked alive-by-default so the pre-existing
- * assertions see the same shape as before.
+ * spawnInTerminal (terminal-spawn.ts) does a post-spawn EARLY-EXIT probe
+ * (WI-37743) that SUBSCRIBES to the child's 'exit'/'error' rather than sleeping
+ * and polling `process.kill(pid, 0)`. So the `spawn` stand-in must be a real
+ * EventEmitter (makeChild below), and a simulated death must EMIT an exit inside
+ * the probe window — making `process.kill` throw simulates nothing now. Fake
+ * timers drive it deterministically (advanced past EARLY_EXIT_PROBE_MS in
+ * `callPost`) so the pre-existing assertions see the same shape as before.
  *
  * Plan: desktop-pui-launch-button-2026-06-05 (Brief 26).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
+import { EventEmitter } from 'node:events';
+// Imported rather than hardcoded so the fake-clock advance below cannot drift
+// from the probe it has to outlast — a literal under-advances silently the
+// moment either constant is retuned, which reads as a hang, not a stale test.
+import { EARLY_EXIT_PROBE_MS } from '../../console-spawn';
+import { STDERR_FLUSH_GRACE_MS } from '../../terminal-spawn';
 
-const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
+/**
+ * A real EventEmitter, because spawnInTerminal's early-exit probe SUBSCRIBES to
+ * the child's 'exit'/'error' (watchEarlyExit) instead of sleeping and polling
+ * `process.kill(pid, 0)`. A plain object literal has no `.on()` and fails the
+ * probe at subscribe time, which surfaces as the route 500ing on every spawn
+ * path. Same reason death is simulated by emitting an exit rather than by making
+ * `process.kill` throw — the probe never consults it.
+ */
+type FakeChild = EventEmitter & { pid?: number; unref: () => void };
+
+/** Flipped by the "silent launch failure" test; reset in beforeEach. */
+let spawnDiesImmediately = false;
+
+function makeChild(): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  child.pid = 4242;
+  child.unref = () => {};
+  if (spawnDiesImmediately) {
+    // Well inside EARLY_EXIT_PROBE_MS, driven by the fake clock `callPost`
+    // advances, so the probe observes a death rather than timing out.
+    setTimeout(() => child.emit('exit', 1, null), 10);
+  }
+  return child;
+}
+
+const spawnMock = vi.fn((_bin?: string, _args?: string[], _opts?: unknown): FakeChild => makeChild());
 const existsSyncMock = vi.fn((_p: string): boolean => true);
 const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true);
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-  return { ...actual, spawn: spawnMock };
+  return { ...actual, spawn: (...a: Parameters<typeof spawnMock>) => spawnMock(...a) };
 });
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
@@ -67,9 +101,10 @@ async function callPost(): Promise<Response> {
     body: '{}',
   });
   const resPromise = route.handler(req, CTX);
-  // Flush spawnInTerminal's post-spawn liveness-check delay (default 400ms,
-  // EI-18696184925888288) if this call took the live-spawn path.
-  await vi.advanceTimersByTimeAsync(500);
+  // Flush spawnInTerminal's post-spawn early-exit probe if this call took the
+  // live-spawn path. Must outlast the probe PLUS the stderr flush that runs only
+  // on the not-opened branch, or the route's promise never settles.
+  await vi.advanceTimersByTimeAsync(EARLY_EXIT_PROBE_MS + STDERR_FLUSH_GRACE_MS + 100);
   return resPromise;
 }
 
@@ -85,7 +120,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   existsSyncMock.mockReturnValue(true);
   delete process.env.TERMINAL;
-  // Default: the spawned pid stays alive past the liveness-check beat.
+  // Default: the spawned child survives the early-exit probe.
+  spawnDiesImmediately = false;
   killSpy.mockReturnValue(true);
 });
 
@@ -143,9 +179,7 @@ describe('launch-pui', () => {
   // EI-18696184925888288: the spawn syscall not throwing is not proof a
   // window actually opened — see terminal-spawn.ts's liveness re-check.
   it('silent launch failure: still ok:true, but adds a warning when the process exits almost immediately', async () => {
-    killSpy.mockImplementation(() => {
-      throw new Error('ESRCH');
-    });
+    spawnDiesImmediately = true;
     const res = await callPost();
     expect(res.status).toBe(200);
     const json = await res.json();
