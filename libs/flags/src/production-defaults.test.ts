@@ -223,9 +223,17 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // zero graduation candidates ready — raised to 24 (see types.ts's 2026-07-10 watermark-
   // raise note) under this session's standing AUTO-mode grant rather than left live
   // pending a synchronous sign-off. Count 22 → 23.
-  'papercusp-git-sync-derived-attribution',
-  // 2026-07-10 (WI-3796) — the EIGHTH instance of the same bug-fix class, alongside
-  // papercusp-git-sync-derived-attribution immediately above. papercusp-doc-steward's OWN
+  // GRADUATED to default-ON 2026-08-10 (WI-37718) — literal removed, so the derivation and
+  // this pin fall together and offCount stays equal to this set's size. The owner flipped it
+  // after the end-to-end review the dark entry demanded: the writer-side defect that made
+  // derived attribution resolve a placeholder holder (EI-20055604348536487, fixed in
+  // b2af0024a8) is live on every writer path, and once the last pre-fix process cycled,
+  // 39/39 consecutive lock rows carried a real declared intent with zero sentinels while the
+  // last 60 commits carried real per-agent subjects with zero sentinel subjects. Count
+  // 33 → 32. papercusp-doc-steward (the other half of the WI-3796 pair) is unaffected.
+  // 2026-07-10 (WI-3796) — the EIGHTH instance of the same bug-fix class, filed alongside
+  // papercusp-git-sync-derived-attribution (which has since graduated out — see the note
+  // immediately above; it is deliberately no longer in this set). papercusp-doc-steward's OWN
   // code comment (libs/flags/src/types.ts, docs-corpus-audit WS2 P-008) has ALWAYS said
   // "DEFAULT OFF: it auto-edits the doc corpus (owner-authority surface) + spawns an agent
   // per drift — flip ON after the owner-verified end-to-end check" but was never actually
@@ -615,7 +623,15 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // testing escape hatch. It graduates by being DELETED once D-004's Stage 2/3 land, never
     // by being flipped on; treating it as ordinary parked work and "graduating" it would
     // silently un-retire the tier. Pinned by libs/flags/src/mug-kettle-cutover-flag.test.ts.
-    expect(offCount).toBe(33);
+    // 2026-08-10 (WI-37718) — papercusp-git-sync-derived-attribution GRADUATED to default-ON
+    // on an explicit owner directive, after the end-to-end review its owner-authority entry
+    // demanded: the writer-side defect that made derived attribution resolve a placeholder
+    // holder (EI-20055604348536487, fixed in b2af0024a8) is live on every writer path, and
+    // once the last pre-fix process cycled, 39/39 consecutive lock rows carried a real
+    // declared intent with zero sentinels while the last 60 commits carried real per-agent
+    // subjects with zero sentinel subjects. case was 'owner-authority', so NO parking-subset
+    // or watermark impact (both stay 14) and no graduation trade was owed. Count 33 → 32.
+    expect(offCount).toBe(32);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

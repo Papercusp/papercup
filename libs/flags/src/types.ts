@@ -954,8 +954,17 @@ export const FLAGS = {
   // groups dirty files by the agent who declared them (coord:declare-intent / lock holder)
   // and makes per-agent commits with the intent message + a Co-Authored-By trailer (catch-all
   // commit for the unattributable remainder), restoring git blame/bisect/review for humans.
-  // DEFAULT OFF: it rewrites the commit hot path; OFF = today's single `git add -A` commit,
-  // byte-identical. No new agent ceremony (attribution is DERIVED). Owner flips post-review.
+  // DEFAULT ON since 2026-08-10 (WI-37718): the owner flipped it after the end-to-end live
+  // verification its owner-authority dark entry demanded. This comment's own superseded
+  // pre-flip claim was "DEFAULT OFF: it rewrites the commit hot path; OFF = today's single
+  // `git add -A` commit, byte-identical. Owner flips post-review" — the DARK_FLAGS entry
+  // carrying it is removed (the set only shrinks, which is always allowed).
+  // EVIDENCE AT FLIP TIME: the writer-side defect that made attribution derive a placeholder
+  // holder (EI-20055604348536487, fixed by su-0d1fbffd in b2af0024a8) is live on every writer
+  // path; once the last pre-fix process cycled, 39/39 consecutive lock rows carried a real
+  // declared intent with zero sentinels, and the last 60 commits carried real per-agent
+  // subjects with zero sentinel subjects. No new agent ceremony (attribution is DERIVED).
+  // Flipping it back OFF remains the tested rollback: one whole-tree `git add -A` commit.
   GIT_SYNC_DERIVED_ATTRIBUTION: "papercusp-git-sync-derived-attribution",
   // docs-corpus-audit WS2 P-008 / deterministic-commit-workitem-attribution P-005: the
   // doc-steward — the post-git-sync freshness sweep, on a drifted doc, dispatches a
@@ -2439,7 +2448,19 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // two already-live, never-ratified behaviors, restoring the byte-identical documented
     // baseline; it does not newly enable anything. Owner may reverse (re-remove from
     // DARK_FLAGS + restore watermark to 22) at any time.
-    [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, { case: 'owner-authority', reason: 'git-sync-dx-hardening-2026-06-17 P-004: DERIVED per-agent commit attribution rewrites the git-sync commit hot path — the mechanism EVERY agent in the fleet depends on to land work — grouping dirty files by declared-intent/lock-holder into per-agent commits + a Co-Authored-By trailer instead of one whole-tree `git add -A` commit. The flag\'s OWN comment has always said "DEFAULT OFF: it rewrites the commit hot path... Owner flips post-review" but was never added to DARK_FLAGS, so it derived live default-ON — confirmed no PG override exists in workspace papercusp-workspace. High fleet-wide blast radius if the per-agent grouping logic has an edge-case bug (a wedged/malformed commit stalls the WHOLE shared tree\'s sync), so it ships dark until the owner reviews the attribution logic end-to-end. OFF ⇒ git-sync reverts to today\'s single whole-tree commit, byte-identical to the documented/expected behavior. Owner flips ON after reviewing.' }],
+    //
+    // 2026-08-10 (WI-37718) — GIT_SYNC_DERIVED_ATTRIBUTION, the FIRST of that pair, has
+    // GRADUATED default-ON and its entry is REMOVED from this map (the set shrinks; an
+    // 'owner-authority' entry is not rationed by DARK_FLAGS_HIGH_WATERMARK / the
+    // DARK_FLAGS_PARKING_COUNT subset either way, so no watermark change accompanies this).
+    // The owner flipped it after the end-to-end review this entry demanded: the writer-side
+    // defect that made derived attribution resolve a placeholder holder
+    // (EI-20055604348536487, fixed in b2af0024a8) is live on every writer path, and after
+    // the last pre-fix process cycled, 39/39 consecutive lock rows carried a real declared
+    // intent with zero sentinels while the last 60 commits carried real per-agent subjects
+    // with zero sentinel subjects — i.e. the edge-case-bug risk this entry was holding the
+    // flag against was measured, not assumed. DOC_STEWARD (the pair's other half, below)
+    // is UNAFFECTED and stays dark — its own end-to-end check has not been run.
     [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, { case: 'owner-authority', reason: 'papercusp-self-improvement-loop-2026-06-04 Phase 3 (D-004/D-006/D-008), found 2026-07-26 (su-709bb) by the flag-comment-lint recall fix (normalization step 5 — this entry declares itself as "When OFF (default)", the REVERSED form the guard could not previously see, so it was silently SKIPPED). Same class as WATCHDOG_AUTO_CLOSE/RECLAIM_STALLED/DOC_STEWARD: the flag\'s OWN comment states it is the master switch for AUTO-implementing captured improvements and that OFF is the default, with an explicit precondition — "Flip ON only once the work_items surface + the release-gate cutover have landed" — but it was never added here, so it derived live default-ON. That is an AUTONOMY-ESCALATION surface (the routine spawns an implementer agent in a dedicated runner harness and lands code via the release gate) running with no owner ratification and with its own stated precondition unverified. OFF ⇒ the improvement-implement routine is a no-op; capture (Phase 1) + triage (Phase 2) are unaffected — exactly the documented, intended behavior. Owner flips ON once the stated preconditions are confirmed landed.' }],
     [FLAGS.CAPABILITY_ENVELOPE_OVERRIDES, { case: 'owner-authority', reason: 'live-configurability-audit-2026-06-20 P-009, found 2026-07-26 (su-709bb) by the same flag-comment-lint recall fix (declares itself "OFF (default) ⇒ the sync-cache stays empty ⇒ byte-identical" — the REVERSED form, previously skipped). Its own comment opens "DARK:" and describes a SECURITY/capability surface: runtime per-role capability-envelope overrides (capability_envelope:set_role / :set_protected) that merge per-role deny/allow overrides OVER the baked ROLE_ENVELOPES at the dispatch checkCapabilityEnvelope step. Never added here, so it derived live default-ON — meaning any override row present would silently apply to real dispatch authorization with no owner ratification. OFF ⇒ the sync-cache stays empty ⇒ byte-identical to the baked envelopes (the documented intent). Owner flips ON to ratify runtime envelope overrides.' }],
     [FLAGS.DOC_STEWARD, { case: 'owner-authority', reason: 'docs-corpus-audit WS2 P-008 / deterministic-commit-workitem-attribution P-005: the post-git-sync doc-freshness sweep dispatches an LLM doc-steward agent to auto-edit/regenerate a drifted doc against current code, and can spawn an agent per drift. The flag\'s OWN comment has always said "DEFAULT OFF: it auto-edits the doc corpus (owner-authority surface) + spawns an agent per drift — flip ON after the owner-verified end-to-end check" but was never added to DARK_FLAGS, so it derived live default-ON — confirmed no PG override exists in workspace papercusp-workspace. Unattended auto-editing of the doc corpus + unbounded per-drift agent spawn is an owner-authority surface, so it ships dark until the owner runs the end-to-end verification its own design calls for. OFF ⇒ the freshness sweep still detects drift, but no auto-edit and no agent dispatch (today\'s actually-safe behavior). Owner flips ON after the verified check.' }],
