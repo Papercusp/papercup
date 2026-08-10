@@ -71,19 +71,23 @@ export const STANDALONE_PACKAGE_DIRS = [
  * `test at` anchor), because a reformatted quote produces a plausible matcher that silently never
  * matches, and an empty parse result reads as "nothing failed" rather than "my matcher is wrong".
  *
+ * ⚠ Annotated `@type` below rather than left to inference, and the two JSDoc blocks are kept
+ * SEPARATE deliberately: a `@typedef` and a `@type` in one comment do not combine, and the
+ * annotation is silently dropped — the emitted `.d.mts` then carries the inferred literal union,
+ * in which the unattributable entries simply lack `fixture`/`expectFile`. The guard cannot then
+ * even ASK whether a fixture is present: the check fails to COMPILE instead of failing loudly at
+ * the one moment it matters, which is the same "the detector went quiet" shape as the bug itself.
+ */
+
+/**
  * @typedef {object} RunnerClassSpec
  * @property {boolean} attributable whether attributeFailedTask can name a FILE for this runner
  * @property {string} detail what the parser keys on, or why no parser is possible
  * @property {string} [fixture] REQUIRED when attributable: verbatim real output from the runner
  * @property {string} [expectFile] REQUIRED when attributable: the path `fixture` must yield
- *
- * Typed as a Record rather than left to inference so that the optional pair stays reachable on
- * every member. Inference produces a union in which the unattributable entries simply lack the
- * keys, which makes the guard unable to even ASK whether a fixture is present — the check would
- * fail to compile instead of failing loudly at the one moment it matters.
- *
- * @type {Record<string, RunnerClassSpec>}
  */
+
+/** @type {Record<string, RunnerClassSpec>} */
 export const RUNNER_CLASSES = {
   vitest: {
     attributable: true,

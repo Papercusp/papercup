@@ -567,6 +567,31 @@ const GC_TAG_SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-20098997113620795 — `attributeFailedTask` must be able to name a failing FILE for every
+    // test RUNNER the repo actually runs. Twice it could not, and neither time did anything fail:
+    // an unreadable runner returns no file rows, which maps to the reason `no-file-rows`, whose
+    // documented causes are "a worker crash, an OOM, a spawn error". So a red reported plausible
+    // INFRASTRUCTURE while the failing file sat named in plain text a few lines up.
+    //
+    // Registered repo-wide because the TRIGGER is not a change to the attributor — it is a
+    // workspace changing what it RUNS. Measured: `--changed-paths papercusp-desktop/package.json`
+    // selects `@papercusp/desktop` and nothing else, so a workspace adopting a new runner would
+    // never have selected the guard that exists to catch exactly that. Keying on package.json is
+    // therefore the whole point; narrowing to "files that look test-related" would rebuild the
+    // blind spot one level down, the same argument no-undrained-stdout-exit makes above.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:attributor-runner-coverage',
+    // The ratchet IS the guard: this file is a plain vitest test inside operator-core's own
+    // suite, so when that suite runs it has genuinely already executed — not assumed.
+    hostSuiteRatchet: 'packages/operator-core/lib/__tests__/attributor-runner-coverage.test.ts',
+    appliesTo: (f) =>
+      f === 'package.json' ||
+      f.endsWith('/package.json') ||
+      f === 'scripts/affected-tests.mjs' ||
+      f === 'scripts/lib/vitest-summary.mjs' ||
+      f === 'scripts/lib/test-runner-classes.mjs',
+  },
+  {
     // EI-20055889379250637 — `console.log(<unbounded>); process.exit()` truncates
     // through a PIPE (measured: only ~8 KiB escapes; a TTY and a `> file` redirect are
     // both synchronous and therefore fine). It is registered repo-wide for the same

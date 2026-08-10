@@ -68,7 +68,7 @@ describe('the runner population is real, and non-empty', () => {
 describe('every runner the repo runs is declared', () => {
   it('classifies every task into a declared runner class', () => {
     const undeclared = tasks
-      .filter((t) => t.classes.some((c) => !RUNNER_CLASSES[c as keyof typeof RUNNER_CLASSES]))
+      .filter((t) => t.classes.some((c) => !RUNNER_CLASSES[c]))
       .map((t) => `${t.workspace} :: ${t.script} => [${t.classes.join(', ')}]`);
 
     expect(
@@ -124,12 +124,7 @@ describe('every runner the repo runs is declared', () => {
 
   it('pins exactly which tasks are unattributable today', () => {
     const actual = tasks
-      .filter(
-        (t) =>
-          !t.classes.some(
-            (c) => RUNNER_CLASSES[c as keyof typeof RUNNER_CLASSES]?.attributable === true,
-          ),
-      )
+      .filter((t) => !t.classes.some((c) => RUNNER_CLASSES[c]?.attributable === true))
       .map((t) => `${t.workspace} :: ${t.script}`)
       .sort();
 
