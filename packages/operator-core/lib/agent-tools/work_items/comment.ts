@@ -16,6 +16,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { commentWorkItem, getWorkItem, isSettledWorkItemState } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
+import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 
 /**
  * EI-10897: `comment` is an ACCEPTED ALIAS for `body` (the SAME field).
@@ -212,7 +213,29 @@ export default defineTool({
             /* the comment already succeeded — swallow */
           }
         }
-        return { ok: true as const, id: it.id, post, ...(hint ? { hint } : {}) };
+        // EI-19455334047866968: a work-item id cited in this body is never checked for
+        // existence, so a phantom ref reads identically to a real one to every later
+        // reader. Advisory + fail-open (a probe that cannot answer stays silent), and
+        // best-effort: the comment has already landed, so a check failure is never the
+        // caller's problem. `known` skips the item being commented ON — the caller just
+        // resolved it above, and re-probing it would be a guaranteed-wasted round-trip.
+        let refsWarning: string | undefined;
+        try {
+          const unresolved = await unresolvedRefsInBody(it.body, {
+            probe: (id) => getWorkItem(id),
+            known: [it.id],
+          });
+          if (unresolved) refsWarning = unresolvedRefsWarning(it.id, unresolved.missing);
+        } catch {
+          /* the comment already succeeded — swallow */
+        }
+        return {
+          ok: true as const,
+          id: it.id,
+          post,
+          ...(hint ? { hint } : {}),
+          ...(refsWarning ? { unresolvedRefsWarning: refsWarning } : {}),
+        };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );

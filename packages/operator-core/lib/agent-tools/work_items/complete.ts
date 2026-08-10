@@ -77,6 +77,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { fireReactionInProcess } from '../../events';
 import {
   isPlaneGapItem,
@@ -1010,6 +1011,30 @@ async function completeOne(
       `not checked out, ignore this. Otherwise re-call work_items:complete with the paths verified on disk.`
     : undefined;
 
+  // EI-19455334047866968: the REF-shaped sibling of the path check above — a work-item id
+  // cited in this completion's prose is never checked for existence, so a phantom reads
+  // identically to a real one. Measured on this very surface: a completion said "Filed
+  // separately as EI-19455206485565591" when the real filing was EI-19455262557905604.
+  //
+  // Scans the caller's own narrative fields — `summary` carries the cross-reference
+  // sentence, and testsRun/testResult routinely cite the item a run was verified against.
+  // Best-effort + fail-open: the completion is already recorded, so a check that cannot
+  // answer stays silent rather than manufacturing an accusation.
+  let unresolvedRefsWarningText: string | undefined;
+  try {
+    const refBody = [
+      completionEvidenceForGate?.summary,
+      completionEvidenceForGate?.testsRun,
+      completionEvidenceForGate?.testResult,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const unresolvedRefs = await unresolvedRefsInBody(refBody, { known: [it.id] });
+    if (unresolvedRefs) unresolvedRefsWarningText = unresolvedRefsWarning(it.id, unresolvedRefs.missing);
+  } catch {
+    /* the completion already landed — never let an advisory fail it */
+  }
+
   // P-004: the authority actually STAMPED on the row, or null when this call stamped
   // none (no terminal `state`, or the state write was rejected). Reporting the computed
   // judgement in either of those cases would tell the caller their close was graded when
@@ -1240,6 +1265,7 @@ async function completeOne(
     ...(skippedTestsWarning ? { skippedTestsWarning } : {}),
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
+    ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
     ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
     // Reported unconditionally on a real close (including `committed`) so the caller can
