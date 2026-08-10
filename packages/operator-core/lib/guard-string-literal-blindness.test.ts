@@ -94,15 +94,21 @@ describe('the lexer defects an AST parse removes', () => {
     expect(out.split('\n').findIndex((l) => l.includes('setInterval('))).toBe(3);
   });
 
-  it('an `^`-anchored /m detector still sees a declaration that follows a block comment', () => {
-    // The line-collapse above was not cosmetic: gluing lines together breaks `^`.
-    const src = '/* note\n   note */\nconst run = promisify(execFile);\n';
-    expect(/^(export\s+)?(const|let)\s+\w+\s*=\s*promisify\(\s*execFile\w*\s*\)/m.test(stripCommentsAndStrings(src, 'a.ts'))).toBe(true);
+  it('does not concatenate code across a removed block comment', () => {
+    // The module keeps string delimiters precisely so nothing new is concatenated across a
+    // removal — but OLD deleted block comments OUTRIGHT, so `*/const run = ...` collapsed onto
+    // the line above and an ^-anchored module-scope detector fired on a declaration that is
+    // not at line start. Blanking preserves the column, so it correctly declines.
+    const glued = '/* c\n*/const run = promisify(execFile);\n';
+    const anchored = /^(export\s+)?(const|let)\s+\w+\s*=\s*promisify\(\s*execFile\w*\s*\)/m;
+    expect(anchored.test(stripCommentsAndStrings(glued, 'a.ts'))).toBe(false);
+    // ...and a genuine column-0 declaration below a block comment still FIRES.
+    expect(anchored.test(stripCommentsAndStrings('/* c\n*/\nconst run = promisify(execFile);\n', 'a.ts'))).toBe(true);
   });
 
   it('blanks a regex BODY, where a guard is most likely to quote its own token', () => {
-    expect(detects('const RE = /\\bsetInterval\\s*\\(/;\n')).toBe(false);
-    expect(detects('const RE = /\\bsetInterval\\s*\\(/;\nsetInterval(fn);\n')).toBe(true);
+    expect(detects('const RE = /setInterval(fn)/;\n')).toBe(false);
+    expect(detects('const RE = /setInterval(fn)/;\nsetInterval(fn);\n')).toBe(true);
   });
 
   it('survives astral emoji before a literal (UTF-16 code units, not code points)', () => {
@@ -125,6 +131,10 @@ describe('stripCommentsOnly is regex-aware too (the phantom that reached the cen
     expect(out).toContain("const live = 'kept'"); // ...and string VALUES are still readable
   });
 
+  // NOT a defect of the pre-AST lexer (it got this right). This guards the AST implementation:
+  // a comment starting on the same line as the previous token is TRAILING trivia, and a
+  // leading-trivia-only scan silently leaves it standing as live code. That intermediate
+  // resurrected a `kettle` mention inside a JSX comment during this very fix.
   it('blanks a JSX {/* ... */} comment — trailing trivia, which leading-only trivia scanning misses', () => {
     const src = 'const A = () => (<div>{/* role: kettle */}<b/></div>);\n';
     const out = stripCommentsOnly(src, 'a.tsx');
