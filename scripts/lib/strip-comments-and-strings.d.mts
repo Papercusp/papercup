@@ -1,0 +1,82 @@
+/**
+ * Strip comments AND the CONTENTS of string/template literals, in ONE pass.
+ *
+ * THE ONE canonical implementation for every lint guard in `scripts/` that text-matches a
+ * call-shaped token. Import it; do not copy it. Copy-pasted `stripComments` IS the root
+ * cause this module exists to remove (EI-19991116787260658) — at the time of lifting,
+ * 16 guard scripts carried their own private copy and 5 were measurably defective.
+ *
+ * WHY THIS EXISTS (EI-19989853369726696): guards used to run a comments-only `stripComments`,
+ * which leaves string literals intact — so a call-shaped token appearing in PROSE inside a
+ * string parsed as a real call site. That is not hypothetical and it was not cheap:
+ * `apps/operator/lib/release/green-checkpoint.ts` contains the error text of a DIFFERENT
+ * guard —
+ *
+ *     '... a new recurring timer bypassed managedSetInterval (P-008) ...'
+ *
+ * The detector regex was /\bmanagedSetInterval\s*\(/, and `\s*\(` happily matches the space
+ * before `(P-008)`. The scan extracted `P-008` as that "call's" argument text, found no
+ * `classification:`, and reported a phantom offender — red-pinning the fleet gate on a file
+ * that does not even IMPORT managedSetInterval, while agents triaged a call site that did
+ * not exist.
+ *
+ * That failure mode is STRUCTURAL for this class of tool, not bad luck: a guard's error
+ * message quotes the very token the guard detects, so guards are exactly the code most
+ * likely to contain their own detection tokens inside strings. A guard whose own failure
+ * text is quoted elsewhere will keep minting phantoms, so the fix belongs in the scanner —
+ * never in a reword of the quoting file.
+ *
+ * ONE pass rather than strip-comments-then-strip-strings, because the two are mutually
+ * escaping: `//` inside a string does not start a comment ("http://x" must survive as a
+ * string, not silently truncate the rest of the line), and a quote inside a comment does
+ * not start a string (`// don't` would otherwise open an unterminated literal and eat the
+ * rest of the file). Chaining two independent regex passes gets both of those wrong.
+ *
+ * `${...}` template expressions are preserved AS CODE — a real call can legitimately live
+ * inside one, and dropping them would trade a false POSITIVE for a false NEGATIVE, which is
+ * the worse direction for a guard.
+ *
+ * The delimiters are kept (contents emptied) so nothing new is concatenated across a
+ * removal. Argument-level detection is unaffected: a check looking for a `classification:`
+ * KEY is reading code, never the string VALUE — `{ classification: 'must-sample' }` still
+ * reads as `{ classification: '' }` and still matches.
+ *
+ * ⚠ NOT FOR EVERY GUARD. Some guards detect tokens that legitimately live INSIDE string or
+ * template literals — `check-no-raw-install-slug-filter` matches `harness_slug = ${installSlug}`
+ * inside SQL template literals BY DESIGN, and the SQL-in-string guards
+ * (check-migration-forward-compat, check-no-sql-json) are the same shape. For those, stripping
+ * strings would trade this false positive for a false NEGATIVE. Use this module when the token
+ * you detect is CODE (a call or identifier); keep reading raw text when the token is legitimately
+ * string-resident.
+ *
+ * KNOWN LIMIT, stated rather than papered over: a regex literal containing a quote or a slash
+ * (`/'/`) can still confuse this, since telling a regex from division needs real parsing. That
+ * is the same class of approximation the call-scanners already document ("without a real AST
+ * parse"), and it fails toward the pre-existing behaviour.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripCommentsAndStrings(text: string): string;
+export function stripCommentsOnly(text: any): string;
+/**
+ * The shared RECURRENCE GUARD for the phantom-offender class.
+ *
+ * Feed a guard's own exported detector a source in which its detection token appears ONLY
+ * inside a string literal. A correct detector reports nothing. A detector still running a
+ * comments-only strip reports a phantom — the exact defect that red-pinned the fleet gate.
+ *
+ * This lives beside the stripper on purpose: the fix (import the stripper) and the proof
+ * (run this) travel together, so a NEW guard cannot ship with the defect merely by not
+ * knowing the history. Call it from the guard's own test suite.
+ *
+ * @param {(src: string) => unknown} detector  the guard's exported detector
+ * @param {string} tokenInProse  a line containing the guard's token as PROSE, e.g.
+ *        `a bare setInterval (P-008) is banned`
+ * @returns {{ ok: boolean, flagged: boolean, detail: string }}
+ */
+export function probeStringLiteralBlindness(detector: (src: string) => unknown, tokenInProse: string): {
+    ok: boolean;
+    flagged: boolean;
+    detail: string;
+};

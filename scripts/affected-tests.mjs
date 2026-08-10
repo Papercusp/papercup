@@ -569,6 +569,9 @@ const REPO_WIDE_INVARIANT_GUARDS = [
   {
     workspace: '@papercusp/operator-core',
     script: 'lint:chunk-safe',
+    // The guard script IS a vitest file in operator-core, so the host suite re-runs it
+    // by construction — the one case where the skip needs no separate ratchet.
+    hostSuiteRatchet: 'packages/operator-core/lib/child-output-guard.test.ts',
     // Every TS-family source file: the guard's own enumeration is repo-wide, so
     // narrowing this to "files that spawn children" would re-create the blind
     // spot one level down — the point is that nobody knows in advance which file
@@ -590,6 +593,9 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // "does the tree violate the invariant"; the discrimination tests that prove the
     // detector works already run inside operator-core's own suite.
     script: 'lint:partial-index-alignment',
+    // `describe('the tree is currently aligned (ratchet)')` execs the SAME script over
+    // REPO_ROOT inside operator-core's suite, so deferring to it is genuinely safe.
+    hostSuiteRatchet: 'packages/operator-core/lib/partial-index-alignment-guard.test.ts',
     appliesTo: (f) =>
       f === PARTIAL_INDEX_SCHEMA_FILE ||
       (/\.[cm]?tsx?$/.test(f) && PARTIAL_INDEX_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`))),
@@ -625,6 +631,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // The standalone script (~1.0s measured, 3 runs — the same order as lint:chunk-safe
     // above, which this list already accepts at that price).
     script: 'lint:drop-database-force',
+    hostSuiteRatchet: 'packages/operator-core/lib/drop-database-force-guard.test.ts',
     // Every TS-family file, for chunk-safe's stated reason: narrowing to "files that
     // currently talk to postgres" would re-create the blind spot one level down, and
     // the bug being guarded IS a NEW file hand-rolling its own teardown.
@@ -674,6 +681,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // only needs the tree RATCHET; the discrimination tests proving the detector can
     // still fail live in docs-engine's own suite (okf-conformance.test.ts).
     script: 'lint:okf-conformance',
+    hostSuiteRatchet: 'packages/operator-core/lib/okf-conformance-guard.test.ts',
     // Mirrors isOkfScannedFile() in check-okf-conformance.mjs: the two corpus roots,
     // the three extensions it opens, and the dot-path exclusion (Astro's loader never
     // sees those, so the lint does not judge them and routing on them would spend the
@@ -831,6 +839,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // needs the ratchet; the discrimination controls that prove the detector works already
     // run inside operator-core's own suite (green-checkpoint-tag-guard.test.ts).
     script: 'lint:green-checkpoint-tag',
+    hostSuiteRatchet: 'packages/operator-core/lib/green-checkpoint-tag-guard.test.ts',
     appliesTo: (f) =>
       /\.[cm]?tsx?$/.test(f) && GC_TAG_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
   },

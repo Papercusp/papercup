@@ -13,6 +13,17 @@ let shouldAlert: (consecutiveRestarts: number, alertAfter?: number) => boolean;
 let shouldClearStrikes: (healthyStreak: number, sustainedPolls?: number) => boolean;
 let maxReachableRestartsPerHr: (bootGraceMs?: number, pollMs?: number) => number;
 let poolShedExplainsFreeze: (idleSec: number | null, shedIdleSec: number | null, graceSec?: number) => boolean;
+let poolShedSuppressionHolds: (
+  shedExplains: boolean,
+  hostAlive: boolean | null,
+  suppressedForSec: number | null,
+  maxSuppressSec?: number,
+) => boolean;
+let probeHostLiveness: (
+  url?: string,
+  timeoutMs?: number,
+  deps?: { fetch?: unknown },
+) => Promise<{ alive: boolean | null; why: string }>;
 let bootProgressExtendsGrace: (
   activeForSec: number | null | undefined,
   cpuTicksDelta: number | null | undefined,
@@ -72,6 +83,8 @@ beforeAll(async () => {
     shouldClearStrikes,
     maxReachableRestartsPerHr,
     poolShedExplainsFreeze,
+    poolShedSuppressionHolds,
+    probeHostLiveness,
     bootProgressExtendsGrace,
     procTreeCpuTicks,
     alertFleet,
@@ -80,7 +93,16 @@ beforeAll(async () => {
     classifyCollateral,
     collateralAlertMessage,
     readCollateral,
-  } = await import('../bghost-watchdog.mjs'));
+    // PROBE_SCRIPT points the WHOLE suite — pure functions included — at a mutated COPY outside the
+    // tree, so scripts/mutation-probe.sh can prove falsifiability without ever mutating the shared
+    // working tree (git-sync would commit the mutant mid-probe).
+    //
+    // ⚠ This used to be a hardcoded '../bghost-watchdog.mjs' while the source-text WIRING blocks below
+    // already honored PROBE_SCRIPT. The result was a copy-out probe that ran happily, reported "MUTANT
+    // SURVIVED", and was measuring the REAL module the whole time — i.e. it could only ever falsify the
+    // grep-shaped tests, and read as evidence that a perfectly good behavioural guard was weak. Caught
+    // 2026-08-10 probing the EI-20025430746362695 liveness requirement.
+  } = await import(/* @vite-ignore */ process.env.PROBE_SCRIPT || '../bghost-watchdog.mjs'));
 });
 
 /**
@@ -825,6 +847,148 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
       const capped = procTreeCpuTicks(1, { ...fakeProc(table), maxPids: 10 })!;
       expect(capped).toBeLessThanOrEqual(10);
       expect(procTreeCpuTicks(1, fakeProc(table))).toBe(101);
+    });
+  });
+
+  /**
+   * EI-20025430746362695: the pool-shed suppression credited "shedding, not dead" for ~53min while
+   * bg-host answered no HTTP at all — git-sync and every routine dead fleet-wide.
+   *
+   * The mechanism is worth stating because the filing did not name it: `poolShedExplainsFreeze` asks
+   * `shedIdleSec <= idleSec + graceSec`, and `idleSec` is the freeze's OWN age — so the window expands
+   * with the thing it explains, and a single shed event at the onset of a freeze satisfies it forever.
+   * "A fresh shed event lands every poll, else the corroboration goes stale" was never required.
+   *
+   * The guard the filing asks for, and its control, are the first two tests here: a host that does NOT
+   * answer must not be suppressed, and a host that DOES answer while shedding must STILL be suppressed
+   * — so this cannot be satisfied by simply always restarting.
+   */
+  describe('pool-shed suppression requires positive liveness AND a bound (EI-20025430746362695)', () => {
+    const ALIVE = true;
+    const WEDGED = false;
+
+    it('THE CONTROL: a shedding host that ANSWERS /api/health is still suppressed', () => {
+      // WI-37506's legitimate case must keep working — this is what stops the fix from degenerating
+      // into "always restart", which would re-open the 45-kills-in-17-hours storm it replaced.
+      expect(poolShedSuppressionHolds(true, ALIVE, 60)).toBe(true);
+    });
+
+    it('THE DEFECT: a shedding host that does NOT answer is NOT suppressed', () => {
+      expect(poolShedSuppressionHolds(true, WEDGED, 60)).toBe(false);
+    });
+
+    it('UNKNOWN liveness never suppresses (a missing signal grants nothing)', () => {
+      // Same asymmetry as isFrozen/withinBootGrace/bootProgressExtendsGrace: only POSITIVE evidence of
+      // life may hold off a restart. An unnecessary restart is cheap; the other direction is an outage.
+      expect(poolShedSuppressionHolds(true, null, 60)).toBe(false);
+    });
+
+    it('no shed event means no suppression, however alive the host is', () => {
+      expect(poolShedSuppressionHolds(false, ALIVE, 0)).toBe(false);
+    });
+
+    it('the suppression is BOUNDED — past the cap it declines even on a live host', () => {
+      expect(poolShedSuppressionHolds(true, ALIVE, 899, 900)).toBe(true);
+      expect(poolShedSuppressionHolds(true, ALIVE, 900, 900)).toBe(false); // at the cap, not past it
+      expect(poolShedSuppressionHolds(true, ALIVE, 5_000, 900)).toBe(false);
+    });
+
+    it('an UNMEASURABLE suppression duration declines rather than suppressing forever', () => {
+      // A bound you cannot measure is not a bound. null/NaN/negative are all "I don't know how long
+      // this has been held", which is precisely the state the outage sat in.
+      for (const bad of [null, Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+        expect(poolShedSuppressionHolds(true, ALIVE, bad as number | null)).toBe(false);
+      }
+    });
+
+    it('REPLAY: every pass of the real 53min outage now declines', () => {
+      // The four logged passes, verbatim from the filing: staleness 1372 → 3173s, each one suppressed
+      // at the time. The host answered no HTTP throughout (curl -m 10 => http=000).
+      for (const suppressedForSec of [1372, 1972, 2572, 3173]) {
+        expect(poolShedSuppressionHolds(true, WEDGED, suppressedForSec)).toBe(false);
+      }
+      // ...and it would have declined on the BOUND alone even had the liveness probe been unavailable,
+      // so the two mechanisms are independently sufficient rather than one dressed up as two.
+      for (const suppressedForSec of [1372, 1972, 2572, 3173]) {
+        expect(poolShedSuppressionHolds(true, ALIVE, suppressedForSec, 900)).toBe(false);
+      }
+    });
+
+    describe('probeHostLiveness', () => {
+      it('treats ANY response as alive — a 500 still proves the event loop turned', async () => {
+        for (const status of [200, 404, 500, 503]) {
+          const r = await probeHostLiveness('http://x/health', 100, { fetch: async () => ({ status }) });
+          expect(r.alive).toBe(true);
+        }
+      });
+
+      it('a timeout / refused connection is DEAD, not unknown', async () => {
+        const timeout = await probeHostLiveness('http://x/health', 100, {
+          fetch: async () => {
+            throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+          },
+        });
+        expect(timeout.alive).toBe(false);
+        expect(timeout.why).toContain('no response');
+      });
+
+      it('an unusable probe (TypeError) is UNKNOWN — never blame a host we did not reach', async () => {
+        const r = await probeHostLiveness('not-a-url', 100, {
+          fetch: async () => {
+            throw new TypeError('Failed to parse URL');
+          },
+        });
+        expect(r.alive).toBeNull();
+        expect(r.why).toContain('unusable');
+      });
+
+      it('no fetch implementation is UNKNOWN, and never throws', async () => {
+        const r = await probeHostLiveness('http://x/health', 100, { fetch: undefined as unknown as null });
+        // globalThis.fetch exists on this runtime, so force the absent-implementation path explicitly.
+        expect(r).toHaveProperty('alive');
+        const forced = await probeHostLiveness('http://x/health', 100, { fetch: 'not-a-function' });
+        expect(forced.alive).toBeNull();
+      });
+    });
+  });
+
+  /**
+   * WIRING: the predicate above is only worth anything if poll() actually consults it. Every pure test
+   * in the block above would still pass if the call were deleted from poll() — the same gap the
+   * collateral and pool-shed WIRING blocks below/above exist to close.
+   */
+  describe('WIRING: the shed branch probes liveness and bounds itself (EI-20025430746362695)', () => {
+    let shedBranch: string;
+    beforeAll(async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, resolve } = await import('node:path');
+      const subject =
+        process.env.PROBE_SCRIPT || resolve(dirname(fileURLToPath(import.meta.url)), '../bghost-watchdog.mjs');
+      const src = readFileSync(subject, 'utf8');
+      const start = src.indexOf('const shedIdleSec = await poolShedIdleSec(dbUrl);');
+      expect(start).toBeGreaterThan(-1);
+      // The shed branch runs until the boot-progress probe that follows it.
+      const end = src.indexOf('const progressTicks = await bootProgressTicks();', start);
+      expect(end).toBeGreaterThan(start);
+      shedBranch = src.slice(start, end);
+    });
+
+    it('probes host liveness before crediting the shed explanation', () => {
+      expect(shedBranch).toContain('await probeHostLiveness(');
+      expect(shedBranch).toContain('poolShedSuppressionHolds(');
+    });
+
+    it('the liveness probe precedes the suppression verdict', () => {
+      expect(shedBranch.indexOf('await probeHostLiveness(')).toBeLessThan(
+        shedBranch.indexOf('poolShedSuppressionHolds('),
+      );
+    });
+
+    it('the DECLINING path escalates, not just logs', () => {
+      // The whole defect was a suppression that could only ever say "not restarting". The path that
+      // overrides it must be at least as loud as the path that suppressed.
+      expect(shedBranch).toContain('alertFleet(');
     });
   });
 

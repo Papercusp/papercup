@@ -18,11 +18,15 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import {
   findViolations,
-  stripComments,
   productionTag,
   GC_TAG_SOURCE_ROOTS,
   ALLOWLIST,
 } from '../../../scripts/check-green-checkpoint-tag.mjs';
+// The guard no longer carries its own stripper (WI-37605): it imports the canonical one, and the
+// two cases below assert the properties THIS call site depends on. They are kept here, pointed at
+// the shared function, rather than deleted with the local copy — the dependency is what needs
+// guarding, and it would otherwise vanish silently if the shared impl were ever simplified back.
+import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const TAG = productionTag();
@@ -111,13 +115,16 @@ describe('WI-37605: no hardcoded green-checkpoint production tag in executable c
     // a false negative, the direction that matters for a guard. Same family as the form-blind
     // detectors documented in CLAUDE.md, which matched a spelling instead of the property.
     const line = `console.warn("see https://x.test/docs", \`${TAG} boom\`);`;
-    expect(stripComments(line)).toContain(TAG);
+    expect(stripCommentsOnly(line)).toContain(TAG);
     expect(scanFixture({ 'src/url.ts': line })).toHaveLength(1);
   });
 
-  it('stripComments preserves line numbering so reported lines are true', () => {
+  it('stripCommentsOnly preserves line numbering so reported lines are true', () => {
     const src = ['/* a\n   multi-line\n   banner */', 'const x = 1;'].join('\n');
-    expect(stripComments(src).split('\n')).toHaveLength(src.split('\n').length);
+    expect(stripCommentsOnly(src).split('\n')).toHaveLength(src.split('\n').length);
+    // ...and nothing is concatenated ACROSS the removal: `a/*c*/b` must not become `ab`, the
+    // defect a delete-based strip has and the reason this one blanks instead.
+    expect(stripCommentsOnly('a/*c*/b')).not.toContain('ab');
   });
 
   // ---- scope is asserted, not assumed ------------------------------------------------------

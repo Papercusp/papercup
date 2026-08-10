@@ -34,6 +34,7 @@
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import * as path from 'node:path';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 /** Roots that can contain gate narration.
  *  ⚠ MIRRORED as `GC_TAG_SOURCE_ROOTS` in scripts/affected-tests.mjs so the repo-wide guard
@@ -53,40 +54,16 @@ export function productionTag() {
   return `${'['}green-${'checkpoint'}${']'}`;
 }
 
-/**
- * Blank out comments so a doc-comment quoting the tag is not a violation, WITHOUT the false
- * NEGATIVE a naive `//`-to-EOL strip introduces: a `//` inside a string literal (a URL, a regex
- * source) would truncate the rest of a real code line and hide an emit sitting after it. So this
- * tracks quote state. Replaces with spaces rather than deleting, to keep line/column numbers true.
- */
-export function stripComments(src) {
-  let out = '';
-  let i = 0;
-  let quote = null; // "'" | '"' | '`'
-  while (i < src.length) {
-    const c = src[i];
-    const next = src[i + 1];
-    if (quote) {
-      if (c === '\\') { out += src.slice(i, i + 2); i += 2; continue; }
-      if (c === quote) quote = null;
-      out += c; i += 1; continue;
-    }
-    if (c === "'" || c === '"' || c === '`') { quote = c; out += c; i += 1; continue; }
-    if (c === '/' && next === '/') {
-      while (i < src.length && src[i] !== '\n') { out += ' '; i += 1; }
-      continue;
-    }
-    if (c === '/' && next === '*') {
-      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) {
-        out += src[i] === '\n' ? '\n' : ' ';
-        i += 1;
-      }
-      out += '  '; i += 2; continue;
-    }
-    out += c; i += 1;
-  }
-  return out;
-}
+// Comment-blanking lives in scripts/lib/strip-comments-and-strings.mjs — imported above as
+// `stripCommentsOnly`, NOT re-implemented here. This guard needs the comments-ONLY variant
+// because the thing it detects IS a string literal (a hardcoded tag inside a console.* call);
+// `stripCommentsAndStrings` would empty exactly the text this scanner has to read and turn the
+// guard into a silent no-op. The two properties this call site depends on — quote-awareness
+// (a `//` inside a URL must not blank the rest of a real line) and line-preservation (violations
+// are reported by line number) — are asserted in guard-string-literal-blindness.test.ts.
+//
+// This file used to carry its own `stripComments`; that copy-paste is the phantom-offender root
+// cause (EI-19991116787260658) and is now blocked by a shrink-only guard.
 
 function isScannable(rel) {
   if (!/\.[cm]?tsx?$/.test(rel)) return false;
@@ -122,7 +99,7 @@ export function findViolations(repoRoot, roots = GC_TAG_SOURCE_ROOTS) {
       let src;
       try { src = readFileSync(path.join(repoRoot, rel), 'utf8'); } catch { continue; }
       if (!src.includes(needle)) continue; // cheap pre-filter before the scanner
-      const lines = stripComments(src).split('\n');
+      const lines = stripCommentsOnly(src).split('\n');
       lines.forEach((text, idx) => {
         if (text.includes(needle)) out.push({ file: rel, line: idx + 1, text: text.trim().slice(0, 160) });
       });

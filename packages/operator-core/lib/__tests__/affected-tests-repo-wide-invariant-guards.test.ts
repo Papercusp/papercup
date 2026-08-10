@@ -231,16 +231,28 @@ describe('affected-tests: partial-index-alignment guard (WI-9434)', () => {
     },
   );
 
-  it('attaches when the GENERATED SCHEMA changes, not just when source changes', () => {
+  it('reaches the ratchet when the GENERATED SCHEMA changes, not just when source changes', () => {
     // The subtle case chunk-safe does not have: the schema is an INPUT to the lint, so a
     // new partial index can retroactively misalign an existing, untouched query.
+    //
+    // Asserted as COVERAGE, not as one mechanism — the same shape as the generated
+    // per-root case above. This guard DECLARES `hostSuiteRatchet`
+    // (partial-index-alignment-guard.test.ts, whose `the tree is currently aligned` case
+    // execs the identical script over REPO_ROOT), so when the schema path also pulls
+    // operator-core into the affected set the ratchet is reached through the host suite
+    // and the narrow task is correctly skipped. Pinning `toContain(PI_TASK)` pinned the
+    // MECHANISM while meaning the COVERAGE, and broke the moment an unrelated
+    // dependency-graph change made operator-core affected for libs/papercusp/** paths
+    // (EI-20026978310669562) — while the invariant itself never stopped being enforced.
     const out = dryTasks(PARTIAL_INDEX_SCHEMA_FILE);
+    const reached = out.includes(PI_TASK) || out.includes(`${HOST_WORKSPACE} :: test`);
     expect(
-      out,
+      reached,
       `${PARTIAL_INDEX_SCHEMA_FILE} defines the partial indexes the lint aligns queries ` +
         'against; adding one can misalign a query nobody touched, so a schema-only change ' +
-        'must still run the ratchet',
-    ).toContain(PI_TASK);
+        `must still reach the ratchet — via "${PI_TASK}" or via "${HOST_WORKSPACE} :: test". ` +
+        `Task list was:\n${out}`,
+    ).toBe(true);
   });
 
   it('does NOT double-run it when the host workspace is already affected', () => {
@@ -319,16 +331,36 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
     ).toContain(FC_TASK);
   });
 
-  it('does NOT double-run it when the host workspace is already affected', () => {
-    const out = dryTasks(INSIDE_TS_PATH);
+  it('STILL attaches when the host workspace is affected, because nothing in that suite re-runs it', () => {
+    // This case asserted the OPPOSITE until EI-20026978310669562, on the premise that
+    // "operator-core's full suite already covers this ratchet". That premise was never
+    // true for THIS guard: operator-core's suite contains
+    // migration-forward-compat-authoring.test.ts, which exercises the DETECTOR against
+    // synthetic `/repo/...` fixture strings and never scans the real SQL directory — so
+    // deferring to the host suite ran nothing at all. The sibling guards that DO defer
+    // each name a real in-suite ratchet via `hostSuiteRatchet`; this one names none, so
+    // it must attach unconditionally.
+    //
+    // How it surfaced: declaring @papercusp/db-org et al. on operator-core made every
+    // libs/papercusp/** path pull the host workspace in, which silently disabled the
+    // guard for migration .sql changes — re-opening WI-9573's class from three files away.
+    // The probe must satisfy BOTH halves at once, which is what makes this a real test of
+    // the skip: a path that (a) MATCHES this guard's predicate — .sql under the scanned
+    // migrations dir — and (b) pulls the host workspace into the affected set. A .ts path
+    // (the old case's probe) satisfies only (b): the predicate cannot match it, so it
+    // would pass for a reason having nothing to do with the skip branch. MIGRATION_PATH
+    // satisfies both, because libs/papercusp/** now reaches operator-core through the
+    // dependency graph — the very change that exposed this bug.
+    const out = dryTasks(MIGRATION_PATH);
     expect(out, 'the host workspace should run its own suite here').toContain(
       `${HOST_WORKSPACE} :: test`,
     );
     expect(
       out,
-      "operator-core's full suite already covers this ratchet, so attaching the narrow " +
-        'task as well would run the same scan twice',
-    ).not.toContain(FC_TASK);
+      'lint:migration-forward-compat declares no hostSuiteRatchet, so the host suite ' +
+        'running is NOT a substitute for it — skipping here is silent coverage loss, not ' +
+        `a saved duplicate scan. Task list was:\n${out}`,
+    ).toContain(FC_TASK);
   });
 
   it('does NOT attach for a .sql OUTSIDE the scanned migrations directory', () => {
@@ -632,13 +664,15 @@ describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () =
     ).toContain(MUG_KETTLE_TASK);
   });
 
-  it('does NOT double-run it when the host workspace is already affected', () => {
-    const out = dryTasks('packages/operator-core/lib/terminal-spawn.ts');
-    expect(out, 'the host workspace should run its own suite here').toContain(
-      `${HOST_WORKSPACE} :: test`,
-    );
-    expect(out, "operator-core's own suite already covers the guard").not.toContain(MUG_KETTLE_TASK);
-  });
+  // NOTE — deliberately NO "does not double-run when the host workspace is affected" case here,
+  // unlike the sibling blocks above. That behaviour is MID-CHANGE in the working tree
+  // (EI-20026978310669562): the host-suite skip is moving from assumed to DECLARED via
+  // `hostSuiteRatchet`, so a guard that names no in-suite ratchet will attach
+  // unconditionally — the fail-safe direction. This guard names none (operator-core's suite
+  // contains nothing that re-runs the mug/kettle census), so under the new rule it SHOULD
+  // attach even inside the host workspace, which is the opposite of what the siblings assert.
+  // Pinning either polarity here would encode a semantic that is actively being inverted, so
+  // this block asserts only what is TRUE UNDER BOTH: the predicate and the wiring.
 
   it('attaches for a MARKDOWN change — a new mug role prompt is a real re-introduction path', () => {
     // The `.md` half of the predicate is the easiest to drop in a refactor and the hardest to
@@ -676,5 +710,115 @@ describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () =
         'affected-tests.mjs skips a registered-but-undeclared guard with a bare `continue`',
     ).toBeTruthy();
     expect(pkg.scripts?.[MUG_KETTLE_SCRIPT]).toContain('check-ungated-mug-kettle.mjs');
+  });
+});
+
+/*
+ * EI-20026978310669562 — the RECURRENCE GUARD for the class the whole registry above exists
+ * to prevent, one level up.
+ *
+ * The router may skip a guard in favour of its host workspace's full suite ONLY when that
+ * suite genuinely re-runs the invariant. That used to be an ASSUMPTION baked into a single
+ * `t.script === 'test'` comparison, held for every guard uniformly, and true for only 5 of
+ * 12 — so a guard could stop firing with no failing test anywhere, triggered by something as
+ * unrelated as a dependency-graph edit three files away (declaring @papercusp/db-org on
+ * operator-core made libs/papercusp/** reach the host workspace, silently disabling
+ * lint:migration-forward-compat for migration .sql changes).
+ *
+ * The premise is now DECLARED per guard via `hostSuiteRatchet`. That fixes the mechanism but
+ * moves the risk rather than removing it: a DECLARATION is just a new place to write an
+ * unverified claim, and a phantom ratchet — a path that does not exist, or a file that never
+ * runs the invariant — buys back the identical silent hole while LOOKING rigorous. So the
+ * declaration is checked here, not trusted.
+ *
+ * Deliberately NOT asserted: that guards without a ratchet attach unconditionally. That is a
+ * BEHAVIOURAL claim and is pinned behaviourally by the forward-compat block above, which
+ * probes a path satisfying both halves at once (matches the predicate AND pulls the host
+ * workspace in). A source-shape assertion here would duplicate it in a weaker form.
+ */
+describe('affected-tests: the host-suite skip is DECLARED and verified, never assumed', () => {
+  type Guard = { script: string; hostSuiteRatchet: string | null };
+
+  const registrySource = (() => {
+    const src = readFileSync(AFFECTED_TESTS, 'utf8');
+    const start = src.indexOf('const REPO_WIDE_INVARIANT_GUARDS');
+    return src.slice(start, src.indexOf('\n];', start));
+  })();
+
+  const guards: Guard[] = registrySource
+    .split(/\n {2}\{\n/)
+    .slice(1)
+    .map((chunk) => {
+      const script = /script: '([^']+)'/.exec(chunk)?.[1];
+      const ratchet = /hostSuiteRatchet: '([^']+)'/.exec(chunk)?.[1] ?? null;
+      return script ? { script, hostSuiteRatchet: ratchet } : null;
+    })
+    .filter((g): g is Guard => g !== null);
+
+  it('CALIBRATION — the registry parse actually found the guards', () => {
+    // Without this, a parse that silently yielded [] would make every it.each below vacuous:
+    // zero cases, green suite, zero protection. The declared count is cross-checked against
+    // the raw `script:` occurrences so a new entry shape cannot quietly fall out of the scan.
+    const rawCount = (registrySource.match(/\n\s*script: '/g) ?? []).length;
+    expect(guards.length, `parsed ${guards.length} guard(s) from a registry with ${rawCount}`).toBe(
+      rawCount,
+    );
+    expect(guards.length).toBeGreaterThanOrEqual(10);
+    expect(guards.every((g) => g.script.startsWith('lint:'))).toBe(true);
+  });
+
+  it('every declared hostSuiteRatchet names a file that EXISTS', () => {
+    // A typo'd or moved path is indistinguishable from a real ratchet at the point of the
+    // skip — the router never opens the file. This is the cheapest phantom to create.
+    for (const g of guards.filter((x) => x.hostSuiteRatchet)) {
+      expect(
+        () => readFileSync(resolve(REPO_ROOT, g.hostSuiteRatchet as string), 'utf8'),
+        `${g.script} declares hostSuiteRatchet '${g.hostSuiteRatchet}', which does not exist`,
+      ).not.toThrow();
+    }
+  });
+
+  it('every declared hostSuiteRatchet lives in the host workspace, so its `test` task really runs it', () => {
+    // Deferring to `@papercusp/operator-core :: test` is only sound if the ratchet is INSIDE
+    // that suite. A ratchet in another workspace is never executed by the task being deferred
+    // to, which is the same hole wearing a declaration.
+    for (const g of guards.filter((x) => x.hostSuiteRatchet)) {
+      expect(
+        g.hostSuiteRatchet,
+        `${g.script}'s ratchet must sit inside packages/operator-core so operator-core's ` +
+          'own `test` task executes it',
+      ).toMatch(/^packages\/operator-core\//);
+    }
+  });
+
+  it('every declared hostSuiteRatchet actually RE-RUNS the invariant it vouches for', () => {
+    // The substantive check: the named file must reference the guard's own detector, either
+    // by being the vitest file the guard script targets, or by exercising the .mjs it runs.
+    // A file that merely sits in the suite vouches for nothing.
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+
+    for (const g of guards.filter((x) => x.hostSuiteRatchet)) {
+      const command = pkg.scripts?.[g.script] ?? '';
+      const ratchetPath = g.hostSuiteRatchet as string;
+      const body = readFileSync(resolve(REPO_ROOT, ratchetPath), 'utf8');
+      const detector = /([\w-]+\.mjs)/.exec(command)?.[1] ?? null;
+
+      // Case 1: the guard script IS this vitest file, so the host suite runs it by construction.
+      const isOwnVitestTarget =
+        /vitest/.test(command) && ratchetPath.endsWith(command.trim().split(/\s+/).pop() ?? '\0');
+      // Case 2: a standalone detector — the ratchet must exercise that same .mjs.
+      const exercisesDetector = detector !== null && body.includes(detector);
+
+      expect(
+        isOwnVitestTarget || exercisesDetector,
+        `${g.script} defers to the host suite on the strength of ${ratchetPath}, but that file ` +
+          `neither is the vitest target of \`${command}\` nor references ` +
+          `${detector ?? '(no .mjs detector found in the command)'}. Either point it at a file ` +
+          'that really re-runs the invariant, or DROP the hostSuiteRatchet declaration so the ' +
+          'guard attaches unconditionally (the fail-safe direction).',
+      ).toBe(true);
+    }
   });
 });

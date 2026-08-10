@@ -122,6 +122,31 @@
  * (no shed ever recorded, or the query itself fails) never explains a freeze — same
  * never-infer-from-a-missing-signal asymmetry as `isFrozen`/`withinBootGrace` above.
  *
+ * ⚠⚠ THE "SELF-LIMITING BY CONSTRUCTION, NO NEW FAILURE MODE" CLAIM ABOVE WAS FALSE, and it cost a
+ * ~53min fleet-wide outage the very next day (EI-20025430746362695, 2026-08-10). Read it as a warning,
+ * not as reassurance — it is left in place because the reasoning is instructive, and because deleting
+ * the wrong claim would hide why the fix below is shaped the way it is.
+ *
+ * The mechanism it missed is in the PREDICATE, not in the signal: `poolShedExplainsFreeze` asks
+ * `shedIdleSec <= idleSec + graceSec` — and `idleSec` is the freeze's own age, so THE WINDOW EXPANDS
+ * WITH THE THING IT IS EXPLAINING. A single shed event landing at the ONSET of a freeze satisfies that
+ * inequality forever: at 1372s stale a 1372s-old shed still "explains" it, and so does the same event
+ * at 3173s. The premise "a fresh shed event lands every poll, else the corroboration goes stale and
+ * stops explaining" never had to hold, because staleness was never required to be FRESH. Measured:
+ * four consecutive passes, staleness 1372→3173s, each logging "SHEDDING under pool starvation, not
+ * dead" while `curl -m 10 :3271/api/health` returned http=000 and git-sync plus every routine were
+ * dead fleet-wide. `systemctl` said `active` throughout, so every ordinary liveness signal agreed.
+ *
+ * Two things were missing, and both are now required before the shed explanation may suppress:
+ *   1. POSITIVE LIVENESS — `probeHostLiveness()` asks the host itself on `/api/health`, a deliberately
+ *      zero-dependency route (no DB, no auth), which is the whole reason it can separate the two cases:
+ *      pool starvation cannot hang it, so shed-but-alive answers and a wedged event loop cannot. A
+ *      PG-touching probe would have collapsed exactly the distinction this exists to draw.
+ *   2. A BOUND — `POOL_SHED_MAX_SUPPRESS_S`, with an alarm at `POOL_SHED_ALERT_AFTER_S` before it. An
+ *      unbounded suppression is a guardrail that can only ever say "not restarting", which is not a
+ *      guardrail; it is an off switch that nothing can reach.
+ * `poolShedSuppressionHolds` is the pure verdict combining all three conditions.
+ *
  * PROGRESS-AWARE BOOT GRACE (EI-20029519971967372, 2026-08-10) — the fixed `BOOT_GRACE_MS` above is a
  * BET on how long a boot takes, and the bet now loses: a cold boot on the current 1.23M-block own log
  * saturates the worker's main thread for LONGER than the 480s grace. Measured live 01:34-02:00Z: two

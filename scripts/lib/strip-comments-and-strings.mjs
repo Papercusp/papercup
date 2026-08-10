@@ -146,11 +146,69 @@ export function stripCommentsAndStrings(text) {
  * actually reads: a KEY or a call token (code) -> stripCommentsAndStrings; a VALUE inside quotes
  * -> this function.
  *
+ * ⚠ THIS IS QUOTE-AWARE AND LINE-PRESERVING, and both properties are load-bearing (WI-37605).
+ * It was a two-regex pass until 2026-08-10 — `.replace(/\/\/[^\n]*\/g, '')` — which had exactly
+ * the two defects the module header warns about, in the FALSE-NEGATIVE direction:
+ *
+ *   1. A `//` INSIDE A STRING started a "comment". `console.warn("see https://x/d", tag)` lost
+ *      everything after `https:`, so a real violation later on that line was silently erased.
+ *      A guard that reports clean on an offending line is the worst failure this class has.
+ *   2. Block comments were DELETED rather than blanked, so `a/*c*\/b` became `ab` (tokens
+ *      concatenated across the removal — the very thing stripCommentsAndStrings keeps its
+ *      delimiters to prevent) and every line after a multi-line comment SHIFTED UP, making
+ *      reported line numbers wrong for any caller that counts them.
+ *
+ * Comments are replaced with spaces (newlines preserved) rather than removed, so offsets and
+ * line numbers stay true. String CONTENTS are still fully preserved — this function remains
+ * string-blind BY DESIGN, which is what `guard-string-literal-blindness` uses it to control for.
+ *
  * @param {string} text
  * @returns {string}
  */
 export function stripCommentsOnly(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  let out = '';
+  let i = 0;
+  let quote = null; // "'" | '"' | '`' — inside a literal, `//` and `/*` are just characters
+  while (i < text.length) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (quote) {
+      if (c === '\\') {
+        out += text.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (c === quote) quote = null;
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      quote = c;
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') {
+        out += ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) {
+        out += text[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      out += '  ';
+      i += 2;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
 }
 
 /**

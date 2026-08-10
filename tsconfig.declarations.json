@@ -81,6 +81,12 @@
     "scripts/check-partial-index-alignment.mjs",
     "scripts/check-migration-forward-compat.mjs",
     "scripts/check-green-checkpoint-tag.mjs",
+    // WI-37605, same reason as okf-frontmatter-sweep.mjs below: check-green-checkpoint-tag.mjs
+    // now imports it (it stopped hand-rolling its own stripComments), so tsc emits this
+    // declaration REGARDLESS and leaving it unregistered makes it an untracked byproduct that
+    // --check cannot police. Unlike that one it IS also imported directly by a .ts
+    // (guard-string-literal-blindness.test.ts), which had been paying a suppressed TS7016 for it.
+    "scripts/lib/strip-comments-and-strings.mjs",
     "scripts/lint-tsc.mjs",
     "scripts/lint-tsc-operator-vite.mjs",
     "scripts/check-transitive-boundary.mjs",

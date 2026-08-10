@@ -36,7 +36,9 @@ import {
   probeStringLiteralBlindness,
   stripCommentsAndStrings,
   stripCommentsOnly,
-  // @ts-expect-error -- .mjs shared lib, no type declarations
+  // No @ts-expect-error here any more: the module is registered in tsconfig.declarations.json
+  // (WI-37605) and now has a generated sibling .d.mts, so this import is genuinely typed. The
+  // directive that used to sit here became TS2578 "unused" the moment that landed.
 } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const SCRIPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../scripts');

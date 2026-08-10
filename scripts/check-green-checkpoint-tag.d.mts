@@ -4,13 +4,6 @@
 // scripts/check-green-checkpoint-tag.mjs and regenerate.
 /** Assembled at runtime — see SELF-MATCH above. */
 export function productionTag(): string;
-/**
- * Blank out comments so a doc-comment quoting the tag is not a violation, WITHOUT the false
- * NEGATIVE a naive `//`-to-EOL strip introduces: a `//` inside a string literal (a URL, a regex
- * source) would truncate the rest of a real code line and hide an emit sitting after it. So this
- * tracks quote state. Replaces with spaces rather than deleting, to keep line/column numbers true.
- */
-export function stripComments(src: any): string;
 /** @returns {{file:string,line:number,text:string}[]} */
 export function findViolations(repoRoot: any, roots?: string[]): {
     file: string;
