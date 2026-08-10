@@ -1398,3 +1398,145 @@ describe('buildJsonbPathRedirect (P-015)', () => {
     expect(probes).toHaveLength(0);
   });
 });
+
+/**
+ * EI-20103748074297088 — the two false zeros that both read as "the agent edited nothing".
+ *
+ * Distinct from every advisory above, and the distinction is the reason these are separate
+ * builders: the tenant advisory warns the rows you got may be from the WRONG TENANT. These warn
+ * there will be NO ROWS AT ALL, from a query that looks perfectly scoped — the failure mode that
+ * cannot be spotted by inspecting the result, because a well-formed zero is exactly what a real
+ * "nothing happened" looks like.
+ *
+ * Both are pure string builders (no client), so they need no stub.
+ */
+describe('buildCorpusNamespaceAdvisory — a tenant predicate on a corpus table (EI-20103748074297088)', () => {
+  const PARTS = 'harness_shared.session_turn_parts';
+
+  it('fires when a corpus table is filtered by a real tenant id', () => {
+    const advisory = buildCorpusNamespaceAdvisory(
+      `SELECT owner, count(*) FROM ${PARTS} WHERE workspace_id = 'papercusp-workspace' GROUP BY 1`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('session_turn_parts');
+    expect(advisory).toContain("'papercusp-workspace'");
+    // It must hand over the fix, not just the diagnosis.
+    expect(advisory).toContain("workspace_id = 'default'");
+    expect(advisory).toContain('owner');
+  });
+
+  /**
+   * The inversion this shares with buildTestRunsAdvisory: it fires BECAUSE the column is
+   * present. An advisory that cleared on "workspace_id is mentioned" would go silent at exactly
+   * the moment the caller has written the wrong thing — which is the whole failure.
+   */
+  it('is NOT satisfied merely by workspace_id being mentioned', () => {
+    expect(
+      buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} WHERE workspace_id = 'papercusp-workspace'`),
+    ).toBeTruthy();
+  });
+
+  it('is silent when the caller already knows the namespace', () => {
+    expect(
+      buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} WHERE workspace_id = 'default'`),
+    ).toBeNull();
+  });
+
+  /** An UNSCOPED read is the correct one for these tables — never warn about a right answer. */
+  it('is silent for an unscoped read', () => {
+    expect(buildCorpusNamespaceAdvisory(`SELECT count(*) FROM ${PARTS}`)).toBeNull();
+    expect(
+      buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} WHERE ts > now() - interval '1 hour'`),
+    ).toBeNull();
+  });
+
+  it('is silent for a genuinely multi-tenant table, where the predicate is correct', () => {
+    expect(
+      buildCorpusNamespaceAdvisory(
+        "SELECT * FROM harness_shared.work_items WHERE workspace_id = 'papercusp-workspace'",
+      ),
+    ).toBeNull();
+  });
+
+  /**
+   * session_turn_journal is 10,453 'default' vs 4,706 'papercusp-workspace' (measured
+   * 2026-08-10) — genuinely mixed, so a tenant predicate there is legitimate. Pinned because the
+   * tempting over-fix is to sweep in every session_* table by name, which would start warning
+   * about correct queries and train callers to ignore the advisory.
+   */
+  it('is silent for a session_* table that is genuinely mixed rather than corpus-namespaced', () => {
+    expect(
+      buildCorpusNamespaceAdvisory(
+        "SELECT * FROM harness_shared.session_turn_journal WHERE workspace_id = 'papercusp-workspace'",
+      ),
+    ).toBeNull();
+  });
+
+  it('ignores a predicate that only appears inside a comment', () => {
+    expect(
+      buildCorpusNamespaceAdvisory(
+        `SELECT count(*) FROM ${PARTS} -- workspace_id = 'papercusp-workspace'\n`,
+      ),
+    ).toBeNull();
+  });
+
+  it('does not fire on an exclusion predicate', () => {
+    expect(
+      buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} WHERE workspace_id <> 'papercusp-workspace'`),
+    ).toBeNull();
+  });
+});
+
+describe('buildNativeToolAttributionAdvisory — native tools are absent from tool_invocations', () => {
+  const TI = 'harness_shared.tool_invocations';
+
+  it('fires when tool_invocations is asked about a native client tool', () => {
+    const advisory = buildNativeToolAttributionAdvisory(
+      `SELECT count(*) FROM ${TI} WHERE tool_name IN ('Edit','Write','MultiEdit')`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('MCP tools ONLY');
+    // Routes to the working query INCLUDING the corpus predicate, so following this advice
+    // cannot land the caller in the second trap.
+    expect(advisory).toContain('session_turn_parts');
+    expect(advisory).toContain("workspace_id = 'default'");
+  });
+
+  it('is silent for an MCP tool name, which really is recorded there', () => {
+    expect(
+      buildNativeToolAttributionAdvisory(`SELECT * FROM ${TI} WHERE tool_name = 'capability:edit'`),
+    ).toBeNull();
+  });
+
+  it('is silent when a native name appears against a different table', () => {
+    expect(
+      buildNativeToolAttributionAdvisory(
+        "SELECT * FROM harness_shared.session_turn_parts WHERE tool_name = 'Edit'",
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent for a tool_invocations query that is not about tool names at all', () => {
+    expect(
+      buildNativeToolAttributionAdvisory(`SELECT count(*) FROM ${TI} WHERE status = 'error'`),
+    ).toBeNull();
+  });
+
+  /**
+   * The REGRESSION case, verbatim in shape from the report: the two traps compose, and the
+   * second zero reads as corroboration of the first. Both advisories must speak for the pair of
+   * queries that produced them.
+   */
+  it('REGRESSION: the composed pair each get their own warning', () => {
+    const trap1 = `SELECT count(*) FROM ${TI} WHERE tool_name IN ('Edit','Write') AND workspace_id = 'papercusp-workspace'`;
+    const trap2 =
+      "SELECT owner, count(*) FROM harness_shared.session_turn_parts WHERE workspace_id = 'papercusp-workspace' AND tool_name = 'Edit' GROUP BY 1";
+
+    expect(buildNativeToolAttributionAdvisory(trap1)).toBeTruthy();
+    // trap1's workspace_id predicate is CORRECT — tool_invocations really is multi-tenant.
+    expect(buildCorpusNamespaceAdvisory(trap1)).toBeNull();
+
+    expect(buildCorpusNamespaceAdvisory(trap2)).toBeTruthy();
+    expect(buildNativeToolAttributionAdvisory(trap2)).toBeNull();
+  });
+});
