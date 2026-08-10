@@ -851,4 +851,93 @@ describe('GoalDetailPanel', () => {
       ]);
     });
   });
+
+  /* ── P-012: tripwire bar accessibility ─────────────────────────────────────
+     Two defects, one widget: the bar carried no progressbar semantics at all,
+     and BREACH — the state it exists to announce — was conveyed by colour
+     alone, so it reached neither a screen reader nor anyone who cannot
+     distinguish the colour. */
+  describe('P-012: tripwire bars are readable by assistive tech', () => {
+    function withTripwires(tripwires: unknown[]) {
+      return detail({
+        goal: {
+          id: 'goal-1',
+          title: 'g',
+          status: 'active',
+          killCriterion: 'stop at 30 days or $500',
+          tripwires,
+        } as GoalDetailInput['goal'],
+      });
+    }
+
+    it('exposes each bar as a progressbar named by its label', () => {
+      renderPanel(withTripwires([
+        { metric: 'spend', label: 'Spend', threshold: 500, current: 310, unit: 'usd' },
+      ]));
+      const bar = screen.getByRole('progressbar', { name: 'Spend' });
+      expect(bar.getAttribute('aria-valuemin')).toBe('0');
+      expect(bar.getAttribute('aria-valuemax')).toBe('100');
+      expect(bar.getAttribute('aria-valuenow')).toBe('62');
+      // The figures, not just the ratio — a bare "62" is not the reading.
+      expect(bar.getAttribute('aria-valuetext')).toBe('$310 of $500');
+    });
+
+    it('reports the TRUE figures for an OVERSHOT tripwire, though the bar is clamped', () => {
+      /* The item's specific requirement, and the subtlest one. The fill is
+         deliberately capped at 100% so it cannot render past its track — that
+         clamp stays. But ARIA requires `aria-valuenow` to sit within
+         valuemin..valuemax, so it CANNOT carry 120 either; `aria-valuetext` is
+         the sanctioned carrier and screen readers prefer it. This asserts the
+         listener hears the real overshoot rather than a comfortable "100". */
+      renderPanel(withTripwires([
+        { metric: 'spend', label: 'Spend', threshold: 500, current: 600, unit: 'usd' },
+      ]));
+      const bar = screen.getByRole('progressbar', { name: 'Spend' });
+      expect(bar.getAttribute('aria-valuenow')).toBe('100');
+      expect(bar.getAttribute('aria-valuetext')).toBe('$600 of $500 — past limit');
+      // …and the visual clamp it must not have broken.
+      const fill = bar.querySelector('.hud-goal__bar-fill') as HTMLElement | null;
+      expect(fill?.style.width).toBe('100%');
+    });
+
+    it('announces BREACH in text, not by colour alone', () => {
+      renderPanel(withTripwires([
+        { metric: 'spend', label: 'Spend', threshold: 500, current: 600, unit: 'usd' },
+        { metric: 'elapsed', label: 'Elapsed', threshold: 30, current: 12, unit: 'days' },
+      ]));
+      /* Exactly one of the two is breached, so this fails both if the marker
+         disappears AND if it starts rendering on every bar. Asserting TEXT
+         rather than a class is the point: a class is still a colour hook, and
+         the whole defect was that the state lived only in the styling. */
+      const breaches = screen.getAllByTestId('goal-tripwire-breach');
+      expect(breaches).toHaveLength(1);
+      expect(breaches[0]!.textContent).toMatch(/past limit/i);
+      expect(screen.getByTestId('goal-tripwires').textContent).toMatch(/past limit/i);
+    });
+
+    it('leaves an INDETERMINATE bar with no aria-valuenow — never a comfortable 0', () => {
+      /* `pct` is null for TWO different reasons and both are genuinely
+         indeterminate: nobody took a reading, OR there is a reading but no
+         threshold to measure it against. Sending 0 for either would re-import
+         the unmeasured-reads-as-zero defect (P-002) into the a11y tree, where
+         it is harder to notice — 0 is the most REASSURING value available, so
+         the failure points at "nothing to worry about". */
+      renderPanel(withTripwires([
+        { metric: 'builds', label: 'Shipped builds', threshold: 1 },
+        { metric: 'signups', label: 'Signups', current: 5 },
+        { metric: 'elapsed', label: 'Elapsed', threshold: 30, current: 0, unit: 'days' },
+      ]));
+      const unread = screen.getByRole('progressbar', { name: 'Shipped builds' });
+      expect(unread.hasAttribute('aria-valuenow')).toBe(false);
+      expect(unread.getAttribute('aria-valuetext')).toMatch(/not measured yet/i);
+
+      const noThreshold = screen.getByRole('progressbar', { name: 'Signups' });
+      expect(noThreshold.hasAttribute('aria-valuenow')).toBe(false);
+
+      // …while a genuine zero DOES report one. This is the pair that makes the
+      // assertion above meaningful rather than vacuous.
+      const realZero = screen.getByRole('progressbar', { name: 'Elapsed' });
+      expect(realZero.getAttribute('aria-valuenow')).toBe('0');
+    });
+  });
 });

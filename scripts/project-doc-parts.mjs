@@ -47,6 +47,20 @@ export const PREAMBLE = '(preamble)';
 export const SPILL_SECTION = 'Trimmed to fit this client’s budget';
 
 /**
+ * How many cut parts the spill pointer ENUMERATES before it stops naming them.
+ *
+ * The cap is load-bearing, not cosmetic. An unbounded list grows with every part cut,
+ * so a tighter budget makes the pointer bigger at exactly the moment there is less
+ * room for it — and past some point the banner plus the pointer alone exceed the
+ * budget and the projector can only refuse. That is a worse degradation than naming
+ * fewer parts: a file that fails to generate helps nobody, and the complete cut set
+ * stays recoverable from PG either way (it is every projected part whose key does not
+ * appear in the file). Bounding it makes the spill block's size O(1), so the refusal
+ * below is reserved for a budget too small to hold the banner at all.
+ */
+export const MAX_SPILL_ENTRIES = 12;
+
+/**
  * Which client file each scope projects into. A part carrying `all` goes to every
  * client; a part carrying a single client is that client's alone. Nothing today
  * diverges — every projected part is `{all}` — which is precisely why the two files
@@ -205,10 +219,17 @@ export function spillBlock(dropped, { budget, docId, client }) {
     `> by hand, which the next projection would undo.`,
     ``,
   ];
-  for (const p of dropped) {
+  for (const p of dropped.slice(0, MAX_SPILL_ENTRIES)) {
     const head = (p.body.split('\n').find((l) => l.trim()) ?? '').replace(/\s+/g, ' ').trim();
     const section = p.target_section === PREAMBLE ? '(preamble)' : p.target_section;
     lines.push(`- \`${p.part_key}\` — *${section}* — ${head.slice(0, 110)}${head.length > 110 ? '…' : ''}`);
+  }
+  if (dropped.length > MAX_SPILL_ENTRIES) {
+    lines.push(
+      `- …and ${dropped.length - MAX_SPILL_ENTRIES} more. The list is capped so the pointer cannot itself` +
+        ` consume the budget; the COMPLETE cut set is every projected part whose \`part_key\` does not` +
+        ` appear above in this file, which the query above returns.`,
+    );
   }
   return lines.join('\n');
 }

@@ -461,9 +461,18 @@ async function main(): Promise<void> {
     .filter((x): x is NonNullable<typeof x> => x !== null);
   const pop = reweightToPopulation(strata);
   if (pop) {
+    const popReading =
+      pop.nullIsInformative === true
+        ? 'INFORMATIVE NULL — no population effect worth shipping'
+        : pop.nullIsInformative === null
+          ? '⚠ UNDECIDABLE — underpowered at the population level, NOT a null'
+          : pop.effect > 0
+            ? '**REAL POPULATION GAIN**'
+            : '**REAL POPULATION LOSS**';
     console.log(
       `Population Δ nDCG@${PRIMARY_CUT} = **${pop.effect >= 0 ? '+' : ''}${pop.effect.toFixed(4)}** ` +
-        `(95% CI ${pop.ci95[0].toFixed(4)} … ${pop.ci95[1].toFixed(4)})`,
+        `(95% CI ${pop.ci95[0].toFixed(4)} … ${pop.ci95[1].toFixed(4)}, ` +
+        `MDE@80% ${pop.mde80.toFixed(4)}) — ${popReading}`,
     );
     if (pop.unmeasured.length)
       console.log(`\n⚠ UNMEASURED strata (not treated as zero): ${pop.unmeasured.join(', ')}`);

@@ -313,6 +313,45 @@ describe('instrumentValidity', () => {
  * mixing it in shrinks a real effect toward zero — manufacturing the very
  * "reranking does not help" reading this instrument exists to prevent.
  */
+describe('population effect carries the same null discipline as a stratum', () => {
+  /**
+   * The population line is the number the integration decision uses. Until this
+   * landed it was the ONE result in the report with no MDE and no verdict, so a
+   * near-zero population effect could not be told apart from an underpowered one
+   * — D-093's exact failure, on the headline figure.
+   */
+  it('reports an underpowered population zero as UNDECIDABLE, not as a null', () => {
+    const pop = reweightToPopulation([
+      { name: 'order-blocked', share: 0.3, effect: 0, se: 0.4 },
+      { name: 'admitted', share: 0.7, effect: 0, se: 0.4 },
+    ]);
+    expect(pop!.nullIsInformative).toBeNull();
+    expect(pop!.mde80).toBeGreaterThan(0.02);
+  });
+
+  it('reports a tight population zero as an INFORMATIVE null', () => {
+    const pop = reweightToPopulation([
+      { name: 'order-blocked', share: 0.3, effect: 0, se: 0.001 },
+      { name: 'admitted', share: 0.7, effect: 0, se: 0.001 },
+    ]);
+    expect(pop!.nullIsInformative).toBe(true);
+    expect(pop!.mde80).toBeLessThanOrEqual(0.02);
+  });
+
+  it('reports a population effect whose CI excludes zero as not-a-null', () => {
+    const pop = reweightToPopulation([{ name: 'order-blocked', share: 1, effect: 0.3, se: 0.01 }]);
+    expect(pop!.nullIsInformative).toBe(false);
+  });
+
+  /** The stratum and population paths must read a zero identically. */
+  it('agrees with pairedDifference on the same estimate and SE', () => {
+    const single = reweightToPopulation([{ name: 'order-blocked', share: 1, effect: 0, se: 0.4 }])!;
+    // A one-stratum population at share 1 is just that stratum's estimate.
+    expect(single.mde80).toBeCloseTo((1.96 + 0.8416) * 0.4, 3);
+    expect(single.nullIsInformative).toBeNull();
+  });
+});
+
 describe('rescueCeiling', () => {
   /**
    * The load-bearing case: `order-blocked` came back EMPTY. The naive reading is

@@ -141,24 +141,16 @@ export function pairedDifference(
   const variance = diffs.reduce((acc, d) => acc + (d - meanDiff) ** 2, 0) / (n - 1);
   const sdDiff = Math.sqrt(variance);
   const se = sdDiff / Math.sqrt(n);
-  const half = Z_95 * se;
-  const mde80 = (Z_95 + Z_POWER_80) * se;
-
-  const ciContainsZero = meanDiff - half <= 0 && meanDiff + half >= 0;
-  const nullIsInformative = !ciContainsZero
-    ? false
-    : mde80 <= informativeNullThreshold
-      ? true
-      : null;
+  const verdict = verdictFrom(meanDiff, se, informativeNullThreshold);
 
   return {
     n,
     meanDiff,
     sdDiff,
     se,
-    ci95: [meanDiff - half, meanDiff + half] as const,
-    mde80,
-    nullIsInformative,
+    ci95: verdict.ci95,
+    mde80: verdict.mde80,
+    nullIsInformative: verdict.nullIsInformative,
   };
 }
 
@@ -189,8 +181,37 @@ export interface PopulationEffect {
   effect: number;
   se: number;
   ci95: readonly [number, number];
+  /**
+   * Same discipline as {@link PairedDifference.mde80}, applied to the number the
+   * integration decision actually uses. Without it the population line was the
+   * ONE result in this report that could be read as "no effect" with no way to
+   * tell an informative null from an underpowered one — the D-093 shape, on the
+   * headline figure.
+   */
+  mde80: number;
+  /** Three-valued, exactly as on a per-stratum difference: true | false | null. */
+  nullIsInformative: boolean | null;
   /** Strata whose share was supplied but which contributed no measured effect. */
   unmeasured: readonly RerankOpportunity[];
+}
+
+/**
+ * The shared verdict arithmetic, so a per-stratum difference and the population
+ * effect cannot drift apart on how they read a zero.
+ */
+function verdictFrom(
+  effect: number,
+  se: number,
+  informativeNullThreshold: number,
+): { ci95: readonly [number, number]; mde80: number; nullIsInformative: boolean | null } {
+  const half = Z_95 * se;
+  const mde80 = (Z_95 + Z_POWER_80) * se;
+  const ciContainsZero = effect - half <= 0 && effect + half >= 0;
+  return {
+    ci95: [effect - half, effect + half] as const,
+    mde80,
+    nullIsInformative: !ciContainsZero ? false : mde80 <= informativeNullThreshold ? true : null,
+  };
 }
 
 /**
@@ -206,7 +227,10 @@ export interface PopulationEffect {
  * order-blocked-only run would never see). A stratum with no measured effect is
  * reported in `unmeasured` rather than being quietly treated as a zero.
  */
-export function reweightToPopulation(strata: readonly Stratum[]): PopulationEffect | null {
+export function reweightToPopulation(
+  strata: readonly Stratum[],
+  informativeNullThreshold = 0.02,
+): PopulationEffect | null {
   if (strata.length === 0) return null;
   const totalShare = strata.reduce((a, s) => a + s.share, 0);
   if (!(totalShare > 0)) return null;
@@ -224,8 +248,15 @@ export function reweightToPopulation(strata: readonly Stratum[]): PopulationEffe
     varSum += (w * s.se) ** 2;
   }
   const se = Math.sqrt(varSum);
-  const half = Z_95 * se;
-  return { effect, se, ci95: [effect - half, effect + half] as const, unmeasured };
+  const verdict = verdictFrom(effect, se, informativeNullThreshold);
+  return {
+    effect,
+    se,
+    ci95: verdict.ci95,
+    mde80: verdict.mde80,
+    nullIsInformative: verdict.nullIsInformative,
+    unmeasured,
+  };
 }
 
 /**

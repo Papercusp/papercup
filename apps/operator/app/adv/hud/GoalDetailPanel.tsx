@@ -1156,7 +1156,36 @@ function TripwireRow({ bar }: { bar: TripwireBar }) {
       data-measured={bar.measured ? 'true' : 'false'}
     >
       <span className="hud-goal__bar-label">{bar.label}</span>
-      <span className="hud-goal__bar-track">
+      {/* ── P-012: real progressbar semantics ──────────────────────────────
+          The track WAS a decorative span, so the state this widget exists to
+          announce reached assistive tech only as a colour.
+
+          `aria-valuenow` carries the CLAMPED pct, which is not a compromise —
+          ARIA requires valuenow to lie within valuemin..valuemax, so an
+          overshot tripwire genuinely cannot report 143 here. `aria-valuetext`
+          is the sanctioned escape hatch and carries the TRUE figures
+          ("$600 of $500"), and screen readers announce it in preference to
+          valuenow — so the real number is what a listener actually hears,
+          which is what the item asked for.
+
+          When `pct` is null the bar is INDETERMINATE and valuenow is omitted
+          entirely rather than sent as 0 — that is the whole unmeasured-vs-
+          measured-at-zero distinction this surface exists to preserve, and a
+          0 here would re-introduce it in the a11y tree after the visuals took
+          such care to avoid it. Note `pct` is null for TWO reasons (no reading,
+          or a reading with no threshold); both are genuinely indeterminate, so
+          one branch is correct for both. */}
+      <span
+        className="hud-goal__bar-track"
+        role="progressbar"
+        /* Name from the same string the visible label renders, so the two
+           cannot drift. */
+        aria-label={bar.label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        {...(bar.pct == null ? {} : { 'aria-valuenow': bar.pct })}
+        aria-valuetext={bar.tone === 'breached' ? `${bar.valueText} — past limit` : bar.valueText}
+      >
         {/* An unread tripwire gets NO fill at all — not a zero-width one. A
             0% bar and "nobody measured this" must not look identical. */}
         {bar.pct == null ? (
@@ -1165,7 +1194,25 @@ function TripwireRow({ bar }: { bar: TripwireBar }) {
           <span className="hud-goal__bar-fill" style={{ width: `${bar.pct}%` }} />
         )}
       </span>
-      <span className="hud-goal__bar-value">{bar.valueText}</span>
+      <span className="hud-goal__bar-value">
+        {bar.valueText}
+        {/* P-012: BREACH IN TEXT, not colour alone. Until now the only signal
+            that a tripwire was past its limit was `--bad` on the fill and the
+            value — invisible to anyone who cannot distinguish it, and absent
+            from the a11y tree entirely.
+
+            TEXT rather than an icon, deliberately: the item suggested matching
+            "the AlertTriangle already used for the missing-criterion case", but
+            measured across the whole operator app the HUD goal surface imports
+            no icons at all — its missing-criterion alarm is text plus a class.
+            An icon HERE would invent a second alarm vocabulary, which is the
+            thing that clause was trying to prevent. */}
+        {bar.tone === 'breached' ? (
+          <span className="hud-goal__bar-breach" data-testid="goal-tripwire-breach">
+            past limit
+          </span>
+        ) : null}
+      </span>
     </li>
   );
 }

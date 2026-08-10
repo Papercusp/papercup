@@ -1324,6 +1324,27 @@
 .hud-goal__bar--breached .hud-goal__bar-value { color: var(--bad); }
 .hud-goal__bar--unread .hud-goal__bar-value { color: var(--fg-mute); }
 
+/* P-012: the breach marker. The three rules ABOVE are all colour, which is
+ * exactly the defect — they stay (colour is a fine REINFORCEMENT), but they are
+ * no longer the only signal. This is deliberately a text badge rather than a
+ * colour swatch or an icon: the surrounding surface signals its other alarm
+ * (a missing kill criterion) with text plus a class and imports no icon set, so
+ * a glyph here would be a second vocabulary rather than a shared one.
+ *
+ * It carries its own border and weight so it survives being rendered in a
+ * single colour — the test a colour-only affordance fails by definition. */
+.hud-goal__bar-breach {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
 .hud-goal__ceiling {
   display: flex;
   align-items: baseline;
