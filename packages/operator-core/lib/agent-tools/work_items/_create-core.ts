@@ -105,6 +105,20 @@ export type CreateOneWorkItemResult =
        *  apply. The item EXISTS (ok:true) — this reports the state write's failure loudly
        *  instead of letting it be a silent no-op. Retry with work_items:set_state. */
       stateError?: string;
+      /** The goal this item was attributed to, when the ambient goal context resolved
+       *  AND the stamp landed. ABSENT is the common, correct case (most agents are not
+       *  running under a goal) — which is exactly why its failure needs its own field
+       *  below rather than being inferred from this one's absence.
+       *  (Returned at runtime since P-002; declared here by EI-20075667133396690, which
+       *  is also why goal-provenance-stamp.integration.test.ts had to cast to read it.) */
+      goalId?: string;
+      /** EI-20075667133396690: set when the goal-provenance stamp THREW. The creation
+       *  still succeeded (ok:true) — the stamp is a best-effort decoration and failing a
+       *  creation because provenance could not be recorded would be worse. But a thrown
+       *  stamp must not look like one that correctly DECLINED: declining is the
+       *  overwhelming majority case, so a silently-broken UPDATE would hide inside it
+       *  forever. Mirrors `degradedReasons` in goal-launch-settings.ts. */
+      goalStampError?: string;
     }
   | {
       ok: false;
@@ -494,16 +508,32 @@ export async function createOneWorkItem(
     // exactly like the edges above — losing provenance is bad, but failing a
     // creation because provenance could not be recorded is worse.
     let goalStamp: string | undefined;
+    let goalStampError: string | undefined;
     try {
       const stampedGoal = await stampGoalProvenance(workItem, workspaceId, ctx.ownerId);
       if (stampedGoal) goalStamp = stampedGoal;
-    } catch {
-      // Non-fatal — the item exists; only its goal attribution is missing.
+    } catch (e) {
+      // EI-20075667133396690 — RECORD, do not raise.
+      //
+      // Staying non-fatal is right: the item exists, and failing a creation because
+      // provenance could not be recorded is worse than losing the attribution. But
+      // this catch used to be EMPTY, and that made a stamp that THREW indistinguishable
+      // from one that correctly DECLINED — and declining is the overwhelming majority
+      // case (most agents are not running under a goal), so a broken UPDATE would hide
+      // inside that majority forever. It nearly did: `goal_id` was NULL on all 37,579
+      // work-items, and from the data alone "never exercised" could not be told apart
+      // from "silently broken every time" without booting real Postgres.
+      goalStampError = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[work_items:create] goal provenance stamp failed for ${workItem.id}:`,
+        goalStampError,
+      );
     }
     return {
       ok: true,
       workItem,
       ...(goalStamp ? { goalId: goalStamp } : {}),
+      ...(goalStampError ? { goalStampError } : {}),
       ...(similarOpen ? { similarOpen } : {}),
       ...(stateError ? { stateError } : {}),
     };
