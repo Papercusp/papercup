@@ -25,11 +25,17 @@
  * criterion being absent. A blank submit here fails the shared rule like any
  * other non-criterion, and the refusal is the shared message.
  *
- * WHY THE CEILING *CAN* BE CLEARED. Asymmetric on purpose. "No ceiling" is a
- * legitimate, nameable state that the sibling launch-settings pane already
- * states out loud rather than rendering as a blank field, and unlike the
- * criterion the ceiling is not the only thing that can stop the goal. So blank
- * means "no ceiling" here too, and the field says so where the owner reads it.
+ * ⚠ NOR CAN IT CLEAR THE CEILING — and here the reason is the WRITE PATH, not
+ * a judgement. `goals:update`'s `budgetCents` is
+ * `z.number().int().nonnegative().optional()`: no `.nullable()`, unlike its
+ * `tripwires`, `parentId` and `launchSettings` siblings, which all take null to
+ * clear. So there is no value this editor could send that unsets a ceiling; a
+ * blank field that appeared to clear one would either be refused by zod or
+ * silently omitted and read as "leave unchanged" — a control that lies about
+ * what it did. Blank is therefore "no change requested" and Save stays
+ * disabled. If clearing is ever wanted, the change is to widen THAT schema
+ * (and its handler) first — not to add a blank-clears path here that the
+ * server has no way to honour.
  */
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 
