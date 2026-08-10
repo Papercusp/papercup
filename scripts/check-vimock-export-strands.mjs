@@ -80,6 +80,10 @@ import * as ts from 'typescript';
 // resolver that lint:full-replacement-mocks enforces with, so the two guards cannot
 // disagree about what "enumerating" or "this module" means.
 import { analyzeMockCalls, resolveSpec } from './check-full-replacement-mocks.mjs';
+// WI-37806: this guard inherited check-required-field-strands' "⚠ NOT CHECKED" PROSE when
+// it was ported, but not its exit STATUS — so it printed "This is NOT a clean bill" and
+// exited 0, which is what `&& echo PASS` and a CI step actually read.
+import { EXIT_NOT_CHECKED, exitForNoFindings } from './lib/not-checked.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -314,7 +318,9 @@ function main() {
     const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], { allowFail: true });
     if (nameStatus === null) {
       console.error(`check-vimock-export-strands: cannot diff against '${base}'`);
-      process.exit(0);
+      // WI-37806: a base we cannot diff against means we examined nothing — the one thing
+      // this must never report as a clean bill.
+      process.exit(EXIT_NOT_CHECKED);
     }
     candidates = nameStatus
       .split('\n')
@@ -381,10 +387,14 @@ function main() {
         `✓ ${changed.length} module(s) gained runtime exports, but no enumerating vi.mock factory targets them:`,
       );
       for (const c of changed) console.log(`    ${c.file}  (+${c.added.join(', ')})`);
-    } else {
-      console.log(formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles), identicalFiles }));
+      // A real clean bill for a real trigger: modules were examined AND changed.
+      process.exit(0);
     }
-    process.exit(0);
+    console.log(formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles), identicalFiles }));
+    // WI-37806: 0 only when something was genuinely compared. This used to be a hardcoded
+    // 0, so a run that examined ZERO files printed the "NOT CHECKED / This is NOT a clean
+    // bill" text above and then reported success to every caller that reads a status.
+    process.exit(exitForNoFindings({ examinedFiles, identicalFiles, declared: Boolean(declaredFiles) }));
   }
 
   console.log(formatFindings(findings));

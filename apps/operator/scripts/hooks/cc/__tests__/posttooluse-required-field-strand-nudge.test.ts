@@ -171,9 +171,12 @@ describe('required-field-strand nudge — the emitted command survives a git-syn
       const git = (...args: string[]) => execFileSync('git', args, { cwd: tmp, encoding: 'utf8' });
       const lib = join(tmp, 'packages/operator-core/lib');
       mkdirSync(lib, { recursive: true });
-      mkdirSync(join(tmp, 'scripts'), { recursive: true });
-      // The REAL detector, copied at test time so it cannot drift from the one that ships.
+      mkdirSync(join(tmp, 'scripts/lib'), { recursive: true });
+      // The REAL detector, copied at test time so it cannot drift from the one that ships —
+      // with its own local imports, or it fails to load and the hook (correctly) fails open
+      // to silence, which reads here as "the nudge did not fire".
       copyFileSync(resolve(ROOT, 'scripts/check-required-field-strands.mjs'), join(tmp, 'scripts/check-required-field-strands.mjs'));
+      copyFileSync(resolve(ROOT, 'scripts/lib/not-checked.mjs'), join(tmp, 'scripts/lib/not-checked.mjs'));
       // `typescript` must resolve from the copy; a stub lint-tsc stands in for the
       // typecheck leg, which is NOT what this test is about (it asserts DETECTION).
       symlinkSync(resolve(ROOT, 'node_modules'), join(tmp, 'node_modules'));

@@ -37,6 +37,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
+// WI-37806: shared with the two guards ported from this one, which inherited this file's
+// NOT-CHECKED prose but not its exit status. Re-exported below so this module's public
+// surface is unchanged.
+import { EXIT_NOT_CHECKED, exitForNoFindings, provedNothing } from './lib/not-checked.mjs';
+
+export { EXIT_NOT_CHECKED, exitForNoFindings, provedNothing };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -235,70 +241,10 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
   ].join('\n');
 }
 
-/**
- * EI-20095543794921181: the exit status for "this run VERIFIED NOTHING".
- *
- * Distinct from both 0 (checked, no strands) and 1 (checked, strands found),
- * because those are the only two answers a caller can currently receive and
- * neither is true when the run examined zero files. On this tree that is the
- * COMMON case, not an edge one: git-sync commits the whole working tree every
- * few minutes, so by the time you run this after an edit the diff against HEAD
- * is usually already empty — the guard is least reliable exactly when it is
- * most needed. Measured: the default invocation returned exit 0 having examined
- * ZERO files, while the same tree checked against the carrying commit had 30
- * real errors, 5 of them in a file `test:affected` does not select.
- *
- * The prose warning was already correct and already printed. Prose does not
- * reach `&& echo PASS`, `grep -c "error TS"`, or a CI step's exit status — the
- * readers that actually decide. Same class the repo fixes elsewhere with
- * `unitsUnknown`, `ownerVisible`, and testing:run's zero-match refusal: ABSENT
- * EVIDENCE MUST NOT READ AS EVIDENCE OF ABSENCE.
- */
-const EXIT_NOT_CHECKED = 2;
-
-/**
- * PURE — the exit status for a run that produced no findings, so the
- * "no findings" ≠ "clean bill" distinction is unit-testable rather than
- * buried in main() where only an end-to-end run could reach it.
- *
- * 0 only when something was genuinely diffed. `EXIT_NOT_CHECKED` for the two
- * ways a run can prove nothing while looking successful:
- *   - nothing differed from `base` at all, so zero files were examined;
- *   - every DECLARED file was byte-identical to `base` (the per-file form of
- *     the same root cause — see formatNoFindings).
- *
- * A PARTIAL declared run — some files identical, others genuinely diffed —
- * deliberately stays 0: it verified what it could, and formatNoFindings names
- * the files it could not. Tightening that to non-zero is a defensible future
- * choice, but it would fail runs that did do real work, so it should be made
- * on purpose rather than as a side effect of this one.
- */
-export function exitForNoFindings(opts = {}) {
-  return provedNothing(opts) ? EXIT_NOT_CHECKED : 0;
-}
-
-/**
- * "This run compared nothing, so it proved nothing" — the SINGLE predicate behind both
- * the exit status and the headline.
- *
- * They were computed separately, and drifted exactly as you would expect: the exit code
- * correctly said EXIT_NOT_CHECKED for an all-identical declared run while the text still
- * opened with `✓ no required fields added to exported types`, burying the invalidation
- * four lines down as what reads like a caveat on a pass (EI-20097325488507587). A reader
- * acts on the headline; a script acts on the status; each was independently defensible
- * and together they said opposite things.
- *
- * Deriving both from here makes that disagreement unrepresentable rather than merely
- * fixed — which matters because this is the fourth filing in the same class, and the
- * previous three each repaired one surface and left the other live.
- */
-export function provedNothing({ examinedFiles = [], identicalFiles = [], declared = false } = {}) {
-  if (examinedFiles.length === 0) return true;
-  // identicalFiles is only ever populated in declared mode (the auto-diff mode derives
-  // its candidates FROM the diff, so a listed file cannot be identical to base) — the
-  // `declared` term keeps that an explicit precondition rather than an inherited one.
-  return declared && identicalFiles.length >= examinedFiles.length;
-}
+// EXIT_NOT_CHECKED / exitForNoFindings / provedNothing now live in ./lib/not-checked.mjs
+// (imported + re-exported at the top of this file). They were extracted in WI-37806 after
+// the two guards ported from this one inherited this file's NOT-CHECKED prose but not its
+// exit status — see that module's header for the full argument.
 
 /**
  * EI-20097325488507587: `--typecheck` asked for, then never run.
