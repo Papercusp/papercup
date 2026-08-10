@@ -37,6 +37,7 @@ const {
   readIssueClaimability,
   readClaimSpecDelta,
   issueClaimCandidateSubquery,
+  compileFilter,
   ALL_ISSUE_CLAIM_FLOORS_PASS,
 } = await import('./get-next');
 
@@ -444,5 +445,105 @@ describe('P-005 — readClaimSpecDelta: which items a proposed spec revision dro
     expect(delta.newlyExcluded).toHaveLength(2);
     expect(delta.truncated.newlyExcluded).toBe(true);
     expect(delta.truncated.newlyAdmitted).toBe(false);
+  });
+});
+
+/**
+ * EI-20091339613996367 — the claimability BAR applies every floor the candidate subquery computes.
+ *
+ * WHY THIS EXISTS, stated as the failure it catches rather than the rule it asserts.
+ * `ALL_ISSUE_CLAIM_FLOORS_PASS` is a hand-written AND of `ok_*` column names. The floor LOGIC
+ * behind each of those columns cannot drift — every one is computed by the same exported helper
+ * `claimNextIssueWorkItem` enforces, which is what makes the count and the row list agree. What
+ * is NOT protected is the SET: decorate a new floor in `issueClaimCandidateSubquery` and forget
+ * to AND it here, and Postgres computes that boolean for every candidate row and then ignores
+ * it. `work_items:claimable` and the survivors count silently OVER-ADMIT — the queue advertises
+ * work the real claim path refuses, which is the exact user-visible shape of WI-2633 / WI-4405 /
+ * WI-37761 / WI-37774, each of which was one floor missing from one representation.
+ *
+ * Nothing about that failure is loud. There is no SQL error (the column exists, it is merely
+ * unreferenced), no type error (the bar is a string), and — the part that matters — the seeded
+ * AGREEMENT tests do not catch it either: `claim-ssot-agreement` and
+ * `work-items-advertise-claim-floor-parity` compare verdicts on rows their fixtures seed, and a
+ * newly-added floor by construction has no fixture yet. That is the same "the audit that proves
+ * this is point-in-time and rots the moment someone adds a door" problem
+ * `claim-door-census.test.ts` was written for, one level down: this asserts a STRUCTURAL set
+ * equality, so it holds for floors nobody has thought of yet.
+ *
+ * MEASURED WHEN WRITTEN (2026-08-10): 13 decorated, 13 ANDed, exact agreement — i.e. this ships
+ * GREEN and is a recurrence guard, not a bug fix. EI-20091339613996367 explicitly left
+ * representation (3) unmeasured ("nothing PREVENTS it from drifting, not that it currently has");
+ * this closes that question in the safe direction and keeps it closed.
+ *
+ * WHY RESULT-COLUMN METADATA AND NOT A SOURCE-TEXT SCAN. Grepping `AS ok_*` out of the .ts file
+ * would be cheaper and would be WRONG in the one direction that matters: the subquery composes
+ * its column list from helper calls at runtime, so a floor introduced by any means other than a
+ * literal `AS ok_x` in that file is invisible to a text scan, which then reports a confident
+ * "0 missing". A guard that cannot see the drift it exists to catch is worse than no guard,
+ * because it is trusted. Asking the server what the query ACTUALLY returns cannot miss that way.
+ */
+describe('EI-20091339613996367 — the claimability bar applies EVERY floor the candidate subquery computes', () => {
+  /** The `ok_*` columns the REAL subquery returns, read from live result-column metadata.
+   *  `WHERE false` still forces Postgres to parse and plan the whole query (so a malformed
+   *  floor fails loudly here) while returning no rows; postgres.js populates `.columns` on an
+   *  empty result, which was verified against this database before the test was written. */
+  async function decoratedOkColumns(): Promise<string[]> {
+    const sql = db.sql as unknown as Parameters<typeof compileFilter>[0];
+    const sub = issueClaimCandidateSubquery(sql, {
+      compiled: compileFilter(sql, undefined), // the broad, no-named-ids spec: the real hot path
+      assignee: 'su-probe',
+      cooldown: 0,
+      harness: H,
+      states: ['open'],
+      issueWs: WS,
+      operatorScopeSlug: H,
+      rigAvailable: true,
+    });
+    const rows = await db.sql`SELECT * FROM (${sub}) probe WHERE false`;
+    const cols = (rows.columns ?? []) as unknown as ReadonlyArray<{ name: string }>;
+    return cols
+      .map((c) => c.name)
+      .filter((n) => n.startsWith('ok_'))
+      .sort();
+  }
+
+  /** The floors the bar actually references, de-duplicated. */
+  function barFloors(): string[] {
+    return [...new Set(ALL_ISSUE_CLAIM_FLOORS_PASS.match(/ok_[a-z_]+/g) ?? [])].sort();
+  }
+
+  it('ANDs every ok_* column the subquery decorates — one computed but not ANDed is silently ignored', async () => {
+    const decorated = await decoratedOkColumns();
+    const anded = barFloors();
+
+    // Guard the guard: if the probe ever stops seeing columns, the comparison below would pass
+    // vacuously in one direction. An empty decorated set means the probe broke, not that the
+    // invariant holds.
+    expect(decorated.length, 'probe returned no ok_* columns — the probe is broken, not the bar').toBeGreaterThan(0);
+
+    const computedButIgnored = decorated.filter((c) => !anded.includes(c));
+    expect(
+      computedButIgnored,
+      `issueClaimCandidateSubquery computes ${JSON.stringify(computedButIgnored)} but ` +
+        `ALL_ISSUE_CLAIM_FLOORS_PASS never ANDs it, so that floor is evaluated per row and then ` +
+        `DISCARDED: work_items:claimable and the survivors count will advertise rows the real ` +
+        `claim path refuses. Add it to the bar in get-next.ts.`,
+    ).toEqual([]);
+
+    const andedButAbsent = anded.filter((c) => !decorated.includes(c));
+    expect(
+      andedButAbsent,
+      `ALL_ISSUE_CLAIM_FLOORS_PASS references ${JSON.stringify(andedButAbsent)}, which the ` +
+        `candidate subquery does not decorate — the floor was removed or renamed on one side only.`,
+    ).toEqual([]);
+  });
+
+  it('the bar is a pure conjunction of column identifiers — no literal that could pin it open', () => {
+    // `sql.unsafe` interpolates this string verbatim at 5+ call sites, so its safety rests on it
+    // containing ONLY identifiers and AND. A stray `OR`/`TRUE` would not just be unsafe, it would
+    // quietly widen the queue — the same over-admit symptom as a missing floor, from the other end.
+    const skeleton = ALL_ISSUE_CLAIM_FLOORS_PASS.replace(/ok_[a-z_]+/g, 'X').replace(/\s+/g, ' ').trim();
+    const expected = Array(barFloors().length).fill('X').join(' AND ');
+    expect(skeleton, `the bar must be "X AND X AND ..."; got ${JSON.stringify(skeleton)}`).toBe(expected);
   });
 });
