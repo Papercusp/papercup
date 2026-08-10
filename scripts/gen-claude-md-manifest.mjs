@@ -305,7 +305,20 @@ export function extractParts(text, { classBySha = null } = {}) {
       clientScope: scope,
       // targetSection is POSITIONAL, so it is always recomputed — a block that moved under a
       // different heading must project under the new one, even though its classification carried.
-      targetSection: scope.length ? section : null,
+      //
+      // EVERY part carries it, projected or not. This used to read `scope.length ? section : null`,
+      // which discarded the section for all 172 non-projecting (prose) blocks — the section was
+      // computed for them and then thrown away. Two things broke downstream, and both are the
+      // reason this is a defect rather than a preference:
+      //   • the corpus could not be RECOMPOSED, because `assemble()` derives the `## ` headings
+      //     from target_section and headings are deliberately not stored as parts. Without a
+      //     section on prose rows the corpus has no headings at all, so `retired-surfaces`
+      //     (which locates its subject BY HEADING) judged 0 claims and still reported a found
+      //     section — the most reassuring possible shape for a guard judging nothing (D-015).
+      //   • Phase 3 moves prose into agent-insights BY SECTION, and cannot without it.
+      // The table CHECK (harness_doc_parts_projected_needs_section) only ever REQUIRED a section
+      // on projected parts; nothing ever asked for it to be absent from the rest.
+      targetSection: section,
       projectRank: cls?.projectRank ?? null,
       expiring: cls?.expiring ?? false,
       blockSha,
