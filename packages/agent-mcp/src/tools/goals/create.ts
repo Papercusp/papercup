@@ -21,6 +21,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
 
@@ -102,6 +103,29 @@ export default defineTool({
         degraded: true,
         degradedReasons: ['no harness in scope — goals are filed against an install_slug'],
       };
+    }
+
+    // EI-20049757392342975: a criterion that states no abandonment condition is
+    // refused HERE too, not only at `goals:propose` and `goals:update`.
+    //
+    // Why this door was the gap that mattered. `goals:propose` validates and
+    // then WRITES NOTHING — its own description says the confirm card is
+    // "fully-editable" and "one button calls goals:create". So the owner could
+    // edit the criterion down to a stub in that card and this door would land
+    // it, bypassing the check propose had just applied. `goals:update`'s
+    // comment already assumed otherwise in as many words ("a criterion the
+    // create path would have rejected"), which is how the gap stayed invisible:
+    // the doc described the system as if this line existed.
+    //
+    // A BLANK/ABSENT criterion still passes, deliberately — a goal may be
+    // created with none at all (WI-37604, owner-directed 2026-08-09). That
+    // overrule is about PRESENCE; this rule is about quality GIVEN presence,
+    // and kill-criterion.ts's header separates the two explicitly. Same
+    // `if (trimmed)` composition `goals:update` already ships.
+    const criterionArg = args.killCriterion?.trim();
+    if (criterionArg) {
+      const problem = killCriterionProblem(criterionArg);
+      if (problem) return { data: null, degraded: true, degradedReasons: [problem] };
     }
 
     const id = goalId(args.title);

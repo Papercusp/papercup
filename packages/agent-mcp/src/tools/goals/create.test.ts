@@ -156,9 +156,52 @@ describe('goals:create — the kill criterion is a COLUMN, not a metadata key', 
   });
 
   it('leaves tripwires null when none are given — a prose-only criterion is valid', async () => {
-    await call(ARGS({ killCriterion: 'gut feel' }), CTX());
+    // ⚠ The criterion here must clear `killCriterionProblem` (≥12 chars, no
+    // placeholder opener). This test is about TRIPWIRES — the criterion is
+    // incidental fixture data — but since EI-20049757392342975 `goals:create`
+    // refuses a stub BEFORE reaching the INSERT, so a short one would return
+    // `degraded`, leave `calls` without an INSERT, and blow up on the `!` below
+    // as a TypeError. That reads like a broken mock rather than a rejected
+    // input — the exact costume this failure wears (it red-pinned the gate via
+    // goals/update.test.ts on 2026-08-10, EI-20048757608108893).
+    // It was `'gut feel'` (8 chars), which asserted the pre-fix bug as correct.
+    await call(ARGS({ killCriterion: 'no paying user by day 30' }), CTX());
     const insert = calls.find((c) => /INSERT INTO/.test(c.sql))!;
     expect(JSON.stringify(insert.params)).not.toContain('[]');
+  });
+
+  // ── EI-20049757392342975: the refusal itself ────────────────────────────
+  describe('kill criterion — the shared rule, applied at THIS door too', () => {
+    it('refuses a stub criterion instead of writing it, the way goals:propose and goals:update do', async () => {
+      const res = await call(ARGS({ killCriterion: 'gut feel' }), CTX());
+      expect(res.degraded).toBe(true);
+      expect(res.degradedReasons?.[0]).toMatch(/states no abandonment condition/);
+      // The REAL assertion: nothing was written. A refusal that still inserts
+      // is the bug wearing a better error message.
+      expect(calls.find((c) => /INSERT INTO/.test(c.sql))).toBeUndefined();
+    });
+
+    it('refuses a placeholder opener even when it is long enough', async () => {
+      const res = await call(ARGS({ killCriterion: 'TBD once we see some real numbers' }), CTX());
+      expect(res.degraded).toBe(true);
+      expect(calls.find((c) => /INSERT INTO/.test(c.sql))).toBeUndefined();
+    });
+
+    // CONTROL for WI-37604 (owner-directed 2026-08-09): the overrule is about
+    // PRESENCE, this rule is about quality GIVEN presence. Without this case a
+    // guard that simply required a criterion would pass every test above while
+    // silently re-imposing the requirement the owner removed.
+    it('still allows NO criterion at all — WI-37604 is about presence, not quality', async () => {
+      const res = await call(ARGS({ killCriterion: undefined }), CTX());
+      expect(res.degraded).not.toBe(true);
+      expect(calls.find((c) => /INSERT INTO/.test(c.sql))).toBeDefined();
+    });
+
+    it('still allows a blank criterion, for the same reason', async () => {
+      const res = await call(ARGS({ killCriterion: '   ' }), CTX());
+      expect(res.degraded).not.toBe(true);
+      expect(calls.find((c) => /INSERT INTO/.test(c.sql))).toBeDefined();
+    });
   });
 });
 

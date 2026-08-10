@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { killCriterionProblem } from '../../goals/kill-criterion';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -199,6 +200,25 @@ export default defineTool({
       args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null);
     if (!installSlug) {
       return err('No harness in scope — goals are filed against an install_slug. Pass `harness`.');
+    }
+
+    // EI-20049757392342975: the SAME refusal `goals:propose`, `goals:update` and
+    // `goals:create` apply. This door was the one that mattered most and the one
+    // the filing missed: it is what the owner's own HUD composer posts to
+    // (GoalComposer → postGoalStart → here), and it lives in operator-core
+    // rather than agent-mcp/tools/goals/, so an audit of "the goals tools"
+    // does not list it. Nothing on that whole path enforced the rule — which is
+    // also why GoalComposer.tsx renders an `errors.killCriterion` slot that
+    // `validateGoalDraft` can never populate.
+    //
+    // Checked BEFORE the ownerId pre-pin and the row write, so a refusal costs
+    // no minted identity and no rollback. Blank/absent still passes: a goal may
+    // have no criterion at all (WI-37604, owner-directed 2026-08-09) — that
+    // overrule is about PRESENCE, this rule is about quality GIVEN presence.
+    const criterionArg = args.killCriterion?.trim();
+    if (criterionArg) {
+      const problem = killCriterionProblem(criterionArg);
+      if (problem) return err(problem);
     }
 
     let callerOwnerId: string | null = null;
