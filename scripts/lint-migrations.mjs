@@ -51,6 +51,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { stripSqlComments } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR = join(ROOT, 'libs/papercusp/libs/db/sql');
@@ -264,7 +265,19 @@ export function findLiteralTenantDefault(sqlText) {
   // DOCUMENTS the trap by quoting the offending DDL — as 616, its own fix, does —
   // gets flagged for the words in its comment. A lint that fires on the fix for
   // the bug it detects is a lint people delete.
-  sqlText = sqlText.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  //
+  // `stripSqlComments` is the CANONICAL mask and delivers exactly that contract
+  // (EI-20073035509369492): it blanks comments — including comments nested inside a
+  // `$tag$` body — while leaving all body CODE live, so the DO-loop ALTERs above are
+  // still seen. It replaced a private `--[^\n]*` + `/* */` pair that was NOT quote-aware:
+  //
+  //   INSERT INTO t(note) VALUES ('see -- below'); ALTER TABLE t ALTER COLUMN workspace_id SET DEFAULT 'ws_1';
+  //
+  // that `--` is inside a STRING LITERAL, so the old regex deleted the rest of the line
+  // and took the real ALTER with it — a false NEGATIVE on the exact DDL this detects.
+  // ⚠ NOT `stripSqlCommentsAndStrings`: it seals `$tag$` bodies wholesale, which would
+  // make this detector blind to the DO-loop ALTERs that are its main quarry.
+  sqlText = stripSqlComments(sqlText);
   // ALTER [VIEW|TABLE] <rel> ALTER [COLUMN] <tenant-col> SET DEFAULT '<literal>'
   const re =
     /ALTER\s+(?:VIEW|TABLE)\s+[^\n;]*?\bALTER\s+(?:COLUMN\s+)?["']?(workspace_id|hive_slug|tenant_id)["']?\s+SET\s+DEFAULT\s+('(?:[^']|'')*'|%L)/gi;

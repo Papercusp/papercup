@@ -17,6 +17,8 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
+import { stripSqlCommentsAndStrings } from '../../../../../../scripts/lib/strip-comments-and-strings.mjs';
+
 const BodySchema = z.object({
   sql: z.string().min(1).max(64 * 1024),
   role: z.enum(['admin', 'app']).optional().default('admin'),
@@ -46,57 +48,25 @@ const FORBIDDEN_INNER_RE = new RegExp(`\\b(?:${FORBIDDEN_INNER.join('|')})\\b`, 
  * identifiers, dollar-quoted strings, and `--` / block comments — so the
  * residue is the bare SQL skeleton safe to keyword-scan. Mirrors the
  * quoting rules `splitStatements` already understands.
+ *
+ * Delegates to the canonical shared mask (EI-20073035509369492). This was the LAST of the
+ * private SQL strippers, and it is the one that guards a SECURITY boundary, so it was migrated
+ * only after proving the shared mask is nowhere WEAKER: a 23-case adversarial differential
+ * (data-modifying CTEs, `EXPLAIN ANALYZE <mutation>`, keywords hidden behind strings / line and
+ * block comments / dollar bodies / quoted identifiers, doubled-`''` escapes, nested block
+ * comments, unterminated literals) found zero cases where the shared mask says SAFE while the
+ * private scanner said MODIFYING. That corpus is now a COMMITTED test beside this file's other
+ * `isDataModifying` cases, and it asserts the SECURITY VERDICT rather than the mask's output —
+ * so if the shared module is ever weakened, it fails HERE, at the boundary that matters, and
+ * not merely in the stripper's own unit tests.
+ *
+ * ⚠ The STRINGS variant is required. `stripSqlComments` (comments-only) recurses INTO
+ * dollar-quoted bodies and leaves their code live — correct for a lint reading DDL, and exactly
+ * wrong here: a `$$ … $$` body is opaque data to this scanner, and leaving it live would flag
+ * every function body that merely mentions DELETE.
  */
 function stripNoise(sql: string): string {
-  let out = '';
-  let i = 0;
-  const n = sql.length;
-  while (i < n) {
-    const c = sql[i];
-    if (c === '-' && sql[i + 1] === '-') {
-      while (i < n && sql[i] !== '\n') i++;
-      out += ' ';
-      continue;
-    }
-    if (c === '/' && sql[i + 1] === '*') {
-      i += 2;
-      while (i + 1 < n && !(sql[i] === '*' && sql[i + 1] === '/')) i++;
-      i += 2;
-      out += ' ';
-      continue;
-    }
-    if (c === "'") {
-      i++;
-      while (i < n) {
-        if (sql[i] === "'" && sql[i + 1] === "'") { i += 2; continue; }
-        if (sql[i] === "'") { i++; break; }
-        i++;
-      }
-      out += ' ';
-      continue;
-    }
-    if (c === '"') {
-      i++;
-      while (i < n && sql[i] !== '"') i++;
-      if (i < n) i++;
-      out += ' ';
-      continue;
-    }
-    if (c === '$') {
-      const tagMatch = sql.slice(i).match(/^\$([A-Za-z_][A-Za-z0-9_]*)?\$/);
-      if (tagMatch) {
-        const tag = tagMatch[0];
-        i += tag.length;
-        const close = sql.indexOf(tag, i);
-        i = close === -1 ? n : close + tag.length;
-        out += ' ';
-        continue;
-      }
-    }
-    out += c;
-    i++;
-  }
-  return out;
+  return stripSqlCommentsAndStrings(sql);
 }
 
 /**

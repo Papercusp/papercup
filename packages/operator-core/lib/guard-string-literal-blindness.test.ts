@@ -340,10 +340,11 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
    * ⚠ "SQL cannot use the shared module" WAS listed here as a reason and is now FALSE: the
    * module grew a SQL path (stripSqlComments / stripSqlCommentsAndStrings, dispatched by
    * isSqlFile) on 2026-08-10, so `--`, nestable block comments, $tag$ bodies and quoted
-   * identifiers are all covered. check-partial-index-alignment.mjs was migrated onto it and
-   * REMOVED from this list the same day (EI-20073035509369492). The two SQL entries that
-   * remain — check-migration-forward-compat.mjs and lint-migrations.mjs — are therefore
-   * un-migrated WORK, not exempt-by-language; do not read their presence as "cannot".
+   * identifiers are all covered. ALL THREE SQL entries — check-partial-index-alignment.mjs,
+   * check-migration-forward-compat.mjs and lint-migrations.mjs — were migrated onto it and
+   * REMOVED from this list that day (EI-20073035509369492). There is no longer any
+   * SQL-shaped entry on this list, and "SQL cannot use the shared module" must never be
+   * reintroduced as a reason for adding one.
    *
    * `check-timer-classification.mjs` is on this list holding a CORRECT private copy (it is the
    * donor the shared module was lifted from). It should collapse into the import, but was left
@@ -354,7 +355,14 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     'check-declared-consumed.mjs',
     'check-drop-database-force.mjs',
     'check-lint-guard-reachability.mjs',
-    'check-migration-forward-compat.mjs',
+    // check-migration-forward-compat.mjs was REMOVED here on 2026-08-10 (EI-20073035509369492):
+    // it now imports stripSqlComments. Its private pair (`/* */` then `--[^\n]*`) was not
+    // quote-aware, so a `--` inside a STRING LITERAL erased the rest of the line — swallowing
+    // any real DDL that followed it and reporting the migration CLEAN. That is a false NEGATIVE
+    // on the one guard whose whole job is catching destructive DDL before it ships.
+    // Comments only, NOT the strings variant: the RULES match DDL keywords, and sealing $tag$
+    // bodies would hide real DDL inside a DO block. Both directions are pinned by falsifying
+    // controls in that guard's own selfTest().
     'check-no-proc-path-fixture.mjs',
     'check-no-raw-block-edge.mjs',
     'check-no-raw-install-slug-filter.mjs',
@@ -369,7 +377,12 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     'check-unbounded-inbox-read.mjs',
     'check-unenrolled-mjs-imports.mjs',
     'check-workspace-deps-complete.mjs',
-    'lint-migrations.mjs',
+    // lint-migrations.mjs was REMOVED here on 2026-08-10 (EI-20073035509369492):
+    // findLiteralTenantDefault now uses stripSqlComments. Its private pair DELETED comments
+    // rather than blanking them, and was not quote-aware — so a `--` inside a string literal
+    // erased the rest of the line, hiding any literal tenant default that followed it.
+    // Comments only, NOT the strings variant: its main quarry is the ALTERs inside a
+    // `DO $$ … $$` loop, which the strings variant would seal away entirely.
   ]);
 
   const measurePopulation = (): string[] =>

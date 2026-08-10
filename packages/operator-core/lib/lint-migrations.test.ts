@@ -510,4 +510,31 @@ describe('findLiteralTenantDefault', () => {
     ].join('\n');
     expect(findLiteralTenantDefault(sql)).toEqual([]);
   });
+
+  /*
+   * MASK CONTRACT (EI-20073035509369492). These three pin WHICH mask this detector may
+   * use. Each is a falsifying control: each one FAILED under a mask this detector
+   * plausibly could have been given, so none of them can be satisfied by accident.
+   */
+
+  it('SEES real DDL following a `--` that sits inside a STRING LITERAL', () => {
+    // The private `--[^\n]*` mask this detector used until 2026-08-10 was not quote-aware:
+    // it deleted from that `--` to end-of-line, taking the real ALTER with it and reporting
+    // the migration CLEAN. A false NEGATIVE on the exact DDL this exists to catch.
+    const sql = `INSERT INTO t(note) VALUES ('see -- below'); ALTER TABLE t ALTER COLUMN workspace_id SET DEFAULT 'ws_1';`;
+    expect(findLiteralTenantDefault(sql)).toEqual([{ column: 'workspace_id', value: "'ws_1'" }]);
+  });
+
+  it('SEES real DDL inside a dollar-quoted body — the DO-loop ALTERs are the main quarry', () => {
+    // Fails under stripSqlCommentsAndStrings, which seals `$tag$` bodies wholesale.
+    const sql = `DO $$ BEGIN\n  ALTER TABLE t ALTER COLUMN workspace_id SET DEFAULT 'ws_1';\nEND $$;`;
+    expect(findLiteralTenantDefault(sql)).toEqual([{ column: 'workspace_id', value: "'ws_1'" }]);
+  });
+
+  it('does NOT flag offending DDL commented out INSIDE a dollar-quoted body', () => {
+    // Fails under a mask that SKIPS `$tag$` bodies instead of recursing into them: the body
+    // text survives verbatim, so the commented-out ALTER reads as live DDL. False POSITIVE.
+    const sql = `DO $$ BEGIN\n  -- ALTER TABLE t ALTER COLUMN workspace_id SET DEFAULT 'ws_1';\n  PERFORM 1;\nEND $$;`;
+    expect(findLiteralTenantDefault(sql)).toEqual([]);
+  });
 });

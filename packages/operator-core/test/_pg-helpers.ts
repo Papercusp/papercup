@@ -23,6 +23,8 @@ import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb } from '@papercusp/test-config';
 
+import { stripSqlComments as sharedStripSqlComments } from '../../../scripts/lib/strip-comments-and-strings.mjs';
+
 const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 
 export interface FreshPgDb {
@@ -105,9 +107,26 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
  * genuinely-missed, actually-applicable gap still throws.
  */
 
-/** PURE — strip SQL comments so a table named only in prose never counts. */
+/**
+ * PURE — strip SQL comments so a table named only in prose never counts.
+ *
+ * Delegates to the CANONICAL shared mask (EI-20073035509369492). The private regex pair
+ * this replaced was not quote-aware, so a `--` inside a STRING LITERAL blanked the rest of
+ * the line:
+ *
+ *   INSERT INTO t(note) VALUES ('see -- below'); CREATE TABLE harness_shared.hidden_one (id text);
+ *
+ * `tablesTouchedBySql` then MISSED `harness_shared.hidden_one` entirely — and since a table
+ * it cannot see is a table the migration-list audit cannot flag as a gap, the failure mode
+ * was a silent false NEGATIVE in an audit whose whole job is to throw on gaps. No migration
+ * in the current corpus triggers it (measured: identical table sets across all 661), so this
+ * closes a latent hole rather than changing any present verdict.
+ *
+ * ⚠ COMMENTS-ONLY, not `stripSqlCommentsAndStrings`: sealing `$tag$` bodies would hide a
+ * `CREATE TABLE` issued inside a `DO $$ … $$` block.
+ */
 export function stripSqlComments(sqlText: string): string {
-  return sqlText.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ');
+  return sharedStripSqlComments(sqlText);
 }
 
 /**

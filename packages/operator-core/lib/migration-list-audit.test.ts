@@ -43,6 +43,31 @@ describe('tablesTouchedBySql', () => {
                  FOR EACH ROW EXECUTE FUNCTION harness_shared.stamp_local_federated_write();`;
     expect(tablesTouchedBySql(sql)).toEqual(new Set());
   });
+
+  it('SEES a CREATE TABLE that follows a `--` sitting inside a STRING LITERAL', () => {
+    /*
+     * MASK CONTRACT (EI-20073035509369492) — a falsifying control, not coverage padding.
+     * The private `--[^\n]*` mask stripSqlComments used until 2026-08-10 was not quote-aware:
+     * that `--` is inside a string literal, so it blanked the rest of the line and this table
+     * vanished from the result. A table the audit cannot SEE is a gap it cannot THROW on, so
+     * the defect was a silent false negative in a gap-detecting audit. Fails on any mask that
+     * is not quote-aware.
+     */
+    const sql = `INSERT INTO t(note) VALUES ('see -- below'); CREATE TABLE harness_shared.hidden_one (id text);`;
+    expect(tablesTouchedBySql(sql)).toEqual(new Set(['harness_shared.hidden_one']));
+  });
+
+  it('SEES a CREATE TABLE issued inside a dollar-quoted body', () => {
+    // Fails under stripSqlCommentsAndStrings, which seals `$tag$` bodies wholesale.
+    const sql = `DO $$ BEGIN\n  CREATE TABLE harness_shared.in_body (id text);\nEND $$;`;
+    expect(tablesTouchedBySql(sql)).toEqual(new Set(['harness_shared.in_body']));
+  });
+
+  it('ignores a CREATE TABLE commented out INSIDE a dollar-quoted body', () => {
+    // Fails under a mask that SKIPS `$tag$` bodies instead of recursing into them.
+    const sql = `DO $$ BEGIN\n  -- CREATE TABLE harness_shared.not_real (id text);\n  PERFORM 1;\nEND $$;`;
+    expect(tablesTouchedBySql(sql)).toEqual(new Set());
+  });
 });
 
 describe('stripSqlComments / migrationNumber', () => {
