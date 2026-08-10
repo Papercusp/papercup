@@ -247,16 +247,26 @@ export class WorkspaceBackup {
     // the dump didn't land. The hook overwrites its dump files atomically, so
     // re-running it on a resume is idempotent.
     await this.event(snapshotRowId, 'progress', { phase: 'pre_snapshot_hook' });
-    await steps.runStep('backup-pre-snapshot-hook', () =>
-      runPreSnapshotHook({
-        workspaceId: this.workspaceId,
-        workspaceRoot: this.workspaceRoot,
-      }).then((result) => this.event(snapshotRowId, 'hook_pg_dump', { ...result }))
-        .catch((err) => {
-          // eslint-disable-next-line no-console
-          console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
-          return this.event(snapshotRowId, 'hook_pg_dump', { ok: false, error: String(err) });
-        }),
+    // The step RETURNS the hook's outcome rather than the event-write's, so a
+    // crash-resume replays the degradation instead of silently recovering to a
+    // clean 'ok': the cached step result is the only record a resumed workflow
+    // sees of what the dump did.
+    const dumpOutcome: { ok: boolean; error: string | null } = await steps.runStep(
+      'backup-pre-snapshot-hook',
+      () =>
+        runPreSnapshotHook({
+          workspaceId: this.workspaceId,
+          workspaceRoot: this.workspaceRoot,
+        }).then(async (result) => {
+          await this.event(snapshotRowId, 'hook_pg_dump', { ...result });
+          return { ok: result.ok, error: result.error ?? null };
+        })
+          .catch(async (err) => {
+            // eslint-disable-next-line no-console
+            console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
+            await this.event(snapshotRowId, 'hook_pg_dump', { ok: false, error: String(err) });
+            return { ok: false, error: String(err) };
+          }),
     );
 
     try {
@@ -278,12 +288,30 @@ export class WorkspaceBackup {
       });
 
       // Step 4 — record the result. Idempotent UPDATE keyed by the row id.
+      //
+      // A snapshot whose pre-snapshot DB dump did NOT land is not 'ok'. The
+      // kopia snapshot itself succeeded — the file tree is captured and
+      // restorable — but the database dump inside it is stale, so recording a
+      // bare 'ok' makes backup_snapshots report green over a backup that has
+      // not captured the database. That is exactly how a dead dump went
+      // unnoticed for 26 hours (EI-20109034777197353): the hook returned
+      // { ok:false } into a logfile nobody reads while this row committed
+      // 'ok', two seconds apart.
+      //
+      // 'degraded' rather than 'failed' is the honest value, and it is chosen
+      // to move exactly one consumer: the scheduler's cadence read is
+      // MAX(started_at) with no status filter (unaffected), orphan-cleanup
+      // only rewrites 'running' (unaffected), while system-health derives
+      // lastOkAtMs from status='ok' — so its existing BACKUP_STALE_MS warn
+      // finally fires instead of being fed a lie.
+      const dumpDegraded = !dumpOutcome.ok;
       await steps.runStep('backup-record-result', async () => {
         await sql`
           UPDATE harness_shared.backup_snapshots
           SET kopia_snapshot_id = ${parsed.snapshotId},
               finished_at       = now(),
-              status            = 'ok',
+              status            = ${dumpDegraded ? 'degraded' : 'ok'},
+              error_text        = ${dumpDegraded ? `pre-snapshot db dump did not land: ${dumpOutcome.error ?? 'unknown'}` : null},
               bytes_added       = ${parsed.bytesAdded},
               bytes_total       = ${parsed.bytesTotal}
           WHERE id = ${snapshotRowId}
@@ -399,9 +427,15 @@ export class WorkspaceBackup {
       last_fail: string  | null;
     }[]>`
       SELECT
-        COUNT(*) FILTER (WHERE status = 'ok')::TEXT      AS total,
-        SUM(bytes_added) FILTER (WHERE status = 'ok')::TEXT AS bytes_added_sum,
-        SUM(bytes_total) FILTER (WHERE status = 'ok')::TEXT AS bytes_total_sum,
+        -- Repo-occupancy aggregates count 'degraded' too: that snapshot really
+        -- was written and really does hold those bytes. Only its DB dump was
+        -- stale. Filtering it out here would silently undercount the repo.
+        COUNT(*) FILTER (WHERE status IN ('ok', 'degraded'))::TEXT      AS total,
+        SUM(bytes_added) FILTER (WHERE status IN ('ok', 'degraded'))::TEXT AS bytes_added_sum,
+        SUM(bytes_total) FILTER (WHERE status IN ('ok', 'degraded'))::TEXT AS bytes_total_sum,
+        -- last_ok stays STRICT ('ok' only). It is read as "when did we last
+        -- take a COMPLETE backup", and a degraded snapshot answering that
+        -- question is the exact lie this change exists to remove.
         MAX(finished_at) FILTER (WHERE status = 'ok')    AS last_ok,
         MAX(finished_at) FILTER (WHERE status = 'failed') AS last_fail
       FROM harness_shared.backup_snapshots

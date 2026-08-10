@@ -51,7 +51,14 @@ export interface SnapshotInfo {
   workspaceId: string;
   startedAt: string;
   finishedAt: string | null;
-  status: 'running' | 'ok' | 'failed' | 'aborted';
+  /**
+   * `degraded` = the kopia snapshot succeeded but the pre-snapshot DB dump did
+   * not land, so the captured tree carries a stale database. Distinct from
+   * `failed` (no usable snapshot at all) because the file tree IS restorable —
+   * and distinct from `ok` because a health surface must not read it as a
+   * complete backup (EI-20109034777197353).
+   */
+  status: 'running' | 'ok' | 'degraded' | 'failed' | 'aborted';
   triggerReason: SnapshotTriggerReason;
   triggerContext: Record<string, unknown> | null;
   bytesAdded: number | null;
