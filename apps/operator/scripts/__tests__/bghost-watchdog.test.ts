@@ -840,18 +840,30 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
    * ')' (comm may contain spaces and parens).
    */
   describe('procTreeCpuTicks — out-of-process progress signal (EI-20029519971967372)', () => {
-    /** Build a /proc/<pid>/stat line. Fields 14/15 are utime/stime; everything before them is padding. */
-    const stat = (pid: number, comm: string, utime: number, stime: number) =>
-      `${pid} (${comm}) S 1 ${pid} ${pid} 0 -1 4194560 100 0 0 0 ${utime} ${stime} 0 0 20 0 12 0 999\n`;
+    /** Build a /proc/<pid>/stat line. Fields 14/15/16/17 are utime/stime/cutime/cstime; everything
+     *  before them is padding. */
+    const stat = (pid: number, comm: string, utime: number, stime: number, cutime = 0, cstime = 0) =>
+      `${pid} (${comm}) S 1 ${pid} ${pid} 0 -1 4194560 100 0 0 0 ${utime} ${stime} ${cutime} ${cstime} 20 0 12 0 999\n`;
 
-    /** A fake /proc: pid -> { comm, utime, stime, children }. */
-    const fakeProc = (table: Record<number, { comm: string; utime: number; stime: number; children?: number[] }>) => ({
+    type ProcRow = {
+      comm: string;
+      utime: number;
+      stime: number;
+      /** ticks the kernel migrated here from REAPED descendants (field 16) */
+      cutime?: number;
+      /** ticks the kernel migrated here from REAPED descendants (field 17) */
+      cstime?: number;
+      children?: number[];
+    };
+
+    /** A fake /proc: pid -> { comm, utime, stime, cutime?, cstime?, children }. */
+    const fakeProc = (table: Record<number, ProcRow>) => ({
       readFile: (p: string) => {
         let m = /^\/proc\/(\d+)\/stat$/.exec(p);
         if (m) {
           const e = table[Number(m[1])];
           if (!e) throw new Error('ENOENT');
-          return stat(Number(m[1]), e.comm, e.utime, e.stime);
+          return stat(Number(m[1]), e.comm, e.utime, e.stime, e.cutime ?? 0, e.cstime ?? 0);
         }
         m = /^\/proc\/(\d+)\/task\/\d+\/children$/.exec(p);
         if (m) {
@@ -930,6 +942,74 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
       const capped = procTreeCpuTicks(1, { ...fakeProc(table), maxPids: 10 })!;
       expect(capped).toBeLessThanOrEqual(10);
       expect(procTreeCpuTicks(1, fakeProc(table))).toBe(101);
+    });
+
+    /**
+     * WI-37714 — THE ESTIMATOR MUST BE CONSERVED ACROSS REAPING, or the two-sample delta is not a rate.
+     *
+     * A fixture of LONG-LIVED children passes with the buggy ut/st-only sum, which is exactly how this
+     * survived. So this feeds two snapshots of a tree that REAPS: pid 3 burned 500 ticks and is gone
+     * from sample B, its ticks migrated into its parent's cutime by the kernel's wait(), while the rest
+     * of the tree also did real work. With ut/st alone the delta goes NEGATIVE on a tree that only ever
+     * burned CPU; all four fields conserve it.
+     *
+     * Measured against a real fork-and-reap tree burning ~2.7 cores: ut+st gave 89, -89, 74, -73, 0, 81
+     * ticks/3s while ut+st+cut+cst gave 668, 830, 799, 887, 813, 798.
+     */
+    it('conserves ticks when a child is reaped between two samples (WI-37714)', () => {
+      // A: root -> mid -> burner(3), everyone alive.
+      const sampleA = fakeProc({
+        1: { comm: 'root', utime: 10, stime: 0, children: [2] },
+        2: { comm: 'mid', utime: 5, stime: 0, children: [3] },
+        3: { comm: 'burner', utime: 500, stime: 0 },
+      });
+      // B: the burner has been reaped by `mid`, whose cutime absorbed its 500 ticks. Everyone still
+      // alive also advanced (root +2, mid +3), and a fresh burner(4) has 40 ticks so far.
+      const sampleB = fakeProc({
+        1: { comm: 'root', utime: 12, stime: 0, children: [2] },
+        2: { comm: 'mid', utime: 8, stime: 0, cutime: 500, children: [4] },
+        4: { comm: 'burner2', utime: 40, stime: 0 },
+      });
+
+      const before = procTreeCpuTicks(1, sampleA)!;
+      const after = procTreeCpuTicks(1, sampleB)!;
+      expect(before).toBe(515); // 10 + 5 + 500
+      expect(after).toBe(560); // 12 + 8 + 500 (reaped) + 40
+      expect(after - before).toBe(45); // the work actually done: 2 + 3 + 40
+
+      // The falsifier: the ut/st-only estimator this replaced goes NEGATIVE on the same two snapshots,
+      // and `bootProgressTicks` maps a negative delta to UNKNOWN ⇒ no suppression ⇒ the busy host dies.
+      const utStOnly = (t: Record<number, { utime: number; stime: number }>) =>
+        Object.values(t).reduce((s, e) => s + e.utime + e.stime, 0);
+      const buggyDelta = utStOnly({ 1: { utime: 12, stime: 0 }, 2: { utime: 8, stime: 0 }, 4: { utime: 40, stime: 0 } })
+        - utStOnly({ 1: { utime: 10, stime: 0 }, 2: { utime: 5, stime: 0 }, 3: { utime: 500, stime: 0 } });
+      expect(buggyDelta).toBeLessThan(0);
+    });
+
+    /**
+     * WI-37714, the tempting wrong fix: reading the ROOT's cutime instead of summing the tree. Measured
+     * against a real tree it reported EXACTLY ZERO for the whole run whenever the root is not the direct
+     * reaper — a worse false-idle than the bug, because it is a confident small number rather than a
+     * negative one. Here `mid` reaps, so the root's own cutime never moves.
+     */
+    it('credits reaped ticks even when the ROOT is not the reaper', () => {
+      const proc = fakeProc({
+        1: { comm: 'root', utime: 3, stime: 0, cutime: 0, cstime: 0, children: [2] }, // never wait()s
+        2: { comm: 'mid', utime: 4, stime: 1, cutime: 700, cstime: 60, children: [] }, // the reaper
+      });
+      expect(procTreeCpuTicks(1, proc)).toBe(768); // 3 + 4 + 1 + 700 + 60
+      expect(procTreeCpuTicks(1, fakeProc({ 1: { comm: 'root', utime: 3, stime: 0 } }))).toBe(3);
+    });
+
+    it('sums cutime and cstime, not just utime and stime', () => {
+      const proc = fakeProc({ 9: { comm: 'reaper', utime: 1, stime: 2, cutime: 30, cstime: 400 } });
+      expect(procTreeCpuTicks(9, proc)).toBe(433);
+    });
+
+    /** A stat line truncated before cutime/cstime is a parse fault, not a zero — UNKNOWN, never "idle". */
+    it('returns UNKNOWN (null) when the tick fields cannot be parsed', () => {
+      const truncated = { readFile: () => '7 (p) S 1 7 7 0 -1 0 0 0 0 0 40 5\n', readDir: () => ['7'] };
+      expect(procTreeCpuTicks(7, truncated)).toBeNull();
     });
   });
 

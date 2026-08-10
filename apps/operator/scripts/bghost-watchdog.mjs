@@ -177,6 +177,9 @@
  *   - SUMMED OVER THE WHOLE PROCESS TREE, because MainPID is only a WRAPPER (utime=0, RSS 82MB) and the
  *     real work happens in a listener CHILD — measuring MainPID alone reports "idle" and is a trap the
  *     filing documents hitting. Summing the tree means never having to pick the right child.
+ *   - INCLUDING cutime/cstime, so the sum is conserved when the tree REAPS children between the two
+ *     samples (WI-37714). Without them the delta is not a rate at all — it oscillates about zero on a
+ *     fork-and-reap tree, and a small positive reading is indistinguishable from a genuinely idle one.
  *   - Walked PID-ANCHORED (/proc/<pid>/task/<tid>/children), never by process-name pattern, so it cannot
  *     self-match a peer agent's diagnostic shell the way `pgrep -f` does.
  *
@@ -470,11 +473,15 @@ export function saturationExtendsGrace(
   return cpuTicksDelta >= minTicks;
 }
 
-/** Sum utime+stime (clock ticks) across `rootPid` AND every descendant, read straight from /proc.
+/** Sum utime+stime+cutime+cstime (clock ticks) across `rootPid` AND every descendant, read straight
+ *  from /proc.
  *
- *  Two deliberate shapes (EI-20029519971967372):
+ *  Three deliberate shapes (EI-20029519971967372, WI-37714):
  *   - THE WHOLE TREE, because the unit's MainPID is only a wrapper (utime=0) while the real work runs in
  *     a listener child; summing means never having to pick the right pid.
+ *   - ALL FOUR TICK FIELDS, so the total is CONSERVED when a child is reaped between two samples (the
+ *     kernel moves its ticks into the parent's cutime). ut/st alone makes a fork-and-reap tree read
+ *     near-zero or negative while it burns multiple cores — see `ticksOf` for the measurements.
  *   - Children come from /proc/<pid>/task/<tid>/children — PID-anchored, so unlike a `pgrep -f` pattern
  *     it cannot match a peer agent's diagnostic shell that happens to contain the same string.
  *
@@ -487,9 +494,27 @@ export function procTreeCpuTicks(rootPid, deps = {}) {
   const maxPids = deps.maxPids ?? 512;
   if (!Number.isFinite(rootPid) || rootPid <= 0) return null;
 
-  /** utime (field 14) + stime (field 15) of /proc/<pid>/stat, or null if unreadable/unparseable. The
-   *  comm field (2) is parenthesised and may itself contain spaces AND parens, so field splitting must
-   *  start after the LAST ')' — the classic /proc/stat parsing trap. */
+  /** utime (14) + stime (15) + cutime (16) + cstime (17) of /proc/<pid>/stat, or null if
+   *  unreadable/unparseable.
+   *
+   *  ⚠ THE c* PAIR IS LOAD-BEARING, NOT DEFENSIVE (WI-37714). Summing only ut/st over the LIVE set makes
+   *  the total a sum over a MEMBERSHIP-VARYING set, so differencing two samples is not a rate: a child
+   *  reaped between samples takes its contribution to sample A out of sample B. Measured against a
+   *  fork-and-reap tree steadily burning ~2.7 cores, ut+st alone yielded 89, -89, 74, -73, 0, 81
+   *  ticks/3s — oscillating about zero — while all four yielded 668, 830, 799, 887, 813, 798. The
+   *  negative-delta fail-safe does NOT cover that: the small POSITIVE readings are accepted as an honest
+   *  measurement of a nearly-idle tree, so a fully-busy host is denied SATURATION_MAX_SUPPRESS_S
+   *  protection and killed. The kernel migrates a reaped child's ticks into its parent's cutime on
+   *  wait(), so all four CONSERVE ticks across churn. No double-count: a process contributes its own
+   *  ut/st only while it is alive and in the walked set, and its parent's cutime credits it only once it
+   *  is dead and out of that set.
+   *
+   *  ⚠ Do NOT "simplify" this to reading the ROOT's cutime alone. Measured against the same tree, that
+   *  reports EXACTLY 0 for the whole run whenever the root is not the direct reaper (root -> mid -> …),
+   *  because the root does not wait() on anything until the run ends — a worse false-idle than the bug.
+   *
+   *  The comm field (2) is parenthesised and may itself contain spaces AND parens, so field splitting
+   *  must start after the LAST ')' — the classic /proc/stat parsing trap. */
   const ticksOf = (pid) => {
     let raw;
     try {
@@ -502,8 +527,11 @@ export function procTreeCpuTicks(rootPid, deps = {}) {
     const fields = raw.slice(close + 2).trim().split(/\s+/); // fields[0] is field 3 (state)
     const utime = Number(fields[11]); // field 14
     const stime = Number(fields[12]); // field 15
+    const cutime = Number(fields[13]); // field 16 — reaped descendants' utime
+    const cstime = Number(fields[14]); // field 17 — reaped descendants' stime
     if (!Number.isFinite(utime) || !Number.isFinite(stime)) return null;
-    return utime + stime;
+    if (!Number.isFinite(cutime) || !Number.isFinite(cstime)) return null;
+    return utime + stime + cutime + cstime;
   };
 
   const rootTicks = ticksOf(rootPid);
