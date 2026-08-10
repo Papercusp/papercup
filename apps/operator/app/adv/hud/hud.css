@@ -399,6 +399,13 @@
   max-width: 150px;
 }
 
+/* P-042: the launch-time mode (Interactive / AUTO / DRAIN). Sized like its
+   siblings so the strip stays one control row — the labels are short words, so
+   it needs no more room than the account picker. */
+.pc-new-session-launcher__select--mode {
+  max-width: 140px;
+}
+
 /* The new-fleet name box. Matches the comboboxes' metrics so the row reads as one
    control strip rather than a text input bolted on; inherits the shell's form
    colours rather than restating them (theming stays in one place). */
