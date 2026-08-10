@@ -29,7 +29,7 @@ import { resolveHarnessDocPaths } from '../../harness/docs/harness-repo';
 import { safeJoinUnderRoot } from '../../harness/docs/doc-fs';
 import { anchorManualDoc } from '../../harness/docs/manual-anchor';
 import { applyProjectionBanner } from '../../harness/docs/authored-doc-projection';
-import { resolveHarnessScope } from '../_harness-scope';
+import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scope';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
@@ -209,7 +209,7 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Harness whose docs to write into. In a workspace-scoped papercusp-su session, omit this for the Papercusp engineering reference (apps/operator-docs/...), or pass its concrete harness slug (for example, 'papercusp'). 'all' is only valid in an unscoped (--all-workspaces) session. Omit only when the session is already scoped to a harness.",
+      "Harness whose docs to write into. For the Papercusp engineering reference (apps/operator-docs/... — where agent-insights live) either OMIT this or pass 'engineering', the same literal docs:search takes for that corpus. Otherwise pass a concrete harness slug (for example, 'papercusp'). 'all' is only valid in an unscoped (--all-workspaces) session. Omit only when the session is already scoped to a harness.",
     ),
 });
 
@@ -252,7 +252,25 @@ export default defineTool({
     //   write root == the anchor read root == apps/operator-docs/src/content/docs.
     const scope = resolveHarnessScope(args.harness, ctxAny);
     let harnessSlug: string;
-    if (scope.kind === 'harness') {
+    if (isEngineeringDocsSentinel(args.harness)) {
+      // EI-20100921170504541: FINDING the page and WRITING it are one workflow, so the
+      // two halves must accept the same argument for the same corpus. `docs:search`'s
+      // own schema tells a workspace-scoped caller to pass 'engineering' (the literal
+      // the workspace clamp does not intercept — EI-18894866320087268); doing the
+      // natural thing and passing it back to this tool used to fail `unknown_harness`,
+      // because resolveHarnessScope classifies it as a CONCRETE slug and no such
+      // harness is registered. That error names a registry concept rather than the fix,
+      // so it read as "this corpus is unreachable from here" — the opposite of true.
+      //
+      // Handled HERE rather than inside resolveHarnessScope on purpose: that helper is
+      // shared with `plans:*` and `harness_docs:*`, and the sentinel is deliberately
+      // invisible to the `_mcp-handler` workspace clamp. Teaching the shared resolver
+      // about it would hand every one of those tools a cross-harness escape the clamp
+      // cannot see — a tenant-data boundary, not a docs one. The sentinel's own
+      // docstring scopes it to doc tools treating it "exactly like HarnessScope's 'all'
+      // kind", which is precisely what this branch does.
+      harnessSlug = 'papercusp';
+    } else if (scope.kind === 'harness') {
       harnessSlug = scope.slug;
     } else if (scope.kind === 'all') {
       harnessSlug = 'papercusp';
@@ -263,7 +281,12 @@ export default defineTool({
     }
 
     const paths = await resolveHarnessDocPaths(harnessSlug);
-    if (!paths) return err(`unknown_harness — ${harnessSlug} is not registered (cannot resolve its docs root)`);
+    if (!paths)
+      return err(
+        `unknown_harness — ${harnessSlug} is not registered (cannot resolve its docs root). ` +
+          `To write the Papercusp engineering reference (agent-insights/…), OMIT \`harness\` entirely ` +
+          `or pass 'engineering' — not a concrete slug.`,
+      );
     const docId = `${section}/${slug}.mdx`;
     const abs = safeJoinUnderRoot(paths.docsRoot, docId);
     if (!abs) return err('path_traversal — section/slug resolved outside the docs root');
