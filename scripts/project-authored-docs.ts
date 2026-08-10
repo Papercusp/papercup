@@ -23,7 +23,6 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { resolve, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 import {
   applyProjectionBanner,
   deriveFrontmatterIndex,
@@ -32,9 +31,10 @@ import {
   sha256,
   splitFrontmatter,
 } from '../packages/operator-core/lib/harness/docs/authored-doc-projection';
+// @ts-ignore — pure JS helper, typed only by JSDoc
+import { connectScriptPg } from './lib/pg-url.mjs';
 
-const require = createRequire(import.meta.url);
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT =resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 export const WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
 export const HARNESS_SLUG = process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
@@ -135,28 +135,10 @@ interface DocRow {
 }
 
 async function connect(): Promise<{ query: (q: string, v?: unknown[]) => Promise<{ rows: DocRow[] }>; end: () => Promise<void> }> {
-  let discoveryError: Error | null = null;
-  const url =
-    process.env.HARNESS_ADMIN_DATABASE_URL || process.env.DATABASE_URL || process.env.PAPERCUSP_PG_URL ||
-    (() => {
-      try {
-        const disc = require('@papercusp/embedded-pg-discovery');
-        return disc.resolvePgUrl?.() ?? disc.getHarnessAdminUrl?.();
-      } catch (err) {
-        discoveryError = err as Error;
-        return null;
-      }
-    })();
-  if (!url) {
-    throw new Error(
-      'No database URL. Set HARNESS_ADMIN_DATABASE_URL (or DATABASE_URL) — never hardcode localhost:5432.' +
-        (discoveryError ? `\n  embedded-pg-discovery also failed: ${String(discoveryError).split('\n')[0]}` : ''),
-    );
-  }
-  const { Client } = require('pg');
-  const client = new Client({ connectionString: url });
-  await client.connect();
-  return client;
+  return (await connectScriptPg()) as unknown as {
+    query: (q: string, v?: unknown[]) => Promise<{ rows: DocRow[] }>;
+    end: () => Promise<void>;
+  };
 }
 
 /**
