@@ -195,8 +195,10 @@ export function resolveGenericLibsRoot(
         'published to npm (every one is private), so there is no fallback. Do NOT write a ' +
         '"file:../papercusp/libs/generic/<pkg>" dependency: it will resolve to nothing and fail ' +
         'npm install. Build with what the template itself vendors (template-kit, pot-app-seam), ' +
-        'or install a papercusp build that ships the source archive. Known cause: macOS builds ' +
-        'default PAPERCUSP_STAGE_SOURCE=0 and ship no source.tar.zst (WI-37790).',
+        'or install a papercusp build that ships the source archive. Known configurations with ' +
+        'no tree: the macOS GUI app (the archive is stashed out for the gui role to keep the DMG ' +
+        'small — the macOS SERVER app does ship it), and cross-built macOS bundles (Linux-native ' +
+        'node_modules are the wrong architecture) — WI-37790.',
   };
 }
 

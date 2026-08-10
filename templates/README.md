@@ -153,9 +153,13 @@ official v1 mechanism that closes them:
 
   `supplyChain.root: null` is a REAL answer, not an error: this install has no
   source tree, so these packages cannot be linked at all — build with what the
-  template vendors, or install a build that ships `source.tar.zst`. That is the
-  current state of **macOS**, whose build paths default `PAPERCUSP_STAGE_SOURCE`
-  to 0 and ship no source archive (WI-37790).
+  template vendors, or install a build that ships `source.tar.zst`. Known
+  no-tree configurations: the **macOS GUI app** (the archive is deliberately
+  stashed out for the `gui` role to keep the DMG small — the **macOS Server
+  app does** ship it) and **cross-built macOS** bundles (Linux-native
+  `node_modules` are the wrong architecture, so staging is off by default with
+  an opt-in darwin cross-install). Linux and Windows ship it by default.
+  See WI-37790.
 - **Runnable checks harness**: the mirror root carries `package.json` +
   `vitest.config.ts`, so `npm install && npm test` runs every
   `<id>/checks/*.test.ts` — `composition-integrity` green against the
