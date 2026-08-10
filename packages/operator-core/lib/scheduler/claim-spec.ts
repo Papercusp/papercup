@@ -101,6 +101,19 @@ export const ITEM_FIELDS = [
   // 215 major bugs strictly behind ~980 minor/nit changes that merely happened to be older.
   // NOT rankable — see RANKABLE_ITEM_FIELDS below for why a bare sort on it is a trap.
   'severity',
+  // `goal` — WI-37711. The goal a work-item was filed under (`work_items.goal_id`,
+  // migration 785 / P-002, stamped by `stampGoalProvenance`). Filterable so a STANDING
+  // PER-GOAL DRAIN FLEET can finally be expressed — `{ field:'goal', op:'=', value:<goalId> }`
+  // — which is the whole point: an agent in goal mode files bugs/changes/tasks STRAIGHT onto
+  // the queue, so those rows carry a goal_id and NO plan, and the `plan`/`tags` approximations
+  // miss exactly them.
+  //
+  // ⚠ NULLABLE, so per WI-5181 a `not`/`!=` leaf on it silently excludes every unstamped row
+  // in the SQL compiler (most rows are unstamped today). Scope a goal lane with the POSITIVE
+  // `=`/`in` form; the negative form needs the documented NULL treatment.
+  //
+  // NOT rankable — an opaque goal id has no meaningful order, same rationale as `id`/`title`.
+  'goal',
 ] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
 
@@ -221,7 +234,7 @@ export const NUMERIC_ITEM_FIELDS = ['priority', 'age', 'est_cost', 'redundancy']
  *  in `work_items` carries a `risk_tier` key at all — it remains FILTERABLE, which is the
  *  only way it has ever been used. */
 export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
-  (f) => f !== 'id' && f !== 'title' && f !== 'severity' && f !== 'risk_tier',
+  (f) => f !== 'id' && f !== 'title' && f !== 'severity' && f !== 'risk_tier' && f !== 'goal',
 );
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;

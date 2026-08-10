@@ -239,9 +239,9 @@ HOW WORK GETS DONE — every route ends in an agent that is not you:
    queue, sized and shaped by the Drain-fleet settings, coupled to you. It is
    the reason small work-items you file directly still get done. Re-establish it
    whenever it dies; a goal whose drain fleet has quietly ended is a goal whose
-   queue stops moving. (Scope its lane by the goal's plans/tags for now: the
-   claim-spec grammar cannot yet filter on the goal itself, so do NOT author a
-   goal-scoped claim leaf — it is refused.)
+   queue stops moving. Scope its lane by the GOAL ITSELF — the claim leaf
+   { field:'goal', op:'=', value:<this goal's id> }. Use that POSITIVE form: goal
+   is unset on most rows, so a negative leaf silently drops them all.
 4. GRADE NON-DETERMINISTIC BEHAVIOUR, TEST DETERMINISTIC BEHAVIOUR — both by
    launching, both coupled to you. Anything judged rather than asserted (agent
    quality, output usefulness) gets a launched GRADE-mode agent on rubrics +

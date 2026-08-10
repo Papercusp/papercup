@@ -230,6 +230,16 @@ const FIELD_MAP: Record<string, FieldMap> = {
     col: (sql) => sql`COALESCE(payload->'_ei'->>'severity', payload->>'severity')`,
     kind: 'scalar-text',
   },
+  // `goal` — WI-37711. A PHYSICAL column on `harness_shared.work_items` (migration 785 /
+  // P-002), which is the base table for BOTH families, so no COALESCE/payload fallback is
+  // needed here and this compiles identically for features and issues. The JS evaluator's
+  // half of the same field is `claim-spec-match.ts`'s `case 'goal'`, reading the mapped
+  // `WorkItem.goalId` — the two must resolve from the same logical source (see the
+  // EI-18654360178824151 note under `plan` below for what divergence costs).
+  //
+  // ⚠ NULLABLE and mostly unstamped, so a `not`/`!=` leaf silently drops every unstamped
+  // row (WI-5181). A goal lane wants the positive `=`/`in` form.
+  goal: { col: (sql) => sql`goal_id`, kind: 'scalar-text' },
   est_cost: { col: (sql) => sql`expected_cost_cents`, kind: 'scalar-num' },
   redundancy: { col: (sql) => sql`COALESCE(redundancy, 1)`, kind: 'scalar-num' },
   assignee: { col: (sql) => sql`taken_by`, kind: 'scalar-text' },

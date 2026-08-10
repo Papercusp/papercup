@@ -9,6 +9,10 @@
  * keeps that true as MODES grows.
  */
 import { describe, it, expect } from 'vitest';
+// WI-37711: imported rather than re-typed so the drain-fleet contract assertion below is
+// pinned to the REAL claim-spec grammar — if `goal` ever leaves ITEM_FIELDS while the
+// contract still prescribes a goal leaf, this test fails instead of the fleet discovering it.
+import { FILTERABLE_ITEM_FIELDS } from '../scheduler/claim-spec';
 import {
   MODES,
   modeChipLabel,
@@ -338,10 +342,20 @@ describe('GOAL mode', () => {
     expect(c).toContain('STANDING DRAIN FLEET');
     expect(c).toMatch(/always maintained/i);
     expect(c).toMatch(/re-establish it/i);
-    // WI-37711: the claim-spec grammar has no `goal` field yet, so the contract
-    // must NOT prescribe a goal-scoped claim leaf — it would be refused at
-    // scheduler:set_claim_spec. Drop this guard only when WI-37711 lands.
-    expect(c).toMatch(/cannot yet filter on the goal itself/i);
+    // WI-37711 LANDED: `goal` is now a filterable claim-spec field (ITEM_FIELDS +
+    // the SQL compiler's FIELD_MAP + the JS evaluator), so the contract no longer
+    // warns the leaf is refused — it PRESCRIBES it. This assertion is the forward
+    // guard inverted: it now fails if the contract ever drifts back to telling
+    // agents the lane cannot be goal-scoped.
+    expect(c).toMatch(/field:'goal'/);
+    expect(c).not.toMatch(/cannot yet filter on the goal itself/i);
+    // The nullable-column hazard (WI-5181) must travel WITH the prescription: a
+    // negative leaf on a mostly-unstamped column silently drops every row.
+    expect(c).toMatch(/POSITIVE form/);
+    // The field the contract now tells agents to author must actually BE filterable —
+    // derived from the grammar rather than hand-asserted, so this test fails if `goal`
+    // is ever removed from ITEM_FIELDS while the contract still prescribes it.
+    expect(FILTERABLE_ITEM_FIELDS).toContain('goal');
   });
 
   // Owner directives 6 + 7 — grading and testing are OUTSOURCED like everything

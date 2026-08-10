@@ -26,6 +26,8 @@ export interface ClaimSpecSubject {
   assignee: string | null;
   /** WI-6675: issue-family severity (critical|major|minor|nit), or null when unset. */
   severity: string | null;
+  /** WI-37711: the goal this item was filed under (`work_items.goal_id`), or null when unstamped. */
+  goal: string | null;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -136,6 +138,13 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
       item.severity ??
       (typeof record(payload._ei).severity === 'string' ? (record(payload._ei).severity as string) : null) ??
       (typeof payload.severity === 'string' ? payload.severity : null),
+    // WI-37711: `work_items.goal_id` is a PHYSICAL column on the base table for both
+    // families (migration 785 / P-002) and is NOT mirrored into payload by anything, so —
+    // unlike `severity` above — there is no payload leg to fall back to and inventing one
+    // would be dead code. The mapped `WorkItem.goalId` is the single source; migration 790
+    // exposes the column on the `engineer_issues` view so `issueToWorkItem` can populate it
+    // for the issue family, which is the family a goal-scoped drain fleet actually claims.
+    goal: item.goalId ?? null,
   };
 }
 
@@ -155,6 +164,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
     case 'est_cost': return subject.estCost;
     case 'assignee': return subject.assignee;
     case 'severity': return subject.severity;
+    case 'goal': return subject.goal;
   }
   return null;
 }

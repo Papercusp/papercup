@@ -224,6 +224,19 @@ export interface WorkItem {
   createdBy: string | null;
   /** Issue-family only. */
   severity: string | null;
+  /**
+   * WI-37711: the goal this item was filed under — `work_items.goal_id` (migration 785 /
+   * P-002), stamped by `stampGoalProvenance` when a goal-mode agent creates work. Null on
+   * the (currently vast) majority of rows, which have no goal.
+   *
+   * Present on BOTH families: goal_id is a column on the shared base table, so unlike
+   * `severity` this is not an issue-family-only notion. It is the field a per-goal STANDING
+   * DRAIN FLEET scopes its claim spec by (`{ field:'goal', op:'=', value:<goalId> }`), which
+   * is why it must be mapped here rather than read ad hoc — the claim-spec JS evaluator
+   * (`claim-spec-match.ts`) reads it from this mapped shape, and the SQL compiler
+   * (`get-next.ts`) reads the same column, so the two admission paths cannot diverge.
+   */
+  goalId: string | null;
   /** Parent work-item id (a chunk's parent, D-004). */
   parent: string | null;
   payload: unknown | null;
@@ -468,6 +481,10 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     assignedBy: i.assignedBy,
     createdBy: i.createdBy,
     severity: i.severity,
+    // WI-37711: migration 790 exposes goal_id on the engineer_issues view; ISSUE_COLS
+    // selects it, so the issue family (the one a goal-scoped drain fleet actually claims)
+    // now carries its goal into matchesWorkItemClaimSpec instead of resolving null forever.
+    goalId: i.goalId,
     parent: null,
     payload: i.payload ?? null,
     ...(externalBlockers.length ? { externalBlockers } : {}),
@@ -528,6 +545,9 @@ export interface FeatureRowDb {
   authority: string | null;
   /** EI-18820653360383242 — bigint epoch-ms on the base table (migration 698). */
   closed_ts: unknown;
+  /** WI-37711 — the goal this item was filed under (migration 785). Already exposed by the
+   *  `harness_features_consolidated` view, so this needed no migration of its own. */
+  goal_id: string | null;
 }
 export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
   const externalBlockers = readExternalBlockers(r.payload);
@@ -553,6 +573,11 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     assignedBy: null, // feature-family has no assigned_by column (collapse-delegate D-002)
     createdBy: null, // feature-family has no equivalent authorship column
     severity: null,
+    // WI-37711: unlike severity, goal_id is NOT an issue-family-only notion — it is a column
+    // on the shared base table `work_items`, already exposed by the
+    // harness_features_consolidated view (so this half needed no migration; only the
+    // engineer_issues view did, migration 790).
+    goalId: r.goal_id ?? null,
     parent: r.parent_id,
     payload: r.payload ?? null,
     ...(externalBlockers.length ? { externalBlockers } : {}),
@@ -588,7 +613,7 @@ export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary
   taken_at, last_progress_at,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
   origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref,
-  authority, closed_ts`;
+  authority, closed_ts, goal_id`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
@@ -1836,6 +1861,10 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     assignedBy: null, // feature-family has no assigned_by column (collapse-delegate D-002)
     createdBy: null, // feature-family has no equivalent authorship column
     severity: null,
+    // WI-37711: null at construction BY CONSTRUCTION — `stampGoalProvenance` runs AFTER the
+    // insert (it UPDATEs work_items.goal_id and returns the id separately, which
+    // _create-core.ts folds onto its result), so a row cannot carry a goal at this point.
+    goalId: null,
     parent: input.parent ?? null,
     payload: input.payload ?? null,
     rank: null,

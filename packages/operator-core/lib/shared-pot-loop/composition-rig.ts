@@ -465,7 +465,14 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       -- trigger and is never written by a caller; here it only has to EXIST so the
       -- SELECT does not 42703. Real column is bigint NULL (epoch ms, the *_ts family
       -- convention), NOT a timestamptz -- do not "fix" it to match the *_at columns.
-      ADD COLUMN IF NOT EXISTS closed_ts bigint;
+      ADD COLUMN IF NOT EXISTS closed_ts bigint,
+      -- Same EI-10579 drift class again: WI-37711 (migration 790) exposed goal_id on
+      -- the engineer_issues VIEW and ISSUE_COLS now selects it unconditionally, so the
+      -- rig's REAL engineer_issues table would 42703 on every getWorkItem issue-family
+      -- probe. On the real schema goal_id lives on the work_items base table and is
+      -- written by stampGoalProvenance; the rig never writes it, it only must EXIST for
+      -- the SELECT. Real column is text NULL.
+      ADD COLUMN IF NOT EXISTS goal_id text;
   `);
 
   // WI-1644 (part 4): migration 432 (work-item-completion-integrity, POST-379 —
