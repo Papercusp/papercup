@@ -47,7 +47,7 @@ import {
 export type GenericLibsRootSource =
   /** An extracted bundled source tree (PAPERCUSP_DEV_SOURCE_ROOT) — a real install. */
   | 'dev-source-tree'
-  /** A папercusp repo checkout found by marker walk — dev boxes and CI. */
+  /** A papercusp repo checkout found by marker walk — dev boxes and CI. */
   | 'integration-root'
   /** No tree resolves; the packages are unreachable on this install. */
   | 'none';
