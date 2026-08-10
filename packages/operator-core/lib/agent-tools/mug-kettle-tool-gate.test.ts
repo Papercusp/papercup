@@ -189,6 +189,15 @@ describe.each(GATED)('P-010 tool gate: $name', ({ name, load, args }) => {
     tierFlag = false;
     const mod = await load();
     const tool = mod.default as { handler: (a: unknown, c: unknown) => Promise<unknown> };
+    // Discount anything the IMPORT did. The claim under test is "this INVOCATION
+    // did not restart the tier", and a module-scope side effect somewhere in the
+    // import graph is not the invocation. Measured 2026-08-10: importing
+    // pot/declare_wake costs 2 statements and pot/survey 1 (`pg_notify`) before
+    // the handler is ever called, while pot/start's chain costs none — so an
+    // import-inclusive baseline reds exactly the tools whose dependency graph is
+    // widest, which is unrelated to whether their gate works.
+    await settle();
+    sqlCalls = [];
     const body = parse(await tool.handler(args, { workspaceId: 'ws', harnessSlug: 'papercusp' }));
     expect(body.error).toBe(MUG_KETTLE_RETIRED_ERROR);
     // THE LOAD-BEARING ASSERTION. `error === 'mug_kettle_retired'` alone would
