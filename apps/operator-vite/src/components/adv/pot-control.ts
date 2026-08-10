@@ -1,12 +1,13 @@
 /**
  * Shared hive start/stop control (start-hive-wake-orchestration P-006).
  *
- * Extracted from AdvNowRunning so the central Hives-tab control (LocalPotsControl)
+ * Extracted from AdvNowRunning so the central Pots-tab control (LocalPotsControl)
  * and the always-visible header "N hives running" pill (PotsRunningPill) drove the
  * SAME gated/audited dispatch and read the same `hive.controlState` sync query —
- * one write path, no drift. PotsRunningPill was deleted 2026-08-10 (P-075), so
- * AdvNowRunning's own Start/Stop is the only LIVE caller left here; the
- * LocalPotsControl caller is preserved-but-unreachable (D-070). `pot:start` / `pot:pause` flip the persisted started
+ * one write path, no drift. Both of those callers are now gone with the mug/kettle
+ * tier (PotsRunningPill deleted 2026-08-10 by P-075; LocalPotsControl by P-077,
+ * once P-075 and P-077 between them removed its last mount), so AdvNowRunning's
+ * own Start/Stop is the ONLY caller left. `pot:start` / `pot:pause` flip the persisted started
  * bit and fire `notifySyncInvalidate('hive.controlState')`, so every consumer
  * refreshes live after a toggle.
  */

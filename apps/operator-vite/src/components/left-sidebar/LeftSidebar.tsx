@@ -58,12 +58,13 @@ import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 // sidebar faces now (WI-5162); components/chat-faces/ChatFacesHost lazy-loads
 // them. The files stay where they are: only their HOST moved.
 // (🌐 Pots is no longer mounted here — the tab was REMOVED from this rail on
-// 2026-08-10 by owner directive. `PotsTab.tsx` is deliberately KEPT IN PLACE,
-// unmounted, rather than moved to a retirement folder: it hosts
-// `PotFederationStatus`, which is the SHARED POT SUBSTRATE and SURVIVES the
-// mug/kettle/cup retirement (plan retire-mug-kettle-su-only-2026-08-09, D-003 +
-// D-069). If federation status should be visible again it wants RE-HOMING (the
-// HUD or the op-chat rail), not resurrecting from `_retired/`.)
+// 2026-08-10 by owner directive, and `PotsTab.tsx` has since been DELETED (P-077).
+// The two surfaces it hosted that are NOT retired tier code — `PotFederationStatus`
+// and the p2p roster, both readers of the SHARED POT SUBSTRATE that D-003 says
+// SURVIVES the retirement — were re-homed into the System tab rather than deleted
+// with their host; the roster lives in `PotPeerRoster.tsx` now. See SystemTab.tsx
+// for why that tab is their home. Only the per-pot start/stop control
+// (`LocalPotsControl`) went with the tier.)
 // 🔑 Accounts — the owner's session-now account override (which Max accounts the fleet
 // may use right now), beside Mug as a sibling owner-steering lever (accounts-pool-tab
 // P-005; promoted to the LEFTMOST sidebar tab by owner request 2026-06-17).
@@ -171,14 +172,13 @@ const TABS = [
   // default tab.
   //
   // DELETED rather than flag-gated, unlike the Convos entry below: the owner
-  // asked for removal, not "behind a testing flag" (his words for Convos). The
-  // component `PotsTab.tsx` is KEPT IN PLACE and simply unmounted — it hosts
-  // `PotFederationStatus`, SURVIVING shared-pot substrate (D-003/D-069) whose
-  // only surface this was. That loss is deliberate and recorded, not overlooked;
-  // re-home it rather than restoring this tab. `LocalPotsControl` was also
-  // mounted by adv/PotsRunningPill, which P-075 has since deleted — so it is now
-  // reachable from no live surface, but is KEPT because the preserved
-  // `PotsTab.tsx` still imports it (D-070).)
+  // asked for removal, not "behind a testing flag" (his words for Convos).
+  // `PotsTab.tsx` itself is now deleted too (P-077), but NOT its contents: the
+  // federation panel and the p2p roster were SURVIVING shared-pot substrate
+  // (D-003/D-069) whose only surface this tab was, and both were re-homed into
+  // the System tab first — see SystemTab.tsx. `LocalPotsControl` is the one part
+  // that went with the tier: adv/PotsRunningPill (P-075) and this tab were its
+  // only two mounts, so D-070's deferred deletion landed with P-077.)
   // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ · Kettle→Thermometer
   // (no lucide kettle exists; the thermometer ties the kettle's heat to overwatch's
   // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.

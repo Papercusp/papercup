@@ -190,6 +190,32 @@ const SUBSTRATE_SYMBOLS = new Set([
   'recordFire', 'claimWatchdogFire',
 ]);
 
+/**
+ * The SAME D-003 population (b) exemption, for the UI category (P-077).
+ *
+ * The `ui` finding below is a FILENAME heuristic — any `.tsx` whose basename carries a
+ * tier noun ("Pot…") is flagged — and a filename cannot tell a per-pot START/STOP control
+ * from a component that merely READS the shared federation substrate. Both of the
+ * components here read `shared_presence` / `network.federationStatus`: they are population
+ * (b), they SURVIVE the retirement, and gating them with the tier would delete the
+ * install's only view of the p2p swarm the moment the flag goes off — the exact opposite
+ * of what the guard is protecting.
+ *
+ * This closes a REAL mechanism gap, not just this file's case: the guard's failure text
+ * tells you a genuine substrate site "belongs in the census's SUBSTRATE_SYMBOLS", but the
+ * census consulted that set ONLY on symbol findings, so a UI finding had nowhere correct
+ * to go and the only route left was appending to a baseline whose own first rule is
+ * "NEVER append to it to silence a new finding" (filed as EI-20092489577490038).
+ *
+ * ⚠ Membership is a claim about the FILE, not its name. Add one only after reading the
+ * component and confirming it reads substrate rather than driving the tier — the whole
+ * failure mode here is a name standing in for a fact nobody checked.
+ */
+const SUBSTRATE_UI = new Set([
+  'PotFederationStatus', // p2p reach + install substrate health (Brief M / G-004)
+  'PotPeerRoster',       // the p2p peer roster over shared_presence (re-homed by P-077)
+]);
+
 /* ══════════════════════════════════════════════════════════════════════════════════
    FILE WALK
    ══════════════════════════════════════════════════════════════════════════════════ */
@@ -597,12 +623,17 @@ const D7_TAB_RE = /["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/g;
 // LIVE: these name surfaces that exist today. A literal here matching NOTHING is a BUG —
 // the census has stopped seeing a file that still exists under a new name.
 const LIVE_CONTROL_SURFACES = [
-  'PotHealthPane', 'PlanRail', 'LocalPotsControl', 'MugTab', 'AdvNowRunning', 'pot-control$',
+  'PotHealthPane', 'PlanRail', 'MugTab', 'AdvNowRunning', 'pot-control$',
 ];
 // TRIPWIRES: retired surfaces that must NOT exist. A literal here matching nothing is the
 // DESIRED state — it is armed to fire if the surface ever reappears. Do not "fix" one by
 // deleting it; that disarms the tripwire.
-const RETIRED_SURFACE_TRIPWIRES = ['KettleTab'];
+// `LocalPotsControl` moved LIVE -> TRIPWIRE on 2026-08-10 (P-077): the per-pot
+// start/stop control was deleted once both its mounts were gone (adv/PotsRunningPill
+// by P-075, left-sidebar/PotsTab by P-077), so it is now a surface that must NOT
+// come back. Moving it rather than dropping it is the whole point of the split
+// above — deleting the literal would silently disarm the tripwire.
+const RETIRED_SURFACE_TRIPWIRES = ['KettleTab', 'LocalPotsControl'];
 // Same alternatives as the single regex this replaces. `KettleTab` moves to the END of the
 // alternation, which cannot change behaviour here: the only use is `.test(base)`, a boolean,
 // and no caller reads a capture group — alternation order decides WHICH branch matched, never
@@ -623,7 +654,10 @@ for (const abs of allFiles) {
     add('ui', abs, 0, base, 'named control surface for pot/plan start-stop (plan D-009/D-010)');
   } else if (/\.tsx$/.test(r) && namesTier(base)) {
     add('ui', abs, 0, base, 'component file named for the retiring tier',
-      { matchedToken: namesTier(base), tabTokens: tabHits.length });
+      { matchedToken: namesTier(base), tabTokens: tabHits.length,
+        ...(SUBSTRATE_UI.has(base)
+          ? { substrate: true, why: 'D-003 population (b): reads the SHARED POT SUBSTRATE (federation/presence), not the tier — inventory, do NOT gate' }
+          : {}) });
   } else if (/\.tsx$/.test(r) && tabHits.length > 0 && /(LeftSidebar|Sidebar|Tab|Rail|Nav)/.test(base)) {
     const tokens = [...new Set(tabHits.map((h) => h[1]))].join(', ');
     const offers = offersTierRoute(src, namesTier);

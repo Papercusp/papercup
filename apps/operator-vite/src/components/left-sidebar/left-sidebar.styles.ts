@@ -1702,6 +1702,12 @@ body.has-left-sidebar .pc-header {
 /* The nested panels keep their own padding for the non-collapsible mounts; inside
    the Pots tab the RailSection already supplies it, so drop the double inset. */
 .pclsb-pots .pclsb-sect .pclsb-panel { padding: 0; gap: 5px; }
+/* P-077 INVERTED THE NESTING. The Pots tab is gone; its p2p roster now lives
+   INSIDE a RailSection in the System tab, so the compact scope is the child
+   rather than the ancestor and the rule above can no longer reach it. The
+   section supplies the inset, so the roster contributes only its own column
+   flow — same intent as the rule above, opposite direction. */
+.pclsb-sect .pclsb-pots { padding: 0; display: flex; flex-direction: column; gap: 5px; }
 
 /* ── Conversations tab (WI-5754) ─────────────────────────────────────────────
    The curated stream at rail width. Two modes in one column: a filtered LIST,

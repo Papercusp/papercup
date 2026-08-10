@@ -42,7 +42,7 @@
  * honest place, the workspace-wide SpendTab. See lib/automation/catalog.ts.
  */
 import { useMemo, useState } from 'react';
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { parseAsArrayOf, parseAsString, parseAsStringLiteral, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
@@ -371,6 +371,17 @@ export interface AutomationPaneProps {
   /** lucide icon for the header bar. */
   icon: ComponentType<{ size?: number | string; 'aria-hidden'?: boolean }>;
   blurb: string;
+  /**
+   * Optional pane-scoped content rendered directly under the blurb, ABOVE the
+   * view switch and the schedule rows (P-077). It exists because a tab built on
+   * this pane may own one surface that is NOT a schedule row — today that is the
+   * System tab's `PotFederationStatus`, re-homed here when the Pots tab was
+   * removed. Putting it in a slot the pane owns (rather than as a sibling of the
+   * pane inside `.pclsb__body`) is what keeps it inside the pane's own column
+   * flow and above ~85 folded rows, instead of stranded at the bottom of the
+   * scroll or floating above the tab's own header.
+   */
+  children?: ReactNode;
 }
 
 export default function AutomationPane({
@@ -380,6 +391,7 @@ export default function AutomationPane({
   subtitle,
   icon: Icon,
   blurb,
+  children,
 }: AutomationPaneProps) {
   const cat = useSyncQuery<AutomationCatalog>({
     queryName: 'automation.catalog',
@@ -743,6 +755,11 @@ export default function AutomationPane({
 
         <div className="pc-auto__panel">
           <p className="pc-auto__blurb">{blurb}</p>
+
+          {/* Pane-scoped non-schedule content (P-077) — see the `children` prop.
+              Rendered before the view switch so it cannot be pushed below the
+              fold by the row list. */}
+          {children}
 
           {/* View switch — state-ordered by default, subject-ordered on request. */}
           <div className="pc-auto__views" role="tablist" aria-label={`${title} view`}>

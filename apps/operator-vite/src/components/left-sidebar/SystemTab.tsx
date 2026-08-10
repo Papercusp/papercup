@@ -23,9 +23,26 @@
  * There is deliberately NO "Pause all" here. It is a money control, and nothing in
  * this pane costs money — a bulk stop of git-sync and the release gate is not an
  * affordance worth one click. Per-row pause still works.
+ *
+ * TWO THINGS HERE ARE NOT SCHEDULES: `PotFederationStatus` and `PotPeerRoster`.
+ * Both were re-homed into this tab by P-077 (retire-mug-kettle-su-only-2026-08-09)
+ * when the Pots tab that hosted them was removed. Neither is retired tier code —
+ * they read the SHARED POT SUBSTRATE, which D-003 says SURVIVES the mug/kettle
+ * retirement, and P-074 left them with no surface at all (D-069 §2 recorded that
+ * loss for the first; the second turned out to be the app's only reader of
+ * `shared_presence`, so it would have gone the same way).
+ *
+ * This tab is their home because p2p reach, peer presence and substrate health are
+ * WORKSPACE-scoped infrastructure status — the same class as the federation drains
+ * already listed below them — whereas the HUD, the alternative D-069 floated, is
+ * pot/goal-scoped and would have handed them a scope selector they do not want.
+ * They sit in the pane's `children` slot, directly under the blurb, so ~85 folded
+ * schedule rows cannot push them below the fold.
  */
 import { Cog } from 'lucide-react';
 import AutomationPane from './AutomationPane';
+import PotFederationStatus from './PotFederationStatus';
+import PotPeerRoster from './PotPeerRoster';
 
 export default function SystemTab({ active }: { active: boolean }) {
   return (
@@ -36,6 +53,13 @@ export default function SystemTab({ active }: { active: boolean }) {
       subtitle="Runs without a model"
       icon={Cog}
       blurb="Deterministic scheduled work — git sync, the release gate, garbage collection, health probes and federation drains. None of it spends money. Healthy rows stay folded; anything stalled or unregistered surfaces at the top."
-    />
+    >
+      {/* Both collapsible, like every other rail section: closed by default, but
+          each header still carries its own worst-first signal, so a closed
+          section never hides a stalled drain, a stranded publish, or a peer that
+          has gone quiet. */}
+      <PotFederationStatus collapsible />
+      <PotPeerRoster />
+    </AutomationPane>
   );
 }
