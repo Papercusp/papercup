@@ -1683,6 +1683,14 @@
                 "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh"
               ],
               "label": "Windows installer legacy-uninstall reaper: ghosts reaped, LIVE entries spared (WI-4490)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh"
+              ],
+              "label": "Rust build-box path remap: every build entry point sets it itself + is idempotent (EI-20075266271803900)"
             }
           ]
         }

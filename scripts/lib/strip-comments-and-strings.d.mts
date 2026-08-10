@@ -137,6 +137,21 @@ export function stripCommentsAndStrings(text: string, fileName?: string): string
  */
 export function stripCommentsOnly(text: string, fileName?: string): string;
 /**
+ * SQL comments blanked; string and dollar-quoted literals left INTACT.
+ * The SQL counterpart of `stripCommentsOnly` — use it when the value you match on lives inside
+ * a literal (a `DEFAULT 'default'`, a quoted identifier).
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripSqlComments(text: string): string;
+/**
+ * SQL comments AND literal contents blanked — the SQL counterpart of
+ * `stripCommentsAndStrings`, and the default choice unless you must read literal values.
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripSqlCommentsAndStrings(text: string): string;
+/**
  * Was the character at `index` LIVE CODE, or was it blanked out as string/comment content?
  *
  * THE CASE THIS EXISTS FOR — a pattern that SPANS code and string content, where NEITHER
