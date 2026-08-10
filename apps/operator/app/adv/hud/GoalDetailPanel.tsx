@@ -77,6 +77,18 @@ import GoalEndsSection from './GoalEndsSection';
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
 import { useOwnerSessionChat } from '@/app/_components/chat/use-owner-session-chat';
+/* ── P-023 [owner 2026-08-10]: the sessions popup's own hide/expand controls ──
+   "mimic the design used in the equivalent popup in the sessions tab for the
+   hide and expand buttons instead of how it is currently 'hide order hide
+   brief etc.'"
+
+   Both are SHARED with that popup rather than re-derived here — the same
+   verbatim-reuse rule P-021 states for the rails and P-018 for the CSS. The
+   toggle carries the constant-label + chevron grammar; the hook carries the
+   full-window/full-screen pair with its browser-vs-desktop split. */
+import PanelToggleButton, { PANEL_TOOLBAR_BUTTON_STYLE } from '@/app/_components/chat/PanelToggleButton';
+import { usePopupMaximize } from '@/app/_components/chat/use-popup-maximize';
+import { Maximize, Maximize2, Minimize, Minimize2, X } from 'lucide-react';
 /* ── P-021 [owner 2026-08-10]: the sessions popup's three rails, IN ADDITION ──
    "the conversation popup for goals should have all the same left and right
    panels as the conversation popup in the sessions tab. the additional ones
@@ -506,6 +518,30 @@ export default function GoalDetailPanel({
   /* Unlike the other two this also needs a MODEL: an agent in no fleet has no
      peers to show, so there is nothing to seat. */
   const peersVisible = open && peersOpen && Boolean(agentOwnerId) && fleetPeers != null;
+
+  /* ── P-023: maximize, the sessions popup's own pair ───────────────────────
+     Its own URL key (`hudgoalmax`, never the sessions popup's `chatMax`): both
+     popups can be open at once in the HUD, and one key would have them
+     maximizing each other. Everything else — the two modes, the desktop split,
+     the fullscreen-exit sync, Esc, the never-strand-the-display cleanups — is
+     the shared hook's. */
+  const {
+    mode: goalMax,
+    maximized,
+    screenActive,
+    screenMechanism,
+    popupRef,
+    toggleWindow,
+    toggleScreen,
+    reset: resetMaximize,
+  } = usePopupMaximize({ param: 'hudgoalmax', open });
+
+  /* Leaving the popup must not strand the display or leave the mode in the URL —
+     reopening any goal would otherwise inherit a maximize it was never given. */
+  const closePanel = useCallback(() => {
+    resetMaximize();
+    onClose();
+  }, [resetMaximize, onClose]);
 
   /* Each seated column widens the popup; an OVERLAYING one must not, or the
      popup grows to make room for a rail that is taking no width. */

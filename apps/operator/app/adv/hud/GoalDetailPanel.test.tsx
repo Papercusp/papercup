@@ -504,7 +504,14 @@ describe('GoalDetailPanel', () => {
     renderPanel(
       detail({
         plans: [
-          { planSlug: 'ship-it', harnessSlug: 'papercusp', title: 'Ship it', items: 4, openItems: 2 },
+          {
+            planSlug: 'ship-it',
+            harnessSlug: 'papercusp',
+            title: 'Ship it',
+            items: 4,
+            openItems: 2,
+            stamped: false,
+          },
         ],
         waitingOnYou: [{ id: 'WI-1', title: 'Needs a decision', harnessSlug: 'papercusp' }],
         activity: [
@@ -556,8 +563,8 @@ describe('GoalDetailPanel', () => {
     renderPanel(
       detail({
         plans: [
-          { planSlug: 'a', harnessSlug: 'h', title: 'A', items: 3, openItems: 2 },
-          { planSlug: 'b', harnessSlug: 'h', title: 'B', items: 4, openItems: 3 },
+          { planSlug: 'a', harnessSlug: 'h', title: 'A', items: 3, openItems: 2, stamped: false },
+          { planSlug: 'b', harnessSlug: 'h', title: 'B', items: 4, openItems: 3, stamped: false },
         ],
       }),
     );
@@ -569,6 +576,53 @@ describe('GoalDetailPanel', () => {
     expect(rail.textContent).toContain('3 open of 4 on this goal');
     expect(rail.textContent).not.toMatch(/\b5 open\b/);
     expect(rail.textContent).not.toMatch(/\b7 (open|total)\b/);
+  });
+
+  it('says a freshly-started plan was STARTED rather than rendering it as "0 open of 0"', () => {
+    // The owner-reported bug, at the moment it bites: a goal whose agent has
+    // just authored its plan. The derived counts are truthfully zero, and
+    // rendering them reads as "the agent did nothing" — in the first minutes of
+    // a goal, which is exactly when the owner is watching.
+    renderPanel(
+      detail({
+        plans: [
+          { planSlug: 'panda-gallery-v1', harnessSlug: 'h', title: 'Panda gallery', items: 0, openItems: 0, stamped: true },
+        ],
+      }),
+    );
+    const rail = screen.getByTestId('goal-work-rail');
+    expect(rail.textContent).toContain('started by this goal');
+    expect(rail.textContent).not.toContain('0 open of 0 on this goal');
+  });
+
+  it('keeps the counts for a stamped plan that HAS produced work', () => {
+    // The flag must not swallow a real reading: once work exists, the counts
+    // are the more informative answer and stay.
+    renderPanel(
+      detail({
+        plans: [
+          { planSlug: 'p', harnessSlug: 'h', title: 'P', items: 4, openItems: 1, stamped: true },
+        ],
+      }),
+    );
+    const rail = screen.getByTestId('goal-work-rail');
+    expect(rail.textContent).toContain('1 open of 4 on this goal');
+    expect(rail.textContent).not.toContain('started by this goal');
+  });
+
+  it('leaves an INHERITED plan with no goal items reading as zero, not as started', () => {
+    // stamped:false + zero items is a different state — the goal never authored
+    // this plan — and must not borrow the reassuring copy.
+    renderPanel(
+      detail({
+        plans: [
+          { planSlug: 'inherited', harnessSlug: 'h', title: 'Inherited', items: 0, openItems: 0, stamped: false },
+        ],
+      }),
+    );
+    const rail = screen.getByTestId('goal-work-rail');
+    expect(rail.textContent).toContain('0 open of 0 on this goal');
+    expect(rail.textContent).not.toContain('started by this goal');
   });
 
   it('closing clears the selection', () => {
