@@ -83,8 +83,30 @@ export interface GoalStopReport {
    */
   unattributedActiveLoops: number;
   /**
+   * Sessions whose GOAL-mode row was CLEARED. Populated only for a TERMINAL status
+   * (see {@link isTerminalStatus}) — a `paused` goal keeps its rows, because they are
+   * the attribution index `executeGoalResume` reads to report on those same sessions.
+   *
+   * Gating placement and disarming loops without this left the session still being
+   * TOLD a finished goal was its standing mission: `agent_modes` has no `enabled`
+   * column (9 columns, verified against the table), so the row's existence IS the
+   * active state (WI-37834).
+   */
+  modesCleared: string[];
+  /**
+   * ⚠ THE HONEST GAP, modes edition. Sessions whose GOAL-mode row could NOT be
+   * cleared because it is `ownerDirected` and this fan-out is not an owner-authority
+   * channel (modes/store.ts OWNER-STICKY, D-003) — so the clear was REFUSED, not
+   * skipped. Reported rather than bypassed on purpose: a machine fan-out overriding
+   * an owner's explicit instruction is a bigger defect than a stale mode row, and
+   * silently reporting success would be the exact false-premise state
+   * `unattributedActiveLoops` already exists to prevent.
+   */
+  modesLeftArmed: string[];
+  /**
    * True when the stop is materially incomplete: placement was gated but loops are
-   * still burning in scope. Callers should render this, not just the status.
+   * still burning in scope, or a mode row could not be cleared. Callers should render
+   * this, not just the status.
    */
   degraded: boolean;
 }
@@ -174,6 +196,21 @@ export const STOPPING_STATUSES: readonly StoppingStatus[] = ['paused', 'killed',
 /** A goal status that triggers the stop fan-out. */
 export function isStoppingStatus(status: string): status is StoppingStatus {
   return (STOPPING_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * The stopping statuses that are also TERMINAL — the goal is over, not merely
+ * suspended. A strict subset of {@link STOPPING_STATUSES}, and the distinction is
+ * load-bearing: `paused` gates placement and disarms loops but must KEEP the
+ * GOAL-mode rows, because `executeGoalResume` reads exactly those rows as its
+ * attribution index. Clear them on a pause and resume can no longer name the
+ * sessions it is reporting on (WI-37834).
+ */
+export const TERMINAL_STATUSES: readonly StoppingStatus[] = ['killed', 'achieved'];
+
+/** A stopping status after which the goal is OVER, not merely suspended. */
+export function isTerminalStatus(status: string): status is 'killed' | 'achieved' {
+  return (TERMINAL_STATUSES as readonly string[]).includes(status);
 }
 
 /** A goal status that triggers the resume fan-out (WI-37615). */

@@ -47,6 +47,7 @@ import { getOrgPg, potsForGoal } from '@papercusp/db-org';
 import {
   setGoalTransitionExecutor,
   isStoppingStatus,
+  isTerminalStatus,
   type GoalTransitionInput,
   type GoalTransitionReport,
   type GoalStopInput,
@@ -55,6 +56,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { pausePotState, resumePotState } from '../pot/pause-core';
 import { deactivateLoop, loopRoutineName } from '../harness/routines/loop';
+import { setMode } from '../modes/store';
 
 /**
  * Session owner ids running GOAL mode for this goal. Presence of the row IS the
@@ -126,6 +128,13 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
     if (await deactivateLoop(ownerId, { sql })) loopsStopped.push(ownerId);
   }
 
+  // ── Tier 3: retire the GOAL-mode rows, but ONLY once the goal is OVER ──────
+  // A pause KEEPS them: they are the attribution index the resume arm reads, so
+  // clearing them here would leave resume unable to name the sessions it reports on.
+  const { modesCleared, modesLeftArmed } = isTerminalStatus(status)
+    ? await clearGoalModes(sql, workspaceId, goalId, owners, input.actor ?? null)
+    : { modesCleared: [], modesLeftArmed: [] };
+
   // ── The honest gap ─────────────────────────────────────────────────────────
   const unattributedActiveLoops = await countUnattributedActiveLoops(
     sql,
@@ -141,10 +150,59 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
     potsSkippedContributing: contributing,
     loopsStopped,
     unattributedActiveLoops,
-    // Degraded when the stop is materially incomplete: we gated placement but real
-    // burn continues in the goal's own pots.
-    degraded: unattributedActiveLoops > 0,
+    modesCleared,
+    modesLeftArmed,
+    // Degraded when the stop is materially incomplete: real burn continues in the
+    // goal's own pots, OR a session is still being told this goal is its mission.
+    degraded: unattributedActiveLoops > 0 || modesLeftArmed.length > 0,
   };
+}
+
+/**
+ * Clear the GOAL-mode row of every session attributed to this goal.
+ *
+ * Routed through `setMode({ enabled: false })` rather than a raw DELETE on purpose —
+ * that path carries three things a hand-written DELETE would silently drop: the
+ * OWNER-STICKY guard, the `agent_mode_changes` audit row, and the
+ * `notifyAgentOrdersChanged` push that keeps the agent's Orders panel from showing a
+ * mission it no longer has. It is also safe by construction: setMode no-ops unless the
+ * incumbent on that axis IS goal mode, so it cannot clobber a different overlay.
+ *
+ * A refusal is REPORTED, never bypassed. An `ownerDirected` row belongs to a human
+ * instruction, and this fan-out is not an owner-authority channel (`ownerAuthorized =
+ * isSelf || callerIsOwnerAuthority`) — passing `callerIsOwnerAuthority` here to force
+ * it through would let a goal status change override the owner, which is a worse
+ * defect than the stale row it would fix.
+ */
+async function clearGoalModes(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  goalId: string,
+  owners: string[],
+  actor: string | null,
+): Promise<{ modesCleared: string[]; modesLeftArmed: string[] }> {
+  const modesCleared: string[] = [];
+  const modesLeftArmed: string[] = [];
+  for (const ownerId of owners) {
+    const res = await setMode({
+      sql,
+      workspaceId,
+      ownerId,
+      modeId: 'goal',
+      enabled: false,
+      reason: `goal ${goalId} reached a terminal status — the mission it named is over`,
+      setBy: actor ?? 'goal-stop-fanout',
+    });
+    // `noop` means the row was already gone (a concurrent clear, or the session
+    // exited the mode itself) — that is the desired end state, not a failure, so it
+    // is not reported as left-armed. Only a real refusal is.
+    if (res.ok) {
+      if (!res.noop) modesCleared.push(ownerId);
+    } else {
+      modesLeftArmed.push(ownerId);
+    }
+  }
+  return { modesCleared, modesLeftArmed };
 }
 
 /**

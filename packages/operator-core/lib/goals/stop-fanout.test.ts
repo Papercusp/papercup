@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   STOPPING_STATUSES,
+  TERMINAL_STATUSES,
   isStopReport,
   type StoppingStatus,
 } from '@papercusp/agent-mcp';
@@ -18,6 +19,17 @@ import {
 const pausePotState = vi.hoisted(() => vi.fn(async () => ({})));
 const resumePotState = vi.hoisted(() => vi.fn(async () => ({})));
 const deactivateLoop = vi.hoisted(() => vi.fn(async () => true));
+/**
+ * Default: the clear succeeds. Tests that need the OWNER-STICKY refusal override it.
+ *
+ * Typed as the REAL SetModeResult rather than letting the default `{ ok: true }` narrow
+ * the mock to `{ ok: boolean }` — that narrowing is what makes an override look like an
+ * excess-property error and tempts an `as never`, which would defeat the one check
+ * vi.fn gives us here (lint:mock-cast-escape).
+ */
+const setMode = vi.hoisted(() =>
+  vi.fn(async (): Promise<import('../modes/store').SetModeResult> => ({ ok: true })),
+);
 const potsForGoal = vi.hoisted(() => vi.fn());
 const sqlRows = vi.hoisted(() => ({
   owners: [] as string[],
@@ -67,6 +79,7 @@ vi.mock('../harness/routines/loop', () => ({
   deactivateLoop,
   loopRoutineName: (ownerId: string) => `loop-${ownerId}`,
 }));
+vi.mock('../modes/store', () => ({ setMode }));
 
 // Imported after the mocks so the module-load install picks them up.
 const { executeGoalStop, executeGoalResume, executeGoalTransition } = await import('./stop-fanout');
@@ -312,5 +325,90 @@ describe('a goal closed as achieved', () => {
     expect(deactivateLoop).toHaveBeenCalledWith('su-attributed', expect.anything());
     expect(isStopReport(report) && report.potsStopped).toEqual(['pot-a']);
     expect(isStopReport(report) && report.loopsStopped).toEqual(['su-attributed']);
+  });
+});
+
+/**
+ * WI-37834 — tier 3: a TERMINAL goal must stop TELLING the session it is the mission.
+ *
+ * `agent_modes` has no `enabled` column, so the row's existence IS the active state:
+ * gating placement and disarming loops while leaving the row behind still hands a live
+ * session a finished goal as its standing mission on every orient.
+ *
+ * The asymmetry with `paused` is the part worth guarding. It is not an oversight — the
+ * GOAL-mode rows are the attribution index `executeGoalResume` reads, so clearing them
+ * on a pause would leave resume unable to name the very sessions it reports on.
+ */
+describe('tier 3 — GOAL-mode rows on a terminal goal', () => {
+  beforeEach(() => {
+    potsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    sqlRows.owners = ['su-attributed'];
+  });
+
+  it.each(TERMINAL_STATUSES)('clears the attributed session\'s goal mode on "%s"', async (status) => {
+    const report = await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status,
+      actor: 'su-test',
+    });
+
+    expect(setMode).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-attributed', modeId: 'goal', enabled: false }),
+    );
+    expect(isStopReport(report) && report.modesCleared).toEqual(['su-attributed']);
+    expect(isStopReport(report) && report.modesLeftArmed).toEqual([]);
+  });
+
+  it('does NOT clear them on "paused" — resume reads those rows as its attribution index', async () => {
+    const report = await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'paused',
+      actor: 'su-test',
+    });
+
+    // The load-bearing assertion: a pause still gates + disarms, but must not retire
+    // the rows. Asserting the report alone would pass if the call were made and its
+    // result merely dropped, so assert the CALL did not happen.
+    expect(setMode).not.toHaveBeenCalled();
+    expect(isStopReport(report) && report.modesCleared).toEqual([]);
+    expect(pausePotState).toHaveBeenCalledWith(expect.anything(), 'ws', 'pot-a');
+  });
+
+  it('REPORTS an owner-directed row it could not clear instead of claiming success', async () => {
+    // modes/store.ts OWNER-STICKY (D-003): a peer caller cannot clear an
+    // owner-directed incumbent. The fan-out is not an owner-authority channel, so
+    // this refusal is the CORRECT outcome — the defect would be reporting it as done.
+    setMode.mockResolvedValueOnce({ ok: false, stickyConflict: true });
+
+    const report = await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'achieved',
+      actor: 'su-test',
+    });
+
+    expect(isStopReport(report) && report.modesCleared).toEqual([]);
+    expect(isStopReport(report) && report.modesLeftArmed).toEqual(['su-attributed']);
+    // A session still being told a finished goal is its mission IS material incompleteness.
+    expect(isStopReport(report) && report.degraded).toBe(true);
+  });
+
+  it('does not report an already-cleared row as newly cleared', async () => {
+    setMode.mockResolvedValueOnce({ ok: true, noop: true });
+
+    const report = await executeGoalTransition({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'killed',
+      actor: 'su-test',
+    });
+
+    // noop = the row was already gone (concurrent clear, or the session exited the
+    // mode itself). That is the desired end state, so it is neither cleared nor left armed.
+    expect(isStopReport(report) && report.modesCleared).toEqual([]);
+    expect(isStopReport(report) && report.modesLeftArmed).toEqual([]);
+    expect(isStopReport(report) && report.degraded).toBe(false);
   });
 });
