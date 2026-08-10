@@ -1031,7 +1031,16 @@ function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: readonly string[])
     : sql`issue_id = ANY(${ids as string[]}::text[])`;
 }
 
-function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
+/**
+ * WI-37827: exported ONLY so the runtime equivalence guard
+ * (`issue-admissible-branch-equivalence.integration.test.ts`) can evaluate the real
+ * fragment each column form returns against real rows, rather than regexing the SQL
+ * out of this file's source — a source-text guard would go false-green the moment the
+ * branches stopped being two written-out literals, which is exactly what this item did
+ * to them. Not part of the module's intended API; call sites live in this file.
+ * Same precedent as get-next.ts exporting ALL_ISSUE_CLAIM_FLOORS_PASS for its own guard.
+ */
+export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // WI-6934/EI-19286331042101069: the lane leg filters the STORED generated column
   // (migration 721), not the payload jsonb — mirrors observationLaneExclusionSql
   // (work-items.ts). Any `payload ->> 'lane'` here forces the whole payload datum to
