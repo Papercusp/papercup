@@ -460,6 +460,57 @@ export interface ReconcilerDeps {
   resolveGiveUpEi?: (recovery: RecoveredSupervisionEpisode) => Promise<string[]>;
 }
 
+/** Strip journald's `Aug 10 12:19:03 host bundle-host.sh[1655791]: ` line prefix, so the
+ *  patterns below match the tool's own text rather than the transport around it. */
+function stripJournalPrefix(line: string): string {
+  return line.replace(/^\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\S+\s+[^:\s]+:\s?/, '');
+}
+
+/** A compiler/loader error a build step actually printed — the WHY behind a failed
+ *  ExecStartPre. esbuild's `✘ [ERROR]`, tsc's `error TSxxxx`, and node's module/syntax
+ *  errors are the shapes this repo's start-up steps emit. */
+const BUILD_ERROR_RE =
+  /(?:✘\s*\[ERROR\]|\berror TS\d+\b|\b(?:Syntax|Reference|Type)Error\b|\bCannot find module\b|\bERR_[A-Z_]+\b)/;
+
+/** A source location line (`../../packages/x/y.ts:533:10:`) — esbuild prints it on the line
+ *  AFTER the error text, which is where the actionable file:line lives. */
+const SOURCE_LOCATION_RE = /\S+\.(?:[cm]?[jt]sx?|json):\d+:\d+/;
+
+/**
+ * EI-19457080109574347: recover the BUILD ERROR a failed start step printed into the journal.
+ *
+ * `summarizeSystemctlStatusCause` names WHICH step failed (`bundle-host.sh`) — that was WI-9249
+ * — but naming the step is not naming the fault, and every responder still had to run journalctl
+ * by hand to reach the one line that mattered. Measured on the 2026-08-10 papercup-staging-api
+ * outage: the escalation carried `Process: 1694694 ExecStartPre=/home/.../bundle-host.sh`, while
+ * the actual cause — `✘ [ERROR] The symbol "startingAdvSessionId" has already been declared` at
+ * `routes/adv/launch-su.ts:533:10` — sat in the same journal the reconciler had already read.
+ *
+ * Scans the WHOLE excerpt rather than its tail on purpose: esbuild prints its error FIRST and
+ * then tens of `▲ [WARNING]` lines, so the error is the part a tail window drops (this is why
+ * the callers read `--lines=200`, not 50 — one failed bundle emits ~72 journal lines).
+ * Returns the error text plus its source location, or null when the excerpt holds no build error.
+ */
+export function extractBuildErrorDetail(output: string): string | null {
+  const lines = output.split('\n').map((line) => stripJournalPrefix(line.trim()));
+
+  const errorIdx = lines.findIndex((line) => BUILD_ERROR_RE.test(line));
+  if (errorIdx === -1) return null;
+
+  const errorText = lines[errorIdx]?.replace(/^✘\s*/, '').trim();
+  if (!errorText) return null;
+
+  // esbuild puts the file:line on a following line; tsc/node inline it. Look a few lines ahead,
+  // stopping at the first location found so a later unrelated frame is never attributed here.
+  const location = lines
+    .slice(errorIdx + 1, errorIdx + 4)
+    .map((line) => line.match(SOURCE_LOCATION_RE)?.[0])
+    .find((match): match is string => Boolean(match));
+
+  const detail = location && !errorText.includes(location) ? `${errorText} @ ${location}` : errorText;
+  return detail.slice(0, 300);
+}
+
 /** Pull one compact failure-cause line out of `systemctl status` output. The
  * current process's ExecMainCode is normally 0 once systemd has respawned it,
  * so the recent journal excerpt embedded by `status --lines` is the only useful
@@ -485,13 +536,20 @@ export function summarizeSystemctlStatusCause(output: string): string | null {
       /code=(?:exited|killed)/.test(line) &&
       !/status=0(?:\/SUCCESS)?\b/.test(line),
   );
-  if (controlProcess) return controlProcess.slice(0, 400);
+  // EI-19457080109574347: the failing STEP is only half the answer \u2014 append the error that step
+  // printed, so the escalation carries the fault itself instead of a pointer to where to look.
+  const buildError = extractBuildErrorDetail(output);
+  if (controlProcess) {
+    const step = controlProcess.slice(0, 400);
+    return buildError ? `${step} \u2014 ${buildError}` : step;
+  }
 
   const cause = [...lines].reverse().find((line) =>
     /EADDRINUSE|address already in use|fatal|Main process exited|Failed with result|code=(?:exited|killed)|status=\d+/i.test(line),
   );
-  if (!cause) return null;
-  return cause.replace(/^[-\u251c\u2514\u2502\s]+/, '').slice(0, 400);
+  if (!cause) return buildError;
+  const trailer = cause.replace(/^[-\u251c\u2514\u2502\s]+/, '').slice(0, 400);
+  return buildError ? `${trailer} \u2014 ${buildError}` : trailer;
 }
 
 /**
@@ -638,7 +696,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
         let lastExitCause: string | null = null;
         try {
           lastExitCause = summarizeSystemctlStatusCause(
-            await deps.execUser(['status', entry.unit, '--no-pager', '--lines=50']),
+            await deps.execUser(['status', entry.unit, '--no-pager', '--lines=200']),
           );
         } catch (err) {
           // EI-19966318801100410: `systemctl --user status` on a failed unit ALWAYS exits
@@ -688,7 +746,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       const fallback = ` Cause unavailable; inspect \`systemctl --user status ${unitName}\` + its journal.`;
       try {
         const cause = summarizeSystemctlStatusCause(
-          await deps.execUser(['status', unitName, '--no-pager', '--lines=50']),
+          await deps.execUser(['status', unitName, '--no-pager', '--lines=200']),
         );
         return cause ? ` Cause: ${cause}` : fallback;
       } catch (err) {
