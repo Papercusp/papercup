@@ -43,144 +43,68 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import ts from 'typescript';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_FILE = resolve(ROOT, '.mock-cast-escape-baseline.json');
 
-/** `.mockImplementation(`, `.mockResolvedValueOnce(`, … — every vitest mock-install verb. */
-const MOCK_CALL_RE =
-  /\.mock(Implementation(?:Once)?|ReturnValue(?:Once)?|ResolvedValue(?:Once)?|RejectedValue(?:Once)?)\s*\(/g;
-
-/** The installed argument ends in a bare `as never` / `as any` — the type-escape idiom. */
-const AS_ESCAPE_RE = /\bas\s+(never|any)\s*$/;
-
 /**
- * Mask out string/template-literal contents and comments with spaces (preserving line
- * breaks and overall length, so reported line numbers stay correct), so a stray paren or
- * the literal text "as never" inside a STRING can never be mistaken for real code. `${…}`
- * interpolation inside a template literal is left live (it is real code), tracked via a
- * simple brace-depth counter; nested template literals inside an interpolation are not
- * specially handled (a rare-enough shape in test fixtures to accept as a known gap for a
- * narrow, advisory guard).
+ * WHY THIS IS AN AST WALK AND NOT A REGEX OVER MASKED TEXT (EI-20059456952698638).
  *
- * @param {string} text
- * @returns {string}
+ * Until 2026-08-10 this file lexed by hand: a `maskStringsAndComments()` helper blanked
+ * comments and string/template literals, then `/\.mock(…)\s*\(/` found call sites and
+ * `/\bas\s+(never|any)\s*$/` tested the argument text. That shape had TWO independent
+ * defects, and BOTH failed silently toward "clean" — the expensive direction for a guard:
+ *
+ *   1. NO REGEX-LITERAL HANDLING. The masker had no concept of a regex literal, so the
+ *      quote inside an ordinary `/['"]/` opened a string state that ran to the next
+ *      matching quote — often EOF. Measured on a 2-line fixture: the mask blanked the
+ *      whole rest of the file and the detector returned ZERO findings for a file whose
+ *      second line was a real `as never` escape. Everything after such a regex was
+ *      invisible; worse, on re-entry the desynced state scanned COMMENT PROSE as live code.
+ *      Telling a regex literal from division needs real parsing — the masker's own docs
+ *      admitted this as a "KNOWN LIMIT" rather than fixing it.
+ *   2. THE `$` ANCHOR VS A TRAILING COMMA. `mockReturnValue(\n  x as never,\n)` — i.e.
+ *      what prettier emits for any multi-line call — ends in `as never,`, so the anchored
+ *      regex did not match. 13 real escapes in this repo's own test corpus were invisible
+ *      for this reason alone (measured 2026-08-10 against the AST detector below).
+ *
+ * The AST has no such states to desync: a comment, a string, and a regex literal are
+ * structurally not `AsExpression`s, and argument position is a tree edge rather than a
+ * paren-counting guess. Trailing commas are the parser's problem, not ours.
+ *
+ * SEMANTICS, chosen by measurement rather than taste. The rule below is a strict SUPERSET
+ * of what the regex matched: over 6,372 tracked test files it reproduced every one of the
+ * old detector's findings (zero coverage lost) and recovered 13 more. Two argument shapes
+ * count as installing an escaped value, because both defeat `vi.mocked()`'s type check for
+ * the same reason:
+ *   (a) the argument IS the cast          — `.mockResolvedValue(fixture as never)`
+ *   (b) the argument is a function whose concise body is the cast
+ *                                          — `.mockImplementation((x) => ({…}) as never)`
+ * A cast NESTED deeper inside an argument (`mockResolvedValue(make({ a: 1 as never }))`)
+ * is deliberately NOT counted: it is a different, much broader policy (+168 occurrences
+ * here) and not what this ratchet was built to hold.
  */
-export function maskStringsAndComments(text) {
-  const out = text.split('');
-  const n = text.length;
-  let i = 0;
-  while (i < n) {
-    const c = text[i];
-    const c2 = i + 1 < n ? text[i + 1] : '';
 
-    if (c === '/' && c2 === '/') {
-      while (i < n && text[i] !== '\n') {
-        out[i] = ' ';
-        i++;
-      }
-      continue;
-    }
+/** Every vitest mock-install verb — the calls `vi.mocked()` is supposed to typecheck. */
+const MOCK_VERBS = new Set([
+  'mockImplementation',
+  'mockImplementationOnce',
+  'mockReturnValue',
+  'mockReturnValueOnce',
+  'mockResolvedValue',
+  'mockResolvedValueOnce',
+  'mockRejectedValue',
+  'mockRejectedValueOnce',
+]);
 
-    if (c === '/' && c2 === '*') {
-      out[i] = ' ';
-      out[i + 1] = ' ';
-      i += 2;
-      while (i < n && !(text[i] === '*' && text[i + 1] === '/')) {
-        out[i] = text[i] === '\n' ? '\n' : ' ';
-        i++;
-      }
-      if (i < n) {
-        out[i] = ' ';
-        out[i + 1] = ' ';
-        i += 2;
-      }
-      continue;
-    }
-
-    if (c === "'" || c === '"') {
-      const quote = c;
-      out[i] = ' ';
-      i++;
-      while (i < n && text[i] !== quote) {
-        if (text[i] === '\\') {
-          out[i] = ' ';
-          i++;
-          if (i < n) {
-            out[i] = text[i] === '\n' ? '\n' : ' ';
-            i++;
-          }
-          continue;
-        }
-        out[i] = text[i] === '\n' ? '\n' : ' ';
-        i++;
-      }
-      if (i < n) {
-        out[i] = ' ';
-        i++;
-      }
-      continue;
-    }
-
-    if (c === '`') {
-      out[i] = ' ';
-      i++;
-      let depth = 0;
-      while (i < n) {
-        if (depth === 0 && text[i] === '\\') {
-          out[i] = ' ';
-          i++;
-          if (i < n) {
-            out[i] = text[i] === '\n' ? '\n' : ' ';
-            i++;
-          }
-          continue;
-        }
-        if (depth === 0 && text[i] === '`') {
-          out[i] = ' ';
-          i++;
-          break;
-        }
-        if (depth === 0 && text[i] === '$' && text[i + 1] === '{') {
-          i += 2;
-          depth = 1;
-          continue;
-        }
-        if (depth > 0) {
-          if (text[i] === '{') depth++;
-          else if (text[i] === '}') depth--;
-          i++;
-          continue;
-        }
-        out[i] = text[i] === '\n' ? '\n' : ' ';
-        i++;
-      }
-      continue;
-    }
-
-    i++;
-  }
-  return out.join('');
-}
-
-/**
- * Index of the `)` matching the `(` at `openIndex`, scanning `text` (already
- * comment/string-masked, so stray parens inside literals cannot desync the count).
- * @param {string} text
- * @param {number} openIndex - must point at a `(`.
- * @returns {number} -1 if unbalanced (never closes) — callers must skip, not crash.
- */
-export function findMatchingParen(text, openIndex) {
-  let depth = 0;
-  for (let i = openIndex; i < text.length; i++) {
-    if (text[i] === '(') depth++;
-    else if (text[i] === ')') {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
+/** `as never` / `as any` — and ONLY those two. `as SomeRealType` still typechecks. */
+function escapeKindOf(typeNode) {
+  if (!typeNode) return null;
+  if (typeNode.kind === ts.SyntaxKind.NeverKeyword) return 'never';
+  if (typeNode.kind === ts.SyntaxKind.AnyKeyword) return 'any';
+  return null;
 }
 
 /**
