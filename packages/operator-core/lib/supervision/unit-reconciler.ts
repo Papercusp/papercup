@@ -284,7 +284,14 @@ export function checkSilentCrashLoop(
 }
 
 export type ReconcileAction =
-  | { kind: 'healthy'; unit: string }
+  | {
+      kind: 'healthy';
+      unit: string;
+      /** EI-20083989508593730: the FIRST time this process has observed this unit, and it was
+       *  already healthy — so a give-up EI filed by a PREVIOUS process may still be open with
+       *  no 'recovered' transition coming to close it. See `decideReconcile`. */
+      firstObservation?: boolean;
+    }
   | { kind: 'recovered'; unit: string } // transition down -> healthy, damping reset
   | {
       kind: 'report-only';
@@ -321,6 +328,15 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
 
   if (!down) {
     const wasDown = state.wasDown;
+    // EI-20083989508593730: `flapStateByUnit` is IN-MEMORY, so a bg-host restart wipes every
+    // unit's `wasDown`. The first tick of a fresh process therefore sees an already-healthy unit
+    // and emits 'healthy', never 'recovered' — so a give-up EI filed by the PREVIOUS process is
+    // never auto-resolved and stays open forever. That is the worst case to lose it in: a
+    // give-up EI is filed when a unit is badly broken, and fixing badly-broken things very often
+    // IS a bg-host/box restart, so the resolve is dropped exactly when it was earned. Measured
+    // 2026-08-10: bg-host restarted 16:50Z, papercup-staging-api was healthy by 16:51Z, and its
+    // give-up EI was still open ~25min later. Flag it so the caller can reconcile the orphan.
+    const firstObservation = input.state.healthySince == null && !wasDown;
     if (state.healthySince == null) state.healthySince = now;
     state.wasDown = false;
     state.consecutiveDownTicks = 0;
@@ -331,7 +347,14 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
       state.restarts = [];
       state.backoffIndex = 0;
     }
-    return { action: { kind: wasDown ? 'recovered' : 'healthy', unit: entry.name }, nextState: state };
+    return {
+      action: wasDown
+        ? { kind: 'recovered', unit: entry.name }
+        : // Emitted ONLY when true, so the steady-state healthy action keeps its exact previous
+          // shape and a `firstObservation: false` never has to be asserted anywhere.
+          { kind: 'healthy', unit: entry.name, ...(firstObservation ? { firstObservation: true } : {}) },
+      nextState: state,
+    };
   }
 
   // Down.
@@ -833,6 +856,17 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
         // EI-19966318801100410: auto-resolve any give-up EI this unit had open. No-ops when
         // none is open (the normal case — most recoveries never went through a give-up at all).
         await deps.resolveGiveUpEi?.({ unit: entry.unit }).catch(() => {});
+        break;
+      case 'healthy':
+        // EI-20083989508593730: a unit already healthy on this process's FIRST observation of it
+        // never produces a 'recovered' transition, so an EI orphaned by the restart would sit
+        // open forever. Reconcile it here. SILENT on purpose — no notify: the unit is merely
+        // healthy, and announcing "recovered" for every healthy unit on every bg-host restart
+        // would be noise. `resolveGiveUpEi` already no-ops when nothing is open, so this costs
+        // one indexed lookup per unit per process, once.
+        if (action.firstObservation) {
+          await deps.resolveGiveUpEi?.({ unit: entry.unit }).catch(() => {});
+        }
         break;
       default:
         break;

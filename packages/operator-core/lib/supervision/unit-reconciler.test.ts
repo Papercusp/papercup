@@ -22,6 +22,7 @@ import {
   SILENT_LOOP_THRESHOLD,
   SILENT_LOOP_WINDOW_MS,
   summarizeSystemctlStatusCause,
+  extractBuildErrorDetail,
   stdoutFromExecError,
   type SystemctlUnitStatus,
   type ReconcilerDeps,
@@ -97,6 +98,19 @@ describe('parseSystemctlShowProperties', () => {
   });
 });
 
+// EI-19457080109574347: the 2026-08-10 papercup-staging-api outage, verbatim in shape — an
+// agent's mid-edit duplicate `const` in the shared tree failed the ExecStartPre bundle. The
+// error is printed FIRST and buried under the warnings that follow it, which is precisely why a
+// tail-window read of the journal reported a step name and no cause.
+const EXEC_START_PRE_BUILD_ERROR_JOURNAL = [
+  'Aug 10 12:19:03 host bundle-host.sh[1655791]: ✘ [ERROR] The symbol "startingAdvSessionId" has already been declared',
+  'Aug 10 12:19:03 host bundle-host.sh[1655791]:     ../../packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts:533:10:',
+  'Aug 10 12:19:03 host bundle-host.sh[1655791]:       533 │     const startingAdvSessionId = ownerId',
+  'Aug 10 12:19:03 host bundle-host.sh[1655791]: ▲ [WARNING] Ignoring this import because "../../libs/testing-shell/src/llm/asserts/tool.ts" was marked as having no side effects',
+  'Aug 10 12:19:57 host bundle-host.sh[1655791]: 7 warnings and 1 error',
+  'Aug 10 12:19:58 host systemd[3674]: papercup-staging-api.service: Control process exited, code=exited, status=1/FAILURE',
+];
+
 describe('summarizeSystemctlStatusCause', () => {
   it('extracts the most-recent concrete failure line from a restarted unit status', () => {
     expect(
@@ -156,6 +170,66 @@ describe('summarizeSystemctlStatusCause', () => {
       ].join('\n'),
     );
     expect(cause).toContain('Main process exited, code=exited, status=1/FAILURE');
+  });
+
+  // EI-19457080109574347 — naming the failing STEP is not naming the FAULT.
+  it('appends the build error the failed step printed, not just the step name', () => {
+    const cause = summarizeSystemctlStatusCause(
+      [
+        'Process: 1694694 ExecStartPre=/home/x/apps/operator/bin/bundle-host.sh (code=exited, status=1/FAILURE)',
+        ...EXEC_START_PRE_BUILD_ERROR_JOURNAL,
+      ].join('\n'),
+    );
+    // still names the step (WI-9249 must not regress)...
+    expect(cause).toContain('bundle-host.sh');
+    // ...and now carries the fault itself, which is what responders had to journalctl for.
+    expect(cause).toContain('startingAdvSessionId');
+    expect(cause).toContain('launch-su.ts:533:10');
+  });
+});
+
+describe('extractBuildErrorDetail (EI-19457080109574347)', () => {
+  it('recovers the esbuild error AND its source location from the journal excerpt', () => {
+    const detail = extractBuildErrorDetail(EXEC_START_PRE_BUILD_ERROR_JOURNAL.join('\n'));
+    expect(detail).toContain('The symbol "startingAdvSessionId" has already been declared');
+    expect(detail).toContain('launch-su.ts:533:10');
+  });
+
+  it('strips the journald line prefix so the detail is the tool\'s own text', () => {
+    const detail = extractBuildErrorDetail(EXEC_START_PRE_BUILD_ERROR_JOURNAL.join('\n'));
+    expect(detail).not.toContain('bundle-host.sh[1655791]');
+    expect(detail).not.toMatch(/^Aug 10/);
+  });
+
+  // The whole reason the callers read --lines=200: the error leads and the warnings trail it, so
+  // a short tail window keeps the useless half. Guard the ORDERING, not the window size.
+  it('finds an error that leads a long run of trailing warnings', () => {
+    const warningFlood = Array.from(
+      { length: 60 },
+      (_, i) => `Aug 10 12:19:57 host bundle-host.sh[1]: ▲ [WARNING] ignored import #${i}`,
+    );
+    const detail = extractBuildErrorDetail(
+      [...EXEC_START_PRE_BUILD_ERROR_JOURNAL.slice(0, 3), ...warningFlood].join('\n'),
+    );
+    expect(detail).toContain('startingAdvSessionId');
+  });
+
+  it('reads a tsc diagnostic too, not only esbuild', () => {
+    const detail = extractBuildErrorDetail(
+      'Aug 10 12:19:03 host tsc[1]: src/thing.ts(12,3): error TS2339: Property "x" does not exist.',
+    );
+    expect(detail).toContain('error TS2339');
+  });
+
+  it('returns null when the excerpt holds no build error', () => {
+    expect(
+      extractBuildErrorDetail(
+        [
+          'Aug 10 12:19:03 host systemd[1]: svc.service: Start request repeated too quickly.',
+          "Aug 10 12:19:03 host systemd[1]: svc.service: Failed with result 'exit-code'.",
+        ].join('\n'),
+      ),
+    ).toBeNull();
   });
 });
 
@@ -228,7 +302,33 @@ describe('decideReconcile', () => {
       autoRestartFlagOn: true,
       now: 1000,
     });
-    expect(action).toEqual({ kind: 'healthy', unit: 'mcp-proxy' });
+    // `firstObservation` is set because this state is fresh (EI-20083989508593730); the steady
+    // state below (`healthy tick after a recovery`) keeps the bare shape.
+    expect(action).toEqual({ kind: 'healthy', unit: 'mcp-proxy', firstObservation: true });
+  });
+
+  // EI-20083989508593730 — the orphaned-give-up-EI class, at the decision layer.
+  it('flags ONLY the first observation, so a restart-orphaned give-up EI can be reconciled', () => {
+    const first = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: up('papercup-mcp-proxy.service'),
+      show: undefined,
+      state: initialFlapState('papercup-mcp-proxy.service'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    expect(first.action).toMatchObject({ kind: 'healthy', firstObservation: true });
+
+    // Second tick of the SAME process: not a first observation, so no re-reconcile every 60s.
+    const second = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: up('papercup-mcp-proxy.service'),
+      show: undefined,
+      state: first.nextState,
+      autoRestartFlagOn: true,
+      now: 2000,
+    });
+    expect(second.action).toEqual({ kind: 'healthy', unit: 'mcp-proxy' });
   });
 
   it('down + autoRestart flag OFF -> report-only, notify on the FIRST tick of the down streak', () => {
@@ -701,6 +801,36 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     // the fixture) but must NEVER be restarted.
     expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart' && c[0][1] === 'papercup-live-federation-gate')).toBe(false);
     expect(deps.notify).toHaveBeenCalled();
+  });
+
+  // EI-20083989508593730 — the SEAM. `flapStateByUnit` is in-memory, so a bg-host restart drops
+  // every `wasDown`; if the unit is healthy again by the first tick, no 'recovered' transition
+  // ever fires and the give-up EI filed by the previous process is orphaned. Measured live:
+  // bg-host restarted 16:50Z, papercup-staging-api was healthy 16:51Z, EI still open 25min later.
+  it('reconciles a give-up EI orphaned by a restart on the FIRST healthy observation, silently', async () => {
+    const resolveGiveUpEi = vi.fn(async () => ['EI-1']);
+    const deps = makeDeps({
+      resolveGiveUpEi,
+      registry: () => [AUTORESTART_ENTRY],
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units')
+          return ['papercup-mcp-proxy.service loaded active running Papercusp resilient MCP proxy', ''].join('\n');
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\n';
+        return '';
+      }),
+    });
+
+    await reconcileTick(deps);
+    expect(resolveGiveUpEi).toHaveBeenCalledWith({ unit: 'papercup-mcp-proxy' });
+    // ...and WITHOUT announcing a recovery that never happened: the unit did not recover, the
+    // supervising process merely restarted. A "✅ recovered" per healthy unit per bg-host
+    // restart would be pure noise.
+    expect(deps.notify.mock.calls.some((c) => String(c[0]?.summary ?? '').includes('recovered'))).toBe(false);
+
+    // Once only — not re-fired on every 60s tick for the life of the process.
+    resolveGiveUpEi.mockClear();
+    await reconcileTick(deps);
+    expect(resolveGiveUpEi).not.toHaveBeenCalled();
   });
 
   // WI-9249: these assert the SEAM (the escalation actually carries the cause), which the pure
