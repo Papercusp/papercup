@@ -287,13 +287,22 @@ async function main(): Promise<number> {
       }
     }
 
+    // Both lists are ACTIONABLE (orphans -> decide to delete the row; untracked -> anchor the
+    // file), so a silently-capped list is worse than useless: it prints a count of N, shows 5,
+    // and gives the reader no signal that the other N-5 exist. Print the whole list, and when a
+    // cap is genuinely needed say so ON the output rather than leaving a bounded list looking total.
+    const listAll = (items: string[], cap = 200): void => {
+      for (const d of items.slice(0, cap)) console.log(`      - ${d}`);
+      if (items.length > cap) console.log(`      … +${fmt(items.length - cap)} more (truncated at ${fmt(cap)})`);
+    };
+
     if (orphanRows.length) {
       console.log(`\n  orphan rows    ${fmt(orphanRows.length)} row(s) have no file on disk (deleted docs; left alone)`);
-      for (const d of orphanRows.slice(0, 5)) console.log(`      - ${d}`);
+      listAll(orphanRows);
     }
     if (untracked.length) {
       console.log(`  untracked      ${fmt(untracked.length)} file(s) have no row (anchor via docs:author / harness_docs:anchor)`);
-      for (const d of untracked.slice(0, 5)) console.log(`      - ${d}`);
+      listAll(untracked);
     }
     if (noFrontmatter.length) {
       console.log(`  no frontmatter ${fmt(noFrontmatter.length)} file(s) carry none — projected without a banner`);
