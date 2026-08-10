@@ -15,9 +15,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { preflightRestartTarget } from './restart-preflight';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
-import { preflightTreeAt } from '../../boot-integrity-preflight';
+import { preflightTreeAt, type LockTreeDriftCheck } from '../../boot-integrity-preflight';
 
-const cleanDrift = () => ({ ok: true, missing: [], extraneous: [], skipped: false }) as const;
+const cleanDrift = (): LockTreeDriftCheck => ({ ok: true, missing: [], extraneous: [], skipped: false });
 const okResolver = () => '/resolved';
 
 describe('preflightRestartTarget — resolving the target tree', () => {
