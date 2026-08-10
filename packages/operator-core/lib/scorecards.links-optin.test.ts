@@ -23,6 +23,15 @@
  * REAL call sites (the `scorecards.list` sync-resolver entry and the `scorecards:list`
  * agent tool) rather than by asserting on a flag in isolation — a test that only checked
  * `includeLinks: true` behaves correctly would still pass if a call site dropped it.
+ *
+ * P-010 then gave `scorecardTrend` a legitimate reason to read edges after all: it drops
+ * scorecards a later filing REVISED, so a correction stops moving the trend twice. That is
+ * the same pressure that produced the original regression — a later feature needs one fact
+ * about links and reaches for the general resolver — so the trend's edge read is pinned by
+ * SHAPE (one batched `rel:'revises'` in-edge call over every row), not merely permitted.
+ * `listScorecards` stays supersession-blind on purpose: a superseded scorecard is still a
+ * real, auditable filing and must keep appearing in listings; only the aggregate that would
+ * double-count it excludes it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -74,9 +83,13 @@ const issuesOutLinksMany = vi.fn(
     new Map([['EI-1', [{ rel: 'grades', dst: { kind: 'work_item', ref: 'WI-1' } }]]]),
 );
 
+/** P-010: scorecardTrend's supersession check — a rel-filtered in-edge read, NOT the join. */
+const issuesSupersededByRevision = vi.fn(async (_ids: string[]) => new Set<string>());
+
 vi.mock('./issues-engineer', () => ({
   issuesScopeWorkspace: () => 'test-workspace',
   issuesOutLinksMany: (ids: string[]) => issuesOutLinksMany(ids),
+  issuesSupersededByRevision: (ids: string[]) => issuesSupersededByRevision(ids),
 }));
 
 vi.mock('./rubrics', () => ({
@@ -88,6 +101,7 @@ vi.mock('./rubrics', () => ({
 
 beforeEach(() => {
   issuesOutLinksMany.mockClear();
+  issuesSupersededByRevision.mockClear();
 });
 
 describe('listScorecards — outbound links are OPT-IN (WI-6124)', () => {
@@ -132,6 +146,31 @@ describe('the aggregate readers stay cheap (WI-6124)', () => {
     // long time paid a links join on every call for up to 500 refs.
     expect(issuesOutLinksMany).not.toHaveBeenCalled();
     expect(trend).toBeTruthy();
+  });
+
+  // P-010 gave scorecardTrend a REASON to read edges (dropping revision-superseded
+  // scorecards), which is exactly the pressure that produced the WI-6124 regression in
+  // the first place: a later feature arrives, needs one fact about links, and reaches
+  // for the general resolver. So the guard above is no longer sufficient on its own —
+  // "does not call the join" would also pass if the supersession read were itself
+  // per-row. Pin the SHAPE of the read that is allowed to exist.
+  it('scorecardTrend checks supersession with ONE batched rel-filtered read, not a per-row walk', async () => {
+    const { scorecardTrend } = await import('./scorecards');
+    await scorecardTrend({ rubricRef: 'test-rubric' });
+
+    expect(issuesSupersededByRevision).toHaveBeenCalledTimes(1);
+    expect(issuesSupersededByRevision).toHaveBeenCalledWith(['EI-1', 'EI-2']);
+    expect(issuesOutLinksMany).not.toHaveBeenCalled(); // still never the join
+  });
+
+  it('listScorecards does NOT pay the supersession read — it is a trend-only cost', async () => {
+    const { listScorecards } = await import('./scorecards');
+    await listScorecards({ rubricRef: 'test-rubric', limit: 100 });
+
+    // The read surface stays supersession-BLIND on purpose: a superseded scorecard is
+    // still a real, auditable filing, so it must keep appearing in listings. Only the
+    // aggregate that would double-count it excludes it.
+    expect(issuesSupersededByRevision).not.toHaveBeenCalled();
   });
 });
 
