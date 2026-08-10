@@ -37,6 +37,24 @@ export interface ServiceStartInfo {
    *  main process to measure (mainPid 0 or absent). */
   secondsSinceStart?: number;
   /**
+   * EI-20093902925801178: systemd's own `NRestarts` — the monotonic count of
+   * restarts systemd has performed for this unit under its `Restart=` policy.
+   * Read from the SAME `systemctl show` call as `MainPID`/`ActiveState`, so it
+   * costs no extra subprocess.
+   *
+   * This is ground truth that no sampling interval can miss, which is the whole
+   * point: the supervision reconciler's in-memory flap counters are written by a
+   * routine in `papercup-bg-host` but READ by `dev:service_health` in the
+   * operator process, where that Map is permanently empty — so every supervised
+   * unit reports `restartsLast10m: 0, flapState: 'ok'` regardless of reality.
+   * Measured 2026-08-10: 4 restarts in 43s while the health tool read zero.
+   *
+   * Undefined when systemd did not report the property (a `.timer` and other
+   * unit types with no main process omit it). An omitted counter is UNKNOWN,
+   * never `0` — conflating them is the exact bug this field exists to kill.
+   */
+  nRestarts?: number;
+  /**
    * WI-10550: EXACT epoch-ms at which the current MainPID started, read straight
    * from `/proc/<MainPID>` mtime. Undefined when there is no live main process,
    * or the read failed (never a fabricated value — the caller falls back).
@@ -376,22 +394,31 @@ export async function probeServiceStart(unit: string): Promise<ServiceStartInfo>
     const svc = resolveUnitName(unit);
     const { stdout } = await run(
       'systemctl',
-      ['--user', 'show', '-p', 'MainPID', '-p', 'ActiveState', svc],
+      // EI-20093902925801178: `NRestarts` rides along on the EXISTING show call —
+      // one more `-p` on a query already being made, no extra subprocess.
+      ['--user', 'show', '-p', 'MainPID', '-p', 'ActiveState', '-p', 'NRestarts', svc],
       { timeout: 3000 },
     );
     const props = parseSystemctlShowOutput(stdout);
     const activeState = props.get('ActiveState');
     const mainPidRaw = props.get('MainPID');
+    // Parsed once and spread into EVERY return path below — a `.timer` and a
+    // down unit have restart histories too, and dropping the counter on those
+    // paths would reintroduce "absent reads as zero" for exactly the units whose
+    // restarts matter most. Absent/unparseable stays undefined, never 0.
+    const nRestartsRaw = props.get('NRestarts');
+    const nRestartsNum = nRestartsRaw === undefined ? Number.NaN : Number(nRestartsRaw);
+    const restarts = Number.isInteger(nRestartsNum) && nRestartsNum >= 0 ? { nRestarts: nRestartsNum } : {};
     if (mainPidRaw === undefined) {
       // No MainPID property for this unit type at all (e.g. a `.timer`) —
       // ActiveState is the only signal available, and on its own it is a
       // complete, determinate answer (a timer never has a "recent restart").
-      return { ok: true, activeState };
+      return { ok: true, activeState, ...restarts };
     }
     const mainPid = Number(mainPidRaw);
     // MainPID 0 ⇒ systemd has no live main process (down / never started). That
     // is a determinate answer: there is NO recent restart to coalesce against.
-    if (!Number.isFinite(mainPid) || mainPid <= 0) return { ok: true, mainPid: 0, activeState };
+    if (!Number.isFinite(mainPid) || mainPid <= 0) return { ok: true, mainPid: 0, activeState, ...restarts };
     const { stdout: etimesOut } = await run(
       'ps',
       ['-o', 'etimes=', '-p', String(mainPid)],
@@ -405,8 +432,8 @@ export async function probeServiceStart(unit: string): Promise<ServiceStartInfo>
     // caller's existing etimes fallback still applies.
     const startedAtMs = await readProcStartMs(mainPid);
     const exact = startedAtMs === null ? {} : { startedAtMs };
-    if (!Number.isFinite(etimes) || etimes < 0) return { ok: true, mainPid, activeState, ...exact };
-    return { ok: true, mainPid, secondsSinceStart: etimes, activeState, ...exact };
+    if (!Number.isFinite(etimes) || etimes < 0) return { ok: true, mainPid, activeState, ...exact, ...restarts };
+    return { ok: true, mainPid, secondsSinceStart: etimes, activeState, ...exact, ...restarts };
   } catch {
     return { ok: false };
   }
