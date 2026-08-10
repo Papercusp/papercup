@@ -70,7 +70,7 @@ import * as ts from 'typescript';
 // WI-37806: this guard inherited check-required-field-strands' "⚠ NOT CHECKED" PROSE when
 // it was ported, but not its exit STATUS — so it printed "This is NOT a clean bill" and
 // exited 0, which is what `&& echo PASS` and a CI step actually read.
-import { EXIT_NOT_CHECKED, exitForNoFindings } from './lib/not-checked.mjs';
+import { EXIT_NOT_CHECKED, exitForNoFindings, provedNothing } from './lib/not-checked.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -304,14 +304,25 @@ function findImporters(sourceFileRelPath) {
  * is a true statement about files you have never opened. That makes the guard effectively
  * unreachable in normal operation, which is precisely why it looked fine for so long.
  */
-export function formatNoFindings(examinedFiles, base, { declared = false } = {}) {
+export function formatNoFindings(examinedFiles, base, { declared = false, identicalFiles = [] } = {}) {
   const files = Array.isArray(examinedFiles) ? examinedFiles : [];
   if (files.length > 0) {
     // Naming the COUNT was not enough. A count is unfalsifiable by the one person who
     // could catch the mistake — the author, who knows which file carries their change.
     // Listing the files lets them see in one glance that theirs is not among them.
+    //
+    // EI-20103725040309933: `--files=` fixes ATTRIBUTION (which files) but not VACUITY
+    // (whether the diff was real). "Examined" only ever meant "a before/after pair was
+    // diffed", never that the two DIFFERED — so a named file that git-sync had already
+    // swept produced `✓ … (1 file(s) examined)` about a file this run never compared.
+    // The headline reads from the same `provedNothing` predicate as the exit status
+    // below, because computing them separately is precisely how they drifted apart in
+    // this guard's parent (EI-20097325488507587).
+    const nothingProved = provedNothing({ examinedFiles: files, identicalFiles, declared });
     const lines = [
-      `✓ no optional seam-dependency members added to exported types (${files.length} file(s) examined vs ${base})`,
+      nothingProved
+        ? `⚠ NOT CHECKED — ${files.length} named file(s) are byte-identical to ${base}, so nothing was compared.`
+        : `✓ no optional seam-dependency members added to exported types (${files.length} file(s) examined vs ${base})`,
       ...files.map((f) => `    ${f}`),
     ];
     if (!declared) {
@@ -322,6 +333,22 @@ export function formatNoFindings(examinedFiles, base, { declared = false } = {})
         '    within minutes, which drops it out of this diff).',
         '    Scope it to what you actually changed:',
         '      node scripts/check-optional-seam-strands.mjs --files=<your,files>',
+      );
+    }
+    // The per-file form of the same root cause, and it is SILENT under `declared` because
+    // the inferred-set warning above deliberately does not fire there. A PARTIAL run (some
+    // named files identical, others genuinely diffed) still reports a pass — it verified
+    // what it could — so this block names the unverified remainder rather than voiding the
+    // whole run.
+    if (identicalFiles.length > 0) {
+      lines.push(
+        `  ⚠ NOT CHECKED — ${identicalFiles.length} of ${files.length} named file(s) are BYTE-IDENTICAL`,
+        `    to ${base}, so this run proves NOTHING about them (git-sync likely already`,
+        '    committed your edit — on this tree that happens within minutes):',
+        ...identicalFiles.map((f) => `      ${f}`),
+        '    Re-run against the commit that actually carried your change:',
+        "      C=$(git log -1 --format=%H -S'<a string your change introduced>' -- <file>)",
+        '      node scripts/check-optional-seam-strands.mjs --base "$C^" --files=<your,files>',
       );
     }
     return lines.join('\n');
@@ -383,6 +410,9 @@ function main() {
   // skipped (added/deleted, .d.ts, no base version, gone from the tree), and counting
   // those as "examined" is the same overstatement this check exists to stop.
   const examinedFiles = [];
+  // Named files that turned out byte-identical to `base` — only reachable in DECLARED mode,
+  // since auto-diff mode derives its candidates FROM the diff and so cannot list one.
+  const identicalFiles = [];
   for (const { status, file } of candidates) {
     if (!file || status.startsWith('A') || status.startsWith('D')) continue;
     if (file.endsWith('.d.ts')) continue;
@@ -394,6 +424,7 @@ function main() {
     const afterText = readFileSync(abs, 'utf8');
 
     examinedFiles.push(file);
+    if (declaredFiles && beforeText === afterText) identicalFiles.push(file);
     const additions = diffOptionalSeamAdditions(beforeText, afterText, file);
     for (const add of additions) {
       const fallback = findRealFallback(afterText, add.member);
@@ -424,12 +455,12 @@ function main() {
     }
   }
 
-  if (json) console.log(JSON.stringify({ base, examined: examinedFiles, findings }, null, 2));
+  if (json) console.log(JSON.stringify({ base, examined: examinedFiles, identical: identicalFiles, findings }, null, 2));
 
   const realStrands = findings.filter((f) => f.strandedSites.length > 0);
 
   if (!findings.length) {
-    if (!json) console.log(formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles) }));
+    if (!json) console.log(formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles), identicalFiles }));
     // NOT process.exit(): under --json the report above is machine-readable output, and
     // exit() does not drain an async pipe write — a truncated report reads as FEWER
     // findings. See scripts/check-undrained-stdout-exit.mjs.
@@ -437,7 +468,7 @@ function main() {
     // WI-37806: 0 only when something was genuinely compared. This used to be a hardcoded
     // 0, so a run that examined ZERO files printed the "NOT CHECKED / This is NOT a clean
     // bill" text above and then reported success to every caller that reads a status.
-    process.exitCode = exitForNoFindings({ examinedFiles, declared: Boolean(declaredFiles) });
+    process.exitCode = exitForNoFindings({ examinedFiles, identicalFiles, declared: Boolean(declaredFiles) });
     return;
   }
 

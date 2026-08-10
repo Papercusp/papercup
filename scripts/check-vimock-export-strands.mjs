@@ -83,7 +83,7 @@ import { analyzeMockCalls, resolveSpec } from './check-full-replacement-mocks.mj
 // WI-37806: this guard inherited check-required-field-strands' "⚠ NOT CHECKED" PROSE when
 // it was ported, but not its exit STATUS — so it printed "This is NOT a clean bill" and
 // exited 0, which is what `&& echo PASS` and a CI step actually read.
-import { EXIT_NOT_CHECKED, exitForNoFindings } from './lib/not-checked.mjs';
+import { EXIT_NOT_CHECKED, exitForNoFindings, provedNothing } from './lib/not-checked.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -225,9 +225,17 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
       '  (Use -G instead of -S when searching by a name you did not introduce.)',
     ].join('\n');
   }
+  // WI-37819: the exit status below already consulted `identicalFiles`, but this headline
+  // was a hardcoded ✓ — so an all-identical declared run printed a pass and exited 2, the
+  // two disagreeing exactly as they did in this guard's parent before EI-20097325488507587.
+  // A reader acts on the headline and a script acts on the status; both must read the SAME
+  // predicate or they drift again the next time either is edited.
+  const nothingProved = provedNothing({ examinedFiles: files, identicalFiles, declared });
   const lines = [
-    `✓ no runtime exports added to a module that enumerating vi.mock factories replace`,
-    `  (${files.length} file(s) examined vs ${base})`,
+    nothingProved
+      ? `⚠ NOT CHECKED — ${files.length} named file(s) are byte-identical to ${base}, so nothing was compared.`
+      : `✓ no runtime exports added to a module that enumerating vi.mock factories replace`,
+    ...(nothingProved ? [] : [`  (${files.length} file(s) examined vs ${base})`]),
     ...files.map((f) => `    ${f}`),
   ];
   if (!declared) {
