@@ -69,6 +69,34 @@ export async function recordEditAttribution(input: RecordEditAttributionInput): 
     const presence = await getPresence(input.agentId).catch(() => null);
     if (presence?.currentPlanSlug) planSlug = presence.currentPlanSlug;
 
+    // EI-20055604348536487: `intent` must carry what the agent said it was DOING (D-002) — but
+    // the automatic per-edit file-lock hook acquires with `intent: f'PreToolUse:{tool_name}'`,
+    // and locks:acquire passes that straight through, so 97.5% of this column was the name of
+    // the hook rather than any intent (measured 24h/n=3,257: 3,047 'PreToolUse:Edit' + 210
+    // 'PreToolUse:Write' vs ~50 real). git-sync renders this field as the COMMIT SUBJECT, so
+    // the sentinel was one reader-side filter away from becoming fleet-wide commit messages.
+    //
+    // The agent's declared coord intent is ALREADY in hand — `presence` is fetched just above
+    // for plan_slug (WI-6584) — so recovering the real value costs NO extra query on this
+    // per-edit hot path. The lifecycle label moves to `acquired_via` (784) rather than being
+    // discarded: it is the only thing the column carried, and "did this edit come through the
+    // automatic hook" stays worth knowing.
+    //
+    // HONEST LIMIT: a declared intent can be STALE (declared at orient, not re-declared since),
+    // so this is "what the agent last said it was doing", not proof of this edit's purpose. That
+    // is the same freshness the plan_slug above and enrich-busy's `holder_intent` already accept,
+    // and it is strictly better than a label that describes no work at all. When neither side has
+    // a usable intent we write NULL — an honest unattributed edit (D-003), never a guess.
+    const rawIntent = input.intent?.trim() || null;
+    const lifecycleLabel = isLifecycleIntent(rawIntent);
+    const declaredIntent = presence?.intent?.trim() || null;
+    const intent = lifecycleLabel
+      ? isLifecycleIntent(declaredIntent)
+        ? null
+        : declaredIntent
+      : rawIntent;
+    const acquiredVia = lifecycleLabel ? rawIntent : null;
+
     const { sql } = getOrgPg();
     // One row per file via unnest — a single round-trip on the hot path.
     await sql`
