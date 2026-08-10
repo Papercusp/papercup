@@ -335,16 +335,14 @@ removal only. ⚠ the `coord:*` plane — `agent-tools/coordination/messages.ts`
 `coord-inbox-bus` — shares the word "messages" and is fully LIVE: match the
 surface, never the substring). (The Mug/Kettle left-rail
 tabs, retired under WI-4778, were RESTORED to the LeftSidebar by owner ask
-2026-07-14 — and are now GATED again, this time behind a flag rather than deleted:
-`retire-mug-kettle-su-only-2026-08-09` (D-020) gates LeftSidebar's `queen` +
-`overwatch` tabs on `papercusp-mug-kettle-system`, whose **default-OFF is the
-delivered end state** (owner-directed 2026-08-09; ON is a reversible testing escape
-hatch), so by default they do not render. This is a GATE, not a `_retired/` move —
-the code is live and extendable, it simply does not mount while the tier is retired.
-The whole Mug · Kettle · cup/nursery tier is gated the same way, across SEVEN
-independent gates (engine · tool · spawn · console · UI · settings · delivery), none
-of which implies another; **su + GOAL mode are the only way to drive the app**, and
-Scout + Blender survive UNGATED (D-001), as does the shared pot substrate (D-003).
+2026-07-14 — and are now GATED rather than deleted: `retire-mug-kettle-su-only-2026-08-09`
+(D-020) gates LeftSidebar's `queen` + `overwatch` tabs on `papercusp-mug-kettle-system`,
+whose **default-OFF IS the delivered end state** (owner-directed 2026-08-09; ON is a
+reversible testing escape hatch). ⚠ A GATE is not a `_retired/` move — the code stays
+live and extendable, it just does not mount. The whole Mug · Kettle · cup/nursery tier
+is gated this way by SEVEN independent gates (engine · tool · spawn · console · UI ·
+settings · delivery), none implying another; **su + GOAL mode are the only way to drive
+the app**. Scout + Blender (D-001) and the shared pot substrate (D-003) survive UNGATED.
 ⚠ `libs/zero-harness` used to be listed above as
 retired-but-kept; it was **deleted** in zero-decommission-2026-06-20, so there is
 nothing preserved and nothing to migrate off — measured 2026-08-09, it is absent

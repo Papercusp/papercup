@@ -39,6 +39,7 @@ import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliab
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { clampText, LIMITS, softText } from '../limits';
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -137,6 +138,21 @@ export default defineTool({
       .optional()
       .describe(
         'EI-20025784115349280: when the pre-launch check would refuse with would_exclude_declared_paths, SLEEP until the commits carrying your declared paths age into the quiet-cut window (wait_sec in that refusal, always ≤300s), then launch — instead of returning. Usually what you want after "I just fixed the reds": it trades a bounded wait for a verdict that actually judges your files. The call blocks for that long; the gate slot stays FREE meanwhile, which is the whole gain over firing first. Ignored unless the refusal would fire.',
+      ),
+    // EI-20031402866608444: ACCEPTED, not ignored. This arg used to be undeclared, and the schema
+    // is additionalProperties:false, so passing it was an `invalid_input` that launched NOTHING —
+    // 19 of 22 rejections over 14 days (~11% of ALL calls to this verb), 6 distinct agents on
+    // 2026-08-09 alone, every observed case a reject-then-retry-without-it 3–6s later, usually
+    // mid-incident on the fleet's highest-blast-radius verb. Agents kept passing it because the
+    // sibling lever on this same surface REQUIRES one (release:deploy { op:'force', reason }).
+    //
+    // softText, not hardText, and deliberately: this verb's entire defect was REJECTING callers,
+    // so it must not gain a second rejection path. There is no `min` (a terse "gate red" is a
+    // fine reason) and no length rejection — the handler clamps at the stamp instead.
+    reason: softText(LIMITS.SHORT_TITLE)
+      .optional()
+      .describe(
+        'OPTIONAL: why you are firing the gate by hand. Recorded to this call\'s tool_invocations metadata as an audit trail for a ~55min suite fired on demand — it does NOT change the launch decision. Worth passing: the strings agents already send here are exactly what an auditor wants ("gate RED 3x / ~2h, main frozen, no run in flight"). Never rejected for length or terseness; clamped if very long.',
       ),
   }),
   async handler(args, ctx) {
@@ -278,8 +294,17 @@ export default defineTool({
     // 'declared-paths-in-candidate' means the gate ASSESSED and allowed, while
     // 'exclusion-undecidable' / 'candidate-unresolved' mean it could not assess at all.
     // Collapsing those into one bare 'passed' would rebuild the exact ambiguity this fixes.
+    //
+    // EI-20031402866608444: the caller's `reason` rides THIS SAME stamp rather than a second
+    // ctx.metadata() call, and that is load-bearing, not stylistic. The seam is
+    // overwrite-not-merge — dispatch-stack.ts:550 is explicit ("last write wins",
+    // `exec.metadataJson = { ...data }`) — so a second call here would silently WIPE every
+    // preLaunchExclusion key above. (The "metadata MERGES" note in the comment above is about
+    // handler keys merging with TRANSPORT keys at finalize, a different axis.) Omitted entirely
+    // when absent, so `metadata_json ? 'fireReason'` cleanly separates calls that gave one.
     ctx.metadata?.({
       preLaunchExclusion: preflight.refuse ? (args.waitForEligibility ? 'waited' : 'refused') : 'passed',
+      ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
       ...(preflight.refuse
         ? {
             preLaunchCandidate: preflight.candidate,

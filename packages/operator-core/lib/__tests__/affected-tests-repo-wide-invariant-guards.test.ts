@@ -739,8 +739,15 @@ describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () =
 describe('affected-tests: the host-suite skip is DECLARED and verified, never assumed', () => {
   type Guard = { script: string; hostSuiteRatchet: string | null };
 
+  // The registry SOURCE is overridable so this block's falsifiability can be proven against a
+  // mutated COPY outside the tree (scripts/mutation-probe.sh tier 2). The shared checkout is
+  // edited by the whole fleet and swept into commits every few minutes, so mutating
+  // affected-tests.mjs in place to test these assertions would risk committing the mutant —
+  // this one line is what makes the safe probe available. Defaults to the real file.
+  const REGISTRY_FILE = process.env.PROBE_AFFECTED_TESTS ?? AFFECTED_TESTS;
+
   const registrySource = (() => {
-    const src = readFileSync(AFFECTED_TESTS, 'utf8');
+    const src = readFileSync(REGISTRY_FILE, 'utf8');
     const start = src.indexOf('const REPO_WIDE_INVARIANT_GUARDS');
     return src.slice(start, src.indexOf('\n];', start));
   })();
