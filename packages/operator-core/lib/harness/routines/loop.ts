@@ -1152,6 +1152,9 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     carry: pt?.carry === 'cold' ? 'cold' : 'warm',
     continuation: pt?.continuation === 'gated' ? 'gated' : 'settle',
     mode: pt?.mode === 'monitor' ? 'monitor' : 'work',
+    // Absent (a loop armed before this field, or with no goal) reads as null — an
+    // honest "not recorded", never an empty string that would render as a blank goal.
+    goal: typeof pt?.goal === 'string' && pt.goal.trim() ? pt.goal.trim() : null,
     fireCount,
     firesSinceArm,
     parked,

@@ -763,6 +763,10 @@ export default defineTool({
       ownerId,
       intervalSec: intervalSec,
       kickoff,
+      // EI-20072281215342526: persist the goal STRUCTURALLY, not only rendered into
+      // `kickoff`. A carry-respawn never renders a kickoff, so this is the copy that
+      // reaches a successor (via loop:status and the carry document).
+      goal,
       costCapCents: args.costCapCents ?? null,
       maxFires: args.maxFires ?? null,
       maxDurationSec: args.maxDurationSec ?? null,
