@@ -39,10 +39,6 @@ import {
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import { resolveBatchTimeoutMs, isWatchdogTimeout } from './lib/batch-watchdog.mjs';
-// The scan rule for lint:no-raw-spawn's REPO_WIDE_INVARIANT_GUARDS entry below, taken
-// from the guard itself so the two cannot drift. Import-only: that script self-execs
-// under a pathToFileURL guard, so pulling in the predicate runs no scan.
-import { isExcluded as isRawSpawnScanExcluded } from './check-no-raw-agent-spawn.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
