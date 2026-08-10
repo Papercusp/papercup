@@ -86,6 +86,22 @@ describe('resolveAuthorHarness (EI-20100921170504541)', () => {
     expect(resolveAuthorHarness('engineering', { harnessSlug: 'papercusp-workspace' })).toEqual({
       ok: true,
       harnessSlug: 'papercusp',
+      engineering: true,
+    });
+  });
+
+  // Both resolve to the same docs root, but they are different INTENTS and the emitted
+  // `surface` metadata reports them apart — so collapsing them would lose a signal.
+  it("distinguishes the engineering reference from the 'papercusp' harness named explicitly", () => {
+    expect(resolveAuthorHarness('papercusp', {})).toEqual({
+      ok: true,
+      harnessSlug: 'papercusp',
+      engineering: false,
+    });
+    expect(resolveAuthorHarness('engineering', {})).toEqual({
+      ok: true,
+      harnessSlug: 'papercusp',
+      engineering: true,
     });
   });
 
@@ -101,15 +117,20 @@ describe('resolveAuthorHarness (EI-20100921170504541)', () => {
 
   it('matches the sentinel case-insensitively and around whitespace', () => {
     for (const v of ['ENGINEERING', ' engineering ', 'Engineering']) {
-      expect(resolveAuthorHarness(v, {})).toEqual({ ok: true, harnessSlug: 'papercusp' });
+      expect(resolveAuthorHarness(v, {})).toEqual({ ok: true, harnessSlug: 'papercusp', engineering: true });
     }
   });
 
   it('still routes a concrete slug to that harness, and ctx scope when no arg', () => {
-    expect(resolveAuthorHarness('some-harness', {})).toEqual({ ok: true, harnessSlug: 'some-harness' });
+    expect(resolveAuthorHarness('some-harness', {})).toEqual({
+      ok: true,
+      harnessSlug: 'some-harness',
+      engineering: false,
+    });
     expect(resolveAuthorHarness(undefined, { harnessSlug: 'scoped-harness' })).toEqual({
       ok: true,
       harnessSlug: 'scoped-harness',
+      engineering: false,
     });
   });
 

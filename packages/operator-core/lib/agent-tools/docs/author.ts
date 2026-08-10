@@ -103,13 +103,16 @@ export function insightsIndexNudge(section: string, harnessSlug: string): string
 export function resolveAuthorHarness(
   argHarness: string | null | undefined,
   ctx: { harnessSlug?: string | null; isSuperuser?: boolean } | null | undefined,
-): { ok: true; harnessSlug: string } | { ok: false; error: string } {
-  if (isEngineeringDocsSentinel(argHarness)) return { ok: true, harnessSlug: 'papercusp' };
+): { ok: true; harnessSlug: string; engineering: boolean } | { ok: false; error: string } {
+  // `engineering` distinguishes "the shared engineering reference" from "the papercusp
+  // harness named explicitly" — both resolve to the same docs root, but they are
+  // different INTENTS and the emitted `surface` metadata reports them apart.
+  if (isEngineeringDocsSentinel(argHarness)) return { ok: true, harnessSlug: 'papercusp', engineering: true };
   const scope = resolveHarnessScope(argHarness, ctx);
-  if (scope.kind === 'harness') return { ok: true, harnessSlug: scope.slug };
-  if (scope.kind === 'all') return { ok: true, harnessSlug: 'papercusp' };
+  if (scope.kind === 'harness') return { ok: true, harnessSlug: scope.slug, engineering: false };
+  if (scope.kind === 'all') return { ok: true, harnessSlug: 'papercusp', engineering: true };
   // kind === 'none': no harness in context and not the 'all' sentinel.
-  if (ctx?.isSuperuser) return { ok: true, harnessSlug: 'papercusp' };
+  if (ctx?.isSuperuser) return { ok: true, harnessSlug: 'papercusp', engineering: true };
   return {
     ok: false,
     error:
@@ -422,7 +425,7 @@ export default defineTool({
     const indexNudge = insightsIndexNudge(section, harnessSlug);
     if (indexNudge) warnings.push(indexNudge);
 
-    ctxAny.metadata?.({ surface: scope.kind === 'harness' ? `harness:${harnessSlug}` : 'engineering', docId });
+    ctxAny.metadata?.({ surface: harnessRes.engineering ? 'engineering' : `harness:${harnessSlug}`, docId });
 
     return {
       content: [
