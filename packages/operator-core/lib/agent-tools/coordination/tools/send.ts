@@ -828,9 +828,27 @@ async function sendOne(
       workspaceId: identity.workspaceId,
       harnessSlug,
       // P-009: the census rides the derivation that ALREADY happens here — no
-      // extra IO, no second coupling path. This is the only coupling read that
-      // runs at volume, so it is the one that can answer whether a derived
-      // relation has ever fired in production.
+      // extra IO, no second coupling path.
+      //
+      // ⚠ THIS SAMPLES ~1.5% OF SENDS — it is NOT a census OF sends, and the
+      // earlier claim here that it is "the only coupling read that runs at
+      // volume" was wrong in the way that matters. `observe` is reached only
+      // PAST resolveCouplingDivergenceStamps' cost gate, which returns before
+      // any IO unless the message carries a COMPARABLE `forYouBecause` (never
+      // `owns`/`other`) addressed to a NON-SELF peer. Measured 2026-08-10 over
+      // 7d of coord_event_log (13,633 messages): 628 carry forYouBecause at all
+      // (4.6%), and of 737 asserted relations 525 (71%) are owns/other —
+      // leaving ~212, i.e. ~1.5% of sends, that can ever reach this sink.
+      //
+      // That is still ~30 FULL censuses/day (each observation covers all four
+      // legs, whichever relation opened the gate), which is enough to answer
+      // "has this leg EVER fired in production". But the sample is deliberately
+      // biased toward senders who assert checkable relations, so: never read a
+      // census count as a send count, and never read leg silence HERE as proof
+      // that leg is dead fleet-wide — absence in a 1.5% biased sample is not
+      // absence. Verified the hard way: a probe send with no forYouBecause,
+      // addressed to self, produced a tool_invocations row with no census and
+      // looked exactly like a broken sink.
       ...(observeCensus ? { observe: observeCensus } : {}),
     });
     if (divergence.length) extra[COUPLING_DIVERGENCE_FIELD] = divergence;
