@@ -28,6 +28,9 @@
  */
 
 import { z } from 'zod';
+import { existsSync, readdirSync } from 'node:fs';
+import * as nodePath from 'node:path';
+import { detectPapercupRoot } from '../../harness/register-papercusp';
 import {
   assumptionsArg,
   hasAssumptionDeclaration,
@@ -281,6 +284,133 @@ export function typeEvidenceGapInCompletion(
   const prose = `${evidence.testsRun ?? ''}\n${evidence.testResult ?? ''}`;
   if (TYPECHECK_MENTION_RE.test(prose)) return undefined;
   return { tsFiles };
+}
+
+/** Injectable filesystem seam so the check below is unit-testable without a real tree. */
+export interface CompletionPathProbe {
+  repoRoot?: string | null;
+  exists?: (absPath: string) => boolean;
+  siblings?: (absDir: string) => string[];
+}
+
+/** Bounds the work: a pathological payload must never turn a completion into a tree walk. */
+const MAX_PATHS_PROBED = 60;
+
+/**
+ * EI-20093150500083378: `filesChanged` names paths that DO NOT EXIST, and nothing notices.
+ *
+ * Every OTHER evidence field on this call is challenged — a bare-string completion is
+ * downgraded to `proposed`, a unit-only close over TypeScript draws `typeEvidenceWarning`,
+ * a terminal close without `assumptions` is refused outright. `filesChanged` alone was
+ * taken verbatim, and it is the field most likely to be written from MEMORY rather than
+ * observation, because it is filled in LAST — when the work is done and the details have
+ * aged out of context (or out of a compaction).
+ *
+ * Measured 2026-08-10: one agent filed 12 paths across two completions and 8 did not
+ * exist — an `agent-tools/` segment inserted because most tools in that package do live
+ * under it, and a `__tests__/` directory invented because nearly every other repo has one.
+ * Both completions still landed `authority:'committed'`. Note the DIRECTION of that error:
+ * the fabricated paths were MORE conventional than the real ones, which is precisely what
+ * lets them survive review by someone who knows the ecosystem but not this tree.
+ *
+ * WARN-ONLY, and fail-open at every step (EI-24 record-and-warn discipline, like every
+ * sibling check here). A missing path has legitimate causes — the file was DELETED by this
+ * very change, or lives in a submodule that is not checked out — so this can only ever be a
+ * nudge. It is silent when it cannot judge: no repo root, a path that escapes the root, a
+ * glob, or any fs error.
+ *
+ * `didYouMean` is what makes it actionable, and it is deliberately CHEAP rather than a
+ * tree search: drop one path segment at a time (catches an inserted `agent-tools/` or
+ * `__tests__/`), then, if the parent directory exists, look for a sibling sharing the
+ * basename's leading token (catches a misremembered filename like `790-engineer-issues-…`
+ * for `790-expose-goal-id-…`). Bounded by the path's own segment count plus one readdir.
+ *
+ * PURE via the injected probe — unit-tested without touching a real tree.
+ */
+export function unresolvedPathsInCompletion(
+  evidence: CompletionVerificationEvidence | undefined,
+  probe: CompletionPathProbe = {},
+): { missing: Array<{ path: string; didYouMean?: string }> } | undefined {
+  const declared = evidence?.filesChanged;
+  if (!declared?.length) return undefined;
+
+  const repoRoot = probe.repoRoot ?? detectPapercupRoot();
+  if (!repoRoot) return undefined; // cannot judge → say nothing
+
+  const exists = probe.exists ?? ((abs: string) => existsSync(abs));
+  const siblings =
+    probe.siblings ??
+    ((abs: string) => {
+      try {
+        return readdirSync(abs);
+      } catch {
+        return [];
+      }
+    });
+
+  const missing: Array<{ path: string; didYouMean?: string }> = [];
+  for (const raw of declared.slice(0, MAX_PATHS_PROBED)) {
+    const declaredPath = raw.trim();
+    // A glob is a description of many files, not a claim that one path exists.
+    if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
+
+    let abs: string;
+    try {
+      abs = nodePath.resolve(repoRoot, declaredPath);
+    } catch {
+      continue;
+    }
+    // Outside the repo we have no standing to judge (and no business probing).
+    if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
+
+    try {
+      if (exists(abs)) continue;
+      missing.push({ path: declaredPath, didYouMean: suggestExistingPath(declaredPath, repoRoot, exists, siblings) });
+    } catch {
+      continue; // fs trouble is never the caller's problem
+    }
+  }
+
+  return missing.length > 0 ? { missing } : undefined;
+}
+
+/** Cheap, bounded repair of a path that does not exist. Returns undefined when unsure. */
+function suggestExistingPath(
+  declaredPath: string,
+  repoRoot: string,
+  exists: (abs: string) => boolean,
+  siblings: (abs: string) => string[],
+): string | undefined {
+  const segments = declaredPath.split('/').filter(Boolean);
+
+  // 1. An INSERTED segment — the observed failure shape (`agent-tools/`, `__tests__/`).
+  //    Never drop the basename: that would "repair" a path to its own directory.
+  for (let i = 0; i < segments.length - 1; i++) {
+    const candidate = [...segments.slice(0, i), ...segments.slice(i + 1)].join('/');
+    try {
+      if (exists(nodePath.resolve(repoRoot, candidate))) return candidate;
+    } catch {
+      /* keep trying the remaining repairs */
+    }
+  }
+
+  // 2. A misremembered BASENAME in a directory that does exist.
+  const dir = segments.slice(0, -1).join('/');
+  const base = segments[segments.length - 1];
+  if (!base) return undefined;
+  try {
+    const absDir = nodePath.resolve(repoRoot, dir);
+    if (!exists(absDir)) return undefined;
+    // Leading token: `790-expose-goal-id….sql` and `790-engineer-issues….sql` share `790`;
+    // `create.test.ts` and `create.ts` share `create`. Two chars minimum so a stray
+    // single letter cannot match half the directory.
+    const token = base.split(/[-._]/)[0];
+    if (!token || token.length < 2) return undefined;
+    const hit = siblings(absDir).find((entry) => entry !== base && entry.split(/[-._]/)[0] === token);
+    return hit ? (dir ? `${dir}/${hit}` : hit) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function completionEvidenceFromRecord(
@@ -858,6 +988,24 @@ async function completeOne(
       `their own project: npx tsc --noEmit -p <workspace>/tsconfig.json). If it only asserts BEHAVIOUR, ignore this.`
     : undefined;
 
+  // EI-20093150500083378: `filesChanged` is the one evidence field nothing challenged, and
+  // it is the one most often written from memory rather than observation. Same evidence
+  // extraction as every check above, so it can never disagree with what the caller supplied.
+  const unresolvedPaths = unresolvedPathsInCompletion(completionEvidenceForGate);
+  const unresolvedPathsWarning = unresolvedPaths
+    ? `completion for ${it.id} names ${unresolvedPaths.missing.length} \`filesChanged\` path(s) that do NOT ` +
+      `exist in the repo: ${unresolvedPaths.missing
+        .map((m) => (m.didYouMean ? `${m.path} (did you mean ${m.didYouMean}?)` : m.path))
+        .join(', ')}. ` +
+      `The completion is RECORDED and this changes nothing about it — but a completion record is what a later ` +
+      `agent or audit trusts WITHOUT re-checking, so a path that cannot be resolved quietly degrades the durable ` +
+      `record. Measured 2026-08-10: an agent filed 12 paths across two closes and 8 were fabricated — an ` +
+      `\`agent-tools/\` segment and a \`__tests__/\` dir that this repo does not use — and both closes still ` +
+      `landed authority:'committed'. The fabricated paths were MORE conventional than the real ones, which is ` +
+      `exactly why review does not catch them. If you DELETED these files, or they live in a submodule that is ` +
+      `not checked out, ignore this. Otherwise re-call work_items:complete with the paths verified on disk.`
+    : undefined;
+
   // P-004: the authority actually STAMPED on the row, or null when this call stamped
   // none (no terminal `state`, or the state write was rejected). Reporting the computed
   // judgement in either of those cases would tell the caller their close was graded when
@@ -1087,6 +1235,7 @@ async function completeOne(
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(skippedTestsWarning ? { skippedTestsWarning } : {}),
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
+    ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
     ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
     // Reported unconditionally on a real close (including `committed`) so the caller can
