@@ -80,6 +80,7 @@
     "libs/generic/deployment-driver",
     "libs/generic/tauri-release-kit",
     "libs/generic/pot-app-seam",
+    "libs/generic/template-kit",
     "libs/generic/lexicon",
     "libs/generic/facets",
     "libs/generic/eval-battery",

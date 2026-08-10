@@ -29,7 +29,7 @@ import type { TemplateManifest } from "./template-manifest.js";
 
 /** Aspect: the 2-hive ops construction — the judgment plane + the ONE seam. */
 export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
-  id: "papercusp-ops-hives",
+  id: "papercusp-ops-pots",
   version: "0.1.0",
   scope: "aspect",
   category: "agentic",
@@ -40,12 +40,12 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
     "into an app table. Nothing else crosses; confinement is enforced at install and the app's " +
     "blueprints/README.md states the rule.",
   components: [
-    { id: "hive-app-seam", version: "0.1.0" },
+    { id: "pot-app-seam", version: "0.1.0" },
     { id: "typed-contracts", version: "0.0.1" },
   ],
-  // Starter blueprints (P-006): ops-hive extends work, member extends
+  // Starter blueprints (P-006): ops-pot extends work, member extends
   // research — placeholder lexicon, renamed per the domain at composition.
-  blueprints: ["ops-hive", "member"],
+  blueprints: ["ops-pot", "member"],
   // The CandidateSet analog — the typed down-leg contract template the
   // building agent specializes for its domain.
   contracts: ["candidate-set"],
@@ -64,7 +64,7 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
     { id: "gym-signals", run: "checks/gym-signals.test.ts", summary: "the hive's guardrail gym signals are present and wired" },
   ],
   musts: [
-    { id: "seam-only-crossing", rule: "Every judgment-plane crossing composes @papercusp/hive-app-seam (bootstrap, work-items transport, ingest loop) — never hand-rolled calls against /api/harness/*", enforcedBy: "seam-round-trip" },
+    { id: "seam-only-crossing", rule: "Every judgment-plane crossing composes @papercusp/pot-app-seam (bootstrap, work-items transport, ingest loop) — never hand-rolled calls against /api/harness/*", enforcedBy: "seam-round-trip" },
     { id: "one-parse-gate", rule: "An app-owned contracts package with strict schemas both directions; the parse gate is the ONLY path from agent output to an app table and rejects emit events, never silent drops", enforcedBy: "seam-round-trip" },
     { id: "confinement-inviolable", rule: "Every hive role is read + propose-only against the app dangerous surface, pinned via role capability envelopes; the app blueprints/README.md is the canonical statement of the rule", enforcedBy: "confinement-guard" },
     { id: "nothing-else-crosses", rule: "No second transport, no side-channel table writes, no direct DB access from a role", enforcedBy: "prose-only" },
@@ -94,7 +94,7 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
     { id: "ui-shape", prompt: "What SPA surface does the deterministic plane need (grids, approvals view, streams)? FREE tier — compose as judged best." },
     { id: "app-identity", prompt: "App name, bundle identifier, app-home directory, and release channels (feeds tauri.conf + tauri-release-kit config)." },
   ],
-  composesWith: ["papercusp-ops-hives", "papercusp-agentic-desktop-app"],
+  composesWith: ["papercusp-ops-pots", "papercusp-agentic-desktop-app"],
   docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
   checks: [
     { id: "boot-e2e", run: "checks/boot-e2e.test.ts", summary: "composed app builds, sidecar spawns, discovery file written, health returns 200" },
@@ -113,7 +113,7 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
  * this exactly for non-empty composesWith). P-022 (owner #5): the agentic app
  * is a LAYER — it requires the non-agentic 'papercusp-desktop-app' as its BASE app
  * (whose closure brings papercusp-tauri-desktop-shell + papercusp-data-layer +
- * papercusp-ui) and adds papercusp-ops-hives, the judgment plane, on top.
+ * papercusp-ui) and adds papercusp-ops-pots, the judgment plane, on top.
  */
 export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
   id: "papercusp-agentic-desktop-app",
@@ -121,7 +121,7 @@ export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
   scope: "app",
   category: "app",
   summary:
-    "The proven two-plane agentic desktop app shape: papercusp-ops-hives " +
+    "The proven two-plane agentic desktop app shape: papercusp-ops-pots " +
     "(judgment plane + the ONE seam) layered onto the non-agentic papercusp-desktop-app BASE template — whose " +
     "requires-closure brings the papercusp-tauri-desktop-shell chassis, papercusp-data-layer, and papercusp-ui — " +
     "plus glue guidance. An app built from this composition must pass the UNION of the full closure's " +
@@ -131,14 +131,14 @@ export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
   decisionPoints: [
     { id: "domain", prompt: "What is the app's domain — the noun the deterministic plane ledgers and the judgment plane reasons about? Drives every aspect-level decision point." },
   ],
-  composesWith: ["papercusp-desktop-app", "papercusp-ops-hives"],
+  composesWith: ["papercusp-desktop-app", "papercusp-ops-pots"],
   // P-015: requires is the HARD pinned edge. P-022 re-layered it: papercusp-desktop-app
   // is the required BASE app (a base app joins the composition without owning
   // it — composeTemplates' root-app rule) and pulls the whole chassis + data
-  // + UI closure; papercusp-ops-hives adds the judgment plane.
+  // + UI closure; papercusp-ops-pots adds the judgment plane.
   requires: [
     { id: "papercusp-desktop-app", version: "0.1.0" },
-    { id: "papercusp-ops-hives", version: "0.1.0" },
+    { id: "papercusp-ops-pots", version: "0.1.0" },
   ],
   docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml"],
   checks: [
@@ -265,7 +265,7 @@ export const PAPERCUSP_DATA_LAYER_TEMPLATE: TemplateManifest = {
   decisionPoints: [
     { id: "app-schema", prompt: "Which tables does the app own, and what is the migration story? Migrations run forward-only on boot (the embedded-postgres-server pattern) — there is no ops window in a desktop app." },
     { id: "connection-resolution", prompt: "Parameterize @papercusp/embedded-pg-discovery for THIS app: which env vars (in priority order), which discovery-file path under the app home, which fallback URL? Never hardcode the port — it rotates per boot." },
-    { id: "contract-gates", prompt: "Which writes cross a trust boundary (agent output, imported files, network payloads)? Each gets the typed-contracts discipline — a dedicated contracts package + ONE parse gate, rejects surfaced as events. If the app composes papercusp-ops-hives this is MANDATORY for the seam; if nothing untrusted writes, drop the pattern." },
+    { id: "contract-gates", prompt: "Which writes cross a trust boundary (agent output, imported files, network payloads)? Each gets the typed-contracts discipline — a dedicated contracts package + ONE parse gate, rejects surfaced as events. If the app composes papercusp-ops-pots this is MANDATORY for the seam; if nothing untrusted writes, drop the pattern." },
   ],
   composesWith: ["papercusp-tauri-desktop-shell", "papercusp-data-sync", "papercusp-search"],
   docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
@@ -277,7 +277,7 @@ export const PAPERCUSP_DATA_LAYER_TEMPLATE: TemplateManifest = {
     { id: "no-hardcoded-pg", rule: "Never hardcode the PG port or URL — the port rotates per boot; always resolve through resolvePgUrl", enforcedBy: "prose-only" },
     { id: "postgres-js-client", rule: "postgres-js is the app PG client, not node-postgres — the search aspect SearchSource types its handle as a postgres-js Sql function (WI-2872)", enforcedBy: "prose-only" },
     { id: "forward-only-migrations", rule: "Migrations run on boot and are forward-only — a desktop app has no ops window", enforcedBy: "prose-only" },
-    { id: "single-parse-gate", rule: "Every trust-boundary write goes through a single typed-contract parse gate — mandatory for the seam down-leg when composing papercusp-ops-hives", enforcedBy: "prose-only" },
+    { id: "single-parse-gate", rule: "Every trust-boundary write goes through a single typed-contract parse gate — mandatory for the seam down-leg when composing papercusp-ops-pots", enforcedBy: "prose-only" },
     { id: "deps-declared", rule: "Every kept component is a real package dependency — not wired on paper", enforcedBy: "components-integrated" },
   ],
 };
@@ -504,7 +504,7 @@ export const PAPERCUSP_WEBAPP_TEMPLATE: TemplateManifest = {
     "discovery, typed-contract write gates) + papercusp-ui (headless primitives, data grids, dock workbench, " +
     "brand lexicon), pulled in as hard requires. A thin pure composition — no own components; an app built " +
     "from it must pass the UNION of the closure's checks. No agent plane here; an agentic web app layers " +
-    "papercusp-ops-hives onto this the way papercusp-agentic-desktop-app layers onto papercusp-desktop-app.",
+    "papercusp-ops-pots onto this the way papercusp-agentic-desktop-app layers onto papercusp-desktop-app.",
   components: [],
   contracts: [],
   decisionPoints: [
@@ -548,7 +548,7 @@ export const PAPERCUSP_WEBAPP_TEMPLATE: TemplateManifest = {
   musts: [
     { id: "thin-app-template", rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects", enforcedBy: "composition-integrity" },
     { id: "full-union-green", rule: "The composed app passes the FULL union of the closure checks — boot-e2e, components-integrated, composition-integrity", enforcedBy: "prose-only" },
-    { id: "no-agent-surfaces", rule: "No hives and no seam in an app built from this template — if agents appear mid-build, add papercusp-ops-hives to the composition explicitly", enforcedBy: "prose-only" },
+    { id: "no-agent-surfaces", rule: "No hives and no seam in an app built from this template — if agents appear mid-build, add papercusp-ops-pots to the composition explicitly", enforcedBy: "prose-only" },
     { id: "auth-before-exposure", rule: "The web-host auth placeholders are replaced before any non-local exposure", enforcedBy: "prose-only" },
   ],
 };
