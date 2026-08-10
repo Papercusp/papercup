@@ -24,6 +24,9 @@ import {
   subjectRequiringModeIds,
   resolveImpliedModes,
   modeIndexMarkdown,
+  LAUNCHABLE_MODE_IDS,
+  isLaunchableMode,
+  launchableModes,
 } from './registry';
 
 /**
@@ -563,5 +566,67 @@ describe('modeIndexMarkdown', () => {
     // every loop above while listing nothing at all.
     expect(MODES.length).toBeGreaterThanOrEqual(7);
     expect(md.split('\n').filter((l) => l.startsWith('- **'))).toHaveLength(MODES.length);
+  });
+});
+
+/**
+ * THE `launchable` DECLARATION (retire-mug-kettle-su-only-2026-08-09 D-067) —
+ * which modes a caller may request BEFORE the session exists.
+ *
+ * Why the flag exists at all: this vocabulary was hardcoded in two places that
+ * cannot see each other (psu-launcher.mjs's argv parser and bootstrap-su.ts's
+ * body validator), and wiring the GUI path was about to make it four. The
+ * population is PINNED here for the same reason the `implies` suite above pins
+ * its own: a guard that iterates whatever it finds passes vacuously, and one
+ * that spot-checks a single id keeps passing after the set changes underneath
+ * it.
+ */
+describe('launchable modes', () => {
+  it('is exactly {auto, drain} — the two postures psu has a flag for', () => {
+    expect([...LAUNCHABLE_MODE_IDS].sort()).toEqual(['auto', 'drain']);
+  });
+
+  it('every launchable id is a real registered mode', () => {
+    for (const id of LAUNCHABLE_MODE_IDS) expect(modeById(id)).not.toBeNull();
+  });
+
+  it('isLaunchableMode agrees with the list, in both directions', () => {
+    for (const m of MODES) {
+      expect(isLaunchableMode(m.id)).toBe(LAUNCHABLE_MODE_IDS.includes(m.id));
+    }
+  });
+
+  it('an unregistered id is not launchable (no crash, no accidental true)', () => {
+    expect(isLaunchableMode('definitely-not-a-mode')).toBe(false);
+    expect(isLaunchableMode('')).toBe(false);
+  });
+
+  /**
+   * The constraint that keeps the GUI honest. A launchable mode is entered by a
+   * flag alone, with nothing to attach a subject to — so a subject-REQUIRING
+   * mode can never be launchable. Violating this does not throw: it writes a
+   * subject-less row that silently zeroes work_items.goal_id and the goal stop,
+   * which is precisely why `goal` is excluded despite being the mode a launcher
+   * would most plausibly want to offer.
+   */
+  it('no launchable mode requires a subject', () => {
+    for (const id of LAUNCHABLE_MODE_IDS) expect(modeRequiresSubject(id)).toBe(false);
+  });
+
+  it('GOAL is registered but NOT launchable — it requires a subject', () => {
+    expect(modeById('goal')).not.toBeNull();
+    expect(modeRequiresSubject('goal')).toBe(true);
+    expect(isLaunchableMode('goal')).toBe(false);
+  });
+
+  it('launchableModes() returns the matching defs, in registry order', () => {
+    const defs = launchableModes();
+    expect(defs.map((m) => m.id)).toEqual([...LAUNCHABLE_MODE_IDS]);
+    // Every def carries what a picker renders from — an empty title or oneLiner
+    // would produce a blank, unpickable row rather than a visible failure.
+    for (const d of defs) {
+      expect(d.title.trim().length).toBeGreaterThan(0);
+      expect(d.oneLiner.trim().length).toBeGreaterThan(0);
+    }
   });
 });

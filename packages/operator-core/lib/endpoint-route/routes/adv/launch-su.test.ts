@@ -306,3 +306,76 @@ describe('launch-su — the terminal child gets a RE-DERIVED operator base, neve
     }
   });
 });
+
+/**
+ * retire-mug-kettle-su-only-2026-08-09 P-042 (D-067) — the launch-time MODE.
+ *
+ * With the Mug/Kettle tier retired, su + its modes ARE how the app is driven, so
+ * a GUI that cannot launch a session into DRAIN or AUTO leaves those postures
+ * reachable only by typing them to a session that is already running.
+ *
+ * The whole surface under test is the MAPPING onto psu's two flag shapes, so
+ * these assert on the composed argv — the same evidence the headless suite above
+ * uses, for the same reason: it is what the shell actually executes.
+ */
+describe('launch-su — launch-time mode (P-042)', () => {
+  it('mode:"drain" passes psu the NAMED-mode flag', async () => {
+    await launch({ mode: 'drain', headless: false });
+    expect(headedPsuCommand()).toContain('--mode=drain');
+  });
+
+  /**
+   * THE LOAD-BEARING CASE. AUTO is a BOOLEAN psu flag, not a named mode:
+   * `--mode=auto` would make psu forward `{mode:'auto'}` to bootstrap-su, which
+   * refuses every named mode but 'drain' with a 400. A uniform `--mode=<id>`
+   * mapping therefore breaks precisely the posture this feature exists to ship,
+   * and it breaks it at spawn time where the terminal flashes one line and
+   * closes. Assert BOTH halves — the flag present, the wrong form absent.
+   */
+  it('mode:"auto" passes the BOOLEAN --auto, never --mode=auto (bootstrap-su 400s on that)', async () => {
+    await launch({ mode: 'auto', headless: false });
+    const cmd = headedPsuCommand();
+    expect(cmd).toContain('--auto');
+    expect(cmd).not.toContain('--mode=auto');
+  });
+
+  it('an OMITTED mode is byte-identical to a pre-feature launch — no mode flag at all', async () => {
+    await launch({ headless: false });
+    const cmd = headedPsuCommand();
+    expect(cmd).not.toContain('--mode=');
+    expect(cmd).not.toContain('--auto');
+  });
+
+  it('carries the mode into a HEADLESS launch too (the posture is orthogonal to the window)', async () => {
+    await launch({ mode: 'drain', headless: true });
+    expect(headlessOneliner()).toContain('--mode=drain');
+  });
+
+  it('an unknown mode is refused with a 400 and spawns NOTHING', async () => {
+    const { status, json } = await launch({ mode: 'definitely-not-a-mode', headless: false });
+    expect(status).toBe(400);
+    expect(String(json.error)).toContain('mode must be one of');
+    expect(spawnInTerminalMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The falsifier that makes the guard mean something. 'goal' IS a registered
+   * mode — so a validator that merely asked "is this a known mode?" would let it
+   * through. It is not LAUNCHABLE: it requires a subject, and a subject-less
+   * goal row silently zeroes its own consumers (work_items.goal_id, the goal
+   * stop) rather than erroring. Refusing it here is the property under test.
+   */
+  it('refuses a mode that is REGISTERED but not launchable (goal requires a subject)', async () => {
+    const { status, json } = await launch({ mode: 'goal', headless: false });
+    expect(status).toBe(400);
+    expect(String(json.error)).toContain('mode must be one of');
+    expect(spawnInTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it('the refusal NAMES the modes that would work, rather than only rejecting', async () => {
+    const { json } = await launch({ mode: 'ideate', headless: false });
+    expect(String(json.error)).toContain('drain');
+    expect(String(json.error)).toContain('auto');
+  });
+});

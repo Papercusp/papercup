@@ -42,6 +42,12 @@ import {
   SU_CONTEXT_SIZES,
   SU_CONTEXT_TOKEN_ESTIMATES,
 } from '@papercusp/operator-core/lib/agent-config-constants';
+// P-042 / D-067: the launch-MODE vocabulary, from the modes registry itself —
+// the same list launch-su validates against, so the picker cannot offer a mode
+// the launcher would refuse. Client-safe for the same reason the module above
+// is: registry.ts has ZERO imports (pure data + pure functions), so reading it
+// here drags no node/server subtree into the renderer bundle.
+import { launchableModes } from '@papercusp/operator-core/lib/modes/registry';
 import { useSuLaunchOptions } from './use-su-launch-options';
 import {
   formatAbsoluteUpdated,
@@ -164,6 +170,7 @@ export const FLEET_SELECT_NONE = '__no_fleet__';
 export const FLEET_SELECT_NEW = '__new_fleet__';
 export const ACCOUNT_SELECT_DEFAULT = 'default';
 export const CONTEXT_SELECT_NATIVE = '__native_context__';
+export const MODE_SELECT_NONE = '__no_mode__';
 
 /** Fleet rows: "no fleet" (psu's own first row + default), "create a new fleet…"
  *  previewing the colour it would get, then every durable fleet with its bound
@@ -212,6 +219,33 @@ export function buildAccountOptions(
       label: a.label?.trim() || a.id,
       detail: a.detail?.trim() || `Pinned pool account`,
       keywords: [a.id],
+    })),
+  ];
+}
+
+/** Launch-MODE rows (P-042 / D-067) — "Interactive" (send nothing, the historical
+ *  behaviour) then every mode the registry marks `launchable`.
+ *
+ *  Rendered FROM the registry rather than a local list on purpose: launch-su
+ *  validates against that same `LAUNCHABLE_MODE_IDS`, so this picker cannot
+ *  drift into offering a mode psu would refuse — a failure that would surface as
+ *  a terminal flashing one error line and closing, under a SUCCESS toast.
+ *
+ *  Pure — exported for unit-test access. */
+export function buildModeOptions(): ComboboxOption[] {
+  return [
+    {
+      value: MODE_SELECT_NONE,
+      label: 'Interactive',
+      detail: 'Default — confirm before acting',
+    },
+    ...launchableModes().map((m) => ({
+      value: m.id,
+      // 'AUTO — act, don’t ask' → the em-dash half is the detail line, so the
+      // trigger stays short. Falls back to the whole title if it has no dash.
+      label: m.title.split('—')[0]?.trim() || m.id.toUpperCase(),
+      detail: m.oneLiner,
+      keywords: [m.id],
     })),
   ];
 }
@@ -384,6 +418,9 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
   const [fleetScheme, setFleetScheme] = useState('');
   const [account, setAccount] = useState<string>(ACCOUNT_SELECT_DEFAULT);
   const [contextSize, setContextSize] = useState(CONTEXT_SELECT_NATIVE);
+  // P-042 — the launch posture. Local useState like its siblings: a mid-edit
+  // draft of the next launch, not a shareable view.
+  const [mode, setMode] = useState(MODE_SELECT_NONE);
 
   // psu's OWN option source — see use-su-launch-options' header. Keyed to the
   // backend the picked model implies, because pool pinning is per-backend.
@@ -397,6 +434,7 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
     [launchOptions.accounts],
   );
   const contextOptions = useMemo(() => buildContextSizeOptions(), []);
+  const modeOptions = useMemo(() => buildModeOptions(), []);
   const schemeOptions = useMemo(
     () =>
       launchOptions.schemes.map((s) => ({
@@ -486,6 +524,12 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         account: account || ACCOUNT_SELECT_DEFAULT,
         contextSize:
           contextSize === CONTEXT_SELECT_NATIVE ? undefined : (contextSize as 'full' | 'trimmed'),
+        // P-042 / D-067 — the launch posture. "Interactive" sends null, which is
+        // byte-identical to a pre-feature launch. launch-su maps the rest onto
+        // psu's argv and bootstrap-su writes the durable agent_modes row, so a
+        // session launched in DRAIN is ALREADY in DRAIN on turn 1 — no one has
+        // to type it, and it survives compaction.
+        mode: mode === MODE_SELECT_NONE ? null : mode,
       });
       if (result.ok && result.warning) {
         // EI-18696184925888288: launch-su's spawn call succeeded but the
@@ -644,6 +688,16 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
           placeholder="Native context"
           emptyLabel="No context sizes match"
           options={contextOptions}
+        />
+        <Combobox
+          triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--mode"
+          value={mode}
+          emptyValue={MODE_SELECT_NONE}
+          onChange={(value) => setMode(value)}
+          ariaLabel="Mode for new session"
+          placeholder="Interactive"
+          emptyLabel="No modes match"
+          options={modeOptions}
         />
         <Button
           variant="primary"

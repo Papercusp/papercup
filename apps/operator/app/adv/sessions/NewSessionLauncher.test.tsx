@@ -119,6 +119,8 @@ import NewSessionLauncher, {
   buildAccountOptions,
   buildContextSizeOptions,
   buildFleetOptions,
+  buildModeOptions,
+  MODE_SELECT_NONE,
   composeModelSpec,
   modelBackend,
   ACCOUNT_SELECT_DEFAULT,
@@ -136,6 +138,12 @@ import {
   MODEL_EFFORT_LEVELS,
   SU_CONTEXT_SIZES,
 } from '@papercusp/operator-core/lib/agent-config-constants';
+// P-042: assert the picker against the SHARED source it renders from, not a
+// local copy — a copy would satisfy the row-count check while still drifting.
+import {
+  LAUNCHABLE_MODE_IDS,
+  isLaunchableMode,
+} from '@papercusp/operator-core/lib/modes/registry';
 
 function plan(slug: string, over: Partial<Record<string, unknown>> = {}) {
   return {
@@ -545,6 +553,69 @@ describe('NewSessionLauncher', () => {
         CONTEXT_SELECT_NATIVE,
         ...SU_CONTEXT_SIZES,
       ]);
+    });
+  });
+
+  /**
+   * retire-mug-kettle-su-only-2026-08-09 P-042 (D-067) — the launch-time MODE.
+   *
+   * With the Mug/Kettle tier retired, su + its modes ARE how the app is driven.
+   * GOAL already had an atomic GUI surface (GoalComposer, P-041); AUTO and DRAIN
+   * had none, so the only way into either was typing it to a session that was
+   * already running.
+   */
+  describe('launch-time mode picker (P-042)', () => {
+    it('renders the mode picker', () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      expect(screen.getByRole('combobox', { name: 'Mode for new session' })).toBeTruthy();
+    });
+
+    it('defaults to Interactive and sends mode:null — an unchanged launch', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ mode: null }));
+    });
+
+    it('threads a chosen mode through to the launch', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Mode for new session' }), {
+        target: { value: 'drain' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ mode: 'drain' }));
+    });
+
+    it('offers Interactive plus exactly the registry\'s launchable modes', () => {
+      expect(buildModeOptions().map((o) => o.value)).toEqual([
+        MODE_SELECT_NONE,
+        ...LAUNCHABLE_MODE_IDS,
+      ]);
+    });
+
+    /**
+     * The picker is rendered FROM the registry so it cannot offer a mode
+     * launch-su would refuse. Asserting the shared source directly is what makes
+     * that claim testable — a local copy would satisfy the row-count check above
+     * while still drifting.
+     */
+    it('offers nothing psu cannot launch — every row but Interactive is launchable', () => {
+      for (const o of buildModeOptions()) {
+        if (o.value === MODE_SELECT_NONE) continue;
+        expect(isLaunchableMode(o.value)).toBe(true);
+      }
+    });
+
+    it('never offers GOAL — it requires a subject and has its own atomic surface', () => {
+      expect(buildModeOptions().map((o) => o.value)).not.toContain('goal');
+    });
+
+    it('every row is renderable — a blank label would be an unpickable row', () => {
+      for (const o of buildModeOptions()) {
+        expect(o.label.trim().length).toBeGreaterThan(0);
+        expect((o.detail ?? '').trim().length).toBeGreaterThan(0);
+      }
     });
   });
 
