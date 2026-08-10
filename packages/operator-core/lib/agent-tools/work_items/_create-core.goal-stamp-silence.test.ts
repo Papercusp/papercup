@@ -60,7 +60,7 @@ vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(as
 vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.fn(async () => null) }));
 
 /** The ambient goal the creating agent is (or is not) running under. */
-const resolveGoalContextMock = vi.fn<[], Promise<string | null>>(async () => null);
+const resolveGoalContextMock = vi.fn<() => Promise<string | null>>(async () => null);
 vi.mock('../../modes/goal-context', () => ({
   resolveGoalContext: () => resolveGoalContextMock(),
 }));

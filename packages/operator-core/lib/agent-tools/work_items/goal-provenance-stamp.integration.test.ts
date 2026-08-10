@@ -174,7 +174,7 @@ describe('goal provenance stamping (P-002/D-008) against real SQL', () => {
     if (!res.ok) return;
 
     expect(await storedGoalId(res.workItem.id)).toBe(GOAL_INHERITED);
-    expect((res as { goalId?: string }).goalId).toBe(GOAL_INHERITED);
+    expect(res.goalId).toBe(GOAL_INHERITED);
   });
 
   it('stamps an item created by the agent that RUNS the goal', async () => {
@@ -198,7 +198,7 @@ describe('goal provenance stamping (P-002/D-008) against real SQL', () => {
     if (!res.ok) return;
 
     expect(await storedGoalId(res.workItem.id)).toBeNull();
-    expect((res as { goalId?: string }).goalId).toBeUndefined();
+    expect(res.goalId).toBeUndefined();
   });
 
   // Precedence is load-bearing (D-008): an agent that BOTH runs a goal and was
