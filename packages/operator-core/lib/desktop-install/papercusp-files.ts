@@ -21,6 +21,10 @@ import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
 import { filterInstallSources, describeRefusals } from './install-source-guard';
+// Single definition, shared with the pot-git ext:: transport (EI-20078551747038927).
+// Re-exported below so existing importers of this module keep resolving it here.
+import { resolveBundledNode } from '../bundled-node';
+export { resolveBundledNode };
 import {
   readInstallStamp,
   writeInstallStamp,
@@ -1647,26 +1651,6 @@ export async function ensureGhLinked(home: string, binDir: string): Promise<bool
   } catch {
     return false;
   }
-}
-
-/**
- * The BUNDLED node, resolved cwd-independently (a subset of resolveShimNode's
- * anchors — the two that don't depend on a launcher path). `null` when this
- * process can't see it (an extracted dev-source operator whose env lacks
- * PAPERCUSP_SIDECAR_BIN and whose execPath is a tsx wrapper, not plain `node`).
- */
-export async function resolveBundledNode(): Promise<string | null> {
-  const sidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
-  const execBase = path.basename(process.execPath).toLowerCase();
-  const execIsNode = execBase === 'node' || execBase === 'node.exe';
-  const candidates = [
-    sidecarBin ? path.join(sidecarBin, 'node') : '',
-    execIsNode ? process.execPath : '',
-  ].filter(Boolean);
-  for (const c of candidates) {
-    if (await pathExists(c)) return c;
-  }
-  return null;
 }
 
 /**

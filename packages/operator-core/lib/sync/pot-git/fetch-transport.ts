@@ -30,6 +30,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createTextCollector } from '../../child-output.js';
+import { resolveBundledNode } from '../../bundled-node';
 import { createServer } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -76,6 +77,36 @@ function escapeExtToken(token: string): string {
  */
 export function formatExtTransportUrl(argv: readonly string[]): string {
   return `ext::${argv.map(escapeExtToken).join(' ')}`;
+}
+
+/**
+ * The interpreter token for the `ext::` command — an ABSOLUTE path to the
+ * bundled node whenever this process can see it.
+ *
+ * ## Why this is not a bare `node` (EI-20078551747038927)
+ *
+ * git execs the ext command itself, inheriting whatever PATH the sidecar
+ * carries — and on a packaged install that is not guaranteed to contain node at
+ * all. On the macOS 0.0.14 VM a non-interactive shell had NO node on PATH
+ * (`node: command not found`) even though the app was running its own bundled
+ * runtime at `…/Contents/Resources/sidecar/bin/node`. A bare token resolves on
+ * the dev box and fails on exactly the installs that matter.
+ *
+ * The failure is silent by construction, which is why it is worth resolving
+ * deliberately: the fetch fail-softs by contract, so a broken interpreter shows
+ * up only as a per-tick stderr line while pot-git replication never converges
+ * and self-retries forever — the same shape that let WI-37735 ship unnoticed.
+ *
+ * `resolveBundledNode` deliberately does NOT fall back to `process.execPath` in
+ * a packaged build (there it is the Tauri binary, not node — EI-2114), so the
+ * bare-`node` fallback below is the honest last resort: it is what a dev tree
+ * with node on PATH has always used, and it is no worse than the old behaviour
+ * anywhere else. The resolved binary is plain node, never a loader wrapper, so
+ * it boots quietly for the pack stream (see the NODE_OPTIONS strip at the
+ * spawn site).
+ */
+export async function extNodeCommand(): Promise<string> {
+  return (await resolveBundledNode()) ?? 'node';
 }
 
 /** Protomux protocol id for the per-fetch git streams (the wiring opens one
@@ -752,11 +783,13 @@ export function fetchOverDuplex(
           server.listen(sockPath, () => r());
         });
         if (settled) return;
-        // ext:: command tokens are space-split by git, and BOTH paths below can
-        // contain a space on a real install (WI-37735: the bridge sits beside
+        // ext:: command tokens are space-split by git, and ALL THREE paths below
+        // can contain a space on a real install (WI-37735: the bridge sits beside
         // this module, i.e. inside `/Applications/Papercusp GUI.app/…` on every
         // macOS install). formatExtTransportUrl escapes them for git.
-        const url = formatExtTransportUrl(['node', EXT_BRIDGE_PATH, sockPath]);
+        const nodeCmd = await extNodeCommand();
+        if (settled) return;
+        const url = formatExtTransportUrl([nodeCmd, EXT_BRIDGE_PATH, sockPath]);
         // The ext helper is a plain `node` grandchild whose STDOUT *is* the git
         // pkt-line channel — so it must boot vanilla. Strip any injected loader
         // (NODE_OPTIONS / tsx --import|--require) that would print startup noise

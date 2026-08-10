@@ -17,7 +17,8 @@ import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { mkdtemp, mkdir, copyFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile, symlink } from 'node:fs/promises';
+import { execFile, execFileSync } from 'node:child_process';
 import {
   defaultRunGit,
   ensurePotGitRepo,
@@ -30,6 +31,7 @@ import {
   fetchPeerNamespace,
   peerNamespaceRefspec,
   formatExtTransportUrl,
+  extNodeCommand,
 } from './fetch-transport';
 
 function devicePubkey(): string {
@@ -224,6 +226,85 @@ describe('pot-git fetch transport (real upload-pack ↔ fetch over a duplex)', (
     expect(escaped.stderr).not.toMatch(/Cannot find module/);
     expect(await readNamespaceRef(mirror, devA, 'refs/heads/work')).toBe(head);
   });
+
+  /**
+   * EI-20078551747038927: the ext:: INTERPRETER token must be an absolute path.
+   *
+   * git execs the ext command itself, inheriting whatever PATH the sidecar
+   * carries — and a packaged install is not guaranteed to have node on it at
+   * all. On the macOS 0.0.14 VM a non-interactive shell had NO node
+   * (`node: command not found`) while the app was running its own bundled
+   * runtime at `…/Contents/Resources/sidecar/bin/node`.
+   *
+   * The node-less PATH is the load-bearing half: every other test here runs on
+   * a dev box that HAS node, so a bare `node` token passes them all — which is
+   * exactly how this survives review. Removing the negative control makes this
+   * test pass with the fix reverted.
+   */
+  it('EI-20078551747038927: fetches with NO node on PATH (and the bare-`node` token still breaks)', async () => {
+    // A PATH carrying git (+sh) but deliberately NOT node.
+    const binDir = join(root, 'nodeless-bin');
+    await mkdir(binDir, { recursive: true });
+    const gitPath = execFileSync('sh', ['-c', 'command -v git']).toString().trim();
+    await symlink(gitPath, join(binDir, 'git'));
+    await symlink(execFileSync('sh', ['-c', 'command -v sh']).toString().trim(), join(binDir, 'sh'));
+
+    // The packaged layout main.rs exports: $PAPERCUSP_SIDECAR_BIN/node.
+    const sidecarBin = join(root, 'Papercusp GUI.app', 'Contents', 'Resources', 'sidecar', 'bin');
+    await mkdir(sidecarBin, { recursive: true });
+    await symlink(process.execPath, join(sidecarBin, 'node'));
+
+    const bridge = join(dirname(fileURLToPath(import.meta.url)), 'git-ext-bridge.mjs');
+    const mirror = await ensurePotGitRepo('hive-x', 'repo-1-nodeless-mirror');
+    const head = await readNamespaceRef(serverRepo, devA, 'refs/heads/work');
+    expect(head, 'server namespace head must exist for this fetch to mean anything').toBeTruthy();
+    expect(await readNamespaceRef(mirror, devA, 'refs/heads/work')).toBeNull();
+
+    const fetchWithoutNodeOnPath = (url: string) =>
+      new Promise<{ code: number; stderr: string }>((resolve) => {
+        execFile(
+          gitPath,
+          [
+            '-c',
+            'protocol.ext.allow=always',
+            '-c',
+            'protocol.version=2',
+            'fetch',
+            '--no-write-fetch-head',
+            url,
+            peerNamespaceRefspec(devA),
+          ],
+          { cwd: mirror, env: { ...process.env, PATH: binDir }, timeout: 30_000 },
+          (err, _stdout, stderr) =>
+            resolve({ code: err ? Number((err as NodeJS.ErrnoException).code ?? 1) : 0, stderr: String(stderr) }),
+        );
+      });
+
+    // NEGATIVE CONTROL: the bare `node` token — the form that shipped.
+    const bare = await fetchWithoutNodeOnPath(formatExtTransportUrl(['node', bridge, sockPath]));
+    expect(bare.code, 'a bare `node` must fail with no node on PATH, or this test proves nothing').not.toBe(0);
+    // ...and fail for the RIGHT reason: the interpreter, not some unrelated breakage.
+    expect(bare.stderr, `expected a node-resolution failure, got: ${bare.stderr}`).toMatch(/node/i);
+    expect(await readNamespaceRef(mirror, devA, 'refs/heads/work')).toBeNull();
+
+    // THE FIX, through the REAL call site: fetchOverDuplex builds the ext:: URL
+    // itself, so scrubbing PATH here (git inherits our env) is what pins line-759
+    // behaviour. Reverting that token to a bare `node` fails THIS assertion —
+    // asserting on extNodeCommand() alone would not, since the call site could
+    // still hardcode `node` and pass.
+    vi.stubEnv('PATH', binDir);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', sidecarBin);
+    let fixed: { code: number; stderr: string };
+    try {
+      expect(await extNodeCommand()).toBe(join(sidecarBin, 'node'));
+      const conn = await dialClient();
+      fixed = await fetchOverDuplex(mirror, conn, [peerNamespaceRefspec(devA)], { timeoutMs: 30_000 });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(fixed.code, fixed.stderr).toBe(0);
+    expect(await readNamespaceRef(mirror, devA, 'refs/heads/work')).toBe(head);
+  }, 60_000);
 
   it('serveUploadPack refuses a repo outside the pot-git root (defense in depth)', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'hgoutside-'));

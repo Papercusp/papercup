@@ -6,13 +6,13 @@
  * (Full serve/fetch byte-stream coverage lives in
  * fetch-transport.integration.test.ts — this file only exercises the guard.)
  */
-import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { describe, expect, it, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Duplex, PassThrough } from 'node:stream';
 import { execFileSync } from 'node:child_process';
-import { serveUploadPack, fetchOverDuplex, formatExtTransportUrl } from './fetch-transport';
+import { serveUploadPack, fetchOverDuplex, formatExtTransportUrl, extNodeCommand } from './fetch-transport';
 import { scopeRepoPath, type ScopeId } from './scope-repo';
 import { authorizeScopeRepoServe } from './scope-serve-gate';
 
@@ -221,6 +221,70 @@ describe('formatExtTransportUrl — git ext:: token escaping (WI-37735)', () => 
     const url = formatExtTransportUrl(['node', '/tmp/%s%G%V/bridge.mjs']);
     // Every % in the output is part of '%%' or '% ' — no directive survives.
     expect(url.replace(/%%/g, '').replace(/% /g, '')).not.toContain('%');
+  });
+});
+
+/**
+ * EI-20078551747038927 — the interpreter token must be an ABSOLUTE path.
+ *
+ * git execs the ext:: command with whatever PATH the sidecar carries, and on a
+ * packaged install that is not guaranteed to contain node at all (observed on
+ * the macOS 0.0.14 VM: `node: command not found` in a non-interactive shell
+ * while the app ran its own bundled runtime). The fetch fail-softs by contract,
+ * so getting this wrong is silent — hence a direct guard rather than relying on
+ * the integration test, which passes either way on a dev box that HAS node.
+ */
+describe('extNodeCommand — the ext:: interpreter token (EI-20078551747038927)', () => {
+  const origExecPath = process.execPath;
+  let tmp: string | null = null;
+
+  afterEach(() => {
+    process.execPath = origExecPath;
+    vi.unstubAllEnvs();
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    tmp = null;
+  });
+
+  function touch(p: string): string {
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, '');
+    return p;
+  }
+
+  it('resolves the bundled node to an absolute path — never the bare `node` that shipped', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'extnode-'));
+    const sidecarBin = join(tmp, 'Papercusp GUI.app', 'Contents', 'Resources', 'sidecar', 'bin');
+    const bundled = touch(join(sidecarBin, 'node'));
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', sidecarBin);
+
+    const cmd = await extNodeCommand();
+    expect(cmd).toBe(bundled);
+    expect(cmd).not.toBe('node');
+  });
+
+  it('the resolved token survives git ext:: parsing even with a space in the install path', async () => {
+    // The two fixes compose: WI-37735 escapes the token, this one makes it absolute.
+    tmp = mkdtempSync(join(tmpdir(), 'extnode-'));
+    const sidecarBin = join(tmp, 'Papercusp GUI.app', 'Contents', 'Resources', 'sidecar', 'bin');
+    const bundled = touch(join(sidecarBin, 'node'));
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', sidecarBin);
+
+    const url = formatExtTransportUrl([await extNodeCommand(), '/tmp/x/bridge.mjs', '/tmp/x/s.sock']);
+    expect(splitExtCommandLikeGit(url.slice('ext::'.length))).toEqual([
+      bundled,
+      '/tmp/x/bridge.mjs',
+      '/tmp/x/s.sock',
+    ]);
+  });
+
+  it('falls back to bare `node` only when no bundled runtime is visible (the dev tree)', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'extnode-'));
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', '');
+    // A packaged Tauri execPath (EI-2114) is NOT a usable interpreter, so it must
+    // not be substituted here — the honest answer is the pre-existing fallback.
+    process.execPath = touch(join(tmp, 'MacOS', 'papercusp-desktop'));
+
+    expect(await extNodeCommand()).toBe('node');
   });
 });
 
