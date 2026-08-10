@@ -26,6 +26,7 @@ import type { Embedder, Listing, SearchSourceParams } from '@papercusp/search';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from '../../search/prose-vector-dims';
+import { sectionAnchorBase } from '../../search/doc-section-anchor';
 
 /** Over-fetch factor: several sections of one page can crowd the top-k; fetch
  *  extra rows so page-level dedupe still fills `limit` distinct pages. */
@@ -35,7 +36,9 @@ export interface DocSemanticHit {
   slug: string;
   url: string;
   title: string;
-  /** Best-matching section's anchor ('' = page preamble). */
+  /** Best-matching section's anchor ('' = page preamble). Always a NAVIGABLE
+   *  heading anchor: a match on a continuation chunk (stored as `<anchor>~N`)
+   *  reports the heading it belongs to, never the storage-only chunk id. */
   anchor: string;
   /** Cosine similarity (1 − pgvector `<=>` distance) in the active space. */
   similarity: number;
@@ -62,7 +65,13 @@ async function querySectionsReal(vec: number[], mode: string, sourceKey: string,
        AND embedding_mode = ${mode}
      ORDER BY embedding <=> ${vecLit}::vector
      LIMIT ${limit}`;
-  return rows.map((r) => ({ ...r, similarity: Number(r.similarity) }));
+  return rows.map((r) => ({
+    ...r,
+    // A continuation chunk is a STORAGE row; the caller gets the heading it
+    // came from, so a tail match cites a link target that actually resolves.
+    anchor: sectionAnchorBase(r.anchor),
+    similarity: Number(r.similarity),
+  }));
 }
 
 export const realDocSemanticDeps: DocSemanticDeps = {
