@@ -260,7 +260,7 @@ describe('the doc corpus — executable claims hold', () => {
       return !known.has(m.script);
     });
     expect(
-      missing.map((m) => `CLAUDE.md:${m.line} — \`npm run ${m.script}\`${m.explicitDir ? ` in ${m.explicitDir}` : ''} names no such script`),
+      missing.map((m) => `${SUBJECT_LABEL}:${m.line} — \`npm run ${m.script}\`${m.explicitDir ? ` in ${m.explicitDir}` : ''} names no such script`),
     ).toEqual([]);
   });
 
@@ -273,7 +273,7 @@ describe('the doc corpus — executable claims hold', () => {
     }
     const denied = claims.prescribed.filter((p) => askAdmissionGate(p.command) === 'deny');
     expect(
-      denied.map((d) => `CLAUDE.md:${d.line} [${d.site}] prescribes \`${d.command}\`, which the heavy-command admission gate REFUSES under fleet load. ${REMEDY}`),
+      denied.map((d) => `${SUBJECT_LABEL}:${d.line} [${d.site}] prescribes \`${d.command}\`, which the heavy-command admission gate REFUSES under fleet load. ${REMEDY}`),
     ).toEqual([]);
   }, 120_000);
 });

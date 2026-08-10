@@ -640,11 +640,32 @@ export async function recallCorpusContext(
           // hydrates them for the final top-N only, instead of paying ts_headline
           // across the whole limit*3 over-fetch pool.
           deferHighlight: true,
-          // P-009 / D-001 — the recency term. D-037 forbids an absolute score
-          // FLOOR on this leg (RRF is rank-derived, so a constant compared
-          // against it is meaningless); this is a monotone RE-ORDER of an
+          // P-009 / D-001 — the recency term. It is a monotone RE-ORDER of an
           // existing ranking and compares nothing against an absolute scale,
-          // which D-001 records as the reason the two are compatible.
+          // which D-001 records as the reason it is compatible with a
+          // rank-derived fusion: an absolute constant compared against a FUSED
+          // RRF value would be meaningless, a reordering of one is not.
+          //
+          // ⚠ This used to read "D-037 forbids an absolute score FLOOR on this
+          // leg". Both halves were wrong (D-097). D-037 lives on plan
+          // context-injection-audit-2026-07-28 and forbids no such thing — its
+          // only "floor" is the phrase "evict a floor-passing memory", about
+          // mem0 POOL floors. And this leg IS floored: it passes no `minScore`,
+          // so `resolveSearchDefaults` supplies the registered engine default
+          // (`search/configure-search-defaults.ts`, reached via the side-effect
+          // import in `agent-tools/search/sources.ts`) — measured live as
+          // `{ embeddings: 0.45 }`, because `buildQueryEmbedder` hands back a
+          // gemma-STAMPED instance and this file stores it unwrapped.
+          //
+          // That floor is currently INERT here, and the reason is worth
+          // keeping: gemma carries a large positive cosine offset on this
+          // corpus (two RANDOM UNRELATED session_turns average .6119, n=16,110
+          // — see search/prose-min-score.ts), so a .45 cut sits ~0.16 BELOW the
+          // noise mean and rejected 0 of 2,161 candidates across a warm 10-query
+          // run, off-domain arm included. Do NOT "fix" that by raising it: the
+          // in/off-domain tails overlap by measurement, so no absolute cut
+          // separates them, and .45 also lands on the `work_item` source, which
+          // was never calibrated for it (D-097 §3).
           //
           // `getTime` is left at its default (`hit.ts`) — both corpus sources
           // now populate it. See WORK_ITEM_RECENCY_NOTE in search/sources.ts for
