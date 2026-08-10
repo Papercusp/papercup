@@ -165,3 +165,64 @@ describe('diagnoseClaimNextMiss treats a detector-only backlog as DRAINED (WI-26
     expect(diag.drained).toBe(false);
   });
 });
+
+/**
+ * WI-37761 — the ADVERTISE floor, the half this file did not cover.
+ *
+ * Everything above proves a detector EI cannot be CLAIMED by a self-selector. Nothing
+ * proved it is not OFFERED, and those are different code paths: the claim path runs
+ * federationDetectorExclusionSql (work-items.ts), the listing path runs
+ * issueAdmissibleWhereSql (issues-engineer.ts) — which never mirrored it.
+ *
+ * That gap was live, not theoretical. `coord:orient { intent }` with no `harness` takes
+ * the `work_items:list({ admissibleOnly:true })` leg, and returned a claimable list of 8
+ * containing 2 detector EIs (EI-20083218992626765, EI-20083218888012602); 97 open rows
+ * carried that filer. An agent picked one, hit the claim floor, and bounced — the exact
+ * "advertised then refused" trip WI-2633 exists to prevent.
+ *
+ * A guard that only tests the claim floor cannot catch that, so these pin the other side.
+ */
+describe('admissibleOnly EXCLUDES a replication-liveness detector EI from the advertised backlog (WI-37761)', () => {
+  it('is offered WITHOUT admissibleOnly but NOT with it (the floor is what removes it)', async () => {
+    await seedIssue('EI-detector-list', { createdTs: 100, payload: detectorPayload() });
+    await seedIssue('WI-real-list', { createdTs: 200 });
+
+    // FALSIFIER FIRST: the unfiltered read must SEE the row. Without this, the
+    // admissibleOnly assertion below would also pass if the fixture never seeded, if the
+    // harness/state filter excluded it, or if the view stopped projecting created_by —
+    // i.e. it would pass for reasons that have nothing to do with the floor.
+    const unfiltered = await wi.listWorkItems({ harness: H, state: 'open' });
+    expect(unfiltered.map((r) => r.id)).toContain('EI-detector-list');
+
+    const admissible = await wi.listWorkItems({ harness: H, state: 'open', admissibleOnly: true });
+    const ids = admissible.map((r) => r.id);
+    expect(ids).not.toContain('EI-detector-list');
+    expect(ids).toContain('WI-real-list'); // and it did not over-filter the real work
+  });
+
+  it('a DIFFERENT _ei.created_by is still advertised (only the detector identity gates)', async () => {
+    await seedIssue('WI-human-list', {
+      kind: 'change',
+      createdTs: 100,
+      payload: { _ei: { scope: 'operator', source: 'engineer', created_by: 'engineer' } },
+    });
+    const ids = (await wi.listWorkItems({ harness: H, state: 'open', admissibleOnly: true })).map((r) => r.id);
+    expect(ids).toContain('WI-human-list');
+  });
+
+  it('a row with no payload / no _ei envelope is still advertised (NULL-safe)', async () => {
+    // engineer_issues.created_by is the VIEW's `(payload->'_ei')->>'created_by'`, so a
+    // null payload yields NULL — and `NULL IS DISTINCT FROM '<detector>'` is TRUE, i.e.
+    // INCLUDED. A plain `<>` here would silently drop every payload-less row.
+    await seedIssue('WI-no-payload-list', { createdTs: 100, payload: null });
+    const ids = (await wi.listWorkItems({ harness: H, state: 'open', admissibleOnly: true })).map((r) => r.id);
+    expect(ids).toContain('WI-no-payload-list');
+  });
+
+  it('a detector-only backlog advertises NOTHING (an agent is told to idle, not offered a bounce)', async () => {
+    await seedIssue('EI-detector-only-1', { createdTs: 100, payload: detectorPayload() });
+    await seedIssue('EI-detector-only-2', { createdTs: 200, payload: detectorPayload() });
+    const admissible = await wi.listWorkItems({ harness: H, state: 'open', admissibleOnly: true });
+    expect(admissible.map((r) => r.id)).toEqual([]);
+  });
+});
