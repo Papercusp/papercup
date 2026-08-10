@@ -2982,6 +2982,85 @@ describe('read-only tree references do not trip the write guard (EI-188983659953
   });
 });
 
+/**
+ * EI-19372138838008750 — the guard's own remediation was unfollowable for the
+ * single most common scratch case on this repo.
+ *
+ * It denied every in-tree write and advised "~/.papercusp/scratch or /tmp". But a
+ * tsx/node probe that IMPORTS repo modules cannot run from either: resolution
+ * walks up from the FILE's directory and neither has a repo `node_modules` above
+ * it (measured 2026-08-10 — a probe under `~/.papercusp/scratch` dies with
+ * MODULE_NOT_FOUND). `<tree>/.papercusp/scratch/` is the one location that both
+ * resolves imports AND is gitignored, so git-sync can never commit it.
+ *
+ * The negative controls below matter as much as the allows: two passing allows
+ * are equally consistent with a guard that has stopped working entirely.
+ */
+describe('sanctioned in-tree scratch exemption (EI-19372138838008750)', () => {
+  const scratchRemedy = /\.papercusp\/scratch\/` INSIDE/;
+
+  it('ALLOWS a shell redirect into <tree>/.papercusp/scratch/', () => {
+    expectAllow(
+      runGate(bashCmd('echo hi > .papercusp/scratch/probe-out.log', { cwd: CANON }), CANON_ENV),
+    );
+  });
+
+  it('ALLOWS the absolute-path form of the same target', () => {
+    expectAllow(
+      runGate(bashCmd(`echo hi > ${CANON}/.papercusp/scratch/probe-out.log`, { cwd: CANON }), CANON_ENV),
+    );
+  });
+
+  it('ALLOWS an interpreter write into <tree>/.papercusp/scratch/ (the tsx-probe case)', () => {
+    expectAllow(
+      runGate(
+        bashCmd(`python3 -c "open('.papercusp/scratch/probe-out.txt','w')"`, { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+  });
+
+  // NEGATIVE CONTROLS — the exemption must be strictly-under, never a prefix match.
+  it('still DENIES an ordinary source path (the guard is not disabled)', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo hi > packages/operator-core/lib/evil.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('EI-18664655909328670');
+  });
+
+  it('still DENIES a near-miss sibling `.papercusp/scratchpad/` (prefix, not a child)', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo hi > .papercusp/scratchpad/x.log', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('EI-18664655909328670');
+  });
+
+  it('still DENIES `.papercusp/` itself outside the scratch subdir', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo hi > .papercusp/config.json', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('EI-18664655909328670');
+  });
+
+  // The message half: a denied agent must be told where it CAN write.
+  it('names the in-tree scratch location in the shell-redirect deny', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo hi > packages/operator-core/lib/evil.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toMatch(scratchRemedy);
+  });
+
+  it('names the in-tree scratch location in the interpreter-write deny', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd(`python3 -c "open('packages/operator-core/lib/evil.ts','w')"`, { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toMatch(scratchRemedy);
+  });
+});
+
 describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
   const expectInterpDeny = (out: { stdout: string; status: number | null }) => {
     const reason = denyReason(out);
