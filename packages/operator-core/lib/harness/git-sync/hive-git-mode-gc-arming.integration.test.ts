@@ -26,8 +26,8 @@ import { insertHiveIfAbsent } from '../../hive-store';
 import { setPotGitMode, getPotGitMode } from './hive-git-mode';
 import {
   getHiveGitGcRoutine,
-  DEFAULT_HIVE_GIT_GC_INTERVAL_SEC,
-  HIVE_GIT_GC_TARGET,
+  DEFAULT_POT_GIT_GC_INTERVAL_SEC,
+  POT_GIT_GC_TARGET,
 } from './hive-git-gc-routine';
 
 const WORKSPACE_ID = `ws-gc-arm-${randomUUID().slice(0, 8)}`;
@@ -84,11 +84,11 @@ describe('setPotGitMode — arms/disarms the hive-git gc routine (G-9, P-205)', 
     expect(routine).not.toBeNull();
     expect(routine!.active).toBe(true);
     expect(routine!.tier).toBe('ephemeral');
-    expect(routine!.targetRole).toBe(HIVE_GIT_GC_TARGET);
+    expect(routine!.targetRole).toBe(POT_GIT_GC_TARGET);
     expect(routine!.triggerConfig).toMatchObject({
-      hive_home_slug: HIVE,
+      pot_home_slug: HIVE,
       repo_key: HIVE,
-      interval_sec: DEFAULT_HIVE_GIT_GC_INTERVAL_SEC,
+      interval_sec: DEFAULT_POT_GIT_GC_INTERVAL_SEC,
     });
   });
 

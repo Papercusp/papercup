@@ -1,7 +1,7 @@
 /**
- * hive-git-gc-routine — the per-hive-home G-9 gc cadence
+ * pot-git-gc-routine — the per-pot-home G-9 gc cadence
  * (p2p-git-live-activation-2026-07-09 / P-205). A `harness_shared.routines`
- * row with `target_role='system:hive-git-gc'`, `tier='ephemeral'`
+ * row with `target_role='system:pot-git-gc'`, `tier='ephemeral'`
  * (schedule-inventory-and-ephemeral-tier-2026-06-26 P-010/D-006) — a
  * frequent in-process cadence armed by the per-host ephemeral executor
  * (`lib/dbos/ephemeral-executor.ts`), NEVER a bare `setInterval`
@@ -27,14 +27,27 @@
 import type { Sql } from 'postgres';
 import { getOrgPg, type RoutineRow } from '@papercusp/db-org';
 
-export const HIVE_GIT_GC_ROUTINE_NAME = 'hive-git-gc';
-export const HIVE_GIT_GC_TARGET = 'system:hive-git-gc';
+/**
+ * POT LEXICON (retire-mug-kettle-su-only-2026-08-09 P-051). Renamed from
+ * `hive-git-gc` / `system:hive-git-gc`. This routine is POT SUBSTRATE, not
+ * mug/kettle/cup tier: it gc's the p2p hive-git bare store behind a Pot's git
+ * plane and self-gates on `getPotGitMode`, consulting no retirement flag. D-003
+ * KEEPS pot substrate, so the settlement here is RENAME, not retire.
+ *
+ * ⚠ The routines table's unique key is (install_slug, name), and `routineId()`
+ * derives the row id from `name` — so changing this VALUE re-keys the row. The
+ * three live rows were migrated in the same change (P-051); a fresh upsert
+ * against a pre-migration row would otherwise INSERT a duplicate rather than
+ * update in place.
+ */
+export const POT_GIT_GC_ROUTINE_NAME = 'pot-git-gc';
+export const POT_GIT_GC_TARGET = 'system:pot-git-gc';
 /** Default cadence: hourly. gc is a bounded-but-not-free sweep (`git gc --prune=now` over a
  *  potentially large shared ODB) — hourly is frequent enough to bound namespace-ref growth
  *  between publishes without contending with every git-sync tick (every 3 min). */
-export const DEFAULT_HIVE_GIT_GC_INTERVAL_SEC = 60 * 60;
+export const DEFAULT_POT_GIT_GC_INTERVAL_SEC = 60 * 60;
 
-export interface HiveGitGcRoutineInput {
+export interface PotGitGcRoutineInput {
   /** Owning workspace_id (routines.workspace_id is NOT NULL, no default). */
   workspaceId: string;
   /** The hive HOME's own harness install slug. */
@@ -61,11 +74,11 @@ function routineId(installSlug: string, name: string): string {
  * never clobbers a human-edited `active` toggle on a bare re-materialize; pass
  * `active` explicitly to change it, e.g. from the mode-flip call site).
  */
-export async function upsertHiveGitGcRoutine(sql: Sql, input: HiveGitGcRoutineInput): Promise<{ id: string }> {
-  const id = routineId(input.potHomeSlug, HIVE_GIT_GC_ROUTINE_NAME);
+export async function upsertPotGitGcRoutine(sql: Sql, input: PotGitGcRoutineInput): Promise<{ id: string }> {
+  const id = routineId(input.potHomeSlug, POT_GIT_GC_ROUTINE_NAME);
   const triggerConfig = JSON.stringify({
-    interval_sec: input.intervalSec ?? DEFAULT_HIVE_GIT_GC_INTERVAL_SEC,
-    hive_home_slug: input.potHomeSlug,
+    interval_sec: input.intervalSec ?? DEFAULT_POT_GIT_GC_INTERVAL_SEC,
+    pot_home_slug: input.potHomeSlug,
     repo_key: input.repoKey,
     ...(input.keepPublishedRefsPerNamespace != null
       ? { keep_published_refs_per_namespace: input.keepPublishedRefsPerNamespace }
@@ -77,8 +90,8 @@ export async function upsertHiveGitGcRoutine(sql: Sql, input: HiveGitGcRoutineIn
       (id, install_slug, name, trigger_kind, trigger_config, target_role,
        concurrency, catchup, active, tier, next_fire_at, workspace_id)
     VALUES (
-      ${id}, ${input.potHomeSlug}, ${HIVE_GIT_GC_ROUTINE_NAME}, 'cron',
-      ${triggerConfig}::text::jsonb, ${HIVE_GIT_GC_TARGET},
+      ${id}, ${input.potHomeSlug}, ${POT_GIT_GC_ROUTINE_NAME}, 'cron',
+      ${triggerConfig}::text::jsonb, ${POT_GIT_GC_TARGET},
       'skip', 'skip-old', ${active}, 'ephemeral', NULL, ${input.workspaceId}
     )
     ON CONFLICT (install_slug, name) DO UPDATE SET
@@ -94,10 +107,10 @@ export async function upsertHiveGitGcRoutine(sql: Sql, input: HiveGitGcRoutineIn
 }
 
 /** Read the hive-home's gc routine, or null if none seeded. */
-export async function getHiveGitGcRoutine(sql: Sql, potHomeSlug: string): Promise<RoutineRow | null> {
+export async function getPotGitGcRoutine(sql: Sql, potHomeSlug: string): Promise<RoutineRow | null> {
   const rows = await sql<Array<Record<string, unknown>>>`
     SELECT * FROM harness_shared.routines
-     WHERE install_slug = ${potHomeSlug} AND target_role = ${HIVE_GIT_GC_TARGET}
+     WHERE install_slug = ${potHomeSlug} AND target_role = ${POT_GIT_GC_TARGET}
      LIMIT 1
   `;
   if (!rows.length) return null;
@@ -125,11 +138,11 @@ export async function getHiveGitGcRoutine(sql: Sql, potHomeSlug: string): Promis
 /** Set active/inactive without touching cadence/repo config (the hiveGit.mode
  *  flip-back-to-legacy path — stop gc'ing once p2p replication is off, but keep
  *  the row + its config for a later re-activation). */
-export async function setHiveGitGcRoutineActive(sql: Sql, potHomeSlug: string, active: boolean): Promise<boolean> {
+export async function setPotGitGcRoutineActive(sql: Sql, potHomeSlug: string, active: boolean): Promise<boolean> {
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.routines
        SET active = ${active}, updated_at = now()
-     WHERE install_slug = ${potHomeSlug} AND target_role = ${HIVE_GIT_GC_TARGET}
+     WHERE install_slug = ${potHomeSlug} AND target_role = ${POT_GIT_GC_TARGET}
      RETURNING id
   `;
   return rows.length > 0;
@@ -138,10 +151,10 @@ export async function setHiveGitGcRoutineActive(sql: Sql, potHomeSlug: string, a
 /** Delete the hive-home's gc routine row entirely (the durable inverse of the
  *  seed — a hive teardown, mirroring git-sync's removeGitSyncRoutine). Returns
  *  true when a row was removed, false when none existed (idempotent). */
-export async function removeHiveGitGcRoutine(sql: Sql, potHomeSlug: string): Promise<boolean> {
+export async function removePotGitGcRoutine(sql: Sql, potHomeSlug: string): Promise<boolean> {
   const rows = await sql<{ id: string }[]>`
     DELETE FROM harness_shared.routines
-     WHERE install_slug = ${potHomeSlug} AND target_role = ${HIVE_GIT_GC_TARGET}
+     WHERE install_slug = ${potHomeSlug} AND target_role = ${POT_GIT_GC_TARGET}
      RETURNING id
   `;
   return rows.length > 0;

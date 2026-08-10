@@ -64,7 +64,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-settings-store';
-import { upsertHiveGitGcRoutine, setHiveGitGcRoutineActive } from './hive-git-gc-routine';
+import { upsertPotGitGcRoutine, setPotGitGcRoutineActive } from './hive-git-gc-routine';
 
 /** Who pushes the GitHub remote for this hive (S-5 decision table input). */
 export type PotGitMode = 'legacy' | 'bridged' | 'p2p-only';
@@ -159,14 +159,14 @@ export async function setPotGitMode(
 ): Promise<void> {
   if (mode === null) {
     await deleteHiveSetting(workspaceId, potHomeSlug, POT_GIT_MODE_SETTING_KEY, sql);
-    await syncHiveGitGcRoutine(workspaceId, potHomeSlug, 'legacy', sql);
+    await syncPotGitGcRoutine(workspaceId, potHomeSlug, 'legacy', sql);
     return;
   }
   if (!POT_GIT_MODES.includes(mode)) {
     throw new Error(`setPotGitMode: unknown mode '${String(mode)}' (expected ${POT_GIT_MODES.join(' | ')})`);
   }
   await setHiveSetting({ workspaceId, potHomeSlug, settingKey: POT_GIT_MODE_SETTING_KEY, value: mode }, sql);
-  await syncHiveGitGcRoutine(workspaceId, potHomeSlug, mode, sql);
+  await syncPotGitGcRoutine(workspaceId, potHomeSlug, mode, sql);
 }
 
 /**
@@ -183,7 +183,7 @@ export async function setPotGitMode(
  * unbounded-ref-growth gap this call exists to close (the mode setting itself
  * has already committed; the upsert/disarm is idempotent on retry).
  */
-async function syncHiveGitGcRoutine(
+async function syncPotGitGcRoutine(
   workspaceId: string,
   potHomeSlug: string,
   mode: PotGitMode,
@@ -191,8 +191,8 @@ async function syncHiveGitGcRoutine(
 ): Promise<void> {
   const s = sql ?? getOrgPg().sql;
   if (mode === 'legacy') {
-    await setHiveGitGcRoutineActive(s, potHomeSlug, false);
+    await setPotGitGcRoutineActive(s, potHomeSlug, false);
     return;
   }
-  await upsertHiveGitGcRoutine(s, { workspaceId, potHomeSlug, repoKey: potHomeSlug, active: true });
+  await upsertPotGitGcRoutine(s, { workspaceId, potHomeSlug, repoKey: potHomeSlug, active: true });
 }

@@ -42,6 +42,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { mugKettleSystemEnabled } from '../../pot/started';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { captureImprovement } from '../improvements/capture-core';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
@@ -276,6 +277,40 @@ export function planCanarySlaCheck(
   return { breaching: candidates, suppressed: [] };
 }
 
+/**
+ * RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-051 / D-044).
+ *
+ * Both canary actions measure exactly ONE thing: does the AUTONOMOUS CUP LOOP
+ * carry queued work end-to-end? That is not incidental framing — it is encoded
+ * in `isVoidedCanaryOwner` above, which accepts a cup session (`s-<ms>-<hex>`)
+ * as THE ONLY VALID PASS and reports an agent-owned completion as a VOID
+ * measurement. The cup tier is retired (D-001): `fleet/operator-spawn.ts`
+ * refuses every `isRetiredTierRole` spawn while `papercusp-mug-kettle-system`
+ * is OFF, and OFF is the DELIVERED state (D-016 polarity).
+ *
+ * So while the flag is OFF the canary's pass condition is UNREACHABLE BY
+ * CONSTRUCTION, and every tick can produce only one of two false alarms:
+ *   - the canary sits un-terminal  → SLA-breach bug, then a daily miss bug;
+ *   - an su claims it from the pool → pass-like terminal → VOID bug.
+ * Measured 2026-08-10: F-CANARY-20260803..20260809 all sat `open`, and the last
+ * pass-like completion (20260802) was su-owned and already void-stamped.
+ *
+ * A detector for a deliberately-retired subsystem is noise, not signal. This
+ * gate is the DURABLE half of the settlement — the two routine rows were also
+ * disarmed, but a row is one UPDATE away from firing again (and `active` is
+ * re-appliable by any re-seed), whereas this cannot resurrect while the flag is
+ * OFF. Flip the flag back ON for testing and both detectors return, intact.
+ */
+async function canaryTierRetired(label: string): Promise<boolean> {
+  if (await mugKettleSystemEnabled()) return false;
+  console.log(
+    `[${label}] mug/kettle/cup tier is RETIRED (flag papercusp-mug-kettle-system is OFF) — ` +
+      `skipping: this canary measures whether a CUP carries queued work end-to-end, and no cup can spawn, ` +
+      `so every verdict would be a false alarm. Flip the flag ON to restore the detector.`,
+  );
+  return true;
+}
+
 /** Forensics for one missed canary: DBOS pipeline rows + nursery rows + fire-state. */
 export async function gatherForensics(slug: string, featureId: string, workspaceId: string): Promise<string> {
   const { sql } = getOrgPg();
@@ -333,6 +368,11 @@ export async function gatherForensics(slug: string, featureId: string, workspace
 registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
   const deadlineHours = Number(payloadTemplate?.deadlineHours) || 6;
+
+  // Retired-tier gate — see canaryTierRetired. Deliberately FIRST: the phases
+  // below both REPORT (file bugs) and QUEUE (insert tomorrow's canary), and
+  // while the cup tier is retired neither has a defensible outcome.
+  if (await canaryTierRetired('hive-canary')) return;
 
   // Self-gate: no registered canary harness → clean no-op (the routine stays
   // ACTIVE; it goes live the moment the harness is registered).
@@ -556,6 +596,11 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
 registerSystemAction('hive-canary-sla', async (ctx: SystemActionCtx) => {
   const { installSlug, workspaceId, payloadTemplate } = ctx;
   const slaMinutes = Number(payloadTemplate?.slaMinutes) || 30;
+
+  // Retired-tier gate — see canaryTierRetired. This sweep is the LOUDER of the
+  // two (every ~15min vs daily), so it is the larger false-alarm source while
+  // no cup can spawn to complete the canary it is timing.
+  if (await canaryTierRetired('hive-canary-sla')) return;
 
   // Self-gate: no registered canary harness → clean no-op (routine stays ACTIVE).
   try {

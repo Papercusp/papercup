@@ -1,8 +1,11 @@
 /**
- * `system:hive-git-gc` — the ephemeral cadence that bounds a hive-git bare
+ * `system:pot-git-gc` — the ephemeral cadence that bounds a pot-git bare
  * store's namespace-ref growth (G-9, p2p-git-live-activation-2026-07-09 /
  * P-205). Config (routine `trigger_config`, from hive-git-gc-routine.ts):
- *   - `hive_home_slug` / `repo_key` — storage.ts's `hiveGitRepoPath` inputs.
+ *   - `pot_home_slug` / `repo_key` — storage.ts's `hiveGitRepoPath` inputs.
+ *     `hive_home_slug` is still READ as a fallback: the key lives in row DATA,
+ *     and P-051 migrated only the rows visible in this workspace, so a row in
+ *     another workspace may still carry the pre-rename spelling.
  *   - `keep_published_refs_per_namespace` — optional (default gc.ts's own).
  *
  * SELF-GATES on the hive's `hiveGit.mode` (hive-git-mode.ts): a `legacy` hive
@@ -24,12 +27,17 @@ import { gcHiveGitRepo } from '../../sync/pot-git/gc';
 import { hiveGitRepoPath } from '../../sync/pot-git/storage';
 import { getPotGitMode } from '../git-sync/hive-git-mode';
 
-registerSystemAction('hive-git-gc', async (ctx: SystemActionCtx) => {
+const potGitGcTick = async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
-  const potHomeSlug = typeof cfg.hive_home_slug === 'string' ? cfg.hive_home_slug : ctx.installSlug;
+  const potHomeSlug =
+    typeof cfg.pot_home_slug === 'string'
+      ? cfg.pot_home_slug
+      : typeof cfg.hive_home_slug === 'string'
+        ? cfg.hive_home_slug
+        : ctx.installSlug;
   const repoKey = typeof cfg.repo_key === 'string' ? cfg.repo_key : null;
   if (!repoKey) {
-    console.warn(`[hive-git-gc] ${potHomeSlug}: missing trigger_config.repo_key — skipping tick`);
+    console.warn(`[pot-git-gc] ${potHomeSlug}: missing trigger_config.repo_key — skipping tick`);
     return;
   }
 
@@ -47,12 +55,34 @@ registerSystemAction('hive-git-gc', async (ctx: SystemActionCtx) => {
       : {}),
   });
   console.log(
-    `[hive-git-gc] ${potHomeSlug}/${repoKey} (mode=${mode}): ` +
+    `[pot-git-gc] ${potHomeSlug}/${repoKey} (mode=${mode}): ` +
       `deleted ${result.deletedRefs.length} ref(s), archived ${result.archivedNamespaces.length} namespace(s), ` +
       `kept ${result.keptRefs.length}` +
       (result.errors.length ? `, ${result.errors.length} error(s)` : ''),
   );
   if (result.errors.length) {
-    for (const e of result.errors) console.warn(`[hive-git-gc]   ! ${e}`);
+    for (const e of result.errors) console.warn(`[pot-git-gc]   ! ${e}`);
   }
-});
+};
+
+/**
+ * CANONICAL NAME (retire-mug-kettle-su-only-2026-08-09 P-051 / D-044). This is
+ * POT SUBSTRATE — it gc's the p2p git store behind a Pot's git plane and
+ * consults no retirement flag — so the settlement was RENAME, not retire.
+ */
+registerSystemAction('pot-git-gc', potGitGcTick);
+
+/**
+ * TRANSITIONAL ALIAS — delete once no `harness_shared.routines` row targets it.
+ *
+ * The three live rows were migrated to `system:pot-git-gc` in the same change,
+ * but `papercup-bg-host` has NO hot-reload: it runs the staging tree from
+ * process start, so between the row UPDATE and its restart the executor is
+ * still resolving the OLD target. Registering both names makes that window a
+ * no-op instead of an hourly unresolved-action tick, in EITHER order.
+ *
+ * Not a back-compat shim for callers (there are none — the name is only ever
+ * reached through a routine row's `target_role`), so it is removable by a
+ * one-line delete the moment the row census is clean.
+ */
+registerSystemAction('hive-git-gc', potGitGcTick);

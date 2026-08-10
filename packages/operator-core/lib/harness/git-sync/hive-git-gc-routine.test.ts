@@ -6,12 +6,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
 import {
-  upsertHiveGitGcRoutine,
-  getHiveGitGcRoutine,
-  setHiveGitGcRoutineActive,
-  removeHiveGitGcRoutine,
-  HIVE_GIT_GC_TARGET,
-  DEFAULT_HIVE_GIT_GC_INTERVAL_SEC,
+  upsertPotGitGcRoutine,
+  getPotGitGcRoutine,
+  setPotGitGcRoutineActive,
+  removePotGitGcRoutine,
+  POT_GIT_GC_TARGET,
+  POT_GIT_GC_ROUTINE_NAME,
+  DEFAULT_POT_GIT_GC_INTERVAL_SEC,
 } from './hive-git-gc-routine';
 
 function fakeSql(rows: Array<Record<string, unknown>>) {
@@ -23,34 +24,38 @@ function fakeSql(rows: Array<Record<string, unknown>>) {
   return { sql: fn as unknown as Sql, calls };
 }
 
-describe('upsertHiveGitGcRoutine', () => {
-  it('writes an ephemeral, active-by-default row keyed on the hive-home slug', async () => {
-    const { sql, calls } = fakeSql([{ id: 'rt_shop_hive_git_gc' }]);
-    const out = await upsertHiveGitGcRoutine(sql, {
+describe('upsertPotGitGcRoutine', () => {
+  it('writes an ephemeral, active-by-default row keyed on the pot-home slug', async () => {
+    const { sql, calls } = fakeSql([{ id: 'rt_shop_hive_pot_git_gc' }]);
+    const out = await upsertPotGitGcRoutine(sql, {
       workspaceId: 'ws-1',
       potHomeSlug: 'shop-hive',
       repoKey: 'repo-1',
     });
-    expect(out).toEqual({ id: 'rt_shop_hive_git_gc' });
+    expect(out).toEqual({ id: 'rt_shop_hive_pot_git_gc' });
     const values = calls[0];
     // Order matches the tagged-template interpolation order in the module.
-    expect(values[0]).toBe('rt_shop-hive_hive-git-gc'.replace(/[^a-z0-9_]/gi, '_').toLowerCase());
+    // P-051: the row id derives from the NAME, so the rename re-keys the row —
+    // which is why the three live rows had to be migrated in the same change
+    // rather than left for the next upsert to reconcile (it would have INSERTed
+    // a duplicate under the new key instead of updating in place).
+    expect(values[0]).toBe('rt_shop-hive_pot-git-gc'.replace(/[^a-z0-9_]/gi, '_').toLowerCase());
     expect(values[1]).toBe('shop-hive'); // install_slug
-    expect(values[2]).toBe('hive-git-gc'); // name
+    expect(values[2]).toBe(POT_GIT_GC_ROUTINE_NAME); // name
     const triggerConfig = JSON.parse(values[3] as string);
     expect(triggerConfig).toEqual({
-      interval_sec: DEFAULT_HIVE_GIT_GC_INTERVAL_SEC,
-      hive_home_slug: 'shop-hive',
+      interval_sec: DEFAULT_POT_GIT_GC_INTERVAL_SEC,
+      pot_home_slug: 'shop-hive',
       repo_key: 'repo-1',
     });
-    expect(values[4]).toBe(HIVE_GIT_GC_TARGET);
+    expect(values[4]).toBe(POT_GIT_GC_TARGET);
     expect(values[5]).toBe(true); // active default
     expect(values[6]).toBe('ws-1');
   });
 
   it('honors an explicit intervalSec / keepPublishedRefsPerNamespace / active:false', async () => {
     const { sql, calls } = fakeSql([{ id: 'rt_x' }]);
-    await upsertHiveGitGcRoutine(sql, {
+    await upsertPotGitGcRoutine(sql, {
       workspaceId: 'ws-1',
       potHomeSlug: 'shop-hive',
       repoKey: 'repo-1',
@@ -62,7 +67,7 @@ describe('upsertHiveGitGcRoutine', () => {
     const triggerConfig = JSON.parse(values[3] as string);
     expect(triggerConfig).toEqual({
       interval_sec: 1800,
-      hive_home_slug: 'shop-hive',
+      pot_home_slug: 'shop-hive',
       repo_key: 'repo-1',
       keep_published_refs_per_namespace: 3,
     });
@@ -70,22 +75,22 @@ describe('upsertHiveGitGcRoutine', () => {
   });
 });
 
-describe('getHiveGitGcRoutine', () => {
+describe('getPotGitGcRoutine', () => {
   it('returns null when no row exists', async () => {
     const { sql } = fakeSql([]);
-    expect(await getHiveGitGcRoutine(sql, 'shop-hive')).toBeNull();
+    expect(await getPotGitGcRoutine(sql, 'shop-hive')).toBeNull();
   });
 
   it('maps a row to RoutineRow shape (defaults tier to ephemeral)', async () => {
     const { sql } = fakeSql([
       {
-        id: 'rt_shop_hive_git_gc',
+        id: 'rt_shop_hive_pot_git_gc',
         workspace_id: 'ws-1',
         install_slug: 'shop-hive',
         name: 'hive-git-gc',
         trigger_kind: 'cron',
         trigger_config: { interval_sec: 3600 },
-        target_role: HIVE_GIT_GC_TARGET,
+        target_role: POT_GIT_GC_TARGET,
         payload_template: null,
         concurrency: 'skip',
         catchup: 'skip-old',
@@ -97,33 +102,33 @@ describe('getHiveGitGcRoutine', () => {
         target_owner_id: null,
       },
     ]);
-    const row = await getHiveGitGcRoutine(sql, 'shop-hive');
-    expect(row).toMatchObject({ id: 'rt_shop_hive_git_gc', tier: 'ephemeral', active: true, targetRole: HIVE_GIT_GC_TARGET });
+    const row = await getPotGitGcRoutine(sql, 'shop-hive');
+    expect(row).toMatchObject({ id: 'rt_shop_hive_pot_git_gc', tier: 'ephemeral', active: true, targetRole: POT_GIT_GC_TARGET });
   });
 });
 
-describe('setHiveGitGcRoutineActive / removeHiveGitGcRoutine', () => {
+describe('setPotGitGcRoutineActive / removePotGitGcRoutine', () => {
   let calls: unknown[][];
   let sql: Sql;
   beforeEach(() => {
-    ({ sql, calls } = fakeSql([{ id: 'rt_shop_hive_git_gc' }]));
+    ({ sql, calls } = fakeSql([{ id: 'rt_shop_hive_pot_git_gc' }]));
   });
 
   it('setActive returns true when a row was updated', async () => {
-    expect(await setHiveGitGcRoutineActive(sql, 'shop-hive', false)).toBe(true);
+    expect(await setPotGitGcRoutineActive(sql, 'shop-hive', false)).toBe(true);
     expect(calls[0][0]).toBe(false);
     expect(calls[0][1]).toBe('shop-hive');
-    expect(calls[0][2]).toBe(HIVE_GIT_GC_TARGET);
+    expect(calls[0][2]).toBe(POT_GIT_GC_TARGET);
   });
 
   it('setActive returns false when no row matched', async () => {
     const empty = fakeSql([]);
-    expect(await setHiveGitGcRoutineActive(empty.sql, 'nobody-hive', true)).toBe(false);
+    expect(await setPotGitGcRoutineActive(empty.sql, 'nobody-hive', true)).toBe(false);
   });
 
   it('remove returns true when a row was deleted, false when idempotent no-op', async () => {
-    expect(await removeHiveGitGcRoutine(sql, 'shop-hive')).toBe(true);
+    expect(await removePotGitGcRoutine(sql, 'shop-hive')).toBe(true);
     const empty = fakeSql([]);
-    expect(await removeHiveGitGcRoutine(empty.sql, 'shop-hive')).toBe(false);
+    expect(await removePotGitGcRoutine(empty.sql, 'shop-hive')).toBe(false);
   });
 });
