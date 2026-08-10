@@ -29,9 +29,8 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// @ts-ignore — pure JS helper, typed only by JSDoc
+// Both are typed by generated sibling .d.mts files (tsconfig.declarations.json).
 import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strings.mjs';
-// @ts-ignore — pure JS helper, typed only by JSDoc
 import {
   applyEnvLocal,
   describePgUrlResolution,
@@ -164,6 +163,12 @@ describe('describePgUrlResolution', () => {
     expect(line).toContain('source=env');
     expect(line).toContain('127.0.0.1:5432/papercusp');
     expect(line).toContain('DATABASE_URL');
+  });
+
+  it('names WHICH env var won — "source=env" alone cannot separate explicit from .env.local', () => {
+    expect(describePgUrlResolution({ ...resolution, via: 'HARNESS_ADMIN_DATABASE_URL' })).toContain(
+      'source=env:HARNESS_ADMIN_DATABASE_URL',
+    );
   });
 
   it('NEVER prints the credentials — this string lands in error output and logs', () => {

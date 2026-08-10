@@ -174,7 +174,12 @@ export function resolveScriptPgUrl({ root = REPO_ROOT, env = process.env } = {})
     return { url: isolatedAdminUrl(env.PAPERCUSP_PG_PORT), source: 'isolated-pg-port', envLocal };
   }
   const { url, source } = getHarnessAdminUrlWithSource();
-  return { url, source, envLocal };
+  // WHICH variable won, not just "an env var did". `source: 'env'` alone reads as
+  // ambiguous exactly when it matters: an explicit HARNESS_ADMIN_DATABASE_URL and a
+  // DATABASE_URL this module lifted out of .env.local are the same `source`, and only the
+  // name distinguishes "you set this" from "the file set this".
+  const via = source === 'env' ? PG_URL_ENV_VARS.find((n) => process.env[n]) : undefined;
+  return { url, source, via, envLocal };
 }
 
 /**
@@ -182,7 +187,7 @@ export function resolveScriptPgUrl({ root = REPO_ROOT, env = process.env } = {})
  * Attach it to a connection failure: "ECONNREFUSED" is unactionable until you know which
  * of the four sources produced the address that refused.
  *
- * @param {{ url: string, source: string, envLocal: { exists: boolean, applied: string[], skipped: string | null } }} r
+ * @param {{ url: string, source: string, via?: string, envLocal: { exists: boolean, applied: string[], skipped: string | null } }} r
  * @returns {string}
  */
 export function describePgUrlResolution(r) {
@@ -200,7 +205,8 @@ export function describePgUrlResolution(r) {
         ? `.env.local supplied ${r.envLocal.applied.join(', ')}`
         : '.env.local present but did not supply the url'
       : 'no .env.local at the repo root';
-  return `pg url source=${r.source} → ${where} (${envLocalNote}; env checked: ${PG_URL_ENV_VARS.join(' > ')})`;
+  const source = r.via ? `${r.source}:${r.via}` : r.source;
+  return `pg url source=${source} → ${where} (${envLocalNote}; env checked: ${PG_URL_ENV_VARS.join(' > ')})`;
 }
 
 /**

@@ -88,6 +88,13 @@
     // --check cannot police. Unlike that one it IS also imported directly by a .ts
     // (guard-string-literal-blindness.test.ts), which had been paying a suppressed TS7016 for it.
     "scripts/lib/strip-comments-and-strings.mjs",
+    // EI-20081449067583201 — the one Postgres-URL resolver for scripts/* CLIs. Registered
+    // for BOTH reasons this list exists: it is imported directly by .ts scripts and by
+    // scripts-pg-url.test.ts (which paid a TS7016 for it), AND it is imported by three
+    // already-registered .mjs guards (lint-migrations, next-migration, check-fixed-but-open),
+    // so tsc emits its declaration regardless and leaving it unregistered would make that an
+    // untracked byproduct --check cannot police.
+    "scripts/lib/pg-url.mjs",
     "scripts/lint-tsc.mjs",
     "scripts/lint-tsc-operator-vite.mjs",
     "scripts/check-transitive-boundary.mjs",

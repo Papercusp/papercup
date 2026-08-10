@@ -31,7 +31,6 @@ import {
   sha256,
   splitFrontmatter,
 } from '../packages/operator-core/lib/harness/docs/authored-doc-projection';
-// @ts-ignore — pure JS helper, typed only by JSDoc
 import { connectScriptPg } from './lib/pg-url.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
