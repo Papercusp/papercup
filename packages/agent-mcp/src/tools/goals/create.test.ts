@@ -184,6 +184,10 @@ describe('goals:create — the kill criterion is a COLUMN, not a metadata key', 
     it('refuses a placeholder opener even when it is long enough', async () => {
       const res = await call(ARGS({ killCriterion: 'TBD once we see some real numbers' }), CTX());
       expect(res.degraded).toBe(true);
+      // Assert the REASON, not just the refusal: this string clears the length
+      // bar, so a bare `degraded` here could be some unrelated rejection and the
+      // test would pass without exercising PLACEHOLDER_OPENER at all.
+      expect(res.degradedReasons?.[0]).toMatch(/states no abandonment condition/);
       expect(calls.find((c) => /INSERT INTO/.test(c.sql))).toBeUndefined();
     });
 

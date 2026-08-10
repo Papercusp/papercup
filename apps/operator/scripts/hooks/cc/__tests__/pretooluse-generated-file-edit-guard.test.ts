@@ -84,6 +84,21 @@ describe('pretooluse-generated-file-edit-guard — falsifiability in both direct
     expect(runHook(edit(generated, 'Read')).denied).toBe(false);
   });
 
+  // P-011's second half — "it must BLOCK a hand-edit and ALLOW a projector write" —
+  // stated in the only vocabulary this hook has. A projector run is a Bash tool call
+  // (or no tool call at all: the generator writes via node:fs), never Edit/Write, so
+  // the guard cannot reach it. Asserting it here means a future widening of the
+  // matcher that would start policing generator runs fails HERE, loudly, instead of
+  // wedging every `gen:*` script on the fleet.
+  it('ALLOWS the projector run itself, on a file it otherwise protects', () => {
+    expect(
+      runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'node scripts/project-doc-parts.mjs --write', file_path: generated },
+      }).denied,
+    ).toBe(false);
+  });
+
   it('fails OPEN on an absent file, a missing path, and malformed input', () => {
     expect(runHook(edit(join(dir, 'no-such-file.md'))).denied).toBe(false);
     expect(runHook({ tool_name: 'Edit', tool_input: {} }).denied).toBe(false);

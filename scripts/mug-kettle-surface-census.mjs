@@ -356,6 +356,35 @@ function resolveArg(raw) {
 
 const findings = [];
 const unresolved = [];
+/**
+ * Sites whose argument is genuinely runtime-determined AND whose resolution SOURCE is
+ * known and named (e.g. a registry lookup). These are inventoried doors, not coverage
+ * holes: keeping them out of `unresolved` preserves that list's meaning ("I could not
+ * tell what this is"), while still printing them so an empty category is never misread
+ * as proof of absence. A door here is a real door — it is classified, not suppressed.
+ */
+const dynamicSites = [];
+
+/**
+ * Resolve a file-local `const <name> = <rhs>` one hop, for args that are neither a
+ * literal nor a module-level constant. Two shapes carry real information:
+ *   `const x = opts.y ?? SOME_CONST`  → the DEFAULT is SOME_CONST (caller-overridable)
+ *   `const x = someLookup(arg)`       → genuinely dynamic, but the SOURCE is nameable
+ * Anything else stays unresolved — this widens resolution, it never invents a verdict.
+ */
+function resolveLocalConst(src, name) {
+  const decl = new RegExp(`\\bconst\\s+${name}\\s*=\\s*([^;\\n]+)`).exec(src);
+  if (!decl) return null;
+  const rhs = decl[1].trim();
+  const fallback = rhs.match(/\?\?\s*([A-Za-z_$][\w$]*)\s*$/);
+  if (fallback) {
+    const c = resolveArg(fallback[1]);
+    if (c.resolved) return { kind: 'default', constName: fallback[1], value: c.value, rhs };
+  }
+  const call = rhs.match(/^(?:await\s+)?([A-Za-z_$][\w$]*)\s*\(/);
+  if (call) return { kind: 'dynamic', source: `${call[1]}()`, rhs };
+  return null;
+}
 
 function add(category, abs, index, subject, detail, extra = {}) {
   const r = rel(abs);
@@ -416,19 +445,45 @@ for (const abs of codeFiles) {
 /* ── D3: blueprint launches ────────────────────────────────────────────────────────
    Classified by CONSTANT NAME, because POT_BLUEPRINT_ID and OVERWATCH_BLUEPRINT_ID
    both resolve to 'coding' — the same id ordinary coding sessions use.                */
-const D3_RE = /fireLaunchBlueprint\s*\(\s*([^,)]+)/g;
+// Deliberately NOT `fireLaunchBlueprint\w*` — that also matches `fireLaunchBlueprintForEvent`,
+// whose first arg is an eventKey, not a blueprintId, so a domain const there would be a
+// false classification. Match the exact name; the ForEvent forward is caught at its own
+// inner `fireLaunchBlueprint(` call.
+const D3_RE = /(function\s+)?fireLaunchBlueprint\s*\(\s*([^,)]+)/g;
 for (const abs of codeFiles) {
   const src = code(abs);
   if (!src.includes('fireLaunchBlueprint')) continue;
   for (const m of src.matchAll(D3_RE)) {
-    const r = resolveArg(m[1]);
+    // The function's own DECLARATION is not a launch site — its CALLERS are. Anchored on
+    // the declaration form (`function fireLaunchBlueprint(`) rather than on the defining
+    // FILE, because that file also contains a real call (the event-driven forward below);
+    // a path-based exclusion would silently drop it. Same discipline as D1's definition
+    // sites: keep `unresolved` meaning "genuinely could not tell".
+    if (m[1]) continue;
+    const r = resolveArg(m[2]);
     if (r.constName && DOMAIN_BLUEPRINT_CONSTS.has(r.constName)) {
       add('blueprint-launch', abs, m.index, r.constName,
         `fireLaunchBlueprint(${r.constName}) → '${r.value ?? '?'}'`,
         { note: 'value is shared with ordinary coding sessions — the CONSTANT is the discriminator' });
-    } else if (!r.resolved) {
-      unresolved.push({ category: 'blueprint-launch', file: rel(abs), line: lineOf(src, m.index), arg: r.via });
+      continue;
     }
+    if (r.resolved) continue;
+    const local = r.constName ? resolveLocalConst(src, r.constName) : null;
+    if (local?.kind === 'default' && DOMAIN_BLUEPRINT_CONSTS.has(local.constName)) {
+      add('blueprint-launch', abs, m.index, local.constName,
+        `fireLaunchBlueprint(${r.constName}) → defaults to ${local.constName} ('${local.value ?? '?'}')`,
+        { note: `local \`${local.rhs}\` — the DEFAULT is the tier blueprint, but a caller may override it` });
+      continue;
+    }
+    if (local?.kind === 'dynamic') {
+      dynamicSites.push({
+        category: 'blueprint-launch', file: rel(abs), line: lineOf(src, m.index),
+        arg: `identifier ${r.constName}`, resolvedBy: local.source,
+        note: `runtime-determined via ${local.source} — inventoried door, blueprint id known only at call time`,
+      });
+      continue;
+    }
+    unresolved.push({ category: 'blueprint-launch', file: rel(abs), line: lineOf(src, m.index), arg: r.via });
   }
 }
 
@@ -567,6 +622,15 @@ const census = {
     status: unresolved.length === 0 ? 'complete' : 'partial',
     unresolvedCount: unresolved.length,
     unresolved,
+    /**
+     * Doors whose argument is runtime-determined but whose resolution SOURCE is named.
+     * They do NOT hold coverage below `complete` — "I know exactly where this is decided,
+     * and it is decided at runtime" is a finished answer, unlike `unresolved`. They are
+     * still listed on every read: a dynamic door can launch a tier blueprint, so an empty
+     * category next to a non-empty `dynamic` list is not proof of absence.
+     */
+    dynamicCount: dynamicSites.length,
+    dynamic: dynamicSites,
     systemActionSitesSeen: d1Sites,
     detectorShapes: {
       'system-action': "registerSystemAction(<literal|CONST>, …) — identifier args resolved via the constant table",
@@ -584,7 +648,7 @@ const census = {
       'prompt/doc prose mentioning the tier without offering it (deliberately excluded — prose is not an entry point)',
     ],
     readingRule:
-      'An empty category is meaningful ONLY when coverage.status === "complete". Read `unresolved` before concluding a surface is absent — this reports "none found", never "none exists".',
+      'An empty category is meaningful ONLY when coverage.status === "complete" AND `dynamic` is empty for that category. Read BOTH before concluding a surface is absent — a dynamic door decides its target at runtime, so it can launch a tier blueprint without ever naming one in source. This reports "none found", never "none exists".',
   },
   findings: live,
   alreadyRetired: retiredAlready,
@@ -648,6 +712,13 @@ console.log(`COVERAGE: ${census.coverage.status.toUpperCase()}  (${unresolved.le
 if (unresolved.length) {
   for (const u of unresolved.slice(0, 12)) console.log(`  ? ${u.category}  ${u.file}:${u.line}  arg=${u.arg}`);
   if (unresolved.length > 12) console.log(`  …+${unresolved.length - 12} more`);
+}
+if (dynamicSites.length) {
+  console.log(`\nDYNAMIC doors (${dynamicSites.length}) — resolution source known, target decided at RUNTIME.`);
+  console.log('  These do not hold coverage below complete, but a category is not "absent" while one is listed here.');
+  for (const d of dynamicSites) {
+    console.log(`  ~ ${d.category}  ${d.file}:${d.line}  ${d.arg} ← ${d.resolvedBy}`);
+  }
 }
 console.log('');
 console.log('NOT COVERED by this scan (query separately):');

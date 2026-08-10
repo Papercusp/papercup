@@ -295,3 +295,55 @@ describe('the kickoff brief', () => {
     expect(brief).toContain('mode contract');
   });
 });
+
+// ── EI-20049757392342975 ──────────────────────────────────────────────────
+describe('goals:start — the shared kill-criterion rule applies at THIS door too', () => {
+  /**
+   * This is the door the owner's own HUD composer posts to
+   * (GoalComposer → postGoalStart → goals:start), and until now nothing on that
+   * whole path enforced the rule — GoalComposer.tsx even renders an
+   * `errors.killCriterion` slot that `validateGoalDraft` can never populate.
+   * `goals:propose` and `goals:update` both refused a stub; this door and
+   * `goals:create` did not, so a criterion could be INSTALLED that could never
+   * afterwards be UPDATED to.
+   */
+  it('refuses a stub criterion, and spawns NOTHING', async () => {
+    const res = await call({ killCriterion: 'gut feel' });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toMatch(/states no abandonment condition/);
+    // The load-bearing assertions: refusing must cost no goal row and no agent.
+    // A refusal that still spawned would leave an orphan process behind, which
+    // is worse than the permissive behaviour it replaced.
+    expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeFalsy();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a placeholder opener that clears the length bar', async () => {
+    const res = await call({ killCriterion: 'TBD once we see some real numbers' });
+    expect(isError(res)).toBe(true);
+    // Assert the REASON: this string is long enough, so a bare isError could be
+    // some unrelated rejection and this test would never exercise the rule.
+    expect(textOf(res)).toMatch(/states no abandonment condition/);
+  });
+
+  /**
+   * CONTROLS. WI-37604 (owner-directed 2026-08-09) made a criterion OPTIONAL at
+   * creation. That overrule is about PRESENCE; this rule is about quality GIVEN
+   * presence. Without these two cases, a guard that simply REQUIRED a criterion
+   * would pass both tests above while silently re-imposing exactly what the
+   * owner removed — and the happy-path suite would not catch it either, because
+   * ARGS always supplies one.
+   */
+  it('still starts a goal with NO criterion at all — WI-37604', async () => {
+    const res = await call({ killCriterion: undefined });
+    expect(isError(res)).toBe(false);
+    expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeTruthy();
+  });
+
+  it('still starts a goal with a blank criterion', async () => {
+    const res = await call({ killCriterion: '   ' });
+    expect(isError(res)).toBe(false);
+    expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeTruthy();
+  });
+});
