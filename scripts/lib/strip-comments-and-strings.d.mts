@@ -52,15 +52,40 @@
  * you detect is CODE (a call or identifier); keep reading raw text when the token is legitimately
  * string-resident.
  *
- * KNOWN LIMIT, stated rather than papered over: a regex literal containing a quote or a slash
- * (`/'/`) can still confuse this, since telling a regex from division needs real parsing. That
- * is the same class of approximation the call-scanners already document ("without a real AST
- * parse"), and it fails toward the pre-existing behaviour.
+ * ⚠ REGEX LITERAL BODIES ARE BLANKED TOO (delimiters kept). A guard's own detection regex is
+ * the single most likely place for its token to appear — `/\bsetInterval\s*\(/` sits in the
+ * source of the very guard that bans `setInterval(` — so a regex body is data, exactly like a
+ * string, for every consumer of this function.
+ *
+ * ⚠ JSX TEXT IS LEFT AS CODE. `<p>see https://x/y</p>` is neither a comment nor a literal;
+ * treating the `//` there as a comment (which the pre-AST lexer did) erases the rest of the
+ * line. Leaving it fails toward a false POSITIVE, which is the safe direction for a guard.
+ *
+ * WHY A REAL PARSER (EI-20064929206355679, measured 2026-08-10). This was a hand-rolled lexer
+ * until then, and it carried TWO defects that no amount of care in the regexes downstream
+ * could have compensated for:
+ *
+ *   1. NO REGEX-LITERAL HANDLING. The quote in an ordinary `/['"]/` opened a phantom string
+ *      that ran to the end of the line, DELETING whatever followed it — including a real
+ *      call site — and then consumed the newline, gluing the next line onto it. Telling a
+ *      regex from division genuinely needs parsing; the old header said so and accepted it.
+ *   2. BLOCK COMMENTS WERE DELETED, NEWLINES AND ALL, so every line after one SHIFTED UP.
+ *      Any caller counting lines in the stripped text reported the wrong line, and an
+ *      `^`-anchored /m regex could match across a boundary that does not exist in the source.
+ *
+ * Both are now structurally impossible: TypeScript's own parser supplies the literal, regex
+ * and comment ranges, and every removal is BLANKED WITH SPACES rather than deleted, so the
+ * output is the same LENGTH as the input, character for character. Offsets and line numbers
+ * in the stripped text are therefore exact — `text.indexOf(x)` and `slice(0, i).split('\n')`
+ * mean in the stripped text precisely what they mean in the source.
  *
  * @param {string} text
+ * @param {string} [fileName]  the real path, used ONLY to pick a ScriptKind (.ts vs .tsx
+ *        change how `<T>x` parses). Omit it and the kind is inferred by parsing both ways and
+ *        keeping whichever the parser preferred — correct, but twice the work, so pass it.
  * @returns {string}
  */
-export function stripCommentsAndStrings(text: string): string;
+export function stripCommentsAndStrings(text: string, fileName?: string): string;
 /**
  * Comments ONLY — string literals are left intact.
  *
@@ -96,10 +121,21 @@ export function stripCommentsAndStrings(text: string): string;
  * line numbers stay true. String CONTENTS are still fully preserved — this function remains
  * string-blind BY DESIGN, which is what `guard-string-literal-blindness` uses it to control for.
  *
+ * ⚠ IT WAS ALSO REGEX-BLIND until 2026-08-10 (EI-20064929206355679), and that defect ran in
+ * the FALSE-POSITIVE direction — the one this module exists to eliminate. The quote in a
+ * regex literal (`/'/`, `/['"]/`) opened a phantom string that never closed, so from that
+ * point to the end of the file NO comment was blanked and every detection token quoted in a
+ * doc comment read as a live call site. Measured, not hypothetical: it put a phantom
+ * `role: 'cup'` — text from a doc comment in `check-ungated-mug-kettle.mjs` — into the
+ * mug/kettle surface census. Comment ranges now come from TypeScript's parser, which knows a
+ * regex from a division.
+ *
  * @param {string} text
+ * @param {string} [fileName]  the real path, used ONLY to pick a ScriptKind. See
+ *        `stripCommentsAndStrings` — omitting it costs a second parse.
  * @returns {string}
  */
-export function stripCommentsOnly(text: string): string;
+export function stripCommentsOnly(text: string, fileName?: string): string;
 /**
  * The shared RECURRENCE GUARD for the phantom-offender class.
  *
