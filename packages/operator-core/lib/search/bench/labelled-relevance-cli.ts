@@ -82,6 +82,18 @@ async function main(): Promise<void> {
   const seed = argValue('--seed') ?? 'p038-labelled-v1';
   const dryRun = process.argv.includes('--dry-run');
   const secondary = process.argv.includes('--secondary');
+  // WI-37638 follow-up: the CONTROL ARM for Stage B. The v1 pass applied
+  // `rerankProseHits` to every stratum uniformly, which measured a pipeline the
+  // live tools do not all run — `docs:search`, `plans:search` and
+  // `work_items:search` have NO rerank stage at all. Without an off-arm the v1
+  // numbers cannot say what Stage B is worth on any surface.
+  //
+  // The control is the fused RRF order truncated at k — deliberately NOT a
+  // second retrieval path: it is byte-identical to what `rerankProseHits`
+  // already returns through its own fail-safe passthrough, so the arms differ
+  // in exactly one thing. Over-fetch stays at `rerankCandidateCount(k)` in BOTH
+  // arms so the fused pool being cut is the same pool.
+  const noRerank = process.argv.includes('--no-rerank');
   const tools = secondary ? SECONDARY_STRATUM_TOOLS : SEARCH_STACK_TOOLS;
 
   const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { activeWorkspaceId }, { getOrgPg }] =
@@ -164,11 +176,13 @@ async function main(): Promise<void> {
     // an engine but scored zero rows returns the retrieval order, which is
     // byte-identical to no reranking at all. Require BOTH.
     let rerankApplied = false;
-    const reranked = await rerankProseHits(query, results, k, {
-      onOutcome: (o) => {
-        rerankApplied = o.attempted && (o.scored ?? 0) > 0;
-      },
-    });
+    const reranked = noRerank
+      ? results.slice(0, k)
+      : await rerankProseHits(query, results, k, {
+          onOutcome: (o) => {
+            rerankApplied = o.attempted && (o.scored ?? 0) > 0;
+          },
+        });
 
     return {
       hits: reranked.map(
