@@ -60,6 +60,14 @@ async function hookMod(): Promise<HookMod> {
 const OUTAGE_SHAPE =
   'const rows = await sql\x60\n  SELECT 1\n  -- crowded out; \x60name\x60 is a tiebreak\n  ORDER BY 1\x60;\n';
 
+/**
+ * The 2026-08-10 break, in shape: a duplicate block-scoped declaration. Unlike every
+ * syntax case above, this one PARSES — a redeclaration is an ECMAScript early error, so
+ * `parseDiagnostics` is empty and the grammar phase's only finding is TS2451.
+ */
+const DUPLICATE_CONST_SHAPE =
+  'export function f(ownerId: string) {\n  const sessionId = ownerId ? "a" : null;\n  const sessionId = ownerId ? "b" : null;\n  return sessionId;\n}\n';
+
 /** Cases the hook and the real detector must agree on, exactly. */
 const CORPUS: Array<[name: string, file: string, text: string]> = [
   ['the 2026-08-03 outage shape', 'watchdog.ts', OUTAGE_SHAPE],
@@ -80,6 +88,14 @@ const CORPUS: Array<[name: string, file: string, text: string]> = [
   ['the WI-37398 doubled export', 'corpus-recall-io.ts', "export export const A = ['x'] as const;\n"],
   ['a doubled async modifier', 'k.ts', 'export async async function f() {}\n'],
   ['a doubled accessibility modifier', 'l.ts', 'class C { public public x = 1; }\n'],
+  // EI-19457229906581679 — the 2026-08-10 outage shape. Parses cleanly AND passes the
+  // grammar phase; its only signal is TS2451, which the <2000 bound discarded. esbuild
+  // refuses it, so it took :3170 down fleet-wide while this very guard was installed.
+  ['the 2026-08-10 duplicate-const outage shape', 'launch-su.ts', DUPLICATE_CONST_SHAPE],
+  // The counterweight: 2xxx diagnostics the noLib grammar phase raises ON ITS OWN. These
+  // MUST stay silent, and they are why the fix is an enumerated set of esbuild-fatal codes
+  // rather than a raised bound (a raised bound would flag every async function in the repo).
+  ['noLib-only Promise/console noise', 'm.ts', 'export async function f() {\n  console.log(1);\n  return Promise.resolve(2);\n}\n'],
 ];
 
 describe('posttooluse-ts-parse-nudge', () => {

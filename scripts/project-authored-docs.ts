@@ -34,7 +34,7 @@ import {
 // @ts-ignore — pure JS helper, typed only by JSDoc
 import { connectScriptPg } from './lib/pg-url.mjs';
 
-const ROOT =resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 export const WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
 export const HARNESS_SLUG = process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';

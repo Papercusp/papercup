@@ -2,7 +2,7 @@
   "generatedBy": "scripts/measure-pot-substrate-split.mjs",
   "planItem": "P-056",
   "plan": "retire-mug-kettle-su-only-2026-08-09",
-  "generatedAt": "2026-08-10T14:40:47.185Z",
+  "generatedAt": "2026-08-10T17:25:27.453Z",
   "method": "Import specifiers are RESOLVED to absolute paths (extensionless + /index aware) and tested for containment in packages/operator-core/lib/pot — not string-matched on \"/pot/\", which both over- and under-matches. KEEP = at least one LIVE (non-test, non-retired-tier) importer outside lib/pot. ⚠ READ THIS BEFORE EXECUTING ANY BUCKET (D-047/D-049): until 2026-08-10 the predicate was \"at least one NON-TEST importer\", which answers IS IT SAFE TO MOVE — not IS IT SUBSTRATE. The two agree on most symbols, so the old keep bucket looked right while quietly counting retired-tier tools as substrate evidence. Importers are now split into `liveImporters` (real evidence) and `tierImporters` (a dead thing referencing another dead thing), and symbols whose ONLY non-test importers are tier land in `keepTierOnly` rather than `keep`.",
   "tierImporterSet": {
     "why": "D-048 ruled the middle-band pot tools tier-vs-container; D-049 established that GATING and CLASSIFICATION are independent, so this set is built on the ruling, not on the gate.",
@@ -29,25 +29,38 @@
   },
   "counts": {
     "potSourceFiles": 30,
-    "exportedSymbols": 349,
-    "keep": 52,
+    "exportedSymbols": 350,
+    "keep": 66,
     "keepTierOnly": 23,
-    "move": 74,
-    "moveNeedsReview": 200,
+    "move": 71,
+    "moveNeedsReview": 190,
     "dynamicallyImportedPotModules": 17,
-    "externalNonTestImporterFiles": 57,
+    "externalNonTestImporterFiles": 59,
     "externalTestImporterFiles": 9,
     "externalNonTestDynamicImporterFiles": 29,
-    "externalTestDynamicImporterFiles": 6
+    "externalTestDynamicImporterFiles": 10
   },
   "methodRisk": "HAND-ROLLED REGEX IMPORT WALKER. A prior dependency audit in this repo (2026-07-20) found exactly this technique UNDER-REPORTS imports — it missed a standard static import and falsely flagged live packages as orphans. Under-reporting is the DANGEROUS direction here: it inflates MOVE, and moving a still-imported symbol breaks the tree. Treat `move` as a CANDIDATE list requiring a second independent method (knip unused-exports, or gitnexus.query call-graph) before P-057 executes it. `keep` is the safe direction — a symbol proven to have an importer is not going to lose one by being measured badly.",
   "selfCheck": {
-    "expectedExternalNonTestImporters": 57,
-    "actual": 57,
+    "expectedExternalNonTestImporters": 59,
+    "actual": 59,
     "matches": true,
-    "note": "P-056 recorded 60 non-test files outside lib/pot importing from it (2026-08-10). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list."
+    "note": "Baseline 59 (P-056 recorded 60 → 57 after excluding 3 gitignored scratch importers → 59 once bare/package specifiers resolved, EI-20087329768209149). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list. A MATCH is weak evidence on its own: it compares this method against itself. Run scripts/verify-pot-substrate-ast.mjs for independent confirmation."
   },
   "keep": [
+    {
+      "symbol": "BehavioralWakePolicy",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ]
+    },
     {
       "symbol": "claimWatchdogFire",
       "definedIn": [
@@ -192,7 +205,49 @@
       ]
     },
     {
+      "symbol": "CupTranscriptCaps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ]
+    },
+    {
+      "symbol": "CupTranscriptMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "liveImporters": [
+        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ]
+    },
+    {
       "symbol": "cupWakeEfficiency",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ]
+    },
+    {
+      "symbol": "CupWakeEfficiency",
       "definedIn": [
         "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
       ],
@@ -306,6 +361,34 @@
       ]
     },
     {
+      "symbol": "ensurePotWakeRuleSync",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/index.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/index.ts"
+      ]
+    },
+    {
       "symbol": "evaluatePlacement",
       "definedIn": [
         "packages/operator-core/lib/pot/placement-watchdog.ts"
@@ -363,6 +446,23 @@
       ]
     },
     {
+      "symbol": "FrontierRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/fleet/placement-gather.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/fleet/placement-gather.ts"
+      ]
+    },
+    {
       "symbol": "getPotStarted",
       "definedIn": [
         "packages/operator-core/lib/pot/started.ts"
@@ -375,6 +475,10 @@
       ],
       "externalNonTestImporters": 4,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -431,6 +535,23 @@
       ]
     },
     {
+      "symbol": "HarnessBlockGraph",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/fleet/placement-gather.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/fleet/placement-gather.ts"
+      ]
+    },
+    {
       "symbol": "isOperatingWell",
       "definedIn": [
         "packages/operator-core/lib/pot/throughput.ts"
@@ -463,6 +584,10 @@
       ],
       "externalNonTestImporters": 6,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -531,6 +656,10 @@
       ],
       "externalNonTestImporters": 2,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -568,6 +697,25 @@
         "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts"
       ],
       "liveImporters": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ]
+    },
+    {
+      "symbol": "MugWakeEfficiency",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
+      ],
+      "importers": [
+        "apps/operator-vite/src/components/adv/MugWakeEfficiencyPanel.tsx",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 2,
+      "dynamicImporters": [
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "apps/operator-vite/src/components/adv/MugWakeEfficiencyPanel.tsx",
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
@@ -660,6 +808,29 @@
       ]
     },
     {
+      "symbol": "PlacementConfig",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/dbos/routines-workflow.ts",
+        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
+        "packages/operator-core/lib/overwatch/compute-brief.ts",
+        "packages/operator-core/lib/scout/error-streak-alarm.ts",
+        "packages/operator-core/lib/scout/nudge-recipient.ts",
+        "packages/operator-core/lib/scout/register-scout-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ]
+    },
+    {
       "symbol": "PLATFORM_SELF_POT_SLUG",
       "definedIn": [
         "packages/operator-core/lib/pot/enable-platform-mode.ts"
@@ -730,6 +901,55 @@
       ]
     },
     {
+      "symbol": "PotEventSubscription",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/_resolve.ts",
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 2,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "tierImporters": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/pot/_resolve.ts"
+      ]
+    },
+    {
+      "symbol": "PotSoakReportSnapshot",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [
+        "apps/operator-vite/src/components/adv/LearningTab.tsx"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/derived-reads/producers.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts"
+      ],
+      "liveImporters": [
+        "apps/operator-vite/src/components/adv/LearningTab.tsx"
+      ]
+    },
+    {
       "symbol": "PotSurvey",
       "definedIn": [
         "packages/operator-core/lib/pot/survey.ts"
@@ -744,6 +964,38 @@
       ],
       "liveImporters": [
         "packages/operator-core/lib/pot-eval/live-ports.ts"
+      ]
+    },
+    {
+      "symbol": "PotThroughputTickRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/dbos/routines-workflow.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts"
+      ]
+    },
+    {
+      "symbol": "RawThroughputTickRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/dbos/routines-workflow.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts"
       ]
     },
     {
@@ -918,6 +1170,34 @@
       ],
       "liveImporters": [
         "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      ]
+    },
+    {
+      "symbol": "registerPotWakeRules",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/index.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/agent-tools/index.ts"
       ]
     },
     {
@@ -1124,6 +1404,10 @@
       ],
       "externalNonTestImporters": 2,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -1243,6 +1527,10 @@
       ],
       "externalNonTestImporters": 1,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -1539,6 +1827,10 @@
       ],
       "externalNonTestImporters": 1,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -1970,6 +2262,29 @@
       ]
     },
     {
+      "symbol": "CarryJournalEntry",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0,
+      "dynamicImporters": [
+        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
+        "packages/operator-core/lib/deployment/account-pool-store.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
+        "packages/operator-core/lib/overwatch/control-state.ts",
+        "packages/operator-core/lib/owner-steering.ts",
+        "packages/operator-core/lib/scout/scout-cycle-action.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/liveness-alarm.ts"
+      ]
+    },
+    {
       "symbol": "carryNoteHead",
       "definedIn": [
         "packages/operator-core/lib/pot/mug-brief-launch.ts"
@@ -2302,17 +2617,6 @@
       ]
     },
     {
-      "symbol": "CupWakeEfficiency",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ]
-    },
-    {
       "symbol": "CupWakeEfficiencyDeps",
       "definedIn": [
         "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
@@ -2528,29 +2832,6 @@
       ]
     },
     {
-      "symbol": "ensurePotWakeRuleSync",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
-        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
-        "packages/operator-core/lib/deployment/account-pool-store.ts",
-        "packages/operator-core/lib/events/await/wake-executor.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/overwatch/control-state.ts",
-        "packages/operator-core/lib/owner-steering.ts",
-        "packages/operator-core/lib/scout/scout-cycle-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/liveness-alarm.ts"
-      ]
-    },
-    {
       "symbol": "EscalationBacklogMetrics",
       "definedIn": [
         "packages/operator-core/lib/pot/soak-report.ts"
@@ -2698,18 +2979,6 @@
       ]
     },
     {
-      "symbol": "FrontierRow",
-      "definedIn": [
-        "packages/operator-core/lib/pot/survey.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
       "symbol": "frontierRowToCandidate",
       "definedIn": [
         "packages/operator-core/lib/pot/survey.ts"
@@ -2775,6 +3044,10 @@
       "importers": [],
       "externalNonTestImporters": 0,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -2787,18 +3060,6 @@
         "packages/operator-core/lib/scout/signal-accumulator.test.ts",
         "packages/operator-core/lib/severe-event-broadcast.ts",
         "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "HarnessBlockGraph",
-      "definedIn": [
-        "packages/operator-core/lib/pot/survey.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
         "packages/operator-core/lib/system-health/compute.ts"
       ]
     },
@@ -3022,6 +3283,10 @@
       "importers": [],
       "externalNonTestImporters": 0,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -3045,6 +3310,10 @@
       "importers": [],
       "externalNonTestImporters": 0,
       "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -3121,18 +3390,6 @@
       "externalNonTestImporters": 0,
       "dynamicImporters": [
         "packages/operator-core/lib/blueprint/blueprint-run-action.ts"
-      ]
-    },
-    {
-      "symbol": "MugWakeEfficiency",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
       ]
     },
     {
@@ -3348,24 +3605,6 @@
       ]
     },
     {
-      "symbol": "PlacementConfig",
-      "definedIn": [
-        "packages/operator-core/lib/pot/placement-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/routines-workflow.ts",
-        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
-        "packages/operator-core/lib/overwatch/compute-brief.ts",
-        "packages/operator-core/lib/scout/error-streak-alarm.ts",
-        "packages/operator-core/lib/scout/nudge-recipient.ts",
-        "packages/operator-core/lib/scout/register-scout-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
       "symbol": "PlacementDecision",
       "definedIn": [
         "packages/operator-core/lib/pot/placement-watchdog.ts"
@@ -3568,29 +3807,6 @@
       ]
     },
     {
-      "symbol": "PotEventSubscription",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
-        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
-        "packages/operator-core/lib/deployment/account-pool-store.ts",
-        "packages/operator-core/lib/events/await/wake-executor.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/overwatch/control-state.ts",
-        "packages/operator-core/lib/owner-steering.ts",
-        "packages/operator-core/lib/scout/scout-cycle-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/liveness-alarm.ts"
-      ]
-    },
-    {
       "symbol": "potFrontierAdmission",
       "definedIn": [
         "packages/operator-core/lib/pot/survey.ts"
@@ -3710,18 +3926,6 @@
       ]
     },
     {
-      "symbol": "PotSoakReportSnapshot",
-      "definedIn": [
-        "packages/operator-core/lib/pot/soak-report.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/derived-reads/producers.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts"
-      ]
-    },
-    {
       "symbol": "PotSpawnSnapshot",
       "definedIn": [
         "packages/operator-core/lib/pot/throughput.ts"
@@ -3778,17 +3982,6 @@
     },
     {
       "symbol": "PotThroughputTickResult",
-      "definedIn": [
-        "packages/operator-core/lib/pot/throughput.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/routines-workflow.ts"
-      ]
-    },
-    {
-      "symbol": "PotThroughputTickRow",
       "definedIn": [
         "packages/operator-core/lib/pot/throughput.ts"
       ],
@@ -3918,17 +4111,6 @@
       "externalNonTestImporters": 0,
       "dynamicImporters": [
         "packages/operator-core/lib/agent-tools/pot/_create.ts"
-      ]
-    },
-    {
-      "symbol": "RawThroughputTickRow",
-      "definedIn": [
-        "packages/operator-core/lib/pot/throughput.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/routines-workflow.ts"
       ]
     },
     {
@@ -4076,29 +4258,6 @@
     },
     {
       "symbol": "refreshAllPotWakeRules",
-      "definedIn": [
-        "packages/operator-core/lib/pot/wake.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
-        "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/tools.test.ts",
-        "packages/operator-core/lib/deployment/account-pool-store.ts",
-        "packages/operator-core/lib/events/await/wake-executor.ts",
-        "packages/operator-core/lib/fleet/operator-spawn.ts",
-        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-        "packages/operator-core/lib/harness/routines/loop-turn-outcome.ts",
-        "packages/operator-core/lib/overwatch/control-state.ts",
-        "packages/operator-core/lib/owner-steering.ts",
-        "packages/operator-core/lib/scout/scout-cycle-action.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts",
-        "packages/operator-core/lib/system-health/liveness-alarm.ts"
-      ]
-    },
-    {
-      "symbol": "registerPotWakeRules",
       "definedIn": [
         "packages/operator-core/lib/pot/wake.ts"
       ],
@@ -4554,14 +4713,6 @@
   ],
   "move": [
     {
-      "symbol": "BehavioralWakePolicy",
-      "definedIn": [
-        "packages/operator-core/lib/pot/behavioral-supervision.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
       "symbol": "BriefCapacity",
       "definedIn": [
         "packages/operator-core/lib/pot/mug-brief.ts"
@@ -4675,22 +4826,6 @@
     },
     {
       "symbol": "CupTranscriptCapReport",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "CupTranscriptCaps",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "CupTranscriptMetrics",
       "definedIn": [
         "packages/operator-core/lib/pot/cup-transcript-cap.ts"
       ],
@@ -5147,6 +5282,8 @@
     }
   ],
   "externalNonTestImporterFiles": [
+    "apps/operator-vite/src/components/adv/LearningTab.tsx",
+    "apps/operator-vite/src/components/adv/MugWakeEfficiencyPanel.tsx",
     "packages/operator-core/lib/agent-state-divergence-sweep.ts",
     "packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts",
     "packages/operator-core/lib/agent-tools/index.ts",
@@ -5249,6 +5386,10 @@
       "packages/operator-core/lib/sync-resolver/index.ts"
     ],
     "packages/operator-core/lib/pot/started.ts": [
+      "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+      "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+      "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
+      "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
       "packages/operator-core/lib/dbos/durable-spawn.ts",
       "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
       "packages/operator-core/lib/dbos/periodic-workflows.ts",
