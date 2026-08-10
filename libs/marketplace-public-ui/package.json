@@ -30,5 +30,8 @@
     "lostpixel": "lost-pixel",
     "lostpixel:update": "LOST_PIXEL_GENERATE_ONLY=1 lost-pixel",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@papercusp/test-config": "*"
   }
 }

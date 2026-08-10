@@ -19,5 +19,8 @@
   "devDependencies": {
     "postgres": "^3.4.5",
     "vitest": "^4.1.4"
+  },
+  "dependencies": {
+    "@papercusp/test-config": "*"
   }
 }

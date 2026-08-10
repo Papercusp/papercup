@@ -19,5 +19,8 @@
   "files": [
     "src/",
     "wit/"
-  ]
+  ],
+  "dependencies": {
+    "@papercusp/test-config": "*"
+  }
 }

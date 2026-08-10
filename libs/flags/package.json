@@ -33,7 +33,8 @@
     }
   },
   "dependencies": {
-    "@papercusp/module-singleton": "*"
+    "@papercusp/module-singleton": "*",
+    "@papercusp/test-config": "*"
   },
   "devDependencies": {
     "vitest": "^4.1.7"

@@ -63,7 +63,8 @@
   },
   "dependencies": {
     "@papercusp/linkable-edges": "file:../../libs/generic/linkable-edges",
-    "@papercusp/pubsub-substrate": "file:../../libs/generic/pubsub-substrate"
+    "@papercusp/pubsub-substrate": "file:../../libs/generic/pubsub-substrate",
+    "@papercusp/test-config": "file:../../libs/test-config"
   },
   "devDependencies": {
     "postgres": "^3.4.5",

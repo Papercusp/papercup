@@ -25,5 +25,8 @@
     "oh-my-pi",
     "mcp",
     "agent"
-  ]
+  ],
+  "dependencies": {
+    "@papercusp/test-config": "*"
+  }
 }
