@@ -23,12 +23,27 @@
  * be testing the wrong layer and would keep passing if this hop regressed.
  *
  * ON VACUITY, which is a live hazard in this file. `validateGoalDraft` runs for
- * real, and a kill criterion shorter than KILL_CRITERION_MIN_CHARS (12) is
- * REJECTED before `postGoalStart` is ever called — the submit would no-op and
- * every assertion below would pass against a component that forwards nothing.
- * The fixtures therefore use a comfortably long criterion, and the first test
- * asserts `postGoalStart` was actually reached. (This is not hypothetical: the
- * same 3-char-criterion trap red-pinned goals/update.test.ts on 2026-08-10.)
+ * REAL — it is not mocked — and when it fails, `postGoalStart` is never called,
+ * the submit no-ops, and every assertion below would pass against a component
+ * that forwards nothing. The fixtures therefore fill every field it can reject
+ * on, and the first test asserts `postGoalStart` was actually REACHED. That
+ * reached-assertion is the load-bearing part: it holds no matter which field
+ * the validator starts rejecting later.
+ *
+ * ⚠ CORRECTION 2026-08-10 (su-0d1fb) — an earlier revision of this comment said
+ * the hazard was a kill criterion shorter than KILL_CRITERION_MIN_CHARS (12)
+ * being "REJECTED before postGoalStart". THAT IS FALSE, and it is worth stating
+ * out loud rather than quietly deleting, because the false version is the more
+ * plausible-sounding one. `validateGoalDraft` (goal-composer-model.ts:83)
+ * rejects ONLY an empty `title` and an unparseable `ceiling`; it applies NO rule
+ * whatsoever to `killCriterion` — `grep 'errors.killCriterion'` in that module
+ * returns nothing, even though GoalComposer.tsx:162 renders that error slot.
+ * The shared rule (`killCriterionProblem`, operator-core/lib/goals/kill-criterion.ts)
+ * has exactly TWO callers, `goals:propose` and `goals:update`, and this composer
+ * is not one of them. So a 3-char criterion sails through this path to the
+ * server. The 3-char trap that red-pinned goals/update.test.ts on 2026-08-10 was
+ * real, but it fired in the `goals:update` HANDLER, not in this validator.
+ * Tracked as EI-20049757392342975.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
@@ -42,7 +57,11 @@ vi.mock('./goal-composer-model', async (importOriginal) => ({
 
 const GoalComposer = (await import('./GoalComposer')).default;
 
-/** Long enough to clear KILL_CRITERION_MIN_CHARS — see the vacuity note above. */
+/**
+ * A realistic criterion. NOTE it is not load-bearing for validation — this path
+ * applies no length rule (see the CORRECTION above); it is realistic so the
+ * fixture reads like a real submission.
+ */
 const KILL = 'no paying user by day 30';
 
 function fillAndSubmit() {

@@ -344,37 +344,43 @@
       </section>
 
       <section id="doors">
-        <h2 class="sec"><span class="num">02</span> Role doors carrying no gate of their own</h2>
-        <p class="lede">
-          Three of the six paths that can turn a role <em>name</em> into a running process do not reference the gate.
-          Two look covered one layer down — but that is a claim to verify, not to assume.
-        </p>
+        <h2 class="sec"><span class="num">02</span> Role doors — <span style="color:var(--heat)">CORRECTED 2026-08-10</span></h2>
 
-        <div class="card -heat">
-          <h3><span class="pill -heat">real reference</span> &nbsp;<span class="path">packages/operator-core/lib/agent-tools/operator/converse.ts</span></h3>
+        <div class="callout" style="border-left:3px solid var(--heat)">
+          <p class="h">⚠ Retraction — this section overstated the risk</p>
           <p>
-            The Papercup concierge's delegate path still routes buildable work to the Mug — the comment at L639–643
-            reads “buildable work (file-and-nudge to the Mug)”, honored for <code>role === 'papercup'</code>. This
-            is behavioural, not a spawn: it tells the concierge that a Mug exists to hand work to. Needs
-            retargeting to su + GOAL mode, in the code and in
-            <code>apps/operator/prompts/papercup.converse.md</code> together.
+            It originally ran under the heading <em>“Role doors carrying no gate of their own”</em> and framed three
+            files as gaps, one of them as a “real reference”. <strong>All three are UPSTREAM OF A GATE and none is
+            a hole.</strong> I found this while working P-054: the ratchet's own
+            <code>roleDoorExemptions</code> already documented it, with reasons — and I then verified each claim
+            against the code rather than trusting the file:
+          </p>
+          <ul class="paths">
+            <li>converse.ts:692–699 calls <code>spawnAgentInHarness</code>, and the gate is ON THAT FUNCTION — <code>fleet/operator-spawn.ts:886–897</code>, <code>isRetiredTierRole</code> + <code>mugKettleSystemEnabled</code>, refusing with a message naming the flag.</li>
+            <li>durable-spawn.ts dispatches to <code>/invoke</code> — the gated spawn chokepoint.</li>
+            <li>psu-launcher.mjs posts to <code>bootstrap-role</code> — the gated console chokepoint.</li>
+          </ul>
+          <p>
+            <strong>What survives the correction:</strong> converse.ts still carries a real <em>behavioural</em>
+            residue — the concierge's delegate path (L639–643, <code>role === 'papercup'</code>) still routes
+            buildable work to a Mug that will now refuse it. That is worth fixing, and is tracked as <b>P-052</b>
+            (now held by peer su-bdf16 alongside WI-37616, the <code>nudgeMug</code> callee layer). But it is a
+            dead-end handoff, <em>not</em> an ungated spawn path.
+          </p>
+          <p>
+            <strong>What this cost:</strong> P-053 was authored off the wrong reading and has been dropped —
+            adding a second gate behind three already-gated chokepoints is duplicate surface, not defence in depth.
+            The lesson is the one this page preaches elsewhere and I still tripped on: the guard reported
+            “3 role doors ungated”, and I read a <em>guard's bookkeeping category</em> as a
+            <em>security finding</em> without opening the exemption list sitting in the same file.
           </p>
         </div>
 
         <div class="card -cool">
-          <h3><span class="pill -cool">covered downstream</span> &nbsp;<span class="path">packages/operator-core/lib/dbos/durable-spawn.ts</span></h3>
           <p>
-            Parses <code>role</code> out of an <code>/invoke?role=…</code> URL and POSTs it (L134–142). The
-            <code>/invoke</code> route <em>is</em> gated, so the tier is refused one hop later. Worth a defence-in-depth
-            gate here anyway, since this file decides <em>whether to fire at all</em>.
-          </p>
-        </div>
-
-        <div class="card -cool">
-          <h3><span class="pill -cool">covered downstream</span> &nbsp;<span class="path">apps/operator/scripts/psu-launcher.mjs</span></h3>
-          <p>
-            <code>psu --role=&lt;role&gt;</code> (L454–455). The console path bootstraps through
-            <code>bootstrap-role.ts</code>, which is gated. Same note as above.
+            <span class="pill -cool">net position</span> &nbsp;Six role-parameterized doors, <strong>zero
+            ungated</strong>. Three carry the gate directly; three are exempt-with-reason because they funnel into
+            one of those three. The ratchet records the exemptions so the next reader does not repeat my mistake.
           </p>
         </div>
       </section>

@@ -136,15 +136,21 @@ describe('defaultSentinelHandoffDeps().nudgeRecipient — routes to someone who 
     // `vitest-fail-on-console` treats an unasserted warn as a defect, and because a
     // quiet fallback here is exactly the failure mode this whole item is about.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let warnCalls: unknown[][] = [];
     try {
       await defaultSentinelHandoffDeps().nudgeRecipient(nudge());
+      // SNAPSHOT the record BEFORE restoring: `mockRestore()` resets the mock as well
+      // as un-patching it, which CLEARS mock.calls — asserting after the `finally`
+      // reads an empty history and fails with "called 0 times" on a warn that really
+      // did fire.
+      warnCalls = warn.mock.calls.map((c) => [...c]);
     } finally {
       warn.mockRestore();
     }
     expect(openEscalationSpy).not.toHaveBeenCalled();
     expect((sendMessageSpy.mock.calls[0]![1] as { to: string[] }).to).toEqual(['@role:mug']);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]![0])).toContain('nudge recipient unresolved for WI-101');
+    expect(warnCalls).toHaveLength(1);
+    expect(String(warnCalls[0]![0])).toContain('nudge recipient unresolved for WI-101');
   });
 
   it('urgency picks the CHANNEL, not the destination: an urgent su nudge still goes to the su', async () => {

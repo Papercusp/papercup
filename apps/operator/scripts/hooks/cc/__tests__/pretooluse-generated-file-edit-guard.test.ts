@@ -26,12 +26,14 @@ const REPO = resolve(HERE, '..', '..', '..', '..', '..', '..');
 /** Run the hook exactly as Claude Code does: JSON on stdin, read the decision. */
 function runHook(
   payload: unknown,
-  env: NodeJS.ProcessEnv = {},
+  env: Record<string, string> = {},
 ): { denied: boolean; reason: string } {
   const out = execFileSync('node', [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, PAPERCUSP_ALLOW_GENERATED_EDIT: '', ...env },
+    // Cleared explicitly so an operator running with the bypass exported cannot
+    // silently turn every deny-case here green.
+    env: { ...process.env, PAPERCUSP_ALLOW_GENERATED_EDIT: '', ...env } as NodeJS.ProcessEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   if (!out.trim()) return { denied: false, reason: '' };
