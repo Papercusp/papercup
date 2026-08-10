@@ -20,6 +20,11 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { Worker } from 'node:worker_threads';
+import { execFile } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 
 // Dynamic import lets afterEach reset module state between tests.
 async function mod() {
@@ -293,4 +298,45 @@ describe('cpu-task-worker — transient-failure recovery (WI-37688)', () => {
     // holding the loop open, or a one-off process never exits.
     expect(m.getCpuWorkerState()).toMatchObject({ alive: true, keepAlive: false });
   });
+
+  it('lets a host whose event loop is otherwise idle EXIT on its own (child process)', async () => {
+    // Ground truth for the test above. `keepAlive` reports what the module
+    // last applied to the handle, which is one inference away from the thing
+    // that actually matters — whether the process can exit. That gap is not
+    // hypothetical: a mutant that stopped ref'ing entirely SURVIVED the
+    // in-tree probe against the state assertions alone (WI-37688).
+    //
+    // The defect only exists when nothing else holds the loop open, which is
+    // unreproducible inside vitest — its runner always has work pending. So
+    // this spawns a bare host that awaits one serialize and does nothing
+    // else, which is every CLI, bench and one-off driver.
+    //
+    // The discriminating predicate is EXIT, not output: the sync fallback
+    // guarantees an answer on every branch, so pre-fix the child printed its
+    // marker and then hung forever (measured: `timeout 15` exit 124, with a
+    // registered beforeExit handler that never ran).
+    const dir = mkdtempSync(join(tmpdir(), 'cpu-task-idle-loop-'));
+    try {
+      const modulePath = resolve(__dirname, 'cpu-task-worker.ts');
+      const child = join(dir, 'idle-host.mts');
+      writeFileSync(
+        child,
+        `const { serializeJsonResponse, OFFLOAD_MIN_ITEMS } = await import(${JSON.stringify(modulePath)});\n` +
+          `const rows = Array.from({ length: OFFLOAD_MIN_ITEMS + 1 }, (_, i) => ({ id: i }));\n` +
+          `const json = await serializeJsonResponse({ rows }, rows.length);\n` +
+          `console.log('CHILD_SERIALIZED len=' + json.length);\n`,
+      );
+
+      // A child still holding the loop open never exits, so execFile rejects
+      // on its timeout — that rejection IS the failure signal.
+      const { stdout } = await promisify(execFile)('npx', ['tsx', child], {
+        cwd: resolve(__dirname, '..'),
+        timeout: 120_000,
+      });
+
+      expect(stdout).toContain('CHILD_SERIALIZED');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180_000);
 });

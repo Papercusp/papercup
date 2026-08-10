@@ -72,6 +72,17 @@ let _nextId = 0;
 const _pending = new Map<number, PendingRequest>();
 let _workerDisabled = false;
 let _consecutiveCrashes = 0;
+/**
+ * What `syncWorkerRef` last APPLIED to the worker's libuv handle.
+ *
+ * libuv exposes no ref-state getter, so this is the only way to report the
+ * real thing. Do NOT replace it by re-deriving `_pending.size > 0` in the
+ * diagnostic: that restates the code instead of observing it, and a
+ * `syncWorkerRef` that stopped ref'ing entirely would still read as correct
+ * (measured — that exact mutant SURVIVED the probe, WI-37688). `syncWorkerRef`
+ * is the only writer.
+ */
+let _workerRefd = false;
 
 /**
  * Consecutive runtime crashes after which the worker is given up on for good.
@@ -103,8 +114,13 @@ function workerPath(): string {
  */
 function syncWorkerRef(): void {
   if (!_worker) return;
-  if (_pending.size > 0) _worker.ref();
-  else _worker.unref();
+  if (_pending.size > 0) {
+    _worker.ref();
+    _workerRefd = true;
+  } else {
+    _worker.unref();
+    _workerRefd = false;
+  }
 }
 
 /**
@@ -128,6 +144,8 @@ function ensureWorker(): Promise<void> {
   _workerReady = new Promise<void>((resolveReady, rejectReady) => {
     try {
       _worker = new Worker(workerPath());
+      // A fresh Worker is ref'd by libuv until we say otherwise.
+      _workerRefd = true;
     } catch (err) {
       _workerDisabled = true;
       rejectReady(err as Error);
@@ -263,6 +281,7 @@ export async function _resetCpuWorker(): Promise<void> {
   _workerReady = null;
   _workerDisabled = false;
   _consecutiveCrashes = 0;
+  _workerRefd = false;
   // REJECT stragglers, never drop them — a bare `_pending.clear()` here left
   // the caller's promise unsettled forever (WI-37688). The 'exit' handler
   // fired by terminate() above normally drains this first; the loop is the
@@ -309,7 +328,7 @@ export function getCpuWorkerState(): {
     disabled: _workerDisabled,
     pendingCount: _pending.size,
     minItems: OFFLOAD_MIN_ITEMS,
-    keepAlive: _worker !== null && _pending.size > 0,
+    keepAlive: _worker !== null && _workerRefd,
     consecutiveCrashes: _consecutiveCrashes,
   };
 }
