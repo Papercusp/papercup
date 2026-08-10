@@ -29,7 +29,12 @@ import {
   type ObservationSubject,
   type ScorecardRatingRubric,
 } from './harness/improvements/observation-types';
-import { issuesScopeWorkspace, issuesOutLinksMany, type IssueOutLink } from './issues-engineer';
+import {
+  issuesScopeWorkspace,
+  issuesOutLinksMany,
+  issuesSupersededByRevision,
+  type IssueOutLink,
+} from './issues-engineer';
 import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
 import { pgTimestampToIso } from './pg-timestamp';
 import {
@@ -958,6 +963,23 @@ export interface RubricTrend {
    *  suggesting the rubric's model has drifted and should re-enter the queen↔scout
    *  loop for re-ratification. */
   staleness: RubricStaleness;
+  /**
+   * How many scorecards were EXCLUDED from this trend as superseded — each the DST
+   * of a `revises` edge from a later correction (goal-mode-rubric-v2-2026-08-10 P-010).
+   *
+   * REPORTED, never silent, and that is the point. A re-grade used to enter the
+   * series as an ADDITIONAL sample, so correcting a scorecard moved the trend twice:
+   * once for the wrong reading and again for the right one. Measured on goal-mode-e2e:
+   * three of its five samples are corrections of one another (their own titles say
+   * "#4 (CORRECTION)" / "#5 (SECOND CORRECTION)"), so the reported direction was an
+   * artifact of re-grading rather than a change in the thing being graded.
+   *
+   * Dropping them silently would trade one invisible distortion for another — a reader
+   * seeing `scorecardCount: 2` with no explanation cannot tell a quiet window from a
+   * heavily-corrected one. So the count is surfaced and `scorecardCount` counts only
+   * what actually fed the series.
+   */
+  supersededExcluded: number;
 }
 
 export interface ScorecardTrendFilter {
@@ -1010,8 +1032,14 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     // WI-6124: no includeLinks — the trend is a pure roll-up of ratings + createdAt and
     // never reads `linkedItems`, so it takes the default and skips the join.
   });
+  // P-010: drop scorecards a later filing REVISED. A correction used to enter the
+  // series as an extra sample, so re-grading moved the trend twice — once for the
+  // reading now known to be wrong, again for the right one. One rel-filtered in-edge
+  // query (NOT the heavy issuesOutLinksMany join the trend deliberately skips).
+  const supersededIds = await issuesSupersededByRevision(rows.map((r) => r.issueId));
+  const live = supersededIds.size ? rows.filter((r) => !supersededIds.has(r.issueId)) : rows;
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
-  const chrono = [...rows].reverse();
+  const chrono = [...live].reverse();
 
   // Scale-aware numeric projection for mean10 (one rubric per trend → one resolve).
   const trendRubric = await getRubric(filter.rubricRef);
@@ -1068,7 +1096,8 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   return {
     rubricRef: filter.rubricRef,
     ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
-    scorecardCount: rows.length,
+    scorecardCount: live.length,
+    supersededExcluded: rows.length - live.length,
     window: {
       ...(filter.since ? { since: filter.since } : {}),
       ...(chrono.length ? { from: chrono[0].createdAt, to: chrono[chrono.length - 1].createdAt } : {}),

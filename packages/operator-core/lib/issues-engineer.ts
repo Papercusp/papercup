@@ -2218,6 +2218,27 @@ export async function issuesOutLinksMany(ids: readonly string[]): Promise<Map<st
   return out;
 }
 
+/**
+ * Which of these issues have been SUPERSEDED — i.e. are the DST of a `revises`
+ * edge, meaning a later filing incorporated/corrected them
+ * (goal-mode-rubric-v2-2026-08-10 P-010).
+ *
+ * ONE batched, rel-filtered in-edge query, deliberately NOT `issuesOutLinksMany`:
+ * that resolves EVERY edge kind and LEFT JOINs engineer_issues + features, and it
+ * was measured as the most-called statement on the box (WI-6124), which is exactly
+ * why the trend opted out of it. A supersession check needs one bit per id, so it
+ * reads one bit per id.
+ *
+ * Returns only the superseded subset — an id absent from the set is live.
+ */
+export async function issuesSupersededByRevision(ids: readonly string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (ids.length === 0) return out;
+  const rows = await links.listInMany(ids.map(issueRef), { rel: 'revises' });
+  for (const r of rows) out.add(r.dst.ref);
+  return out;
+}
+
 /** Link-degree of one issue, as the blocking-impact ranking reads it
  *  (self-improvement-consume-edges-2026-06-12 P-022). */
 export interface IssueLinkCounts {
