@@ -643,7 +643,11 @@ export async function composeOrient(
   // EI-19452326548245557: this fold must BE the claim oracle, not a cheaper
   // lookalike. It used to be `work_items:list({ admissibleOnly: true })` — which by
   // that flag's OWN contract is "a cheap STRUCTURAL pre-filter ... NOT the full
-  // claim-floor verdict", applying remote-origin + observation-lane only. So the ~12
+  // claim-floor verdict". (That flag has since grown the rest of the ROW-INTRINSIC
+  // floors — WI-4405/WI-37761/WI-37774 — so the "remote-origin + observation-lane only"
+  // reading this comment was written against no longer holds; the CONCLUSION below is
+  // unaffected, because it still cannot apply the context floors: blocked-dep, cooldown,
+  // rig, swarm-affinity, redundancy.) So the ~12
   // floors `work_items:claim` / `claim_next` / `scheduler:get_next` really enforce
   // were never applied here and this list advertised work the real claim path
   // refuses. Measured 2026-08-04 on `papercusp`: 16 of the 20 rows it returned were
