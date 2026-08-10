@@ -676,7 +676,28 @@ if (outIdx >= 0) {
   process.exit(0);
 }
 
-if (wantJson) { console.log(JSON.stringify(census, null, 2)); process.exit(0); }
+/* Write stdout SYNCHRONOUSLY, then exit.
+ *
+ * `console.log(big); process.exit(0)` silently TRUNCATES at exactly one 64 KiB
+ * pipe buffer: writes to a pipe are async in Node, and process.exit() does not
+ * drain them. It survives a `> file` redirect (file writes are sync), so the
+ * bug is invisible until someone PIPES the output — `--json | jq`, `| python3`
+ * — and it only began firing when the census grew past 64 KiB (it is ~72 KiB
+ * now). The failure mode is a partial census that parses as "fewer findings",
+ * i.e. a FALSE CLEAN, not a loud error.
+ *
+ * writeSync on a non-blocking pipe can also short-write, so loop until drained.
+ * Measured 2026-08-10: pipe 65536 bytes/invalid -> 71902 bytes/valid. */
+const writeStdoutSync = (s) => {
+  const buf = Buffer.from(s.endsWith('\n') ? s : s + '\n');
+  let off = 0;
+  while (off < buf.length) {
+    try { off += fs.writeSync(1, buf, off, buf.length - off); }
+    catch (err) { if (err.code === 'EAGAIN') continue; if (err.code === 'EPIPE') break; throw err; }
+  }
+};
+
+if (wantJson) { writeStdoutSync(JSON.stringify(census, null, 2)); process.exit(0); }
 
 /* ── printed table ─────────────────────────────────────────────────────────────── */
 const pad = (s, n) => String(s).padEnd(n);
