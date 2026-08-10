@@ -113,6 +113,16 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // The dossier half of the session popup — it shows what the agent was TOLD,
     // modes included, so it goes stale on exactly this write.
     'agentDetail.byOwner',
+    // goals.detail (P-018/D-007) — the goal↔agent pairing lives in
+    // `agent_modes.subject`; there is no dedicated column and no join table, so
+    // resolveGoalDetail selects FROM agent_modes directly (goals.ts). An agent
+    // started on (or stopped off) this goal must therefore repaint the goal
+    // popup's conversation affordance. Full-bust for this entry's stated reason:
+    // the consumer is keyed by goalId, never by this table's PK. Unlike
+    // agentOrders.byOwner below there is NO producer-side push for goals.detail —
+    // this entry is its only invalidation path, so dropping it silently returns
+    // the popup to remount-only refresh.
+    'goals.detail',
     /* NOT `agentOrders.byOwner`, deliberately — this list ORIGINALLY named it and
        that was a regression in two ways (caught by resolver-backing-table-coverage's
        stale-PUSH_EXEMPT guard, which is precisely what that guard is for).
@@ -235,6 +245,17 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // plan-doc-backed (template = rubric, lib/rubrics.ts queryRubricPlans), so a
     // rubric create/ratify/edit is a harness_plans write — refresh the Rubrics tab.
     'rubrics.list',
+    // goals.detail (P-019/D-010) — the goal popup's plans rail LEFT JOINs
+    // harness_plans for each derived plan's title + status (goals.ts
+    // resolveGoalDetail). The rail's ROW LIST is invalidated by work_items, but
+    // the JOINED columns come from here, so without this entry a plan renamed,
+    // archived or shipped after the popup opened keeps rendering its old label.
+    // Full-bust rather than `planSlugScope`, for the reason plans.items above
+    // documents: goals.detail's args are `{ workspaceId, goalId, activityLimit }`
+    // and carry no `slug`, so a `{ slug }` scope could never be a matching subset
+    // and the query would sit subscribed to a scope it can never match — i.e.
+    // silently never refreshing, which is the exact failure this list prevents.
+    'goals.detail',
   ],
   'harness_shared.plan_revisions': ['plans.revisions'],
   // plan_runs feeds BOTH the Agents-tab flat list (plans.runs, { slug }) and the

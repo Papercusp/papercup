@@ -189,6 +189,40 @@ const post = defineTool({
     if (!ROLE_RE.test(role)) {
       return jsonRes({ status: 'error', error: `invalid role: ${role.slice(0, 32)}` }, 400);
     }
+    // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-013 / D-022) — the
+    // THIRD spawn door. D-018 gated the two chokepoints an OPERATOR-side launch
+    // traverses (`fleet/operator-spawn.ts`, the `/invoke` route) and its header
+    // asserts the surface has "exactly TWO doors". That is FALSE for the console
+    // path: `psu --role <role>` routes any non-su-tier role through `roleFlow`
+    // (SU_TIER_ROLES = ['planner'], so mug/kettle/cup all qualify), which POSTs
+    // HERE and then EXECS THE BACKEND LOCALLY — `spawnAgentInHarness` is never
+    // called and the /invoke route is never hit. Without this gate the retired
+    // tier stays launchable by name with the flag OFF, which is precisely what
+    // P-013 exists to prevent. This route is bootstrap-role's ONLY caller, so
+    // one gate here closes the door completely.
+    //
+    // Keyed on `isRetiredTierRole` (NOT a raw string match) so the pre-rename
+    // aliases queen/bee/overwatch are canonicalized first — same predicate the
+    // other two doors share, so the three cannot drift apart.
+    const { isRetiredTierRole } = await import('../../../pot/retired-tier-roles');
+    if (isRetiredTierRole(role)) {
+      const { mugKettleSystemEnabled } = await import('../../../pot/started');
+      if (!(await mugKettleSystemEnabled())) {
+        return jsonRes(
+          {
+            status: 'error',
+            code: 'mug_kettle_retired',
+            flag: 'papercusp-mug-kettle-system',
+            error:
+              `Cannot launch role="${role}" — the Mug/Kettle/Cup tier is RETIRED ` +
+              `(flag papercusp-mug-kettle-system is OFF, which is the delivered state). ` +
+              `Launch an su fleet instead — fleet:launch-on-plan. ` +
+              `To re-enable the tier for testing, flip the flag ON in /admin/features.`,
+          },
+          403,
+        );
+      }
+    }
     if (!isSuAgent(body.agent)) {
       return jsonRes({ status: 'error', error: `agent must be one of claude|omp|codex (got ${String(body.agent).slice(0, 24)})` }, 400);
     }

@@ -2124,8 +2124,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // DYNAMIC OWNER PIN (account-dynamic-pin-2026-06-29): a RUNTIME owner→account pin, set via accounts:pin
   // (POST /admin/owner-pin) and honored per-request keyed by the x-papercusp-owner header — it OVERRIDES the
   // static x-papercusp-account spawn header, so any agent can re-route ANY agent (by owner id; its own id to
-  // self-pin) LIVE without a respawn. `hard` ⇒ no failover (like the static hard pin). In-memory: pins are
-  // re-applied if the gateway restarts (durable persistence is a follow-up).
+  // self-pin) LIVE without a respawn. `hard` ⇒ no failover (like the static hard pin). This Map is the HOT
+  // read only — the durable store is `operator_owner_pins` (migration 416, deployment/account-owner-pins.ts):
+  // accounts:pin writes the DB first, then pushes here for immediate effect, and launch.ts re-seeds this Map
+  // from the DB at gateway startup + on its periodic resync, so a pin survives a gateway restart.
   const ownerPinMap = new Map<string, { accountId: string; hard: boolean }>();
   // COLD-START RATE SEED (account-cold-start-seed-2026-06-29): the DURABLE per-account rate projection
   // (pausedUntil / 5h+7d utilization + window resets), loaded by the launch layer at startup + on its poll.

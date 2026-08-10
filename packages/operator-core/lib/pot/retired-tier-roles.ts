@@ -4,12 +4,23 @@
  *
  * Split out as its own module for two deliberate reasons:
  *
- *  1. ONE definition, TWO chokepoints. The spawn surface has exactly two doors —
+ *  1. ONE definition, THREE doors. A role reaches a running agent through
  *     `fleet/operator-spawn.ts` (the role-admission chokepoint every agent-driven
- *     launch funnels through) and `endpoint-route/routes/harness/spawn.ts` (the
- *     `/invoke` route every launch-blueprint + wake path traverses). Both must
- *     answer this question identically; two inline literal lists would be two
- *     things free to drift, and a drifted spawn gate fails OPEN.
+ *     launch funnels through), `endpoint-route/routes/harness/spawn.ts` (the
+ *     `/invoke` route every launch-blueprint + wake path traverses), and
+ *     `endpoint-route/routes/agent-mcp/bootstrap-role.ts` (the CONSOLE path:
+ *     `psu --role <role>` execs the backend LOCALLY after bootstrapping here, so
+ *     it calls neither of the other two). All three must answer this question
+ *     identically; inline literal lists would be things free to drift, and a
+ *     drifted spawn gate fails OPEN.
+ *
+ *     ⚠ THIS HEADER SAID "exactly two doors" UNTIL P-013 (D-022), AND IT WAS
+ *     WRONG — the console door was simply never enumerated. The claim read as
+ *     settled fact and is exactly what made the third door easy to skip: an
+ *     agent checking "is spawn-by-role-name covered?" finds a confident
+ *     two-door statement, both doors gated, and stops. If you add a fourth
+ *     launch path, it belongs in this list — and do not trust a count here
+ *     over a fresh enumeration of who can turn a role NAME into a process.
  *
  *  2. NOT added to `pot/started.ts`. That module already exports
  *     `mugKettleSystemEnabled`, and adding an export there strands every

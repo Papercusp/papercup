@@ -114,6 +114,24 @@ vi.mock('../../saved-prompts-materialize', () => ({
 const getPlanContextBySlugMock = vi.fn(async (_slug?: string) => '## Source Plan Context\n\n**Plan:** `p1`');
 vi.mock('../../plan-context-for-feature', () => ({ getPlanContextBySlug: (slug: string) => getPlanContextBySlugMock(slug) }));
 
+// P-013 / D-022 — the retirement gate on THIS (third) spawn door.
+//
+// ⚠ `importOriginal`-SPREAD, NOT a bare factory. `pot/started` exports far more
+// than this flag, and a minimal factory would strand every other export the
+// module graph might reach — the exact stranding EI-20017608270017874 measured
+// when `mugKettleSystemEnabled` was added to this module (once loudly, once
+// SILENTLY). Spreading keeps every real export and overrides ONE.
+//
+// ⚠ The override is KEY-AWARE by construction: it replaces a NAMED function, so
+// it cannot answer for some other flag. The key-BLIND shape this plan was bitten
+// by twice (`useFlag: () => mock()`) answers every flag alike, which silently
+// turns an unrelated suite into an assertion about the retirement notice.
+const mugKettleEnabledMock = vi.fn(async () => false);
+vi.mock('../../pot/started', async (orig) => ({
+  ...(await orig<typeof import('../../pot/started')>()),
+  mugKettleSystemEnabled: () => mugKettleEnabledMock(),
+}));
+
 const CTX: RouteContext = { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
 
 async function callPost(body: unknown): Promise<Response> {
@@ -478,5 +496,61 @@ describe('bootstrap-role — fleet join (WI-1408 + WI-1893)', () => {
     expect(json.fleetSlug).toBeNull();
     expect(json.fleetRole).toBeNull();
     expect(stampFleetMembershipMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * P-013 / D-022 — the THIRD spawn door.
+ *
+ * D-018 gated the two doors an operator-side launch traverses and its module
+ * header asserted the surface had "exactly TWO". It does not: `psu --role <role>`
+ * routes every non-su-tier role (SU_TIER_ROLES = ['planner'], so all three
+ * retired roles qualify) through `roleFlow`, which POSTs to THIS route and then
+ * execs the backend LOCALLY — calling neither `spawnAgentInHarness` nor /invoke.
+ * Until this gate, the retired tier stayed launchable by name with the flag OFF.
+ *
+ * The four cases below are deliberately a FALSIFIABLE set, not four hide-checks:
+ * the SHOW control fails if the gate refuses unconditionally, and the
+ * CALIBRATION fails if `isRetiredTierRole` degenerates to `() => true`. Without
+ * both, "refuse everything" passes the whole suite.
+ */
+describe('bootstrap-role — P-013/D-022 retired-tier gate (the psu --role console door)', () => {
+  it('flag OFF + role=mug ⇒ 403 mug_kettle_retired (HIDE)', async () => {
+    mugKettleEnabledMock.mockResolvedValue(false);
+    const res = await callPost({ role: 'mug', agent: 'claude', harness_slug: 'papercup' });
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json.code).toBe('mug_kettle_retired');
+    expect(json.flag).toBe('papercusp-mug-kettle-system');
+    // Refused BEFORE any launch work — no spec built, no session recorded.
+    expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('flag OFF + role=queen (pre-rename ALIAS) ⇒ still refused — the gate canonicalizes', async () => {
+    // The whole point of keying on isRetiredTierRole rather than a raw string:
+    // a spelling-matched gate looks closed and is open under the old names.
+    mugKettleEnabledMock.mockResolvedValue(false);
+    const res = await callPost({ role: 'queen', agent: 'claude', harness_slug: 'papercup' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('mug_kettle_retired');
+  });
+
+  it('flag ON + role=mug ⇒ NOT refused — the cutover escape hatch still works (SHOW control)', async () => {
+    // Fails if the gate refuses unconditionally. The flag is `case: 'cutover'`;
+    // reversibility is the point, so ON must still launch the tier.
+    mugKettleEnabledMock.mockResolvedValue(true);
+    const res = await callPost({ role: 'mug', agent: 'claude', harness_slug: 'papercup' });
+    expect(res.status).toBe(200);
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalled();
+  });
+
+  it('flag OFF + role=worker ⇒ NOT refused — a non-retired role is untouched (CALIBRATION)', async () => {
+    // Fails if isRetiredTierRole degenerates to `() => true`, which would
+    // otherwise satisfy every hide-assertion above.
+    mugKettleEnabledMock.mockResolvedValue(false);
+    const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    expect(res.status).toBe(200);
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalled();
   });
 });

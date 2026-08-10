@@ -252,7 +252,9 @@ const invoke = defineTool({
     // literally invoked, not what's canonically stored).
     const canonicalRole = canonicalCoordRole(role);
     // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-008 / D-018). The
-    // second of exactly TWO spawn chokepoints. This route is the one the comment
+    // second of THREE spawn doors (the third is agent-mcp/bootstrap-role.ts, the
+    // `psu --role` console path — see retired-tier-roles.ts; this comment said
+    // "exactly TWO" until P-013/D-022 and was wrong). This route is the one the comment
     // above already calls "the ONE chokepoint every launch-blueprint spawn
     // traverses", and fireLaunchBlueprint's own header adds that EVERY wake path
     // reaches it (durable spawn, direct fire, manual /invoke) — so this single
