@@ -294,9 +294,16 @@ export async function resolveGoalsList(args: {
   // Cut ONCE for the whole page, so two rows in the same render can never be
   // measured over windows that differ by the query's own duration.
   const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
-  const { rows, total: totalGoals } = await sql.begin(async (tx) => {
+  /* Captured from INSIDE the transaction below rather than returned out of it.
+     `sql.begin` does not pass an arbitrary object return through — returning
+     { rows, total } resolved to something whose `rows` was undefined, which
+     surfaced as "Cannot read properties of undefined (reading 'map')" on the
+     line after. The callback keeps returning the row array exactly as it did
+     before, and the count rides out on this binding. */
+  let totalGoals = 0;
+  const rows = await sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
-    return (await tx`
+    const goalRows = (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.metadata, g.created_at, g.updated_at,
              (SELECT COUNT(*) FROM harness_shared.goal_pots gp
@@ -390,7 +397,8 @@ export async function resolveGoalsList(args: {
          AND (${status}::text IS NULL OR g.status = ${status}::text)
     `) as unknown as Array<{ total: number | string | null }>;
 
-    return { rows, total: totalRow?.total == null ? rows.length : Number(totalRow.total) };
+    totalGoals = totalRow?.total == null ? goalRows.length : Number(totalRow.total);
+    return goalRows;
   });
   const goals = rows.map(toSummary);
 
