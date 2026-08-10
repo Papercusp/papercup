@@ -107,7 +107,7 @@ async function insertRoutine(o: {
 describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
   it('reports an overdue CRON routine (a genuine engine-starvation signal)', async () => {
     await insertRoutine({ id: 'cron-dead', cfg: { cron: '*/30 * * * * *' }, nextFireAt: overduePast() });
-    expect(await readDeadRoutines(rootSql, OVERDUE_MS)).toEqual(['cron-dead']);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual(['cron-dead']);
   });
 
   it('does NOT report an overdue PURE LOOP (busy fleet loop, not engine starvation)', async () => {
@@ -115,25 +115,25 @@ describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
     // interval' — 15min past here (the owner is running a long turn) — yet the engine
     // is fine. This is the exact false positive EI-11797 fixes.
     await insertRoutine({ id: 'loop-overdue', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: overduePast() });
-    expect(await readDeadRoutines(rootSql, OVERDUE_MS)).toEqual([]);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual([]);
   });
 
   it('does NOT report a PARKED loop (next_fire_at=infinity, actively running)', async () => {
     await insertRoutine({ id: 'loop-parked', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: 'infinity' });
-    expect(await readDeadRoutines(rootSql, OVERDUE_MS)).toEqual([]);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual([]);
   });
 
   it('STILL reports an overdue cron+loop (a recurrence the engine should be advancing)', async () => {
     // cron+loop has an interval AND a cron → claimDueRoutine advances it to cron-next
     // every tick (never parks it), so an overdue one genuinely means the engine is stuck.
     await insertRoutine({ id: 'cronloop-dead', cfg: { cron: '*/30 * * * * *' }, rescheduleIntervalSec: 60, nextFireAt: overduePast() });
-    expect(await readDeadRoutines(rootSql, OVERDUE_MS)).toEqual(['cronloop-dead']);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual(['cronloop-dead']);
   });
 
   it('does NOT report a not-yet-due cron routine, nor an inactive one', async () => {
     await insertRoutine({ id: 'cron-future', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
     await insertRoutine({ id: 'cron-inactive', cfg: { cron: '*/30 * * * * *' }, active: false, nextFireAt: overduePast() });
-    expect(await readDeadRoutines(rootSql, OVERDUE_MS)).toEqual([]);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual([]);
   });
 
   it('mixes them: only genuine engine-starvation rows surface, loops excluded', async () => {
@@ -143,7 +143,7 @@ describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
     await insertRoutine({ id: 'loop-parked', cfg: {}, rescheduleIntervalSec: 1800, nextFireAt: 'infinity' });
     await insertRoutine({ id: 'cron-future', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
     // Ordered by next_fire_at ASC → cron-dead (20m) before cronloop-dead (15m).
-    expect(await readDeadRoutines(rootSql, OVERDUE_MS)).toEqual(['cron-dead', 'cronloop-dead']);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS)).names).toEqual(['cron-dead', 'cronloop-dead']);
   });
 });
 
