@@ -141,7 +141,10 @@ vi.mock('@/lib/useLexicon', () => ({
 // The two workspace-wide status pills the strip carries since 2026-08-01. Each
 // has its own suite (and its own sync queries + popovers); stub them so this one
 // stays about WHERE the strip puts them.
-vi.mock('./PotsRunningPill', () => ({ default: () => <div data-testid="hives-pill" /> }));
+// NOTE: no './PotsRunningPill' mock — the component was DELETED (P-075,
+// [owner 2026-08-10] "remove the ... 'pots running' button"). Deliberately not
+// re-stubbed: a regression that re-adds the import fails at resolution, which is
+// a louder guard than any assertion here.
 vi.mock('./AgentsRunningPill', () => ({ default: () => <div data-testid="agents-pill" /> }));
 
 // Shortcut bus: capture each registered action so tests can trigger it.
@@ -281,10 +284,12 @@ describe('AdvShell — strip + header', () => {
     const strip = document.querySelector('.pc-advshell__tabs')!;
     const status = strip.querySelector('.pc-advshell__header-status')!;
     expect(status).toBeTruthy();
-    // Both pills, mounted by the SHELL — so they show on every tab, not just HUD
-    // (they read hive.controlState / advRoster.list, neither filtered by ?slug=).
-    expect(screen.getByTestId('hives-pill')).toBeTruthy();
+    // Mounted by the SHELL — so they show on every tab, not just HUD (they read
+    // advRoster.list, which is not filtered by ?slug=). The pot-running pill was
+    // the third member of this strip until P-075 deleted it; its absence is
+    // asserted so a restore has to come with a deliberate test change.
     expect(screen.getByTestId('agents-pill')).toBeTruthy();
+    expect(screen.queryByTestId('hives-pill')).toBeNull();
     // …and positioned AFTER the More trigger, which is the owner's chosen spot.
     // DOCUMENT_POSITION_FOLLOWING asserts the order without pinning the Popover's
     // internal wrapper markup (which is Radix's to change, not ours).
@@ -297,7 +302,6 @@ describe('AdvShell — strip + header', () => {
     // `withStatus`, which only HUD passes, so every other tab lost them.
     nuqsState.tab = 'docs';
     await renderShell();
-    expect(screen.getByTestId('hives-pill')).toBeTruthy();
     expect(screen.getByTestId('agents-pill')).toBeTruthy();
   });
 

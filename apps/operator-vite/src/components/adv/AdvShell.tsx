@@ -36,7 +36,12 @@ import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { CATEGORICAL } from '@/app/harness/theme';
-import PotsRunningPill from './PotsRunningPill';
+// PotsRunningPill ("▶ N POT running") was the first pill in this strip until
+// 2026-08-10, when it was deleted by owner directive ([owner 2026-08-10]
+// "remove the ... 'pots running' button", retire-mug-kettle-su-only-2026-08-09
+// P-075) — it expanded a per-pot start/stop control, i.e. the retired
+// autonomous tier (D-010). It had a second mount in QuickPanelHeaderControls;
+// both went together.
 import AgentsRunningPill from './AgentsRunningPill';
 import TasksRunningPill from './TasksRunningPill';
 // The pills' own button/popover styles. Portable by design
@@ -706,7 +711,6 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
               `tasks` tab, removed in the same change; plan decision D-014 reasoned
               about WHERE in that rail it sat, which this supersedes. */}
           <div className="pc-advshell__header-status">
-            <PotsRunningPill />
             <AgentsRunningPill />
             <TasksRunningPill />
           </div>

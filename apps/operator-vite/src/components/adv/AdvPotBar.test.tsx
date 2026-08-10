@@ -130,7 +130,8 @@ vi.mock('./AdvNowRunning', () => ({
 // row must NOT import them any more. The stubs stay deliberately: they are what
 // makes the negative assertion below real — re-adding either import here would
 // render a stub and red the test, rather than silently restoring the duplicate.
-vi.mock('./PotsRunningPill', () => ({ default: () => <div data-testid="hives-pill" /> }));
+// No './PotsRunningPill' mock — the component was DELETED by P-075
+// ([owner 2026-08-10] "remove the ... 'pots running' button").
 vi.mock('./AgentsRunningPill', () => ({ default: () => <div data-testid="agents-pill" /> }));
 vi.mock('./DiscordBadge', () => ({
   default: ({ slug }: { slug: string | null }) => (
