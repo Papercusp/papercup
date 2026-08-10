@@ -1060,9 +1060,15 @@ longest-green-prefix salvage, an in-process refire that abandons the candidate) 
 `head -1` showing `green=true` was routinely read as "this became the pin".
 
 ```bash
-grep -o 'GATE_PROMOTION.*' <log> | tail -1
+grep -o 'GATE_PROMOTION candidate=.*' <log> | tail -1
 # GATE_PROMOTION candidate=33cd2bfebec8 green=true promoted=false reason=perf-held
 ```
+
+⚠ The ` candidate=` anchor is prophylactic here, not a fix for an observed break — no test name
+embeds `GATE_PROMOTION` today (measured 2026-08-10). Keep it anyway: this marker is the one whose
+**absence** carries the most meaning (see the next paragraph), and absence is precisely what a
+future impostor line would erase. The two markers that ARE currently defeated this way are
+`GATE_HELD_BY` and `AFFECTED_TESTS_RESULT` — WI-37636.
 
 Two readings that are easy to get wrong. **ABSENCE IS MEANINGFUL:** no `GATE_PROMOTION` line means
 the run never reached a promotion decision at all — killed, crashed, or still in flight — a third
@@ -1090,7 +1096,7 @@ files, `failed=3` vs 4, and `failed=2` vs **11**.
 ✅ **The run now states its own per-FILE break set — read that line instead of mining prose:**
 
 ```bash
-grep -o 'AFFECTED_TESTS_FAILING_FILES.*' <log> | tail -1
+grep -o 'AFFECTED_TESTS_FAILING_FILES run=.*' <log> | tail -1   # keep ` run=` — see the impostor warning below
 # AFFECTED_TESTS_FAILING_FILES run=<pid>-<nonce> coverage=complete fileCount=11 \
 #   unattributedCount=0 truncated=false transformCulpritCount=0 \
 #   files=[{"workspace":"…","file":"…"}] unattributed=[] transformCulprits=[]
@@ -1134,13 +1140,30 @@ instead, and then it is EMPTY while the gate is legitimately red.** Read `GATE_H
 gate's own answer to "what held it", which covers legs AND files:
 
 ```bash
-grep -o 'GATE_HELD_BY.*' <log> | tail -1
+grep -o 'GATE_HELD_BY count=.*' <log> | tail -1
 # GATE_HELD_BY count=1 truncated=false entries=["lint:no-control-bytes"]
 ```
 
 It is emitted from the SAME list the gate decided red on (`failingTests`, which folds in every
 leg's `failingSignatures`), so it cannot drift from the verdict. **`count=` is legs + files
 combined — not a file count** (the `failed=N` misread above, one level up).
+
+⚠⚠ **Keep the ` count=` in that grep — a bare `grep -o 'GATE_HELD_BY.*'` returns a vitest TEST
+NAME, and it fails in the direction that reads like an answer.** `green-checkpoint.test.ts:4919` is
+named `renders one greppable line, in the house GATE_HELD_BY / AFFECTED_TESTS_RESULT shape`, so the
+reporter echoes both markers into the very log you are grepping, whenever that suite is selected —
+i.e. exactly when the gate is judging the release path, which is exactly when you are triaging.
+Measured 2026-08-10 on `…-cand-a68d051e8fd8.log`: the bare recipe returned
+`GATE_HELD_BY / AFFECTED_TESTS_RESULT shape<ESC>[32m 28ms` and **all 6 matches were impostors —
+zero real machine lines existed.** That log was a legitimately GREEN run, where absence of
+`GATE_HELD_BY` is the *meaningful* signal (nothing held it); the impostor converts that absence into
+a non-empty, plausible-looking result. **Anchor every one of these greps on the field that only a
+real machine line carries** — `GATE_HELD_BY count=`, `AFFECTED_TESTS_RESULT status=`,
+`AFFECTED_TESTS_FAILING_FILES run=`, `TEST_FILE_RESULT status=` — never the bare marker. Same class
+as the `[green-checkpoint]` suite-capture impersonation (WI-37605), but via the test NAME, so a fix
+aimed at log prefixes does not cover it. Tracked as WI-37636 (4 files, ~10 such names, including two
+`does NOT print the TEST_FILE_RESULT` tests whose names emit a match for the marker whose ABSENCE
+they assert).
 
 Why this exists: candidate `dca4c291` (verdict 2026-08-03T17:27:30Z, part of the 6-red streak that
 held `main` at `5b898b7b` for ~4h) carried `AFFECTED_TESTS_RESULT status=passed tasks=58 failed=0`,
