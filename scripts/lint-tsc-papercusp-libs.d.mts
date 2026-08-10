@@ -43,7 +43,7 @@ export function main({ libsRoot, relativeTo, listOnly, spawn, log, warn, error, 
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
     } | undefined;
-}): 1 | 0;
+}): 0 | 1;
 export function GATE_COVERAGE(): string[];
 import { realSpawn } from './lib/typecheck-fanout.mjs';
 import { discover } from './lib/typecheck-fanout.mjs';

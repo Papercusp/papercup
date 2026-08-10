@@ -75,6 +75,24 @@ export const STANDALONE_PACKAGE_DIRS: string[];
 /** @type {Record<string, RunnerClassSpec>} */
 export const RUNNER_CLASSES: Record<string, RunnerClassSpec>;
 /**
+ * Tasks that emit the `DECLARED_FAILING_FILE` contract, mapped to the script that emits it.
+ *
+ * ⚠ THIS IS A CLAIM ABOUT BEHAVIOUR, SO IT IS VERIFIED RATHER THAN TRUSTED. A hand-kept list
+ * saying "these tasks emit the contract" is precisely the shape of the bug this module exists
+ * to detect: nothing fails when it stops being true, and the only symptom is a quiet drift
+ * back to `no-file-rows`. So the value is the emitting script's path, and
+ * attributor-runner-coverage.test.ts asserts that file actually imports the shared emitter
+ * (`formatDeclaredFailingFileLines`). Deleting the emit — or hand-typing the token instead of
+ * importing it, which is how the two ends drift apart — fails that test by name.
+ *
+ * Membership is OPT-IN for the same reason UNATTRIBUTABLE_TASKS pins members rather than the
+ * class: `bespoke-script` must stay unattributable so a NEW hand-written harness is reviewed
+ * once, instead of being absorbed into a class that claims coverage it does not have.
+ *
+ * @type {Record<string, string>} `<workspace> :: <script>` -> repo-relative emitting script
+ */
+export const DECLARED_FAILING_FILES_TASKS: Record<string, string>;
+/**
  * The exact tasks that are expected to be unattributable today, as `<workspace> :: <script>`.
  *
  * Pinned as a MEMBER LIST, not just a class set, and that distinction is the point. A new

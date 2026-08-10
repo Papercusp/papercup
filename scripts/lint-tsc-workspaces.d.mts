@@ -98,7 +98,7 @@ export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listI
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
     } | undefined;
-}): 1 | 0;
+}): 0 | 1;
 /**
  * The superproject roots. `libs/papercusp` is deliberately ABSENT: it is a git submodule with its
  * own leg (`lint:tsc:papercusp-libs`) and its own stale-pin semantics. Covering it twice would
