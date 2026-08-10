@@ -38,7 +38,7 @@
  * answering from the inbox (P-006's resolve/reply routing + provenance stamp).
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
 import { Tooltip } from '../../harness/Tooltip';
@@ -83,7 +83,7 @@ import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useAgentDetail } from '../../adv/sessions/use-agent-detail';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
-import { ChevronLeft, ChevronRight, Maximize, Maximize2, Minimize, Minimize2, Terminal, X } from 'lucide-react';
+import { Maximize, Maximize2, Minimize, Minimize2, Terminal, X } from 'lucide-react';
 import { AGENT_MARKS, type ChatMessage } from './ChatConversation';
 import {
   contextPct,
@@ -113,14 +113,12 @@ import '../../adv/sessions/SessionsRosterView.css';
 // grammar and the two repo rails (letter-spacing:0, no flex on a <button>).
 import './chat-controls.css';
 import { advRosterArgs } from '@/lib/adv-roster-args';
-// P-001 full-screen: in the desktop shell the DOM Fullscreen API cannot leave
-// the webview, so "fill the display" has to drive the WINDOW. See that module's
-// header for why the two mechanisms are not interchangeable.
-import {
-  enterDesktopWindowFullscreen,
-  exitDesktopWindowFullscreen,
-  isDesktopShell,
-} from '@/lib/desktop-window-fullscreen';
+// P-001 full-screen (window + display), extracted 2026-08-10 so the goal popup
+// gets the same pair without a forked copy of the mechanism.
+import { usePopupMaximize } from './use-popup-maximize';
+// The panel show/hide control — constant label, chevron carrying the verb.
+// Shared with GoalDetailPanel; see its header for the grammar.
+import PanelToggleButton, { PANEL_TOOLBAR_BUTTON_STYLE } from './PanelToggleButton';
 
 /** The roster payload shape (advRoster.list). Inlined, never imported from the
  *  server module — same rationale as HudView.tsx's identical inline type
@@ -306,57 +304,21 @@ function useIsNarrowViewport(query: string): boolean {
 
 /* ── Maximize (session-chat-popup-direction-d-2026-08-02 P-001) ─────────────
  *
- * [owner 2026-08-01 22:29, verbatim] "add 2 buttons. a full window button
- * that makes it take up the full size of the window and a full screen button
- * that makes it take up the full screen. Both options above should be for the
- * actual conversation not the panes to the left and belo, but it should also
- * include the chatbox for the user to enter in messages"
+ * The MECHANISM moved to `use-popup-maximize.ts` (2026-08-10) so the goal popup
+ * could grow the same two buttons without a second copy of it — read that file's
+ * header for the whole design: the two modes, D-007's "the target is the popup
+ * container, so every zone is included by construction", and D-006's two
+ * mechanisms for `screen` (browser DOM fullscreen vs. driving the Tauri window).
  *
- * Two modes. `window` grows the popup to the whole app WINDOW; `screen` puts it
- * on the whole DISPLAY.
+ * What stays HERE is only what is specific to this popup: which element the ref
+ * lands on (`session-chat-modal`, the container holding Orders │ conversation │
+ * Activity — pointing it at the conversation region would silently drop all
+ * three panels again, which is exactly the D-002 bug D-007 fixed) and the two
+ * `contentStyle` branches below.
  *
- * ── D-007 (2026-08-02) SUPERSEDES D-002: maximize now keeps EVERY zone ──────
  * [owner 2026-08-02, verbatim] "lets actually make the left panel and right
  * panel and bottom and top panel all show in both full screen views"
- *
- * This REVERSES the 2026-08-01 ask quoted above, on the owner's word. Maximize
- * used to mean "the conversation, alone"; it now means "the whole popup,
- * bigger" — Orders on the left, Activity on the right, the action band and the
- * fleet row below, the status band on top, all present in both modes.
- *
- * D-002's mechanism is what had to change to deliver that, not just a set of
- * `!maximized` gates. It made the excluded set STRUCTURAL by pointing
- * `requestFullscreen()` at the conversation REGION: the browser paints that
- * element's subtree and nothing else, so the panels — its SIBLINGS — could not
- * appear however the layout was written. Keeping them therefore required moving
- * the fullscreen target UP, to the popup container that holds all of them
- * (`popupRef` / `session-chat-modal`).
- *
- * D-002's good half is preserved, just at the new boundary: the target is still
- * ONE element and the rule is still "everything inside it, nothing outside it",
- * so a pane added later is included by construction, with no hide-list — the
- * inclusion is structural in exactly the way the exclusion used to be. The
- * panels stay SIBLINGS of the conversation region (P-015's own guard asserts
- * that, and it still holds); what changed is which ancestor gets painted.
- *
- * ── D-006 (2026-08-02): `screen` needs TWO mechanisms ───────────────────────
- * [owner 2026-08-02, verbatim] "both fullscreen buttons do the same thing. one
- * of them is supposed to full screen on the full desktop display not just the
- * window."
- *   - BROWSER — `requestFullscreen()` on the popup container. The UA takes the
- *     OS window fullscreen and paints that element on it.
- *   - DESKTOP (Tauri) — drive the WINDOW (`setFullscreen`) and let the same
- *     maximized layout fill it.
- * The desktop split is NOT because the webview swallows a DOM request — it was
- * measured doing the opposite (see desktop-window-fullscreen.ts's header for the
- * numbers). It is because that call is conditional on transient activation, and
- * EVERY way it can fail lands on `setChatMax('window')` — the other button's
- * behavior. A control that degrades into its neighbour reads as a duplicate,
- * which is what was reported. The window path has no gesture requirement, so a
- * deep link and an agent-driven `ui:dispatch` reach the display too.
  */
-const CHAT_MAX_MODES = ['window', 'screen'] as const;
-type ChatMaxMode = (typeof CHAT_MAX_MODES)[number];
 
 /** The toolbar lives INSIDE the conversation region, pinned to its top-right.
  *  Since D-007 the fullscreen target is the popup container (which contains the
@@ -393,36 +355,9 @@ const CHAT_TOOLBAR_LEFT_STYLE: React.CSSProperties = {
   alignItems: 'center',
 };
 
-/** The panel-toggle chevron. Sized + weighted deliberately
- *  [owner 2026-08-02: "just make the open/close arrow more visible"]: the old
- *  control drew a typographic "‹"/"›" at the button's 11px font size, which all
- *  but disappeared next to the label. A real icon at 14px with a heavier stroke
- *  is the visible affordance, and it inherits the button's colour so it still
- *  reads as one control rather than a decoration beside one. */
-const PANEL_CHEVRON_SIZE = 14;
-const PANEL_CHEVRON_STROKE = 2.75;
-
-const CHAT_TOOLBAR_BUTTON_STYLE: React.CSSProperties = {
-  fontSize: 11,
-  lineHeight: 1,
-  padding: '4px 7px',
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 4,
-};
-
-/**
- * Is `el` the element currently painted fullscreen?
- *
- * Deliberately reads the DOM rather than trusting our own "I asked for
- * fullscreen" flag: the user can leave fullscreen by pressing Esc or F11,
- * which fires no click of ours. `document.fullscreenElement` is the only
- * source that is right in every one of those exits.
- */
-function isFullscreenElement(el: Element | null): boolean {
-  if (!el || typeof document === 'undefined') return false;
-  return document.fullscreenElement === el;
-}
+/* The panel-toggle chevron and the compact toolbar button both live in
+   PanelToggleButton now (2026-08-10) — the goal popup renders the same five
+   toggles, and two copies of this grammar is how the popups drift apart. */
 
 /**
  * Badge tone → the P-003 vocabulary's State-pill tone class.
@@ -1293,74 +1228,25 @@ export default function SessionChatModal({
   const ordersOpen = ordersParam ?? !isOrdersNarrow;
 
   /* ── P-001 maximize ──────────────────────────────────────────────────────
-     Which maximize mode is on, in the URL like every other bit of this
-     popup's state (nuqs-by-default) so it is deep-linkable and reachable from
-     ui:get_state / ui:dispatch. Absent ⇒ the normal centred popup. */
-  const [chatMax, setChatMax] = useQueryState('chatMax', parseAsStringLiteral(CHAT_MAX_MODES));
+     The whole mechanism — the two modes, the URL param, the browser/desktop
+     split for `screen`, the fullscreen-exit sync, the Esc handler and the
+     never-strand-the-display cleanups — lives in `usePopupMaximize`. Shared
+     with GoalDetailPanel since 2026-08-10; read that file's header, not a
+     re-derivation here. */
+  const {
+    mode: chatMax,
+    maximized,
+    screenActive,
+    screenMechanism,
+    popupRef,
+    toggleWindow,
+    toggleScreen,
+    reset: resetMaximize,
+  } = usePopupMaximize({ param: 'chatMax', open });
   /* Focus target (`onOpenAutoFocus`) and the scroll container the reader came
-     for. NOT the fullscreen target — see popupRef. */
+     for. NOT the fullscreen target — that is the hook's `popupRef`, which goes
+     on the popup CONTAINER (D-007). */
   const conversationRef = useRef<HTMLDivElement | null>(null);
-  /* D-007 — THE fullscreen target: the popup container that holds every zone
-     (Orders | conversation + action band + fleet row | Activity). The browser
-     paints exactly this element's subtree, so pointing it here is what makes
-     "all four panels show in full screen" true structurally rather than by a
-     list of things to keep. Pointing it back at the conversation region would
-     silently drop all four again, layout gates notwithstanding. */
-  const popupRef = useRef<HTMLDivElement | null>(null);
-
-  /* Whether something is ACTUALLY painting our region on the whole display,
-     which is not the same question as `chatMax === 'screen'` and must not be
-     inferred from it. Two ways they diverge, both routine:
-       - a shared/reloaded URL carrying `chatMax=screen` cannot enter
-         fullscreen on load, because the DOM API requires a user gesture. The
-         page renders maximized and the button still offers to go fullscreen;
-       - Esc / F11 leaves fullscreen without any click of ours.
-     So the host is the authority and this mirrors it. */
-  const [screenActive, setScreenActive] = useState(false);
-
-  /* D-006 — the DESKTOP half of `screen`, and the only state that says whether
-     we may put the window back:
-       'owned'   we fullscreened the window, so exiting is ours to do;
-       'adopted' it was ALREADY fullscreen (the user's own F11, another
-                 surface) — we ride it and must NOT take it away on the way out;
-       null      the desktop path is not engaged (browser, or refused).
-     A ref rather than state: it is read inside the document listener below,
-     where a stale closure over a state value would make the listener act on
-     the mode we were in one render ago. */
-  const windowScreen = useRef<'owned' | 'adopted' | null>(null);
-
-  /** Give the window back. Idempotent, and safe to fire from an unmount. */
-  const releaseWindowScreen = useCallback(async () => {
-    const held = windowScreen.current;
-    windowScreen.current = null;
-    setScreenActive(false);
-    if (held === 'owned') await exitDesktopWindowFullscreen();
-  }, []);
-
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const sync = () => {
-      // Desktop path: the DOCUMENT never enters fullscreen there, so a
-      // fullscreenchange raised by anything else (a video player, an embedded
-      // frame) would read as "the user left fullscreen" and cancel a mode they
-      // are still in. The window state is authoritative while it is engaged.
-      if (windowScreen.current) return;
-      const active = isFullscreenElement(popupRef.current);
-      setScreenActive(active);
-      // Left fullscreen by a route we did not drive (Esc, F11, the browser
-      // dropping it on tab switch) — drop the mode with it, or the popup sits
-      // in a maximized layout the user just asked to leave.
-      if (!active) setChatMax((prev) => (prev === 'screen' ? null : prev));
-    };
-    document.addEventListener('fullscreenchange', sync);
-    return () => document.removeEventListener('fullscreenchange', sync);
-  }, [setChatMax]);
-
-  /** Layout-maximized: true for BOTH modes. `screen` still needs the
-   *  full-window layout underneath it — if the webview refuses fullscreen (or
-   *  a deep link arrives before a gesture can grant it) the user gets the
-   *  maximized popup rather than nothing happening. */
-  const maximized = chatMax != null;
 
   /* P-015: whether the Orders panel is actually on screen. Since D-007 maximize
      is NOT part of this answer — the panel shows in every mode, and the only
@@ -1388,122 +1274,13 @@ export default function SessionChatModal({
     (dossierOpen && !isNarrow ? 300 + 16 : 0) +
     (peersVisible && !isPeersNarrow ? 248 + 16 : 0);
 
-  const exitScreen = useCallback(async () => {
-    // Desktop first: if the window is carrying the mode, the document is not.
-    if (windowScreen.current) {
-      await releaseWindowScreen();
-      return;
-    }
-    if (typeof document === 'undefined') return;
-    if (document.fullscreenElement) {
-      try {
-        await document.exitFullscreen();
-      } catch {
-        // Already gone, or the UA refused — `fullscreenchange`/the next sync
-        // settles the real state either way. Nothing to report to the user.
-      }
-    }
-  }, [releaseWindowScreen]);
-
-  /* Never strand the display. Closing the popup while `screen` is engaged would
-     leave the whole app filling the screen with the control that undoes it no
-     longer rendered — so release on close AND on unmount, not only in
-     `closeChat` (which a route change or a cleared session skips). `exitScreen`
-     rather than `releaseWindowScreen` so this covers the browser's DOM
-     fullscreen too; the unmount case cannot wait for an event to correct it. */
-  useEffect(() => {
-    if (!open) void exitScreen();
-  }, [open, exitScreen]);
-  useEffect(
-    () => () => {
-      void exitScreen();
-    },
-    [exitScreen],
-  );
-
-  const toggleWindow = useCallback(() => {
-    if (chatMax === 'window') {
-      void setChatMax(null);
-      return;
-    }
-    if (screenActive) {
-      // Coming from `screen`: give the display back FIRST (whichever mechanism
-      // is holding it), then land in window mode. The set has to come after: the
-      // fullscreenchange handler above clears the mode on the way out — without
-      // it this click would read as "exit maximize" rather than "switch to
-      // full window".
-      void exitScreen().then(() => setChatMax('window'));
-      return;
-    }
-    // The ordinary path stays SYNCHRONOUS. Routing it through the same promise
-    // as the fullscreen exit cost a microtask for nothing and made the mode
-    // land a tick after the click — a visible flash of the old layout, and a
-    // click whose effect a caller could not observe in the same turn.
-    void setChatMax('window');
-  }, [chatMax, screenActive, exitScreen, setChatMax]);
-
-  const toggleScreen = useCallback(() => {
-    if (screenActive) {
-      void exitScreen().then(() => setChatMax(null));
-      return;
-    }
-    /* D-006 — DESKTOP: drive the WINDOW, not the document. The DOM request
-       below needs transient activation, and every way it can fail falls through
-       to `window` — the other button's mode, which is the reported bug. Moving
-       the OS window is unconditional, and readable back afterwards. */
-    if (isDesktopShell()) {
-      void enterDesktopWindowFullscreen().then(({ active, owned }) => {
-        windowScreen.current = active ? (owned ? 'owned' : 'adopted') : null;
-        setScreenActive(active);
-        // Refused — an older desktop binary whose baked capabilities predate
-        // `core:window:allow-set-fullscreen`. Same rule as the browser fallback
-        // below: the user asked for bigger, so give the bigger we still have.
-        void setChatMax(active ? 'screen' : 'window');
-      });
-      return;
-    }
-    // D-007: the POPUP, not the conversation — this element's subtree is what
-    // the browser paints, so it is the only target that keeps the four panels.
-    const el = popupRef.current;
-    // No element, or a webview with the Fullscreen API switched off: fall back
-    // to full-window rather than doing nothing. A dead button is the worse
-    // failure — the user asked for "bigger" and there IS a bigger we can give.
-    if (!el || typeof el.requestFullscreen !== 'function') {
-      void setChatMax('window');
-      return;
-    }
-    void Promise.resolve(el.requestFullscreen())
-      .then(() => setChatMax('screen'))
-      .catch(() => setChatMax('window'));
-  }, [screenActive, exitScreen, setChatMax]);
-
-  /* D-003 — Esc leaves DESKTOP full screen.
-     In the browser the UA owns Esc while it paints a fullscreen element, which
-     is why `closeOnEscape` is disarmed below. On the desktop path nothing
-     consumes it, so with the dialog's own handler disarmed Esc would simply be
-     dead — leaving a fullscreen window whose only exit is one small icon in a
-     corner. Restore the gesture people already expect. */
-  useEffect(() => {
-    if (!screenActive || typeof document === 'undefined') return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || !windowScreen.current) return;
-      e.preventDefault();
-      e.stopPropagation();
-      void exitScreen().then(() => setChatMax(null));
-    };
-    // Capture: the dialog's own layers see the key first otherwise.
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [screenActive, exitScreen, setChatMax]);
-
   /* Leaving the popup must not leave the browser in fullscreen or the mode in
      the URL — reopening any session would otherwise inherit a maximize the
      user never asked for on it. */
   const closeChat = useCallback(() => {
-    void exitScreen();
-    void setChatMax(null);
+    resetMaximize();
     onClose();
-  }, [exitScreen, setChatMax, onClose]);
+  }, [resetMaximize, onClose]);
 
   // hud-first-nav-and-dossier-2026-07-26 P-004 (D-002's one deliberate
   // duplicate): the footer's "⚠ N locks / M unread" chip opens the rail
@@ -1624,9 +1401,7 @@ export default function SessionChatModal({
           // popup's own surface. Scoped to the browser mechanism: on the desktop
           // path (D-006) nothing is lifted out of the page and the modal's
           // surface is already behind us.
-          ...(screenActive && windowScreen.current === null
-            ? { background: 'var(--bg-popover, #0d1829)' }
-            : null),
+          ...(screenMechanism === 'document' ? { background: 'var(--bg-popover, #0d1829)' } : null),
         }}
         data-testid="session-chat-modal"
       >
@@ -1694,27 +1469,18 @@ export default function SessionChatModal({
             unable to close a panel they can see. */}
         {open ? (
           <div style={CHAT_TOOLBAR_LEFT_STYLE} data-testid="session-chat-toolbar-left">
-            <button
-              type="button"
-              className="pc-button"
-              onClick={() => void setOrdersOpen(!ordersOpen)}
-              aria-pressed={ordersOpen}
-              aria-label={ordersOpen ? 'Hide agent orders' : 'Show agent orders'}
+            {/* `side="left"` is the whole chevron decision: this panel lives on
+                the LEFT, so open ⇒ its inner edge travels left to close (chevron
+                leads, pointing left) and closed ⇒ it expands rightward (chevron
+                trails, pointing right). See PanelToggleButton's header. */}
+            <PanelToggleButton
+              label="Orders"
+              describe="agent orders"
+              side="left"
+              open={ordersOpen}
+              onToggle={() => void setOrdersOpen(!ordersOpen)}
               data-testid="session-chat-orders-toggle"
-              style={CHAT_TOOLBAR_BUTTON_STYLE}
-            >
-              {/* Mirror of the Activity chevron: this panel lives on the LEFT,
-                  so open ⇒ its inner edge travels LEFT to close (chevron leads,
-                  pointing left) and closed ⇒ it expands rightward (chevron
-                  trails, pointing right). */}
-              {ordersOpen ? (
-                <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
-              ) : null}
-              Orders
-              {ordersOpen ? null : (
-                <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
-              )}
-            </button>
+            />
           </div>
         ) : null}
         {open ? (
@@ -1736,7 +1502,7 @@ export default function SessionChatModal({
                 aria-pressed={chatMax === 'window'}
                 aria-label={chatMax === 'window' ? 'Exit full window' : 'Full window'}
                 data-testid="session-chat-full-window"
-                style={CHAT_TOOLBAR_BUTTON_STYLE}
+                style={PANEL_TOOLBAR_BUTTON_STYLE}
               >
                 {chatMax === 'window' ? <Minimize2 size={12} aria-hidden="true" /> : <Maximize2 size={12} aria-hidden="true" />}
               </button>
@@ -1753,68 +1519,37 @@ export default function SessionChatModal({
                 aria-pressed={screenActive}
                 aria-label={screenActive ? 'Exit full screen' : 'Full screen'}
                 data-testid="session-chat-full-screen"
-                style={CHAT_TOOLBAR_BUTTON_STYLE}
+                style={PANEL_TOOLBAR_BUTTON_STYLE}
               >
                 {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
               </button>
             </Tooltip>
             {/* Shown in EVERY mode since D-007 — maximized now HAS the rail, so
                 the control that opens and closes it has to be there too.
-
-                The LABEL IS CONSTANT — "Activity", never "Hide activity"
-                [owner 2026-08-02: "dont add the hide when its expanded just make
-                the open/close arror more visible"]. The button names the PANEL
-                and the chevron carries the verb, so the hit target stops
-                changing width as it is pressed. `aria-pressed` + `aria-label`
-                still spell the action out for a screen reader, which cannot see
-                a chevron point. */}
-            <button
-              type="button"
-              className="pc-button"
-              onClick={() => void setDossierOpen(!dossierOpen)}
-              aria-pressed={dossierOpen}
-              aria-label={dossierOpen ? 'Hide agent activity' : 'Show agent activity'}
+                `side="right"`: open ⇒ the panel's inner edge travels RIGHT to
+                close, so the chevron trails pointing that way; closed ⇒ it
+                arrives from the right, so the chevron leads pointing left. */}
+            <PanelToggleButton
+              label="Activity"
+              describe="agent activity"
+              side="right"
+              open={dossierOpen}
+              onToggle={() => void setDossierOpen(!dossierOpen)}
               data-testid="session-chat-dossier-toggle"
-              style={CHAT_TOOLBAR_BUTTON_STYLE}
-            >
-              {/* Open ⇒ the panel's inner edge travels RIGHT to close, so the
-                  chevron trails the label pointing that way; closed ⇒ it
-                  arrives from the right, so the chevron leads pointing left.
-                  The glyph tracks the motion, not the state. */}
-              {dossierOpen ? null : (
-                <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
-              )}
-              Activity
-              {dossierOpen ? (
-                <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
-              ) : null}
-            </button>
+            />
             {/* The FLEET rail's toggle. Rendered ONLY when this agent is in a
                 fleet: a solo agent has no rail to open, and a control that
                 opens an empty column saying "not in a fleet" is chrome
-                pretending to be information.
-
-                Same grammar as Activity beside it — constant label, chevron
-                carrying the verb, `aria-pressed` + `aria-label` spelling the
-                action out for a reader who cannot see a chevron point. */}
+                pretending to be information. */}
             {fleetPeers || fleetUnknownSession ? (
-              <button
-                type="button"
-                className="pc-button"
-                onClick={() => void setFleetOpen(!fleetOpen)}
-                aria-pressed={fleetOpen}
-                aria-label={fleetOpen ? 'Hide fleet peers' : 'Show fleet peers'}
+              <PanelToggleButton
+                label="Fleet"
+                describe="fleet peers"
+                side="right"
+                open={fleetOpen}
+                onToggle={() => void setFleetOpen(!fleetOpen)}
                 data-testid="session-chat-fleet-toggle"
-                style={CHAT_TOOLBAR_BUTTON_STYLE}
-              >
-                {fleetOpen ? null : (
-                  <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
-                )}
-                Fleet
-                {fleetOpen ? (
-                  <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
-                ) : null}
-              </button>
+              />
             ) : null}
             {/* Maximized covers the backdrop, and in fullscreen Esc is spoken
                 for — so without an explicit ✕ there is no way out but the
@@ -1827,7 +1562,7 @@ export default function SessionChatModal({
                   onClick={closeChat}
                   aria-label="Close conversation"
                   data-testid="session-chat-close"
-                  style={CHAT_TOOLBAR_BUTTON_STYLE}
+                  style={PANEL_TOOLBAR_BUTTON_STYLE}
                 >
                   <X size={12} aria-hidden="true" />
                 </button>
