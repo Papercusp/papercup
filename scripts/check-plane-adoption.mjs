@@ -70,8 +70,7 @@
  * the measurement" without naming a day — this file's own dated choice, marked
  * `reviewSource: 'derived'` so nobody mistakes it for a ruling of the plan's.
  */
-import os from 'node:os';
-import { readFileSync } from 'node:fs';
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 /**
  * The agent-facing surfaces whose adoption floor is a runtime CALL count.
@@ -191,19 +190,6 @@ export function rollupAdoption(rows, now) {
   };
 }
 
-function resolvePgUrl() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  try {
-    const p = JSON.parse(readFileSync(`${os.homedir()}/.papercusp/embedded-pg.json`, 'utf8'));
-    if (p?.host && p?.port && p.user && p.password) {
-      return `postgresql://${p.user}:${p.password}@${p.host}:${p.port}/papercusp`;
-    }
-  } catch {
-    /* no discovery file — fall through to the dev default */
-  }
-  return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-}
-
 const MARK = { adopted: '✓', 'below-floor': '⚠', unused: '✗', 'no-data': '?' };
 
 export function formatReport(rows, roll, now) {
@@ -240,7 +226,7 @@ export function formatReport(rows, roll, now) {
 
 async function main() {
   const postgres = (await import('postgres')).default;
-  const sql = postgres(resolvePgUrl(), { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
+  const sql = postgres(resolveScriptPgUrl().url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
   const now = new Date();
   const rows = [];
   try {

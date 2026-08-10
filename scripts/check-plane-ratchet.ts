@@ -21,21 +21,8 @@ import {
   type RatchetRow,
 } from '../packages/operator-core/lib/agent-plane-ratchet';
 import type { PlaneZeroReason } from '../packages/operator-core/lib/agent-plane-measurement';
-import { readFileSync } from 'node:fs';
-import os from 'node:os';
-
-function resolvePgUrl(): string {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  try {
-    const p = JSON.parse(readFileSync(`${os.homedir()}/.papercusp/embedded-pg.json`, 'utf8'));
-    if (p?.host && p?.port && p.user && p.password) {
-      return `postgresql://${p.user}:${p.password}@${p.host}:${p.port}/papercusp`;
-    }
-  } catch {
-    /* no discovery file — fall through to the dev default */
-  }
-  return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-}
+// @ts-ignore — pure JS helper, typed only by JSDoc
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 /**
  * Statuses that mean the gap item is CLOSED and its exemption is withdrawn.
@@ -68,7 +55,7 @@ interface StoredMetric {
 async function main() {
   const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
   const postgres = (await import('postgres')).default;
-  const sql = postgres(resolvePgUrl(), { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
+  const sql = postgres(resolveScriptPgUrl().url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
 
   let series: Array<{ measuredAt: string; metrics: StoredMetric[] }> = [];
   let closedGaps = new Set<string>();

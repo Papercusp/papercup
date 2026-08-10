@@ -54,8 +54,7 @@
  * the condition that produced WI-6465.
  */
 
-import os from 'node:os';
-import { readFileSync } from 'node:fs';
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 /**
  * THE CENSUS. One row per field this plane added.
@@ -266,23 +265,10 @@ export function rollupCensus(rows) {
   };
 }
 
-function resolvePgUrl() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  try {
-    const p = JSON.parse(readFileSync(`${os.homedir()}/.papercusp/embedded-pg.json`, 'utf8'));
-    if (p?.host && p?.port && p.user && p.password) {
-      return `postgresql://${p.user}:${p.password}@${p.host}:${p.port}/papercusp`;
-    }
-  } catch {
-    /* no discovery file — fall through to the dev default */
-  }
-  return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-}
-
 async function main() {
   const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
   const postgres = (await import('postgres')).default;
-  const sql = postgres(resolvePgUrl(), { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
+  const sql = postgres(resolveScriptPgUrl().url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
 
   const rows = [];
   const statusByRef = new Map();

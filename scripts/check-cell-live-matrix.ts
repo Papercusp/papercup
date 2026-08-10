@@ -25,8 +25,6 @@
  * Usage:  npm run lint:cell-matrix          (both ports)
  *         npm run lint:cell-matrix -- --port 3170    (one port, no A/B)
  */
-import { readFileSync } from 'node:fs';
-import os from 'node:os';
 import {
   assessMatrix,
   compareAb,
@@ -36,21 +34,10 @@ import {
 } from '../packages/operator-core/lib/cell-live-matrix';
 import { BUILTIN_CELLS } from '../packages/operator-core/lib/cell-registrations';
 import type { CellSpec } from '../packages/operator-core/lib/cell-registry';
+// @ts-ignore — pure JS helper, typed only by JSDoc
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 const TERMINAL_STATUSES = new Set(['done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated']);
-
-function resolvePgUrl(): string {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  try {
-    const p = JSON.parse(readFileSync(`${os.homedir()}/.papercusp/embedded-pg.json`, 'utf8'));
-    if (p?.host && p?.port && p.user && p.password) {
-      return `postgresql://${p.user}:${p.password}@${p.host}:${p.port}/papercusp`;
-    }
-  } catch {
-    /* no discovery file — fall through to the dev default */
-  }
-  return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-}
 
 /* -------------------------------------------------------------------------- */
 /* The probe                                                                   */
@@ -159,7 +146,7 @@ async function main(): Promise<void> {
   const ports = portArg >= 0 ? [argv[portArg + 1]] : ['3170', '3070'];
 
   const postgres = (await import('postgres')).default;
-  const sql = postgres(resolvePgUrl(), { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
+  const sql = postgres(resolveScriptPgUrl().url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
 
   let openGapItems = new Set<string>();
   let liveHolder: string | null = null;

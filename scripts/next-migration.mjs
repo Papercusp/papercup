@@ -36,10 +36,10 @@
  * Exits non-zero (without reserving) when PG is unreachable — a number handed out
  * without a ledger row would re-introduce the very race this prevents.
  */
-import { readdirSync, readFileSync } from 'node:fs';
-import os from 'node:os';
+import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve as resolvePath } from 'node:path';
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 const ALLOC_ADVISORY_KEY = 873_135; // must match next_migration.ts
 
@@ -140,19 +140,6 @@ export function buildAllocationResult({ next, filename, reservedBy, dryRun, cano
   };
 }
 
-function resolvePgUrl() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  try {
-    const p = JSON.parse(readFileSync(`${os.homedir()}/.papercusp/embedded-pg.json`, 'utf8'));
-    if (p?.host && p?.port && p.user && p.password) {
-      return `postgresql://${p.user}:${p.password}@${p.host}:${p.port}/papercusp`;
-    }
-  } catch {
-    /* no discovery file */
-  }
-  return 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -165,7 +152,7 @@ async function main() {
   const reservedBy = args.by || process.env.USER || process.env.LOGNAME || 'cli';
 
   const postgres = (await import('postgres')).default;
-  const sql = postgres(resolvePgUrl(), {
+  const sql = postgres(resolveScriptPgUrl().url, {
     max: 1,
     connect_timeout: 5,
     idle_timeout: 1,

@@ -17,15 +17,15 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import postgres from 'postgres';
+// @ts-ignore — pure JS helper, typed only by JSDoc
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 interface ProjectEntry {
   slug: string;
   path: string;
 }
 
-const PG_URL =
-  process.env.HARNESS_ADMIN_DATABASE_URL ??
-  'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+const PG_URL = resolveScriptPgUrl().url;
 
 const SNAPSHOT_FILES = [
   'features.json', 'validation-contract.md', 'supervisor-notes.md', 'config.json',
