@@ -929,6 +929,7 @@ export function formatDeadRoutinesSummary(wf: {
   deadRoutines: number;
   deadRoutineNames?: string[];
   deadRoutinesInScope?: number;
+  deadRoutinesDistinct?: number;
   deadRoutineCriticalNames?: string[];
 }): string {
   const count = wf.deadRoutines;
@@ -938,7 +939,12 @@ export function formatDeadRoutinesSummary(wf: {
   const hasDenominator = typeof total === 'number' && total > 0 && count <= total;
   const population = hasDenominator ? `${count} of ${total}` : `${count}`;
   const named = wf.deadRoutineNames ?? [];
-  const unnamed = Math.max(0, count - named.length);
+  // ⚠ UNIT DISCIPLINE: `deadRoutines` counts ROWS (one per install — git-sync alone is 59 here)
+  // while `deadRoutineNames` is DEDUPED. Subtracting one from the other would announce
+  // "+134 more" when 2 more distinct routines exist. Count the remainder in distinct names, and
+  // when that number was not observed, say nothing rather than guess.
+  const distinct = wf.deadRoutinesDistinct;
+  const unnamed = typeof distinct === 'number' ? Math.max(0, distinct - named.length) : 0;
   const names = named.length ? `: ${named.join(', ')}${unnamed > 0 ? ` (+${unnamed} more)` : ''}` : '';
   // Half the durable engine overdue is no longer "some routines are late" — say the stronger word.
   const frozen = hasDenominator && count / (total as number) >= 0.5;

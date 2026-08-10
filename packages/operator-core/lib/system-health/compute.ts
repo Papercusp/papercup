@@ -681,7 +681,7 @@ export async function readDeadRoutines(sql: Sql, overdueMs: number): Promise<Dea
   // Zero overdue rows ⇒ no alarm fires, so the denominator is never read; report a clean zero
   // rather than paying a second query for a scope count nothing will consume.
   if (rows.length === 0) {
-    return { count: 0, totalInScope: 0, names: [], criticalNames: [], namesTruncated: false, censusTruncated: false };
+    return { count: 0, distinctCount: 0, totalInScope: 0, names: [], criticalNames: [], namesTruncated: false, censusTruncated: false };
   }
   return summarizeDeadRoutines(rows.map((r) => r.name), {
     count: rows[0].overdue_total,
@@ -701,6 +701,12 @@ export interface DeadRoutineCensus {
    * to prevent (see {@link summarizeDeadRoutines}).
    */
   count: number;
+  /**
+   * Distinct routine NAMES overdue. `count` counts ROWS and the table holds one row per
+   * install, so the two differ by a large factor here (git-sync alone is 59 rows). This is the
+   * unit `names` is measured in, and therefore the unit any "+N more" must be computed in.
+   */
+  distinctCount: number;
   /** Active in-scope durable routines — the DENOMINATOR that turns a bare count into a ratio. */
   totalInScope: number;
   /** Exemplars to NAME, fleet-blocking first, then most-overdue. Capped; see `namesTruncated`. */
@@ -748,17 +754,27 @@ export function summarizeDeadRoutines(
 ): DeadRoutineCensus {
   const limit = opts.exemplarLimit ?? DEAD_ROUTINE_EXEMPLAR_LIMIT;
   const critical = opts.criticalNames ?? FLEET_BLOCKING_ROUTINE_NAMES;
-  const criticalNames = overdueMostOverdueFirst.filter((n) => critical.has(n));
-  const rest = overdueMostOverdueFirst.filter((n) => !critical.has(n));
+  // DEDUPE FIRST — `harness_shared.routines` carries ONE ROW PER INSTALL, so a name repeats
+  // once per pot. Measured live 2026-08-10: git-sync 59 rows, cross-hive-outbox-drain 24,
+  // green-checkpoint 13. Without this, a total freeze fills every exemplar slot with the SAME
+  // name ("git-sync, git-sync, git-sync, …") and hides every other routine — which would make
+  // the consequence-ordering fix actively worse than the arbitrary ordering it replaced.
+  // Preserves first-seen order, so the incoming most-overdue-first ordering survives.
+  const distinct = [...new Set(overdueMostOverdueFirst)];
+  const criticalNames = distinct.filter((n) => critical.has(n));
+  const rest = distinct.filter((n) => !critical.has(n));
   const names = [...criticalNames, ...rest].slice(0, limit);
   return {
     count: totals.count,
+    distinctCount: distinct.length,
     totalInScope: totals.totalInScope,
     names,
     criticalNames,
-    // Compare against the POPULATION, not the fetched slice: with a truncated census there are
-    // provably more names than were fetched, so the list is truncated even if it fit the cap.
-    namesTruncated: totals.count > names.length,
+    // Compared in the SAME UNIT as `names` (distinct names), never against the row count —
+    // mixing the two would report "+134 more" when only 2 more distinct routines exist.
+    // A truncated CENSUS also implies more names exist than were ever fetched, so it counts as
+    // truncated even when the names that DID arrive happen to fit the cap.
+    namesTruncated: distinct.length > names.length || (totals.censusTruncated ?? false),
     censusTruncated: totals.censusTruncated ?? false,
   };
 }
@@ -1113,6 +1129,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       // 101-routine freeze as "20 dead routine(s)".
       keylessHumanReviewBacklog, deadRoutines: deadCensus.count, deadRoutineNames,
       deadRoutinesInScope: deadCensus.totalInScope,
+      deadRoutinesDistinct: deadCensus.distinctCount,
       deadRoutineCriticalNames: deadCensus.criticalNames,
       ...(deadCensus.namesTruncated ? { deadRoutineNamesTruncated: true } : {}),
       stalePausedRoutines: stalePaused.length, stalePausedRoutineNames, stalePausedCriticalRoutines,

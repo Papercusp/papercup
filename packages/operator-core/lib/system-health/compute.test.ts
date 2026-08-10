@@ -1059,6 +1059,8 @@ describe('summarizeDeadRoutines — census vs. exemplar list (EI-200456914514713
     // Census hit its own fetch cap: 3 names came back, but the count says 500 are overdue.
     const c = summarizeDeadRoutines(many(3), { count: 500, totalInScope: 600, censusTruncated: true });
     expect(c.count).toBe(500);
+    // The 3 fetched names fit the cap, so the distinct-vs-named comparison alone says
+    // "complete" — but a truncated census proves more names exist that were never fetched.
     expect(c.namesTruncated).toBe(true);
     expect(c.censusTruncated).toBe(true);
   });
@@ -1068,6 +1070,25 @@ describe('summarizeDeadRoutines — census vs. exemplar list (EI-200456914514713
     expect(c.names).toEqual(['pr-poll']);
     expect(c.namesTruncated).toBe(false);
     expect(c.criticalNames).toEqual([]);
+  });
+
+  it('DEDUPES names — one row per install must not fill the exemplar list with one routine', () => {
+    // Live shape, 2026-08-10: git-sync 59 rows, cross-hive-outbox-drain 24, green-checkpoint 13.
+    // Undeduped, the whole exemplar list reads "git-sync, git-sync, git-sync, …" and every other
+    // routine disappears — strictly worse than the arbitrary ordering this replaced.
+    const rows = [
+      ...Array(59).fill('git-sync'),
+      ...Array(24).fill('cross-hive-outbox-drain'),
+      ...Array(13).fill('green-checkpoint'),
+      'pr-poll',
+    ];
+    const c = summarizeDeadRoutines(rows, { count: rows.length, totalInScope: 144 });
+    expect(c.names).toEqual(['git-sync', 'green-checkpoint', 'cross-hive-outbox-drain', 'pr-poll']);
+    expect(c.criticalNames).toEqual(['git-sync', 'green-checkpoint']);
+    // count stays in ROWS (the true magnitude); distinctCount is the unit `names` is measured in.
+    expect(c.count).toBe(97);
+    expect(c.distinctCount).toBe(4);
+    expect(c.namesTruncated).toBe(false); // all 4 distinct names fit — despite 97 overdue rows
   });
 
   it('keeps the fleet-blocking set as the release-critical set plus git-sync', () => {

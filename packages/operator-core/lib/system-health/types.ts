@@ -277,6 +277,11 @@ export interface WorkFeedHealth {
    *  ("101 of 151" reads as an engine freeze; a bare "101" does not). Optional; absent ⇒
    *  unknown, in which case render the bare count rather than inventing a ratio. */
   deadRoutinesInScope?: number;
+  /** Distinct routine NAMES overdue. `deadRoutines` counts ROWS and this table holds one row
+   *  per install (git-sync alone is 59 rows here), so the two differ by a large factor — and
+   *  `deadRoutineNames` is deduped, so any "+N more" must be computed against THIS, not the row
+   *  count. Optional; absent ⇒ unknown. */
+  deadRoutinesDistinct?: number;
   /** Every fleet-blocking routine among the overdue set, reported in FULL regardless of the
    *  exemplar cap — so a fleet-wide commit outage can never be announced under a bystander
    *  routine's name (the filed incident led with `pr-poll` and omitted `git-sync`). */
