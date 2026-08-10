@@ -147,6 +147,57 @@ describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
   });
 });
 
+describe('readDeadRoutines — census integrity under a WIDE freeze (EI-20045691451471399)', () => {
+  it('reports the TRUE overdue count, NOT the length of the capped exemplar list', async () => {
+    // 12 overdue (twice the 6-exemplar cap) + 2 healthy, so the denominator is also exercised.
+    for (let i = 0; i < 12; i++) {
+      await insertRoutine({
+        id: `frozen-${String(i).padStart(2, '0')}`, cfg: { cron: '*/30 * * * * *' },
+        nextFireAt: new Date(Date.now() - (20 + i) * 60_000),
+      });
+    }
+    await insertRoutine({ id: 'healthy-1', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
+    await insertRoutine({ id: 'healthy-2', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
+
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS);
+    // ⚠ THE REGRESSION THIS GUARDS. The old code returned a bare `LIMIT 20` name list and the
+    // panel set `deadRoutines = deadRoutineNames.length`, making the reported count a function
+    // of the fetch cap. Measured in the wild 2026-08-10: the alarm broadcast "20 dead
+    // routine(s)" while 101 of 151 routines were genuinely overdue, and the agent who read it
+    // concluded "the DETECTOR is fine". If anyone re-derives the count from the list, THIS
+    // assertion fails — count and names.length are deliberately different numbers here.
+    expect(census.count).toBe(12);
+    expect(census.names.length).toBeLessThan(census.count);
+    expect(census.namesTruncated).toBe(true);
+    // The denominator counts every in-scope durable routine, overdue or not.
+    expect(census.totalInScope).toBe(14);
+  });
+
+  it('NAMES git-sync even when it is the LEAST overdue member (consequence beats overdue-seconds)', async () => {
+    // git-sync is overdue by the SMALLEST margin, so ordering by overdue-seconds ranks it dead
+    // last and the exemplar cap would drop it entirely — which is precisely how the filed
+    // incident announced a fleet-wide commit outage under the name `pr-poll`.
+    for (let i = 0; i < 10; i++) {
+      await insertRoutine({
+        id: `bystander-${i}`, cfg: { cron: '*/30 * * * * *' },
+        nextFireAt: new Date(Date.now() - (30 + i) * 60_000),
+      });
+    }
+    await insertRoutine({ id: 'git-sync', cfg: { cron: '*/30 * * * * *' }, nextFireAt: new Date(Date.now() - 11 * 60_000) });
+
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS);
+    expect(census.names[0]).toBe('git-sync');
+    expect(census.criticalNames).toEqual(['git-sync']);
+    expect(census.count).toBe(11);
+  });
+
+  it('reports a clean, unbounded zero when nothing is overdue', async () => {
+    await insertRoutine({ id: 'cron-future', cfg: { cron: '*/30 * * * * *' }, nextFireAt: future() });
+    const census = await readDeadRoutines(rootSql, OVERDUE_MS);
+    expect(census).toMatchObject({ count: 0, names: [], criticalNames: [], namesTruncated: false, censusTruncated: false });
+  });
+});
+
 describe('resolveDeadRoutineOverdueMs — checkpoint-window-aware threshold against a real PG (WI-4310)', () => {
   it('widens when the (mocked) lock probe reports a checkpoint run active — never queries pipeline_events', async () => {
     lockProbe.mockReturnValue({ held: true, elapsedSec: 120 });

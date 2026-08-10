@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -1029,6 +1029,51 @@ describe('systemHealthGitSidecarEnabled — WI-7160 (git-spawn stalls the main t
         PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
       }),
     ).toBe(false);
+  });
+});
+
+describe('summarizeDeadRoutines — census vs. exemplar list (EI-20045691451471399)', () => {
+  const many = (n: number, prefix = 'r') => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+
+  it("carries the caller's TRUE count through, never names.length", () => {
+    // The exact wild misreport: 101 genuinely overdue, a far shorter exemplar list.
+    const c = summarizeDeadRoutines(many(101), { count: 101, totalInScope: 151 });
+    expect(c.count).toBe(101);
+    expect(c.totalInScope).toBe(151);
+    expect(c.names.length).toBeLessThan(101);
+    expect(c.namesTruncated).toBe(true);
+  });
+
+  it('hoists fleet-blocking routines ahead of merely-more-overdue bystanders', () => {
+    // Input order IS most-overdue-first, so git-sync/green-checkpoint arrive LAST here — the
+    // shape that buried git-sync behind pr-poll in the filed incident.
+    const overdue = [...many(8, 'bystander'), 'green-checkpoint', 'git-sync'];
+    const c = summarizeDeadRoutines(overdue, { count: 10, totalInScope: 12 });
+    expect(c.names.slice(0, 2)).toEqual(['green-checkpoint', 'git-sync']);
+    // Reported in FULL even though the exemplar list is capped: a cap must never be able to
+    // hide the member that explains the blast radius.
+    expect(c.criticalNames).toEqual(['green-checkpoint', 'git-sync']);
+  });
+
+  it('marks the list truncated when the population exceeds what is named, even under a truncated census', () => {
+    // Census hit its own fetch cap: 3 names came back, but the count says 500 are overdue.
+    const c = summarizeDeadRoutines(many(3), { count: 500, totalInScope: 600, censusTruncated: true });
+    expect(c.count).toBe(500);
+    expect(c.namesTruncated).toBe(true);
+    expect(c.censusTruncated).toBe(true);
+  });
+
+  it('reports an untruncated list when every overdue routine is named', () => {
+    const c = summarizeDeadRoutines(['pr-poll'], { count: 1, totalInScope: 151 });
+    expect(c.names).toEqual(['pr-poll']);
+    expect(c.namesTruncated).toBe(false);
+    expect(c.criticalNames).toEqual([]);
+  });
+
+  it('keeps the fleet-blocking set as the release-critical set plus git-sync', () => {
+    // Pinned because the consequence-ordering fix is worthless if git-sync silently drops out
+    // of this set in a later refactor — the failure would be invisible until the next freeze.
+    expect([...FLEET_BLOCKING_ROUTINE_NAMES].sort()).toEqual(['git-sync', 'green-checkpoint', 'release-trigger']);
   });
 });
 

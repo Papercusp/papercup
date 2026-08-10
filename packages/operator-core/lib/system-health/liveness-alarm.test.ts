@@ -4,6 +4,7 @@ import {
   diagnoseHealthTickStall,
   runLivenessAlarmTick,
   deriveSignatureFromSummary,
+  formatDeadRoutinesSummary,
   livenessSignatureOf,
   beesIdleByDesign,
   beesIdleDecision,
@@ -2133,5 +2134,64 @@ describe('EI-19462267124852221 — an auto-resolve must carry its OBSERVATION, n
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("infra-liveness signal 'stale-paused-routines' cleared (condition recovered)");
     expect(notes[0]).toContain('observed workFeed status=warn stalePausedRoutines=0');
+  });
+});
+
+describe('formatDeadRoutinesSummary — magnitude + consequence (EI-20045691451471399)', () => {
+  it('reads as a fleet-wide freeze, not a one-routine blip, when the engine is frozen', () => {
+    const s = formatDeadRoutinesSummary({
+      deadRoutines: 101,
+      deadRoutinesInScope: 151,
+      deadRoutineNames: ['git-sync', 'green-checkpoint', 'pr-poll'],
+      deadRoutineCriticalNames: ['git-sync', 'green-checkpoint'],
+    });
+    expect(s).toContain('101 of 151');            // the ratio, not a bare count
+    expect(s).toContain('FROZEN');                 // >=50% of the engine is a freeze, say so
+    expect(s).toContain('(+98 more)');             // the cap is disclosed, never silent
+    expect(s).toContain('git-sync');
+    expect(s).toContain('NOTHING in the shared tree is being committed');
+  });
+
+  it('still classifies as the dead-routines signature — the substring dedup depends on', () => {
+    // ⚠ THE COUPLING GUARD. `deriveSignatureFromSummary` classifies this signal by regex over
+    // the summary text, and that is the dedup identity for legacy escalation rows written
+    // before EI-2146 stamped an explicit signature. Reword `dead routine(s)` out of the
+    // summary and those rows silently stop classifying — they would never auto-resolve. This
+    // asserts the round-trip rather than trusting the wording to stay put.
+    const frozen = formatDeadRoutinesSummary({
+      deadRoutines: 101, deadRoutinesInScope: 151,
+      deadRoutineNames: ['git-sync'], deadRoutineCriticalNames: ['git-sync'],
+    });
+    const single = formatDeadRoutinesSummary({ deadRoutines: 1, deadRoutineNames: ['pr-poll'] });
+    expect(deriveSignatureFromSummary(frozen)).toBe('dead-routines');
+    expect(deriveSignatureFromSummary(single)).toBe('dead-routines');
+  });
+
+  it('degrades to a bare count rather than inventing a denominator it never observed', () => {
+    const s = formatDeadRoutinesSummary({ deadRoutines: 4, deadRoutineNames: ['pr-poll'] });
+    expect(s).toContain('4 dead routine(s)');
+    expect(s).not.toContain(' of ');
+    // No observed scope ⇒ no ratio ⇒ no basis to call it frozen.
+    expect(s).toContain('starved');
+    expect(s).not.toContain('FROZEN');
+  });
+
+  it('does not call a handful of stuck routines a freeze', () => {
+    const s = formatDeadRoutinesSummary({
+      deadRoutines: 3, deadRoutinesInScope: 151, deadRoutineNames: ['pr-poll', 'a', 'b'],
+    });
+    expect(s).toContain('3 of 151');
+    expect(s).toContain('starved');
+    expect(s).not.toContain('FROZEN');
+    expect(s).not.toContain('more)');   // nothing withheld, so claim nothing withheld
+  });
+
+  it('names a non-git-sync fleet-blocking routine without the commit-outage claim', () => {
+    const s = formatDeadRoutinesSummary({
+      deadRoutines: 2, deadRoutinesInScope: 151,
+      deadRoutineNames: ['release-trigger', 'pr-poll'], deadRoutineCriticalNames: ['release-trigger'],
+    });
+    expect(s).toContain('Fleet-blocking: release-trigger.');
+    expect(s).not.toContain('shared tree');
   });
 });
