@@ -37,6 +37,7 @@ import {
   type CouplingDivergenceVerdict,
 } from './message-fields';
 import type { DerivedCouplingRelation } from '../../coord/couplings';
+import type { DerivedSignalCensus } from '../../coord/derived-signal-census';
 
 // ⚠ EVERY IO DEPENDENCY IS IMPORTED DYNAMICALLY, INSIDE `readPeerRelations` —
 // deliberately, and it is load-bearing twice over.
@@ -51,8 +52,10 @@ import type { DerivedCouplingRelation } from '../../coord/couplings';
 //   2. COST. The gate below means most messages never call this function at
 //      all, so the heavy half should not be paid at import time either.
 //
-// The pure half (`message-fields`, and the `DerivedCouplingRelation` TYPE) stays
-// static: `send.ts` already imports message-fields, so it adds nothing.
+// The pure half (`message-fields`, and the `DerivedCouplingRelation` /
+// `DerivedSignalCensus` TYPES) stays static: `send.ts` already imports
+// message-fields, and a `import type` is erased entirely at compile time — it
+// creates no runtime edge, so it cannot drag the IO chain in.
 
 /** One asserted relation, scored against the graph as it stood at send. */
 export interface CouplingDivergenceStamp {
