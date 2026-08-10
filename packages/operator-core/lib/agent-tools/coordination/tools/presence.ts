@@ -31,7 +31,7 @@ import { overlayPresenceCursors } from '../presence-cursor-overlay';
 import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings';
 import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
 import { deriveCouplings } from '../../../coord/coupling-derivation';
-import { DERIVED_SIGNAL_CENSUS_KEY } from '../../../coord/derived-signal-census';
+import { censusObserverFor } from '../../../coord/derived-signal-census';
 import { couplingSourcesFor, presenceNeedsCoordinationDomain } from '../coupling-sources';
 import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle';
 
@@ -260,7 +260,12 @@ export default defineTool({
         // answer "has this relation ever fired in production?" could not answer it
         // for anyone. The census is a bounded per-call object on a path that already
         // writes metadata; the firings data it finally collects is the point.
-        const emitCensus = (c as { metadata?: (d: Record<string, unknown>) => void }).metadata;
+        // P-009: the cast + key-wrapping now live in ONE place
+        // (`censusObserverFor`), so the last-write-wins hazard behind them is
+        // documented once instead of re-invited at each new wiring site. This path
+        // is no longer the only one wired — `coord:send` and `topics:feed` carry the
+        // same sink, which is what makes the census observable at volume.
+        const observeCensus = censusObserverFor(c);
         const derived = await deriveCouplings(
           self.ownerId,
           snapshot.active,
@@ -275,9 +280,7 @@ export default defineTool({
               ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
               ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
             }),
-            ...(emitCensus
-              ? { observe: (census) => emitCensus({ [DERIVED_SIGNAL_CENSUS_KEY]: census }) }
-              : {}),
+            ...(observeCensus ? { observe: observeCensus } : {}),
           },
         );
         const peers = resolveCoupledPeers(self.ownerId, derived, edges);

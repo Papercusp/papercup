@@ -36,6 +36,14 @@ import {
   resolveCouplingDivergenceStamps,
   COUPLING_DIVERGENCE_FIELD,
 } from '../coupling-divergence-stamp';
+// TYPE ONLY — erased at compile time, so it creates no runtime edge. A VALUE
+// import of this module would be a load-time hazard here: `coord/couplings`
+// (which `derived-signal-census` imports for DERIVED_COUPLING_RELATIONS) statically
+// imports `@papercusp/db-org`, so a static value import would drag a store into the
+// send path's module graph — the exact class EI-19281789650149592 records ("one
+// static store import here red a 95-test suite") and what coupling-divergence-stamp's
+// own import contract forbids. `censusObserverFor` is imported DYNAMICALLY below.
+import type { DerivedSignalCensus } from '../../../coord/derived-signal-census';
 import { resolvePremiseStamps, PREMISE_STAMPS_FIELD } from '../premise-resolve';
 // The FACTORY only — `premise-probes` holds every store import inside the probe
 // bodies (dynamic), so this adds nothing to the send path's module graph. See
@@ -486,6 +494,18 @@ async function sendOne(
     renouncedFleetAuthority?: boolean;
   },
   cueAuthority?: CueAuthorityStamp | null,
+  /**
+   * P-009 — the dead-signal census sink, built ONCE from the handler's ctx
+   * (`censusObserverFor(ctx)`) and threaded down because this function is where
+   * the only volume coupling derivation happens. Optional, so every other caller
+   * and every test wires no instrument.
+   *
+   * ⚠ Fires once PER MESSAGE, and `ctx.metadata` is last-write-wins, so a bulk
+   * send records the LAST message's census. Deliberate: the sender's roster and
+   * legs are identical across a bulk's messages, so the surviving record is
+   * representative — but it is a sample, never a message count.
+   */
+  observeCensus?: (census: DerivedSignalCensus) => void,
 ): Promise<BulkItemResult> {
   // agent-report-cards-2026-07-17 P-001 / D-004: validate a structured report
   // card payload FIRST (pure, cheap) through the ONE canonical validator. A
@@ -807,6 +827,11 @@ async function sendOne(
       sections: fieldStamp.sections,
       workspaceId: identity.workspaceId,
       harnessSlug,
+      // P-009: the census rides the derivation that ALREADY happens here — no
+      // extra IO, no second coupling path. This is the only coupling read that
+      // runs at volume, so it is the one that can answer whether a derived
+      // relation has ever fired in production.
+      ...(observeCensus ? { observe: observeCensus } : {}),
     });
     if (divergence.length) extra[COUPLING_DIVERGENCE_FIELD] = divergence;
   }
@@ -1732,6 +1757,24 @@ export default defineTool({
   })),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // P-009: build the dead-signal census sink ONCE per invocation, here, because
+    // the handler is the only scope holding the `ctx.metadata` channel it writes
+    // through. Threaded into sendOne rather than resolved deeper: `sendOne` has no
+    // ctx, and giving a per-message function its own ambient sink would hide a
+    // per-invocation fact in module state. Undefined when the ctx carries no
+    // metadata channel, so non-tool callers degrade to today's behaviour.
+    //
+    // DYNAMIC import, deliberately — see the type-only import at the top of this
+    // file: a static value import would put `@papercusp/db-org` in the send path's
+    // load-time graph. Fail-soft: the census is an instrument, so a resolution
+    // failure must cost a measurement, never a send.
+    let observeCensus: ((census: DerivedSignalCensus) => void) | undefined;
+    try {
+      const { censusObserverFor } = await import('../../../coord/derived-signal-census');
+      observeCensus = censusObserverFor(ctx);
+    } catch {
+      observeCensus = undefined;
+    }
     // The sender's own harness when it's a real, harness-scoped agent (pipeline
     // roles carry ctx.harnessSlug); '*'/empty = SU/operator/oracle wildcard.
     // P-001: an un-scoped sender no longer silently stays local — in a workspace
@@ -1860,6 +1903,7 @@ export default defineTool({
           scoped.harnessSlug,
           { scoped: bcast.scoped, allHive: bcast.allHive, renouncedFleetAuthority },
           wasBroadcast && !renouncedFleetAuthority ? senderCueAuthority : null,
+          observeCensus,
         );
       },
       {

@@ -153,7 +153,17 @@ export function scoreCouplingDivergence(
 /** The one IO leg, injectable so the wrapper is testable without a database. */
 export type PeerRelationsReader = (
   selfOwnerId: string,
-  opts: { workspaceId?: string | null; harnessSlug?: string | null },
+  opts: {
+    workspaceId?: string | null;
+    harnessSlug?: string | null;
+    /**
+     * P-009 — the dead-signal census sink, supplied by the TOOL layer (`send.ts`
+     * via `censusObserverFor(ctx)`), because that is the only layer holding a
+     * `ctx.metadata` channel. Optional: a caller that omits it changes nothing,
+     * so tests and internal re-use wire no instrument.
+     */
+    observe?: (census: DerivedSignalCensus) => void;
+  },
 ) => Promise<ReadonlyMap<string, readonly DerivedCouplingRelation[]>>;
 
 /**
@@ -207,14 +217,22 @@ export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) 
   const derived = await deriveCouplings(
     selfOwnerId,
     snapshot.active,
-    couplingSourcesFor({
-      selfOwnerId,
-      rosterOwnerIds,
-      // The line that makes `holds-a-lock-on` derivable on this path at all.
-      ...(coordinationDomain ? { coordinationDomain } : {}),
-      ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
-      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-    }),
+    {
+      ...couplingSourcesFor({
+        selfOwnerId,
+        rosterOwnerIds,
+        // The line that makes `holds-a-lock-on` derivable on this path at all.
+        ...(coordinationDomain ? { coordinationDomain } : {}),
+        ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+        ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+      }),
+      // P-009: THE path that runs at volume. Wiring the census here is what makes
+      // "has `holds-a-lock-on` ever fired in production?" answerable at all — the
+      // sink previously existed only on `coord:presence` (11 calls ever), so the
+      // detector could not observe the surface whose 12-day silence (D-088) is the
+      // reason it exists.
+      ...(opts.observe ? { observe: opts.observe } : {}),
+    },
   );
   const edges = await listCouplingsFor(selfOwnerId, opts.workspaceId ?? undefined);
   const byPeer = new Map<string, readonly DerivedCouplingRelation[]>();
@@ -238,6 +256,8 @@ export async function resolveCouplingDivergenceStamps(
     sections: readonly SectionLike[];
     workspaceId?: string | null;
     harnessSlug?: string | null;
+    /** P-009 — the census sink, forwarded to the reader. See `PeerRelationsReader`. */
+    observe?: (census: DerivedSignalCensus) => void;
   },
   readRelations: PeerRelationsReader = readPeerRelations,
 ): Promise<CouplingDivergenceStamp[]> {
@@ -255,6 +275,7 @@ export async function resolveCouplingDivergenceStamps(
     const byPeer = await readRelations(self, {
       workspaceId: opts.workspaceId ?? null,
       harnessSlug: opts.harnessSlug ?? null,
+      ...(opts.observe ? { observe: opts.observe } : {}),
     });
     return scoreCouplingDivergence(claims, recipients, byPeer);
   } catch {

@@ -19,6 +19,7 @@ import { resolvePresenceScope, assemblePresenceSnapshot } from './presence-snaps
 import { couplingSourcesFor } from './coupling-sources';
 import { coupledTopicSourcesFor } from './coupled-topic-sources';
 import { deriveCouplings } from '../../coord/coupling-derivation';
+import type { DerivedSignalCensus } from '../../coord/derived-signal-census';
 import { listCouplingsFor, resolveCoupledPeers } from '../../coord/couplings';
 import { deriveCoupledTopics, type CoupledTopicFeed } from '../../coord/coupled-topics';
 
@@ -37,7 +38,19 @@ export interface CoupledTopicsReadCtx {
 export async function readCoupledTopics(
   selfOwnerId: string,
   ctx: CoupledTopicsReadCtx = {},
-  opts: { withFeed?: boolean } = {},
+  opts: {
+    withFeed?: boolean;
+    /**
+     * P-009 — the dead-signal census sink, threaded from the TOOL layer (the only
+     * layer holding a `ctx.metadata` channel) via `censusObserverFor(ctx)`.
+     *
+     * ⚠ "PULL ONLY, ZERO WRITES" above is about COUPLING STATE and still holds:
+     * this writes no coupling row and stores no projection. It rides the calling
+     * invocation's existing metadata record, which is the reuse the census was
+     * designed around (derived-signal-census.ts) rather than a new surface.
+     */
+    observe?: (census: DerivedSignalCensus) => void;
+  } = {},
 ): Promise<CoupledTopicFeed[]> {
   const self = selfOwnerId?.trim();
   if (!self) return [];
@@ -52,12 +65,15 @@ export async function readCoupledTopics(
     const derived = await deriveCouplings(
       self,
       snapshot.active,
-      couplingSourcesFor({
-        selfOwnerId: self,
-        rosterOwnerIds,
-        ...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),
-        ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}),
-      }),
+      {
+        ...couplingSourcesFor({
+          selfOwnerId: self,
+          rosterOwnerIds,
+          ...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),
+          ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}),
+        }),
+        ...(opts.observe ? { observe: opts.observe } : {}),
+      },
     );
     const edges = await listCouplingsFor(self, ctx.workspaceId ?? undefined);
     const peers = resolveCoupledPeers(self, derived, edges);

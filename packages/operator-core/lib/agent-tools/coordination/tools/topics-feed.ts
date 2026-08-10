@@ -15,6 +15,7 @@ import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { topicFeed } from '../../../topics-feed';
 import { readCoupledTopics } from '../coupled-topics-read';
+import { censusObserverFor } from '../../../coord/derived-signal-census';
 import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 
 export default defineTool({
@@ -73,10 +74,18 @@ export default defineTool({
     let derivedTopics: string[] = [];
     let derivedBecause: Record<string, string> = {};
     if (args.coupled === true) {
+      // P-009: wire the dead-signal census onto a path that ACTUALLY RUNS. The
+      // sink lived only on `coord:presence` (11 calls ever), which is why zero
+      // rows in `tool_invocations` had ever carried `metadata_json.derivedSignals`
+      // — the instrument built to answer "has this relation fired in production?"
+      // was attached to the one surface that never runs. `censusObserverFor`
+      // returns undefined when the ctx has no metadata channel, so this degrades
+      // to today's behaviour rather than throwing.
+      const observeCensus = censusObserverFor(ctx);
       const derived = await readCoupledTopics(
         typeof identity?.ownerId === 'string' ? identity.ownerId : '',
         { workspaceId: ctx?.workspaceId ?? null, harnessSlug: ctx?.harnessSlug ?? null },
-        { withFeed: false },
+        { withFeed: false, ...(observeCensus ? { observe: observeCensus } : {}) },
       );
       derivedTopics = derived.map((d) => d.topic);
       derivedBecause = Object.fromEntries(derived.map((d) => [d.topic, d.because]));

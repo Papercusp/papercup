@@ -150,3 +150,47 @@ export function censusDerivedSignals(
   }
   return { v: DERIVED_SIGNAL_CENSUS_VERSION, relations };
 }
+
+/**
+ * Build the `observe` sink for one tool invocation — the ONE place that knows how
+ * a census reaches `tool_invocations.metadata_json`.
+ *
+ * Returns `undefined` when the ctx carries no metadata channel, so every call
+ * site spreads it conditionally (`...(obs ? { observe: obs } : {})`) and a
+ * non-tool caller — a test, a script, an internal re-use — wires nothing rather
+ * than throwing.
+ *
+ * ⚠ EXISTS BECAUSE THE CAST IS THE DANGEROUS PART, NOT THE CALL. `ctx.metadata`
+ * is `overwrite-not-merge, last write wins` (dispatch-stack.ts:550-552): the
+ * accumulator is REPLACED by each call, never merged into. Two consequences that
+ * a per-call-site inline cast quietly re-invites every time it is copied:
+ *
+ *   1. A tool that emits a census AND calls `ctx.metadata()` anywhere else keeps
+ *      only whichever ran LAST. The census dies silently — no error, no row —
+ *      which is indistinguishable from the dead signal it was built to detect.
+ *      `coord:presence` is safe today only because it happens to have exactly one
+ *      metadata call; adding a second would have killed the census with nothing
+ *      failing. That is the same "born unobservable" condition D-088 records.
+ *   2. On a BULK path (`coord:send` sends N messages per invocation) the sink
+ *      fires once per message and the LAST census wins. That is acceptable and
+ *      deliberate — the sender's roster and legs are identical across a bulk's
+ *      messages, so the surviving record is representative rather than partial —
+ *      but it is a sample, so never read a census count as a message count.
+ *
+ * Centralised so that if the substrate ever gains merge semantics, or the census
+ * needs to compose with other metadata, exactly one function changes instead of
+ * every wiring site being re-audited.
+ */
+export function censusObserverFor(ctx: unknown): ((census: DerivedSignalCensus) => void) | undefined {
+  const emit = (ctx as { metadata?: (d: Record<string, unknown>) => void } | null | undefined)?.metadata;
+  if (typeof emit !== 'function') return undefined;
+  return (census: DerivedSignalCensus) => {
+    // Fail-soft, like every other leg of the derivation: an observer that can
+    // break what it observes is worse than no observer (coupling-derivation.ts).
+    try {
+      emit({ [DERIVED_SIGNAL_CENSUS_KEY]: census });
+    } catch {
+      /* the census is an instrument; it must never fail the tool it measures */
+    }
+  };
+}
