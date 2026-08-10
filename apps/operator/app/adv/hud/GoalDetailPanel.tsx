@@ -65,6 +65,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '@/app/harness/Modal';
 import { Tooltip } from '@/app/harness/Tooltip';
 import GoalWorkRail from './GoalWorkRail';
+import GoalStatusControl from './GoalStatusControl';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
@@ -265,6 +266,13 @@ export default function GoalDetailPanel({
                 <span className="pc-ctl-state__dot" aria-hidden="true" />
                 {goal.status}
               </span>
+            ) : null}
+            {/* P-016 — the status LEVER, beside the readout rather than on it. The pill
+                above stays a pure readout: it moves when the STORE moves, so a failed
+                write cannot leave it lying. Panel variant, so the terminal moves are
+                here (behind a confirm) and the card keeps only the reversible pair. */}
+            {goal ? (
+              <GoalStatusControl goalId={goal.id} status={goal.status} variant="panel" />
             ) : null}
             {goal ? (
               <span

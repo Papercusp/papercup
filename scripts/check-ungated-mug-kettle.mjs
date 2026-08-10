@@ -78,18 +78,35 @@ const SELF_FILE = fileURLToPath(import.meta.url);
  * read a `role` for authorization, and plenty spawn things with a fixed role.
  */
 
-/** The role is DATA, not a literal — the half the census cannot see. */
+/**
+ * The role arrives from EXTERNAL input — an HTTP request or a CLI argv — which is
+ * what makes a site a DOOR (externally reachable) rather than an internal helper.
+ * This is the half the census cannot see: there is no role literal to match.
+ *
+ * ⚠ SCOPE, stated because a detector's scope is a premise too: these patterns are
+ * deliberately anchored to request/argv shapes. An earlier, looser draft accepted any
+ * `role = <expr>.role` and matched a SORT COMPARATOR in `code-run-adoption.ts`
+ * (`a.role === b.role ? …`), and accepted a bare `spawn(`/`execFileSync(` as a launch,
+ * which flagged `pot/mug-warm-session.ts` — a pure, IO-free decider. Both were noise,
+ * and noise is not harmless here: it is what makes a baseline get rubber-stamped.
+ */
 const ROLE_FROM_INPUT = [
   /\bbody\.role\b/,
   /\bsearchParams\.get\(\s*['"`]role['"`]/,
   /\bparams\.role\b/,
   /\bquery\.role\b/,
-  /\brole\s*[:=]\s*(?:body|req|input|args|opts|params|url|payload|msg)\b/,
-  /\brole\s*=\s*[^;'"`\n]*\.(?:role|childRole|agentRole)\b/,
-  /--role=\$\{/,
+  /\bargv\.role\b/,
+  /\brole\s*[:=]\s*(?:body|req|request|input|args|params|url|payload)\./,
 ];
 
-/** …and it reaches something that actually starts a process / launches a blueprint. */
+/**
+ * …and it reaches a real launch BACKEND. Composing a command string is NOT a door:
+ * `agent-launch-core.ts` builds `--role=${opts.role}` psu commands for
+ * capability:terminal / capability:launch-agent / fleet:launch-on-plan, but running
+ * that command routes through `psu --role` → POST bootstrap-role, which IS gated
+ * (D-022). Gating the chokepoint is correct; demanding a gate in every upstream
+ * composer would be noise that trains readers to wave the guard through.
+ */
 const REACHES_LAUNCH = [
   /\bspawnAgentInHarness\b/,
   /\bfireLaunchBlueprint\b/,
@@ -97,9 +114,7 @@ const REACHES_LAUNCH = [
   /\blaunchAgent\b/,
   /\binvokeOnce\b/,
   /\bexecFile(?:Sync)?\s*\(/,
-  /\bspawn(?:Sync)?\s*\(/,
-  /\bpsu\b.*--role/,
-  /['"`]\/api\/harness\/[^'"`]*\/invoke['"`]/,
+  /['"`][^'"`]*\/(?:invoke|bootstrap-role)['"`]/,
 ];
 
 /** Gated = references the canonical PREDICATE (never a raw 'mug' string match). */
