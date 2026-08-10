@@ -570,7 +570,7 @@ const GC_TAG_SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
 // error in a lint module must not hard-fail everyone's test:affected. Asserted equal to the real
 // export by affected-tests-repo-wide-invariant-guards.test.ts.
 //
-// WHY THE RUNNER HAS TO KNOW THIS NUMBER AT ALL (WI-37820): the strand-guard family derives its
+// WHY THE RUNNER HAS TO KNOW THIS NUMBER AT ALL (WI-37826): the strand-guard family derives its
 // subject from `git diff <base>`, so it answers THREE things, not two — 0 "checked, found
 // nothing", 1 "checked, found something", 2 "I could not look". A gate that collapses those into
 // `status !== 0` reads "I could not look" as "violation". That is not hypothetical here: a gate

@@ -66,7 +66,7 @@ import {
 // WI-37605 — same reason as the import above: the router MIRRORS this list rather than importing
 // it, so importing the ORIGINAL here is what keeps the mirror honest.
 import { GC_TAG_SOURCE_ROOTS } from '../../../../scripts/check-green-checkpoint-tag.mjs';
-// WI-37820 — same mirror-honesty reason: the router hardcodes this number rather than importing
+// WI-37826 — same mirror-honesty reason: the router hardcodes this number rather than importing
 // it, so importing the ORIGINAL here is what stops the two from drifting apart.
 import { EXIT_NOT_CHECKED } from '../../../../scripts/lib/not-checked.mjs';
 
@@ -779,7 +779,7 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
   });
 
   /**
-   * WI-37820 — "I could not look" must never gate, and the registry is where that is declared.
+   * WI-37826 — "I could not look" must never gate, and the registry is where that is declared.
    *
    * The strand-guard family answers THREE things: 0 checked-and-clean, 1 checked-and-found,
    * 2 could-not-look (EXIT_NOT_CHECKED). The router gates on `status !== 0`, so registering

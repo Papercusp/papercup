@@ -148,3 +148,38 @@ describe('the script (exit status, end to end)', () => {
     expect(run(root).status).toBe(0);
   });
 });
+
+/**
+ * THE RATCHET'S ACTUAL OBLIGATION — this file is named as the
+ * `hostSuiteRatchet` for `lint:no-unhosted-remote-core` in
+ * REPO_WIDE_INVARIANT_GUARDS, which is what lets affected-tests SKIP the guard's
+ * own narrow task whenever operator-core's full suite runs (affected-tests.mjs
+ * line ~1282). Every path this guard's `appliesTo` matches lives in
+ * operator-core, so in practice that skip fires essentially always.
+ *
+ * The cases above exec the real script but only against SYNTHETIC trees — they
+ * prove the detector works and prove nothing about THIS repo. Without the case
+ * below, the ratchet claim would be false in exactly the way the registry's own
+ * comment warns about: the guard would be "enforced" by a suite that never
+ * looks at the tree it is supposed to be guarding.
+ */
+describe('the ratchet (the real tree, which is what the registry skip is trading against)', () => {
+  it('runs the guard against THIS repo and finds no unhosted remote-core opens', () => {
+    const res = (() => {
+      try {
+        return {
+          status: 0,
+          output: execFileSync(process.execPath, [join(REPO_ROOT, GUARD_REL)], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }),
+        };
+      } catch (e) {
+        const err = e as { status?: number; stdout?: string; stderr?: string };
+        return { status: err.status ?? -1, output: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+      }
+    })();
+    expect(res.output).not.toContain('REASON REQUIRED');
+    expect(res.status).toBe(0);
+  }, 60_000);
+});
