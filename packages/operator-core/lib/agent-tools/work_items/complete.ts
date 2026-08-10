@@ -334,7 +334,11 @@ export function unresolvedPathsInCompletion(
   const declared = evidence?.filesChanged;
   if (!declared?.length) return undefined;
 
-  const repoRoot = probe.repoRoot ?? detectPapercupRoot();
+  // `in` rather than `??`: an EXPLICIT `repoRoot: null` means "I could not resolve a root,
+  // do not guess", which is a different instruction from omitting the key. Collapsing the
+  // two would silently fall back to detection and judge paths against the wrong tree —
+  // the same absent-vs-explicitly-empty conflation this whole check exists to catch.
+  const repoRoot = 'repoRoot' in probe ? probe.repoRoot : detectPapercupRoot();
   if (!repoRoot) return undefined; // cannot judge → say nothing
 
   const exists = probe.exists ?? ((abs: string) => existsSync(abs));
