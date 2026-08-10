@@ -246,7 +246,18 @@ export interface HudGoalInput {
   projectCount?: number | null;
   /** FLEET spend: what the goal's child agents cost. Not the goal's own turns. */
   spendUsd?: number | null;
+  /**
+   * The same fleet spend, restricted to the recent window (P-003) — the RATE
+   * input where `spendUsd` is the LEVEL.
+   *
+   * Optional, and its ABSENCE is meaningful: a payload that carries no reading
+   * must render no rate at all, never `$0/day`. See goalBurn.
+   */
+  spendRecentUsd?: number | null;
+  /** How wide that window is. Read from the payload, never assumed to be 7. */
+  spendRecentWindowDays?: number | null;
   budgetCents?: number | null;
+  createdAt?: string | null;
   updatedAt?: string | null;
   /**
    * The parent goal, when this row is a SUBDIRECTIVE rather than a goal in its
@@ -649,6 +660,156 @@ export function goalSpendLabel(goal: HudGoalInput): string {
   return `$${spend} / $${Math.round(goal.budgetCents / 100)}`;
 }
 
+/**
+ * Why there is no projected ceiling date. Rendered as a REASON, never as a
+ * blank or a dash: the whole point of P-003 is that a missing rate is itself
+ * information, and an empty slot reads as "nothing to worry about".
+ */
+export type GoalBurnEtaAbsence =
+  | 'no-ceiling'
+  | 'no-recent-spend'
+  | 'already-over'
+  | 'beyond-horizon';
+
+/** The spend RATE behind the card's spend level. Pure. */
+export interface GoalBurn {
+  /** Dollars per day across `windowDays`. */
+  perDayUsd: number;
+  /** The denominator actually used — NOT necessarily the wire's window. */
+  windowDays: number;
+  /** True when the goal is younger than the wire window, so no caller may
+   *  print "last 7 days" against this rate. */
+  windowShort: boolean;
+  /** Epoch ms the ceiling lands at this rate, or null — then read `etaAbsent`. */
+  ceilingEtaMs: number | null;
+  etaAbsent: GoalBurnEtaAbsence | null;
+}
+
+/** Past a year out the projection is arithmetic, not information. */
+const BURN_HORIZON_DAYS = 365;
+
+/** A goal minutes old would otherwise divide by ~0 and report millions/day. */
+const MIN_BURN_WINDOW_DAYS = 1 / 24;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * The goal's recent burn, and when the ceiling lands if it keeps up.
+ *
+ * ⚠ RETURNS NULL WHEN NOTHING MEASURED THE WINDOW — and that is the whole
+ * contract. `spendRecentUsd` absent means "no reading", which is NOT the same
+ * as a reading of zero, and collapsing the two would put `$0/day` on a goal
+ * that might be burning fast. That is the identical unknown-is-not-absent
+ * failure P-002 fixed one item earlier on this same surface, and it fails in
+ * the same direction: toward reassurance. A measured zero is a real, useful
+ * answer and comes back as `perDayUsd: 0` with `etaAbsent: 'no-recent-spend'`.
+ *
+ * ⚠ THE DENOMINATOR IS DELIBERATELY ASYMMETRIC. It is the wire's window
+ * SHORTENED to the goal's own age, never lengthened. Shortening can only raise
+ * the rate, and a raised rate can only pull the projected ceiling date EARLIER.
+ * That is the safe direction for a warning: warning early costs the reader a
+ * glance, warning late costs them the ceiling. A goal two days old that has
+ * spent $100 is burning $50/day, and reporting $14/day because the window is
+ * nominally seven would understate it by 3.5x on the one surface whose job is
+ * advance notice.
+ */
+export function goalBurn(goal: HudGoalInput, nowMs: number): GoalBurn | null {
+  const recent = goal.spendRecentUsd;
+  const wireWindowDays = goal.spendRecentWindowDays;
+  if (recent == null || !Number.isFinite(recent)) return null;
+  if (wireWindowDays == null || !Number.isFinite(wireWindowDays) || wireWindowDays <= 0) {
+    return null;
+  }
+
+  const ageInSec = ageSec(goal.createdAt, nowMs);
+  const ageDays = ageInSec == null ? null : ageInSec / (24 * 60 * 60);
+  const windowDays = Math.max(
+    MIN_BURN_WINDOW_DAYS,
+    ageDays == null ? wireWindowDays : Math.min(wireWindowDays, ageDays),
+  );
+  const perDayUsd = Math.max(0, recent) / windowDays;
+  const base = { perDayUsd, windowDays, windowShort: windowDays < wireWindowDays };
+
+  const ceilingUsd = goal.budgetCents == null ? null : goal.budgetCents / 100;
+  if (ceilingUsd == null || ceilingUsd <= 0) {
+    return { ...base, ceilingEtaMs: null, etaAbsent: 'no-ceiling' };
+  }
+  const spend = goal.spendUsd ?? 0;
+  if (spend >= ceilingUsd) {
+    return { ...base, ceilingEtaMs: null, etaAbsent: 'already-over' };
+  }
+  if (perDayUsd <= 0) {
+    return { ...base, ceilingEtaMs: null, etaAbsent: 'no-recent-spend' };
+  }
+  const daysLeft = (ceilingUsd - spend) / perDayUsd;
+  if (daysLeft > BURN_HORIZON_DAYS) {
+    return { ...base, ceilingEtaMs: null, etaAbsent: 'beyond-horizon' };
+  }
+  return { ...base, ceilingEtaMs: nowMs + daysLeft * MS_PER_DAY, etaAbsent: null };
+}
+
+/**
+ * `$52/day`. Deliberately finer-grained than `moneyish`'s whole dollars: a rate
+ * is routinely under $10, where rounding to the dollar turns a real burn into
+ * `$0/day` — a false zero on the number this feature exists to surface.
+ */
+export function burnRateText(perDayUsd: number): string {
+  const digits = perDayUsd >= 10 ? 0 : perDayUsd >= 1 ? 1 : 2;
+  return `$${perDayUsd.toFixed(digits)}/day`;
+}
+
+/** The card chip: the rate alone. Null when nothing measured it. */
+export function goalBurnLabel(goal: HudGoalInput, nowMs: number): string | null {
+  const burn = goalBurn(goal, nowMs);
+  if (!burn) return null;
+  return burnRateText(burn.perDayUsd);
+}
+
+/** Close enough that the projected date is promoted onto the card itself. */
+const BURN_WARN_HORIZON_MS = 7 * MS_PER_DAY;
+
+/** `Aug 14`. Day precision only — the projection is a linear extrapolation from
+ *  one window, and an hour on it would claim a precision it does not have. */
+export function burnEtaText(etaMs: number): string {
+  return new Date(etaMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** How the window is described. Never says "7 days" when it measured less. */
+function burnWindowText(burn: GoalBurn): string {
+  if (!burn.windowShort) {
+    const d = Math.round(burn.windowDays);
+    return `the last ${d} day${d === 1 ? '' : 's'}`;
+  }
+  return burn.windowDays < 1
+    ? 'this goal’s first hours'
+    : `this goal’s ${Math.round(burn.windowDays)}-day life so far`;
+}
+
+/**
+ * The full sentence. Every no-date case names its REASON — an unexplained
+ * missing projection is exactly the blank this item set out to remove.
+ */
+export function burnTitle(burn: GoalBurn, goal: HudGoalInput): string {
+  const rate = `Fleet spend is running at ${burnRateText(burn.perDayUsd)} over ${burnWindowText(burn)}`;
+  switch (burn.etaAbsent) {
+    case 'no-ceiling':
+      return `${rate}. No ceiling is set, so there is nothing for it to run into.`;
+    case 'already-over':
+      return `${rate}. The ceiling has already been reached.`;
+    case 'no-recent-spend':
+      return `${rate} — nothing has been spent in that window, so no ceiling date can be projected.`;
+    case 'beyond-horizon':
+      return `${rate}. At that rate the ceiling is over a year out.`;
+    default:
+      break;
+  }
+  const ceiling = goal.budgetCents == null ? null : goal.budgetCents / 100;
+  return (
+    `${rate}. At that rate the ${ceiling == null ? 'ceiling' : `$${Math.round(ceiling)} ceiling`}` +
+    ` lands around ${burnEtaText(burn.ceilingEtaMs as number)}.`
+  );
+}
+
 /** A goal row rendered as one of its parent's subdirectives (D-006). */
 export function toSubGoal(goal: HudGoalInput): HudSubGoal {
   const status = (goal.status ?? '').toLowerCase();
@@ -704,6 +865,25 @@ export function toGoalCard(
       ? 'Fleet spend has reached this goal’s ceiling'
       : 'Fleet spend — what this goal’s CHILD agents cost. The goal agent’s own turns are subscription-billed.',
   });
+  // The RATE beside the level (P-003). Absent entirely when nothing measured
+  // the window — goalBurn returns null rather than a reassuring $0/day.
+  const burn = goalBurn(goal, nowMs);
+  if (burn && !overCeiling) {
+    // The projected date is promoted INTO the label only when it is close
+    // enough to act on. A date eleven months out is arithmetic; a date next
+    // Tuesday is the warning this item exists to give, and burying that in a
+    // tooltip on the glance surface would be the same miss in a new place.
+    const eta = burn.ceilingEtaMs;
+    const soon = eta != null && eta - nowMs <= BURN_WARN_HORIZON_MS;
+    badges.push({
+      id: `${goal.id}:burn`,
+      label: soon
+        ? `${burnRateText(burn.perDayUsd)} · ceiling ~${burnEtaText(eta as number)}`
+        : burnRateText(burn.perDayUsd),
+      tone: soon ? 'bad' : 'neutral',
+      title: burnTitle(burn, goal),
+    });
+  }
 
   return {
     id: goal.id,

@@ -33,6 +33,13 @@
  * form already has. Recorded as goal-mode-2026-08-07#D-022.
  */
 import { formatAge } from './hud-board-model';
+/* The burn derivation is IMPORTED, not mirrored. ceilingLine below already
+   admits to hand-mirroring goalSpendLabel "so the detail view and the card it
+   opened from cannot disagree" — a promise kept only by whoever edits both. The
+   rate is the number where disagreeing would be worst (it drives a date the
+   owner acts on), so it has exactly one implementation and both surfaces call
+   it. Direction is safe: hud-entity-board imports nothing from this module. */
+import { burnEtaText, burnTitle, goalBurn } from './hud-entity-board';
 
 /* ── The `goals.detail` wire shape, narrowed ──────────────────────────────
    Declared here rather than imported from `sync-resolver/goals.ts` for the
@@ -58,6 +65,10 @@ export interface GoalDetailGoalInput {
   tripwires?: GoalDetailTripwire[] | null;
   budgetCents?: number | null;
   spendUsd?: number | null;
+  /** The recent-window spend behind the burn rate (P-003). Absent ⇒ no reading;
+   *  see goalBurn, which refuses to render a zero it did not measure. */
+  spendRecentUsd?: number | null;
+  spendRecentWindowDays?: number | null;
   openWorkItems?: number | null;
   needsHuman?: number | null;
   projectCount?: number | null;
@@ -426,6 +437,42 @@ export function ceilingLine(goal: GoalDetailGoalInput | null): {
     pct: Math.max(0, Math.min(100, Math.round((spend / ceiling) * 100))),
     over: spend >= ceiling,
   };
+}
+
+/**
+ * The rate line under the ceiling (P-003): what the goal is burning, and when
+ * that runs into the ceiling.
+ *
+ * Separate from `ceilingLine` rather than folded into its `text`, because that
+ * text renders in TWO places — a compact status chip in the header and the
+ * ceiling block — and a full projected-date sentence does not belong in the
+ * chip. Null when nothing measured the window, so the panel renders no line at
+ * all rather than a zero rate it cannot support.
+ */
+export function burnLine(
+  goal: GoalDetailGoalInput | null,
+  nowMs: number,
+): { text: string; detail: string; urgent: boolean } | null {
+  if (!goal) return null;
+  const burn = goalBurn(goal, nowMs);
+  if (!burn) return null;
+  const eta = burn.ceilingEtaMs;
+  const urgent = eta != null && eta - nowMs <= 7 * 24 * 60 * 60 * 1000;
+  return {
+    text:
+      eta == null
+        ? burnRateShort(burn.perDayUsd)
+        : `${burnRateShort(burn.perDayUsd)} · ceiling ~${burnEtaText(eta)}`,
+    detail: burnTitle(burn, goal),
+    urgent,
+  };
+}
+
+/** Mirrors burnRateText's precision rule — see the note there on why a rate
+ *  cannot use `moneyish`'s whole dollars. */
+function burnRateShort(perDayUsd: number): string {
+  const digits = perDayUsd >= 10 ? 0 : perDayUsd >= 1 ? 1 : 2;
+  return `$${perDayUsd.toFixed(digits)}/day`;
 }
 
 /* ── The work rail (P-019) ─────────────────────────────────────────────────

@@ -85,6 +85,7 @@ import '@/app/_components/chat/chat-controls.css';
 import './hud.css';
 import {
   agoText,
+  burnLine,
   ceilingLine,
   killCriterionLine,
   partitionProjects,
@@ -190,6 +191,7 @@ export default function GoalDetailPanel({
   const bars = useMemo(() => tripwireBars(goal), [goal]);
   const criterion = useMemo(() => killCriterionLine(goal), [goal]);
   const ceiling = useMemo(() => ceilingLine(goal), [goal]);
+  const burn = useMemo(() => burnLine(goal, nowMs), [goal, nowMs]);
   const projects = useMemo(() => partitionProjects(data?.projects), [data?.projects]);
   const stack = useMemo(() => spendStack(data?.spendByDay), [data?.spendByDay]);
 
@@ -404,6 +406,18 @@ export default function GoalDetailPanel({
                 >
                   {ceiling.text}
                 </span>
+                {/* The RATE beside the LEVEL (P-003). Absent entirely when the
+                    window was never measured — never a $0/day we cannot back. */}
+                {burn ? (
+                  <Tooltip content={burn.detail}>
+                    <span
+                      className={`hud-goal__ceiling-burn${burn.urgent ? ' hud-goal__ceiling-burn--urgent' : ''}`}
+                      data-burn-urgent={burn.urgent ? 'true' : 'false'}
+                    >
+                      {burn.text}
+                    </span>
+                  </Tooltip>
+                ) : null}
               </div>
             </section>
 

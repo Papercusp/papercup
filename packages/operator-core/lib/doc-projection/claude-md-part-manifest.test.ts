@@ -3,13 +3,10 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// @ts-expect-error — .mjs generator, no type declarations by design (it is a scripts/ tool)
-import {
-  bootstrapExtent,
-  buildManifest,
-  extractParts,
-  rangeBoundaryProblems,
-} from '../../../../scripts/gen-claude-md-manifest.mjs';
+// @ts-expect-error — .mjs generator, no type declarations by design (it is a scripts/ tool).
+// Keep this import on ONE line: the directive suppresses the error TS reports on the module
+// specifier, so wrapping the clause moves that line and the directive reads as unused (TS2578).
+import { bootstrapExtent, buildManifest, extractParts, rangeBoundaryProblems } from '../../../../scripts/gen-claude-md-manifest.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '../../../..');

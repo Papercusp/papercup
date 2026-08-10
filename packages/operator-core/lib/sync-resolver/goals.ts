@@ -63,7 +63,45 @@ export interface GoalSummaryRow {
   /** Items parked on the owner. The rail's "waiting on you" count. */
   needsHuman: number;
   spendUsd: number;
+  /**
+   * Fleet spend inside the recent window — the RATE input, where `spendUsd` is
+   * the LEVEL (goals-tab-improvement-2026-08-09 P-003).
+   *
+   * `spendUsd` alone cannot distinguish a goal that spent its ceiling over six
+   * weeks from one that spent it since Tuesday, and the ceiling is exactly the
+   * thing the owner needs advance warning of.
+   *
+   * Attributed exactly as `spendUsd` is — every sample for the goal's
+   * non-removed projects — so the two are the same measurement over different
+   * spans and a caller may divide one by the window to get a rate. It follows
+   * that this inherits D-021: it is per-goal and DOES NOT SUM across goals,
+   * because a shared project's spend counts in full against each goal it serves.
+   */
+  spendRecentUsd: number;
+  /**
+   * How wide that window is, in days.
+   *
+   * On the WIRE rather than a constant the UI imports, because the HUD
+   * deliberately narrows this row into its own `HudGoalInput` instead of
+   * importing it (see that type's docblock). A UI that hardcoded `7` would
+   * silently keep saying "last 7 days" if this window were ever retuned;
+   * reading the window from the same payload as the figure makes that
+   * particular drift impossible rather than merely unlikely.
+   */
+  spendRecentWindowDays: number;
 }
+
+/**
+ * The rolling window behind `spendRecentUsd`.
+ *
+ * Rolling (`ts >= now - N days`), NOT calendar days. `spendByDay` further down
+ * buckets by UTC calendar day for the chart, and the two windows genuinely
+ * differ — deriving the burn from those buckets instead would guarantee the
+ * card and the detail panel disagreed about the same goal.
+ */
+export const SPEND_RECENT_WINDOW_DAYS = 7;
+
+const SPEND_RECENT_WINDOW_MS = SPEND_RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 /** Rows are ordered so the goals that can still change sit at the top. */
 const STATUS_RANK = `CASE g.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END`;
@@ -96,6 +134,7 @@ interface RawGoal {
   open_work_items: string | null;
   needs_human: string | null;
   spend_usd: string | null;
+  spend_recent_usd: string | null;
 }
 
 function iso(v: string | Date | null): string | null {
@@ -127,6 +166,8 @@ function toSummary(r: RawGoal): GoalSummaryRow {
     openWorkItems: num(r.open_work_items),
     needsHuman: num(r.needs_human),
     spendUsd: num(r.spend_usd),
+    spendRecentUsd: num(r.spend_recent_usd),
+    spendRecentWindowDays: SPEND_RECENT_WINDOW_DAYS,
   };
 }
 
@@ -145,6 +186,9 @@ export async function resolveGoalsList(args: {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const { workspaceId, status = null, limit = 100 } = args;
+  // Cut ONCE for the whole page, so two rows in the same render can never be
+  // measured over windows that differ by the query's own duration.
+  const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
   const rows = await sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
     return (await tx`
@@ -164,7 +208,19 @@ export async function resolveGoalsList(args: {
                  AND s.harness_slug IN (
                    SELECT gp.harness_slug FROM harness_shared.goal_projects gp
                     WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
-                      AND gp.removed_at IS NULL)) AS spend_usd
+                      AND gp.removed_at IS NULL)) AS spend_usd,
+             -- The same sum over the recent window. s.ts is epoch MILLIS
+             -- (bigint), not a timestamp, so this compares against a ms integer
+             -- rather than a now() - interval expression. Covered by
+             -- agent_usage_samples_harness_idx (workspace_id, harness_slug, ts DESC).
+             (SELECT COALESCE(SUM(s.cost_usd), 0)
+                FROM harness_shared.agent_usage_samples s
+               WHERE s.workspace_id = g.workspace_id
+                 AND s.ts >= ${recentSinceMs}
+                 AND s.harness_slug IN (
+                   SELECT gp.harness_slug FROM harness_shared.goal_projects gp
+                    WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
+                      AND gp.removed_at IS NULL)) AS spend_recent_usd
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId}
          AND (${status}::text IS NULL OR g.status = ${status}::text)
@@ -255,6 +311,8 @@ export async function resolveGoalDetail(args: {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const { workspaceId, goalId, activityLimit = 40 } = args;
+  // Same cut as resolveGoalsList — see the note there.
+  const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
 
   return sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
@@ -262,7 +320,8 @@ export async function resolveGoalDetail(args: {
     const [goalRow] = (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.metadata, g.created_at, g.updated_at,
-             0 AS project_count, 0 AS open_work_items, 0 AS needs_human, 0 AS spend_usd
+             0 AS project_count, 0 AS open_work_items, 0 AS needs_human,
+             0 AS spend_usd, 0 AS spend_recent_usd
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId} AND g.id = ${goalId}
        LIMIT 1
@@ -281,6 +340,16 @@ export async function resolveGoalDetail(args: {
                 FROM harness_shared.agent_usage_samples s
                WHERE s.workspace_id = gp.workspace_id
                  AND s.harness_slug = gp.harness_slug) AS spend_usd,
+             -- The recent-window half, per project, so the popup's burn rate is
+             -- the SAME measurement the card's is (P-003). Deliberately the
+             -- rolling ts predicate the list uses, NOT the calendar-day buckets
+             -- spend_by_day builds below: those are different windows, and
+             -- deriving the rate from them would make the two surfaces disagree.
+             (SELECT COALESCE(SUM(s.cost_usd), 0)
+                FROM harness_shared.agent_usage_samples s
+               WHERE s.workspace_id = gp.workspace_id
+                 AND s.ts >= ${recentSinceMs}
+                 AND s.harness_slug = gp.harness_slug) AS spend_recent_usd,
              (SELECT COUNT(*) FROM harness_shared.work_items wi
                WHERE wi.harness_slug = gp.harness_slug
                  AND wi.goal_id = gp.goal_id
@@ -390,6 +459,14 @@ export async function resolveGoalDetail(args: {
     goal.spendUsd = projects
       .filter((p) => !p.removedAt)
       .reduce((acc, p) => acc + p.spendUsd, 0);
+    // Summed over the SAME project set as spendUsd immediately above, so the
+    // level and the rate always describe one population. Read off the raw rows
+    // rather than the mapped ones: this is an input to the burn, not a field of
+    // the project card, and widening the card's type for it would put an
+    // unrendered number on a public shape.
+    goal.spendRecentUsd = projectRows
+      .filter((p) => p.removed_at == null)
+      .reduce((acc, p) => acc + num(p.spend_recent_usd), 0);
     goal.openWorkItems = projects.reduce((acc, p) => acc + p.openWorkItems, 0);
 
     /* SUBDIRECTIVES + the parent, for the popup's hierarchy section

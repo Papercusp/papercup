@@ -155,7 +155,10 @@ const CLASSIFIED = {
   '213721f3ce9a76cf': 'INS', // "⚠ The ` candidate=` anchor is prophylactic here…"
   '4d615c553e999816': 'INS', // ```bash grep -o 'AFFECTED_TESTS_FAILING_FILES run=.*'
   '4b7c788b2032a7fe': 'INS', // ```bash grep -o 'GATE_HELD_BY count=.*'
-  '5db12b56770442ca': 'INS', // "⚠⚠ Keep the ` count=` in that grep…"
+  '5db12b56770442ca': 'INS', // "⚠⚠ Keep the ` count=` in that grep…" (superseded by e337b6dd below)
+  e337b6ddc39d8670: 'INS', // same warning, reworded by its author minutes later — a live example
+  //                          of why these are keyed by content: the reword did NOT inherit the
+  //                          old verdict, it came back UNCLASSIFIED for a fresh look.
 };
 
 const sha16 = (s) => createHash('sha256').update(s).digest('hex').slice(0, 16);

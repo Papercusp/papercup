@@ -129,6 +129,19 @@ function submodulePaths(cwd) {
  *   'comment' — the line is prose about the change (the evidence-bearing shape)
  *   'literal' — the id sits inside quotes, i.e. it is DATA (fixture rows, id arrays)
  *   'code'    — anything else
+ *
+ * ⚠ The return type is DECLARED, not inferred, and that is load-bearing for
+ * `gen:declarations:check`. `generate()` unlinks the existing declarations before running tsc
+ * while `check()` emits into a temp dir without unlinking, so the two runs hand tsc different
+ * compilation inputs. tsc orders union members by internal type id, so an INFERRED literal union
+ * can come out permuted between the two — emitting `"comment" | "code" | "literal"` one way and
+ * `"code" | "comment" | "literal"` the other. The check byte-compares, so that permutation reads
+ * as a stale declaration that regenerating cannot fix (observed live 2026-08-10). Declaring the
+ * union pins the order. Keep the annotation on any exported function here returning 3+ literals.
+ *
+ * @param {string} content
+ * @param {string} id
+ * @returns {'comment' | 'literal' | 'code'}
  */
 export function classifyCitation(content, id) {
   if (COMMENT_LINE_RE.test(content)) return 'comment';
@@ -187,6 +200,9 @@ function scanCitations() {
  * `everLiteral` DOMINATES: once an id is used as data anywhere, its other citations cannot be
  * distinguished from fixture scaffolding, so it drops to 'weak' no matter how it reads elsewhere.
  * This is the filter that removed the measured EI-100 false positive.
+ *
+ * @param {{ contexts: Set<string>, inTest: boolean, everLiteral: boolean }} rec
+ * @returns {'guard' | 'source-comment' | 'weak'}
  */
 export function tierFor(rec) {
   if (rec.everLiteral) return 'weak';

@@ -7,16 +7,36 @@
  *   'comment' — the line is prose about the change (the evidence-bearing shape)
  *   'literal' — the id sits inside quotes, i.e. it is DATA (fixture rows, id arrays)
  *   'code'    — anything else
+ *
+ * ⚠ The return type is DECLARED, not inferred, and that is load-bearing for
+ * `gen:declarations:check`. `generate()` unlinks the existing declarations before running tsc
+ * while `check()` emits into a temp dir without unlinking, so the two runs hand tsc different
+ * compilation inputs. tsc orders union members by internal type id, so an INFERRED literal union
+ * can come out permuted between the two — emitting `"comment" | "code" | "literal"` one way and
+ * `"code" | "comment" | "literal"` the other. The check byte-compares, so that permutation reads
+ * as a stale declaration that regenerating cannot fix (observed live 2026-08-10). Declaring the
+ * union pins the order. Keep the annotation on any exported function here returning 3+ literals.
+ *
+ * @param {string} content
+ * @param {string} id
+ * @returns {'comment' | 'literal' | 'code'}
  */
-export function classifyCitation(content: any, id: any): "comment" | "code" | "literal";
+export function classifyCitation(content: string, id: string): "comment" | "literal" | "code";
 /**
  * Tier an id by the strength of its citation evidence.
  *
  * `everLiteral` DOMINATES: once an id is used as data anywhere, its other citations cannot be
  * distinguished from fixture scaffolding, so it drops to 'weak' no matter how it reads elsewhere.
  * This is the filter that removed the measured EI-100 false positive.
+ *
+ * @param {{ contexts: Set<string>, inTest: boolean, everLiteral: boolean }} rec
+ * @returns {'guard' | 'source-comment' | 'weak'}
  */
-export function tierFor(rec: any): "guard" | "source-comment" | "weak";
+export function tierFor(rec: {
+    contexts: Set<string>;
+    inTest: boolean;
+    everLiteral: boolean;
+}): "guard" | "source-comment" | "weak";
 /**
  * A citation can name an item as STILL OUTSTANDING rather than as fixed — a third false-positive
  * mode, distinct from fixture data and invisible to the tiering (the line is a genuine comment in
