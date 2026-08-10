@@ -331,7 +331,6 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     'check-constant-conditional.mjs',
     'check-env-feature-gates.mjs',
     'check-explicit-presence.mjs',
-    'check-full-replacement-mocks.mjs',
     'check-generic-first.mjs',
     'check-github-identity-terms.mjs',
     'check-migration-fixture-drift.mjs',

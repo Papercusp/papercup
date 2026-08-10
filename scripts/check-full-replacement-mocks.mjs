@@ -35,6 +35,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -116,26 +117,50 @@ const SPEC_HEAD = /^\s*(['"])([^'"]+)\1/;
  *   'automock'       — no factory: vitest synthesises the WHOLE surface, cannot strand
  *   'import-actual'  — factory receives importOriginal, or calls vi.importActual: immune
  *   'full-replacement' — bare `() => ({...})`: strands on any new export the subject imports
+ *
+ * MATCH ON MASKED, READ ON RAW — the one shape neither stripper alone can express.
+ * This analyzer needs BOTH halves at once: the CALL is code (a `vi.mock(` quoted inside a
+ * template-literal fixture or a doc comment is data, and matching it mints a phantom
+ * offender), but the SPECIFIER it must extract IS a string literal — so
+ * `stripCommentsAndStrings` wholesale would delete the very thing SPEC_HEAD reads and turn
+ * every real call into a silent pass. Measured 2026-08-10: 17 `vi.mock(` tokens on the live
+ * corpus sit inside a string or comment, ~15 of which this analyzer reported as real calls;
+ * none is a violation only because PROTECTED_MODULES currently holds one module, so the red
+ * gate was latent, not absent. The header of THIS file is itself such a site, which is the
+ * structural reason guards mint phantoms from their own prose.
+ *
+ * The mask is LENGTH-PRESERVING (contents blanked, delimiters kept), so an offset in `scan`
+ * means exactly what it means in `text`: find positions on `scan`, read values from `text`.
+ * Structure detection is strictly BETTER on the masked text — a paren or comma inside a
+ * string or a regex body can no longer confuse matchParen/firstTopLevelComma — and the
+ * import-actual escape is read from `scan` too, so a factory that merely NAMES
+ * `importActual` in a string no longer buys immunity it has not earned.
+ *
+ * @param {string} text      raw source
+ * @param {string} [fileName] real path — picks the ScriptKind for the parse (.ts vs .tsx)
  */
-export function analyzeMockCalls(text) {
+export function analyzeMockCalls(text, fileName) {
   const out = [];
+  const scan = stripCommentsAndStrings(text, fileName);
   MOCK_CALL.lastIndex = 0;
   let m;
-  while ((m = MOCK_CALL.exec(text))) {
+  while ((m = MOCK_CALL.exec(scan))) {
     const open = m.index + m[0].length - 1;
-    const close = matchParen(text, open);
+    const close = matchParen(scan, open);
     if (close === -1) continue;
+    // The ONE read that must come from the raw text: the specifier lives inside the quotes
+    // the mask just emptied. Same offsets, because the mask preserves length.
     const specMatch = SPEC_HEAD.exec(text.slice(open + 1, close));
     if (!specMatch) continue;
     const spec = specMatch[2];
-    const comma = firstTopLevelComma(text, open, close);
+    const comma = firstTopLevelComma(scan, open, close);
     const line = text.slice(0, m.index).split('\n').length;
     if (comma === -1) {
       out.push({ spec, form: 'automock', line });
       MOCK_CALL.lastIndex = close;
       continue;
     }
-    const factory = text.slice(comma + 1, close);
+    const factory = scan.slice(comma + 1, close);
     // A factory that takes a parameter receives vitest's importOriginal; one that calls
     // vi.importActual/importOriginal itself is equally immune. Everything else enumerates.
     const takesParam = /^\s*(?:async\s*)?\(\s*[A-Za-z_$]/.test(factory);
@@ -160,7 +185,7 @@ export function resolveSpec(filePath, spec) {
 /** Pure check of ONE file against the protected set. Returns violations. */
 export function checkFile({ path, text, protectedModules }) {
   const violations = [];
-  for (const call of analyzeMockCalls(text)) {
+  for (const call of analyzeMockCalls(text, path)) {
     if (call.form !== 'full-replacement') continue;
     const resolved = resolveSpec(path, call.spec);
     if (!resolved) continue;
@@ -244,6 +269,46 @@ export const SELF_TESTS = [
     text: `vi.mock('./adv-sessions', () => ({ a: vi.fn() }));`,
     expect: 0,
   },
+  // The phantom half. A guard's own test necessarily QUOTES the offending shape it asserts
+  // on, so these are the sites most likely to contain it — which is why the fixtures below
+  // are the ones that used to force a self-exclusion instead of a fix.
+  {
+    name: 'silent when the whole call sits inside a template-literal fixture (phantom)',
+    path: FIXTURE_PATH,
+    text: [
+      'const badShape = `',
+      `vi.mock('../../adv-sessions', () => ({ recordedLiveOwnerIds: vi.fn() }));`,
+      '`;',
+    ].join('\n'),
+    expect: 0,
+  },
+  {
+    name: 'silent when the call is quoted in a line comment (phantom)',
+    path: FIXTURE_PATH,
+    text: `// never write vi.mock('../../adv-sessions', () => ({ a: vi.fn() })) — spread instead`,
+    expect: 0,
+  },
+  {
+    name: 'silent when the call is quoted in a block comment (phantom)',
+    path: FIXTURE_PATH,
+    text: `/**\n * BAD: vi.mock('../../adv-sessions', () => ({ a: vi.fn() }));\n */`,
+    expect: 0,
+  },
+  {
+    name: 'a factory that merely NAMES importActual in a string does not earn immunity',
+    path: FIXTURE_PATH,
+    text: `vi.mock('../../adv-sessions', () => ({ note: 'use importActual instead', a: vi.fn() }));`,
+    expect: 1,
+  },
+  {
+    name: 'FIRES on a real call sitting AFTER a comment that quotes the same shape',
+    path: FIXTURE_PATH,
+    text: [
+      `// vi.mock('../../adv-sessions', () => ({ decoy: vi.fn() }));`,
+      `vi.mock('../../adv-sessions', () => ({ real: vi.fn() }));`,
+    ].join('\n'),
+    expect: 1,
+  },
 ];
 
 function runSelfTest() {
@@ -302,17 +367,20 @@ function main() {
   });
 
   if (argv.includes('--list')) {
+    // One parse per candidate, not one per (module × candidate): the analyzer now runs a
+    // real TS parse, so the old nested loop would re-parse the whole corpus per module.
+    const census = new Map(PROTECTED_MODULES.map((p) => [p.module, { full: 0, safe: 0 }]));
+    for (const c of candidates) {
+      for (const call of analyzeMockCalls(c.text, c.path)) {
+        const row = census.get(resolveSpec(c.path, call.spec));
+        if (!row) continue;
+        if (call.form === 'full-replacement') row.full += 1;
+        else row.safe += 1;
+      }
+    }
     console.log(`protected modules (${PROTECTED_MODULES.length}):\n`);
     for (const p of PROTECTED_MODULES) {
-      let full = 0;
-      let safe = 0;
-      for (const c of candidates) {
-        for (const call of analyzeMockCalls(c.text)) {
-          if (resolveSpec(c.path, call.spec) !== p.module) continue;
-          if (call.form === 'full-replacement') full += 1;
-          else safe += 1;
-        }
-      }
+      const { full, safe } = census.get(p.module);
       console.log(`  ${p.module}\n      mockers: ${safe} safe, ${full} full-replacement\n      ${p.why}\n`);
     }
     process.exit(0);

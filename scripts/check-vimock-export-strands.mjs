@@ -182,7 +182,7 @@ export function findEnumeratingMockers({ modulePath, testFiles = [], read }) {
     // Cheap substring pre-filter before parsing, mirroring collectCandidateFiles in the
     // sibling guard: a test that never mentions the basename cannot mock it relatively.
     if (needle && !text.includes(needle)) continue;
-    for (const call of analyzeMockCalls(text)) {
+    for (const call of analyzeMockCalls(text, path)) {
       if (call.form !== 'full-replacement') continue;
       if (resolveSpec(path, call.spec) !== modulePath) continue;
       hits.push({ path, line: call.line, spec: call.spec });
