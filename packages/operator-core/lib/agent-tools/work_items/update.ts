@@ -22,6 +22,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
+import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 
 /**
  * EI-18707466248332421: the family-AGNOSTIC subset of this tool's fields — the ones that are
@@ -318,7 +319,32 @@ export default defineTool({
               }
             }
           }
-          return { ok: true as const, id: it.id, item, ...(claimabilityWarning ? { claimabilityWarning } : {}) };
+          // EI-19455334047866968 / EI-20097514755548526: a work-item id written into this
+          // edit is never checked for existence, so a PHANTOM ref reads identically to a
+          // real one. `update` REWRITES the durable record — the same high-trust surface
+          // class as `comment`/`complete`, and the version a later reader sees is this one,
+          // not whatever it replaced.
+          //
+          // Uses the helper's DEFAULT (dynamic-import) probe rather than importing
+          // getWorkItem statically: several suites here vi.mock '../../work-items' wholesale,
+          // and a new static import from it is a known way to break them (EI-19395547021329946).
+          // Advisory + fail-open + best-effort — the edit has already been written.
+          let unresolvedRefsWarningText: string | undefined;
+          try {
+            const unresolved = await unresolvedRefsInBody([it.title, it.body].filter(Boolean).join('\n'), {
+              known: [it.id],
+            });
+            if (unresolved) unresolvedRefsWarningText = unresolvedRefsWarning(it.id, unresolved.missing);
+          } catch {
+            /* the edit already landed — never fail it over an advisory */
+          }
+          return {
+            ok: true as const,
+            id: it.id,
+            item,
+            ...(claimabilityWarning ? { claimabilityWarning } : {}),
+            ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
+          };
         }
         if (res.reason === 'body_shrink_guard') {
           return {
