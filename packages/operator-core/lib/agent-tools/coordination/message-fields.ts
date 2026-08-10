@@ -406,17 +406,113 @@ export interface CouldNotDetermineEntry {
   note?: string;
 }
 
-const youMayNotKnowArg = z
-  .array(
-    z.object({
-      ref: z.string().min(1),
-      provenance: z.enum(['computed', 'authored']),
-    }),
-  )
-  .max(20)
+/**
+ * ─── WHY A WRONG SHAPE IS REFUSED WITH PROSE, AND NOT ACCEPTED AS SUGAR ──────
+ *
+ * The obvious "fix" for these two fields — admit a bare string and normalise it
+ * to `{ ref, provenance: 'authored' }` / `{ what }` — is the ONE change that must
+ * not happen here, and it is the change every agent who trips over the shape
+ * proposes (six open filings as of 2026-08-10, three of them MAJOR).
+ *
+ * It is the same mechanism the owner banned for `body` (2026-07-28, interactive:
+ * *"WE SHOULD NOT ALLOW JUST A STRING I WANT TO ENFORCE THE STRUCTURE THAT IS THE
+ * WHOLE POINT OF IT"*), and the measurement behind that ban transfers verbatim:
+ * while a free-text alternative sat beside the structured form, the structured
+ * form was used ONCE in 5,642 messages. Sugar here would drive `provenance` to
+ * ~100% 'authored' — the value that can never be refuted — collapsing the
+ * computed/authored split that the owner has personally reinstated TWICE (D-040,
+ * D-070) after agents withdrew it. The field would keep its name and lose its
+ * meaning, which is worse than the papercut it cures.
+ *
+ * So the SHAPE stays strict and only the REFUSAL improves: name the member shape
+ * in the FIRST error the way BODY_MUST_BE_ARRAY_MESSAGE does, instead of making
+ * the caller discover it one zod layer per round-trip. Measured cost of the old
+ * behaviour, live 2026-08-10: three consecutive rejections on one message —
+ * `{...}` → "expected array, received object"; `["..."]` → "expected object,
+ * received string"; `[{ text }]` → ".0.ref: expected string, received undefined".
+ * Each was correct and each disclosed exactly one layer, so there was no way to
+ * converge in fewer than three calls. The escape everyone then takes — fold the
+ * content into `text` as prose — silently defeats the field, which is why the
+ * error, not the schema, is the thing to fix.
+ */
+const SHAPE_REFUSAL_TAIL =
+  ' This field is a CITATION, not prose: if what you want to say is a sentence, it belongs in ' +
+  "the section's `text`. It is deliberately NOT sugar-coated to accept a bare string — a " +
+  'free-text alternative beside a structured field is how the structure dies (the owner banned ' +
+  'exactly that for `body`; see the note above this message in message-fields.ts).';
+
+export const YOU_MAY_NOT_KNOW_SHAPE_MESSAGE =
+  '`youMayNotKnow` must be an ARRAY of `{ ref, provenance }` OBJECTS — not a string, and not an ' +
+  'array of strings. Write: youMayNotKnow: [{ ref: "WI-1234", provenance: "authored" }]. `ref` is ' +
+  'WHAT you are pointing them at (a work-item id, `fact:owner:<id>:<key>@v<N>`, a doc path, a ' +
+  '`msg:<id>`); `provenance` is exactly one of "computed" (the ref came out of the ' +
+  'evidence-minus-their-watermark diff) or "authored" (it is YOUR model of what they lack). Label ' +
+  'a GUESS "authored" — "computed" claims a mechanism produced it and is refutable against the ' +
+  'recipient\'s read watermark.' +
+  SHAPE_REFUSAL_TAIL;
+
+export const COULD_NOT_DETERMINE_SHAPE_MESSAGE =
+  '`couldNotDetermine` must be an ARRAY of `{ what, note? }` OBJECTS — not a string, and not an ' +
+  'array of strings. Write: couldNotDetermine: [{ what: "<the thing you tried to establish and ' +
+  'could not>" }], with an optional `note` for detail. It is AUTHORED ONLY: no system can derive ' +
+  'that you tried and failed, so if you do not write it the receiver cannot tell "unknown" from ' +
+  '"not asked".' +
+  SHAPE_REFUSAL_TAIL;
+
+/** Rendered when the array is well-shaped but too long — `maxItems: 20` in a raw schema dump has
+ *  been misread as a 20-CHARACTER limit, so the count is spelled out in words. */
+const tooManyEntriesMessage = (field: string, max: number, got: number) =>
+  `\`${field}\` accepts at most ${max} ENTRIES (you sent ${got}). That is a limit on the NUMBER ` +
+  `of entries in the array, not on the length of any string inside them.`;
+
+/**
+ * Refuse a wrong shape with a message that TEACHES the right one, while keeping the
+ * strict member schema as the first union branch so the published JSON schema still
+ * shows callers the real shape. Same trick as `messageBodyArg`: the bad branches exist
+ * only to be caught. Order matters — the strict branch is tried first, so a valid value
+ * never reaches the permissive catch-alls.
+ */
+function shapeTaughtArray<E>(field: string, entry: z.ZodType<E>, message: string, max = 20) {
+  return z
+    .union([z.array(entry).max(max), z.string(), z.array(z.unknown())])
+    .superRefine((value, ctx) => {
+      if (typeof value === 'string' || !Array.isArray(value)) {
+        ctx.addIssue({ code: 'custom', message });
+        return;
+      }
+      // The strict branch already enforces `max`; this only fires for a LONG array that
+      // fell through to the catch-all, which would otherwise be silently accepted.
+      if (value.length > max) {
+        ctx.addIssue({ code: 'custom', message: tooManyEntriesMessage(field, max, value.length) });
+        return;
+      }
+      if (value.every((member) => entry.safeParse(member).success)) return;
+      ctx.addIssue({ code: 'custom', message });
+    })
+    // Only reached when every member conformed, so the cast restores the precise output
+    // type the catch-all branches widen.
+    .transform((value) => value as E[]);
+}
+
+const youMayNotKnowEntrySchema = z.object({
+  ref: z.string().min(1),
+  provenance: z.enum(['computed', 'authored']),
+});
+
+const couldNotDetermineEntrySchema = z.object({
+  what: z.string().min(1),
+  note: z.string().min(1).optional(),
+});
+
+const youMayNotKnowArg = shapeTaughtArray(
+  'youMayNotKnow',
+  youMayNotKnowEntrySchema,
+  YOU_MAY_NOT_KNOW_SHAPE_MESSAGE,
+)
   .optional()
   .describe(
-    'PER-SECTION. Information I have that you may lack, as { ref, provenance }. ' +
+    'PER-SECTION. Information I have that you may lack, as an ARRAY of { ref, provenance } ' +
+      "OBJECTS — e.g. [{ ref: \"WI-1234\", provenance: \"authored\" }]. A bare string is REFUSED. " +
       "'computed' entries are the evidence-minus-your-watermark diff; 'authored' entries are my " +
       'model of you and are valuable precisely because they can be WRONG. Label a GUESS `authored`, ' +
       'never `computed` — `computed` claims the diff produced it and is refutable against the ' +
@@ -425,18 +521,17 @@ const youMayNotKnowArg = z
       '`couldNotDetermine` (D-024) — this one is a gap in YOUR knowledge, that one is a failed attempt of MINE.',
   );
 
-const couldNotDetermineArg = z
-  .array(
-    z.object({
-      what: z.string().min(1),
-      note: z.string().min(1).optional(),
-    }),
-  )
-  .max(20)
+const couldNotDetermineArg = shapeTaughtArray(
+  'couldNotDetermine',
+  couldNotDetermineEntrySchema,
+  COULD_NOT_DETERMINE_SHAPE_MESSAGE,
+)
   .optional()
   .describe(
     'PER-SECTION, AUTHORED ONLY. What I TRIED to establish and FAILED to — so you read the ' +
-      'question as OPEN rather than answered. No system can derive this; if you do not write it, ' +
+      'question as OPEN rather than answered, as an ARRAY of { what, note? } OBJECTS — e.g. ' +
+      '[{ what: "whether the next candidate carries the fix" }]. A bare string is REFUSED. ' +
+      'No system can derive this; if you do not write it, ' +
       'the receiver cannot distinguish "unknown" from "not asked".',
   );
 
