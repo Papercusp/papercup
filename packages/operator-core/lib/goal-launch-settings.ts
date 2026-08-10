@@ -220,10 +220,7 @@ export async function goalHeadcount(args: {
     const rows = await pg(args.sql)`
       SELECT
         count(*)::int AS total,
-        count(*) FILTER (
-          WHERE ${args.fleetSlug ?? null}::text IS NOT NULL
-            AND p.fleet_slug = ${args.fleetSlug ?? null}
-        )::int AS fleet
+        count(*) FILTER (WHERE p.fleet_slug = ${args.fleetSlug || ''})::int AS fleet
       FROM harness_shared.session_briefs b
       LEFT JOIN harness_shared.coord_presence p ON p.owner_id = b.owner_id
       WHERE b.workspace_id = ${args.workspaceId}
