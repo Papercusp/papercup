@@ -147,8 +147,52 @@ export interface GoalDetailSubGoalInput {
   status: string;
 }
 
+/**
+ * The launch knobs a goal pins, per role or as its across-the-board default
+ * (goal-mode-hardening-2026-08-10 P-004's `LaunchProfile`, as it arrives here).
+ *
+ * Every field optional and typed as `string` rather than as the server's unions:
+ * the closed sets arrive with the payload (`launchSettingsOptions`) so the editor
+ * renders what the validator enforces, and re-declaring the unions here would be
+ * the second spelling D-011 exists to prevent.
+ */
+export interface GoalDetailLaunchProfile {
+  agent?: string;
+  model?: string;
+  effort?: string;
+  account?: string;
+  carry?: string;
+  contextSize?: string;
+}
+
+/** The document stored on the goal — D-005's two ceilings plus the profiles. */
+export interface GoalDetailLaunchSettings {
+  /** Ceiling over EVERY live session associated with this goal. Null/absent = none. */
+  maxAgents?: number | null;
+  /** Ceiling on any ONE fleet pursuing it. Composes with maxAgents. */
+  maxPerFleet?: number | null;
+  defaults?: GoalDetailLaunchProfile;
+  roles?: Record<string, GoalDetailLaunchProfile>;
+}
+
+/** The closed sets the editor may offer, shipped by the resolver from the
+ *  schema's own constants so the form cannot drift from the validator. */
+export interface GoalDetailLaunchOptions {
+  agent?: readonly string[];
+  carry?: readonly string[];
+  contextSize?: readonly string[];
+}
+
 export interface GoalDetailInput {
   goal: GoalDetailGoalInput | null;
+  /** Null = nothing pinned, which is the launch default and NOT an error. */
+  launchSettings?: GoalDetailLaunchSettings | null;
+  /** Non-null when the stored document could not be read — so the ceilings are
+   *  NOT being enforced. Rendered as an alarm, never as "no settings": an
+   *  unreadable ceiling and an absent one look identical and mean opposite
+   *  things about whether the owner's limit is holding. */
+  launchSettingsInvalid?: string | null;
+  launchSettingsOptions?: GoalDetailLaunchOptions | null;
   /** Empty array = none; absent/null = a payload from before P-017. */
   subGoals?: GoalDetailSubGoalInput[] | null;
   /** Set only when the open goal is itself a subdirective. */

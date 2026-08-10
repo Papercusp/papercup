@@ -14,6 +14,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
+import {
+  goalLaunchSettingsSchema,
+  writeGoalLaunchSettings,
+} from '@papercusp/operator-core/lib/goal-launch-settings';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema } from './create';
 import { resolveGoalWorkspace } from './_workspace';
@@ -27,7 +31,7 @@ import {
 export default defineTool({
   name: 'goals:update',
   description:
-    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId? }. ' +
+    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings? }. ' +
     'Partial — an omitted field is left untouched. Use status:"killed" when the written kill criterion trips and "achieved" when the outcome is met; ' +
     'a goal that is only ever created and never closed is the ratchet GOAL mode exists to prevent. ' +
     'status FANS OUT, in both directions: "paused"|"killed" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
@@ -67,6 +71,12 @@ export default defineTool({
     budgetCents: z.number().int().nonnegative().optional().describe('revise the declared ceiling'),
     spentCents: z.number().int().nonnegative().optional().describe('actuals to date, recorded in metadata alongside the ceiling'),
     parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
+    launchSettings: goalLaunchSettingsSchema
+      .nullable()
+      .optional()
+      .describe(
+        'per-goal launch ceilings + profile ({ maxAgents, maxPerFleet, defaults, roles }) — the numbers every launch for this goal is checked against. Pass null to clear back to unlimited/unpinned; omit to leave untouched.',
+      ),
   }),
   async handler(args, ctx) {
     // ── The criterion gate (P-009) ───────────────────────────────────────────
@@ -173,6 +183,25 @@ export default defineTool({
        WHERE id = ${args.id}
     `;
 
+    /* PER-GOAL LAUNCH SETTINGS (P-005 wires P-004's store to a door).
+       Delegated to `writeGoalLaunchSettings` rather than folded into the UPDATE
+       above: that function is the store's writer, it re-validates before the
+       column is touched, and having a second place that knows how to serialise
+       this document is how the two would drift.
+
+       Passed `ctx.tx`, so it runs INSIDE this handler's transaction — the
+       settings and the rest of the row commit together or not at all. Its own
+       default (`getOrgPg()`) would open a second connection and could leave a
+       ceiling raised on a goal whose update rolled back.
+
+       Undefined leaves the column alone; null clears it — the same
+       omitted-vs-explicitly-null distinction `parentId` and `tripwires` make. */
+    let launchSettingsError: string | null = null;
+    if (args.launchSettings !== undefined) {
+      const w = await writeGoalLaunchSettings(args.id, args.launchSettings, ctx.tx);
+      if (!w.ok) launchSettingsError = `launch settings NOT saved: ${w.error ?? 'unknown error'}`;
+    }
+
     const [row] = await ctx.tx<
       Array<{
         id: string;
@@ -183,9 +212,11 @@ export default defineTool({
         kill_criterion: string | null;
         tripwires: unknown;
         metadata: Record<string, unknown> | null;
+        launch_settings: unknown;
       }>
     >`
-      SELECT id, title, status, parent_id, budget_cents, kill_criterion, tripwires, metadata
+      SELECT id, title, status, parent_id, budget_cents, kill_criterion, tripwires, metadata,
+             launch_settings
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
 
@@ -240,6 +271,9 @@ export default defineTool({
     }
 
     const degradedReasons: string[] = [];
+    // Loud, not swallowed: an owner who just raised a ceiling and got `ok` back
+    // would otherwise believe a limit is in force that was never written.
+    if (launchSettingsError) degradedReasons.push(launchSettingsError);
     if (stopError) degradedReasons.push(stopError);
     if (stop?.degraded) {
       degradedReasons.push(
