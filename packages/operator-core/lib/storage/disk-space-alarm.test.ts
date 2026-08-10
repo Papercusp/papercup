@@ -111,6 +111,7 @@ describe('formatDiskAlarmToast', () => {
       {
         path: '/ws',
         kinds: ['low-bytes', 'low-inodes'],
+        severity: 'critical', // 0.4% free — critical under the default policy
         freeBytes: 2 * GIB,
         totalBytes: 500 * GIB,
         freePct: 0.004,
@@ -132,6 +133,7 @@ describe('formatDiskAlarmToast', () => {
       {
         path: '/ws',
         kinds: ['low-bytes'],
+        severity: 'critical', // 0.4% free — critical under the default policy
         freeBytes: 2 * GIB,
         totalBytes: 500 * GIB,
         freePct: 0.004,
