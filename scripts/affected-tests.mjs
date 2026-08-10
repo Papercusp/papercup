@@ -567,6 +567,22 @@ const GC_TAG_SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-20055889379250637 — `console.log(<unbounded>); process.exit()` truncates
+    // through a PIPE (measured: only ~8 KiB escapes; a TTY and a `> file` redirect are
+    // both synchronous and therefore fine). It is registered repo-wide for the same
+    // reason as chunk-safe below: the defect appears when someone adds a `--json` mode
+    // or an accumulating write to ANY CLI, and nobody knows in advance which file that
+    // will be. Narrowing to "files that already print JSON" would rebuild the blind
+    // spot one level down.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:no-undrained-stdout-exit',
+    // The ratchet inside operator-core's suite EXECS the guard over REPO_ROOT (the
+    // `describe('the tree is currently clean (ratchet)')` case), so deferring to the
+    // host suite is genuinely safe here rather than assumed.
+    hostSuiteRatchet: 'packages/operator-core/lib/undrained-stdout-exit-guard.test.ts',
+    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f),
+  },
+  {
     workspace: '@papercusp/operator-core',
     script: 'lint:chunk-safe',
     // The guard script IS a vitest file in operator-core, so the host suite re-runs it
