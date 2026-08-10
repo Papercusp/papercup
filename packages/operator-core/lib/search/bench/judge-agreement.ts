@@ -441,6 +441,39 @@ export function formatReport(report: JudgeAgreementReport): string {
   } else {
     lines.push(`## self-consistency: NOT MEASURED (disabled)`, ``);
   }
+  // The POSITIVE score distribution is the one thing the aggregates cannot
+  // stand in for. Sensitivity is a count of pairs over the bar; it cannot say
+  // whether the misses landed just under it (a bar-calibration problem) or at
+  // the floor (a genuine judge/gold disagreement worth reading individually).
+  const positives = report.outcomes.filter((o) => o.goldRelevant && !o.pairId.endsWith('#rejudge'));
+  if (positives.length > 0) {
+    const hist = new Map<number, number>();
+    for (const p of positives) hist.set(p.relevance, (hist.get(p.relevance) ?? 0) + 1);
+    lines.push(
+      `## positive score distribution (n=${positives.length}, bar=${report.passBar})`,
+      '  ' +
+        [...hist.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([score, n]) => `${score}:${n}`)
+          .join('  '),
+      ``,
+      `## gold positives the judge scored BELOW the bar`,
+      `   (ambiguous by construction — judge error OR a citation that was never topical)`,
+    );
+    const misses = positives
+      .filter((p) => !p.judgedRelevant)
+      .sort((a, b) => a.relevance - b.relevance);
+    if (misses.length === 0) lines.push(`   (none)`);
+    for (const m of misses) {
+      lines.push(
+        `  - ${m.pairId} score=${m.relevance} doc=${m.docId}`,
+        `    query: ${m.query.slice(0, 160)}`,
+        `    judge: ${(m.judgeNotes ?? '(no notes)').slice(0, 400)}`,
+      );
+    }
+    lines.push(``);
+  }
+
   lines.push(`## limits (these travel with the numbers)`);
   for (const c of report.caveats) lines.push(`  - ${c}`);
   return lines.join('\n');

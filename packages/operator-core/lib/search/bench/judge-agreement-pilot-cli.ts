@@ -17,6 +17,8 @@
  *   npx tsx ... --queries 12 --docs 300 --harness papercusp --self-consistency 8
  *   npx tsx ... --dry-run          # build + print the pairs, spend nothing
  */
+import fs from 'node:fs';
+
 import { getOrgPg } from '@papercusp/db-org';
 
 import { llmCall } from '../../llm-testing/llm-client';
@@ -47,7 +49,13 @@ async function main(): Promise<void> {
 
   const { sql } = getOrgPg();
   // Treated fraction is ~34%, so oversample candidates to land `docsWanted`.
-  const rows = await sql.unsafe<SampledRow[]>(sampleSql(docsWanted * 4, docsWanted, harness));
+  // Default to a FIXED seed: this run is compared to earlier ones, so the
+  // sample is part of the frozen contract (`--seed random` opts back out).
+  const seedArg = argValue('--seed') ?? 'p038-pilot-v1';
+  const seed = seedArg === 'random' ? undefined : seedArg;
+  const rows = await sql.unsafe<SampledRow[]>(
+    sampleSql(docsWanted * 4, docsWanted, harness, seed),
+  );
   const pool = buildPool(rows);
   const queries = buildGoldQueries(rows, queriesWanted);
   if (pool.length === 0 || queries.length === 0) {
@@ -82,7 +90,16 @@ async function main(): Promise<void> {
     log: (m) => console.log(new Date().toISOString().slice(11, 19), m),
   });
 
+  // Persist EVERY per-pair row, not just the aggregates. Sensitivity cannot say
+  // whether a miss landed just under the bar or at the floor, and the judge's
+  // own rationale on a low-scored gold positive is the only material that can
+  // adjudicate judge-error vs a citation that was never topical. Re-deriving
+  // that means paying for the whole run again.
+  const out = argValue('--out') ?? `/tmp/claude-1000/p038-judge-pilot-${Date.now()}.json`;
+  fs.writeFileSync(out, JSON.stringify(report, null, 2));
+
   console.log('\n' + formatReport(report) + '\n');
+  console.log(`wrote full per-pair record: ${out}`);
 }
 
 await main();

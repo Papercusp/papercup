@@ -99,20 +99,39 @@ export interface GoldQuery {
  * same-harness scoping) so `v1_text || refs_block` is byte-identical to what
  * the sweep embeds.
  */
-export function sampleSql(candidates: number, docs: number, harness: string | undefined): string {
+export function sampleSql(
+  candidates: number,
+  docs: number,
+  harness: string | undefined,
+  /**
+   * Optional REPRODUCIBLE sample. Omitted ⇒ `ORDER BY random()`, a fresh draw
+   * each run (what the D-076 recall measurement uses). Supplied ⇒ the draw is
+   * a stable hash of the row id, so a re-run judges the SAME rows.
+   *
+   * That matters wherever a run is COMPARED to an earlier one: a frozen judging
+   * contract freezes model, rubric AND sample, and a number that moved because
+   * the sample moved is not a measurement of anything the contract froze.
+   */
+  seed?: string,
+): string {
   if (harness !== undefined && !/^[a-z0-9][a-z0-9-]{0,79}$/i.test(harness)) {
     // Interpolated, not bound — so constrain it to the slug grammar rather
     // than trusting quoting.
     throw new Error(`--harness must be a slug ([A-Za-z0-9-]), got ${JSON.stringify(harness)}`);
   }
+  if (seed !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(seed)) {
+    // Interpolated, same reasoning as `harness` above.
+    throw new Error(`seed must be [A-Za-z0-9._-]{1,64}, got ${JSON.stringify(seed)}`);
+  }
   const harnessPred = harness ? `AND wi.harness_slug = '${harness}'` : '';
+  const sampleOrder = seed ? `md5(wi.feature_id || '${seed}')` : 'random()';
   return (
     `WITH cand AS (` +
     ` SELECT wi.harness_slug, wi.title, wi.summary, wi.feature_id` +
     ` FROM harness_shared.work_items wi` +
     ` WHERE length(COALESCE(wi.title, '') || E'\\n' || left(COALESCE(wi.summary, ''), 2000)) > 0` +
     ` ${harnessPred}` +
-    ` ORDER BY random() LIMIT ${candidates}` +
+    ` ORDER BY ${sampleOrder} LIMIT ${candidates}` +
     `)` +
     ` SELECT c.feature_id,` +
     ` COALESCE(c.title, '') || E'\\n' || left(COALESCE(c.summary, ''), 2000) AS v1_text,` +
