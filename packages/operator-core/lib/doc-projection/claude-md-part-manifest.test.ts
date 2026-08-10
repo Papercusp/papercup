@@ -4,7 +4,12 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error — .mjs generator, no type declarations by design (it is a scripts/ tool)
-import { buildManifest, extractParts, rangeBoundaryProblems } from '../../../../scripts/gen-claude-md-manifest.mjs';
+import {
+  bootstrapExtent,
+  buildManifest,
+  extractParts,
+  rangeBoundaryProblems,
+} from '../../../../scripts/gen-claude-md-manifest.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '../../../..');
@@ -216,7 +221,7 @@ describe('the RANGES bootstrap may not cut a block in half', () => {
     //
     // Tiling, unlike the boundary shape, is pure line arithmetic — so a synthetic document of
     // the right length exercises it for real, with no dependence on the file's content.
-    const synthetic = Array.from({ length: manifestSnapshotLines }, (_, i) => `line ${i + 1}`).join('\n');
+    const synthetic = Array.from({ length: bootstrapExtent() as number }, (_, i) => `line ${i + 1}`).join('\n');
     const { problems } = buildManifest(synthetic, null) as Reanchor;
     expect(problems.filter((p) => /gap:|overlap at|must start at line 1/.test(p))).toEqual([]);
   });
