@@ -37,15 +37,57 @@ describe('SQL comment stripping', () => {
     expect(stripSqlComments(sql)).toBe(sql);
   });
 
-  it('does NOT treat -- inside a dollar-quoted body as a comment', () => {
-    // Function bodies are dollar-quoted and contain -- freely. A regex masks straight through.
-    const sql = "CREATE FUNCTION f() RETURNS int AS $$ -- not a comment\n SELECT 1; $$ LANGUAGE sql;";
+  /**
+   * SUPERSEDED CONTRACT, recorded because the reversal matters (EI-20073035509369492,
+   * 2026-08-10). These two cases originally asserted the OPPOSITE — that `stripSqlComments`
+   * returns a dollar-quoted body byte-for-byte, treating it as an opaque literal. The stated
+   * reason was sound: "function bodies contain -- freely, and a regex masks straight through",
+   * i.e. protect the body's CODE from being mangled.
+   *
+   * Skipping the body wholesale does protect the code, but it also leaves every genuine comment
+   * INSIDE the body live — and a live comment is exactly how a guard reads prose as DDL, the
+   * whole class this module exists to close. MEASURED on this repo: 264 of 661 migrations use
+   * dollar quoting and 109 of them carry a comment that survived ONLY because it sat in a body
+   * (000-baseline.sql's "-- Echo-loop guard:" among them). Migrating a .sql guard onto the
+   * skip-the-body reading would have handed it 109 files of prose to mistake for SQL.
+   *
+   * Recursion satisfies the original concern strictly better: body code survives untouched,
+   * body comments are masked, and a `--` inside a STRING inside a body still stays live —
+   * a distinction a blanket skip cannot express at all. The opaque-literal reading is still
+   * correct for `stripSqlCommentsAndStrings`, whose consumers want the body sealed, and the
+   * last case here pins that so the two variants can never silently converge.
+   */
+  it('RECURSES into a dollar-quoted body: the comment is masked, the code is not', () => {
+    const sql = "CREATE FUNCTION f() RETURNS int AS $$ -- a real comment\n SELECT 1; $$ LANGUAGE sql;";
+    const masked = stripSqlComments(sql);
+    expect(masked).toHaveLength(sql.length);
+    expect(masked).not.toContain('a real comment');
+    // The original concern, kept as an assertion: the body's CODE must never be mangled.
+    expect(masked).toContain('SELECT 1;');
+    expect(masked).toContain('LANGUAGE sql;');
+  });
+
+  it('recurses into a $tag$-delimited body too, not just bare $$', () => {
+    const sql = "CREATE FUNCTION f() AS $body$ -- inside\n SELECT 1; $body$ LANGUAGE sql;";
+    const masked = stripSqlComments(sql);
+    expect(masked).not.toContain('inside');
+    expect(masked).toContain('SELECT 1;');
+    expect(masked).toHaveLength(sql.length);
+  });
+
+  it('a -- inside a STRING inside a body is still not a comment', () => {
+    // Only recursion can get this right: the blanket skip leaves it live for the wrong reason,
+    // and a naive regex blanks the rest of the line, destroying real body code after it.
+    const sql = "DO $$ BEGIN PERFORM 'a -- b'; END $$;";
     expect(stripSqlComments(sql)).toBe(sql);
   });
 
-  it('handles a $tag$-delimited body, not just bare $$', () => {
-    const sql = "CREATE FUNCTION f() AS $body$ -- inside\n SELECT 1; $body$ LANGUAGE sql;";
-    expect(stripSqlComments(sql)).toBe(sql);
+  it('stripSqlCommentsAndStrings still seals the whole body (the other reading, deliberately kept)', () => {
+    const sql = "CREATE FUNCTION f() RETURNS int AS $$ -- c\n SELECT 1; $$ LANGUAGE sql;";
+    const masked = stripSqlCommentsAndStrings(sql);
+    expect(masked).toHaveLength(sql.length);
+    expect(masked).not.toContain('SELECT 1;'); // sealed: injection/txn-control detection wants this
+    expect(masked).toContain('LANGUAGE sql;'); // but code AFTER the body is untouched
   });
 
   it('counts depth for NESTED block comments (PostgreSQL nests; C does not)', () => {
