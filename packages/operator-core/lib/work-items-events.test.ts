@@ -28,6 +28,7 @@ const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
   // agent-protocol-authority-semantics-2026-07-26 P-004: also required on WorkItem.
   completionAuthority: null,
   severity: null,
+  goalId: null, // WI-37711 — the goal a work-item was filed under; unset on this fixture.
   parent: null,
   payload: null,
   rank: null,

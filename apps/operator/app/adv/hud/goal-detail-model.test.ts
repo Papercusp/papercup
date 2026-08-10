@@ -321,7 +321,8 @@ describe('workRail', () => {
     // the "nothing is under this goal" sentence over them would be a lie.
     expect(workRail(overlapping, NOW).empty).toBe(false);
     expect(
-      workRail({ goal: null, plans: [{ planSlug: 'p', harnessSlug: 'h' }] }, NOW).empty,
+      workRail({ goal: null, plans: [{ planSlug: 'p', harnessSlug: 'h', stamped: false }] }, NOW)
+        .empty,
     ).toBe(false);
   });
 
@@ -330,8 +331,8 @@ describe('workRail', () => {
       {
         goal: null,
         plans: [
-          { planSlug: '', harnessSlug: 'h' },
-          { planSlug: 'real-plan', harnessSlug: 'h' },
+          { planSlug: '', harnessSlug: 'h', stamped: false },
+          { planSlug: 'real-plan', harnessSlug: 'h', stamped: false },
         ],
       },
       NOW,
