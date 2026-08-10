@@ -231,6 +231,15 @@ export type WatchdogSource =
   // WI-1574: the ready-plan autostart sweep's decompose-wake (a ratified scout
   // plan with no open items cannot start — the Mug is woken to add items).
   | 'scout-ready-decompose'
+  // retire-mug-kettle-su-only-2026-08-09 P-070 (D-064): the SAME sweep's START
+  // path, scoped per plan slug. It exists only while the op_status axis is
+  // RETIRED: that write used to be the sweep's own once-only latch (a started
+  // plan stops matching `op_status <> 'started'`), and gating it away leaves the
+  // plan selected on every 30s tick. Re-entry is idempotent, not wrong — so this
+  // bounds churn rather than preventing damage, and the geometric backoff is a
+  // FEATURE here: items added to an already-ratified plan still reach the queue
+  // eventually, which the one-way op_status bit never allowed.
+  | 'scout-ready-autostart'
   // GYM-2 (gym-unwedge): the chronic-autoloop-failure escalator's per-(harness,role)
   // 24h debounce (a cycle red >= threshold consecutive fires files an observation).
   | 'autoloop-chronic'

@@ -74,10 +74,6 @@ const ALLOW: ReadonlyMap<string, string> = new Map([
     'agent-tools/plans/pause.ts',
     "EXIT-ONLY. The `AND op_status IS NOT NULL` guard means it can only rewrite a row ALREADY on the axis ('started'→'paused'), never put one there. It is also the sole remaining lever that removes a pre-P-047 plan from the DBOS frontier's dispatch (orchestrator-loop.ts reads op_status='started' and is NOT gated), so refusing it would freeze those plans dispatchable with no off switch — the stopper carve-out in _mug-kettle-gate.ts's scope note. D-061.",
   ],
-  [
-    'scout/ready-plan-autostart.ts',
-    'DORMANT, and gating it correctly needs a design this item does not carry. The sweep returns early unless `listStartedPots()` is non-empty, and the only door that sets that bit (pot:start) is already gated — every hive_started row is false as of 2026-08-10. Skipping just its UPDATE would also remove the "already started" latch that stops the 30s sweep re-promoting the same plan forever, so it needs its own latch. Tracked as a follow-up item on the plan.',
-  ],
 ]);
 
 const isTest = (f: string) => /\.(test|integration\.test)\.tsx?$/.test(f);
@@ -178,6 +174,18 @@ describe('op_status writer census — the live tree', () => {
     // an ungated re-appearance must fail here rather than inherit an exemption.
     expect(spawn, 'spawn-child no longer contains a recognisable op_status write').toBeDefined();
     expect(spawn?.gated).toBe(true);
+  });
+
+  it('ready-plan-autostart — the scout-sweep writer — is gated (P-070, ALLOW entry deleted)', () => {
+    const sweep = enteringWriters().find((w) => w.rel === 'scout/ready-plan-autostart.ts');
+    // The last writer to come off the ALLOW list. Its exemption was earned by
+    // being DORMANT (no started pot ⇒ the sweep returns before reaching the
+    // write), which is a property of the DATA, not of the code — one
+    // `hive_started` row flipping true would have re-armed an ungated write with
+    // nothing failing. P-070 replaced that with a real gate plus a debounce latch
+    // standing in for the op_status write's own once-only property.
+    expect(sweep, 'ready-plan-autostart no longer contains a recognisable op_status write').toBeDefined();
+    expect(sweep?.gated).toBe(true);
   });
 
   it('has no STALE allowances — an entry whose file stopped writing is removed', () => {

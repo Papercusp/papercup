@@ -37,13 +37,36 @@
  *
  * Watchdog conventions (mirrors draft-review-watchdog.ts): pure deciders split
  * from the PG sweep, env kill switch, per-hive debounce over
- * `hive_watchdog_fires` for the WAKE path, fail-soft throughout. The START
- * path needs no debounce: a started plan stops matching the selector
- * (op_status filter), so it is naturally once-only.
+ * `hive_watchdog_fires` for the WAKE path, fail-soft throughout.
+ *
+ * ⚠ THE op_status WRITE IS GATED (retire-mug-kettle-su-only-2026-08-09 P-070 /
+ * D-064), mirroring plans:start (P-047 / D-010). op_status is the OPERATIONAL
+ * axis — it RESERVES a plan's items from su self-selection on the premise that a
+ * dispatcher hands them out — and it retires with the Mug/Kettle tier. While the
+ * tier is retired (the delivered default) this sweep does everything it always
+ * did EXCEPT write op_status: it still reads the row, still calls
+ * `promotePlanItems`, still fires the decompose-wake. Promotion is the
+ * su-SERVING half and is what closes WI-1574's dead end; the axis write is the
+ * half that would strand what it just promoted.
+ *
+ * THE LATCH, and why the retired branch needs a different one. The START path
+ * used to need no debounce because the op_status write WAS the latch: a started
+ * plan stops matching the selector (`op_status <> 'started'`), so the sweep was
+ * naturally once-only. Skip the write and that latch disappears — the plan stays
+ * selected and the 30s routinesTick re-enters it forever. So the retired branch
+ * claims a per-plan debounce over the same `pot_watchdog_fires` ledger the WAKE
+ * path uses (`source: 'scout-ready-autostart'`, scoped by plan slug). Re-entry is
+ * not incorrect — `promotePlanItems` is idempotent (`listCoveredPlanItemRefs`
+ * skips anything already covered by an implements/relates edge or a
+ * `payload.plan_item` stamp) — it is UNBOUNDED, which is the thing worth
+ * stopping. The debounce's geometric backoff on an unchanged premise makes the
+ * retired latch strictly BETTER than the op_status one it replaces: items added
+ * to an already-ratified plan eventually reach the queue instead of being locked
+ * out forever by a one-way bit.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listStartedPots } from '../pot/started';
+import { listStartedPots, mugKettleSystemEnabled } from '../pot/started';
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
@@ -126,47 +149,114 @@ export async function readScoutReadyCandidates(
   }));
 }
 
-/** Start ONE ratified scout plan in the hive's own workspace: op_status='started'
- *  (idempotent — COALESCE keeps the first started_at) + promote its items into
- *  work_items. Returns the promoted work-item ids. Mirrors plans:start's core but
- *  workspace-correct for scout plans (see module header). */
+/**
+ * What one ratified scout plan's start attempt actually DID. An outcome rather
+ * than a boolean, deliberately (the P-071 lesson): the retired branch promotes
+ * WITHOUT entering the axis, and a two-valued `transitioned` cannot express that
+ * — it collapses "promoted, axis retired" into the same `false` as "already
+ * started, did nothing", which is how a caller ends up reporting a no-op for a
+ * call that just filled the queue.
+ */
+export type ReadyScoutStartOutcome =
+  /** Axis LIVE: op_status='started' written + items promoted. */
+  | 'started'
+  /** Axis RETIRED: items promoted, op_status deliberately NOT written. */
+  | 'promoted'
+  /** The row is already on the axis (a race, or a pre-retirement start). */
+  | 'already-started'
+  /** No such plan row in this workspace/harness. */
+  | 'plan-not-found';
+
+export interface ReadyScoutStartResult {
+  outcome: ReadyScoutStartOutcome;
+  promoted: number;
+  /** PLAN_WORKITEM_PROMOTION is OFF — promotion ran but minted nothing. */
+  flagOff: boolean;
+  /** Did THIS call put the plan onto the retired op_status axis? */
+  axisWritten: boolean;
+}
+
+/** Start ONE ratified scout plan in the hive's own workspace: promote its items
+ *  into work_items, and — only while the Mug/Kettle tier is live — mark
+ *  op_status='started' (idempotent: COALESCE keeps the first started_at).
+ *  Mirrors plans:start's core (P-047 gate included) but workspace-correct for
+ *  scout plans (see module header).
+ *
+ *  ⚠ The gate is FAIL-CLOSED and defaults to reading the flag itself, so a future
+ *  caller that forgets to pass `deps` gets the SAFE behaviour rather than an
+ *  ungated write. `mugKettleSystemEnabledFn` exists for the sweep (which resolves
+ *  the flag once per sweep instead of once per plan) and for tests. */
 export async function startReadyScoutPlan(
   sql: Sql,
   args: { workspaceId: string; planStorageSlug: string; planSlug: string },
-): Promise<{ transitioned: boolean; promoted: number; flagOff: boolean }> {
+  deps: { mugKettleSystemEnabledFn?: () => Promise<boolean> } = {},
+): Promise<ReadyScoutStartResult> {
+  // P-070 / D-064: op_status is the OPERATIONAL axis and retires with the tier.
+  // Fail-CLOSED — mugKettleSystemEnabled's own catch resolves an unreadable flag
+  // to retired, because a false `true` reserves freshly-promoted items for a
+  // dispatcher that no longer runs, while a false `false` merely leaves a
+  // deliberately-retired axis unwritten.
+  const axisLive = deps.mugKettleSystemEnabledFn
+    ? await deps.mugKettleSystemEnabledFn()
+    : await mugKettleSystemEnabled();
   const now = new Date().toISOString();
-  const rows = await sql<{ prev_op_status: string | null }[]>`
-    UPDATE harness_shared.harness_plans AS p
-       SET op_status     = 'started',
-           op_started_at = COALESCE(p.op_started_at, ${now}),
-           op_updated_at = ${now}
-      FROM (
-        SELECT plan_slug, op_status AS prev_op_status
+  // Both branches return the row's PRIOR op_status under the same column name, so
+  // the already-started race check below is identical either way. The retired
+  // branch is a plain read: same rows, same scoping, no write.
+  const rows = axisLive
+    ? await sql<{ prev_op_status: string | null }[]>`
+        UPDATE harness_shared.harness_plans AS p
+           SET op_status     = 'started',
+               op_started_at = COALESCE(p.op_started_at, ${now}),
+               op_updated_at = ${now}
+          FROM (
+            SELECT plan_slug, op_status AS prev_op_status
+              FROM harness_shared.harness_plans
+             WHERE workspace_id = ${args.workspaceId}
+               AND harness_slug = ${args.planStorageSlug}
+               AND plan_slug    = ${args.planSlug}
+               FOR UPDATE
+          ) prev
+         WHERE p.workspace_id = ${args.workspaceId}
+           AND p.harness_slug = ${args.planStorageSlug}
+           AND p.plan_slug    = prev.plan_slug
+        RETURNING prev.prev_op_status`
+    : await sql<{ prev_op_status: string | null }[]>`
+        SELECT op_status AS prev_op_status
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${args.workspaceId}
            AND harness_slug = ${args.planStorageSlug}
-           AND plan_slug    = ${args.planSlug}
-           FOR UPDATE
-      ) prev
-     WHERE p.workspace_id = ${args.workspaceId}
-       AND p.harness_slug = ${args.planStorageSlug}
-       AND p.plan_slug    = prev.plan_slug
-    RETURNING prev.prev_op_status`;
-  const transitioned = rows.length > 0 && rows[0].prev_op_status !== 'started';
-  if (!transitioned) return { transitioned: false, promoted: 0, flagOff: false };
+           AND plan_slug    = ${args.planSlug}`;
+  if (rows.length === 0)
+    return { outcome: 'plan-not-found', promoted: 0, flagOff: false, axisWritten: false };
+  // Kept in BOTH branches, not just the live one: a row already carrying
+  // 'started' was promoted when it was started, so re-promoting it under the
+  // retired branch would be pure churn.
+  if (rows[0].prev_op_status === 'started')
+    return { outcome: 'already-started', promoted: 0, flagOff: false, axisWritten: false };
+  // NOT gated on the axis — promotion is the su-serving half (the P-044 lesson),
+  // and it is exactly what plans:start keeps running while retired.
   const result = await promotePlanItems({
     workspaceId: args.workspaceId,
     harnessSlug: args.planStorageSlug,
     planSlug: args.planSlug,
     createdBy: 'scout-ready-autostart',
   });
-  return { transitioned: true, promoted: result.promoted, flagOff: result.flagOff === true };
+  return {
+    outcome: axisLive ? 'started' : 'promoted',
+    promoted: result.promoted,
+    flagOff: result.flagOff === true,
+    axisWritten: axisLive,
+  };
 }
 
 export interface ScoutReadyAutostartResult {
   workspaceId: string;
   installSlug: string;
-  outcome: 'started' | 'decompose-nudged' | 'skipped' | 'error';
+  /** `promoted` = items reached work_items with the op_status axis RETIRED (P-070);
+   *  `latched` = the retired-branch per-plan debounce is still inside its quiet
+   *  window, so this tick deliberately did nothing. */
+  outcome: 'started' | 'promoted' | 'latched' | 'decompose-nudged' | 'skipped' | 'error';
   planSlug?: string;
   promoted?: number;
   reason: string;
@@ -214,6 +304,10 @@ export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartRes
   try {
     const started = await listStartedPots();
     if (started.length === 0) return results;
+    // P-070: resolve the retirement gate ONCE per sweep, not once per plan — the
+    // flag cannot meaningfully change inside a single 30s tick, and the per-plan
+    // read would be N PostHog/flag reads for one answer.
+    const axisLive = await mugKettleSystemEnabled();
     const { sql } = getOrgPg();
     for (const { workspaceId, installSlug } of started) {
       try {
@@ -229,18 +323,57 @@ export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartRes
         const { startable, itemless } = partitionReadyCandidates(candidates);
         for (const plan of startable) {
           try {
-            const r = await startReadyScoutPlan(sql, { workspaceId, planStorageSlug, planSlug: plan.planSlug });
+            // THE REPLACEMENT LATCH (P-070, module header). While the axis is
+            // live the op_status write is itself the latch — the plan stops
+            // matching the selector — so this claim is skipped entirely and the
+            // live path stays byte-identical to pre-P-070 behaviour. While it is
+            // retired nothing removes the plan from the selector, so a per-plan
+            // debounce over the shared fires ledger is what keeps the 30s tick
+            // from re-entering it forever.
+            if (!axisLive) {
+              const claimed = await claimWatchdogFire({
+                workspaceId,
+                installSlug,
+                source: 'scout-ready-autostart',
+                scopeKey: plan.planSlug,
+                windowHours: 1,
+                reason: `ready scout plan ${plan.planSlug} promoted with the op_status axis retired`,
+                wakeAt: null,
+              });
+              if (!claimed) {
+                results.push({
+                  workspaceId,
+                  installSlug,
+                  outcome: 'latched',
+                  planSlug: plan.planSlug,
+                  reason: 'retired-axis debounce still inside its quiet window',
+                });
+                continue;
+              }
+            }
+            const r = await startReadyScoutPlan(
+              sql,
+              { workspaceId, planStorageSlug, planSlug: plan.planSlug },
+              { mugKettleSystemEnabledFn: async () => axisLive },
+            );
+            const promotedSomething = r.outcome === 'started' || r.outcome === 'promoted';
             results.push({
               workspaceId,
               installSlug,
-              outcome: r.transitioned ? 'started' : 'skipped',
+              outcome: promotedSomething ? (r.axisWritten ? 'started' : 'promoted') : 'skipped',
               planSlug: plan.planSlug,
               promoted: r.promoted,
-              reason: r.transitioned
+              reason: promotedSomething
                 ? r.flagOff
-                  ? 'auto-started BUT promotion no-oped: PLAN_WORKITEM_PROMOTION flag is OFF — items will NOT reach the Queen until it is flipped'
-                  : `auto-started ratified scout plan; promoted ${r.promoted} item(s)`
-                : 'already started (race)',
+                  ? 'promotion no-oped: PLAN_WORKITEM_PROMOTION flag is OFF — items will NOT reach the queue until it is flipped'
+                  : r.axisWritten
+                    ? `auto-started ratified scout plan; promoted ${r.promoted} item(s)`
+                    : `promoted ${r.promoted} item(s) from a ratified scout plan; op_status NOT written — ` +
+                      'the operational axis is RETIRED (papercusp-mug-kettle-system is OFF, the delivered ' +
+                      'state), so su agents self-select these items via scheduler:get_next'
+                : r.outcome === 'plan-not-found'
+                  ? 'plan row vanished between the candidate read and the start'
+                  : 'already started (race)',
             });
           } catch (e) {
             results.push({
