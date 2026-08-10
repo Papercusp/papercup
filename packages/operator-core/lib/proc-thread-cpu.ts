@@ -1,0 +1,148 @@
+/**
+ * proc-thread-cpu.ts — parse `/proc/<pid>/stat` CPU ticks, and turn two samples
+ * into a verdict about what a thread was DOING between them.
+ *
+ * ## Why this is its own module
+ *
+ * Two callers need the same parse and must not fork it:
+ *
+ * - `test-desktop-reaper.ts` (identifies runaway desktop processes), and
+ * - `event-loop-sentinel.worker.ts`, which runs on a `worker_threads` Worker and
+ *   is a **worker ENTRY**. Worker threads do not inherit the parent's ESM loader
+ *   hooks, so that file is loaded by Node's native type stripping. It therefore
+ *   cannot import anything that needs a real transform or drags in dependencies
+ *   — the reaper imports `drizzle-orm` and `sync-sse`, so importing it from the
+ *   worker would break the sentinel. Everything here is dependency-free and
+ *   syntax-plain on purpose. Keep it that way.
+ *
+ * ## The distinction this exists to preserve
+ *
+ * `/proc/<pid>/stat` reports the CPU of the WHOLE PROCESS (all threads summed).
+ * `/proc/<pid>/task/<tid>/stat` reports ONE thread. Reading the first while
+ * believing the second is the standard way to conclude "the main thread is
+ * busy" about a process whose main thread is parked and whose children are
+ * burning CPU — the same class of error as measuring a supervisor pid and
+ * calling the tree idle. `classifyThreadCpu` flags that case rather than
+ * quietly reporting a number that cannot be true of a single thread.
+ */
+
+/**
+ * Linux USER_HZ — clock ticks/sec for /proc utime+stime. 100 on every mainstream
+ * build (CONFIG_HZ_100 default). A wrong value only scales the derived cpuMs, so
+ * a hardcode is safe; it never changes which branch a caller takes on identity.
+ */
+export const USER_HZ = 100;
+
+/** One parsed `/proc/<pid>/stat` (or `/proc/<pid>/task/<tid>/stat`) reading. */
+export interface ProcStatSample {
+  /** Scheduler state letter: R runnable, S sleeping, D uninterruptible, Z zombie. */
+  state: string;
+  /** utime + stime, in clock ticks (see USER_HZ). */
+  ticks: number;
+}
+
+/**
+ * Parse the CPU fields out of a raw `/proc/**\/stat` line.
+ *
+ * `comm` (field 2) is parenthesised and may itself contain spaces AND parens
+ * (`(node (worker))`), so a naive whitespace split mis-indexes every later
+ * field. Splitting after the LAST ')' is the only correct approach.
+ * Post-')' tokens: `[0]=state … [11]=utime [12]=stime`.
+ *
+ * Returns null on anything unparseable — callers treat that as "unknown", never
+ * as zero, because a zero here reads as "idle" and is the wrong default.
+ */
+export function parseProcStat(raw: string): ProcStatSample | null {
+  const close = raw.lastIndexOf(')');
+  if (close < 0) return null;
+  const rest = raw.slice(close + 1).trim().split(/\s+/);
+  if (rest.length < 13) return null;
+  const state = rest[0];
+  const utime = Number(rest[11]);
+  const stime = Number(rest[12]);
+  if (!Number.isFinite(utime) || !Number.isFinite(stime)) return null;
+  return { state, ticks: utime + stime };
+}
+
+/**
+ * What a thread was doing across a sampling window.
+ *
+ * - `spinning`  — burning CPU. For a blocked event loop this means a synchronous
+ *                 JS loop / GC, and a stack sample is the next step.
+ * - `parked`    — using ~no CPU. Blocked in a syscall or simply not scheduled;
+ *                 `state` (D vs S) and wchan discriminate further.
+ * - `partial`   — in between; neither explanation is clean.
+ * - `unknown`   — could not be measured. NOT the same as parked, and must never
+ *                 be rendered as 0.
+ */
+export type ThreadCpuKind = 'spinning' | 'parked' | 'partial' | 'unknown';
+
+export interface ThreadCpuVerdict {
+  kind: ThreadCpuKind;
+  /** CPU consumed across the window, in ms. Null when unknown. */
+  cpuMs: number | null;
+  /** cpuMs / elapsedMs — "cores' worth". Null when unknown. */
+  cores: number | null;
+  /**
+   * True when `cores` exceeds what one thread can possibly use, which means the
+   * sample almost certainly came from a PROCESS-wide stat file rather than a
+   * per-thread one. Surfaced instead of swallowed: the number is not wrong so
+   * much as about the wrong subject, and that is the misreading that costs
+   * hours.
+   */
+  suspectWrongSubject: boolean;
+}
+
+const UNKNOWN: ThreadCpuVerdict = {
+  kind: 'unknown',
+  cpuMs: null,
+  cores: null,
+  suspectWrongSubject: false,
+};
+
+/**
+ * Difference two `parseProcStat` readings of the SAME thread into a verdict.
+ *
+ * Deliberately pure so every branch is reachable from a test with plain numbers
+ * — the same reason `decideLoopSentinelAction` is a pure reducer.
+ */
+export function classifyThreadCpu(opts: {
+  /** ticks at the start of the window; null if it could not be read. */
+  baselineTicks: number | null;
+  /** ticks at the end of the window; null if it could not be read. */
+  currentTicks: number | null;
+  /** wall-clock ms between the two samples. */
+  elapsedMs: number;
+  userHz?: number;
+  /** at/above this many cores' worth, call it spinning. */
+  spinningCores?: number;
+  /** at/below this many cores' worth, call it parked. */
+  parkedCores?: number;
+}): ThreadCpuVerdict {
+  const {
+    baselineTicks,
+    currentTicks,
+    elapsedMs,
+    userHz = USER_HZ,
+    spinningCores = 0.5,
+    parkedCores = 0.05,
+  } = opts;
+
+  if (baselineTicks == null || currentTicks == null) return UNKNOWN;
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return UNKNOWN;
+  if (!(userHz > 0)) return UNKNOWN;
+
+  const deltaTicks = currentTicks - baselineTicks;
+  // A negative delta means the counter reset under us — the thread/process was
+  // replaced between samples. That is not "0 CPU"; it is no measurement at all.
+  if (deltaTicks < 0) return UNKNOWN;
+
+  const cpuMs = (deltaTicks / userHz) * 1000;
+  const cores = cpuMs / elapsedMs;
+  const suspectWrongSubject = cores > 1.5;
+
+  const kind: ThreadCpuKind =
+    cores >= spinningCores ? 'spinning' : cores <= parkedCores ? 'parked' : 'partial';
+
+  return { kind, cpuMs, cores, suspectWrongSubject };
+}

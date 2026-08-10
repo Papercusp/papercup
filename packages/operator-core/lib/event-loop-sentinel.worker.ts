@@ -43,7 +43,12 @@
  */
 
 import { workerData, parentPort } from 'node:worker_threads';
-import { writeSync } from 'node:fs';
+import { writeSync, readFileSync } from 'node:fs';
+// EXPLICIT `.ts` EXTENSION IS LOAD-BEARING for the same reason as the import
+// below — this is a worker ENTRY, loaded by Node's native type stripping, which
+// has no extensionless lookup. `proc-thread-cpu.ts` is dependency-free and
+// syntax-plain precisely so it is safe to pull in here.
+import { parseProcStat, classifyThreadCpu } from './proc-thread-cpu.ts';
 import {
   decideLoopSentinelAction,
   initialLoopSentinelState,
@@ -121,6 +126,72 @@ function lastKnownLag(): Record<string, number> {
   };
 }
 
+/**
+ * WHAT the main thread was doing while it was stalled — the one thing the kill
+ * line never used to say.
+ *
+ * A wedge has two completely different causes that the staleness number cannot
+ * tell apart, and which need opposite fixes:
+ *
+ *   - the thread is SPINNING (a synchronous JS loop, a pathological regex, GC
+ *     thrash) — CPU is being burned and a stack sample is the next step;
+ *   - the thread is PARKED in a blocking syscall — CPU is ~zero and `state`/
+ *     `wchan` name what it is waiting on.
+ *
+ * Both look identical from staleness alone, so every occurrence used to teach us
+ * nothing and the investigation restarted from scratch. We read it off `/proc`
+ * from THIS thread, which keeps running while the main thread does not — the
+ * same off-thread trick `lastKnownLag()` uses, and the only kind that can work
+ * when the subject cannot execute JS to report on itself.
+ *
+ * Per-THREAD path (`/task/<pid>/`), never the process-wide one: the process
+ * total includes every worker and would report "busy" about a parked main
+ * thread sitting beside busy children.
+ */
+function readMainThreadStat(): { state: string; ticks: number } | null {
+  try {
+    return parseProcStat(readFileSync(`/proc/${pid}/task/${pid}/stat`, 'utf8'));
+  } catch {
+    return null; // not Linux, or the process is gone — unknown, never zero.
+  }
+}
+
+function readMainThreadWchan(): string | null {
+  try {
+    const w = readFileSync(`/proc/${pid}/task/${pid}/wchan`, 'utf8').trim();
+    return w === '' || w === '0' ? null : w;
+  } catch {
+    return null;
+  }
+}
+
+/** CPU + scheduler state of the main thread at the last observation it was HEALTHY. */
+let healthyCpu: { ticks: number; atMs: number } | null = null;
+
+/**
+ * Difference the last healthy CPU reading against now, yielding the verdict for
+ * the stall window. Best-effort: every field degrades to `unknown`/absent rather
+ * than throwing, because a diagnostic must never take down the sentinel.
+ */
+function mainThreadActivity(): Record<string, string | number | boolean> {
+  const now = readMainThreadStat();
+  const verdict = classifyThreadCpu({
+    baselineTicks: healthyCpu?.ticks ?? null,
+    currentTicks: now?.ticks ?? null,
+    elapsedMs: healthyCpu ? Date.now() - healthyCpu.atMs : 0,
+  });
+  const out: Record<string, string | number | boolean> = {
+    mainThreadActivity: verdict.kind,
+    mainThreadState: now?.state ?? 'unknown',
+  };
+  if (verdict.cpuMs != null) out.mainThreadCpuMsDuringStall = Math.round(verdict.cpuMs);
+  if (verdict.cores != null) out.mainThreadCores = Number(verdict.cores.toFixed(2));
+  if (verdict.suspectWrongSubject) out.suspectWrongSubject = true;
+  const wchan = readMainThreadWchan();
+  if (wchan) out.mainThreadWchan = wchan;
+  return out;
+}
+
 let state: LoopSentinelState = initialLoopSentinelState(
   Date.now(),
   Atomics.load(view, 0),
@@ -155,12 +226,19 @@ const timer = setInterval(() => {
 
   switch (action.kind) {
     case 'ok':
-    case 'grace':
+    case 'grace': {
       // The loop is turning again — re-arm both one-per-stall latches so the
       // NEXT stall is reported as a fresh event rather than suppressed.
       warnedThisStall = false;
       reportedThisStall = false;
+      // Re-baseline the CPU reading while the loop is demonstrably healthy, so a
+      // later stall differences against the last GOOD sample. Taken here rather
+      // than at stall-detection time because by then the window has already
+      // started and its beginning is exactly what we would be missing.
+      const healthy = readMainThreadStat();
+      if (healthy) healthyCpu = { ticks: healthy.ticks, atMs: Date.now() };
       return;
+    }
 
     case 'warn':
       if (!warnedThisStall) {
@@ -169,6 +247,7 @@ const timer = setInterval(() => {
           stalenessMs: action.stalenessMs,
           wedgeAfterMs: thresholds.wedgeAfterMs,
           consecutiveStale: action.consecutiveStale,
+          ...mainThreadActivity(),
           ...lastKnownLag(),
         });
       }
@@ -218,6 +297,7 @@ const timer = setInterval(() => {
           mode,
           pid,
           reason: action.reason,
+          ...mainThreadActivity(),
           ...lastKnownLag(),
         },
       );

@@ -43,12 +43,12 @@ import { promises as fsp, readFileSync, statSync } from 'node:fs';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { notifySyncInvalidate } from './sync-sse';
+// Shared with event-loop-sentinel.worker.ts — one parser, not two. See that
+// module's header for why it is dependency-free (it is imported by a worker
+// entry that Node type-strips, which cannot pull in this file's deps).
+import { parseProcStat, USER_HZ } from './proc-thread-cpu';
 
 const TOAST_RING_BUFFER = 2000;
-/** Linux USER_HZ — clock ticks/sec for /proc utime+stime. 100 on every mainstream
- *  build (CONFIG_HZ_100 default); a wrong value only scales cpuPercent, never the
- *  fail-safe identification, so a hardcode is safe here. */
-const USER_HZ = 100;
 const CPU_SAMPLE_MS = 250;
 
 function envNum(name: string, fallback: number): number {
@@ -223,20 +223,6 @@ export interface ReaperDeps {
   emitToast?: (t: { level: string; message: string; description: string }) => Promise<void>;
 }
 
-function parseStat(raw: string): { state: string; ticks: number } | null {
-  // /proc/<pid>/stat: `pid (comm) state ppid …`. comm may contain spaces/parens,
-  // so split AFTER the last ')'. Post-')' tokens: [0]=state … [11]=utime [12]=stime.
-  const close = raw.lastIndexOf(')');
-  if (close < 0) return null;
-  const rest = raw.slice(close + 1).trim().split(/\s+/);
-  if (rest.length < 13) return null;
-  const state = rest[0];
-  const utime = Number(rest[11]);
-  const stime = Number(rest[12]);
-  if (!Number.isFinite(utime) || !Number.isFinite(stime)) return null;
-  return { state, ticks: utime + stime };
-}
-
 async function defaultSample(): Promise<ProcSample[]> {
   let pids: string[];
   try {
@@ -264,7 +250,7 @@ async function defaultSample(): Promise<ProcSample[]> {
     let stat: { state: string; ticks: number } | null = null;
     try {
       rawStat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-      stat = parseStat(rawStat);
+      stat = parseProcStat(rawStat);
     } catch {
       continue;
     }
@@ -313,7 +299,7 @@ async function defaultSample(): Promise<ProcSample[]> {
     let cpuPercent = 0;
     if (p.state !== 'Z') {
       try {
-        const s = parseStat(readFileSync(`/proc/${p.pid}/stat`, 'utf8'));
+        const s = parseProcStat(readFileSync(`/proc/${p.pid}/stat`, 'utf8'));
         if (s) {
           const dTicks = s.ticks - p.ticks0;
           cpuPercent = (dTicks / USER_HZ / (CPU_SAMPLE_MS / 1000)) * 100;
