@@ -39,6 +39,10 @@ import {
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import { resolveBatchTimeoutMs, isWatchdogTimeout } from './lib/batch-watchdog.mjs';
+// The scan rule for lint:no-raw-spawn's REPO_WIDE_INVARIANT_GUARDS entry below, taken
+// from the guard itself so the two cannot drift. Import-only: that script self-execs
+// under a pathToFileURL guard, so pulling in the predicate runs no scan.
+import { isExcluded as isRawSpawnScanExcluded } from './check-no-raw-agent-spawn.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -581,6 +585,44 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // host suite is genuinely safe here rather than assumed.
     hostSuiteRatchet: 'packages/operator-core/lib/undrained-stdout-exit-guard.test.ts',
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f),
+  },
+  {
+    // EI-20070078750133139 — the D-034 shape, 7th instance. `lint:no-raw-spawn` enumerates
+    // the WHOLE tracked tree (every .ts outside _retired/node_modules/dist/*.test.ts) but its
+    // only enforcement point was a vitest file in operator-core, so a bypass introduced
+    // anywhere else got no local signal at all.
+    //
+    // It surfaced now rather than earlier because the census got MORE accurate, not because
+    // the guard changed: EI-20064929206355679 made the shared stripper an AST parse, which
+    // promoted this guard from "logic-test only" to enforced-but-partially-covered. A true
+    // new finding — so the remedy is registration, NOT an append to
+    // ACKNOWLEDGED_PARTIAL_COVERAGE (that set is shrink-only and says so).
+    workspace: '@papercusp/operator-core',
+    // The standalone SCRIPT. ⚠ operator-core did not DECLARE this script until this change —
+    // a registration naming a workspace that lacks the script is INERT (silently skipped at
+    // :815 while scoring as fully enforced), which is the exact trap WI-37454 found and now
+    // fails on. The package.json declaration is half of this fix, not incidental to it.
+    script: 'lint:no-raw-spawn',
+    // COST, measured before registering (this registry's own standing instruction). The guard
+    // was ~11.8-12.1s — 50x what the entries here normally cost — because the AST stripper
+    // above parses every scanned file. A provably-sound raw-text pre-filter in the guard
+    // (skip files not containing `buildInvokeOnce`; blanking only removes text, so it cannot
+    // hide a hit) brought it to ~0.95s, which is the same order as the guards already here.
+    // Registering it at 12s would have taxed every fleet-wide test:affected run touching a
+    // .ts file, so the pre-filter is what makes this entry affordable rather than a
+    // regression traded for coverage.
+    hostSuiteRatchet: 'packages/operator-core/lib/dbos/no-raw-spawn-guard.test.ts',
+    // MIRRORS `isExcluded` in scripts/check-no-raw-agent-spawn.mjs — deliberately copied
+    // rather than narrowed: the predicate must match what the guard actually scans, and the
+    // asymmetry (predicate wider or narrower than the scan) is the defect this registry
+    // exists to prevent.
+    appliesTo: (f) =>
+      /\.ts$/.test(f) &&
+      !f.endsWith('.test.ts') &&
+      !f.startsWith('_retired/') &&
+      !f.includes('/_retired/') &&
+      !f.includes('/node_modules/') &&
+      !f.includes('/dist/'),
   },
   {
     workspace: '@papercusp/operator-core',

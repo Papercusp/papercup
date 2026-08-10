@@ -70,6 +70,35 @@ export const isExcluded = (f) =>
 // `buildInvokeOnce(` quoted in prose inside a string read as a real call site.
 
 /**
+ * The ONE identifier every bypass must contain. Hoisted so the cheap raw-text
+ * pre-filter below and the real detector below that cannot drift apart.
+ */
+const BYPASS_TOKEN = 'buildInvokeOnce';
+
+/**
+ * CALLER-SIDE PRE-FILTER — why this exists, and why it is SOUND rather than a heuristic.
+ *
+ * `stripCommentsAndStrings` became an AST parse (EI-20064929206355679, correctly — it
+ * removed a regex-literal blind spot). That cost ~0.12ms/file -> ~2.65ms/file, and this
+ * guard parses the WHOLE tracked tree, so it went to ~11.8-12.1s (measured 2026-08-10,
+ * 3 runs). That matters here specifically: this guard is now registered in
+ * REPO_WIDE_INVARIANT_GUARDS, so a 12s scan would be charged to every agent's
+ * `test:affected` run touching any .ts file, fleet-wide.
+ *
+ * The pre-filter is the option-1 remedy prescribed by EI-20068047132832988 and already
+ * the pattern at check-green-checkpoint-tag.mjs:101. It CANNOT produce a false negative:
+ * stripping only ever BLANKS text, so a stripped hit implies the raw text contained the
+ * token. Skipping files whose RAW text lacks it therefore removes only files the
+ * detector could never have flagged — the skip is provably result-preserving, not a
+ * sampling trade-off. Equivalence was also verified empirically over the real tree:
+ * identical offender sets across 5,855 scanned files, of which only 16 (0.27%) bear
+ * the token and so still reach the parse. Measured effect: ~11.8s -> ~0.95s.
+ *
+ * ⚠ If a SECOND detection token is ever added, it must join `BYPASS_TOKEN` here or the
+ * pre-filter silently becomes unsound — that is the one way this optimisation can rot.
+ */
+
+/**
  * The tell of an agent-CLI spawn bypass: a CALL to `buildInvokeOnce(...)` outside
  * the allowlist. Building the invoke-once command is the chokepoint's exclusive
  * right — every other caller must go through `spawnInvokeOnce`. Keying on the
@@ -84,6 +113,7 @@ export const isExcluded = (f) =>
  * masquerade as a call. Pure (text → boolean) so it's unit-testable.
  */
 export function isRawAgentSpawnBypass(text, fileName) {
+  if (!text.includes(BYPASS_TOKEN)) return false;
   return /\bbuildInvokeOnce\s*\(/.test(stripCommentsAndStrings(text, fileName));
 }
 
