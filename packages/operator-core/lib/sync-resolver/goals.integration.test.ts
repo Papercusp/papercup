@@ -264,6 +264,26 @@ describe('goals.* resolvers against real SQL', () => {
     // pure chip test, because the shape is produced by json_agg + a correlated
     // servesGoals sub-select — SQL the client tests cannot see.
     expect(g.pots).toEqual([{ harnessSlug: 'alpha', role: 'owner', servesGoals: 1 }]);
+    // EI-20080280064869122: the count is UNBOUNDED and must not be the capped
+    // array's length. Untruncated here, so both agree — the control is below.
+    expect(out.totalGoals).toBe(1);
+    expect(out.truncatedByLimit).toBe(false);
+  });
+
+  it('reports the TRUE goal count even when the limit cut the rows', async () => {
+    // The defect: the board rendered a capped list with nothing saying so, and
+    // a truncated board is pixel-identical to a complete one. Driving the cap
+    // below the row count is the only way to prove the aggregate is computed
+    // independently rather than derived from the rows that survived it — which
+    // is exactly the failure the paired assertion above cannot catch.
+    const { resolveGoalsList } = await import('./goals');
+    await goal();
+    await pot('alpha');
+
+    const cut = await resolveGoalsList({ workspaceId: WS, limit: 0 });
+    expect(cut.goals).toHaveLength(0);
+    expect(cut.totalGoals).toBe(1);
+    expect(cut.truncatedByLimit).toBe(true);
   });
 
   it('resolveGoalDetail RUNS and returns every section the detail view reads', async () => {

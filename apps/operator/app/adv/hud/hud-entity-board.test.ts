@@ -22,6 +22,7 @@ import {
   goalBurn,
   goalBurnLabel,
   goalColumn,
+  goalsTruncationNotice,
   goalSilence,
   partitionGoals,
   goalSpendLabel,
@@ -345,6 +346,34 @@ describe('buildGoalBoard', () => {
     );
     const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
     expect(card.badges.find((b) => b.id === 'g1:spend')?.tone).toBe('neutral');
+  });
+
+  /* ── truncation disclosure (EI-20080280064869122) ──────────────────────── */
+
+  it('says how many goals are hidden when the query capped the list', () => {
+    expect(goalsTruncationNotice(100, 214)).toMatch(/Showing 100 of 214 goals/);
+    expect(goalsTruncationNotice(100, 214)).toMatch(/114 more/);
+  });
+
+  it('stays silent when nothing is hidden — no permanent "showing all N" banner', () => {
+    expect(goalsTruncationNotice(4, 4)).toBeNull();
+    expect(goalsTruncationNotice(4, 3)).toBeNull();
+  });
+
+  it('stays silent when the total is UNMEASURED rather than claiming completeness', () => {
+    // An older payload carries no totalGoals. That is "unknown", not "nothing
+    // hidden" — but a notice we cannot substantiate is worse than none, so the
+    // honest render is silence. The resolver is the place that must supply it.
+    expect(goalsTruncationNotice(4, null)).toBeNull();
+    expect(goalsTruncationNotice(4, undefined)).toBeNull();
+    expect(goalsTruncationNotice(4, Number.NaN)).toBeNull();
+  });
+
+  it('CANNOT fire when handed the rendered length as its own total', () => {
+    // The defect this guards: passing goals.length as `total` makes the check
+    // `shown > shown`, always false — a disclosure that can never fire and is
+    // indistinguishable from a working one until the day it is needed.
+    for (const n of [0, 4, 100]) expect(goalsTruncationNotice(n, n)).toBeNull();
   });
 
   /* ── the pots chip (P-007 / D-022) ─────────────────────────────────────── */

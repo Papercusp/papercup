@@ -1155,6 +1155,33 @@
   padding: 14px 16px;
 }
 
+/* A SECTION heading is not a ZONE heading (EI-20080299460815216).
+   chat-controls.css introduces `.pc-zone-title` as "A VERTICAL zone's name: a
+   full-width bar at the top of the column. Sticky, because the rail scrolls and
+   the zone it belongs to should not scroll away" — a ONE-PER-SCROLL-CONTAINER
+   contract, and each rail in SessionChatModal honours it with exactly one.
+
+   P-024 adopted that primitive for the goal detail's SECTION headings, which is
+   right for the look and wrong for the stickiness: seven of them now share the
+   single scrolling `.hud-goal` column. Sticky exists so a zone's name survives
+   its own column scrolling; a SECTION's name scrolling away with its section is
+   the correct behaviour, not a defect to pin against. So the section variant
+   opts out — the visual parity P-024 was asked for is kept, the positioning
+   contract it silently inherited is not. */
+.hud-goal__section > .pc-zone-title {
+  position: static;
+}
+
+/* The one section that is a CARD (tinted, rounded, padded) needs its heading to
+   span the card the way a zone title spans its column — otherwise the plate is
+   inset by the card's own padding and reads as a bar floating inside a box.
+   The negative margin cancels that padding; the top corners follow the card's
+   6px radius so the two edges agree. */
+.hud-goal__section--ends > .pc-zone-title {
+  margin: -14px -16px 0;
+  border-radius: 6px 6px 0 0;
+}
+
 /* `.hud-goal__h` and `.hud-goal__h-note` were DELETED here (P-024, D-023).
    They were the goal panels' own heading idiom — bare 10px/600 uppercase muted
    text — where the conversation popup this popup is meant to match uses a

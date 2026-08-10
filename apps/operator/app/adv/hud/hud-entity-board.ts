@@ -691,6 +691,33 @@ export function goalSpendLabel(goal: HudGoalInput): string {
 }
 
 /**
+ * "Showing 100 of 214 goals" — the disclosure that stops a capped list reading
+ * as the whole set (EI-20080280064869122, dropped plan item P-014).
+ *
+ * The board renders whatever `goals.list` returned, and that query is capped.
+ * Without this line a truncated board is pixel-identical to a complete one:
+ * the owner sees goals, none of them wrong, and no reason to suspect absence.
+ * Silent UNDER-reporting on a steering surface is the failure direction that
+ * matters — a goal you cannot see is a goal you cannot stop.
+ *
+ * Returns null when nothing is hidden, so the notice slot stays empty in the
+ * ordinary case rather than carrying a permanent "showing all N" banner.
+ *
+ * ⚠ `total` is the resolver's UNBOUNDED count, never `goals.length`. Passing
+ * the array's own length here would make the check `shown > shown` — always
+ * false, a disclosure that can never fire, and indistinguishable from a
+ * working one until the day it is needed.
+ */
+export function goalsTruncationNotice(
+  shown: number,
+  total: number | null | undefined,
+): string | null {
+  if (total == null || !Number.isFinite(total)) return null;
+  if (total <= shown) return null;
+  return `Showing ${shown} of ${total} goals — this list is capped, so ${total - shown} more exist than are on screen.`;
+}
+
+/**
  * How many pot names fit in the chip before it becomes a count again. Two:
  * the chip shares a row capped at MAX_CHIPS=4, and a third name pushes the
  * label past what reads at a glance.

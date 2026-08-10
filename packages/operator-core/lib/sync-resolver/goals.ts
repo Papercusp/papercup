@@ -270,14 +270,31 @@ export async function resolveGoalsList(args: {
   workspaceId: string;
   status?: string | null;
   limit?: number;
-}): Promise<{ goals: GoalSummaryRow[]; portfolioSpendUsd: number; portfolioPots: number }> {
+}): Promise<{
+  goals: GoalSummaryRow[];
+  /**
+   * The TRUE number of goals matching the same predicate, counted UNBOUNDED.
+   *
+   * ⚠ NOT `goals.length`. That array is capped by `limit`, and a capped list
+   * length rendered as a total is the repeat-offender class this file already
+   * defends against twice — see the note on `waitingTotalRow`, and the pot
+   * sample whose overflow is computed from `potCount` rather than its own
+   * length. The goals list was the one collection here without the guard
+   * (dropped plan item P-014, goals-tab-improvement-2026-08-09).
+   */
+  totalGoals: number;
+  /** True when `goals` is a prefix of a larger set — the client must say so. */
+  truncatedByLimit: boolean;
+  portfolioSpendUsd: number;
+  portfolioPots: number;
+}> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const { workspaceId, status = null, limit = 100 } = args;
   // Cut ONCE for the whole page, so two rows in the same render can never be
   // measured over windows that differ by the query's own duration.
   const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
-  const rows = await sql.begin(async (tx) => {
+  const { rows, total: totalGoals } = await sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
     return (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
@@ -358,6 +375,22 @@ export async function resolveGoalsList(args: {
        ORDER BY ${sql.unsafe(STATUS_RANK)}, g.updated_at DESC NULLS LAST
        LIMIT ${limit}
     `) as unknown as RawGoal[];
+
+    // The TRUE count, over the SAME predicate as the row fetch above and inside
+    // the SAME transaction — so the number and the rows it describes can never
+    // be read from two different snapshots.
+    //
+    // Counted separately rather than by lifting the LIMIT: the payload stays
+    // bounded while the aggregate stays honest. Both are needed — the rows to
+    // render, the count to be truthful about how many there are.
+    const [totalRow] = (await tx`
+      SELECT COUNT(*)::int AS total
+        FROM harness_shared.goals g
+       WHERE g.workspace_id = ${workspaceId}
+         AND (${status}::text IS NULL OR g.status = ${status}::text)
+    `) as unknown as Array<{ total: number | string | null }>;
+
+    return { rows, total: totalRow?.total == null ? rows.length : Number(totalRow.total) };
   });
   const goals = rows.map(toSummary);
 
@@ -373,6 +406,10 @@ export async function resolveGoalsList(args: {
   return {
     goals,
     portfolioSpendUsd: portfolio.costUsd,
+    totalGoals,
+    // Derived from the two numbers rather than from the caller's `limit`, so it
+    // stays right if the cap ever moves or a caller passes its own.
+    truncatedByLimit: totalGoals > goals.length,
     portfolioPots: portfolio.pots,
   };
 }

@@ -43,7 +43,7 @@ import HudEntityColumns from './HudEntityColumns';
 import GoalComposer from './GoalComposer';
 import GoalDetailPanel from './GoalDetailPanel';
 import GoalStatusControl from './GoalStatusControl';
-import { workItemIdForCard, type HudEntityCard } from './hud-entity-board';
+import { goalsTruncationNotice, workItemIdForCard, type HudEntityCard } from './hud-entity-board';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import {
   ALL_FLEETS,
@@ -612,6 +612,9 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   const goalWorkspaceId = workspaceId ?? browserWorkspaceId;
   const goalsQuery = useSyncQuery<{
     goals: HudGoalInput[];
+    /** UNBOUNDED count from the resolver — NOT goals.length, which is capped. */
+    totalGoals?: number;
+    truncatedByLimit?: boolean;
     portfolioSpendUsd: number;
     portfolioPots: number;
   }>({
@@ -627,6 +630,29 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       }),
     [goalsQuery.data, nowMs, entityQuery],
   );
+
+  /**
+   * The board's one notice line, carrying up to two independent facts.
+   *
+   * TRUNCATION FIRST: a capped list is a statement about what is MISSING, and a
+   * selection message is about what is present. If only one can be read at a
+   * glance it must be the one that says the screen is incomplete
+   * (EI-20080280064869122).
+   *
+   * The count comes from the resolver's UNBOUNDED `totalGoals`, never from the
+   * rendered array — see goalsTruncationNotice. Note it is deliberately NOT
+   * derived from `goalBoard`, whose cards are additionally filtered by the
+   * search query: the disclosure is about the QUERY's cap, not about what the
+   * local filter hid, and conflating the two would blame the cap for a search.
+   */
+  const goalNotice = useMemo(() => {
+    const payload = goalsQuery.data?.[0];
+    const parts = [
+      goalsTruncationNotice(payload?.goals?.length ?? 0, payload?.totalGoals),
+      goalFilter ? `Selected goal ${goalFilter} — click its card again to deselect.` : null,
+    ].filter((s): s is string => !!s);
+    return parts.length > 0 ? parts.join(' ') : null;
+  }, [goalsQuery.data, goalFilter]);
 
   /* ── Work items tab ────────────────────────────────────────────────────── */
 
@@ -904,7 +930,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
            is a selection they cannot clear — and since clicking the same card
            toggles it off, the notice is also the only thing that explains why
            a second click appears to "do nothing". */
-        notice={goalFilter ? `Selected goal ${goalFilter} — click its card again to deselect.` : null}
+        notice={goalNotice}
         noun="goals"
         onOpenCard={onOpenGoalCard}
         renderCardAction={renderGoalCardAction}
