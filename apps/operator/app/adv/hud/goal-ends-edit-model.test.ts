@@ -30,11 +30,15 @@ describe('parseCeilingInput', () => {
     expect(parseCeilingInput('$1,250.50')).toEqual({ cents: 125_050, problem: null });
   });
 
-  it('reads blank as an explicit CLEAR, not as a refusal', () => {
-    // The ceiling half is deliberately clearable — "no ceiling" is a state the
-    // sibling settings pane already names out loud.
+  it('refuses blank, and says the control cannot remove a ceiling', () => {
+    // Measured, not chosen: `goals:update`'s budgetCents is
+    // `z.number().int().nonnegative().optional()` with NO `.nullable()`, so
+    // there is no value this editor could send that unsets a ceiling. A blank
+    // that appeared to clear one would be a control that lies.
     for (const raw of ['', '   ', '$']) {
-      expect(parseCeilingInput(raw)).toEqual({ cents: null, problem: null });
+      const r = parseCeilingInput(raw);
+      expect(r.problem).toMatch(/cannot remove one/);
+      expect(r.cents).toBeUndefined();
     }
   });
 
@@ -55,6 +59,9 @@ describe('parseCeilingInput', () => {
   });
 
   it('never returns cents WITHOUT clearing problem, so a caller cannot write a refused value', () => {
+    // The failure this prevents is quiet: `cents` undefined reaching
+    // `goals:update` reads as "leave unchanged", so a refusal would land as a
+    // successful-looking no-op that closes the editor.
     for (const raw of ['500', '', '1e9', 'nope']) {
       const r = parseCeilingInput(raw);
       if (r.problem) expect('cents' in r).toBe(false);
@@ -80,7 +87,7 @@ describe('ceilingToInput', () => {
 
   it('round-trips through parseCeilingInput', () => {
     for (const cents of [0, 1, 99, 100, 50_000, 125_050]) {
-      expect(parseCeilingInput(ceilingToInput(cents)).cents).toBe(cents === 0 ? 0 : cents);
+      expect(parseCeilingInput(ceilingToInput(cents)).cents).toBe(cents);
     }
   });
 });
@@ -93,9 +100,17 @@ describe('dirtiness', () => {
     expect(ceilingDirty(50_000, '600')).toBe(true);
   });
 
-  it('counts clearing a set ceiling as dirty, and blank-on-blank as not', () => {
-    expect(ceilingDirty(50_000, '')).toBe(true);
+  it('counts BLANK as no-change even when a ceiling is stored — Save never promises a clear', () => {
+    // Blank cannot mean "clear it" (the write path has no way to unset a
+    // ceiling), so an enabled Save over an empty field would promise something
+    // this control cannot deliver.
+    expect(ceilingDirty(50_000, '')).toBe(false);
+    expect(ceilingDirty(50_000, '  $ ')).toBe(false);
     expect(ceilingDirty(null, '')).toBe(false);
+  });
+
+  it('counts a first ceiling on a goal that had none as dirty', () => {
+    expect(ceilingDirty(null, '500')).toBe(true);
   });
 
   it('counts an unparseable draft as dirty so the refusal stays reachable', () => {

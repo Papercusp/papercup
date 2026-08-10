@@ -50,11 +50,12 @@ export const MAX_CEILING_USD = 10_000_000;
 
 export interface CeilingInputResult {
   /**
-   * Cents to write, or `null` to CLEAR the ceiling. Present only when
-   * `problem` is null — a caller that reads `cents` without checking `problem`
-   * would write `undefined`, which `goals:update` reads as "leave unchanged".
+   * Cents to write. Present only when `problem` is null — a caller that reads
+   * `cents` without checking `problem` would write `undefined`, which
+   * `goals:update` reads as "leave unchanged", turning a refusal into a
+   * silent no-op that still closes the editor.
    */
-  cents?: number | null;
+  cents?: number;
   /** The refusal to render under the field, or null when the input is usable. */
   problem: string | null;
 }
@@ -75,10 +76,15 @@ export interface CeilingInputResult {
  */
 export function parseCeilingInput(raw: string): CeilingInputResult {
   const text = raw.trim().replace(/^\$/, '').replace(/,/g, '').trim();
-  if (!text) return { cents: null, problem: null };
+  if (!text) {
+    return {
+      problem:
+        'Enter a ceiling in dollars, like 500. This control sets or revises a ceiling — it cannot remove one; press Cancel to leave the current ceiling as it is.',
+    };
+  }
   if (!/^\d+(\.\d{1,2})?$/.test(text)) {
     return {
-      problem: `'${raw.trim()}' is not a dollar amount — enter a number like 500 or 1250.50, or leave it empty for no ceiling`,
+      problem: `'${raw.trim()}' is not a dollar amount — enter a number like 500 or 1250.50`,
     };
   }
   const usd = Number(text);
@@ -128,13 +134,22 @@ export function criterionDirty(stored: string | null | undefined, draft: string)
  * Has the ceiling draft actually moved off what is stored?
  *
  * Compares PARSED values, not text, so `$500`, `500` and `500.00` are all the
- * same ceiling and none of them offers a Save that would write nothing. An
- * unparseable draft counts as dirty: the owner is mid-edit and typing, and
- * disabling Save on garbage would hide the refusal that explains it.
+ * same ceiling and none of them offers a Save that would write nothing.
+ *
+ * BLANK IS NOT DIRTY, even when a ceiling IS stored. Blank cannot mean "clear
+ * it" here (see the header — the write path has no way to unset a ceiling), so
+ * the only honest reading left is "no change requested", and an enabled Save
+ * over an empty field would promise a clear this control cannot deliver.
+ *
+ * An unparseable NON-blank draft does count as dirty: the owner typed
+ * something, and disabling Save on it would hide the refusal that explains
+ * why it is not a ceiling.
  */
 export function ceilingDirty(storedCents: number | null | undefined, draft: string): boolean {
+  const typed = draft.trim().replace(/^\$/, '').replace(/,/g, '').trim();
+  if (!typed) return false;
   const parsed = parseCeilingInput(draft);
   if (parsed.problem) return true;
   const stored = storedCents == null || storedCents < 0 ? null : Math.round(storedCents);
-  return (parsed.cents ?? null) !== stored;
+  return parsed.cents !== stored;
 }
