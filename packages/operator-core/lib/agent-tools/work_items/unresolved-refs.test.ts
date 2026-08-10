@@ -22,12 +22,18 @@ describe('unresolvedRefsInBody', () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it.each([['', 'empty'], ['   ', 'whitespace'], [null, 'null'], [undefined, 'undefined']])(
-    'says nothing for a %s body (%s)',
-    async (body) => {
-      expect(await unresolvedRefsInBody(body as string | null | undefined, { probe: probeWith() })).toBeUndefined();
-    },
-  );
+  // The tuple list is heterogeneous (string | null | undefined in slot 0), so
+  // vitest types the callback as a UNION of tuple spreads — a single-parameter
+  // callback is not assignable to it (TS2345). Declaring both slots satisfies
+  // every member of that union.
+  it.each<[string | null | undefined, string]>([
+    ['', 'empty'],
+    ['   ', 'whitespace'],
+    [null, 'null'],
+    [undefined, 'undefined'],
+  ])('says nothing for a %s body (%s)', async (body, _label) => {
+    expect(await unresolvedRefsInBody(body, { probe: probeWith() })).toBeUndefined();
+  });
 
   it('says nothing when every cited ref resolves', async () => {
     const probe = probeWith('EI-100', 'WI-200');

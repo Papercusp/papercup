@@ -53,7 +53,13 @@ export const VENDORED = ['template-kit', 'pot-app-seam'];
 
 const exists = (p) => fs.stat(p).then(() => true, () => false);
 
-/** Recursively list files under dir as dir-relative paths (posix slashes). */
+/**
+ * Recursively list files under dir as dir-relative paths (posix slashes).
+ *
+ * @param {string} dir
+ * @param {{ exclude?: (rel: string) => boolean }} [opts]
+ * @returns {Promise<string[]>}
+ */
 export async function walk(dir, { exclude = () => false } = {}) {
   const out = [];
   const entries = await fs.readdir(dir, { recursive: true, withFileTypes: true });
@@ -72,6 +78,14 @@ export async function walk(dir, { exclude = () => false } = {}) {
  * Build the expected manifest: mirror-relative path -> canonical source abs path.
  * Exported so a test can drive it against a synthetic tree without touching the
  * shared checkout.
+ *
+ * Throws (with `exitCode: 2`) when a vendored package's source is missing —
+ * an empty canonical source would otherwise flag every vendored mirror file
+ * extraneous, and `--push` would delete them.
+ *
+ * @param {string} [root]
+ * @param {string[]} [vendored]
+ * @returns {Promise<{ expected: Map<string, string>, templateIds: string[] }>}
  */
 export async function buildExpected(root = ROOT, vendored = VENDORED) {
   const expected = new Map();
@@ -109,7 +123,13 @@ export async function buildExpected(root = ROOT, vendored = VENDORED) {
   return { expected, templateIds };
 }
 
-/** Enumerate the mirror's ACTUAL state over the SYNCED surface only. */
+/**
+ * Enumerate the mirror's ACTUAL state over the SYNCED surface only.
+ *
+ * @param {string} mirror
+ * @param {string[]} [vendored]
+ * @returns {Promise<Set<string>>}
+ */
 export async function buildActual(mirror, vendored = VENDORED) {
   const actual = new Set();
   const mirrorRootEntries = await fs.readdir(mirror, { withFileTypes: true });
@@ -130,7 +150,14 @@ export async function buildActual(mirror, vendored = VENDORED) {
   return actual;
 }
 
-/** Diff expected vs actual. Byte-compares every file present on both sides. */
+/**
+ * Diff expected vs actual. Byte-compares every file present on both sides.
+ *
+ * @param {Map<string, string>} expected
+ * @param {Set<string>} actual
+ * @param {string} mirror
+ * @returns {Promise<{ missing: string[], changed: string[], extraneous: string[] }>}
+ */
 export async function computeDrift(expected, actual, mirror) {
   const drift = { missing: [], changed: [], extraneous: [] };
   for (const [rel, src] of expected) {
@@ -145,6 +172,10 @@ export async function computeDrift(expected, actual, mirror) {
   return drift;
 }
 
+/**
+ * @param {{ missing: string[], changed: string[], extraneous: string[] }} drift
+ * @returns {number}
+ */
 export const driftTotal = (drift) =>
   drift.missing.length + drift.changed.length + drift.extraneous.length;
 
