@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, formatNoFindings } from '../../../../scripts/check-required-field-strands.mjs';
+import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings } from '../../../../scripts/check-required-field-strands.mjs';
 
 const BEFORE = `
 export interface IssueClaimExclusionBreakdown {
@@ -314,5 +314,55 @@ describe('formatNoFindings — "examined nothing" must never read as "clean"', (
     });
     expect(msg).toContain('1 of 2 named file(s)');
     expect(msg).toContain('also-mine.ts');
+  });
+});
+
+/**
+ * EI-20095543794921181 — the warning above was already correct and already
+ * printed; the run still EXITED 0. Prose does not reach `&& echo PASS`,
+ * `grep -c "error TS"`, or a CI step's exit status, which are the readers that
+ * actually decide. Measured: the default invocation reported exit 0 having
+ * examined ZERO files (git-sync had already committed the edit, so nothing
+ * differed from HEAD), while the same tree checked against the carrying commit
+ * had 30 real errors — 5 in a file `test:affected` does not select.
+ */
+describe('exitForNoFindings — "no findings" is not a clean bill unless something was diffed', () => {
+  it('is NOT 0 when zero files were examined — the false clean this exists to kill', () => {
+    expect(exitForNoFindings({ examinedFiles: [], identicalFiles: [], declared: false })).not.toBe(0);
+  });
+
+  it('is NOT 0 when every DECLARED file was byte-identical to the base', () => {
+    expect(
+      exitForNoFindings({
+        examinedFiles: ['mine.ts', 'also-mine.ts'],
+        identicalFiles: ['mine.ts', 'also-mine.ts'],
+        declared: true,
+      }),
+    ).not.toBe(0);
+  });
+
+  it('distinguishes "not checked" from "checked, strands found" (1) so a caller can tell them apart', () => {
+    // The whole point of a third code: 0 and 1 are both claims about a run that
+    // LOOKED, and neither is honest about a run that did not.
+    const notChecked = exitForNoFindings({ examinedFiles: [], declared: false });
+    expect(notChecked).not.toBe(0);
+    expect(notChecked, 'must not collide with the strands-found status').not.toBe(1);
+  });
+
+  it('IS 0 when files were genuinely diffed and nothing was stranded', () => {
+    expect(exitForNoFindings({ examinedFiles: ['mine.ts'], identicalFiles: [], declared: true })).toBe(0);
+    expect(exitForNoFindings({ examinedFiles: ['a.ts', 'b.ts'], identicalFiles: [], declared: false })).toBe(0);
+  });
+
+  it('IS 0 for a PARTIAL declared run — it verified what it could, and the message names the rest', () => {
+    // Deliberate: failing this case would fail runs that did real work. Tightening
+    // it is a defensible future choice, but an intentional one, not a side effect.
+    expect(
+      exitForNoFindings({ examinedFiles: ['mine.ts', 'also-mine.ts'], identicalFiles: ['also-mine.ts'], declared: true }),
+    ).toBe(0);
+  });
+
+  it('ignores identicalFiles when the set was INFERRED, not declared (identical tracking is a declared-mode signal)', () => {
+    expect(exitForNoFindings({ examinedFiles: ['a.ts'], identicalFiles: ['a.ts'], declared: false })).toBe(0);
   });
 });

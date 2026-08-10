@@ -225,6 +225,50 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
   ].join('\n');
 }
 
+/**
+ * EI-20095543794921181: the exit status for "this run VERIFIED NOTHING".
+ *
+ * Distinct from both 0 (checked, no strands) and 1 (checked, strands found),
+ * because those are the only two answers a caller can currently receive and
+ * neither is true when the run examined zero files. On this tree that is the
+ * COMMON case, not an edge one: git-sync commits the whole working tree every
+ * few minutes, so by the time you run this after an edit the diff against HEAD
+ * is usually already empty — the guard is least reliable exactly when it is
+ * most needed. Measured: the default invocation returned exit 0 having examined
+ * ZERO files, while the same tree checked against the carrying commit had 30
+ * real errors, 5 of them in a file `test:affected` does not select.
+ *
+ * The prose warning was already correct and already printed. Prose does not
+ * reach `&& echo PASS`, `grep -c "error TS"`, or a CI step's exit status — the
+ * readers that actually decide. Same class the repo fixes elsewhere with
+ * `unitsUnknown`, `ownerVisible`, and testing:run's zero-match refusal: ABSENT
+ * EVIDENCE MUST NOT READ AS EVIDENCE OF ABSENCE.
+ */
+const EXIT_NOT_CHECKED = 2;
+
+/**
+ * PURE — the exit status for a run that produced no findings, so the
+ * "no findings" ≠ "clean bill" distinction is unit-testable rather than
+ * buried in main() where only an end-to-end run could reach it.
+ *
+ * 0 only when something was genuinely diffed. `EXIT_NOT_CHECKED` for the two
+ * ways a run can prove nothing while looking successful:
+ *   - nothing differed from `base` at all, so zero files were examined;
+ *   - every DECLARED file was byte-identical to `base` (the per-file form of
+ *     the same root cause — see formatNoFindings).
+ *
+ * A PARTIAL declared run — some files identical, others genuinely diffed —
+ * deliberately stays 0: it verified what it could, and formatNoFindings names
+ * the files it could not. Tightening that to non-zero is a defensible future
+ * choice, but it would fail runs that did do real work, so it should be made
+ * on purpose rather than as a side effect of this one.
+ */
+export function exitForNoFindings({ examinedFiles = [], identicalFiles = [], declared = false } = {}) {
+  if (examinedFiles.length === 0) return EXIT_NOT_CHECKED;
+  if (declared && identicalFiles.length >= examinedFiles.length) return EXIT_NOT_CHECKED;
+  return 0;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
@@ -253,7 +297,9 @@ function main() {
     const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], { allowFail: true });
     if (nameStatus === null) {
       console.error(`check-required-field-strands: cannot diff against '${base}'`);
-      process.exit(0);
+      // A base we cannot diff against means we examined nothing — the one thing
+      // this must never report as a clean bill (EI-20095543794921181).
+      process.exit(EXIT_NOT_CHECKED);
     }
     candidates = nameStatus
       .split('\n')
@@ -300,7 +346,13 @@ function main() {
         formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles), identicalFiles }),
       );
     }
-    process.exit(0);
+    // EI-20095543794921181: "no findings" is only a clean bill if something was
+    // actually diffed. Two ways it is not: nothing differed from `base` at all
+    // (zero files), or every DECLARED file turned out byte-identical to it — the
+    // per-file form of the same root cause, already described at formatNoFindings.
+    // A partial run (some named files identical, others genuinely diffed) still
+    // exits 0: it verified what it could, and the warning above names the rest.
+    process.exit(exitForNoFindings({ examinedFiles, identicalFiles, declared: Boolean(declaredFiles) }));
   }
 
   if (!json) {
