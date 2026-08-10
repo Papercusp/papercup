@@ -109,7 +109,21 @@ export interface FrontmatterInput {
   documents: string[];
   plans: string[];
   sidebarOrder?: number;
+  /**
+   * OKF v0.2's ONE mandatory field (`lint:okf-conformance` fails a doc without it).
+   *
+   * This tool omitted it until 2026-08-10, so every doc it produced was born
+   * OKF-nonconformant — harmless while hand-authoring was the common path and the corpus
+   * carried it anyway (measured: 578 Insight / 94 Convention), and a fleet-wide gate red
+   * the moment docs:author became the ONLY supported way to author (P-008). Defaulted
+   * rather than required: a mandatory arg would break every existing caller to prevent a
+   * failure a sensible default already prevents.
+   */
+  type: string;
 }
+
+/** The OKF `type:` for a doc, defaulted by section. */
+export const DEFAULT_DOC_TYPE = 'Insight';
 
 /** YAML double-quoted scalar — JSON.stringify is a valid YAML flow scalar. */
 function yamlStr(s: string): string {
@@ -121,6 +135,7 @@ export function buildFrontmatter(fm: FrontmatterInput): string {
   const lines: string[] = ['---'];
   lines.push(`title: ${yamlStr(fm.title)}`);
   lines.push(`description: ${yamlStr(fm.description)}`);
+  lines.push(`type: ${fm.type}`);
   lines.push(`discovered: ${fm.discovered}`);
   if (fm.tags.length) lines.push(`tags: [${fm.tags.map(yamlStr).join(', ')}]`);
   lines.push(`status: ${fm.status}`);
@@ -183,6 +198,7 @@ const argsSchema = z.object({
     .optional()
     .describe('Docs-root-relative section dir. Default "agent-insights" (the runbook/insight section).'),
   status: z.enum(['active', 'superseded', 'draft']).optional().describe('Frontmatter `status`. Default "active".'),
+  type: z.string().optional().describe('OKF `type:` — the genre. "Insight" (default) for a discovery/failure-mode; "Convention" for a rule the repo follows.'),
   sidebarOrder: z.number().int().optional().describe('Optional Starlight sidebar order.'),
   verify: z
     .boolean()
@@ -271,6 +287,7 @@ export default defineTool({
       description: args.description.trim(),
       discovered: todayIso(),
       status: args.status ?? 'active',
+      type: (args.type ?? '').trim() || DEFAULT_DOC_TYPE,
       tags: normalizeList(args.tags),
       documents,
       plans: normalizeList(args.plans),

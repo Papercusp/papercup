@@ -777,7 +777,8 @@ so you see what's happening in your areas and others see what you discover:
   (D-002), not a bug to file.
 - **File what you discover — the moment you notice it.** Don't let it evaporate into
   prose: a health/degradation signal or turn-end reflection → `improvements:capture`
-  (with evidence); durable how-it-works → an agent-insights doc; a concrete actionable
+  (with evidence); durable how-it-works → an agent-insights doc via `docs:author` (never a
+  hand-written .mdx — PG is canonical, the file is a projection); a concrete actionable
   out-of-scope problem → `work_items:create { kind:'bug', title, severity, topics }`
   (never drop it) — `topics:tag` routes any object to an area; `work_items:claim` before
   fixing; `work_items:set_state`/`work_items:promote { harness }` on resolution.

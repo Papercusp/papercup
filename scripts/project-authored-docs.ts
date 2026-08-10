@@ -277,6 +277,16 @@ async function main(): Promise<number> {
 
 // Symlink-robust self-exec guard: node realpaths import.meta.url while process.argv[1]
 // keeps the invoked path, so comparing them naively fails through the workspace symlink.
+//
+// `.then` rather than top-level await, deliberately: tsx transforms this file to CJS, where
+// a top-level await is a hard transform error ("not supported with the cjs output format")
+// — the script would not run at all, which is how this was found.
 if (process.argv[1] && resolve(process.argv[1]).endsWith(`${sep}project-authored-docs.ts`)) {
-  process.exit(await main());
+  void main().then(
+    (code) => process.exit(code),
+    (err: unknown) => {
+      console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+      process.exit(1);
+    },
+  );
 }
