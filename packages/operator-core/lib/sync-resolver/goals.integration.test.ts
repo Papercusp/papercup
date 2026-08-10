@@ -259,6 +259,11 @@ describe('goals.* resolvers against real SQL', () => {
     expect(g.openWorkItems).toBe(2);
     expect(g.needsHuman).toBe(1);
     expect(g.potCount).toBe(1);
+    // P-007/D-022: the card names WHICH pots, so the list query now carries a
+    // bounded sample beside the count. Asserted here rather than only in the
+    // pure chip test, because the shape is produced by json_agg + a correlated
+    // servesGoals sub-select — SQL the client tests cannot see.
+    expect(g.pots).toEqual([{ harnessSlug: 'alpha', role: 'owner', servesGoals: 1 }]);
   });
 
   it('resolveGoalDetail RUNS and returns every section the detail view reads', async () => {

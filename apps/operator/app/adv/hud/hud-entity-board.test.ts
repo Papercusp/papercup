@@ -347,6 +347,86 @@ describe('buildGoalBoard', () => {
     expect(card.badges.find((b) => b.id === 'g1:spend')?.tone).toBe('neutral');
   });
 
+  /* ── the pots chip (P-007 / D-022) ─────────────────────────────────────── */
+
+  const potsBadge = (goal: Record<string, unknown>) => {
+    const board = buildGoalBoard([{ id: 'g1', title: 'Ship', status: 'active', ...goal }], {
+      nowMs: NOW,
+    });
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    return card.badges.find((b) => b.id === 'g1:pots');
+  };
+
+  it('names the pots instead of counting them', () => {
+    // The item: "the card says 3 pots and never says WHICH".
+    expect(potsBadge({ potCount: 2, pots: [{ harnessSlug: 'alpha' }, { harnessSlug: 'beta' }] })?.label).toBe(
+      'alpha, beta',
+    );
+  });
+
+  it('counts overflow from potCount, NOT from the sample it was given', () => {
+    // The sample is bounded server-side, so a goal past the cap has more pots
+    // than names arrived. Deriving "+N" from the array would under-report it —
+    // here: 40 pots, 6 sampled, 2 shown, so 38 hidden and NOT 4.
+    const sample = Array.from({ length: 6 }, (_, i) => ({ harnessSlug: `p${i}` }));
+    expect(potsBadge({ potCount: 40, pots: sample })?.label).toBe('p0, p1 +38');
+  });
+
+  it('SAYS a pot is shared, in the label rather than only the tooltip (D-021)', () => {
+    // A reader adding two goals' spend together never hovers to discover they
+    // overlap, so the fact has to survive at a glance.
+    const badge = potsBadge({
+      potCount: 1,
+      pots: [{ harnessSlug: 'alpha', role: 'owner', servesGoals: 3 }],
+    });
+    expect(badge?.label).toBe('alpha · shared');
+    expect(badge?.title).toMatch(/also serves 2 other goals/);
+    expect(badge?.title).toMatch(/do not add up/);
+  });
+
+  it('stays silent about sharing when every pot serves this goal alone', () => {
+    // Paired control for the assertion above — without it, a chip that could
+    // never say "shared" would pass the negative here.
+    const badge = potsBadge({ potCount: 1, pots: [{ harnessSlug: 'alpha', servesGoals: 1 }] });
+    expect(badge?.label).toBe('alpha');
+    expect(badge?.title).not.toMatch(/shared|add up/);
+  });
+
+  it('falls back to the bare count when no sample arrived', () => {
+    // A payload from before the list query carried names must degrade to the
+    // old chip, not lose the signal.
+    expect(potsBadge({ potCount: 3 })?.label).toBe('3 pots');
+    expect(potsBadge({ potCount: 3, pots: [] })?.label).toBe('3 pots');
+  });
+
+  it('renders no pots chip at all for a goal with none', () => {
+    expect(potsBadge({ potCount: 0 })).toBeUndefined();
+    // Paired control: the same builder DOES emit one when there is a pot.
+    expect(potsBadge({ potCount: 1, pots: [{ harnessSlug: 'alpha' }] })).toBeTruthy();
+  });
+
+  it('never lets the pots chip cost more than the ONE slot the count used to', () => {
+    // The constraint behind D-022: the card renders only MAX_CHIPS badges, so a
+    // chip per pot would push the spend-vs-ceiling badge off a busy card.
+    const board = buildGoalBoard(
+      [
+        {
+          id: 'g1',
+          title: 'Ship',
+          status: 'active',
+          potCount: 5,
+          pots: Array.from({ length: 5 }, (_, i) => ({ harnessSlug: `p${i}` })),
+          spendUsd: 10,
+          budgetCents: 30_000,
+        },
+      ],
+      { nowMs: NOW },
+    );
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    expect(card.badges.filter((b) => b.id.includes(':pots')).length).toBe(1);
+    expect(card.badges.find((b) => b.id === 'g1:spend')).toBeTruthy();
+  });
+
   /* ── the burn chip (P-003) ─────────────────────────────────────────────── */
 
   const burnBadge = (goal: Record<string, unknown>) => {

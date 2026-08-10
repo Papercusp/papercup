@@ -235,6 +235,14 @@ export interface HudPlanInput {
  * without pulling a server module (and its `postgres` import) into a DOM-free
  * unit test.
  */
+/** One pot serving a goal, as the list query samples it (P-007/D-022). */
+export interface HudGoalPot {
+  harnessSlug: string;
+  role?: string | null;
+  /** Live goals this same pot serves. >1 means its spend does not sum (D-021). */
+  servesGoals?: number | null;
+}
+
 export interface HudGoalInput {
   id: string;
   title: string;
@@ -244,6 +252,16 @@ export interface HudGoalInput {
   needsHuman?: number | null;
   openWorkItems?: number | null;
   potCount?: number | null;
+  /**
+   * WHICH pots those are — a BOUNDED SAMPLE from the list query, never the
+   * total (goals-tab-improvement-2026-08-09 P-007, D-022).
+   *
+   * ⚠ Read `potCount` for how many, this for the names. `pots.length` is how
+   * many names the query was willing to carry; a goal past the sample cap has
+   * more pots than this array has entries, which is exactly the case where
+   * counting it would report a confident wrong number.
+   */
+  pots?: HudGoalPot[] | null;
   /** FLEET spend: what the goal's child agents cost. Not the goal's own turns. */
   spendUsd?: number | null;
   /**
@@ -673,6 +691,74 @@ export function goalSpendLabel(goal: HudGoalInput): string {
 }
 
 /**
+ * How many pot names fit in the chip before it becomes a count again. Two:
+ * the chip shares a row capped at MAX_CHIPS=4, and a third name pushes the
+ * label past what reads at a glance.
+ */
+const POT_NAMES_SHOWN = 2;
+
+/**
+ * The pots chip: WHICH pots pursue this goal, not merely how many
+ * (goals-tab-improvement-2026-08-09 P-007, D-022).
+ *
+ * ONE chip, in the slot the bare count used to occupy. That is a constraint,
+ * not a preference: the card renders only the first MAX_CHIPS (4) badges and a
+ * goal can already spend three on needs-you / paused / open, so a chip PER pot
+ * would routinely push the spend-vs-ceiling badge off the card — evicting one
+ * of the two things that can actually stop a goal in order to say who is
+ * working on it. Naming them inside the existing slot costs nothing and answers
+ * the question the count only gestured at.
+ *
+ * ⚠ OVERFLOW COUNTS FROM `potCount`, NOT from the array. The array is a bounded
+ * sample (POT_SAMPLE_LIMIT server-side), so `pots.length` is how many names
+ * arrived, not how many exist — a goal with forty pots must still say "+38",
+ * and deriving that from the sample would silently under-report it.
+ *
+ * Falls back to the old count-only chip when no sample arrived, so a payload
+ * from before this shipped degrades to the previous behaviour rather than
+ * losing the signal entirely.
+ */
+export function goalPotsChip(goal: HudGoalInput): HudBadge | null {
+  const total = goal.potCount ?? 0;
+  const sample = (goal.pots ?? []).filter((p) => p && p.harnessSlug);
+  if (total <= 0 && sample.length === 0) return null;
+
+  if (sample.length === 0) {
+    return {
+      id: `${goal.id}:pots`,
+      label: `${total} pot${total === 1 ? '' : 's'}`,
+      tone: 'neutral',
+      title: `${total} pot${total === 1 ? '' : 's'} serve this goal`,
+    };
+  }
+
+  const shown = sample.slice(0, POT_NAMES_SHOWN);
+  const hidden = Math.max(0, (total || sample.length) - shown.length);
+  const shared = sample.filter((p) => (p.servesGoals ?? 1) > 1);
+
+  let label = shown.map((p) => p.harnessSlug).join(', ');
+  if (hidden > 0) label += ` +${hidden}`;
+  // D-021's visible face. In the LABEL rather than only the tooltip: a reader
+  // adding two goals' spend together never hovers to find out they overlap.
+  if (shared.length > 0) label += ' · shared';
+
+  const lines = [
+    `${total || sample.length} pot${(total || sample.length) === 1 ? '' : 's'} pursue this goal: ${sample
+      .map((p) => (p.role ? `${p.harnessSlug} (${p.role})` : p.harnessSlug))
+      // The title lists the whole SAMPLE; the ellipsis fires only when the goal
+      // has pots the sample itself could not carry.
+      .join(', ')}${total > sample.length ? ', …' : ''}`,
+  ];
+  for (const p of shared) {
+    lines.push(
+      `${p.harnessSlug} also serves ${(p.servesGoals ?? 1) - 1} other goal${(p.servesGoals ?? 1) - 1 === 1 ? '' : 's'} — its spend counts in FULL against each, so these goals' costs do not add up.`,
+    );
+  }
+
+  return { id: `${goal.id}:pots`, label, tone: 'neutral', title: lines.join('\n') };
+}
+
+/**
  * Why there is no projected ceiling date. Rendered as a REASON, never as a
  * blank or a dash: the whole point of P-003 is that a missing rate is itself
  * information, and an empty slot reads as "nothing to worry about".
@@ -921,10 +1007,8 @@ export function toGoalCard(
   if (open > 0) {
     badges.push({ id: `${goal.id}:open`, label: `${open} open`, tone: 'good', title: `${open} open work item${open === 1 ? '' : 's'} stamped to this goal` });
   }
-  const pots = goal.potCount ?? 0;
-  if (pots > 0) {
-    badges.push({ id: `${goal.id}:pots`, label: `${pots} pot${pots === 1 ? '' : 's'}`, tone: 'neutral', title: `${pots} pot${pots === 1 ? '' : 's'} serve this goal` });
-  }
+  const potChip = goalPotsChip(goal);
+  if (potChip) badges.push(potChip);
   // The spend chip goes `bad` only at/over the ceiling — the second of the two
   // things that can actually stop a goal, so it earns an alarm tone.
   const ceilingUsd = goal.budgetCents == null ? null : goal.budgetCents / 100;

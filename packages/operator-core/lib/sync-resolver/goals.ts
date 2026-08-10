@@ -176,6 +176,31 @@ function num(v: unknown): number {
   return v == null ? 0 : Number(v);
 }
 
+/**
+ * The sampled pot names, as `json_agg` hands them back (P-007/D-022).
+ *
+ * Drops a row with no `harnessSlug` rather than rendering a nameless chip — the
+ * chip's entire job is to answer "which", and a blank one answers it wrongly
+ * while looking like data. `servesGoals` falls back to 1, the ordinary case,
+ * because the alternative (0) would read as "serves no goals" on a pot that
+ * demonstrably serves this one.
+ */
+function parsePotChips(raw: unknown): GoalPotChip[] {
+  if (!Array.isArray(raw)) return [];
+  const out: GoalPotChip[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as { harnessSlug?: unknown; role?: unknown; servesGoals?: unknown };
+    if (typeof r.harnessSlug !== 'string' || !r.harnessSlug) continue;
+    out.push({
+      harnessSlug: r.harnessSlug,
+      role: typeof r.role === 'string' ? r.role : null,
+      servesGoals: Math.max(1, num(r.servesGoals) || 1),
+    });
+  }
+  return out;
+}
+
 interface RawGoal {
   id: string;
   title: string;
@@ -190,6 +215,8 @@ interface RawGoal {
   updated_at: string | Date | null;
   last_activity_at: string | Date | null;
   pot_count: string | null;
+  /** json_agg of the sampled pots — shape validated by parsePotChips, not here. */
+  pots: unknown;
   open_work_items: string | null;
   needs_human: string | null;
   spend_usd: string | null;
@@ -223,6 +250,7 @@ function toSummary(r: RawGoal): GoalSummaryRow {
     updatedAt: iso(r.updated_at),
     lastActivityAt: iso(r.last_activity_at),
     potCount: num(r.pot_count),
+    pots: parsePotChips(r.pots),
     openWorkItems: num(r.open_work_items),
     needsHuman: num(r.needs_human),
     spendUsd: num(r.spend_usd),
@@ -427,7 +455,7 @@ export async function resolveGoalDetail(args: {
     const [goalRow] = (await tx`
       SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.metadata, g.launch_settings, g.created_at, g.updated_at,
-             0 AS pot_count, 0 AS open_work_items, 0 AS needs_human,
+             0 AS pot_count, '[]'::json AS pots, 0 AS open_work_items, 0 AS needs_human,
              0 AS spend_usd, 0 AS spend_recent_usd
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId} AND g.id = ${goalId}
