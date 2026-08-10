@@ -34,6 +34,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { toast } from 'sonner';
+import { Select } from '@/app/harness/Select';
 import type {
   GoalDetailLaunchOptions,
   GoalDetailLaunchSettings,
@@ -52,6 +53,17 @@ import {
   type LaunchSettingsForm,
   type ProfileField,
 } from './goal-launch-settings-model';
+
+/* The stored value for "unset" is the empty string, but Radix Select THROWS on
+   an Item whose value is '' (the wrapper drops such options defensively, which
+   would silently swallow this one). So the empty string cannot be an option
+   value, and it travels through the menu as this sentinel instead, mapped back
+   on the way out.
+   `placeholder` alone would not do: it only DISPLAYS the unset state, while the
+   native <option value="">system default</option> this replaces was also how a
+   user CLEARED a field they had already set. Dropping it would take that
+   affordance away with no visible sign. */
+const SYSTEM_DEFAULT_CHOICE = '__system_default__';
 
 async function saveLaunchSettings(
   goalId: string,
@@ -113,20 +125,20 @@ function ProfileFields({
                 owner cannot use. Degraded, but still editable — and it cannot
                 offer a wrong value, since the server validates either way. */}
             {choices && choices.length ? (
-              <select
+              <Select
                 id={id}
                 className="hud-goal__set-in"
-                value={value[field]}
+                value={value[field] === '' ? SYSTEM_DEFAULT_CHOICE : value[field]}
                 disabled={disabled}
-                onChange={(e) => onChange(field, e.target.value)}
-              >
-                <option value="">system default</option>
-                {choices.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
+                placeholder="system default"
+                onChange={(next: string) =>
+                  onChange(field, next === SYSTEM_DEFAULT_CHOICE ? '' : next)
+                }
+                options={[
+                  { value: SYSTEM_DEFAULT_CHOICE, label: 'system default' },
+                  ...choices.map((c) => ({ value: c, label: c })),
+                ]}
+              />
             ) : (
               <input
                 id={id}
