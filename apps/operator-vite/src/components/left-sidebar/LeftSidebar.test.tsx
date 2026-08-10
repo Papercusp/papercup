@@ -55,11 +55,13 @@ vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test:${k}`,
 }));
 // Stub the lazy tab panels with trivial markers — their own surfaces are tested
-// separately (MugTab / OverwatchTab / PotsTab).
+// separately (MugTab / OverwatchTab).
+// (No './PotsTab' stub: this rail no longer mounts it at all — the Pots tab was
+// removed 2026-08-10 on owner directive. A stub here would hide a regression that
+// re-added the tab, the same reasoning as the SwarmTab/VoiceTab note below.)
 vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-accounts" /> }));
 vi.mock('./MugTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
 vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwatch" /> }));
-vi.mock('./PotsTab', () => ({ default: () => <div data-testid="panel-hives" /> }));
 vi.mock('./SystemTab', () => ({ default: () => <div data-testid="panel-system" /> }));
 vi.mock('./AgentsTab', () => ({ default: () => <div data-testid="panel-agents" /> }));
 vi.mock('./SpendTab', () => ({ default: () => <div data-testid="panel-spend" /> }));
@@ -141,7 +143,7 @@ describe('<LeftSidebar> shell', () => {
   // t('overwatch')); the useLexicon mock above echoes the key, so they render as
   // the bare key names (restore-pot-lexicon P-005 — the classic pack shows
   // Pots / Papercup / Brain / Kettle at runtime).
-  it('orders the rail Accounts · Pots · Papercup · Mug · Kettle · Agents · System · Spend', () => {
+  it('orders the rail Accounts · Papercup · Mug · Kettle · Agents · System · Spend', () => {
     // The blanket useFlag answer turns EVERY gated tab on — overwatch, sentinel
     // and (since WI-37561) conversations. The full rail is what the owner's
     // ordering describes, and pinning it with the gates open is deliberate: a
@@ -153,7 +155,12 @@ describe('<LeftSidebar> shell', () => {
     const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
     expect(tabs.map((x) => x.textContent?.trim())).toEqual([
       'Accounts',
-      'pot',
+      // ('pot' sat HERE, right of Accounts, 2026-07-25 → 2026-08-10. REMOVED on
+      // owner directive: "Remove the 'Pots' tab from the middle pane." Like the
+      // Goals removal noted below this is a removal from the MIDDLE, so every
+      // entry after it shifts up one — if you are reading this because the test
+      // red'd, check whether your change meant to move a tab at all before
+      // editing the expectation.)
       'operator',
       'brain',
       'overwatch',
@@ -205,7 +212,9 @@ describe('<LeftSidebar> shell', () => {
       .filter((id) => id !== 'expand');
     expect(railButtons).toEqual([
       'accounts',
-      'hives',
+      // ('hives' was here — removed 2026-08-10 with the Pots tab. It joins
+      // 'goal'/'blender'/'docs'/'tasks' as a RETIRED id: a stale `?lst=hives` no
+      // longer matches the nuqs literal parser and falls through to the default.)
       'sentinel',
       'queen',
       'overwatch',
@@ -219,11 +228,23 @@ describe('<LeftSidebar> shell', () => {
     ]);
   });
 
+  // Subject is `system`, not the removed `hives` (2026-08-10). It must stay a
+  // NON-DEFAULT, ungated, stubbed tab or the test stops proving anything: point it
+  // at the default tab and it passes without the deep link doing any work.
   it('deep-links a tab from ?lst= and mounts only that panel', async () => {
-    renderRail('?lst=hives');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('hives');
-    expect(await screen.findByTestId('panel-hives')).toBeTruthy();
+    renderRail('?lst=system');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('system');
+    expect(await screen.findByTestId('panel-system')).toBeTruthy();
     expect(screen.queryByTestId('panel-queen')).toBeNull();
+  });
+
+  // A retired tab id must not resolve. `hives` joins goal/blender/docs/tasks: the
+  // nuqs literal parser no longer lists it, so a stale deep link falls through to
+  // the default tab rather than rendering a blank rail.
+  it('falls through to the default tab for the RETIRED ?lst=hives deep link', () => {
+    renderRail('?lst=hives');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).not.toBe('hives');
+    expect(screen.queryByTestId('panel-hives')).toBeNull();
   });
 
   it('collapses to the icon rail on ?lsb=false and unmounts the active panel', () => {
@@ -232,15 +253,18 @@ describe('<LeftSidebar> shell', () => {
     expect(rail.getAttribute('data-collapsed')).toBe('true');
     expect(screen.queryByTestId('panel-queen')).toBeNull();
     // The collapsed expand-rail icon buttons are present.
-    expect(screen.getByTestId('left-sidebar-rail-hives')).toBeTruthy();
+    expect(screen.getByTestId('left-sidebar-rail-system')).toBeTruthy();
+    // ...and the removed Pots icon is NOT (2026-08-10) — the collapsed rail is a
+    // second rendering of TABS, so a tab removed from one must vanish from both.
+    expect(screen.queryByTestId('left-sidebar-rail-hives')).toBeNull();
   });
 
   it('clicking a tab switches the active panel and writes ?lst', async () => {
     const { lastQuery } = renderRail();
-    fireEvent.click(screen.getByTestId('left-sidebar-tab-hives'));
-    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('hives'));
-    expect(await screen.findByTestId('panel-hives')).toBeTruthy();
-    expect(lastQuery()).toContain('lst=hives');
+    fireEvent.click(screen.getByTestId('left-sidebar-tab-system'));
+    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('system'));
+    expect(await screen.findByTestId('panel-system')).toBeTruthy();
+    expect(lastQuery()).toContain('lst=system');
   });
 
   it('the collapse button writes ?lsb=false', async () => {
@@ -265,10 +289,13 @@ describe('<LeftSidebar> shell', () => {
   });
 
   it('the expand control is the TOPMOST collapsed-rail button and re-expands to the last pane without switching tabs (WI-4800)', async () => {
-    renderRail('?lsb=false&lst=hives');
+    // Subject moved off the removed `hives` to `system` (2026-08-10). It must be a
+    // NON-DEFAULT tab (the default is 'queen') or "re-expands WITHOUT switching
+    // tabs" would pass even if the tab silently reset.
+    renderRail('?lsb=false&lst=system');
     const rail = screen.getByTestId('left-sidebar');
     expect(rail.getAttribute('data-collapsed')).toBe('true');
-    expect(rail.getAttribute('data-tab')).toBe('hives');
+    expect(rail.getAttribute('data-tab')).toBe('system');
     // The expand control is the FIRST button in the collapsed rail (topmost) —
     // the mirror of the collapse chevron, not buried under the tab icons.
     const railEl = document.querySelector('.pclsb__expand-rail');
@@ -280,7 +307,7 @@ describe('<LeftSidebar> shell', () => {
     await waitFor(() => {
       expect(rail.getAttribute('data-collapsed')).toBe('false');
     });
-    expect(rail.getAttribute('data-tab')).toBe('hives');
+    expect(rail.getAttribute('data-tab')).toBe('system');
   });
 
   // WI-5162 (owner ask 2026-07-17): Fleet + Peers MOVED to the op-chat sidebar,
@@ -294,10 +321,15 @@ describe('<LeftSidebar> shell', () => {
       expect(screen.queryByTestId(`left-sidebar-tab-${gone}`)).toBeNull();
       expect(screen.queryByTestId(`left-sidebar-rail-${gone}`)).toBeNull();
     }
-    // The steering/settings tabs this rail kept are all still here.
-    for (const kept of ['accounts', 'queen', 'overwatch', 'hives']) {
+    // The steering/settings tabs this rail kept are all still here. ('hives' left
+    // this list on 2026-08-10 — the Pots tab was removed on owner directive, so
+    // asserting it is KEPT would now be asserting the opposite of the intent.)
+    for (const kept of ['accounts', 'queen', 'overwatch']) {
       expect(screen.getByTestId(`left-sidebar-tab-${kept}`)).toBeTruthy();
     }
+    // ...and Pots is gone from BOTH renderings, same as Fleet/Peers above.
+    expect(screen.queryByTestId('left-sidebar-tab-hives')).toBeNull();
+    expect(screen.queryByTestId('left-sidebar-rail-hives')).toBeNull();
   });
 
   // A bookmarked ?lst=swarm must not wedge the rail on a tab that no longer

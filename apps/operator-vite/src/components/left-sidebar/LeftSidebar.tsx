@@ -57,7 +57,13 @@ import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 // SwarmTab / VoiceTab are no longer mounted here — they render as op-chat
 // sidebar faces now (WI-5162); components/chat-faces/ChatFacesHost lazy-loads
 // them. The files stay where they are: only their HOST moved.
-const PotsTab = lazy(() => import('./PotsTab'));
+// (🌐 Pots is no longer mounted here — the tab was REMOVED from this rail on
+// 2026-08-10 by owner directive. `PotsTab.tsx` is deliberately KEPT IN PLACE,
+// unmounted, rather than moved to a retirement folder: it hosts
+// `PotFederationStatus`, which is the SHARED POT SUBSTRATE and SURVIVES the
+// mug/kettle/cup retirement (plan retire-mug-kettle-su-only-2026-08-09, D-003 +
+// D-069). If federation status should be visible again it wants RE-HOMING (the
+// HUD or the op-chat rail), not resurrecting from `_retired/`.)
 // 🔑 Accounts — the owner's session-now account override (which Max accounts the fleet
 // may use right now), beside Mug as a sibling owner-steering lever (accounts-pool-tab
 // P-005; promoted to the LEFTMOST sidebar tab by owner request 2026-06-17).
@@ -138,10 +144,13 @@ const SpendTab = lazy(() => import('./SpendTab'));
 // brand nouns resolve through the flag-gated pack — classic/public shows Pot,
 // Brain, Operator, Fleet; the-hive skin shows Hive, Queen, Sentinel, Colony.
 // Overwatch has no TermKey (D-002) so it stays literal in both packs.
-// ORDER IS OWNER-SET (2026-07-25, split 2026-07-26): Accounts · Pots · Papercup ·
-// Mug · Kettle · Agents · System · Spend. The owner reads the rail left-to-right
-// as "who am I / what am I running / who talks to me" (Accounts → Pots → Papercup)
-// before the autonomous machinery (Mug → Kettle → the two scheduled-work panes).
+// ORDER IS OWNER-SET (2026-07-25, split 2026-07-26; Pots removed 2026-08-10):
+// Accounts · Papercup · Mug · Kettle · Agents · System · Spend. The owner read the
+// rail left-to-right as "who am I / what am I running / who talks to me"
+// (Accounts → Pots → Papercup) before the autonomous machinery (Mug → Kettle → the
+// two scheduled-work panes). With Pots gone that reading is now Accounts →
+// Papercup; the REST of the order is untouched, deliberately — removing one entry
+// must not become licence to re-sort the others.
 // Tab IDS ARE FROZEN — `?lst=<id>` deep links, ui:dispatch, and the collapsed rail
 // buttons key on them — so reordering only moves array entries; never rename an id
 // to match a new position. (`blender` and `docs` are RETIRED ids: their panes were
@@ -155,7 +164,20 @@ const TABS = [
   // before (EI-13037). Same panes (SwarmTab / VoiceTab), composed for the
   // sidebar in components/chat-faces/ChatFacesHost. This middle rail keeps the
   // SETTINGS/steering surfaces.)
-  { id: 'hives', label: (t: BoundLexicon) => t('pot', { plural: true }), icon: Network, tip: (t: BoundLexicon) => `${t('pot', { plural: true })} — the cross-device P2P network of connected ${t('node', { plural: true, lower: true })}`, render: (a: boolean) => <PotsTab active={a} /> },
+  // (🌐 Pots sat HERE, right of Accounts, from 2026-07-25 to 2026-08-10. REMOVED
+  // on owner directive [owner 2026-08-10, verbatim: "Remove the 'Pots' tab
+  // from the middle pane."]. `hives` joins `blender`, `docs` and `tasks` as a
+  // RETIRED tab id — a stale `?lst=hives` deep link now falls through to the
+  // default tab.
+  //
+  // DELETED rather than flag-gated, unlike the Convos entry below: the owner
+  // asked for removal, not "behind a testing flag" (his words for Convos). The
+  // component `PotsTab.tsx` is KEPT IN PLACE and simply unmounted — it hosts
+  // `PotFederationStatus`, SURVIVING shared-pot substrate (D-003/D-069) whose
+  // only surface this was. That loss is deliberate and recorded, not overlooked;
+  // re-home it rather than restoring this tab. `LocalPotsControl` is also mounted
+  // by adv/PotsRunningPill — which P-075 removes, orphaning it; whichever of the
+  // two lands second owns retiring it.)
   // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ · Kettle→Thermometer
   // (no lucide kettle exists; the thermometer ties the kettle's heat to overwatch's
   // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.
