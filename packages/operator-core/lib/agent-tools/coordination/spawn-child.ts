@@ -22,13 +22,17 @@
  *      (`F-<CHILD>-SEED-NNN`) so a retried promote upserts instead of
  *      duplicating (D-004 idempotency).
  *   4. **Start** the seed plan (`op_status='started'` — same write as
- *      plans:start). ⚠ RETIRED (P-071/D-062): the operational axis retires with
+ *      plans:start). ⚠ RETIRED (P-071/D-063): the operational axis retires with
  *      the Mug/Kettle tier, so this step is gated by `mugKettleSystemEnabled()`
- *      and normally reports `start: 'axis_retired'` without writing. That is a
- *      SUCCESS, not a partial failure — an un-started plan's items are no longer
- *      RESERVED away from scheduler self-selection (work-items.ts:3828), so the
- *      child's features become claimable by su agents instead of waiting on a
- *      dispatcher that no longer runs.
+ *      and normally reports `start: 'axis_retired'` without writing.
+ *
+ *      That is a SUCCESS, not a partial failure. The write's live consumer is
+ *      the DBOS frontier — `readFrontierFeatures` makes a plan-sourced feature
+ *      dispatchable only while `COALESCE(source_plan_slug, metadata->>'source_plan')`
+ *      names a plan at `op_status='started'` — i.e. exactly the dispatcher tier
+ *      that retires. su SELF-SELECTION does not read that axis at all
+ *      (`claimFloorsWhereSql` imposes no started-plan requirement), so the
+ *      child's imported features stay claimable without the write.
  *
  * Failure model (D-004): idempotent + best-effort. Every step failure lands in
  * `warnings[]` — this module NEVER throws — and aborts the remaining steps for
@@ -259,7 +263,7 @@ export interface SpawnChildResult {
   assertions_written: number;
   started: boolean;
   /**
-   * P-071/D-062 — WHY `started` is what it is, so a false reading is never
+   * P-071/D-063 — WHY `started` is what it is, so a false reading is never
    * ambiguous. `axis_retired` is the normal outcome now (the op_status axis
    * retired with the Mug/Kettle tier) and is NOT a partial failure: unlike
    * `plan_not_found`/`failed` it produces no warning and re-promoting cannot
@@ -327,7 +331,7 @@ export interface SpawnChildDeps {
   /**
    * plans:start equivalent — op_status='started' on the seed plan row.
    *
-   * P-071/D-062: returns an OUTCOME, not a boolean, because the three falsy
+   * P-071/D-063: returns an OUTCOME, not a boolean, because the three falsy
    * cases mean different things to the caller — `plan_not_found` is a real
    * partial failure worth a re-promote, `axis_retired` is the expected steady
    * state and must NOT be reported as one.
@@ -456,7 +460,7 @@ export async function executeSpawnChild(
   }
 
   // ── 5. Start the seed plan (the RETIRED dispatcher eligibility gate) ─────
-  // P-071/D-062: `startPlan` is gated on mugKettleSystemEnabled and normally
+  // P-071/D-063: `startPlan` is gated on mugKettleSystemEnabled and normally
   // refuses. Each falsy case gets its OWN outcome because they need opposite
   // reactions from the reader: `plan_not_found` means the seed row is missing
   // and a re-promote can fix it; `axis_retired` means nothing is wrong and a
@@ -469,9 +473,9 @@ export async function executeSpawnChild(
     if (outcome === 'plan_not_found') {
       warn('plans:start matched no seed-plan row — features stay ineligible until the plan is started; re-promote to retry');
     }
-    // 'axis_retired' is deliberately WARNING-FREE: the features are claimable
-    // (an un-started plan does not reserve its items away from the scheduler),
-    // and this module's warnings are read as "re-promote to retry".
+    // 'axis_retired' is deliberately WARNING-FREE: nothing failed, the child's
+    // features remain su-claimable without the write, and this module's warnings
+    // are read as "re-promote to retry" — which would change nothing here.
   } catch (e) {
     result.start = 'failed';
     warn(`plans:start failed: ${e instanceof Error ? e.message : String(e)} — start the seed plan manually or re-promote`);
@@ -558,12 +562,12 @@ export function buildDefaultSpawnChildDeps(io: {
     },
 
     async startPlan(childSlug, seedSlug) {
-      // P-071 / D-062: the op_status axis retires with the Mug/Kettle tier, so
+      // P-071 / D-063: the op_status axis retires with the Mug/Kettle tier, so
       // this write is gated exactly as plans:start is (start.ts) — fail-CLOSED
-      // via mugKettleSystemEnabled, because a false `true` would put a brand-new
-      // child's seed plan back on the axis and RESERVE its freshly imported
-      // features away from scheduler self-selection (work-items.ts:3828) for a
-      // dispatcher that is not running. Refusing BEFORE resolvePlanScope keeps
+      // via mugKettleSystemEnabled, because a false `true` puts a brand-new
+      // child's seed plan back on the axis whose only live reader is the DBOS
+      // frontier's plan gate (orchestrator-loop.ts readFrontierFeatures), the
+      // dispatcher tier that is retiring. Refusing BEFORE resolvePlanScope keeps
       // the retired path free of the DB round-trip entirely.
       if (!(await mugKettleSystemEnabled())) return 'axis_retired';
 

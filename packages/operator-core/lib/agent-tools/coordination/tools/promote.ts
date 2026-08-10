@@ -1331,7 +1331,7 @@ export default defineTool({
       seed_plan_slug: c.seed_plan_slug,
       feature_ids: c.feature_ids,
       started: c.started,
-      // P-071/D-062: `started:false` alone cannot be read — 'axis_retired' (the
+      // P-071/D-063: `started:false` alone cannot be read — 'axis_retired' (the
       // normal outcome now) and 'plan_not_found' (a real partial failure) are
       // both falsy and want opposite reactions.
       start: c.start,

@@ -1,15 +1,13 @@
 /**
- * spawn-child's op_status writer is GATED (P-071 / D-062, plan
+ * spawn-child's op_status writer is GATED (P-071 / D-063, plan
  * retire-mug-kettle-su-only-2026-08-09).
  *
  * `buildDefaultSpawnChildDeps().startPlan` is the promote-time entry to the
  * RETIRED plan operational axis: it wrote `op_status='started'` on a freshly
- * scaffolded child's seed plan so the DBOS frontier would dispatch its features.
- * That dispatcher no longer runs, and the write is not inert — the scheduler's
- * reservation leg (`work-items.ts`: `AND (p.op_status IN ('started','paused') OR
- * p.status='active')`) RESERVES a started plan's items away from su
- * self-selection. So the un-gated write would take a brand-new child's freshly
- * imported features and hide them from the only agents left to claim them.
+ * scaffolded child's seed plan so the DBOS frontier would dispatch its features
+ * (`readFrontierFeatures` gates a plan-sourced feature on its plan being
+ * `op_status='started'`) — the dispatcher tier that retires. su self-selection
+ * never read that axis, so the refusal costs the child's features nothing.
  *
  * Two properties, and the second is the one that rots:
  *   1. RETIRED ⇒ no write at all (not "a write that no-ops").
@@ -88,9 +86,9 @@ describe('spawn-child startPlan — the retired op_status axis', () => {
   });
 
   it('fails CLOSED when the flag store is unreachable', async () => {
-    // An unreadable flag resolving to "axis live" would re-reserve a child's
-    // features for a dispatcher that is not running — the exact failure the
-    // gate exists to stop, arriving precisely when the system is degraded.
+    // An unreadable flag resolving to "axis live" would re-enter the retired
+    // axis — the exact failure the gate exists to stop, arriving precisely when
+    // the system is degraded.
     TIER.on = null;
     await expect(startPlan()).resolves.toBe('axis_retired');
     expect(SQL.calls).toEqual([]);

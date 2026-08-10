@@ -64,7 +64,7 @@ vi.mock('../../harness-core', async () => {
   };
 });
 
-// P-071/D-062: `startPlan` is gated on the Mug/Kettle tier flag, which is OFF in
+// P-071/D-063: `startPlan` is gated on the Mug/Kettle tier flag, which is OFF in
 // the delivered end state — so the op_status write this suite was written to
 // observe no longer happens by default. Hold the axis LIVE for the frontier
 // cases below (they assert the DISPATCHER mechanics op_status feeds, which are

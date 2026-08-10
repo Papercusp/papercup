@@ -392,7 +392,7 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(r.warnings.some((w) => w.includes('plans:start'))).toBe(true);
   });
 
-  // P-071/D-062. The two falsy start outcomes must NOT read alike: this module's
+  // P-071/D-063. The two falsy start outcomes must NOT read alike: this module's
   // warnings mean "re-promote to retry", which is wrong (and was the misleading
   // warning P-071 names) for a refusal no re-promote can change.
   it('a RETIRED axis is a distinct outcome with NO warning — the spawn still succeeded', async () => {
