@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, lstatSync, readlinkSync, symlinkSync, copyFileSync, openSync, readSync, closeSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, lstatSync, readlinkSync, symlinkSync, copyFileSync, openSync, readSync, writeSync, closeSync } from 'node:fs';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, delimiter, basename } from 'node:path';
@@ -38,6 +38,15 @@ import {
 // su-role-addendum.ts. Plain .mjs so this bare-node script and the tsx/bundled
 // operator import the SAME definition — a second copy here would drift silently.
 import { SU_TIER_ROLES } from '../../../packages/operator-core/lib/su-tier-roles.mjs';
+// WI-37841: the ONE derivation of a launch's boot-log path, shared with
+// launch-su.ts (which points the keep-window-open receipt at the same file) and
+// with the reader that surfaces its tail on the failed-launch banner. Plain .mjs
+// for the same reason as the imports above.
+import {
+  ensurePsuLaunchLogPath,
+  prunePsuLaunchLogs,
+  PSU_LAUNCH_LOG_MAX_BYTES,
+} from '../../../packages/operator-core/lib/psu-launch-log.mjs';
 import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
 import {
   ompGatewayModelsConfig,
@@ -1428,6 +1437,108 @@ export function recordSessionOwner(nativeSessionId, coordOwnerId, { home = homed
   } catch {
     return false;
   }
+}
+
+/**
+ * Tee this launcher's OWN stderr into the launch's boot log — WI-37841.
+ *
+ * WHAT THIS BUYS. When a HUD "+ New session" launch dies before psu registers,
+ * the operator can say only "its terminal closed before the session came online"
+ * — it has no access to the one artifact that names the cause, because psu's
+ * diagnostics go to the spawned window's pty and nowhere else. That has now cost
+ * two full forensic sessions for two different root causes. Every explanation
+ * was already printed; none was readable afterwards.
+ *
+ * WHY A STREAM WRAPPER AND NOT INSTRUMENTED EXIT PATHS. This launcher has 60+
+ * `console.error` / `process.exit` sites. Instrumenting them is unmaintainable
+ * and, worse, fails silently in the direction that matters: the exit path nobody
+ * remembered to annotate is precisely the novel failure a future forensic
+ * session will be spent on. One wrapper at the stream captures all of them —
+ * including an uncaught exception's stack, which no per-site annotation would.
+ *
+ * WHY STDERR ONLY, NEVER STDOUT. psu hands stdout to an INTERACTIVE agent client
+ * (the claude/codex REPL owns the pty). Routing it through a tee — the obvious
+ * shell-level `psu … | tee` shape — destroys the tty and breaks every launch it
+ * was meant to diagnose. This wrapper also only ever ADDS a file write; the
+ * original `write` still runs first, so the window shows exactly what it did
+ * before.
+ *
+ * SCOPE IS SELF-LIMITING, BY CONSTRUCTION. Only a launch that was handed a
+ * PRE-PINNED `--owner-id` (i.e. a programmatic one — launch-su) gets a log; a
+ * human typing `psu` at a terminal has the window in front of them and needs no
+ * side-channel. And once psu hands the tty to the agent child, the child writes
+ * to fd 2 directly rather than through this JS wrapper, so capture naturally
+ * stops at the boot boundary instead of trailing a session for hours.
+ *
+ * Never throws, and returns null when it captured nothing: a diagnostic
+ * side-channel must never be able to fail a launch. Every failure degrades to
+ * exactly the pre-WI-37841 behaviour.
+ */
+export function installBootLogCapture(
+  ownerId,
+  { home = homedir(), maxBytes = PSU_LAUNCH_LOG_MAX_BYTES, stream = process.stderr, argv = process.argv.slice(2), now = () => new Date() } = {},
+) {
+  const file = ensurePsuLaunchLogPath(ownerId, { home });
+  if (!file) return null;
+  let fd;
+  try {
+    // 'w' — TRUNCATE. Owner ids are unique per launch, so this file belongs to
+    // this launch alone; truncating means a reader can never be handed a
+    // previous launch's diagnostic, which would be worse than no diagnostic.
+    fd = openSync(file, 'w');
+  } catch {
+    return null;
+  }
+  let written = 0;
+  let live = true;
+  const append = (text) => {
+    if (!live || written >= maxBytes) return;
+    try {
+      const buf = Buffer.from(text, 'utf8');
+      const room = maxBytes - written;
+      writeSync(fd, room >= buf.length ? buf : buf.subarray(0, room));
+      written += buf.length;
+    } catch {
+      // A broken fd must not take the launch down with it, and retrying every
+      // subsequent write would turn one fault into a storm.
+      live = false;
+    }
+  };
+  // The header is half the value: a failed launch's argv is what distinguishes
+  // "psu refused these arguments" from "psu never got that far", and it is not
+  // recoverable from the adv_sessions row once the launch dies.
+  append(`# psu launch ${ownerId} at ${now().toISOString()}\n# argv: ${argv.join(' ')}\n`);
+  const original = stream.write.bind(stream);
+  stream.write = (chunk, encoding, cb) => {
+    try {
+      append(typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+    } catch {
+      // fall through — the real write below is what the user sees, and it must
+      // happen whatever the tee did.
+    }
+    return original(chunk, encoding, cb);
+  };
+  // Housekeeping, not correctness: one small file per launch would otherwise
+  // accrete forever. Best-effort and bounded (see prunePsuLaunchLogs).
+  try {
+    prunePsuLaunchLogs({ home });
+  } catch {
+    /* never blocks a launch */
+  }
+  return {
+    path: file,
+    /** Restore the original stream + stop writing. Tests use it; production
+     *  never needs to — the process exiting is the natural end of capture. */
+    uninstall() {
+      live = false;
+      stream.write = original;
+      try {
+        closeSync(fd);
+      } catch {
+        /* already gone */
+      }
+    },
+  };
 }
 
 /** The coordOwnerId this native session was born with, or null (no entry /
@@ -7277,6 +7388,14 @@ async function ensureBackendInstalled(agent, { interactive = Boolean(process.std
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // WI-37841 — FIRST, before any flow can fail. A launch carrying a PRE-PINNED
+  // owner id was started programmatically (launch-su's "+ New session"), so
+  // nobody is watching its window and every diagnostic it prints from here on is
+  // otherwise lost the moment it exits. Tee them to this launch's boot log so
+  // the failure banner can name a cause instead of "the terminal closed".
+  // Never throws and returns null on any trouble — a diagnostic side-channel
+  // must not be able to fail the launch it is diagnosing.
+  if (args.ownerId) installBootLogCapture(args.ownerId);
   // headless-fleet-launch P-001: publish the headless posture into the env BEFORE any
   // launch flow. runWrapper builds its child env from sanitizeInheritedEnv(process.env)
   // (which preserves PAPERCUSP_*), so this single assignment is what (a) makes

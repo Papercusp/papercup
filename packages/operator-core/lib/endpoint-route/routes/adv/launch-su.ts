@@ -22,6 +22,9 @@ import { isSuAgent, isSuContextSize, type SuAgent, type SuContextSize } from '..
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
+// WI-37841: the ONE derivation of this launch's boot-log path, shared with
+// psu-launcher.mjs (the other writer) and with the reader that surfaces its tail.
+import { psuLaunchLogPath } from '../../../psu-launch-log.mjs';
 import {
   DISPLAY_TERMINAL_LAUNCH,
   markAdvSessionEnded,
@@ -515,7 +518,23 @@ const launchSu = defineTool({
         // recover a message that had been printed to a window all along.
         // console-spawn's windows have never had this problem; this is the same
         // helper they use.
-        oneliner: keepWindowOpenOnFailure(psuCommand),
+        oneliner: keepWindowOpenOnFailure(psuCommand, {
+          // WI-37841: point the receipt at THIS launch's boot log — the same
+          // file psu itself tees its diagnostics into (psu-launch-log.mjs owns
+          // the one derivation, so neither side can drift).
+          //
+          // The two writers cover disjoint halves of the failure space, which is
+          // why both are needed. psu's own tee cannot record a failure that
+          // happens BEFORE node runs — psu missing from PATH, an unusable login
+          // shell, a bad interpreter — and those exit through this shell wrapper
+          // instead. Without the receipt they leave no trace anywhere the
+          // operator can read, which is indistinguishable from the launch never
+          // having been attempted.
+          //
+          // Null when there is no pre-pinned owner (a resume) — the wrapper then
+          // behaves exactly as it did before, printing to the window only.
+          receiptPath: psuLaunchLogPath(ownerId),
+        }),
         env: { ...process.env, PAPERCUSP_OPERATOR_URL: resolveSpawnHostOperatorBaseUrl() },
       });
       spawned = r.ok ? r : { ok: false, error: r.error };
