@@ -825,14 +825,21 @@ describe('GoalDetailPanel', () => {
     it('keeps DOM order equal to the promised reading order, so tab order cannot contradict the layout', () => {
       rosterRows(inFleet);
       renderPanel(withAgent());
-      /* Orders │ Brief │ conversation │ Work │ Activity │ Fleet. This is the
-         guard that forbids reaching for CSS `order` to place a zone: `order`
-         moves the pixels and leaves the tab sequence behind, which is the a11y
-         failure this codebase already rejects elsewhere. */
+      /* Orders │ Brief │ conversation │ Sessions │ Work │ Activity │ Fleet.
+         This is the guard that forbids reaching for CSS `order` to place a
+         zone: `order` moves the pixels and leaves the tab sequence behind,
+         which is the a11y failure this codebase already rejects elsewhere.
+
+         P-024 inserted Sessions at position 4 rather than appending it, because
+         the owner placed it "to the left of the WORK pane" — and a list that
+         merely CONTAINED the new id in any position would pass with the zone
+         seated at the far edge, which is the one placement that was ruled out
+         explicitly. */
       const nodes = [
         'goal-orders-rail',
         'goal-brief-rail',
         'goal-chat',
+        'goal-sessions-rail',
         'goal-work-rail',
         'goal-dossier-rail',
         'goal-peers-rail',
@@ -855,6 +862,14 @@ describe('GoalDetailPanel', () => {
         'goal-orders-toggle',
         'goal-activity-toggle',
         'goal-fleet-toggle',
+        /* P-024's zone goes with them. It is not a BORROWED rail — it describes
+           the goal, not the agent — but its five sections exist to report
+           coverage gaps in a goal that is RUNNING, and a goal with no agent
+           stamp has none to report. Five empty sections beside the popup's own
+           "no agent is running this goal yet" sentence would be saying that a
+           sixth time, in a shape that reads as a fault. */
+        'goal-sessions-rail',
+        'goal-sessions-toggle',
       ]) {
         expect(screen.queryByTestId(id)).toBeNull();
       }
