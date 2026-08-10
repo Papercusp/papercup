@@ -11,7 +11,11 @@ import {
   splitFrontmatter,
   stripProjectionBanner,
 } from './authored-doc-projection';
-import { listCorpusDocs, listSectionDocs } from '../../../../../scripts/project-authored-docs';
+import {
+  GENERATOR_OWNED_DOCS,
+  listCorpusDocs,
+  listSectionDocs,
+} from '../../../../../scripts/project-authored-docs';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -245,6 +249,43 @@ describe('authored-doc projection (P-008)', () => {
       expect(got).not.toContain('spec/notes.txt');
       // Agent scratch under a dot-path must never be minted as a canonical doc.
       expect(got.some((d) => d.includes('.papercusp'))).toBe(false);
+    });
+
+    describe('docs another generator owns are excluded (WI-37747 regression)', () => {
+      // WHY: `npm run gen:doc-projections` rewrites these five from LIVE sources (the
+      // defineTool registry, the PG plan store, the blueprint/role registries). PG cannot be
+      // canonical for them — a row is only ever a stale snapshot. When this projector was
+      // widened from `agent-insights` to the whole corpus it began claiming them, and
+      // `gen:authored-docs:check` (a GATE) went red the next time either generator ran.
+      beforeEach(() => {
+        writeFileSync(join(root, 'reference', 'tool-catalog.md'), SAMPLE);
+        writeFileSync(join(root, 'reference', 'plans-index.md'), SAMPLE);
+        writeFileSync(join(root, 'reference', 'generated-api-and-lib-reference.mdx'), SAMPLE);
+      });
+
+      it('excludes generator-owned docs from the corpus walk', () => {
+        const got = listCorpusDocs(root);
+        expect(got).not.toContain('reference/tool-catalog.md');
+        expect(got).not.toContain('reference/plans-index.md');
+      });
+
+      it('excludes them BY DOC, not by banning the reference/ directory', () => {
+        // The falsifier that separates the real rule from a lazy `reference/` blanket ban:
+        // `generated-api-and-lib-reference.mdx` carries THIS projector's own banner and is
+        // genuinely PG-canonical, so it must survive — as must any ordinary doc filed there.
+        const got = listCorpusDocs(root);
+        expect(got).toContain('reference/generated-api-and-lib-reference.mdx');
+        expect(got).toContain('reference/b.md');
+      });
+
+      it('every excluded doc_id is one the projector would otherwise have walked', () => {
+        // Guards the set against rot: an entry naming a path that no longer exists (renamed,
+        // deleted, or typo'd) silently protects nothing, and the gate it guards would red
+        // without anything pointing here.
+        for (const docId of GENERATOR_OWNED_DOCS) {
+          expect(docId).toMatch(/^[^.].*\.mdx?$/);
+        }
+      });
     });
   });
 
