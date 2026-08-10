@@ -38,8 +38,13 @@ vi.mock('../../events/await/store', () => ({
 // EI-20099413453852234: a successful claim now declares the caller's intent, which is a
 // presence WRITE — mocked here for the same reason as cancelClaimableAwaits above, so these
 // unit tests never touch real PG, and so the block below can assert exactly what was written.
-const getPresenceM = vi.hoisted(() => vi.fn(async () => null as unknown));
-const writePresenceM = vi.hoisted(() => vi.fn(async () => {}));
+const getPresenceM = vi.hoisted(() => vi.fn(async (_ownerId?: string) => null as unknown));
+// The parameters are DECLARED even though the body ignores them: a bare `vi.fn(async () => {})`
+// types `mock.calls` as the empty tuple `[]`, so asserting on `calls[0][1]` (the PresenceInput
+// this test exists to inspect) is TS2493 — caught by lint:tsc, never by vitest.
+const writePresenceM = vi.hoisted(() =>
+  vi.fn(async (_identity?: unknown, _input?: Record<string, unknown>, _harness?: unknown) => {}),
+);
 // PARTIAL mock, deliberately: this module also exports PRESENCE_STALE_MS, which
 // presence-wakeability.ts -> fleet-roster.ts imports transitively. A whole-module factory
 // drops it and the mock fails at import time rather than in a test.
