@@ -114,6 +114,40 @@ describe('inProcessCall — registration + gate routing', () => {
     const unstamped = mocks.dispatchProjectedTool.mock.calls[0]![3] as { telemetrySurface?: string };
     expect('telemetrySurface' in unstamped).toBe(false); // no opts → field ABSENT, not undefined
   });
+
+  // WI-37843. A compound tool that serves 'full' still folded TRIMMED sub-reads,
+  // because the inner ctx is a spread of the outer one. The visible casualty was
+  // fleet:assignments' trimmed shaper projecting per-agent `claims[]` to a NUMBER
+  // (EI-20108229813877389) — a type change one level below where anyone looked.
+  describe('ignoreSessionPayloadTier — the sub-read tier (WI-37843)', () => {
+    const trimmedCtx = { who: 'caller', contextTier: 'trimmed' } as unknown as UnifiedToolContext;
+
+    it('clears the inherited session tier so sub-reads resolve to full', async () => {
+      mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+      await inProcessCall(trimmedCtx, { ignoreSessionPayloadTier: true })('fleet:assignments', {});
+      const passed = mocks.dispatchProjectedTool.mock.calls[0]![3] as { contextTier?: unknown };
+      // The KEY must be present-and-undefined, not absent: it has to override the
+      // spread of the outer ctx. Asserting `in` too, because a plain
+      // `toBeUndefined()` passes just as happily if the override never happened
+      // and the key simply vanished — which would be the bug, not the fix.
+      expect('contextTier' in passed).toBe(true);
+      expect(passed.contextTier).toBeUndefined();
+    });
+
+    it('INHERITS the session tier when not opted in — every other compound tool is unchanged', async () => {
+      // The falsifier for the test above: same ctx, flag off, tier still flows.
+      mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+      await inProcessCall(trimmedCtx, { telemetrySurface: 'orient' })('fleet:assignments', {});
+      const passed = mocks.dispatchProjectedTool.mock.calls[0]![3] as { contextTier?: unknown };
+      expect(passed.contextTier).toBe('trimmed');
+
+      mocks.dispatchProjectedTool.mockClear();
+      mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+      await inProcessCall(trimmedCtx)('fleet:assignments', {});
+      const noOpts = mocks.dispatchProjectedTool.mock.calls[0]![3] as { contextTier?: unknown };
+      expect(noOpts.contextTier).toBe('trimmed');
+    });
+  });
 });
 
 describe('inProcessCall — failure surfacing (throws)', () => {

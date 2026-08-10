@@ -103,7 +103,7 @@ function doorify(out: Record<string, unknown>) {
  * to thread would look identical from the outside — orient would just quietly
  * go back to being truncated, with every test still green.
  */
-describe('coord:orient declares BOTH uncapping legs (WI-37843)', () => {
+describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
   it("opts out of the result door as 'oversize-by-design' — the MODEL-FACING reason", () => {
     // Not 'programmatic-caller': that reason additionally suppresses appended
     // prose, and orient's reader is an agent that must still receive warnings
@@ -121,6 +121,23 @@ describe('coord:orient declares BOTH uncapping legs (WI-37843)', () => {
     // property that made p99 pin to the old 30,000-CHAR ceiling.
     expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBe(120_000);
     expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBeGreaterThan(16_472 * 4);
+  });
+
+  // The leg that actually uncaps AGENTS. The two above were landed first and
+  // looked like a complete fix; they are not, because an MCP agent session
+  // resolves ctx_tier='trimmed' and is cut by the SHAPER before either applies.
+  it('opts out of routine per-session tier shaping — the leg that cuts agents', () => {
+    expect(orientTool.ignoreSessionPayloadTier).toBe(true);
+  });
+
+  // The pairing is the whole design, and it is the easy thing to "tidy" away:
+  // deleting the shapers looks like finishing the uncapping, and every test
+  // above would still pass. It would remove the hard ceiling's degradation
+  // path and re-open the 2026-07-01 43k-token incident (P-012).
+  it('KEEPS its shapers despite the opt-out — they are the ceiling degradation path', () => {
+    expect(orientTool.shape).toBeDefined();
+    expect(typeof orientTool.shape?.trimmed).toBe('function');
+    expect(typeof orientTool.shape?.standard).toBe('function');
   });
 });
 

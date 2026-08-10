@@ -109,7 +109,34 @@ function unwrap(
  */
 export function inProcessCall(
   ctx: UnifiedToolContext,
-  opts?: { telemetrySurface?: string },
+  opts?: {
+    telemetrySurface?: string;
+    /**
+     * WI-37843: drop the caller's SESSION payload tier for these sub-reads, so
+     * each inner tool resolves to 'full' instead of inheriting `ctx.contextTier`.
+     *
+     * Opt-IN (default: inherit, unchanged) because it is only correct for a
+     * compound tool that has itself declared `ignoreSessionPayloadTier` — the
+     * outer result must still be bounded by SOMETHING, and for those tools it is
+     * their own `payloadTierCeilingChars` valve.
+     *
+     * WHY IT MATTERS. The inner ctx is a spread of the outer one, so a compound
+     * tool under a trimmed session gets trimmed SUB-READS even when the compound
+     * tool itself serves full — the shaping happens one level below where anyone
+     * is looking. That is not hypothetical: `fleet:assignments`' trimmed shaper
+     * projects per-agent `claims[]` to `claims: claims.length` (a NUMBER, see
+     * assignments-shape.ts), which is what killed coord:orient's planNow leg
+     * (EI-20108229813877389) — a swallowed throw turned the type change into a
+     * plausible-looking `null` rather than an error.
+     *
+     * This is the same class of perturbation `transport: 'in_process'` below
+     * already exists to prevent: that keeps the sub-result from being re-encoded,
+     * this keeps it from being re-shaped. A fold is data the compound tool
+     * COMPUTES with, not text an agent reads, so trimming it for context economy
+     * buys nothing and silently changes field types.
+     */
+    ignoreSessionPayloadTier?: boolean;
+  },
 ): InnerCall {
   // The re-dispatch is IN-PROCESS, not the agent-facing MCP transport. Reuse the
   // caller's ctx (its auth/scope/quota/harness) but stamp transport:'in_process'
@@ -126,6 +153,11 @@ export function inProcessCall(
   const innerCtx: UnifiedToolContext & { telemetrySurface?: string } = {
     ...ctx,
     transport: 'in_process',
+    // WI-37843: see `ignoreSessionPayloadTier` above. Setting the key to
+    // undefined (rather than omitting it) is load-bearing — it must OVERRIDE the
+    // inherited `ctx.contextTier` from the spread, and resolvePayloadTier treats
+    // undefined as "no session tier" ⇒ 'full'.
+    ...(opts?.ignoreSessionPayloadTier ? { contextTier: undefined } : {}),
     ...(opts?.telemetrySurface ? { telemetrySurface: opts.telemetrySurface } : {}),
   };
   return async (name, args) => {

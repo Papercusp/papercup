@@ -1933,20 +1933,42 @@ export default defineTool({
   // WI-37843 [owner 2026-08-10]: "this is a very important tool that is only
   // called once at session start. remove the limit entirely."
   //
-  // These two are ONE change, and either alone is a half-fix — orient was cut
-  // TWICE, by independent mechanisms, and removing only the one you can see
-  // leaves the other still cutting:
-  //   - the per-result door truncated 1140 of 1140 calls (100%), spilling the
-  //     remainder to scratch for the agent to page back;
-  //   - the payload-tier ceiling had ALREADY force-shaped it before the door
-  //     ever ran, and that loss is worse: never serialized, so unrecoverable.
-  // See ORIENT_PAYLOAD_TIER_CEILING_CHARS above for the measurements.
+  // Orient was cut by THREE independent mechanisms, and each of the three
+  // declarations below removes exactly one. Any subset is a half-fix, because
+  // whichever you leave keeps cutting on its own:
+  //
+  //   1. THE RESULT DOOR truncated 1140 of 1140 calls (100%), spilling the
+  //      remainder to scratch for the agent to page back — recoverable, but it
+  //      costs round-trips on the one turn an agent can least afford them.
+  //      → skipResultDoor
+  //   2. THE TIER SHAPER. MCP agent sessions carry ctx_tier='trimmed', so
+  //      shapeOrient's trimmed projection ran on essentially every agent call
+  //      and produced ~24k chars where the real payload is ~66k (~16.5k tok).
+  //      THIS is what actually cut agents. → ignoreSessionPayloadTier
+  //   3. THE HARD CEILING (30k chars) — force-shapes above the cap.
+  //      → payloadTierCeilingChars
+  //
+  // ⚠ CORRECTION (2026-08-10, same work-item). An earlier revision of this
+  // comment asserted that "the payload-tier ceiling had ALREADY force-shaped it
+  // before the door ever ran". That is WRONG for the sessions that matter, and
+  // it was inferred from a percentile shape (p99 = 29,908 of 30,000, read as a
+  // clamp signature) rather than from the resolution code. For a trimmed-tier
+  // agent, mechanism 2 produces the ~24k result and the ceiling never fires;
+  // the ceiling only binds callers who explicitly asked for 'full'. Left as a
+  // correction rather than deleted, because the wrong reading is re-derivable
+  // from the same measurement and the next reader should meet the refutation.
   //
   // 'oversize-by-design', NOT 'programmatic-caller': orient's reader is a MODEL,
   // so it must keep the prose annotations (the store-identity wrong-database
   // warning above all) that a hook-parsed body has to be spared.
   skipResultDoor: 'oversize-by-design',
   payloadTierCeilingChars: ORIENT_PAYLOAD_TIER_CEILING_CHARS,
+  // The load-bearing half of the fix (see mechanism 2 above). Note what this
+  // does NOT do: the `shape` shapers declared above stay in place and are still
+  // force-applied by the hard ceiling past ORIENT_PAYLOAD_TIER_CEILING_CHARS.
+  // Deleting them to "finish" the uncapping would remove the degradation path
+  // and re-open the 2026-07-01 43k-token incident (P-012).
+  ignoreSessionPayloadTier: true,
   async handler(args, ctx) {
     // Soft identity resolve — orient is a READ; a bare loopback caller without an
     // attributable coord identity still gets a (fleet-wide) orientation.
@@ -2127,7 +2149,15 @@ export default defineTool({
       // P-001 (orient-recall-quality-2026-07-12): the folded memory:search records
       // its recall telemetry under surface 'orient' (not generic 'search') so
       // orient's recall quality is measurable per-entry-point. Telemetry only.
-      inProcessCall(ctx, { telemetrySurface: 'orient' }),
+      //
+      // WI-37843: `ignoreSessionPayloadTier` is the SUB-READ half of orient's
+      // uncapping, and without it the tool declaration above is a half-fix.
+      // orient serving 'full' only governs orient's OWN payload; each folded
+      // sub-read re-resolves the tier from the inherited ctx, so under a trimmed
+      // agent session every fold still arrived shaped — including
+      // fleet:assignments projecting per-agent `claims[]` down to a NUMBER, the
+      // type change behind the planNow failure (EI-20108229813877389).
+      inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true }),
       ownerId,
       driveMode,
       ownerPresent,
