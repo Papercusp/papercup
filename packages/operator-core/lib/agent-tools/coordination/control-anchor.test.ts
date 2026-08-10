@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { deriveClaimScope } from './control-anchor';
 import {
   CONTROL_ANCHOR_MAX_TOKENS,
   CONTROL_TRANSITION_MAX_TOKENS,
