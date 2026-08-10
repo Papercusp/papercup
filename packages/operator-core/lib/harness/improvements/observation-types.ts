@@ -107,6 +107,53 @@ export interface StructuredObservation {
   evidenceFingerprint?: string;
   /** Deterministic instrument snapshots attached by scorecards:emit/evaluate. */
   instrumentSnapshots?: Record<string, unknown>;
+  /**
+   * WHAT this scorecard grades — the per-RUN identity
+   * (goal-mode-rubric-v2-2026-08-10 P-009).
+   *
+   * THE GAP THIS CLOSES: a PER-RUN rubric (goal-mode-e2e grades ONE run of ONE
+   * agent) had nowhere structured to say WHICH run a scorecard is about.
+   * `sourceHive`/`targetHive` answer which POT, never which RUN, so all five v1
+   * goal-mode-e2e scorecards were indistinguishable from each other by field —
+   * you could not re-derive one, compare two runs, or even attribute a grade to
+   * its subject without reading prose.
+   *
+   * WHY THIS SHAPE, and not a free-form label: it is exactly the DRILL PARAMETER
+   * BINDING. Measured across goal-mode-e2e v2's 25 criteria, the replication
+   * drills are parameterized by three things and no others — `:subject` (20
+   * criteria), `:run_start` (12), `:run_end` (11). Recording precisely those
+   * makes a scorecard RE-RUNNABLE FROM ITS OWN RECORD: a reader can replay every
+   * drill that produced it. A looser "notes"-style field would not have that
+   * property, which is the whole point.
+   *
+   * Optional, like every other field here — a pot-level or free-text observation
+   * carries no subject and is unaffected.
+   */
+  subject?: ObservationSubject;
+}
+
+/** What kind of thing a scorecard's `subject` names. Open-ended by design: the
+ *  grading substrate is per-run TODAY (agent-run/session), but the same identity
+ *  gap applies to grading a work-item, a plan, or a pot. */
+export type ObservationSubjectKind = 'agent-run' | 'session' | 'work-item' | 'plan' | 'pot';
+
+/**
+ * The graded subject + its measurement window — the binding a replication drill
+ * needs to be replayed (`:subject`, `:run_start`, `:run_end`).
+ */
+export interface ObservationSubject {
+  /** What `ref` names. Omitted when the emitter did not classify it. */
+  kind?: ObservationSubjectKind;
+  /**
+   * The graded thing's id — the drills' `:subject`. An ownerId for an agent-run,
+   * a session id, a WI-/EI- id, a plan slug, a pot/harness slug. REQUIRED: a
+   * subject block that cannot say WHAT it graded is the very gap this closes.
+   */
+  ref: string;
+  /** ISO — start of the graded window; the drills' `:run_start`. */
+  windowStart?: string;
+  /** ISO — end of the graded window; the drills' `:run_end`. */
+  windowEnd?: string;
 }
 
 /** Thrown by `validateObservationRatings` when a rating lacks required evidence
@@ -320,6 +367,26 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (o.instrumentSnapshots && typeof o.instrumentSnapshots === 'object' && !Array.isArray(o.instrumentSnapshots)) {
     out.instrumentSnapshots = o.instrumentSnapshots as Record<string, unknown>;
+  }
+  // P-009: the graded subject. This parse is an explicit ALLOWLIST — a key absent
+  // here is silently dropped on READ even though it persisted fine on write, so
+  // the field is invisible to every reader that goes through this narrowing
+  // (listScorecards included). `ref` is load-bearing: a subject block without it
+  // cannot say what it graded, so it is discarded rather than half-kept.
+  if (o.subject && typeof o.subject === 'object' && !Array.isArray(o.subject)) {
+    const s = o.subject as Record<string, unknown>;
+    if (typeof s.ref === 'string' && s.ref.trim()) {
+      out.subject = {
+        ref: s.ref,
+        ...(typeof s.kind === 'string' && s.kind.trim()
+          ? { kind: s.kind as ObservationSubjectKind }
+          : {}),
+        ...(typeof s.windowStart === 'string' && s.windowStart.trim()
+          ? { windowStart: s.windowStart }
+          : {}),
+        ...(typeof s.windowEnd === 'string' && s.windowEnd.trim() ? { windowEnd: s.windowEnd } : {}),
+      };
+    }
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

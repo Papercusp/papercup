@@ -371,6 +371,43 @@ export default defineTool({
               .describe(
                 "link this filing to one or more existing work-items at file time (e.g. a GRADE follow-up, or rel:'revises' for a feedback-driven revision) — best-effort, never fails the capture",
               ),
+            // goal-mode-rubric-v2-2026-08-10 P-009: WHAT this scorecard grades.
+            // sourceHive/targetHive answer which POT; for a PER-RUN rubric
+            // (goal-mode-e2e grades ONE run of ONE agent) nothing said which RUN —
+            // so five v1 scorecards were indistinguishable by field, none re-derivable.
+            // The shape is the DRILL PARAMETER BINDING, measured across that rubric's
+            // 25 criteria: `:subject` (20), `:run_start` (12), `:run_end` (11) and
+            // nothing else. Recording exactly those makes a scorecard re-runnable
+            // from its own record.
+            subject: z
+              .object({
+                kind: z
+                  .enum(['agent-run', 'session', 'work-item', 'plan', 'pot'])
+                  .optional()
+                  .describe('what `ref` names; omit if you did not classify it'),
+                ref: z
+                  .string()
+                  .min(1)
+                  .max(200)
+                  .describe(
+                    "the graded thing's id — the drills' `:subject` (an ownerId for an agent-run, a session id, a WI-/EI- id, a plan slug, a pot slug)",
+                  ),
+                windowStart: z
+                  .string()
+                  .max(40)
+                  .optional()
+                  .describe("ISO — start of the graded window; the drills' `:run_start`"),
+                windowEnd: z
+                  .string()
+                  .max(40)
+                  .optional()
+                  .describe("ISO — end of the graded window; the drills' `:run_end`"),
+              })
+              .strict()
+              .optional()
+              .describe(
+                'WHAT this scorecard grades (a per-RUN rubric needs this to be attributable/re-runnable): { ref, kind?, windowStart?, windowEnd? } — the replication-drill parameter binding. Omit for a pot-level or free-text observation.',
+              ),
           })
           // plan-templates-and-rubric-v2 P-012 (strict/fail-loud): reject UNKNOWN observation keys
           // LOUDLY instead of silently STRIPPING them. A silent strip dropped data live (su-2a0b4: an
