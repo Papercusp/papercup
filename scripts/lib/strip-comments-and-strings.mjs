@@ -224,9 +224,26 @@ function collectSqlRanges(text, { strings = false } = {}) {
         const delim = m[0];
         const bodyStart = i + delim.length;
         const close = text.indexOf(delim, bodyStart);
-        const end = close === -1 ? n : close + delim.length;
         // Unterminated ⇒ treat the rest as body; a truncated file must not read as clean code.
-        if (strings) ranges.push([bodyStart, close === -1 ? n : close]);
+        const bodyEnd = close === -1 ? n : close;
+        const end = close === -1 ? n : close + delim.length;
+        if (strings) {
+          // The literal reading: to `stripSqlCommentsAndStrings` a dollar-quoted body IS a string
+          // literal, and its consumers (injection / transaction-control detection) want the whole
+          // body opaque. Blank it entire and do not look inside.
+          ranges.push([bodyStart, bodyEnd]);
+        } else {
+          // COMMENTS-ONLY must RECURSE, not skip. A dollar-quoted body is PL/pgSQL *code*, so a
+          // `--` inside it is a real comment — and skipping the body wholesale leaves that comment
+          // LIVE, which is how a guard reads prose as DDL. Measured on this repo 2026-08-10:
+          // 264 of 661 migrations use dollar quoting and 109 of them carry a comment that survives
+          // ONLY because it sits in a body (e.g. 000-baseline.sql's "-- Echo-loop guard:").
+          // Recursion also handles nesting ($$ inside $function$) for free, and a `--` inside a
+          // STRING within the body still correctly stays live, which a blanket skip cannot express.
+          for (const [s, e] of collectSqlRanges(text.slice(bodyStart, bodyEnd), { strings })) {
+            ranges.push([bodyStart + s, bodyStart + e]);
+          }
+        }
         i = end;
         continue;
       }
