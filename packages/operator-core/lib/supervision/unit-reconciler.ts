@@ -893,6 +893,26 @@ export interface SupervisionStatusEntry {
   /** Restart attempts within the trailing GIVE_UP_WINDOW_MS (10 minutes) as of `now`. */
   restartsLast10m: number;
   flapState: SupervisionFlapState;
+  /**
+   * EI-20093902925801178: did this process actually HAVE reconciler flap state
+   * for this entry, or are the counters above merely the zero-defaults?
+   *
+   * `flapStateByUnit` is plain module state, so it is populated only in the
+   * process that runs `reconcileTick` — and that is the `supervision-reconcile`
+   * ROUTINE, which executes inside `papercup-bg-host`. `dev:service_health`
+   * imports this same module in the OPERATOR process, where the Map is
+   * permanently empty. Every systemd-user entry therefore took the
+   * `state === undefined` branch and serialized as `restartsLast10m: 0,
+   * lastRestartAt: null, flapState: 'ok'` — a NO-DATA reading indistinguishable
+   * from a measured-healthy one. Measured 2026-08-10: `papercup-staging-api`
+   * read exactly that while systemd's own `NRestarts` was 4.
+   *
+   * `false` means "these counters measured nothing", NOT "this unit is fine" —
+   * read it before trusting `flapState`. It is legitimately `false` for a
+   * `node-child`/`desktop-shell` entry, which this reconciler never tracks and
+   * whose real respawn state is overlaid by its own spawn module.
+   */
+  flapObserved: boolean;
 }
 
 /**
@@ -930,6 +950,10 @@ export function supervisionSnapshot(
       lastRestartAt: state?.lastRestartAt ?? null,
       restartsLast10m,
       flapState,
+      // EI-20093902925801178: the counters above are zero-defaults whenever
+      // `state` is undefined. Say so, rather than letting "no data" wear the
+      // same shape as "measured healthy".
+      flapObserved: state !== undefined,
     };
   });
 }
