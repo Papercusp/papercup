@@ -1,6 +1,7 @@
 /*
  * adv-header-pills.css — the SHARED styles for the AdvShell header "running" pills
- * (PotsRunningPill = "▶ N POT running", AgentsRunningPill = "⚡ N agents running").
+ * (AgentsRunningPill = "⚡ N agents running", TasksRunningPill). PotsRunningPill
+ * was the third and is gone (P-075, [owner 2026-08-10]).
  *
  * SINGLE SOURCE OF TRUTH (quick-panel-status-pills-2026-07-13 D-001). These rules
  * used to live in AdvShell.tsx's inline <style>, so the pills rendered correctly
@@ -46,7 +47,7 @@
   cursor: default;
 }
 
-/* ── AdvNowRunning: the pot status bar + its Start/Stop/waiting buttons ────── */
+/* ── AdvNowRunning: the pot status bar + its Start/Stop buttons ───────────── */
 .pc-advshell__harness-bar {
   display: flex;
   align-items: center;
@@ -82,87 +83,17 @@
 /* The amber `--waiting` variant ("N plans waiting") was removed with its only
    consumer, the AdvNowRunning nudge (P-075, [owner 2026-08-10]). */
 
-/* ── PotsRunningPill: "▶ N POT running" button + fold-out control popover ── */
-.pc-advshell__pots-pill-wrap {
-  position: relative;
-  flex: 0 0 auto;
-}
-.pc-advshell__action--pots {
-  background: #0f1b2d;
-  color: #b9f6d3;
-  border-color: rgba(52, 211, 153, 0.38);
-}
-.pc-advshell__action--pots:hover,
-.pc-advshell__action--pots[aria-expanded="true"] {
-  background: #13243a;
-  border-color: rgba(52, 211, 153, 0.58);
-  color: #d9ffe8;
-}
-.pc-advshell__action--pots.is-running {
-  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.14);
-}
-.pc-advshell__pots-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 80;
-  width: min(340px, calc(100vw - 28px));
-  overflow: visible;
-  border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
-  border-radius: 10px;
-  background:
-    linear-gradient(180deg, #111c2f 0%, #0b1525 100%);
-  box-shadow:
-    0 18px 44px rgba(0, 0, 0, 0.54),
-    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
-}
-.pc-advshell__pots-pop::before {
-  content: "";
-  position: absolute;
-  top: -6px;
-  right: 24px;
-  width: 10px;
-  height: 10px;
-  transform: rotate(45deg);
-  border-left: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
-  border-top: 1px solid var(--border-strong, rgba(125, 211, 252, 0.26));
-  background: #111c2f;
-}
-.pc-advshell__pots-pop .pclsb-panel {
-  position: relative;
-  gap: 6px;
-  max-height: min(420px, calc(100vh - 96px));
-  padding: 10px;
-  overflow: auto;
-  border-radius: inherit;
-  background: transparent;
-}
-.pc-advshell__pots-pop .pclsb-panel__bar {
-  min-height: 26px;
-  padding: 0 1px 7px;
-  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.16));
-}
-.pc-advshell__pots-pop .pclsb-panel__bar-label {
-  color: #b9d4e8;
-}
-.pc-advshell__pots-pop .pclsb-row {
-  padding: 8px 9px;
-  border-color: var(--border, rgba(125, 211, 252, 0.16));
-  background: #0f1b2d;
-}
-.pc-advshell__pots-pop .pclsb-row + .pclsb-row {
-  margin-top: 4px;
-}
-.pc-advshell__pots-pop .pclsb-row__title {
-  color: #e7f7ff;
-}
-.pc-advshell__pots-pop .pclsb-row__sub {
-  color: #8aa4bd;
-}
-.pc-advshell__pots-pop .pclsb-panel__empty,
-.pc-advshell__pots-pop .pclsb-panel__error {
-  background: #0f1b2d;
-}
+/* ── PotsRunningPill — REMOVED 2026-08-10 (P-075) ─────────────────────────────
+   The "▶ N POT running" button, its `--pots` variant, the `pots-pill-wrap`
+   positioning context and the whole `pots-pop` fold-out popover (which hosted
+   LocalPotsControl's per-pot start/stop rows, hence the `.pclsb-*` overrides)
+   lived here until the owner directive removed the button
+   ([owner 2026-08-10] "remove the ... 'pots running' button"). The component was
+   deleted, so every selector in this block had zero possible matches; they are
+   removed rather than left as dead CSS the next reader has to disprove.
+   The `.pclsb-*` rules here were OVERRIDES of the left-sidebar panel styles for
+   this popover only — the base rules still live with that panel and are
+   untouched. */
 
 /* ── Tasks pill + Task Manager dropdown (WI-6844) ─────────────────────────────
    Owner ask 2026-08-02: the task manager moves out of the left rail's middle

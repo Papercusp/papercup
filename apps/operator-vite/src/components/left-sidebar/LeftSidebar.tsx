@@ -175,9 +175,10 @@ const TABS = [
   // component `PotsTab.tsx` is KEPT IN PLACE and simply unmounted — it hosts
   // `PotFederationStatus`, SURVIVING shared-pot substrate (D-003/D-069) whose
   // only surface this was. That loss is deliberate and recorded, not overlooked;
-  // re-home it rather than restoring this tab. `LocalPotsControl` is also mounted
-  // by adv/PotsRunningPill — which P-075 removes, orphaning it; whichever of the
-  // two lands second owns retiring it.)
+  // re-home it rather than restoring this tab. `LocalPotsControl` was also
+  // mounted by adv/PotsRunningPill, which P-075 has since deleted — so it is now
+  // reachable from no live surface, but is KEPT because the preserved
+  // `PotsTab.tsx` still imports it (D-070).)
   // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ · Kettle→Thermometer
   // (no lucide kettle exists; the thermometer ties the kettle's heat to overwatch's
   // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.
