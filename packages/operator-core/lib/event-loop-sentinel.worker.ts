@@ -50,7 +50,23 @@ import {
   SENTINEL_SAB_IDX,
   type LoopSentinelState,
   type LoopSentinelThresholds,
-} from './event-loop-sentinel';
+  // EXPLICIT `.ts` EXTENSION IS LOAD-BEARING — do not "tidy" it away.
+  //
+  // This module is a Worker ENTRY. Worker threads do NOT inherit the parent's
+  // registered ESM loader hooks, so under `npx tsx bin/hono-host.ts` (bg-host,
+  // dev, desktop sidecar) this file is loaded by NODE'S NATIVE type stripping,
+  // not by tsx — and native stripping uses standard ESM resolution, which has
+  // no extensionless lookup. An extensionless specifier here therefore throws
+  // `Cannot find module …/event-loop-sentinel` INSIDE the worker, and because
+  // the host is fail-soft that surfaces only as "sentinel disabled, host
+  // unaffected" milliseconds after it already logged "armed".
+  //
+  // Measured 2026-08-10: 57 arm-then-die cycles in 24h on papercup-bg-host,
+  // leaving the routines host unguarded — during which it wedged its event loop
+  // for 23 minutes (1.13 cores, 101 routines frozen) with nothing to kill it,
+  // exactly the outage this sentinel was built to bound at ~24s.
+  // Guarded by worker-entry-plain-node-loadable.test.ts.
+} from './event-loop-sentinel.ts';
 
 export interface SentinelWorkerData {
   sab: SharedArrayBuffer;
