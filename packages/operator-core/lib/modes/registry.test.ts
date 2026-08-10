@@ -226,33 +226,159 @@ describe('GOAL mode', () => {
     expect(goal!.oneLiner).not.toContain('\n');
   });
 
-  it('carries the arbitration rule — one placer per pot (P-006)', () => {
-    expect(goal!.contract).toContain('ONE PLACER PER POT');
-    expect(goal!.contract).toContain('pauseNewWork');
-    expect(goal!.contract).toMatch(/never both/i);
+  // ── goal-mode-hardening-2026-08-10 P-007: the decisions this contract applies ──
+  //
+  // Each `it` below pins ONE decision by content. The contract IS the deliverable
+  // for this mode, so a clause silently dropped by a later edit is the whole
+  // regression — there is no runtime that fails without it, which is exactly why
+  // it is pinned here rather than left to review.
+
+  // D-001. The owner removed "project" from the vocabulary outright ("We dont have
+  // the concept of projects so why use that verbiage instead of pots?" → "do the
+  // full rename"), with no aliases. A contract that reintroduces the word is
+  // teaching every goal agent a surface that does not exist.
+  it('speaks POT, never PROJECT (D-001)', () => {
+    expect(goal!.contract).not.toMatch(/\bprojects?\b/i);
+    expect(goal!.contract).toMatch(/\bpots?\b/i);
+    expect(goal!.oneLiner).not.toMatch(/\bprojects?\b/i);
   });
 
-  // P-013 / D-015. The item's premise was that taking a pot leaves its draft
-  // queue with NO disposer. Verified false: the scout-draft-review backstop
-  // never touches the steering gate (it goes sweep -> wakeMug, never pot:wake),
-  // and pauseNewWork empties the frontier, which makes the Mug reach plan-review
-  // SOONER rather than later. So the real hazard is the opposite one — two
-  // disposers racing the same queue, both writing dispositions that feed the
-  // Blender corpus. The clause has to say "do not double-dispose", and a clause
-  // that drifted back to "you are now the sole disposer" must fail here.
-  it('tells a goal agent that pausing placement does NOT pause draft disposal (P-013)', () => {
+  // The Mug / Overwatch / cup tier is RETIRED (owner, 2026-08-10: "we retired the
+  // mug and overwatch so remove those refrences from the prompt"; "we want them to
+  // be launching su agents, not cups, we are retiring the cup system"). The Blender
+  // SURVIVES, so this asserts a targeted absence rather than a blanket one — a
+  // guard that also killed Blender would quietly delete a live clause.
+  it('names no retired tier — Mug, Overwatch and cup are gone; Blender stays', () => {
     const c = goal!.contract;
-    expect(c).toMatch(/PAUSING PLACEMENT DOES NOT PAUSE DISPOSAL/);
-    expect(c).toMatch(/EXACTLY ONE disposition/);
-    // it must point at the Mug's rules rather than restate them (prompt weight)
-    expect(c).toContain('mug.base.md');
-    // and it must NOT claim the goal agent inherits sole ownership of the queue
-    expect(c).not.toMatch(/sole disposer|only disposer/i);
+    expect(c).not.toMatch(/\bmug\b/i);
+    expect(c).not.toMatch(/\boverwatch\b/i);
+    expect(c).not.toMatch(/\bcups?\b/i);
+    expect(c).not.toContain('mug.base.md');
+    expect(c).not.toContain("adv_sessions.role = 'cup'");
+    expect(c).toContain('Blender');
   });
 
-  it('gates child-executes proof on the cup ROLE, not the spawn-id prefix (P-002)', () => {
-    expect(goal!.contract).toContain("adv_sessions.role = 'cup'");
-    expect(goal!.contract).toMatch(/proves "spawned", NOT "cup"/);
+  // D-002, and the owner tightened it mid-review ("they should launch an agent for
+  // this as well"): the draft carved out an exception letting the goal agent fix
+  // shared infrastructure stalling its own fleets. There is no exception. This is
+  // the clause most likely to be softened back by a well-meaning edit, because the
+  // infra case genuinely feels different from the outside.
+  it('forbids implementing ANYTHING, infrastructure included (D-002)', () => {
+    const c = goal!.contract;
+    expect(c).toContain('YOUR HANDS');
+    expect(c).toMatch(/never IMPLEMENT/i);
+    expect(c).toMatch(/NOT INFRASTRUCTURE/i);
+    expect(c).toMatch(/no\s+exception/i);
+    // the concrete case the exception used to be written for
+    expect(c).toMatch(/red release gate|wedged service/i);
+  });
+
+  // D-004. The owner cut "CAPACITY PREFLIGHT, RAMP ONE AT A TIME" ("we want multiple
+  // projects to be worked on simultaneously"). Asserting the absence of the PHRASE
+  // would be wrong — the contract now mentions it precisely to say there is none —
+  // so this pins the absence of the INSTRUCTION and the presence of its replacement.
+  it('tells the agent to parallelize hard, with no ramp-one-at-a-time rule (D-004)', () => {
+    const c = goal!.contract;
+    expect(c).not.toMatch(/RAMP ONE AT A TIME/i);
+    expect(c).not.toMatch(/drive ONE (project|pot) end-to-end/i);
+    expect(c).toContain('PARALLELIZE HARD');
+    expect(c).toMatch(/under-parallelizing is the named failure/i);
+    // only the goal agent sees the whole portfolio, so the width has to travel DOWN
+    expect(c).toMatch(/state the intended parallelism in the brief/i);
+  });
+
+  // D-005 — the two ceilings are what make D-004's "parallelize hard" safe, so they
+  // are pinned together with the composition rule the owner spelled out: "so a plan
+  // agents contributes both to the plan max and this total max".
+  it('carries both ceilings and states that they compose (D-005)', () => {
+    const c = goal!.contract;
+    expect(c).toContain('TWO CEILINGS');
+    expect(c).toMatch(/MAX AGENTS/);
+    expect(c).toMatch(/counts against both/i);
+  });
+
+  // D-006 + D-009. Numbers live on the goal record as owner-editable data, not in
+  // prose — so the contract must NOT hardcode any. A literal count here is the
+  // failure: it silently overrides a value the owner set in the UI.
+  it('treats launch numbers as settings on the goal record, never as prose (D-006/D-009)', () => {
+    const c = goal!.contract;
+    expect(c).toContain('SETTINGS ARE DATA');
+    expect(c).toMatch(/editable by\s*\n?the owner|goal's detail popup/i);
+    expect(c).toMatch(/never hardcode a number/i);
+    // a value remembered from an earlier wake is stale by construction
+    expect(c).toMatch(/may have changed it while/i);
+  });
+
+  // Owner directive 4: "launch a new agent and give provide instructions to the
+  // newly launched agent to launch a headless fleet with the newly launched agent
+  // themselves as the fleet leader". The goal agent must NOT lead the plan fleet.
+  it('has plan fleets led by a launched agent, not by the goal agent (owner directive 4)', () => {
+    const c = goal!.contract;
+    expect(c).toMatch(/LAUNCH AN AGENT AND HAVE IT LEAD/i);
+    expect(c).toContain('headless');
+    expect(c).toMatch(/makes\s*\n?\s*the CALLER the leader/i);
+    expect(c).toContain('coord:couple');
+  });
+
+  // Owner directive 5: a standing per-goal drain fleet, always maintained. The
+  // "re-establish it when it dies" half is the one that matters — a drain fleet
+  // that quietly ended is indistinguishable from a queue with nothing in it.
+  it('keeps one standing drain fleet per goal (owner directive 5)', () => {
+    const c = goal!.contract;
+    expect(c).toContain('STANDING DRAIN FLEET');
+    expect(c).toMatch(/always maintained/i);
+    expect(c).toMatch(/re-establish it/i);
+    // WI-37711: the claim-spec grammar has no `goal` field yet, so the contract
+    // must NOT prescribe a goal-scoped claim leaf — it would be refused at
+    // scheduler:set_claim_spec. Drop this guard only when WI-37711 lands.
+    expect(c).toMatch(/cannot yet filter on the goal itself/i);
+  });
+
+  // Owner directives 6 + 7 — grading and testing are OUTSOURCED like everything
+  // else. Derived from MODES rather than hand-spelled (D-011): if the contract
+  // names a mode as an outsourcing target, that mode has to exist in the registry.
+  it('outsources grading and testing to launched agents in registered modes (owner directives 6/7)', () => {
+    const c = goal!.contract;
+    expect(c).toMatch(/GRADE NON-DETERMINISTIC BEHAVIOUR/i);
+    for (const id of ['grade', 'test']) {
+      expect(modeById(id), `contract names ${id.toUpperCase()} mode, so it must be registered`).not.toBeNull();
+      expect(c).toMatch(new RegExp(`${id}-mode agent`, 'i'));
+    }
+    // the point of a separate test agent: not the builder re-marking its own work
+    expect(c).toMatch(/re-marking\s*\n?\s*its own homework/i);
+  });
+
+  // Owner directive 9 — the goal agent is the Blender's reviewer, and the escape
+  // hatch for "the Blender wants a new goal" is goals:propose (owner-confirmed),
+  // never a silent adopt-or-discard.
+  it('makes the agent the Blender’s reviewer, with goals:propose as the escape hatch (owner directive 9)', () => {
+    const c = goal!.contract;
+    expect(c).toContain('KEEP THE BLENDER HONEST');
+    expect(c).toContain('goals:propose');
+    expect(c).toMatch(/never silently adopt it, and never silently discard it/i);
+  });
+
+  // Replaces the retired cup-role proof. "Spawned" still is not "working" — only
+  // the subject changed (a launched su agent, not a cup), so the failure it
+  // prevents is unchanged: N children that look busy while executing nothing.
+  it('requires proof that a launched agent EXECUTES, not merely that it spawned', () => {
+    const c = goal!.contract;
+    expect(c).toMatch(/PROVE A LAUNCHED AGENT ACTUALLY EXECUTES/i);
+    expect(c).toMatch(/"Spawned" is not\s*\n?"working"/i);
+    expect(c).toContain('coord:presence');
+    expect(c).toMatch(/look\s*\n?busy while executing nothing/i);
+  });
+
+  // ONE MAIN OWNER PER POT survives the removal of ONE PLACER PER POT above: the
+  // placer clause was Mug arbitration (retired), while this one is the goal_pots
+  // schema constraint, which is still enforced.
+  it('keeps the schema-enforced one-main-owner-per-pot rule', () => {
+    const c = goal!.contract;
+    expect(c).toContain('ONE MAIN OWNER PER POT');
+    expect(c).toContain('goal_pots_one_owner_per_pot');
+    expect(c).toMatch(/do not sum/i);
+    // the retired arbitration clause must NOT come back with it
+    expect(c).not.toContain('ONE PLACER PER POT');
   });
 
   it('carries a mandatory kickoff question with a kill criterion and a spend ceiling', () => {
@@ -284,11 +410,13 @@ describe('GOAL mode', () => {
 
   it('keeps the remaining guidance clauses that have no other home', () => {
     const c = goal!.contract;
-    expect(c).toContain('CAPACITY PREFLIGHT'); // 1
-    expect(c).toContain('DEDUP BEFORE CREATING'); // 7
-    expect(c).toContain('TEMPLATES MANDATE'); // 8
-    expect(c).toContain('RUBRIC REUSE'); // 9
-    expect(c).toMatch(/SHIPPED, NOT GREEN/); // 6 — flags ship ON
+    // NOTE: the CAPACITY PREFLIGHT assertion that used to head this list was
+    // removed by owner directive (D-004) — see the parallelize-hard test above,
+    // which pins its absence. The rest are unchanged.
+    expect(c).toContain('DEDUP BEFORE CREATING');
+    expect(c).toContain('TEMPLATES MANDATE');
+    expect(c).toContain('RUBRIC REUSE');
+    expect(c).toMatch(/SHIPPED, NOT GREEN/); // flags ship ON
   });
 });
 
