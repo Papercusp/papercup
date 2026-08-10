@@ -363,6 +363,15 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
     expect(source).toContain('unattributedTasks.push(...a.unattributed)');
   });
 
+  it('threads the transform culprits through as well — WI-37607', () => {
+    // The THIRD output of the attributor. A culprit set that is collected but never passed to
+    // the renderer produces exactly today's bug (a fully-attributed break set with no stated
+    // cause), and every behavioural test above would still pass, because they call the
+    // renderer directly. This assertion is the only thing covering the runner's own call.
+    expect(source).toContain('transformCulpritPaths.push(...a.transformCulprits)');
+    expect(source).toContain('transformCulprits: transformCulpritPaths');
+  });
+
   it('accounts for the non-vitest cargo task, which the attributor cannot speak for', () => {
     // Cargo does not go through attributeFailedTask, so its two failure sites are the one
     // place a red task could still be silently omitted from the break set.

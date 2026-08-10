@@ -212,15 +212,22 @@ export { tierFor, setCapabilityTierResolver } from '@papercusp/tooldef';
 // as tooldef's tier resolver (see capability-tiers-papercusp.ts).
 export { papercuspTierFor, setCapabilityTierOverride, type CapabilityTierOverride } from './capability-tiers-papercusp';
 
-// The goal stop seam (EI-20013729460455061). operator-core installs the executor at
-// module load; without it `goals:update { status:'paused' }` is a pure record write.
+// The goal TRANSITION seam (EI-20013729460455061 stop, WI-37615 resume). operator-core
+// installs the executor at module load; without it `goals:update { status:'paused' }` is a
+// pure record write — and `status:'active'` leaves placement gated behind an "active" label.
 export {
-  setGoalStopExecutor,
-  getGoalStopExecutor,
+  setGoalTransitionExecutor,
+  getGoalTransitionExecutor,
   isStoppingStatus,
-  type GoalStopExecutor,
+  isResumingStatus,
+  isTransitioningStatus,
+  isStopReport,
+  type GoalTransitionExecutor,
+  type GoalTransitionInput,
+  type GoalTransitionReport,
   type GoalStopInput,
   type GoalStopReport,
+  type GoalResumeReport,
 } from './tools/goals/stop-seam';
 
 // Per-spawn URL-param parser — used by both projected-tool transports

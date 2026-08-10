@@ -1339,6 +1339,7 @@ for (const t of tasks) {
         });
         failedFileEntries.push(...a.entries);
         unattributedTasks.push(...a.unattributed);
+        transformCulpritPaths.push(...a.transformCulprits);
       }
       // EI-19332556961886184: surface a timeout signature right here, in the log a
       // triager reads, instead of letting it collapse into an indistinguishable red.
@@ -1443,11 +1444,15 @@ if (failed) {
   // so mining it returned fixture paths. Rendered by a unit-tested helper rather than inline:
   // this path runs only when the gate is ALREADY red, so a fault here would surface at the
   // worst possible moment and no source-text assertion could have caught it.
+  // WI-37607: `transformCulprits` makes the summary lead with the PARSE failure when one is
+  // present. Without it a peer's mid-write reads as `coverage=complete` over N innocent files —
+  // measured 21 on this runner and 7 on the gate's own checkout, both stamped complete.
   for (const line of renderFailingFilesSummary({
     runToken: RUN_TOKEN,
     failedTaskCount: failed,
     entries: failedFileEntries,
     unattributed: unattributedTasks,
+    transformCulprits: transformCulpritPaths,
   })) {
     errSync(line);
   }

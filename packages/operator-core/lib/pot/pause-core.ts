@@ -60,3 +60,62 @@ export async function pausePotState(
     timeWakeCleared: loopIdle,
   };
 }
+
+export interface ResumePotResult {
+  harness: string;
+  started: true;
+  wakeMode: 'auto';
+  /**
+   * ⚠ ALWAYS FALSE, and present so a caller cannot read this result as a full
+   * inverse. `pausePotState` DELETES the pot's declared time-wake routine row
+   * (`clearPotTimeWake`) when it idles the workspace loop, and a deleted row takes
+   * its cadence with it — there is nothing left to restore it from. `pot:start`
+   * does not restore it either (it fires a one-shot urgent wake instead), so this
+   * is a property of the existing pause/start pair, not of the goal resume.
+   *
+   * Deliberately NOT measured per-call: `getPotTimeWake` returns null both for
+   * "the pause cleared it" and for "one was never declared", so a measured claim
+   * here would be a guess wearing a number.
+   */
+  timeWakeRestored: false;
+}
+
+/**
+ * The INVERSE of `pausePotState` — restore a pot's placement bit and make sure the
+ * workspace Mug loop is running to service it (WI-37615, plan D-013).
+ *
+ * It exists because the pause is deliberately UNRECOVERABLE by watchdog: the
+ * `deliberate: true` markers above tell the paused-pot recovery sweep to leave the
+ * pause alone (WI-3261 / WI-3309). That is correct for a pause and is exactly what
+ * made the missing resume permanent — a goal moved back to `active` gated placement
+ * forever while its row read "active".
+ *
+ * ORDERING IS THE MIRROR of the pause, and for the same P-013 reason. The pause
+ * clears the per-pot placement bit FIRST so no watchdog seam re-arms between the
+ * wake clear and the state flip; the resume arms the workspace Mug loop FIRST, so
+ * that at the instant placement is re-enabled there is already a Mug running to
+ * service it. Reversed, there is a window where work is placeable and nothing is
+ * awake to place it — which reads to an owner as "I resumed it and nothing happened".
+ *
+ * NOT a `pot:start`. That tool additionally fires `requestUrgentPotWake` with a
+ * caller-supplied kickoff and ensures default wake subscriptions. The kickoff is a
+ * policy choice belonging to the person starting a pot, not to a goal-level status
+ * write — firing one urgent wake per owned project off a single goal resume would be
+ * a surprise. This is the state transition only.
+ */
+export async function resumePotState(
+  workspaceId: string,
+  installSlug: string,
+): Promise<ResumePotResult> {
+  // Arm the workspace Mug loop FIRST (see ORDERING above), then re-open placement.
+  //
+  // No `deliberate` on either write, and that is not an omission: BOTH setters
+  // IGNORE the option when `started` is true and unconditionally CLEAR the
+  // paused-deliberate bit (started.ts:131-135, :172-178). Passing it would read to
+  // the next person as though it did something.
+  await setPotStarted(workspaceId, installSlug, true);
+  await setPotPlacementStarted(workspaceId, installSlug, true);
+  await setDefaultWakeMode('auto');
+
+  return { harness: installSlug, started: true, wakeMode: 'auto', timeWakeRestored: false };
+}

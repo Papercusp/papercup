@@ -23,6 +23,20 @@
  * BASELINE entries shrink as each is fixed (declare the dependency + regenerate
  * package-lock.json) — remove the entry when its edge is declared. Do NOT add new
  * entries; a NEW undeclared edge must be fixed, not grandfathered.
+ *
+ * ⚠ ONE EXCEPTION, and it is narrow: a BASELINE CORRECTION, when this guard's VISION widens
+ * and edges that existed all along become visible for the first time. That is not the same
+ * act as grandfathering a new edge — nothing was added to the repo, something was finally
+ * seen — and refusing it would mean keeping a measurement knowingly wrong. It happened once,
+ * 55 -> 58 (EI-20028225708881148, 2026-08-10), when the target-side lookup stopped being
+ * limited to root workspaces; the three entries carry an inline BASELINE CORRECTION note.
+ * The same distinction, with the same reasoning, is documented for CLAUDE.md's
+ * module-singleton allowlist growing 14 -> 32. If you are widening this guard: extend
+ * BASELINE IN THE SAME CHANGE. It is registered in REPO_WIDE_INVARIANT_GUARDS, so a widened-
+ * but-unbaselined guard exits 1 on every change and red-pins the fleet gate on arrival.
+ *
+ * Target-side scope + that trap are pinned by
+ * packages/operator-core/lib/__tests__/check-workspace-deps-complete-target-scope.test.ts.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, readdirSync, realpathSync } from 'node:fs';
@@ -56,6 +70,15 @@ export const BASELINE = new Set([
   '@papercusp/operator-core->@papercusp/embedded-pg-discovery',
   '@papercusp/operator-core->@papercusp/embedded-postgres-server',
   '@papercusp/operator-core->@papercusp/fanout-resolver',
+  // ↓ BASELINE CORRECTION (EI-20028225708881148, 2026-08-10) — these 3 edges are NOT new.
+  // They existed all along and were SILENTLY DROPPED by the target-side root-workspace test
+  // (see loadLocalPackagesOnDisk above). Nothing was added to the repo; 3 pre-existing edges
+  // are finally being SEEN. That is a baseline CORRECTION, not a breach of the shrink-only
+  // rule — same precedent, and the same reasoning, as CLAUDE.md's module-singleton allowlist
+  // growing 14 -> 32 when its detector stopped being form-blind.
+  // Their targets are local packages that are not root workspaces, so the fix is NOT the
+  // generic `"<name>": "*"` advice below (see the failure message for why that breaks npm ci).
+  '@papercusp/operator-core->@papercusp/file-claim',
   '@papercusp/operator-core->@papercusp/grid-core',
   '@papercusp/operator-core->@papercusp/harness',
   '@papercusp/operator-core->@papercusp/ipc-endpoint-server',
@@ -68,6 +91,7 @@ export const BASELINE = new Set([
   '@papercusp/operator-core->@papercusp/projection-index',
   '@papercusp/operator-core->@papercusp/publish-auth',
   '@papercusp/operator-core->@papercusp/rate-limit',
+  '@papercusp/operator-core->@papercusp/sse', // BASELINE CORRECTION — see note above
   '@papercusp/operator-core->@papercusp/sync',
   '@papercusp/operator-core->@papercusp/testing-shell',
   '@papercusp/operator-core->@papercusp/tooldef',
@@ -76,6 +100,7 @@ export const BASELINE = new Set([
   '@papercusp/operator-vite->@papercusp/grid-core',
   '@papercusp/operator-vite->@papercusp/operator-core',
   '@papercusp/operator-vite->@papercusp/p2p-voice',
+  '@papercusp/operator-vite->@papercusp/sse', // BASELINE CORRECTION — see note above
   '@papercusp/operator-vite->@papercusp/sync',
   '@papercusp/operator-vite->@papercusp/testing-shell',
   '@papercusp/operator-vite->@papercusp/ui-primitives',
@@ -113,6 +138,70 @@ function expandWorkspaces(patterns) {
   return out;
 }
 
+/** Directories that never contain a first-party package we care about. */
+const WALK_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  '.next',
+  'build',
+  'target',
+  'coverage',
+  '.turbo',
+]);
+
+/**
+ * EI-20028225708881148 — every local package ON DISK, root-workspace or not.
+ *
+ * WHY THIS EXISTS: the target-side test below used to be `byName.has(importedName)`, i.e.
+ * "is this a ROOT WORKSPACE", with the comment "not a local workspace (published-only or
+ * typo) — out of scope". That comment states an assumption which is FALSE for a package
+ * that exists on disk but was never added to root.workspaces. Such edges were silently
+ * discarded, so the guard's own headline count understated BY CONSTRUCTION — independently
+ * of the BASELINE backlog, and invisibly, because a dropped edge produces no output at all.
+ *
+ * MEASURED 2026-08-10: 3 such edges existed (operator-core->sse, operator-vite->sse,
+ * operator-core->file-claim), all three targeting real packages symlinked into node_modules.
+ * Both targets were genuinely unrouted in affected-tests.mjs at the time: a change to
+ * libs/generic/sse selected ZERO workspaces (EI-20027740706934564) and so did
+ * libs/papercusp/packages/file-claim — i.e. the class this guard exists to detect was
+ * occurring in exactly the packages the guard could not see.
+ *
+ * WHY A DISK WALK rather than probing node_modules for a symlink: determinism. A guard
+ * registered in REPO_WIDE_INVARIANT_GUARDS must give the SAME answer in the gate's checkout
+ * as on a dev box, and node_modules content differs between checkouts (and two of the local
+ * non-workspace packages — papergrid, cli — are not symlinked in at all, so a node_modules
+ * probe would miss them). The tree is the same everywhere; node_modules is not.
+ * Cost is negligible and was measured, not assumed: 2611 dirs / 118 package.json in 0.15s.
+ */
+export function loadLocalPackagesOnDisk() {
+  const byName = new Map();
+  const walk = (abs, rel, depth) => {
+    if (depth > 6) return;
+    let entries;
+    try {
+      entries = readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((e) => e.isFile() && e.name === 'package.json')) {
+      try {
+        const pkg = JSON.parse(readFileSync(join(abs, 'package.json'), 'utf8'));
+        if (pkg.name && !byName.has(pkg.name)) byName.set(pkg.name, { dir: rel || '.', pkg });
+      } catch {
+        /* unparseable package.json is not this guard's business */
+      }
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (WALK_SKIP_DIRS.has(e.name) || e.name.startsWith('.')) continue;
+      walk(join(abs, e.name), rel ? `${rel}/${e.name}` : e.name, depth + 1);
+    }
+  };
+  walk(ROOT, '', 0);
+  return byName;
+}
+
 function loadWorkspaces() {
   const rootPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
   const wsDirs = expandWorkspaces(rootPkg.workspaces);
@@ -123,7 +212,11 @@ function loadWorkspaces() {
     byDir.set(dir, pkg);
     if (pkg.name) byName.set(pkg.name, { dir, pkg });
   }
-  return { byDir, byName };
+  // Root workspaces WIN on a name collision (@papercusp/desktop resolves to two dirs on
+  // disk); the workspace copy is the one npm and affected-tests.mjs actually resolve.
+  const localByName = loadLocalPackagesOnDisk();
+  for (const [name, meta] of byName) localByName.set(name, meta);
+  return { byDir, byName, localByName };
 }
 
 /** Match a real `@papercusp/x` module specifier (import/require/dynamic-import + subpaths),
@@ -173,7 +266,7 @@ function importsInWorkspace(dir) {
 
 /** Scan every workspace for undeclared local @papercusp/* imports. Returns [{ importer, imported, edge }]. */
 export function findOffenders() {
-  const { byDir, byName } = loadWorkspaces();
+  const { byDir, byName, localByName } = loadWorkspaces();
   const offenders = [];
   for (const [dir, pkg] of byDir) {
     const imported = importsInWorkspace(dir);
@@ -181,10 +274,23 @@ export function findOffenders() {
     const declared = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
     for (const importedName of imported) {
       if (importedName === pkg.name) continue; // self-import (rare, re-exports)
-      if (!byName.has(importedName)) continue; // not a local workspace (published-only or typo) — out of scope
+      // Out of scope only if the target is not a local package ANYWHERE on disk — i.e.
+      // genuinely published-only, or a typo. Testing root-workspace membership here (the
+      // pre-EI-20028225708881148 behaviour) silently dropped real edges; see
+      // loadLocalPackagesOnDisk() above.
+      if (!localByName.has(importedName)) continue;
       if (declared[importedName]) continue; // already declared — fine
       const edge = `${pkg.name}->${importedName}`;
-      offenders.push({ importer: pkg.name, importerDir: dir, imported: importedName, edge });
+      offenders.push({
+        importer: pkg.name,
+        importerDir: dir,
+        imported: importedName,
+        edge,
+        // The remedy DIFFERS by target kind, so carry it to the failure message rather than
+        // making the reader re-derive it (see main()).
+        targetIsWorkspace: byName.has(importedName),
+        targetDir: localByName.get(importedName)?.dir ?? null,
+      });
     }
   }
   return offenders.sort((a, b) => a.edge.localeCompare(b.edge));
@@ -224,10 +330,39 @@ function main() {
   console.error('  means a change to the imported package will NOT run the importer\'s tests.');
   console.error('');
   for (const o of newOffenders) {
-    console.error(`    ${o.edge}  (${o.importerDir})`);
+    const kind = o.targetIsWorkspace ? '' : `  ⚠ target is NOT a root workspace (on disk at ${o.targetDir})`;
+    console.error(`    ${o.edge}  (${o.importerDir})${kind}`);
   }
-  console.error(`\n  Fix: add "${newOffenders[0]?.imported}": "*" (etc.) to the importer's dependencies, then`);
-  console.error('  `npm install` to regenerate package-lock.json. Do NOT add these to BASELINE.');
+
+  const wsTargets = newOffenders.filter((o) => o.targetIsWorkspace);
+  const nonWsTargets = newOffenders.filter((o) => !o.targetIsWorkspace);
+
+  if (wsTargets.length > 0) {
+    console.error(`\n  Fix (target IS a root workspace): add "${wsTargets[0].imported}": "*" (etc.) to the`);
+    console.error('  importer\'s dependencies, then `npm run install:safe` to regenerate package-lock.json.');
+    console.error('  Do NOT add these to BASELINE.');
+  }
+
+  if (nonWsTargets.length > 0) {
+    // EI-20028225708881148 — the generic advice above is WRONG for a non-workspace target and
+    // breaks the repo if followed. package-lock.json carries its OWN copy of the workspaces
+    // array (84 entries) and CI runs `npm ci` strict, so declaring `"<name>": "*"` for a package
+    // npm does not treat as a workspace sends npm to the REGISTRY for a private package.
+    console.error(`\n  ⚠ Fix (target is NOT a root workspace — ${nonWsTargets.length} above): do NOT use "*".`);
+    console.error('  npm resolves "*" from the registry for a package it does not know as a workspace, and');
+    console.error('  package-lock.json carries its own workspaces array while CI runs `npm ci` strict — so');
+    console.error('  the "*" form breaks the install. Pick one:');
+    console.error('    (a) declare it as a path dep, the pattern apps/operator already uses:');
+    console.error(`        "${nonWsTargets[0].imported}": "file:<relative-path-to-package>"`);
+    console.error('    (b) promote the package to a real root workspace — add it to root package.json');
+    console.error('        `workspaces` AND regenerate the lockfile via `npm run install:safe`. Cleanest');
+    console.error('        end-state; do it in a QUIET window, since it rewrites node_modules/.bin under');
+    console.error('        every concurrent agent\'s in-flight test run.');
+    console.error('  Either way ALSO confirm the package is reachable by the affected-set walk:');
+    console.error('    node scripts/affected-tests.mjs --changed-paths <pkg>/src/index.ts --print-affected');
+    console.error('  Zero AFFECTED_WS lines means changing it runs NOTHING — add it to');
+    console.error('  STANDALONE_PACKAGE_DIRS in scripts/affected-tests.mjs (that is the lockfile-free route).');
+  }
   process.exit(1);
 }
 

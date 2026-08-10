@@ -1,5 +1,11 @@
 /**
- * The host seam that gives `goals:update { status:'paused'|'killed' }` real teeth.
+ * The host seam that gives `goals:update { status }` real teeth — in BOTH directions.
+ *
+ * Stop (`paused` | `killed`) and resume (`active`) share ONE executor and one install
+ * point. They were split for a while and only the stop half existed, which is exactly
+ * how the resume no-op (WI-37615) survived: a `status:'active'` write moved the label,
+ * left placement gated and loops disarmed, and the card left the `blocked` lane with
+ * nothing running behind it. One seam means there is one place to forget, not two.
  *
  * WHY A SEAM AND NOT A DIRECT CALL. The dep direction is
  * operator-core -> agent-mcp -> tooldef, so a goals tool (which lives HERE) cannot
@@ -64,32 +70,96 @@ export interface GoalStopReport {
   degraded: boolean;
 }
 
-export interface GoalStopInput {
+/**
+ * What a goal RESUME did (WI-37615, plan D-013). Deliberately not a mirror-image of
+ * `GoalStopReport`: resume is not the inverse of pause, and a symmetric-looking
+ * report would imply it is.
+ */
+export interface GoalResumeReport {
+  goalId: string;
+  status: 'active';
+  /** Projects whose placement was re-opened — the same OWNED set the stop gates. */
+  projectsResumed: string[];
+  /** Contributing links, spared on the way down and untouched on the way up. */
+  projectsSkippedContributing: string[];
+  /**
+   * ⚠ THE HONEST GAP, resume edition. Sessions attributed to this goal whose engine
+   * loop is currently disarmed and which this resume deliberately did NOT re-arm.
+   *
+   * WHY NOT RE-ARM: a loop belongs to a SESSION. By the time a goal resumes, the
+   * sessions its pause disarmed are routinely dead, and re-arming a dead session's
+   * loop is meaningless; re-arming a LIVE one the owner has since re-tasked is
+   * worse. The fleet re-forms from placement — that is what placement is for.
+   *
+   * WHY IT IS A CURRENT-STATE MEASUREMENT and not a replay of what the pause did:
+   * loop disarms have NO durable audit trail. `harness_shared.routine_loop_transitions`
+   * records only `parked` and `rearmed` (measured 2026-08-09), so that table's silence
+   * about a disarm is not evidence of anything. This counts what is disarmed NOW.
+   */
+  loopsLeftDisarmed: number;
+  /**
+   * ⚠ ALWAYS FALSE. The pause DELETES the pot's declared time-wake routine row, which
+   * takes its cadence with it; nothing can reconstruct it, and `pot:start` does not
+   * either. Stated as a constant rather than measured because `getPotTimeWake` returns
+   * null both for "cleared" and for "never declared".
+   */
+  timeWakeRestored: false;
+  /** True when the resume is materially incomplete — currently, when loops stayed disarmed. */
+  degraded: boolean;
+}
+
+export type GoalTransitionReport = GoalStopReport | GoalResumeReport;
+
+export interface GoalTransitionInput {
   goalId: string;
   workspaceId: string;
-  status: 'paused' | 'killed';
-  /** The agent performing the stop, for the transition audit trail. */
+  /** The status the goal moved INTO. Only these three fan out. */
+  status: 'paused' | 'killed' | 'active';
+  /** The agent performing the transition, for the audit trail. */
   actor?: string | null;
 }
 
-export type GoalStopExecutor = (input: GoalStopInput) => Promise<GoalStopReport>;
+/** @deprecated Narrower alias kept only so existing call sites keep reading naturally. */
+export type GoalStopInput = GoalTransitionInput & { status: 'paused' | 'killed' };
 
-let executor: GoalStopExecutor | undefined;
+export type GoalTransitionExecutor = (input: GoalTransitionInput) => Promise<GoalTransitionReport>;
+
+let executor: GoalTransitionExecutor | undefined;
 
 /**
  * Install (or clear, with `undefined`) the host executor. Called once by
  * operator-core at module load. Idempotent — a re-install replaces.
+ *
+ * ONE executor covers stop AND resume rather than two parallel seams: they are two
+ * directions of a single question ("what happens when a goal's status moves"), and a
+ * second seam would be a second install point to forget — which is precisely the
+ * failure mode this seam already exists to guard against.
  */
-export function setGoalStopExecutor(fn: GoalStopExecutor | undefined): void {
+export function setGoalTransitionExecutor(fn: GoalTransitionExecutor | undefined): void {
   executor = fn;
 }
 
 /** The installed executor, or undefined when the host has not wired one. */
-export function getGoalStopExecutor(): GoalStopExecutor | undefined {
+export function getGoalTransitionExecutor(): GoalTransitionExecutor | undefined {
   return executor;
 }
 
 /** A goal status that triggers the stop fan-out. */
 export function isStoppingStatus(status: string): status is 'paused' | 'killed' {
   return status === 'paused' || status === 'killed';
+}
+
+/** A goal status that triggers the resume fan-out (WI-37615). */
+export function isResumingStatus(status: string): status is 'active' {
+  return status === 'active';
+}
+
+/** Any status that fans out at all — the union of the two above. */
+export function isTransitioningStatus(status: string): status is 'paused' | 'killed' | 'active' {
+  return isStoppingStatus(status) || isResumingStatus(status);
+}
+
+/** Narrow a transition report to the stop arm. */
+export function isStopReport(r: GoalTransitionReport): r is GoalStopReport {
+  return r.status === 'paused' || r.status === 'killed';
 }

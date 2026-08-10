@@ -1084,7 +1084,8 @@ files, `failed=3` vs 4, and `failed=2` vs **11**.
 ```bash
 grep -o 'AFFECTED_TESTS_FAILING_FILES.*' <log> | tail -1
 # AFFECTED_TESTS_FAILING_FILES run=<pid>-<nonce> coverage=complete fileCount=11 \
-#   unattributedCount=0 truncated=false files=[{"workspace":"…","file":"…"}] unattributed=[]
+#   unattributedCount=0 truncated=false transformCulpritCount=0 \
+#   files=[{"workspace":"…","file":"…"}] unattributed=[] transformCulprits=[]
 ```
 
 Read **`coverage`** before `files`, because an empty list is ambiguous in the expensive direction
@@ -1094,6 +1095,31 @@ output, a worker crash/OOM that printed no FAIL rows, or a non-vitest task like 
 such task is listed with its reason. **`files=[]` never means "nothing failed"** unless
 `coverage=none`. `run=` is the same token as the `Full run log:` path, which is how you tell this
 run's break set from a fixture line in an interleaved verdict log.
+
+⚠⚠ **`coverage` does NOT tell you the listed files are BROKEN — read `transformCulpritCount` too,
+and on a nonzero one treat the whole file list as CASUALTIES until proven otherwise.** The two
+questions come apart completely on a parse failure: an unparseable module reds every test file that
+transitively imports it, so all of them get real FAIL rows, all of them attribute cleanly, and the
+run stamps the most confident label it has — `coverage=complete` — over a list of innocent files.
+`coverage` only ever answered "were the failed TASKS attributed", never "are these files at fault",
+and this passage used to send you straight from `complete` to the list with nothing in between.
+
+Measured 2026-08-09 (WI-37607): run `465313-5f9da4f2` reported `coverage=complete fileCount=21
+unattributedCount=0` from ONE peer mid-write on
+`packages/operator-core/lib/sync/hyperbee/log-snapshot.ts:592`; the file was clean minutes later and
+a 3-file re-run passed 69/69. The same shape had already reached the GATE — run `3993890-864b7768`
+from the `papercusp-checkpoint` checkout: 7 files, `coverage=complete`, one parse error in
+`lib/memory/corpus-recall-io.ts:58`. Nothing in either output said the files shared one cause.
+
+The runner now leads its summary with a `⚠⚠ PARSE (transform) FAILURE DETECTED — cause=transform`
+block naming the culprit module, and carries `transformCulpritCount` / `transformCulprits` on the
+machine line. `transformCulpritCount=0` is the ordinary case. Note there is deliberately **no
+`cause=` field on the machine line**: that a parse failure was PRESENT is provable, that it caused
+every listed file is not, and a confident cause taxonomy is the same overstatement being fixed.
+On this shared tree the usual source is a peer mid-edit — re-run in a minute and check the
+culprit's `git status` before investigating anything in the list. Triaging an OLDER log with no
+`transformCulpritCount` field at all? It predates this fix: grep it for `Transform failed with`
+yourself before trusting its break set.
 
 ⚠⚠ **That line covers TEST FILES only — a red can be held by a post-suite LINT/TYPECHECK/BUILD leg
 instead, and then it is EMPTY while the gate is legitimately red.** Read `GATE_HELD_BY` for the
