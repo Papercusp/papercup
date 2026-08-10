@@ -27,14 +27,16 @@
  * `detectPapercupRoot()`), which is the same answer the env-operator launcher
  * runs the dev/local children from.
  *
- * THE `null` ANSWER IS A REAL ANSWER, NOT A FAILURE. On macOS today the source
- * archive is never staged (`PAPERCUSP_STAGE_SOURCE` defaults to 0 on both mac
- * build paths — P-004/WI-37790), so there is no tree and these packages CANNOT
- * be linked at all. That is a genuine product gap, and the right thing to hand a
- * builder is the gap stated plainly — never a plausible-looking path that will
- * fail at `npm install`. `pending` separates "none, and none is coming" (the
- * macOS gap) from "not extracted YET" (first boot, ~minutes), because those two
- * demand opposite reactions from the caller.
+ * THE `null` ANSWER IS A REAL ANSWER, NOT A FAILURE. Several shipping
+ * configurations genuinely have no tree — the macOS GUI app stashes the archive
+ * out so the DMG stays small (the macOS Server app DOES ship it), and a
+ * cross-built macOS bundle ships none by default because Linux-native
+ * node_modules are the wrong architecture (P-004/WI-37790). In those installs
+ * these packages CANNOT be linked at all, and the right thing to hand a builder
+ * is that stated plainly — never a plausible-looking path that fails at
+ * `npm install`. `pending` separates "none, and none is coming" from "not
+ * extracted YET" (first boot, ~minutes), because those demand opposite
+ * reactions from the caller.
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
