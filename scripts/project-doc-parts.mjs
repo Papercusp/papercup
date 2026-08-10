@@ -389,12 +389,36 @@ export function verifyBodiesPresent(text, kept) {
  * we wrote, i.e. somebody changed them, and overwriting would destroy that change. On
  * this tree CLAUDE.md is edited several times an hour, so this is the expected case,
  * not a hypothetical one. `absent` is safe: there is nothing to lose.
+ *
+ * ⚠ "OUR OWN OUTPUT" IS PER CLIENT (EI-20055472930397669). One doc row projects into N
+ * files, so a single stored hash cannot answer this question for more than one of them.
+ * The first version compared EVERY client's file against `content_hash` — the PRIMARY
+ * client's cached composition — so AGENTS.md, whose bytes legitimately differ from
+ * CLAUDE.md's, could never match and was refused on every subsequent run. The per-client
+ * record in `harness_docs.projected_clients` is the answer, and it is why
+ * `lastProjectionSha` is the FIRST hash consulted; `contentHash` survives only as the
+ * pre-column fallback for the primary client.
+ *
+ * `nextText` (the bytes we are about to write) is accepted outright when it matches: a
+ * write that changes nothing cannot destroy anything, whoever produced the bytes. That
+ * is what lets an un-recorded file re-join the steady state instead of needing a
+ * backfill — but it is NOT sufficient on its own, and reading it as the fix would be a
+ * mistake: the moment a part changes, the next output differs from disk and only the
+ * per-client record can distinguish "our last projection" from "a peer's edit".
  */
-export function overwriteVerdict({ onDisk, generatedFromSha, contentHash }) {
+export function overwriteVerdict({
+  onDisk,
+  generatedFromSha,
+  contentHash,
+  lastProjectionSha = null,
+  nextText = null,
+}) {
   if (onDisk === null) return { ok: true, reason: 'absent' };
   const live = sha256(onDisk);
+  if (nextText !== null && live === sha256(nextText)) return { ok: true, reason: 'already-current', live };
+  if (lastProjectionSha && live === lastProjectionSha) return { ok: true, reason: 'matches-last-projection', live };
   if (generatedFromSha && live === generatedFromSha) return { ok: true, reason: 'matches-loaded-source', live };
-  if (contentHash && live === contentHash) return { ok: true, reason: 'matches-last-projection', live };
+  if (contentHash && live === contentHash) return { ok: true, reason: 'matches-cached-composition', live };
   return { ok: false, reason: 'drifted', live };
 }
 
@@ -493,7 +517,7 @@ export function composeCorpus(allParts, { banner = true, sourceSha = null } = {}
 
 export async function readDocRow(client, docId) {
   const { rows } = await client.query(
-    `SELECT content_mode, content, content_hash, generated_from_sha
+    `SELECT content_mode, content, content_hash, generated_from_sha, projected_clients
        FROM harness_shared.harness_docs
       WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3`,
     [WORKSPACE_ID, HARNESS_SLUG, docId],
@@ -518,6 +542,56 @@ export async function writeCache(client, docId, text, generatedFromSha) {
       WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3`,
     [WORKSPACE_ID, HARNESS_SLUG, docId, text, sha256(text), generatedFromSha ?? null],
   );
+}
+
+/**
+ * Record what we just wrote to each client's file (migration 783).
+ *
+ * `||` shallow-merges, so a client whose write was REFUSED keeps its previous record
+ * instead of being erased by a run that only succeeded for its sibling. That coupling is
+ * the compounding half of EI-20055472930397669: the original code gated the single cache
+ * write on a GLOBAL `failed` flag, so one client's refusal also threw away the other
+ * client's fresh record, and every subsequent run started further behind.
+ *
+ * Called only after a successful write — a dry run records nothing, because nothing on
+ * disk changed.
+ */
+export function projectionRecord({ file, text }) {
+  return { file, sha: sha256(text), chars: text.length, written_at: new Date().toISOString() };
+}
+
+export async function writeProjectionRecords(client, docId, records) {
+  if (!records || Object.keys(records).length === 0) return;
+  await client.query(
+    `UPDATE harness_shared.harness_docs
+        SET projected_clients = COALESCE(projected_clients, '{}'::jsonb) || $4::jsonb,
+            updated_at = now()
+      WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3`,
+    [WORKSPACE_ID, HARNESS_SLUG, docId, JSON.stringify(records)],
+  );
+}
+
+/** The sha this client's file carried at its last successful projection, or null. */
+export function lastProjectionShaFor(doc, client) {
+  const rec = doc?.projected_clients?.[client];
+  return typeof rec?.sha === 'string' && rec.sha.length === 64 ? rec.sha : null;
+}
+
+/**
+ * What to pass `writeCache` as `generatedFromSha` — the sha of the SOURCE the parts were
+ * loaded from.
+ *
+ * P-003's loader parked that sha in `content_hash` (there was no `content` yet), so a
+ * legacy row needs it moved across exactly once. This is a ONE-TIME migration and must
+ * be conditional on the column still being empty: after the first projection
+ * `content_hash` holds our OUTPUT, and seeding from it unconditionally would overwrite
+ * the real provenance with the previous projection's hash on the very next run — a
+ * quiet corruption of the field `overwriteVerdict` trusts to recognise pre-cutover
+ * files.
+ */
+export function sourceShaSeed(doc) {
+  if (doc?.generated_from_sha) return null; // already recorded — never re-seed
+  return doc?.content_hash || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +657,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
     console.log(`  budget         ${fmt(budget)} chars  (context ${fmt(contextTokens)} × ${MEMORY_WARN_CONTEXT_FRACTION} × ${charsPerToken} chars/token, floor ${fmt(MEMORY_WARN_FLOOR_CHARS)})`);
 
+    /** Per-client projection records for this run — see writeProjectionRecords. */
+    const records = {};
+    let primaryText = null;
+
     for (const spec of CLIENTS) {
       const out = projectClient(parts, { ...spec, docId, budget });
       const path = resolve(ROOT, spec.file);
@@ -607,35 +685,69 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
       // A symlink has no content of its own to protect — retiring it destroys nothing,
       // because its target is the OTHER client's file, which is written separately.
+      //
+      // `contentHash` is offered ONLY to the primary client, because that is the only
+      // client it describes (it is the hash of the cached `content`, which is the
+      // primary's composition). Offering it to every client is precisely
+      // EI-20055472930397669 — it can never match a second client's bytes, so that
+      // client was refused forever.
+      const isPrimary = spec.client === CLIENTS[0].client;
       const verdict = isSymlink
         ? { ok: true, reason: 'symlink' }
-        : overwriteVerdict({ onDisk, generatedFromSha: doc.generated_from_sha, contentHash: doc.content_hash });
+        : overwriteVerdict({
+            onDisk,
+            generatedFromSha: doc.generated_from_sha,
+            contentHash: isPrimary ? doc.content_hash : null,
+            lastProjectionSha: lastProjectionShaFor(doc, spec.client),
+            nextText: out.text,
+          });
       if (!verdict.ok) {
+        const expected = [
+          lastProjectionShaFor(doc, spec.client) && `last ${spec.client} projection ${lastProjectionShaFor(doc, spec.client).slice(0, 16)}`,
+          doc.generated_from_sha && `loaded-from ${String(doc.generated_from_sha).slice(0, 16)}`,
+          isPrimary && doc.content_hash && `cached composition ${String(doc.content_hash).slice(0, 16)}`,
+        ].filter(Boolean).join(', ') || 'nothing on record';
         console.error(
           `    ✗ REFUSING to overwrite ${spec.file}: on-disk bytes are neither the source the parts were\n` +
-            `      loaded from nor the last projection — somebody edited it (live ${verdict.live.slice(0, 16)},\n` +
-            `      loaded-from ${String(doc.generated_from_sha ?? doc.content_hash).slice(0, 16)}).\n` +
+            `      loaded from nor a projection we wrote — somebody edited it (live ${verdict.live.slice(0, 16)};\n` +
+            `      on record: ${expected}).\n` +
             `      Writing would erase that edit. Re-run the loader against the current file first:\n` +
             `        node scripts/gen-claude-md-manifest.mjs && node scripts/split-claude-md-rule-evidence.mjs\n` +
             `        node scripts/load-claude-md-doc-parts.mjs --execute`,
         );
         failed = true;
+      } else if (missing.length) {
+        // The composition self-check failed above. Writing anyway would put a file on
+        // disk that is missing a rule the rows carry — exactly what verifyBodiesPresent
+        // exists to catch — and a non-zero exit does not un-write a file.
+        console.error(`    ✗ NOT writing ${spec.file}: the composition self-check above failed.`);
       } else if (write) {
         // The symlink is retired here, not by hand, so each client genuinely owns its
         // file. Unlinking first matters: writeFileSync THROUGH a symlink would write
         // the other client's file instead.
         if (isSymlink) unlinkSync(path);
         writeFileSync(path, out.text, 'utf8');
-        console.log(`    ✓ wrote ${spec.file}`);
+        records[spec.client] = projectionRecord({ file: spec.file, text: out.text });
+        if (isPrimary) primaryText = out.text;
+        console.log(`    ✓ wrote ${spec.file}  (${verdict.reason})`);
       }
     }
 
-    // Only the primary client's composition is cached on the doc row; AGENTS.md is a
-    // second projection of the same parts, not a second document.
-    if (write && !failed) {
-      const primary = projectClient(parts, { ...CLIENTS[0], docId, budget });
-      await writeCache(client, docId, primary.text, doc.content_hash || null);
-      console.log(`\n  ✓ cached the ${CLIENTS[0].file} composition on harness_docs.content`);
+    if (write) {
+      // Per client, and merged — so a client that was refused keeps its old record
+      // rather than having it dropped by its sibling's successful run. Gating this on a
+      // GLOBAL failure flag is what made the original drift COMPOUND: one refusal threw
+      // away the other file's fresh record too, so the next run started further behind.
+      await writeProjectionRecords(client, docId, records);
+      if (Object.keys(records).length) {
+        console.log(`\n  ✓ recorded ${Object.keys(records).length} client projection(s) on harness_docs.projected_clients`);
+      }
+      // Only the primary client's composition is cached in `content`; AGENTS.md is a
+      // second projection of the same parts, not a second document.
+      if (primaryText !== null) {
+        await writeCache(client, docId, primaryText, sourceShaSeed(doc));
+        console.log(`  ✓ cached the ${CLIENTS[0].file} composition on harness_docs.content`);
+      }
     }
 
     if (!write) {

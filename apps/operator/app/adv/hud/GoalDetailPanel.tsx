@@ -8,7 +8,7 @@
  * ── One query, one param ──────────────────────────────────────────────────
  * Everything on this page comes from `goals.detail` (resolveGoalDetail), which
  * already returns each section pre-shaped. A second query would be a second
- * clock: the projects grid and the spend chart are two readings of the same
+ * clock: the pots grid and the spend chart are two readings of the same
  * ledger, and fetching them separately lets them disagree on screen.
  *
  * The open-state param is `hudgoal` — the SAME param the board uses for "the
@@ -109,13 +109,13 @@ import {
   burnLine,
   ceilingLine,
   killCriterionLine,
-  partitionProjects,
+  partitionPots,
   spendStack,
   tripwireBars,
   waitingCount,
   workRail,
   type GoalDetailInput,
-  type GoalDetailProject,
+  type GoalDetailPot,
   type TripwireBar,
 } from './goal-detail-model';
 import type { HudRosterEntry } from './hud-board-model';
@@ -381,7 +381,7 @@ export default function GoalDetailPanel({
   const criterion = useMemo(() => killCriterionLine(goal), [goal]);
   const ceiling = useMemo(() => ceilingLine(goal), [goal]);
   const burn = useMemo(() => burnLine(goal, nowMs), [goal, nowMs]);
-  const projects = useMemo(() => partitionProjects(data?.projects), [data?.projects]);
+  const pots = useMemo(() => partitionPots(data?.pots), [data?.pots]);
   const stack = useMemo(() => spendStack(data?.spendByDay), [data?.spendByDay]);
 
   const waiting = data?.waitingOnYou ?? [];
@@ -829,7 +829,7 @@ export default function GoalDetailPanel({
             </section>
 
             {/* ── 2. WAITING ON YOU ───────────────────────────────────────
-                Above projects and activity because it is the only section the
+                Above pots and activity because it is the only section the
                 owner can ACT on — the rest is read-only reporting. */}
             {/* ── 2b. SUBDIRECTIVES (P-017) ───────────────────────────────
                 Above "Waiting on you" on purpose: this section answers "what is
@@ -881,30 +881,30 @@ export default function GoalDetailPanel({
               )}
             </section>
 
-            {/* ── 3. PROJECTS ─────────────────────────────────────────────── */}
+            {/* ── 3. POTS ─────────────────────────────────────────────────── */}
             <section className="hud-goal__section">
-              <h3 className="hud-goal__h">Projects</h3>
-              {projects.active.length === 0 && projects.removed.length === 0 ? (
-                <p className="hud-goal__empty">No projects serve this goal yet.</p>
+              <h3 className="hud-goal__h">Pots</h3>
+              {pots.active.length === 0 && pots.removed.length === 0 ? (
+                <p className="hud-goal__empty">No pots serve this goal yet.</p>
               ) : null}
-              {projects.active.length > 0 ? (
-                <div className="hud-goal__grid" data-testid="goal-projects">
-                  {projects.active.map((p) => (
-                    <ProjectCard key={p.harnessSlug} project={p} />
+              {pots.active.length > 0 ? (
+                <div className="hud-goal__grid" data-testid="goal-pots">
+                  {pots.active.map((p) => (
+                    <PotCard key={p.harnessSlug} pot={p} />
                   ))}
                 </div>
               ) : null}
 
-              {/* Killed projects STAY, greyed. If they vanished, the page would
+              {/* Killed pots STAY, greyed. If they vanished, the page would
                   only ever show growth — and "the agent actually closes things"
                   is the one behaviour the owner most needs to confirm, so it
                   must stay visible exactly when it is working. */}
-              {projects.removed.length > 0 ? (
+              {pots.removed.length > 0 ? (
                 <>
-                  <h4 className="hud-goal__h4">Closed ({projects.removed.length})</h4>
-                  <div className="hud-goal__grid" data-testid="goal-projects-closed">
-                    {projects.removed.map((p) => (
-                      <ProjectCard key={p.harnessSlug} project={p} nowMs={nowMs} />
+                  <h4 className="hud-goal__h4">Closed ({pots.removed.length})</h4>
+                  <div className="hud-goal__grid" data-testid="goal-pots-closed">
+                    {pots.removed.map((p) => (
+                      <PotCard key={p.harnessSlug} pot={p} nowMs={nowMs} />
                     ))}
                   </div>
                 </>
@@ -939,7 +939,7 @@ export default function GoalDetailPanel({
             <section className="hud-goal__section">
               <h3 className="hud-goal__h">{data?.spendLabel ?? 'fleet spend'} by day</h3>
               {/* D-021: per-goal spend figures do NOT sum across goals — a
-                  shared project counts in full against each. The caveat rides
+                  shared pot counts in full against each. The caveat rides
                   with the chart because this is the section most likely to be
                   screenshotted into a report. */}
               {data?.spendNote ? <p className="hud-goal__note">{data.spendNote}</p> : null}
@@ -1217,29 +1217,29 @@ function TripwireRow({ bar }: { bar: TripwireBar }) {
   );
 }
 
-function ProjectCard({ project, nowMs }: { project: GoalDetailProject; nowMs?: number }) {
-  const removedAgo = nowMs != null ? agoText(project.removedAt, nowMs) : null;
+function PotCard({ pot, nowMs }: { pot: GoalDetailPot; nowMs?: number }) {
+  const removedAgo = nowMs != null ? agoText(pot.removedAt, nowMs) : null;
   return (
-    <article className={`hud-goal__proj${project.removed ? ' hud-goal__proj--removed' : ''}`}>
+    <article className={`hud-goal__proj${pot.removed ? ' hud-goal__proj--removed' : ''}`}>
       <div className="hud-goal__proj-head">
-        <span className="hud-goal__proj-slug">{project.harnessSlug}</span>
-        {project.role === 'owner' ? <span className="hud__chip hud__role">main</span> : null}
-        {project.sharedBadge ? <span className="hud__chip">{project.sharedBadge}</span> : null}
+        <span className="hud-goal__proj-slug">{pot.harnessSlug}</span>
+        {pot.role === 'owner' ? <span className="hud__chip hud__role">main</span> : null}
+        {pot.sharedBadge ? <span className="hud__chip">{pot.sharedBadge}</span> : null}
       </div>
       <p
-        className={`hud-goal__proj-crit${project.killCriterionMissing ? ' hud-goal__proj-crit--missing' : ''}`}
+        className={`hud-goal__proj-crit${pot.killCriterionMissing ? ' hud-goal__proj-crit--missing' : ''}`}
       >
-        {project.killCriterionText}
+        {pot.killCriterionText}
       </p>
       <div className="hud-goal__proj-meta">
-        <span>${Math.round(project.spendUsd ?? 0).toLocaleString('en-US')}</span>
-        <span>{project.openWorkItems ?? 0} open</span>
-        {project.removed ? <span>closed{removedAgo ? ` ${removedAgo}` : ''}</span> : null}
+        <span>${Math.round(pot.spendUsd ?? 0).toLocaleString('en-US')}</span>
+        <span>{pot.openWorkItems ?? 0} open</span>
+        {pot.removed ? <span>closed{removedAgo ? ` ${removedAgo}` : ''}</span> : null}
       </div>
-      {/* The note is the REASON a project was closed — the whole value of
-          keeping killed projects on the page. */}
-      {project.removed && project.note?.trim() ? (
-        <p className="hud-goal__proj-note">{project.note.trim()}</p>
+      {/* The note is the REASON a pot was closed — the whole value of
+          keeping killed pots on the page. */}
+      {pot.removed && pot.note?.trim() ? (
+        <p className="hud-goal__proj-note">{pot.note.trim()}</p>
       ) : null}
     </article>
   );

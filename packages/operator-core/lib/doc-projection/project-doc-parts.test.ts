@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, cutOrder, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, readOrder, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, cutOrder, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionRecord, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -340,10 +340,24 @@ describe('overwriteVerdict — the projector reads PG, so the FILE is what it ca
     expect(v.reason).toBe('matches-loaded-source');
   });
 
-  it('CALIBRATION — the file is our own last projection (post-cutover, the steady state)', () => {
-    const v = overwriteVerdict({ onDisk: projected, generatedFromSha: sha(source), contentHash: sha(projected) });
+  it('CALIBRATION — the file is our own last projection for THIS client (the steady state)', () => {
+    const v = overwriteVerdict({
+      onDisk: projected,
+      generatedFromSha: sha(source),
+      contentHash: '',
+      lastProjectionSha: sha(projected),
+    });
     expect(v.ok).toBe(true);
     expect(v.reason).toBe('matches-last-projection');
+  });
+
+  it('CALIBRATION — the primary client still recognises its pre-column cached composition', () => {
+    // `content_hash` is the hash of the cached `content`, i.e. the PRIMARY client's
+    // composition. It survives as a fallback so a row projected before migration 783
+    // keeps working with no backfill.
+    const v = overwriteVerdict({ onDisk: projected, generatedFromSha: sha(source), contentHash: sha(projected) });
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('matches-cached-composition');
   });
 
   it('CONTROL — a peer edit between the load and the write is REFUSED, not silently erased', () => {
@@ -372,6 +386,108 @@ describe('overwriteVerdict — the projector reads PG, so the FILE is what it ca
     // Guards the obvious implementation slip: `live === contentHash` with both empty.
     const v = overwriteVerdict({ onDisk: 'anything at all', generatedFromSha: '', contentHash: '' });
     expect(v.ok).toBe(false);
+  });
+});
+
+describe('EI-20055472930397669 — one doc row, N client files, so "our own output" is PER CLIENT', () => {
+  // The two files are separate projections of the same parts and their bytes legitimately
+  // differ (different banner, different client scoping), so a single stored hash cannot
+  // describe both.
+  const claudeText = '# CLAUDE.md projection\n';
+  const codexText = '# AGENTS.md projection\n';
+  const sourceText = '# hand-authored\n';
+  const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
+
+  it('THE BUG — comparing the SECOND client against the primary\'s cached hash refuses it forever', () => {
+    // The original shape, reproduced exactly: AGENTS.md's bytes judged against
+    // `content_hash` (CLAUDE.md's composition) with no per-client record. It cannot
+    // match, so the projector refused — and would refuse on every future run.
+    const v = overwriteVerdict({
+      onDisk: codexText,
+      generatedFromSha: sha(sourceText),
+      contentHash: sha(claudeText),
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('drifted');
+  });
+
+  it('THE FIX — with its own record, the second client is recognised and may be updated', () => {
+    // Note the output has MOVED ON (a part was edited), so byte-identity cannot be what
+    // rescues this — only the per-client record can.
+    const v = overwriteVerdict({
+      onDisk: codexText,
+      generatedFromSha: sha(sourceText),
+      contentHash: null,
+      lastProjectionSha: sha(codexText),
+      nextText: `${codexText}a newly added rule\n`,
+    });
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('matches-last-projection');
+  });
+
+  it('a file already holding the exact bytes we are about to write is a no-op, never a refusal', () => {
+    // This is what lets an unrecorded file re-join the steady state without a backfill.
+    const v = overwriteVerdict({ onDisk: codexText, generatedFromSha: '', contentHash: '', nextText: codexText });
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('already-current');
+  });
+
+  it('CONTROL — the per-client record does NOT weaken the guard: a peer edit is still refused', () => {
+    // The whole point of the guard survives the fix. Without this, "recognise our own
+    // output" could be satisfied by blessing everything.
+    const v = overwriteVerdict({
+      onDisk: `${codexText}a peer added this line\n`,
+      generatedFromSha: sha(sourceText),
+      contentHash: null,
+      lastProjectionSha: sha(codexText),
+      nextText: `${codexText}a newly added rule\n`,
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('drifted');
+  });
+
+  it('CONTROL — a malformed record blesses nothing', () => {
+    // A truncated/absent sha must read as "no record", not as a wildcard.
+    expect(lastProjectionShaFor({ projected_clients: { codex: { sha: 'deadbeef' } } }, 'codex')).toBeNull();
+    expect(lastProjectionShaFor({ projected_clients: {} }, 'codex')).toBeNull();
+    expect(lastProjectionShaFor({}, 'codex')).toBeNull();
+    expect(lastProjectionShaFor(null, 'codex')).toBeNull();
+    expect(overwriteVerdict({ onDisk: 'x', generatedFromSha: '', contentHash: '', lastProjectionSha: null }).ok).toBe(false);
+  });
+
+  it('a record round-trips: what we write is what the next run recognises', () => {
+    const rec = projectionRecord({ file: 'AGENTS.md', text: codexText });
+    expect(rec.sha).toBe(sha(codexText));
+    expect(rec.chars).toBe(codexText.length);
+    expect(rec.file).toBe('AGENTS.md');
+    const v = overwriteVerdict({
+      onDisk: codexText,
+      generatedFromSha: '',
+      contentHash: '',
+      lastProjectionSha: lastProjectionShaFor({ projected_clients: { codex: rec } }, 'codex'),
+      nextText: `${codexText}changed\n`,
+    });
+    expect(v.ok).toBe(true);
+  });
+});
+
+describe('sourceShaSeed — the one-time legacy migration must not run twice', () => {
+  it('seeds generated_from_sha from content_hash while the column is empty (P-003 loader rows)', () => {
+    expect(sourceShaSeed({ generated_from_sha: null, content_hash: 'aaa' })).toBe('aaa');
+    expect(sourceShaSeed({ content_hash: 'aaa' })).toBe('aaa');
+  });
+
+  it('CONTROL — once recorded it is never re-seeded, so a projection hash cannot overwrite the provenance', () => {
+    // The defect this pins: `content_hash` holds our OUTPUT after the first projection,
+    // so an unconditional seed would replace the real source sha with the previous
+    // projection's hash on the very next run — silently corrupting the field
+    // overwriteVerdict trusts to recognise a pre-cutover file.
+    expect(sourceShaSeed({ generated_from_sha: 'real-source-sha', content_hash: 'a-projection-hash' })).toBeNull();
+  });
+
+  it('an empty row seeds nothing rather than an empty string', () => {
+    expect(sourceShaSeed({})).toBeNull();
+    expect(sourceShaSeed({ generated_from_sha: '', content_hash: '' })).toBeNull();
   });
 });
 

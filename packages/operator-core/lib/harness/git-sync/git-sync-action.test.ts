@@ -1399,6 +1399,29 @@ describe("WI-37668: the lock hook's sentinel intent never becomes a commit subje
     expect(merged[0].intent).toBeUndefined();
   });
 
+  it('LIVE-CAUGHT BUG: recovers the intent of an agent that declared NO files (the presence roster drops it)', () => {
+    // Measured on the real hot path 2026-08-10: loadAttributionRoster filters presence to
+    // `files.length > 0`, but the ledger exists precisely to attribute agents who never declared
+    // files — so deriving the intent map from the FILTERED roster recovered nothing and every
+    // subject fell to the default. The map must span ALL live agents, which is why it is passed in.
+    const declaredIntents = new Map([['su-6', 'Resume P-001 code half: rename goal-pot surface']]);
+    const merged = mergeAttributionRosters(
+      [entry('su-6', 'PreToolUse:Edit')],
+      [], // presence roster is EMPTY — su-6 declared no current_files
+      declaredIntents,
+    );
+    expect(merged[0].intent).toBe('Resume P-001 code half: rename goal-pot surface');
+  });
+
+  it('an explicit intent map takes precedence over deriving from the presence array', () => {
+    const merged = mergeAttributionRosters(
+      [entry('su-7', 'PreToolUse:Edit')],
+      [entry('su-7', 'stale roster intent')],
+      new Map([['su-7', 'authoritative intent']]),
+    );
+    expect(merged[0].intent).toBe('authoritative intent');
+  });
+
   it('isGenericLockIntent treats blank and both hook phases as unusable', () => {
     for (const bad of ['', '   ', 'PreToolUse:Edit', 'PreToolUse:Write', 'PostToolUse:Edit', 'pretooluse:multiedit']) {
       expect(isGenericLockIntent(bad)).toBe(true);

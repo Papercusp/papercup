@@ -1024,10 +1024,35 @@ async function gitSyncRuntimeGate(slug: string): Promise<{ gate: GitSyncEligibil
  *  coord presence. Best-effort — a presence-read failure degrades to [] (no attribution). The lazy
  *  import breaks a load-time cycle (git-sync-action is loaded by the system-action registry). */
 async function loadAttributionRoster(workspaceId: string | null): Promise<AttributionRosterEntry[]> {
+  return (await loadPresenceAttribution(workspaceId)).roster;
+}
+
+/**
+ * ONE presence read, TWO derived views (WI-37668).
+ *
+ * `roster` keeps the historical semantics: only agents that declared `current_files`, because an
+ * entry with no files can attribute nothing.
+ *
+ * `declaredIntentByAgent` deliberately spans ALL live agents, files or not — it supplies a commit
+ * SUBJECT, which needs no declared files to be meaningful. Deriving it from the FILTERED roster
+ * was a real bug (caught on the live hot path 2026-08-10): the ledger's whole purpose is to
+ * attribute agents who never declared files, and those are exactly the agents the filter drops —
+ * so every sentinel intent fell through to the default subject and the recovery never fired.
+ */
+async function loadPresenceAttribution(
+  workspaceId: string | null,
+): Promise<{ roster: AttributionRosterEntry[]; declaredIntentByAgent: Map<string, string> }> {
   try {
     const { listPresence } = await import('../../agent-tools/coordination/presence');
     const recs = await listPresence({ workspaceId });
-    return recs
+    const declaredIntentByAgent = new Map<string, string>();
+    for (const r of recs) {
+      const declared = (r.intent ?? '').trim();
+      if (!isGenericLockIntent(declared) && !declaredIntentByAgent.has(r.ownerId)) {
+        declaredIntentByAgent.set(r.ownerId, declared);
+      }
+    }
+    const roster = recs
       .map((r) => ({
         agent: r.ownerId,
         agentLabel: r.ownerLabel ?? undefined,
@@ -1035,8 +1060,9 @@ async function loadAttributionRoster(workspaceId: string | null): Promise<Attrib
         files: Array.isArray(r.currentFiles) ? r.currentFiles : [],
       }))
       .filter((e) => e.files.length > 0);
+    return { roster, declaredIntentByAgent };
   } catch {
-    return [];
+    return { roster: [], declaredIntentByAgent: new Map() };
   }
 }
 
@@ -1079,12 +1105,17 @@ export function isGenericLockIntent(intent: string | undefined | null): boolean 
 export function mergeAttributionRosters(
   ledger: AttributionRosterEntry[],
   presence: AttributionRosterEntry[],
+  /** Agent → declared intent, spanning ALL live agents (see loadPresenceAttribution). Omitted ⇒
+   *  derived from `presence`, which is correct only when that array is itself unfiltered. */
+  declaredIntents?: Map<string, string>,
 ): AttributionRosterEntry[] {
-  const declaredIntentByAgent = new Map<string, string>();
-  for (const p of presence) {
-    const declared = (p.intent ?? '').trim();
-    if (!isGenericLockIntent(declared) && !declaredIntentByAgent.has(p.agent)) {
-      declaredIntentByAgent.set(p.agent, declared);
+  const declaredIntentByAgent = declaredIntents ?? new Map<string, string>();
+  if (!declaredIntents) {
+    for (const p of presence) {
+      const declared = (p.intent ?? '').trim();
+      if (!isGenericLockIntent(declared) && !declaredIntentByAgent.has(p.agent)) {
+        declaredIntentByAgent.set(p.agent, declared);
+      }
     }
   }
   const repaired = ledger.map((e) => ({
@@ -1121,7 +1152,8 @@ async function loadAttributionRosterMerged(
   } catch {
     /* best-effort: fall through to presence */
   }
-  return mergeAttributionRosters(ledger, await loadAttributionRoster(workspaceId));
+  const { roster, declaredIntentByAgent } = await loadPresenceAttribution(workspaceId);
+  return mergeAttributionRosters(ledger, roster, declaredIntentByAgent);
 }
 
 /** P-006 (assign-don't-broadcast / F5): recipients for a content-guard escalation — the agents who

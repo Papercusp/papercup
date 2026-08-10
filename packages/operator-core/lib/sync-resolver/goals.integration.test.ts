@@ -188,7 +188,7 @@ function closedItem(id: string, updatedTs = CLOSED_AT): Promise<void> {
 /* ── P-019/D-010 fixtures ────────────────────────────────────────────────
    A work item that CAME FROM a plan. `source_plan_slug` is the only column
    tying a work item to a plan, and it is the entire basis of the goal→plan
-   derivation — see D-010 for why the projects-based alternative is rejected. */
+   derivation — see D-010 for why the pots-based alternative is rejected. */
 async function planItem(
   id: string,
   planSlug: string,
@@ -267,7 +267,7 @@ describe('goals.* resolvers against real SQL', () => {
 
     const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
       goal: { id: string } | null;
-      projects: unknown[];
+      pots: unknown[];
       waitingOnYou: Array<{ id: string; updatedAt: string | null }>;
       activity: Array<{ id: string; closedAt: string | null; updatedAt: string | null }>;
       spendByDay: Array<{ day: string; costUsd: number }>;
@@ -352,7 +352,7 @@ describe('goals.* resolvers against real SQL', () => {
 
     const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
       goal: { potCount: number };
-      projects: Array<{ harnessSlug: string; removedAt: string | null }>;
+      pots: Array<{ harnessSlug: string; removedAt: string | null }>;
     };
     expect(out.pots.map((p) => p.harnessSlug).sort()).toEqual(['alpha', 'beta']);
     expect(out.pots.find((p) => p.harnessSlug === 'beta')?.removedAt).not.toBeNull();
@@ -361,7 +361,7 @@ describe('goals.* resolvers against real SQL', () => {
   });
 
   /* ── P-019/D-010: plans, DERIVED through stamped work items ────────────── */
-  it('derives plans from the goal’s work items — and never from its projects’ harnesses', async () => {
+  it('derives plans from the goal’s work items — and never from its pots’ harnesses', async () => {
     const { resolveGoalDetail } = await import('./goals');
     await goal();
     await pot('alpha');

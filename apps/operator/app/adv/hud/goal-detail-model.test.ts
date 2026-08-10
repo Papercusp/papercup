@@ -3,15 +3,15 @@
  *
  * The cases that earn their place here are the ones where a plausible-looking
  * implementation is silently WRONG rather than obviously broken: an unmeasured
- * tripwire rendered as a confident zero, a killed project quietly dropped, a
- * shared-project count that includes the goal you are already looking at.
+ * tripwire rendered as a confident zero, a killed pot quietly dropped, a
+ * shared-pot count that includes the goal you are already looking at.
  */
 import { describe, expect, it } from 'vitest';
 import {
   agoText,
   ceilingLine,
   killCriterionLine,
-  partitionProjects,
+  partitionPots,
   planLabel,
   spendStack,
   tripwireBar,
@@ -19,7 +19,7 @@ import {
   waitingCount,
   workRail,
   type GoalDetailInput,
-  type GoalDetailProjectInput,
+  type GoalDetailPotInput,
 } from './goal-detail-model';
 
 describe('tripwireBar', () => {
@@ -143,13 +143,13 @@ describe('killCriterionLine', () => {
   });
 });
 
-describe('partitionProjects', () => {
-  const base: GoalDetailProjectInput = { harnessSlug: 'alpha', role: 'owner', servesGoals: 1 };
+describe('partitionPots', () => {
+  const base: GoalDetailPotInput = { harnessSlug: 'alpha', role: 'owner', servesGoals: 1 };
 
-  it('KEEPS killed projects instead of filtering them out', () => {
+  it('KEEPS killed pots instead of filtering them out', () => {
     // If kills vanish, the page only ever shows growth and "the agent actually
     // closes things" becomes invisible exactly when it is working.
-    const { active, removed } = partitionProjects([
+    const { active, removed } = partitionPots([
       base,
       { ...base, harnessSlug: 'beta', removedAt: '2026-08-01T00:00:00Z', note: 'no traction' },
     ]);
@@ -160,29 +160,29 @@ describe('partitionProjects', () => {
   });
 
   it('excludes THIS goal from the shared-with count', () => {
-    // servesGoals counts every goal the project serves, this one included — so
-    // a project serving only this goal (1) must show no badge at all.
-    expect(partitionProjects([{ ...base, servesGoals: 1 }]).active[0].sharedBadge).toBeNull();
-    expect(partitionProjects([{ ...base, servesGoals: 2 }]).active[0].sharedBadge).toBe('shared with 1 other goal');
-    expect(partitionProjects([{ ...base, servesGoals: 3 }]).active[0].sharedBadge).toBe('shared with 2 other goals');
+    // servesGoals counts every goal the pot serves, this one included — so
+    // a pot serving only this goal (1) must show no badge at all.
+    expect(partitionPots([{ ...base, servesGoals: 1 }]).active[0].sharedBadge).toBeNull();
+    expect(partitionPots([{ ...base, servesGoals: 2 }]).active[0].sharedBadge).toBe('shared with 1 other goal');
+    expect(partitionPots([{ ...base, servesGoals: 3 }]).active[0].sharedBadge).toBe('shared with 2 other goals');
   });
 
-  it('surfaces a project missing its own kill criterion (clause 4)', () => {
-    const [withCrit] = partitionProjects([{ ...base, killCriterion: 'ship or stop' }]).active;
+  it('surfaces a pot missing its own kill criterion (clause 4)', () => {
+    const [withCrit] = partitionPots([{ ...base, killCriterion: 'ship or stop' }]).active;
     expect(withCrit.killCriterionMissing).toBe(false);
     expect(withCrit.killCriterionText).toBe('ship or stop');
 
-    const [without] = partitionProjects([base]).active;
+    const [without] = partitionPots([base]).active;
     expect(without.killCriterionMissing).toBe(true);
   });
 
-  it('handles an absent project list', () => {
-    expect(partitionProjects(null)).toEqual({ active: [], removed: [] });
+  it('handles an absent pot list', () => {
+    expect(partitionPots(null)).toEqual({ active: [], removed: [] });
   });
 });
 
 describe('spendStack', () => {
-  it('stacks each day by project and sizes columns against the tallest day', () => {
+  it('stacks each day by pot and sizes columns against the tallest day', () => {
     const stack = spendStack([
       { day: '2026-08-01', harnessSlug: 'alpha', costUsd: 3 },
       { day: '2026-08-01', harnessSlug: 'beta', costUsd: 1 },
@@ -206,7 +206,7 @@ describe('spendStack', () => {
     expect(stack.days.map((d) => d.day)).toEqual(['2026-08-01', '2026-08-03']);
   });
 
-  it('SUMS a repeated day+project pair rather than keeping only the last', () => {
+  it('SUMS a repeated day+pot pair rather than keeping only the last', () => {
     // The resolver groups already; this guards the reshape against silently
     // discarding rows if a caller ever passes ungrouped ones.
     const stack = spendStack([
@@ -217,7 +217,7 @@ describe('spendStack', () => {
     expect(stack.days[0].slices).toHaveLength(1);
   });
 
-  it('labels an unattributed project rather than dropping its cost', () => {
+  it('labels an unattributed pot rather than dropping its cost', () => {
     const stack = spendStack([{ day: '2026-08-01', harnessSlug: null, costUsd: 4 }]);
     expect(stack.days[0].slices[0].harnessSlug).toBe('unattributed');
     expect(stack.totalUsd).toBe(4);

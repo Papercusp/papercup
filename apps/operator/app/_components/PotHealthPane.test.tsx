@@ -31,7 +31,7 @@ const NOW = Date.now();
 
 function seedGoals(goals: unknown[] = [defaultGoal()]) {
   h.queries['goals.list'] = {
-    data: [{ goals, portfolioSpendUsd: 412.5, portfolioProjects: 3 }],
+    data: [{ goals, portfolioSpendUsd: 412.5, portfolioPots: 3 }],
   };
 }
 
@@ -52,7 +52,7 @@ function defaultGoal(overrides: Record<string, unknown> = {}) {
     spendRecentWindowDays: 7,
     openWorkItems: 9,
     needsHuman: 2,
-    projectCount: 3,
+    potCount: 3,
     lastActivityAt: new Date(NOW - 3 * 60 * 60_000).toISOString(),
     ...overrides,
   };
@@ -160,7 +160,7 @@ describe('PotHealthPane (su-only rebuild — P-018..P-021 / D-032)', () => {
       (el) => el.textContent,
     );
     expect(kvValues).toContain('$310 of $500');
-    expect(screen.getByText(/3 projects · 9 open · 2 need you/)).toBeTruthy();
+    expect(screen.getByText(/3 pots · 9 open · 2 need you/)).toBeTruthy();
   });
 
   it('GOALS: a goal with NO kill criterion says so loudly — nothing can stop it', () => {
@@ -246,7 +246,7 @@ describe('PotHealthPane (su-only rebuild — P-018..P-021 / D-032)', () => {
     expect(screen.getByText('6 opened · 7 closed')).toBeTruthy();
     expect(screen.getByText('2 items · 1 plans')).toBeTruthy();
     expect(screen.getByText(/\$1\.25 last hour · \$42\.50 last 24h \(900 calls\)/)).toBeTruthy();
-    expect(screen.getByText(/\$412\.50 across 3 projects/)).toBeTruthy();
+    expect(screen.getByText(/\$412\.50 across 3 pots/)).toBeTruthy();
   });
 
   it('honest empty states: no goals steering, nobody driving', () => {

@@ -67,7 +67,7 @@ interface PotGoalRow extends GoalDetailGoalInput {
 interface GoalsEnvelope {
   goals: PotGoalRow[];
   portfolioSpendUsd: number;
-  portfolioProjects: number;
+  portfolioPots: number;
 }
 
 /** One agent as `fleet.status` returns it. `sessionState` is the liveness
@@ -352,7 +352,7 @@ export function PotHealthPane() {
                 )}
                 <KvRow
                   k="work"
-                  v={`${g.projectCount ?? 0} projects · ${g.openWorkItems ?? 0} open${
+                  v={`${g.potCount ?? 0} pots · ${g.openWorkItems ?? 0} open${
                     (g.needsHuman ?? 0) > 0 ? ` · ${g.needsHuman} need you` : ''
                   }`}
                   tone={(g.needsHuman ?? 0) > 0 ? 'warn' : 'ok'}
@@ -457,7 +457,7 @@ export function PotHealthPane() {
             {goalsEnvelope != null && (
               <KvRow
                 k="portfolio"
-                v={`$${goalsEnvelope.portfolioSpendUsd.toFixed(2)} across ${goalsEnvelope.portfolioProjects} projects`}
+                v={`$${goalsEnvelope.portfolioSpendUsd.toFixed(2)} across ${goalsEnvelope.portfolioPots} pots`}
               />
             )}
           </div>

@@ -243,7 +243,7 @@ export interface HudGoalInput {
   /** Items on this goal parked on the owner — the needs-you signal. */
   needsHuman?: number | null;
   openWorkItems?: number | null;
-  projectCount?: number | null;
+  potCount?: number | null;
   /** FLEET spend: what the goal's child agents cost. Not the goal's own turns. */
   spendUsd?: number | null;
   /**
@@ -921,9 +921,9 @@ export function toGoalCard(
   if (open > 0) {
     badges.push({ id: `${goal.id}:open`, label: `${open} open`, tone: 'good', title: `${open} open work item${open === 1 ? '' : 's'} stamped to this goal` });
   }
-  const projects = goal.projectCount ?? 0;
-  if (projects > 0) {
-    badges.push({ id: `${goal.id}:projects`, label: `${projects} proj`, tone: 'neutral', title: `${projects} project${projects === 1 ? '' : 's'} serve this goal` });
+  const pots = goal.potCount ?? 0;
+  if (pots > 0) {
+    badges.push({ id: `${goal.id}:pots`, label: `${pots} pot${pots === 1 ? '' : 's'}`, tone: 'neutral', title: `${pots} pot${pots === 1 ? '' : 's'} serve this goal` });
   }
   // The spend chip goes `bad` only at/over the ceiling — the second of the two
   // things that can actually stop a goal, so it earns an alarm tone.

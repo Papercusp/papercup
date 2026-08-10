@@ -71,18 +71,18 @@ export interface GoalDetailGoalInput {
   spendRecentWindowDays?: number | null;
   openWorkItems?: number | null;
   needsHuman?: number | null;
-  projectCount?: number | null;
+  potCount?: number | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 }
 
-export interface GoalDetailProjectInput {
+export interface GoalDetailPotInput {
   harnessSlug: string;
   role: string;
   killCriterion?: string | null;
   note?: string | null;
   addedAt?: string | null;
-  /** Non-null ⇒ detached/killed. The row STAYS on the page — see partitionProjects. */
+  /** Non-null ⇒ detached/killed. The row STAYS on the page — see partitionPots. */
   removedAt?: string | null;
   servesGoals?: number | null;
   spendUsd?: number | null;
@@ -113,7 +113,7 @@ export interface GoalDetailSpendDayInput {
 
 /** One derived plan row for the work rail (P-019). Shape mirrors the resolver's
  *  `GoalPlanCard` — see D-010 for WHY a goal's plans are derived through its
- *  stamped work items rather than through its projects' harnesses. */
+ *  stamped work items rather than through its pots' harnesses. */
 export interface GoalDetailPlanInput {
   planSlug: string;
   harnessSlug: string;
@@ -153,7 +153,7 @@ export interface GoalDetailInput {
   subGoals?: GoalDetailSubGoalInput[] | null;
   /** Set only when the open goal is itself a subdirective. */
   parent?: { id: string; title: string } | null;
-  projects?: GoalDetailProjectInput[] | null;
+  pots?: GoalDetailPotInput[] | null;
   plans?: GoalDetailPlanInput[] | null;
   agents?: GoalDetailAgentInput[] | null;
   waitingOnYou?: GoalDetailWaitingInput[] | null;
@@ -297,18 +297,18 @@ export function killCriterionLine(goal: GoalDetailGoalInput | null): {
   };
 }
 
-/* ── Projects ────────────────────────────────────────────────────────────── */
+/* ── Pots ────────────────────────────────────────────────────────────────── */
 
-export interface GoalDetailProject extends GoalDetailProjectInput {
+export interface GoalDetailPot extends GoalDetailPotInput {
   removed: boolean;
   /** `shared with 2 other goals`, or null when this goal is its only claimant. */
   sharedBadge: string | null;
-  /** Clause 4 requires one per project; its absence is shown, not hidden. */
+  /** Clause 4 requires one per pot; its absence is shown, not hidden. */
   killCriterionText: string;
   killCriterionMissing: boolean;
 }
 
-function decorate(p: GoalDetailProjectInput): GoalDetailProject {
+function decorate(p: GoalDetailPotInput): GoalDetailPot {
   const removed = p.removedAt != null;
   const serves = p.servesGoals ?? 0;
   const crit = p.killCriterion?.trim();
@@ -317,32 +317,32 @@ function decorate(p: GoalDetailProjectInput): GoalDetailProject {
     removed,
     // `servesGoals` counts THIS goal too, so the shared count is one less.
     sharedBadge: serves > 1 ? `shared with ${serves - 1} other goal${serves === 2 ? '' : 's'}` : null,
-    killCriterionText: crit || 'No kill criterion for this project',
+    killCriterionText: crit || 'No kill criterion for this pot',
     killCriterionMissing: !crit,
   };
 }
 
 /**
- * Active and removed projects, both kept.
+ * Active and removed pots, both kept.
  *
- * Removed projects STAY on the page, greyed. If kills vanished, the page would
+ * Removed pots STAY on the page, greyed. If kills vanished, the page would
  * only ever show growth — and "the agent actually closes things" (clause 4: an
  * agent that only ever creates is a ratchet) would become invisible at exactly
  * the moment it is working. The resolver deliberately does not filter them
  * either; this is the same decision held on both sides of the wire.
  */
-export function partitionProjects(projects: GoalDetailProjectInput[] | null | undefined): {
-  active: GoalDetailProject[];
-  removed: GoalDetailProject[];
+export function partitionPots(pots: GoalDetailPotInput[] | null | undefined): {
+  active: GoalDetailPot[];
+  removed: GoalDetailPot[];
 } {
-  const all = (projects ?? []).map(decorate);
+  const all = (pots ?? []).map(decorate);
   return {
     active: all.filter((p) => !p.removed),
     removed: all.filter((p) => p.removed),
   };
 }
 
-/* ── Spend by day, stacked by project ────────────────────────────────────── */
+/* ── Spend by day, stacked by pot ────────────────────────────────────────── */
 
 export interface SpendStackSlice {
   harnessSlug: string;
@@ -361,16 +361,16 @@ export interface SpendStackDay {
 
 export interface SpendStack {
   days: SpendStackDay[];
-  /** Every project appearing anywhere in the window, for a stable legend/colour. */
+  /** Every pot appearing anywhere in the window, for a stable legend/colour. */
   harnesses: string[];
   maxDayUsd: number;
   totalUsd: number;
 }
 
 /**
- * Bucket the flat (day, project, cost) rows into stacked columns. Pure.
+ * Bucket the flat (day, pot, cost) rows into stacked columns. Pure.
  *
- * The resolver already grouped by day+project, so this is a reshape rather than
+ * The resolver already grouped by day+pot, so this is a reshape rather than
  * an aggregation — but it must still SUM on collision, because a caller that
  * passes ungrouped rows (a test, or a resolver that later stops grouping)
  * would otherwise silently keep only the last row of each pair.
