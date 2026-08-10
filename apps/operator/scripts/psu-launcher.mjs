@@ -1508,7 +1508,11 @@ export function installBootLogCapture(
   // "psu refused these arguments" from "psu never got that far", and it is not
   // recoverable from the adv_sessions row once the launch dies.
   append(`# psu launch ${ownerId} at ${now().toISOString()}\n# argv: ${argv.join(' ')}\n`);
-  const original = stream.write.bind(stream);
+  // Keep the UNBOUND original and re-dispatch with `.call(stream, …)`, rather
+  // than storing a `.bind(stream)` copy: uninstall must put back the exact
+  // function that was there, or a second install/uninstall cycle leaves a stack
+  // of bound wrappers behind and the stream never returns to its own method.
+  const original = stream.write;
   stream.write = (chunk, encoding, cb) => {
     try {
       append(typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
@@ -1516,7 +1520,7 @@ export function installBootLogCapture(
       // fall through — the real write below is what the user sees, and it must
       // happen whatever the tee did.
     }
-    return original(chunk, encoding, cb);
+    return original.call(stream, chunk, encoding, cb);
   };
   // Housekeeping, not correctness: one small file per launch would otherwise
   // accrete forever. Best-effort and bounded (see prunePsuLaunchLogs).

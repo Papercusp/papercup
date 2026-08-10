@@ -20,6 +20,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../../define-route';
+// WI-37841: the READER's derivation. Imported (not re-typed) so the receipt
+// assertion below fails if the writer and reader ever drift apart.
+import { psuLaunchLogPath } from '../../../psu-launch-log.mjs';
 
 // Both mocks DECLARE their parameter so `.mock.calls[0][0]` is typed — that call
 // argument is the whole assertion surface here (it carries the composed argv).
@@ -268,6 +271,37 @@ describe('launch-su — the terminal child gets a RE-DERIVED operator base, neve
 
   /** The env the route actually handed the terminal. */
   const headedEnv = (): NodeJS.ProcessEnv => spawnInTerminalMock.mock.calls[0]![0].env;
+
+  it('points the keep-open receipt at THIS launch\'s boot log (WI-37841)', async () => {
+    // The other half of WI-37841's evidence capture, and the half psu itself
+    // cannot provide: a failure BEFORE node runs — psu missing from PATH, an
+    // unusable login shell, a bad interpreter — exits through this shell wrapper,
+    // not through psu, so only the receipt records it. Without it those failures
+    // leave nothing an operator can read, which is indistinguishable from the
+    // launch never having been attempted.
+    //
+    // Asserted by EXECUTION against the path the READER will derive, not by
+    // matching a literal: a hand-written path here would keep this test green
+    // while the writer and reader silently drifted apart, which is the exact
+    // failure the shared derivation exists to prevent.
+    const { json } = await launch({ headless: false });
+    const ownerId = json.ownerId as string;
+    expect(ownerId).toMatch(/^su-/);
+
+    const expected = psuLaunchLogPath(ownerId);
+    expect(expected).toBeTruthy();
+    // The banner printf is tee'd to the receipt inside the keep-open wrapper.
+    expect(headedOneliner()).toContain(`| tee -a '${expected}'`);
+  });
+
+  it('omits the receipt on a RESUME, which pins no owner (no path to derive)', async () => {
+    // A resumed session already has an identity, so the route mints no owner id —
+    // and psuLaunchLogPath(null) is null. The wrapper must then degrade to its
+    // pre-WI-37841 behaviour (print to the window only) rather than tee to a
+    // path built from an empty string, which would collide across every resume.
+    await launch({ headless: false, resume_session_id: 'sess-abc' });
+    expect(headedOneliner()).not.toContain('tee -a');
+  });
 
   it('does NOT leak an /api/mcp-suffixed PAPERCUSP_OPERATOR_URL into the spawned terminal', async () => {
     // The exact shape the desktop sidecar was observed carrying. Inherited
