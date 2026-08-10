@@ -120,6 +120,117 @@ export function recordStandingReds({ entries, path = DEFAULT_OBSERVATION_PATH, n
 }
 
 /**
+ * The gate verdicts on which the COMPLETE standing new-file red set is known.
+ *
+ * This list is the soundness boundary of the whole resolution path below, so it is an
+ * ALLOW-list, never a `!startsWith('fail-')` test: a verdict nobody has classified must
+ * default to "we do not know", and a deny-list silently admits every future verdict.
+ *
+ * Why exactly these four. `newFiles` is computed only on the unattributed-regression path
+ * (tsc-baseline-gate.mjs) — so:
+ *   - `ok-peer-drift` computes it AND records it via recordStandingReds(): known, complete.
+ *   - `ok` / `ok-below` / `ok-ratchet` are reached only when NOTHING regressed above
+ *     baseline. A new file with type errors IS a regression (absent baseline => 0 -> N), so
+ *     these verdicts entail an EMPTY standing set. Known, complete, and empty.
+ *   - every `fail-*` verdict exits before the standing set is recorded (and `fail-regressed`
+ *     never computes it at all), so a run that ended in one proves NOTHING about whether a
+ *     given file is still red. Emitting a heartbeat there would be the false-clean bug this
+ *     whole module exists to avoid.
+ */
+export const COMPLETE_STANDING_SET_VERDICTS = Object.freeze(['ok', 'ok-below', 'ok-peer-drift', 'ok-ratchet']);
+
+/**
+ * Did a run ending in `verdict` observe the complete standing set? Pure, so the soundness
+ * boundary is unit-testable without running a compile.
+ */
+export function verdictObservesCompleteStandingSet(verdict) {
+  return COMPLETE_STANDING_SET_VERDICTS.includes(verdict);
+}
+
+/**
+ * Append ONE run heartbeat — "a full compile of `project` completed at T and the standing set
+ * it observed is recorded in this same store".
+ *
+ * THIS IS THE MISSING HALF OF THE SAMPLER. Observations alone can only ever say a red EXISTS;
+ * nothing in the store distinguishes "still red" from "the sampler stopped running", so a red
+ * that gets FIXED simply stops being mentioned and its work-item sits open forever as a
+ * severity:major false critical (measured 2026-08-10: 5 of 5 open ones were stale, 4 of them
+ * by ~30h). A heartbeat is what makes silence readable: a run that completed AFTER a file's
+ * last sighting, and did not re-sight it, is POSITIVE evidence the red is gone — because a run
+ * that still saw it would have appended a fresh observation for it in this very store.
+ *
+ * That inference is only valid when the run actually knew the complete standing set, which is
+ * why the verdict is REQUIRED and filtered here rather than at the call site: a caller that
+ * forgets the guard gets a no-op, not an unsound heartbeat.
+ *
+ * Fail-soft on the same terms as recordStandingReds — this runs on the gate's hot path, which
+ * the whole fleet blocks on, so every failure is swallowed and TSC_EXIT is never affected.
+ *
+ * @param {object} opts
+ * @param {string} opts.verdict - the gate verdict this run ended on
+ * @param {string} [opts.project] - which tsc project ran (several gates share the store)
+ * @param {number} [opts.standingCount] - how many standing reds it observed (0 on the ok paths)
+ * @param {string} [opts.path]
+ * @param {number} [opts.nowMs]
+ * @returns {{ok: boolean, written: number, skipped?: string, error?: string}}
+ */
+export function recordGateRun({
+  verdict,
+  project = '',
+  standingCount = 0,
+  path = DEFAULT_OBSERVATION_PATH,
+  nowMs = Date.now(),
+}) {
+  if (!verdictObservesCompleteStandingSet(verdict)) {
+    return { ok: true, written: 0, skipped: 'incomplete-standing-set' };
+  }
+  try {
+    const ts = Math.floor(nowMs / 1000);
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, JSON.stringify({ ts, kind: 'run', project, verdict, standingCount }) + '\n');
+    return { ok: true, written: 1 };
+  } catch (err) {
+    // Deliberately swallowed — see the module header. The gate's verdict outranks this.
+    return { ok: false, written: 0, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+/**
+ * Read the run heartbeats, dropping anything unparseable or past RETENTION_SEC.
+ *
+ * @returns {{ts: number, project: string, verdict: string, standingCount: number}[]}
+ */
+export function readRunHeartbeats({ path = DEFAULT_OBSERVATION_PATH, nowMs = Date.now(), retentionSec = RETENTION_SEC } = {}) {
+  if (!existsSync(path)) return [];
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch {
+    return [];
+  }
+  const cutoff = Math.floor(nowMs / 1000) - retentionSec;
+  const out = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!rec || rec.kind !== 'run' || typeof rec.ts !== 'number') continue;
+    if (rec.ts < cutoff) continue;
+    out.push({
+      ts: rec.ts,
+      project: rec.project ?? '',
+      verdict: rec.verdict ?? '',
+      standingCount: typeof rec.standingCount === 'number' ? rec.standingCount : 0,
+    });
+  }
+  return out;
+}
+
+/**
  * Read observations, dropping anything unparseable or past RETENTION_SEC.
  *
  * A corrupt line is skipped rather than fatal: concurrent appenders (9 compiles/hour, several
@@ -146,6 +257,10 @@ export function readObservations({ path = DEFAULT_OBSERVATION_PATH, nowMs = Date
     } catch {
       continue;
     }
+    // Run heartbeats share this store but are NOT observations of a red — never let one
+    // reach selectDwelledReds. They have no `file`, so the shape guard below already
+    // excludes them; this is explicit so a future heartbeat field cannot smuggle one in.
+    if (rec && rec.kind === 'run') continue;
     if (!rec || typeof rec.file !== 'string' || typeof rec.ts !== 'number') continue;
     if (rec.ts < cutoff) continue;
     out.push({ ts: rec.ts, file: rec.file, count: rec.count ?? null, project: rec.project ?? '' });
@@ -212,10 +327,23 @@ export function selectDwelledReds(observations, { nowMs = Date.now(), dwellSec =
 export function pruneObservations({ path = DEFAULT_OBSERVATION_PATH, nowMs = Date.now(), retentionSec = RETENTION_SEC } = {}) {
   try {
     const kept = readObservations({ path, nowMs, retentionSec });
-    if (!existsSync(path)) return { ok: true, kept: 0 };
-    writeFileSync(path, kept.map((o) => JSON.stringify(o)).join('\n') + (kept.length ? '\n' : ''));
-    return { ok: true, kept: kept.length };
+    // Heartbeats live in this same file and MUST survive the prune. Rewriting from
+    // readObservations alone silently deleted every one of them — which would not fail
+    // anything, it would just make the resolution path permanently unable to find evidence
+    // and therefore permanently silent. That is the exact failure shape this module is
+    // being extended to remove, so it gets its own line rather than a comment.
+    const keptRuns = readRunHeartbeats({ path, nowMs, retentionSec });
+    if (!existsSync(path)) return { ok: true, kept: 0, keptRuns: 0 };
+    const rows = [
+      ...kept.map((o) => ({ ts: o.ts, rec: o })),
+      ...keptRuns.map((r) => ({
+        ts: r.ts,
+        rec: { ts: r.ts, kind: 'run', project: r.project, verdict: r.verdict, standingCount: r.standingCount },
+      })),
+    ].sort((a, b) => a.ts - b.ts);
+    writeFileSync(path, rows.map((r) => JSON.stringify(r.rec)).join('\n') + (rows.length ? '\n' : ''));
+    return { ok: true, kept: kept.length, keptRuns: keptRuns.length };
   } catch (err) {
-    return { ok: false, kept: 0, error: String(err && err.message ? err.message : err) };
+    return { ok: false, kept: 0, keptRuns: 0, error: String(err && err.message ? err.message : err) };
   }
 }
