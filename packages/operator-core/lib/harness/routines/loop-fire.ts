@@ -41,6 +41,8 @@ import {
   type CheckEntry,
   type WallEntry,
 } from '../../carry-note';
+import { getOrgPg } from '@papercusp/db-org';
+import { assessGoalStaleness, extractGoalWorkItemIds } from './loop-goal-staleness';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
 import {
   renderWallNagLine,
@@ -111,6 +113,11 @@ export interface LoopFireDeps {
   findWakeRecipe?: typeof defaultFindTopRecipeForWake;
   /** P-006: read-and-clear the pending turn-settle wall nag (fail-soft). */
   takeWallNag?: typeof defaultTakeLoopWallNag;
+  /** EI-19501119110607678: resolve the CURRENT state of the work-items the frozen goal
+   *  names, so the wake can say the goal is stale instead of merely warning that it
+   *  might be. Fail-soft: a failed read must yield an EMPTY map (⇒ every id unresolved
+   *  ⇒ no staleness claim at all), never a partial one that could read as "finished". */
+  readGoalItemStates?: typeof defaultReadGoalItemStates;
   /** EI-11484: fetch + render the OPEN OWNER DIRECTIVES block for the wake's
    *  workspace (defaults to renderOpenOwnerDirectivesBlock). Best-effort. */
   renderOwnerDirectives?: (
@@ -486,6 +493,18 @@ export function renderLoopWakeText(opts: {
    *  first-carry-note mandate, which must only assert emptiness on a CONFIRMED-empty
    *  read (a failed read may hide a real note the mandate would nudge an overwrite of). */
   noteReadFailed?: boolean;
+  /**
+   * EI-19501119110607678: the MEASURED staleness of the arm-time goal
+   * (`assessGoalStaleness`), or null when there is nothing honest to say.
+   *
+   * ⚠ RENDERED IN BOTH FORMS, and adjacent to the goal it judges. P-017 demoted the
+   * frozen goal below the checkpoint and tagged it "frozen at arm time" — but that is
+   * a generic caution, and a generic caution loses to specific text: the goal still
+   * names real ids in the shape of live state. This line is the difference between
+   * "this might be stale" and "these four items are done"; separating it from the goal
+   * would recreate the ordering defect P-017 fixed, one level up.
+   */
+  goalStalenessNote?: string | null;
 }): string {
   const block = renderLoopCheckpointBlock(opts.checkpoint, {
     updatedAtMs: opts.checkpointUpdatedAtMs,
@@ -509,9 +528,16 @@ export function renderLoopWakeText(opts: {
       ? '⚠ NO loop:checkpoint carry-note exists for this loop yet. Write the FIRST one before this turn ends — loop:checkpoint { did, left, insight, next } — even on a quiet wake: with no carry-note, a cold wake, a successor, or a post-compaction resume reconstructs this loop from its arm-time goal text alone.'
       : null;
   if (isLoopWakeFullForm(opts.fireNumber, block != null)) {
-    return [opts.kickoff, ...priority, ...(block ? [block] : []), ...(noNoteMandate ? [noNoteMandate] : [])].join(
-      '\n\n',
-    );
+    // The staleness verdict sits IMMEDIATELY after the kickoff here, because in the
+    // FULL form the kickoff (goal and all) leads — so the correction has to be the
+    // very next thing read, not filed below the checkpoint.
+    return [
+      opts.kickoff,
+      ...(opts.goalStalenessNote ? [opts.goalStalenessNote] : []),
+      ...priority,
+      ...(block ? [block] : []),
+      ...(noNoteMandate ? [noNoteMandate] : []),
+    ].join('\n\n');
   }
   const firstLine = opts.kickoff.split('\n').find((l) => l.trim().length > 0) ?? opts.kickoff;
   return [
@@ -538,9 +564,47 @@ export function renderLoopWakeText(opts: {
     // the checkpoint's `next` is the authoritative action. Tagged at its point of use so
     // a reader meeting a stale PID/run-id/leader here knows what it is without a preamble.
     `Arm-time goal (frozen at arm time — the checkpoint above is the fresher source): ${firstLine}`,
+    // Directly beneath the goal, never elsewhere: this is the measured verdict ON that
+    // exact line, and a reader must not be able to accept the goal before meeting it.
+    ...(opts.goalStalenessNote ? [opts.goalStalenessNote] : []),
     '',
     'When this unit settles: refresh loop:checkpoint, then END YOUR TURN. `loop:end` to stop; `loop:status` to inspect.',
   ].join('\n');
+}
+
+/**
+ * Resolve the current state of the work-items a frozen goal names.
+ *
+ * ⚠ ONE QUERY, BOUNDED BY THE ID LIST, and it must FAIL SOFT TO EMPTY. Returning a
+ * partially-populated map on error would let a read failure masquerade as "these
+ * items are gone", which `assessGoalStaleness` would then read as a resolved id —
+ * exactly the fabricated-measurement failure that module is built to refuse.
+ *
+ * `work_items` is the right (single) table for all three id shapes: issue-family rows
+ * (EI-/bug/change/task) are MIRRORED into it, so a WI-/EI-/F- id resolves here
+ * uniformly rather than needing a second read against `engineer_issues`.
+ */
+export async function defaultReadGoalItemStates(
+  ids: readonly string[],
+  opts: { sql?: Sql; workspaceId?: string | null } = {},
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (ids.length === 0) return out;
+  try {
+    const sql = opts.sql ?? getOrgPg().sql;
+    const rows = await sql<{ feature_id: string; status: string | null }[]>`
+      SELECT feature_id, status
+        FROM harness_shared.work_items
+       WHERE feature_id = ANY(${ids as string[]})`;
+    for (const r of rows) {
+      if (r.feature_id && r.status) out.set(r.feature_id.toUpperCase(), r.status);
+    }
+  } catch {
+    // Fail-soft to EMPTY — see the note above. A wake must never be delayed or
+    // decorated with a claim this read could not support.
+    return new Map();
+  }
+  return out;
 }
 
 /** Read the loop's carry MODE from payload_template (su-cold-auto-mode-2026-07-03 P-003).
@@ -715,8 +779,27 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
       return renderOpenOwnerDirectivesBlock(ws, o);
     });
   const ownerDirectivesBlock = await renderDirectives(input.workspaceId, { sql: input.sql }).catch(() => null);
+  // EI-19501119110607678 — MEASURE the frozen goal instead of only cautioning about it.
+  // Judge the persisted `goal` when the loop has one; otherwise the kickoff's first
+  // line, which is the text the wake actually renders as "Arm-time goal" — the check
+  // must judge WHAT THE READER SEES, or it can exonerate a line it never looked at.
+  const goalTextForCheck =
+    typeof input.payloadTemplate?.goal === 'string' && input.payloadTemplate.goal.trim()
+      ? input.payloadTemplate.goal
+      : (armTimeKickoff.split('\n').find((l) => l.trim().length > 0) ?? '');
+  const readGoalItemStates = deps.readGoalItemStates ?? defaultReadGoalItemStates;
+  const goalIds = extractGoalWorkItemIds(goalTextForCheck);
+  // Skipped entirely for a prose goal: no ids ⇒ nothing to resolve ⇒ no query on the
+  // hot fire path, which is the common case for a mission-shaped goal.
+  const goalItemStates = goalIds.length
+    ? await readGoalItemStates(goalIds, { sql: input.sql, workspaceId: input.workspaceId }).catch(
+        () => new Map<string, string>(),
+      )
+    : new Map<string, string>();
+  const goalStalenessNote = assessGoalStaleness(goalTextForCheck, goalItemStates).note;
   const kickoff = renderLoopWakeText({
     kickoff: armTimeKickoff,
+    goalStalenessNote,
     fireNumber,
     checkpoint: checkpointBody,
     checkpointUpdatedAtMs: checkpointMeta.updatedAtMs,

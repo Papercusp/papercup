@@ -72,6 +72,16 @@ export interface CarryDocSessionMode {
   modes: CarryDocMode[];
   loopActive: boolean;
   loopIntervalSec: number | null;
+  /**
+   * EI-20072281215342526: the armed loop's GOAL — the session's MISSION.
+   *
+   * The carry document printed the loop's INTERVAL and not its goal, so a respawned
+   * successor was told a loop existed but not what it was for. The mission was durable
+   * the whole time (in the loop row), and reached the successor through no channel at
+   * all: the wake kickoff that renders it is a different wake path, and `loop:status`
+   * did not return it either. Optional so an older caller compiles unchanged.
+   */
+  loopGoal?: string | null;
 }
 
 export interface CarryDocPlanItem {
@@ -422,6 +432,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
       modes,
       loopActive: Boolean(brief.loop?.active),
       loopIntervalSec: brief.loop?.intervalSec ?? null,
+      loopGoal: brief.loop?.goal ?? null,
     },
     planItems: planItems.slice(0, CARRY_DOC_MAX_PLAN_ITEMS),
     asks: asks.slice(0, CARRY_DOC_MAX_ASKS),
@@ -716,6 +727,20 @@ function renderSessionMode(sm: CarryDocSessionMode): string {
         ? '- loop: ⚠ NOT ARMED, AND AN AUTONOMY MODE IS ON. You have NO wake source. If you end a turn without loop:arm, this session HALTS and nothing re-wakes it — the mode grants you authorization to keep working, not the means. Arm it (loop:arm { intervalSec, goal, workItem }) as your FIRST act unless you will finish inside this turn.'
         : '- loop: not armed — your only wake source is the owner speaking. If they stop, ending a turn halts this session for good; arm a loop before you go autonomous.',
   );
+  // EI-20072281215342526 — THE MISSION, on its own line, right under the loop.
+  //
+  // This document used to print the loop's INTERVAL and not its GOAL, and that
+  // asymmetry WAS the bug: a respawned successor is handed its held work-items but not
+  // the mission that generated them, so it cannot tell a mission-held item from an
+  // ambient claim. The observed failure is not a loud halt — the agent re-orients,
+  // sees unclaimed backlog, and confidently starts doing something else. Printed
+  // VERBATIM (not summarised) because the successor's whole problem is that it has no
+  // other copy of this text.
+  if (sm.loopActive && sm.loopGoal?.trim()) {
+    lines.push(
+      `- loop goal (YOUR MISSION — carried from the loop that armed it; frozen at arm time, so re-check any work-item it names before acting): ${sm.loopGoal.trim()}`,
+    );
+  }
   return `## Session mode\n${lines.join('\n')}`;
 }
 

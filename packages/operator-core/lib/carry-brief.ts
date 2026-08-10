@@ -73,6 +73,12 @@ export interface CarryBrief {
     harness: string;
     active: boolean;
     intervalSec: number | null;
+    /** EI-20072281215342526: the loop's GOAL — the agent's MISSION. Carried here
+     *  because a carry-respawn renders no wake kickoff, which used to be the goal's
+     *  only delivery channel; the successor therefore inherited its held work-items
+     *  WITHOUT the mission that generated them. Null for a loop armed with no goal, or
+     *  armed before the goal was persisted structurally (those cannot be back-filled). */
+    goal: string | null;
     carryNote: string | null;
     carryNoteUpdatedAtMs: number | null;
   } | null;
@@ -484,6 +490,7 @@ export async function buildCarryBrief(
         harness: loop.harnessSlug,
         active: Boolean(loop.active),
         intervalSec: loop.intervalSec ?? null,
+        goal: loop.goal ?? null,
         carryNote: meta.note,
         carryNoteUpdatedAtMs: meta.updatedAtMs,
       };
