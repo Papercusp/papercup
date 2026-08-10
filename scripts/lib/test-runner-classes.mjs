@@ -155,13 +155,63 @@ export const RUNNER_CLASSES = {
     ].join('\n'),
     expectFile: 'src/pages/__fixture-broken.astro',
   },
+  'declared-failing-files': {
+    attributable: true,
+    detail:
+      'A bespoke harness that DECLARES its own culprit files, one `DECLARED_FAILING_FILE <path>` ' +
+      'line per file. parseDeclaredFailingFiles. Classified by DECLARATION, never inferred from ' +
+      'the command string — see DECLARED_FAILING_FILES_TASKS.',
+    // Verbatim from a real failing run of apps/operator/scripts/el-tools-check.mjs against a
+    // scratch registry with both of its error classes planted (EI-20102376842495928).
+    //
+    // The human error row above the declarations is kept ON PURPOSE, and it is the whole
+    // reason this fixture is three lines rather than two: it NAMES A FILE IN PROSE
+    // ("in demo.ts"). A matcher that scanned for path-shaped text would attribute `demo.ts`
+    // — a bare basename that resolves nowhere — so this fixture proves the parser reads the
+    // DECLARATION and not the narration around it.
+    //
+    // The second declaration is a cross-tree path with `../` segments, which is what a def
+    // under packages/operator-core looks like from this workspace. Keeping a real one here
+    // pins the workspace-relative convention: a future "tidy-up" to repo-root-relative paths
+    // breaks this fixture instead of silently emitting paths that resolve against the wrong
+    // base in the `<workspace> :: <file>` summary.
+    fixture: [
+      "  - demo_thing (demo.thing in demo.ts): registered as browser:'optional' but pushed as client-tool. Promote browser to 'required'.",
+      'DECLARED_FAILING_FILE scripts/el-agent-sync.mjs',
+      'DECLARED_FAILING_FILE ../../packages/operator-core/lib/commands/defs/demo.ts',
+    ].join('\n'),
+    expectFile: '../../packages/operator-core/lib/commands/defs/demo.ts',
+  },
   'bespoke-script': {
     attributable: false,
     detail:
-      'A hand-written `node scripts/*.mjs` harness. Unattributable BY CONSTRUCTION: the command ' +
-      'string does not reveal what runs inside, so no parser can be written from it. Membership ' +
-      'is pinned by UNATTRIBUTABLE_TASKS so a NEW one is reviewed rather than absorbed silently.',
+      'A hand-written `node scripts/*.mjs` harness that declares nothing. Unattributable BY ' +
+      'CONSTRUCTION: the command string does not reveal what runs inside, so no parser can be ' +
+      'written from it. The fix for a member is to make it DECLARE (see ' +
+      'DECLARED_FAILING_FILES_TASKS) — but only where a real culprit file exists to name; ' +
+      'UNATTRIBUTABLE_TASKS records why the remaining member cannot.',
   },
+};
+
+/**
+ * Tasks that emit the `DECLARED_FAILING_FILE` contract, mapped to the script that emits it.
+ *
+ * ⚠ THIS IS A CLAIM ABOUT BEHAVIOUR, SO IT IS VERIFIED RATHER THAN TRUSTED. A hand-kept list
+ * saying "these tasks emit the contract" is precisely the shape of the bug this module exists
+ * to detect: nothing fails when it stops being true, and the only symptom is a quiet drift
+ * back to `no-file-rows`. So the value is the emitting script's path, and
+ * attributor-runner-coverage.test.ts asserts that file actually imports the shared emitter
+ * (`formatDeclaredFailingFileLines`). Deleting the emit — or hand-typing the token instead of
+ * importing it, which is how the two ends drift apart — fails that test by name.
+ *
+ * Membership is OPT-IN for the same reason UNATTRIBUTABLE_TASKS pins members rather than the
+ * class: `bespoke-script` must stay unattributable so a NEW hand-written harness is reviewed
+ * once, instead of being absorbed into a class that claims coverage it does not have.
+ *
+ * @type {Record<string, string>} `<workspace> :: <script>` -> repo-relative emitting script
+ */
+export const DECLARED_FAILING_FILES_TASKS = {
+  '@papercusp/web :: lint:el-tools': 'apps/operator/scripts/el-tools-check.mjs',
 };
 
 /**
@@ -176,12 +226,20 @@ export const RUNNER_CLASSES = {
  * that deserves the scrutiny.
  */
 export const UNATTRIBUTABLE_TASKS = [
-  // EI-20102376842495928 shrank this: the two `astro check` tasks moved out when
-  // parseAstroCheckFailedFiles landed. What remains is the genuinely-unparseable half —
-  // a bespoke script's command string cannot reveal what runs inside it, so the fix for
-  // these two is to make them EMIT a machine-readable failing-file line, not to guess a
-  // parser from `node scripts/el-tools-check.mjs`.
-  '@papercusp/web :: lint:el-tools',
+  // EI-20102376842495928 shrank this twice: the two `astro check` tasks left when
+  // parseAstroCheckFailedFiles landed, then `lint:el-tools` left when it began DECLARING its
+  // culprits (DECLARED_FAILING_FILES_TASKS).
+  //
+  // What remains is the one task where no honest answer exists, and it is worth stating
+  // plainly because the obvious "fix" is wrong. `test:el-suite` drives a LIVE REMOTE agent
+  // over a WebSocket and asserts on the replies it gets back — checks like "no 'great
+  // question' prelude" and "response is ≤350 chars". When one fails, the thing that is wrong
+  // is that agent's prompt/configuration, which is not in this repo. The only path the script
+  // could name is its OWN source, so declaring would produce a confident-looking attribution
+  // pointing at the one file that is certainly not the culprit — the exact "plausible wrong
+  // diagnosis" failure described in this module's header, re-created by the mechanism built to
+  // remove it. `no-file-rows` is the honest report here. It also exits 0 (skips) without EL
+  // credentials, so on a normal box it is not a red at all.
   '@papercusp/web :: test:el-suite',
 ];
 
@@ -298,12 +356,20 @@ export function enumerateTaskRunnerClasses(repoRoot) {
     const scripts = scriptsByDir.get(dir);
     for (const script of TASK_ENTRY_SCRIPTS) {
       if (!scripts[script]) continue;
-      out.push({
-        workspace: pkgByDir.get(dir).name ?? dir,
-        dir,
-        script,
-        classes: [...classifyRunnerClasses(script, scripts, { scriptsByDir })].sort(),
-      });
+      const workspace = pkgByDir.get(dir).name ?? dir;
+      const classes = classifyRunnerClasses(script, scripts, { scriptsByDir });
+      // A DECLARATION is evidence the command string cannot carry, so it is added here —
+      // where workspace and script name are both known — rather than in classifySegment,
+      // which sees one segment and could only guess.
+      //
+      // ⚠ ADDED, never substituted. Replacing the inferred classes would also swallow an
+      // `unknown` from a chain step we could not follow, so a declaring task that later grew
+      // an unrecognised runner beside its emit would look fully covered. The union keeps the
+      // declaration's claim (attributable) and the classifier's doubt (unknown) both visible.
+      if (DECLARED_FAILING_FILES_TASKS[`${workspace} :: ${script}`]) {
+        classes.add('declared-failing-files');
+      }
+      out.push({ workspace, dir, script, classes: [...classes].sort() });
     }
   }
   return out;

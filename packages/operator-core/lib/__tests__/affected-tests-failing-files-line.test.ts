@@ -39,6 +39,9 @@ import {
   parseFailedTestFiles,
   parseNodeTestFailedFiles,
   parseAstroCheckFailedFiles,
+  parseDeclaredFailingFiles,
+  formatDeclaredFailingFileLines,
+  DECLARED_FAILING_FILE_TOKEN,
   transformCulpritsFrom,
   AFFECTED_TESTS_FAILING_FILES_TOKEN,
   FAILING_FILES_LINE_MAX_ENTRIES,
@@ -715,6 +718,112 @@ describe('parseAstroCheckFailedFiles (EI-20102376842495928)', () => {
     });
     expect(res.entries).toEqual([
       { workspace: '@papercupai/operator-docs', file: 'src/pages/__fixture-broken.astro' },
+    ]);
+    expect(res.unattributed).toEqual([]);
+  });
+});
+
+/**
+ * The DECLARED_FAILING_FILE contract (EI-20102376842495928).
+ *
+ * Every other parser in vitest-summary.mjs reverse-engineers somebody else's output format, so
+ * its risk is "the format changed and my regex went quiet". This one is OURS on both ends,
+ * which removes that risk and adds a different one: the emitter and the matcher drifting apart.
+ * These tests pin the ROUND TRIP for that reason — asserting the parser against a hand-written
+ * string would pass just as happily while the emitter wrote something else.
+ *
+ * The fixture strings below are VERBATIM bytes from a real failing run of
+ * apps/operator/scripts/el-tools-check.mjs (scratch registry, both error classes planted, read
+ * back through `cat -A`) — not a reconstruction from the source.
+ */
+describe('parseDeclaredFailingFiles — a harness naming its own culprits', () => {
+  const REAL_ERROR_ROW =
+    "  - demo_thing (demo.thing in demo.ts): registered as browser:'optional' but pushed as " +
+    "client-tool. Promote browser to 'required'.";
+  const REAL_DECLARATIONS = [
+    'DECLARED_FAILING_FILE scripts/el-agent-sync.mjs',
+    'DECLARED_FAILING_FILE ../../packages/operator-core/lib/commands/defs/demo.ts',
+  ];
+
+  it('round-trips: what the shared emitter writes is exactly what the parser reads back', () => {
+    const paths = ['scripts/el-agent-sync.mjs', '../../packages/operator-core/lib/commands/defs/demo.ts'];
+    expect(parseDeclaredFailingFiles(formatDeclaredFailingFileLines(paths).join('\n'))).toEqual(paths);
+  });
+
+  it('emits the bytes a real run emitted', () => {
+    expect(
+      formatDeclaredFailingFileLines([
+        'scripts/el-agent-sync.mjs',
+        '../../packages/operator-core/lib/commands/defs/demo.ts',
+      ]),
+    ).toEqual(REAL_DECLARATIONS);
+  });
+
+  /**
+   * A culprit outside the workspace keeps its `../` segments. The summary renders entries as
+   * `<workspace> :: <file>`, so a repo-root-relative path would resolve against the wrong base
+   * for whoever reads it — silently pointing at a file that does not exist there.
+   */
+  it('preserves a cross-tree workspace-relative path rather than normalising it away', () => {
+    expect(parseDeclaredFailingFiles(REAL_DECLARATIONS[1])).toEqual([
+      '../../packages/operator-core/lib/commands/defs/demo.ts',
+    ]);
+  });
+
+  /**
+   * The narration around a declaration names files too. `demo.ts` appears in the real error row
+   * above as a bare basename that resolves nowhere — attributing it would send a triager to a
+   * path that does not exist, which is worse than the `no-file-rows` this replaced.
+   */
+  it('reads the declaration, not the prose around it', () => {
+    expect(parseDeclaredFailingFiles([REAL_ERROR_ROW, ...REAL_DECLARATIONS].join('\n'))).toEqual([
+      'scripts/el-agent-sync.mjs',
+      '../../packages/operator-core/lib/commands/defs/demo.ts',
+    ]);
+  });
+
+  /** Line-anchored, so the token quoted inside a sentence is not a declaration. */
+  it('ignores the token mid-line and a malformed multi-word payload', () => {
+    const noise = [
+      `  see ${DECLARED_FAILING_FILE_TOKEN} <path> for the format`,
+      `${DECLARED_FAILING_FILE_TOKEN} two words here`,
+      `prefixed${DECLARED_FAILING_FILE_TOKEN} a/b.ts`,
+    ].join('\n');
+    expect(parseDeclaredFailingFiles(noise)).toEqual([]);
+  });
+
+  /**
+   * ANSI is stripped FIRST. Our emitter writes plain bytes, so this looks redundant — it is the
+   * same assumption that left a sibling parser dead in production for weeks
+   * (EI-18819483316574031) and made a `grep 'error ts('` over real astro output return zero.
+   */
+  it('still matches when the surrounding harness colourises its output', () => {
+    const coloured = `\x1b[31m${DECLARED_FAILING_FILE_TOKEN} scripts/el-agent-sync.mjs\x1b[0m`;
+    expect(parseDeclaredFailingFiles(coloured)).toEqual(['scripts/el-agent-sync.mjs']);
+  });
+
+  it('dedupes, and drops paths that cannot survive the line format', () => {
+    expect(formatDeclaredFailingFileLines(['a/b.ts', 'a/b.ts', '', '   ', 'has space.ts'])).toEqual([
+      `${DECLARED_FAILING_FILE_TOKEN} a/b.ts`,
+    ]);
+  });
+
+  /** A green run declares nothing, so it can never contribute files to a break set. */
+  it('attributes nothing to a run that declared nothing', () => {
+    expect(parseDeclaredFailingFiles('[el-tools-check] ✓ aligned — 2 client tools.')).toEqual([]);
+    expect(formatDeclaredFailingFileLines([])).toEqual([]);
+  });
+
+  it('END-TO-END: a real el-tools-check red is attributed instead of reporting no-file-rows', () => {
+    const res = attributeFailedTask({
+      workspace: '@papercusp/web',
+      task: '@papercusp/web :: lint:el-tools',
+      captured: true,
+      output: ['[el-tools-check] ✗ 2 drift errors:', REAL_ERROR_ROW, ...REAL_DECLARATIONS].join('\n'),
+    });
+    expect(res.entries).toEqual([
+      { workspace: '@papercusp/web', file: 'scripts/el-agent-sync.mjs' },
+      { workspace: '@papercusp/web', file: '../../packages/operator-core/lib/commands/defs/demo.ts' },
     ]);
     expect(res.unattributed).toEqual([]);
   });

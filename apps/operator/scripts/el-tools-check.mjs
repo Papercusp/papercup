@@ -31,9 +31,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// The SHARED emitter for the failing-file declaration contract. Imported rather than
+// hand-typed on purpose: `scripts/lib/test-runner-classes.mjs` classifies this task as
+// attributable only because this import exists, and importing the formatter means the
+// token here can never drift from the parser that reads it (EI-20102376842495928).
+import { formatDeclaredFailingFileLines } from '../../../scripts/lib/vitest-summary.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const operatorRoot = path.resolve(__dirname, '..');
+
+/** This script's own workspace-relative path to el-agent-sync.mjs, whose TOOLS list is the
+ *  culprit whenever an entry there has no backing registry def. */
+const SYNC_SCRIPT_REL = 'scripts/el-agent-sync.mjs';
 
 // 1. Parse the TOOLS array from el-agent-sync.mjs by string match. The
 //    file is JS we own so the regex is safe; if we ever switch the
@@ -90,7 +99,20 @@ for (const d of defs) {
 }
 
 // 4. Cross-check.
+//
+// Each finding carries the file a triager should OPEN to fix it — the input to the
+// DECLARED_FAILING_FILE lines emitted in step 6. Paths are WORKSPACE-relative (this
+// workspace is apps/operator), which is the convention every parser in
+// scripts/lib/vitest-summary.mjs shares, so a def under packages/operator-core is written
+// with `../` segments rather than from the repo root.
+//
+// ⚠ Derived from `defsDir` rather than written out, so moving the defs directory moves the
+// emitted path with it. A hand-copied prefix would still PARSE after such a move — it would
+// just name a file that no longer exists, which is worse than naming nothing.
+const defsDirRel = path.relative(operatorRoot, defsDir).split(path.sep).join('/');
+/** @type {{ msg: string, file: string }[]} */
 const errors = [];
+/** @type {{ msg: string, file: string }[]} */
 const warnings = [];
 
 // Tools that intentionally bypass the registry — handled directly in
@@ -103,19 +125,25 @@ for (const toolName of syncClientNames) {
   if (REGISTRY_EXEMPT.has(toolName)) continue;
   const def = operatorDefsByToolName.get(toolName);
   if (!def) {
-    errors.push(
-      `${toolName}: pushed as client-tool to EL but no registry def with agents:['operator',...] — ` +
-      'agent will call it and crash with "Client tool not defined on client". ' +
-      'Either register the def or remove the entry from TOOLS.',
-    );
+    errors.push({
+      // The TOOLS entry is the thing that EXISTS and is wrong, so it is where a triager
+      // starts even though "register the def" is the other valid fix.
+      file: SYNC_SCRIPT_REL,
+      msg:
+        `${toolName}: pushed as client-tool to EL but no registry def with agents:['operator',...] — ` +
+        'agent will call it and crash with "Client tool not defined on client". ' +
+        'Either register the def or remove the entry from TOOLS.',
+    });
     continue;
   }
   if (def.kind === 'command' && def.browser !== 'required') {
-    errors.push(
-      `${toolName} (${def.id} in ${def.file}): registered as browser:'${def.browser ?? 'unset'}' but pushed as client-tool. ` +
-      'buildClientTools only exposes browser:\'required\' commands; ' +
-      'agent will call it and crash. Promote browser to \'required\'.',
-    );
+    errors.push({
+      file: `${defsDirRel}/${def.file}`,
+      msg:
+        `${toolName} (${def.id} in ${def.file}): registered as browser:'${def.browser ?? 'unset'}' but pushed as client-tool. ` +
+        'buildClientTools only exposes browser:\'required\' commands; ' +
+        'agent will call it and crash. Promote browser to \'required\'.',
+    });
   }
 }
 
@@ -127,10 +155,14 @@ for (const [toolName, def] of operatorDefsByToolName) {
   // Only flag commands+queries that look like reasonable agent tools —
   // skip aliases (nav.harness duplicates navigate, etc.).
   if (def.id === 'nav.papercusp') continue;
-  warnings.push(
-    `${toolName} (${def.id} in ${def.file}): registry def is operator-tagged but missing from TOOLS list. ` +
-    'EL agent can\'t call it. Add to TOOLS if intended.',
-  );
+  warnings.push({
+    // The fix is "add it to TOOLS", so the TOOLS list is the culprit — not the def, which
+    // is fine as written.
+    file: SYNC_SCRIPT_REL,
+    msg:
+      `${toolName} (${def.id} in ${def.file}): registry def is operator-tagged but missing from TOOLS list. ` +
+      'EL agent can\'t call it. Add to TOOLS if intended.',
+  });
 }
 
 // 6. Report.
@@ -141,12 +173,29 @@ if (errors.length === 0 && warnings.length === 0) {
 
 if (errors.length > 0) {
   console.error(`[el-tools-check] ✗ ${errors.length} drift error${errors.length > 1 ? 's' : ''}:`);
-  for (const e of errors) console.error(`  - ${e}`);
+  for (const e of errors) console.error(`  - ${e.msg}`);
 }
 if (warnings.length > 0) {
   console.error(`[el-tools-check] ${warnings.length} warning${warnings.length > 1 ? 's' : ''}:`);
-  for (const w of warnings) console.error(`  - ${w}`);
+  for (const w of warnings) console.error(`  - ${w.msg}`);
 }
 
+// `--strict` is resolved BEFORE the declaration is emitted, not after, because the two must
+// agree exactly: the declared set is the set of files responsible for the non-zero exit.
 const strict = process.argv.includes('--strict');
-process.exit(errors.length > 0 || (strict && warnings.length > 0) ? 1 : 0);
+const failing = errors.length > 0 || (strict && warnings.length > 0);
+
+// Machine-readable attribution for `scripts/affected-tests.mjs` (EI-20102376842495928).
+// Without it a red here reported the reason `no-file-rows`, whose docstring reads "a worker
+// crash, an OOM, a spawn error" — so a drift error with its culprit printed in plain text
+// two lines up sent triagers hunting infrastructure instead.
+//
+// FAILURE-EXCLUSIVE, like every matcher it feeds. Warnings are declared only when `--strict`
+// is what makes them fatal; on a passing run nothing is emitted at all, so a green run can
+// never contribute files to a break set.
+if (failing) {
+  const culprits = [...errors, ...(strict ? warnings : [])].map((f) => f.file);
+  for (const line of formatDeclaredFailingFileLines(culprits)) console.log(line);
+}
+
+process.exit(failing ? 1 : 0);

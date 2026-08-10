@@ -22,7 +22,7 @@
  * second, instead of drifting into more `no-file-rows` months later and reading as flakiness.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,7 @@ import {
   TASK_ENTRY_SCRIPTS,
   STANDALONE_PACKAGE_DIRS,
   UNATTRIBUTABLE_TASKS,
+  DECLARED_FAILING_FILES_TASKS,
   classifyRunnerClasses,
   enumerateTaskRunnerClasses,
 } from '../../../../scripts/lib/test-runner-classes.mjs';
@@ -139,6 +140,90 @@ describe('every runner the repo runs is declared', () => {
         'Membership is pinned rather than just the class set because a bespoke ' +
         '`node scripts/*.mjs` task is exactly where an entire new runner can hide.',
     ).toEqual([...UNATTRIBUTABLE_TASKS].sort());
+  });
+});
+
+/**
+ * The declaration mechanism (EI-20102376842495928).
+ *
+ * `DECLARED_FAILING_FILES_TASKS` is the one entry in this whole subsystem that is a CLAIM ABOUT
+ * BEHAVIOUR rather than a derivation from the repo: it asserts "this task emits the contract".
+ * A hand-kept list of such claims is the exact shape of the bug this file exists to catch —
+ * nothing fails when it stops being true, and the only symptom is a quiet drift back to
+ * `no-file-rows`, which reads as an infra crash. So the claim is verified against the emitting
+ * script's source rather than believed.
+ */
+describe('a declared task really does declare', () => {
+  it('names an emitting script that exists', () => {
+    for (const [task, rel] of Object.entries(DECLARED_FAILING_FILES_TASKS)) {
+      expect(
+        existsSync(resolve(REPO_ROOT, rel)),
+        `DECLARED_FAILING_FILES_TASKS maps '${task}' to '${rel}', which does not exist. The ` +
+          'script was moved or renamed; the attributor still believes this task names its own ' +
+          'culprit files.',
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * IMPORTING the shared emitter is the property, not "contains the token". A script that
+   * hand-types `DECLARED_FAILING_FILE` would satisfy a substring check and then silently drift
+   * the moment the constant changes — the two-ends-of-one-format failure the emitter was put in
+   * vitest-summary.mjs to prevent.
+   */
+  it('emits through the SHARED formatter rather than a hand-typed copy of the token', () => {
+    for (const [task, rel] of Object.entries(DECLARED_FAILING_FILES_TASKS)) {
+      const src = readFileSync(resolve(REPO_ROOT, rel), 'utf8');
+      expect(
+        /import\s*\{[^}]*\bformatDeclaredFailingFileLines\b[^}]*\}\s*from\s*['"][^'"]*vitest-summary\.mjs['"]/s.test(
+          src,
+        ),
+        `'${task}' is declared attributable via ${rel}, but that file does not import ` +
+          '`formatDeclaredFailingFileLines` from scripts/lib/vitest-summary.mjs.\n\n' +
+          'Either the emit was removed — in which case this task is now silently unattributable ' +
+          'and the entry must move to UNATTRIBUTABLE_TASKS — or the token is being hand-typed, ' +
+          'which is how the emitter and parser come apart with nothing failing.',
+      ).toBe(true);
+    }
+  });
+
+  it('classifies a declared task as attributable, and leaves undeclared bespoke scripts alone', () => {
+    for (const task of Object.keys(DECLARED_FAILING_FILES_TASKS)) {
+      const found = tasks.find((t) => `${t.workspace} :: ${t.script}` === task);
+      expect(found, `DECLARED_FAILING_FILES_TASKS names '${task}', which is not a real task.`).toBeTruthy();
+      expect(found!.classes).toContain('declared-failing-files');
+      expect(
+        found!.classes.some((c: string) => RUNNER_CLASSES[c as keyof typeof RUNNER_CLASSES]?.attributable),
+        `'${task}' declares the contract but still classifies as unattributable.`,
+      ).toBe(true);
+    }
+
+    // The declaration ADDS a class; it does not erase what the command string said. A declaring
+    // task that later grew an unrecognised runner beside its emit must still surface that.
+    const declaredBespoke = tasks.filter(
+      (t) =>
+        t.classes.includes('declared-failing-files') &&
+        DECLARED_FAILING_FILES_TASKS[`${t.workspace} :: ${t.script}`],
+    );
+    for (const t of declaredBespoke) {
+      expect(t.classes).toContain('bespoke-script');
+    }
+  });
+
+  /**
+   * The counter-case, pinned deliberately. `test:el-suite` asserts on the replies of a LIVE
+   * REMOTE agent ("no 'great question' prelude", "response is ≤350 chars"); when one fails the
+   * culprit is that agent's prompt, which is not in this repo. Declaring would name its own
+   * source — a confident attribution pointing at the one file that is certainly not broken.
+   * If a future edit "completes" the migration by declaring it, this fails and says why.
+   */
+  it('does NOT declare the task whose failures have no repo file to name', () => {
+    expect(
+      DECLARED_FAILING_FILES_TASKS['@papercusp/web :: test:el-suite'],
+      'test:el-suite drives a live remote agent — its checks assert on replies, not on repo ' +
+        'files. The only path it could declare is its own source, which would send triagers to ' +
+        'the harness instead of the agent config. `no-file-rows` is the honest answer here.',
+    ).toBeUndefined();
   });
 });
 
