@@ -211,13 +211,21 @@ async function planItem(
 
 async function plan(
   planSlug: string,
-  over: { harness?: string; title?: string; status?: string; archived?: boolean } = {},
+  over: {
+    harness?: string;
+    title?: string;
+    status?: string;
+    archived?: boolean;
+    /** Migration 791: the plan was CREATED under this goal. Defaults to NULL —
+     *  the overwhelmingly common case, and the one the derived leg covers. */
+    goalId?: string | null;
+  } = {},
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.harness_plans
-      (workspace_id, harness_slug, plan_slug, title, status, archived)
+      (workspace_id, harness_slug, plan_slug, title, status, archived, goal_id)
     VALUES (${WS}, ${over.harness ?? 'alpha'}, ${planSlug}, ${over.title ?? `Plan ${planSlug}`},
-            ${over.status ?? 'ready'}, ${over.archived ?? false})
+            ${over.status ?? 'ready'}, ${over.archived ?? false}, ${over.goalId ?? null})
   `;
 }
 
@@ -465,6 +473,75 @@ describe('goals.* resolvers against real SQL', () => {
 
     expect(out.plans.map((p) => p.planSlug)).toEqual(['ship-it']);
     expect(out.plans[0]).toMatchObject({ title: 'Ship it', items: 2, openItems: 1 });
+  });
+
+  /* ── 791: the STAMPED leg, unioned with the derived one ─────────────────── */
+  it('shows a plan the goal’s agent AUTHORED before any work item has come from it', async () => {
+    // The owner-reported bug. Derivation alone cannot see this plan: no work
+    // item names it yet, which is the state every goal starts in.
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await plan('authored-here', { title: 'Authored here', goalId: GOAL });
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      plans: Array<{ planSlug: string; items: number; openItems: number; stamped: boolean }>;
+    };
+    expect(out.plans).toHaveLength(1);
+    // Counts stay strictly DERIVED — a truthful zero. `stamped` is what lets the
+    // UI say "started by this goal" instead of rendering that zero as failure.
+    expect(out.plans[0]).toMatchObject({
+      planSlug: 'authored-here',
+      items: 0,
+      openItems: 0,
+      stamped: true,
+    });
+  });
+
+  it('keeps the DERIVED leg for a plan the goal inherited but never authored', async () => {
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await plan('inherited', { title: 'Inherited' });
+    await planItem('WI-a', 'inherited');
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      plans: Array<{ planSlug: string; items: number; stamped: boolean }>;
+    };
+    expect(out.plans).toHaveLength(1);
+    expect(out.plans[0]).toMatchObject({ planSlug: 'inherited', items: 1, stamped: false });
+  });
+
+  it('returns a plan that is BOTH stamped and derived exactly ONCE', async () => {
+    // The union key is (plan_slug, harness_slug); a plan satisfying both legs
+    // must not double-render, and its counts must stay the derived ones.
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await plan('both', { title: 'Both', goalId: GOAL });
+    await planItem('WI-a', 'both');
+    await planItem('WI-b', 'both', { status: 'done', closedTs: CLOSED_AT });
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      plans: Array<{ planSlug: string; items: number; openItems: number; stamped: boolean }>;
+    };
+    expect(out.plans).toHaveLength(1);
+    expect(out.plans[0]).toMatchObject({
+      planSlug: 'both',
+      items: 2,
+      openItems: 1,
+      stamped: true,
+    });
+  });
+
+  it('does not lend the stamp to ANOTHER goal’s plan', async () => {
+    // goal_id is a scoped filter, not a truthiness test — the failure mode is a
+    // rail that fills up with every goal's plans and looks busy while lying.
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await plan('other-goals-plan', { title: 'Other', goalId: 'some-other-goal' });
+
+    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+      plans: Array<{ planSlug: string }>;
+    };
+    expect(out.plans).toEqual([]);
   });
 
   it('keeps a plan whose row is GONE, carrying a null title rather than dropping it', async () => {

@@ -359,16 +359,19 @@ describe('workRail', () => {
 
 describe('planLabel', () => {
   it('marks a plan whose row no longer resolves instead of passing its slug off as a title', () => {
-    expect(planLabel({ planSlug: 'my-plan', harnessSlug: 'h', title: 'My Plan' })).toEqual({
+    // No `harnessSlug` here: planLabel takes only the two fields its answer
+    // depends on, so passing more would be noise the excess-property check
+    // rightly rejects.
+    expect(planLabel({ planSlug: 'my-plan', title: 'My Plan' })).toEqual({
       text: 'My Plan',
       missing: false,
     });
     // The state worth SEEING: live work items pointing at a plan that is gone.
-    expect(planLabel({ planSlug: 'my-plan', harnessSlug: 'h', title: null })).toEqual({
+    expect(planLabel({ planSlug: 'my-plan', title: null })).toEqual({
       text: 'my-plan',
       missing: true,
     });
-    expect(planLabel({ planSlug: 'my-plan', harnessSlug: 'h', title: '   ' }).missing).toBe(true);
+    expect(planLabel({ planSlug: 'my-plan', title: '   ' }).missing).toBe(true);
   });
 });
 
