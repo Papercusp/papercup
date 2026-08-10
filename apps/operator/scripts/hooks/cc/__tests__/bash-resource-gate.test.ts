@@ -2833,6 +2833,20 @@ describe('relative target after an unfollowable `cd` (EI-20106159536811878 / WI-
     );
   });
 
+  /**
+   * WI-7219's VERBATIM repro, kept in its original shape on purpose: a NEWLINE
+   * statement separator (not `&&`) and a multi-line quoted body. Closing that item
+   * on a paraphrase would leave its actual reported case untested.
+   */
+  it('allows WI-7219\'s exact reported repro (newline-separated cd, multi-line body)', () => {
+    expectAllow(
+      runGate(
+        bashCmd(`cd /tmp\npython3 -c "\nopen('somefile.json', 'w').write('x')\n"`, { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+  });
+
   it('still denies an interpreter write into the tree when NO cd moved us out', () => {
     const reason = denyReason(
       runGate(
