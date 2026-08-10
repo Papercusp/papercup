@@ -40,7 +40,7 @@ import type { FleetPeer, FleetPeersModel } from './fleet-peers';
 /** The state word under each peer. Terse on purpose: this column is ~248px and
  *  the row's job is to be scanned, not read. The full sentence rides in `title`
  *  (the board's own `reason`), so nothing is lost — it is one hover away. */
-const COLUMN_WORD: Record<HudColumnId, string> = {
+export const COLUMN_WORD: Record<HudColumnId, string> = {
   'needs-you': 'needs you',
   blocked: 'blocked',
   stalled: 'stalled',
