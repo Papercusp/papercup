@@ -361,3 +361,82 @@ describe('rollbackPromote — corrupt sidecar live escape (Gap 15)', () => {
     expect(await readFile(join(live, 'marker.txt'), 'utf8')).toBe('OLD_LIVE'); // old live restored
   });
 });
+
+// -------------------------------------------------------------------------
+// Gap 16 — a DEGRADED pre-snapshot DB dump must not be recorded as 'ok'.
+//
+// EI-20109034777197353: the pre-snapshot pg_dump skipped hourly for 26 hours
+// while every snapshot row committed status='ok'. The hook returned
+// { ok:false } into a logfile nobody reads, and the ledger — the one surface a
+// human or a health check actually consults — said the backup was fine. The
+// dump going stale is not what made this dangerous; the ledger agreeing that it
+// hadn't is. Measured: "pg SKIP" logged at 22:47:06Z, snapshot 'ok' at
+// 22:47:08Z, two seconds apart.
+//
+// Drives the real `backup-record-result` UPDATE (every other step is canned)
+// and reads the status parameter actually bound into that query.
+// -------------------------------------------------------------------------
+describe('degraded pre-snapshot dump must not record status=ok (EI-20109034777197353)', () => {
+  async function recordWithHookOutcome(outcome: { ok: boolean; error?: string | null }) {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: unknown, ...values: unknown[]) => {
+      if (Array.isArray(strings)) queries.push({ text: (strings as string[]).join('?'), values });
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const runner: StepRunner = {
+      runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        // The recording UPDATE is the subject under test — run it for real.
+        if (name === 'backup-record-result') return fn();
+        const canned: Record<string, unknown> = {
+          'backup-insert-row': { id: 7, startedAtMs: 1000 },
+          'backup-pre-snapshot-hook': { ok: outcome.ok, error: outcome.error ?? null },
+          'backup-kopia-create': {
+            snapshotId: 'kopia-xyz', bytesAdded: 11, bytesTotal: 22, durationMs: 5,
+          },
+        };
+        return canned[name] as T;
+      },
+    };
+    configureBackupStepRunner(runner);
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+    vi.spyOn(w, 'ensureRepo').mockResolvedValue(undefined);
+    await w.snapshot('interval');
+    const update = queries.find(
+      (q) => /UPDATE harness_shared\.backup_snapshots/.test(q.text) && /kopia_snapshot_id/.test(q.text),
+    );
+    expect(update, 'the recording UPDATE should have run').toBeDefined();
+    // Bound in source order: kopia id, status, error_text, bytes_added, bytes_total, row id.
+    return { status: update!.values[1], errorText: update!.values[2] };
+  }
+
+  it('records status=degraded (NOT ok) when the dump was skipped for space', async () => {
+    const { status, errorText } = await recordWithHookOutcome({
+      ok: false,
+      error:
+        'insufficient free space (35319316480 available; 6415804660 needed for a dump of 1780687612 bytes)',
+    });
+    expect(status).toBe('degraded');
+    expect(status).not.toBe('ok');
+    // The reason must land ON the row: a bare 'degraded' with no error_text
+    // sends the next reader back to the logfile this bug proved nobody reads.
+    expect(String(errorText)).toMatch(/insufficient free space/);
+  });
+
+  it('records status=degraded when the dump pipeline FAILED outright', async () => {
+    const { status, errorText } = await recordWithHookOutcome({ ok: false, error: 'pg_dump exited 1' });
+    expect(status).toBe('degraded');
+    expect(String(errorText)).toMatch(/pg_dump exited 1/);
+  });
+
+  it('still records a clean ok (and a null error_text) when the dump landed', async () => {
+    const { status, errorText } = await recordWithHookOutcome({ ok: true });
+    expect(status).toBe('ok');
+    expect(errorText).toBeNull();
+  });
+});

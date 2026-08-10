@@ -66,6 +66,16 @@
 #                                                              real-state DBs; papercusp_su /
 #                                                              postgres are tiny/derived and
 #                                                              deliberately not gated.
+#   BACKUP_OPTIONAL_ARTIFACTS (default "$HOME/.papercusp-workspaces/*/db-dumps/pg-embedded.sql.gz")
+#                                     — artifacts gated on FRESHNESS but not on EXISTENCE, and
+#                                       allowed to be ABSOLUTE paths (these live beside each
+#                                       workspace, not under BACKUP_DUMP_DIR). Absent ⇒ silent
+#                                       (a box with no workspace backups is not broken);
+#                                       present but stale ⇒ same alarm as any other artifact.
+#                                       EI-20109034777197353 recurrence guard: the workspace
+#                                       pre-snapshot pg_dump died and went unnoticed for 26h
+#                                       precisely because NO probe watched its artifact — the
+#                                       snapshot ledger said status='ok' the whole time.
 #   BACKUP_MAX_AGE_H     (default 6)   — artifact older than this ⇒ alarm (dumps run ~hourly)
 #   BACKUP_MAX_FAILS     (default 3)   — this many trailing FAILED runs with no "OK" ⇒ alarm
 #   BACKUP_STALE_TMP_MAX_H (default 2) — a "*.tmp" pg_dump staging dir under
@@ -100,6 +110,15 @@ fi
 
 BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
 BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg/papercusp pg/restart}"
+# Unquoted on purpose at the loop below so the glob expands per workspace; an
+# unmatched glob stays literal, which then reads as "absent" and is silent.
+#
+# `-` not `:-` deliberately: an explicitly EMPTY value must mean "gate nothing",
+# not "use the default". With `:-` the two are indistinguishable, so a caller
+# that opts out (the self-test does exactly this) silently gets the default set
+# back — and here that default points at a REAL artifact on the host, which made
+# an isolated test case judge live state. Caught by self-test case 4.
+BACKUP_OPTIONAL_ARTIFACTS="${BACKUP_OPTIONAL_ARTIFACTS-$HOME/.papercusp-workspaces/*/db-dumps/pg-embedded.sql.gz}"
 BACKUP_MAX_AGE_H="${BACKUP_MAX_AGE_H:-6}"
 BACKUP_MAX_FAILS="${BACKUP_MAX_FAILS:-3}"
 BACKUP_STALE_TMP_MAX_H="${BACKUP_STALE_TMP_MAX_H:-2}"
@@ -178,6 +197,7 @@ if [ "${1:-}" = "--self-test" ]; then
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="" \
         "$@" bash "$self" >/dev/null 2>&1
     # BACKUP_ARTIFACTS can name several dumps, so a red writes one stale-* marker PER
     # artifact — glob-match ANY of them (a bare `[ -f state/stale-* ]` errors with
@@ -217,6 +237,7 @@ if [ "${1:-}" = "--self-test" ]; then
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="" \
         "$@" bash "$self" >/dev/null 2>&1
     local got_marker=no
     [ -f "$t/state/stale-tmp" ] && got_marker=yes
@@ -235,6 +256,48 @@ if [ "${1:-}" = "--self-test" ]; then
   check_tmp "fresh .tmp (in-progress dump), production defaults: green, no marker" \
         no  no
   printf '  ---- %d passed, %d failed (post stranded-tmp block)\n' "$p" "$f"
+
+  # ── EI-20109034777197353 recurrence guard: the WORKSPACE dump artifact ────
+  # The workspace pre-snapshot pg_dump died and nobody noticed for 26 HOURS,
+  # because no probe watched its artifact — it lives outside BACKUP_DUMP_DIR,
+  # and the only surface that mentioned it (backup_snapshots.status) said 'ok'
+  # the entire time. It is gated on FRESHNESS but not EXISTENCE: a box with no
+  # workspace backup is not broken, but one whose dump stopped advancing is.
+  check_optional() {
+    local name="$1" mode="$2" want_marker="$3"; shift 3
+    rm -rf "${t:?}/state" "$t/dump/pg" "$t/ws"
+    mkdir -p "$t/state" "$t/dump/pg/papercusp" "$t/dump/pg/restart" "$t/ws"
+    # Required artifacts stay FRESH so any marker can only come from the optional one.
+    : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
+    local opt="$t/ws/pg-embedded.sql.gz"
+    case "$mode" in
+      absent) rm -f "$opt" ;;
+      fresh)  : > "$opt" ;;
+      stale)  : > "$opt"; touch -d '26 hours ago' "$opt" ;;
+    esac
+    env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="$opt" \
+        "$@" bash "$self" >/dev/null 2>&1
+    local got_marker=no
+    compgen -G "$t/state/stale-*" >/dev/null 2>&1 && got_marker=yes
+    if [ "$got_marker" = "$want_marker" ]; then
+      printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted marker=%s, got marker=%s\n' "$name" "$want_marker" "$got_marker"; f=$((f+1))
+    fi
+  }
+  # 7. THE INCIDENT ITSELF: a workspace dump 26h stale must alarm.
+  check_optional "optional artifact 26h STALE (the EI-20109034777197353 incident): marker set" \
+        stale  yes
+  # 8. NOT gated on existence — a box that never ran a workspace backup is silent.
+  check_optional "optional artifact ABSENT: silent (never-backed-up workspace is not a fault)" \
+        absent no
+  # 9. NOT a hair-trigger: a current workspace dump is green.
+  check_optional "optional artifact FRESH: green, no marker" \
+        fresh  no
+  printf '  ---- %d passed, %d failed (post optional-artifact block)\n' "$p" "$f"
   [ "$f" -eq 0 ] || exit 1
   exit 0
 fi
@@ -243,10 +306,24 @@ fi
 # Deliberately artifact-based: a rotated/truncated hook.log must never make a dead
 # backup look healthy. An artifact that stopped advancing IS the failure, whatever
 # the log says.
-for art in $BACKUP_ARTIFACTS; do
-  f="$BACKUP_DUMP_DIR/$art"
+# Required artifacts first, then the optional ones. The sentinel flips the mode
+# mid-loop: membership testing cannot be used here because the optional list is
+# a GLOB that expands during this very word-split, so an expanded path would no
+# longer match the pattern it came from.
+ART_OPTIONAL=0
+for art in $BACKUP_ARTIFACTS __OPTIONAL_ARTIFACTS_FOLLOW__ $BACKUP_OPTIONAL_ARTIFACTS; do
+  if [ "$art" = __OPTIONAL_ARTIFACTS_FOLLOW__ ]; then ART_OPTIONAL=1; continue; fi
+  # Absolute entries are used as-is (workspace dumps live outside BACKUP_DUMP_DIR);
+  # relative ones hang off it, as they always have.
+  case "$art" in /*) f="$art" ;; *) f="$BACKUP_DUMP_DIR/$art" ;; esac
   # -e not -f: db-backup.sh's artifacts are pg_dump -Fd DIRECTORIES, not single files.
   if [ ! -e "$f" ]; then
+    # An optional artifact that does not exist is not a fault: the workspace may
+    # simply never have been backed up. Only its going STALE is a signal.
+    if [ "$ART_OPTIONAL" = 1 ]; then
+      log "artifact $art: absent (optional — not gated on existence)"
+      continue
+    fi
     TITLE="DB backup artifact MISSING: $art (no dump has ever succeeded at $BACKUP_DUMP_DIR)"
     BODY="EI-10733 durable backup-health probe: expected dump artifact '$f' does not exist at all. There is NO recoverable database dump. Check ~/.config/kopia/db-backup.sh, its timer (systemctl --user status papercusp-db-backup.timer), and $BACKUP_HOOK_LOG."
     RED_MARKER="$STATE_DIR/missing-${art//\//-}"   # art may contain '/' (pg/papercusp) — flatten for the filename
