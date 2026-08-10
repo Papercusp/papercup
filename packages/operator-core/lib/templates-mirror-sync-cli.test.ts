@@ -166,3 +166,49 @@ describe('CLI contract', () => {
     expect(r.stderr).toMatch(/unknown args/);
   });
 });
+
+/**
+ * A canonical package with NO tsconfig.json — the real shape of
+ * libs/generic/pot-app-seam, which ships package.json + src/ and nothing else.
+ *
+ * buildExpected used to add `<pkg>/tsconfig.json` UNCONDITIONALLY, so this package
+ * produced a `missing pot-app-seam/tsconfig.json` that no push could ever satisfy,
+ * and `--push` then threw ENOENT out of fs.copyFile part-way through applying.
+ *
+ * The bug survived because `makeCanonicalRoot` above writes a tsconfig.json for
+ * EVERY package — the fixture was more uniform than the tree it stands in for, so
+ * the one real package that breaks the assumption was never represented.
+ */
+describe('a vendored package that ships no tsconfig.json (the pot-app-seam shape)', () => {
+  async function makeRootWithoutTsconfig(root: string) {
+    await fs.mkdir(join(root, 'templates/papercusp-ops-pots'), { recursive: true });
+    await fs.writeFile(join(root, 'templates/papercusp-ops-pots/GUIDE.md'), 'guide body\n');
+    await fs.writeFile(join(root, 'templates/README.md'), 'templates readme\n');
+    const dir = join(root, 'libs/generic/pot-app-seam');
+    await fs.mkdir(join(dir, 'src'), { recursive: true });
+    await fs.writeFile(join(dir, 'package.json'), '{"name":"@papercusp/pot-app-seam"}\n');
+    await fs.writeFile(join(dir, 'src/index.ts'), "export const x = 'seam';\n");
+    // deliberately NO tsconfig.json
+  }
+
+  it('does not expect a tsconfig.json the canonical package does not have', async () => {
+    const root = join(tmp, 'no-tsconfig-root');
+    await makeRootWithoutTsconfig(root);
+    const { expected } = await buildExpected(root, ['pot-app-seam']);
+    expect([...expected.keys()]).toContain('pot-app-seam/package.json');
+    expect([...expected.keys()]).toContain('pot-app-seam/src/index.ts');
+    expect([...expected.keys()]).not.toContain('pot-app-seam/tsconfig.json');
+  });
+
+  it('every expected path resolves to a real file, so --push cannot ENOENT', async () => {
+    // The push loop does `fs.copyFile(expected.get(rel), dst)` for every missing or
+    // changed path. An expectation pointing at a nonexistent source is therefore not
+    // a cosmetic false positive — it aborts the apply mid-way.
+    const root = join(tmp, 'no-tsconfig-push');
+    await makeRootWithoutTsconfig(root);
+    const { expected } = await buildExpected(root, ['pot-app-seam']);
+    for (const [rel, src] of expected) {
+      await expect(fs.access(src), `expected "${rel}" -> missing source ${src}`).resolves.toBeUndefined();
+    }
+  });
+});

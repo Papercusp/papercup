@@ -25,7 +25,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -104,6 +104,7 @@ describe('affected-tests: non-workspace path routes (EI-19346163916263067)', () 
   });
 
   it('THE RATCHET: the routed workspace still owns tests that exercise root scripts/', () => {
+    // (see the templates/ block below for the second routed non-workspace dir)
     // The route is only correct while the suites it aims at live there. If they move,
     // the route keeps "working" while selecting a workspace that covers nothing.
     const r = spawnSync(
@@ -120,5 +121,72 @@ describe('affected-tests: non-workspace path routes (EI-19346163916263067)', () 
       `${ROUTE_TARGET} no longer holds a meaningful number of tests referencing root scripts/. ` +
         'If those suites moved, move the route with them.',
     ).toBeGreaterThan(20);
+  });
+});
+
+/**
+ * WI-37840 — the same class, found again in `templates/`.
+ *
+ * `templates/` is SHIPPED CONTENT (the official app templates, overlaid wholesale
+ * into a user's materialized app) with no package.json of its own, so it matched no
+ * workspace. MEASURED before the route was added:
+ *
+ *   --changed-paths templates/papercusp-ui/template.yaml  -> (empty), exit 0
+ *   --changed-paths packages/operator-core/lib/cupboard/templates.ts -> 5 workspaces
+ *
+ * and "nothing to gate" is GREEN at the green-checkpoint. So a templates-only commit
+ * ran no tests at all — while THREE guards written specifically to police that
+ * directory (template-bundle-integrity, template-docs-slugs, template-store-shadowing)
+ * sat in operator-core, unreachable from the only change that can trip them.
+ */
+describe('affected-tests: the templates/ route (WI-37840)', () => {
+  const TEMPLATE_GUARDS = [
+    'packages/operator-core/lib/cupboard/template-bundle-integrity.test.ts',
+    'packages/operator-core/lib/cupboard/template-docs-slugs.test.ts',
+    'packages/operator-core/lib/cupboard/template-store-shadowing.test.ts',
+  ];
+
+  it('routes a templates/ manifest change to the workspace holding the template guards', () => {
+    expect(
+      affectedFor(['templates/papercusp-ui/template.yaml']),
+      'A templates/** change no longer selects the workspace that owns the template ' +
+        'guards, so adding a dangling docs: slug or an unvendored import would pass the ' +
+        'gate green. Check NON_WORKSPACE_PATH_ROUTES in scripts/affected-tests.mjs.',
+    ).toContain(ROUTE_TARGET);
+  });
+
+  it('routes a vendored package inside a template too', () => {
+    // The vendored copies (template-kit, pot-app-seam) are the drift-prone surface
+    // findVendorDrift polices; they live under templates/ and must route the same way.
+    expect(affectedFor(['templates/papercusp-ops-pots/pot-app-seam/src/index.ts'])).toContain(
+      ROUTE_TARGET,
+    );
+  });
+
+  it("THE RATCHET: templates/ is still not an npm workspace", () => {
+    const patterns: string[] = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'),
+    ).workspaces ?? [];
+    const claimed = patterns.some((p) =>
+      p.endsWith('/*') ? 'templates'.startsWith(p.slice(0, -2) + '/') : p === 'templates',
+    );
+    expect(
+      claimed,
+      'templates/ is now an npm workspace — remove its NON_WORKSPACE_PATH_ROUTES entry so ' +
+        'the workspace-dir rule owns it, rather than leaving a dead route behind.',
+    ).toBe(false);
+  });
+
+  it('THE RATCHET: the template guards still live in the routed workspace', () => {
+    // The route aims at operator-core because the guards are there. If a guard moves,
+    // the route keeps "working" while pointing at a workspace that no longer covers it.
+    for (const guard of TEMPLATE_GUARDS) {
+      expect(
+        existsSync(resolve(REPO_ROOT, guard)),
+        `${guard} is gone or moved. The templates/ route points at ${ROUTE_TARGET} precisely ` +
+          'because these guards live there — move the route with them, or this route silently ' +
+          'stops protecting anything.',
+      ).toBe(true);
+    }
   });
 });

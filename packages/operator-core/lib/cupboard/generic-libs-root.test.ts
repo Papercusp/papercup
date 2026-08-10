@@ -8,7 +8,8 @@
  * to say when this install has no tree.
  */
 import { describe, it, expect } from 'vitest';
-import { join } from 'node:path';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import {
   resolveGenericLibsRoot,
   genericLibsDependencySpec,
@@ -137,6 +138,50 @@ describe('genericLibsDependencySpec', () => {
     expect(genericLibsDependencySpec('sync', none)).toBeNull();
     // The vendored ones still work — they do not depend on the tree (D-001).
     expect(genericLibsDependencySpec('pot-app-seam', none)).toBe('file:./pot-app-seam');
+  });
+});
+
+/**
+ * WI-37839 — THE GROUNDING CHECK. Everything above tests the ROUTING CONTRACT
+ * (given the constant, does the function route correctly?) using the constant as
+ * its own oracle. That is worth pinning, but it cannot notice the failure that
+ * actually shipped: `pot-app-seam` sat in VENDORED_IN_TEMPLATE for weeks while being
+ * vendored into NO template, so `resolveGenericLibsRoot().explanation` — returned by
+ * both templates:get-guide and templates:new-app — told every builder to link
+ * `file:./pot-app-seam` (which resolved to nothing) and explicitly NOT to use the
+ * supplyChain root, which was the path that worked.
+ *
+ * A test asserting `genericLibsDependencySpec(pkg) === 'file:./' + pkg` for each pkg
+ * IN the constant re-states the constant and passes either way. The only thing that
+ * can catch this is the FILESYSTEM, so this asserts against the real templates tree.
+ */
+describe('VENDORED_IN_TEMPLATE is grounded in the real templates tree', () => {
+  const TEMPLATES_DIR = resolve(__dirname, '..', '..', '..', '..', 'templates');
+
+  it('every declared package is really vendored into at least one template', () => {
+    expect(existsSync(TEMPLATES_DIR), `no templates dir at ${TEMPLATES_DIR}`).toBe(true);
+    const refs = readdirSync(TEMPLATES_DIR).filter((e) =>
+      statSync(join(TEMPLATES_DIR, e)).isDirectory(),
+    );
+    expect(refs.length, 'found no template dirs — the assertion below would be vacuous').toBeGreaterThan(0);
+
+    for (const pkg of VENDORED_IN_TEMPLATE) {
+      const hosts = refs.filter((ref) => existsSync(join(TEMPLATES_DIR, ref, pkg, 'package.json')));
+      expect(
+        hosts,
+        `"${pkg}" is declared in VENDORED_IN_TEMPLATE but no templates/<ref>/${pkg}/package.json ` +
+          `exists. Every builder is therefore told to link "file:./${pkg}" — a path that cannot ` +
+          `resolve — and steered away from the supplyChain root, which would have worked. ` +
+          `Either vendor it into the template that needs it, or remove it from the constant.`,
+      ).not.toEqual([]);
+    }
+  });
+
+  it('CONTROL: a package that is NOT vendored is absent from the constant', () => {
+    // Pins the other direction, so the assertion above cannot be satisfied by a
+    // constant that simply lists everything under libs/generic.
+    expect(VENDORED_IN_TEMPLATE).not.toContain('sync');
+    expect(VENDORED_IN_TEMPLATE).not.toContain('ui-primitives');
   });
 });
 

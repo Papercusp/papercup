@@ -481,6 +481,17 @@ const NON_WORKSPACE_PATH_ROUTES = [
   // would have fired only via the full suite, hours later at the fleet gate,
   // which is the exact latency the check exists to remove.
   { prefix: 'CLAUDE.md', workspace: '@papercusp/operator-core' },
+  // WI-37840. `templates/` is SHIPPED CONTENT with no package.json of its own, and
+  // the three guards that govern it are vitest files in operator-core
+  // (template-bundle-integrity, template-docs-slugs, template-store-shadowing).
+  // MEASURED before adding it: `--changed-paths templates/papercusp-ui/template.yaml`
+  // selected ZERO workspaces and exited 0, while the same run against an
+  // operator-core path selected five — so a templates-only commit ran no tests at
+  // all, and "nothing to gate" is GREEN at the green-checkpoint. Every defect this
+  // plan built guards for (a dangling docs: slug, an unvendored @papercusp/* import
+  // in a template check, user-layer shadowing residue) is introduced by exactly that
+  // shape of commit, so the guards were unreachable from the change they guard.
+  { prefix: 'templates/', workspace: '@papercusp/operator-core' },
 ];
 
 // EI-19388389386110890 — REPO-WIDE INVARIANTS ENFORCED FROM ONE WORKSPACE.

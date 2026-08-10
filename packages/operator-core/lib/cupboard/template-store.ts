@@ -198,15 +198,37 @@ export function listLocalTemplatesWithShadows(roots: TemplateRoot[] = templateRo
   return { templates, shadows };
 }
 
+/**
+ * Resolve one template by ref (or id), together with any cross-layer collision
+ * affecting THAT template (WI-37839 follow-up).
+ *
+ * `resolveLocalTemplate` discards the shadow report, which meant a REFUSED shadow
+ * was silent on the materialize path: `templates:list` showed the collision, but a
+ * builder going straight to get-guide / new-app got no hint that the user-layer dir
+ * they had just installed was being ignored. The refusal still protected them; they
+ * simply could not tell it had happened, which is the half of "refuse OR visibly
+ * report" that was missing.
+ */
+export function resolveLocalTemplateWithShadows(
+  idOrRef: string,
+  roots: TemplateRoot[] = templateRoots(),
+): { template: LocalTemplate | null; shadows: ShadowEvent[] } {
+  const key = (idOrRef ?? '').trim();
+  if (!key) return { template: null, shadows: [] };
+  const { templates, shadows } = listLocalTemplatesWithShadows(roots);
+  const template = templates.find((t) => t.ref === key || t.id === key) ?? null;
+  return {
+    template,
+    shadows: template ? shadows.filter((s) => s.ref === template.ref) : [],
+  };
+}
+
 /** Resolve one template by ref (or id) from the local store, or null. */
 export function resolveLocalTemplate(
   idOrRef: string,
   roots: TemplateRoot[] = templateRoots(),
 ): LocalTemplate | null {
-  const key = (idOrRef ?? '').trim();
-  if (!key) return null;
-  const all = listLocalTemplates(roots);
-  return all.find((t) => t.ref === key || t.id === key) ?? null;
+  return resolveLocalTemplateWithShadows(idOrRef, roots).template;
 }
 
 // ── GUIDE read (local mirror of fetchTemplateGuide) ───────────────────────────

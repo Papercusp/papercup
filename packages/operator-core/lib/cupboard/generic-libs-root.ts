@@ -166,8 +166,10 @@ export function resolveGenericLibsRoot(
           `"@papercusp/sync": "file:${join(root, 'sync')}" — a RELATIVE path like ` +
           `"file:../papercusp/libs/generic/sync" only works inside a dev checkout and is ` +
           `not what this install looks like. ` +
-          `${VENDORED_IN_TEMPLATE.join(' and ')} are the exception: they are vendored INTO ` +
-          `the template, so link those as "file:./<name>", not from here.`,
+          `${VENDORED_IN_TEMPLATE.join(' and ')} are the exception: each is vendored INTO the ` +
+          `template(s) that use it (template-kit into the app-scope roots, pot-app-seam into ` +
+          `papercusp-ops-pots), so when your template ships one, link it as "file:./<name>" ` +
+          `rather than from here — the vendored copy is the one that reaches a materialized app.`,
       };
     }
   }

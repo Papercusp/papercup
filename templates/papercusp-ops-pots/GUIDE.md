@@ -41,17 +41,19 @@ typed contract comes DOWN through a single parse gate into an app table.
    (`buildDomainWorkItemsSeam`), the ingest loop (`startIngestLoop`). Do not
    hand-roll fetch calls against `/api/harness/*` — the seam component IS the
    blessed primitive (that's what buys observability, Queen dispatch, and
-   confinement). Supply chain: `file:`-link it from **this install's resolved
-   `libs/generic` root**, which `templates:get-guide` and `templates:new-app`
-   hand you as `supplyChain` — that is the only path guaranteed to exist where
-   you are actually building
-   (`"@papercusp/pot-app-seam": "file:<supplyChain>/pot-app-seam"`).
-   ⚠ Do NOT link it out of a clone of the public templates mirror. The mirror
-   is pre-rename and 404s on `pot-app-seam/` — it still serves the old
-   `hive-app-seam/` (measured 2026-08-10, WI-37775), so the documented
-   `file:../<mirror-clone>/pot-app-seam` never resolves. Run
-   `npm run mirror:check` in the monorepo before assuming the mirror is
-   current; templates README § Supply chain.
+   confinement). Supply chain: the seam is **vendored INSIDE this template**, so
+   link it relative to your new app —
+   `"@papercusp/pot-app-seam": "file:./pot-app-seam"` — and it resolves after a
+   plain `npm install`. That is the one path that works everywhere: materializing
+   copies the whole `<ref>/` dir into your app, so the vendored copy rides along
+   on every platform, including cross-built macOS bundles, which ship no source
+   tree (plan decisions D-001, D-005).
+   ⚠ Do NOT link it from `libs/generic` or from a clone of the public templates
+   mirror. `libs/generic` is a dev-checkout/source-archive path that an install
+   may not have at all; the mirror is pre-rename and 404s on `pot-app-seam/`,
+   still serving the old `hive-app-seam/` (measured 2026-08-10, WI-37775). Run
+   `npm run mirror:check` in the monorepo before assuming the mirror is current;
+   templates README § Supply chain.
 2. **Own contracts package, ONE parse gate** — specialize
    `contracts/candidate-set.ts` into e.g. `@yourapp/contracts`: `.strict()`
    zod schemas both directions; the join key round-trips unchanged; an empty
