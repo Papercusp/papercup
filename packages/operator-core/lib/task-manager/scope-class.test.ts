@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifyScope,
+  isConsoleWindowScope,
   isTerminalWindowScope,
   EXEMPT_REASON_LABEL,
   type ExemptReason,
@@ -165,5 +166,50 @@ describe('correspondence with the build-time spawn guard', () => {
     ]) {
       expect(ALLOWLIST.has(cited), `${cited} is cited by scope-class.ts`).toBe(true);
     }
+  });
+
+  /**
+   * EI-20106565311448967. The test above asserts the citation EXISTS; it cannot
+   * assert the runtime rule FIRES for the processes that allowlist entry produces.
+   * It passed for as long as `console-spawn.ts` was allowlisted and its scopes were
+   * still being counted as escapes — the gap is reachability, not correspondence.
+   */
+  it('has a reachable runtime rule for the console scopes the allowlist exempts', () => {
+    expect(ALLOWLIST.has('packages/operator-core/lib/console-spawn.ts')).toBe(true);
+    // The literal shape `buildScopedSpawnArgv(..., 'papercup-console', ...)` mints.
+    expect(isConsoleWindowScope('papercup-console-gnome-terminal-665488-1786388175428.scope')).toBe(true);
+  });
+});
+
+describe('isConsoleWindowScope', () => {
+  it('matches a console scope by leaf, bare or in a full path', () => {
+    expect(isConsoleWindowScope('papercup-console-verify-0014-platforms-69344-1786368816770.scope')).toBe(true);
+    expect(
+      isConsoleWindowScope(`${OUR_SLICE}/papercusp-agent.slice/papercup-console-Windows-VM-SPICE-5931.scope`),
+    ).toBe(true);
+  });
+
+  /**
+   * The load-bearing negative. `papercup-headless-*` is the SAME builder one argument
+   * apart, and it is the genuine un-enrolled gap the residue census exists to raise —
+   * sweeping it in here would delete the signal instead of fixing the false alarm.
+   */
+  it('does NOT match papercup-headless, our own pc- scopes, or a lookalike', () => {
+    expect(isConsoleWindowScope(`${OUR_SLICE}/papercup-headless-some-job-1786388175428.scope`)).toBe(false);
+    expect(isConsoleWindowScope(`${OUR_SLICE}/pc-aaa111.scope`)).toBe(false);
+    // Right prefix, not a scope unit — must not match a slice or a stray directory.
+    expect(isConsoleWindowScope(`${OUR_SLICE}/papercup-console-something.slice`)).toBe(false);
+    expect(isConsoleWindowScope('')).toBe(false);
+  });
+
+  /**
+   * A console scope lives INSIDE our slice, so `classifyScope` still calls it `owned`
+   * — deliberately. The console is not an exception to ownership; the residue split
+   * is where it stops being an escape. Pinned so a later refactor cannot quietly
+   * weaken the `owned` short-circuit in the name of this fix.
+   */
+  it('does not make a console scope stop being owned', () => {
+    const consolePath = `${OUR_SLICE}/papercup-console-gnome-terminal-665488.scope`;
+    expect(classifyScope(consolePath, true)).toEqual({ scope: 'owned', exemptReason: null });
   });
 });

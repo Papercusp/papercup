@@ -173,6 +173,33 @@ describe('reconcileTick — happy path', () => {
     expect(sent[0]!.summary).toMatch(/unaccounted cgroup/);
   });
 
+  /**
+   * EI-20106565311448967 — the property the fix actually has to deliver.
+   *
+   * A `papercup-console-*` scope is a desktop terminal window we opened for a human.
+   * `spawnConsole` hardcodes `taskScope: null` and `console-spawn.ts` is allowlisted
+   * from enrolment, so the scope can NEVER acquire a ledger row: counted as residue it
+   * re-notified every 30 minutes forever. Measured on this box: 7 scopes / 14 processes.
+   */
+  it('does NOT alarm on a human console window that can never hold a ledger row', async () => {
+    const notify = vi.fn();
+    await reconcileTick({
+      listLive: async () => [],
+      scan: () =>
+        scanResult([
+          proc({
+            pid: 99,
+            cgroupPath: `${OURS}/papercusp-agent-session.slice/papercup-console-gnome-terminal-665488-1786388175428.scope`,
+            processIdentity: 'linux:b:99',
+            cmdline: 'gnome-terminal',
+          }),
+        ]),
+      fs: memFs({}),
+      notify,
+    });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   it('distinguishes a never-registered process from a scope that OUTLIVED its row (WI-37509)', async () => {
     // These are two different faults needing two different investigations. Reporting
     // both as "no managedSpawn registered" sent every reader off to audit spawn sites

@@ -394,3 +394,51 @@ describe('summarizeReconcile', () => {
     });
   });
 });
+
+/**
+ * EI-20106565311448967 — a console scope can NEVER acquire a ledger row
+ * (`spawnConsole` hardcodes `taskScope: null`), so counting it as `unaccounted`
+ * produced an alarm that could never clear: 7 scopes / 14 processes on this box,
+ * re-notified every 30 minutes.
+ *
+ * The falsifier that matters is the SECOND test, not the first. Reclassifying
+ * consoles is only correct if it does not also silence `papercup-headless-*`,
+ * which comes out of the same builder one argument apart and IS the real
+ * un-enrolled gap the residue census exists to raise.
+ */
+describe('reconcile — console windows are accounted by the window, not the ledger', () => {
+  const CONSOLE = `${OUR_SLICE}/papercusp-agent.slice/papercusp-agent-session.slice/papercup-console-gnome-terminal-665488-1786388175428.scope`;
+
+  it('files a papercup-console scope as consoleWindow, never as unaccounted', () => {
+    const r = reconcile([], [proc({ pid: 1, cgroupPath: CONSOLE }), proc({ pid: 2, cgroupPath: CONSOLE })], {
+      now: NOW,
+    });
+
+    expect(r.unaccounted).toHaveLength(0);
+    expect(r.consoleWindow).toHaveLength(1);
+    expect(r.consoleWindow[0]).toMatchObject({ cgroupPath: CONSOLE, pids: [1, 2] });
+    // The count the 30-minute notifier fires on is zero, while the class stays visible.
+    expect(summarizeReconcile(r)).toMatchObject({
+      unaccounted: 0,
+      unaccountedPids: 0,
+      consoleWindow: 1,
+      consoleWindowPids: 2,
+    });
+  });
+
+  it('still reports an un-enrolled papercup-headless scope as unaccounted', () => {
+    const headless = `${OUR_SLICE}/papercusp-bash.slice/papercup-headless-some-job-1786388175428.scope`;
+    const r = reconcile([], [proc({ pid: 3, cgroupPath: headless })], { now: NOW });
+
+    expect(r.consoleWindow).toHaveLength(0);
+    expect(r.unaccounted).toHaveLength(1);
+    expect(summarizeReconcile(r)).toMatchObject({ unaccounted: 1, unaccountedPids: 1, consoleWindow: 0 });
+  });
+
+  it('leaves a genuine in-slice escape in unaccounted', () => {
+    const r = reconcile([], [proc({ pid: 4, cgroupPath: `${OUR_SLICE}/stray` })], { now: NOW });
+
+    expect(r.consoleWindow).toHaveLength(0);
+    expect(r.unaccounted).toHaveLength(1);
+  });
+});
