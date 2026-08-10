@@ -28,9 +28,7 @@ import {
   type SurfaceResolver,
 } from './retired-surfaces';
 
-// lib/doc-claims → lib → operator-core → packages → <repo root>
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const CLAUDE_MD = join(ROOT, 'CLAUDE.md');
+import { CORPUS_FLOORS, CORPUS_PATH, ROOT, SUBJECT_LABEL, readCorpus } from './corpus-subject';
 
 const SOURCE_EXT = /\.(?:tsx?|jsx?|[cm]js|md|json|sql|rs|sh|css)$/;
 
@@ -73,7 +71,10 @@ function buildResolver(): SurfaceResolver {
 }
 
 const resolver = buildResolver();
-const md = existsSync(CLAUDE_MD) ? readFileSync(CLAUDE_MD, 'utf8') : '';
+// The CORPUS, not CLAUDE.md. This guard locates its subject BY HEADING and the claims
+// beneath it are prose, so the client projection yields 0 judged claims (it still emits
+// the heading, because one invariant sits under it). See corpus-subject.ts.
+const md = readCorpus();
 const extraction = extractRetiredSurfaceClaims(md, resolver);
 
 /**
@@ -235,19 +236,21 @@ describe('extractRetiredSurfaceClaims — fixture controls', () => {
 
 // ─────────────────────── live assertions over CLAUDE.md ──────────────────────
 
-describe('CLAUDE.md — retired-surface claims hold', () => {
+describe('the doc corpus — retired-surface claims hold', () => {
   it('has a retired-surfaces section with claims to check', () => {
-    expect(existsSync(CLAUDE_MD)).toBe(true);
+    expect(existsSync(CORPUS_PATH)).toBe(true);
+    // `sectionFound` alone is NOT non-vacuity, and this is the trap worth naming: the
+    // projected client file still reports sectionFound TRUE (one invariant sits under
+    // the heading, so the heading is emitted) while judging ZERO claims — the most
+    // reassuring possible shape for a guard measuring nothing. The count is the check.
     expect(extraction.sectionFound).toBe(true);
-    // Non-vacuity: if the section stops yielding claims, this suite is measuring
-    // nothing and must say so rather than go green.
-    expect(extraction.judged.length).toBeGreaterThan(5);
+    expect(extraction.judged.length).toBeGreaterThanOrEqual(CORPUS_FLOORS.retiredSurfacesJudged);
     expect(extraction.roster.length).toBeGreaterThan(0);
   });
 
   it('every surface it lists as RETIRED is actually retired on disk', () => {
     const verdict = judgeRetiredSurfaceClaims(extraction, CLASSIFICATION);
-    expect(verdict.violations.map((v) => `CLAUDE.md:${v.line} — ${v.message}`)).toEqual([]);
+    expect(verdict.violations.map((v) => `${SUBJECT_LABEL}:${v.line} — ${v.message}`)).toEqual([]);
   });
 
   it('CLOSURE: every judged span is classified, and every classification is still used', () => {
@@ -255,7 +258,7 @@ describe('CLAUDE.md — retired-surface claims hold', () => {
     expect(
       verdict.unclassified.map(
         (s) =>
-          `CLAUDE.md:${s.line} — \`${s.text}\` is named in the retired-surfaces section ` +
+          `${SUBJECT_LABEL}:${s.line} — \`${s.text}\` is named in the retired-surfaces section ` +
           `but CLASSIFICATION does not say whether the doc means it as 'retired' or ` +
           `'live'. Add it (resolves to: ${s.resolvesTo.join(', ') || 'NOTHING'}).`,
       ),

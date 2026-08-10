@@ -8,14 +8,8 @@
  * itself shipped for months (`grep -o 'GATE_HELD_BY.*' <log> | tail -1`).
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { judgeMachineLineGrepAnchors, CANONICAL_ANCHOR } from './machine-line-grep-anchors';
-
-// lib/doc-claims → lib → operator-core → packages → <repo root>
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const CLAUDE_MD = join(ROOT, 'CLAUDE.md');
+import { CORPUS_FLOORS, SUBJECT_LABEL, readCorpus } from './corpus-subject';
 
 /** Pad a fixture past the short-read refusal so we test the RULE, not the guard. */
 const pad = (body: string): string => `${body}\n${'filler prose line\n'.repeat(200)}`;
@@ -115,19 +109,25 @@ describe('CLAUDE.md machine-line grep anchors', () => {
   });
 
   describe('the live claim', () => {
-    const source = readFileSync(CLAUDE_MD, 'utf8');
+    // The CORPUS, not CLAUDE.md — the fenced grep recipes this guard judges live in
+    // prose, which the client projection deliberately omits (0 of 5 survive it). See
+    // corpus-subject.ts.
+    const source = readCorpus();
 
-    it('CLAUDE.md anchors every machine-line grep recipe it prescribes', () => {
+    it('the corpus anchors every machine-line grep recipe it prescribes', () => {
       const verdict = judgeMachineLineGrepAnchors(source);
-      expect(verdict.violations).toEqual([]);
+      expect(verdict.violations.map((v) => `${SUBJECT_LABEL}:${v.line} — ${v.message}`)).toEqual([]);
       expect(verdict.ok).toBe(true);
     });
 
     it('actually inspected the recipes — a rule that matched nothing proves nothing', () => {
-      // Guards against the doc being restructured such that the judge silently
-      // scopes to zero lines and reports a vacuous pass.
+      // Guards against the subject being restructured — or SWAPPED, which is how this
+      // nearly happened — such that the judge silently scopes to zero lines and reports
+      // a vacuous pass. `ok: true` means "no violations among the lines I checked", so
+      // on an empty read it is TRUE and meaningless; this is the assertion that catches
+      // that, and it is the one that fires on a projected client file (0 checked lines).
       const verdict = judgeMachineLineGrepAnchors(source);
-      expect(verdict.checkedLines).toBeGreaterThanOrEqual(3);
+      expect(verdict.checkedLines).toBeGreaterThanOrEqual(CORPUS_FLOORS.checkedLines);
     });
   });
 });

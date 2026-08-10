@@ -423,6 +423,53 @@ export async function readProjectedParts(client, docId) {
   return rows;
 }
 
+/**
+ * Every live part, projected or not — the corpus. Same query as `readProjectedParts`
+ * minus the `cardinality(client_scope) > 0` filter, and ordered identically so a rule
+ * always precedes its `#evidence` half ('foo' sorts before 'foo#evidence').
+ */
+export async function readAllParts(client, docId) {
+  const { rows } = await client.query(
+    `SELECT part_key, kind, body, ordinal, client_scope, target_section, project_rank
+       FROM harness_shared.harness_doc_parts
+      WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3
+        AND tombstone = false
+      ORDER BY ordinal, part_key`,
+    [WORKSPACE_ID, HARNESS_SLUG, docId],
+  );
+  return rows;
+}
+
+/**
+ * Compose the whole corpus, closing the (rule, evidence) seam the loader cut.
+ *
+ * The halves are rejoined with NO separator, because `ruleAndEvidence` guarantees
+ * `rule + evidence === raw` by arithmetic for its exact modes — joining them the way
+ * `assemble` joins blocks would fabricate a blank line that was never in the source
+ * and split one paragraph into two.
+ *
+ * ⚠ The result is deliberately NOT byte-identical to the hand-authored CLAUDE.md, and
+ * no test should assert that it is: P-015 re-authored 55 of the 253 blocks into
+ * (rule, evidence) pairs, so 55 blocks carry text that never appeared in the file.
+ * P-017 is what verified that separation dropped no rule; identity was given up there,
+ * on purpose. What IS asserted is the property that matters here — that the corpus
+ * yields at least as many judged claims as the file it replaced (see doc-corpus.test.ts).
+ */
+export function composeCorpus(allParts, { banner = CORPUS_BANNER } = {}) {
+  const byKey = new Map(allParts.map((p) => [p.part_key, p]));
+  const blocks = [];
+  for (const p of allParts) {
+    if (p.part_key.endsWith(EVIDENCE_SUFFIX)) continue;
+    const evidence = byKey.get(`${p.part_key}${EVIDENCE_SUFFIX}`);
+    blocks.push({
+      body: p.body + (evidence ? evidence.body : ''),
+      target_section: p.target_section,
+    });
+  }
+  const text = assemble(blocks);
+  return { text: banner ? `${banner}\n\n${text}` : text, blocks: blocks.length };
+}
+
 export async function readDocRow(client, docId) {
   const { rows } = await client.query(
     `SELECT content_mode, content, content_hash, generated_from_sha
@@ -463,6 +510,7 @@ function fmt(n) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const argv = process.argv.slice(2);
   const write = argv.includes('--write');
+  const writeCorpus = argv.includes('--write-corpus');
   const docId = (argv.find((a) => a.startsWith('--doc-id='))?.split('=')[1]) ?? 'claude-md';
   const contextTokens = Number(argv.find((a) => a.startsWith('--context-tokens='))?.split('=')[1] ?? 400_000);
   const charsPerToken = Number(
@@ -489,6 +537,29 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const parts = await readProjectedParts(client, docId);
     console.log(`project-doc-parts: ${WORKSPACE_ID}/${HARNESS_SLUG}/${docId}`);
     console.log(`  parts          ${parts.length} projected (${fmt(parts.reduce((a, p) => a + p.body.length, 0))} chars of bodies)`);
+
+    // ── the corpus ───────────────────────────────────────────────────────────
+    // Written independently of --write, and that separation is deliberate: D-014
+    // gates overwriting the CLIENT files (which would erase 108k of prose every
+    // agent reads) behind P-004. This file is NEW and nothing reads it yet, so
+    // writing it destroys nothing — and P-004 cannot land without it, since it is
+    // the location the doc-claims guards are being re-pointed at.
+    const allParts = await readAllParts(client, docId);
+    const corpus = composeCorpus(allParts);
+    const corpusPath = resolve(ROOT, CORPUS_FILE);
+    const corpusOnDisk = existsSync(corpusPath) ? readFileSync(corpusPath, 'utf8') : null;
+    console.log(`\n  ${CORPUS_FILE}`);
+    console.log(
+      `    composed     ${fmt(corpus.text.length)} chars — ${corpus.blocks} block(s) from ${allParts.length} part(s)` +
+        ` (${allParts.filter((p) => !p.client_scope.length).length} unprojected)`,
+    );
+    if (corpusOnDisk === null) console.log('    on disk      absent');
+    else console.log(`    on disk      ${fmt(corpusOnDisk.length)} chars — ${corpusOnDisk === corpus.text ? 'IDENTICAL ✓' : 'DIFFERS'}`);
+    if (write || writeCorpus) {
+      writeFileSync(corpusPath, corpus.text, 'utf8');
+      console.log(`    ✓ wrote ${CORPUS_FILE}`);
+    }
+
     console.log(`  budget         ${fmt(budget)} chars  (context ${fmt(contextTokens)} × ${MEMORY_WARN_CONTEXT_FRACTION} × ${charsPerToken} chars/token, floor ${fmt(MEMORY_WARN_FLOOR_CHARS)})`);
 
     for (const spec of CLIENTS) {

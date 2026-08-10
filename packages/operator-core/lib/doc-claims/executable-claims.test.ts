@@ -27,13 +27,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractExecutableClaims } from './executable-claims';
+import { CORPUS_FLOORS, CORPUS_PATH, ROOT, SUBJECT_LABEL, readCorpus } from './corpus-subject';
 
-// lib/doc-claims → lib → operator-core → packages → <repo root>
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const CLAUDE_MD = join(ROOT, 'CLAUDE.md');
 const HOOK = join(ROOT, 'apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh');
 
-const md = existsSync(CLAUDE_MD) ? readFileSync(CLAUDE_MD, 'utf8') : '';
+// The CORPUS, not CLAUDE.md: the client projection carries only the projected minority,
+// so it names ~half the `npm run` scripts and prescribes fewer commands. A claim that
+// moved into prose is still a claim agents are told to run. See corpus-subject.ts.
+const md = readCorpus();
 const claims = extractExecutableClaims(md);
 
 // ───────────────────────── the admission-gate oracle ─────────────────────────
@@ -228,11 +229,14 @@ describe('extractExecutableClaims — prescription detection', () => {
 
 // ──────────────────────── live assertions over CLAUDE.md ────────────────────
 
-describe('CLAUDE.md — executable claims hold', () => {
-  it('has a CLAUDE.md to check', () => {
-    expect(existsSync(CLAUDE_MD)).toBe(true);
-    expect(claims.npmRun.length).toBeGreaterThan(0);
-    expect(claims.prescribed.length).toBeGreaterThan(0);
+describe('the doc corpus — executable claims hold', () => {
+  it('has a corpus to check, and it is the WHOLE corpus', () => {
+    expect(existsSync(CORPUS_PATH)).toBe(true);
+    // Floors, not just >0: a subject swapped for the projected client file would still
+    // clear >0 (it names 21 scripts and 9 prescriptions) while judging half the corpus.
+    // >0 catches an EMPTY read; these catch a SHRUNKEN one, which is the likelier bug.
+    expect(claims.npmRun.length).toBeGreaterThanOrEqual(CORPUS_FLOORS.npmRun);
+    expect(claims.prescribed.length).toBeGreaterThanOrEqual(CORPUS_FLOORS.prescribed);
   });
 
   it('(a) every `npm run <script>` it names resolves to a real script', () => {

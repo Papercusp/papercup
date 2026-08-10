@@ -160,13 +160,37 @@ export type PeerRelationsReader = (
  * unfortunate: the sender has explicitly said that edge should not surface.
  */
 export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) => {
-  const [{ resolvePresenceScope, assemblePresenceSnapshot }, { couplingSourcesFor }, { deriveCouplings }, { listCouplingsFor, resolveCoupledPeers }] =
+  const [{ resolvePresenceScope, assemblePresenceSnapshot }, { couplingSourcesFor }, { deriveCouplings }, { listCouplingsFor, resolveCoupledPeers }, { lockCoordinationDomain }] =
     await Promise.all([
       import('./presence-snapshot'),
       import('./coupling-sources'),
       import('../../coord/coupling-derivation'),
       import('../../coord/couplings'),
+      import('../locks/coordination-domain'),
     ]);
+  // EI-20042650315152947: WITHOUT a `coordinationDomain`, `couplingSourcesFor`
+  // omits the `heldFiles` source ENTIRELY (coupling-sources.ts:201-206), so
+  // `holds-a-lock-on` cannot derive here at all — it is structurally unwired,
+  // not merely empty. That matters because THIS is the coord:send path, the only
+  // coupling path that runs at volume: the relation was wired on the presence
+  // path (11 calls ever) and produced 0 edges in 14 days everywhere else.
+  //
+  // Resolved HERE rather than threaded from `send.ts` because the domain is a
+  // PROCESS fact, not a caller fact: `lockCoordinationDomain()` takes no
+  // arguments, and `readIdentity()` — the source the presence path uses — is
+  // literally a wrapper around this same call (locks/identity.ts:73). Threading
+  // it through `sendOne` would add a parameter carrying no caller-specific
+  // information. Imported dynamically to honour this file's import contract
+  // above: a static import would put it in `send.ts`'s load-time graph.
+  //
+  // Fail-soft, like every other leg here: a throw degrades to the previous
+  // behaviour (no lock signal) rather than failing a send.
+  let coordinationDomain: string | undefined;
+  try {
+    coordinationDomain = lockCoordinationDomain();
+  } catch {
+    coordinationDomain = undefined;
+  }
   const ctx = {
     ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
@@ -183,6 +207,8 @@ export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) 
     couplingSourcesFor({
       selfOwnerId,
       rosterOwnerIds,
+      // The line that makes `holds-a-lock-on` derivable on this path at all.
+      ...(coordinationDomain ? { coordinationDomain } : {}),
       ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
       ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     }),
