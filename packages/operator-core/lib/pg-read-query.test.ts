@@ -14,6 +14,8 @@ import {
   buildTenantScopeAdvisory,
   buildSilentNullPathAdvisory,
   buildClaimabilityAdvisory,
+  buildCorpusNamespaceAdvisory,
+  buildNativeToolAttributionAdvisory,
   buildDerivedColumnRedirect,
   buildJsonbPathRedirect,
   parseMissingColumnName,
