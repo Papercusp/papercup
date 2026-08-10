@@ -280,7 +280,11 @@ function main() {
   if (listMode) {
     console.log(JSON.stringify(offenders.map((o) => o.edge), null, 2));
     console.log(`\n${offenders.length} total edge(s).`);
-    process.exit(0);
+    // NOT process.exit(): --list is how the baseline is re-seeded, and exit() does not
+    // drain an async pipe write — a truncated re-seed silently shrinks the baseline.
+    // See scripts/check-undrained-stdout-exit.mjs.
+    process.exitCode = 0;
+    return;
   }
 
   const baselineSet = BASELINE;

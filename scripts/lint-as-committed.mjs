@@ -424,7 +424,10 @@ function main() {
       ? `\nAll ${results.length} check(s) pass AS COMMITTED at ${short}.`
       : `\n${failedCount} of ${results.length} check(s) did NOT pass as committed at ${short}.`,
   );
-  process.exit(exitCode);
+  // NOT process.exit(): the per-check `lines` loop above grows with the number of
+  // checks and exit() does not drain an async pipe write, so piping this summary would
+  // cut the very lines that say what failed. See scripts/check-undrained-stdout-exit.mjs.
+  process.exitCode = exitCode;
 }
 
 /**

@@ -366,7 +366,10 @@ function main() {
 
   if (json) {
     console.log(JSON.stringify({ base, examined: examinedFiles, identical: identicalFiles, findings }, null, 2));
-    process.exit(0);
+    // NOT process.exit(): it does not drain an async pipe write, so a piped run would
+    // report FEWER findings than were found. See scripts/check-undrained-stdout-exit.mjs.
+    process.exitCode = 0;
+    return;
   }
 
   if (!findings.length) {

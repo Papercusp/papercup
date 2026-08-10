@@ -424,7 +424,11 @@ function main() {
 
   if (!findings.length) {
     if (!json) console.log(formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles) }));
-    process.exit(0);
+    // NOT process.exit(): under --json the report above is machine-readable output, and
+    // exit() does not drain an async pipe write — a truncated report reads as FEWER
+    // findings. See scripts/check-undrained-stdout-exit.mjs.
+    process.exitCode = 0;
+    return;
   }
 
   if (!json) {

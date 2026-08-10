@@ -836,7 +836,13 @@ function main() {
 
   if (json) {
     console.log(JSON.stringify(census, null, 2));
-    if (censusOnly) process.exit(0);
+    if (censusOnly) {
+      // NOT process.exit(): this census is the machine-readable output people pipe to
+      // jq, and exit() does not drain an async pipe write — a truncated census reads as
+      // FEWER unreachable guards. See scripts/check-undrained-stdout-exit.mjs.
+      process.exitCode = 0;
+      return;
+    }
   }
 
   const byTier = {};

@@ -60,6 +60,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+// This file's --list/--json output is emitted at ESM TOP LEVEL, where `return` is not
+// available, so the exit cannot simply become `process.exitCode`. A plain console.log
+// followed by process.exit() truncates through a pipe (measured: ~8 KiB survives), and
+// --list is the documented way to RE-SEED the baseline — a truncated re-seed would
+// silently shrink it. See scripts/check-undrained-stdout-exit.mjs.
+import { writeStdoutSync } from './lib/write-stdout-sync.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = path.join(REPO_ROOT, 'scripts', 'ungated-mug-kettle-baseline.json');
@@ -247,7 +253,8 @@ const roleDoors = findings.filter((f) => f.category === 'role-door');
 
 if (has('--list')) {
   // The baseline is re-seeded from THIS, never from a hand-run grep (CLAUDE.md).
-  console.log(JSON.stringify({ entries: findings.map(keyOf).sort() }, null, 2));
+  // Written SYNCHRONOUSLY so `--list | …` cannot silently re-seed from a truncated set.
+  writeStdoutSync(JSON.stringify({ entries: findings.map(keyOf).sort() }, null, 2));
   process.exit(0);
 }
 
@@ -258,7 +265,7 @@ const newlyGated = novel.filter((f) => f.gated);
 const stale = [...baseline].filter((k) => !findings.some((f) => keyOf(f) === k));
 
 if (has('--json')) {
-  console.log(JSON.stringify({
+  writeStdoutSync(JSON.stringify({
     total: findings.length,
     roleDoors: roleDoors.length,
     roleDoorsUngated: roleDoors.filter((f) => !f.gated).map(keyOf),

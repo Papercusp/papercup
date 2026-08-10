@@ -358,7 +358,10 @@ function main() {
 
   if (asJson) {
     console.log(JSON.stringify({ indexes, violations, filesScanned, statementsScanned }, null, 2));
-    process.exit(violations.length === 0 ? 0 : 1);
+    // NOT process.exit(): it does not drain an async pipe write, so a piped run would
+    // report FEWER violations than were found. See scripts/check-undrained-stdout-exit.mjs.
+    process.exitCode = violations.length === 0 ? 0 : 1;
+    return;
   }
 
   const idxList = indexes.map((i) => `${i.index} (${i.col} ->> '${i.key}')`).join('\n    ');

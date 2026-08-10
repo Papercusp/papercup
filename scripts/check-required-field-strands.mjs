@@ -337,10 +337,14 @@ function main() {
     out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
     if (!json) console.log(out);
     console.error('\n✗ typecheck reported errors above baseline after a required-field addition.');
-    process.exit(1);
+    // NOT process.exit(): `out` holds up to 64MB of captured tsc output and exit() does
+    // not drain an async pipe write, so piping this would cut the error list — which
+    // reads as FEWER type errors. See scripts/check-undrained-stdout-exit.mjs.
+    process.exitCode = 1;
+    return;
   }
   if (!json) console.log(out);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 // Only run main() when invoked as a script, so the pure fns above stay unit-testable.
