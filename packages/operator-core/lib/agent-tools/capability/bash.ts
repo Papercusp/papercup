@@ -179,9 +179,46 @@ export default defineTool({
       ` · ${(r.durationMs / 1000).toFixed(1)}s · cwd ${cwd}` +
       (r.truncated ? ` · output spilled (${r.totalBytes} bytes) → ${r.logPath}` : '');
 
+    const isError = r.status === 'failed' && r.exitCode === null;
+
     return {
       content: [{ type: 'text' as const, text: `${header}\n${r.output || '(no output)'}` }],
-      isError: r.status === 'failed' && r.exitCode === null,
+      isError,
+      // EI-20066912585022608: the text above is the right answer for a MODEL reading
+      // this result and the wrong one for a `code:run` script, which gets handed the
+      // raw string and whose `result.<field>` then resolves to undefined SILENTLY —
+      // indistinguishable from a true empty. Worse, this tool's own background branch
+      // returns JSON, so `capability.bash(...)` changed shape depending on an argument.
+      // Give code-mode the same data the header renders, and only code-mode: attaching
+      // it unconditionally would duplicate every foreground command's output on the
+      // wire for direct callers that read the text and never look at this field.
+      //
+      // `output` is deliberately NOT called `stdout` — bash-jobs pipes stdout and
+      // stderr into one buffer, so `stdout` would be a name that reads right and is
+      // false, which is the same defect class one level down. A script that guesses
+      // `.stdout` now gets a loud fieldMiss naming the real keys instead of ''.
+      ...(ctx.codeMode
+        ? {
+            structuredContent: {
+              // `ok` answers the question a script actually asks — "did my command
+              // succeed" — NOT the narrower "did the shell manage to run it"
+              // (`isError`, reserved for a command that never produced an exit code).
+              // `status === 'completed'` is exactly `exitCode === 0` in bash-jobs;
+              // 'failed' | 'killed' | 'timed_out' all read as ok:false, and `status`
+              // is what distinguishes "it ran and failed" from "it never finished".
+              // Defining ok as !isError instead would hand back ok:true for a command
+              // that exited 3 — the reads-true-but-false shape this whole item is about.
+              ok: r.status === 'completed',
+              status: r.status,
+              exit_code: r.exitCode,
+              duration_ms: r.durationMs,
+              cwd,
+              output: r.output,
+              truncated: r.truncated,
+              ...(r.truncated ? { total_bytes: r.totalBytes, log_path: r.logPath } : {}),
+            },
+          }
+        : {}),
     };
   },
 });

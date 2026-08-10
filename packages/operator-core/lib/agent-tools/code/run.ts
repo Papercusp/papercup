@@ -376,7 +376,17 @@ export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx
   //
   // Always COPY: this must never leak onto the outer `ctx`, whose own result
   // does cross the transport.
-  const baseCtx: UnifiedToolContext = { ...ctx, contextTier: undefined, transportCapExempt: true };
+  // `codeMode` is NOT a synonym for `transportCapExempt` even though code:run is
+  // today the only setter of both: that one exempts the result from the transport
+  // CAP, this one tells a text-rendering handler its result is about to be read as
+  // a JS VALUE, not by a model (EI-20066912585022608). Separate names because they
+  // answer different questions and will not always travel together.
+  const baseCtx: UnifiedToolContext = {
+    ...ctx,
+    contextTier: undefined,
+    transportCapExempt: true,
+    codeMode: true,
+  };
 
   if (tool.crossWorkspace === true) {
     const { sql: adminTx } = getOrgPg();

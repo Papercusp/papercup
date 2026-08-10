@@ -1,0 +1,138 @@
+/**
+ * bash-code-mode-shape.test.ts — EI-20066912585022608.
+ *
+ * capability:bash renders a human-readable text result (a header line + combined
+ * output). That is right for a MODEL reading the result and wrong for a `code:run`
+ * script, which receives whatever `unwrapToolResult` can make of it: no JSON to
+ * parse ⇒ a raw STRING ⇒ every `result.<field>` access resolves to `undefined`,
+ * silently, and an `?? ''` fallback launders that into a real-looking empty output.
+ * The reported case read as "the codebase does not contain this" for two greps that
+ * both matched.
+ *
+ * The sharp edge is that the tool DISAGREED WITH ITSELF: the background branch
+ * returns JSON (a real object), the foreground branch returns text — so the same
+ * call expression changed shape depending on an argument.
+ *
+ * Runs the real shell (no mocks), mirroring bash-desktop-env.test.ts.
+ */
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+// Same rationale as bash-desktop-env.test.ts: pin the exec-sandbox flag OFF so the
+// suite is hermetic on a host with no bubblewrap (the console.warn would otherwise
+// be turned into a failure by vitest-fail-on-console).
+vi.mock('./exec-sandbox', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./exec-sandbox')>()),
+  capabilityExecSandboxEnabled: vi.fn(async () => false),
+}));
+
+import bashTool from './bash';
+import { __resetBashJobs } from './bash-jobs';
+import { unwrapToolResult } from '@papercusp/tooldef';
+
+type ToolResultish = {
+  content: Array<{ text: string }>;
+  isError?: boolean;
+  structuredContent?: Record<string, unknown>;
+};
+type Tool = { handler: (a: unknown, c: unknown) => Promise<ToolResultish> };
+const bash = bashTool as unknown as Tool;
+const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-shape-'));
+
+function makeCtx(opts: { codeMode?: boolean } = {}) {
+  return {
+    projectDir: STATE,
+    stateDir: STATE,
+    signal: new AbortController().signal,
+    emit: () => {},
+    role: 'cup',
+    ...(opts.codeMode ? { codeMode: true } : {}),
+  } as never;
+}
+
+afterEach(() => {
+  __resetBashJobs();
+});
+
+describe('capability:bash — result shape for a code:run script (EI-20066912585022608)', () => {
+  it('gives a code-mode caller an OBJECT whose output field carries the real output', async () => {
+    const r = await bash.handler({ command: 'echo HELLO-SHAPE-PROBE' }, makeCtx({ codeMode: true }));
+
+    // What the script actually receives — through the REAL unwrap seam, not a
+    // hand-asserted shape. This is the assertion the defect would have failed:
+    // before the fix `unwrap` returned a string and `.output` was undefined.
+    const seen = unwrapToolResult(r as never) as Record<string, unknown>;
+    expect(typeof seen).toBe('object');
+    expect(String(seen.output)).toContain('HELLO-SHAPE-PROBE');
+    expect(seen.ok).toBe(true);
+    expect(seen.exit_code).toBe(0);
+    expect(seen.cwd).toBe(STATE);
+    expect(typeof seen.duration_ms).toBe('number');
+  });
+
+  it('leaves a DIRECT caller byte-identical — no duplicated output on the wire', async () => {
+    const r = await bash.handler({ command: 'echo HELLO-SHAPE-PROBE' }, makeCtx());
+
+    // The cost control: capability:bash is one of the most-called tools here, so
+    // attaching the machine-readable copy unconditionally would double the payload
+    // for every caller that only ever reads the text.
+    expect(r.structuredContent).toBeUndefined();
+    expect(r.content[0].text).toContain('HELLO-SHAPE-PROBE');
+    // And the raw-string fallback is still what such a result unwraps to — this is
+    // the behaviour being deliberately confined to non-code-mode, not removed.
+    expect(typeof unwrapToolResult(r as never)).toBe('string');
+  });
+
+  it('reports a FAILING command as ok:false with the real exit code, not a bare empty', async () => {
+    const r = await bash.handler(
+      { command: 'echo OOPS >&2; exit 3' },
+      makeCtx({ codeMode: true }),
+    );
+    const seen = unwrapToolResult(r as never) as Record<string, unknown>;
+
+    // exit_code must survive as a NUMBER: a script branching on `exit_code !== 0`
+    // is the whole reason to hand back structure instead of a rendered header line.
+    expect(seen.exit_code).toBe(3);
+    // The load-bearing one: `ok` must track the COMMAND, not the shell. Defining it
+    // as `!isError` would report ok:true here, because isError is reserved for a
+    // command that never produced an exit code at all.
+    expect(seen.ok).toBe(false);
+    expect(seen.status).toBe('failed');
+    // stderr is folded into the same buffer by bash-jobs, which is exactly why the
+    // field is named `output` and not `stdout`.
+    expect(String(seen.output)).toContain('OOPS');
+  });
+
+  it('does not name the combined buffer `stdout` — the name would read true and be false', async () => {
+    const r = await bash.handler({ command: 'echo X >&2' }, makeCtx({ codeMode: true }));
+    const seen = unwrapToolResult(r as never) as Record<string, unknown>;
+
+    // A script that guesses `.stdout` now gets `undefined` from an OBJECT, which the
+    // code:run field-miss tracker reports with the real key list. That is a loud
+    // correction; the pre-fix `.stdout` on a STRING was silent and unreportable.
+    expect(seen.stdout).toBeUndefined();
+    expect(Object.keys(seen)).toContain('output');
+    expect(String(seen.output)).toContain('X');
+  });
+
+  it('agrees with its own background branch: both shapes are objects', async () => {
+    // The asymmetry WITHIN this tool is what made `.stdout` the natural thing to
+    // write — an agent who used the background form first learned "it is an object".
+    const bg = await bash.handler(
+      { command: 'echo BG', run_in_background: true },
+      makeCtx({ codeMode: true }),
+    );
+    const fg = await bash.handler({ command: 'echo FG' }, makeCtx({ codeMode: true }));
+
+    const bgSeen = unwrapToolResult(bg as never) as Record<string, unknown>;
+    const fgSeen = unwrapToolResult(fg as never) as Record<string, unknown>;
+    expect(typeof bgSeen).toBe('object');
+    expect(typeof fgSeen).toBe('object');
+    // Both carry the launch/run facts under the same names.
+    expect(bgSeen.ok).toBe(true);
+    expect(fgSeen.ok).toBe(true);
+    expect(bgSeen.cwd).toBe(STATE);
+    expect(fgSeen.cwd).toBe(STATE);
+  });
+});
