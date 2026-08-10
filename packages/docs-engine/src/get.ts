@@ -22,7 +22,7 @@ import {
   sliceByHeading,
   truncationTail,
 } from './shared';
-import { evaluateOkfTrust, okfStaleBanner, okfTrustIsNotable } from './okf';
+import { evaluateOkfTrust, okfTrustBanner, okfTrustIsNotable } from './okf';
 
 export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx = {}): Promise<GetResult> {
   const { slugs, heading } = args;
@@ -74,7 +74,7 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
       // cap so a stale warning is never the thing that gets cut off the end of a
       // long doc (`bytes` then measures the content actually returned, banner included).
       const trust = evaluateOkfTrust(page.okf, now);
-      const banner = okfStaleBanner(trust);
+      const banner = okfTrustBanner(trust);
       if (banner) body = banner + body;
 
       const originalBytes = body.length;

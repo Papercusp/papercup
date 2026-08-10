@@ -46,9 +46,15 @@ export interface DocPage {
    */
   searchable?: boolean;
   /**
-   * OKF v0.2 trust/staleness frontmatter, when the adapter's source carries it
+   * OKF v0.2 trust/staleness frontmatter — plus this repo's local `status:` —
+   * when the adapter's source carries any of it
    * (okf-frontmatter-adoption-2026-08-08 P-005). Absent means the source has no
    * OKF metadata — which reads as `unverified` + not-stale, never as verified.
+   *
+   * ⚠ PRESENT does NOT imply the doc carries OKF trust fields: most of this
+   * corpus sets only `status: active`, which populates this object while leaving
+   * every trust field unset. Test the specific field you care about
+   * (`okf.staleAfter`, `okf.verified`), never `okf !== undefined`.
    */
   okf?: OkfFrontmatter;
 }

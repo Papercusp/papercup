@@ -13,7 +13,8 @@ import {
   evaluateOkfTrust,
   isMachineVerifier,
   normalizeOkfDate,
-  okfStaleBanner,
+  okfFromObject,
+  okfTrustBanner,
   okfTrustIsNotable,
   parseOkfFrontmatter,
 } from './okf';
@@ -169,27 +170,84 @@ describe('evaluateOkfTrust — staleness', () => {
   });
 });
 
-describe('okfStaleBanner', () => {
+describe('okfTrustBanner', () => {
   it('emits nothing for the corpus\'s current state (nothing to warn about)', () => {
-    expect(okfStaleBanner(evaluateOkfTrust(undefined, NOW))).toBeNull();
+    expect(okfTrustBanner(evaluateOkfTrust(undefined, NOW))).toBeNull();
   });
 
   it('names the date and says the claims are unverified when stale', () => {
-    const banner = okfStaleBanner(evaluateOkfTrust({ staleAfter: '2026-01-01' }, NOW));
+    const banner = okfTrustBanner(evaluateOkfTrust({ staleAfter: '2026-01-01' }, NOW));
     expect(banner).toContain('STALE');
     expect(banner).toContain('2026-01-01');
     expect(banner).toContain('never been verified');
   });
 
   it('quotes the last verification when the stale doc HAS one', () => {
-    const banner = okfStaleBanner(
+    const banner = okfTrustBanner(
       evaluateOkfTrust({ staleAfter: '2026-01-01', verified: [{ by: 'avi', at: '2025-12-01' }] }, NOW),
     );
     expect(banner).toContain('Last verified 2025-12-01 by avi');
   });
 
   it('says the expiry could NOT be evaluated for an unparseable date', () => {
-    const banner = okfStaleBanner(evaluateOkfTrust({ staleAfter: 'next tuesday' }, NOW));
+    const banner = okfTrustBanner(evaluateOkfTrust({ staleAfter: 'next tuesday' }, NOW));
     expect(banner).toContain('not a parseable date');
+  });
+});
+
+describe('status: superseded — an AUTHORED retirement, not a fabricated verdict', () => {
+  it('normalises the authored value, case and padding included', () => {
+    expect(okfFromObject({ status: '  SuperSeded ' })?.status).toBe('superseded');
+  });
+
+  it('populates okf from `status:` ALONE, so a doc with no OKF fields is still readable', () => {
+    // The 28 superseded docs are not guaranteed to carry any of the four OKF
+    // fields; if `status` did not count as present, parseOkfFrontmatter would
+    // return undefined and the retirement would stay invisible — the exact bug.
+    const fm = okfFromObject({ status: 'superseded' });
+    expect(fm).toBeDefined();
+    expect(evaluateOkfTrust(fm, NOW).superseded).toBe(true);
+  });
+
+  it('flags the doc as superseded and makes the verdict notable', () => {
+    const t = evaluateOkfTrust({ status: 'superseded' }, NOW);
+    expect(t.superseded).toBe(true);
+    expect(okfTrustIsNotable(t)).toBe(true);
+  });
+
+  it('does NOT retire the 587 docs that say active/current — they stay silent', () => {
+    for (const status of ['active', 'current', 'draft']) {
+      const t = evaluateOkfTrust({ status }, NOW);
+      expect(t.superseded).toBeUndefined();
+      expect(t.status).toBe(status);
+      expect(okfTrustIsNotable(t)).toBe(false);
+      expect(okfTrustBanner(t)).toBeNull();
+    }
+  });
+
+  it('carries an UNRECOGNISED status verbatim without asserting anything about it', () => {
+    const t = evaluateOkfTrust({ status: 'mothballed' }, NOW);
+    expect(t.status).toBe('mothballed');
+    expect(t.superseded).toBeUndefined();
+    expect(okfTrustIsNotable(t)).toBe(false);
+  });
+
+  it('banners a superseded doc and tells the reader to go find its replacement', () => {
+    const banner = okfTrustBanner(evaluateOkfTrust({ status: 'superseded' }, NOW));
+    expect(banner).toContain('SUPERSEDED');
+    expect(banner).toContain('status: superseded');
+    expect(banner).toContain('do NOT follow it as current guidance');
+  });
+
+  it('leads with SUPERSEDED over STALE when a doc is both, but still reports the date', () => {
+    // Retirement is the stronger claim: "replaced" beats "needs re-checking", and
+    // leading with the weaker one would send a reader off to re-verify a doc that
+    // should simply be abandoned.
+    const banner = okfTrustBanner(
+      evaluateOkfTrust({ status: 'superseded', staleAfter: '2026-01-01' }, NOW),
+    );
+    expect(banner).toContain('SUPERSEDED');
+    expect(banner).not.toContain('**STALE');
+    expect(banner).toContain('2026-01-01');
   });
 });

@@ -27,7 +27,7 @@
  *     `staleness` on a hit MEANS "no dead anchors", and both the tool guidance and
  *     `memoryStalenessIsNotable` below state it, so absence is never read as
  *     "unknown".
- *  2. **A banner on the BODY, not only a sibling field.** `okfStaleBanner`'s
+ *  2. **A banner on the BODY, not only a sibling field.** `okfTrustBanner`'s
  *     rationale carries verbatim — an agent reads the CONTENT, and a field it may
  *     not look at cannot deliver "this is stale" at read time. Here that is
  *     load-bearing rather than belt-and-braces: `coord:orient`'s memory fold reduces

@@ -39,7 +39,7 @@ export interface OkfVerifiedEvent {
   at?: string;
 }
 
-/** The four OKF fields, normalised (see `parseOkfFrontmatter`). */
+/** The four OKF fields plus this repo's local `status`, normalised (see `parseOkfFrontmatter`). */
 export interface OkfFrontmatter {
   /** OKF's only mandatory field. Free-form by spec — consumers MUST tolerate unknown types. */
   type?: string;
@@ -52,6 +52,19 @@ export interface OkfFrontmatter {
   verified?: OkfVerifiedEvent[];
   /** Absolute date, as authored (a YAML date is normalised to `YYYY-MM-DD`). */
   staleAfter?: string;
+  /**
+   * NOT an OKF v0.2 field — a pre-existing LOCAL convention (`status: active |
+   * superseded | current | draft`), lower-cased here.
+   *
+   * It rides along in this module rather than in a parallel one because it is the
+   * same KIND of claim as `stale_after` — an authored, read-time assertion that
+   * the doc should not be trusted as live — and because the corpus is parsed at
+   * exactly one point (`parseOkfFrontmatter`, called by the Starlight adapter) and
+   * consumed at exactly two (`searchDocs`, `getDocs`). A second module would have
+   * to re-derive all three, and the moment its parse diverged, a doc could be
+   * retired to one reader and live to the other.
+   */
+  status?: string;
 }
 
 export interface OkfTrust {
@@ -61,6 +74,16 @@ export interface OkfTrust {
   staleAfter?: string;
   /** The `stale_after` value did not parse as a date — a conformance defect, NOT staleness. */
   staleAfterUnparseable?: true;
+  /**
+   * The author declared this doc RETIRED via `status:` (see `RETIRED_STATUSES`).
+   *
+   * Orthogonal to `stale`: staleness is a DATE the author set and the clock
+   * passed, retirement is a STANDING assertion that something else supersedes
+   * this. A doc can be either, both, or neither.
+   */
+  superseded?: true;
+  /** The raw `status:` as authored (lower-cased), whatever its value. */
+  status?: string;
   /** Raw verifier of the MOST RECENT verification, so the tier is always auditable. */
   verifiedBy?: string;
   verifiedAt?: string;
@@ -77,8 +100,24 @@ export interface OkfTrust {
  * MEANS `unverified` and not stale — stated in both tools' guidance.
  */
 export function okfTrustIsNotable(t: OkfTrust): boolean {
-  return t.tier !== 'unverified' || t.stale || t.staleAfterUnparseable === true;
+  return (
+    t.tier !== 'unverified' || t.stale || t.staleAfterUnparseable === true || t.superseded === true
+  );
 }
+
+/**
+ * `status:` values that assert the doc is RETIRED.
+ *
+ * Deliberately a one-value set, from a measured corpus rather than a guess: the
+ * 859 docs carry `active` (561), `superseded` (28), `current` (25), `draft` (1).
+ * Only `superseded` claims the doc has been replaced. `draft` says INCOMPLETE,
+ * which is a different warning and would be a different banner — one doc is not
+ * a population to design one against, so it is left alone rather than folded in
+ * under a name that does not mean it.
+ *
+ * Widening this is a one-line change; every consumer reads through it.
+ */
+const RETIRED_STATUSES = new Set(['superseded']);
 
 /**
  * Machine-vs-human verifier classification.
@@ -215,6 +254,10 @@ export function okfFromObject(meta: Record<string, unknown>): OkfFrontmatter | u
   const staleAfter = normalizeOkfDate(meta.stale_after);
   if (staleAfter) out.staleAfter = staleAfter;
 
+  if (typeof meta.status === 'string' && meta.status.trim()) {
+    out.status = meta.status.trim().toLowerCase();
+  }
+
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -265,18 +308,35 @@ export function evaluateOkfTrust(fm: OkfFrontmatter | undefined, now: Date = new
     }
   }
 
+  // Reporting what the author WROTE, which is the same thing `stale_after` does
+  // and the opposite of inventing a verdict (plan D-002). An unrecognised status
+  // is carried verbatim and asserts nothing.
+  if (fm.status) {
+    out.status = fm.status;
+    if (RETIRED_STATUSES.has(fm.status)) out.superseded = true;
+  }
+
   return out;
 }
 
 /**
- * A ONE-LINE banner prepended to a stale doc's body at read time.
+ * A ONE-LINE banner prepended to a retired or stale doc's body at read time.
  *
  * The structured `trust` field is the machine-readable answer, but an agent
  * reads the CONTENT — a field it may not look at cannot deliver "this is
  * stale" at read time, which is the whole point of P-005. Returns null when
- * there is nothing to warn about (the entire corpus, today).
+ * there is nothing to warn about.
+ *
+ * RETIREMENT OUTRANKS STALENESS when a doc carries both. "Superseded" already
+ * says the strongest available thing — something else replaced this — whereas
+ * "past its date" only says it needs re-checking; leading with the weaker of the
+ * two would invite a reader to go re-verify a doc that should simply be left.
  */
-export function okfStaleBanner(trust: OkfTrust): string | null {
+export function okfTrustBanner(trust: OkfTrust): string | null {
+  if (trust.superseded) {
+    const alsoStale = trust.stale ? ` It is also past its \`stale_after\` (${trust.staleAfter}).` : '';
+    return `> ⛔ **SUPERSEDED — the author marked this doc \`status: ${trust.status}\`.** Something else replaced it: do NOT follow it as current guidance without first finding what did.${alsoStale}\n\n`;
+  }
   if (trust.stale) {
     const verified = trust.verifiedAt
       ? ` Last verified ${trust.verifiedAt}${trust.verifiedBy ? ` by ${trust.verifiedBy}` : ''}.`

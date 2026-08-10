@@ -30,7 +30,7 @@ export {
   okfFromObject,
   normalizeOkfDate,
   evaluateOkfTrust,
-  okfStaleBanner,
+  okfTrustBanner,
   okfTrustIsNotable,
   isMachineVerifier,
   type OkfFrontmatter,
