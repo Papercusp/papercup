@@ -21,6 +21,18 @@ import { withNuqsTestingAdapter, type UrlUpdateEvent } from 'nuqs/adapters/testi
 // authorizer/why-line copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
+// Key-aware, and it answers only the ONE flag this file cares about
+// (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021). `mugKettleOn` starts
+// FALSE to match the registry default for a cutover flag, so the pre-existing
+// cases below keep the behaviour they were written against; the gate test flips
+// it. A blanket `() => true` here would silently un-retire the tier for the whole
+// file — the mirror of the trap D-020 caught.
+let mugKettleOn = false;
+vi.mock('@/lib/flag-hooks', () => ({
+  useFlag: (k: string) => (k === FLAGS.MUG_KETTLE_SYSTEM ? mugKettleOn : true),
+}));
+
+import { FLAGS } from '@papercusp/flags';
 import PlanOtherList from './PlanOtherList';
 import type { AttentionGroup, AttentionItem } from './plans-api';
 
@@ -83,6 +95,61 @@ const BASE = {
   refresh: () => {},
   title: 'Pending',
 };
+
+/* ── Mug/Kettle retired (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021) ──
+ *
+ * /admin/plans carries no mug gate of its own, so these two deep-links to
+ * /settings/autonomy outlived every gate landed for this plan — an invitation to
+ * hand work to a decider that cannot run, pointing at a page that now renders
+ * only a retirement notice. Both assertions are PAIRED with a show control: a
+ * bare "the link is absent" is equally satisfied by a fixture that never produced
+ * the bucket at all, which is a test that passes while measuring nothing.
+ */
+describe('PlanOtherList — retired Mug deep-links', () => {
+  const queenItem = () => item({ id: 'coord-escalation:q1', authorizer: 'queen-eligible' });
+  const LINK = /Let the brain handle these/;
+
+  afterEach(() => {
+    mugKettleOn = false;
+  });
+
+  it('hides the bucket-head link when the tier is retired, and shows it when it is on', () => {
+    // SHOW CONTROL — the same fixture + query DOES find the link with the tier on.
+    mugKettleOn = true;
+    const on = render(
+      <PlanOtherList {...BASE} groups={[group([queenItem()])]} groupByAuthorizer />,
+      { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
+    );
+    expect(screen.getByText(LINK)).toBeTruthy();
+    on.unmount();
+
+    mugKettleOn = false;
+    render(<PlanOtherList {...BASE} groups={[group([queenItem()])]} groupByAuthorizer />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: '' }),
+    });
+    expect(screen.queryByText(LINK)).toBeNull();
+    // CALIBRATION — the bucket itself must still render, or the null above would
+    // just mean "the fixture produced nothing". The partition is not what we gate.
+    expect(screen.getByText('Automatable — for now')).toBeTruthy();
+  });
+
+  it('leaves no anchor pointing at /settings/autonomy while retired', () => {
+    mugKettleOn = true;
+    const on = render(
+      <PlanOtherList {...BASE} groups={[group([queenItem()])]} groupByAuthorizer />,
+      { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
+    );
+    const shown = document.querySelectorAll('a[href="/settings/autonomy"]');
+    expect(shown.length).toBeGreaterThan(0); // show control
+    on.unmount();
+
+    mugKettleOn = false;
+    render(<PlanOtherList {...BASE} groups={[group([queenItem()])]} groupByAuthorizer />, {
+      wrapper: withNuqsTestingAdapter({ searchParams: '' }),
+    });
+    expect(document.querySelectorAll('a[href="/settings/autonomy"]')).toHaveLength(0);
+  });
+});
 
 describe('PlanOtherList — Queue unification (includePlanItems)', () => {
   it('surfaces a needs-human plan-item in the "Needs your call" bucket with its P-NNN', () => {

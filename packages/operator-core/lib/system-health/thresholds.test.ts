@@ -1195,9 +1195,7 @@ describe('worstInjectionVerdict — a dead port must not hide behind a healthy o
     const rolled = worstInjectionVerdict([clientLevel, ...ports.map((p) => p.verdict)]);
     expect(rolled).toBe('regressed'); // ← and defeated
 
-    const d = health([row({ client: 'claude', sessions: 385, events: 900, everObserved: true, ports })]);
-    d.clients[0].verdict = rolled;
-    expect(contextInjectionStatus(d)).toBe('crit');
+    expect(contextInjectionStatus(panel(rolled, ports))).toBe('crit');
   });
 
   it('a never-written turn-start port warns, and does NOT page', () => {
@@ -1210,9 +1208,7 @@ describe('worstInjectionVerdict — a dead port must not hide behind a healthy o
     ];
     const rolled = worstInjectionVerdict(['ok', ...ports.map((p) => p.verdict)]);
     expect(rolled).toBe('never-observed');
-    const d = health([row({ client: 'claude', sessions: 385, events: 900, everObserved: true, ports })]);
-    d.clients[0].verdict = rolled;
-    expect(contextInjectionStatus(d)).toBe('warn');
-    expect(contextInjectionStatus(d)).not.toBe('crit');
+    expect(contextInjectionStatus(panel(rolled, ports))).toBe('warn');
+    expect(contextInjectionStatus(panel(rolled, ports))).not.toBe('crit');
   });
 });

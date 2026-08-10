@@ -24,6 +24,7 @@
     "lint:no-retired": "node ../../scripts/check-no-retired-imports.mjs",
     "lint:no-retired-resurrection": "node ../../scripts/check-retired-resurrection.mjs",
     "lint:vimock-export-strands": "node ../../scripts/check-vimock-export-strands.mjs",
+    "lint:workspace-deps-complete": "node ../../scripts/check-workspace-deps-complete.mjs",
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {
@@ -50,6 +51,7 @@
     "@papercusp/model-pricing": "*",
     "@papercusp/module-singleton": "*",
     "@papercusp/orchestrator": "*",
+    "@papercusp/overlap-clusters": "*",
     "@papercusp/p2p-voice": "*",
     "@papercusp/plan-parser": "*",
     "@papercusp/rerank": "*",

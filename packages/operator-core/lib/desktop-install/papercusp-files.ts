@@ -773,6 +773,20 @@ const CC_HOOK_FILES = [
   // `as never|as unknown as` counts 7656 tree-wide against the guard's 1113, a different
   // population entirely.
   'posttooluse-mock-cast-escape-nudge.mjs',
+  // EI-20023819609804890: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an
+  // edit ADDS a banned nonzero `letter-spacing` — i.e. arms the `lint:design-primitives`
+  // green-checkpoint leg. Same author-never-pays incentive gap as the mock-cast nudge above,
+  // with a measured recurrence: hud.css ALONE red-pinned the fleet 3x on this one rule (once
+  // 2026-08-02, twice 2026-08-09). The remedy already tried was PROSE — that file carries four
+  // warning comments about this exact rule (L564, L782, L885, L1372) and broke anyway, because
+  // a comment only reaches someone reading that region of a 1,445-line stylesheet while the
+  // author adding a new uppercase micro-label is writing elsewhere in it. Neither routine check
+  // catches it either: a CSS declaration is not a type error, and an author editing .css is
+  // typically not running tests at all. Reuses the lint's own matcher via the extracted
+  // app/_lints/letter-spacing-pattern.mjs rather than re-implementing the regex — the negative
+  // lookahead is exactly what separates a banned `0.04em` from the REQUIRED `letter-spacing: 0`,
+  // so a drifted copy would fire on every compliant declaration in the tree.
+  'posttooluse-css-design-primitives-nudge.mjs',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1871,6 +1885,21 @@ export function mergeClaudeHookSettings(
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-mock-cast-escape-nudge.mjs'),
     });
+  // merge_css_design_primitives_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-20023819609804890). Advisory only, and it MUST stay advisory: PostToolUse cannot block,
+  // and the gate remains the authority. Fires only on an INCREASE, so removing offenders never
+  // nags the person doing it, and only for the file population the lint actually scans
+  // (.css/.ts/.tsx under apps/operator/app + apps/operator-vite/src, tests excluded) — nudging
+  // outside that set would be a false positive by construction.
+  if (has('posttooluse-css-design-primitives-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(
+      ev('PostToolUse'),
+      ours('posttooluse-css-design-primitives-nudge.mjs'),
+      {
+        matcher: 'Edit|Write|MultiEdit',
+        hooks: cmd('posttooluse-css-design-primitives-nudge.mjs'),
+      },
+    );
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {
     const sl = p('statusline-fleet.sh');

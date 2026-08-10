@@ -45,6 +45,8 @@ import {
 } from './plans-api';
 import { byAuthorizer, planSections, whyLine } from './queue-authorizer';
 import { useLexicon } from '@/lib/useLexicon';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 import { Tooltip } from '@/app/harness/Tooltip';
 
 // Exported for the left-sidebar Inbox pane (EI-13037) — ONE kind→label map so
@@ -146,6 +148,14 @@ export default function PlanOtherList({
   includePlanItems,
 }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
+  // The "Let the {brain} handle these →" deep-link points at /settings/autonomy,
+  // which is retired with the tier (retire-mug-kettle-su-only-2026-08-09 P-011 /
+  // D-021). /admin/plans carries no mug gate of its own, so this link outlived
+  // every gate landed so far — an invitation to hand work to a decider that
+  // cannot run, landing on a page that now renders only a retirement notice.
+  // The BUCKET itself stays: `queen-eligible` is a real authorizer partition and
+  // re-partitioning the queue is out of scope here (no plan item owns it).
+  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
   // Inbox shares one preview pane across the Other + item lists; selecting an
   // Other item clears any plan-item selection (and vice-versa) so the shared
   // pane shows exactly one.
@@ -293,7 +303,7 @@ export default function PlanOtherList({
                   policy — rendered as a sibling of the trigger (can't nest an
                   anchor inside the trigger button). Other sections render the
                   bare trigger so the legacy markup is unchanged. */}
-              {s.queenLink ? (
+              {s.queenLink && mugKettleOn ? (
                 <div className="pc-queue__section-head">
                   <Collapsible.Trigger asChild>{head}</Collapsible.Trigger>
                   <a className="pc-queue__queen-link" href="/settings/autonomy">
@@ -421,6 +431,9 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss }: {
   // all three call sites (InboxPane, PlansClient, PreviewPanel) unchanged, and
   // guarantees every action dispatched below acts on the full row.
   const { item, hydrated } = useHydratedAttentionItem(listItem);
+  // Same retired deep-link as the list head above (P-011 / D-021) — this is the
+  // per-item why-line copy, a separate component, so it needs its own read.
+  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
   const [discussOpen, setDiscussOpen] = useState(false);
   // D-027 follow-on (1): the inline Answer InputCard (conversation kind). State
   // resets per selection — PlansClient remounts OtherDetail with key={item.id}.
@@ -556,7 +569,7 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss }: {
       {why ? (
         <div className="pc-items__why-line pc-queue__intro" style={{ margin: '4px 14px 0' }}>
           {why}
-          {item.authorizer === 'queen-eligible' ? (
+          {item.authorizer === 'queen-eligible' && mugKettleOn ? (
             <>
               {' · '}
               <a className="pc-queue__queen-link" href="/settings/autonomy">

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import { FLAGS } from '@papercusp/flags';
 import type { ReactElement } from 'react';
 
 // The page renders RecentAutoDecisions → DecisionLog, which reads `?decision=<id>`
@@ -28,8 +29,21 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), succe
 
 // The armed banner reads the autonomy arming flag; mock the hook so the page
 // renders deterministically without the flag bootstrap / SSE stream.
+//
+// KEY-AWARE ON PURPOSE (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021).
+// This was a blanket `useFlag: () => flagMock()`, which answers EVERY flag with
+// the armed value — so the "not armed" case ALSO read MUG_KETTLE_SYSTEM as false,
+// retired the tier, and made the page render its retirement notice. Every
+// assertion in this file would then have been measuring the refusal instead of
+// its subject: a pass-shaped failure that looks like coverage. This suite's
+// subject IS mug work, so the tier flag answers TRUE here by default; the OFF
+// case gets its own block below. `FLAGS` is dereferenced at render time, not in
+// the hoisted factory, so the key cannot drift from the registry.
 const flagMock = vi.fn(() => true);
-vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => flagMock() }));
+const mugKettleMock = vi.fn(() => true);
+vi.mock('@/lib/flag-hooks', () => ({
+  useFlag: (k: string) => (k === FLAGS.MUG_KETTLE_SYSTEM ? mugKettleMock() : flagMock()),
+}));
 
 // Self-contained nuqs stand-in (no NuqsAdapter needed): useState-backed.
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
@@ -95,6 +109,9 @@ const ROWS = [
 beforeEach(() => {
   mutateMock.mockClear();
   flagMock.mockReturnValue(true);
+  // The tier this page steers is ON for the whole existing suite — its subject IS
+  // mug work, so a retired tier would make every case below assert the refusal.
+  mugKettleMock.mockReturnValue(true);
   syncResult = { data: ROWS, loading: false, error: null };
 });
 afterEach(cleanup);
@@ -192,5 +209,54 @@ describe('AutonomySettingsPage', () => {
     expect(screen.getByRole('heading', { name: /Recent auto-decisions/i })).toBeTruthy();
     expect(screen.getByText(/No decisions logged yet/i)).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Graduation' })).toBeNull();
+  });
+});
+
+/* ── Mug/Kettle retired (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021) ──
+ *
+ * Every hide-assertion here is PAIRED with a show control on the same query. A
+ * bare `queryBy… === null` cannot tell "the gate hid it" from "it never rendered
+ * anyway" (a renamed aria-label, a broken fixture, a page that threw) — those are
+ * the same null, and the second one is a test that passes while measuring
+ * nothing. Asserting the ON case FIRST, with the throwing `getBy…`, is what makes
+ * the null below evidence rather than an assumption.
+ */
+describe('AutonomySettingsPage — Mug/Kettle retired', () => {
+  it('hides the ceiling table + armed banner and explains why, but shows them when the tier is on', () => {
+    // SHOW CONTROL — `getBy…` throws if these are absent, so reaching the
+    // unmount() proves the queries below are capable of finding the surface.
+    mugKettleMock.mockReturnValue(true);
+    const on = render(<AutonomySettingsPage />);
+    expect(screen.getByRole('region', { name: 'Autonomy categories' })).toBeTruthy();
+    expect(screen.getByText('Autonomy is armed.')).toBeTruthy();
+    expect(screen.getAllByRole('button').length).toBeGreaterThan(0);
+    on.unmount();
+
+    // HIDE — same queries, tier retired.
+    mugKettleMock.mockReturnValue(false);
+    render(<AutonomySettingsPage />);
+    expect(screen.queryByRole('region', { name: 'Autonomy categories' })).toBeNull();
+    expect(screen.queryByText('Autonomy is armed.')).toBeNull();
+    // No controls at all — the harm P-011 names is a DEAD CONTROL that reads as
+    // live, so "no table" is not enough; nothing may be clickable.
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    expect(screen.getByText(/is retired, so there is no autonomy policy to steer/)).toBeTruthy();
+  });
+
+  it('stays retired regardless of the arming flag — the two flags are independent', () => {
+    // The bug this pins: a key-blind `useFlag` mock made ARMED and
+    // MUG_KETTLE_SYSTEM the same value, so "not armed" and "retired" were
+    // indistinguishable. They are orthogonal; assert both combinations.
+    mugKettleMock.mockReturnValue(false);
+    flagMock.mockReturnValue(true); // armed…
+    const armedRetired = render(<AutonomySettingsPage />);
+    expect(screen.getByText(/is retired, so there is no autonomy policy to steer/)).toBeTruthy();
+    expect(screen.queryByText('Autonomy is armed.')).toBeNull();
+    armedRetired.unmount();
+
+    flagMock.mockReturnValue(false); // …and not armed
+    render(<AutonomySettingsPage />);
+    expect(screen.getByText(/is retired, so there is no autonomy policy to steer/)).toBeTruthy();
+    expect(screen.queryByText('Autonomy is not armed.')).toBeNull();
   });
 });

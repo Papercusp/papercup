@@ -20,6 +20,7 @@
     "@bprogress/react": "^1.2.7",
     "@hono/node-server": "^2.0.3",
     "@novnc/novnc": "^1.7.0",
+    "@papercusp/card-stack": "file:../../libs/generic/card-stack",
     "@papercusp/facets": "file:../../libs/generic/facets",
     "@papercusp/lexicon": "file:../../libs/generic/lexicon",
     "@tanstack/react-router": "^1.170.6",

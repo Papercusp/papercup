@@ -89,6 +89,7 @@
     "@openai/agents-realtime": "^0.8.5",
     "@papercusp/agent-chat": "file:../../libs/agent-chat",
     "@papercusp/backup": "file:../../packages/backup",
+    "@papercusp/card-stack": "file:../../libs/generic/card-stack",
     "@papercusp/coordination": "file:../../packages/coordination",
     "@papercusp/db-org": "file:../../libs/papercusp/libs/db",
     "@papercusp/desktop-ipc": "file:../../libs/generic/desktop-ipc",

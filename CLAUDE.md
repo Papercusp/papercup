@@ -1875,6 +1875,30 @@ regression there is invisible to *both* routine checks and first reds the
 > while `2>&1 | tail` throws away tsc's exit code too. `build:typecheck` refuses a
 > zero-file run instead of reporting a clean zero, and names the projects that do exist.
 
+> ⚠⚠ **The same false green also arrives via a CRASH, which the zero-file guards above
+> cannot see — a hand-run `tsc` on operator-core OOMs and is killed BEFORE printing one
+> diagnostic** (EI-20019651513530828 / EI-20013137550825704, both measured 2026-08-09).
+> The program is ~9k files and overflows node's default ~4GB old-space:
+>
+> ```
+> FATAL ERROR: Ineffective mark-compacts near heap limit … JavaScript heap out of memory
+> Aborted (core dumped)          # exit 134
+> ```
+>
+> A dead run emits **zero** `error TS####` lines, so every probe you would naturally
+> reach for reads exactly as it would on a clean compile — `grep -c "error TS"` → `0`,
+> `grep <my-changed-file>` → nothing. One agent got to within a step of recording
+> "operator-core typechecks clean with the new required field", on precisely the
+> required-field question the next paragraph flags as the classic silent breaker.
+>
+> **Never conclude "clean" from an absence of matches — read the run's exit status.**
+> The tools now do it for you: `npm run lint:tsc`, `build:typecheck` and
+> `capability:inspect { check:'typecheck' }` all pin the heap
+> (`PAPERCUSP_TSC_HEAP_MB`, default 8192) so the OOM does not happen, and all three
+> refuse a nonzero-exit-with-no-diagnostics run rather than reporting it as a pass.
+> If you must hand-run tsc, set `NODE_OPTIONS=--max-old-space-size=8192` and check
+> `EXIT=` — never the grep alone.
+
 **The trigger to watch: adding a REQUIRED field to a shared interface** (or renaming
 / re-typing one). Every fixture that constructs that type elsewhere goes stale
 instantly, in files your change never touched and `test:affected` never selects — and

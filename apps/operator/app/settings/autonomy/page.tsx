@@ -138,6 +138,10 @@ export default function AutonomySettingsPage() {
   // the page must SHOW it — a stale "armed is pending" claim is what hid that
   // autonomy was already live. Owner flips it via /admin/features, not here.
   const armed = useFlag(FLAGS.MUG_AUTONOMY_ARMED);
+  // The tier this page steers (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021).
+  // Read HERE, beside the other hooks, so hook order never depends on the flag —
+  // the early return lives below, after every hook has run.
+  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
 
   const [filter, setFilter] = useQueryState(
     'filter',
@@ -247,6 +251,29 @@ export default function AutonomySettingsPage() {
       ),
     [mergedRows, filter],
   );
+
+  // ── Mug/Kettle retired (P-011 / D-021) ────────────────────────────────────
+  // Every hook above has run, so this early return is safe.
+  //
+  // The nav entry is already hidden by the layout's SETTINGS_PATH_FLAGS gate, but
+  // that filters SETTINGS_GROUPS and nothing else — the route stays reachable by a
+  // typed URL, a bookmark, and the /admin/plans queue deep-links. Without this the
+  // owner still lands on live ceiling sliders and an armed-state banner for a
+  // decider that cannot run, which is the exact "reads as a live control" harm the
+  // item names. Read-only notice, no controls.
+  if (!mugKettleOn) {
+    return (
+      <div>
+        <h1>Autonomy</h1>
+        <p className="pc-settings-intro" role="status">
+          The {t('brain')} is retired, so there is no autonomy policy to steer. These
+          per-category ceilings governed her auto-decide gate; with the tier switched off
+          nothing consults them. Agent autonomy is now set per session (AUTO mode) rather
+          than centrally here.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div>

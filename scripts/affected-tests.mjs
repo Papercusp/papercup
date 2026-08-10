@@ -687,6 +687,41 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // TS-family only: nothing else can declare a runtime export for a factory to omit.
     appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
   },
+  {
+    // WI-37593 — the D-034 shape, and the one instance that corrupts THIS FILE'S OWN
+    // reverse-dep walk, so every other guard's selection inherits the blind spot.
+    //
+    // MEASURED (2026-08-09, the ~2h20m fleet-gate freeze): `libs/generic/search/src/
+    // hybrid.ts` gained `lexicalWithCascade()` and broke 3 fixtures in operator-core.
+    //   --changed-paths libs/generic/search/src/hybrid.ts
+    //       -> AFFECTED_WS @papercusp/search, @papercusp/web    (operator-core ABSENT)
+    // Mechanism, read at the writer: the reverse-dep map above is built from
+    // {dependencies, devDependencies, peerDependencies} ONLY. operator-core imports
+    // @papercusp/search in 10+ files and declares it in NONE, so the edge does not
+    // exist in the graph and the consumer is invisible. Nothing caught it locally; the
+    // fleet gate went red 3x and `main` was frozen while four agents converged on it.
+    //
+    // ⚠ WHY REGISTER A GUARD THAT IS ALREADY "ENFORCED": it is enforced REMOTELY and
+    // POST-PROMOTION only — .github/workflows/test.yml runs it, but git-sync stamps
+    // every commit `[skip ci]`, so the push/pull_request triggers never fire
+    // (EI-18661485259809120); green-checkpoint dispatches the workflow explicitly AFTER
+    // it fast-forwards `main`. So the author of an undeclared import gets ZERO local
+    // signal, and the fleet's own blocking verdict never runs it. lint:guard-reachability
+    // therefore classifies it `[ci]` = enforced, which is true and still leaves exactly
+    // the gap this registry exists to close. Do NOT read its absence from that census's
+    // NOT-ENFORCED list as evidence the local path is covered.
+    workspace: '@papercusp/operator-core',
+    // 1.10-1.16s (3 runs measured) — between lint:chunk-safe and lint:drop-database-force
+    // (~1.0s), both already accepted here at that price.
+    script: 'lint:workspace-deps-complete',
+    // Mirrors the guard's OWN scan surface: `--include=*.ts` / `*.tsx`
+    // (check-workspace-deps-complete.mjs:150-151). Deliberately NOT the wider
+    // /\.[cm]?tsx?$/ the guards above use — matching more than it scans only wastes the
+    // 1.1s, but the annotation would then lie about what it covers. `package.json` is the
+    // OTHER direction and is why this is not a source-only predicate: DELETING a
+    // declaration reintroduces the edge without touching a single import.
+    appliesTo: (f) => /\.tsx?$/.test(f) || f === 'package.json' || f.endsWith('/package.json'),
+  },
 ];
 
 const workspaces = [

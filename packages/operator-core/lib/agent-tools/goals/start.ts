@@ -60,18 +60,33 @@ import { setMode } from '../../modes/store';
 export function buildGoalKickoffBrief(opts: {
   goalId: string;
   title: string;
-  killCriterion: string;
-  budgetCents: number;
+  killCriterion?: string | null;
+  budgetCents?: number | null;
   body?: string | null;
 }): string {
-  const ceiling = `$${(opts.budgetCents / 100).toFixed(2)}`;
+  /* Both constraints are OPTIONAL at creation since 2026-08-09 (see the args
+     schema). When one is absent the brief SAYS SO rather than omitting the
+     line: a missing CEILING line reads to the agent as "no budget discipline
+     was mentioned", whereas "none declared" plus the standing instruction to
+     report actuals keeps the discipline without inventing a number the owner
+     never gave. Never render `$0.00` or an empty criterion here — a fabricated
+     constraint is worse than an acknowledged absent one. */
+  const kill = opts.killCriterion?.trim();
+  const ceiling =
+    opts.budgetCents == null
+      ? null
+      : `$${(opts.budgetCents / 100).toFixed(2)}`;
   return [
     `You are in GOAL mode on goal \`${opts.goalId}\`, which the owner just started.`,
     '',
     `OUTCOME — ${opts.title}`,
     opts.body?.trim() ? `\n${opts.body.trim()}\n` : '',
-    `KILL THIS IF — ${opts.killCriterion}`,
-    `CEILING — ${ceiling} declared. Report actuals against it; do not quietly exceed it.`,
+    kill
+      ? `KILL THIS IF — ${kill}`
+      : 'KILL THIS IF — none declared. Propose a stopping condition in your kickoff question.',
+    ceiling
+      ? `CEILING — ${ceiling} declared. Report actuals against it; do not quietly exceed it.`
+      : 'CEILING — none declared. Report actuals anyway, and flag before any large spend.',
     '',
     'Your mode contract (delivered with your orient) governs how to run this, including',
     'the mandatory kickoff question. Start there, then begin.',
@@ -116,18 +131,36 @@ export default defineTool({
       .min(1)
       .max(500)
       .describe('the outcome, stated so its achievement is checkable ("ship a paid app")'),
+    /* OPTIONAL since 2026-08-09 [owner 2026-08-09, interactive, verbatim:
+       "when creating a new goal the 'kill this if' and 'ceiling' should not be
+       required properties"]. Both were `.min(1)` / required before, and the
+       reasoning for that — an autonomous agent with no stopping condition and
+       no declared ceiling is what GOAL mode's contract exists to prevent —
+       still holds as ADVICE. It just is not the owner's to be blocked by at
+       creation time: the surface that mandated it was the only way to record a
+       goal at all, so the mandate became "you may not start a goal until you
+       can phrase its kill criterion", which is a different and worse rule.
+
+       Absent ⇒ stored NULL, never a placeholder string or a 0 ceiling. A `$0.00`
+       ceiling would read as "declared zero budget" and a "" criterion would read
+       as a criterion that was written and left blank; both are lies about what
+       the owner said, and the UI already renders the missing case honestly
+       (`killCriterionLine` shouts, `ceilingLine` says "no ceiling set"). */
     killCriterion: z
       .string()
-      .min(1)
       .max(2000)
+      .optional()
       .describe(
-        'REQUIRED — the written condition under which this goal is abandoned. GOAL mode mandates one at creation; a goal with no kill criterion runs until somebody notices.',
+        'OPTIONAL — the written condition under which this goal is abandoned. Strongly advised: a goal with no kill criterion runs until somebody notices. Omitted ⇒ stored NULL and the agent is told none was set.',
       ),
     budgetCents: z
       .number()
       .int()
       .nonnegative()
-      .describe('REQUIRED — the declared spend ceiling in cents, the number actuals are reported against'),
+      .optional()
+      .describe(
+        'OPTIONAL — the declared spend ceiling in cents, the number actuals are reported against. Omitted ⇒ stored NULL (no ceiling declared), NOT 0.',
+      ),
     body: z
       .string()
       .max(20000)

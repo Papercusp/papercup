@@ -220,8 +220,23 @@ async function setup() {
  * things, and reporting them as one number would answer the question backwards:
  *
  *   DEEP        the row HAS a vector (its own, or a chunk's) and the ranker
- *               still did not surface it => genuinely semantically distant =>
- *               evidence the cascade is degrading the page.
+ *               still did not return it.
+ *
+ *               ⚠⚠ DEEP DOES NOT MEAN "SEMANTICALLY DISTANT", and reading it
+ *               that way is the mistake this comment exists to stop. I made it
+ *               first. `hnsw.ef_search` is 40 on this box with
+ *               `hnsw.iterative_scan = off`, so an HNSW scan returns AT MOST
+ *               ~ef_search rows NO MATTER WHAT LIMIT IS ASKED. Measured
+ *               2026-08-10 against the live 302,093-row embedded corpus, asking
+ *               for 600: ef_search 40 -> 40 rows, 200 -> 212, 800 -> 600. The
+ *               engine's `candidateLimit = ctx.limit * 3` is therefore a NO-OP
+ *               for the semantic leg past 40.
+ *
+ *               So a DEEP row may have an excellent cosine and simply never be
+ *               visited by the approximate scan. DEEP means "outside a ~40-row
+ *               ANN window", which is a statement about the INDEX SETTING, not
+ *               about relevance. Until that cap is lifted this column CANNOT
+ *               support a "the cascade buries good rows" verdict.
  *   UNEMBEDDED  the row has NO vector at all. `sources.ts` gates BOTH semantic
  *               legs on `text_embedding IS NOT NULL` / `c.embedding IS NOT NULL`
  *               (:760, :783), so the semantic ranker CANNOT return it at any
@@ -479,13 +494,26 @@ describe.skipIf(skipReason !== null)('two-stage lexical cascade — page QUALITY
         const [cos, src] = resolve(id, onCos);
         cell.introducedBy[src] += 1;
         if (cos !== null) cell.introduced.push(cos);
+        if (src === 'beyond') cell.introducedBeyond.push(id);
       }
       for (const id of displaced) {
         const [cos, src] = resolve(id, offCos);
         cell.displacedBy[src] += 1;
         if (cos !== null) cell.displaced.push(cos);
+        if (src === 'beyond') cell.displacedBeyond.push(id);
       }
     }
+
+    // ONE batched classification for the whole run: is a BEYOND row genuinely
+    // deep in the semantic ranking, or simply invisible to it?
+    const allBeyond = [...new Set([...cells.values()].flatMap((c) => [...c.introducedBeyond, ...c.displacedBeyond]))];
+    const beyondKind = await classifyBeyond(ctx!.sql, allBeyond);
+    const splitOf = (ids: string[]) => {
+      let deep = 0;
+      let unembedded = 0;
+      for (const id of ids) (beyondKind.get(id) === 'deep' ? (deep += 1) : (unembedded += 1));
+      return { deep, unembedded };
+    };
 
     const lines: string[] = [];
     let totalIntroduced = 0;
@@ -499,6 +527,8 @@ describe.skipIf(skipReason !== null)('two-stage lexical cascade — page QUALITY
       totalIntroduced += inTotal;
       totalDisplaced += disTotal;
       const delta = ins.n > 0 && dis.n > 0 ? ins.median - dis.median : NaN;
+      const inSplit = splitOf(c.introducedBeyond);
+      const disSplit = splitOf(c.displacedBeyond);
       lines.push(
         `  ${key.padEnd(26)} ${c.queriesMeasured} measured (${c.unmeasurable} unmeasurable` +
           `${c.unmeasurable ? `: ${[...c.reasons].join('; ').slice(0, 60)}` : ''}), ` +
@@ -507,10 +537,12 @@ describe.skipIf(skipReason !== null)('two-stage lexical cascade — page QUALITY
           `      TRADE SIZE per query   median ${trade.median} of ${HIT_LIMIT} rows  p25 ${trade.p25} / p75 ${trade.p75}\n` +
           `      INTRODUCED n=${inTotal}  cosine median ${f3(ins.median)}  p25 ${f3(ins.p25)} / p75 ${f3(ins.p75)}  ` +
           `[scored on page ${rate(c.introducedBy.page, inTotal)}, recovered by probe ${rate(c.introducedBy.probe, inTotal)}, ` +
-          `BEYOND top-${PROBE_LIMIT} ${rate(c.introducedBy.beyond, inTotal)}]\n` +
+          `unreturned by semantic ${rate(c.introducedBy.beyond, inTotal)}` +
+          ` = DEEP ${rate(inSplit.deep, inTotal)} / UNEMBEDDED ${rate(inSplit.unembedded, inTotal)}]\n` +
           `      DISPLACED  n=${disTotal}  cosine median ${f3(dis.median)}  p25 ${f3(dis.p25)} / p75 ${f3(dis.p75)}  ` +
           `[scored on page ${rate(c.displacedBy.page, disTotal)}, recovered by probe ${rate(c.displacedBy.probe, disTotal)}, ` +
-          `BEYOND top-${PROBE_LIMIT} ${rate(c.displacedBy.beyond, disTotal)}]\n` +
+          `unreturned by semantic ${rate(c.displacedBy.beyond, disTotal)}` +
+          ` = DEEP ${rate(disSplit.deep, disTotal)} / UNEMBEDDED ${rate(disSplit.unembedded, disTotal)}]\n` +
           `      VERDICT INPUT: median(introduced) - median(displaced) = ${f3(delta)}` +
           ` over ${ins.n} vs ${dis.n} scored rows`,
       );
@@ -532,13 +564,26 @@ describe.skipIf(skipReason !== null)('two-stage lexical cascade — page QUALITY
         '  • READ COVERAGE FIRST. The cosine medians are CONDITIONAL on the rows that\n' +
         '    could be scored. `rankerScores` is populated post-floor and is absent for\n' +
         '    rankers that did not return a hit, so the rows most likely to lack one are\n' +
-        '    exactly the lexical-only rows the cascade introduces. A high BEYOND rate on\n' +
-        '    INTRODUCED with a low one on DISPLACED IS the finding — the cascade would be\n' +
-        '    trading semantically-ranked rows for rows the semantic ranker puts below\n' +
-        `    rank ${PROBE_LIMIT} — and it makes the medians beside it a footnote, because\n` +
-        '    those medians then describe only the introduced rows that were already fine.\n' +
-        '  • A BEYOND row contributes NO number. Scoring it 0, or at the floor, would\n' +
-        '    fabricate data; counting it is what keeps the median honest.\n' +
+        '    exactly the lexical-only rows the cascade introduces — i.e. the medians\n' +
+        '    describe only the introduced rows that were ALREADY fine.\n' +
+        '  • THE DEEP/UNEMBEDDED SPLIT, and the two halves mean different things:\n' +
+        '      DEEP        the row HAS a vector and the ranker still did not return it.\n' +
+        '                  ⚠ This is NOT "semantically distant". hnsw.ef_search=40 with\n' +
+        '                  iterative_scan=off caps an HNSW scan at ~40 rows regardless of\n' +
+        '                  LIMIT (measured: asking 600 returns 40 / 212 / 600 at ef_search\n' +
+        '                  40 / 200 / 800), so candidateLimit=limit*3 is a NO-OP for the\n' +
+        '                  semantic leg. A DEEP row may have an excellent cosine and simply\n' +
+        '                  never have been visited. This column CANNOT support a "the\n' +
+        '                  cascade buries good rows" verdict until that cap is lifted.\n' +
+        '      UNEMBEDDED  the row has NO vector, so both semantic legs exclude it BY\n' +
+        '                  CONSTRUCTION (sources.ts:760/:783 gate on IS NOT NULL). Its\n' +
+        '                  absence is not evidence of irrelevance, and the lexical leg is\n' +
+        '                  the ONLY path by which it can EVER reach a page — so for that\n' +
+        '                  row the cascade is the opposite of a regression.\n' +
+        '    A high INTRODUCED-unreturned rate that is mostly UNEMBEDDED means the cascade\n' +
+        '    is RECOVERING structurally-invisible corpus, not burying good rows.\n' +
+        '  • An unreturned row contributes NO number. Scoring it 0, or at the floor, would\n' +
+        '    fabricate data; counting and CLASSIFYING it is what keeps the median honest.\n' +
         '  • MEDIAN + quartiles, never a bare mean (D-055 was retracted for exactly that).\n' +
         '  • This is a two-arm SET DIFFERENCE, so it needs no ground truth and scales to\n' +
         '    the whole query population — the method that broke the one-query trap.',

@@ -23,6 +23,7 @@
     "@modelcontextprotocol/sdk": "*",
     "@papercusp/db-org": "*",
     "@papercusp/host-platform": "file:../../libs/host-platform",
+    "@papercusp/operator-core": "*",
     "@papercusp/result-encoding": "*",
     "@papercusp/sse": "file:../../libs/generic/sse",
     "@papercusp/tooldef": "*",

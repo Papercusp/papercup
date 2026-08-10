@@ -131,6 +131,27 @@ describe('foldInjectionCoverage — one port must never mask another', () => {
     expect(portOf(omp, 'turn-start').everObserved).toBe(false);
   });
 
+  it('CONTROL: the client-keyed fold this replaced DOES mask the dead port', () => {
+    // A deliberately-wrong reimplementation, kept permanently so the assertions
+    // above are demonstrably falsifiable rather than merely descriptive of
+    // today's behavior. This is the pre-WI-37597 logic: `ever` keyed on CLIENT
+    // alone, exactly as the shipped reader did it.
+    const rows: CoverageEverRow[] = [{ client: 'claude', port: 'mid-turn' }];
+    const everByClientOnly = new Set(rows.map((r) => r.client));
+
+    // Under the old keying a turn-start port that has NEVER written inherits a
+    // baseline from its mid-turn sibling…
+    expect(everByClientOnly.has('claude')).toBe(true);
+
+    // …while the shipped fold refuses to.
+    const { clients } = fold({ everRows: rows });
+    expect(portOf(clients[0]!, 'turn-start').everObserved).toBe(false);
+
+    // If these two ever agree, the masking is back: a dead turn-start port would
+    // be handed a baseline it never earned, and classifyInjectionClient would
+    // score it 'ok' forever instead of 'never-observed'.
+  });
+
   it('sums the client total from exactly its ports', () => {
     const { clients, totalEvents } = fold({
       windowRows: [
