@@ -170,6 +170,66 @@ describe('unitStateFromProps', () => {
     expect(s.failed).toBe(true);
     expect(s.active).toBe(false);
   });
+
+  /**
+   * EI-20093902925801178. systemd's own NRestarts is the only restart signal in
+   * this payload that no sampling interval can miss — the reconciler's
+   * `restartsLast10m` is written in `papercup-bg-host` and read in the operator
+   * process, where it is always 0. These are REAL captured values: during the
+   * 2026-08-10 crash-loop `papercup-staging-api` showed NRestarts=4 while the
+   * health tool reported `restartsLast10m: 0, flapState: 'ok'`.
+   */
+  it('parses systemd NRestarts into nRestarts', () => {
+    const s = unitStateFromProps(
+      parseSystemctlShowOutput(
+        'Id=papercup-staging-api.service\nLoadState=loaded\nActiveState=active\nSubState=running\nNRestarts=4\n',
+      ),
+      'user',
+      'x',
+    );
+    expect(s.nRestarts).toBe(4);
+  });
+
+  /**
+   * THE regression that matters, and the reason the field is optional rather
+   * than defaulted: a unit TYPE with no main process (a `.timer`) omits the
+   * property entirely. Defaulting an omitted counter to 0 would recreate the
+   * exact bug this field was added to kill — absent evidence reading as evidence
+   * of absence, i.e. "no data" wearing the shape of "zero restarts".
+   */
+  it('an ABSENT NRestarts leaves nRestarts undefined — never 0', () => {
+    const s = unitStateFromProps(
+      parseSystemctlShowOutput(
+        'Id=papercup-live-federation-gate.timer\nLoadState=loaded\nActiveState=active\nSubState=waiting\n',
+      ),
+      'user',
+      'x',
+    );
+    expect(s.nRestarts).toBeUndefined();
+    expect(s).not.toHaveProperty('nRestarts');
+  });
+
+  it('a zero NRestarts is preserved as 0 — a measured zero is NOT the same as absent', () => {
+    const s = unitStateFromProps(
+      parseSystemctlShowOutput('Id=x.service\nLoadState=loaded\nActiveState=active\nSubState=running\nNRestarts=0\n'),
+      'user',
+      'x',
+    );
+    expect(s.nRestarts).toBe(0);
+  });
+
+  it('a malformed NRestarts is undefined rather than NaN or a coerced number', () => {
+    for (const raw of ['', 'not-a-number', '-1', '2.5']) {
+      const s = unitStateFromProps(
+        parseSystemctlShowOutput(
+          `Id=x.service\nLoadState=loaded\nActiveState=active\nSubState=running\nNRestarts=${raw}\n`,
+        ),
+        'user',
+        'x',
+      );
+      expect(s.nRestarts, `NRestarts=${JSON.stringify(raw)} must not produce a number`).toBeUndefined();
+    }
+  });
 });
 
 describe('probeUnitStates', () => {

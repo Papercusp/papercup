@@ -40,10 +40,17 @@ vi.mock("../../projected-tool-deps", () => ({
 // the precise defect that oracle was extracted to prevent.
 vi.mock("../../supervision/unit-reconciler", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../supervision/unit-reconciler")>()),
+  // EI-20093902925801178: `flapObserved` distinguishes "these counters measured
+  // something" from "these counters are zero-defaults". mcp-proxy is modelled as
+  // OBSERVED (a process that runs the reconciler), so its zeros are real and no
+  // caveat note is expected. The two node-child sidecars are legitimately
+  // un-observed by this reconciler — their real respawn state arrives via
+  // `overlayNodeChildSupervision` — which is exactly the case the note must NOT
+  // fire for, or the flag becomes noise readers learn to ignore.
   supervisionSnapshot: vi.fn(() => [
-    { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
-    { name: "substrate-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
-    { name: "spawner-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
+    { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok", flapObserved: true },
+    { name: "substrate-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok", flapObserved: false },
+    { name: "spawner-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok", flapObserved: false },
   ]),
 }));
 vi.mock("../../sync/hyperbee/substrate-sidecar-spawn", () => ({
