@@ -292,8 +292,28 @@ const SHARED_STRIPPER = /strip-comments-and-strings\.mjs/;
  * regex-blind included). A guard-of-guards that classifies by NAME cannot see a synonym, and
  * "any spelling" in a comment is not a rule. Widened 2026-08-10 (WI-37717).
  */
-const NAMED_STRIPPER =
-  /\b(?:strip|mask|blank|scrub|elide|redact)[A-Za-z]*(?:Comments?|Strings?|Literals?|Bodies)\b/;
+const STRIPPER_NAME = String.raw`(?:strip|mask|blank|scrub|elide|redact)[A-Za-z]*(?:Comments?|Strings?|Literals?|Bodies)`;
+/**
+ * A stripper DEFINITION, not a mention — and the distinction is the whole point (WI-37801).
+ *
+ * Matching any MENTION cannot work here, because the import statement of a migrated file
+ * (`import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs'`) mentions a
+ * stripper name itself. That collision is why the classifier used to return on the FIRST
+ * match with `shared` ranked ahead of `hand-rolled`: it was the only way to stop every
+ * migrated file from re-reporting as a hand-roller. But ordering traded one wrong answer for
+ * another — it made a PARTIALLY migrated file permanently invisible, so the first migrated
+ * call site in a file switched off enforcement for every hand-rolled stripper still in it.
+ *
+ * Anchoring on the definition forms dissolves the conflict instead of ranking it: a bare
+ * import has no definition and still classifies `shared`, while a file that imports the
+ * shared module AND defines its own stripper is correctly `hand-rolled`.
+ */
+const NAMED_STRIPPER_DEF = new RegExp(
+  String.raw`\b(?:export\s+)?(?:async\s+)?function\s*\*?\s*${STRIPPER_NAME}\s*\(` +
+    String.raw`|\b(?:const|let|var)\s+${STRIPPER_NAME}\s*=` +
+    String.raw`|^[ \t]*(?:static\s+)?(?:async\s+)?${STRIPPER_NAME}\s*\([^)\n]*\)\s*\{`,
+  'm',
+);
 /** The two copy-pasted regexes themselves, matched as literal text — they are the defect. */
 const NAIVE_BLOCK_RE = String.raw`\/\*[\s\S]*?\*\/`;
 const NAIVE_LINE_RE = String.raw`\/\/.*$`;
@@ -305,14 +325,26 @@ const READS_FILES = /readFileSync|execFileSync\s*\(\s*['"](rg|grep)['"]/;
 type Masking = 'shared' | 'hand-rolled' | 'ast' | 'unmasked';
 
 function classifyMasking(maskedSource: string): Masking {
-  if (SHARED_STRIPPER.test(maskedSource)) return 'shared';
+  // HAND-ROLLED IS TESTED FIRST, AHEAD OF THE SHARED IMPORT (WI-37801). The old order asked
+  // "does this file import the shared module?" and returned on the first yes, which made the
+  // classification per-FILE. Consolidation proceeds per CALL SITE, so the first migrated site
+  // in a file silenced the guard for every stripper still living beside it — partial migration
+  // was not merely unenforced, it was rewarded with a permanent exemption. Worse, that reached
+  // the BASELINE below: an entry could be removed for a file that still hand-rolls, so the
+  // shrink-only list shrank while the debt stayed. Both files it hid (lint-migrations.mjs,
+  // check-migration-forward-compat.mjs) had in fact already been de-listed that way.
+  //
+  // Ordering is safe now only because the predicate anchors on DEFINITIONS: a migrated file
+  // whose sole stripper reference is its own import has no definition site and still falls
+  // through to `shared`. See NAMED_STRIPPER_DEF.
   if (
-    NAMED_STRIPPER.test(maskedSource) ||
+    NAMED_STRIPPER_DEF.test(maskedSource) ||
     maskedSource.includes(NAIVE_BLOCK_RE) ||
     maskedSource.includes(NAIVE_LINE_RE)
   ) {
     return 'hand-rolled';
   }
+  if (SHARED_STRIPPER.test(maskedSource)) return 'shared';
   if (PARSES_AST.test(maskedSource)) return 'ast';
   return 'unmasked';
 }
@@ -342,9 +374,16 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
    * isSqlFile) on 2026-08-10, so `--`, nestable block comments, $tag$ bodies and quoted
    * identifiers are all covered. ALL THREE SQL entries — check-partial-index-alignment.mjs,
    * check-migration-forward-compat.mjs and lint-migrations.mjs — were migrated onto it and
-   * REMOVED from this list that day (EI-20073035509369492). There is no longer any
-   * SQL-shaped entry on this list, and "SQL cannot use the shared module" must never be
-   * reintroduced as a reason for adding one.
+   * REMOVED from this list that day (EI-20073035509369492). "SQL cannot use the shared module"
+   * must never be reintroduced as a reason for adding an entry.
+   *
+   * ⚠ TWO of those three came BACK the same day (WI-37801), and the distinction matters when
+   * you read them: only check-partial-index-alignment.mjs was fully migrated. The other two
+   * migrated ONE call site while keeping a private stripper, and the classifier's
+   * first-match-wins ordering made that invisible — so they were de-listed on a verdict the
+   * measurement could not actually support. They are listed again on the DEFINITION-anchored
+   * measurement. So a SQL-shaped entry here is not a relapse to the retired reason above; it
+   * means that file still DEFINES its own stripper. Check which before acting on it.
    *
    * `check-timer-classification.mjs` is on this list holding a CORRECT private copy (it is the
    * donor the shared module was lifted from). It should collapse into the import, but was left
@@ -355,14 +394,23 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     'check-declared-consumed.mjs',
     'check-drop-database-force.mjs',
     'check-lint-guard-reachability.mjs',
-    // check-migration-forward-compat.mjs was REMOVED here on 2026-08-10 (EI-20073035509369492):
-    // it now imports stripSqlComments. Its private pair (`/* */` then `--[^\n]*`) was not
-    // quote-aware, so a `--` inside a STRING LITERAL erased the rest of the line — swallowing
-    // any real DDL that followed it and reporting the migration CLEAN. That is a false NEGATIVE
-    // on the one guard whose whole job is catching destructive DDL before it ships.
-    // Comments only, NOT the strings variant: the RULES match DDL keywords, and sealing $tag$
-    // bodies would hide real DDL inside a DO block. Both directions are pinned by falsifying
-    // controls in that guard's own selfTest().
+    // ⚠ RE-ADDED 2026-08-10 (WI-37801), having been REMOVED here earlier the SAME DAY
+    // (EI-20073035509369492). The removal was made in good faith — that guard's own call site
+    // genuinely migrated onto stripSqlComments — but the file still DEFINES a private
+    // `stripComments(sql)` (:142), and the classifier could not see it: `shared` was returned on
+    // the FIRST match, so importing the shared module anywhere exempted the whole file. Nothing
+    // failed when the entry was dropped, and that silence IS the harm this list exists to
+    // prevent: the shrink-only population shrank while the debt stayed exactly where it was.
+    // It measured straight back in once classification anchored on DEFINITIONS rather than
+    // mentions. Removing it again requires removing the private stripper, not another import.
+    // The original migration note, still true of the migrated call site: its private pair
+    // (`/* */` then `--[^\n]*`) was not quote-aware, so a `--` inside a STRING LITERAL erased the
+    // rest of the line — swallowing any real DDL that followed it and reporting the migration
+    // CLEAN. That is a false NEGATIVE on the one guard whose whole job is catching destructive
+    // DDL before it ships. Comments only, NOT the strings variant: the RULES match DDL keywords,
+    // and sealing $tag$ bodies would hide real DDL inside a DO block. Both directions are pinned
+    // by falsifying controls in that guard's own selfTest().
+    'check-migration-forward-compat.mjs',
     'check-no-proc-path-fixture.mjs',
     'check-no-raw-block-edge.mjs',
     'check-no-raw-install-slug-filter.mjs',
@@ -383,14 +431,18 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     // erased the rest of the line, hiding any literal tenant default that followed it.
     // Comments only, NOT the strings variant: its main quarry is the ALTERs inside a
     // `DO $$ … $$` loop, which the strings variant would seal away entirely.
-    // ⚠ PARTIAL, and its removal from this list is NOT a claim that the file is fully migrated:
-    // `stripSqlBodies` in that same file is STILL hand-rolled, deliberately (WI-37800 — its call
-    // sites need opposite masks, and its tag-regex bug is load-bearing today; swapping it was
-    // measured to drop a real detection). Note that removing it here changed nothing mechanically:
-    // classifyMasking() returns 'shared' on its FIRST match, so a file that imports the shared
-    // module is classified clean even while it hand-rolls another stripper elsewhere — this file
-    // would pass whether or not it were listed. That first-match-wins blind spot is filed as
-    // WI-37801; it means a PARTIAL migration silently exempts the remainder of the file forever.
+    // ⚠ RE-ADDED 2026-08-10 (WI-37801). The note written at removal time called this correctly:
+    // the removal was "NOT a claim that the file is fully migrated", because `stripSqlBodies` in
+    // that same file is STILL hand-rolled, deliberately (WI-37800 — its call sites need opposite
+    // masks, and its tag-regex bug is load-bearing today; swapping it was measured to drop a real
+    // detection). What that note could only observe, and WI-37801 has now fixed, is that removing
+    // it "changed nothing mechanically": classifyMasking() returned 'shared' on its FIRST match,
+    // so the file was classified clean whether or not it appeared here. The entry had become
+    // decorative. Now that the classifier anchors on DEFINITIONS, this entry is load-bearing
+    // again and the file measures as hand-rolled — which is the honest reading while
+    // stripSqlBodies exists. It comes off this list when WI-37800 retires that stripper, not
+    // before.
+    'lint-migrations.mjs',
   ]);
 
   const measurePopulation = (): string[] =>
@@ -627,10 +679,41 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
       expect(classifyMasking(fixture)).toBe('hand-rolled');
     });
 
-    it('importing the shared module outranks every other signal', () => {
-      // A migrated guard that still MENTIONS a stripper name must classify as `shared`, or
-      // migrating a file would move it from one baseline to the other instead of off both.
+    it('a bare import of the shared module is not itself a hand-roll', () => {
+      // A migrated guard MENTIONS a stripper name in its own import statement. That must not
+      // read as a hand-rolled definition, or migrating a file would move it from one baseline
+      // to the other instead of off both. This is why the rule anchors on DEFINITION forms
+      // rather than ranking `shared` ahead of `hand-rolled` (see NAMED_STRIPPER_DEF).
       const fixture = `import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';`;
+      expect(classifyMasking(fixture)).toBe('shared');
+    });
+
+    // WI-37801 — THE FALSIFYING CONTROL FOR THE FIRST-MATCH-WINS BLIND SPOT.
+    // Under the previous implementation this returned 'shared', so the assertion below fails
+    // before the fix and passes after; that is what makes the fix verifiable rather than
+    // plausible. The fixture is not hypothetical — it is the exact shape of lint-migrations.mjs,
+    // which imports the shared SQL mask for findLiteralTenantDefault while still hand-rolling
+    // stripSqlBodies (deliberately, WI-37800), and was de-listed from BASELINE while doing so.
+    it('a file that BOTH imports the shared module AND defines a private stripper is hand-rolled', () => {
+      const fixture = [
+        `import { stripSqlComments } from './lib/strip-comments-and-strings.mjs';`,
+        `export function stripSqlBodies(sqlText) {`,
+        `  return sqlText.replace(/\\$([A-Za-z_]*)\\$/g, ' ');`,
+        `}`,
+      ].join('\n');
+      expect(SHARED_STRIPPER.test(fixture), 'CONTROL IS VACUOUS: fixture must import the shared module').toBe(true);
+      expect(classifyMasking(fixture)).toBe('hand-rolled');
+    });
+
+    // The mirror case, so the fix cannot be "call everything hand-rolled". A file that imports
+    // the shared module and merely CALLS it — the shape every fully-migrated guard has — must
+    // still be `shared`, including when the call sits at the start of a line.
+    it('calling an imported stripper is not defining one', () => {
+      const fixture = [
+        `import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';`,
+        `const masked = stripCommentsOnly(readFileSync(f, 'utf8'), f);`,
+        `stripCommentsOnly(src, name);`,
+      ].join('\n');
       expect(classifyMasking(fixture)).toBe('shared');
     });
   });
