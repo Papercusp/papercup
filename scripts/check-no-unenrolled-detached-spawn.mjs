@@ -147,6 +147,12 @@ export function isUnenrolledDetachedSpawn(relPath, source) {
   // recognised a comment OPENING a line, so a trailing `// ... detached: true` or any block-comment
   // body not starting with `*` walked straight through it, as did a template literal quoting a
   // spawn (WI-37717).
+  // Cheap RAW pre-filter before the mask: blanking is MONOTONIC (it can only remove a match,
+  // never create one), so a file without both tokens in raw text cannot have them masked either
+  // — and this guard scans every tracked .ts/.tsx in the repo, where an unconditional TS parse
+  // per file costs minutes.
+  if (!/detached:\s*true/.test(source)) return false;
+  if (!/\b(spawn|childSpawn|spawnFn)\s*\(/.test(source)) return false;
   const code = stripCommentsAndStrings(source, relPath);
   if (!/detached:\s*true/.test(code)) return false;
   if (!/\b(spawn|childSpawn|spawnFn)\s*\(/.test(code)) return false;

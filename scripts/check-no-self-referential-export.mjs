@@ -54,8 +54,15 @@ const SELF_REF_EXPORT = /^\s*export\s+(?:const|let|var)\s+(\w+)\s*=\s*\1\s*;?\s*
 export function findSelfReferentialExports(path, text) {
   const hits = [];
   const lines = text.split('\n');
-  const scan = stripCommentsAndStrings(text, path).split('\n');
+  // MASK LAZILY, ONLY FOR CANDIDATE FILES. Masking is MONOTONIC — blanking can only ever REMOVE
+  // a match, never create one — so a line with no RAW match cannot produce a masked one, and the
+  // TS parse behind the mask can be skipped outright. That is not a micro-optimisation: this
+  // guard scans every tracked source file in the repo, and parsing all of them took this from
+  // sub-second to over two minutes. A clean tree has zero hits, so the parse now runs ~never.
+  let scan = null;
   for (let i = 0; i < lines.length; i++) {
+    if (!SELF_REF_EXPORT.test(lines[i])) continue;
+    scan ??= stripCommentsAndStrings(text, path).split('\n');
     const m = SELF_REF_EXPORT.exec(scan[i]);
     if (m) hits.push({ path, line: i + 1, identifier: m[1], text: lines[i].trim() });
   }

@@ -117,10 +117,15 @@ const RULES = [
 export function scanSource(text, fileName) {
   const hits = [];
   const lines = text.split('\n');
-  const masked = stripCommentsAndStrings(text, fileName).split('\n');
+  // Masked lazily: blanking is MONOTONIC (it can only remove a match, never create one), so a
+  // line with no RAW match needs no mask, and the TS parse is skipped for every file that names
+  // none of the banned producers — which is nearly all of them.
+  let masked = null;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     for (const rule of RULES) {
+      if (!rule.re.test(line)) continue;
+      masked ??= stripCommentsAndStrings(text, fileName).split('\n');
       if (firstLiveMatch(line, masked[i], rule.re)) {
         hits.push({ line: i + 1, id: rule.id, hint: rule.hint, text: line.trim() });
       }

@@ -83,14 +83,22 @@ export function findOffendersInText(f, text) {
   // on RAW and ask whether the match's ANCHOR — the `from`/`import`/`require`/`fetch` keyword —
   // is live program text. Its specifier being a string is expected; a keyword that is itself
   // string or comment content never was an import.
-  const masked = stripCommentsAndStrings(text, f);
+  // MASK LAZILY, AND GATE IT ON A RAW REGEX HIT — not on the `includes` pre-filter above.
+  // Masking is MONOTONIC (it can only remove a match, never create one), so a line with no raw
+  // match needs no mask. The distinction is worth ~22s of wall clock: 119 tracked files mention
+  // `_retired/` SOMEWHERE, and parsing all of them cost 0.26s -> 21.99s of detector time
+  // (measured), while only a handful contain a line that actually matches an import shape.
   const rawLines = text.split('\n');
-  const maskedLines = masked.split('\n');
+  let maskedLines = null;
   rawLines.forEach((line, i) => {
-    if (firstLiveMatch(line, maskedLines[i], RETIRED_IMPORT)) {
+    const rawRetired = RETIRED_IMPORT.test(line);
+    const rawDead = DEAD_SPAWN_FETCH.test(line);
+    if (!rawRetired && !rawDead) return;
+    maskedLines ??= stripCommentsAndStrings(text, f).split('\n');
+    if (rawRetired && firstLiveMatch(line, maskedLines[i], RETIRED_IMPORT)) {
       offenders.push(`${f}:${i + 1}  [imports a _retired/ module]  ${line.trim().slice(0, 100)}`);
     }
-    if (firstLiveMatch(line, maskedLines[i], DEAD_SPAWN_FETCH)) {
+    if (rawDead && firstLiveMatch(line, maskedLines[i], DEAD_SPAWN_FETCH)) {
       offenders.push(`${f}:${i + 1}  [retired /api/plugins/orchestrator/spawn fetch]  ${line.trim().slice(0, 100)}`);
     }
   });

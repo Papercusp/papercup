@@ -97,6 +97,11 @@ const REEXPORT_RE = /^\s*export\s+(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*from\s*['"]
  * @param {string} [fileName]
  */
 export function countReexportChains(text, fileName) {
+  // Cheap RAW pre-filter first: masking is MONOTONIC (it only ever removes matches), so a text
+  // with no raw match has no masked one either, and the TS parse is skipped for every file that
+  // re-exports nothing.
+  REEXPORT_RE.lastIndex = 0;
+  if (REEXPORT_RE.exec(text) === null) return 0;
   const scan = stripCommentsAndStrings(text, fileName);
   REEXPORT_RE.lastIndex = 0;
   let n = 0;
