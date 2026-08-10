@@ -167,6 +167,64 @@ describe('comments cannot satisfy or trigger the check', () => {
              WHERE surface = 'messages'`),
     ).toHaveLength(0);
   });
+
+  /**
+   * EI-20073035509369492 — the private `--`-only stripper was replaced by the shared SQL mask.
+   * Both directions below were MEASURED against the old implementation, so each assertion is a
+   * falsifier: revert the stripper and the expected number changes. A no-diff test would have
+   * proved nothing, since a stripper that silently no-ops returns what a clean corpus returns.
+   */
+  it('a BLOCK comment cannot trigger the check (old `--`-only stripper: 1 false positive)', () => {
+    // Measured: with block-comment content left live, the detector reports 1 here.
+    expect(
+      flag(`SELECT 1 FROM t /* body ->> 'related_msg_id' = $1 */ WHERE x = 1`),
+    ).toHaveLength(0);
+  });
+
+  it('a `--` inside a quoted identifier is NOT a comment (old stripper blanked the rest of the line)', () => {
+    // The dangerous direction: the old regex blanked from `--` to end of line, erasing live SQL.
+    // Erasing live SQL can delete the presence guard itself and turn an aligned query into a
+    // reported violation — or, as here, delete the comparison and hide a real one. Measured 0
+    // under the old stripper, 1 under the shared mask.
+    expect(
+      flag(`SELECT 1 FROM t WHERE "weird--name" = 1 AND body ->> 'related_msg_id' = $1`),
+    ).toHaveLength(1);
+  });
+});
+
+describe('the sql`` tag is matched against MASKED source, so prose cannot mint a statement', () => {
+  /**
+   * Measured 2026-08-10: the bare tag regex fires on the word `sql` in a markdown code span
+   * inside a doc comment, because the span's CLOSING backtick supplies the backtick it wants.
+   * gc-plan-runs.ts says "`sql` is a seam." and that minted a 427-char "SQL statement" made of
+   * the file's imports and an interface. Corpus-wide: 61 phantom statements in 33 files.
+   */
+  const PROSE = [
+    '/**',
+    ' * Keeps the ledger row. `sql` is a seam.',
+    ' */',
+    "import { getOrgPg } from '@papercusp/db-org';",
+    'export const KEEP_LAST_DEFAULT = 90;',
+    'const q = other`x`;',
+  ].join('\n');
+
+  it('the raw tag regex DOES fire on that prose — otherwise this test is vacuous', () => {
+    // Guards the guard: if the regex stops matching, the assertion below passes for the wrong
+    // reason and silently stops testing anything.
+    expect(/\bsql\s*(?:<[^`>]*>)?\s*`/.test(PROSE)).toBe(true);
+  });
+
+  it('extracts NO template from it', () => {
+    expect(extractSqlTemplates(PROSE, 'gc-plan-runs.ts')).toHaveLength(0);
+  });
+
+  it('still extracts a real adjacent template in the same file', () => {
+    // The mask must not cost real coverage: a genuine tag after the prose is still found.
+    const src = `${PROSE}\nconst rows = await sql\`SELECT body->>'related_msg_id' FROM t\`;`;
+    const tpls = extractSqlTemplates(src, 'gc-plan-runs.ts');
+    expect(tpls).toHaveLength(1);
+    expect(tpls[0]!.text).toContain('SELECT');
+  });
 });
 
 describe('line attribution survives interpolation', () => {
