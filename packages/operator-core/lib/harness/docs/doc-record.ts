@@ -18,7 +18,9 @@
  * source — it never silently downgrades to plain generated.
  */
 
+import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { parseFrontmatterBlock } from '@papercusp/docs-engine';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 import type { SubjectRef } from './subject-ref';
 
