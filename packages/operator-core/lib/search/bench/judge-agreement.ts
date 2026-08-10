@@ -1,0 +1,391 @@
+/**
+ * judge-agreement.ts — P-038's PILOT: does an LLM relevance judge agree with
+ * ground truth we ALREADY trust, and does it agree with ITSELF?
+ * (plan semantic-search-fingerprint-coverage-2026-08-03, D-077 §3 / WI-37638.)
+ *
+ * WHY THIS EXISTS BEFORE THE LABELLED PASS. P-038 wants LLM-judged relevance
+ * labels for real queries. A judge that is not first validated produces labels
+ * that LOOK like data and are not — and no downstream metric can detect that,
+ * because there is nothing left to check them against. So the judge is measured
+ * against gold that is known BY CONSTRUCTION (`ref-expansion-gold.ts`, D-076)
+ * BEFORE it is trusted to label anything.
+ *
+ * WHAT IT MEASURES — three numbers that are deliberately NOT collapsed into one:
+ *
+ *   1. SENSITIVITY — of pairs gold says are relevant, how many does the judge
+ *      call relevant.
+ *   2. SPECIFICITY — of pairs gold says are irrelevant, how many does the judge
+ *      call irrelevant. ⚠ The negatives here are sampled at RANDOM from the
+ *      pool, so they are EASY. Specificity against random negatives is an
+ *      UPPER BOUND on discriminative power, not an estimate of it; a real
+ *      screening task presents near-misses that rank highly. Do not quote this
+ *      number as "the judge is N% accurate".
+ *   3. SELF-CONSISTENCY — re-judging the same pair at temperature 0.4 (the
+ *      double-scored convention `memory/bench/judged.ts` established). Reported
+ *      as mean/max |Δ| AND as the BINARY FLIP RATE, because those answer
+ *      different questions: a |Δ| of 1 that never crosses the pass bar changes
+ *      no label, while a |Δ| of 1 that crosses it flips one. Only the flip rate
+ *      bounds how much label noise the judge injects.
+ *
+ * ⚠ A DISAGREEMENT ON A POSITIVE PAIR IS AMBIGUOUS, AND THE PILOT MUST SAY SO.
+ *   The gold edge is STRUCTURAL (row cites item R), not semantic. A row that
+ *   cites R as a sibling ticket or a passing "see also" is gold-relevant while
+ *   being topically about something else. So a positive the judge scores low is
+ *   EITHER judge error OR a citation that was never a topical relationship. This
+ *   module cannot separate those two, and reports the rate rather than assigning
+ *   blame. Treat sensitivity as a LOWER bound on judge quality.
+ *
+ * ⚠ AGREEMENT MEASURED ON DERIVED QUERIES DOES NOT TRANSFER UNEXAMINED TO REAL
+ *   ONES. Both arms here are built from item titles, not typed by a user. That
+ *   limit is P-038's to report, not to assume away.
+ *
+ * Pure + dependency-injected: no PG, no argv, no fs. The transport (`llm`) and
+ * the pairs come from the caller, so the same core serves a bench CLI or a gate
+ * test — the form decision is deliberately still open.
+ */
+
+import {
+  judgeRun,
+  type JudgeRubric,
+  type LlmCallFn,
+  type PersonaTraits,
+  type RunSummary,
+} from '@papercusp/testing-shell/llm';
+
+// =============================================================================
+// Frozen judging contract — bump RUBRIC_VERSION when any of it changes
+// =============================================================================
+
+export const JUDGE_AGREEMENT_RUBRIC_VERSION = 'search-relevance.v1';
+
+/** Frozen judge model, mirroring the judged tier's freeze discipline (D-005). */
+export const JUDGE_AGREEMENT_MODEL = 'claude-sonnet-4-6';
+
+/** score >= this counts as "the judge called it relevant". */
+export const RELEVANCE_PASS_BAR = 3;
+
+/** Temperature of the second (self-consistency) pass — judged.ts's convention. */
+export const SELF_CONSISTENCY_TEMPERATURE = 0.4;
+
+export const SEARCH_RELEVANCE_RUBRIC: JudgeRubric = {
+  version: JUDGE_AGREEMENT_RUBRIC_VERSION,
+  axes: [
+    {
+      id: 'relevance',
+      description:
+        'Would a person who issued this search query be satisfied to find THIS document ' +
+        'among the results? Judge the document on its own merits against the query intent: ' +
+        'does it carry the subject matter the query is asking about? Judge TOPICAL relevance ' +
+        'only — do not reward a document merely for sharing vocabulary with the query, and do ' +
+        'not penalise one for using different words for the same subject.',
+      anchors: {
+        bad: 'The document is about a different subject; finding it would be a wasted result.',
+        ideal: 'The document is squarely about what the query asks for.',
+      },
+    },
+  ],
+};
+
+const BENCH_PERSONA_TRAITS: PersonaTraits = {
+  verbosity: 'terse',
+  politeness: 'neutral',
+  clarification: 'never_clarifies',
+  goalClarity: 'precise',
+  interrupts: false,
+  modality: 'text',
+};
+
+// =============================================================================
+// Shapes
+// =============================================================================
+
+/** Which query arm a pair was built from — they are NOT interchangeable. */
+export type QueryArm = 'verbatim' | 'degraded';
+
+/** One (query, document) pair carrying the label gold assigns it. */
+export interface JudgedPair {
+  /** Stable id — `${ref}:${arm}:${pos|neg}`; also the double-score join key. */
+  pairId: string;
+  /** The referenced item the query was derived from. */
+  ref: string;
+  arm: QueryArm;
+  query: string;
+  docId: string;
+  docText: string;
+  /** TRUE when gold says this document is relevant to this query. */
+  goldRelevant: boolean;
+}
+
+export interface PairOutcome extends JudgedPair {
+  /** Judge score on the relevance axis, 0..5. */
+  relevance: number;
+  /** Judge's binary call at the pass bar. */
+  judgedRelevant: boolean;
+  /** Whether the judge's binary call matches gold. */
+  agrees: boolean;
+  judgeCostUsd: number;
+  judgeNotes?: string;
+}
+
+export interface ArmAggregate {
+  arm: QueryArm;
+  positives: { n: number; meanScore: number; sensitivity: number };
+  negatives: { n: number; meanScore: number; specificity: number };
+  /**
+   * Raw agreement over both classes. ⚠ Dominated by the easy random negatives —
+   * always read the two class rates above instead of this one.
+   */
+  rawAgreement: number;
+  /** Mean score gap positives − negatives: the judge's separation on this arm. */
+  separation: number;
+}
+
+export interface SelfConsistency {
+  n: number;
+  meanAbsDelta: number;
+  maxAbsDelta: number;
+  /** Fraction of re-judged pairs whose BINARY call changed — the label-noise floor. */
+  flipRate: number;
+  temperature: number;
+}
+
+export interface JudgeAgreementReport {
+  startedAt: string;
+  finishedAt: string;
+  judgeModel: string;
+  rubricVersion: string;
+  passBar: number;
+  outcomes: PairOutcome[];
+  byArm: ArmAggregate[];
+  selfConsistency: SelfConsistency | null;
+  judgeCostUsd: number;
+  /** Limits that must travel WITH the numbers, never as a footnote elsewhere. */
+  caveats: string[];
+}
+
+// =============================================================================
+// Judging
+// =============================================================================
+
+/** Synthesize the minimal one-turn RunSummary `judgeRun` consumes. */
+export function synthesizePairRun(pair: JudgedPair, judgeModel: string): RunSummary {
+  const now = new Date();
+  return {
+    runId: `p038-${pair.pairId}`,
+    scenarioId: `search-relevance-${pair.pairId}`,
+    scenarioVersion: 1,
+    identityHash: `p038:${JUDGE_AGREEMENT_RUBRIC_VERSION}:${pair.pairId}`,
+    sutModel: 'derived-gold pair (no retrieval system in the loop)',
+    judgeModel,
+    personaId: 'search-bench',
+    personaTraits: BENCH_PERSONA_TRAITS,
+    workspaceMode: 'isolated',
+    transportMode: 'in-process',
+    turns: [
+      {
+        assistantText: `Search result document for the query "${pair.query}":\n\n${pair.docText}`,
+        toolCalls: [],
+        cards: [],
+        controlTags: [],
+        costUsd: 0,
+        latencyMs: 0,
+        finishReason: 'done',
+        rawSseTape: [],
+      },
+    ],
+    toolInvocations: [],
+    continueChainRows: [],
+    totalCostUsd: 0,
+    startedAt: now,
+    finishedAt: now,
+    finishReason: 'completed',
+    capBreaches: [],
+  };
+}
+
+export async function judgePair(
+  pair: JudgedPair,
+  llm: LlmCallFn,
+  judgeModel: string = JUDGE_AGREEMENT_MODEL,
+  temperature?: number,
+): Promise<PairOutcome> {
+  const run = synthesizePairRun(pair, judgeModel);
+  const judge = await judgeRun(
+    {
+      model: judgeModel,
+      rubric: SEARCH_RELEVANCE_RUBRIC,
+      scenarioId: run.scenarioId,
+      scenarioDescription:
+        `Search-relevance check. A user issued the query "${pair.query}". The assistant turn ` +
+        `shows ONE document a retrieval system could return for it, verbatim. Score ONLY ` +
+        `whether that document is topically relevant to the query. There is no conversation ` +
+        `to evaluate and no tool use — ignore both.`,
+      personaSummary: 'n/a — non-interactive relevance bench (no sim-user)',
+      goalSummary: 'Topical relevance of one document to one query.',
+      ...(temperature !== undefined ? { temperature } : {}),
+    },
+    run,
+    [],
+    llm,
+  );
+
+  const relevance = judge.scores.relevance ?? 0;
+  const judgedRelevant = relevance >= RELEVANCE_PASS_BAR;
+  return {
+    ...pair,
+    relevance,
+    judgedRelevant,
+    agrees: judgedRelevant === pair.goldRelevant,
+    judgeCostUsd: judge.costUsd,
+    ...(judge.notes ? { judgeNotes: judge.notes } : {}),
+  };
+}
+
+// =============================================================================
+// Aggregation
+// =============================================================================
+
+function mean(xs: readonly number[]): number {
+  return xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
+}
+
+export function aggregateByArm(outcomes: readonly PairOutcome[]): ArmAggregate[] {
+  const arms = [...new Set(outcomes.map((o) => o.arm))];
+  return arms.map((arm) => {
+    const rows = outcomes.filter((o) => o.arm === arm);
+    const pos = rows.filter((r) => r.goldRelevant);
+    const neg = rows.filter((r) => !r.goldRelevant);
+    const posMean = mean(pos.map((r) => r.relevance));
+    const negMean = mean(neg.map((r) => r.relevance));
+    return {
+      arm,
+      positives: {
+        n: pos.length,
+        meanScore: posMean,
+        sensitivity: pos.length === 0 ? 0 : pos.filter((r) => r.judgedRelevant).length / pos.length,
+      },
+      negatives: {
+        n: neg.length,
+        meanScore: negMean,
+        specificity: neg.length === 0 ? 0 : neg.filter((r) => !r.judgedRelevant).length / neg.length,
+      },
+      rawAgreement: rows.length === 0 ? 0 : rows.filter((r) => r.agrees).length / rows.length,
+      separation: posMean - negMean,
+    };
+  });
+}
+
+export interface RunJudgeAgreementOptions {
+  pairs: readonly JudgedPair[];
+  llm: LlmCallFn;
+  judgeModel?: string;
+  /** Re-judge the first N pairs at temp 0.4 for self-consistency. Default 8; 0 disables. */
+  selfConsistencyN?: number;
+  log?: (msg: string) => void;
+}
+
+export async function runJudgeAgreement(
+  opts: RunJudgeAgreementOptions,
+): Promise<JudgeAgreementReport> {
+  const startedAt = new Date().toISOString();
+  const log = opts.log ?? (() => {});
+  const judgeModel = opts.judgeModel ?? JUDGE_AGREEMENT_MODEL;
+  const selfConsistencyN = opts.selfConsistencyN ?? 8;
+
+  const outcomes: PairOutcome[] = [];
+  for (const [i, pair] of opts.pairs.entries()) {
+    outcomes.push(await judgePair(pair, opts.llm, judgeModel));
+    if ((i + 1) % 10 === 0) log(`judged ${i + 1}/${opts.pairs.length} pairs`);
+  }
+
+  let selfConsistency: SelfConsistency | null = null;
+  if (selfConsistencyN > 0 && outcomes.length > 0) {
+    // Sample ACROSS the outcome list rather than taking a prefix: the pairs are
+    // emitted grouped by arm and class, so a prefix would re-judge only one
+    // corner of the space and report its stability as the judge's.
+    const stride = Math.max(1, Math.floor(outcomes.length / selfConsistencyN));
+    const probes = outcomes.filter((_, i) => i % stride === 0).slice(0, selfConsistencyN);
+    log(`re-judging ${probes.length} pairs at temp ${SELF_CONSISTENCY_TEMPERATURE}…`);
+    const deltas: number[] = [];
+    let flips = 0;
+    for (const row of probes) {
+      const second = await judgePair(row, opts.llm, judgeModel, SELF_CONSISTENCY_TEMPERATURE);
+      deltas.push(Math.abs(second.relevance - row.relevance));
+      if (second.judgedRelevant !== row.judgedRelevant) flips++;
+      outcomes.push({ ...second, pairId: `${second.pairId}#rejudge` });
+    }
+    if (deltas.length > 0) {
+      selfConsistency = {
+        n: deltas.length,
+        meanAbsDelta: mean(deltas),
+        maxAbsDelta: Math.max(...deltas),
+        flipRate: flips / deltas.length,
+        temperature: SELF_CONSISTENCY_TEMPERATURE,
+      };
+    }
+  }
+
+  // The re-judge rows exist for the delta only; they would double-count a pair
+  // in the arm aggregates, so aggregate over the first pass alone.
+  const firstPass = outcomes.filter((o) => !o.pairId.endsWith('#rejudge'));
+
+  return {
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    judgeModel,
+    rubricVersion: JUDGE_AGREEMENT_RUBRIC_VERSION,
+    passBar: RELEVANCE_PASS_BAR,
+    outcomes,
+    byArm: aggregateByArm(firstPass),
+    selfConsistency,
+    judgeCostUsd: outcomes.reduce((a, o) => a + o.judgeCostUsd, 0),
+    caveats: [
+      'Negatives are sampled at RANDOM from the pool, so they are easy. Specificity here is ' +
+        'an UPPER BOUND on discriminative power, not an estimate of it — a real screening task ' +
+        'presents near-misses that rank highly.',
+      'Gold is STRUCTURAL (the document cites the referenced item), not semantic. A positive ' +
+        'the judge scores low is ambiguous between judge error and a citation that was never a ' +
+        'topical relationship, so sensitivity is a LOWER bound on judge quality.',
+      'Both query arms are derived from item titles, not typed by a user. Agreement measured ' +
+        'here does not transfer unexamined to real queries.',
+      'rawAgreement blends both classes and is dominated by the easy negatives — read ' +
+        'sensitivity and specificity separately.',
+    ],
+  };
+}
+
+export function formatReport(report: JudgeAgreementReport): string {
+  const pctf = (x: number): string => `${(x * 100).toFixed(1)}%`;
+  const lines: string[] = [
+    `# P-038 judge-agreement pilot`,
+    ``,
+    `judge=${report.judgeModel} rubric=${report.rubricVersion} passBar=${report.passBar}`,
+    `pairs=${report.outcomes.length} cost=$${report.judgeCostUsd.toFixed(4)}`,
+    ``,
+  ];
+  for (const a of report.byArm) {
+    lines.push(
+      `## arm: ${a.arm}`,
+      `  positives n=${a.positives.n} meanScore=${a.positives.meanScore.toFixed(2)} ` +
+        `sensitivity=${pctf(a.positives.sensitivity)}`,
+      `  negatives n=${a.negatives.n} meanScore=${a.negatives.meanScore.toFixed(2)} ` +
+        `specificity=${pctf(a.negatives.specificity)}  (random negatives — upper bound)`,
+      `  separation=${a.separation.toFixed(2)} rawAgreement=${pctf(a.rawAgreement)} (blended — do not quote alone)`,
+      ``,
+    );
+  }
+  if (report.selfConsistency) {
+    const s = report.selfConsistency;
+    lines.push(
+      `## self-consistency (re-judged at temp ${s.temperature})`,
+      `  n=${s.n} mean|Δ|=${s.meanAbsDelta.toFixed(2)} max|Δ|=${s.maxAbsDelta.toFixed(2)} ` +
+        `binaryFlipRate=${pctf(s.flipRate)}`,
+      ``,
+    );
+  } else {
+    lines.push(`## self-consistency: NOT MEASURED (disabled)`, ``);
+  }
+  lines.push(`## limits (these travel with the numbers)`);
+  for (const c of report.caveats) lines.push(`  - ${c}`);
+  return lines.join('\n');
+}
