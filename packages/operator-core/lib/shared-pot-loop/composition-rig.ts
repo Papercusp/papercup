@@ -338,22 +338,10 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       harness_slug TEXT NOT NULL DEFAULT 'papercup',
       plan_slug    TEXT NOT NULL,
       status       TEXT,
-      -- Same drift class as the terminal_reason/authority/closed_ts block below
-      -- (EI-20099366410545026), but on a THIRD table and reached through a READ,
-      -- not a write. claimFeatureRow's plan-item reservation subquery in
-      -- work-items.ts (FROM harness_shared.harness_plans p) selects p.op_status
-      -- -- migration 122's OPERATIONAL axis, which plans:start writes while
-      -- deliberately leaving the 'status' lifecycle column alone -- and the
-      -- blockedBy dependency check on the same table (alias bp) reads bp.items
-      -- (migration 128). Neither is in this rig's original 4-column slice, so
-      -- both 42703 the moment a claim runs. The op_status reference landed
-      -- 2026-08-03 and stayed INVISIBLE until the terminal_reason fix
-      -- (d73e40ae88) unblocked the rig far enough to reach the claim path -- a
-      -- LAYERED drift, where each fix reveals the next missing column one whole
-      -- test cycle later. Real columns are text NULL and jsonb NULL; the rig
-      -- never asserts on either value, they only need to EXIST.
-      op_status    TEXT,
-      items        JSONB,
+      -- NOTE: this table is completed to the FULL real column set by the
+      -- schema-completeness block below (EI-20099366410545026) — the key
+      -- columns stay here so the composition/collision rationale above still
+      -- reads as one piece.
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
     CREATE TABLE harness_shared.plan_item_claims (
@@ -540,6 +528,116 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       -- "fix" closed_ts to timestamptz to match the *_at columns).
       ADD COLUMN IF NOT EXISTS authority text,
       ADD COLUMN IF NOT EXISTS closed_ts bigint;
+  `);
+
+  // ── Schema COMPLETENESS (EI-20099366410545026) ────────────────────────────
+  // Everything above this line is the historical pattern: a column drifts in,
+  // an integration test 42703s, someone adds that ONE column. That has now
+  // recurred at least seven times (EI-10579, EI-18820653360383242, WI-37711,
+  // EI-20094613443189011 + its authority/closed_ts follow-up, then
+  // op_status/items and lane on 2026-08-10), and the per-instance fix does not
+  // converge, for two compounding reasons:
+  //
+  //   1. LAYERED FAILURE. Postgres reports ONE missing column per query, so
+  //      each fix only reveals the next one — a fresh ~3.5min integration
+  //      cycle per column. A single session on 2026-08-10 peeled three layers
+  //      (terminal_reason -> op_status -> lane) without reaching the bottom.
+  //   2. THE EXISTING GUARDS CANNOT SEE IT. Both drift guards check
+  //      "the rig declares a column the REAL schema lacks"; this is the
+  //      opposite direction. A source-text guard for THIS direction was
+  //      prototyped and REJECTED on 2026-08-10: the references are often
+  //      COMPOSED at runtime (a fragment like "lane IS DISTINCT FROM …"
+  //      interpolated behind a table prefix), so the required column never
+  //      appears as literal source text. The prototype reported a confident
+  //      "0 missing" against a tree that was red on a missing column at that
+  //      very moment -- a false green, i.e. strictly worse than no guard.
+  //
+  // So the fix is not a better detector — it is removing the drift surface.
+  // These two tables are now completed to the FULL real column set, generated
+  // from live information_schema (types verbatim, including the GENERATED
+  // expression for work_items.lane), which makes a missing-column 42703
+  // structurally impossible here rather than merely detected. Adding columns
+  // to a fixture is free: the rig asserts on none of these values, they only
+  // need to EXIST with a faithful type.
+  //
+  // EXCLUDED, deliberately: `_search` (tsvector GENERATED — needs the exact
+  // to_tsvector expression and buys the rig nothing, no full-text path runs
+  // here) and `embedding` (pgvector USER-DEFINED type — would make the rig
+  // depend on the extension being installed in a throwaway PG). If a future
+  // code path ever reads either, it will need that extension anyway.
+  //
+  // ⚠ Keep this block in sync by REGENERATING, never by hand-adding one column
+  // when the next 42703 appears — that is the habit this block replaces:
+  //   SELECT column_name, udt_name, is_generated, generation_expression
+  //     FROM information_schema.columns
+  //    WHERE table_schema='harness_shared' AND table_name IN ('work_items','harness_plans');
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.harness_features_consolidated
+      ADD COLUMN IF NOT EXISTS audit_reasons text,
+      ADD COLUMN IF NOT EXISTS audited_at timestamptz,
+      ADD COLUMN IF NOT EXISTS condition_key text,
+      ADD COLUMN IF NOT EXISTS created_by_github_user_id bigint,
+      ADD COLUMN IF NOT EXISTS embedding_mode text,
+      ADD COLUMN IF NOT EXISTS embedding_recipe smallint,
+      ADD COLUMN IF NOT EXISTS run_seq integer,
+      ADD COLUMN IF NOT EXISTS schedule jsonb,
+      ADD COLUMN IF NOT EXISTS schedule_active boolean,
+      ADD COLUMN IF NOT EXISTS scheduled_at timestamptz,
+      ADD COLUMN IF NOT EXISTS template_slug text,
+      ADD COLUMN IF NOT EXISTS tzid text,
+      ADD COLUMN IF NOT EXISTS verified_done_at_remote_ts timestamptz,
+      ADD COLUMN IF NOT EXISTS verifier_last_checked_at timestamptz,
+      ADD COLUMN IF NOT EXISTS verifier_last_error text,
+      ADD COLUMN IF NOT EXISTS worked_by_history jsonb,
+      ADD COLUMN IF NOT EXISTS working_users bigint[];
+    -- lane is GENERATED ALWAYS from payload (migration 721). It must be added
+    -- AFTER payload exists (it does, above) and reproduced as a generated
+    -- column, not plain text: a plain column would read NULL and silently
+    -- change the meaning of every "lane IS DISTINCT FROM 'observation'" floor
+    -- rather than erroring -- a false GREEN, which is worse than the 42703.
+    ALTER TABLE harness_shared.harness_features_consolidated
+      ADD COLUMN IF NOT EXISTS lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED;
+    ALTER TABLE harness_shared.harness_plans
+      ADD COLUMN IF NOT EXISTS archived boolean,
+      ADD COLUMN IF NOT EXISTS author_pubkey text,
+      ADD COLUMN IF NOT EXISTS content text,
+      ADD COLUMN IF NOT EXISTS content_hash text,
+      ADD COLUMN IF NOT EXISTS created text,
+      ADD COLUMN IF NOT EXISTS created_at timestamptz,
+      ADD COLUMN IF NOT EXISTS current_wave text,
+      ADD COLUMN IF NOT EXISTS decisions jsonb,
+      ADD COLUMN IF NOT EXISTS expires_at timestamptz,
+      ADD COLUMN IF NOT EXISTS fed_hlc text,
+      ADD COLUMN IF NOT EXISTS fed_ts bigint,
+      ADD COLUMN IF NOT EXISTS goal_id text,
+      ADD COLUMN IF NOT EXISTS initiative text,
+      ADD COLUMN IF NOT EXISTS input_schema jsonb,
+      ADD COLUMN IF NOT EXISTS is_legacy boolean,
+      ADD COLUMN IF NOT EXISTS items jsonb,
+      ADD COLUMN IF NOT EXISTS now_next text,
+      ADD COLUMN IF NOT EXISTS now_state text,
+      ADD COLUMN IF NOT EXISTS op_priority integer,
+      ADD COLUMN IF NOT EXISTS op_started_at timestamptz,
+      ADD COLUMN IF NOT EXISTS op_status text,
+      ADD COLUMN IF NOT EXISTS op_updated_at timestamptz,
+      ADD COLUMN IF NOT EXISTS origin text,
+      ADD COLUMN IF NOT EXISTS owner text,
+      ADD COLUMN IF NOT EXISTS owner_author_pubkey text,
+      ADD COLUMN IF NOT EXISTS promote_policy jsonb,
+      ADD COLUMN IF NOT EXISTS run_seq integer,
+      ADD COLUMN IF NOT EXISTS schedule jsonb,
+      ADD COLUMN IF NOT EXISTS schedule_active boolean,
+      ADD COLUMN IF NOT EXISTS scheduled_at timestamptz,
+      ADD COLUMN IF NOT EXISTS superseded_by text,
+      ADD COLUMN IF NOT EXISTS supersedes text[],
+      ADD COLUMN IF NOT EXISTS template text,
+      ADD COLUMN IF NOT EXISTS template_data jsonb,
+      ADD COLUMN IF NOT EXISTS template_slug text,
+      ADD COLUMN IF NOT EXISTS title text,
+      ADD COLUMN IF NOT EXISTS tzid text,
+      ADD COLUMN IF NOT EXISTS updated text,
+      ADD COLUMN IF NOT EXISTS updated_at timestamptz,
+      ADD COLUMN IF NOT EXISTS version bigint;
   `);
 
   // WI-1644: mirror migration 374's structural cutover (P-010 work-item
