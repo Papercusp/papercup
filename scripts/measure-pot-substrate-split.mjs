@@ -78,6 +78,70 @@ function walk(dir, acc = []) {
 
 const isTest = (f) => /\.(test|spec)\.[cm]?tsx?$/.test(f) || f.includes('/__tests__/');
 
+/**
+ * ── TIER IMPORTERS (D-048 / D-049) ─────────────────────────────────────────
+ *
+ * WHY THIS EXISTS. The original predicate — "KEEP = at least one non-test
+ * importer outside lib/pot" — answers **is it safe to move**, which is NOT the
+ * same question as **is it substrate** (D-047). Both readings agree on most
+ * symbols, which is exactly why the gap survived: `behavioral-supervision.ts` is
+ * cup-supervision code by content, yet lands in KEEP because a RETIRED tier tool
+ * outside lib/pot imports it. An importer that is itself retired is not evidence
+ * of live substrate — it is evidence of one dead thing referencing another.
+ *
+ * ⚠ D-049 is explicit that GATING and CLASSIFICATION are independent, and this
+ * set is built on the CLASSIFICATION. `pot:status` is ruled TIER by D-048 yet
+ * deliberately carries no gate (it is the read-only diagnostic that lets
+ * P-030/P-031 verify the tier is wound down), so a set derived ONLY from "does
+ * it import _mug-kettle-gate" would wrongly count it live. Hence two sources:
+ *   1. DERIVED — any file importing `_mug-kettle-gate` is gated, therefore dead
+ *      at runtime, therefore tier. Self-maintaining: gate a new tool and it is
+ *      classified with no edit here.
+ *   2. DECLARED — tier files that are deliberately ungated. Each needs a cited
+ *      decision, because an unexplained entry here silently deletes substrate
+ *      evidence, which is the dangerous direction.
+ */
+const GATE_MODULE = '_mug-kettle-gate';
+/**
+ * Match an actual IMPORT of the gate, never a mere mention.
+ *
+ * ⚠ A bare `src.includes('_mug-kettle-gate')` self-matches, and both victims are
+ * instructive (measured 2026-08-10, before this regex existed):
+ *   - `_mug-kettle-gate.ts` itself — it names itself in its own header comment.
+ *     Misclassifying it as tier is the DANGEROUS direction: it imports
+ *     `mugKettleSystemEnabled` from lib/pot, so it would have deleted that
+ *     symbol's substrate evidence. (It survived only because another live
+ *     importer happened to exist — luck, not design.)
+ *   - THIS SCRIPT — the moment it gained the string above, the measuring
+ *     instrument classified itself into the population it measures.
+ * Same self-match class the repo's pgrep guidance warns about; the fix is to
+ * match the syntax you mean rather than the substring.
+ *
+ * Two details are load-bearing, and BOTH were found by running it, not by
+ * reading it:
+ *   - `import\s*\(` is required. `cup/spawn.ts:163` reaches the gate through a
+ *     DYNAMIC `await import('../_mug-kettle-gate')`, so a from/require-only
+ *     pattern silently dropped a genuinely gated actuator out of the tier set —
+ *     a false NEGATIVE, which re-inflates the substrate bucket.
+ *   - `[^'"\n]` (not `[^'"]`) is required. With `.`-spanning-newlines this very
+ *     comment matched itself: the prose `derived ONLY from "does\n * it import
+ *     _mug-kettle-gate"` is a `from`, a quote, and the module name. A real
+ *     import specifier never contains a newline, so forbidding one costs
+ *     nothing and stops a sentence ABOUT the detector from tripping it.
+ */
+const GATE_IMPORT_RE = /(?:from|require\s*\(|import\s*\()\s*['"][^'"\n]*_mug-kettle-gate['"]/;
+const GATE_MODULE_FILE = 'packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts';
+/** Populated during the import scan below (source 1). Repo-relative paths. */
+const gatedTierImporters = new Set();
+/** Source 2 — ruled tier, deliberately ungated. Cite the decision for each. */
+const DECLARED_TIER_IMPORTERS = new Map([
+  [
+    'packages/operator-core/lib/agent-tools/pot/status.ts',
+    'D-048 ruled it TIER ("the read-side companion of two gated actuators"); D-049 settled its gating as NO, so it carries no _mug-kettle-gate import to derive from.',
+  ],
+]);
+const isTierImporter = (rel) => gatedTierImporters.has(rel) || DECLARED_TIER_IMPORTERS.has(rel);
+
 // ── resolve an import specifier to an absolute file, extensionless-aware ────
 function resolveSpecifier(fromFile, spec) {
   if (!spec.startsWith('.')) return null; // bare/package specifier — not a relative lib/pot import
@@ -165,6 +229,10 @@ const DYNAMIC_RE = /(?:\bimport|\brequire)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 for (const f of allFiles) {
   if (inPot(f)) continue; // internal to lib/pot — not an external consumer
   const src = readFileSync(f, 'utf8');
+  // Source 1 of the tier set. Detected BEFORE the 'pot' prefilter so the
+  // classification never depends on an unrelated substring happening to appear.
+  const relF = relative(REPO, f);
+  if (!isTest(f) && relF !== GATE_MODULE_FILE && GATE_IMPORT_RE.test(src)) gatedTierImporters.add(relF);
   if (!src.includes('pot')) continue; // cheap prefilter
   for (const m of src.matchAll(IMPORT_RE)) {
     const clause = m[2];
@@ -203,19 +271,82 @@ for (const f of allFiles) {
   }
 }
 
+/**
+ * PRUNE the derived tier set to files that actually import from lib/pot.
+ *
+ * Membership only MEANS anything for a file that contributes importer evidence:
+ * a file importing the gate but nothing from lib/pot cannot change any symbol's
+ * bucket, so listing it is noise in an artifact people audit by reading.
+ *
+ * It also ends a self-match arms race honestly. THIS script kept classifying
+ * ITSELF: first because it contained the module's name, then — after the regex
+ * was tightened — because the comment above documents the dynamic form and
+ * therefore literally contains `import('../_mug-kettle-gate')`. Every precise
+ * explanation of the detector re-tripped it. A structural rule ends that, where
+ * a third regex patch would only have moved it.
+ */
+for (const t of [...gatedTierImporters]) {
+  if (!externalImporterFiles.has(t)) gatedTierImporters.delete(t);
+}
+
+/**
+ * TIER SELF-CHECK — falsifiable in BOTH directions, because the detection above
+ * failed in both and each failure produced a plausible-looking number.
+ *
+ * This is deliberately an in-script assertion rather than a vitest guard: the
+ * whole script is P-056/P-057 tooling that P-068 deletes with the gate, so a
+ * permanent test harness for it would outlive its subject. An assertion that
+ * runs on EVERY invocation catches a regression at the only moment anyone cares
+ * — when the census is actually being re-measured.
+ */
+const TIER_MUST_INCLUDE = [
+  'packages/operator-core/lib/agent-tools/pot/start.ts',
+  'packages/operator-core/lib/agent-tools/pot/wake.ts',
+  'packages/operator-core/lib/agent-tools/pot/survey.ts',
+  'packages/operator-core/lib/agent-tools/pot/declare_wake.ts',
+  'packages/operator-core/lib/agent-tools/pot/set_steering.ts',
+  'packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts',
+];
+/** FALSE-POSITIVE sentinels: each of these was wrongly classified tier at least once. */
+const TIER_MUST_EXCLUDE = [
+  GATE_MODULE_FILE, // names itself in its own header; imports lib/pot, so a false hit DELETES substrate evidence
+  'scripts/measure-pot-substrate-split.mjs', // the measuring instrument classifying itself
+];
+const tierSelfCheck = {
+  missing: TIER_MUST_INCLUDE.filter((p) => !gatedTierImporters.has(p)),
+  falsePositives: TIER_MUST_EXCLUDE.filter((p) => gatedTierImporters.has(p)),
+  note: 'A MISSING entry re-inflates the substrate bucket (false negative). A FALSE POSITIVE deletes a symbol\'s substrate evidence and is how P-057 moves a still-live symbol — the dangerous direction.',
+};
+tierSelfCheck.ok = tierSelfCheck.missing.length === 0 && tierSelfCheck.falsePositives.length === 0;
+
 // ── classify ────────────────────────────────────────────────────────────────
 const keep = [];
+const keepTierOnly = [];
 const move = [];
 const moveNeedsReview = [];
 for (const [symbol, files] of [...exportsBySymbol].sort((a, b) => a[0].localeCompare(b[0]))) {
   const importers = [...(importersBySymbol.get(symbol) ?? [])].sort();
   const nonTest = importers.filter((i) => !isTest(i));
+  // THE D-049 SPLIT. `live` is the substrate evidence; `tier` is not.
+  const tier = nonTest.filter(isTierImporter);
+  const live = nonTest.filter((i) => !isTierImporter(i));
   const definedIn = [...files].sort();
   const dynamicImporters = [...new Set(definedIn.flatMap((d) => [...(dynamicImportersByModule.get(d) ?? [])]))].sort();
   const row = { symbol, definedIn, importers, externalNonTestImporters: nonTest.length };
   if (dynamicImporters.length) row.dynamicImporters = dynamicImporters;
-  if (nonTest.length > 0) keep.push(row);
-  else if (dynamicImporters.length > 0) moveNeedsReview.push(row);
+  if (tier.length) row.tierImporters = tier;
+  if (live.length > 0) {
+    // Proven live substrate: at least one importer that is NOT retired tier.
+    row.liveImporters = live;
+    keep.push(row);
+  } else if (nonTest.length > 0) {
+    // KEEP under the OLD predicate, but every importer is retired tier. These
+    // are the symbols the old census could not distinguish from substrate, and
+    // they are the whole point of this pass — P-057's newly-drawable boundary.
+    // NOT auto-moved: `move` is a candidate list under the methodRisk below, and
+    // this bucket inherits that caution.
+    keepTierOnly.push(row);
+  } else if (dynamicImporters.length > 0) moveNeedsReview.push(row);
   else move.push(row);
 }
 
@@ -225,11 +356,19 @@ const artifact = {
   plan: 'retire-mug-kettle-su-only-2026-08-09',
   generatedAt: new Date().toISOString(),
   method:
-    'Import specifiers are RESOLVED to absolute paths (extensionless + /index aware) and tested for containment in packages/operator-core/lib/pot — not string-matched on "/pot/", which both over- and under-matches. KEEP = at least one NON-TEST importer outside lib/pot.',
+    'Import specifiers are RESOLVED to absolute paths (extensionless + /index aware) and tested for containment in packages/operator-core/lib/pot — not string-matched on "/pot/", which both over- and under-matches. KEEP = at least one LIVE (non-test, non-retired-tier) importer outside lib/pot. ⚠ READ THIS BEFORE EXECUTING ANY BUCKET (D-047/D-049): until 2026-08-10 the predicate was "at least one NON-TEST importer", which answers IS IT SAFE TO MOVE — not IS IT SUBSTRATE. The two agree on most symbols, so the old keep bucket looked right while quietly counting retired-tier tools as substrate evidence. Importers are now split into `liveImporters` (real evidence) and `tierImporters` (a dead thing referencing another dead thing), and symbols whose ONLY non-test importers are tier land in `keepTierOnly` rather than `keep`.',
+  tierImporterSet: {
+    why: 'D-048 ruled the middle-band pot tools tier-vs-container; D-049 established that GATING and CLASSIFICATION are independent, so this set is built on the ruling, not on the gate.',
+    derived: [...gatedTierImporters].sort(),
+    derivedRule: `any non-test file importing ${GATE_MODULE} — gated, therefore dead at runtime, therefore tier. Self-maintaining.`,
+    declared: Object.fromEntries([...DECLARED_TIER_IMPORTERS].sort((a, b) => a[0].localeCompare(b[0]))),
+    selfCheck: tierSelfCheck,
+  },
   counts: {
     potSourceFiles: potFiles.length,
     exportedSymbols: exportsBySymbol.size,
     keep: keep.length,
+    keepTierOnly: keepTierOnly.length,
     move: move.length,
     moveNeedsReview: moveNeedsReview.length,
     dynamicallyImportedPotModules: dynamicImportersByModule.size,
@@ -247,6 +386,7 @@ const artifact = {
     note: 'P-056 recorded 60 non-test files outside lib/pot importing from it (2026-08-10). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list.',
   },
   keep,
+  keepTierOnly,
   moveNeedsReview,
   move,
   externalNonTestImporterFiles: [...externalImporterFiles].sort(),
@@ -262,8 +402,20 @@ if (!quiet) {
   console.log(`pot source files (non-test): ${c.potSourceFiles}`);
   console.log(`exported symbols:            ${c.exportedSymbols}`);
   console.log(`  KEEP (live substrate):     ${c.keep}`);
+  console.log(`  KEEP-TIER-ONLY (D-049):    ${c.keepTierOnly}   ← imported ONLY by retired tier; not substrate`);
   console.log(`  MOVE-NEEDS-REVIEW (dyn):   ${c.moveNeedsReview}`);
   console.log(`  MOVE (retire with tier):   ${c.move}`);
+  console.log(
+    `tier importers: ${artifact.tierImporterSet.derived.length} derived (import ${GATE_MODULE}) + ` +
+      `${Object.keys(artifact.tierImporterSet.declared).length} declared`,
+  );
+  if (tierSelfCheck.ok) {
+    console.log('TIER SELF-CHECK: OK (all expected gated tools detected; no known false positives)');
+  } else {
+    console.log('TIER SELF-CHECK: ⚠ FAILED — the substrate split below is NOT trustworthy');
+    if (tierSelfCheck.missing.length) console.log(`  MISSING (re-inflates substrate): ${tierSelfCheck.missing.join(', ')}`);
+    if (tierSelfCheck.falsePositives.length) console.log(`  FALSE POSITIVE (deletes substrate evidence): ${tierSelfCheck.falsePositives.join(', ')}`);
+  }
   console.log(`dynamically-imported pot modules: ${c.dynamicallyImportedPotModules}`);
   console.log(`external non-test importers: ${c.externalNonTestImporterFiles} static  (test: ${c.externalTestImporterFiles})`);
   console.log(`                             ${c.externalNonTestDynamicImporterFiles} dynamic (test: ${c.externalTestDynamicImporterFiles})`);
