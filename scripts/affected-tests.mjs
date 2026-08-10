@@ -567,6 +567,24 @@ const GC_TAG_SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // EI-19454727576364875 — a `lint:*` script is declared in a package.json, so editing a
+    // package.json is the single edit that can ORPHAN a guard (add a script and wire it nowhere;
+    // rename one a runner invokes by name; delete one a gate leg expects). The meta-guard that
+    // detects exactly that already existed and was reachable only from a root npm script, i.e.
+    // from nothing that any edit selects.
+    //
+    // ⚠ Registering it here was IMPOSSIBLE-IN-EFFECT until the early-exit ordering bug above was
+    // fixed: root `package.json` maps to no workspace, so the guard loop was unreachable for the
+    // very file this entry is keyed on. Registration would have looked correct and done nothing —
+    // which is why the item it closes had concluded the only remedy was to route package.json to
+    // a workspace and pay a whole suite for every root edit.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:guard-reachability',
+    // No hostSuiteRatchet: no test file execs this detector, so it attaches unconditionally —
+    // the fail-safe direction, and cheap because appliesTo is package.json-only.
+    appliesTo: (f) => f === 'package.json' || f.endsWith('/package.json'),
+  },
+  {
     // EI-20098997113620795 — `attributeFailedTask` must be able to name a failing FILE for every
     // test RUNNER the repo actually runs. Twice it could not, and neither time did anything fail:
     // an unreadable runner returns no file rows, which maps to the reason `no-file-rows`, whose
