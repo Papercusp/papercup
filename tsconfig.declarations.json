@@ -70,6 +70,7 @@
   // emitting declarations for every future script in the repo.
   "files": [
     "scripts/lib/not-checked.mjs",
+    "scripts/lib/task-exit-class.mjs",
     "scripts/lib/quarantine.mjs",
     "scripts/lib/sync-write.mjs",
     "scripts/lib/vitest-summary.mjs",

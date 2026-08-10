@@ -39,6 +39,7 @@ import {
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import { resolveBatchTimeoutMs, isWatchdogTimeout } from './lib/batch-watchdog.mjs';
+import { classifyTaskExit, isGatingFailure } from './lib/task-exit-class.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -1573,7 +1574,23 @@ for (const t of tasks) {
         `offending file by re-running this workspace's suites individually, or compare utime/stime on the worker ` +
         `process next time it's caught live (EI-19371039618090828) — a tight syscall loop is system-time-dominated.`,
     );
-  } else if (r.status !== 0 && retryFailed && !isQuarantined) {
+  } else if (
+    retryFailed &&
+    // EI-20107132436867486: retry ONLY what this run would actually count against itself.
+    // This used to read `r.status !== 0 && retryFailed && !isQuarantined`, which re-ran a
+    // task the reporting branch below was about to forgive as non-gating — announcing a
+    // WORKSPACE-shaped "FAILED — retrying once" for one guard that examined nothing, on
+    // every run against a git-sync-swept tree (i.e. the normal case). Same predicate as the
+    // reporting branch, so the two cannot drift apart again.
+    isGatingFailure(
+      classifyTaskExit({
+        status: r.status,
+        notCheckedExitCode: EXIT_NOT_CHECKED,
+        notCheckedIsNonGating: t.notCheckedIsNonGating,
+        quarantined: isQuarantined,
+      }),
+    )
+  ) {
     const failedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
     if (failedFiles.length > 0 && failedFiles.length <= FRESH_RETRY_MAX_FILES) {
       errSync(
@@ -1608,7 +1625,17 @@ for (const t of tasks) {
     }
   }
   if (r.status !== 0) {
-    if (t.notCheckedIsNonGating && r.status === EXIT_NOT_CHECKED) {
+    // WI-37830: the classification is a pure, unit-tested helper because every branch below
+    // runs ONLY once a task has already failed — on a healthy tree that is never, so this
+    // gate-protecting logic was previously reachable by no test and checkable only by
+    // reading it. The retry decision above consults the SAME helper.
+    const exitClass = classifyTaskExit({
+      status: r.status,
+      notCheckedExitCode: EXIT_NOT_CHECKED,
+      notCheckedIsNonGating: t.notCheckedIsNonGating,
+      quarantined: isQuarantined,
+    });
+    if (exitClass === 'not-checked') {
       // "I could not look" is not "I found a violation" — see EXIT_NOT_CHECKED above. Reported
       // LOUDLY rather than swallowed: the guard really did verify nothing, and a reader who
       // takes this run as coverage of the strand class would be wrong. It just is not the
@@ -1619,7 +1646,7 @@ for (const t of tasks) {
           `    checkout, so it has no opinion here. It speaks in a LOCAL run, where the edit\n` +
           `    that triggers it is still uncommitted.`,
       );
-    } else if (isQuarantined) {
+    } else if (exitClass === 'quarantined') {
       quarantinedFailed++;
       errSync(`  (quarantined failure — not gating)`);
     } else {
