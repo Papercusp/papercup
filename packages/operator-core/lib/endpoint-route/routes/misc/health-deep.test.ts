@@ -5,7 +5,7 @@
  * outage into a 503). The handler's real PG/memory round-trips are integration
  * territory; the logic here is what determines ready vs 503.
  */
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { Worker } from 'node:worker_threads';
 import {
   computeDeepReadiness,
@@ -154,27 +154,37 @@ describe('readCpuWorker', () => {
     const m = await cpuMod();
     const rows = bigBatch(m);
 
-    // "Spawns fine, dies on every message": drop the reply so no request is ever
-    // served, which is the run the breaker exists to give up on.
-    const realPost = Worker.prototype.postMessage;
-    (Worker.prototype as unknown as { postMessage: () => void }).postMessage = () => {};
+    // Latching the breaker deliberately writes the operator-facing warning to
+    // console.error, and operator-core's vitest setup FAILS any test that does.
+    // Spy rather than silence: that log is the only runtime trace the latch
+    // leaves, so assert it actually fired instead of merely swallowing it.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      for (let i = 0; i < 3; i++) {
-        const inFlight = m.serializeJsonResponse({ rows }, rows.length);
-        for (let t = 0; t < 200 && readCpuWorker().pendingCount === 0; t++) {
-          await new Promise((r) => setTimeout(r, 10));
+      // "Spawns fine, dies on every message": drop the reply so no request is ever
+      // served, which is the run the breaker exists to give up on.
+      const realPost = Worker.prototype.postMessage;
+      (Worker.prototype as unknown as { postMessage: () => void }).postMessage = () => {};
+      try {
+        for (let i = 0; i < 3; i++) {
+          const inFlight = m.serializeJsonResponse({ rows }, rows.length);
+          for (let t = 0; t < 200 && readCpuWorker().pendingCount === 0; t++) {
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          expect(m._injectWorkerCrashForTest(new Error(`boom ${i}`))).toBe(true);
+          await inFlight; // answered by the sync fallback
         }
-        expect(m._injectWorkerCrashForTest(new Error(`boom ${i}`))).toBe(true);
-        await inFlight; // answered by the sync fallback
+      } finally {
+        (Worker.prototype as unknown as { postMessage: typeof realPost }).postMessage = realPost;
       }
-    } finally {
-      (Worker.prototype as unknown as { postMessage: typeof realPost }).postMessage = realPost;
-    }
 
-    // The process is still CORRECT and would still answer /health/deep 200 —
-    // which is exactly why this has to appear in the payload. Without it the
-    // offload is gone for the rest of the process lifetime with no other trace.
-    expect(readCpuWorker()).toMatchObject({ disabled: true, consecutiveCrashes: 3 });
+      // The process is still CORRECT and would still answer /health/deep 200 —
+      // which is exactly why this has to appear in the payload. Without it the
+      // offload is gone for the rest of the process lifetime with no other trace.
+      expect(readCpuWorker()).toMatchObject({ disabled: true, consecutiveCrashes: 3 });
+      expect(errSpy.mock.calls.flat().join(' ')).toContain('worker-breaker TRIPPED');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   // A reader nothing SERVES is exactly as silent as no reader at all, so pin the

@@ -362,6 +362,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:coord-probe-canary': { spend: 'none', why: 'Runs a verb-cycle probe pair' },
   'system:plan-item-orphan-reconcile': { spend: 'none', why: 'Reconciles orphaned plan items' },
   'system:supervision-reconcile': { spend: 'none', why: 'Reconciles supervision rows' },
+  'system:worker-breaker-watch': {
+    spend: 'none',
+    why: 'HTTP GET of the embed sidecar /healthz + a coord broadcast on a tripped breaker — no spawn/dispatch/wake',
+  },
   'system:readiness-drift-monitor': {
     spend: 'none',
     why: 'Reconciles the work_item_blocked readiness sidecar against its SQL oracle and repairs drift',

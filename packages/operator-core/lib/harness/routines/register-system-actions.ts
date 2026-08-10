@@ -13,10 +13,20 @@
  * Step 2 is NOT optional and NOT deferrable: `routine-classification.registry.test.ts`
  * cross-checks this registry against `TARGET_ROLE_SPEND` and fails on any unclassified
  * action, so skipping it reds the green-checkpoint for the whole fleet hours later,
- * far from the change that caused it. That has now happened three separate times
- * (`system:scout-cycle`, `system:task-reconcile`, `system:gitnexus-reindex`) — every
- * one an author who did step 1 and stopped, because this comment used to describe
- * only step 1. Classify it in the same edit as the import.
+ * far from the change that caused it. That has now happened four separate times
+ * (`system:scout-cycle`, `system:task-reconcile`, `system:gitnexus-reindex`,
+ * `system:pot-git-gc`) — every one an author who did step 1 and stopped, because
+ * this comment used to describe only step 1. Classify it in the same edit as the import.
+ *
+ * ⚠ A RENAME IS BOTH STEPS, TWICE — and this comment used to say only "add a NEW
+ * action", which is why the 4th instance happened to a rename (P-051,
+ * `hive-git-gc` → `pot-git-gc`). Renaming an action ADDS one key and REMOVES
+ * another, so `TARGET_ROLE_SPEND` needs BOTH edits or the cross-check fails from
+ * either side: the new name unclassified, or the old name classified-but-no-longer-
+ * registered. Renaming also desyncs every OTHER registry keyed by the action NAME as
+ * a STRING — `scripts/ungated-mug-kettle-baseline.json` is one, where a stale key
+ * additionally reports the surface as having SHRUNK. Before renaming an action,
+ * grep the whole tree for its name as a literal, not just for its constants.
  *
  * ⚠ Deliberate exception: an action that is a live `target_role` but is NOT actually
  * registered here stays UNCLASSIFIED on purpose (see the `system:template-gym` note in
@@ -82,8 +92,13 @@
  *   - `system:hive-canary` — hive-loop-e2e-testing-2026-06-10 P-009. The daily
  *     live canary: queue one trivial feature into the dedicated canary harness;
  *     a canary still un-terminal past its deadline files a forensics-laden
- *     improvement. Self-gates on the canary harness being registered; seeded
- *     ACTIVE (seed-hive-canary-routine.ts).
+ *     improvement. Self-gates on the canary harness being registered.
+ *     ⚠ RETIRED + DISARMED (retire-mug-kettle-su-only-2026-08-09 P-051 / D-045):
+ *     it (and `system:hive-canary-sla`) measure whether the AUTONOMOUS CUP LOOP
+ *     carries queued work end-to-end — the only valid pass is a cup session — and
+ *     no cup can spawn while `papercusp-mug-kettle-system` is OFF, so every tick
+ *     could only file a false alarm. Both rows are `active=false` AND both actions
+ *     now gate on `mugKettleSystemEnabled()`. Flip the flag ON to restore them.
  *   - `system:coord-probe-canary` + `system:coord-invariant-monitor` —
  *     coord-system-e2e-testing-2026-06-10 P-012/P-013 (Layer D). The live
  *     probe-pair verb-cycle canary (15 min, SLO'd, self-sweeping) and the
@@ -410,7 +425,7 @@ import './autonomy-trust-scan-action';
 // direction that hands out blocked work — was going unobserved.
 import './readiness-drift-monitor-action';
 import './cargo-test-action';
-// p2p-git-live-activation-2026-07-09 P-205 (G-9): `system:hive-git-gc` — the
+// p2p-git-live-activation-2026-07-09 P-205 (G-9): `system:pot-git-gc` — the
 // ephemeral (tier:'ephemeral') per-hive-home cadence bounding a hive-git bare
 // store's namespace-ref growth. Self-gates on `hiveGit.mode` (a no-op for
 // legacy hives); armed by upsertHiveGitGcRoutine at the mode-flip-off-legacy
@@ -432,6 +447,19 @@ import './corpus-term-df-action';
 // entry when FLAGS.SUPERVISOR_AUTO_RESTART (default ON) && entry.autoRestart, with uniform
 // flap-damping; report-only otherwise. Seeded ACTIVE by seed-supervision-reconcile-routine.ts.
 import './supervision-reconcile-action';
+// WI-37700 (follow-on to WI-37696): `system:worker-breaker-watch` — announces a tripped
+// persistent-worker crash-breaker on the embed SIDECAR (`workers.{embedder,reranker}` on
+// its /healthz), a bespoke ephemeral (tier:'ephemeral', 5min) operator-HOME cadence (same
+// deviation reasoning as supervision-reconcile-action). WI-37696 made those latches
+// readable but nothing polled them, so a permanent silent fallback to main-thread work
+// was still never ANNOUNCED. REPORT-ONLY: one broadcast per false→true edge, no restart
+// and no readiness gating (a fallen-back worker is degraded, not down).
+// ⚠ Watches TWO of the three breakers on purpose. The third (`cpuWorker`) is per-CLUSTER-
+// WORKER state that /api/health/deep can only SAMPLE 1-of-N, so it announces itself from
+// inside each worker instead — see cpu-task-worker.ts's configureCpuWorkerBreakerNotifier
+// and worker-breaker-watch.ts's header for why the mechanism differs per leg.
+// Seeded ACTIVE by seed-worker-breaker-watch-routine.ts.
+import './worker-breaker-watch-action';
 // task-manager-no-escape-2026-07-27 P-011: `system:task-reconcile` — the task
 // manager's kernel-vs-ledger reconcile + metrics sample, a bespoke ephemeral
 // (tier:'ephemeral', 30s) operator-HOME cadence (same deviation reasoning as

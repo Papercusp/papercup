@@ -98,6 +98,75 @@ let _workerRefd = false;
  */
 const MAX_CONSECUTIVE_CRASHES = 3;
 
+/**
+ * Announce a breaker trip (WI-37700). Null ⇒ nothing wired; the trip is still logged.
+ *
+ * A SEAM rather than a direct call because this module is a hot-path serialization
+ * helper reached from an HTTP route handler — importing the coord/PG client here would
+ * pull that whole graph into every request path and invite an import cycle. The host
+ * wires the real notifier at boot (`runBootstrap`); tests inject a fake.
+ */
+let _breakerNotifier: ((summary: string) => void) | null = null;
+
+/**
+ * Wire the breaker-trip announcement. Call once per process, at boot.
+ *
+ * MUST be called in every process that SERVES REQUESTS, not just the primary: this
+ * module's state is per-process, and on a clustered host (`hono-host.ts` listens with
+ * `reusePort: true`; `cluster-fork.ts` forks N workers) the offload — and therefore the
+ * breaker — lives independently in each forked worker. That per-process scoping is the
+ * whole reason this leg announces from the inside instead of being polled: a GET of
+ * `/api/health/deep` is answered by ONE worker, so it samples 1 of N rather than
+ * reporting the host. See `worker-breaker-watch.ts` for the full split.
+ */
+export function configureCpuWorkerBreakerNotifier(
+  notify: ((summary: string) => void) | null,
+): void {
+  _breakerNotifier = notify;
+}
+
+/**
+ * Latch the breaker and announce it EXACTLY ONCE.
+ *
+ * Every write to `_workerDisabled = true` goes through here, which is what makes "the
+ * breaker tripped" a single observable event rather than a state three call sites set
+ * independently.
+ *
+ * ⚠ The `if (_workerDisabled) return;` guard is DEFENCE IN DEPTH, not the thing
+ * currently producing the once-only property — measured, not assumed (a mutation probe
+ * removing it leaves the suite green). Today a second call cannot happen: once the latch
+ * is set, `serializeJsonResponse` computes `useWorker = false` and goes straight to the
+ * sync fallback without re-entering `ensureWorker`, and `_worker` is already null so the
+ * 'error' handler cannot fire again. The guard stays because that reachability argument
+ * is an emergent property of three separate call sites rather than an invariant anything
+ * enforces — the same reasoning as `installBeforeExitHook`'s documented-unreachable
+ * pending check — and because the failure it prevents (one broadcast per request to the
+ * whole fleet) is far worse than a redundant branch.
+ */
+function tripBreaker(reason: string): void {
+  if (_workerDisabled) return;
+  _workerDisabled = true;
+  const summary =
+    `⚠ worker-breaker TRIPPED: \`cpuWorker\` in operator host pid ${process.pid} has ` +
+    `latched \`disabled\` (${reason}) — every JSON response body above ` +
+    `${OFFLOAD_MIN_ITEMS} items now serializes INLINE on the main event loop instead of ` +
+    `the worker thread, which is the 30-50ms-per-response lag this module exists to ` +
+    `remove. This is PERMANENT for the life of this process: the breaker never re-arms ` +
+    `itself, and the fallback is byte-identical, so nothing else will ever signal it. ` +
+    `On a clustered host this is ONE worker of N — the others are unaffected, and ` +
+    `restarting the host is what clears it.`;
+  // Logged unconditionally: the log line is the floor, the notifier the improvement.
+  // A trip that only ever reached a notifier nobody wired would be as silent as before.
+  console.error(`[cpu-task-worker] ${summary}`);
+  try {
+    _breakerNotifier?.(summary);
+  } catch (err) {
+    // The notifier is best-effort telemetry on a degradation path — it must never
+    // turn a survivable fallback into a thrown error inside a response handler.
+    console.error('[cpu-task-worker] breaker notifier threw (ignored):', err);
+  }
+}
+
 function workerPath(): string {
   const here =
     typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
@@ -147,7 +216,7 @@ function ensureWorker(): Promise<void> {
       // A fresh Worker is ref'd by libuv until we say otherwise.
       _workerRefd = true;
     } catch (err) {
-      _workerDisabled = true;
+      tripBreaker(`the worker thread could not be spawned: ${err instanceof Error ? err.message : String(err)}`);
       rejectReady(err as Error);
       return;
     }
@@ -194,7 +263,9 @@ function ensureWorker(): Promise<void> {
       // be respawned on every request (WI-37688).
       _worker = null;
       _workerReady = null;
-      if (++_consecutiveCrashes >= MAX_CONSECUTIVE_CRASHES) _workerDisabled = true;
+      if (++_consecutiveCrashes >= MAX_CONSECUTIVE_CRASHES) {
+        tripBreaker(`${_consecutiveCrashes} consecutive runtime crashes without a served request`);
+      }
       if (!initialized) rejectReady(err);
     });
 

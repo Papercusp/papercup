@@ -37,6 +37,12 @@ import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/devic
 import { registerHostPlatform } from '@papercusp/host-platform';
 import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon-preflight';
+// [WI-37700] The cpu-task worker's crash-breaker announcement seam. `sendMessage` is
+// imported DYNAMICALLY at the call site instead: coordination/messages.ts registers an
+// onFlagChange listener at MODULE TOP LEVEL, and this notifier fires at most once per
+// process, so a static edge here would pay that cost — and widen host-bootstrap's import
+// graph for every consumer that merely imports this module — to no benefit.
+import { configureCpuWorkerBreakerNotifier } from '@papercusp/operator-core/lib/cpu-task-worker';
 import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFreshInstallGap } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 import { applyToProcessEnv, readAgentConfig, agentCmdBootWarning } from '@papercusp/operator-core/lib/agent-config';
 import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
@@ -160,10 +166,49 @@ export async function waitForBootMigrationGate(timeoutMs = 20_000): Promise<void
   }
 }
 
+/** Coord identity for the cpu-task breaker broadcast (mirrors supervision-reconcile's). */
+const CPU_WORKER_BREAKER_IDENTITY = {
+  ownerId: 'worker-breaker-watch',
+  ownerLabel: 'worker-breaker-watch',
+  source: 'static-client' as const,
+  workspaceId: null,
+  userId: null,
+};
+
 export function runBootstrap(): void {
   const g = globalThis as GuardedGlobal;
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
+
+  // [WI-37700] Give the cpu-task worker's crash-breaker a voice. The breaker latches
+  // PERMANENTLY on repeated failure and the sync fallback is byte-identical, so a trip
+  // is otherwise invisible — no error, no exit code, just the event-loop lag that module
+  // exists to remove. Wired HERE rather than in a background-workers block on purpose:
+  // runBootstrap runs in EVERY process, and on a clustered host the offload (and so the
+  // breaker) lives independently in each forked request worker, which is exactly the
+  // state /api/health/deep can only sample 1-of-N. `to: ['*']`, report-only — the
+  // fallback keeps serving correct responses, so this is scheduled work, not a page.
+  // try/catch + a void'd promise: a notifier on a degradation path must never throw into
+  // a response handler or wedge boot.
+  try {
+    configureCpuWorkerBreakerNotifier((summary) => {
+      void (async () => {
+        const { sendMessage } = await import(
+          '@papercusp/operator-core/lib/agent-tools/coordination/messages'
+        );
+        await sendMessage(CPU_WORKER_BREAKER_IDENTITY, {
+          to: ['*'],
+          summary,
+          category: 'health',
+          kind: 'message',
+        });
+      })().catch((e) => {
+        console.warn('[cpu-task-worker] breaker broadcast failed (non-fatal):', (e as Error)?.message ?? e);
+      });
+    });
+  } catch (e) {
+    console.warn('[cpu-task-worker] breaker notifier wiring failed (non-fatal):', (e as Error)?.message ?? e);
+  }
 
   // [harness-provided-cadence-ops-2026-06-26 D-007 / WI-1146] Make the launch-blueprint
   // resolver installed-aware (installed `~/.papercusp/blueprints` → built-in) — the same

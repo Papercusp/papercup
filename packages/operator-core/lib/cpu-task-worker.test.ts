@@ -18,7 +18,7 @@
  * All tests run in Node via vitest, so worker_threads is available.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Worker } from 'node:worker_threads';
 import { execFile } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -211,6 +211,11 @@ describe('cpu-task-worker — transient-failure recovery (WI-37688)', () => {
   it('gives up after a run of crashes that serve NOTHING, so a broken worker is not respawned per request', async () => {
     const m = await mod();
     const rows = bigBatch(m);
+    // WI-37700: the trip is now ANNOUNCED, so the log line is expected here rather
+    // than incidental — assert it instead of suppressing it (a silenced spy would
+    // let the announcement be deleted with this suite still green, which is the one
+    // property the announcement has to have).
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Remove the answer so every spawned worker goes ready and then serves
     // nothing — the "spawns fine, dies on every message" case the breaker
@@ -240,6 +245,14 @@ describe('cpu-task-worker — transient-failure recovery (WI-37688)', () => {
     expect(m.getCpuWorkerState()).toMatchObject({ disabled: true, consecutiveCrashes: 3 });
     const json = await m.serializeJsonResponse({ rows }, rows.length);
     expect(JSON.parse(json)).toEqual({ rows });
+
+    // WI-37700: and it SAID SO, exactly once, naming the cause. Before this the trip
+    // was byte-identical to healthy operation from the outside.
+    const trips = errSpy.mock.calls.filter((c) => String(c[0]).includes('worker-breaker TRIPPED'));
+    expect(trips).toHaveLength(1);
+    expect(String(trips[0][0])).toContain('cpuWorker');
+    expect(String(trips[0][0])).toContain('3 consecutive runtime crashes');
+    errSpy.mockRestore();
   });
 
   it('settles an in-flight request when the worker goes away instead of dropping it', async () => {
@@ -339,4 +352,128 @@ describe('cpu-task-worker — transient-failure recovery (WI-37688)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 180_000);
+});
+
+/**
+ * WI-37700 — the breaker ANNOUNCEMENT seam.
+ *
+ * WI-37696 made this breaker readable on /api/health/deep. That surface can only ever
+ * SAMPLE it: the operator host is a node:cluster reuseport fleet and this module's state
+ * is per-process, so one GET reports 1 of N workers. The announcement therefore comes
+ * from inside the process that owns the state — which is only worth anything if it fires
+ * exactly on the false→true edge and never again.
+ *
+ * Driven through the CRASH-RUN latch rather than the spawn-failure one because that is
+ * the branch a test can actually reach: `new Worker(<bad path>)` reports asynchronously
+ * via an 'error' event, so the synchronous catch around the constructor cannot be
+ * triggered from here without inventing a production seam to satisfy a test.
+ */
+describe('cpu-task-worker — breaker announcement (WI-37700)', () => {
+  afterEach(async () => {
+    const m = await mod();
+    m.configureCpuWorkerBreakerNotifier(null);
+  });
+
+  /** A batch big enough to take the worker path (local copy — the WI-37688 block's
+   *  helper is scoped to that describe, and widening it would couple two suites). */
+  function bigBatch(m: { OFFLOAD_MIN_ITEMS: number }) {
+    return Array.from({ length: m.OFFLOAD_MIN_ITEMS + 1 }, (_, i) => ({ id: i }));
+  }
+
+  /** Drive the breaker to its latch the same way the WI-37688 suite above does. */
+  async function tripViaCrashRun(m: Awaited<ReturnType<typeof mod>>): Promise<void> {
+    const rows = bigBatch(m);
+    const realPost = Worker.prototype.postMessage;
+    (Worker.prototype as unknown as { postMessage: () => void }).postMessage = () => {};
+    try {
+      for (let i = 0; i < 3; i++) {
+        const inFlight = m.serializeJsonResponse({ rows }, rows.length);
+        for (let t = 0; t < 200 && m.getCpuWorkerState().pendingCount === 0; t++) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        m._injectWorkerCrashForTest(new Error(`boom ${i}`));
+        await inFlight;
+      }
+    } finally {
+      (Worker.prototype as unknown as { postMessage: typeof realPost }).postMessage = realPost;
+    }
+  }
+
+  it('notifies exactly once on the false→true edge, naming the worker, cause and pid', async () => {
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const seen: string[] = [];
+    m.configureCpuWorkerBreakerNotifier((s) => seen.push(s));
+
+    await tripViaCrashRun(m);
+
+    expect(m.getCpuWorkerState().disabled).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('cpuWorker');
+    expect(seen[0]).toContain('3 consecutive runtime crashes');
+    // The pid is what makes a clustered host's report actionable — "one worker of N"
+    // is useless without saying which.
+    expect(seen[0]).toContain(String(process.pid));
+
+    // Subsequent requests do not re-announce. ⚠ Honest note on WHAT this proves: a
+    // mutation probe removing tripBreaker's `if (_workerDisabled) return;` leaves this
+    // green, because once latched `serializeJsonResponse` short-circuits to the sync
+    // fallback and never re-enters ensureWorker — so the once-only property currently
+    // comes from that bypass, not from the guard. This assertion pins the OBSERVABLE
+    // behaviour (a permanent degradation announces once, not once per request); the
+    // guard itself is documented as defence in depth rather than claimed as tested.
+    const rows = bigBatch(m);
+    await m.serializeJsonResponse({ rows }, rows.length);
+    await m.serializeJsonResponse({ rows }, rows.length);
+    expect(seen).toHaveLength(1);
+
+    errSpy.mockRestore();
+  });
+
+  it('logs the trip even with NO notifier wired, so an unwired host is not silent', async () => {
+    // The log line is the floor and the notifier the improvement: a trip that only ever
+    // reached an unwired seam would be exactly as invisible as before this item.
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    m.configureCpuWorkerBreakerNotifier(null);
+
+    await tripViaCrashRun(m);
+
+    const trips = errSpy.mock.calls.filter((c) => String(c[0]).includes('worker-breaker TRIPPED'));
+    expect(trips).toHaveLength(1);
+    errSpy.mockRestore();
+  });
+
+  it('survives a notifier that throws — a degradation path must not become an error', async () => {
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    m.configureCpuWorkerBreakerNotifier(() => {
+      throw new Error('coord exploded');
+    });
+
+    await tripViaCrashRun(m);
+
+    // The latch still set, and the module still serving: this runs inside an HTTP
+    // route handler, so a throwing notifier must not turn a survivable fallback into
+    // a failed response.
+    expect(m.getCpuWorkerState().disabled).toBe(true);
+    const rows = bigBatch(m);
+    const json = await m.serializeJsonResponse({ rows }, rows.length);
+    expect(JSON.parse(json)).toEqual({ rows });
+    errSpy.mockRestore();
+  });
+
+  it('re-announces after _resetCpuWorker clears the latch and it trips again', async () => {
+    const m = await mod();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const seen: string[] = [];
+    m.configureCpuWorkerBreakerNotifier((s) => seen.push(s));
+
+    await tripViaCrashRun(m);
+    await m._resetCpuWorker();
+    await tripViaCrashRun(m);
+
+    expect(seen).toHaveLength(2);
+    errSpy.mockRestore();
+  });
 });
