@@ -20,6 +20,7 @@ import {
   buildPlanBoard,
   buildWorkItemBoard,
   goalColumn,
+  partitionGoals,
   goalSpendLabel,
   GOAL_START_CARD_ID,
   GOAL_START_COLUMN,
@@ -832,5 +833,142 @@ describe('buildGoalBoard — the "+ Start a goal" card', () => {
     // unmatched string away from a dead button, and this card has no entity id.
     const board = buildGoalBoard([], { nowMs: NOW });
     expect(startCardOf(board)!.open).toEqual({ kind: 'start-goal' });
+  });
+});
+
+/**
+ * Subdirectives (goals-tab-improvement-2026-08-09 P-017 / D-006 / D-014).
+ *
+ * ⚠ THE GUARD THE ITEM TEXT ASKS FOR IS NOT THE GUARD BUILT HERE, deliberately.
+ * P-010 and P-017 both prescribe "a parent + two children fixture asserting no
+ * summed figure is rendered anywhere", inherited from D-002/D-021. D-006 — written
+ * after both — retires that hazard for parent/child: "a child has no separable
+ * spend and no separable session cost … the sub-goal spend-summing hazard D-002
+ * warned about mostly dissolves … Do not carry the parent/child version of that
+ * worry into the nested layout; carry the project version."
+ *
+ * So the fixture is kept (parent + two children) and the assertion is STRONGER:
+ * a child contributes no spend figure at all, because `HudSubGoal` has nowhere to
+ * put one. Asserting "no summed number appears" would test that nobody wrote an
+ * addition; asserting the child shape carries no money field tests that nobody
+ * CAN. D-002 still binds at the top level, where distinct goals share projects —
+ * that is P-007's obligation and is untouched here.
+ */
+describe('buildGoalBoard — subdirectives (P-017)', () => {
+  const NOW = Date.parse('2026-08-09T00:00:00.000Z');
+  const allCards = (b: ReturnType<typeof buildGoalBoard>) =>
+    b.columns.flatMap((c) => c.cards).filter((c) => c.id !== GOAL_START_CARD_ID);
+
+  /** Parent + two children, the fixture both item texts call for. */
+  const FAMILY: HudGoalInput[] = [
+    { id: 'parent', title: 'Ship a paid app', status: 'active', spendUsd: 300, budgetCents: 50_000 },
+    { id: 'kid1', title: 'Rewrite onboarding', status: 'active', parentId: 'parent', spendUsd: 120 },
+    { id: 'kid2', title: 'Cut the trial to 7 days', status: 'achieved', parentId: 'parent', spendUsd: 80 },
+  ];
+
+  it('gives a child NO card of its own — the whole of D-006 on this board', () => {
+    // Before P-017 every row went through toGoalCard, so a child landed in
+    // whatever lane its own status implied and read as a peer of its parent.
+    const ids = allCards(buildGoalBoard(FAMILY, { nowMs: NOW })).map((c) => c.id);
+    expect(ids).toEqual(['parent']);
+    expect(ids).not.toContain('kid1');
+    expect(ids).not.toContain('kid2');
+  });
+
+  it('nests both children on the parent card, terminal state preserved', () => {
+    const [card] = allCards(buildGoalBoard(FAMILY, { nowMs: NOW }));
+    expect(card.subGoals?.map((s) => s.title)).toEqual([
+      'Rewrite onboarding',
+      'Cut the trial to 7 days',
+    ]);
+    // A finished directive is struck through, not dropped — it is part of how the
+    // goal got here, so the list of what steered the agent stays complete.
+    expect(card.subGoals?.map((s) => s.terminal)).toEqual([false, true]);
+  });
+
+  it('carries NO spend on a child, so parent+child spend cannot be added (D-006)', () => {
+    const [card] = allCards(buildGoalBoard(FAMILY, { nowMs: NOW }));
+    for (const sub of card.subGoals ?? []) {
+      // Not "the number is absent" — there is no field that could hold one.
+      expect(sub).not.toHaveProperty('spendUsd');
+      expect(sub).not.toHaveProperty('badges');
+      expect(Object.keys(sub).sort()).toEqual(['id', 'ref', 'status', 'terminal', 'title']);
+    }
+  });
+
+  it('leaves the PARENT spend exactly its own — never the family total', () => {
+    // The children are worth $120 + $80; a rolled-up figure would read $500.
+    const [card] = allCards(buildGoalBoard(FAMILY, { nowMs: NOW }));
+    const spend = card.badges.find((b) => b.id === 'parent:spend')!;
+    expect(spend.label).toBe('$300 / $500');
+  });
+
+  it('PROMOTES an orphan instead of dropping it, and says why', () => {
+    // A child whose parent is outside the window has no card to nest inside.
+    // Silently discarding it would remove a real goal from the board with
+    // nothing saying so — the one outcome this board's counts discipline bars.
+    const board = buildGoalBoard(
+      [{ id: 'kid1', title: 'Rewrite onboarding', status: 'active', parentId: 'missing' }],
+      { nowMs: NOW },
+    );
+    const cards = allCards(board);
+    expect(cards.map((c) => c.id)).toEqual(['kid1']);
+    expect(cards[0].context).toContain('not on this board');
+  });
+
+  it('finds a nested child by search, through its parent card', () => {
+    // A child has no card, so the parent is the only thing a query can return it
+    // in. Without this the filter would hide a matching child entirely.
+    const board = buildGoalBoard(FAMILY, { nowMs: NOW, query: 'onboarding' });
+    expect(allCards(board).map((c) => c.id)).toEqual(['parent']);
+  });
+
+  it('does not treat a self-parented row as its own child', () => {
+    // Would otherwise nest a card inside itself and drop it from every lane.
+    const { roots, childrenByParent } = partitionGoals([
+      { id: 'g1', title: 'Loop', status: 'active', parentId: 'g1' },
+    ]);
+    expect(roots.map((r) => r.id)).toEqual(['g1']);
+    expect(childrenByParent.size).toBe(0);
+  });
+
+  it('counts goals, not directives — a family of three is one card', () => {
+    const board = buildGoalBoard(FAMILY, { nowMs: NOW });
+    expect(board.total).toBe(1);
+  });
+
+  /* EVERY FETCHED ROW RENDERS EXACTLY ONCE — the invariant behind the orphan and
+     depth cases alike. A goal that disappears cannot announce that it has, so
+     these two are asserted by counting the whole set rather than by inspecting
+     the case that happens to be interesting. */
+  it('nests a GRANDCHILD on the root card instead of dropping it', () => {
+    // parent_id is a free self-FK, so A←B←C is representable. Attaching C to B
+    // would strand it: B is not a root, so B has no card to nest C inside.
+    // Flattening to the root is also what D-006 means — the root is the agent,
+    // and every descendant is a direction that agent was pointed in.
+    const board = buildGoalBoard(
+      [
+        { id: 'a', title: 'Root goal', status: 'active' },
+        { id: 'b', title: 'Child', status: 'active', parentId: 'a' },
+        { id: 'c', title: 'Grandchild', status: 'active', parentId: 'b' },
+      ],
+      { nowMs: NOW },
+    );
+    const cards = allCards(board);
+    expect(cards.map((c) => c.id)).toEqual(['a']);
+    expect(cards[0].subGoals?.map((s) => s.title).sort()).toEqual(['Child', 'Grandchild']);
+  });
+
+  it('keeps a PARENT CYCLE visible rather than hanging or dropping it', () => {
+    // Uninterpretable data must fail toward visible, never toward vanished — and
+    // the walk must terminate.
+    const board = buildGoalBoard(
+      [
+        { id: 'x', title: 'X', status: 'active', parentId: 'y' },
+        { id: 'y', title: 'Y', status: 'active', parentId: 'x' },
+      ],
+      { nowMs: NOW },
+    );
+    expect(allCards(board).map((c) => c.id).sort()).toEqual(['x', 'y']);
   });
 });

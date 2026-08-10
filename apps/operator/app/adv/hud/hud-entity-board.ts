@@ -786,10 +786,42 @@ export function partitionGoals(goals: HudGoalInput[]): {
   childrenByParent: Map<string, HudSubGoal[]>;
   orphans: HudGoalInput[];
 } {
-  const present = new Set(goals.map((g) => g.id));
+  const byId = new Map(goals.map((g) => [g.id, g]));
   const roots: HudGoalInput[] = [];
   const orphans: HudGoalInput[] = [];
   const childrenByParent = new Map<string, HudSubGoal[]>();
+
+  /**
+   * Walk to the ROOT ancestor, not merely to the immediate parent.
+   *
+   * `goals.parent_id` is a free self-FK, so A←B←C is representable, and attaching
+   * C to B would strand it: only roots and orphans get cards, so a grandchild
+   * nested under a goal that is itself nested renders NOWHERE. That is the same
+   * silent loss the orphan branch exists to prevent, one level deeper.
+   *
+   * Flattening to the root is also the semantically right answer, not just the
+   * safe one: under D-006 the ROOT is the agent, and every descendant — at any
+   * depth — is a direction that agent was pointed in. So they all belong on the
+   * root's card.
+   *
+   * Returns null when the chain leaves this set (→ orphan) or cycles. A cycle is
+   * impossible to render and must not hang the board, so `seen` bounds the walk;
+   * the row is treated as an orphan, which keeps it VISIBLE rather than dropping
+   * it — the honest failure direction for data we cannot interpret.
+   */
+  function rootOf(start: HudGoalInput): HudGoalInput | null {
+    let cur = start;
+    const seen = new Set<string>([cur.id]);
+    for (;;) {
+      const parentId = cur.parentId ?? null;
+      if (!parentId || parentId === cur.id) return cur;
+      const next = byId.get(parentId);
+      if (!next) return null;
+      if (seen.has(next.id)) return null;
+      seen.add(next.id);
+      cur = next;
+    }
+  }
 
   for (const g of goals) {
     const parentId = g.parentId ?? null;
@@ -798,13 +830,14 @@ export function partitionGoals(goals: HudGoalInput[]): {
       roots.push(g);
       continue;
     }
-    if (!present.has(parentId)) {
+    const root = rootOf(g);
+    if (!root) {
       orphans.push(g);
       continue;
     }
-    const list = childrenByParent.get(parentId);
+    const list = childrenByParent.get(root.id);
     if (list) list.push(toSubGoal(g));
-    else childrenByParent.set(parentId, [toSubGoal(g)]);
+    else childrenByParent.set(root.id, [toSubGoal(g)]);
   }
   return { roots, childrenByParent, orphans };
 }

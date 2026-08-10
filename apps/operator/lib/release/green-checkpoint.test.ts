@@ -84,6 +84,9 @@ import {
   type FailingFile,
   type IsolationResult,
   type WorkspaceRerunResult,
+  // WI-37605: re-exported from green-checkpoint.ts (:961). Used so the persisted-log header
+  // assertion resolves the tag instead of hardcoding the production literal.
+  orchestratorStdoutTag,
 } from './green-checkpoint';
 import { git, revParse, advanceReady } from './git-ops';
 import { releaseConfig } from './release-config';
@@ -3274,8 +3277,13 @@ describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches th
 
     expect(body).toContain('Test Files  571 passed (573)');
     expect(body).toContain('Tests  42576 passed');
-    // header first, then the transcript, then the suite output it precedes
-    expect(body.indexOf('[green-checkpoint] candidate=')).toBe(0);
+    // header first, then the transcript, then the suite output it precedes.
+    // WI-37605: the header now emits the RESOLVED tag, so this must not hardcode the production
+    // literal — under vitest the same write path legitimately produces the FIXTURE tag, which is
+    // the whole point (a log written by a test announces itself in its own first line instead of
+    // opening byte-identically to a genuine verdict log). Resolving it here keeps the assertion
+    // about ORDERING, which is what this test exists to pin.
+    expect(body.indexOf(`${orchestratorStdoutTag()} candidate=`)).toBe(0);
     expect(body.indexOf('--- orchestrator transcript')).toBeLessThan(body.indexOf('Test Files  571 passed'));
   });
 

@@ -35,13 +35,28 @@
  *   motivates a paraphrase follow-up) but it is not an estimate of the lift a
  *   user would see.
  *
+ * ⚠ RECALL IS A SET METRIC AND CANNOT SEE ORDERING. It answers "did the relevant
+ *   row cross into the top k", never "where in the top k did it land". Until
+ *   2026-08-10 this file imported `recallAtK` ALONE, so a treatment that moved a
+ *   relevant row from rank 9 to rank 1 measured as a dead-flat zero delta — the
+ *   same blind spot D-073/D-074 removed from the owner-query eval. Both are now
+ *   reported (plan semantic-search-fingerprint-coverage-2026-08-03, D-075).
+ *
+ * ⚠ READ THE TWO NUMBERS AS COMPLEMENTS, NOT AS ONE BEING A SUPERSET.
+ *   `ndcgAtK` normalises against the ideal ordering OF THE GRADES IT WAS GIVEN
+ *   (metrics.ts: `const ideal = [...grades].sort()`), i.e. of what actually landed
+ *   in the top k — NOT against the full relevant set. So a query whose 3 relevant
+ *   rows yield only 1 in the top k is scored on how well THAT ONE is placed, with
+ *   no penalty for the 2 missed. Completeness is recall's job and ordering is
+ *   nDCG's, and neither one subsumes the other here.
+ *
  * READ-ONLY: it selects and embeds. It writes nothing, anywhere.
  *
  *   npx tsx packages/operator-core/lib/search/bench/ref-expansion-recall-cli.ts
  *   npx tsx ... --docs 300 --queries 150 --k 10 --concurrency 3
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { recallAtK } from '@papercusp/search-core';
+import { evaluateRelevance } from '@papercusp/search-core';
 
 import { resolveBackfillEmbedder } from '../embed-backfill';
 

@@ -1,0 +1,322 @@
+#!/usr/bin/env node
+/**
+ * gen-claude-md-manifest.mjs — P-014 of claude-md-projection-from-pg-2026-08-10
+ *
+ * Emits the part manifest that P-003 loads into harness_shared.harness_doc_parts.
+ *
+ * WHY A GENERATOR AND NOT A COMMITTED JSON FILE.
+ * CLAUDE.md is edited continuously by the whole fleet — it grew 678 bytes and 8 lines
+ * during the ~40 minutes between the P-002 classification and this script being written.
+ * A committed manifest would be stale before it was reviewed. The durable artifact is the
+ * CLASSIFICATION (the RANGES table below, which is human judgment); the manifest is derived.
+ *
+ * WHY EVERY RANGE CARRIES A FINGERPRINT.
+ * Ranges are line-anchored, and line numbers rot on every edit. Each range therefore records
+ * the first non-blank line it began at when it was classified. The generator asserts that
+ * fingerprint still matches, so drift FAILS LOUDLY naming the ranges to re-review, instead of
+ * silently attaching last week's classification to today's paragraph. That failure mode —
+ * a well-formed manifest that classifies the wrong text — is the one worth engineering against.
+ *
+ *   node scripts/gen-claude-md-manifest.mjs                # write manifest, exit 1 on drift
+ *   node scripts/gen-claude-md-manifest.mjs --check        # verify only, write nothing
+ *   node scripts/gen-claude-md-manifest.mjs --out <path>
+ *
+ * UNITS. `wc -c` reports BYTES; String.length reports UTF-16 code units. This file is dense
+ * with multibyte glyphs, so the two differ by ~1.5k. The manifest records BOTH, named, because
+ * the projector's budget (D-008) is compared against a threshold expressed in characters.
+ */
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// Overridable so the drift detector can be proven falsifiable against a mutated COPY
+// outside the tree (tier 2 of the mutation-probe recipe) — never by mutating the shared file.
+const SOURCE = process.env.PAPERCUSP_CLAUDE_MD
+  ? resolve(process.env.PAPERCUSP_CLAUDE_MD)
+  : resolve(ROOT, 'CLAUDE.md');
+const DEFAULT_OUT = resolve(ROOT, 'packages/operator-core/lib/doc-projection/claude-md-part-manifest.json');
+
+/**
+ * The P-002 classification. [startLine, endLine, kind, fingerprint]
+ *   INV invariant · PTR pointer · REC recipe · INS prose · EXP expiring correction
+ *
+ * INV/PTR/REC project into CLAUDE.md + AGENTS.md. INS/EXP move to agent-insights rows and
+ * never project (enforced by harness_doc_parts_prose_never_projects, migration 781).
+ * EXP is prose with a bounded life: scaffolding that exists only to correct an earlier
+ * version of this file, and which should age out once no agent carries the stale reading.
+ *
+ * Contiguous and exhaustive: covers every line, no gaps, no overlaps (asserted below).
+ */
+const RANGES = [
+  [1, 15, 'INV', '# Papercup — agent guide'],
+  [16, 30, 'INV', '## ▶ Running / testing this app — it is '],
+  [31, 57, 'EXP', '> ⚠ **Launch via `npm run dev` — never a'],
+  [58, 73, 'INV', '> **You CAN — and therefore MUST — verif'],
+  [74, 84, 'INV', '- **Never open `:3055` or `:3070` in a b'],
+  [85, 89, 'PTR', 'The `:3055`/`:3070` layer **is the deskt'],
+  [90, 106, 'INV', '## Almost all state should be in nuqs'],
+  [107, 123, 'INV', '## All client data sync goes through `@p'],
+  [124, 135, 'INV', '## Scheduling: no bare `setInterval`, no'],
+  [136, 152, 'INS', '⚠ **`schedule:inventory` is PER-PROCESS,'],
+  [153, 166, 'INS', '⚠ Federation was necessary, **not suffic'],
+  [167, 181, 'INV', '## Spawning: no unenrolled `detached` sp'],
+  [182, 196, 'INV', "live desktop window and peer agents' Xvf"],
+  [197, 222, 'INV', '## Shared-lib singletons: pin through th'],
+  [223, 282, 'INS', 'Measured (EI-19451658870832332): `@paper'],
+  [283, 295, 'INV', '## Deployment model: desktop is the prod'],
+  [296, 349, 'INV', '## Retired / preserved-not-active surfac'],
+  [350, 365, 'INS', '**What enforces this section.** `lint:no'],
+  [366, 375, 'PTR', '## Borrowable libraries — generic-first'],
+  [376, 390, 'INV', '## This app is in testing — there are no'],
+  [391, 408, 'INV', '## A blocker is work, not a stop sign — '],
+  [409, 422, 'INV', '## A cross-lane ruling is a plan Decisio'],
+  [423, 432, 'INS', 'Two mechanisms make this cheap in practi'],
+  [433, 442, 'INV', '## Branch discipline: the shared tree st'],
+  [443, 452, 'INV', '## Commit discipline: git-sync owns comm'],
+  [453, 541, 'INS', '> ⚠ **Checking whether your edit landed,'],
+  [542, 552, 'INV', '> ⚠ **`git blame` on this repo never tel'],
+  [553, 569, 'INV', '> 🚨 **NEVER run a tree-wide destructive '],
+  [570, 583, 'INV', '**Never sit in a wait/poll loop for git-'],
+  [584, 601, 'INV', '**"Is my change live, and if not what is'],
+  [602, 630, 'INV', '**About to ACT on one of these values — '],
+  [631, 650, 'INV', 'Two specifics worth knowing:'],
+  [651, 679, 'EXP', '⚠⚠ **This passage asserted the OPPOSITE '],
+  [680, 709, 'INV', '⚠⚠ **THE PREMISE UNDER EVERY RECIPE BELO'],
+  [710, 726, 'REC', '✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 T'],
+  [727, 778, 'INS', 'The `candidate` field DRIFTS: a single c'],
+  [779, 869, 'INS', '**FALLBACK — the routines marker in Post'],
+  [870, 1019, 'INS', '**Then — and only then — settle containm'],
+  [1020, 1084, 'INS', "⚠⚠ **A RUN'S JUDGED CANDIDATE CHANGES MI"],
+  [1085, 1183, 'INS', '⚠ **`AFFECTED_TESTS_RESULT failed=N` cou'],
+  [1184, 1249, 'INS', '⚠ **`skipped-locked` is a DESIGNED DEFER'],
+  [1250, 1273, 'INV', '🚨 **Never fire a manual `release:checkpo'],
+  [1274, 1333, 'INS', '🚨🚨 **Never answer "is a gate run in flig'],
+  [1334, 1362, 'INV', '## Server-side edits and the two-port mo'],
+  [1363, 1380, 'PTR', '## Before you design or test — read the '],
+  [1381, 1389, 'PTR', '## Read this before changing code — perf'],
+  [1390, 1395, 'INV', '## Storage policy: Postgres by default'],
+  [1396, 1427, 'INV', '- **Schema = migrations only; NO runtime'],
+  [1428, 1437, 'INV', '| you want | use | not |'],
+  [1438, 1468, 'INS', 'Nothing in the table fits and the shape '],
+  [1469, 1494, 'INS', 'Prefer `work_items:list{severity}` / `wo'],
+  [1495, 1558, 'INV', '## Reaching for bash? These reads alread'],
+  [1559, 1594, 'INV', '## `cd` outside the repo tree does NOT p'],
+  [1595, 1607, 'INV', '## Long jobs: background them at the LAU'],
+  [1608, 1646, 'INS', '⚠ **A background job still has a wall-cl'],
+  [1647, 1689, 'INS', "⚠ **A background command's own reported "],
+  [1690, 1734, 'INV', '⚠ **Never wait on a process-table patter'],
+  [1735, 1777, 'REC', '✅ **"Is this process actually DOING WORK'],
+  [1778, 1797, 'INS', "⚠ **Waiting on the right PID isn't enoug"],
+  [1798, 1851, 'INV', '## Feature flags + PostHog'],
+  [1852, 1866, 'INV', '## Tests after editing'],
+  [1867, 1907, 'INS', 'A git-based probe cannot answer that que'],
+  [1908, 1915, 'INV', '⚠⚠ **`lint:tsc` typechecks `packages/ope'],
+  [1916, 2015, 'INS', '> ✅ **Editing `apps/operator` — includin'],
+  [2016, 2049, 'INV', '**The trigger to watch: adding a REQUIRE'],
+  [2050, 2070, 'INV', 'Schema/migration edits (`libs/papercusp/'],
+  [2071, 2096, 'INS', "It discovers each file's owning workspac"],
+  [2097, 2139, 'INS', '**`npm install`/`npm ci` on this shared '],
+  [2140, 2168, 'INV', '## Proving a guard is falsifiable — neve'],
+  [2169, 2211, 'INS', '| your subject | how to prove falsifiabi'],
+  [2212, 2220, 'PTR', '## Browser checks — use `verdict`'],
+  [2221, 2227, 'PTR', '## Use Context7 for current library docs'],
+  [2228, 2284, 'INV', '## Adding a tool — the per-role guidance'],
+  [2285, 2299, 'INV', '## Prompts are auto-generated — edit the'],
+  [2300, 2311, 'INV', '## Where new tests go — four canonical f'],
+];
+
+// kind -> (schema kind, client scope, budget rank). Ranks are coarse on purpose: D-008 keeps
+// every imperative, so rank orders the CUT if the budget bites, and safety rails must survive.
+const KIND = { INV: 'invariant', PTR: 'pointer', REC: 'recipe', INS: 'prose', EXP: 'prose' };
+const SCOPE = { INV: ['all'], PTR: ['all'], REC: ['all'], INS: [], EXP: [] };
+const RANK = { INV: 100, REC: 200, PTR: 300, EXP: 900, INS: 1000 };
+
+const sha16 = (s) => createHash('sha256').update(s).digest('hex').slice(0, 16);
+
+function slug(s, max = 48) {
+  return s
+    .replace(/`|\*\*/g, '')
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s-]+/g, '-') // '_' too: \w keeps it, but part keys stay strictly kebab-case
+    .slice(0, max)
+    .replace(/^-+|-+$/g, '');
+}
+
+/** Blank-line-delimited blocks, with fenced code held together. */
+function splitBlocks(lines, from, to) {
+  const out = [];
+  let cur = [];
+  let start = null;
+  let fenced = false;
+  for (let i = from - 1; i < to; i++) {
+    const line = lines[i] ?? '';
+    if (line.trim().startsWith('```')) fenced = !fenced;
+    if (!line.trim() && !fenced) {
+      if (cur.length) out.push({ start, end: i, body: cur });
+      cur = [];
+      start = null;
+      continue;
+    }
+    if (start === null) start = i + 1;
+    cur.push(line);
+  }
+  if (cur.length) out.push({ start, end: to, body: cur });
+  return out;
+}
+
+const firstNonBlank = (lines, a, b) => (lines.slice(a - 1, b).find((l) => l.trim()) ?? '').trim();
+
+export function buildManifest(text) {
+  const lines = text.split('\n');
+  const problems = [];
+
+  // ── structural checks on the classification itself ──
+  const sorted = [...RANGES].sort((x, y) => x[0] - y[0]);
+  if (sorted[0][0] !== 1) problems.push(`ranges must start at line 1, start at ${sorted[0][0]}`);
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const end = sorted[i][1];
+    const next = sorted[i + 1][0];
+    if (next !== end + 1) {
+      problems.push(next > end + 1 ? `gap: lines ${end + 1}..${next - 1} unclassified` : `overlap at line ${next}`);
+    }
+  }
+  const lastLine = sorted[sorted.length - 1][1];
+  if (lastLine !== lines.length) {
+    problems.push(
+      `ranges end at line ${lastLine} but the file has ${lines.length} — ${lines.length - lastLine} line(s) unclassified. ` +
+        `CLAUDE.md has grown since classification; re-run P-002 over the new lines.`,
+    );
+  }
+
+  // ── fingerprint check: has the text under each range moved? ──
+  const drifted = [];
+  for (const [a, b, kind, fingerprint] of sorted) {
+    const actual = firstNonBlank(lines, a, b).slice(0, fingerprint.length);
+    if (actual !== fingerprint) drifted.push({ range: [a, b], kind, expected: fingerprint, actual });
+  }
+
+  // ── emit parts ──
+  const heads = [];
+  lines.forEach((l, i) => {
+    if (l.startsWith('## ')) heads.push([i + 1, l.slice(3).trim()]);
+  });
+  const sectionOf = (n) => {
+    let cur = '(preamble)';
+    for (const [ln, t] of heads) {
+      if (ln <= n) cur = t;
+      else break;
+    }
+    return cur;
+  };
+
+  const parts = [];
+  const seen = new Set();
+  let ordinal = 0;
+  for (const [a, b, kind] of sorted) {
+    const section = sectionOf(a);
+    for (const blk of splitBlocks(lines, a, b)) {
+      const raw = blk.body.join('\n');
+      if (raw.trimStart().startsWith('## ')) continue; // headings are emitted by the projector
+      ordinal += 1;
+      const base = slug(`${slug(section, 28)}--${firstNonBlank(lines, blk.start, blk.end)}`);
+      let key = base || `part-${ordinal}`;
+      let n = 1;
+      while (seen.has(key)) key = `${base}-${++n}`;
+      seen.add(key);
+      const projects = SCOPE[kind].length > 0;
+      parts.push({
+        partKey: key,
+        ordinal,
+        kind: KIND[kind],
+        clientScope: SCOPE[kind],
+        targetSection: projects ? section : null,
+        projectRank: RANK[kind],
+        expiring: kind === 'EXP',
+        blockSha: sha16(raw),
+        chars: raw.length + 1,
+        lineHint: [blk.start, blk.end],
+      });
+    }
+  }
+
+  // ── invariants the loader depends on (mirrors migration 781's CHECK constraints) ──
+  for (const p of parts) {
+    if (p.kind === 'prose' && p.clientScope.length) problems.push(`${p.partKey}: prose must not project`);
+    if (p.clientScope.length && !p.targetSection) problems.push(`${p.partKey}: projected part needs a targetSection`);
+  }
+
+  const byKind = {};
+  for (const p of parts) {
+    byKind[p.kind] ??= { parts: 0, chars: 0 };
+    byKind[p.kind].parts += 1;
+    byKind[p.kind].chars += p.chars;
+  }
+  const projectedChars = parts.reduce((n, p) => n + (p.clientScope.length ? p.chars : 0), 0);
+
+  return {
+    manifest: {
+      schema: 'claude-md-part-manifest/1',
+      sourcePath: 'CLAUDE.md',
+      docId: 'claude-md',
+      contentMode: 'composed', // migration 781 / D-010: parts are canonical, the file is output
+      snapshotSha256: createHash('sha256').update(text).digest('hex'),
+      // Named units, because `wc -c` (bytes) and String.length disagree by ~1.5k on this file.
+      snapshotChars: text.length,
+      snapshotBytes: Buffer.byteLength(text, 'utf8'),
+      snapshotLines: lines.length,
+      generatedBy: 'scripts/gen-claude-md-manifest.mjs (P-014, claude-md-projection-from-pg-2026-08-10)',
+      summary: { byKind, projectedChars, totalParts: parts.length },
+      parts,
+    },
+    problems,
+    drifted,
+  };
+}
+
+// ── CLI ──
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const argv = process.argv.slice(2);
+  const checkOnly = argv.includes('--check');
+  const outIdx = argv.indexOf('--out');
+  const out = outIdx >= 0 ? resolve(argv[outIdx + 1]) : DEFAULT_OUT;
+
+  const text = readFileSync(SOURCE, 'utf8');
+  const { manifest, problems, drifted } = buildManifest(text);
+  const { byKind, projectedChars, totalParts } = manifest.summary;
+
+  console.log(`gen-claude-md-manifest: ${totalParts} parts from ${manifest.snapshotChars} chars ` +
+              `(${manifest.snapshotBytes} bytes) / ${manifest.snapshotLines} lines`);
+  for (const k of ['invariant', 'pointer', 'recipe', 'prose']) {
+    const v = byKind[k] ?? { parts: 0, chars: 0 };
+    const pct = ((100 * v.chars) / manifest.snapshotChars).toFixed(1);
+    console.log(`  ${k.padEnd(10)} ${String(v.parts).padStart(3)} parts  ${String(v.chars).padStart(7)} chars  (${pct}%)`);
+  }
+  console.log(`  projected  ${projectedChars} chars (${((100 * projectedChars) / manifest.snapshotChars).toFixed(1)}%)`);
+
+  if (drifted.length) {
+    console.error(`\n✗ ${drifted.length} range(s) DRIFTED — the text under them is not what was classified.`);
+    console.error('  Re-review these against the P-002 map before loading; do NOT just renumber them.');
+    for (const d of drifted.slice(0, 12)) {
+      console.error(`   L${d.range[0]}-${d.range[1]} [${d.kind}]`);
+      console.error(`     classified: ${JSON.stringify(d.expected)}`);
+      console.error(`     now reads : ${JSON.stringify(d.actual)}`);
+    }
+    if (drifted.length > 12) console.error(`   ... and ${drifted.length - 12} more`);
+  }
+  for (const p of problems) console.error(`✗ ${p}`);
+
+  const bad = drifted.length > 0 || problems.length > 0;
+  if (!checkOnly && !bad) {
+    writeFileSync(out, `${JSON.stringify(manifest, null, 1)}\n`);
+    console.log(`\n✓ wrote ${out}`);
+  } else if (!checkOnly && bad) {
+    console.error('\n✗ refusing to write a manifest built on a drifted or incomplete classification.');
+  } else if (!bad) {
+    console.log('\n✓ classification is current (--check: nothing written)');
+  }
+  process.exit(bad ? 1 : 0);
+}

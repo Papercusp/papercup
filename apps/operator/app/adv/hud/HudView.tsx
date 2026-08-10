@@ -1083,6 +1083,10 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
            growing a chat surface of its own — D-005, never fork a second chat
            renderer. `setOpenOwner` is that route, already owned here. */
         onOpenAgent={(ownerId) => void setOpenOwner(ownerId)}
+        /* P-017: re-targets THIS popup at the parent goal when the open goal is a
+           subdirective. Same `hudgoal` route the board click uses — not a second
+           navigation path, and not a nested popup. */
+        onOpenGoal={(id) => void setGoalFilter(id)}
       />
       {/* P-015: the ORIGIN of a goal, opposite the panel above which is its
           destination. Submitting spawns the GOAL-mode agent (D-008), so on

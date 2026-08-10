@@ -66,6 +66,9 @@ import { Modal } from '@/app/harness/Modal';
 import { Tooltip } from '@/app/harness/Tooltip';
 import GoalWorkRail from './GoalWorkRail';
 import GoalStatusControl from './GoalStatusControl';
+// P-017: the hierarchy section. Its own file because it owns a WRITE (creating a
+// subdirective) and this component is already long.
+import SubGoalsSection from './SubGoalsSection';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
@@ -150,6 +153,7 @@ export default function GoalDetailPanel({
   onClose,
   onOpenWorkItem,
   onOpenAgent,
+  onOpenGoal,
 }: {
   /** The open goal — null renders nothing (closed). */
   goalId: string | null;
@@ -165,6 +169,11 @@ export default function GoalDetailPanel({
    *  re-target the session popup passes nothing and the control is not
    *  rendered at all, rather than rendered dead. */
   onOpenAgent?: (ownerId: string) => void;
+  /** P-017: re-targets this popup at another goal — used by the subdirective
+   *  section to make "Subdirective of X" a destination. Optional: a host that
+   *  cannot re-target passes nothing and the parent renders as text, never as a
+   *  dead control. */
+  onOpenGoal?: (goalId: string) => void;
 }) {
   const open = goalId !== null;
   const detail = useSyncQuery<GoalDetailInput>({
@@ -409,6 +418,7 @@ export default function GoalDetailPanel({
                 goalId={goalId}
                 subGoals={data?.subGoals}
                 parent={data?.parent}
+                onOpenGoal={onOpenGoal}
               />
             ) : null}
 
