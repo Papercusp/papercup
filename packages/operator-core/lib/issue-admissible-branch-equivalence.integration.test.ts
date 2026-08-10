@@ -44,6 +44,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -207,6 +208,13 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await ensureCoordCapabilityTables(db.sql);
+  // A decoy carrying EVERY column engineer_issues has (see the ambiguity test below).
+  // Derived from the view itself rather than a hand-listed column set, so a column added
+  // to the view is covered without anyone remembering to update this file.
+  await db.sql`
+    CREATE TABLE harness_shared.ambiguity_decoy AS
+      SELECT * FROM harness_shared.engineer_issues WITH NO DATA`;
 }, 180_000);
 
 afterAll(async () => {
@@ -214,7 +222,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_item_claims`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_item_claims, harness_shared.coord_links, harness_shared.ambiguity_decoy`;
   // The plan-lane floor reads BOTH an active plan and a live item lease, so both
   // fixtures are always present and the seeded rows choose which one they land on.
   await db.sql`
@@ -249,6 +257,67 @@ describe('WI-37827: both column forms of issueAdmissibleWhereSql enforce every f
     // column form and absent (or differently written) in the other moves an id across
     // this boundary, in whichever direction, and fails naming it.
     expect(await agreedAdmittedIds()).toEqual(expected);
+  });
+
+  /**
+   * The probes above call the function directly. This drives BOTH forms through their REAL
+   * production call sites instead — `listIssues` takes the unaliased leg, and the aliased
+   * leg is reachable ONLY through a topic-JOINed count, which is why it is easy to leave
+   * uncovered: before this test, nothing in the repo passed `topic` and `admissibleOnly`
+   * together, so the aliased branch had no production-path coverage at all.
+   *
+   * It also pins the mechanical property the WI-37827 dedup rests on: the rendered fragment
+   * splices correctly into a query that carries its own bound parameters AND a JOIN, without
+   * disturbing placeholder numbering. A hand-written probe cannot establish that; this can.
+   */
+  it('both forms agree through their REAL call sites (listIssues vs the topic-joined count)', async () => {
+    const TOPIC = 'equivalence-probe';
+    for (const c of [...REFUSED, ...ADMITTED]) {
+      await seedIssue(c.id, c.seed);
+      await db.sql`
+        INSERT INTO harness_shared.coord_links (workspace_id, rel, src_kind, src_ref, dst_kind, dst_ref)
+        VALUES (${WS}, 'tagged', ${eng.ISSUE_KIND}, ${c.id}, 'topic', ${TOPIC})`;
+    }
+    // Unaliased leg, through the real list read.
+    const listed = (await eng.listIssues({ admissibleOnly: true, limit: 500 })).map((i) => i.id).sort();
+    // Aliased leg, through the real topic-joined count. Every seeded row is tagged, so the
+    // topic JOIN is a no-op on the population and any difference is the predicate's alone.
+    const counted = await eng.countIssues({ topic: TOPIC, admissibleOnly: true });
+    expect(listed).toEqual(ADMITTED.map((c) => c.id).sort());
+    expect(counted).toBe(listed.length);
+  });
+
+  /**
+   * The one NEW failure mode the WI-37827 dedup introduces, and the reason it needs its own
+   * test rather than being covered by the equality assertions above.
+   *
+   * The two forms are now ONE text rendered with a column qualifier, so a floor can no longer
+   * be added to one branch and forgotten in the other — that whole class is gone structurally.
+   * What replaces it is a forgotten qualifier on a single column. That is INVISIBLE to every
+   * other test here: an unqualified `origin` inside `FROM engineer_issues ei` is perfectly
+   * legal SQL and resolves to the same column, so both forms keep admitting identical id sets
+   * and every equality assertion above still passes. It only becomes a fault later, when the
+   * aliased form's query gains a JOIN partner sharing that column name — i.e. in production,
+   * in the topic-joined counts, long after the change that caused it.
+   *
+   * So this JOINs a decoy holding EVERY column of the view, which makes any unqualified
+   * reference genuinely ambiguous and turns a latent trap into a parse-time failure here.
+   * The decoy is created from `SELECT * FROM engineer_issues WITH NO DATA`, so it tracks the
+   * view's columns automatically instead of via a hand-listed set that could go stale.
+   */
+  it('every column the ALIASED form references is qualified (ambiguity-forcing join)', async () => {
+    for (const c of [...REFUSED, ...ADMITTED]) await seedIssue(c.id, c.seed);
+    // Exactly one decoy row: the join is then a no-op on the population, so the admitted set
+    // must be UNCHANGED — the assertion stays non-vacuous instead of merely "did not throw".
+    await db.sql`INSERT INTO harness_shared.ambiguity_decoy SELECT * FROM harness_shared.engineer_issues LIMIT 1`;
+    const rows = await db.sql<{ issue_id: string }[]>`
+      SELECT ei.issue_id
+        FROM harness_shared.engineer_issues ei
+        JOIN harness_shared.ambiguity_decoy d ON TRUE
+       WHERE ei.workspace_id = ${WS}
+         AND ${eng.issueAdmissibleWhereSql(db.sql, true)}
+       ORDER BY ei.issue_id`;
+    expect(rows.map((r) => r.issue_id)).toEqual(ADMITTED.map((c) => c.id).sort());
   });
 
   it('the probe really is evaluating the predicate (positive control: without it, nothing is withheld)', async () => {

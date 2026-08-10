@@ -1116,77 +1116,60 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // duplication as the needsHuman/_claimHold floors above. `externalBlockers` survives the
   // view's `payload - '_ei'` subtraction because it is a TOP-LEVEL payload key, not an _ei
   // sub-field (verified against WI-5107's live payload).
-  return aliased
-    ? sql`(
-        (ei.origin = 'local' OR ei.origin IS NULL)
-        AND ei.lane IS DISTINCT FROM 'observation'
-        AND ei.created_by IS DISTINCT FROM 'system:replication-liveness'
-        AND COALESCE(ei.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
-        AND COALESCE(ei.payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
-        AND COALESCE(ei.title, '') NOT ILIKE 'Loop wake #%'
-        AND COALESCE(ei.title, '') NOT ILIKE 'AUTO loop iteration:%'
+  // WI-37827: ONE definition, rendered in the caller's column form. These two forms were
+  // hand-maintained as two literals until 2026-08-10; measured then, the aliased text with
+  // every `ei.` stripped was BYTE-IDENTICAL to the unaliased one (1128 vs 1074 chars, 18
+  // prefixes and nothing else), so every floor above had to be stated — and edited — twice.
+  // WI-37774 added three floors to both branches by hand for exactly that reason.
+  //
+  // `c` is the column qualifier, NOT caller input: a hardcoded literal chosen by a boolean,
+  // so the `sql.unsafe` here carries the same safety argument as get-next.ts's
+  // `${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)}` — pure column identifiers, zero bound
+  // values (every literal in this predicate is inline), nothing interpolated from a caller.
+  // It qualifies only the columns of the row under test; `hp.` / `pic.` inside the plan
+  // subqueries belong to those subqueries' own FROM and are deliberately left alone.
+  //
+  // GUARDED BY `issue-admissible-branch-equivalence.integration.test.ts`, which evaluates
+  // BOTH forms against real seeded rows and asserts they admit the same id set — a runtime
+  // check, so it survives this refactor and any later one. A source-text guard was
+  // considered and rejected: it would have gone false-green the moment this became a
+  // rendering rather than two written-out literals, i.e. precisely here.
+  const c = aliased ? 'ei.' : '';
+  return sql.unsafe(`(
+        (${c}origin = 'local' OR ${c}origin IS NULL)
+        AND ${c}lane IS DISTINCT FROM 'observation'
+        AND ${c}created_by IS DISTINCT FROM 'system:replication-liveness'
+        AND COALESCE(${c}payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
+        AND COALESCE(${c}payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
+        AND COALESCE(${c}title, '') NOT ILIKE 'Loop wake #%'
+        AND COALESCE(${c}title, '') NOT ILIKE 'AUTO loop iteration:%'
         AND (
-          (ei.terminal_owner IS NULL OR ei.terminal_owner = '')
+          (${c}terminal_owner IS NULL OR ${c}terminal_owner = '')
           OR (
-            (ei.terminal_completion_ref IS NULL OR ei.terminal_completion_ref = '')
-            AND ei.authority IS NULL
+            (${c}terminal_completion_ref IS NULL OR ${c}terminal_completion_ref = '')
+            AND ${c}authority IS NULL
           )
         )
         AND NOT jsonb_path_exists(
-          COALESCE(ei.payload, '{}'::jsonb),
+          COALESCE(${c}payload, '{}'::jsonb),
           '$.externalBlockers[*] ? (@.status == "active")'::jsonpath
         )
         AND NOT (
-          COALESCE(ei.payload, '{}'::jsonb) ? 'plan_item' AND (
+          COALESCE(${c}payload, '{}'::jsonb) ? 'plan_item' AND (
             EXISTS (
               SELECT 1 FROM harness_shared.harness_plans hp
-               WHERE hp.plan_slug = ei.payload->'plan_item'->>'plan_slug'
+               WHERE hp.plan_slug = ${c}payload->'plan_item'->>'plan_slug'
                  AND hp.status = 'active'
             )
             OR EXISTS (
               SELECT 1 FROM harness_shared.plan_item_claims pic
-               WHERE pic.plan_slug = ei.payload->'plan_item'->>'plan_slug'
-                 AND pic.item_id  = ei.payload->'plan_item'->>'item_id'
+               WHERE pic.plan_slug = ${c}payload->'plan_item'->>'plan_slug'
+                 AND pic.item_id  = ${c}payload->'plan_item'->>'item_id'
                  AND pic.expires_ts > now()
             )
           )
         )
-      )`
-    : sql`(
-        (origin = 'local' OR origin IS NULL)
-        AND lane IS DISTINCT FROM 'observation'
-        AND created_by IS DISTINCT FROM 'system:replication-liveness'
-        AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
-        AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
-        AND COALESCE(title, '') NOT ILIKE 'Loop wake #%'
-        AND COALESCE(title, '') NOT ILIKE 'AUTO loop iteration:%'
-        AND (
-          (terminal_owner IS NULL OR terminal_owner = '')
-          OR (
-            (terminal_completion_ref IS NULL OR terminal_completion_ref = '')
-            AND authority IS NULL
-          )
-        )
-        AND NOT jsonb_path_exists(
-          COALESCE(payload, '{}'::jsonb),
-          '$.externalBlockers[*] ? (@.status == "active")'::jsonpath
-        )
-        AND NOT (
-          COALESCE(payload, '{}'::jsonb) ? 'plan_item' AND (
-            EXISTS (
-              SELECT 1 FROM harness_shared.harness_plans hp
-               WHERE hp.plan_slug = payload->'plan_item'->>'plan_slug'
-                 AND hp.status = 'active'
-            )
-            OR EXISTS (
-              SELECT 1 FROM harness_shared.plan_item_claims pic
-               WHERE pic.plan_slug = payload->'plan_item'->>'plan_slug'
-                 AND pic.item_id  = payload->'plan_item'->>'item_id'
-                 AND pic.expires_ts > now()
-            )
-          )
-        )
-      )`;
+      )`);
 }
 
 export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
