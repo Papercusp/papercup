@@ -58,6 +58,23 @@
  * never "do not put a chat here", it was "do not build a SECOND one".
  * `onOpenAgent` survives as a secondary "open full-size" affordance, because
  * the embedded chat is width-constrained beside the work rail.
+ *
+ * ── P-023 (2026-08-10): the CONTROLS are borrowed too, not just the frame ───
+ * [owner 2026-08-10] "mimic the design used in the equivalent popup in the
+ * sessions tab for the hide and expand buttons instead of how it is currently
+ * 'hide order hide brief etc.'"
+ *
+ * Which is the same rule as P-018/P-021, applied one level down and one level
+ * later. This popup had grown the sessions popup's LAYOUT and its RAILS while
+ * writing its own control vocabulary for them: five toggles that swapped their
+ * own text ("Orders" → "Hide orders") where the sessions popup keeps a constant
+ * label and moves a chevron. Both surfaces looked deliberate in isolation; side
+ * by side one of them is wrong, and the owner is the one who has to notice.
+ *
+ * So the controls are SHARED CODE now, the same way the rails already are —
+ * `PanelToggleButton` for the five toggles, `usePopupMaximize` for the expand
+ * pair this popup previously had no equivalent of. Neither is a goal-flavoured
+ * variant, so the next restyle of either popup lands in both.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
