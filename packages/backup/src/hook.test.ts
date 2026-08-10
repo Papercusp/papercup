@@ -28,6 +28,10 @@ const h = vi.hoisted(() => ({
   // the mid-dump broken-pipe crash regression (gz dies while pg_dump streams).
   gzipStdinError: false,
   availableBlocks: 100_000_000,
+  // Size of the PREVIOUS dump already on disk, which is what the free-space
+  // reserve is now sized from. null ⇒ no previous artifact (fresh workspace),
+  // so stat() rejects ENOENT exactly as the real fs would.
+  previousDumpSize: null as number | null,
 }));
 
 // Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
@@ -77,7 +81,17 @@ vi.mock('node:fs', () => ({
 
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn(async () => {}),
-  stat: vi.fn(async () => ({ size: h.dumpSize })),
+  // Path-aware: the in-flight `.tmp` (dumpPg's post-dump size check) and the
+  // PREVIOUS dump (the reserve-sizing probe) are different files with
+  // different sizes, and the reserve test only means something if they can
+  // differ here too.
+  stat: vi.fn(async (p: string) => {
+    if (String(p).endsWith('.tmp')) return { size: h.dumpSize };
+    if (h.previousDumpSize === null) {
+      throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+    }
+    return { size: h.previousDumpSize };
+  }),
   statfs: vi.fn(async () => ({ bsize: 4096, bavail: h.availableBlocks, blocks: 200_000_000 })),
   appendFile: vi.fn(async (_p: string, line: string) => {
     h.logLines.push(line);
@@ -92,7 +106,7 @@ vi.mock('./config', () => ({
   backupHost: () => ({ getHarnessAdminUrl: () => h.adminUrl }),
 }));
 
-import { runPreSnapshotHook } from './hook';
+import { requiredFreeBytes, runPreSnapshotHook } from './hook';
 
 const ctx = { workspaceId: 'ws-1', workspaceRoot: '/work/ws-1' };
 
@@ -107,6 +121,7 @@ beforeEach(() => {
   h.logLines = [];
   h.gzipStdinError = false;
   h.availableBlocks = 100_000_000;
+  h.previousDumpSize = null;
 });
 afterEach(() => vi.clearAllMocks());
 
