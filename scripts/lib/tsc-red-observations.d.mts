@@ -79,4 +79,31 @@ export declare function pruneObservations(opts?: {
   path?: string;
   nowMs?: number;
   retentionSec?: number;
-}): { ok: boolean; kept: number; error?: string };
+}): { ok: boolean; kept: number; keptRuns: number; error?: string };
+
+/** One persisted RUN HEARTBEAT line — a compile that knew the complete standing set. */
+export interface TscRunHeartbeatRecord {
+  ts: number;
+  project: string;
+  verdict: string;
+  standingCount: number;
+}
+
+/** Gate verdicts on which the complete standing new-file red set is known. */
+export declare const COMPLETE_STANDING_SET_VERDICTS: readonly string[];
+
+export declare function verdictObservesCompleteStandingSet(verdict: string | undefined): boolean;
+
+export declare function recordGateRun(opts: {
+  verdict: string | undefined;
+  project?: string;
+  standingCount?: number;
+  path?: string;
+  nowMs?: number;
+}): { ok: boolean; written: number; skipped?: string; error?: string };
+
+export declare function readRunHeartbeats(opts?: {
+  path?: string;
+  nowMs?: number;
+  retentionSec?: number;
+}): TscRunHeartbeatRecord[];

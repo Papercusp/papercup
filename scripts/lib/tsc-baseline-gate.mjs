@@ -20,7 +20,7 @@ import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { recordStandingReds, DWELL_SEC } from './tsc-red-observations.mjs';
+import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
 
 /**
  * One diagnostic parsed out of tsc's output.
@@ -2023,6 +2023,26 @@ export async function runTscBaselineGate({
       console.error(`     - ${f}  ← COMMITTED: a standing red that WILL red the fleet at the next bare run`);
     }
   }
+
+  // EI-20064603102922814 — the OTHER half of the sampler. recordStandingReds() below remembers
+  // that a red EXISTS; nothing recorded that a compile RAN, so a red that got FIXED simply
+  // stopped being mentioned and its work-item sat open forever as a severity:major false
+  // critical (5 of 5 open ones were stale at one measurement, 4 by ~30h). A heartbeat makes the
+  // silence readable: a later run that did NOT re-sight a file is positive evidence it is clean,
+  // because a run that still saw it would have re-recorded it in the same store.
+  //
+  // Placed BEFORE the switch on purpose: every `process.exit()` lives inside it, so this is the
+  // last point every verdict still passes through. Soundness is enforced inside recordGateRun,
+  // which drops any verdict that did not observe the complete standing set — so the `fail-*`
+  // exits below record nothing, and a future verdict nobody classified is ignored rather than
+  // trusted. Fail-soft like its sibling: TSC_EXIT can never depend on it.
+  recordGateRun({
+    verdict: result.verdict,
+    project: label ?? '',
+    standingCount: Array.isArray(result.newFiles)
+      ? partitionNewFilesByLiveEdit(result.newFiles).standing.length
+      : 0,
+  });
 
   switch (result.verdict) {
     case 'fail-syntax':

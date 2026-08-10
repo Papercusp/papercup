@@ -52,13 +52,22 @@ import {
   readObservations,
   selectDwelledReds,
   pruneObservations,
+  readRunHeartbeats,
   DWELL_SEC,
 } from '../../../../../scripts/lib/tsc-red-observations.mjs';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { listIssues, setIssueState, commentIssue, type EngineerIssue } from '../../issues-engineer';
+import {
+  decideTscRedCleared,
+  tscRedPathOf,
+  type TscRedClearedDecision,
+} from '../improvements/tsc-red-cleared-resolve';
 
 /** One dwelled red, as the sweep resolved it. */
 export interface TscRedSweepResult {
   file: string;
-  outcome: 'filed' | 'debounced' | 'capped' | 'error';
+  outcome: 'filed' | 'debounced' | 'capped' | 'error' | 'resolved';
   /** How long the red was observed to persist, first sighting to last. */
   spanSec: number;
   sightings: number;
@@ -150,6 +159,129 @@ export interface TscRedSweepDeps {
   claimFireFn?: typeof claimWatchdogFire;
   captureFn?: (input: CaptureImprovementInput) => Promise<unknown>;
   workspaceIdFn?: () => string;
+  readRunHeartbeatsFn?: typeof readRunHeartbeats;
+  /** Open watchdog-keyed issues to consider for retraction. */
+  listOpenIssuesFn?: () => Promise<EngineerIssue[]>;
+  /** Terminal resolve for one cleared red. */
+  resolveIssueFn?: (id: string, decision: TscRedClearedDecision) => Promise<void>;
+  /** Does this repo-relative path still exist? */
+  fileExistsFn?: (file: string) => boolean;
+  /** Post-sighting clean runs required (default TSC_RED_MIN_CLEAN_RUNS). */
+  minCleanRuns?: number;
+  /** Root the reported paths are relative to (default process.cwd()). */
+  repoRoot?: string;
+}
+
+/** The watchdog key a filed issue carries, or '' — mirrors auto-close.ts's accessor. */
+function watchdogKeyOfIssue(i: EngineerIssue): string {
+  const p = i.payload && typeof i.payload === 'object' ? (i.payload as Record<string, unknown>) : {};
+  return typeof p.watchdogKey === 'string' ? p.watchdogKey : '';
+}
+
+/**
+ * When do we last KNOW this file was red?
+ *
+ * NOT from the observation store. That store has a 6h retention, and the items this exists
+ * to retract are ~30h old — every observation that ever justified them has aged out, so a
+ * store-only reading returns "no sighting" for exactly the population we care about and the
+ * resolver would refuse forever while looking like it worked.
+ *
+ * The durable answer rides on the ITEM: `buildRedCapture` stamps `evidenceAt` with the last
+ * sighting at filing time. Any FRESHER sighting still inside retention is layered on top by
+ * the caller (max of the two), so a red that came back cannot be resolved by evidence that
+ * predates its return. `updatedAt` is the fallback — later than the truth, which errs toward
+ * refusing rather than resolving.
+ */
+function issueLastKnownRedSec(i: EngineerIssue): number | null {
+  const p = i.payload && typeof i.payload === 'object' ? (i.payload as Record<string, unknown>) : {};
+  for (const cand of [p.evidenceAt, i.updatedAt]) {
+    if (typeof cand !== 'string') continue;
+    const ms = Date.parse(cand);
+    if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+  }
+  return null;
+}
+
+/**
+ * Retract the standing-red items whose file is provably clean again.
+ *
+ * Fail-soft on every leg, like the filing pass: a store read error, an unreachable DB, or one
+ * resolve failing degrades to "retract nothing this tick" and never throws into the routines
+ * tick.
+ */
+export async function resolveClearedTscReds(deps: TscRedSweepDeps = {}): Promise<TscRedSweepResult[]> {
+  const {
+    nowMs = Date.now(),
+    path,
+    minCleanRuns,
+    repoRoot = process.cwd(),
+    readObservationsFn = readObservations,
+    readRunHeartbeatsFn = readRunHeartbeats,
+    fileExistsFn = (file: string) => existsSync(join(repoRoot, file)),
+    listOpenIssuesFn = () => listIssues({ state: 'open', watchdogKeyed: true, limit: 500 }),
+    resolveIssueFn = async (id: string, decision: TscRedClearedDecision) => {
+      await commentIssue(
+        id,
+        `🟢 Auto-resolved on POSITIVE clean-run evidence: ${decision.completionRef}`,
+        'tsc-red-cleared-resolve',
+      );
+      // NOT a dedup marker: the gate verifiably re-compiled this file and did not see the
+      // red, so this is genuine, evidenced completion.
+      await setIssueState(id, 'resolved', 'tsc-red-cleared-resolve', decision.completionRef!, {
+        completionEvidence: decision.evidence,
+      });
+    },
+  } = deps;
+
+  const out: TscRedSweepResult[] = [];
+  try {
+    const heartbeats = readRunHeartbeatsFn(path ? { path, nowMs } : { nowMs });
+    // No heartbeat inside retention means the sampler has not spoken at all. Every decision
+    // below would refuse anyway; returning here makes that explicit and skips the DB read.
+    if (heartbeats.length === 0) return out;
+
+    const latestSightingByFile = new Map<string, number>();
+    for (const o of readObservationsFn(path ? { path, nowMs } : { nowMs })) {
+      latestSightingByFile.set(o.file, Math.max(latestSightingByFile.get(o.file) ?? 0, o.ts));
+    }
+
+    const open = await listOpenIssuesFn();
+    for (const issue of open) {
+      const watchdogKey = watchdogKeyOfIssue(issue);
+      const file = tscRedPathOf(watchdogKey);
+      if (!file) continue;
+      try {
+        const filedAt = issueLastKnownRedSec(issue);
+        const fresh = latestSightingByFile.get(file) ?? 0;
+        const lastSeenSec = Math.max(filedAt ?? 0, fresh) || null;
+        const decision = decideTscRedCleared(
+          watchdogKey,
+          { lastSeenSec, heartbeats, fileExists: fileExistsFn(file) },
+          { minCleanRuns },
+        );
+        if (!decision.resolve) continue;
+        await resolveIssueFn(issue.id, decision);
+        out.push({
+          file,
+          outcome: 'resolved',
+          spanSec: 0,
+          sightings: 0,
+          reason: `${issue.id} ${decision.reason}`,
+        });
+      } catch (e) {
+        out.push({
+          file,
+          outcome: 'error',
+          spanSec: 0,
+          sightings: 0,
+          reason: `resolve failed for ${issue.id}: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn(`[tsc-red-sweep] resolve pass failed: ${e instanceof Error ? e.message : e}`);
+  }
+  return out;
 }
 
 /**
