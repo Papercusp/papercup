@@ -908,6 +908,27 @@ export interface PipelinePosition {
      * outlived the pipeline's own normal cadence, not merely exist.
      */
     mainFastForwarded: boolean | null;
+    /**
+     * THE SAME MEASUREMENT AS `mainFastForwarded`, IN THE POLARITY AGENTS ASK IN:
+     * `true` means main IS behind staging (a buffer exists). A PROJECTION, not a second
+     * derivation (axis 5) — both are the one `greenPinAtStagingHead` read, negated from
+     * a single local, so they cannot drift apart; `null` (unmeasured) propagates as
+     * `null` rather than becoming a confident `true`.
+     *
+     * ⚠ WHY BOTH EXIST — do not "simplify" this away. The state cell is named
+     * `git.mainBehindStaging` because that is the question agents ask and hand-copy, but
+     * `CellSpec.headline` is a FIELD PATH and axis 5 forbids a surface from re-deriving
+     * (negating) what it projects. So the correctly-polarised value must exist HERE or
+     * the cell answers its own name backwards — which it did, until
+     * EI-20046248345042252: `state:read { cell: 'git.mainBehindStaging' }` returned
+     * `false` while main sat 22 commits behind staging, because it projected
+     * `mainFastForwarded` unchanged.
+     *
+     * ⚠ `true` IS NOT A FAULT. A buffer is the fleet's normal steady state (see
+     * `mainFastForwarded` above); the stall signal is `mainBufferIsStale`, which requires
+     * the buffer to have outlived the pipeline's own cadence.
+     */
+    mainBehindStaging?: boolean | null;
     /** Commits `ready` has that the deployed ref doesn't (0 once the live host has
      *  caught up to the latest green verdict). */
     deployedBehindGreenPin: number | null;
@@ -3807,11 +3828,17 @@ export async function gitPipelinePosition(
       }
     }
   }
+  // ONE reading, two polarities. Both fields below are this same local, so they cannot
+  // drift apart the way two independent `snap.deploy?...` reads could.
+  const greenPinAtStagingHead = snap.deploy?.greenPinAtStagingHead ?? null;
   const verdictProvenance: PipelinePosition['verdictProvenance'] = {
     lastGreenSha: ready?.sha ?? null,
     lastGreenShortSha: ready?.shortSha ?? null,
     lastGreenAgeMs: ready ? Date.now() - ready.committedAtMs : null,
-    mainFastForwarded: snap.deploy?.greenPinAtStagingHead ?? null,
+    mainFastForwarded: greenPinAtStagingHead,
+    // The polarity the `git.mainBehindStaging` cell is NAMED after (EI-20046248345042252).
+    // An unmeasured `null` stays `null` — negating it would manufacture a confident `true`.
+    mainBehindStaging: greenPinAtStagingHead === null ? null : !greenPinAtStagingHead,
     deployedBehindGreenPin: snap.deploy?.deployedBehindGreenPin ?? null,
     deployOrigin,
   };

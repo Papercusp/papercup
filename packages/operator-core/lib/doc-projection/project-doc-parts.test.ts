@@ -1,21 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+// ⚠ ONE LINE, deliberately. `@ts-expect-error` suppresses the NEXT LINE only, and on a
+// multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
+// directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import {
-  assemble,
-  budgetMatrix,
-  CHARS_PER_TOKEN_KNOWN_MODEL,
-  CHARS_PER_TOKEN_UNKNOWN_MODEL,
-  cutOrder,
-  MAX_SPILL_ENTRIES,
-  MEMORY_WARN_FLOOR_CHARS,
-  memoryWarningThreshold,
-  partTargetsClient,
-  PREAMBLE,
-  projectClient,
-  readOrder,
-  SPILL_SECTION,
-  verifyBodiesPresent,
-} from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, cutOrder, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, readOrder, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -301,8 +290,8 @@ describe('the budget — the output can never exceed it', () => {
       bulky(1_000, { ordinal: 3, project_rank: 300, kind: 'pointer', part_key: 'ptr' }),
     ];
     const out = projectClient(parts, { ...CLIENT, budget: 3_000 });
-    expect(out.dropped.map((d) => d.part_key)).toContain('ptr');
-    expect(out.kept.map((k) => k.part_key)).toContain('inv');
+    expect(out.dropped.map((d: Part) => d.part_key)).toContain('ptr');
+    expect(out.kept.map((k: Part) => k.part_key)).toContain('inv');
   });
 
   it('within one rank the LARGEST part is cut first — most rules retained per char surrendered', () => {
@@ -331,6 +320,63 @@ describe('the budget — the output can never exceed it', () => {
   });
 
   it('CONTROL — a budget too small for even the pointer REFUSES rather than emitting over budget', () => {
+    const parts = Array.from({ length: 5 }, (_, i) => bulky(1_000, { ordinal: i + 1 }));
+    expect(() => projectClient(parts, { ...CLIENT, budget: 50 })).toThrow(/cannot fit/i);
+  });
+});
+
+describe('overwriteVerdict — the projector reads PG, so the FILE is what it can destroy', () => {
+  const source = '# hand-authored CLAUDE.md\n';
+  const projected = '# projected CLAUDE.md\n';
+  const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
+
+  it('absent — nothing on disk to lose', () => {
+    expect(overwriteVerdict({ onDisk: null, generatedFromSha: sha(source), contentHash: '' }).ok).toBe(true);
+  });
+
+  it('CALIBRATION — the file is still the exact text the parts were loaded from (pre-cutover)', () => {
+    const v = overwriteVerdict({ onDisk: source, generatedFromSha: sha(source), contentHash: sha(projected) });
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('matches-loaded-source');
+  });
+
+  it('CALIBRATION — the file is our own last projection (post-cutover, the steady state)', () => {
+    const v = overwriteVerdict({ onDisk: projected, generatedFromSha: sha(source), contentHash: sha(projected) });
+    expect(v.ok).toBe(true);
+    expect(v.reason).toBe('matches-last-projection');
+  });
+
+  it('CONTROL — a peer edit between the load and the write is REFUSED, not silently erased', () => {
+    // The real hazard: CLAUDE.md is edited several times an hour on this tree, and the
+    // projector would otherwise overwrite those edits with a composition of rows that
+    // never saw them.
+    const v = overwriteVerdict({
+      onDisk: `${source}a peer added this paragraph\n`,
+      generatedFromSha: sha(source),
+      contentHash: sha(projected),
+    });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toBe('drifted');
+  });
+
+  it('CONTROL — a hand-edit to the GENERATED file is refused too', () => {
+    const v = overwriteVerdict({
+      onDisk: `${projected}someone edited the generated file\n`,
+      generatedFromSha: sha(source),
+      contentHash: sha(projected),
+    });
+    expect(v.ok).toBe(false);
+  });
+
+  it('CONTROL — an empty/absent stored hash never blesses an arbitrary file', () => {
+    // Guards the obvious implementation slip: `live === contentHash` with both empty.
+    const v = overwriteVerdict({ onDisk: 'anything at all', generatedFromSha: '', contentHash: '' });
+    expect(v.ok).toBe(false);
+  });
+});
+
+describe('unsatisfiable budgets', () => {
+  it('still refuses rather than emitting an over-budget file', () => {
     const parts = Array.from({ length: 5 }, (_, i) => bulky(1_000, { ordinal: i + 1 }));
     expect(() => projectClient(parts, { ...CLIENT, budget: 50 })).toThrow(/cannot fit/i);
   });

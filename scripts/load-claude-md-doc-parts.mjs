@@ -213,11 +213,18 @@ async function writeRows(client, rows, docId, text) {
   try {
     // The parent doc must exist and must declare itself COMPOSED, or the parts are
     // not canonical and a reader would trust `content` instead (migration 781).
+    // `generated_from_sha` records WHICH text these parts were read out of; it is what
+    // P-005's projector checks before overwriting the file, so that a peer edit landing
+    // between this load and that write is refused rather than silently erased.
+    // `content_hash` describes `content` — the projector's cached output — and is left
+    // for the projector to set. Writing the SOURCE sha into it (as this did while
+    // `content` was empty) would leave the two columns meaning different things on
+    // different rows, which is exactly the ambiguity the drift check cannot afford.
     await client.query(
-      `INSERT INTO harness_shared.harness_docs (workspace_id, harness_slug, doc_id, content_mode, content, content_hash)
-       VALUES ($1, $2, $3, 'composed', '', $4)
+      `INSERT INTO harness_shared.harness_docs (workspace_id, harness_slug, doc_id, content_mode, content, content_hash, generated_from_sha)
+       VALUES ($1, $2, $3, 'composed', '', '', $4)
        ON CONFLICT (workspace_id, harness_slug, doc_id)
-       DO UPDATE SET content_mode = 'composed', updated_at = now()`,
+       DO UPDATE SET content_mode = 'composed', generated_from_sha = EXCLUDED.generated_from_sha, updated_at = now()`,
       [WORKSPACE_ID, HARNESS_SLUG, docId, sha256(text)],
     );
 

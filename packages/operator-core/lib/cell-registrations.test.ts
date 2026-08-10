@@ -188,8 +188,13 @@ describe('P-007: the four verdict cells', () => {
 
     expect(ownership).toBeDefined();
     expect(ownership!.falsifier.field).toBe('gate.ownership.holderSessionState');
-    // ...and the cell pointing AT it keeps its own, unrelated falsifier.
-    expect(GATE_VERDICT_CELL.falsifier.field).toBe('verdictProvenance.mainFastForwarded');
+    // ...and the cell pointing AT it keeps its own, unrelated falsifier. THE INTENT is
+    // "not the ownership falsifier" — the ancestry field it names is incidental and was
+    // legitimately repointed to the polarity-correct projection (EI-20046248345042252),
+    // so assert the intent explicitly rather than leaving a bare literal that reads as a
+    // break the next time the sign is corrected.
+    expect(GATE_VERDICT_CELL.falsifier.field).not.toBe(ownership!.falsifier.field);
+    expect(GATE_VERDICT_CELL.falsifier.field).toBe('verdictProvenance.mainBehindStaging');
   });
 
   /**
@@ -259,6 +264,45 @@ describe('P-007: the four verdict cells', () => {
       expect(spec.falsifier.field).not.toBe(spec.headline);
       expect(validateCellSpec(spec).some((r) => r.axis === 1)).toBe(false);
     }
+  });
+
+  /**
+   * EI-20046248345042252 — this cell answered its own NAME BACKWARDS. It headlined
+   * `verdictProvenance.mainFastForwarded`, which is the same measurement in the opposite
+   * polarity, so `state:read { cell: 'git.mainBehindStaging' }` returned `false` while
+   * main sat 22 commits behind staging (measured 2026-08-10). Because
+   * `greenPinAtStagingHead` is false in the fleet's normal steady state, the wrong answer
+   * was the STANDING one rather than an edge case.
+   *
+   * This pins the PROPERTY — a reader who follows the headline path gets the answer the
+   * cell's NAME asks for — rather than the spelling of a field, which is what a rename
+   * would sail straight through. It carries its own CONTROL so it cannot pass vacuously.
+   */
+  it('headlines a field whose polarity matches the cell NAME (main behind => true)', () => {
+    // The fleet's normal steady state: staging has outrun the green pin, so main IS
+    // behind. That is exactly what `greenPinAtStagingHead === false` encodes.
+    const mainIsBehind = {
+      verdictProvenance: { mainFastForwarded: false, mainBehindStaging: true },
+    };
+    const read = (path: string): unknown =>
+      path
+        .split('.')
+        .reduce<unknown>((o, k) => (o as Record<string, unknown> | undefined)?.[k], mainIsBehind);
+
+    expect(MAIN_BEHIND_STAGING_CELL.cell).toBe('git.mainBehindStaging');
+    // THE ASSERTION THAT MATTERS: follow the headline, get the name's answer.
+    expect(read(MAIN_BEHIND_STAGING_CELL.headline)).toBe(true);
+
+    // CONTROL — the field it used to headline yields the OPPOSITE from the same fixture.
+    // If this ever stops holding, the fixture has gone vacuous and the check above is
+    // no longer evidence of anything.
+    expect(read('verdictProvenance.mainFastForwarded')).toBe(false);
+
+    // A change-signal left on the old path would poll the opposite sign, so a watcher
+    // would fire on exactly the wrong transition.
+    expect(MAIN_BEHIND_STAGING_CELL.changeSignal).toMatchObject({
+      path: MAIN_BEHIND_STAGING_CELL.headline,
+    });
   });
 
   /**

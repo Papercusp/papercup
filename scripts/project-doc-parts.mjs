@@ -312,6 +312,32 @@ export function verifyBodiesPresent(text, kept) {
   return missing;
 }
 
+/**
+ * May we overwrite what is on disk?
+ *
+ * The projector reads PG, never the file, so on its own it cannot notice that a peer
+ * edited CLAUDE.md after the parts were loaded — those edits would simply be erased.
+ * The file is only safe to overwrite when its current bytes are one of the two things
+ * we already know about, and the two cases correspond to the two phases of this plan:
+ *
+ *   • BEFORE cutover the file is hand-authored, and the parts were loaded from exactly
+ *     that text — so it must hash to `generated_from_sha`.
+ *   • AFTER cutover the file is our own output — so it must hash to `content_hash`,
+ *     the cached projection.
+ *
+ * Anything else means the bytes on disk are neither the source we read nor the output
+ * we wrote, i.e. somebody changed them, and overwriting would destroy that change. On
+ * this tree CLAUDE.md is edited several times an hour, so this is the expected case,
+ * not a hypothetical one. `absent` is safe: there is nothing to lose.
+ */
+export function overwriteVerdict({ onDisk, generatedFromSha, contentHash }) {
+  if (onDisk === null) return { ok: true, reason: 'absent' };
+  const live = sha256(onDisk);
+  if (generatedFromSha && live === generatedFromSha) return { ok: true, reason: 'matches-loaded-source', live };
+  if (contentHash && live === contentHash) return { ok: true, reason: 'matches-last-projection', live };
+  return { ok: false, reason: 'drifted', live };
+}
+
 // ---------------------------------------------------------------------------
 // Database
 // ---------------------------------------------------------------------------
@@ -447,7 +473,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         console.log(`    ⚠ cut: ${out.dropped.map((d) => d.part_key).slice(0, 8).join(', ')}${out.dropped.length > 8 ? ` (+${out.dropped.length - 8})` : ''}`);
       }
 
-      if (write) {
+      // A symlink has no content of its own to protect — retiring it destroys nothing,
+      // because its target is the OTHER client's file, which is written separately.
+      const verdict = isSymlink
+        ? { ok: true, reason: 'symlink' }
+        : overwriteVerdict({ onDisk, generatedFromSha: doc.generated_from_sha, contentHash: doc.content_hash });
+      if (!verdict.ok) {
+        console.error(
+          `    ✗ REFUSING to overwrite ${spec.file}: on-disk bytes are neither the source the parts were\n` +
+            `      loaded from nor the last projection — somebody edited it (live ${verdict.live.slice(0, 16)},\n` +
+            `      loaded-from ${String(doc.generated_from_sha ?? doc.content_hash).slice(0, 16)}).\n` +
+            `      Writing would erase that edit. Re-run the loader against the current file first:\n` +
+            `        node scripts/gen-claude-md-manifest.mjs && node scripts/split-claude-md-rule-evidence.mjs\n` +
+            `        node scripts/load-claude-md-doc-parts.mjs --execute`,
+        );
+        failed = true;
+      } else if (write) {
         // The symlink is retired here, not by hand, so each client genuinely owns its
         // file. Unlinking first matters: writeFileSync THROUGH a symlink would write
         // the other client's file instead.

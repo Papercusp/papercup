@@ -122,7 +122,7 @@ describe("shapeCoordPresence (P-022)", () => {
     expect(shapeCoordPresence(weird, "trimmed")).toBe(weird);
   });
 
-  // P-031 leg (d) — the appended coupling block (default-ON since D-093/D-094).
+  // P-031 leg (d) — the appended coupling block (default-ON since D-098).
   describe("expanded[] (include_coupling)", () => {
     const longIntent =
       "Wiring the P-031 union consumer into coord:presence and re-verifying it live on the staging operator at :3170 before flipping anything";

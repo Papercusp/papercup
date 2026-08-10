@@ -191,9 +191,11 @@ export const GATE_VERDICT_CELL: CellSpec = {
   headline: 'gate.consecutiveReds',
 
   falsifier: {
-    field: 'verdictProvenance.mainFastForwarded',
+    // Repointed to the polarity-correct projection of the SAME devDeployState reading
+    // (EI-20046248345042252). The measurement is unchanged; only its sign is.
+    field: 'verdictProvenance.mainBehindStaging',
     measurement:
-      'a git ancestry check (is the newest green pin exactly at main HEAD, from devDeployState) — a REF-GRAPH measurement that shares no input with the green-checkpoint routine metadata the red streak is counted from',
+      'a git ancestry check (is the newest green pin exactly at STAGING head, from devDeployState) — a REF-GRAPH measurement that shares no input with the green-checkpoint routine metadata the red streak is counted from. ⚠ pin-vs-STAGING, not pin-vs-main: the green pin IS main HEAD by devDeployState\'s own definition, so a pin-vs-main check could never diverge and would be a falsifier that can never fire (WI-6357 / EI-18790908999972569 corrected the same stale wording on the resolver field).',
     kills:
       '"0 consecutive reds" read as "the pipeline is healthy". A gate that never FIRED cannot go red, and a gate whose verdict never promoted main leaves the tally green while nothing advances — the count alone cannot see either.',
   },
@@ -504,17 +506,29 @@ export const DEPLOYED_SHA_CELL: CellSpec = {
 /**
  * Cell 4 — is main fast-forwarded to the newest green pin.
  *
- * NAMING. The cell is `git.mainBehindStaging` because that is the question agents ask
- * and hand-copy; the headline is the boolean the system actually measures
- * (`verdictProvenance.mainFastForwarded` = `deploy.greenPinAtStagingHead`). There is
- * deliberately NO raw main-behind-staging COUNT — grepped git-pipeline-stats, none
- * exists — and inventing one would be a second derivation of a question already
- * answered (axis 5).
+ * NAMING — AND THE POLARITY BUG IT USED TO CARRY (EI-20046248345042252). The cell is
+ * `git.mainBehindStaging` because that is the question agents ask and hand-copy. It
+ * used to headline `verdictProvenance.mainFastForwarded`, which is the SAME measurement
+ * in the OPPOSITE polarity — so the cell answered its own name backwards: measured
+ * 2026-08-10, `state:read { cell: 'git.mainBehindStaging' }` returned `false` while main
+ * sat 22 commits behind staging. Because `greenPinAtStagingHead` is false in the normal
+ * steady state (staging outruns the ~hourly gate), the wrong answer was the STANDING
+ * one, not an edge case.
+ *
+ * The fix belongs in the RESOLVER, not here: `headline` is a field path and axis 5
+ * forbids a surface from re-deriving (negating) what it projects, so
+ * `verdictProvenance.mainBehindStaging` is published already-negated from the same
+ * single read. Do not repoint this back at `mainFastForwarded`.
+ *
+ * There is still deliberately NO raw main-behind-staging COUNT — grepped
+ * git-pipeline-stats, none exists — and inventing one would be a second derivation of a
+ * question already answered (axis 5). The negated boolean is a projection, not a
+ * derivation: same read, same `null`, one negation.
  */
 export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
   cell: 'git.mainBehindStaging',
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
-  headline: 'verdictProvenance.mainFastForwarded',
+  headline: 'verdictProvenance.mainBehindStaging',
 
   /**
    * ⚠ THE KILLS IS THE OPPOSITE OF THE OBVIOUS ONE, and writing the obvious one would
@@ -556,9 +570,9 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
 
   visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
-  changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'verdictProvenance.mainFastForwarded' },
+  changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'verdictProvenance.mainBehindStaging' },
   shape:
-    '{ verdictProvenance: { mainFastForwarded, lastGreenSha, lastGreenAgeMs, deployedBehindGreenPin, deployOrigin }, verdictUnknown[] }',
+    '{ verdictProvenance: { mainBehindStaging, mainFastForwarded, lastGreenSha, lastGreenAgeMs, deployedBehindGreenPin, deployOrigin }, verdictUnknown[] }',
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════

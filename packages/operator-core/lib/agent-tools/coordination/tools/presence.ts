@@ -209,7 +209,7 @@ export default defineTool({
     // paths and provably independent of the modes/parkedOn/deafness/cursor
     // overlays below.
     //
-    // ⚠ DEFAULT-ON since 2026-08-10 (D-094) — `!== false`, not `=== true`. The
+    // ⚠ DEFAULT-ON since 2026-08-10 (D-098) — `!== false`, not `=== true`. The
     // opt-in gate was the reason the entire coupling payoff was invisible: measured
     // over the whole retained window, `include_coupling` was passed 11 times EVER,
     // by 4 agents, ALL of them this feature's own authors, out of 316 `coord:presence`
@@ -254,7 +254,7 @@ export default defineTool({
         // `lint:derived-signal-firings` can answer "has this relation ever fired in
         // production?" — the question no unit test can, and the one that would have
         // caught `holds-a-lock-on` 12 days earlier (D-088). ⚠ THIS NOW RIDES THE
-        // DEFAULT PATH (D-094) — it used to be bounded to the opt-in branch, all 11
+        // DEFAULT PATH (D-098) — it used to be bounded to the opt-in branch, all 11
         // calls of it, which is precisely why ZERO rows in `tool_invocations` have
         // ever carried `metadata_json.derivedSignals` and the detector built to
         // answer "has this relation ever fired in production?" could not answer it
