@@ -18,6 +18,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { getActiveClaimForOwner } from './work-item-claims';
 import { getPresence } from './agent-tools/coordination/presence';
+import { isLifecycleIntent } from './agent-tools/coordination/presence-payload';
 
 export interface RecordEditAttributionInput {
   /** The lock's coordination domain — the physical repo root (the join key). */
@@ -102,10 +103,10 @@ export async function recordEditAttribution(input: RecordEditAttributionInput): 
     await sql`
       INSERT INTO harness_shared.edit_attribution_ledger
         (repo_root, file, agent_id, session_id, contributor, workspace_id,
-         harness_slug, work_item_id, plan_slug, intent)
+         harness_slug, work_item_id, plan_slug, intent, acquired_via)
       SELECT ${input.repoRoot}, f, ${input.agentId}, ${input.sessionId ?? null},
              ${input.contributor ?? null}, ${input.workspaceId ?? null},
-             ${harnessSlug}, ${workItemId}, ${planSlug}, ${input.intent ?? null}
+             ${harnessSlug}, ${workItemId}, ${planSlug}, ${intent}, ${acquiredVia}
         FROM unnest(${files}::text[]) AS f
     `;
   } catch {

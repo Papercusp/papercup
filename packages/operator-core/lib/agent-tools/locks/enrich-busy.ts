@@ -8,7 +8,7 @@
  */
 
 import { getPresence } from '../coordination/presence';
-import { PLACEHOLDER_INTENT } from '../coordination/presence-payload';
+import { PLACEHOLDER_INTENT, isLifecycleIntent } from '../coordination/presence-payload';
 import type { AcquireBusy } from './su-lock-store';
 import type { CellReader } from '../../cell-registry';
 import type { HolderContext, HolderContextSources } from '../../coord/holder-context';
@@ -67,12 +67,12 @@ export function busyToJson(b: AcquireBusy): BusyJson {
 
 /** Hook/dispatch-stamped lock intents that don't identify WHAT the holder is
  *  changing, so the lock's own intent can't be compared against the holder's
- *  declared coord intent (e.g. 'PreToolUse:Edit', 'capability:edit'). */
-function isUninformativeLockIntent(intent: string): boolean {
-  const s = intent.trim();
-  if (!s || s === PLACEHOLDER_INTENT) return true;
-  return /^(?:PreToolUse:|PostToolUse:|capability:)/i.test(s);
-}
+ *  declared coord intent (e.g. 'PreToolUse:Edit', 'capability:edit').
+ *
+ *  Delegates to the canonical predicate (EI-20055604348536487) — this used to be a third local
+ *  copy, and the copies had already drifted apart from each other. Kept as a named local alias
+ *  because the call sites below read against LOCK intent specifically. */
+const isUninformativeLockIntent = isLifecycleIntent;
 
 /** Work-item-ish refs (WI-4138, EI-10433, F-FIX-046, P-011, …). Extracted so a
  *  shared ref between the two intents counts as "same thread, not diverged". */

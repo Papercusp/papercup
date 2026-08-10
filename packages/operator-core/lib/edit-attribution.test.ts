@@ -26,7 +26,7 @@ vi.mock('./work-item-claims', () => ({
   getActiveClaimForOwner: async () => mockClaim,
 }));
 
-let mockPresence: { currentPlanSlug: string | null } | null = null;
+let mockPresence: { currentPlanSlug: string | null; intent?: string | null } | null = null;
 vi.mock('./agent-tools/coordination/presence', () => ({
   getPresence: async () => mockPresence,
 }));
@@ -165,6 +165,92 @@ describe('recordEditAttribution — plan_slug fill (WI-6584)', () => {
     expect(harnessSlug).toBe('papercusp');
     expect(workItemId).toBe('WI-6584');
     expect(planSlug).toBe('my-plan');
+  });
+});
+
+describe('recordEditAttribution — intent is DECLARED work, never the lock hook label (EI-20055604348536487)', () => {
+  // THE REGRESSION GUARD. Before this fix, `intent` was written straight from the lock's own
+  // `args.intent`, which for the automatic per-edit file-lock hook is the literal
+  // `PreToolUse:{tool_name}`. Measured over 24h (n=3,257): 3,047 'PreToolUse:Edit' + 210
+  // 'PreToolUse:Write' vs ~50 rows with a real intent — 97.5% of the column was the name of the
+  // hook. git-sync renders this field as a commit SUBJECT, so the sentinel was one reader-side
+  // filter away from becoming the fleet's commit messages.
+  //
+  // The failure is silent in the expensive direction: a sentinel is NON-EMPTY, so every
+  // "did we record an intent?" check passes while the recorded value describes no work at all.
+  // These assertions pin the value, not its presence.
+  const call = (over: Record<string, unknown> = {}) =>
+    recordEditAttribution({
+      repoRoot: '/repo',
+      files: ['a.ts'],
+      agentId: 'su-1',
+      workspaceId: 'ws',
+      ...over,
+    });
+  /** [repoRoot, agentId, sessionId, contributor, workspaceId, harnessSlug, workItemId, planSlug, intent, acquiredVia, files] */
+  const recorded = () => ({ intent: insertCalls[0][8], acquiredVia: insertCalls[0][9] });
+
+  beforeEach(() => {
+    insertCalls.length = 0;
+    mockClaim = null;
+    mockPresence = null;
+  });
+
+  it('records the DECLARED intent and files the hook label under acquired_via', async () => {
+    mockPresence = { currentPlanSlug: null, intent: 'WI-42: fix the sync resolver' };
+    await call({ intent: 'PreToolUse:Edit' });
+    expect(recorded()).toEqual({
+      intent: 'WI-42: fix the sync resolver',
+      acquiredVia: 'PreToolUse:Edit',
+    });
+  });
+
+  it('writes NULL intent rather than a sentinel when the agent declared nothing', async () => {
+    // D-003: an honest unattributed edit beats a confident wrong one. NULL is what every
+    // consumer already handles ("no usable intent, fall back"); 'PreToolUse:Edit' is not.
+    mockPresence = { currentPlanSlug: null, intent: null };
+    await call({ intent: 'PreToolUse:Write' });
+    expect(recorded()).toEqual({ intent: null, acquiredVia: 'PreToolUse:Write' });
+  });
+
+  it('treats the presence PLACEHOLDER as no-intent, not as intent', async () => {
+    // The turn-start hook heartbeats this exact string every turn, so it is present far more
+    // often than a real intent — recovering it would have re-created the bug with a new literal.
+    mockPresence = { currentPlanSlug: null, intent: '(active — see coord:presence for current work)' };
+    await call({ intent: 'PreToolUse:Edit' });
+    expect(recorded()).toEqual({ intent: null, acquiredVia: 'PreToolUse:Edit' });
+  });
+
+  it('leaves a hand-declared lock intent alone (acquired_via stays NULL)', async () => {
+    // A multi-file hold acquired by hand already carries real intent; presence must NOT override
+    // it — the lock's own intent is the more specific statement about THIS edit.
+    mockPresence = { currentPlanSlug: null, intent: 'something else entirely' };
+    await call({ intent: 'WI-7: hold across the package-lock regeneration' });
+    expect(recorded()).toEqual({
+      intent: 'WI-7: hold across the package-lock regeneration',
+      acquiredVia: null,
+    });
+  });
+
+  it('does NOT misclassify a declared intent that talks ABOUT the hook label', async () => {
+    // The anchoring falsifier: the predicate matches a PREFIX, not a substring. This is the
+    // intent that produced this very fix, and a substring test would have silently discarded it —
+    // the failure mode being fixed, re-created by the fix.
+    mockPresence = {
+      currentPlanSlug: null,
+      intent: 'EI-20055604348536487: stop PreToolUse:Edit leaking into the attribution ledger',
+    };
+    await call({ intent: 'PreToolUse:Edit' });
+    expect(recorded().intent).toBe(
+      'EI-20055604348536487: stop PreToolUse:Edit leaking into the attribution ledger',
+    );
+  });
+
+  it('records neither when the caller passed no intent at all', async () => {
+    // apply-on-grant and other non-hook callers: absent stays absent, and must not invent a label.
+    mockPresence = { currentPlanSlug: null, intent: null };
+    await call({});
+    expect(recorded()).toEqual({ intent: null, acquiredVia: null });
   });
 });
 

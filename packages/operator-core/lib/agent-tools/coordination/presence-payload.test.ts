@@ -22,6 +22,8 @@ import {
   PRESENCE_LIVENESS_FIELDS,
   PRESENCE_DROPPED_FIELDS,
   PRESENCE_DELTA_FIELDS,
+  PLACEHOLDER_INTENT,
+  isLifecycleIntent,
   type RosterRow,
 } from './presence-payload';
 
@@ -279,5 +281,41 @@ describe('two-lane drift guard (D-005)', () => {
     expect([...PRESENCE_DELTA_FIELDS].sort()).toEqual(
       [...PRESENCE_IDENTITY_FIELDS, ...PRESENCE_STATE_FIELDS].sort(),
     );
+  });
+});
+
+describe('isLifecycleIntent — one canonical sentinel test (EI-20055604348536487)', () => {
+  // This predicate had grown THREE disagreeing copies before it was canonicalized here:
+  // locks/enrich-busy.ts covered `capability:` + the placeholder, git-sync-action.ts covered
+  // neither, and the lock hook carries a Python third. Each narrower copy classified a real
+  // sentinel as usable intent. Pin the union so a later edit cannot quietly re-narrow it.
+  it.each([
+    ['PreToolUse:Edit', 'the hook label on 3,047 of 3,257 ledger rows'],
+    ['PreToolUse:Write', 'the same, for Write'],
+    ['PostToolUse:Edit', 'the other hook phase'],
+    ['pretooluse:edit', 'case-insensitive — the hook is not the only writer'],
+    ['capability:edit', 'the in-dispatch lock-guard label'],
+    ['capability:write', 'the same, for write'],
+    ['', 'blank is no-intent'],
+    ['   ', 'whitespace is no-intent'],
+    [PLACEHOLDER_INTENT, 'heartbeated every turn, so more common than real intent'],
+  ])('treats %j as a lifecycle label (%s)', (s) => {
+    expect(isLifecycleIntent(s)).toBe(true);
+  });
+
+  it.each([undefined, null])('treats %j as a lifecycle label', (s) => {
+    expect(isLifecycleIntent(s)).toBe(true);
+  });
+
+  it.each([
+    ['WI-42: fix the sync resolver', 'an ordinary declared intent'],
+    [
+      'EI-20055604348536487: stop PreToolUse:Edit leaking into the ledger',
+      'ANCHORED, not substring — an intent that talks about the label is still real intent',
+    ],
+    ['reviewing capability:edit call sites', 'the same anchoring hazard, other prefix'],
+    ['PreToolUse handling in the hook', 'no colon: not the label shape'],
+  ])('treats %j as real declared intent (%s)', (s) => {
+    expect(isLifecycleIntent(s)).toBe(false);
   });
 });
