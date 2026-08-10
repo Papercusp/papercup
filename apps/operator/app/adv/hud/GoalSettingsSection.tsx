@@ -166,24 +166,37 @@ export default function GoalSettingsSection({
   const [busy, setBusy] = useState(false);
   const [problems, setProblems] = useState<string[]>([]);
 
+  /* TWO DIFFERENT QUESTIONS, AND CONFLATING THEM BREAKS THE RE-SYNC BELOW.
+     `dirty` asks "does the form differ from what is STORED" — that is what the
+     Save button is for. `edited` asks "has the owner typed since we loaded this
+     form", measured against the document we last loaded FROM. They come apart
+     exactly when the server changes underneath an untouched form: `dirty` goes
+     true because the stored document moved, not because anyone typed. Guarding
+     the re-sync on `dirty` therefore treats every external change as an edit in
+     progress and the form never updates again. */
   const dirty = useMemo(() => isSettingsDirty(form, settings ?? null), [form, settings]);
+  const syncedRef = useRef<GoalDetailLaunchSettings | null>(settings ?? null);
+  const edited = useMemo(() => isSettingsDirty(form, syncedRef.current), [form]);
 
   /* RE-SYNC FROM THE SERVER, BUT NEVER OVER AN EDIT IN PROGRESS. `goals.detail`
      re-pulls on every invalidation — including ones this popup did not cause —
-     so without this the form would silently keep showing a stale document after
-     someone else changed it. Guarded on `dirty` because the opposite failure is
-     worse: re-initialising mid-edit would delete what the owner is typing. The
-     ref carries the last document we synced FROM so a re-render with an equal
-     document does not re-run this. */
-  const syncedRef = useRef<string>(JSON.stringify(settings ?? null));
+     so without this the form would keep showing a stale document after someone
+     else changed it. The opposite failure is worse, which is why an edit wins:
+     re-initialising mid-edit would delete what the owner is typing.
+
+     `!dirty` is the second way in, and it is what un-sticks the form after our
+     OWN save: the form then already equals the incoming document, so adopting
+     it changes nothing on screen but advances the ref — without it, `edited`
+     would stay true against a stale ref forever and later external changes
+     would never land. */
   useEffect(() => {
-    const next = JSON.stringify(settings ?? null);
-    if (next === syncedRef.current) return;
-    syncedRef.current = next;
-    if (dirty) return;
-    setForm(settingsToForm(settings));
+    const incoming = settings ?? null;
+    if (JSON.stringify(incoming) === JSON.stringify(syncedRef.current)) return;
+    if (edited && dirty) return;
+    syncedRef.current = incoming;
+    setForm(settingsToForm(incoming));
     setProblems([]);
-  }, [settings, dirty]);
+  }, [settings, edited, dirty]);
 
   const setDefaultsField = useCallback((field: ProfileField, next: string) => {
     setForm((f) => ({ ...f, defaults: { ...f.defaults, [field]: next } }));
