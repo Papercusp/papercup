@@ -565,6 +565,20 @@ const OKF_SCAN_ROOTS = [
 // affected-tests-repo-wide-invariant-guards.test.ts.
 const GC_TAG_SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
 
+// MIRRORS `EXIT_NOT_CHECKED` in scripts/lib/not-checked.mjs — mirrored, not imported, for the
+// same reason as the roots above: this file is every agent's test-loop entry point, and a load
+// error in a lint module must not hard-fail everyone's test:affected. Asserted equal to the real
+// export by affected-tests-repo-wide-invariant-guards.test.ts.
+//
+// WHY THE RUNNER HAS TO KNOW THIS NUMBER AT ALL (WI-37820): the strand-guard family derives its
+// subject from `git diff <base>`, so it answers THREE things, not two — 0 "checked, found
+// nothing", 1 "checked, found something", 2 "I could not look". A gate that collapses those into
+// `status !== 0` reads "I could not look" as "violation". That is not hypothetical here: a gate
+// checkout is CLEAN BY CONSTRUCTION (the candidate is committed), so the working diff is empty
+// and a registered strand guard examines zero files EVERY time — turning exit 2 into a
+// permanent, content-free red on every candidate that touches a .ts file.
+const EXIT_NOT_CHECKED = 2;
+
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
     // EI-19454727576364875 — a `lint:*` script is declared in a package.json, so editing a
