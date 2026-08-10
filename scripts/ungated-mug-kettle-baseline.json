@@ -107,7 +107,7 @@
     "system-action|cross-hive-outbox-drain|packages/operator-core/lib/harness/routines/cross-hive-drain-action.ts",
     "system-action|hive-canary-sla|packages/operator-core/lib/harness/routines/hive-canary-action.ts",
     "system-action|hive-canary|packages/operator-core/lib/harness/routines/hive-canary-action.ts",
-    "system-action|hive-git-gc|packages/operator-core/lib/harness/routines/hive-git-gc-action.ts",
+    "system-action|pot-git-gc|packages/operator-core/lib/harness/routines/hive-git-gc-action.ts",
     "system-action|system:overwatch-launch|packages/operator-core/lib/overwatch/loop.ts",
     "tool|cup:spawn|packages/operator-core/lib/agent-tools/cup/spawn.ts",
     "tool|cup:spawn|packages/operator-core/lib/llm-testing/scenarios/overwatch/OW01-nudge-not-replace.ts",
