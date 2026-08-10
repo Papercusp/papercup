@@ -13,7 +13,7 @@ const NOW = 1_800_000_000_000;
 function brief(over: Partial<CarryBrief> = {}): CarryBrief {
   return {
     ownerId: 'su-1',
-    loop: { harness: 'papercusp', active: true, intervalSec: 60, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW },
+    loop: { harness: 'papercusp', active: true, intervalSec: 60, goal: null, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW },
     heldItems: [],
     directives: [],
     directivesTotalOpen: 0,

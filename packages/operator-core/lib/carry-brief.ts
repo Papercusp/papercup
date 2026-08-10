@@ -282,7 +282,16 @@ export interface BuildCarryBriefOpts {
   // Test seams — each defaults to the real reader.
   getLoopStatusFn?: (
     ownerId: string,
-  ) => Promise<{ harnessSlug: string; active: boolean; intervalSec: number | null } | null>;
+  ) => Promise<{
+    harnessSlug: string;
+    active: boolean;
+    intervalSec: number | null;
+    /** EI-20072281215342526: the MISSION. Optional on the seam (not on `LoopStatus`,
+     *  where it is required) so an existing test stub keeps compiling — a stub that
+     *  omits it is stating "this test does not exercise the goal", which is honest,
+     *  whereas the real reader always has one to give. */
+    goal?: string | null;
+  } | null>;
   getLoopCarryNoteWithMetaFn?: (ref: {
     harness: string;
     ownerId: string;

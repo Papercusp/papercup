@@ -500,7 +500,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   it('returns "" when the brief carries nothing beyond the loop note', () => {
     const empty: CarryBrief = {
       ownerId: 'x',
-      loop: { harness: 'h', active: true, intervalSec: 60, carryNote: 'n', carryNoteUpdatedAtMs: 1 },
+      loop: { harness: 'h', active: true, intervalSec: 60, goal: null, carryNote: 'n', carryNoteUpdatedAtMs: 1 },
       heldItems: [],
       directives: [],
       directivesTotalOpen: 0,

@@ -68,7 +68,7 @@ describe('detectFlushTripwires', () => {
 
   it('emits armed-loop-no-carry-note when the loop is active with no note', () => {
     const t = detectFlushTripwires(
-      brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, carryNote: '  ', carryNoteUpdatedAtMs: null } }),
+      brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, goal: null, carryNote: '  ', carryNoteUpdatedAtMs: null } }),
       NOW,
     );
     expect(t).toHaveLength(1);
@@ -77,7 +77,7 @@ describe('detectFlushTripwires', () => {
 
   it('does NOT flag an armed loop that HAS a carry-note', () => {
     const t = detectFlushTripwires(
-      brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW } }),
+      brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, goal: null, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW } }),
       NOW,
     );
     expect(t).toEqual([]);
@@ -85,7 +85,7 @@ describe('detectFlushTripwires', () => {
 
   it('does NOT flag an INACTIVE loop with no note', () => {
     const t = detectFlushTripwires(
-      brief({ loop: { harness: 'papercusp', active: false, intervalSec: null, carryNote: null, carryNoteUpdatedAtMs: null } }),
+      brief({ loop: { harness: 'papercusp', active: false, intervalSec: null, goal: null, carryNote: null, carryNoteUpdatedAtMs: null } }),
       NOW,
     );
     expect(t).toEqual([]);
