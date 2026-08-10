@@ -145,6 +145,15 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     // goes blind to new arrivals. Feature-family creates carry no severity ⇒ null, which
     // is the correct non-match for an issue-family-only notion.
     severity: spec.severity ?? null,
+    // WI-37711: ALWAYS null here, deliberately — unlike `severity` above, the goal is NOT
+    // knowable at create-time admission. stampGoalProvenance writes goal_id in an UPDATE
+    // *after* the row is inserted (_create-core.ts), so no goal exists to read while this
+    // subject is being built. Mirrors `id: null`'s reasoning: a goal-pinned cohort is
+    // closed, and an item cannot be placed into it on the strength of a goal it has not
+    // been stamped with yet. This fails CLOSED (a `goal = X` leaf refuses an unstamped
+    // subject), which is the intended direction — the goal-scoped drain fleet claims the
+    // item later, through scheduler:get_next, once the stamp is on the row.
+    goal: null,
   };
 }
 

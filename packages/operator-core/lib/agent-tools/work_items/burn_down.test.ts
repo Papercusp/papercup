@@ -62,6 +62,7 @@ function item(overrides: Partial<WorkItem>): WorkItem {
     createdAt: '2026-07-05T20:00:00.000Z',
     updatedAt: '2026-07-05T20:00:00.000Z',
     closedAt: null,
+    goalId: null,
     ...overrides,
   };
 }

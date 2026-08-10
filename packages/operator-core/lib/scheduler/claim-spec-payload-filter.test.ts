@@ -64,6 +64,7 @@ function subjectOf(p: {
     estCost: null,
     assignee: null,
     severity: null,
+    goal: null,
   };
 }
 

@@ -131,6 +131,7 @@ function nullPlanSubject(id: string): ClaimSpecSubject {
     estCost: null,
     assignee: null,
     severity: null,
+    goal: null,
   };
 }
 

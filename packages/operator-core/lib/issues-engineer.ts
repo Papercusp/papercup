@@ -183,6 +183,11 @@ export interface EngineerIssue {
    *  Read it INSTEAD of updatedAt for anything time-of-close — updatedAt moves on any write
    *  and a single bulk write makes it report thousands of ancient rows as just-closed. */
   closedAt: string | null;
+  /** WI-37711 — the goal this item was filed under (`work_items.goal_id`, migration 785),
+   *  exposed on this compat view by migration 790 so a claim spec can scope a standing
+   *  drain fleet to ONE goal. Stamped by stampGoalProvenance at creation; null when the
+   *  filing agent held no goal context (the overwhelming majority of historical rows). */
+  goalId: string | null;
 }
 
 export interface EngineerIssueDetail extends EngineerIssue {
@@ -462,6 +467,8 @@ interface IssueRowDb {
   updated_at: unknown;
   /** EI-18820653360383242 — bigint epoch-ms on the base table (migration 698). */
   closed_ts: unknown;
+  /** WI-37711 — exposed on the engineer_issues view by migration 790. */
+  goal_id: string | null;
 }
 // EI-18691099450966094: delegates to the shared pg-timestamp helper — a raw
 // Postgres-text timestamptz (e.g. "2026-07-26 03:34:43.647148-04") must be
@@ -504,6 +511,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     createdAt: tsIso(r.created_at),
     updatedAt: tsIso(r.updated_at),
     closedAt: tsIsoOrNull(r.closed_ts),
+    goalId: r.goal_id,
   };
 }
 
@@ -512,7 +520,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 export const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
-  terminal_completion_ref, authority, feature_order, created_at, updated_at, closed_ts`;
+  terminal_completion_ref, authority, feature_order, created_at, updated_at, closed_ts, goal_id`;
 
 /**
  * ISSUE_COLS with `body` replaced by a NULL of the same type — for the readers that
@@ -552,7 +560,7 @@ export const ISSUE_ROW_DB_KEYS = [
   'assigned_by', 'assigned_at', 'last_progress_at', 'payload', 'origin', 'found_during',
   'linked_feature_id', 'created_by', 'signal_origin', 'assignee_rank', 'rank_writer',
   'rank_updated_at', 'terminal_owner', 'terminal_completion_ref', 'authority', 'feature_order',
-  'created_at', 'updated_at', 'closed_ts',
+  'created_at', 'updated_at', 'closed_ts', 'goal_id',
 ] as const;
 type IssueRowDbKeysUnion = (typeof ISSUE_ROW_DB_KEYS)[number];
 type MissingFromTuple = Exclude<keyof IssueRowDb, IssueRowDbKeysUnion>;
@@ -1063,6 +1071,42 @@ function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // (sync/hyperbee/replication-stall-ei.ts) because that module FILES issues and so
   // imports this one — importing back would cycle. Same precedent, same reason, as
   // harness/improvements/policy.ts and work-items.ts's own copy.
+  //
+  // WI-37774: the remaining THREE row-intrinsic claim floors — found by AUDITING the
+  // siblings of WI-37761's gap rather than waiting to hit each one. A floor meaning
+  // "agents must never get this" has TWO sides — cannot-CLAIM (claimNextIssueWorkItem)
+  // and is-not-OFFERED (here) — and each of these was implemented only on the claim side:
+  //   - loop-noise (EI-8802, loopIterationNoiseExclusionSql)
+  //   - already-terminally-completed (EI-8972, alreadyTerminallyCompletedExclusionSql)
+  //   - an ACTIVE typed external blocker (externalBlockersExclusionSql)
+  // Every one of those helpers takes ONLY `sql` — no assignee/rigAvailable/swarmId — so
+  // they are exactly the "unconditional per-row floors" the WI-4405 contract above already
+  // claims to mirror, NOT the readiness/rig/cooldown/swarm/redundancy floors it
+  // deliberately omits for needing live claim context. They were missed, not excluded.
+  //
+  // Measured before the fix (workspace papercusp, state=open, unassigned, passing all six
+  // then-current floors): 1517 advertised, of which 14 loop-noise + 1 active-external-blocker
+  // + 0 already-completed = 15 rows this path OFFERED and the claim path REFUSED. The
+  // loop-noise count independently reproduces EI-19452326548245557's own 2026-08-04 census
+  // ("loopNoise (14)"), measured from the other direction. `already-completed` being 0 today
+  // is why it is added on this pass rather than when it first bites — it is the one of the
+  // three that can appear at any moment.
+  //
+  // ⚠ This does NOT make `admissibleOnly` the claim verdict, and the flag's description must
+  // keep saying so: blocked-dep / rig / cooldown / swarm-affinity / redundancy still are not
+  // (and cannot be) evaluated here. `work_items:claimable` remains the only full oracle.
+  //
+  // ⚠ COST: none of the three adds a datum fetch. `title`, `terminal_owner`,
+  // `terminal_completion_ref` and `authority` are real in-line columns on this view, and
+  // `title` is already in ISSUE_COLS; the jsonb_path_exists touches the SAME out-of-line
+  // payload datum the `_claimHold` / `needsHuman` floors above already force. The ILIKE pair
+  // is the same predicate, at the same cost, the claim path already runs on this table.
+  //
+  // ⚠ The helpers are written `wi.`-prefixed against the base work_items TABLE, so they are
+  // RESTATED here in the view's column form rather than imported — the same deliberate
+  // duplication as the needsHuman/_claimHold floors above. `externalBlockers` survives the
+  // view's `payload - '_ei'` subtraction because it is a TOP-LEVEL payload key, not an _ei
+  // sub-field (verified against WI-5107's live payload).
   return aliased
     ? sql`(
         (ei.origin = 'local' OR ei.origin IS NULL)
@@ -1070,6 +1114,19 @@ function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
         AND ei.created_by IS DISTINCT FROM 'system:replication-liveness'
         AND COALESCE(ei.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
         AND COALESCE(ei.payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
+        AND COALESCE(ei.title, '') NOT ILIKE 'Loop wake #%'
+        AND COALESCE(ei.title, '') NOT ILIKE 'AUTO loop iteration:%'
+        AND (
+          (ei.terminal_owner IS NULL OR ei.terminal_owner = '')
+          OR (
+            (ei.terminal_completion_ref IS NULL OR ei.terminal_completion_ref = '')
+            AND ei.authority IS NULL
+          )
+        )
+        AND NOT jsonb_path_exists(
+          COALESCE(ei.payload, '{}'::jsonb),
+          '$.externalBlockers[*] ? (@.status == "active")'::jsonpath
+        )
         AND NOT (
           COALESCE(ei.payload, '{}'::jsonb) ? 'plan_item' AND (
             EXISTS (
@@ -1092,6 +1149,19 @@ function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
         AND created_by IS DISTINCT FROM 'system:replication-liveness'
         AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
         AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
+        AND COALESCE(title, '') NOT ILIKE 'Loop wake #%'
+        AND COALESCE(title, '') NOT ILIKE 'AUTO loop iteration:%'
+        AND (
+          (terminal_owner IS NULL OR terminal_owner = '')
+          OR (
+            (terminal_completion_ref IS NULL OR terminal_completion_ref = '')
+            AND authority IS NULL
+          )
+        )
+        AND NOT jsonb_path_exists(
+          COALESCE(payload, '{}'::jsonb),
+          '$.externalBlockers[*] ? (@.status == "active")'::jsonpath
+        )
         AND NOT (
           COALESCE(payload, '{}'::jsonb) ? 'plan_item' AND (
             EXISTS (

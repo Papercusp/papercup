@@ -96,6 +96,7 @@ const base: ClaimSpecSubject = {
   estCost: 12,
   assignee: null,
   severity: 'major',
+  goal: null,
 };
 
 describe('fleet scope assignment admission (P-016)', () => {
@@ -163,6 +164,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       createdAt: '2026-07-13T00:00:00.000Z',
       updatedAt: '2026-07-13T00:00:00.000Z',
       closedAt: null,
+      goalId: null,
     });
     expect(subject).toMatchObject({ plan: 'ops', planItem: ['P-9'], riskTier: 'high' });
     expect(subject.paths).toEqual(['packages/operator-core/lib/x.ts']);

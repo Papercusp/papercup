@@ -69,6 +69,7 @@ const aWorkItem = (over: Partial<WorkItem> = {}): WorkItem => ({
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   closedAt: null,
+  goalId: null,
   ...over,
 });
 

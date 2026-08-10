@@ -143,6 +143,10 @@ export default defineTool({
             // features carry no severity, so this subject always reports null (matches
             // work_items/create.ts's feature-family construction).
             severity: null,
+            // WI-37711: plan-item assignment happens pre-promotion, before any work-item
+            // row (and so before any goal stamp) exists — there is nothing to read here.
+            // Same fail-closed direction as work_items/create.ts's construction.
+            goal: null,
           },
         });
         if (!admission.allowed) {
