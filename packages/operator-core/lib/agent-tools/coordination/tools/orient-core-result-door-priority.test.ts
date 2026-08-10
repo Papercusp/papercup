@@ -34,7 +34,7 @@ vi.mock('../../../context-doors-config', () => ({ getDoorConstantsSync: doorCons
 
 import { BAKED_DOOR_CONSTANTS } from '../../../context-doors';
 import { applyResultDoor, RESULT_DOOR_TOKENS } from '../../../result-door';
-import { assembleOrientOutput } from './orient';
+import orientTool, { assembleOrientOutput, ORIENT_PAYLOAD_TIER_CEILING_CHARS } from './orient';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 
@@ -83,6 +83,46 @@ function doorify(out: Record<string, unknown>) {
     { toolName: 'coord:orient', workspaceId: 'ws-1', runId: '11111111-2222-4333-8444-555555555556' },
   );
 }
+
+/**
+ * WI-37843. READ THIS BEFORE THE SUITES BELOW, which otherwise look like they
+ * describe live behavior: coord:orient no longer passes through the result door
+ * at all — it declares `skipResultDoor: 'oversize-by-design'`.
+ *
+ * The key-ordering work those suites pin is therefore DEFENCE IN DEPTH now, not
+ * the mechanism keeping orient's core result in context. It is deliberately kept
+ * (a) because the ordering is still what decides which fields survive if the
+ * exemption is ever removed or a shaper re-trims, and (b) because they encode
+ * WHICH fields are load-bearing — knowledge that would otherwise be lost.
+ *
+ * This first suite is the one that pins the exemption itself. It asserts on the
+ * TOOL DEFINITION rather than on a dispatch, because the failure it guards is
+ * precisely a declaration that never reaches the host: `skipResultDoor` spent
+ * time fully typed and threaded while the one call site ignored it
+ * (EI-19389430626961976), and a `payloadTierCeilingChars` that silently failed
+ * to thread would look identical from the outside — orient would just quietly
+ * go back to being truncated, with every test still green.
+ */
+describe('coord:orient declares BOTH uncapping legs (WI-37843)', () => {
+  it("opts out of the result door as 'oversize-by-design' — the MODEL-FACING reason", () => {
+    // Not 'programmatic-caller': that reason additionally suppresses appended
+    // prose, and orient's reader is an agent that must still receive warnings
+    // (see mayAnnotateResultText).
+    expect(orientTool.skipResultDoor).toBe('oversize-by-design');
+  });
+
+  it('raises its payload-tier ceiling — the OTHER, unrecoverable cut', () => {
+    // The door spills what it cuts; this ceiling never serialized it. Declaring
+    // only the door exemption would have left orient trimmed anyway, which is
+    // the half-fix this pins against.
+    expect(orientTool.payloadTierCeilingChars).toBe(ORIENT_PAYLOAD_TIER_CEILING_CHARS);
+    // 30k tokens at ~4 chars/token. Measured unshaped orient was ~16.5k tokens,
+    // so the valve sits above the real payload rather than clamping it — the
+    // property that made p99 pin to the old 30,000-CHAR ceiling.
+    expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBe(120_000);
+    expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBeGreaterThan(16_472 * 4);
+  });
+});
 
 describe('EI-18689334534773965: coord:orient core result (me/claimable/inbox) survives the result-door under a large preamble', () => {
   it('ok/me/claimable/inbox are present in the KEPT (in-context) text, not only the spill', () => {
