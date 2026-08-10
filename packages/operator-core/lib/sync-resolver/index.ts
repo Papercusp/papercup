@@ -3306,32 +3306,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [deriveAttentionCounts(Array.isArray(r?.groups) ? r.groups : [])];
     },
   },
-  // plans.waitingCount — the AGGREGATE for AdvNowRunning's "N plans waiting"
-  // nudge (EI-19409535742567802). AdvNowRunning is chrome mounted on every
-  // /adv tab (AdvPotBar -> AdvShell header) and was pulling the WHOLE
-  // plans.list feed (~702 KB measured, on a route rendering no plan list)
-  // just to derive one integer client-side (countWaitingPlans = plans
-  // with startStatus === 'started'). This returns [{count}] instead — same
-  // precedent as plans.attentionCounts (WI-5955). Scoped by harness_slugs,
-  // matching AdvNowRunning's pre-existing client args shape exactly
-  // (`enabled: !!slug && stopped` guarantees slug is truthy whenever this
-  // actually fires, so an empty harness_slugs is dead in practice, matching
-  // the pre-migration direct plans.list call's behavior).
-  'plans.waitingCount': {
-    backingTables: ['harness_shared.harness_plans'],
-    resolve: async (args) => {
-      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const r = (await callPlansRead('list', (args ?? {}) as Record<string, unknown>)) as {
-        plans?: Array<{ startStatus?: string }>;
-      };
-      const plans = Array.isArray(r?.plans) ? r.plans : [];
-      const count = plans.filter((p) => p?.startStatus === 'started').length;
-      return [{ count }];
-    },
-  },
+  // plans.waitingCount was REMOVED here 2026-08-10 (P-075). It was the
+  // AGGREGATE behind AdvNowRunning's "N plans waiting" nudge
+  // (EI-19409535742567802), and that nudge was the only consumer it ever had;
+  // the owner directive that deleted the nudge ("remove the 'plans waiting'
+  // button") therefore left a live query feeding nothing, which P-075 retired in
+  // the same change rather than leaving behind. AdvNowRunning.test.tsx asserts
+  // the bar no longer SUBSCRIBES to it (not merely that no button renders), so a
+  // re-added consumer fails there first instead of 404ing at runtime.
+  //
   // plans.steerable — the 6-field projection behind the Mug steering panel's
   // plan checkboxes (no-http-anywhere-2026-07-28 D-071). Same precedent as
-  // plans.waitingCount right above and plans.attentionRefs below: an
+  // plans.attentionCounts above and plans.attentionRefs below: an
   // always-mounted CHROME consumer was holding the whole plans.list superset
   // feed for a sliver of it.
   //

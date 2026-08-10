@@ -79,17 +79,8 @@
 .pc-advshell__action--stop:hover {
   background: rgba(239, 68, 68, 0.22);
 }
-/* Amber "N plans waiting" nudge — started plans with no running pot to pick them
-   up. Matches the Create tab's amber accent. */
-.pc-advshell__action--waiting {
-  background: rgba(245, 158, 11, 0.14);
-  color: #fcd34d;
-  border-color: rgba(245, 158, 11, 0.4);
-}
-.pc-advshell__action--waiting:hover {
-  background: rgba(245, 158, 11, 0.24);
-  color: #fde68a;
-}
+/* The amber `--waiting` variant ("N plans waiting") was removed with its only
+   consumer, the AdvNowRunning nudge (P-075, [owner 2026-08-10]). */
 
 /* ── PotsRunningPill: "▶ N POT running" button + fold-out control popover ── */
 .pc-advshell__pots-pill-wrap {

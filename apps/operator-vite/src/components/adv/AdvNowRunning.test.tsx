@@ -11,9 +11,8 @@
 //   - Start fires pot:start through the loopback palette bridge and flips to
 //     the optimistic active state (errors → toast.error),
 //   - Stop confirms, then fires pot:pause { drainCups: true },
-//   - the "N plans waiting" nudge (push-driven plans.waitingCount, the
-//     server-side aggregate — EI-19409535742567802) + its click-through to
-//     the Plans tab's Running bucket.
+//   - that the removed "N plans waiting" nudge neither renders NOR subscribes
+//     to plans.waitingCount (P-075 — the aggregate was deleted with it).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -38,7 +37,6 @@ vi.mock('sonner', () => ({
 // Per-query sync mock — the component subscribes to three distinct queries.
 let hiveRows: unknown[] | undefined = [{ slug: 'hive-1', started: false }];
 let runRows: unknown[] = [];
-let waitingCountRows: unknown[] = [];
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
@@ -60,8 +58,6 @@ vi.mock('@papercusp/sync', () => ({
         return { data: hiveRows };
       case 'agentRunsConsolidated.recent':
         return { data: runRows };
-      case 'plans.waitingCount':
-        return { data: waitingCountRows };
       default:
         return { data: undefined };
     }
@@ -101,7 +97,6 @@ beforeEach(() => {
   for (const k of Object.keys(syncArgs)) delete syncArgs[k];
   hiveRows = [{ slug: 'hive-1', started: false }];
   runRows = [];
-  waitingCountRows = [];
   runToolCalls = [];
   runToolResponse = { ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } };
   tierLive = true;
@@ -202,27 +197,20 @@ describe('AdvNowRunning', () => {
     expect(toastMock.success).not.toHaveBeenCalled();
   });
 
-  it('nudges with "N plans waiting" while stopped and deep-links the Running bucket', async () => {
-    waitingCountRows = [{ count: 2 }];
+  // ---- "N plans waiting" nudge REMOVED (P-075, [owner 2026-08-10] "remove the
+  // 'plans waiting' button"). This asserts the stronger property than "no button
+  // renders": the bar must not SUBSCRIBE to plans.waitingCount at all. That is
+  // what licensed deleting the server-side aggregate in the same change — a
+  // surviving subscription would have made the resolver removal a runtime break
+  // rather than dead-code cleanup. Asserted in the STOPPED state, the only one
+  // that ever rendered the nudge.
+  it('no longer renders the waiting-plans nudge, nor subscribes to its aggregate (P-075)', async () => {
+    hiveRows = [{ slug: 'hive-1', started: false }];
     render(<AdvNowRunning slug="pot-a" />);
-    const nudge = await screen.findByText('2 plans waiting');
-    // the plans.waitingCount query is enabled + scoped to this harness while stopped
-    expect(syncEnabled['plans.waitingCount']).toBe(true);
-    expect(syncArgs['plans.waitingCount']).toEqual({ harness_slugs: ['pot-a'] });
-    fireEvent.click(nudge);
-    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('plans'));
-    expect(nuqsSetters.view).toHaveBeenCalledWith('plans');
-    expect(nuqsSetters.pBuckets).toHaveBeenCalledWith(['running']);
-  });
-
-  it('disables the waiting-plans query entirely while the hive is started', async () => {
-    hiveRows = [{ slug: 'hive-1', started: true }];
-    waitingCountRows = [{ count: 2 }];
-    render(<AdvNowRunning slug="pot-a" />);
-    await screen.findByText('Stop pot');
-    // started hive → stopped=false → plans.waitingCount disabled (no fetch) → no nudge
-    expect(syncEnabled['plans.waitingCount']).toBe(false);
+    // Wait for the bar itself so this cannot pass merely because nothing rendered yet.
+    await waitFor(() => expect(document.querySelector('.pc-advshell__harness-bar')).toBeTruthy());
     expect(screen.queryByText(/plans? waiting/)).toBeNull();
+    expect(Object.keys(syncEnabled)).not.toContain('plans.waitingCount');
   });
 
   // ---- Mug/Kettle/Cup retirement (P-043; D-010 retires the buttons, D-017

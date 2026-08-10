@@ -255,8 +255,12 @@ describe('AdvPotBar — which tabs get it (owner ask 2026-07-27 #2/#3)', () => {
     // never their scope. Asserted under withStatus (the strongest case: this is
     // the one mode that used to render them) so a re-added import cannot slip
     // back in unnoticed and double-render them on HUD.
+    //
+    // The pots-running half of that pair no longer exists at all (P-075 deleted
+    // the component), so only the agents pill is still a live regression risk
+    // here — a `hives-pill` assertion would now pass vacuously and is dropped
+    // rather than left looking like coverage.
     await renderBar({ withStatus: true });
-    expect(screen.queryByTestId('hives-pill')).toBeNull();
     expect(screen.queryByTestId('agents-pill')).toBeNull();
   });
 
