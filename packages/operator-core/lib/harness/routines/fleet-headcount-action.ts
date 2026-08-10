@@ -13,6 +13,7 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnHeadless } from '../../console-spawn';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { memberLaunchCommand } from '../../agent-launch-core';
+import { resolveGoalLaunch } from '../../goal-launch-settings';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -60,6 +61,37 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       return;
     }
     const config: FleetHeadcountConfig = attempt.config;
+
+    // ── The goal ceilings bind the GOVERNOR too (P-004/D-009) ─────────────────
+    // This is the path that most needs them. Every other launch door is driven by
+    // an agent or a human who would at least see a refusal; this one tops a fleet
+    // back up to target on a routine, unattended, forever. Left unwired it would
+    // quietly hold a fleet ABOVE a goal's maxAgents indefinitely — refusing the
+    // owner's own launches while a background routine ignored the same ceiling.
+    //
+    // The launcher is the fleet's LEADER: the governor is acting on the leader's
+    // behalf, so the goal it serves is the leader's goal context (D-008).
+    const goalLaunch = await resolveGoalLaunch({
+      workspaceId,
+      launcherOwnerId: fleet.leaderOwnerId ?? '',
+      role: config.role ?? null,
+      fleetSlug,
+      count: deficit,
+    });
+    if (goalLaunch.refusal) {
+      // Recorded as a failed attempt rather than thrown: the governor must keep
+      // running (the fleet may shrink back under the ceiling on its own), and the
+      // reason belongs on the attempt so an operator sees WHY the fleet is being
+      // held below target instead of reading it as the top-up silently breaking.
+      await recordFleetHeadcountAttempt({
+        workspaceId,
+        fleetSlug,
+        succeeded: false,
+        error: goalLaunch.refusal.message,
+      });
+      return;
+    }
+
     const envelope = await buildConsoleEnvelope({
       workspaceId,
       slug: config.harness,
@@ -72,8 +104,12 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       harness: config.harness,
       plan: config.plan,
       headless: true,
-      model: config.model,
-      account: config.account,
+      // The goal's profile applies to a governor top-up exactly as it does to the
+      // leader's own launches — otherwise a replaced member silently comes back
+      // on a different model/account than the one the goal pinned.
+      model: goalLaunch.effective.model ?? config.model,
+      effort: goalLaunch.effective.effort,
+      account: goalLaunch.effective.account ?? config.account,
       role: config.role,
       launchContext: config.launchContext,
       contextSize: config.contextSize,
