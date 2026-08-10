@@ -28,6 +28,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveHarnessDocPaths } from '../../harness/docs/harness-repo';
 import { safeJoinUnderRoot } from '../../harness/docs/doc-fs';
 import { anchorManualDoc } from '../../harness/docs/manual-anchor';
+import { applyProjectionBanner } from '../../harness/docs/authored-doc-projection';
 import { resolveHarnessScope } from '../_harness-scope';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
@@ -199,12 +200,12 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'docs:author',
   description:
-    "Create a NEW manual / agent-insights doc the right way, in one call: writes <section>/<slug>.mdx to the canonical docs root (resolved exactly like docs:search — for papercusp that's apps/operator-docs/src/content/docs), stamps the full frontmatter convention (title/description/discovered/tags/status/documents/plans), and AUTO-anchors + verifies it so it ships drift-tracked. Eliminates the wrong-dir / missing-frontmatter / forgot-to-anchor footgun. Returns { ok, path, slug, section, surface, anchored, status, subjectRef, warnings }.",
+    "Create or replace a manual / agent-insights doc the right way, in one call. THE ONLY supported way to author one: Postgres (harness_docs.content) is canonical and the <section>/<slug>.mdx file is a projection of it, so hand-writing that file does not durably create a doc. Stamps the full frontmatter convention (title/description/discovered/tags/status/documents/plans), writes the canonical row, projects the file, and AUTO-anchors + verifies so it ships drift-tracked. Returns { ok, path, slug, section, surface, anchored, status, subjectRef, warnings }.",
   guidance: {
     when:
       'You have a durable HOW-IT-WORKS runbook / failure-mode / hard-won gotcha to write down (the CLAUDE.md "write it as an anchored agent-insights MDX" rule). Pass `documents` with the files/symbols the doc covers so it ships drift-tracked.',
     notWhen:
-      'For a quick personal fact use memory:remember (not a doc). To EDIT an existing doc use capability:write/edit then harness_docs:verify. To only declare a subject_ref on an already-written doc use harness_docs:anchor.',
+      'For a quick personal fact use memory:remember (not a doc). To EDIT an existing doc call this tool again with overwrite:true — do NOT hand-edit the .mdx: Postgres is canonical and the file is a projection, so a hand-edit is refused by the next projection and never lands. To only declare a subject_ref use harness_docs:anchor.',
     chaining:
       'docs:author { slug, title, description, body, documents } → (later, on a drift nudge) harness_docs:verify { docId }.',
     seeAlso: [
@@ -277,15 +278,17 @@ export default defineTool({
     };
     const content = composeDoc(fm, args.body);
 
-    try {
-      await fs.mkdir(dirname(abs), { recursive: true });
-      await fs.writeFile(abs, content, 'utf8');
-    } catch (e) {
-      return err(`write_failed — ${(e as Error).message}`);
-    }
-
-    // Auto-anchor (+ verify by default): pass documents explicitly so we never hit
-    // the inference path — and so the doc ships drift-tracked, not "untracked".
+    // ── PG FIRST, FILE SECOND (P-008 / D-025) ──────────────────────────────────────
+    // This order is the whole inversion. Postgres is canonical for authored doc prose;
+    // the .mdx is a PROJECTION of harness_docs.content, written below by the same module
+    // the CLI projector uses. Writing the file first (as this tool did until 2026-08-10)
+    // would make the file the source and the row a lagging mirror — and on a partial
+    // failure it would leave prose on disk that nothing else knows about, which is
+    // precisely the state P-008 exists to end.
+    //
+    // The anchor call is what writes the row, so it carries the content: one writer
+    // (upsertDocRecord), not two competing ones. Documents are passed explicitly so we
+    // never hit the inference path — and so the doc ships drift-tracked, not "untracked".
     const verify = args.verify ?? true;
     let anchored = false;
     let status = 'untracked';
@@ -297,6 +300,7 @@ export default defineTool({
         ...(documents.length ? { documents } : {}),
         verify,
         title: args.title.trim(),
+        content,
       });
       if (res.ok) {
         anchored = res.anchored;
@@ -306,10 +310,29 @@ export default defineTool({
           warnings.push('anchor resolved 0 subject refs from the provided `documents` — check the paths/ids exist in the repo.');
         }
       } else {
-        warnings.push(`doc written but anchor failed (${res.error}) — run harness_docs:anchor { docId, documents } to drift-track it.`);
+        // The canonical write FAILED, so the doc does not exist. Under the old file-first
+        // order this was a warning ("doc written but anchor failed") because the prose was
+        // already safe on disk; now the row IS the doc, and writing the file anyway would
+        // leave an unbacked .mdx that the projector must later refuse as drift.
+        return err(`doc_not_saved — the canonical row write failed (${res.error}); nothing was written. Retry, or file the doc with harness_docs:anchor once the cause is fixed.`);
       }
     } catch (e) {
-      warnings.push(`doc written but anchor threw (${(e as Error).message}) — run harness_docs:anchor manually.`);
+      return err(`doc_not_saved — the canonical row write threw (${(e as Error).message}); nothing was written.`);
+    }
+
+    // ── The projection ─────────────────────────────────────────────────────────────
+    // Written from the SAME module the CLI projector uses, so a doc authored here and a
+    // doc projected by a corpus-wide run are byte-identical. A failure here is genuinely
+    // recoverable and must NOT lose the doc: the prose is already canonical in Postgres,
+    // so the next projector run writes the file.
+    try {
+      await fs.mkdir(dirname(abs), { recursive: true });
+      await fs.writeFile(abs, applyProjectionBanner(content, docId), 'utf8');
+    } catch (e) {
+      warnings.push(
+        `the doc is saved (Postgres is canonical) but its .mdx projection failed to write (${(e as Error).message}) — ` +
+          `run: node --import tsx scripts/project-authored-docs.ts --write`,
+      );
     }
 
     const indexNudge = insightsIndexNudge(section, harnessSlug);

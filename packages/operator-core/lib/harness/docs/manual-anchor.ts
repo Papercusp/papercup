@@ -56,6 +56,16 @@ export interface AnchorManualDocInput {
   verify?: boolean;
   title?: string;
   workspaceId?: string;
+  /**
+   * The doc's canonical prose (P-008 / D-025) — the whole .mdx text, frontmatter included.
+   *
+   * Supplying it makes this call the PG-canonical write: the row carries the prose, and the
+   * file becomes a projection of it. It also lets the caller anchor a doc whose file does
+   * not exist yet, which is required now that docs:author writes PG BEFORE the file — the
+   * inference path below would otherwise read a file that is not there and silently anchor
+   * nothing. Omit to leave existing prose untouched (the re-anchor / sweep path).
+   */
+  content?: string;
 }
 
 export type AnchorResult =
@@ -82,7 +92,10 @@ export async function anchorManualDoc(input: AnchorManualDocInput): Promise<Anch
 
   let documents = input.documents;
   if (documents == null) {
-    const body = await readDocBody(docsRoot, docId);
+    // Prefer the caller's canonical prose over the file. Under PG-canonical authoring the
+    // row is written BEFORE the file exists, so reading disk here would infer from a
+    // missing file and anchor nothing — the doc would ship silently untracked.
+    const body = input.content ?? (await readDocBody(docsRoot, docId));
     if (body) {
       documents = frontmatterDocuments(body);
       if (documents == null) {
@@ -138,6 +151,9 @@ export async function anchorManualDoc(input: AnchorManualDocInput): Promise<Anch
     status,
     statusDetail: anchored ? (lastVerifiedSha ? null : 'anchored — verify to set a baseline') : 'not drift-tracked (no subject_ref)',
     ...(input.title ? { title: input.title } : {}),
+    // Absent means "leave the prose alone", never "the prose is empty" — the re-anchor and
+    // freshness-sweep callers hold no opinion about the body and must not blank it.
+    ...(input.content !== undefined ? { content: input.content } : {}),
   });
   return { ok: true, record, subjectRef, anchored };
 }
