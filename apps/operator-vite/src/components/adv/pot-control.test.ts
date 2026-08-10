@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { countStarted, hivesRunningLabel, runHiveControl, type HiveControlRow } from './hive-control';
+import { countStarted, hivesRunningLabel, runHiveControl, type HiveControlRow } from './pot-control';
 
 const row = (slug: string, started: boolean): HiveControlRow => ({ slug, started });
 

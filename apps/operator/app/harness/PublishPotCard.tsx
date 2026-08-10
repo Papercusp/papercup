@@ -25,7 +25,7 @@ export function PublishPotCard({
 } & Pick<ShareHiveFormProps, 'fetchShareMeta' | 'setHiveListing' | 'onSaved'>) {
   return (
     <div
-      data-testid="publish-hive-card"
+      data-testid="publish-pot-card"
       style={{
         border: '1px solid var(--accent, #4a90d9)',
         borderRadius: 8,

@@ -26,7 +26,7 @@ import PotWorkspaceCards, {
   type HiveWorkspaceCardsProps,
   type PotProject,
 } from './PotWorkspaceCards';
-import type { HiveGroup } from './harness-hive-groups';
+import type { HiveGroup } from './harness-pot-groups';
 
 afterEach(() => cleanup());
 
@@ -95,7 +95,7 @@ describe('<PotWorkspaceCards /> list', () => {
 
   it('renders the workspace-cards container and a row per pot', () => {
     render(<PotWorkspaceCards groups={groups} onDrill={vi.fn()} />);
-    expect(screen.getByTestId('hive-workspace-cards')).toBeTruthy();
+    expect(screen.getByTestId('pot-workspace-cards')).toBeTruthy();
     expect(screen.getByTestId('hive-card-alpha')).toBeTruthy();
     expect(screen.getByTestId('hive-member-alpha-web')).toBeTruthy();
     expect(screen.getByTestId('hive-card-beta')).toBeTruthy();

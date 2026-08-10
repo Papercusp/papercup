@@ -19,7 +19,7 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { AlertTriangle, ChevronDown, ChevronRight, ListChecks } from 'lucide-react';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { useLexicon } from '@/lib/useLexicon';
-import type { SteeringTree, TreeHive, TreePlan } from './hive-steering-tree';
+import type { SteeringTree, TreeHive, TreePlan } from './pot-steering-tree';
 
 export interface HiveSteeringTreeProps {
   tree: SteeringTree;

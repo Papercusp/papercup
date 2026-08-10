@@ -4,21 +4,21 @@
  */
 
 export const COLORS = {
-  bg: 'var(--hive-harness-bg, #0b0e14)',
-  surface: 'var(--hive-harness-surface, #0f1420)',
-  surfaceRaised: 'var(--hive-harness-surface-raised, #111827)',
-  surfaceHover: 'var(--hive-harness-surface-hover, #1a2332)',
-  border: 'var(--hive-harness-border, #1f2937)',
-  borderStrong: 'var(--hive-harness-border-strong, #374151)',
-  borderSubtle: 'var(--hive-harness-border-subtle, #161b26)',
+  bg: 'var(--pot-harness-bg, #0b0e14)',
+  surface: 'var(--pot-harness-surface, #0f1420)',
+  surfaceRaised: 'var(--pot-harness-surface-raised, #111827)',
+  surfaceHover: 'var(--pot-harness-surface-hover, #1a2332)',
+  border: 'var(--pot-harness-border, #1f2937)',
+  borderStrong: 'var(--pot-harness-border-strong, #374151)',
+  borderSubtle: 'var(--pot-harness-border-subtle, #161b26)',
 
-  text: 'var(--hive-harness-text, #e5e7eb)',
-  textMuted: 'var(--hive-harness-text-muted, #9ca3af)',
-  textDim: 'var(--hive-harness-text-dim, #6b7280)',
-  textFaint: 'var(--hive-harness-text-faint, #4b5563)',
+  text: 'var(--pot-harness-text, #e5e7eb)',
+  textMuted: 'var(--pot-harness-text-muted, #9ca3af)',
+  textDim: 'var(--pot-harness-text-dim, #6b7280)',
+  textFaint: 'var(--pot-harness-text-faint, #4b5563)',
 
-  accent: 'var(--hive-harness-accent, #5e6ad2)',
-  accentHover: 'var(--hive-harness-accent-hover, #7178d8)',
+  accent: 'var(--pot-harness-accent, #5e6ad2)',
+  accentHover: 'var(--pot-harness-accent-hover, #7178d8)',
 
   // Solid filled-button tones: the semantic status hue pulled toward the page's
   // deepest bg so white button text keeps contrast in every theme (P-006c —

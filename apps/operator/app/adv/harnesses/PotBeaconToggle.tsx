@@ -131,8 +131,8 @@ export default function PotBeaconToggle({
     >
       <button
         type="button"
-        className={`pc-hive-beacon${on ? ' pc-hive-beacon--on' : ''}`}
-        data-testid="hive-beacon-toggle"
+        className={`pc-pot-beacon${on ? ' pc-pot-beacon--on' : ''}`}
+        data-testid="pot-beacon-toggle"
         aria-label="Live status beacon"
         aria-pressed={on}
         disabled={busy}
@@ -141,7 +141,7 @@ export default function PotBeaconToggle({
         <Radio size={13} aria-hidden />
         Beacon {busy ? '…' : on ? 'on' : 'off'}
         <style>{`
-          .pc-hive-beacon {
+          .pc-pot-beacon {
             display: inline-flex;
             align-items: center;
             gap: 5px;
@@ -156,16 +156,16 @@ export default function PotBeaconToggle({
             cursor: pointer;
             flex-shrink: 0;
           }
-          .pc-hive-beacon:hover:not(:disabled) {
+          .pc-pot-beacon:hover:not(:disabled) {
             color: var(--fg, #e7f7ff);
             border-color: var(--accent, #38bdf8);
           }
-          .pc-hive-beacon--on {
+          .pc-pot-beacon--on {
             border-color: color-mix(in oklab, #34d399, transparent 60%);
             background: color-mix(in oklab, #34d399, transparent 86%);
             color: #86efac;
           }
-          .pc-hive-beacon:disabled { opacity: 0.55; cursor: default; }
+          .pc-pot-beacon:disabled { opacity: 0.55; cursor: default; }
         `}</style>
       </button>
     </Tooltip>

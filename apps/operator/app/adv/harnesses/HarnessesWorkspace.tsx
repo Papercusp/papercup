@@ -14,7 +14,7 @@ import PotWorkspaceCards from './PotWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { useSyncQuery } from '@papercusp/sync';
 import { hiveMembers, resolveFocusedMember, resolveDockSlug, isHarnessParamStale } from './harness-axis';
-import { groupByHive } from './harness-hive-groups';
+import { groupByHive } from './harness-pot-groups';
 import './adv-dock.css';
 import './adv-panel-chrome.css';
 

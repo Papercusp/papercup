@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupByHive, hiveRootOf, type HiveGroupProject } from './harness-hive-groups';
+import { groupByHive, hiveRootOf, type HiveGroupProject } from './harness-pot-groups';
 
 function p(slug: string, parent_slug?: string | null, extra: Partial<HiveGroupProject> = {}): HiveGroupProject {
   return { slug, parent_slug: parent_slug ?? null, ...extra };

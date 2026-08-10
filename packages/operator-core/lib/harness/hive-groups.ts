@@ -26,7 +26,7 @@
  *
  * Pure (no PG / fs / React) so the precedence is unit-tested standalone and the
  * module is importable by BOTH the route (operator-core) and the app
- * (`apps/operator/app/adv/harnesses/harness-hive-groups.ts` re-exports it).
+ * (`apps/operator/app/adv/harnesses/harness-pot-groups.ts` re-exports it).
  */
 
 /** The `harness_kind` value that marks a project as a Hive home. */

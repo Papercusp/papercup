@@ -58,7 +58,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-const toggle = () => screen.getByTestId('hive-beacon-toggle');
+const toggle = () => screen.getByTestId('pot-beacon-toggle');
 
 describe('PotBeaconToggle', () => {
   it('reads absent consent as OFF and flips to ON through the write seam', async () => {

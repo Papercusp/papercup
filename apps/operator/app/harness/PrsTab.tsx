@@ -13,7 +13,7 @@ import { useQueryState, parseAsStringLiteral, parseAsBoolean, parseAsInteger } f
 import { toast } from 'sonner';
 import { GitPullRequest, RefreshCw, Settings, Bot, Lock } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
-import { groupByHive, type HiveGroupProject } from '../adv/harnesses/harness-hive-groups';
+import { groupByHive, type HiveGroupProject } from '../adv/harnesses/harness-pot-groups';
 import { computeAutoStatus, type PrAutoStatus } from '@papercusp/operator-core/lib/pr-host/pr-row-data';
 import { PrRow, type PrRowData } from './PrRow';
 import { PrReviewerSettings } from './PrReviewerSettings';

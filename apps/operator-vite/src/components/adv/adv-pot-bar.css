@@ -147,6 +147,6 @@ button.pc-advshell__action--shared:hover {
    AdvShell's inline <style>). That reset is right for page-body buttons but it
    also strips the hives pill's "is-running" ring, which is a STATE affordance,
    not a bevel. Re-assert exactly that one shadow. */
-.pc-potbar .pc-advshell__action--hives.is-running:not(:focus-visible) {
+.pc-potbar .pc-advshell__action--pots.is-running:not(:focus-visible) {
   box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.14) !important;
 }

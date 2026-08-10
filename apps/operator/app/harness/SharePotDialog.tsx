@@ -269,46 +269,46 @@ export function SharePotForm({
         : `Publish ${hiveLabel}`;
 
   return (
-    <div className={compact ? 'pc-share-hive pc-share-hive--compact' : 'pc-share-hive'} data-testid="share-hive-form">
+    <div className={compact ? 'pc-share-pot pc-share-pot--compact' : 'pc-share-pot'} data-testid="share-pot-form">
       {currentState && (
-        <div className="pc-share-hive__current" data-testid="share-hive-current">
+        <div className="pc-share-pot__current" data-testid="share-pot-current">
           Currently: <strong>{currentState}</strong>
         </div>
       )}
 
-      <div className="pc-share-hive__viz" role="group" aria-label="Visibility">
+      <div className="pc-share-pot__viz" role="group" aria-label="Visibility">
         {visibilityCards.map(({ value, label, Icon, copy }) => (
           <button
             key={value}
             type="button"
-            className="pc-share-hive__viz-card"
-            data-testid={`share-hive-viz-${value}`}
+            className="pc-share-pot__viz-card"
+            data-testid={`share-pot-viz-${value}`}
             aria-pressed={visibility === value}
             disabled={busy}
             onClick={() => setVisibility(value)}
           >
-            <span className="pc-share-hive__viz-head">
+            <span className="pc-share-pot__viz-head">
               <Icon size={13} aria-hidden /> {label}
             </span>
-            <span className="pc-share-hive__viz-copy">{copy}</span>
+            <span className="pc-share-pot__viz-copy">{copy}</span>
           </button>
         ))}
       </div>
 
-      <label className="pc-share-hive__field">
-        <span className="pc-share-hive__field-label">Title</span>
+      <label className="pc-share-pot__field">
+        <span className="pc-share-pot__field-label">Title</span>
         <TextInput
-          data-testid="share-hive-title"
+          data-testid="share-pot-title"
           value={title}
           maxLength={200}
           onChange={(e) => setTitle(e.target.value)}
           placeholder={potSlug}
         />
       </label>
-      <label className="pc-share-hive__field">
-        <span className="pc-share-hive__field-label">Description</span>
+      <label className="pc-share-pot__field">
+        <span className="pc-share-pot__field-label">Description</span>
         <TextArea
-          data-testid="share-hive-description"
+          data-testid="share-pot-description"
           value={description}
           rows={compact ? 2 : 3}
           maxLength={1000}
@@ -318,13 +318,13 @@ export function SharePotForm({
       </label>
 
       {memberRepos.length > 0 && (
-        <div className="pc-share-hive__repos" data-testid="share-hive-repos">
-          <span className="pc-share-hive__field-label">
+        <div className="pc-share-pot__repos" data-testid="share-pot-repos">
+          <span className="pc-share-pot__field-label">
             {visibility === 'private'
               ? `Member repos that will be unlisted (${memberRepos.length})`
               : `Member repos that will be listed (${memberRepos.length})`}
           </span>
-          <ul className="pc-share-hive__repo-list">
+          <ul className="pc-share-pot__repo-list">
             {memberRepos.map((ref) => (
               <li key={ref}>
                 <code>{repoRefDisplay(ref)}</code>
@@ -335,16 +335,16 @@ export function SharePotForm({
       )}
 
       {inviteLink && (
-        <div className="pc-share-hive__invite" data-testid="share-hive-invite">
-          <span className="pc-share-hive__field-label">Invite link — share it with collaborators</span>
-          <span className="pc-share-hive__invite-row">
-            <code className="pc-share-hive__invite-code" data-testid="share-hive-invite-link" title={inviteLink}>
+        <div className="pc-share-pot__invite" data-testid="share-pot-invite">
+          <span className="pc-share-pot__field-label">Invite link — share it with collaborators</span>
+          <span className="pc-share-pot__invite-row">
+            <code className="pc-share-pot__invite-code" data-testid="share-pot-invite-link" title={inviteLink}>
               {inviteLink}
             </code>
             <Tooltip label="Copy the invite link"><button
               type="button"
-              className="pc-share-hive__copy"
-              data-testid="share-hive-invite-copy"
+              className="pc-share-pot__copy"
+              data-testid="share-pot-invite-copy"
 
               onClick={() => {
                 void navigator.clipboard
@@ -369,8 +369,8 @@ export function SharePotForm({
 
       {outcome && (
         <div
-          className="pc-share-hive__outcome"
-          data-testid="share-hive-outcome"
+          className="pc-share-pot__outcome"
+          data-testid="share-pot-outcome"
           style={{ color: outcome.ok ? 'var(--good, #34d399)' : 'var(--bad, #e64646)' }}
         >
           {outcome.ok
@@ -385,10 +385,10 @@ export function SharePotForm({
         </div>
       )}
 
-      <div className="pc-share-hive__actions">
+      <div className="pc-share-pot__actions">
         <Button
           variant={visibility === 'private' ? 'destructive' : 'primary'}
-          data-testid="share-hive-submit"
+          data-testid="share-pot-submit"
           disabled={busy}
           onClick={() => void submit()}
         >
@@ -443,12 +443,12 @@ export function SharePotDialog({ open, onOpenChange, ...form }: ShareHiveDialogP
 function ShareHiveStyles() {
   return (
     <style>{`
-      .pc-share-hive { display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
-      .pc-share-hive--compact { gap: 9px; font-size: 12.5px; }
-      .pc-share-hive__current { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
-      .pc-share-hive__current strong { color: var(--fg-dim, #b9d4e8); font-weight: 650; }
-      .pc-share-hive__viz { display: flex; flex-direction: column; gap: 6px; }
-      .pc-share-hive__viz-card {
+      .pc-share-pot { display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
+      .pc-share-pot--compact { gap: 9px; font-size: 12.5px; }
+      .pc-share-pot__current { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
+      .pc-share-pot__current strong { color: var(--fg-dim, #b9d4e8); font-weight: 650; }
+      .pc-share-pot__viz { display: flex; flex-direction: column; gap: 6px; }
+      .pc-share-pot__viz-card {
         display: flex;
         flex-direction: column;
         gap: 3px;
@@ -461,33 +461,33 @@ function ShareHiveStyles() {
         cursor: pointer;
         font: inherit;
       }
-      .pc-share-hive__viz-card:hover:not(:disabled) {
+      .pc-share-pot__viz-card:hover:not(:disabled) {
         border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
       }
-      .pc-share-hive__viz-card[aria-pressed='true'] {
+      .pc-share-pot__viz-card[aria-pressed='true'] {
         border-color: var(--accent, #38bdf8);
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 92%);
         color: var(--fg, #e7f7ff);
       }
-      .pc-share-hive__viz-card:disabled { opacity: 0.6; cursor: default; }
-      .pc-share-hive__viz-head {
+      .pc-share-pot__viz-card:disabled { opacity: 0.6; cursor: default; }
+      .pc-share-pot__viz-head {
         display: inline-flex;
         align-items: center;
         gap: 6px;
         font-weight: 650;
         font-size: 12.5px;
       }
-      .pc-share-hive__viz-copy { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); line-height: 1.4; }
-      .pc-share-hive__field { display: flex; flex-direction: column; gap: 4px; }
-      .pc-share-hive__field-label {
+      .pc-share-pot__viz-copy { font-size: 11.5px; color: var(--fg-mute, #7f9bb4); line-height: 1.4; }
+      .pc-share-pot__field { display: flex; flex-direction: column; gap: 4px; }
+      .pc-share-pot__field-label {
         font-size: 11px;
         font-weight: 600;
         color: var(--fg-mute, #7f9bb4);
         text-transform: uppercase;
         letter-spacing: 0;
       }
-      .pc-share-hive__repos { display: flex; flex-direction: column; gap: 4px; }
-      .pc-share-hive__repo-list {
+      .pc-share-pot__repos { display: flex; flex-direction: column; gap: 4px; }
+      .pc-share-pot__repo-list {
         margin: 0;
         padding: 0 0 0 16px;
         font-size: 12px;
@@ -495,9 +495,9 @@ function ShareHiveStyles() {
         max-height: 110px;
         overflow-y: auto;
       }
-      .pc-share-hive__invite { display: flex; flex-direction: column; gap: 4px; }
-      .pc-share-hive__invite-row { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-      .pc-share-hive__invite-code {
+      .pc-share-pot__invite { display: flex; flex-direction: column; gap: 4px; }
+      .pc-share-pot__invite-row { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+      .pc-share-pot__invite-code {
         font-size: 11px;
         color: var(--fg-dim, #b9d4e8);
         overflow: hidden;
@@ -506,7 +506,7 @@ function ShareHiveStyles() {
         flex: 1;
         min-width: 0;
       }
-      .pc-share-hive__copy {
+      .pc-share-pot__copy {
         display: inline-flex;
         align-items: center;
         gap: 4px;
@@ -520,12 +520,12 @@ function ShareHiveStyles() {
         border-radius: 999px;
         cursor: pointer;
       }
-      .pc-share-hive__copy:hover {
+      .pc-share-pot__copy:hover {
         color: var(--fg, #e7f7ff);
         border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
       }
-      .pc-share-hive__outcome { font-size: 12px; }
-      .pc-share-hive__actions { display: flex; justify-content: flex-end; }
+      .pc-share-pot__outcome { font-size: 12px; }
+      .pc-share-pot__actions { display: flex; justify-content: flex-end; }
     `}</style>
   );
 }

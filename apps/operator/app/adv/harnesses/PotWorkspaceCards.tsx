@@ -12,7 +12,7 @@
  *
  *   Pot · Kind · Hive · Description · Members · State · Shared · Spec · Path
  *
- * The name kept `PotWorkspaceCards` (its import + the `hive-workspace-cards`
+ * The name kept `PotWorkspaceCards` (its import + the `pot-workspace-cards`
  * mount oracle + the `hive-card-<slug>` / `hive-member-<slug>` row testids are
  * relied on by HarnessesWorkspace and the adv-harness-member-axis e2e). Rows
  * flatten `groupByHive`: each group's root (the hive/pot) is a `hive-card-*`
@@ -37,7 +37,7 @@ import {
   type RichGridSortState,
 } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
-import { HIVE_KIND, type HiveGroup, type HiveGroupProject } from './harness-hive-groups';
+import { HIVE_KIND, type HiveGroup, type HiveGroupProject } from './harness-pot-groups';
 
 /**
  * The pot metadata a row reads. A superset of `HiveGroupProject` with the
@@ -287,10 +287,10 @@ export default function PotWorkspaceCards({ groups, workspaceLabel, onDrill, onC
 
   if (baseRows.length === 0) {
     return (
-      <div className="pc-hive-cards pc-hive-cards--empty" data-testid="hive-workspace-cards">
+      <div className="pc-pot-cards pc-pot-cards--empty" data-testid="pot-workspace-cards">
         <div>No {hivesLabel.toLowerCase()} yet.</div>
         {onCreate && (
-          <button type="button" className="pc-hive-cards__create" onClick={onCreate}>
+          <button type="button" className="pc-pot-cards__create" onClick={onCreate}>
             <Plus size={14} aria-hidden /> Create new {hiveLabel.toLowerCase()}
           </button>
         )}
@@ -300,17 +300,17 @@ export default function PotWorkspaceCards({ groups, workspaceLabel, onDrill, onC
   }
 
   return (
-    <div className="pc-hive-cards" data-testid="hive-workspace-cards">
-      <div className="pc-hive-cards__ws-header">
+    <div className="pc-pot-cards" data-testid="pot-workspace-cards">
+      <div className="pc-pot-cards__ws-header">
         <Boxes size={13} aria-hidden />
-        <span className="pc-hive-cards__ws-name" title={workspaceLabel ? `Workspace: ${workspaceLabel}` : undefined}>
+        <span className="pc-pot-cards__ws-name" title={workspaceLabel ? `Workspace: ${workspaceLabel}` : undefined}>
           {workspaceLabel ?? 'Workspace'}
         </span>
-        <span className="pc-hive-cards__ws-count">
+        <span className="pc-pot-cards__ws-count">
           {baseRows.length} {(baseRows.length === 1 ? hiveLabel : hivesLabel).toLowerCase()}
         </span>
         {onCreate && (
-          <button type="button" className="pc-hive-cards__create pc-hive-cards__create--inline" onClick={onCreate}>
+          <button type="button" className="pc-pot-cards__create pc-pot-cards__create--inline" onClick={onCreate}>
             <Plus size={13} aria-hidden /> New {hiveLabel.toLowerCase()}
           </button>
         )}
@@ -341,14 +341,14 @@ export default function PotWorkspaceCards({ groups, workspaceLabel, onDrill, onC
 function ListStyles() {
   return (
     <style>{`
-      .pc-hive-cards {
+      .pc-pot-cards {
         flex: 1;
         min-height: 0;
         display: flex;
         flex-direction: column;
         padding: 12px 12px 0;
       }
-      .pc-hive-cards--empty {
+      .pc-pot-cards--empty {
         align-items: center;
         justify-content: center;
         gap: 14px;
@@ -357,7 +357,7 @@ function ListStyles() {
         text-align: center;
         padding: 24px;
       }
-      .pc-hive-cards__create {
+      .pc-pot-cards__create {
         display: inline-flex;
         align-items: center;
         gap: 6px;
@@ -370,13 +370,13 @@ function ListStyles() {
         font-weight: 600;
         cursor: pointer;
       }
-      .pc-hive-cards__create:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 65%); }
-      .pc-hive-cards__create--inline {
+      .pc-pot-cards__create:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 65%); }
+      .pc-pot-cards__create--inline {
         margin-left: auto;
         padding: 4px 10px;
         font-size: 11px;
       }
-      .pc-hive-cards__ws-header {
+      .pc-pot-cards__ws-header {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -389,13 +389,13 @@ function ListStyles() {
         text-transform: uppercase;
         letter-spacing: 0;
       }
-      .pc-hive-cards__ws-name {
+      .pc-pot-cards__ws-name {
         color: var(--fg, #e7f7ff);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .pc-hive-cards__ws-count {
+      .pc-pot-cards__ws-count {
         font-weight: 600;
         text-transform: none;
         color: var(--fg-mute, #7f9bb4);

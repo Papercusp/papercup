@@ -281,7 +281,7 @@ export default function PotFederationStatus({ collapsible = false }: HiveFederat
         title="Federation"
         summary={label}
         tone={tone}
-        testId="hive-federation-status"
+        testId="pot-federation-status"
       >
         {body}
       </RailSection>
@@ -289,7 +289,7 @@ export default function PotFederationStatus({ collapsible = false }: HiveFederat
   }
 
   return (
-    <div className="pclsb-panel" data-testid="hive-federation-status">
+    <div className="pclsb-panel" data-testid="pot-federation-status">
       <div className="pclsb-panel__bar">
         <span className="pclsb-panel__bar-label">federation status</span>
       </div>

@@ -133,21 +133,21 @@ export default function PotContentPanel({ params, api }: PanelComponentProps) {
   const loading = featuresQ.loading || plansQ.loading;
 
   return (
-    <div className="pc-advpanel pc-hivecontent">
+    <div className="pc-advpanel pc-potcontent">
       <div className="pc-advpanel__toolbar">
-        <div className="pc-hivecontent__tabs" role="tablist">
+        <div className="pc-potcontent__tabs" role="tablist">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               type="button"
               role="tab"
               aria-selected={tab === id}
-              className={`pc-hivecontent__tab${tab === id ? ' is-active' : ''}`}
+              className={`pc-potcontent__tab${tab === id ? ' is-active' : ''}`}
               onClick={() => void setTab(id)}
             >
               <Icon size={13} aria-hidden />
               {label}
-              <span className="pc-hivecontent__tabcount">{id === 'features' ? features.length : plans.length}</span>
+              <span className="pc-potcontent__tabcount">{id === 'features' ? features.length : plans.length}</span>
             </button>
           ))}
         </div>
@@ -174,7 +174,7 @@ export default function PotContentPanel({ params, api }: PanelComponentProps) {
         </Tooltip>
       </div>
 
-      <div className="pc-hivecontent__meta">
+      <div className="pc-potcontent__meta">
         {memberCount} {memberCount === 1 ? 'member' : 'members'} · browsing every member’s federated content (read-only)
       </div>
 
@@ -186,18 +186,18 @@ export default function PotContentPanel({ params, api }: PanelComponentProps) {
             No federated features in this {t('pot', { lower: true })} yet — peer members&rsquo; features land here live as they sync.
           </div>
         ) : (
-          <ul className="pc-hivecontent__list" role="list">
+          <ul className="pc-potcontent__list" role="list">
             {visibleFeatures.map((f) => (
               <li key={`${f.harnessSlug}:${f.featureId}`}>
                 <Tooltip label={`Open ${f.featureId} in ${f.harnessSlug}`}>
                   <button
                     type="button"
-                    className="pc-hivecontent__row"
+                    className="pc-potcontent__row"
                     onClick={() => drillToMember(f.harnessSlug, f.featureId)}
                   >
-                    <span className="pc-hivecontent__origin" title={`Member: ${f.harnessSlug}`}>{f.harnessSlug}</span>
-                    <span className="pc-hivecontent__id">{f.featureId}</span>
-                    <span className="pc-hivecontent__title">{f.title ?? '(untitled)'}</span>
+                    <span className="pc-potcontent__origin" title={`Member: ${f.harnessSlug}`}>{f.harnessSlug}</span>
+                    <span className="pc-potcontent__id">{f.featureId}</span>
+                    <span className="pc-potcontent__title">{f.title ?? '(untitled)'}</span>
                     {f.status && <StatusPill status={f.status as HarnessStatus} size="xs" />}
                   </button>
                 </Tooltip>
@@ -210,17 +210,17 @@ export default function PotContentPanel({ params, api }: PanelComponentProps) {
           No federated plans in this {t('pot', { lower: true })} yet — peer members’ plans land here live as they sync.
         </div>
       ) : (
-        <ul className="pc-hivecontent__list" role="list">
+        <ul className="pc-potcontent__list" role="list">
           {visiblePlans.map((p) => (
             <li key={`${p.harness}:${p.slug}`}>
               <Tooltip label={`Open plan ${p.slug} in ${p.harness}`}>
                 <button
                   type="button"
-                  className="pc-hivecontent__row"
+                  className="pc-potcontent__row"
                   onClick={() => drillToMember(p.harness)}
                 >
-                  <span className="pc-hivecontent__origin" title={`Member: ${p.harness}`}>{p.harness}</span>
-                  <span className="pc-hivecontent__title">{p.title ?? p.slug}</span>
+                  <span className="pc-potcontent__origin" title={`Member: ${p.harness}`}>{p.harness}</span>
+                  <span className="pc-potcontent__title">{p.title ?? p.slug}</span>
                   {p.status && <StatusPill status={p.status as HarnessStatus} size="xs" />}
                 </button>
               </Tooltip>
@@ -230,37 +230,37 @@ export default function PotContentPanel({ params, api }: PanelComponentProps) {
       )}
 
       <style>{`
-        .pc-hivecontent { display: flex; flex-direction: column; min-height: 0; }
-        .pc-hivecontent__tabs { display: inline-flex; gap: 2px; }
-        .pc-hivecontent__tab {
+        .pc-potcontent { display: flex; flex-direction: column; min-height: 0; }
+        .pc-potcontent__tabs { display: inline-flex; gap: 2px; }
+        .pc-potcontent__tab {
           display: inline-flex; align-items: center; gap: 5px;
           padding: 3px 9px; border-radius: 6px;
           font-size: 12px; color: var(--fg-mute); background: transparent;
           border: 1px solid transparent; cursor: pointer;
         }
-        .pc-hivecontent__tab:hover { background: color-mix(in oklab, var(--accent), transparent 88%); }
-        .pc-hivecontent__tab.is-active {
+        .pc-potcontent__tab:hover { background: color-mix(in oklab, var(--accent), transparent 88%); }
+        .pc-potcontent__tab.is-active {
           color: var(--text); background: color-mix(in oklab, var(--accent), transparent 82%);
           border-color: color-mix(in oklab, var(--accent), transparent 70%);
         }
-        .pc-hivecontent__tabcount { font-variant-numeric: tabular-nums; opacity: 0.7; font-size: 11px; }
-        .pc-hivecontent__meta { padding: 4px 8px; font-size: 11px; color: var(--fg-mute); }
-        .pc-hivecontent__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
-        .pc-hivecontent__row {
+        .pc-potcontent__tabcount { font-variant-numeric: tabular-nums; opacity: 0.7; font-size: 11px; }
+        .pc-potcontent__meta { padding: 4px 8px; font-size: 11px; color: var(--fg-mute); }
+        .pc-potcontent__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+        .pc-potcontent__row {
           display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 8px;
           width: 100%; text-align: left; padding: 5px 8px; background: transparent; border: 0;
           border-bottom: 1px solid var(--border-subtle, color-mix(in oklab, var(--text), transparent 92%));
           cursor: pointer; font-size: 12.5px; color: var(--text);
         }
-        .pc-hivecontent__row:hover { background: color-mix(in oklab, var(--accent), transparent 90%); }
-        .pc-hivecontent__origin {
+        .pc-potcontent__row:hover { background: color-mix(in oklab, var(--accent), transparent 90%); }
+        .pc-potcontent__origin {
           font-size: 11px; font-weight: 600; color: var(--accent);
           padding: 1px 6px; border-radius: 999px;
           background: color-mix(in oklab, var(--accent), transparent 86%);
           white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
         }
-        .pc-hivecontent__id { font-variant-numeric: tabular-nums; color: var(--fg-mute); font-size: 11.5px; white-space: nowrap; }
-        .pc-hivecontent__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pc-potcontent__id { font-variant-numeric: tabular-nums; color: var(--fg-mute); font-size: 11.5px; white-space: nowrap; }
+        .pc-potcontent__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       `}</style>
     </div>
   );

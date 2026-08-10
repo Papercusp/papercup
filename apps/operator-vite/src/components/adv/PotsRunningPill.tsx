@@ -14,7 +14,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
 import { useLexicon } from '@/lib/useLexicon';
-import { countStarted, hivesRunningLabel, type HiveControlRow } from './hive-control';
+import { countStarted, hivesRunningLabel, type HiveControlRow } from './pot-control';
 import LocalPotsControl from '../left-sidebar/LocalPotsControl';
 // Portable pill styles (button base + hives popover) — shared with AdvShell so
 // this pill renders styled in the Quick Panel popup too (quick-panel-status-pills D-001).
@@ -31,15 +31,15 @@ export default function PotsRunningPill() {
   const running = countStarted(hives);
 
   return (
-    <div className="pc-advshell__hives-pill-wrap">
+    <div className="pc-advshell__pots-pill-wrap">
       <Popover
         open={open}
         onOpenChange={(next) => void setOpen(next)}
         trigger={(
           <button
             type="button"
-            className={`pc-advshell__action pc-advshell__action--hives${running > 0 ? ' is-running' : ''}`}
-            data-testid="hives-running-pill"
+            className={`pc-advshell__action pc-advshell__action--pots${running > 0 ? ' is-running' : ''}`}
+            data-testid="pots-running-pill"
             aria-expanded={open}
             aria-controls="pc-advshell-hives-pop"
           >
@@ -51,7 +51,7 @@ export default function PotsRunningPill() {
         side="bottom"
         align="end"
         ariaLabel={`Local ${t('pot', { plural: true, lower: true })}`}
-        contentClassName="pc-advshell__hives-pop"
+        contentClassName="pc-advshell__pots-pop"
       >
         <div
           id="pc-advshell-hives-pop"

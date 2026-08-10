@@ -16,7 +16,7 @@ import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { useLexicon } from '@/lib/useLexicon';
-import { runHiveControl, countStarted, type HiveControlRow } from '../adv/hive-control';
+import { runHiveControl, countStarted, type HiveControlRow } from '../adv/pot-control';
 import RailSection from './RailSection';
 
 export interface LocalHivesControlProps {
@@ -125,7 +125,7 @@ export default function LocalPotsControl({ collapsible = false }: LocalHivesCont
           title={`Local ${t('pot', { plural: true, lower: true })}`}
           summary={hives.length === 0 ? (loading ? '…' : 'none') : `${started}/${hives.length} running`}
           tone={hives.length > 0 && started > 0 ? 'good' : 'mute'}
-          testId="local-hives-control"
+          testId="local-pots-control"
         >
           {body}
         </RailSection>
@@ -134,7 +134,7 @@ export default function LocalPotsControl({ collapsible = false }: LocalHivesCont
   }
 
   return (
-    <div className="pclsb-panel" data-testid="local-hives-control">
+    <div className="pclsb-panel" data-testid="local-pots-control">
       {confirmEl}
       <div className="pclsb-panel__bar">
         <span className="pclsb-panel__bar-label">

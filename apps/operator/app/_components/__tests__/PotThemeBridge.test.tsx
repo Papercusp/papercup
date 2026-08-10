@@ -49,7 +49,7 @@ describe('PotThemeBridge', () => {
 
     expect(document.documentElement.dataset.theme).toBe('honeycomb');
     expect(document.title).toBe('The Swarm');
-    const favicon = document.getElementById('pc-hive-favicon') as HTMLLinkElement | null;
+    const favicon = document.getElementById('pc-pot-favicon') as HTMLLinkElement | null;
     expect(favicon?.href.endsWith('/brand/the-hive/favicon.svg')).toBe(true);
   });
 
@@ -63,6 +63,6 @@ describe('PotThemeBridge', () => {
 
     expect(document.documentElement.dataset.theme).toBe('black');
     expect(document.title).toBe('Papercusp Operator');
-    expect(document.getElementById('pc-hive-favicon')).toBeNull();
+    expect(document.getElementById('pc-pot-favicon')).toBeNull();
   });
 });

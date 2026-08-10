@@ -108,7 +108,7 @@ describe('WorkbenchPotDirectoryPanel (P-007 / P-009)', () => {
       { potId: 'ash', title: 'Ash Hive', description: '', owner: 'al', visibility: 'public', memberTopics: ['a'], memberLinks: [], memberCount: 1, createdAt: 1, lastSeenMs: 1 },
     ];
     render(<WorkbenchPotDirectoryPanel {...panelProps} />);
-    fireEvent.click(await screen.findByTestId('hive-directory-refresh'));
+    fireEvent.click(await screen.findByTestId('pot-directory-refresh'));
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
   });
 

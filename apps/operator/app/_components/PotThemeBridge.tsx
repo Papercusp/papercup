@@ -8,7 +8,7 @@ import { applyTheme, readActiveTheme, subscribeTheme } from '@/lib/theme';
 const HIVE_TITLE = 'The Swarm';
 const HIVE_THEME_ID = 'honeycomb';
 const CLASSIC_TITLE = 'Papercusp Operator';
-const HIVE_FAVICON_ID = 'pc-hive-favicon';
+const HIVE_FAVICON_ID = 'pc-pot-favicon';
 const HIVE_FAVICON_HREF = '/brand/the-hive/favicon.svg';
 
 function setHiveFavicon(enabled: boolean): void {

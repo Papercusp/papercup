@@ -117,7 +117,7 @@ export function WorkbenchPotDirectoryPanel({ api }: PanelComponentProps): React.
   const refreshBtn = (
     <div style={headerRow}>
       <Tooltip label={`Re-fetch the discovered ${t('pot', { plural: true, lower: true })} now`}>
-        <button type="button" data-testid="hive-directory-refresh" onClick={() => invalidate()}>
+        <button type="button" data-testid="pot-directory-refresh" onClick={() => invalidate()}>
           Refresh
         </button>
       </Tooltip>
@@ -126,7 +126,7 @@ export function WorkbenchPotDirectoryPanel({ api }: PanelComponentProps): React.
 
   if (error && rows.length === 0) {
     return (
-      <div style={fill} data-testid="hive-directory">
+      <div style={fill} data-testid="pot-directory">
         {refreshBtn}
         <div style={mute}>Directory unavailable: {error instanceof Error ? error.message : String(error)}</div>
       </div>
@@ -134,7 +134,7 @@ export function WorkbenchPotDirectoryPanel({ api }: PanelComponentProps): React.
   }
   if (rows.length === 0) {
     return (
-      <div style={fill} data-testid="hive-directory">
+      <div style={fill} data-testid="pot-directory">
         {refreshBtn}
         <div style={mute}>
           No {t('pot', { plural: true, lower: true })} discovered yet. When a peer announces a public{' '}
@@ -145,7 +145,7 @@ export function WorkbenchPotDirectoryPanel({ api }: PanelComponentProps): React.
   }
 
   return (
-    <div style={fill} data-testid="hive-directory">
+    <div style={fill} data-testid="pot-directory">
       {refreshBtn}
       {rows.map((h) => {
         const joinable = h.memberLinks.length > 0;

@@ -22,14 +22,14 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.result }));
 // (restore-pot-lexicon P-005).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 vi.mock('./LocalPotsControl', () => ({
-  default: () => <div data-testid="local-hives-control" />,
+  default: () => <div data-testid="local-pots-control" />,
 }));
 // PotFederationStatus is mounted inside PotsTab but is its OWN surface with its
 // own test + its own `network.federationStatus` sync query. Stub it so this test's
 // queryName-agnostic useSyncQuery mock doesn't feed it PotsTab's hive rows (which
 // it would mis-read as a FedStatus and crash on). Mirrors the LocalPotsControl stub.
 vi.mock('./PotFederationStatus', () => ({
-  default: () => <div data-testid="hive-federation-status" />,
+  default: () => <div data-testid="pot-federation-status" />,
 }));
 
 import PotsTab from './PotsTab';
@@ -61,13 +61,13 @@ describe('<PotsTab>', () => {
     render(<PotsTab active={true} />);
     expect(screen.getByText(/p2p pot · 0 joined · 0 live/)).toBeTruthy();
     expect(screen.getByText(/this pot flies solo/)).toBeTruthy();
-    expect(screen.queryByTestId('local-hives-control')).toBeNull();
+    expect(screen.queryByTestId('local-pots-control')).toBeNull();
   });
 
   it('mounts LocalPotsControl only when the POT_CONTROL flag is on', () => {
     H.flagOn = true;
     render(<PotsTab active={true} />);
-    expect(screen.getByTestId('local-hives-control')).toBeTruthy();
+    expect(screen.getByTestId('local-pots-control')).toBeTruthy();
   });
 
   it('does not show the empty state while loading', () => {

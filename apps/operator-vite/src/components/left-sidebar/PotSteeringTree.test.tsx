@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 import PotSteeringTree, { type HiveSteeringTreeProps } from './PotSteeringTree';
-import type { SteeringTree, TreeHive, TreePlan } from './hive-steering-tree';
+import type { SteeringTree, TreeHive, TreePlan } from './pot-steering-tree';
 
 // Lexicon resolver mocked to ECHO its key (t('brain') → 'brain', t('pot') → 'pot')
 // — isolates from the THE_HIVE flag hook; classic pack renders 'Brain'/'Pot(s)' at

@@ -106,7 +106,7 @@ vi.mock('@/app/harness/CreateHarnessPicker', () => ({
 }));
 vi.mock('@/app/harness/PublishPotCard', () => ({
   PublishPotCard: ({ potSlug }: { potSlug: string }) => (
-    <div data-testid="publish-hive-card" data-slug={potSlug} />
+    <div data-testid="publish-pot-card" data-slug={potSlug} />
   ),
 }));
 // The share modal wrapper — passthrough so the card renders without Radix.
@@ -435,7 +435,7 @@ describe('AdvShell — the URL-mounted modals (the pot bar only opens them)', ()
   it('mounts the hive-publish share modal from URL state and closes it', async () => {
     nuqsState.share = true;
     await renderShell();
-    const card = screen.getByTestId('publish-hive-card');
+    const card = screen.getByTestId('publish-pot-card');
     expect(card.getAttribute('data-slug')).toBe('pot-a');
     fireEvent.click(screen.getByText('close-share'));
     await waitFor(() => expect(nuqsSetters.share).toHaveBeenCalledWith(false));

@@ -31,7 +31,7 @@ vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 // The child control boots its own sync/runtime — stub to a marker so we only
 // assert that the popover mounts it.
 vi.mock('../left-sidebar/LocalPotsControl', () => ({
-  default: () => <div data-testid="local-hives-control">control</div>,
+  default: () => <div data-testid="local-pots-control">control</div>,
 }));
 
 // nuqs ?hivesCtl boolean — a per-test store with a spy setter.
@@ -65,7 +65,7 @@ describe('<PotsRunningPill>', () => {
     H.flagOn = false;
     const { container } = render(<Pill />);
     expect(container.innerHTML).toBe('');
-    expect(screen.queryByTestId('hives-running-pill')).toBeNull();
+    expect(screen.queryByTestId('pots-running-pill')).toBeNull();
   });
 
   it('renders nothing when no local hive is registered', () => {
@@ -76,7 +76,7 @@ describe('<PotsRunningPill>', () => {
 
   it('shows the pluralized running label and the is-running class when ≥1 started', () => {
     render(<Pill />);
-    const pill = screen.getByTestId('hives-running-pill');
+    const pill = screen.getByTestId('pots-running-pill');
     expect(pill.textContent).toContain('1 pot running');
     expect(pill.className).toContain('is-running');
     expect(pill.getAttribute('aria-expanded')).toBe('false');
@@ -85,29 +85,29 @@ describe('<PotsRunningPill>', () => {
   it('drops the is-running class when nothing is started (and pluralizes 0)', () => {
     H.rows = [{ slug: 'a', started: false }, { slug: 'b', started: false }];
     render(<Pill />);
-    const pill = screen.getByTestId('hives-running-pill');
+    const pill = screen.getByTestId('pots-running-pill');
     expect(pill.textContent).toContain('0 pot running');
     expect(pill.className).not.toContain('is-running');
   });
 
   it('clicking the pill flips the ?hivesCtl param (open the popover)', () => {
     render(<Pill />);
-    fireEvent.click(screen.getByTestId('hives-running-pill'));
+    fireEvent.click(screen.getByTestId('pots-running-pill'));
     expect(nuqs.set).toHaveBeenCalledWith(true);
   });
 
   it('clicking again (when open) flips it back to false', () => {
     nuqs.open = true;
     render(<Pill />);
-    expect(screen.getByTestId('hives-running-pill').getAttribute('aria-expanded')).toBe('true');
-    fireEvent.click(screen.getByTestId('hives-running-pill'));
+    expect(screen.getByTestId('pots-running-pill').getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByTestId('pots-running-pill'));
     expect(nuqs.set).toHaveBeenCalledWith(false);
   });
 
   it('mounts the LocalPotsControl popover only while open', () => {
     const { rerender } = render(<Pill />);
     expect(screen.queryByTestId('hives-running-pop')).toBeNull();
-    expect(screen.queryByTestId('local-hives-control')).toBeNull();
+    expect(screen.queryByTestId('local-pots-control')).toBeNull();
     nuqs.open = true;
     rerender(<Pill />);
     // The shared <Popover> now renders the dialog semantics (role=dialog + aria-label) on its
@@ -118,7 +118,7 @@ describe('<PotsRunningPill>', () => {
     expect(dialog.getAttribute('aria-label')).toBe('Local pot');
     const pop = screen.getByTestId('hives-running-pop');
     expect(pop).toBeTruthy();
-    expect(screen.getByTestId('hives-running-pill').getAttribute('aria-controls')).toBe(pop.id);
-    expect(screen.getByTestId('local-hives-control')).toBeTruthy();
+    expect(screen.getByTestId('pots-running-pill').getAttribute('aria-controls')).toBe(pop.id);
+    expect(screen.getByTestId('local-pots-control')).toBeTruthy();
   });
 });

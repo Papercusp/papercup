@@ -6,7 +6,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import { runHiveControl } from './hive-control';
+import { runHiveControl } from './pot-control';
 // This bar's OWN styles (.pc-advshell__harness-bar / __idle and the
 // --start/--stop/--waiting button variants). They used to live in AdvShell's
 // inline <style>, which only worked while this rendered inside AdvShell's header;

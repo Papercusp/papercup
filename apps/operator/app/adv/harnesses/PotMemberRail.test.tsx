@@ -73,12 +73,12 @@ describe('<PotMemberRail /> solo hive', () => {
 describe('<PotMemberRail /> open (default)', () => {
   it('lists every member with the count in the header', () => {
     render(<PotMemberRail members={MEMBERS} activeSlug="child-a" onSelect={vi.fn()} />);
-    const rail = screen.getByTestId('hive-member-rail');
+    const rail = screen.getByTestId('pot-member-rail');
     expect(rail.getAttribute('data-collapsed')).toBe('false');
     expect(screen.getByTestId('hive-member-root-h')).toBeTruthy();
     expect(screen.getByTestId('hive-member-child-a')).toBeTruthy();
     expect(screen.getByTestId('hive-member-child-b')).toBeTruthy();
-    expect(rail.querySelector('.pc-hive-rail__title-count')?.textContent).toBe('3');
+    expect(rail.querySelector('.pc-pot-rail__title-count')?.textContent).toBe('3');
   });
 
   it('marks the active member (is-active + aria-current) and only that one', () => {
@@ -98,13 +98,13 @@ describe('<PotMemberRail /> open (default)', () => {
         livenessBySlug={{ 'child-a': true }}
       />,
     );
-    expect(screen.getByTestId('hive-member-root-h').querySelector('.pc-hive-rail__root')).toBeTruthy();
+    expect(screen.getByTestId('hive-member-root-h').querySelector('.pc-pot-rail__root')).toBeTruthy();
     const childA = screen.getByTestId('hive-member-child-a');
-    expect(childA.querySelector('.pc-hive-rail__kind')?.textContent).toBe('sub');
-    expect(childA.querySelector('.pc-hive-rail__shared')).toBeTruthy();
-    expect(childA.querySelector('.pc-hive-rail__dot.is-live')).toBeTruthy();
+    expect(childA.querySelector('.pc-pot-rail__kind')?.textContent).toBe('sub');
+    expect(childA.querySelector('.pc-pot-rail__shared')).toBeTruthy();
+    expect(childA.querySelector('.pc-pot-rail__dot.is-live')).toBeTruthy();
     // child-b: no liveness hint → not live
-    expect(screen.getByTestId('hive-member-child-b').querySelector('.pc-hive-rail__dot.is-live')).toBeNull();
+    expect(screen.getByTestId('hive-member-child-b').querySelector('.pc-pot-rail__dot.is-live')).toBeNull();
   });
 
   it('fires onSelect with the member slug on click', () => {
@@ -120,14 +120,14 @@ describe('<PotMemberRail /> collapse toggle', () => {
     render(<PotMemberRail members={MEMBERS} activeSlug={null} onSelect={vi.fn()} />);
     // open → click Hide
     fireEvent.click(screen.getByRole('button', { name: /hide harnesses/i }));
-    const collapsed = screen.getByTestId('hive-member-rail');
+    const collapsed = screen.getByTestId('pot-member-rail');
     expect(collapsed.getAttribute('data-collapsed')).toBe('true');
     // the member list is gone; the count badge shows the member total
     expect(screen.queryByTestId('hive-member-root-h')).toBeNull();
-    expect(collapsed.querySelector('.pc-hive-rail__count')?.textContent).toBe('3');
+    expect(collapsed.querySelector('.pc-pot-rail__count')?.textContent).toBe('3');
     // expand again → the list is back
-    fireEvent.click(collapsed.querySelector('.pc-hive-rail__expand') as HTMLButtonElement);
-    expect(screen.getByTestId('hive-member-rail').getAttribute('data-collapsed')).toBe('false');
+    fireEvent.click(collapsed.querySelector('.pc-pot-rail__expand') as HTMLButtonElement);
+    expect(screen.getByTestId('pot-member-rail').getAttribute('data-collapsed')).toBe('false');
     expect(screen.getByTestId('hive-member-root-h')).toBeTruthy();
   });
 });

@@ -64,19 +64,19 @@ export default function PotMemberRail({
   if (!open) {
     return (
       <aside
-        className="pc-hive-rail pc-hive-rail--collapsed"
-        data-testid="hive-member-rail"
+        className="pc-pot-rail pc-pot-rail--collapsed"
+        data-testid="pot-member-rail"
         data-collapsed="true"
         aria-label={`${hiveLabel} ${membersLabel.toLowerCase()}`}
       >
         <Tooltip label={`Show ${membersLabel.toLowerCase()} (${members.length})`}>
           <button
             type="button"
-            className="pc-hive-rail__expand"
+            className="pc-pot-rail__expand"
             onClick={() => void setOpen(true)}
           >
             <ChevronRight size={14} aria-hidden />
-            <span className="pc-hive-rail__count">{members.length}</span>
+            <span className="pc-pot-rail__count">{members.length}</span>
           </button>
         </Tooltip>
         <RailStyles />
@@ -86,20 +86,20 @@ export default function PotMemberRail({
 
   return (
     <aside
-      className="pc-hive-rail"
-      data-testid="hive-member-rail"
+      className="pc-pot-rail"
+      data-testid="pot-member-rail"
       data-collapsed="false"
       aria-label={`${hiveLabel} ${membersLabel.toLowerCase()}`}
     >
-      <div className="pc-hive-rail__head">
-        <span className="pc-hive-rail__title">
+      <div className="pc-pot-rail__head">
+        <span className="pc-pot-rail__title">
           {membersLabel}
-          <span className="pc-hive-rail__title-count">{members.length}</span>
+          <span className="pc-pot-rail__title-count">{members.length}</span>
         </span>
         <Tooltip label={`Hide ${membersLabel.toLowerCase()}`}>
           <button
             type="button"
-            className="pc-hive-rail__collapse"
+            className="pc-pot-rail__collapse"
             aria-label={`Hide ${membersLabel.toLowerCase()}`}
             onClick={() => void setOpen(false)}
           >
@@ -107,7 +107,7 @@ export default function PotMemberRail({
           </button>
         </Tooltip>
       </div>
-      <ul className="pc-hive-rail__list" role="list">
+      <ul className="pc-pot-rail__list" role="list">
         {members.map((m) => {
           const active = m.slug === activeSlug;
           const live = livenessBySlug?.[m.slug] ?? false;
@@ -116,31 +116,31 @@ export default function PotMemberRail({
               <Tooltip label={m.slug}><button
                 type="button"
                 data-testid={`hive-member-${m.slug}`}
-                className={`pc-hive-rail__item${active ? ' is-active' : ''}`}
+                className={`pc-pot-rail__item${active ? ' is-active' : ''}`}
                 aria-current={active ? 'true' : undefined}
 
                 onClick={() => onSelect(m.slug)}
               >
                 <span
-                  className={`pc-hive-rail__dot${live ? ' is-live' : ''}`}
+                  className={`pc-pot-rail__dot${live ? ' is-live' : ''}`}
                   title={live ? 'Harness has state' : 'Not set up yet'}
                   aria-hidden
                 />
-                <span className="pc-hive-rail__name">{m.slug}</span>
+                <span className="pc-pot-rail__name">{m.slug}</span>
                 {m.isRoot && (
                   <Home
                     size={12}
-                    className="pc-hive-rail__root"
+                    className="pc-pot-rail__root"
                     aria-label={`${hiveLabel} root`}
                   />
                 )}
                 {m.harness_kind && m.harness_kind !== 'harness' && (
-                  <span className="pc-hive-rail__kind">{m.harness_kind}</span>
+                  <span className="pc-pot-rail__kind">{m.harness_kind}</span>
                 )}
                 {m.is_shared && (
                   <Share2
                     size={11}
-                    className="pc-hive-rail__shared"
+                    className="pc-pot-rail__shared"
                     aria-label="Shared"
                   />
                 )}
@@ -157,7 +157,7 @@ export default function PotMemberRail({
 function RailStyles() {
   return (
     <style>{`
-      .pc-hive-rail {
+      .pc-pot-rail {
         flex: 0 0 auto;
         width: 196px;
         min-width: 0;
@@ -167,12 +167,12 @@ function RailStyles() {
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 94%);
         overflow: hidden;
       }
-      .pc-hive-rail--collapsed {
+      .pc-pot-rail--collapsed {
         width: 34px;
         align-items: center;
         padding-top: 8px;
       }
-      .pc-hive-rail__expand {
+      .pc-pot-rail__expand {
         display: inline-flex;
         flex-direction: column;
         align-items: center;
@@ -184,20 +184,20 @@ function RailStyles() {
         color: var(--accent-strong, #7dd3fc);
         cursor: pointer;
       }
-      .pc-hive-rail__expand:hover { color: var(--fg, #e7f7ff); }
-      .pc-hive-rail__count {
+      .pc-pot-rail__expand:hover { color: var(--fg, #e7f7ff); }
+      .pc-pot-rail__count {
         font-size: 11px;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
       }
-      .pc-hive-rail__head {
+      .pc-pot-rail__head {
         display: flex;
         align-items: center;
         justify-content: space-between;
         padding: 8px 10px;
         border-bottom: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
       }
-      .pc-hive-rail__title {
+      .pc-pot-rail__title {
         display: inline-flex;
         align-items: center;
         gap: 6px;
@@ -207,7 +207,7 @@ function RailStyles() {
         text-transform: uppercase;
         color: var(--accent-strong, #7dd3fc);
       }
-      .pc-hive-rail__title-count {
+      .pc-pot-rail__title-count {
         font-size: 10px;
         font-weight: 700;
         padding: 1px 6px;
@@ -216,7 +216,7 @@ function RailStyles() {
         color: var(--fg, #e7f7ff);
         font-variant-numeric: tabular-nums;
       }
-      .pc-hive-rail__collapse {
+      .pc-pot-rail__collapse {
         display: inline-flex;
         background: transparent;
         border: none;
@@ -225,8 +225,8 @@ function RailStyles() {
         padding: 2px;
         border-radius: 4px;
       }
-      .pc-hive-rail__collapse:hover { color: var(--fg, #e7f7ff); }
-      .pc-hive-rail__list {
+      .pc-pot-rail__collapse:hover { color: var(--fg, #e7f7ff); }
+      .pc-pot-rail__list {
         list-style: none;
         margin: 0;
         padding: 6px;
@@ -236,7 +236,7 @@ function RailStyles() {
         overflow-y: auto;
         min-height: 0;
       }
-      .pc-hive-rail__item {
+      .pc-pot-rail__item {
         display: flex;
         align-items: center;
         gap: 7px;
@@ -250,17 +250,17 @@ function RailStyles() {
         text-align: left;
         cursor: pointer;
       }
-      .pc-hive-rail__item:hover {
+      .pc-pot-rail__item:hover {
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
         color: var(--fg, #e7f7ff);
       }
-      .pc-hive-rail__item.is-active {
+      .pc-pot-rail__item.is-active {
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 74%);
         border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 52%);
         color: var(--fg, #e7f7ff);
         font-weight: 650;
       }
-      .pc-hive-rail__dot {
+      .pc-pot-rail__dot {
         flex: 0 0 auto;
         width: 7px;
         height: 7px;
@@ -268,19 +268,19 @@ function RailStyles() {
         background: color-mix(in srgb, var(--fg-dim, #b9d4e8), transparent 72%);
         box-shadow: inset 0 0 0 1px var(--bg-3, rgba(255, 255, 255, 0.075));
       }
-      .pc-hive-rail__dot.is-live {
+      .pc-pot-rail__dot.is-live {
         background: var(--good, #34d399);
         box-shadow: 0 0 6px color-mix(in srgb, var(--good, #34d399), transparent 40%);
       }
-      .pc-hive-rail__name {
+      .pc-pot-rail__name {
         flex: 1 1 auto;
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .pc-hive-rail__root { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
-      .pc-hive-rail__kind {
+      .pc-pot-rail__root { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
+      .pc-pot-rail__kind {
         flex: 0 0 auto;
         font-size: 9.5px;
         font-weight: 700;
@@ -291,7 +291,7 @@ function RailStyles() {
         background: var(--bg-3, rgba(255, 255, 255, 0.075));
         color: var(--fg-mute, #7f9bb4);
       }
-      .pc-hive-rail__shared { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
+      .pc-pot-rail__shared { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
     `}</style>
   );
 }

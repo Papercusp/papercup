@@ -61,7 +61,7 @@ import {
   togglePlan as treeTogglePlanFn,
   type SteeringSelection,
   type TreePlanInput,
-} from './hive-steering-tree';
+} from './pot-steering-tree';
 
 /** One row of the `hive.steering` sync query (C-1, B-01 + round-2 eligibleHives). */
 export interface HiveSteeringRow {

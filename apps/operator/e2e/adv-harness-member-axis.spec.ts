@@ -162,7 +162,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
 
     // A single-member hive renders no rail (nothing to pick) — the dock is
     // byte-identical to the pre-plan single-harness view.
-    await expect(page.getByTestId('hive-member-rail')).toHaveCount(0);
+    await expect(page.getByTestId('pot-member-rail')).toHaveCount(0);
     await expect.poll(() => lanesSlugs.has(SOLO), { timeout: 15_000 }).toBe(true);
   });
 
@@ -184,7 +184,7 @@ test.describe('/adv Harnesses tab — hive member model (P-001/P-002/P-003)', ()
     await stubAndRecord(page);
     // All-mode renders the flat, sortable pot LIST (RichGrid, WI-3345) — no
     // dock / no "Add panel" — so the mount oracle is the list container.
-    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&scope=all`, { testId: 'hive-workspace-cards' });
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}&scope=all`, { testId: 'pot-workspace-cards' });
     test.skip(!mounted, SKIP_MSG);
 
     // Drill into the R&D member. The list is flat: each pot (hive root + member
