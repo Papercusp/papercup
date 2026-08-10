@@ -266,6 +266,65 @@ function nextVerbForService(name: string, wedged?: boolean): string {
   return `${restart} RECOVERS it — but this is a WEDGE (listening, not accepting), so capture evidence FIRST or the cause survives the restart: logs:read { unit, since:"-10m" } + dev:pg_active_queries`;
 }
 
+/** The out-of-process supervisor that OWNS bg-host restarts (`apps/operator/scripts/bghost-watchdog.mjs`). */
+export const BG_HOST_WATCHDOG_UNIT = "papercup-bg-host-watchdog";
+
+/**
+ * EI-20065717746825416: a `nextVerb` prescribing an action that an AUTONOMOUS SUPERVISOR already
+ * owns must disclose that owner, or it is instructing agents to race it.
+ *
+ * `papercup-bg-host-watchdog` is active on this box, out-of-process, and restarts bg-host on
+ * exactly the condition the ticker probe reports (routine fires AND routinesTick both >240s
+ * stale). Nothing on this AGENT-FACING surface said so. The watchdog is referenced ~15 times
+ * across the tree — but every one of those is an internal doc comment in a subsystem that
+ * interacts with it (`dbos/pool-pressure`, `routines-workflow`, `hyperbee/boot`, …). The
+ * knowledge existed everywhere EXCEPT the one place an agent reads when deciding what to do.
+ *
+ * Measured cost of that gap, 2026-08-10 (an agent following this tool's own instruction):
+ *   10:36:59Z  the watchdog detected the freeze and restarted bg-host
+ *   10:50:29Z  second freeze — watchdog DELIBERATELY SUPPRESSED the restart: the process tree
+ *              was burning ~503 CPU ticks/5s, so it judged "saturated, not dead" and held off
+ *   11:00:30Z  suppression hit its 900s hard bound — watchdog restarted bg-host
+ *   11:01:50Z  the agent, having read `nextVerb: dev:restart{bg-host}`, restarted it BY HAND
+ *              ~80s later — inside `dev:restart`'s ~120s phantom-coalesce window (EI-11137),
+ *              so the call almost certainly did nothing while the watchdog's recovery made it
+ *              look like it had worked. The agent then reported to the owner that bg-host had
+ *              "no auto-recovery" and that its restart was the fix. Both were false.
+ *
+ * Two traps this text exists to kill, because BOTH read as the opposite of the truth:
+ *  - a still-frozen bg-host is NOT evidence the watchdog is absent — it may be mid-suppression
+ *    BY DESIGN, and killing that process is the exact outcome the suppression prevents;
+ *  - verifying a hand restart BY OUTCOME cannot attribute the recovery, because the watchdog's
+ *    restart produces an identical outcome. Only its journal separates the two.
+ *
+ * PURE. `watchdogActive === undefined` is an honest UNKNOWN and says so rather than asserting
+ * either an owner or an absence — the same in-band-unknown convention as `isActiveStateDown`
+ * and the probes above (an absent check and a passed check must never look alike).
+ */
+export function bgHostWatchdogOwnership(watchdogActive: boolean | undefined): string {
+  const read = `logs:read { unit:"${BG_HOST_WATCHDOG_UNIT}", since:"-20m" }`;
+  if (watchdogActive === false) {
+    return (
+      ` ⚠ AND \`${BG_HOST_WATCHDOG_UNIT}\` — the out-of-process supervisor that normally recovers this —` +
+      ` is NOT ACTIVE. That is a finding in its own right: bg-host currently has NO automatic recovery.` +
+      ` Restart bg-host, then revive the watchdog (\`systemctl --user start ${BG_HOST_WATCHDOG_UNIT}\`).`
+    );
+  }
+  const owner =
+    watchdogActive === true
+      ? `\`${BG_HOST_WATCHDOG_UNIT}\` is RUNNING and OWNS this restart`
+      : `\`${BG_HOST_WATCHDOG_UNIT}\` normally OWNS this restart (could NOT determine whether it is running —` +
+        ` check \`systemctl --user is-active ${BG_HOST_WATCHDOG_UNIT}\`)`;
+  return (
+    ` ⚠ DO NOT restart by hand as a first move: ${owner} — it restarts bg-host once routine fires AND` +
+    ` routinesTick are both >240s stale. It also DELIBERATELY SUPPRESSES a restart while the process tree` +
+    ` is CPU-saturated (>=50 ticks/5s) for up to 900s, so a still-frozen bg-host is NOT evidence it is` +
+    ` absent or broken. Read its verdict FIRST: ${read}. A hand restart within ~120s of one of its restarts` +
+    ` PHANTOM-COALESCES (EI-11137) and does nothing — while the watchdog's own recovery makes it look like` +
+    ` yours worked, so verifying by outcome CANNOT tell you who fixed it.`
+  );
+}
+
 /**
  * D-005 (outage-must-not-be-silent-2026-08-02) — surface the mcp-proxy TRANSPORT ledger to the
  * AGENT-facing health tool.
@@ -324,6 +383,10 @@ export function buildMcpProxyTransportBlock(
 export function buildServiceHealthDiagnostic(
   services: ProbeResult[],
   supervision: SupervisionStatusEntry[],
+  /** EI-20065717746825416: live `ActiveState` of `papercup-bg-host-watchdog`, when the caller
+   *  could read it. Drives the ownership disclosure on a bg-host `nextVerb`; `undefined` is an
+   *  honest unknown that discloses ownership WITHOUT asserting the watchdog is up. */
+  watchdogActive?: boolean,
 ): RuntimeDiagnostic<
   { services: string[]; supervised: string[] },
   { up: number; down: number; wedged: number; absent: number; supervisionUnhealthy: number },
@@ -362,7 +425,14 @@ export function buildServiceHealthDiagnostic(
     },
     evidence: { checked: services.length, failures, unhealthySupervision },
     rootCause,
-    nextVerb: rootCause ? nextVerbForService(rootCause.component, first?.wedged) : null,
+    // EI-20065717746825416: a bg-host restart is OWNED by an out-of-process watchdog, so the
+    // verb must name that owner. Same `includes("bg-host")` predicate `restartVerbForService`
+    // uses, so every component routed to the bg-host restart carries the disclosure with it —
+    // a name that earns the verb but not the caveat is exactly how this gap reappears.
+    nextVerb: rootCause
+      ? nextVerbForService(rootCause.component, first?.wedged) +
+        (rootCause.component.includes("bg-host") ? bgHostWatchdogOwnership(watchdogActive) : "")
+      : null,
   });
 }
 
@@ -441,6 +511,20 @@ export default defineTool({
     // response's supervision block BEFORE it can drive a contradictory rootCause/
     // nextVerb — see reconcileBgHostTicker's doc comment.
     const services = reconcileBgHostTicker(rawServices, supervision);
+    // EI-20065717746825416: when a bg-host component is the failure we are about to prescribe a
+    // restart for, read whether its out-of-process supervisor is actually running — so the verb
+    // names a LIVE owner, reports a DEAD one as the critical finding it is, and says "unknown"
+    // when the probe could not tell. Conditional on purpose: a systemctl call on every healthy
+    // call would be pure cost, and this is the only branch whose advice depends on the answer.
+    const bgHostFailing = services.some((s) => s.present !== false && !s.up && s.name.includes("bg-host"));
+    let watchdogActive: boolean | undefined;
+    if (bgHostFailing) {
+      const probed = await probeUnitStates([BG_HOST_WATCHDOG_UNIT], "user").catch(() => null);
+      const row = probed?.states?.[0];
+      // `not-found` (never installed) is a determinate NO supervisor, not an unknown. A missing
+      // row / failed probe stays undefined — an unreadable probe must never read as an absence.
+      watchdogActive = row ? row.loadState !== "not-found" && row.activeState === "active" : undefined;
+    }
     return {
       content: [
         {

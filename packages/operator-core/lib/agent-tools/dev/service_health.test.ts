@@ -65,6 +65,8 @@ import {
   overlaySystemdRestartRecency,
   reconcileBgHostTicker,
   BG_HOST_BOOT_GRACE_SEC,
+  bgHostWatchdogOwnership,
+  BG_HOST_WATCHDOG_UNIT,
 } from "./service_health";
 
 /** Fixed clock for the transport-block tests — the summarizer windows on it. */
@@ -190,7 +192,14 @@ describe("buildServiceHealthDiagnostic", () => {
       [],
     );
     expect(out.rootCause).toEqual({ component: "bg-host-ticker", reason: "routine engine stale" });
-    expect(out.nextVerb).toBe('dev:restart { target:"bg-host" }');
+    // This assertion was `toBe('dev:restart { target:"bg-host" }')` until EI-20065717746825416
+    // appended the watchdog-ownership disclosure to every bg-host verb. Its ORIGINAL intent —
+    // the verb names the SANCTIONED target (the bg-host, never the :3070 operator) — is what
+    // matters and is asserted more strictly than before: it must LEAD with that verb, and must
+    // not name the operator restart at all. (The disclosure's own content is guarded by the
+    // bgHostWatchdogOwnership suite; duplicating it here would just make this test brittle.)
+    expect(out.nextVerb?.startsWith('dev:restart { target:"bg-host" }')).toBe(true);
+    expect(out.nextVerb).not.toContain('target:"dev"');
     expect(out.evidence.failures).toHaveLength(1);
   });
 
@@ -298,6 +307,90 @@ describe("reconcileBgHostTicker (EI-19934795546523351, pure)", () => {
     expect(out.rootCause).toBeNull();
     expect(out.nextVerb).toBeNull();
     expect(out.effective.down).toBe(0);
+  });
+});
+
+/**
+ * EI-20065717746825416: `dev:service_health` prescribed `dev:restart{bg-host}` while an
+ * out-of-process watchdog already owned that decision — so an agent following the tool's own
+ * nextVerb raced a live supervisor, got a phantom-coalesced no-op (EI-11137), and credited
+ * itself with the watchdog's recovery. The guard is that a bg-host restart verb can never
+ * again be emitted WITHOUT naming its owner.
+ */
+describe("bgHostWatchdogOwnership (EI-20065717746825416, pure)", () => {
+  const downTicker = (note = "⚠ no routine has fired in 21m — looks FROZEN") =>
+    [{ name: "bg-host-ticker", up: false, status: null, latencyMs: 2, note }];
+
+  it("names the watchdog as the RUNNING owner and warns off a first-move hand restart", () => {
+    const out = bgHostWatchdogOwnership(true);
+    expect(out).toContain(BG_HOST_WATCHDOG_UNIT);
+    expect(out).toMatch(/OWNS this restart/);
+    expect(out).toMatch(/DO NOT restart by hand/i);
+  });
+
+  it("discloses the two readings that INVERT — suppression, and un-attributable outcome verification", () => {
+    // These are the whole point: both look like the opposite of the truth. A frozen bg-host
+    // reads as "no watchdog" when the watchdog is deliberately holding off, and a hand restart
+    // reads as "I fixed it" when the watchdog's restart produced the same outcome.
+    const out = bgHostWatchdogOwnership(true);
+    expect(out).toMatch(/SUPPRESS/i);
+    expect(out).toMatch(/NOT evidence/i);
+    expect(out).toMatch(/PHANTOM-COALESCE/i);
+  });
+
+  it("reports an ABSENT watchdog as a finding in its own right, and then does prescribe the hand restart", () => {
+    const out = bgHostWatchdogOwnership(false);
+    expect(out).toMatch(/NOT ACTIVE/);
+    expect(out).toMatch(/NO automatic recovery/i);
+    expect(out).toMatch(/systemctl --user start/);
+    // It must NOT tell the agent to stand down when nothing is going to act for it.
+    expect(out).not.toMatch(/DO NOT restart by hand/i);
+  });
+
+  it("an UNKNOWN liveness discloses ownership WITHOUT asserting the watchdog is up or absent", () => {
+    // An unreadable probe must never read as an absence (nor as a live owner) — the same
+    // in-band-unknown convention as isActiveStateDown / the portless probes.
+    const out = bgHostWatchdogOwnership(undefined);
+    expect(out).toContain(BG_HOST_WATCHDOG_UNIT);
+    expect(out).toMatch(/could NOT determine/i);
+    expect(out).not.toMatch(/is RUNNING and OWNS/);
+    expect(out).not.toMatch(/NOT ACTIVE/);
+  });
+
+  // ── THE RECURRENCE GUARD ────────────────────────────────────────────────────
+  it("REPRODUCES THE BUG unfixed: a frozen ticker's nextVerb never again prescribes a bare restart", () => {
+    const out = buildServiceHealthDiagnostic(downTicker(), [], true);
+    expect(out.rootCause?.component).toBe("bg-host-ticker");
+    // Pre-fix this was exactly 'dev:restart { target:"bg-host" }' and nothing else.
+    expect(out.nextVerb).toContain('dev:restart { target:"bg-host" }');
+    expect(out.nextVerb).toContain(BG_HOST_WATCHDOG_UNIT);
+  });
+
+  it("carries the disclosure with the VERB, not with one probe name — every bg-host component gets it", () => {
+    // restartVerbForService routes any name containing 'bg-host' to the bg-host restart, so the
+    // caveat has to follow the same predicate; a name that earns the verb but not the caveat is
+    // precisely how this gap comes back.
+    const out = buildServiceHealthDiagnostic(
+      [{ name: "bg-host-code", up: false, status: null, latencyMs: 1, note: "code drift" }],
+      [],
+      true,
+    );
+    expect(out.nextVerb).toContain(BG_HOST_WATCHDOG_UNIT);
+  });
+
+  it("does NOT leak the bg-host caveat onto an unrelated service's nextVerb", () => {
+    const out = buildServiceHealthDiagnostic(
+      [{ name: "operator", up: false, status: 500, latencyMs: 3, note: "probe failed" }],
+      [],
+      true,
+    );
+    expect(out.nextVerb).toBe('dev:restart { target:"dev" }');
+  });
+
+  it("omitting the liveness argument still discloses ownership (unknown), never silence", () => {
+    // The old two-arg call shape must not silently reproduce the original bug.
+    const out = buildServiceHealthDiagnostic(downTicker(), []);
+    expect(out.nextVerb).toContain(BG_HOST_WATCHDOG_UNIT);
   });
 });
 
