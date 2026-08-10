@@ -169,6 +169,26 @@ export interface UnitState {
   active: boolean;
   /** `activeState === 'failed'` — the literal `systemctl is-failed` answer. */
   failed: boolean;
+  /**
+   * EI-20093902925801178: systemd's OWN `NRestarts` — a monotonic count of the
+   * restarts systemd has performed for this unit under its `Restart=` policy.
+   *
+   * This is the one restart signal that CANNOT be missed by sampling. The
+   * supervision reconciler's in-memory flap state is written by a routine
+   * running in `papercup-bg-host`, while `dev:service_health` reads that same
+   * module's Map from the OPERATOR process — where it is permanently empty, so
+   * every supervised unit reports all-zero counters and `flapState:'ok'`
+   * whatever is actually happening. Reading the counter from the OS here is the
+   * same ground-truth escape hatch `activeState` above already uses, and it is
+   * immune to both the cross-process gap AND to a loop cycling faster than any
+   * probe interval (measured: 4 restarts in 43s while the health tool read
+   * `restartsLast10m: 0`).
+   *
+   * Undefined when systemd did not report the property — a `.timer` and other
+   * unit types that run no main process omit it entirely, and an omitted
+   * counter must never be read as `0` restarts.
+   */
+  nRestarts?: number;
 }
 
 /** What a unit-state query returns. */
@@ -185,7 +205,7 @@ export interface UnitStateResult {
 }
 
 /** The properties one `systemctl show` call asks for. `Id` is what maps a block back to a unit. */
-const UNIT_STATE_PROPS = ['Id', 'LoadState', 'ActiveState', 'SubState'] as const;
+const UNIT_STATE_PROPS = ['Id', 'LoadState', 'ActiveState', 'SubState', 'NRestarts'] as const;
 
 /**
  * PURE — split a multi-unit `systemctl show` stdout into one property map per
@@ -212,6 +232,13 @@ export function unitStateFromProps(props: Map<string, string>, scope: 'user' | '
   const loadState = props.get('LoadState') ?? 'error';
   const activeState = props.get('ActiveState') ?? 'inactive';
   const subState = props.get('SubState');
+  // EI-20093902925801178: parse defensively. A property systemd considers
+  // inapplicable to the unit TYPE is absent (never an empty string), and an
+  // absent counter is UNKNOWN, not zero — collapsing the two would recreate
+  // exactly the "no data rendered as healthy" bug this field exists to kill.
+  const rawNRestarts = props.get('NRestarts');
+  const parsedNRestarts = rawNRestarts === undefined ? Number.NaN : Number(rawNRestarts);
+  const nRestarts = Number.isInteger(parsedNRestarts) && parsedNRestarts >= 0 ? parsedNRestarts : undefined;
   return {
     unit: props.get('Id') ?? fallbackUnit,
     scope,
@@ -223,6 +250,7 @@ export function unitStateFromProps(props: Map<string, string>, scope: 'user' | '
     // caller reading `active` alone can't be misled either.
     active: loadState === 'loaded' && activeState === 'active',
     failed: activeState === 'failed',
+    ...(nRestarts !== undefined ? { nRestarts } : {}),
   };
 }
 
