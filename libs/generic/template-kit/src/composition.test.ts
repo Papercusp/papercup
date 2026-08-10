@@ -164,10 +164,10 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
       "dock-workbench",
       "embedded-pg-discovery",
       "embedded-postgres-server",
-      "pot-app-seam",
       "hono-host",
       "lexicon",
       "papergrid",
+      "pot-app-seam",
       "tauri-release-kit",
       "tauri-shell",
       "typed-contracts",
@@ -182,9 +182,9 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
       "papercusp-agentic-desktop-app:composition-integrity",
       "papercusp-data-layer:components-integrated",
       "papercusp-desktop-app:composition-integrity",
-      "papercusp-ops-hives:confinement-guard",
-      "papercusp-ops-hives:gym-signals",
-      "papercusp-ops-hives:seam-round-trip",
+      "papercusp-ops-pots:confinement-guard",
+      "papercusp-ops-pots:gym-signals",
+      "papercusp-ops-pots:seam-round-trip",
       "papercusp-tauri-desktop-shell:boot-e2e",
       "papercusp-ui:components-integrated",
     ]);
@@ -196,7 +196,7 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
     expect(composition!.scope).toBe("aspect");
     expect(composition!.appTemplateId).toBeUndefined();
     expect(AGENTIC_DESKTOP_APP_TEMPLATE.composesWith.sort()).toEqual(
-      ["papercusp-desktop-app", "papercusp-ops-hives"],
+      ["papercusp-desktop-app", "papercusp-ops-pots"],
     );
   });
 });
@@ -255,7 +255,7 @@ describe("P-015 — requires: hard pinned cross-template deps", () => {
         "papercusp-agentic-desktop-app",
         "papercusp-desktop-app",
         "papercusp-data-layer",
-        "papercusp-ops-hives",
+        "papercusp-ops-pots",
         "papercusp-ui",
         "papercusp-tauri-desktop-shell",
       ]),

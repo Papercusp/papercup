@@ -28,7 +28,7 @@ function lint(overrides: Partial<TemplateProseLintInput> & { guide: string }) {
     files: ["template.yaml", "GUIDE.md", "checks/boot-e2e.test.ts", "checks/README.md", "reference/README.md"],
     prose: [{ path: "GUIDE.md", content: overrides.guide }],
     knownComponentIds: ["tauri-shell", "hono-host"],
-    knownTemplateIds: ["papercusp-fixture-shell", "papercusp-ops-hives"],
+    knownTemplateIds: ["papercusp-fixture-shell", "papercusp-ops-pots"],
     allowedPackages: ["template-kit"],
     ...overrides,
   });
@@ -39,7 +39,7 @@ describe("lintTemplateProse", () => {
     const r = lint({
       guide:
         "Copy the `reference/README.md` shape. Uses `tauri-shell` via `@papercusp/tauri-shell`; " +
-        "composes with `papercusp-ops-hives`. Read `agent-insights/templates-system-design`. " +
+        "composes with `papercusp-ops-pots`. Read `agent-insights/templates-system-design`. " +
         "Run `checks/boot-e2e.test.ts`. The kit is `@papercusp/template-kit`.",
     });
     expect(r).toEqual({ ok: true, errors: [] });
@@ -53,9 +53,9 @@ describe("lintTemplateProse", () => {
   });
 
   it("WI-2891 class: a phantom @papercusp component fails", () => {
-    const r = lint({ guide: "You MUST use `@papercusp/hive-app-seam` for the seam." });
+    const r = lint({ guide: "You MUST use `@papercusp/pot-app-seam` for the seam." });
     expect(r.ok).toBe(false);
-    expect(r.errors[0]).toContain("@papercusp/hive-app-seam");
+    expect(r.errors[0]).toContain("@papercusp/pot-app-seam");
   });
 
   it("an unknown papercusp-* template mention fails (rename rot)", () => {
