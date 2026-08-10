@@ -973,6 +973,35 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // ENFORCING instead of as a ratchet carrying debt.
     appliesTo: (f) => f.endsWith('.mjs'),
   },
+  {
+    // WI-5371 / WI-5673 — a Protomux carries AT MOST ONE hypercore/alpha channel per
+    // discovery key, and every harness on this machine shares ONE peer socket. So a second
+    // local replica of a remote key never attaches a replicator: it sits at peersCount 0
+    // FOREVER while the socket stays live and every health surface reads healthy, then trips
+    // replication_stalled -> repair-on-detect (which structurally cannot win the one slot) ->
+    // repair-exhausted -> a FORCED TOPIC REJOIN that tears down the SHARED socket for the
+    // healthy co-tenant harnesses too. `remote-core-host.ts` fixed it by keeping ONE core per
+    // (machine, key) behind the `openRemoteLog` seam — but nothing stopped the next
+    // `store.get({ key })` from re-arming it, and the failure is silent at the call site.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:no-unhosted-remote-core',
+    // The ratchet IS the guard: no-unhosted-remote-core-guard.test.ts EXECS the real script
+    // three times (violation -> exit 1, clean -> exit 0, own-log -> exit 0), so when
+    // operator-core's suite runs the detector has genuinely executed, not been assumed.
+    hostSuiteRatchet: 'packages/operator-core/lib/no-unhosted-remote-core-guard.test.ts',
+    // NARROW TRIGGER, BROAD SCAN — deliberate, and the asymmetry is the point. The script
+    // always scans libs/packages/apps in full (~7.6s), so a violation planted anywhere is
+    // caught by any in-scope edit; `appliesTo` only decides WHEN to pay that cost. Keyed on
+    // the surfaces where a Corestore is actually in scope, because attaching ~7.6s to every
+    // TS edit in the repo is not a trade this list accepts (the sibling guards above run
+    // 1.4-2.1s). A new Corestore call site in a wholly unrelated tree is the residual gap;
+    // it is caught the next time anything under these paths moves.
+    appliesTo: (f) =>
+      /^packages\/operator-core\/lib\/sync\//.test(f) ||
+      /(^|\/)(corestore|peer-log|remote-core-host|scope-cores)\.ts$/.test(f) ||
+      f.includes('/hyperbee/') ||
+      f === 'scripts/check-no-unhosted-remote-core.mjs',
+  },
 ];
 
 const workspaces = [
