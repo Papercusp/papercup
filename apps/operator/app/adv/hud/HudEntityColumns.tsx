@@ -32,6 +32,7 @@ import { memo, type ReactNode } from 'react';
 import { RowBoundary, SectionBoundary } from '@/app/_components/RenderBoundary';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { formatAge, type HudBadge } from './hud-board-model';
+import HudSearchBox from './HudSearchBox';
 import {
   HUD_ENTITY_COLUMNS,
   HUD_ENTITY_COLUMN_LABEL,
@@ -329,13 +330,12 @@ export default function HudEntityColumns({
             search is not a nicety — without it the board is a wall. It filters
             the MODEL (ref/title/context), so the counts above always describe
             what is actually on screen. */}
-        <input
-          type="search"
-          className="hud__search"
+        <HudSearchBox
           value={query}
+          onChange={onQuery}
           placeholder={`Filter ${noun}…`}
-          aria-label={`Filter ${noun}`}
-          onChange={(e) => onQuery(e.target.value)}
+          ariaLabel={`Filter ${noun}`}
+          testId="hud-entity-search"
         />
 
         <span className="hud__spacer" />

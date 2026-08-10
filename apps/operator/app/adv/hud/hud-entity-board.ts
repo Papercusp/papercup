@@ -164,6 +164,40 @@ export interface HudEntityCard {
    * an agent and so "has no business sitting in a lane of its own" (D-006).
    */
   subGoals?: HudSubGoal[];
+  /**
+   * WHO is behind this card, so every HUD tab can be filtered by session/agent
+   * id the way the sessions tab already can ([owner 2026-08-10]).
+   *
+   * ⚠ NEVER populate this with a stand-in. `undefined` means "this card has no
+   * single owning agent", and `matchesQuery` treats it as matching nothing.
+   * Filling it with the nearest plausible value (a plan's harness, a goal's
+   * first pot) would make the filter silently WRONG rather than merely
+   * incomplete — and a filter that looks like it worked is far worse than one
+   * that visibly returns nothing.
+   *
+   * One optional OBJECT rather than three optional sibling strings (D-002): the
+   * card is built in three places, and siblings invite a builder to set one and
+   * forget the rest, which half-works undetectably.
+   *
+   * Coverage today (D-003): the work-items board populates it from `assignee`.
+   * Plans and goals cannot yet — their inputs carry no identity at all — which
+   * is P-006, not a bug in this field.
+   */
+  identity?: HudCardIdentity;
+}
+
+/**
+ * The identity strings a query may match against. Every field optional and
+ * independently absent: a card can know its agent without its session, or the
+ * reverse, and neither absence may be papered over with a placeholder.
+ */
+export interface HudCardIdentity {
+  /** Coordination owner id, e.g. `su-12b70e95-84ce-4ea0-b546-8a692cdc949c`. */
+  ownerId?: string | null;
+  /** Session id / number, when the card traces to one concrete session. */
+  sessionId?: string | null;
+  /** Short display handle, e.g. `su-12b70` — what the owner actually types. */
+  agentHandle?: string | null;
 }
 
 export interface HudEntityBoard {
@@ -468,8 +502,40 @@ export function planCountsSummary(counts: Record<string, number> | null | undefi
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
+/**
+ * Does this identity match the query? Exported so the sessions board and the
+ * entity boards apply ONE definition of "filtering by session/agent id" and
+ * cannot drift ([owner 2026-08-10] asked for every tab to filter the way the
+ * sessions tab does — two implementations is how that promise decays).
+ *
+ * Substring, case-insensitive, deliberately: the owner types `su-12b70`, not
+ * the full `su-12b70e95-84ce-4ea0-b546-8a692cdc949c`. An exact-match rule would
+ * make the feature useless for the ids people actually have in their heads.
+ *
+ * An absent/blank field matches NOTHING — never the empty string. `''.includes`
+ * is vacuously true for any needle-free query, and this function is reached
+ * only with a non-empty needle, but the explicit guard states the intent so a
+ * later refactor cannot turn "no identity" into "matches everything".
+ */
+export function identityMatches(
+  identity: HudCardIdentity | undefined,
+  needle: string,
+): boolean {
+  if (!identity || !needle) return false;
+  for (const field of [identity.ownerId, identity.sessionId, identity.agentHandle]) {
+    if (field && field.toLowerCase().includes(needle)) return true;
+  }
+  return false;
+}
+
 function matchesQuery(
-  card: { ref: string; title: string; context: string | null; subGoals?: HudSubGoal[] },
+  card: {
+    ref: string;
+    title: string;
+    context: string | null;
+    subGoals?: HudSubGoal[];
+    identity?: HudCardIdentity;
+  },
   q: string,
 ): boolean {
   if (!q) return true;
@@ -478,6 +544,10 @@ function matchesQuery(
     card.ref.toLowerCase().includes(needle) ||
     card.title.toLowerCase().includes(needle) ||
     (card.context ?? '').toLowerCase().includes(needle) ||
+    // WHO is behind the card, so `su-12b70` filters every tab the way it
+    // already filters sessions. Absent identity contributes nothing rather
+    // than matching — see the warning on HudEntityCard.identity.
+    identityMatches(card.identity, needle) ||
     // A subdirective has no card of its own (D-006), so the PARENT card is the
     // only thing a search can return it in. Without this the filter would hide
     // a child that matches — a silent loss, and the one outcome this board's
@@ -1335,6 +1405,18 @@ export function toWorkItemCard(item: HudWorkItemInput, nowMs: number): HudEntity
     // back to the board's active harness, which is correct for these (unlike an
     // ask, they only ever render under a resolved harness).
     open: { kind: 'work-item', id: item.id, harnessSlug: null },
+    // The assignee IS the agent id, so this board can filter by it today
+    // ([owner 2026-08-10]). UNDEFINED when unassigned — deliberately not
+    // `{ ownerId: null }`: an unassigned item has no owner to match, and a
+    // present-but-empty identity is the shape most likely to be "fixed" later
+    // into something that matches everything.
+    //
+    // `sessionId` is absent because a work item is not owned by one session —
+    // its assignee outlives any single session, and inventing one would be the
+    // fabrication D-003 forbids.
+    identity: item.assignee
+      ? { ownerId: item.assignee, agentHandle: shortAssignee(item.assignee) }
+      : undefined,
   };
 }
 

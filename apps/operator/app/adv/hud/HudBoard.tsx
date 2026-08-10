@@ -37,6 +37,7 @@ import {
   type HudSession,
 } from './hud-board-model';
 import { HUD_TABS, HUD_TAB_LABEL, type HudTabId } from './hud-entity-board';
+import HudSearchBox from './HudSearchBox';
 import { RowBoundary, SectionBoundary } from '@/app/_components/RenderBoundary';
 import './hud.css';
 
@@ -480,8 +481,14 @@ export default function HudBoard({
             — wearing the same quiet .hud__search chrome as the entity tabs'
             filter boxes, so it read as one more muted chip and was routinely
             missed. It now LEADS the row and carries the --hero treatment
-            (magnifier + accent ring + tinted well); the quiet base stays for
-            HudEntityColumns.
+            (magnifier + accent ring + tinted well).
+
+            ⚠ The clause that used to end this sentence — "the quiet base stays
+            for HudEntityColumns" — no longer holds. [owner 2026-08-10] asked
+            every HUD tab to share one highlighted box, so the markup moved into
+            <HudSearchBox/> and HudEntityColumns renders the SAME control. Style
+            changes belong in that component now, never inline here, or the two
+            boards re-split exactly the way they had before.
 
             What it searches is the reason it is worth this much salience: every
             session's FULL TRANSCRIPT, not the card text. The roster carries only
@@ -491,49 +498,35 @@ export default function HudBoard({
             In this row (not .hud__fleets) for the same nowrap/overflow reason
             documented on the plan filter below. */}
         {onSessionQuery ? (
-          <span className="hud__searchwrap">
-            <svg
-              className="hud__search-icon"
-              viewBox="0 0 16 16"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <circle cx="6.8" cy="6.8" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.9" />
-              <path
-                d="M10.3 10.3 L14 14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.9"
-                strokeLinecap="round"
-              />
-            </svg>
-            <input
-              type="search"
-              className="hud__search hud__search--hero"
-              value={sessionQuery}
-              placeholder="Search transcripts…"
-              aria-label="Search session transcripts"
-              data-testid="hud-session-search"
-              onChange={(e) => onSessionQuery(e.target.value)}
-            />
-            {/* The slow pass, reported where you are already looking. Typing
-                filters the board on THIS keystroke; this says whether a wider
-                answer is still coming, so a pause reads as "still searching"
-                rather than "it ignored me" — the whole complaint behind the
-                2026-08-02 ask. role=status (not alert): it must reach a screen
-                reader without stealing focus from the box being typed in. */}
-            {searchActive && (sessionSearching || (transcriptExtra ?? 0) > 0) ? (
-              <span
-                className={`hud__search-status${sessionSearching ? ' hud__search-status--busy' : ''}`}
-                data-testid="hud-session-search-status"
-                role="status"
-              >
-                {sessionSearching
-                  ? 'transcripts…'
-                  : `+${transcriptExtra} transcript${transcriptExtra === 1 ? '' : 's'}`}
-              </span>
-            ) : null}
-          </span>
+          <HudSearchBox
+            value={sessionQuery}
+            onChange={onSessionQuery}
+            placeholder="Search transcripts…"
+            ariaLabel="Search session transcripts"
+            testId="hud-session-search"
+            status={
+              /* The slow pass, reported where you are already looking. Typing
+                 filters the board on THIS keystroke; this says whether a wider
+                 answer is still coming, so a pause reads as "still searching"
+                 rather than "it ignored me" — the whole complaint behind the
+                 2026-08-02 ask. role=status (not alert): it must reach a screen
+                 reader without stealing focus from the box being typed in.
+
+                 It rides in HudSearchBox's `status` slot so it stays INSIDE the
+                 control's wrap, exactly where it rendered before the extraction. */
+              searchActive && (sessionSearching || (transcriptExtra ?? 0) > 0) ? (
+                <span
+                  className={`hud__search-status${sessionSearching ? ' hud__search-status--busy' : ''}`}
+                  data-testid="hud-session-search-status"
+                  role="status"
+                >
+                  {sessionSearching
+                    ? 'transcripts…'
+                    : `+${transcriptExtra} transcript${transcriptExtra === 1 ? '' : 's'}`}
+                </span>
+              ) : null
+            }
+          />
         ) : null}
 
         {/* P-002 (owner asks 2026-07-26) put the launch cluster at the head of

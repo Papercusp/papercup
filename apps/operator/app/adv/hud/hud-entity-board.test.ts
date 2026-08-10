@@ -26,6 +26,7 @@ import {
   goalSilence,
   partitionGoals,
   goalSpendLabel,
+  identityMatches,
   toGoalCard,
   GOAL_START_CARD_ID,
   GOAL_START_COLUMN,
@@ -1353,5 +1354,77 @@ describe('goalSilence — staleness escalation + the abandoned state (goals-tab-
     const card = toGoalCard(never, NOW);
     expect(card.sinceSec).toBeNull();
     expect(card.sortKey).toBe(toGoalCard(goal({ lastActivityAt: iso(2 * HOUR) }), NOW).sortKey);
+  });
+});
+
+/**
+ * Identity filtering — [owner 2026-08-10] "they should all be filterable by the
+ * session id and agent id like the session tab is".
+ *
+ * The MISS cases carry the weight here. A filter that over-matches looks like it
+ * works (results appear, they are just wrong), so "absent identity matches
+ * nothing" is pinned explicitly rather than left to `''.includes()` semantics.
+ */
+describe('identityMatches', () => {
+  const FULL = 'su-12b70e95-84ce-4ea0-b546-8a692cdc949c';
+
+  it('matches a SHORT prefix of an owner id — what the owner actually types', () => {
+    // The whole point: nobody types the full uuid. An exact-match rule would
+    // make the feature unusable for the ids people have in their heads.
+    expect(identityMatches({ ownerId: FULL }, 'su-12b70')).toBe(true);
+  });
+
+  it('matches case-insensitively and on any of the three fields', () => {
+    expect(identityMatches({ ownerId: FULL }, 'SU-12B70'.toLowerCase())).toBe(true);
+    expect(identityMatches({ sessionId: 'session-4821' }, '4821')).toBe(true);
+    expect(identityMatches({ agentHandle: 'su-12b70e95' }, 'b70e')).toBe(true);
+  });
+
+  it('MISSES when no field contains the needle', () => {
+    expect(identityMatches({ ownerId: FULL }, 'su-99999')).toBe(false);
+  });
+
+  it('an ABSENT identity matches NOTHING — never everything', () => {
+    // The regression guard for the failure mode D-003 forbids: if this ever
+    // returns true, every unassigned card matches every query and the filter
+    // silently stops filtering.
+    expect(identityMatches(undefined, 'su-12b70')).toBe(false);
+    expect(identityMatches({}, 'su-12b70')).toBe(false);
+    expect(identityMatches({ ownerId: null, sessionId: null }, 'su-12b70')).toBe(false);
+    expect(identityMatches({ ownerId: '' }, 'su-12b70')).toBe(false);
+  });
+
+  it('an empty needle matches nothing, so it can never widen a search', () => {
+    expect(identityMatches({ ownerId: FULL }, '')).toBe(false);
+  });
+});
+
+describe('work-item cards carry identity so the Work items tab filters by agent', () => {
+  it('populates ownerId + agentHandle from the assignee', () => {
+    const card = toWorkItemCard(item({ assignee: 'su-12b70e95-84ce-4ea0-b546-8a692cdc949c' }), NOW);
+    expect(card.identity?.ownerId).toBe('su-12b70e95-84ce-4ea0-b546-8a692cdc949c');
+    expect(card.identity?.agentHandle).toBe('su-12b70e95');
+    expect(identityMatches(card.identity, 'su-12b70')).toBe(true);
+  });
+
+  it('leaves identity UNDEFINED when unassigned, rather than an empty object', () => {
+    // Not `{ ownerId: null }`: a present-but-empty identity is the shape most
+    // likely to be "tidied up" later into one that matches everything.
+    expect(toWorkItemCard(item({ assignee: null }), NOW).identity).toBeUndefined();
+    expect(toWorkItemCard(item({}), NOW).identity).toBeUndefined();
+  });
+
+  it('filters the board by agent id, keeping only that agent’s items', () => {
+    const board = buildWorkItemBoard(
+      [
+        item({ id: 'WI-MINE', assignee: 'su-12b70e95-84ce-4ea0-b546-8a692cdc949c' }),
+        item({ id: 'WI-THEIRS', assignee: 'su-0056be10-6496-40e0-bd98-f88198fe84b4' }),
+        item({ id: 'WI-NOBODY' }),
+      ],
+      [],
+      { nowMs: NOW, query: 'su-12b70' },
+    );
+    const ids = board.columns.flatMap((c) => c.cards.map((card) => card.id));
+    expect(ids).toEqual(['WI-MINE']);
   });
 });
