@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-// ⚠ ONE LINE, deliberately. `@ts-expect-error` suppresses the NEXT LINE only, and on a
-// multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
-// directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
-// @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { applyProjectionBanner, bannerLines, frontmatterIndex, ingestVerdict, listSectionDocs, PROJECTION_MARKER, projectionVerdict, sha256, splitFrontmatter, stripProjectionBanner } from '../../../../scripts/project-authored-docs.mjs';
+import {
+  applyProjectionBanner,
+  bannerLines,
+  deriveFrontmatterIndex,
+  ingestVerdict,
+  PROJECTION_MARKER,
+  projectionVerdict,
+  sha256,
+  splitFrontmatter,
+  stripProjectionBanner,
+} from './authored-doc-projection';
+import { listSectionDocs } from '../../../../../scripts/project-authored-docs';
 
 /**
  * P-008 — PG becomes canonical for authored doc prose, projected back to .mdx.
@@ -90,12 +97,12 @@ describe('authored-doc projection (P-008)', () => {
   describe('the banner is invisible to every consumer that matters', () => {
     it('parses away — frontmatter index is identical with and without it', () => {
       const projected = applyProjectionBanner(SAMPLE, 'agent-insights/a-doc.mdx');
-      expect(frontmatterIndex(projected)).toEqual(frontmatterIndex(SAMPLE));
+      expect(deriveFrontmatterIndex(projected)).toEqual(deriveFrontmatterIndex(SAMPLE));
     });
 
     it('preserves every frontmatter key, including ones no writer here generates', () => {
       const rich = doc('title: "T"\ntype: Insight\ngenerated:\n  by: agent\n  at: 2026-07-26\nverified:\n  - at: 2026-08-01', 'body');
-      const idx = frontmatterIndex(rich) as Record<string, unknown>;
+      const idx = deriveFrontmatterIndex(rich) as Record<string, unknown>;
       expect(Object.keys(idx).sort()).toEqual(['generated', 'title', 'type', 'verified']);
       // A DATE STAYS A STRING. js-yaml's default schema would hand back a JS Date here,
       // which JSON.stringify widens to "2026-07-26T00:00:00.000Z" — a timezone-bearing
@@ -114,7 +121,7 @@ describe('authored-doc projection (P-008)', () => {
 
     it('returns null (never throws) for frontmatter that does not parse', () => {
       const broken = doc('title: "unterminated\n  bad: [', 'body');
-      expect(frontmatterIndex(broken)).toBeNull();
+      expect(deriveFrontmatterIndex(broken)).toBeNull();
     });
   });
 
