@@ -401,6 +401,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
       carry: 'warm' as const,
       continuation: 'settle' as const,
       mode: 'work' as const,
+      goal: null,
       fireCount: 3,
       firesSinceArm: 3,
       parked: false,
