@@ -206,6 +206,8 @@
     "lint:no-hand-rolled-module-pin": "node scripts/check-no-hand-rolled-module-pin.mjs",
     "lint:no-unthreaded-apply": "node scripts/check-no-unthreaded-apply.mjs",
     "lint:partial-index-alignment": "node scripts/check-partial-index-alignment.mjs",
+    "lint:no-undrained-stdout-exit": "node scripts/check-undrained-stdout-exit.mjs",
+    "lint:no-undrained-stdout-exit:report": "node scripts/check-undrained-stdout-exit.mjs --report",
     "lint:typeless-reexport": "node scripts/check-typeless-reexport-trap.mjs",
     "lint:full-replacement-mocks": "node scripts/check-full-replacement-mocks.mjs",
     "lint:systemd-startlimit-placement": "node scripts/check-systemd-startlimit-placement.mjs",
