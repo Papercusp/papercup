@@ -269,6 +269,34 @@ export function exitForNoFindings({ examinedFiles = [], identicalFiles = [], dec
   return 0;
 }
 
+/**
+ * EI-20097325488507587: `--typecheck` asked for, then never run.
+ *
+ * A caller passes `--typecheck` to have the precise detector RUN. When no required-field
+ * additions are found we return before reaching it — correctly, since there is nothing to
+ * check — but silently, so the exit status is the caller's only signal and it is
+ * indistinguishable from "the typecheck ran and passed". That is the same
+ * absent-evidence-reads-as-evidence-of-absence failure the EXIT_NOT_CHECKED work fixed
+ * one level up, and it survives that fix: `exitForNoFindings` legitimately returns 0 for
+ * a genuine diff with no additions, and that 0 then carries an implication it never earned.
+ *
+ * The two reasons differ in what the reader should DO, so they are not collapsed:
+ *   'no-findings' — the run did compare, and found nothing to typecheck. Believe it.
+ *   'not-checked' — the run compared nothing at all; the absent typecheck is the
+ *                   second-order symptom, and the NOT CHECKED text above is the fix.
+ * Returns null when a typecheck was not requested, so callers can print unconditionally.
+ */
+export function formatTypecheckNotRun({ requested = false, reason = null } = {}) {
+  if (!requested || !reason) return null;
+  if (reason === 'not-checked') {
+    return '\n--typecheck: NOT RUN — this run examined nothing to find additions in (see above).';
+  }
+  return [
+    '\n--typecheck: NOT RUN — no required-field additions were found, so there was nothing',
+    '  to typecheck. This exit status means "nothing to check", NOT "the typecheck passed".',
+  ].join('\n');
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
@@ -336,8 +364,29 @@ function main() {
     if (added.length) findings.push({ file, added });
   }
 
+  const noFindingsExit = exitForNoFindings({
+    examinedFiles,
+    identicalFiles,
+    declared: Boolean(declaredFiles),
+  });
+  // Reported in JSON too: a machine reader has even less to go on than a human, and
+  // `findings: []` alongside a requested-but-unrun typecheck reads as a pass.
+  const typecheck = findings.length
+    ? { requested: runTypecheck, ran: runTypecheck, reason: null }
+    : {
+        requested: runTypecheck,
+        ran: false,
+        reason: noFindingsExit === EXIT_NOT_CHECKED ? 'not-checked' : 'no-findings',
+      };
+
   if (json) {
-    console.log(JSON.stringify({ base, examined: examinedFiles, identical: identicalFiles, findings }, null, 2));
+    console.log(
+      JSON.stringify(
+        { base, examined: examinedFiles, identical: identicalFiles, findings, typecheck },
+        null,
+        2,
+      ),
+    );
   }
 
   if (!findings.length) {
@@ -345,6 +394,8 @@ function main() {
       console.log(
         formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles), identicalFiles }),
       );
+      const note = formatTypecheckNotRun({ requested: runTypecheck, reason: typecheck.reason });
+      if (note) console.log(note);
     }
     // EI-20095543794921181: "no findings" is only a clean bill if something was
     // actually diffed. Two ways it is not: nothing differed from `base` at all
@@ -352,7 +403,7 @@ function main() {
     // per-file form of the same root cause, already described at formatNoFindings.
     // A partial run (some named files identical, others genuinely diffed) still
     // exits 0: it verified what it could, and the warning above names the rest.
-    process.exit(exitForNoFindings({ examinedFiles, identicalFiles, declared: Boolean(declaredFiles) }));
+    process.exit(noFindingsExit);
   }
 
   if (!json) {

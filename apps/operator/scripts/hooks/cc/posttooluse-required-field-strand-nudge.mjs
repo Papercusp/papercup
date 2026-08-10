@@ -34,6 +34,24 @@
 //   it reports to the AUTHOR while it is still their turn. That is the one moment
 //   the signal is both correct and actionable.
 //
+// WHY THE PRESCRIBED COMMAND IS ANCHORED (EI-20097325488507587)
+//   This hook used to prescribe the bare `npm run lint:required-field-strands:typecheck`,
+//   which re-derives its own subject from `git diff HEAD` — a DIFFERENT comparison from
+//   the one the hook just made, and one that decays within minutes. Measured: with the
+//   author's file already swept into HEAD and one peer file left dirty, it printed
+//   `✓ no required fields added to exported types (1 file(s) examined vs HEAD)` naming
+//   only the peer's file, and exited 0 — a true statement about a file the author never
+//   opened, standing in for the answer they asked for. The nudge fired correctly and
+//   then handed over a verification that silently verified nothing.
+//
+//   So the command carries BOTH pins: `--base <the sha this hook diffed against>` and
+//   `--files=<the file this hook observed>`. It therefore reproduces THIS hook's exact
+//   comparison and keeps working after git-sync commits the edit. The same resolved ref
+//   is used for the hook's own `git show`, so the two cannot drift apart even if a sweep
+//   lands mid-hook. If the ref cannot be resolved we fall back to `--files=` alone, which
+//   still cannot go falsely green: the detector reports NOT CHECKED (exit 2) when the
+//   named file turns out byte-identical to the base.
+//
 // CONTRACT
 //   - ADVISORY ONLY. PostToolUse cannot block, and must not try to: adding a
 //     required field is usually CORRECT and usually accompanied by updated call
@@ -120,8 +138,14 @@ export function findRepoRoot(filePath, exists = existsSync) {
   }
 }
 
-/** The advisory text for a set of findings. Exported so the test asserts the real string. */
-export function formatNudge(relPath, added) {
+/**
+ * The advisory text for a set of findings. Exported so the test asserts the real string.
+ *
+ * `baseSha` is the ref this hook actually diffed against. Passing it turns the
+ * prescribed command into a reproduction of THIS comparison rather than a fresh,
+ * decaying one — see "WHY THE PRESCRIBED COMMAND IS ANCHORED" in the header.
+ */
+export function formatNudge(relPath, added, { baseSha = null } = {}) {
   const lines = [
     '⚠ REQUIRED-FIELD ADDITION — you may have just stranded construction sites you cannot see.',
     `  ${relPath}`,
@@ -136,8 +160,22 @@ export function formatNudge(relPath, added) {
     '  files test:affected will not select and vitest cannot see. The first thing that',
     '  otherwise notices is the fleet green-checkpoint, hours from now, for everyone.',
     '',
-    '  Confirm now, while it is still your turn:',
-    '    npm run lint:required-field-strands:typecheck',
+  );
+  if (baseSha) {
+    lines.push(
+      '  Confirm now — this reproduces the exact comparison this hook just made, and (unlike',
+      '  the bare `npm run lint:required-field-strands`) stays correct after git-sync commits',
+      '  your edit and drops it out of `git diff HEAD`:',
+      `    node scripts/check-required-field-strands.mjs --typecheck --base ${baseSha} --files=${relPath}`,
+    );
+  } else {
+    lines.push(
+      '  Confirm now, while it is still your turn (--files pins YOUR file: without it this',
+      '  goes green about peers’ files once git-sync commits your edit):',
+      `    node scripts/check-required-field-strands.mjs --typecheck --files=${relPath}`,
+    );
+  }
+  lines.push(
     '',
     '  Adding a required field is usually CORRECT — this is a prompt to verify, not a',
     '  verdict. Do NOT make the field optional to silence errors: that reintroduces the',
@@ -157,6 +195,7 @@ export async function nudgeFor(filePath, deps = {}) {
     sizeOf = (p) => statSync(p).size,
     showHead = defaultShowHead,
     loadDiffer = defaultLoadDiffer,
+    resolveBase = defaultResolveBase,
   } = deps;
 
   if (!isCandidateFile(filePath)) return null;
@@ -168,8 +207,15 @@ export async function nudgeFor(filePath, deps = {}) {
   if (!root) return null;
 
   const relPath = relative(root, abs).split(sep).join('/');
-  // No HEAD version => a new file => no pre-existing construction sites to strand.
-  const beforeText = showHead(root, relPath);
+  // Pin the ref ONCE, and use that same pin for the comparison below AND for the command
+  // we prescribe. Resolving it separately would leave a window in which git-sync commits
+  // between the two, so the command would name a base that already contains the edit and
+  // report NOT CHECKED. Symbolic 'HEAD' is the fail-open fallback: it preserves the
+  // pre-existing behaviour exactly, and only costs the anchoring in the prescription.
+  const baseSha = resolveBase(root);
+  const baseRef = baseSha ?? 'HEAD';
+  // No version at the base => a new file => no pre-existing construction sites to strand.
+  const beforeText = showHead(root, relPath, baseRef);
   if (beforeText === null) return null;
 
   const afterText = readFile(abs);
@@ -180,12 +226,30 @@ export async function nudgeFor(filePath, deps = {}) {
 
   const added = diffRequiredAdditions(beforeText, afterText, relPath);
   if (!added || !added.length) return null;
-  return formatNudge(relPath, added);
+  return formatNudge(relPath, added, { baseSha });
 }
 
-function defaultShowHead(root, relPath) {
+/**
+ * The commit the working tree is being compared against — baked into the prescribed
+ * command so it survives git-sync. Fails open to null (detached/empty repo, no git),
+ * which degrades the prescription to `--files=` alone rather than losing the nudge.
+ */
+function defaultResolveBase(root) {
   try {
-    return execFileSync('git', ['show', `HEAD:${relPath}`], {
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultShowHead(root, relPath, ref = 'HEAD') {
+  try {
+    return execFileSync('git', ['show', `${ref}:${relPath}`], {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -261,9 +325,40 @@ async function selfTest() {
     ...base,
     showHead: () => 'export interface Foo { id: string }',
     readFile: () => 'export interface Foo { id: string; name: string }',
+    resolveBase: () => 'abc1234',
   });
   check('fires on a required-field addition', !!hit && hit.includes('Foo.name'));
-  check('names the remediation command', !!hit && hit.includes('lint:required-field-strands:typecheck'));
+  check('names the remediation command', !!hit && hit.includes('check-required-field-strands.mjs --typecheck'));
+  // EI-20097325488507587: the command must be pinned to BOTH the base this hook diffed
+  // against and the file it observed. Unpinned, it re-derives its own subject from
+  // `git diff HEAD` and goes green about peers' files once git-sync sweeps the edit.
+  check('pins the base commit it actually diffed against', !!hit && hit.includes('--base abc1234'));
+  check('pins the file it observed', !!hit && hit.includes('--files=a.ts'));
+
+  // The SAME pin must drive the comparison, or the prescribed command reproduces a
+  // different diff than the one that produced the finding.
+  let seenRef = null;
+  await nudgeFor('/repo/packages/x/a.ts', {
+    ...base,
+    showHead: (_root, _rel, ref) => {
+      seenRef = ref;
+      return 'export interface Foo { id: string }';
+    },
+    readFile: () => 'export interface Foo { id: string; name: string }',
+    resolveBase: () => 'deadbee',
+  });
+  check('diffs against the same ref it prescribes', seenRef === 'deadbee');
+
+  // Unresolvable base => still never the unpinned form; --files= alone cannot go
+  // falsely green (the detector reports NOT CHECKED when the file matches its base).
+  const noBase = await nudgeFor('/repo/packages/x/a.ts', {
+    ...base,
+    showHead: () => 'export interface Foo { id: string }',
+    readFile: () => 'export interface Foo { id: string; name: string }',
+    resolveBase: () => null,
+  });
+  check('degrades to --files= when the base cannot be resolved', !!noBase && noBase.includes('--files=a.ts'));
+  check('never prescribes the unpinned form', !!noBase && !noBase.includes('npm run lint:required-field-strands:typecheck'));
 
   // Unchanged content must never fire (the common case: an edit elsewhere in the file).
   const same = await nudgeFor('/repo/packages/x/a.ts', {
