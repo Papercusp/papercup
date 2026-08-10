@@ -55,6 +55,37 @@ vi.mock('nuqs', async () => {
   };
 });
 
+/* Select: a native <select>, the same stand-in the sibling suites use
+   (PlansListPanel, AdvChatPanel). Radix renders its items into a portal that
+   exists only while the menu is OPEN, so the option set is unassertable from
+   the closed control — and the option set is exactly what D-011 is about.
+   Deliberately renders ONLY the options it is handed: the component supplies
+   its own "system default" entry, so a placeholder option added here would
+   double it and hide a component that had stopped offering one. */
+vi.mock('@/app/harness/Select', () => ({
+  Select: ({
+    id,
+    value,
+    onChange,
+    options,
+    disabled,
+  }: {
+    id?: string;
+    value: string;
+    onChange: (value: string) => void;
+    options: Array<{ value: string; label: string }>;
+    disabled?: boolean;
+  }) => (
+    <select id={id} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  ),
+}));
+
 import { toast } from 'sonner';
 import GoalSettingsSection from './GoalSettingsSection';
 import type { GoalDetailLaunchSettings } from './goal-detail-model';
@@ -246,12 +277,41 @@ describe('GoalSettingsSection — role profiles', () => {
 });
 
 describe('GoalSettingsSection — the option lists come from the server (D-011)', () => {
-  it('offers exactly the agents the payload carried', () => {
+  const agent = () => screen.getByLabelText('Agent') as HTMLSelectElement;
+
+  it('offers exactly the agents the payload carried, plus an explicit unset', () => {
     mount(null);
     open();
-    const sel = screen.getByLabelText('Agent') as HTMLSelectElement;
-    // '' is the "system default" choice — absent, not a pinned value.
-    expect([...sel.options].map((o) => o.value)).toEqual(['', 'claude', 'codex', 'omp']);
+    // The sentinel stands in for '': Radix throws on an Item valued '', and the
+    // wrapper drops such options defensively, so an unset choice travelling as
+    // the empty string would vanish silently.
+    expect([...agent().options].map((o) => o.value)).toEqual([
+      '__system_default__',
+      'claude',
+      'codex',
+      'omp',
+    ]);
+  });
+
+  it('maps the unset choice back to an ABSENT key, not to a pinned sentinel', async () => {
+    // The round-trip that matters: the sentinel must never reach the store, or
+    // the goal would launch pinned to a model literally called
+    // "__system_default__".
+    mount({ defaults: { agent: 'codex' } });
+    open();
+    fireEvent.change(agent(), { target: { value: '__system_default__' } });
+    fireEvent.click(saveBtn());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(writtenBody().launchSettings).toBeNull();
+  });
+
+  it('pins the agent the owner picked', async () => {
+    mount(null);
+    open();
+    fireEvent.change(agent(), { target: { value: 'codex' } });
+    fireEvent.click(saveBtn());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(writtenBody().launchSettings).toEqual({ defaults: { agent: 'codex' } });
   });
 
   it('falls back to a text input when the payload carried no options', () => {
