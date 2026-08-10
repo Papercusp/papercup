@@ -40,7 +40,11 @@ vi.mock('../../events/await/store', () => ({
 // unit tests never touch real PG, and so the block below can assert exactly what was written.
 const getPresenceM = vi.hoisted(() => vi.fn(async () => null as unknown));
 const writePresenceM = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('../coordination/presence', () => ({
+// PARTIAL mock, deliberately: this module also exports PRESENCE_STALE_MS, which
+// presence-wakeability.ts -> fleet-roster.ts imports transitively. A whole-module factory
+// drops it and the mock fails at import time rather than in a test.
+vi.mock('../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   getPresence: getPresenceM,
   writePresence: writePresenceM,
 }));
@@ -325,5 +329,82 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
       getNextTool.handler({ harness: 'papercusp' } as never, {} as never),
     ).rejects.toThrow(/pool exhausted: boom/);
     warnSpy.mockRestore();
+  });
+});
+
+/**
+ * EI-20099413453852234 — claiming an item must also DECLARE it.
+ *
+ * get_next claimed an item and left the caller's declared intent untouched, so presence held a
+ * live claim beside a stale intent and computed `intentDivergent: true` for an agent that was
+ * actively mid-implementation. Peers use that signal to judge whether a claim is real: one read
+ * it and offered to take an item out from under its holder, mid-fix. An agent in a get_next loop
+ * re-claims every wake, so the intent was stale BY CONSTRUCTION unless it remembered a second,
+ * optional call each time.
+ */
+describe('a successful claim declares the caller intent (EI-20099413453852234)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    getNextM.mockResolvedValue({ workItem: { id: 'WI-4242', title: 'Fix the flaky thing' } });
+    getPresenceM.mockResolvedValue(null);
+    writePresenceM.mockResolvedValue(undefined);
+  });
+
+  it('writes an intent naming the claimed item', async () => {
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    expect(writePresenceM).toHaveBeenCalledTimes(1);
+    expect(writePresenceM.mock.calls[0]![1]).toMatchObject({
+      intent: 'WI-4242: Fix the flaky thing',
+    });
+  });
+
+  // THE REGRESSION CASE, and the reason this is a read-modify-write rather than a bare write.
+  // PgPresenceStore's ON CONFLICT sets `current_plan_slug = EXCLUDED.current_plan_slug` — a BARE
+  // assignment — so a write that omits it CLEARS it. Without this test a naive implementation
+  // passes the one above while silently wiping the declared plan slug of every self-pulling
+  // agent on every claim: strictly worse than the stale intent it set out to fix.
+  it('CARRIES the existing currentPlanSlug — a claim must never wipe the declared plan', async () => {
+    getPresenceM.mockResolvedValue({ intent: 'something older', currentPlanSlug: 'my-plan-slug' });
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    expect(writePresenceM.mock.calls[0]![1]).toMatchObject({ currentPlanSlug: 'my-plan-slug' });
+  });
+
+  it('does not clobber an intent the caller already declared for THIS item', async () => {
+    getPresenceM.mockResolvedValue({
+      intent: 'WI-4242: my own richer wording, deliberately set',
+      currentPlanSlug: null,
+    });
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    expect(writePresenceM).not.toHaveBeenCalled();
+  });
+
+  // The claim is COMMITTED before this runs, so losing the caller's result over a presence
+  // hiccup would be far worse than a stale intent. Both legs must fail soft.
+  it('still returns the claim when the presence write throws', async () => {
+    writePresenceM.mockRejectedValue(new Error('presence pool exhausted'));
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    expect(JSON.parse(out.content[0]!.text)).toMatchObject({ workItem: { id: 'WI-4242' } });
+  });
+
+  it('still returns the claim when the presence READ throws', async () => {
+    getPresenceM.mockRejectedValue(new Error('presence read failed'));
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    expect(JSON.parse(out.content[0]!.text)).toMatchObject({ workItem: { id: 'WI-4242' } });
+  });
+
+  it('declares nothing on a MISS — an empty pull leaves the existing intent alone', async () => {
+    getNextM.mockResolvedValue(null);
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    expect(writePresenceM).not.toHaveBeenCalled();
   });
 });
