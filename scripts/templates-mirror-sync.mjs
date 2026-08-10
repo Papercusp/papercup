@@ -116,8 +116,15 @@ export async function buildExpected(root = ROOT, vendored = VENDORED) {
     for (const rel of await walk(join(pkgDir, 'src'), { exclude: (r) => r.endsWith('.test.ts') })) {
       expected.set(`${pkg}/src/${rel}`, join(pkgDir, 'src', rel));
     }
-    expected.set(`${pkg}/package.json`, join(pkgDir, 'package.json'));
-    expected.set(`${pkg}/tsconfig.json`, join(pkgDir, 'tsconfig.json'));
+    // Only expect a top-level file the canonical package ACTUALLY has. tsconfig.json
+    // used to be added unconditionally, which was wrong in both directions for
+    // pot-app-seam (which ships none): `mirror:check` reported a permanent
+    // `missing pot-app-seam/tsconfig.json` that no push could ever satisfy, and
+    // `--push` then threw ENOENT out of fs.copyFile mid-apply — breaking the one
+    // command the templates README documents for repairing the mirror.
+    for (const meta of ['package.json', 'tsconfig.json']) {
+      if (await exists(join(pkgDir, meta))) expected.set(`${pkg}/${meta}`, join(pkgDir, meta));
+    }
   }
 
   return { expected, templateIds };

@@ -25,10 +25,19 @@
  *     BUNDLE puts inside the user's app — i.e. an `@papercusp/*` import must have
  *     a vendored package dir inside that same template, since only `<ref>/` is
  *     overlaid. A copy at libs/generic/ does NOT satisfy this: it reaches the user
- *     only via source.tar.zst, which macOS builds do not ship.
- *  2. Each vendored copy is byte-identical to its canonical libs/generic source.
- *     Vendoring buys platform-independence at the cost of duplication; this is the
- *     price paid so the duplication cannot drift silently (plan D-001).
+ *     only via source.tar.zst, and ONE of the two macOS build paths ships no such
+ *     archive by default — `build-mac-cross.sh` defaults PAPERCUSP_STAGE_SOURCE to
+ *     0, while `mac-vm-build.sh` and `stage-source-tree.sh` both default it to 1.
+ *     (This sentence previously read "which macOS builds do not ship", a claim plan
+ *     decision D-003 retracted and D-005 re-measured per-path. The vendoring
+ *     conclusion is unchanged: the `<ref>/`-only overlay above is the load-bearing
+ *     reason, and it holds on every platform.)
+ *  2. Each vendored copy is byte-identical to its canonical libs/generic source,
+ *     IN BOTH DIRECTIONS — a file present in canonical but missing from the vendored
+ *     copy is drift too, and the one this guard used to be blind to (see
+ *     findVendorDrift). Vendoring buys platform-independence at the cost of
+ *     duplication; this is the price paid so the duplication cannot drift silently
+ *     (plan D-001).
  */
 import {
   existsSync,
@@ -94,38 +103,87 @@ function listCheckFiles(ref: string): string[] {
 /**
  * Every non-relative, non-`node:` import specifier in a TS source.
  *
- * Matches on the `from "<spec>"` tail rather than on `import` + specifier, so a
- * MULTILINE named import (`import {\n  A,\n  B,\n} from "pkg";`) is caught. That
- * shape is exactly what hid the template-kit import from a hand grep during the
- * audit that produced this file — a single-line `grep "^import .*@papercusp"`
- * reported the checks as import-clean while three of them imported the kit.
+ * FOUR shapes, because a module can enter a file four ways and missing any one of
+ * them fails in the SILENT direction — an unvendored import reported as clean:
+ *
+ *   1. `from "<spec>"`      — static named/default, INCLUDING the multiline form
+ *      (`import {\n  A,\n  B,\n} from "pkg";`). That shape is exactly what hid the
+ *      template-kit import from a hand grep during the audit that produced this
+ *      file: a single-line `grep "^import .*@papercusp"` reported the checks as
+ *      import-clean while three of them imported the kit.
+ *   2. `import "<spec>"`    — SIDE-EFFECT import, which has no `from` at all and so
+ *      was invisible to the original `from`-only matcher.
+ *   3. `import("<spec>")`   — dynamic import with a literal specifier.
+ *   4. `require("<spec>")`  — CJS.
+ *
+ * A dynamic import whose argument is an EXPRESSION rather than a string literal
+ * (`await import(pathToFileURL(p).href)`, as in the ops-pots seam check) is
+ * deliberately not matched: it resolves at runtime against a path inside the user's
+ * app, so it is not a package dependency this guard can or should adjudicate.
  */
 export function externalImportsOf(source: string): string[] {
   const out = new Set<string>();
-  const re = /\bfrom\s+["']([^"']+)["']/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(source)) !== null) {
-    const spec = m[1];
-    if (spec.startsWith('node:') || spec.startsWith('.') || spec.startsWith('/')) continue;
-    out.add(spec);
+  const patterns = [
+    /\bfrom\s+["']([^"']+)["']/g,
+    /\bimport\s+["']([^"']+)["']/g,
+    /\bimport\s*\(\s*["']([^"']+)["']/g,
+    /\brequire\s*\(\s*["']([^"']+)["']/g,
+  ];
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(source)) !== null) {
+      const spec = m[1];
+      if (spec.startsWith('node:') || spec.startsWith('.') || spec.startsWith('/')) continue;
+      out.add(spec);
+    }
   }
   return [...out].sort();
 }
 
-/** `@papercusp/template-kit` -> `template-kit` (the dir name a vendored copy uses). */
+/**
+ * `@papercusp/template-kit` -> `template-kit` (the dir name a vendored copy uses).
+ *
+ * Takes the PACKAGE NAME only, so a subpath specifier resolves to the same vendored
+ * dir as its root: `@papercusp/template-kit/catalog` -> `template-kit`, not
+ * `template-kit/catalog` (which named no directory and so raised a false violation
+ * against a package that WAS correctly vendored).
+ */
 function vendorDirName(spec: string): string {
-  return spec.startsWith('@') ? spec.split('/').slice(1).join('/') : spec;
+  const parts = spec.split('/');
+  return spec.startsWith('@') ? (parts[1] ?? spec) : parts[0];
 }
 
-/** Every file under `dir`, as paths relative to `dir`. */
+/**
+ * Every file under `dir`, as paths relative to `dir`.
+ *
+ * Skips `node_modules` and dot-dirs. This mattered the moment the drift check below
+ * became two-directional: a VENDORED copy has no node_modules, so the one-way walk
+ * never met one, but a CANONICAL libs/generic package usually does — walking it
+ * would compare thousands of installed files and time the guard out.
+ */
 function filesUnder(dir: string, base = dir): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
+    if (entry === 'node_modules' || entry.startsWith('.')) continue;
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) out.push(...filesUnder(full, base));
     else out.push(relative(base, full));
   }
   return out.sort();
+}
+
+/**
+ * Files that legitimately exist ONLY in the canonical package — the vendored copy
+ * ships runtime code and its manifest, not the dev harness. Anything NOT matched
+ * here must appear in both copies (see findVendorDrift's second direction).
+ *
+ * Kept deliberately small and explicit rather than a broad glob: every entry is a
+ * hole in the symmetry check, so a new one should be an argued decision, not a
+ * pattern that quietly swallows a missing runtime file.
+ */
+export function isVendorDevOnly(rel: string): boolean {
+  const base = rel.split(/[\\/]/).pop() ?? rel;
+  return base.endsWith('.test.ts') || base === 'vitest.config.ts' || base === 'README.md';
 }
 
 /**
@@ -174,6 +232,7 @@ export function findVendorDrift(templatesDir: string, libsGenericDir: string): s
         drift.push(`templates/${ref}/${entry} is vendored but has no canonical source at libs/generic/${entry}`);
         continue;
       }
+      // Direction 1: everything IN the vendored copy matches canonical.
       for (const rel of filesUnder(vendored)) {
         const b = join(canonical, rel);
         if (!existsSync(b)) {
@@ -182,6 +241,21 @@ export function findVendorDrift(templatesDir: string, libsGenericDir: string): s
         }
         if (readFileSync(join(vendored, rel), 'utf8') !== readFileSync(b, 'utf8')) {
           drift.push(`templates/${ref}/${entry}/${rel} differs from libs/generic/${entry}/${rel}`);
+        }
+      }
+      // Direction 2: everything canonical ships (bar the dev harness) is PRESENT in
+      // the vendored copy. Without this the guard is blind to the one drift that
+      // actually breaks a user: canonical gains src/new-helper.ts, index.ts is
+      // correctly re-copied so direction 1 stays silent, and the helper it imports
+      // was never vendored — so the materialized app fails to resolve while this
+      // guard reports green.
+      for (const rel of filesUnder(canonical)) {
+        if (isVendorDevOnly(rel)) continue;
+        if (!existsSync(join(vendored, rel))) {
+          drift.push(
+            `libs/generic/${entry}/${rel} is missing from the vendored copy at templates/${ref}/${entry}/ — ` +
+              `only <ref>/ is overlaid into a materialized app, so a user cannot resolve it`,
+          );
         }
       }
     }
@@ -208,6 +282,30 @@ describe('template bundle integrity — a materialized app can run the checks it
   it('extracts a MULTILINE named import (the shape that hid the original break)', () => {
     const src = 'import {\n  COMPONENT_CATALOG,\n  composeTemplates,\n} from "@papercusp/template-kit";\n';
     expect(externalImportsOf(src)).toEqual(['@papercusp/template-kit']);
+  });
+
+  it('extracts the three non-`from` entry shapes (side-effect, dynamic, require)', () => {
+    // Each of these used to be invisible to the `from`-only matcher, and each fails
+    // in the silent direction: an unvendored package reported as clean.
+    expect(externalImportsOf('import "@papercusp/side-effect";\n')).toEqual(['@papercusp/side-effect']);
+    expect(externalImportsOf('const m = await import("@papercusp/dynamic");\n')).toEqual([
+      '@papercusp/dynamic',
+    ]);
+    expect(externalImportsOf('const m = require("@papercusp/cjs");\n')).toEqual(['@papercusp/cjs']);
+  });
+
+  it('ignores a dynamic import whose specifier is an expression, not a literal', () => {
+    // templates/papercusp-ops-pots/checks/seam-round-trip.test.ts does exactly this:
+    // the target is a path inside the user's app, not a package dependency.
+    expect(externalImportsOf('await import(pathToFileURL(inApp(p)).href);\n')).toEqual([]);
+  });
+
+  it('maps a scoped SUBPATH specifier to the package dir, not a phantom nested dir', () => {
+    // `@papercusp/template-kit/catalog` must look for templates/<ref>/template-kit/,
+    // never templates/<ref>/template-kit/catalog/ — which named no directory and so
+    // raised a violation against a package that WAS correctly vendored.
+    const violations = findUnvendoredImports(TEMPLATES_DIR);
+    expect(violations.filter((v) => v.includes('/catalog/'))).toEqual([]);
   });
 
   it('every non-node import in a template check is vendored INSIDE that template or is a public devDep', () => {
@@ -288,6 +386,24 @@ describe('template bundle integrity — the guard itself fails when it should', 
       '{"name":"@papercusp/demo-kit","main":"./src/index.ts"}',
     );
     writeFileSync(join(templates, 'drifted', 'demo-kit', 'src', 'index.ts'), 'export const thing = 999; // DRIFT\n');
+
+    // BROKEN C: every file the vendored copy HAS matches canonical byte-for-byte —
+    // so direction 1 is silent — but canonical ships a runtime file the vendored
+    // copy never received. This is the shape that reaches a user as an unresolvable
+    // import, and the shape the one-directional check could not see.
+    mkdirSync(join(templates, 'incomplete', 'checks'), { recursive: true });
+    mkdirSync(join(templates, 'incomplete', 'partial-kit', 'src'), { recursive: true });
+    mkdirSync(join(libsGeneric, 'partial-kit', 'src'), { recursive: true });
+    writeFileSync(join(templates, 'incomplete', 'checks', 'd.test.ts'), 'import { it } from "vitest";\n');
+    for (const base of [join(templates, 'incomplete', 'partial-kit'), join(libsGeneric, 'partial-kit')]) {
+      writeFileSync(join(base, 'package.json'), '{"name":"@papercusp/partial-kit","main":"./src/index.ts"}');
+      writeFileSync(join(base, 'src', 'index.ts'), 'export { helper } from "./helper";\n');
+    }
+    // canonical-only: the helper index.ts imports, plus dev-harness files that are
+    // legitimately vendored-out and must NOT be reported.
+    writeFileSync(join(libsGeneric, 'partial-kit', 'src', 'helper.ts'), 'export const helper = 1;\n');
+    writeFileSync(join(libsGeneric, 'partial-kit', 'src', 'index.test.ts'), 'import { it } from "vitest";\n');
+    writeFileSync(join(libsGeneric, 'partial-kit', 'README.md'), '# partial-kit\n');
   });
 
   afterAll(() => rmSync(fixture, { recursive: true, force: true }));
@@ -310,5 +426,22 @@ describe('template bundle integrity — the guard itself fails when it should', 
 
   it('does NOT treat `vitest`/`yaml` as needing vendoring', () => {
     expect(findUnvendoredImports(templates).some((r) => r.includes('"vitest"'))).toBe(false);
+  });
+
+  it('FIRES on a canonical runtime file missing from the vendored copy (direction 2)', () => {
+    const rows = findVendorDrift(templates, libsGeneric);
+    expect(
+      rows.some((r) => r.includes('partial-kit/src/helper.ts') && r.includes('missing from the vendored copy')),
+      `direction-2 drift not reported. rows:\n${rows.join('\n')}`,
+    ).toBe(true);
+  });
+
+  it('does NOT report the dev harness (tests, vitest config, README) as missing', () => {
+    // The exclusion list is a hole in the symmetry check, so prove it is exactly the
+    // intended size: these three are absent from `incomplete`'s vendored copy on
+    // purpose and must stay silent, or every vendored package reports permanent drift.
+    const rows = findVendorDrift(templates, libsGeneric).filter((r) => r.includes('partial-kit'));
+    expect(rows.some((r) => r.includes('index.test.ts'))).toBe(false);
+    expect(rows.some((r) => r.includes('README.md'))).toBe(false);
   });
 });
