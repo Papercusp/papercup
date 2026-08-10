@@ -279,7 +279,13 @@ export default defineTool({
         }
         const dryRun = it.dryRun ?? false;
         const result = await runToolOrchestration(recipe.script, {
-          ctx,
+          // EI-20066912585022608: a recipe script consumes tool results as JS VALUES,
+          // exactly like the code:run script it was captured FROM — so it has to be
+          // told the same thing, or a handler that renders text for a model (and
+          // structure for a script) hands a recipe replay the raw string. That would
+          // silently change the shape of a script that was authored and verified under
+          // code:run: `r.output` verified fine, then reads undefined on every replay.
+          ctx: { ...ctx, codeMode: true },
           deps: PROJECTED_DEPS,
           tools: all,
           allowed,
