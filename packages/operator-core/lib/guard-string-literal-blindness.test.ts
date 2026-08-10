@@ -421,7 +421,15 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
   const SCANS_UNMASKED_SOURCE = new Set([
     'check-constant-conditional.mjs',
     'check-env-feature-gates.mjs',
-    'check-explicit-presence.mjs',
+    // check-explicit-presence.mjs was REMOVED here on 2026-08-10 (WI-37717) because it now
+    // imports stripCommentsOnly, which this file's classifier ranks as `shared`. Read that as
+    // a PARTIAL mask, not a full one: it deliberately still text-matches against unmasked
+    // STRINGS, because its corpus includes generated runner source living inside template
+    // literals (admin-test-suites.ts) that carries the real incident shape. Measured over
+    // 3,934 files: masking comments moved the corpus verdict by nothing (62 -> 62) while
+    // ALSO masking strings dropped 8 rows, every one real code and not one a phantom. So it
+    // cannot pass probeStringLiteralBlindness and is correctly absent from the cases table
+    // above — "migrate it to the full stripper" is a REGRESSION, and its own header says so.
     'check-generic-first.mjs',
     'check-github-identity-terms.mjs',
     'check-migration-fixture-drift.mjs',
@@ -430,7 +438,14 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     'check-no-control-bytes.mjs',
     'check-no-identity-literals.mjs',
     'check-no-nul-in-source.mjs',
-    'check-no-restart-imports.mjs',
+    // check-no-restart-imports.mjs was REMOVED here on 2026-08-10 (WI-37717): it now imports
+    // stripCommentsOnly, which this file's classifier ranks as `shared`. Same PARTIAL-mask
+    // shape as check-explicit-presence above — it deliberately still matches unmasked STRINGS,
+    // because its stated miss-class is "bare config strings" (package.json deps, tsconfig path
+    // maps, transpilePackages arrays), which ARE string literals. Masking strings would blind
+    // it to its PRIMARY target, so it cannot pass probeStringLiteralBlindness and is correctly
+    // absent from the cases table. Its own --self-test pins that: the four STRING positive
+    // controls fail loudly if anyone swaps in the full stripper.
     'check-okf-conformance.mjs',
     'check-scope-defaults.mjs',
     'check-shell-syntax.mjs',

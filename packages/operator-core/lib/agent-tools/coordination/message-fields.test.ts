@@ -23,6 +23,8 @@ import {
   ENVELOPE_ONLY_FIELDS,
   renderAuthoredFieldsSuffix,
   projectAuthoredFields,
+  YOU_MAY_NOT_KNOW_SHAPE_MESSAGE,
+  COULD_NOT_DETERMINE_SHAPE_MESSAGE,
 } from './message-fields';
 import { DERIVED_COUPLING_RELATIONS } from '../../coord/couplings';
 
@@ -527,6 +529,94 @@ describe('the envelope/section split (D-064) — enforced, not documented', () =
 
   it('rejects an unknown key outright (strict)', () => {
     expect(messageSectionSchema.safeParse({ text: 'a', vibes: 'good' }).success).toBe(false);
+  });
+});
+
+describe('structured section fields refuse a wrong shape by TEACHING it (EI-20021148706594627)', () => {
+  const issuesOf = (input: unknown, field: 'youMayNotKnow' | 'couldNotDetermine') => {
+    const r = messageSectionSchema.safeParse({ text: 'a', [field]: input });
+    return r.success ? '' : r.error.issues.map((i) => i.message).join(' | ');
+  };
+
+  // The three shapes measured live on 2026-08-10, each of which previously cost its own
+  // round-trip because zod disclosed exactly one layer at a time.
+  const wrongShapes: Array<[string, unknown]> = [
+    ['a bare string', 'some prose'],
+    ['an array of strings', ['some prose']],
+    ['an array of the WRONG object', [{ text: 'some prose' }]],
+  ];
+
+  describe.each(wrongShapes)('youMayNotKnow given %s', (_label, input) => {
+    it('refuses it', () => {
+      expect(messageSectionSchema.safeParse({ text: 'a', youMayNotKnow: input }).success).toBe(
+        false,
+      );
+    });
+
+    it('names the member shape in the FIRST error', () => {
+      expect(issuesOf(input, 'youMayNotKnow')).toContain(YOU_MAY_NOT_KNOW_SHAPE_MESSAGE);
+    });
+  });
+
+  describe.each(wrongShapes)('couldNotDetermine given %s', (_label, input) => {
+    it('refuses it', () => {
+      expect(messageSectionSchema.safeParse({ text: 'a', couldNotDetermine: input }).success).toBe(
+        false,
+      );
+    });
+
+    it('names the member shape in the FIRST error', () => {
+      expect(issuesOf(input, 'couldNotDetermine')).toContain(COULD_NOT_DETERMINE_SHAPE_MESSAGE);
+    });
+  });
+
+  it('still accepts the correct shape for both fields', () => {
+    expect(
+      messageSectionSchema.safeParse({
+        text: 'a',
+        youMayNotKnow: [{ ref: 'WI-1234', provenance: 'authored' }],
+        couldNotDetermine: [{ what: 'whether the next candidate carries the fix', note: 'n' }],
+      }).success,
+    ).toBe(true);
+  });
+
+  /**
+   * THE RULING THIS PINS (owner 2026-07-28, interactive, for `body`; applied here):
+   * a bare string must NOT be sugared into `{ ref, provenance: 'authored' }`. Six
+   * agents have proposed exactly that sugar, so this test exists to make the next
+   * such "fix" fail loudly rather than silently collapse `provenance` to the one
+   * value that can never be refuted (D-040 / D-070 reinstated that split twice).
+   */
+  it('does NOT silently normalise a bare string into an entry (the sugar is the bug)', () => {
+    const r = messageSectionSchema.safeParse({ text: 'a', youMayNotKnow: 'WI-1234' });
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    // and it must not have been coerced on the way to failing
+    expect(JSON.stringify(r.error.issues)).not.toContain('"provenance":"authored"');
+  });
+
+  it('reports the length cap in ENTRIES, since `maxItems: 20` has been misread as characters', () => {
+    const tooMany = Array.from({ length: 21 }, (_, i) => ({
+      ref: `WI-${i}`,
+      provenance: 'authored' as const,
+    }));
+    const msg = issuesOf(tooMany, 'youMayNotKnow');
+    expect(msg).toMatch(/at most 20 ENTRIES/);
+    expect(msg).toMatch(/not on the length of any string/);
+  });
+
+  /**
+   * CONTROL: the guard could pass while teaching nothing — if the message stopped
+   * naming the required keys, every assertion above would still be green because
+   * they only check that SOME shared constant came back.
+   */
+  it('CONTROL: the taught message actually names the required keys', () => {
+    expect(YOU_MAY_NOT_KNOW_SHAPE_MESSAGE).toMatch(/\bref\b/);
+    expect(YOU_MAY_NOT_KNOW_SHAPE_MESSAGE).toMatch(/\bprovenance\b/);
+    expect(YOU_MAY_NOT_KNOW_SHAPE_MESSAGE).toMatch(/computed/);
+    expect(YOU_MAY_NOT_KNOW_SHAPE_MESSAGE).toMatch(/authored/);
+    expect(COULD_NOT_DETERMINE_SHAPE_MESSAGE).toMatch(/\bwhat\b/);
+    expect(COULD_NOT_DETERMINE_SHAPE_MESSAGE).toMatch(/\bnote\b/);
   });
 });
 

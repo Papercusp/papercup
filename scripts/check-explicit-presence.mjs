@@ -51,6 +51,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listTrackedFiles, describeUnscanned } from './lib/tracked-files.mjs';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -120,8 +121,36 @@ export function analyzeForExplicitPresence({ path, text }) {
   if (/\.(test|integration\.test|spec)\.ts$/.test(path)) return [];
   if (path.endsWith('.d.ts')) return [];
 
-  const lines = text.split('\n');
-  const hasIpcMarker = IPC_MARKER_RE.test(text);
+  // COMMENTS ARE MASKED; STRINGS ARE DELIBERATELY NOT. Both halves are measured, and the
+  // asymmetry is the whole point (2026-08-10, WI-37717):
+  //
+  //   * Comments must go. `lineIsExcluded` below only skips a line whose FIRST character is
+  //     `//` or `*`, and the two tracked-variable assignment regexes run BEFORE that check —
+  //     so `// const payload = JSON.parse(x)` registered `payload` as a parsed-boundary
+  //     variable and then flagged an unrelated REAL line further down. That phantom is the
+  //     worst shape there is: the reported line is genuine code, so triage looks legitimate
+  //     and the bogus tracking that caused it is invisible at the reported location.
+  //
+  //   * Strings must STAY. This guard's corpus deliberately includes source that lives inside
+  //     template literals — `admin-test-suites.ts` builds a runner script that really does
+  //     `JSON.parse(...)` then reads `payload.n || 0`, and that generated code carries the
+  //     exact incident risk this guard exists to catch. Measured over 3,934 tracked .ts/.tsx
+  //     files: stripCommentsOnly changes the corpus verdict by NOTHING (62 -> 62, zero drops,
+  //     zero adds) while stripCommentsAndStrings drops 8 rows, ALL of them real embedded
+  //     code in that one file and NOT ONE of them a phantom. So the full stripper — the
+  //     reflexive "migrate it to the shared masker" fix — is a net REGRESSION here.
+  //
+  // Consequence, stated so nobody "fixes" it later: this guard cannot pass
+  // probeStringLiteralBlindness, whose string-literal and template-literal cases are exactly
+  // the behaviour above. Its SCANS_UNMASKED_SOURCE entry is ACCURATE and intentional.
+  //
+  // stripCommentsOnly blanks with spaces rather than deleting, so it is length-preserving and
+  // every line index below still addresses the raw text — which is why `rawLines` can supply
+  // the snippet while detection runs on the masked copy.
+  const rawLines = text.split('\n');
+  const maskedText = stripCommentsOnly(text, path);
+  const lines = maskedText.split('\n');
+  const hasIpcMarker = IPC_MARKER_RE.test(maskedText);
   const parsedVars = new Map(); // name -> assignment line index
   const sqlRowVars = new Map();
   const hits = [];
@@ -138,7 +167,7 @@ export function analyzeForExplicitPresence({ path, text }) {
     if (DIRECT_JSON_PARSE_CHAIN_RE.test(line)) {
       hits.push({
         line: i + 1,
-        snippet: line.trim().slice(0, 160),
+        snippet: (rawLines[i] ?? line).trim().slice(0, 160),
         reason: 'defaults a field read directly off JSON.parse(...) to a zero value — the udxRelayed/bytesReceived incident shape (WI-5977): absence and a genuine zero/false/empty measurement read identically here.',
       });
       continue;
@@ -152,7 +181,7 @@ export function analyzeForExplicitPresence({ path, text }) {
       if (parsedAt !== undefined && i - parsedAt <= LOOKBACK_LINES) {
         hits.push({
           line: i + 1,
-          snippet: line.trim().slice(0, 160),
+          snippet: (rawLines[i] ?? line).trim().slice(0, 160),
           reason: `defaults a field read on \`${varName}\` (assigned from JSON.parse at line ${parsedAt + 1}) to a zero value — absence and a genuine zero/false/empty measurement read identically here.`,
         });
         continue;
@@ -160,7 +189,7 @@ export function analyzeForExplicitPresence({ path, text }) {
       if (sqlAt !== undefined && i - sqlAt <= LOOKBACK_LINES) {
         hits.push({
           line: i + 1,
-          snippet: line.trim().slice(0, 160),
+          snippet: (rawLines[i] ?? line).trim().slice(0, 160),
           reason: `defaults a field read on \`${varName}\` (a DB row, assigned from a sql-tagged query at line ${sqlAt + 1}) to a zero value — a NULL column and a genuine zero/false/empty value read identically here.`,
         });
         continue;
@@ -170,7 +199,7 @@ export function analyzeForExplicitPresence({ path, text }) {
     if (hasIpcMarker && IPC_PAYLOAD_RISKY_RE.test(line)) {
       hits.push({
         line: i + 1,
-        snippet: line.trim().slice(0, 160),
+        snippet: (rawLines[i] ?? line).trim().slice(0, 160),
         reason: 'defaults an IPC/event payload field read to a zero value — a field the sender never set and a genuine zero/false/empty value read identically here.',
       });
     }
@@ -223,6 +252,47 @@ function selfTest() {
       expect: 0,
       path: 'packages/operator-core/lib/x/e.ts',
       text: "const debugEnabled = config.debug ?? false;\n",
+    },
+
+    // ── COMMENT-PHANTOM REGRESSIONS (WI-37717). Every one of these FIRED before comments
+    // were masked. They are cheap to re-break: deleting the stripCommentsOnly call restores
+    // all four, and nothing else in this suite would notice.
+    {
+      name: 'PHANTOM: the whole risky chain sits in a line comment → not flagged',
+      expect: 0,
+      path: 'packages/operator-core/lib/x/p1.ts',
+      text: '// const n = JSON.parse(raw).count ?? 0;\n',
+    },
+    {
+      name: 'PHANTOM: risky chain in a block comment whose line starts with neither // nor *',
+      expect: 0,
+      path: 'packages/operator-core/lib/x/p2.ts',
+      text: '/* JSON.parse(raw).count ?? 0 */\n',
+    },
+    {
+      name: 'PHANTOM: risky chain in a TRAILING comment after real code → not flagged',
+      expect: 0,
+      path: 'packages/operator-core/lib/x/p3.ts',
+      text: 'const ok = true; // JSON.parse(raw).count ?? 0\n',
+    },
+    {
+      // The nastiest shape: the assignment regexes run BEFORE lineIsExcluded, so a
+      // commented-out assignment poisoned the tracked-variable map and then flagged a REAL
+      // line below it. The reported line is genuine code, so the phantom is invisible there.
+      name: 'PHANTOM: tracked var assigned ONLY inside a comment must not poison tracking',
+      expect: 0,
+      path: 'packages/operator-core/lib/x/p4.ts',
+      text: '// const parsed = JSON.parse(raw);\nconst n = parsed.count ?? 0;\n',
+    },
+    {
+      // The deliberate NON-fix: strings stay live. admin-test-suites.ts embeds a generated
+      // runner script in a template literal that carries the real incident shape; masking
+      // strings would drop 8 such rows and zero phantoms. If someone "fixes" this guard with
+      // stripCommentsAndStrings, THIS case is what fails.
+      name: 'INTENTIONAL: risky shape inside a template literal IS still flagged (generated code)',
+      expect: 1,
+      path: 'packages/operator-core/lib/x/p5.ts',
+      text: 'const script = `\n  const payload = JSON.parse(line);\n  send(payload.n || 0);\n`;\n',
     },
     {
       name: 'boundary present but default is a non-zero sentinel string → not flagged',
