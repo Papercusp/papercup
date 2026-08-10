@@ -77,6 +77,7 @@ import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { probeServiceStart } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
+import { preflightRestartTarget } from './restart-preflight';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { checkGateCollision, isGateSensitiveTarget } from '../../release/gate-collision-guard';
 
@@ -261,6 +262,15 @@ export default defineTool({
       .describe(
         'Restart a gate-sensitive target (embed-sidecar/gateway/bg-host) even though a green-checkpoint run is in flight or imminent. Only pass when the target is genuinely wedged and cannot wait — a restart mid-run can starve the gate into a FALSE red that gets misdiagnosed as a regression.',
       ),
+    /** EI-18661647550414959: restart a target whose tree cannot boot. Only pass when
+     *  the restart is itself the remedy — otherwise this hands you the crash-loop the
+     *  preflight just predicted. */
+    override_boot_integrity: z
+      .boolean()
+      .optional()
+      .describe(
+        "Restart even though the target's tree is missing packages it needs to boot. Only when the restart IS the remedy — otherwise it crash-loops the host.",
+      ),
     /** Short free-text reason, recorded on the audit_log row when a real
      *  restart fires (either enablement route). Optional but encouraged when
      *  using `authorize` in place of the env gate. */
@@ -307,11 +317,22 @@ export default defineTool({
       // here is what prevents the confirm call from being made at all — strictly better than
       // refusing that call afterwards. Read-only; never blocks the dry run.
       const preview = await checkGateCollision(target, args.override_gate_collision === true);
+      // EI-18661647550414959: same reasoning as the gate-collision preview above — the dry
+      // run is where the decision is actually made, so "this tree cannot boot" belongs HERE,
+      // where it costs nothing, not only in the refusal afterwards.
+      const bootPreview = await preflightRestartTarget(target);
       return json({
         ok: true,
         dry_run: true,
         target,
         would_run: restartCmd,
+        boot_integrity: {
+          checked: bootPreview.checked,
+          would_block: !bootPreview.ok,
+          tree: bootPreview.lockRoot,
+          ...(bootPreview.missing.length ? { missing: bootPreview.missing } : {}),
+          ...(bootPreview.reason ? { reason: bootPreview.reason } : {}),
+        },
         ...(isGateSensitiveTarget(target)
           ? { gate_collision: { kind: preview.kind, would_block: preview.blocked, ...preview.detail } }
           : {}),
@@ -362,6 +383,39 @@ export default defineTool({
         restarted: false,
         drained: false,
         note: `Restart REFUSED — the enablement gate is not set, and NOTHING was done: no lock taken, no drain, ${cfg.unit} left running exactly as it was. To actually restart it, re-call with { confirm: true, authorize: true, reason: '<why, ≤300 chars>' } (audited), or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process.`,
+      });
+    }
+
+    // EI-18661647550414959: refuse to restart a host whose tree cannot boot. Placed HERE
+    // deliberately — after the enablement refusal (cheaper still, and no probe) but BEFORE
+    // the gate-collision probe, the cooldown marker and the drain, because this is the one
+    // check that must happen while the target is STILL RUNNING. Once the drain starts we
+    // have already begun disrupting agents for a restart that would only crash-loop.
+    // Refusing here leaves the host up on old-but-working code, which is strictly the best
+    // available end state (cf. the EI-18643120769203916 half-execution defect above).
+    //
+    // Soft block, mirroring override_gate_collision: a genuinely wedged host whose remedy
+    // IS the restart must stay restartable via override_boot_integrity. Fails OPEN — an
+    // unreadable tree reports checked:false and proceeds, and is NEVER treated as clean.
+    const bootIntegrity = await preflightRestartTarget(target);
+    if (!bootIntegrity.ok && args.override_boot_integrity !== true) {
+      return json({
+        ok: false,
+        target,
+        reason: 'boot_integrity_inconsistent',
+        restarted: false,
+        drained: false,
+        boot_integrity: {
+          checked: bootIntegrity.checked,
+          tree: bootIntegrity.lockRoot,
+          missing: bootIntegrity.missing,
+          ...(bootIntegrity.reason ? { skipped: bootIntegrity.reason } : {}),
+        },
+        note:
+          `Restart REFUSED — NOTHING was done: no lock taken, no drain, ${cfg.unit} left running exactly as it was ` +
+          `on its current (working) code. ${bootIntegrity.note} Restarting now would take ${cfg.unit} down and ` +
+          `crash-loop it instead of bringing it back. Fix the tree first, then re-run this call. If the restart is ` +
+          `itself the remedy, re-call with override_boot_integrity:true.`,
       });
     }
 
