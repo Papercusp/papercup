@@ -197,6 +197,9 @@ const firstNonBlank = (lines, a, b) => (lines.slice(a - 1, b).find((l) => l.trim
 
 const sortedRanges = () => [...RANGES].sort((x, y) => x[0] - y[0]);
 
+/** Last line the RANGES bootstrap covers — i.e. the snapshot it was drawn against. */
+export const bootstrapExtent = () => sortedRanges().at(-1)[1];
+
 /**
  * A classification range must never end in the MIDDLE of a block.
  *

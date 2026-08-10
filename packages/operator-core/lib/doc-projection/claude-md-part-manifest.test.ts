@@ -4,7 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error — .mjs generator, no type declarations by design (it is a scripts/ tool)
-import { buildManifest, rangeBoundaryProblems } from '../../../../scripts/gen-claude-md-manifest.mjs';
+import { buildManifest, extractParts, rangeBoundaryProblems } from '../../../../scripts/gen-claude-md-manifest.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '../../../..');
@@ -122,55 +122,63 @@ type Reanchor = {
 };
 
 describe('re-anchoring carries classification by CONTENT, not by line', () => {
-  // A guard that has never failed is a guard that has not been tested. These run against
-  // synthetic mutants built in memory — the shared CLAUDE.md is never read for a verdict here
-  // and never written at all.
+  // A guard that has never failed is a guard that has not been tested.
   //
-  // The property under test replaced a line-anchored one (WI-37635 / D-011). The old check
-  // refused whenever text MOVED: at the re-anchor it reported 30 drifted ranges while 247 of 252
-  // blocks were byte-identical — a ~6x overstatement, on a file that moves daily.
-  const CLAUDE_MD = readFileSync(resolve(ROOT, 'CLAUDE.md'), 'utf8');
+  // These run against a SYNTHETIC document, never the live CLAUDE.md. That is deliberate and was
+  // learned the expensive way twice: re-anchor mode ignores RANGES entirely, so a synthetic doc
+  // exercises the real property — and an assertion against the shared file is not a test but a
+  // race. The first draft of this very suite asserted `needsReview == []` against live
+  // CLAUDE.md and went red within minutes, because a peer edited the file between the manifest
+  // being regenerated and the suite running. On this tree that is the normal condition, and a
+  // gating test written that way reds the fleet gate daily for no defect at all.
+  //
+  // The property replaced a line-anchored one (WI-37635 / D-011). The old check refused whenever
+  // text MOVED: at the re-anchor it reported 30 drifted ranges while 247 of 252 blocks were
+  // byte-identical — a ~6x overstatement, on a file that moves daily.
+  const DOC = ['rule one', '', 'rule two', '', 'rule three'].join('\n');
+
+  /** A prior manifest over DOC: real blockShas (via the shipped splitter), hand-assigned kinds. */
+  const priorFor = (text: string) => ({
+    parts: (extractParts(text) as Array<{ blockSha: string; partKey: string }>).map((p) => ({
+      partKey: p.partKey,
+      blockSha: p.blockSha,
+      kind: 'invariant',
+      clientScope: ['all'],
+      projectRank: 100,
+      expiring: false,
+    })),
+  });
+  const prior = priorFor(DOC);
 
   it('does NOT fire when blocks merely MOVE', () => {
-    // A peer inserting a paragraph at the top shifts every line in the file. Exactly one block
-    // is new, so exactly one block may need review.
-    const shifted = `An unrelated paragraph a peer added at the very top.\n\n${CLAUDE_MD}`;
-    const { needsReview, departed } = buildManifest(shifted, manifest) as Reanchor;
+    // Inserting a paragraph at the top shifts every line. Exactly one block is new, so exactly
+    // one block may need review — under the old line-anchored check, ALL of them did.
+    const shifted = `a paragraph inserted at the very top\n\n${DOC}`;
+    const { needsReview, departed } = buildManifest(shifted, prior) as Reanchor;
     expect(needsReview.map((n) => n.line)).toEqual([1]);
-    expect(departed).toHaveLength(0);
+    expect(departed).toEqual([]);
   });
 
-  it('FIRES when a classified block is reworded', () => {
-    const NEEDLE = '## Almost all state should be in nuqs';
-    // If the anchor ever stops matching, this control would silently compare the file to
-    // itself and pass while testing nothing — the classic vacuous mutation control.
-    expect(CLAUDE_MD.includes(NEEDLE), `mutation anchor ${JSON.stringify(NEEDLE)} no longer present`).toBe(true);
-    const mutant = CLAUDE_MD.replace(
-      'Prefer `parseAsStringEnum`',
-      'Always prefer `parseAsStringEnum`',
-    );
-    expect(mutant).not.toBe(CLAUDE_MD);
-
-    const { needsReview, departed } = buildManifest(mutant, manifest) as Reanchor;
-    expect(needsReview.length).toBeGreaterThan(0);
-    // and the block it replaced is reported as gone, rather than silently keeping its verdict
-    expect(departed.length).toBeGreaterThan(0);
+  it('FIRES when a classified block is reworded, and reports the old one as departed', () => {
+    const mutant = DOC.replace('rule two', 'rule two, amended');
+    expect(mutant).not.toBe(DOC);
+    const { needsReview, departed } = buildManifest(mutant, prior) as Reanchor;
+    expect(needsReview).toHaveLength(1);
+    expect(departed).toHaveLength(1);
   });
 
   it('leaves a reworded block UNCLASSIFIED rather than inheriting the old verdict', () => {
-    const mutant = CLAUDE_MD.replace('Prefer `parseAsStringEnum`', 'Always prefer `parseAsStringEnum`');
-    const { manifest: rebuilt } = buildManifest(mutant, manifest) as Reanchor;
+    const { manifest: rebuilt } = buildManifest(DOC.replace('rule two', 'rule two, amended'), prior) as Reanchor;
     const unclassified = rebuilt.parts.filter((p) => !p.kind);
-    expect(unclassified.length).toBeGreaterThan(0);
+    expect(unclassified).toHaveLength(1);
     // An unclassified part must never project — that is what stops a silent inherit from
     // pushing unreviewed text into CLAUDE.md.
     for (const p of unclassified) expect(p.clientScope).toEqual([]);
   });
 
-  it('does NOT fire on the unmodified file the manifest was generated from', () => {
-    // The calibration case. Without it, the controls above would also pass if the detector
-    // simply reported everything as needing review.
-    const { needsReview, departed, problems } = buildManifest(CLAUDE_MD, manifest) as Reanchor;
+  it('does NOT fire on the unmodified document (calibration)', () => {
+    // Without this, every control above would also pass against a checker that always fires.
+    const { needsReview, departed, problems } = buildManifest(DOC, prior) as Reanchor;
     expect(problems).toEqual([]);
     expect(needsReview).toEqual([]);
     expect(departed).toEqual([]);
@@ -200,10 +208,16 @@ describe('the RANGES bootstrap may not cut a block in half', () => {
     expect(rangeBoundaryProblems(lines, [[1, 2, 'INV'], [3, 6, 'INV']])).toEqual([]);
   });
 
-  it('holds for the ranges actually shipped', () => {
-    // The regression this exists to prevent, asserted against the real bootstrap data.
-    const snapshot = readFileSync(resolve(ROOT, 'CLAUDE.md'), 'utf8').split('\n');
-    const { problems } = buildManifest(snapshot.join('\n'), null) as Reanchor;
-    expect(problems.filter((p) => /mid-paragraph|fenced code block/.test(p))).toEqual([]);
+  it('ships ranges that tile contiguously from line 1', () => {
+    // Deliberately NOT asserted against live CLAUDE.md. RANGES is pinned to the snapshot it was
+    // drawn on: once the file grows past it, every boundary points at shifted text and the
+    // boundary check reports ~28 phantom cuts. A gating test written that way reds the fleet
+    // gate daily for no defect, which is the trap this suite already documents elsewhere.
+    //
+    // Tiling, unlike the boundary shape, is pure line arithmetic — so a synthetic document of
+    // the right length exercises it for real, with no dependence on the file's content.
+    const synthetic = Array.from({ length: manifestSnapshotLines }, (_, i) => `line ${i + 1}`).join('\n');
+    const { problems } = buildManifest(synthetic, null) as Reanchor;
+    expect(problems.filter((p) => /gap:|overlap at|must start at line 1/.test(p))).toEqual([]);
   });
 });
