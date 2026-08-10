@@ -164,7 +164,9 @@ async function main() {
   console.log('\n===== ARM RUN SUMMARY =====');
   console.log(JSON.stringify({ arm: ARM, runId, runError: out.runError, wallMs, peakConcurrentBees: out.peakConcurrentBees, taskCount: out.taskCount, nonEmptyDiffs, totals: out.totals, coordEventCount: result.coordEvents.length }, null, 2));
   console.log(`\n[compare] wrote ${OUT_DIR}/${ARM}.json + ${perTask.length} diffs under diffs-${ARM}/`);
-  process.exit(0);
+  // NOT process.exit(): it does not drain an async pipe write, so piping this summary
+  // would truncate the JSON above. See scripts/check-undrained-stdout-exit.mjs.
+  process.exitCode = 0;
 }
 
 main().catch((e) => {

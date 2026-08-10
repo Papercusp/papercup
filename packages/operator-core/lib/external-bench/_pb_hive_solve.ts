@@ -229,11 +229,15 @@ async function main(): Promise<void> {
   };
   const res = await drivePaperReplication(req, realPaperReplicationOps());
   console.log(JSON.stringify({ paperBenchDriver: res }));
+  // NOT process.exit(): stdout is async on a pipe and exit() does not drain it, so a
+  // consumer parsing this driver result would silently get a truncated prefix.
+  // See scripts/check-undrained-stdout-exit.mjs.
   if (!res.ok) {
     console.error(`[pb] ${res.error ?? 'failed'}`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 // Run as a CLI only when invoked directly (so the test can import the pure functions).
