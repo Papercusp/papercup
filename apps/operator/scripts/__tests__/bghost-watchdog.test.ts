@@ -827,4 +827,123 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
       expect(procTreeCpuTicks(1, fakeProc(table))).toBe(101);
     });
   });
+
+  /**
+   * ENTRYPOINT GUARD — importing this module must never start a live watchdog.
+   *
+   * The autostart used to be an OPT-OUT (`start()` unless PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART=1),
+   * which put the whole burden on the importer knowing an env var exists. On 2026-08-10 an agent
+   * importing `procTreeCpuTicks` for a one-off /proc probe started a SECOND real watchdog against
+   * papercup-bg-host — polling the live unit with its own independent debounce and circuit state, able
+   * to issue its own `systemctl restart` of a shared service, and writing to the durable log.
+   *
+   * These are BEHAVIOURAL (spawn a real node process and observe what it does), not source greps: the
+   * property is "an import starts no poll loop", which must hold however the guard is spelled. A grep
+   * for `isDirectEntrypoint` would pass against a guard that was rewritten into uselessness.
+   *
+   * Note the second test is the one that matters for the SYSTEMD side: a guard that wrongly answers
+   * "imported" under the unit would leave bg-host with no freeze recovery, silently. So both directions
+   * are pinned, not just the one that caused the incident.
+   */
+  describe('ENTRYPOINT GUARD: import must not start a watchdog; direct run must', () => {
+    const runNode = async (
+      args: string[],
+      env: Record<string, string>,
+      // A STARTED watchdog never exits (start() schedules an interval), so for that case the timeout is
+      // the expected end of the run and doubles as the suite's cost — keep it just long enough for the
+      // synchronous startup banner to be written.
+      timeout = 20_000,
+    ): Promise<{ stdout: string; stderr: string }> => {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      try {
+        return await promisify(execFile)(process.execPath, args, {
+          env: { ...process.env, ...env },
+          timeout,
+        });
+      } catch (e) {
+        const err = e as { stdout?: string; stderr?: string };
+        return { stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
+      }
+    };
+
+    // A sandboxed unit + log so neither branch can touch the real service or the durable log, and a poll
+    // interval long enough that no poll fires inside the window we observe.
+    const sandbox = (log: string) => ({
+      PAPERCUSP_BGHOST_WATCHDOG_UNIT: 'papercusp-nonexistent-dummy-unit',
+      PAPERCUSP_BGHOST_WATCHDOG_LOG: log,
+      PAPERCUSP_BGHOST_WATCHDOG_POLL_MS: '600000',
+      PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART: '',
+    });
+
+    it('importing the module starts NO poll loop, and says why', async () => {
+      const { writeFileSync, existsSync, readFileSync, rmSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, resolve } = await import('node:path');
+
+      const subject =
+        process.env.PROBE_SCRIPT || resolve(dirname(fileURLToPath(import.meta.url)), '../bghost-watchdog.mjs');
+      const log = join(tmpdir(), `wd-guard-import-${process.pid}.log`);
+      const importer = join(tmpdir(), `wd-guard-importer-${process.pid}.mjs`);
+      rmSync(log, { force: true });
+      writeFileSync(importer, `await import(${JSON.stringify(subject)});\n`);
+      try {
+        const { stderr } = await runNode([importer], sandbox(log));
+        // The process must have exited on its own — a started watchdog holds a setInterval forever and
+        // would have been killed by the timeout instead.
+        expect(stderr).toContain('NOT auto-starting');
+        // The decisive assertion: the startup banner is written by start(), so its absence IS the
+        // absence of a poll loop.
+        const written = existsSync(log) ? readFileSync(log, 'utf8') : '';
+        expect(written).not.toContain('up — unit');
+      } finally {
+        rmSync(importer, { force: true });
+        rmSync(log, { force: true });
+      }
+    }, 30_000);
+
+    it('running the script directly DOES start the watchdog', async () => {
+      const { existsSync, readFileSync, rmSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, resolve } = await import('node:path');
+
+      const subject =
+        process.env.PROBE_SCRIPT || resolve(dirname(fileURLToPath(import.meta.url)), '../bghost-watchdog.mjs');
+      const log = join(tmpdir(), `wd-guard-direct-${process.pid}.log`);
+      rmSync(log, { force: true });
+      try {
+        // start() schedules a long interval, so this never exits on its own: the timeout is the
+        // expected end, and the banner in the log is the evidence it started.
+        await runNode([subject], sandbox(log), 4_000);
+        const written = existsSync(log) ? readFileSync(log, 'utf8') : '';
+        expect(written).toContain('up — unit papercusp-nonexistent-dummy-unit');
+      } finally {
+        rmSync(log, { force: true });
+      }
+    }, 30_000);
+
+    it('the explicit NO_AUTOSTART kill-switch still suppresses a direct run', async () => {
+      const { existsSync, readFileSync, rmSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, resolve } = await import('node:path');
+
+      const subject =
+        process.env.PROBE_SCRIPT || resolve(dirname(fileURLToPath(import.meta.url)), '../bghost-watchdog.mjs');
+      const log = join(tmpdir(), `wd-guard-killswitch-${process.pid}.log`);
+      rmSync(log, { force: true });
+      try {
+        await runNode([subject], { ...sandbox(log), PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART: '1' });
+        const written = existsSync(log) ? readFileSync(log, 'utf8') : '';
+        expect(written).not.toContain('up — unit');
+      } finally {
+        rmSync(log, { force: true });
+      }
+    }, 30_000);
+  });
 });

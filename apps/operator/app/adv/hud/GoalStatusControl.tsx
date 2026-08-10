@@ -39,6 +39,7 @@
 
 import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 /** The writable enum, exactly as `goals:update` accepts it. */
@@ -194,25 +195,28 @@ export default function GoalStatusControl({
       {/* A terminal goal has no everyday verb — nothing to pause, nothing to resume.
           Reopening it is a panel-only move (below), never a card click. */}
       {!isTerminal ? (
-        <button
-          type="button"
-          className="pc-ctl-act"
-          data-testid="goal-pause-resume"
-          disabled={busy}
-          aria-label={isPaused ? 'Resume this goal' : 'Pause this goal'}
-          title={
+        <Tooltip
+          label={
             isPaused
               ? 'Re-open placement on this goal’s projects'
               : 'Gate placement on this goal’s projects and disarm its sessions’ loops'
           }
-          onClick={(e) => {
-            // The card is itself a button; without this the click also opens the popup.
-            e.stopPropagation();
-            void togglePause();
-          }}
         >
-          {busy ? '…' : isPaused ? 'Resume' : 'Pause'}
-        </button>
+          <button
+            type="button"
+            className="pc-ctl-act"
+            data-testid="goal-pause-resume"
+            disabled={busy}
+            aria-label={isPaused ? 'Resume this goal' : 'Pause this goal'}
+            onClick={(e) => {
+              // The card is itself a button; without this the click also opens the popup.
+              e.stopPropagation();
+              void togglePause();
+            }}
+          >
+            {busy ? '…' : isPaused ? 'Resume' : 'Pause'}
+          </button>
+        </Tooltip>
       ) : null}
 
       {variant === 'panel' && !isTerminal ? (
@@ -242,16 +246,17 @@ export default function GoalStatusControl({
       ) : null}
 
       {variant === 'panel' && isTerminal ? (
-        <button
-          type="button"
-          className="pc-ctl-act"
-          data-testid="goal-reopen"
-          disabled={busy}
-          title="Re-open placement and put this goal back in play"
-          onClick={() => void reactivate('terminal')}
-        >
-          {busy ? '…' : 'Reopen'}
-        </button>
+        <Tooltip label="Re-open placement and put this goal back in play">
+          <button
+            type="button"
+            className="pc-ctl-act"
+            data-testid="goal-reopen"
+            disabled={busy}
+            onClick={() => void reactivate('terminal')}
+          >
+            {busy ? '…' : 'Reopen'}
+          </button>
+        </Tooltip>
       ) : null}
 
       {confirmEl}

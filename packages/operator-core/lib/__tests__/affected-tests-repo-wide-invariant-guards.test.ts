@@ -587,3 +587,94 @@ describe('affected-tests: green-checkpoint tag guard (WI-37605)', () => {
     expect(pkg.scripts?.[GC_TAG_SCRIPT]).toContain('check-green-checkpoint-tag.mjs');
   });
 });
+
+/**
+ * EI-20032324229208320 — the mug/kettle retirement's recurrence guard
+ * (retire-mug-kettle-su-only-2026-08-09 P-016).
+ *
+ * WHY THIS BLOCK EXISTS, and it is NOT the usual "route it to the offending workspace" reason.
+ * The guard was registered in REPO_WIDE_INVARIANT_GUARDS *and* declared in the host workspace —
+ * both steps done correctly — and it STILL held `main` red, because those two steps buy
+ * COVERAGE, never ENFORCEMENT. `check-lint-guard-reachability.mjs`'s `buildCorpora()` reads
+ * exactly four enforcement corpora: green-checkpoint.ts, .github/workflows/*, ENFORCING
+ * *.test.ts, and hooks. `scripts/affected-tests.mjs` is not among them, so a repo-wide
+ * registration can never make a guard "reachable" by itself — the guard landed in the
+ * UNREACHABLE tier, past the shrink-only acknowledged set, and red-pinned the fleet's gate on
+ * three cases at once (the unenforced-guard assertion plus both fail-open/PASS-output cases,
+ * which only fail because the census exits nonzero).
+ *
+ * So the durable lesson this block pins is: EVERY repo-wide invariant guard needs a SECOND
+ * wiring into an enforcement corpus. Measured at the time of writing — lint:no-retired -> 2
+ * test files; lint:green-checkpoint-tag -> this file; lint:workspace-deps-complete -> CI
+ * test.yml. This block is that second wiring for the mug/kettle guard, and it earns its place
+ * by asserting the routing behaviour rather than merely naming the script.
+ *
+ * `npm run lint:no-ungated-mug-kettle` was verified exit 0 on the tree before wiring, so this
+ * cannot red anyone's loop on pre-existing debt (same precaution the GC_TAG entry records).
+ */
+const MUG_KETTLE_SCRIPT = 'lint:no-ungated-mug-kettle';
+const MUG_KETTLE_TASK = `${HOST_WORKSPACE} :: ${MUG_KETTLE_SCRIPT}`;
+
+/** A TS path that routes to @papercusp/web, never pulling in the host workspace. */
+const MK_OUTSIDE_TS_PATH = 'apps/operator/lib/release/green-checkpoint.ts';
+/** Markdown inside a package dir — blueprint PROMPTS are a census category, so `.md` counts. */
+const MK_MARKDOWN_PATH = 'apps/operator/docs/nuqs-audit-2026-05-11.md';
+/** Matches the predicate NOWHERE: not TS/JS-family, not `.md`. */
+const MK_UNMATCHED_PATH = 'apps/operator/app/_brand-primitives.css';
+
+describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () => {
+  it('attaches for a TS change outside the host workspace', () => {
+    expect(
+      dryTasks(MK_OUTSIDE_TS_PATH),
+      `${MK_OUTSIDE_TS_PATH} routes to @papercusp/web, so without this attachment a NEW ` +
+        'mug/kettle entry point added there gets ZERO local signal — which is the whole ' +
+        'point of a repo-wide guard: nobody knows in advance which file grows the next door',
+    ).toContain(MUG_KETTLE_TASK);
+  });
+
+  it('does NOT double-run it when the host workspace is already affected', () => {
+    const out = dryTasks('packages/operator-core/lib/terminal-spawn.ts');
+    expect(out, 'the host workspace should run its own suite here').toContain(
+      `${HOST_WORKSPACE} :: test`,
+    );
+    expect(out, "operator-core's own suite already covers the guard").not.toContain(MUG_KETTLE_TASK);
+  });
+
+  it('attaches for a MARKDOWN change — a new mug role prompt is a real re-introduction path', () => {
+    // The `.md` half of the predicate is the easiest to drop in a refactor and the hardest to
+    // miss the consequences of: blueprint prompts are a census category, so a quiet new mug
+    // role prompt is exactly the shape this guard exists to catch.
+    expect(dryTasks(MK_MARKDOWN_PATH)).toContain(MUG_KETTLE_TASK);
+  });
+
+  it('does NOT attach for a change the predicate cannot match', () => {
+    const out = dryTasks(MK_UNMATCHED_PATH);
+    // ⚠ This assertion is only about the PREDICATE if the double-run branch cannot have fired
+    // first. The guard loop tests, in order: inert -> excludes -> already-queued -> appliesTo.
+    // Pinning that the host workspace is absent is what makes this a predicate test rather
+    // than a test that passes for an unrelated reason. A `.ts` under libs/flags looks like a
+    // negative case but is NOT one — it pulls operator-core in through the dep graph and is
+    // skipped as a double-run, with the predicate never consulted.
+    expect(
+      out,
+      'must not be excluded via the already-queued branch, or this proves nothing about appliesTo',
+    ).not.toContain(`${HOST_WORKSPACE} :: test`);
+    expect(
+      out,
+      'every agent pays for this guard on every edit; attaching it to a stylesheet spends ' +
+        'that budget for a finding that is impossible by construction',
+    ).not.toContain(MUG_KETTLE_TASK);
+  });
+
+  it('keeps the guard script DEFINED, so the registration cannot be silently inert', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.[MUG_KETTLE_SCRIPT],
+      `${HOST_WORKSPACE} must define "${MUG_KETTLE_SCRIPT}" or the attachment is inert — ` +
+        'affected-tests.mjs skips a registered-but-undeclared guard with a bare `continue`',
+    ).toBeTruthy();
+    expect(pkg.scripts?.[MUG_KETTLE_SCRIPT]).toContain('check-ungated-mug-kettle.mjs');
+  });
+});
