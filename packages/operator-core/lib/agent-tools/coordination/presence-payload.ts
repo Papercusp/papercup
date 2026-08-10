@@ -52,6 +52,29 @@ import type { ContextPressureBucket } from './context-pressure';
 export const PLACEHOLDER_INTENT = '(active — see coord:presence for current work)';
 
 /**
+ * True when an intent string is a LIFECYCLE LABEL — the name of the hook or dispatch step that
+ * happened to take a lock ('PreToolUse:Edit', 'capability:write') — rather than a declaration of
+ * WHAT the agent is changing. Blank and {@link PLACEHOLDER_INTENT} count too: all three mean the
+ * same thing to a consumer, "no usable intent here, look elsewhere".
+ *
+ * Canonical here, beside PLACEHOLDER_INTENT and for the same reason (EI-20055604348536487). The
+ * predicate had independently grown THREE copies that did not agree — `isUninformativeLockIntent`
+ * (locks/enrich-busy.ts) covered `capability:` and the placeholder, `isGenericLockIntent`
+ * (harness/git-sync/git-sync-action.ts) covered neither, and the lock hook has a third in Python.
+ * Two surfaces resolving one projection two ways is the divergence D-038 axis 5 forbids, and this
+ * is the union: the narrower copies each classified a real sentinel as usable intent.
+ *
+ * ⚠ The regexes are ANCHORED to the label's own prefix, never a substring search — an agent whose
+ * DECLARED intent legitimately discusses the hook ("stop PreToolUse:Edit leaking into the ledger",
+ * which is literally the intent that produced this function) must not be classified as a sentinel.
+ */
+export function isLifecycleIntent(intent: string | null | undefined): boolean {
+  const s = (intent ?? '').trim();
+  if (!s || s === PLACEHOLDER_INTENT) return true;
+  return /^(?:Pre|Post)ToolUse:/i.test(s) || /^capability:/i.test(s);
+}
+
+/**
  * A coord:presence roster row at the point it is emitted: the unified
  * local+federated record, plus the derived `lastActiveSecAgo`, the coordinator
  * wakeability signals (`sessionState` / `wakeable`, P-001), and the (local-only)
