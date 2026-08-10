@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { narrowHeadingPayload } from "./get.js";
+import { findSection, narrowHeadingPayload, splitSections } from "./get.js";
 
 type Sec = { heading: string; level: number; chars: number; body: string };
 
