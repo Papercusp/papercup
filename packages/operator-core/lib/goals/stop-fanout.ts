@@ -1,6 +1,7 @@
 /**
  * The host half of the goal stop seam — what actually happens when a goal moves to
- * `paused` or `killed` (EI-20013729460455061).
+ * `paused`, `killed` or `achieved` (EI-20013729460455061; `achieved` added by WI-37832,
+ * which found the SUCCESS terminal was the one status that wound nothing down).
  *
  * Installed into `@papercusp/agent-mcp` at MODULE LOAD, the same way
  * capability-tier-overrides installs its resolver. It is imported from the

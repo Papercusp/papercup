@@ -22,6 +22,8 @@ import {
   SILENT_LOOP_THRESHOLD,
   SILENT_LOOP_WINDOW_MS,
   summarizeSystemctlStatusCause,
+  isBuildStepFailure,
+  BUILD_STEP_RETRY_LIMIT,
   supervisionSnapshot,
   extractBuildErrorDetail,
   stdoutFromExecError,
@@ -1256,8 +1258,20 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
       now += 61_000;
     }
     expect(fileGiveUpEi).not.toHaveBeenCalled(); // not yet — still restarting, hasn't given up
-    // The next tick (still inside the give-up window) gives up instead of restarting again.
-    await reconcileTick(deps);
+
+    // EI-20093844846536045: this fixture's cause is a BUILD-STEP (ExecStartPre) failure, which is
+    // no longer a PERMANENT give-up on the first trip — the tree usually recovers on its own, so
+    // the reconciler absorbs a bounded number of cycles and keeps retrying. Filing an EI for a
+    // self-clearing tree break is exactly the noise that policy exists to avoid.
+    //
+    // The contract THIS test guards is unchanged and still asserted below: when the reconciler
+    // genuinely gives up, it files a durable claimable EI rather than only broadcasting. So drive
+    // past the patience budget to reach that real give-up, instead of weakening the assertion.
+    for (let i = 0; i < (GIVE_UP_THRESHOLD + 2) * (BUILD_STEP_RETRY_LIMIT + 2); i++) {
+      if (fileGiveUpEi.mock.calls.length > 0) break;
+      await reconcileTick(deps);
+      now += 61_000;
+    }
     expect(fileGiveUpEi).toHaveBeenCalledTimes(1);
     expect(fileGiveUpEi.mock.calls[0]![0]).toMatchObject({
       unit: 'papercup-mcp-proxy',
@@ -1340,5 +1354,162 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     await expect(reconcileTick(deps)).resolves.toBeDefined();
     const recoveredPage = deps.notify.mock.calls.map((c) => c[0].summary as string).find((s) => s.includes('recovered'));
     expect(recoveredPage).toBeDefined();
+  });
+});
+
+// ── EI-20093844846536045: build-step failures are not permanent give-ups ─────
+
+/**
+ * The real 2026-08-10 shape: the unit never started because its ExecStartPre bundle step failed
+ * to compile against a torn git-sync commit. `status=1/FAILURE` on a `Process:` line is what
+ * separates this from the unit's own code dying.
+ */
+const CONTROL_PROCESS_CAUSE =
+  'Process: 1694694 ExecStartPre=/srv/papercusp/apps/operator/bin/bundle-host.sh (code=exited, status=1/FAILURE)';
+
+describe('isBuildStepFailure', () => {
+  it('is TRUE for a failed control-process (ExecStartPre) line', () => {
+    expect(isBuildStepFailure(CONTROL_PROCESS_CAUSE)).toBe(true);
+  });
+
+  it('is TRUE when the cause carries an appended build error (the shipped summarizer format)', () => {
+    expect(isBuildStepFailure(`${CONTROL_PROCESS_CAUSE} — [ERROR] Expected "}" but found "s"`)).toBe(true);
+  });
+
+  it('is FALSE for a MAIN-process death — that IS a code fault and must still give up', () => {
+    expect(isBuildStepFailure('Main process exited, code=exited, status=1/FAILURE')).toBe(false);
+  });
+
+  it('is FALSE for a SUCCESSFUL control process (status=0 is also reported on a Process: line)', () => {
+    expect(isBuildStepFailure('Process: 123 ExecStartPre=/x/bundle-host.sh (code=exited, status=0/SUCCESS)')).toBe(
+      false,
+    );
+  });
+
+  it.each([null, undefined, '', 'Failed with result "exit-code".'])('is FALSE for %p', (cause) => {
+    expect(isBuildStepFailure(cause as string | null | undefined)).toBe(false);
+  });
+
+  it('agrees with the cause SUMMARIZER — the two share one predicate and cannot drift', () => {
+    const status = [
+      '● papercup-staging-api.service - Papercusp staging API',
+      '   Active: failed (Result=exit-code)',
+      `  ${CONTROL_PROCESS_CAUSE}`,
+      "   Failed with result 'exit-code'.",
+    ].join('\n');
+    const summarized = summarizeSystemctlStatusCause(status);
+    expect(summarized).toContain('ExecStartPre');
+    expect(isBuildStepFailure(summarized)).toBe(true);
+  });
+});
+
+describe('reconcileTick — a build-step give-up is absorbed and retried, not latched', () => {
+  beforeEach(() => {
+    _resetReconcilerState();
+  });
+
+  /** Drives ticks on a controllable clock, always past the longest backoff. */
+  function makeBuildStepDeps(statusCause: string) {
+    let clock = 1_000_000;
+    const execUser = vi.fn(async (args: string[]) => {
+      if (args[0] === 'list-units') return LIST_UNITS_FIXTURE; // mcp-proxy is failed/failed here
+      if (args[0] === 'show') return 'Result=exit-code\nNRestarts=0\n';
+      if (args[0] === 'status') return ['● papercup-mcp-proxy.service', `  ${statusCause}`].join('\n');
+      return '';
+    });
+    const notify = vi.fn(async () => {});
+    const deps = {
+      execUser,
+      notify,
+      now: () => clock,
+      autoRestartFlagOn: async () => true,
+      registry: () => [AUTORESTART_ENTRY],
+      log: () => {},
+    } as unknown as ReconcilerDeps & { execUser: ReturnType<typeof vi.fn>; notify: ReturnType<typeof vi.fn> };
+    // 61s > the 60s ladder max, so backoff spacing never suppresses an attempt.
+    const advance = () => {
+      clock += 61_000;
+    };
+    return { deps, advance, execUser, notify };
+  }
+
+  const summaries = (notify: ReturnType<typeof vi.fn>) =>
+    notify.mock.calls.map((c) => (c[0] as { summary: string }).summary);
+  const callsFor = (execUser: ReturnType<typeof vi.fn>, verb: string) =>
+    execUser.mock.calls.map((c) => c[0] as string[]).filter((a) => a[0] === verb);
+
+  it("does NOT declare a code fault, clears systemd's latch, and keeps restarting", async () => {
+    const { deps, advance, execUser, notify } = makeBuildStepDeps(CONTROL_PROCESS_CAUSE);
+    for (let i = 0; i <= GIVE_UP_THRESHOLD; i++) {
+      await reconcileTick(deps);
+      advance();
+    }
+
+    const said = summaries(notify);
+    expect(said.some((s) => s.includes('BUILD STEP failed'))).toBe(true);
+    expect(said.some((s) => s.includes('NOT giving up'))).toBe(true);
+    // The false verdict this whole change exists to stop.
+    expect(said.some((s) => s.includes('this is a code fault not a transient'))).toBe(false);
+
+    // The step that existed nowhere before: without it systemd refuses every later restart.
+    expect(callsFor(execUser, 'reset-failed')).toContainEqual(['reset-failed', 'papercup-mcp-proxy']);
+
+    // Not latched — it must still be trying after the give-up point.
+    const before = callsFor(execUser, 'restart').length;
+    await reconcileTick(deps);
+    expect(callsFor(execUser, 'restart').length).toBeGreaterThan(before);
+  });
+
+  it('pages ONCE per episode, not on every retry cycle', async () => {
+    const { deps, advance, notify } = makeBuildStepDeps(CONTROL_PROCESS_CAUSE);
+    for (let i = 0; i < GIVE_UP_THRESHOLD * 3; i++) {
+      await reconcileTick(deps);
+      advance();
+    }
+    expect(summaries(notify).filter((s) => s.includes('BUILD STEP failed'))).toHaveLength(1);
+  });
+
+  it('EVENTUALLY gives up for real — patience is bounded, not infinite', async () => {
+    const { deps, advance, notify } = makeBuildStepDeps(CONTROL_PROCESS_CAUSE);
+    for (let i = 0; i < (GIVE_UP_THRESHOLD + 2) * (BUILD_STEP_RETRY_LIMIT + 2); i++) {
+      await reconcileTick(deps);
+      advance();
+    }
+    expect(summaries(notify).some((s) => s.includes('GIVING UP') && s.includes('retry cycles'))).toBe(true);
+  });
+
+  it('files NO give-up EI while absorbing — then files exactly one when patience runs out', async () => {
+    const fileGiveUpEi = vi.fn(async (_e: SupervisionGiveUpEpisode): Promise<string | null> => 'EI-123');
+    const { deps, advance } = makeBuildStepDeps(CONTROL_PROCESS_CAUSE);
+    (deps as ReconcilerDeps).fileGiveUpEi = fileGiveUpEi;
+
+    // One full give-up cycle: absorbed, so no durable EI — filing one for a self-clearing tree
+    // break is the noise this policy exists to avoid.
+    for (let i = 0; i <= GIVE_UP_THRESHOLD; i++) {
+      await reconcileTick(deps);
+      advance();
+    }
+    expect(fileGiveUpEi).not.toHaveBeenCalled();
+
+    // But the unit must never end up permanently down with nobody owning it: once the budget is
+    // spent, the normal durable filing happens exactly as before.
+    for (let i = 0; i < (GIVE_UP_THRESHOLD + 2) * (BUILD_STEP_RETRY_LIMIT + 2); i++) {
+      if (fileGiveUpEi.mock.calls.length > 0) break;
+      await reconcileTick(deps);
+      advance();
+    }
+    expect(fileGiveUpEi).toHaveBeenCalledTimes(1);
+  });
+
+  it('a MAIN-process failure still gives up immediately — the old behaviour is untouched', async () => {
+    const { deps, advance, execUser, notify } = makeBuildStepDeps('Main process exited, code=exited, status=1/FAILURE');
+    for (let i = 0; i <= GIVE_UP_THRESHOLD; i++) {
+      await reconcileTick(deps);
+      advance();
+    }
+    const said = summaries(notify);
+    expect(said.some((s) => s.includes('this is a code fault not a transient'))).toBe(true);
+    expect(said.some((s) => s.includes('BUILD STEP failed'))).toBe(false);
+    expect(callsFor(execUser, 'reset-failed')).toHaveLength(0);
   });
 });
