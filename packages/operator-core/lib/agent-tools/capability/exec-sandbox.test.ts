@@ -91,6 +91,25 @@ describe('capabilityBuildCacheWritePaths (EI-12725 — out-of-tree build caches 
     expect(capabilityBuildCacheWritePaths(stock, home)).toEqual([]);
   });
 
+  // WI-37702: the two below pin the `process.env.CARGO_TARGET_DIR` candidate — the
+  // one input with no parameter seam. Before this it was exercised only by accident,
+  // on whichever hosts happened to export the variable, and there in the form of a
+  // FAILURE; on a host that leaves it unset the leg ran zero times. Both populations
+  // got the wrong answer, so neither could have caught a regression here.
+  it('honours CARGO_TARGET_DIR, and lists it FIRST — it is the highest-priority candidate', () => {
+    vi.stubEnv('CARGO_TARGET_DIR', envCache);
+    // The cwd's symlinked target still resolves too, so this also pins the ORDER:
+    // env var ahead of the in-repo target, matching the candidate list's intent.
+    expect(capabilityBuildCacheWritePaths(cwd, home)).toEqual([envCache, bigDisk]);
+  });
+
+  it('applies the cwd-containment skip to CARGO_TARGET_DIR too — an env cache inside the cwd is not double-bound', () => {
+    vi.stubEnv('CARGO_TARGET_DIR', envCacheInsideCwd);
+    // Resolves under `cwd`, so the cwd bind already covers it: only the out-of-tree
+    // symlinked target should survive.
+    expect(capabilityBuildCacheWritePaths(cwd, home)).toEqual([bigDisk]);
+  });
+
   it('bwrap argv binds the resolved cache rw, and does NOT weaken the read-only / bind', () => {
     const d = buildCapabilitySandboxCommand({ cmd: CMD, cwd }, { ...base, enabled: true, homeDir: home });
     const i = d.argv.indexOf(bigDisk);
