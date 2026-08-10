@@ -53,6 +53,38 @@ export function parseSummaryFailedCounts(text: any): {
  */
 export function parseFailedTestFiles(text: string): string[];
 /**
+ * The FAILING TEST FILES named by a `node --test` run's own output.
+ *
+ * A SECOND runner format, deliberately NOT folded into {@link parseFailedTestFiles}
+ * (EI-20095409199430877). Node's built-in runner ends a red run with a `✖ failing tests:`
+ * block whose every entry is a `test at <file>:<line>:<col>` line — a shape matching
+ * NEITHER vitest matcher. So before this existed, every failure in a `node --test`
+ * workspace was reported as `no-file-rows`, the reason whose documented causes are "a
+ * worker crash, an OOM, a spawn error". That sends a triager hunting infrastructure while
+ * the truth is a named assertion in a named file, printed in plain text a few lines up.
+ *
+ * Measured on run 3655179-735cdb19: `@papercusp/desktop :: test` was reported
+ * `unattributed / no-file-rows` while its own captured output read
+ * `test at test/build-desktop-sidecar-lock.test.js:11:1`. `@papercusp/desktop` alone runs
+ * ~20 test files this way, so the blind spot covered every one of them.
+ *
+ * ⚠ WHY SEPARATE, and do not "simplify" this by merging the two: `parseFailedTestFiles`'s
+ * result is ALSO fed back as re-run ARGUMENTS (`run(failedFiles)` in affected-tests.mjs),
+ * which is a vitest calling convention. `@papercusp/desktop`'s `test` script is a chain of
+ * `npm run` sub-steps, so appending file paths to it would not re-run those files — it
+ * would silently re-run something else. ATTRIBUTION (what broke) and RE-RUN (how to run it
+ * again) are different questions; only the first is answered here.
+ *
+ * Matched from REAL EMITTED BYTES (node v22), never from a quoted log: a mixed pass/fail
+ * run prints `test at` for the failing tests ONLY, so the line is failure-exclusive. The
+ * path it carries is workspace-relative — the same shape vitest's rollup rows yield, so
+ * callers need no normalisation.
+ *
+ * @param {string} text
+ * @returns {string[]} workspace-relative paths, deduped; [] when none
+ */
+export function parseNodeTestFailedFiles(text: string): string[];
+/**
  * The esbuild TRANSFORM (parse) failures named in a run's own output.
  *
  * MOVED HERE from scripts/test-files.mjs (WI-37607) so the two runners share ONE detector
@@ -146,8 +178,11 @@ export function formatFailingFilesLine({ runToken, entries, unattributed, transf
  * passed". Three ways a genuinely-red task yields no file:
  *   - `no-captured-output` — an interactive TTY run inherited stdio, so there is no text
  *     to parse. The failure is real; attribution was never possible.
- *   - `no-file-rows`      — captured output with no FAIL/rollup rows: a worker crash, an
- *     OOM, a spawn error.
+ *   - `no-file-rows`      — captured output in which NO known runner format named a file:
+ *     a worker crash, an OOM, a spawn error.
+ *     ⚠ Read this as "no PARSER spoke for it", not "the output named nothing" — those came
+ *     apart for `node --test` workspaces until EI-20095409199430877, where output naming the
+ *     failing file in plain text still reported this reason and read as an infra crash.
  *   - `transform`         — no FAIL/rollup rows AND a parse failure is present, i.e. the
  *     collapse happened before the reporter ran. Split out of `no-file-rows` (WI-37607):
  *     this docstring used to name a transform failure as one of that reason's causes, which
