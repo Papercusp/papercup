@@ -1163,11 +1163,25 @@ if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
 
 const affected = affectedWorkspaces();
 
-if (!affected.length) {
-  outSync('No affected workspaces.');
-  outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces');
-  process.exit(0);
-}
+// EI-19454727576364875 — there is DELIBERATELY no `if (!affected.length) exit` here, and it
+// must not be reintroduced. It used to sit at this line, 46 lines above the
+// REPO_WIDE_INVARIANT_GUARDS loop below, which made that loop unreachable whenever the changed
+// paths mapped to no workspace. That silently defeated the mechanism in exactly the case it was
+// built for: a guard is registered by `appliesTo(changedFile)` PRECISELY so it keeps running when
+// its host workspace is not affected, and the change that routes NOWHERE (root package.json,
+// tsconfig.base.json, the lockfile) is the one most likely to break something repo-wide.
+//
+// Measured before the fix: `--changed-paths package.json` printed
+// `status=passed tasks=0 reason=no-affected-workspaces` while a guard registered with
+// `appliesTo: (f) => f === 'package.json'` sat right there, matching, and never ran. The failure
+// presented as GREEN — `tasks=0 … status=passed` is indistinguishable from "nothing needed
+// checking", which is the expensive direction for a gate to fail in.
+//
+// The empty-affected case is now handled by the single `if (!tasks.length)` exit below, AFTER the
+// guards have had their chance to attach. The per-workspace loop is already a no-op over an empty
+// `affected`; `wsByName` is built from ALL workspaces, so a guard's host still resolves; and with
+// no `test` task present the `hostSuiteRatchet` deferral cannot fire, so guards attach
+// unconditionally — the fail-safe direction.
 
 const tasks = [];
 for (const ws of affected) {
@@ -1225,8 +1239,17 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
 }
 
 if (!tasks.length) {
-  outSync(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
-  outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script');
+  // Two genuinely different empty outcomes, kept as DISTINCT reasons (EI-19454727576364875).
+  // Collapsing them would hide the more interesting one: "workspaces were selected but none of
+  // them declares a test script" is a coverage smell worth noticing, whereas "this change routes
+  // nowhere at all" is the case that used to skip the repo-wide guards entirely.
+  if (!affected.length) {
+    outSync('No affected workspaces (and no repo-wide invariant guard matched the changed paths).');
+    outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces');
+  } else {
+    outSync(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
+    outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script');
+  }
   process.exit(0);
 }
 

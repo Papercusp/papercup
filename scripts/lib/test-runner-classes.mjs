@@ -134,10 +134,26 @@ export const RUNNER_CLASSES = {
       'distinct reason, so it is never confused with an unreadable runner.',
   },
   'astro-check': {
-    attributable: false,
+    attributable: true,
     detail:
-      '`astro check` is a typechecker, not a test runner; it reports diagnostics rather than ' +
-      'failing test files. A red here lands in `no-file-rows` legitimately.',
+      '`astro check` diagnostics: `<file>:<line>:<col> - error ts(NNNN): …`. ' +
+      'parseAstroCheckFailedFiles.',
+    // Verbatim from a real `astro check` run (astro 6.3.6) against a copy of the
+    // operator-docs app with a planted two-error .astro file, read back through `cat -A`.
+    //
+    // ⚠ The ANSI escapes are KEPT here on purpose, unlike the sibling fixtures. astro colors
+    // its output even when piped to a file, so these codes are what production actually
+    // captures — and a matcher written against the rendered text matches ZERO of them. This
+    // fixture therefore proves the strip-then-match property, not just the regex.
+    //
+    // The warning row is kept for the same reason the bash-selftests fixture keeps a PASS:
+    // it proves the matcher is failure-exclusive (` - error ` vs ` - warning `) rather than
+    // attributing every diagnostic the typechecker prints.
+    fixture: [
+      '\x1b[96msrc/content.config.ts\x1b[0m:\x1b[93m34\x1b[0m:\x1b[93m14\x1b[0m - \x1b[93mwarning\x1b[0m\x1b[90m ts(6385): \x1b[0m\'z\' is deprecated.',
+      '\x1b[96msrc/pages/__fixture-broken.astro\x1b[0m:\x1b[93m2\x1b[0m:\x1b[93m7\x1b[0m - \x1b[91merror\x1b[0m\x1b[90m ts(2322): \x1b[0mType \'string\' is not assignable to type \'number\'.',
+    ].join('\n'),
+    expectFile: 'src/pages/__fixture-broken.astro',
   },
   'bespoke-script': {
     attributable: false,
