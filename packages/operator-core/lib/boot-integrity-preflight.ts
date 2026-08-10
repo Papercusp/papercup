@@ -273,7 +273,7 @@ export interface LockTreeDriftCheck extends LockTreeDriftResult {
  * Walks up from `startDir` looking for a `package-lock.json` — the monorepo root.
  * Bounded so a misconfigured/rootless environment can't loop forever.
  */
-function findLockRootUpward(startDir: string): string | null {
+export function findLockRootUpward(startDir: string): string | null {
   let dir = startDir;
   for (let i = 0; i < 12; i++) {
     if (existsSync(join(dir, 'package-lock.json'))) return dir;
@@ -304,6 +304,153 @@ export function checkLockTreeDrift(
   } catch (e) {
     return { ok: true, missing: [], extraneous: [], skipped: true, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Preflight ANOTHER tree, from OUTSIDE it (EI-18661647550414959).
+//
+// Everything above answers "may *I* boot?" — it runs inside the host being started,
+// which is necessarily AFTER the running process was killed. The one moment we can
+// still cheaply say "don't do this" is the moment nobody asks: BEFORE the restart,
+// while the host is still up. `preflightTreeAt` is that same verdict computed about
+// an arbitrary tree root, so `dev:restart` and deploy-cli can refuse instead of
+// restarting a host straight into a crash-loop.
+//
+// TWO TRAPS, BOTH MEASURED (2026-08-10) — a naive wiring silently checks NOTHING:
+//
+//  1. WRONG DIRECTORY. `package-lock.json` lives at the TREE ROOT, but every caller's
+//     natural handle on a host is its systemd `WorkingDirectory`, which for 4 of the 5
+//     dev:restart targets is `<root>/apps/operator`. `checkLockTreeDrift` does NOT walk
+//     up from an explicit `rootDir`, so passing that directly returns
+//     `{ skipped: true, ok: true }` — a guard that inspects nothing and reports clean.
+//     Hence the mandatory `findLockRootUpward` hop below.
+//
+//  2. WRONG TREE. `preflightCriticalModules`'s default resolver resolves against THIS
+//     file's own node_modules. For a target running from a DIFFERENT checkout (the
+//     `dev` target runs from `papercup-release`, not the staging tree this code is
+//     usually loaded from) that silently audits the wrong tree — and that target is
+//     precisely the one whose node_modules a deploy rewrites and whose interrupted
+//     rollback leaves inconsistent. Hence the tree-anchored `createRequire` below.
+//
+// FAIL OPEN, BUT NEVER SILENTLY. A tree we could not inspect must be reported as NOT
+// CHECKED, never as clean: `ok` stays true so an unreadable tree can never block a
+// restart, but `checked:false` is what a caller must branch on. Reading `ok:true`
+// without `checked` is the same false-green this module already warns about for
+// `LockTreeDriftCheck.skipped`.
+// ---------------------------------------------------------------------------
+
+export interface TreeIntegrityResult {
+  /** Did we actually inspect the tree? FALSE ⇒ NOT CHECKED. `ok:true` with
+   *  `checked:false` is NOT a clean bill — it is "no verdict, failing open". */
+  checked: boolean;
+  /** true iff nothing blocking was found. Fails OPEN: an uninspectable tree is `ok`. */
+  ok: boolean;
+  /** The directory the caller asked about (typically a unit's WorkingDirectory). */
+  requestedRoot: string;
+  /** The ancestor actually carrying package-lock.json, or null if none was found. */
+  lockRoot: string | null;
+  /** Required packages absent from node_modules — the union of the list-free lock⇄tree
+   *  diff and the sentinel manifest. Non-empty ⇒ this tree will not boot. */
+  missing: string[];
+  /** On-disk but unlisted; a future `npm install` prune, never a reason to refuse. */
+  extraneous: string[];
+  /** Why the check could not run / could only run partially. Set iff `checked` is false
+   *  or a leg was skipped. */
+  reason?: string;
+  /** One actionable line, safe to hand straight to an agent or a human. */
+  note: string;
+}
+
+/**
+ * Resolve-check an arbitrary tree the way boot would, without starting anything.
+ * Pure + fully injectable (`lockRootFor` / `driftCheck` / `resolve`) so tests never
+ * touch a real tree, mirroring the rest of this module.
+ *
+ * The verdict is deliberately ASYMMETRIC, and that asymmetry is the whole point: a
+ * POSITIVE detection is trustworthy even from a partial inspection (a package that is
+ * genuinely absent is absent), while a CLEAN bill from a partial inspection is not
+ * evidence of anything. So a skipped drift leg still reports whatever the sentinel
+ * leg found, but never reports "clean".
+ */
+export function preflightTreeAt(opts: {
+  rootDir: string;
+  modules?: readonly string[];
+  resolve?: ModuleResolver;
+  driftCheck?: (rootDir: string) => LockTreeDriftCheck;
+  lockRootFor?: (startDir: string) => string | null;
+}): TreeIntegrityResult {
+  const requestedRoot = opts.rootDir;
+  const base: Pick<TreeIntegrityResult, 'requestedRoot' | 'missing' | 'extraneous'> = {
+    requestedRoot,
+    missing: [],
+    extraneous: [],
+  };
+
+  const lockRoot = (opts.lockRootFor ?? findLockRootUpward)(requestedRoot);
+  if (!lockRoot) {
+    const reason = `no package-lock.json in ${requestedRoot} or any ancestor`;
+    return {
+      ...base,
+      checked: false,
+      ok: true,
+      lockRoot: null,
+      reason,
+      note: `[boot-integrity] NOT CHECKED (${reason}) — proceeding without a verdict. This is not a clean bill of health.`,
+    };
+  }
+
+  const drift = (opts.driftCheck ?? ((r: string) => checkLockTreeDrift({ rootDir: r })))(lockRoot);
+
+  // Anchor resolution to the TREE UNDER TEST, not to whichever checkout loaded this code.
+  let resolve = opts.resolve;
+  if (!resolve) {
+    try {
+      resolve = createRequire(join(lockRoot, 'package.json')).resolve;
+    } catch {
+      resolve = undefined;
+    }
+  }
+  const sentinel = resolve ? preflightCriticalModules({ modules: opts.modules, resolve }) : null;
+
+  const missing = [...new Set([...(drift.skipped ? [] : drift.missing), ...(sentinel?.missing.map((m) => m.id) ?? [])])];
+  const extraneous = drift.skipped ? [] : drift.extraneous;
+
+  // `checked` tracks the PRIMARY, list-free signal. A sentinel-only pass is a partial
+  // inspection and must not read as a full clean bill (see the asymmetry above).
+  const checked = !drift.skipped && sentinel !== null;
+  const skippedLegs: string[] = [];
+  if (drift.skipped) skippedLegs.push(`lock⇄tree diff skipped (${drift.error ?? 'unknown'})`);
+  if (!sentinel) skippedLegs.push('sentinel resolve skipped (could not anchor a resolver)');
+  const reason = skippedLegs.length ? skippedLegs.join('; ') : undefined;
+
+  if (missing.length > 0) {
+    return {
+      ...base,
+      checked,
+      ok: false,
+      lockRoot,
+      missing,
+      extraneous,
+      reason,
+      note:
+        `[boot-integrity] ${lockRoot} is INCONSISTENT — ${missing.length} required package(s) are absent from ` +
+        `node_modules: ${missing.slice(0, 8).join(', ')}${missing.length > 8 ? `, +${missing.length - 8} more` : ''}. ` +
+        `Starting a host from this tree would crash-loop it on MODULE_NOT_FOUND (the boot guard would exit ` +
+        `${BOOT_INTEGRITY_EXIT_CODE}). Fix: \`npm run install:safe -- ci\` in ${lockRoot}, then retry.`,
+    };
+  }
+
+  return {
+    ...base,
+    checked,
+    ok: true,
+    lockRoot,
+    extraneous,
+    reason,
+    note: checked
+      ? `[boot-integrity] ${lockRoot} resolves clean (${extraneous.length} extraneous, not fatal).`
+      : `[boot-integrity] PARTIALLY CHECKED (${reason}) — nothing blocking found, but this is not a full verdict.`,
+  };
 }
 
 /** Distinct exit code so systemd / deploy-cli auto-rollback / a human can tell a
