@@ -6,8 +6,17 @@
  *
  * Before this, start/stop lived ONLY inside a single hive's status bar
  * (AdvNowRunning, N=1) — there was no one place to see every hive's started
- * state or flip them. This is that place. Mounted both at the top of the Hives
- * tab and inside the header PotsRunningPill popover (one control, two mounts).
+ * state or flip them. This is that place.
+ *
+ * ⚠ CURRENTLY REACHABLE FROM NO LIVE SURFACE (2026-08-10). It had two mounts:
+ * the Pots tab (unmounted by P-074, which removed that tab from the middle rail)
+ * and the header PotsRunningPill popover (deleted by P-075). D-069 anticipated
+ * that the SECOND of those items would own retiring this file — but P-074
+ * changed that premise by KEEPING `PotsTab.tsx` in place (it hosts
+ * PotFederationStatus, surviving substrate), and PotsTab still imports this. So
+ * this is PRESERVED-not-reachable rather than retired: deleting it would break a
+ * file P-074 deliberately preserved. See D-070. Do not "clean it up" without
+ * settling PotsTab's own disposition first.
  */
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -27,8 +36,11 @@ export interface LocalHivesControlProps {
    * (owner ask 2026-07-25: the Pots tab must show its p2p roster without
    * scrolling, and this control + the federation panel were what pushed the
    * roster off-screen). The OTHER mount — the header PotsRunningPill popover —
-   * leaves this false: that popover exists solely to show this control, so
-   * collapsing it there would hide the only thing the popover is for.
+   * left this false: that popover existed solely to show this control, so
+   * collapsing it there would have hidden the only thing the popover was for.
+   * That popover was deleted by P-075, so the `false` default now has no live
+   * caller; the prop is kept because PotsTab (preserved, unmounted) passes
+   * `collapsible`.
    */
   collapsible?: boolean;
 }
