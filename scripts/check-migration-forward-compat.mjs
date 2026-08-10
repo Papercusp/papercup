@@ -43,6 +43,8 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
  * Repo-relative form of the scanned directory, EXPORTED so the repo-wide invariant
@@ -117,9 +119,28 @@ const RULES = [
   },
 ];
 
-/** Strip SQL comments so prose describing DDL is never mistaken for DDL. */
+/**
+ * Strip SQL comments so prose describing DDL is never mistaken for DDL.
+ *
+ * Uses the CANONICAL shared mask (EI-20073035509369492). The private regex pair this
+ * replaced -- `/\*...*\/` then `--[^\n]*` -- was not quote-aware, which made this guard
+ * fail at its own job in a way no test covered:
+ *
+ *   INSERT INTO t(note) VALUES ('see -- below'); ALTER TABLE t ALTER COLUMN c SET NOT NULL;
+ *
+ * The `--` there is INSIDE a string literal, so the naive regex erased the rest of the
+ * line -- taking the real SET NOT NULL with it and reporting the file CLEAN. A guard whose
+ * whole purpose is catching destructive DDL silently missed a destructive DDL. Pinned by a
+ * falsifying control in the self-test below.
+ *
+ * ⚠ COMMENTS-ONLY, deliberately -- NOT `stripSqlCommentsAndStrings`. The RULES below match
+ * DDL KEYWORDS, and the strings variant seals `$tag$` bodies wholesale, which would hide
+ * REAL DDL inside a DO block (a false NEGATIVE on a forward-compat guard). The comments-only
+ * mask recurses into those bodies instead: body CODE stays live, body COMMENTS get masked.
+ * Both directions are pinned in the self-test.
+ */
 function stripComments(sql) {
-  return sql.replace(/\/\*[\s\S]*?\*\//g, '\n').replace(/--[^\n]*/g, '\n');
+  return stripSqlComments(sql);
 }
 
 /**
@@ -184,6 +205,42 @@ function selfTest() {
   if (negHits.length > 0) {
     failures.push(
       `detector fired on a known-negative fixture (comment text mistaken for DDL): ${negHits.join(', ')}`,
+    );
+  }
+
+  /*
+   * MASK CONTRACT (EI-20073035509369492). The three fixtures below pin WHICH mask this
+   * guard may use. They are falsifying controls, not coverage padding: each one FAILED
+   * under a mask this guard plausibly could have been given.
+   */
+
+  // (a) A `--` inside a STRING LITERAL is not a comment. The private regex this guard used
+  //     until 2026-08-10 erased the rest of the line, swallowing the real SET NOT NULL and
+  //     reporting CLEAN -- the exact failure this guard exists to prevent. Fails on any
+  //     non-quote-aware mask.
+  const commentInString = `INSERT INTO t(note) VALUES ('see -- below'); ALTER TABLE t ALTER COLUMN c SET NOT NULL;`;
+  if (!violationsFor(commentInString).some((r) => r.id === 'set-not-null')) {
+    failures.push(
+      'detector MISSED real DDL following a `--` inside a string literal (mask is not quote-aware)',
+    );
+  }
+
+  // (b) REAL DDL inside a dollar-quoted body must still fire. Fails under
+  //     stripSqlCommentsAndStrings, which seals `$tag$` bodies wholesale -- a false NEGATIVE.
+  const ddlInBody = `DO $$ BEGIN\n  ALTER TABLE t ALTER COLUMN c SET NOT NULL;\nEND $$;`;
+  if (!violationsFor(ddlInBody).some((r) => r.id === 'set-not-null')) {
+    failures.push(
+      'detector MISSED real DDL inside a dollar-quoted body (mask seals `$$` bodies -- must be comments-only)',
+    );
+  }
+
+  // (c) A COMMENT inside a dollar-quoted body is still a comment. Fails under a mask that
+  //     skips `$tag$` bodies instead of recursing into them -- a false POSITIVE.
+  const commentInBody = `DO $$ BEGIN\n  -- ALTER TABLE t ALTER COLUMN c SET NOT NULL;\n  PERFORM 1;\nEND $$;`;
+  const bodyCommentHits = violationsFor(commentInBody).map((r) => r.id);
+  if (bodyCommentHits.length > 0) {
+    failures.push(
+      `detector fired on a COMMENTED-OUT statement inside a dollar-quoted body (mask skips bodies instead of recursing): ${bodyCommentHits.join(', ')}`,
     );
   }
 
