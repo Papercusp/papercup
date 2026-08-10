@@ -85,6 +85,7 @@ import ts from 'typescript';
  * @returns {string}
  */
 export function stripCommentsAndStrings(text, fileName) {
+  if (isSqlFile(fileName)) return blankRanges(text, collectSqlRanges(text, { strings: true }));
   return blankRanges(text, collectRanges(text, fileName, { strings: true, regex: true }));
 }
 
@@ -138,7 +139,144 @@ export function stripCommentsAndStrings(text, fileName) {
  * @returns {string}
  */
 export function stripCommentsOnly(text, fileName) {
+  if (isSqlFile(fileName)) return blankRanges(text, collectSqlRanges(text, { strings: false }));
   return blankRanges(text, collectRanges(text, fileName, { strings: false, regex: false }));
+}
+
+/** Does this path name a SQL file? Extension gate for the dispatch above. */
+function isSqlFile(fileName) {
+  return typeof fileName === 'string' && /\.sql$/i.test(fileName);
+}
+
+/**
+ * SQL (PostgreSQL) comment + string ranges — the SQL half of this module.
+ *
+ * WHY THIS EXISTS (EI-20073035509369492, measured 2026-08-10). Everything above is the
+ * TypeScript parser, and `fileName` only ever picked a ScriptKind. Handed SQL, it returned the
+ * input COMPLETELY UNMASKED — no throw, no warning. That is worse than lacking SQL support,
+ * because the repo's standing advice is "migrate your guard to the shared stripper", and doing
+ * that to a `.sql`-scanning guard left the hole open WHILE the guard-of-guards classifier
+ * reclassified it as masked. A no-op indistinguishable from success, on the documented path.
+ *
+ * It also replaces five private implementations that disagreed with each other, none of which
+ * was string-aware and only one of which preserved offsets:
+ *   check-partial-index-alignment:222  blanks in place, but no block comments, no strings
+ *   check-migration-forward-compat:122 collapses each comment to '\n' — LINE NUMBERS SHIFT
+ *   lint-migrations:266                deletes outright — every offset after it is wrong
+ *   check-workspace-default-sql:91     per-line, and treats any earlier `--` as a comment start
+ *                                      even inside a string literal (silent false negatives)
+ *
+ * Three PostgreSQL specifics that a naive dash-dash-to-end-of-line regex cannot get right, all
+ * common in this repo's migrations (and note: writing that regex literally in THIS comment
+ * ends it early — its trailing slash closes the block. That is the same class of bug):
+ *   1. DOLLAR-QUOTED STRINGS ($$…$$, $tag$…$tag$) — function bodies, which contain `--` and
+ *      `/*` freely. A regex masks straight through them and mangles the body.
+ *   2. NESTABLE BLOCK COMMENTS — unlike C, PostgreSQL nests, so the first `*​/` does not
+ *      necessarily close the comment. Depth must be counted.
+ *   3. DOUBLED-QUOTE ESCAPES — '' inside a string and "" inside an identifier continue the
+ *      literal rather than ending it.
+ *
+ * Contract matches the TypeScript path exactly: ranges are BLANKED WITH SPACES by the shared
+ * `blankRanges`, never deleted, so output length, offsets and line numbers are identical to the
+ * input. String DELIMITERS are preserved when `strings` is set, so `isLiveCodeAt` works the same
+ * way here as it does for TS.
+ *
+ * @param {string} text
+ * @param {{ strings?: boolean }} [opts]  also blank string/identifier literal CONTENT
+ * @returns {Array<[number, number]>} half-open [start, end) ranges
+ */
+function collectSqlRanges(text, { strings = false } = {}) {
+  const ranges = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    // -- line comment, to end of line (the newline itself is left alone by blankRanges).
+    if (ch === '-' && next === '-') {
+      const nl = text.indexOf('\n', i);
+      const end = nl === -1 ? n : nl;
+      ranges.push([i, end]);
+      i = end;
+      continue;
+    }
+
+    // /* block comment */ — NESTABLE in PostgreSQL, so count depth rather than stopping at
+    // the first close.
+    if (ch === '/' && next === '*') {
+      const start = i;
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        if (text[i] === '/' && text[i + 1] === '*') { depth += 1; i += 2; continue; }
+        if (text[i] === '*' && text[i + 1] === '/') { depth -= 1; i += 2; continue; }
+        i += 1;
+      }
+      ranges.push([start, i]);
+      continue;
+    }
+
+    // $tag$ … $tag$ dollar-quoted string. The tag is [A-Za-z_][A-Za-z0-9_]* or empty ($$).
+    if (ch === '$') {
+      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(text.slice(i));
+      if (m) {
+        const delim = m[0];
+        const bodyStart = i + delim.length;
+        const close = text.indexOf(delim, bodyStart);
+        const end = close === -1 ? n : close + delim.length;
+        // Unterminated ⇒ treat the rest as body; a truncated file must not read as clean code.
+        if (strings) ranges.push([bodyStart, close === -1 ? n : close]);
+        i = end;
+        continue;
+      }
+    }
+
+    // '…' string (with '' escape) and "…" quoted identifier (with "" escape). E'…' adds
+    // backslash escapes; the leading E is ordinary code, so we only shift the opening quote.
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      const backslashEscapes = quote === "'" && i > 0 && /[eE]/.test(text[i - 1])
+        && !/[A-Za-z0-9_]/.test(text[i - 2] ?? '');
+      const bodyStart = i + 1;
+      let j = bodyStart;
+      while (j < n) {
+        if (backslashEscapes && text[j] === '\\') { j += 2; continue; }
+        if (text[j] === quote) {
+          if (text[j + 1] === quote) { j += 2; continue; } // doubled ⇒ escaped, keep going
+          break;
+        }
+        j += 1;
+      }
+      if (strings) ranges.push([bodyStart, Math.min(j, n)]);
+      i = Math.min(j + 1, n);
+      continue;
+    }
+
+    i += 1;
+  }
+  return ranges;
+}
+
+/**
+ * SQL comments blanked; string and dollar-quoted literals left INTACT.
+ * The SQL counterpart of `stripCommentsOnly` — use it when the value you match on lives inside
+ * a literal (a `DEFAULT 'default'`, a quoted identifier).
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripSqlComments(text) {
+  return blankRanges(text, collectSqlRanges(text, { strings: false }));
+}
+
+/**
+ * SQL comments AND literal contents blanked — the SQL counterpart of
+ * `stripCommentsAndStrings`, and the default choice unless you must read literal values.
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripSqlCommentsAndStrings(text) {
+  return blankRanges(text, collectSqlRanges(text, { strings: true }));
 }
 
 /**
