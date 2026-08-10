@@ -147,6 +147,16 @@ export const BACKOFF_SEQUENCE_SEC: readonly number[] = [1, 5, 15, 60];
 /** ≥ this many restarts inside GIVE_UP_WINDOW_MS → stop restarting, escalate. */
 export const GIVE_UP_THRESHOLD = 6;
 export const GIVE_UP_WINDOW_MS = 10 * 60 * 1000;
+/**
+ * EI-20093844846536045: how many consecutive BUILD-STEP (control-process) give-ups we absorb as
+ * "the shared tree is mid-sweep" before treating the break as real and giving up for good.
+ *
+ * Each absorbed give-up costs one longest-backoff wait plus another GIVE_UP_THRESHOLD restart
+ * attempts, so this is minutes of patience — comfortably longer than a git-sync sweep window,
+ * comfortably shorter than leaving a genuinely broken checkout looping unowned forever.
+ */
+export const BUILD_STEP_RETRY_LIMIT = 5;
+
 /** Continuously healthy this long resets the restart counter + give-up latch. */
 export const HEALTHY_RESET_MS = 5 * 60 * 1000;
 
@@ -167,6 +177,18 @@ export interface UnitFlapState {
   /** True once give-up has fired (systemd start-limit-hit OR our own ≥6/10m) — no further
    *  restart attempts until the healthy-reset clears it. */
   gaveUp: boolean;
+  /**
+   * EI-20093844846536045: how many times we have declined to latch a permanent give-up because
+   * the failure was a BUILD-STEP (control-process) failure — an external, self-clearing tree
+   * break rather than a fault in this unit's own code.
+   *
+   * Bounds the patience: a tree break clears in minutes, so retrying forever on one would convert
+   * a genuinely broken checkout into a silent, unowned infinite loop. Past
+   * {@link BUILD_STEP_RETRY_LIMIT} we stop believing "transient" and fall through to the normal
+   * permanent give-up (page + file an EI). Reset by the healthy-reset and by an administrative
+   * pause, exactly like `restarts`/`gaveUp`.
+   */
+  buildStepRetries: number;
   /** True while the unit was down as of the PREVIOUS tick — transition-only notify gate
    *  (mirrors service-health.ts's diffHealth pattern) so a persistent down state doesn't
    *  re-notify every 60s tick. */
@@ -204,6 +226,7 @@ export function initialFlapState(unit: string): UnitFlapState {
     lastRestartAt: null,
     healthySince: null,
     gaveUp: false,
+    buildStepRetries: 0,
     wasDown: false,
     restartDriftWarned: false,
     consecutiveDownTicks: 0,
@@ -346,6 +369,9 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
       state.gaveUp = false;
       state.restarts = [];
       state.backoffIndex = 0;
+      // EI-20093844846536045: the unit has been healthy for the full reset window, so whatever
+      // tree break drove the build-step retries is over — spend the patience budget fresh next time.
+      state.buildStepRetries = 0;
     }
     return {
       action: wasDown
@@ -377,6 +403,7 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
       state.restarts = [];
       state.backoffIndex = 0;
       state.lastRestartAt = null;
+      state.buildStepRetries = 0;
       return {
         action: { kind: 'report-only', unit: entry.name, reason: 'paused', notify: justWentDown },
         nextState: state,
@@ -538,6 +565,43 @@ export function extractBuildErrorDetail(output: string): string | null {
  * current process's ExecMainCode is normally 0 once systemd has respawned it,
  * so the recent journal excerpt embedded by `status --lines` is the only useful
  * source for the failure that incremented NRestarts. */
+/**
+ * A FAILED control-process line: `Process: <pid> ExecStartPre=/path/x.sh (code=exited, status=1/FAILURE)`.
+ *
+ * Extracted (EI-20093844846536045) so the CAUSE SUMMARY and the GIVE-UP POLICY below cannot drift
+ * apart about what a build-step failure looks like. `status=0` is excluded: a SUCCESSFUL
+ * ExecStartPre is also reported on a `Process:` line.
+ */
+const isFailedControlProcessLine = (line: string): boolean =>
+  /^Process:\s+\d+\s+Exec\w+=/.test(line) &&
+  /code=(?:exited|killed)/.test(line) &&
+  !/status=0(?:\/SUCCESS)?\b/.test(line);
+
+/**
+ * EI-20093844846536045: did this failure happen in a CONTROL process (ExecStartPre/Post — i.e. the
+ * build/bundle step) rather than in the unit's MAIN process?
+ *
+ * The distinction decides whether "GIVING UP, this is a code fault not a transient" is TRUE or a
+ * LIE, and the two cases want opposite policies:
+ *
+ *  - MAIN-process death → the unit's own code is broken. Nothing external will fix it; giving up
+ *    and paging a human is correct.
+ *  - CONTROL-process (build-step) failure → the unit never started at all, because the SHARED TREE
+ *    did not compile. git-sync sweeps the whole tree on a timer and deliberately commits
+ *    half-written files, so a sweep landing mid-edit yields an invalid bundle. The fault is
+ *    EXTERNAL to the unit and SELF-CLEARING — the next good sweep fixes it with nobody touching
+ *    anything. Latching a permanent give-up here strands the service long after it would start
+ *    again: measured 2026-08-10, :3170 stayed down until 12:51 on a break that cleared much earlier.
+ *
+ * Takes the `summarizeSystemctlStatusCause` OUTPUT (whose control-process branch puts that line
+ * first), so it reads the same evidence the escalation quotes.
+ */
+export function isBuildStepFailure(cause: string | null | undefined): boolean {
+  if (!cause) return false;
+  // The cause may carry an appended ` — <build error>`; only the leading line is the verdict.
+  return isFailedControlProcessLine(cause.split(' — ')[0].trim());
+}
+
 export function summarizeSystemctlStatusCause(output: string): string | null {
   const lines = output
     .split('\n')
@@ -553,12 +617,7 @@ export function summarizeSystemctlStatusCause(output: string): string | null {
   // 'exit-code'.", while this line named `bundle-host.sh` outright. Three agents each ran
   // journalctl by hand to recover exactly that, because the escalation carried the former.
   // status=0 is excluded: a SUCCESSFUL ExecStartPre is also reported on a `Process:` line.
-  const controlProcess = lines.find(
-    (line) =>
-      /^Process:\s+\d+\s+Exec\w+=/.test(line) &&
-      /code=(?:exited|killed)/.test(line) &&
-      !/status=0(?:\/SUCCESS)?\b/.test(line),
-  );
+  const controlProcess = lines.find(isFailedControlProcessLine);
   // EI-19457080109574347: the failing STEP is only half the answer \u2014 append the error that step
   // printed, so the escalation carries the fault itself instead of a pointer to where to look.
   const buildError = extractBuildErrorDetail(output);
@@ -765,13 +824,16 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // `entry.unit` is narrowed to string by the `if (!entry.unit) continue` guard above, but TS
     // discards that narrowing inside a closure (the capture could be invoked later), so bind it.
     const unitName = entry.unit;
-    const failureCauseSuffix = async (): Promise<string> => {
+    // EI-20093844846536045: returns the RAW cause alongside the rendered suffix. The suffix is
+    // prefixed (` Cause: …`), so `isBuildStepFailure` must see the unwrapped value — testing the
+    // suffix would silently never match and the build-step branch would be dead code.
+    const failureCause = async (): Promise<{ suffix: string; cause: string | null }> => {
       const fallback = ` Cause unavailable; inspect \`systemctl --user status ${unitName}\` + its journal.`;
       try {
         const cause = summarizeSystemctlStatusCause(
           await deps.execUser(['status', unitName, '--no-pager', '--lines=200']),
         );
-        return cause ? ` Cause: ${cause}` : fallback;
+        return { suffix: cause ? ` Cause: ${cause}` : fallback, cause };
       } catch (err) {
         // EI-19966318801100410: `systemctl --user status` on a failed/inactive unit ALWAYS
         // exits non-zero (execUser always rejects here), even though it prints full diagnostic
@@ -780,7 +842,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
         // rejection still carries before falling back to "unavailable".
         const stdout = stdoutFromExecError(err);
         const cause = stdout ? summarizeSystemctlStatusCause(stdout) : null;
-        return cause ? ` Cause: ${cause}` : fallback;
+        return { suffix: cause ? ` Cause: ${cause}` : fallback, cause };
       }
     };
 
@@ -806,18 +868,68 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
             summary:
               `🚨 supervision: \`${entry.unit}\` hit systemd's OWN start-limit — NOT restarting further ` +
               `(needs \`systemctl --user reset-failed ${entry.unit}\` + investigation).` +
-              (await failureCauseSuffix()),
+              (await failureCause()).suffix,
             kind: 'escalation',
           })
           .catch(() => {});
         break;
       case 'escalate-give-up': {
-        const causeSuffix = await failureCauseSuffix();
+        const { suffix: causeSuffix, cause } = await failureCause();
+
+        // EI-20093844846536045: a BUILD-STEP (control-process) failure is NOT "a code fault not a
+        // transient" — the unit never started because the SHARED TREE did not compile, which
+        // git-sync clears on its own within minutes. Latching a permanent give-up here is what
+        // kept :3170 down long past the point it would have started fine, because nothing
+        // un-parks a unit once systemd refuses it with "Start request repeated too quickly".
+        //
+        // So: keep retrying, slowly, and say so honestly — but BOUND the patience, or a genuinely
+        // broken checkout becomes a silent unowned loop.
+        if (isBuildStepFailure(cause) && nextState.buildStepRetries < BUILD_STEP_RETRY_LIMIT) {
+          nextState.buildStepRetries += 1;
+          // Un-latch so the next tick may try again, and re-arm at the LONGEST backoff so the
+          // retry is paced (one attempt per ladder-max wait), never a hot loop.
+          nextState.gaveUp = false;
+          nextState.restarts = [];
+          nextState.backoffIndex = BACKOFF_SEQUENCE_SEC.length - 1;
+          nextState.lastRestartAt = now;
+
+          // systemd has very likely parked the unit itself ("Start request repeated too quickly").
+          // A later `restart` is REFUSED while that latch is set, so clearing it is what actually
+          // makes the retry possible — this is the step that did not exist anywhere before.
+          try {
+            await deps.execUser(['reset-failed', entry.unit]);
+          } catch (err) {
+            // Best-effort: the unit may not be in a failed state at all, which is fine.
+            log(`reset-failed ${entry.unit} (build-step retry) failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+
+          // Page ONCE per episode (on the first absorbed give-up), not on every retry cycle —
+          // a tree break that takes several cycles to clear must not emit a page per cycle.
+          if (nextState.buildStepRetries === 1) {
+            await deps
+              .notify({
+                summary:
+                  `⚠ supervision: \`${entry.unit}\` failed to start ${action.restartsInWindow}× in <10min — its ` +
+                  `BUILD STEP failed, so the shared tree did not compile. This is EXTERNAL to the unit and ` +
+                  `usually self-clears on the next good git-sync sweep, so supervision is NOT giving up: it ` +
+                  `cleared systemd's failed latch and will keep retrying (up to ${BUILD_STEP_RETRY_LIMIT} ` +
+                  `cycles) until the tree builds. No action needed unless it persists.` +
+                  causeSuffix,
+                kind: 'escalation',
+              })
+              .catch(() => {});
+          }
+          break;
+        }
+
         await deps
           .notify({
             summary:
               `🚨 supervision: \`${entry.unit}\` crash-looped (${action.restartsInWindow} restarts in <10min) — ` +
-              `GIVING UP, this is a code fault not a transient. Needs investigation.` +
+              (nextState.buildStepRetries >= BUILD_STEP_RETRY_LIMIT
+                ? `GIVING UP. Its BUILD STEP has now failed across ${nextState.buildStepRetries} retry cycles, so ` +
+                  `this is no longer a passing git-sync sweep — the tree is genuinely broken. Needs investigation.`
+                : `GIVING UP, this is a code fault not a transient. Needs investigation.`) +
               causeSuffix,
             kind: 'escalation',
           })
