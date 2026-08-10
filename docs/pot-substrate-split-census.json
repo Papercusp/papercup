@@ -1,0 +1,3115 @@
+{
+  "generatedBy": "scripts/measure-pot-substrate-split.mjs",
+  "planItem": "P-056",
+  "plan": "retire-mug-kettle-su-only-2026-08-09",
+  "generatedAt": "2026-08-10T13:17:47.611Z",
+  "method": "Import specifiers are RESOLVED to absolute paths (extensionless + /index aware) and tested for containment in packages/operator-core/lib/pot — not string-matched on \"/pot/\", which both over- and under-matches. KEEP = at least one NON-TEST importer outside lib/pot.",
+  "counts": {
+    "potSourceFiles": 30,
+    "exportedSymbols": 349,
+    "keep": 75,
+    "move": 274,
+    "externalNonTestImporterFiles": 57,
+    "externalTestImporterFiles": 9
+  },
+  "selfCheck": {
+    "expectedExternalNonTestImporters": 60,
+    "actual": 57,
+    "matches": false,
+    "note": "P-056 recorded 60 non-test files outside lib/pot importing from it (2026-08-10). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list."
+  },
+  "keep": [
+    {
+      "symbol": "anyPotPlacementStarted",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "armDefaultPotWakeSubscriptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "claimPotWakeFire",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "claimWatchdogFire",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-state-divergence-sweep.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.test.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/learning-loop-health-sweep.test.ts",
+        "packages/operator-core/lib/harness/routines/learning-loop-health-sweep.ts",
+        "packages/operator-core/lib/harness/routines/loop-turn-outcome.test.ts",
+        "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
+        "packages/operator-core/lib/harness/routines/sync-read-budget-watchdog.ts",
+        "packages/operator-core/lib/harness/routines/tsc-red-sweep.ts",
+        "packages/operator-core/lib/release-deploy-staleness-watchdog.ts",
+        "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts",
+        "packages/operator-core/lib/stale-prompt-render-sweep.ts"
+      ],
+      "externalNonTestImporters": 11
+    },
+    {
+      "symbol": "clearPotTimeWake",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/pot/dissolve.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 3
+    },
+    {
+      "symbol": "computeCupWakeDossier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/fleet/spawn-hydration-deps.test.ts",
+        "packages/operator-core/lib/fleet/spawn-hydration-deps.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "computeWatchdogBackoff",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/overwatch/scorecard-backstop.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "contributeUpstream",
+      "definedIn": [
+        "packages/operator-core/lib/pot/contribute-upstream.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/platform/contribute.test.ts",
+        "packages/operator-core/lib/agent-tools/platform/contribute.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "convergenceChurn",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "cupWakeEfficiency",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "cupWakeSampleRows",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "declarePotTimeWake",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts",
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "DEFAULT_BEHAVIORAL_WAKE_POLICY",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "defaultPotEventSubscriptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "deriveCupLiveness",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "effectivePotWakeFloorSec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "enablePlatformMode",
+      "definedIn": [
+        "packages/operator-core/lib/pot/enable-platform-mode.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/platform/enable.test.ts",
+        "packages/operator-core/lib/agent-tools/platform/enable.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "evaluatePlacement",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "evaluateWakeFrontierGuard",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "fetchHarnessBlockGraph",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/fleet/placement-gather.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "filterReadyFrontier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/fleet/placement-gather.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "getPotStarted",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts",
+        "packages/operator-core/lib/agent-tools/pot/wake.ts",
+        "packages/operator-core/lib/overwatch/loop.ts"
+      ],
+      "externalNonTestImporters": 4
+    },
+    {
+      "symbol": "getPotTimeWake",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/_resolve.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "isOperatingWell",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "listNonTerminalPlacements",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "listStartedPots",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/dbos/orchestrator-loop.ts",
+        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
+        "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+        "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+        "packages/operator-core/lib/scout/signal-accumulator.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.test.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
+      ],
+      "externalNonTestImporters": 6
+    },
+    {
+      "symbol": "listUnplacedPotFrontier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "looksLikeUnverifiedOwnerClaim",
+      "definedIn": [
+        "packages/operator-core/lib/pot/owner-claim-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "MAX_SOAK_WINDOW_HOURS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/loop/soak_report.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "MIN_SOAK_WINDOW_HOURS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/loop/soak_report.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "mugKettleSystemEnabled",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts",
+        "packages/operator-core/lib/harness/routines/hive-canary-action.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "mugWakeEfficiency",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "mugWakeSampleRows",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "normalizeThroughputRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "PAPERCUSP_CANONICAL_REPO_URL",
+      "definedIn": [
+        "packages/operator-core/lib/pot/enable-platform-mode.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/platform/enable.ts",
+        "packages/operator-core/lib/agent-tools/platform/fork_gc.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "pausePotState",
+      "definedIn": [
+        "packages/operator-core/lib/pot/pause-core.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/pause.ts",
+        "packages/operator-core/lib/goals/stop-fanout.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "PlacementCandidate",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "placementConfig",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/fleet/placement-gather.ts",
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "placementRankerSpec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "PLATFORM_SELF_POT_SLUG",
+      "definedIn": [
+        "packages/operator-core/lib/pot/enable-platform-mode.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/platform/contribute.ts",
+        "packages/operator-core/lib/agent-tools/platform/dogfood_verify.ts",
+        "packages/operator-core/lib/agent-tools/platform/enable.ts"
+      ],
+      "externalNonTestImporters": 3
+    },
+    {
+      "symbol": "POT_BLUEPRINT_ID",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts",
+        "packages/operator-core/lib/agent-tools/pot/wake.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "potBootCheck",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/index.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "PotSurvey",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/live-ports.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "potWakeFloorSec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "readCreateWakeSuppressPlans",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "readPotSoakReport",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/loop/soak_report.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "readPotWakeState",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/_resolve.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "readSessionAuditDigest",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/loop/session_audit.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "recentWatchdogFires",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-state-divergence-sweep.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.test.ts",
+        "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+        "packages/operator-core/lib/harness/routines/learning-loop-health-sweep.test.ts",
+        "packages/operator-core/lib/harness/routines/learning-loop-health-sweep.ts",
+        "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
+        "packages/operator-core/lib/harness/routines/tsc-red-sweep.ts",
+        "packages/operator-core/lib/release-deploy-staleness-watchdog.ts",
+        "packages/operator-core/lib/rubric-staleness-watchdog.ts",
+        "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts",
+        "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+        "packages/operator-core/lib/sync/hyperbee/cold-join-canary.ts",
+        "packages/operator-core/lib/wall-lapse-watchdog.ts"
+      ],
+      "externalNonTestImporters": 14
+    },
+    {
+      "symbol": "recordFire",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/rubric-staleness-watchdog.ts",
+        "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+        "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+        "packages/operator-core/lib/sync/hyperbee/cold-join-canary.ts",
+        "packages/operator-core/lib/wall-lapse-watchdog.ts"
+      ],
+      "externalNonTestImporters": 5
+    },
+    {
+      "symbol": "recordPotWake",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "requestUrgentPotWake",
+      "definedIn": [
+        "packages/operator-core/lib/pot/urgent-wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
+        "packages/operator-core/lib/agent-tools/pot/start.ts",
+        "packages/operator-core/lib/harness/routines/hive-canary-action.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 4
+    },
+    {
+      "symbol": "requirePotTier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tier-gate.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/dissolve.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "resolveMugOwner",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
+      ],
+      "externalNonTestImporters": 3
+    },
+    {
+      "symbol": "resolvePotHomeSlug",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/loop/arm.ts",
+        "packages/operator-core/lib/agent-tools/loop/checkpoint.ts",
+        "packages/operator-core/lib/agent-tools/loop/session_audit.ts",
+        "packages/operator-core/lib/agent-tools/loop/soak_report.ts",
+        "packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/overwatch/pause.ts",
+        "packages/operator-core/lib/agent-tools/overwatch/start.ts",
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+        "packages/operator-core/lib/agent-tools/pot/get_steering.ts",
+        "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts",
+        "packages/operator-core/lib/agent-tools/pot/pause.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
+        "packages/operator-core/lib/agent-tools/pot/start.ts",
+        "packages/operator-core/lib/agent-tools/pot/status.ts",
+        "packages/operator-core/lib/agent-tools/pot/survey.ts",
+        "packages/operator-core/lib/agent-tools/pot/wake.ts",
+        "packages/operator-core/lib/endpoint-route/routes/operator/hive-steering.ts",
+        "packages/operator-core/lib/network-board/build-board.ts",
+        "packages/operator-core/lib/overwatch/loop.ts",
+        "packages/operator-core/lib/overwatch/snapshot.ts"
+      ],
+      "externalNonTestImporters": 20
+    },
+    {
+      "symbol": "resumePotState",
+      "definedIn": [
+        "packages/operator-core/lib/pot/pause-core.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/goals/stop-fanout.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "runCupTranscriptCapSweep",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "scopedFireReason",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "scopeViolation",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "setPotCarryNote",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "setPotEventSubscriptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "setPotPlacementStarted",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "setPotStarted",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/start.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "shouldWakeOnChurn",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "shouldWakeOnScopeViolation",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/pot-eval/supervision-metrics.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "summarizeOpenPlacements",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "surveyPot",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "surveyWorkspace",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/survey.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "teardownPotLearningLoop",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/dissolve.ts",
+        "packages/operator-core/lib/pot-eval/live-ops.ts"
+      ],
+      "externalNonTestImporters": 2
+    },
+    {
+      "symbol": "UNVERIFIED_NOTE_STAMP",
+      "definedIn": [
+        "packages/operator-core/lib/pot/owner-claim-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "UNVERIFIED_OWNER_CLAIM_GUIDANCE",
+      "definedIn": [
+        "packages/operator-core/lib/pot/owner-claim-guard.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "watchdogBackoffCapHours",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/overwatch/scorecard-backstop.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "watchdogFallbackSleepSec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "watchdogStaleSec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/status.ts"
+      ],
+      "externalNonTestImporters": 1
+    },
+    {
+      "symbol": "withDefaultPotWakeSubscriptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/agent-tools/pot/declare_wake.ts"
+      ],
+      "externalNonTestImporters": 1
+    }
+  ],
+  "move": [
+    {
+      "symbol": "_resetPotWakeRuleSyncForTests",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ACTIVE_RECLAIM_WINDOW_MS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "appendCarryJournal",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "armFallbackPotWake",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BehavioralWakePolicy",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BG_HOST_FAILURE_PATTERN",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BG_HOST_JOURNAL_CACHE_TAG",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BG_HOST_JOURNAL_HARD_TTL_MS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BG_HOST_JOURNAL_SOFT_TTL_MS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BG_HOST_MEMORY_PEAK_PATTERN",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BG_HOST_OOM_PATTERN",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BG_HOST_RESTART_PATTERN",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BgHostJournalMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "blueprintWakeSubscriptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BriefCapacity",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BriefCup",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BriefEscalation",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "BriefInboxItem",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "buildOpenPlacementSummary",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "buildPlanItemBlockGraph",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CARRY_JOURNAL_MAX_ENTRIES",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CARRY_JOURNAL_NOTE_MAX_CHARS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CARRY_JOURNAL_TOTAL_MAX_CHARS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "carryNoteHead",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief-launch.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "checkCupSpawnHealth",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "checkpointDeclaresTerminal",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "clampWakeAt",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "clearRetiredTierWakes",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "clusterInvalidCalls",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CompactionAudit",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ComputeCupWakeDossierInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "computeMugBriefFloorView",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief-launch.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "computeMugWakeBrief",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief-launch.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "computePotPlacementSplit",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief-launch.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "computePotThroughput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "computeRecurringFriction",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "computeSoakReport",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ContextBurnMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ContributeKind",
+      "definedIn": [
+        "packages/operator-core/lib/pot/contribute-upstream.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ContributeUpstreamInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/contribute-upstream.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ContributeUpstreamResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/contribute-upstream.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ConvergenceChurnInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ConvergenceChurnVerdict",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "countCompactionMarkersInTranscript",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "countPlaceableFrontier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "countQuarantinedFrontier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupDossierCaps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupDossierDeps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupDossierInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupLiveness",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupLivenessInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupRosterPeer",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupSession",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupSpawnHealthResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupSpawnHealthSnapshot",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupSpawnHealthThresholds",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupSpawnHealthVerdict",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupSpawnRecord",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupTranscriptCapDeps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupTranscriptCapReport",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupTranscriptCaps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupTranscriptMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupWakeEfficiency",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupWakeEfficiencyDeps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupWakeSample",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "CupWakeSampleRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "decideMugWakeMode",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-warm-session.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "decidePotWakeAdmission",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEFAULT_CUP_DOSSIER_CAPS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEFAULT_CUP_TRANSCRIPT_CAPS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEFAULT_MUG_BRIEF_CAPS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEFAULT_MUG_BRIEF_TEXT_CAPS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEFAULT_POT_SCOUT_CRON",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEFAULT_POT_SCOUT_MAX_COST_USD",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEFAULT_SOAK_WINDOW_HOURS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEFAULT_STALE_RECOVERING_MS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DefaultPotEventSubscriptionsOpts",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-defaults.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "defaultResolveSelfPotMember",
+      "definedIn": [
+        "packages/operator-core/lib/pot/contribute-upstream.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DEPLOY_LATENCY_THRESHOLD_MS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "DeployLatencyMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "detectThroughputBreaches",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "effectiveAutoResumeForPause",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "EMPTY_CUP_WAKE_EFFICIENCY",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "EMPTY_MUG_WAKE_EFFICIENCY",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "EnablePlatformModeInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/enable-platform-mode.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "EnablePlatformModeResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/enable-platform-mode.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ensurePotWakeRuleSync",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "EscalationBacklogMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "evaluateCupSpawnHealth",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "evaluateStalePlacementEscalation",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "evaluateTerminalPlacementReconcile",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "FailedCallRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "FallbackArmResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "fetchEscalatedIssueFrontierRows",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "fetchFrontierRows",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "fetchReconcileFrontier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "floorFromSurvey",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "FloorViewFrontierItem",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief-launch.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "freshContextRegimeDelta",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-fresh-context-delta.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "FreshContextRegimeDelta",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-fresh-context-delta.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "FrictionSignature",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "FrontierAdmission",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "frontierInEligiblePlans",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "FrontierRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "frontierRowToCandidate",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "GateTransition",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "getPotCarryJournal",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "getPotCarryNote",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "getPotPlacementStarted",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "HarnessBlockGraph",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "idealPlacements",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "inAllowedHarness",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "inEligiblePlans",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "InfraCurseMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "INVALID_CALL_CLUSTER_GAP_MS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "INVALID_CALL_CLUSTER_MIN_COUNT",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "InvalidCallCluster",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isAdmissionStarved",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isHeldByLiveNonCupAssignee",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isNewWorkPaused",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isReaperReclaim",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isRetiredTierRole",
+      "definedIn": [
+        "packages/operator-core/lib/pot/retired-tier-roles.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isStuckBlockerState",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isUnitParked",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isUnitParkedForReconcile",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "isUnitTerminal",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/fleet/placement-gather.test.ts"
+      ],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "latestMugWakeAt",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "listPausedPots",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "listStartedWorkspaceLoops",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MAX_COMPACTION_SESSIONS_SCANNED",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MAX_FAILED_CALL_ROWS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MAX_GATE_TRANSITIONS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MUG_COORD_SLOT",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MUG_SESSION_MAX_AGE_MS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-warm-session.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugBriefCaps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugBriefFloor",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugBriefFloorView",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief-launch.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugBriefInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugBriefTextCaps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugRebirthInputs",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-warm-session.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugWakeDecision",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-warm-session.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugWakeEfficiency",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugWakeEfficiencyDeps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugWakeMode",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-warm-session.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugWakeOptions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugWakeSample",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "MugWakeSampleRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "mugWarmWakeAttempt",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-warm-session.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "normalizeErrorSignature",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "notStopped",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "OPEN_PLACEMENT_STATES",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "OpenPlacementSummary",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "parseBgHostGlobalJournal",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "parseBgHostUnitJournal",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "pausedPotRecoverySweep",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "pausedRecoveryAutoResume",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PausedRecoveryResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "pausedRecoveryStaleSec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PausePotResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/pause-core.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "permissionToTier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tiers.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PLACEMENT_FEATURES",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PLACEMENT_WEIGHTS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PlacementConfig",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PlacementDecision",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PlacementObservation",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PlacementRankContext",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PlacementSweepResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PlacementView",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PlanItemBlockGraph",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "planToCandidate",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "POST_COMPACTION_ERROR_MARKER_REGEX",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "POST_COMPACTION_MARKER_WINDOW_MIN",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "POT_SCOUT_CADENCE_MIN",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "POT_SCOUT_ROUTINE_NAME",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "POT_WAKE_ROUTINE_NAME",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "POT_WAKE_RULES_INVALIDATION",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotBindingRepo",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tier-gate.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotDemand",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potDemandCheck",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotEventSubscription",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potFrontierAdmission",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotLiveness",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potLivenessCheck",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotMembership",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotMemberTier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tiers.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potMidTurn",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potPlaceableFrontierDepth",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potReadyFrontierDepth",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potScoutRoutineId",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotSoakReport",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotSoakReportSnapshot",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotSpawnSnapshot",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotThroughputBreach",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotThroughputBreachContext",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotThroughputInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotThroughputMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotThroughputTickResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotThroughputTickRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotTierGateResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tier-gate.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potTurnEndCheck",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotWakeAdmission",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PotWakeState",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "potWatchdogSweep",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "presenceToRosterPeer",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "provisionPotLearningLoop",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ProvisionPotLearningLoopInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ProvisionPotLearningLoopResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "PublishPackOutcome",
+      "definedIn": [
+        "packages/operator-core/lib/pot/contribute-upstream.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "rankPlacements",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "RawThroughputTickRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "readBgHostJournalUncached",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "readCompactionAudit",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "readContextBurnMetrics",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "readFailedCallRows",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "readGateTransitions",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "readPlanItemStamp",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ReadyFrontierDepth",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ReconcileFrontier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ReconcileFrontierRow",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "reconcileOnePot",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "reconcilePotPlacements",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ReconcileSweepDeps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "recordPotThroughputTick",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "RECURRING_FRICTION_MIN_OCCURRENCES",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "RECURRING_FRICTION_MIN_OWNERS",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "RecycleDecision",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "refreshAllPotWakeRules",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "registerPotWakeRules",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "renderCupDossier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-dossier.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "renderMugBrief",
+      "definedIn": [
+        "packages/operator-core/lib/pot/mug-brief.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ResolvedTier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tier-gate.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "resolveMugOwners",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "resolvePotMembership",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "resolvePotMemberTier",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tier-gate.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "resolvePotRepo",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tier-gate.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ResolveTierOpts",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tier-gate.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ResumePotResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/pause-core.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "RETIRED_TIER_ROLES",
+      "definedIn": [
+        "packages/operator-core/lib/pot/retired-tier-roles.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "RoleTurnSuccess",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ScopeFilter",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ScopeViolationInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "ScopeViolationVerdict",
+      "definedIn": [
+        "packages/operator-core/lib/pot/behavioral-supervision.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "SCOUT_CYCLE_TARGET_ROLE",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "SelfPotMember",
+      "definedIn": [
+        "packages/operator-core/lib/pot/contribute-upstream.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "SessionAuditDigest",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "SessionCompactionDetail",
+      "definedIn": [
+        "packages/operator-core/lib/pot/session-audit.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "shouldActOnPausedPot",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "shouldRecycleCupTranscript",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "SoakReportInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "staggeredPotScoutCron",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "StaleEscalationDecision",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "StalePlacementEscalationObs",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "startCupSpawnHealthWatchdog",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "stuckThresholdMs",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "SUMMARY_INACTIVE_UNIT_STATES",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "SurveyDeps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "syncPotWakeRules",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "TeardownPotLearningLoopInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "TeardownPotLearningLoopResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/provision-learning-loop.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "TerminalPlacementObs",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "throughputReadWindowMs",
+      "definedIn": [
+        "packages/operator-core/lib/pot/throughput.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "tierMeets",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tiers.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "TierReason",
+      "definedIn": [
+        "packages/operator-core/lib/pot/member-tier-gate.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "UrgentPotWakeResult",
+      "definedIn": [
+        "packages/operator-core/lib/pot/urgent-wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "WAKE_MEAN_CHAR_BUDGET",
+      "definedIn": [
+        "packages/operator-core/lib/pot/soak-report.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "WakeFrontierGuardInput",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "WakeFrontierRefusal",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake-frontier-guard.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "wakeMug",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "WatchdogBackoffDecision",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "WatchdogBackoffLast",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "watchdogDemandSleepSec",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "WatchdogSource",
+      "definedIn": [
+        "packages/operator-core/lib/pot/watchdog.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "withinWakeFloor",
+      "definedIn": [
+        "packages/operator-core/lib/pot/wake.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "WorkspaceSurvey",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    }
+  ],
+  "externalNonTestImporterFiles": [
+    "packages/operator-core/lib/agent-state-divergence-sweep.ts",
+    "packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts",
+    "packages/operator-core/lib/agent-tools/index.ts",
+    "packages/operator-core/lib/agent-tools/loop/arm.ts",
+    "packages/operator-core/lib/agent-tools/loop/checkpoint.ts",
+    "packages/operator-core/lib/agent-tools/loop/session_audit.ts",
+    "packages/operator-core/lib/agent-tools/loop/soak_report.ts",
+    "packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
+    "packages/operator-core/lib/agent-tools/overwatch/pause.ts",
+    "packages/operator-core/lib/agent-tools/overwatch/start.ts",
+    "packages/operator-core/lib/agent-tools/platform/contribute.ts",
+    "packages/operator-core/lib/agent-tools/platform/dogfood_verify.ts",
+    "packages/operator-core/lib/agent-tools/platform/enable.ts",
+    "packages/operator-core/lib/agent-tools/platform/fork_gc.ts",
+    "packages/operator-core/lib/agent-tools/pot/_create.ts",
+    "packages/operator-core/lib/agent-tools/pot/_resolve.ts",
+    "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
+    "packages/operator-core/lib/agent-tools/pot/dissolve.ts",
+    "packages/operator-core/lib/agent-tools/pot/get_steering.ts",
+    "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts",
+    "packages/operator-core/lib/agent-tools/pot/pause.ts",
+    "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
+    "packages/operator-core/lib/agent-tools/pot/start.ts",
+    "packages/operator-core/lib/agent-tools/pot/status.ts",
+    "packages/operator-core/lib/agent-tools/pot/survey.ts",
+    "packages/operator-core/lib/agent-tools/pot/wake.ts",
+    "packages/operator-core/lib/dbos/orchestrator-loop.ts",
+    "packages/operator-core/lib/endpoint-route/routes/operator/hive-steering.ts",
+    "packages/operator-core/lib/fleet/placement-gather.ts",
+    "packages/operator-core/lib/fleet/spawn-hydration-deps.ts",
+    "packages/operator-core/lib/goals/stop-fanout.ts",
+    "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
+    "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts",
+    "packages/operator-core/lib/harness/routines/hive-canary-action.ts",
+    "packages/operator-core/lib/harness/routines/learning-loop-health-sweep.ts",
+    "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
+    "packages/operator-core/lib/harness/routines/sync-read-budget-watchdog.ts",
+    "packages/operator-core/lib/harness/routines/tsc-red-sweep.ts",
+    "packages/operator-core/lib/network-board/build-board.ts",
+    "packages/operator-core/lib/overwatch/loop.ts",
+    "packages/operator-core/lib/overwatch/scorecard-backstop.ts",
+    "packages/operator-core/lib/overwatch/snapshot.ts",
+    "packages/operator-core/lib/pot-eval/live-ops.ts",
+    "packages/operator-core/lib/pot-eval/live-ports.ts",
+    "packages/operator-core/lib/pot-eval/supervision-metrics.ts",
+    "packages/operator-core/lib/release-deploy-staleness-watchdog.ts",
+    "packages/operator-core/lib/rubric-staleness-watchdog.ts",
+    "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+    "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+    "packages/operator-core/lib/scout/ready-plan-autostart.ts",
+    "packages/operator-core/lib/scout/signal-accumulator.ts",
+    "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts",
+    "packages/operator-core/lib/search/session-ingest-lag-watchdog.ts",
+    "packages/operator-core/lib/stale-prompt-render-sweep.ts",
+    "packages/operator-core/lib/sync-resolver/learning-hive-throughput-read.ts",
+    "packages/operator-core/lib/sync/hyperbee/cold-join-canary.ts",
+    "packages/operator-core/lib/wall-lapse-watchdog.ts"
+  ]
+}
