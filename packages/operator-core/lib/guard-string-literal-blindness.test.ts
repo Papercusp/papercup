@@ -322,6 +322,44 @@ const SCANS_CODE_FILES = /\.tsx?['"`]|\.mjs['"`]|\.jsx['"`]|\.cts['"`]|\.mts['"`
 const TEXT_MATCHES = /\.test\s*\(|\.match(All)?\s*\(|\.includes\s*\(|\.exec\s*\(/;
 const READS_FILES = /readFileSync|execFileSync\s*\(\s*['"](rg|grep)['"]/;
 
+/**
+ * A call to one of the shared module's OWN exports. WI-37801 follow-up: a definition whose
+ * body DELEGATES to the shared stripper is a thin alias, not a hand-roll — and counting it
+ * as one punishes exactly the migration this guard exists to drive.
+ *
+ * Found the expensive way, an hour after the definition rule landed: `lint-migrations.mjs`
+ * retired its private `stripSqlBodies` in favour of
+ *   const maskSealingBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText);
+ * and the name-shaped rule scored that FULLY-MIGRATED file as hand-rolled, because
+ * `maskSealingBodies` is `mask` + `Sealing` + `Bodies` in `const X =` form. The author had
+ * done the right thing and the guard called it debt.
+ */
+const SHARED_EXPORT_CALL =
+  /\b(?:stripCommentsAndStrings|stripCommentsOnly|stripSqlComments|stripSqlCommentsAndStrings)\s*\(/;
+
+/**
+ * Does this source DEFINE its own stripper, as opposed to importing or aliasing the shared one?
+ *
+ * Checks EVERY definition site, not just the first: a file may hold a delegating alias AND a
+ * real hand-roll, and stopping at the first match would let whichever came first decide — the
+ * same first-match-wins mistake at one level down.
+ *
+ * Delegation is judged on the definition's OWN line, which is deliberately conservative: it
+ * clears the one-line arrow alias above and nothing else. A multi-line wrapper that merely
+ * forwards still reads as hand-rolled — a false positive that costs one BASELINE line, versus
+ * a body-scanning rule that would exempt a real hand-roll for mentioning the shared module
+ * somewhere inside it. That is the direction this guard must err in.
+ */
+function definesPrivateStripper(maskedSource: string): boolean {
+  for (const m of maskedSource.matchAll(new RegExp(NAMED_STRIPPER_DEF.source, 'gm'))) {
+    const nl = maskedSource.indexOf('\n', m.index);
+    const line = maskedSource.slice(m.index, nl === -1 ? undefined : nl);
+    if (SHARED_EXPORT_CALL.test(line)) continue;
+    return true;
+  }
+  return false;
+}
+
 type Masking = 'shared' | 'hand-rolled' | 'ast' | 'unmasked';
 
 function classifyMasking(maskedSource: string): Masking {
@@ -338,7 +376,7 @@ function classifyMasking(maskedSource: string): Masking {
   // whose sole stripper reference is its own import has no definition site and still falls
   // through to `shared`. See NAMED_STRIPPER_DEF.
   if (
-    NAMED_STRIPPER_DEF.test(maskedSource) ||
+    definesPrivateStripper(maskedSource) ||
     maskedSource.includes(NAIVE_BLOCK_RE) ||
     maskedSource.includes(NAIVE_LINE_RE)
   ) {
@@ -431,18 +469,19 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     // erased the rest of the line, hiding any literal tenant default that followed it.
     // Comments only, NOT the strings variant: its main quarry is the ALTERs inside a
     // `DO $$ … $$` loop, which the strings variant would seal away entirely.
-    // ⚠ RE-ADDED 2026-08-10 (WI-37801). The note written at removal time called this correctly:
-    // the removal was "NOT a claim that the file is fully migrated", because `stripSqlBodies` in
-    // that same file is STILL hand-rolled, deliberately (WI-37800 — its call sites need opposite
-    // masks, and its tag-regex bug is load-bearing today; swapping it was measured to drop a real
-    // detection). What that note could only observe, and WI-37801 has now fixed, is that removing
-    // it "changed nothing mechanically": classifyMasking() returned 'shared' on its FIRST match,
-    // so the file was classified clean whether or not it appeared here. The entry had become
-    // decorative. Now that the classifier anchors on DEFINITIONS, this entry is load-bearing
-    // again and the file measures as hand-rolled — which is the honest reading while
-    // stripSqlBodies exists. It comes off this list when WI-37800 retires that stripper, not
-    // before.
-    'lint-migrations.mjs',
+    // lint-migrations.mjs: RE-ADDED and then REMOVED AGAIN, both on 2026-08-10, and the round
+    // trip is worth keeping because each step was correct on the evidence available at the time.
+    // WI-37801 re-added it once classification anchored on DEFINITIONS, because the file then
+    // genuinely still hand-rolled `stripSqlBodies`; that entry's note said it comes off "when
+    // WI-37800 retires that stripper, not before". WI-37800 then retired it the same day,
+    // replacing it with a one-line alias that DELEGATES to the shared module:
+    //     const maskSealingBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText);
+    // which is the fully-migrated state this list exists to reward. So it is off the list.
+    // ⚠ That alias also exposed a false positive in the definition rule itself — `maskSealingBodies`
+    // is `mask`+`Sealing`+`Bodies` in `const X =` form, so a name-shaped rule scored a migrated
+    // file as debt. Fixed by SHARED_EXPORT_CALL / definesPrivateStripper above; do not re-add
+    // this entry on the strength of a stripper-shaped NAME alone — check whether the definition
+    // delegates.
   ]);
 
   const measurePopulation = (): string[] =>
@@ -715,6 +754,38 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
         `stripCommentsOnly(src, name);`,
       ].join('\n');
       expect(classifyMasking(fixture)).toBe('shared');
+    });
+
+    // WI-37801 follow-up, from a REAL false positive an hour after the definition rule landed:
+    // lint-migrations.mjs retired its private stripSqlBodies for exactly this alias, and the
+    // rule scored the now-migrated file as debt. A named wrapper that DELEGATES is the migrated
+    // state — flagging it punishes the very consolidation this suite drives.
+    it('a named alias that DELEGATES to the shared module is migrated, not hand-rolled', () => {
+      const fixture = [
+        `import { stripSqlCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';`,
+        `const maskSealingBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText);`,
+      ].join('\n');
+      // VACUITY GUARD: the alias must really look like a stripper definition, or this proves
+      // nothing about the delegation carve-out — it would just be a name the rule never matched.
+      expect(
+        new RegExp(NAMED_STRIPPER_DEF.source, 'm').test(fixture),
+        'CONTROL IS VACUOUS: the alias no longer matches the definition rule at all',
+      ).toBe(true);
+      expect(classifyMasking(fixture)).toBe('shared');
+    });
+
+    // ...and the carve-out must not become a laundering trick. A file that delegates in one
+    // place and still hand-rolls in another is hand-rolled: definesPrivateStripper checks EVERY
+    // definition site precisely so the first one cannot decide for the rest.
+    it('a delegating alias does NOT launder a real hand-roll elsewhere in the same file', () => {
+      const fixture = [
+        `import { stripSqlCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';`,
+        `const maskSealingBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText);`,
+        `function stripComments(sql) {`,
+        `  return sql.replace(/--[^\\n]*/g, ' ');`,
+        `}`,
+      ].join('\n');
+      expect(classifyMasking(fixture)).toBe('hand-rolled');
     });
   });
 });
