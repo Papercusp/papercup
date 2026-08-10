@@ -125,10 +125,24 @@ export const smartQuotesDetector: ContentDetector = {
  * break needs a human/LLM to decide the intended code; the goal here is
  * quarantine-before-commit, not guessing at someone's unfinished edit.
  */
+/**
+ * EI-20089601803883232: `.mts`/`.cts` are INCLUDED. They were not, and the two halves of
+ * this same guard disagreed about which files exist — the PostToolUse sibling
+ * (`posttooluse-ts-parse-nudge.mjs`) has always used `/\.(ts|tsx|mts|cts)$/`, while this
+ * commit-path detector stopped at `.ts|.tsx`. The narrower half is the one that
+ * quarantines, so an unparseable `.mts` committed clean: found live in
+ * `apps/operator/lib/release/test-e2e-generation.mts`, which carried ten `\!` shell-escape
+ * artifacts (TS1127 "Invalid character") in the committed tree. `.mts` is executed by tsx
+ * on the RELEASE path, so it breaks exactly like a `.ts` file does.
+ *
+ * Widening measured before landing: 52 tracked `.mts`/`.cts` files, of which exactly one
+ * was unparseable (a 9-day-abandoned scratchpad probe with a trailing comma) — fixed in
+ * the same change, so this adds coverage without newly quarantining anything.
+ */
 export const tsParseDetector: ContentDetector = {
   key: 'ts-parse',
-  glob: '**/*.{ts,tsx}',
-  matches: (f) => /\.(ts|tsx)$/.test(f) && !isExcludedPath(f),
+  glob: '**/*.{ts,tsx,mts,cts}',
+  matches: (f) => /\.(ts|tsx|mts|cts)$/.test(f) && !isExcludedPath(f),
   detect: (file, text) => {
     const hit = findTsParseError(file, text);
     if (!hit) return null;

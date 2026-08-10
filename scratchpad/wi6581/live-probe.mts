@@ -23,7 +23,7 @@ const { findCodexRolloutPath, findCodexRolloutPathByUuid, __resetTranscriptResol
 const { findArchivedSessionIdForAdv } = await import(`${LIB}/session-archive.ts`);
 const { getOrgPg } = await import('@papercusp/db-org');
 const { codexHomeForSessionKey } = await import(
-  join(REPO, 'libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts'),
+  join(REPO, 'libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts')
 );
 
 const { sql } = getOrgPg();

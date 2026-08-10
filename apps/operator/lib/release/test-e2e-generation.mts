@@ -62,11 +62,11 @@ try {
   console.log('✓ index.html generated:', path.join(tmpDir, 'index.html'));
 
   // Verify it contains key elements
-  if (\!indexHtml.includes('Papercusp releases')) throw new Error('Missing title');
-  if (\!indexHtml.includes('0.0.9')) throw new Error('Missing version');
-  if (\!indexHtml.includes('Fixed auto-update')) throw new Error('Missing changelog');
-  if (\!indexHtml.includes('document.referrer')) throw new Error('Missing analytics beacon');
-  if (\!indexHtml.includes('noindex')) throw new Error('Missing noindex meta tag');
+  if (!indexHtml.includes('Papercusp releases')) throw new Error('Missing title');
+  if (!indexHtml.includes('0.0.9')) throw new Error('Missing version');
+  if (!indexHtml.includes('Fixed auto-update')) throw new Error('Missing changelog');
+  if (!indexHtml.includes('document.referrer')) throw new Error('Missing analytics beacon');
+  if (!indexHtml.includes('noindex')) throw new Error('Missing noindex meta tag');
   console.log('✓ index.html contains all required elements');
 
   // Test 2: Render history.json
@@ -78,8 +78,8 @@ try {
 
   fs.writeFileSync(path.join(tmpDir, 'history.json'), historyJson, 'utf8');
   const parsed = JSON.parse(historyJson);
-  if (parsed.releases[0].version \!== '0.0.9') throw new Error('history.json version mismatch');
-  if (parsed.releases[0].tag \!== 'desktop-v0.0.9-alpha') throw new Error('history.json tag mismatch');
+  if (parsed.releases[0].version !== '0.0.9') throw new Error('history.json version mismatch');
+  if (parsed.releases[0].tag !== 'desktop-v0.0.9-alpha') throw new Error('history.json tag mismatch');
   console.log('✓ history.json generated and parses correctly');
 
   // Test 3: Render plan page
@@ -92,8 +92,8 @@ try {
 
   fs.mkdirSync(path.join(tmpDir, 'plans'), { recursive: true });
   fs.writeFileSync(path.join(tmpDir, 'plans', 'auto-update.html'), planHtml, 'utf8');
-  if (\!planHtml.includes('Auto-update reliability')) throw new Error('Missing plan title');
-  if (\!planHtml.includes('Fixed critical issues')) throw new Error('Missing plan content');
+  if (!planHtml.includes('Auto-update reliability')) throw new Error('Missing plan title');
+  if (!planHtml.includes('Fixed critical issues')) throw new Error('Missing plan content');
   console.log('✓ plan page generated');
 
   // Test 4: Verify no secrets leaked
@@ -103,7 +103,7 @@ try {
   if (allContent.includes('location.href')) throw new Error('Leaked location.href');
   console.log('✓ No secrets leaked in generated pages');
 
-  console.log('\n✅ All end-to-end tests passed\!');
+  console.log('\n✅ All end-to-end tests passed!');
   console.log('   Generated site:', tmpDir);
   process.exit(0);
 } catch (e) {

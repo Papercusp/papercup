@@ -226,6 +226,17 @@ describe('findTsParseError — esbuild-fatal codes above the grammar bound', () 
 });
 
 describe('tsParseDetector', () => {
+  // EI-20089601803883232 — the commit-path detector and its PostToolUse sibling must agree
+  // on WHICH FILES EXIST. The sibling has always matched .mts/.cts; this half did not, so an
+  // unparseable .mts committed clean (test-e2e-generation.mts, ten `\!` artifacts, TS1127).
+  it('covers .mts/.cts — the release path executes them and they break identically', () => {
+    expect(tsParseDetector.matches('apps/operator/lib/release/test-e2e-generation.mts')).toBe(true);
+    expect(tsParseDetector.matches('packages/x/a.cts')).toBe(true);
+    // ...and the exclusions still apply to the newly-covered extensions.
+    expect(tsParseDetector.matches('packages/x/node_modules/y/z.mts')).toBe(false);
+    expect(tsParseDetector.matches('_retired/papercup/x.mts')).toBe(false);
+  });
+
   it('scopes to tracked .ts/.tsx and skips retired/vendored/build trees', () => {
     expect(tsParseDetector.matches('packages/operator-core/lib/x.ts')).toBe(true);
     expect(tsParseDetector.matches('apps/operator/components/X.tsx')).toBe(true);
