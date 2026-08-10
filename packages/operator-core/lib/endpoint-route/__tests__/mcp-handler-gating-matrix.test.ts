@@ -394,7 +394,19 @@ defineTool({
   capability: 'agent_tools:read',
   args: z.object({}),
   agentRoles: ['scoper'],
-  skipResultDoor: true,
+  skipResultDoor: 'programmatic-caller',
+  handler: async () => ({ data: { big: DOOR_TEST_BIG_TEXT } }),
+});
+// WI-37843: the OTHER skip reason. Same door-skipping effect, opposite prose
+// treatment — a model-facing tool that is oversize by design (coord:orient)
+// must keep the annotations a programmatic caller has to be spared.
+defineTool({
+  name: 'gatingtest:door_skip_oversize',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  agentRoles: ['scoper'],
+  skipResultDoor: 'oversize-by-design',
   handler: async () => ({ data: { big: DOOR_TEST_BIG_TEXT } }),
 });
 
@@ -568,8 +580,19 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
     expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
   });
 
-  it('skipResultDoor:true on the tool definition skips the door entirely — full body, no spill', async () => {
+  it("skipResultDoor:'programmatic-caller' on the tool definition skips the door entirely — full body, no spill", async () => {
     const res = await callTool('gatingtest:door_skip', {}, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(textOf(res)).toContain(DOOR_TEST_BIG_TEXT);
+  });
+
+  // WI-37843: the reason must not become decorative. BOTH reasons skip the door
+  // — if this ever regressed to matching only the original literal, coord:orient
+  // would silently start being truncated again at 1500 tokens, which is exactly
+  // the state this work removed and is invisible without an assertion.
+  it("skipResultDoor:'oversize-by-design' also skips the door — full body, no spill", async () => {
+    const res = await callTool('gatingtest:door_skip_oversize', {}, scoped('ws-test'));
     expect(res.isError).not.toBe(true);
     expect(res._meta?.resultDoor).toBeUndefined();
     expect(textOf(res)).toContain(DOOR_TEST_BIG_TEXT);

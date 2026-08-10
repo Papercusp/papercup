@@ -74,7 +74,7 @@ import {
 } from '@papercusp/tooldef-mcp';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor } from '../../../result-door';
-import { annotateStoreIdentitySuspectResult } from './store-identity-suspect';
+import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import { PROJECTION_ARG, applyResultProjection, parseProjection } from '../../../result-projection';
 import type { ProjectionSpec } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
@@ -2300,13 +2300,13 @@ const handler = createMcpHandler(
               // programmatic caller's body parseable (EI-19386201256023240) while still
               // stamping the machine-readable `_meta` marker.
               // WI-37843: gate that on the REASON, not on the mere fact of skipping the
-              // door. `'oversize-by-design'` is a MODEL-FACING exemption — orient's reader
-              // is an agent, and "this not_found may be from the WRONG database" is exactly
-              // the warning a bootstrap read must not lose. Only `'programmatic-caller'`
-              // needs a byte-clean body.
+              // door — see mayAnnotateResultText, which owns the rule. `'oversize-by-design'`
+              // is a MODEL-FACING exemption: orient's reader is an agent, and "this not_found
+              // may be from the WRONG database" is exactly the warning a bootstrap read must
+              // not lose. Only `'programmatic-caller'` needs a byte-clean body.
               const result = annotateStoreIdentitySuspectResult(
                 doored,
-                projected.skipResultDoor !== 'programmatic-caller',
+                mayAnnotateResultText(projected.skipResultDoor),
               );
               // EI-19389431406847252: the door spills to scratch but the telemetry
               // row for THIS call was already snapshotted+queued inside
