@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
   applyProjectionBanner,
@@ -11,7 +11,10 @@ import {
   splitFrontmatter,
   stripProjectionBanner,
 } from './authored-doc-projection';
-import { listSectionDocs } from '../../../../../scripts/project-authored-docs';
+import { listCorpusDocs, listSectionDocs } from '../../../../../scripts/project-authored-docs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * P-008 — PG becomes canonical for authored doc prose, projected back to .mdx.
@@ -202,6 +205,62 @@ describe('authored-doc projection (P-008)', () => {
   describe('listSectionDocs', () => {
     it('returns [] for a missing docs root rather than throwing', () => {
       expect(listSectionDocs('/nonexistent/docs/root')).toEqual([]);
+    });
+  });
+
+  describe('listCorpusDocs — the whole corpus, not one section (WI-37747)', () => {
+    // Synthetic tree, per this file's no-live-corpus rule. The shapes below are the ones
+    // the section-scoped walk could not see, and each is REAL in the corpus: 4 loose files
+    // at the docs root, and 6 `.md` files. Both were invisible to a `<root>/<section>` walk.
+    let root = '';
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'corpus-docs-'));
+      mkdirSync(join(root, 'spec'), { recursive: true });
+      mkdirSync(join(root, 'reference'), { recursive: true });
+      mkdirSync(join(root, '.papercusp', 'memory'), { recursive: true });
+      writeFileSync(join(root, 'index.mdx'), SAMPLE);
+      writeFileSync(join(root, 'branding.mdx'), SAMPLE);
+      writeFileSync(join(root, 'spec', 'a.mdx'), SAMPLE);
+      writeFileSync(join(root, 'reference', 'b.md'), SAMPLE);
+      writeFileSync(join(root, 'spec', 'notes.txt'), 'not a doc');
+      writeFileSync(join(root, '.papercusp', 'memory', 'raw.md'), SAMPLE);
+    });
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    it('returns [] for a missing docs root rather than throwing', () => {
+      expect(listCorpusDocs('/nonexistent/docs/root')).toEqual([]);
+    });
+
+    it('includes the loose root-level files a section walk drops', () => {
+      expect(listCorpusDocs(root)).toContain('index.mdx');
+      expect(listCorpusDocs(root)).toContain('branding.mdx');
+      // The section-scoped walk cannot see them — that gap is the whole reason this exists.
+      expect(listSectionDocs(root, 'spec')).not.toContain('index.mdx');
+    });
+
+    it('includes .md as well as .mdx, and still ignores non-docs and dot-paths', () => {
+      const got = listCorpusDocs(root);
+      expect(got).toContain('reference/b.md');
+      expect(got).toContain('spec/a.mdx');
+      expect(got).not.toContain('spec/notes.txt');
+      // Agent scratch under a dot-path must never be minted as a canonical doc.
+      expect(got.some((d) => d.includes('.papercusp'))).toBe(false);
+    });
+  });
+
+  describe('the round trip holds for the shapes the corpus widening added', () => {
+    // Same load-bearing property as above, exercised on doc_ids that only exist now that
+    // the projector is corpus-wide: a `.md` file, and a root-level id with NO section
+    // prefix (the banner embeds the doc_id, so a slash-less id is a distinct code path).
+    it.each(['index.mdx', 'branding.mdx', 'reference/okf.md', 'testing/agent-e2e.md'])(
+      '%s: strip(apply(c)) === c',
+      (docId) => {
+        expect(stripProjectionBanner(applyProjectionBanner(SAMPLE, docId)).content).toEqual(SAMPLE);
+      },
+    );
+
+    it('a root-level doc_id still names itself in the banner', () => {
+      expect(applyProjectionBanner(SAMPLE, 'index.mdx')).toContain('index.mdx');
     });
   });
 });

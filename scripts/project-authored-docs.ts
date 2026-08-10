@@ -39,8 +39,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
 export const HARNESS_SLUG = process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
 
-/** The section this script owns. Scoped, not table-wide: `content_mode='authored'` also
- *  covers per-harness project docs whose files this repo does not own. */
+/** The section the corpus was FIRST inverted for (P-008). Retained as `listSectionDocs`'s
+ *  default and as the `--section` shorthand; the projector itself is no longer scoped to it
+ *  (WI-37747 widened it to the whole corpus). */
 export const SECTION = 'agent-insights';
 
 /** The docs root, resolved the way the read + anchor systems resolve it. */
@@ -50,26 +51,44 @@ export function resolveDocsRoot(root: string = ROOT): string {
   return join(root, cfg?.root ?? 'apps/operator-docs/src/content/docs');
 }
 
+/** Shared walk: every .mdx/.md at or under `dir`, as doc_ids relative to `docsRoot`. */
+function walkDocs(dir: string, docsRoot: string, out: string[] = []): string[] {
+  if (!existsSync(dir)) return out;
+  for (const entry of readdirSync(dir)) {
+    // Skip dot-entries. Measured 2026-08-10: the corpus contains
+    // `agent-insights/.papercusp/memory/raw.md` — agent scratch state that landed under
+    // the docs root and is not a doc. Ingesting it would mint a canonical row for a file
+    // nothing publishes, and projecting it back would give scratch state a banner
+    // claiming Postgres owns it.
+    if (entry.startsWith('.')) continue;
+    const abs = join(dir, entry);
+    if (statSync(abs).isDirectory()) walkDocs(abs, docsRoot, out);
+    else if (/\.mdx?$/.test(entry)) out.push(relative(docsRoot, abs).split(sep).join('/'));
+  }
+  return out;
+}
+
 /** Every .mdx/.md under `<docsRoot>/<section>`, as doc_ids ("agent-insights/foo.mdx"). */
 export function listSectionDocs(docsRoot: string, section: string = SECTION): string[] {
-  const base = join(docsRoot, section);
-  if (!existsSync(base)) return [];
-  const out: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir)) {
-      // Skip dot-entries. Measured 2026-08-10: the corpus contains
-      // `agent-insights/.papercusp/memory/raw.md` — agent scratch state that landed under
-      // the docs root and is not a doc. Ingesting it would mint a canonical row for a file
-      // nothing publishes, and projecting it back would give scratch state a banner
-      // claiming Postgres owns it.
-      if (entry.startsWith('.')) continue;
-      const abs = join(dir, entry);
-      if (statSync(abs).isDirectory()) walk(abs);
-      else if (/\.mdx?$/.test(entry)) out.push(relative(docsRoot, abs).split(sep).join('/'));
-    }
-  };
-  walk(base);
-  return out.sort();
+  return walkDocs(join(docsRoot, section), docsRoot).sort();
+}
+
+/**
+ * Every doc in the corpus: ALL sections, PLUS the loose files sitting at the docs root
+ * (`index.mdx`, `branding.mdx`, `agent-policies.mdx`, `performance.mdx`) which belong to no
+ * section at all — a dirs-only walk drops those four silently, which is why this walks the
+ * root itself rather than enumerating directories.
+ *
+ * THE FILESYSTEM IS THE SCOPE, deliberately, and that is the safety property rather than a
+ * convenience. `content_mode='authored'` also covers per-harness project docs whose files
+ * this repo does not own — measured 2026-08-10, four `plans/*.md` rows whose real files live
+ * under an entirely different root. Deriving scope from what exists HERE cannot reach them:
+ * they fall out as orphan rows and are left alone. A hand-maintained section list would have
+ * to keep getting that right; this cannot get it wrong, and it picks up a new section with
+ * no edit here.
+ */
+export function listCorpusDocs(docsRoot: string): string[] {
+  return walkDocs(docsRoot, docsRoot).sort();
 }
 
 interface DocRow {
@@ -104,17 +123,23 @@ async function connect(): Promise<{ query: (q: string, v?: unknown[]) => Promise
   return client;
 }
 
+/**
+ * Authored rows for this harness. `section: null` reads the WHOLE corpus — which is safe
+ * only because the caller intersects these rows with the files that actually exist (see
+ * `listCorpusDocs`): a row this repo owns no file for stays an orphan and is left alone.
+ */
 export async function readAuthoredRows(
   client: { query: (q: string, v?: unknown[]) => Promise<{ rows: DocRow[] }> },
-  section: string = SECTION,
+  section: string | null = SECTION,
 ): Promise<Map<string, DocRow>> {
+  const scoped = section !== null;
   const { rows } = await client.query(
     `SELECT doc_id, content, content_hash, content_mode
        FROM harness_shared.harness_docs
       WHERE workspace_id = $1 AND harness_slug = $2
-        AND doc_id LIKE $3 AND content_mode = 'authored'
+        AND content_mode = 'authored'${scoped ? ' AND doc_id LIKE $3' : ''}
       ORDER BY doc_id`,
-    [WORKSPACE_ID, HARNESS_SLUG, `${section}/%`],
+    scoped ? [WORKSPACE_ID, HARNESS_SLUG, `${section}/%`] : [WORKSPACE_ID, HARNESS_SLUG],
   );
   return new Map(rows.map((r) => [r.doc_id, r]));
 }
@@ -154,15 +179,20 @@ async function main(): Promise<number> {
     return 2;
   }
 
+  // `--section=<name>` scopes a run to one section. The default is the WHOLE corpus:
+  // per-section runs exist so each section's round trip can be proven on its own rather
+  // than inferred from an aggregate green (WI-37747).
+  const sectionArg = argv.find((a) => a.startsWith('--section='))?.slice('--section='.length) ?? null;
+
   const docsRoot = resolveDocsRoot();
   const client = await connect();
   let failed = false;
   try {
-    const rows = await readAuthoredRows(client);
-    const files = listSectionDocs(docsRoot);
+    const rows = await readAuthoredRows(client, sectionArg);
+    const files = sectionArg ? listSectionDocs(docsRoot, sectionArg) : listCorpusDocs(docsRoot);
     const fileSet = new Set(files);
 
-    console.log(`project-authored-docs: ${WORKSPACE_ID}/${HARNESS_SLUG}/${SECTION}`);
+    console.log(`project-authored-docs: ${WORKSPACE_ID}/${HARNESS_SLUG}/${sectionArg ?? '(whole corpus)'}`);
     console.log(`  docs root      ${relative(ROOT, docsRoot)}`);
     console.log(`  files          ${fmt(files.length)}`);
     console.log(`  rows           ${fmt(rows.size)} (content_mode='authored')`);
