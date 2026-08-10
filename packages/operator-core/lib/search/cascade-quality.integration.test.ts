@@ -210,7 +210,61 @@ async function setup() {
     return { ...last!, attempts: MAX_ATTEMPTS };
   };
 
-  return { search, sampled: sampled.map((r) => ({ ...r })) };
+  return { search, sql, sampled: sampled.map((r) => ({ ...r })) };
+}
+
+/**
+ * SPLIT `beyond` INTO ITS TWO OPPOSITE-MEANING POPULATIONS.
+ *
+ * A row the semantic probe never returned is one of two completely different
+ * things, and reporting them as one number would answer the question backwards:
+ *
+ *   DEEP        the row HAS a vector (its own, or a chunk's) and the ranker
+ *               still did not surface it => genuinely semantically distant =>
+ *               evidence the cascade is degrading the page.
+ *   UNEMBEDDED  the row has NO vector at all. `sources.ts` gates BOTH semantic
+ *               legs on `text_embedding IS NOT NULL` / `c.embedding IS NOT NULL`
+ *               (:760, :783), so the semantic ranker CANNOT return it at any
+ *               depth, with any floor, ever. Its absence says nothing about
+ *               relevance — and the lexical leg is then the ONLY path by which
+ *               it can EVER reach a page, which makes the cascade the opposite
+ *               of a regression for that row.
+ *
+ * 14.3% of `session_turns` carried no vector when this was written (50,407 of
+ * 352,500 — measured, not assumed), so this is a live population, not a corner.
+ *
+ * `source_id` is `<source_kind>:<session_id>:<turn_idx>` (sources.ts:694/:814);
+ * session ids are uuids and contain no colon, so split_part is exact.
+ */
+async function classifyBeyond(
+  sql: Setup['sql'],
+  ids: string[],
+): Promise<Map<string, 'deep' | 'unembedded'>> {
+  const out = new Map<string, 'deep' | 'unembedded'>();
+  if (ids.length === 0) return out;
+  const rows = await sql<Array<{ sid: string; has_vec: boolean }>>`
+    WITH ids AS (SELECT unnest(${ids}::text[]) AS sid),
+    p AS (
+      SELECT sid,
+             split_part(sid, ':', 1) AS source_kind,
+             split_part(sid, ':', 2) AS session_id,
+             NULLIF(split_part(sid, ':', 3), '')::int AS turn_idx
+        FROM ids
+    )
+    SELECT p.sid,
+           (t.text_embedding IS NOT NULL
+            OR EXISTS (SELECT 1 FROM harness_shared.session_turn_chunks c
+                        WHERE c.source_kind = p.source_kind
+                          AND c.session_id  = p.session_id
+                          AND c.turn_idx    = p.turn_idx
+                          AND c.embedding IS NOT NULL)) AS has_vec
+      FROM p
+      LEFT JOIN harness_shared.session_turns t
+        ON t.source_kind = p.source_kind
+       AND t.session_id  = p.session_id
+       AND t.turn_idx    = p.turn_idx`;
+  for (const r of rows) out.set(r.sid, r.has_vec ? 'deep' : 'unembedded');
+  return out;
 }
 
 type Setup = Awaited<ReturnType<typeof setup>>;
@@ -334,6 +388,9 @@ describe.skipIf(skipReason !== null)('two-stage lexical cascade — page QUALITY
       /** Provenance counts — coverage is a headline, never inferred. */
       introducedBy: Record<CosSource, number>;
       displacedBy: Record<CosSource, number>;
+      /** BEYOND ids, kept so they can be split deep-vs-unembedded after the run. */
+      introducedBeyond: string[];
+      displacedBeyond: string[];
       /** Per-query trade size, so a median cosine is read against how much moved. */
       tradeSize: number[];
       queriesTraded: number;
@@ -351,6 +408,7 @@ describe.skipIf(skipReason !== null)('two-stage lexical cascade — page QUALITY
           introduced: [], displaced: [],
           introducedBy: { page: 0, probe: 0, beyond: 0 },
           displacedBy: { page: 0, probe: 0, beyond: 0 },
+          introducedBeyond: [], displacedBeyond: [],
           tradeSize: [], queriesTraded: 0, queriesMeasured: 0, unmeasurable: 0,
           stage2Fired: 0, stage2Added: 0, reasons: new Set(),
         };

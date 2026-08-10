@@ -24,11 +24,13 @@ const {
   consumePendingControlTransitionMock,
   detectHarnessSlugSyncMock,
   resolveAgentSignalsMock,
+  recordInjectionCoverageMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   consumePendingControlTransitionMock: vi.fn(),
   detectHarnessSlugSyncMock: vi.fn(),
   resolveAgentSignalsMock: vi.fn(),
+  recordInjectionCoverageMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
@@ -47,6 +49,9 @@ vi.mock('../../../memory/detect-harness-slug', () => ({
 }));
 vi.mock('../../../memory/agent-signals', () => ({
   resolveAgentSignalsForOwner: resolveAgentSignalsMock,
+}));
+vi.mock('../../../memory/injection-delivery-coverage', () => ({
+  recordInjectionCoverage: recordInjectionCoverageMock,
 }));
 
 import routes from './turn-start-memory';
@@ -70,7 +75,16 @@ beforeEach(() => {
   consumePendingControlTransitionMock.mockReset().mockResolvedValue(null);
   detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });
   resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
+  recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
 });
+
+/**
+ * The coverage write is fire-and-forget (`void`, never awaited) and reaches its
+ * module through a dynamic import, so it lands a few microtasks AFTER the
+ * response resolves. Settle the queue before asserting — otherwise these tests
+ * would pass or fail on scheduling luck, which is worse than not having them.
+ */
+const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
   it('a 23-char prompt REACHES the memory pipeline — the audit\'s founding symptom', async () => {
@@ -226,5 +240,87 @@ describe('agent signals reach the query (context-injection-audit-2026-07-28 P-04
     expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({
       queryContext: { userText: 'why is session history slow' },
     });
+  });
+});
+
+/**
+ * Delivery-coverage emission (WI-37597).
+ *
+ * `recordInjectionCoverage` used to be called from `mid-turn-context.ts` and
+ * nowhere else, so `context_injection_coverage` had never held a single
+ * `turn-start` row for any client. The detector that answers "is this client
+ * being served context?" was therefore structurally blind to a turn-start
+ * outage — which is why EI-20001110634702380, a real turn-start injection
+ * failure, closed cause-undetermined.
+ *
+ * ⚠ The near-miss that made this hard to see: this file ALREADY contained
+ * `port: 'turn-start'`, on the `session` object feeding memory_recall_stats —
+ * a DIFFERENT SINK. A grep for the port literal said "covered" while the
+ * counter had never been written. These cases assert the RECORDER was called,
+ * never that the string appears.
+ */
+describe('turn-start delivery coverage (WI-37597)', () => {
+  it('records a recalled event, attributed to the calling client', async () => {
+    await post({ owner: 'sess-1', prompt: 'why is recall empty', client: 'omp' });
+    await settle();
+
+    expect(recordInjectionCoverageMock).toHaveBeenCalledTimes(1);
+    expect(recordInjectionCoverageMock.mock.calls[0]![0]).toEqual([
+      expect.objectContaining({ port: 'turn-start', outcome: 'recalled', client: 'omp' }),
+    ]);
+  });
+
+  it('records no-recall when the pipeline returns nothing — healthy quiet is still a reading', async () => {
+    // The whole point: a silent turn is DISTINGUISHABLE from a dead hook only
+    // because the silent one still writes a row.
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    await post({ owner: 'sess-1', prompt: 'a prompt that matches nothing', client: 'claude' });
+    await settle();
+    expect(recordInjectionCoverageMock.mock.calls[0]![0]).toEqual([
+      expect.objectContaining({ port: 'turn-start', outcome: 'no-recall' }),
+    ]);
+  });
+
+  it('records no-signal when the caller opted out of memory', async () => {
+    // Not an outage. Recording nothing here would make a client that always
+    // disables memory indistinguishable from one whose hook is dead.
+    await post({ owner: 'sess-1', prompt: 'anything', client: 'codex', memoryEnabled: false });
+    await settle();
+    expect(recordInjectionCoverageMock.mock.calls[0]![0]).toEqual([
+      expect.objectContaining({ port: 'turn-start', outcome: 'no-signal', client: 'codex' }),
+    ]);
+  });
+
+  it('records an UNATTRIBUTED client rather than inventing one', async () => {
+    // A caller without the P-005 threading records '' — a real reading. Guessing
+    // a client name here would manufacture coverage for a client that may not
+    // have sent the request.
+    await post({ owner: 'sess-1', prompt: 'no client field here' });
+    await settle();
+    expect(recordInjectionCoverageMock.mock.calls[0]![0]).toEqual([
+      expect.objectContaining({ port: 'turn-start', client: '' }),
+    ]);
+  });
+
+  it('records NOTHING when the pipeline throws — a fault must not read as healthy quiet', async () => {
+    // The outcome vocabulary has no failure value, and 'no-recall' means healthy
+    // quiet, so recording it would actively hide the fault. Writing nothing
+    // leaves the turn absent from the numerator, which the outage detector
+    // already reads as broken.
+    buildMemoryContextBlockMock.mockRejectedValue(new Error('pg down'));
+    const out = await post({ owner: 'sess-1', prompt: 'why is recall empty', client: 'omp' });
+    await settle();
+    expect(out.ok).toBe(true); // still fail-soft — the turn is never harmed
+    expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
+  });
+
+  it('never lets a failing coverage write harm the turn', async () => {
+    // The recorder swallows its own errors, but the call site must survive one
+    // regardless — this endpoint's whole contract is that it cannot cost a turn.
+    recordInjectionCoverageMock.mockRejectedValue(new Error('coverage table gone'));
+    const out = await post({ owner: 'sess-1', prompt: 'why is recall empty', client: 'omp' });
+    await settle();
+    expect(out.ok).toBe(true);
+    expect(out.text).toContain('MEM-BLOCK');
   });
 });

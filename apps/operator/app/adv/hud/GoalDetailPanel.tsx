@@ -47,6 +47,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '@/app/harness/Modal';
+import { Tooltip } from '@/app/harness/Tooltip';
 import GoalWorkRail from './GoalWorkRail';
 // The conversation popup's own control vocabulary (pc-ctl-band, pc-zone,
 // pc-peers). Imported rather than re-declared so P-018's "mimic" is literally
@@ -267,15 +268,22 @@ export default function GoalDetailPanel({
                 Rendered only when there IS an agent and the host can route to
                 it, so it is never a button that looks live and is not. */}
             {primaryAgent && onOpenAgent ? (
-              <button
-                type="button"
-                className="pc-button"
-                data-testid="goal-open-agent"
-                onClick={() => onOpenAgent(primaryAgent.ownerId)}
-                title={`Open the conversation of the agent running this goal (${primaryAgent.ownerId})`}
-              >
-                Open agent
-              </button>
+              /* The shared Tooltip primitive, NOT a `title=` attribute — a
+                 native title is unreachable by keyboard and on touch, and
+                 `lint:design-primitives` fails a title on a <button> for
+                 exactly that reason (it is a green-checkpoint LEG, so this is
+                 a fleet-wide red, not a style nit). FleetPeersRail carries the
+                 same note over the same decision. */
+              <Tooltip label={`Open the conversation of the agent running this goal (${primaryAgent.ownerId})`} side="bottom">
+                <button
+                  type="button"
+                  className="pc-button"
+                  data-testid="goal-open-agent"
+                  onClick={() => onOpenAgent(primaryAgent.ownerId)}
+                >
+                  Open agent
+                </button>
+              </Tooltip>
             ) : null}
             <button
               type="button"

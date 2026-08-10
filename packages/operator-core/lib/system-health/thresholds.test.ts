@@ -28,6 +28,7 @@ import {
   coordinationStatus,
   memoryStatus,
   classifyInjectionClient,
+  worstInjectionVerdict,
   contextInjectionStatus,
   QUEEN_STALL_MS,
   SYNC_LAG_WARN_MS,
@@ -1039,7 +1040,18 @@ describe('context-injection delivery — a crit REQUIRES a baseline (P-005)', ()
   const row = (o: Partial<ContextInjectionClientRow> & { client: string }): ContextInjectionClientRow => {
     const base = {
       sessions: 0, events: 0, recalled: 0, unknownTool: 0,
-      driftTools: [] as string[], everObserved: false, ...o,
+      driftTools: [] as string[], everObserved: false,
+      ...o,
+      // These cases are about the CLIENT-level verdict, so they assert nothing
+      // about ports and carry none. The per-port roll-up has its own describe
+      // block below (WI-37597).
+      //
+      // Pinned AFTER the spread, not before: `o` is a Partial, so spreading it
+      // last widens `ports` to `... | undefined` and the result stops being a
+      // ContextInjectionClientRow (TS2322 — a committed standing red, since
+      // vitest transpiles without typechecking and so stays green on it).
+      // Same value either way; this only keeps the type honest.
+      ports: o.ports ?? ([] as ContextInjectionClientRow['ports']),
     };
     return { ...base, verdict: classifyInjectionClient(base) };
   };
@@ -1114,5 +1126,93 @@ describe('context-injection delivery — a crit REQUIRES a baseline (P-005)', ()
       row({ client: 'omp', sessions: 10, events: 15, recalled: 9, everObserved: true }),
     ]);
     expect(contextInjectionStatus(d)).toBe('ok');
+  });
+});
+
+/**
+ * The per-PORT roll-up (WI-37597).
+ *
+ * A client-level total cannot say "turn-start is dead but mid-turn is fine" —
+ * the working port's traffic keeps `events` healthy, so the panel stays green
+ * through a real outage. `worstInjectionVerdict` is what lets one dead port move
+ * the panel at all, and these cases pin the two readings that must not blur:
+ * a port with a baseline that went silent (pageable) versus one that has never
+ * written at all (a known gap, deliberately not pageable).
+ */
+describe('worstInjectionVerdict — a dead port must not hide behind a healthy one', () => {
+  /** A one-client panel carrying an already-rolled-up verdict. Local because the
+   *  fixtures above are scoped to their own describe. */
+  const panel = (
+    verdict: ContextInjectionClientRow['verdict'],
+    ports: ContextInjectionClientRow['ports'],
+  ): ContextInjectionHealth => ({
+    windowHours: 24,
+    clients: [
+      {
+        client: 'claude', sessions: 385, events: 900, recalled: 700, unknownTool: 0,
+        driftTools: [], everObserved: true, verdict, ports,
+      },
+    ],
+    totalEvents: 900,
+    recordingPathSuspect: false,
+  });
+
+  it('takes the worst, so a regressed port beats an ok one', () => {
+    expect(worstInjectionVerdict(['ok', 'regressed'])).toBe('regressed');
+    expect(worstInjectionVerdict(['regressed', 'ok'])).toBe('regressed');
+  });
+
+  it('ranks idle BELOW ok, so a quiet port never outvotes a working one', () => {
+    // idle means "no sessions, nothing to conclude". If it outranked ok it would
+    // drag a healthy client down; if it were treated as ok it would invent a
+    // pass. It must simply lose to anything that actually reported.
+    expect(worstInjectionVerdict(['ok', 'idle'])).toBe('ok');
+    expect(worstInjectionVerdict(['idle', 'idle'])).toBe('idle');
+  });
+
+  it('ranks actionable drift above a known never-observed gap', () => {
+    expect(worstInjectionVerdict(['never-observed', 'drift'])).toBe('drift');
+  });
+
+  it('an empty set is idle, NOT ok — no verdicts is no evidence', () => {
+    // The same principle the baseline rule applies one level down: absence of a
+    // reading must never degrade into a confident pass.
+    expect(worstInjectionVerdict([])).toBe('idle');
+  });
+
+  it('THE CASE THIS EXISTS FOR: healthy mid-turn + dead turn-start still pages', () => {
+    // claude's mid-turn port doing 900 events while its turn-start port has a
+    // baseline and has gone completely silent. Before the roll-up this client
+    // read 'ok' on the strength of the mid-turn traffic alone.
+    const ports: ContextInjectionClientRow['ports'] = [
+      { port: 'turn-start', events: 0, everObserved: true, verdict: 'regressed' },
+      { port: 'mid-turn', events: 900, everObserved: true, verdict: 'ok' },
+    ];
+    const clientLevel = classifyInjectionClient({
+      sessions: 385, events: 900, unknownTool: 0, everObserved: true,
+    });
+    expect(clientLevel).toBe('ok'); // ← the masking, reproduced
+    const rolled = worstInjectionVerdict([clientLevel, ...ports.map((p) => p.verdict)]);
+    expect(rolled).toBe('regressed'); // ← and defeated
+
+    const d = health([row({ client: 'claude', sessions: 385, events: 900, everObserved: true, ports })]);
+    d.clients[0].verdict = rolled;
+    expect(contextInjectionStatus(d)).toBe('crit');
+  });
+
+  it('a never-written turn-start port warns, and does NOT page', () => {
+    // The state of every client the moment the reader learned to look per-port
+    // and before the new writer had recorded anything. A crit here would have
+    // been a false page on the rollout of its own fix.
+    const ports: ContextInjectionClientRow['ports'] = [
+      { port: 'turn-start', events: 0, everObserved: false, verdict: 'never-observed' },
+      { port: 'mid-turn', events: 900, everObserved: true, verdict: 'ok' },
+    ];
+    const rolled = worstInjectionVerdict(['ok', ...ports.map((p) => p.verdict)]);
+    expect(rolled).toBe('never-observed');
+    const d = health([row({ client: 'claude', sessions: 385, events: 900, everObserved: true, ports })]);
+    d.clients[0].verdict = rolled;
+    expect(contextInjectionStatus(d)).toBe('warn');
+    expect(contextInjectionStatus(d)).not.toBe('crit');
   });
 });
