@@ -18,16 +18,16 @@ import type { ComponentManifest } from "./component-manifest.js";
 
 export const COMPONENT_CATALOG: ComponentManifest[] = [
   {
-    id: "hive-app-seam",
+    id: "pot-app-seam",
     version: "0.1.0",
     tier: "B",
     kind: "package",
     provides: ["hive-bootstrap", "domain-work-items-transport", "ingest-loop"],
     composesWith: ["typed-contracts", "hono-host", "embedded-postgres-server", "tauri-shell"],
     source: {
-      repo: "Papercusp/hive-app-seam",
-      path: "libs/generic/hive-app-seam",
-      package: "@papercusp/hive-app-seam",
+      repo: "Papercusp/pot-app-seam",
+      path: "libs/generic/pot-app-seam",
+      package: "@papercusp/pot-app-seam",
     },
     tests: "npm test in the lib (17 vitest tests); consumed with app tests unmodified in both internal reference apps",
     summary:
@@ -36,7 +36,7 @@ export const COMPONENT_CATALOG: ComponentManifest[] = [
       "/api/harness/:slug/work-items (UP: enqueue kind:'task' items carrying the payload.domainKind envelope; " +
       "DOWN: fetchCompleted() returns untrusted payload.out for the app-owned contract gate), and the best-effort " +
       "poll ingest loop. Contract gates, storage, and app defaults stay app-side by design. The source repo is " +
-      "papercusp-internal; consume the copy VENDORED in the public templates mirror as hive-app-seam/ (file:-link " +
+      "papercusp-internal; consume the copy VENDORED in the public templates mirror as pot-app-seam/ (file:-link " +
       "it — see the templates README, Supply chain).",
     guide: "agent-insights/templates-system-design",
   },
@@ -65,7 +65,7 @@ export const COMPONENT_CATALOG: ComponentManifest[] = [
     tier: "A",
     kind: "pattern",
     provides: ["embedded-postgres", "db-lifecycle", "connection-discovery"],
-    composesWith: ["hono-host", "hive-app-seam"],
+    composesWith: ["hono-host", "pot-app-seam"],
     source: {
       path: "both internal reference apps: libs/embedded-postgres-server (an app-local package each)",
       package: "@papercusp/embedded-pg-discovery (the discovery half, already shared)",
@@ -102,7 +102,7 @@ export const COMPONENT_CATALOG: ComponentManifest[] = [
     tier: "B",
     kind: "pattern",
     provides: ["contract-schema", "single-parse-gate", "payload-validation"],
-    composesWith: ["hive-app-seam"],
+    composesWith: ["pot-app-seam"],
     source: {
       path: "internal reference apps: the contracts packages (parseCandidateSet/PurchaseResearchInputSchema; SignalSchema)",
     },
@@ -111,7 +111,7 @@ export const COMPONENT_CATALOG: ComponentManifest[] = [
       "The typed-contract pattern — the MANDATORY down-leg discipline of the one seam: a dedicated contracts " +
       "package owns the zod schemas for what crosses the app⇄hive boundary (input payloads wire-validated at " +
       "enqueue; agent outputs parsed through ONE gate before touching app tables; rejects emitted UP as events, " +
-      "never silently dropped). An app composes hive-app-seam with ITS OWN contracts package — the seam " +
+      "never silently dropped). An app composes pot-app-seam with ITS OWN contracts package — the seam " +
       "deliberately ships no validation.",
     guide: "agent-insights/templates-system-design",
   },
@@ -121,7 +121,7 @@ export const COMPONENT_CATALOG: ComponentManifest[] = [
     tier: "A",
     kind: "pattern",
     provides: ["sidecar-http-host", "operator-json-discovery", "spa-serving", "sse-streams"],
-    composesWith: ["tauri-shell", "embedded-postgres-server", "hive-app-seam"],
+    composesWith: ["tauri-shell", "embedded-postgres-server", "pot-app-seam"],
     source: {
       path: "internal reference apps: apps/desktop/bin/serve.ts + apps/desktop/src/_hono/",
     },
@@ -347,7 +347,7 @@ export const COMPONENT_CATALOG: ComponentManifest[] = [
     tier: "A",
     kind: "pattern",
     provides: ["web-http-host", "standalone-build", "workspace-lib-transpile", "auth-middleware-seam", "operator-json-discovery"],
-    composesWith: ["embedded-postgres-server", "hive-app-seam"],
+    composesWith: ["embedded-postgres-server", "pot-app-seam"],
     source: {
       path:
         "origin webapp: apps/web (next.config.js standalone + tracing root, middleware.ts, auth-proxy.mjs, " +
