@@ -473,7 +473,8 @@ a:hover { color: var(--accent); }
 }
 .tag.current { border-color: transparent; color: #fff; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%); }
 .meta { color: var(--muted); font-size: .85rem; margin-bottom: 1.25rem; }
-.meta code { font-family: var(--mono); background: var(--surface-2); border: 1px solid var(--border); padding: .1rem .4rem; border-radius: 5px; font-size: .85em; }
+.meta code, .platform-section code { font-family: var(--mono); background: var(--surface-2); border: 1px solid var(--border); padding: .1rem .4rem; border-radius: 5px; font-size: .85em; }
+.platform-section code { display: inline-block; margin: .18rem 0; user-select: all; }
 .changelog { margin: 1.35rem 0 0; color: var(--fg-dim); }
 .changelog :first-child { margin-top: 0; }
 .changelog h1, .changelog h2, .changelog h3 {
@@ -680,6 +681,32 @@ function platformRequirementNote(
     : `\n<p class="warn">⚠ On ${escapeHtml(label)} the app also needs <strong>Papercusp Server</strong> to run — it isn't in this release yet, so this build can't start on its own.</p>`;
 }
 
+/** macOS first-launch note (EI-20109680727314274). Our mac builds are AD-HOC SIGNED,
+ *  so Gatekeeper HARD-BLOCKS first launch ("damaged" / "unidentified developer") and
+ *  there is no way through it from the Finder — the user must run `xattr` once. This
+ *  has to live on the PAGE, not in one release's changelog: it applies to every mac
+ *  build we ship until a real Apple Developer certificate lands (owner wall WI-5138).
+ *
+ *  It is deliberately NOT covered by any automated test we have: our own mac E2E
+ *  harness (papercusp-desktop/bin/mac-vm-fresh-install-e2e.sh) unquarantines the
+ *  bundles itself before launching them, so it is structurally incapable of hitting
+ *  the wall a human hits. That asymmetry is exactly why this went unnoticed. */
+function macFirstLaunchNote(hasGui: boolean, hasServer: boolean): string {
+  const apps: string[] = [];
+  if (hasGui) apps.push('Papercusp GUI.app');
+  if (hasServer) apps.push('Papercusp Server.app');
+  if (apps.length === 0) return '';
+  const cmds = apps
+    .map((a) => `<code>xattr -dr com.apple.quarantine "/Applications/${escapeHtml(a)}"</code>`)
+    .join('<br>');
+  return (
+    `\n<p class="warn">⚠ <strong>macOS: one command before first launch.</strong> These builds are ad-hoc signed, so macOS will refuse to open them ` +
+    `(&ldquo;damaged&rdquo; or &ldquo;unidentified developer&rdquo;). Drag ${apps.length > 1 ? 'them' : 'it'} to Applications, then run this once in Terminal:</p>` +
+    `\n<p class="n">${cmds}</p>` +
+    `\n<p class="n">Then open the app normally. This is not a virus warning &mdash; it means we do not yet have an Apple Developer certificate.</p>`
+  );
+}
+
 /** One platform's section: a heading, then the app downloads and (when present)
  *  the Server downloads, each as its own labelled table of the SAME shape. */
 function renderPlatformSection(label: string, desktop: boolean, list: ReleaseArtifact[]): string {
@@ -698,6 +725,11 @@ function renderPlatformSection(label: string, desktop: boolean, list: ReleaseArt
     parts.push(renderDownloadTable(server));
   }
   if (desktop) parts.push(platformRequirementNote(label, app.length > 0, server.length > 0));
+  // Gatekeeper blocks EVERY mac build we ship (ad-hoc signed) — the note belongs on
+  // the page, not in a single release's changelog. See macFirstLaunchNote.
+  if (desktop && label === 'macOS') {
+    parts.push(macFirstLaunchNote(app.length > 0, server.length > 0));
+  }
   return `<section class="platform-section">\n${parts.filter(Boolean).join('\n')}\n</section>`;
 }
 

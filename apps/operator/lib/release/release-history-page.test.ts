@@ -709,6 +709,70 @@ describe('the Server artifact is disclosed, not silently dropped', () => {
     expect(html).toContain('Install both.');
   });
 
+  /* EI-20109680727314274 — our mac builds are AD-HOC SIGNED, so Gatekeeper hard-blocks
+     first launch and the ONLY way through is a Terminal `xattr` command. Before this,
+     no tester-facing surface said so anywhere: the sole occurrence of the command in
+     the whole release tree was our own mac E2E harness, which unquarantines the bundles
+     ITSELF before launching them — so the automation was structurally incapable of
+     hitting the wall a human hits. These tests are the recurrence guard. */
+  describe('macOS Gatekeeper first-launch instruction (EI-20109680727314274)', () => {
+    const XATTR = 'xattr -dr com.apple.quarantine';
+
+    it('gives the unquarantine command for EVERY mac app in the release', () => {
+      const macBoth = hydrated({
+        row: row({
+          artifacts: [
+            { product: 'gui', platform: 'darwin-universal', name: 'GUI_0.0.9_universal.dmg', url: 'desktop-v0.0.9-alpha/GUI_0.0.9_universal.dmg', size: 1_300_000_000, sha256: 'g' },
+            { product: 'server', platform: 'darwin-universal', name: 'Server_0.0.9_universal.dmg', url: 'desktop-v0.0.9-alpha/Server_0.0.9_universal.dmg', size: 1_300_000_000, sha256: 's' },
+          ],
+        }),
+      });
+      const html = renderIndexHtml([macBoth], { generatedAt: GENERATED_AT, analytics: null });
+      expect(html).toContain(`${XATTR} "/Applications/Papercusp GUI.app"`);
+      expect(html).toContain(`${XATTR} "/Applications/Papercusp Server.app"`);
+    });
+
+    it('names ONLY the apps actually shipped — no command for a Server that is not in the release', () => {
+      const macGuiOnly = hydrated({
+        row: row({
+          artifacts: [
+            { product: 'gui', platform: 'darwin-universal', name: 'GUI_0.0.9_universal.dmg', url: 'desktop-v0.0.9-alpha/GUI_0.0.9_universal.dmg', size: 1_300_000_000, sha256: 'g' },
+          ],
+        }),
+      });
+      const html = renderIndexHtml([macGuiOnly], { generatedAt: GENERATED_AT, analytics: null });
+      expect(html).toContain(`${XATTR} "/Applications/Papercusp GUI.app"`);
+      expect(html).not.toContain('Papercusp Server.app');
+    });
+
+    /* The falsifier: this note is macOS-ONLY. If it ever renders under Linux or
+       Windows it is actively wrong — those platforms have no Gatekeeper — so a
+       leak across the platform boundary must fail here. */
+    it('does NOT appear for Linux', () => {
+      const linux = hydrated({
+        row: row({
+          artifacts: [
+            { product: 'gui', platform: 'linux-x86_64', name: 'GUI_0.0.9_amd64.AppImage', url: 'desktop-v0.0.9-alpha/GUI_0.0.9_amd64.AppImage', size: 1_300_000_000, sha256: 'l' },
+          ],
+        }),
+      });
+      const html = renderIndexHtml([linux], { generatedAt: GENERATED_AT, analytics: null });
+      expect(html).not.toContain(XATTR);
+    });
+
+    it('does NOT appear for Windows', () => {
+      const win = hydrated({
+        row: row({
+          artifacts: [
+            { product: 'gui', platform: 'windows-x86_64', name: 'GUI_0.0.9_x64-setup.exe', url: 'desktop-v0.0.9-alpha/GUI_0.0.9_x64-setup.exe', size: 1_800_000_000, sha256: 'w' },
+          ],
+        }),
+      });
+      const html = renderIndexHtml([win], { generatedAt: GENERATED_AT, analytics: null });
+      expect(html).not.toContain(XATTR);
+    });
+  });
+
   it('WARNS when a mac/Windows section has an app but NO Server (the non-functional case)', () => {
     const macGuiOnly = hydrated({
       row: row({
