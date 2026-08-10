@@ -69,6 +69,9 @@ import GoalStatusControl from './GoalStatusControl';
 // P-017: the hierarchy section. Its own file because it owns a WRITE (creating a
 // subdirective) and this component is already long.
 import SubGoalsSection from './SubGoalsSection';
+// P-005: the launch-settings editor. Its own file for the same reason as the
+// section above — it owns a WRITE (goals:update) and the form model behind it.
+import GoalSettingsSection from './GoalSettingsSection';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
@@ -840,6 +843,20 @@ export default function GoalDetailPanel({
                 subGoals={data?.subGoals}
                 parent={data?.parent}
                 onOpenGoal={onOpenGoal}
+              />
+            ) : null}
+
+            {/* ── 2c. LAUNCH SETTINGS (goal-mode-hardening P-005 / D-007) ──
+                Directly after subdirectives, and for the same reason they sit
+                here: both answer "what is this agent allowed to do" — the
+                directions it is pointed in, then the ceiling on how much it may
+                spawn pursuing them. */}
+            {goalId ? (
+              <GoalSettingsSection
+                goalId={goalId}
+                settings={data?.launchSettings}
+                settingsInvalid={data?.launchSettingsInvalid}
+                options={data?.launchSettingsOptions}
               />
             ) : null}
 

@@ -1259,6 +1259,152 @@
   color: var(--fg-mute);
 }
 
+/* ── launch settings (P-005) ─────────────────────────────────────────────────
+   Borrows the addsub input/button rules above rather than restating them: this
+   is the same popup, and a second set of near-identical field styles is how two
+   sections of one panel start looking like two different products. Only what is
+   genuinely new to a multi-field FORM is declared here. */
+
+.hud-goal__set-toggle {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: var(--fg-mute);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.hud-goal__set-toggle:hover {
+  color: var(--fg);
+}
+
+.hud-goal__set-summary {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--fg-mute);
+}
+
+/* Loud on purpose: this is the "your ceiling is not being enforced" line, and it
+   has to out-shout a form full of fields that all look fine. */
+.hud-goal__set-alarm {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--fg);
+  /* The tint idiom this file already uses for the warn band above, on --bad —
+     the theme's own alarm colour, so it re-themes with everything else. */
+  background: rgb(from var(--bad) r g b / 0.1);
+  border: 1px solid rgb(from var(--bad) r g b / 0.4);
+  border-radius: 4px;
+}
+
+.hud-goal__set {
+  margin-top: 8px;
+}
+
+/* auto-fit rather than a fixed column count: the popup is resizable and the
+   six profile fields must not each shrink to an unusable width on a narrow one. */
+.hud-goal__set-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.hud-goal__set-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hud-goal__set-label {
+  font-size: 10px;
+  color: var(--fg-mute);
+}
+
+.hud-goal__set-in {
+  min-width: 0;
+  padding: 4px 7px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.hud-goal__set-in:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hud-goal__set-in:disabled {
+  opacity: 0.55;
+}
+
+.hud-goal__set-h {
+  margin: 12px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.hud-goal__set-role {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.hud-goal__set-rolehead {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.hud-goal__set-rolehead .hud-goal__set-field {
+  flex: 1 1 auto;
+}
+
+.hud-goal__set-add,
+.hud-goal__set-remove {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.hud-goal__set-add {
+  margin-top: 8px;
+}
+
+.hud-goal__set-add:disabled,
+.hud-goal__set-remove:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.hud-goal__set-problems {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--bad);
+}
+
+.hud-goal__set-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
 /* ── tripwire bars ───────────────────────────────────────────────────────── */
 
 .hud-goal__bars {
