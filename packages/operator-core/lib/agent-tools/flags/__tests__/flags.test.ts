@@ -239,3 +239,101 @@ describe('flags:set (bulk keyed-array, P-006)', () => {
     expect(publishFlagChange).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * `enabled: null` = CLEAR the runtime pg-override, letting whatever governs underneath
+ * (PostHog, else the derived FLAG_DEFAULTS) take over again.
+ *
+ * ⚠ THE FIRST TEST HERE IS THE LOAD-BEARING ONE, and it is a SCHEMA test on purpose.
+ * The defect was never in the handler: the override store has ALWAYS implemented
+ * clear-by-null (`FlagOverrideStore.set(key, boolean | null)` — "`null` clears it",
+ * libs/flags/src/server.ts:48), but BOTH agent-facing edges declared `z.boolean()`, so
+ * no caller could ever express it. A capability implemented in the core and unreachable
+ * from every edge is indistinguishable from a missing feature — and it hides behind its
+ * own documentation, which is why three agents read that line and assumed the operation
+ * existed. These tests call `handler` directly, which does NOT run the args schema, so
+ * a handler-only test would pass against a `z.boolean()` edge that rejects every real
+ * call. Tightening the schema back must FAIL something: it fails the first test below.
+ */
+describe('flags:set — `enabled: null` clears the pg-override (the graduation path)', () => {
+  it('the args schema ACCEPTS null, in BOTH the n=1 and items forms (the actual gap)', async () => {
+    const { default: tool } = await import('../set');
+    expect(tool.args.parse({ key: KEY, enabled: null, reason: 'clearing an override' })).toMatchObject({
+      key: KEY,
+      enabled: null,
+    });
+    expect(
+      tool.args.parse({ items: [{ key: KEY, enabled: null }], reason: 'clearing an override' }),
+    ).toMatchObject({ items: [{ key: KEY, enabled: null }] });
+  });
+
+  it('still refuses a n=1 call that OMITS enabled — nullable widened the type, it did not make the field optional', async () => {
+    const { default: tool } = await import('../set');
+    expect(() => tool.args.parse({ key: KEY, reason: 'no value at all' })).toThrow();
+  });
+
+  it('CLEARS the override and never touches PostHog (a local clear must not rewrite the shared value)', async () => {
+    setFlagOverride.mockResolvedValue({ ok: true });
+    getFlag.mockResolvedValue(true); // the derived default governs once the row is gone
+    const { default: tool } = await import('../set');
+    const b = parseEnvelope(
+      await tool.handler({ key: KEY, enabled: null, reason: 'graduating the flag' }, MAKE_CTX()) as never,
+    );
+    expect(setFlagOverride).toHaveBeenCalledWith(KEY, null);
+    expect(setFlag).not.toHaveBeenCalled();
+    expect(publishFlagChange).toHaveBeenCalledWith(KEY);
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    expect(b.results[0]).toMatchObject({ ok: true, key: KEY, cleared: true, backend: 'pg-override-cleared' });
+  });
+
+  it('reports what NOW GOVERNS after the clear, not the value that was removed', async () => {
+    setFlagOverride.mockResolvedValue({ ok: true });
+    getFlag.mockResolvedValue(true);
+    const { default: tool } = await import('../set');
+    const b = parseEnvelope(
+      await tool.handler({ key: KEY, enabled: null, reason: 'graduating the flag' }, MAKE_CTX()) as never,
+    );
+    // For a graduated flag this `true` IS the proof the derived default — not a
+    // surviving override row — is what governs now.
+    expect(b.results[0].enabled).toBe(true);
+  });
+
+  it('null is NOT false: `false` writes an override row, `null` removes one', async () => {
+    setFlag.mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
+    setFlagOverride.mockResolvedValue({ ok: true });
+    getFlag.mockResolvedValue(false);
+    const { default: tool } = await import('../set');
+    await tool.handler({ key: KEY, enabled: false, reason: 'pinning it off' }, MAKE_CTX());
+    expect(setFlagOverride).toHaveBeenLastCalledWith(KEY, false);
+
+    getFlag.mockResolvedValue(true);
+    await tool.handler({ key: KEY, enabled: null, reason: 'clearing the pin' }, MAKE_CTX());
+    expect(setFlagOverride).toHaveBeenLastCalledWith(KEY, null);
+  });
+
+  it('a failed clear fails ONLY that item and does not publish', async () => {
+    setFlagOverride.mockResolvedValue({ ok: false, reason: 'pg down' });
+    const { default: tool } = await import('../set');
+    const b = parseEnvelope(
+      await tool.handler({ key: KEY, enabled: null, reason: 'graduating the flag' }, MAKE_CTX()) as never,
+    );
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0].error).toMatch(/could not clear the pg-override/);
+    expect(publishFlagChange).not.toHaveBeenCalled();
+  });
+
+  it('audits the clear with what now governs, and never calls setFlag for it', async () => {
+    setFlagOverride.mockResolvedValue({ ok: true });
+    getFlag.mockResolvedValue(true);
+    const { default: tool } = await import('../set');
+    await tool.handler(
+      { key: KEY, enabled: null, reason: 'graduating the flag' },
+      MAKE_CTX({ principal: { slug: 'agent-x' } }),
+    );
+    expect(recordFlagAudit).toHaveBeenCalledWith(KEY, true, 'agent-x', {
+      reason: 'graduating the flag',
+      backend: 'pg-override',
+    });
+    expect(setFlag).not.toHaveBeenCalled();
+  });
+});

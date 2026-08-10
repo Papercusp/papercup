@@ -19,7 +19,17 @@ import '../../../flag-bus';
 import { recordFlagAudit } from '../../../flag-audit';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const Body = z.object({ key: z.string(), enabled: z.boolean() });
+/**
+ * `enabled: null` CLEARS the runtime pg-override for this key (the store has always
+ * supported it — FlagOverrideStore.set is `boolean | null`, "`null` clears it" —
+ * but this edge declared `z.boolean()`, so no caller could reach it). Kept at parity
+ * with the flags:set MCP tool deliberately: two edges onto the same store that accept
+ * different shapes is how one of them silently rots.
+ *
+ * ⚠ null is NOT `false`. `false` PINS the flag off with an override row; `null` REMOVES
+ * the row so the code default (or PostHog) governs again.
+ */
+const Body = z.object({ key: z.string(), enabled: z.boolean().nullable() });
 
 export default defineTool({
   method: 'POST',
@@ -31,6 +41,31 @@ export default defineTool({
     const key = rawKey as FlagKey;
     if (!ALL_FLAG_KEYS.includes(key)) {
       return Response.json({ ok: false, error: 'unknown flag key' }, { status: 400 });
+    }
+    // Handled BEFORE the PostHog path on purpose: clearing a LOCAL override must never
+    // rewrite the PostHog value, which governs other deployments.
+    if (enabled === null) {
+      const cleared = await setFlagOverride(key, null);
+      if (!cleared.ok) {
+        return Response.json(
+          { ok: false, applied: false, key, error: `could not clear the pg-override: ${cleared.reason}` },
+          { status: 502 },
+        );
+      }
+      publishFlagChange(key);
+      // Report what NOW governs — the caller's real question after a clear.
+      const resolved = await getFlag(key, 'system');
+      await recordFlagAudit(key, resolved, ctx.principal?.slug ?? 'operator', {
+        backend: 'pg-override',
+      });
+      return Response.json({
+        ok: true,
+        applied: true,
+        key,
+        enabled: resolved,
+        cleared: true,
+        backend: 'pg-override-cleared',
+      });
     }
     const result = await setFlag(key, enabled);
     if (result.ok) {

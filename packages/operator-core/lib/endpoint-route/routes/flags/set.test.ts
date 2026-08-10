@@ -24,11 +24,11 @@ vi.mock('@papercusp/flags', () => ({ ALL_FLAG_KEYS: ['papercusp-the-hive', 'pape
 import { setFlag, setFlagOverride, getFlag } from '@papercusp/flags/server';
 import route from './set';
 
-function ctxFor(key: string, enabled: boolean) {
+function ctxFor(key: string, enabled: boolean | null) {
   return { input: { key, enabled }, principal: { slug: 'tester' } } as never;
 }
 
-async function callRoute(key: string, enabled: boolean) {
+async function callRoute(key: string, enabled: boolean | null) {
   const res = (await route.handler(new Request('http://127.0.0.1/api/flags/set'), ctxFor(key, enabled))) as Response;
   return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 }
@@ -156,5 +156,80 @@ describe('POST /api/flags/set — read-back guard (EI-18712738949489735)', () =>
     expect(status).toBe(200);
     expect(body).toMatchObject({ ok: true, applied: true, backend: 'posthog' });
     expect(getFlag).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `enabled: null` = CLEAR the pg-override.
+ *
+ * ⚠ THE FIRST TEST HERE IS THE LOAD-BEARING ONE, and it is a SCHEMA test on purpose.
+ * The defect was never in the handler — it was that this edge declared `z.boolean()`,
+ * so a caller could not EXPRESS the clear the store had always implemented
+ * (`FlagOverrideStore.set(key, boolean | null)`, "`null` clears it"). A handler-only
+ * test calls `route.handler` directly and therefore never runs the input schema at
+ * all — it would pass just as happily against a `z.boolean()` edge that rejects every
+ * real request. Tightening the schema back to boolean must FAIL a test, and that is
+ * the one below.
+ */
+describe('POST /api/flags/set — `enabled: null` clears the override', () => {
+  it('the input schema ACCEPTS null (the actual gap: the store supported it, the edge did not)', () => {
+    const parsed = route.input!.parse({ key: 'papercusp-the-hive', enabled: null });
+    expect(parsed).toEqual({ key: 'papercusp-the-hive', enabled: null });
+  });
+
+  it('still rejects a missing/garbage `enabled` — nullable widened the type, it did not remove the field', () => {
+    expect(() => route.input!.parse({ key: 'papercusp-the-hive' })).toThrow();
+    expect(() => route.input!.parse({ key: 'papercusp-the-hive', enabled: 'null' })).toThrow();
+  });
+
+  it('CLEARS the override (setFlagOverride(key, null)) and never touches PostHog', async () => {
+    vi.mocked(setFlagOverride).mockResolvedValue({ ok: true });
+    vi.mocked(getFlag).mockResolvedValue(true); // the derived default governs once the row is gone
+
+    const { status, body } = await callRoute('papercusp-the-hive', null);
+
+    expect(status).toBe(200);
+    expect(setFlagOverride).toHaveBeenCalledWith('papercusp-the-hive', null);
+    // A LOCAL clear must never rewrite the PostHog value, which governs other deployments.
+    expect(setFlag).not.toHaveBeenCalled();
+    expect(body).toMatchObject({ ok: true, applied: true, cleared: true, backend: 'pg-override-cleared' });
+  });
+
+  it('reports what NOW GOVERNS after the clear, not the value that was cleared', async () => {
+    vi.mocked(setFlagOverride).mockResolvedValue({ ok: true });
+    // A graduated flag: the override row said nothing useful; the derived default is ON.
+    vi.mocked(getFlag).mockResolvedValue(true);
+
+    const { body } = await callRoute('papercusp-the-hive', null);
+
+    expect(body.enabled).toBe(true);
+  });
+
+  it('null is NOT false: `false` PINS the flag off via a write, `null` REMOVES the row', async () => {
+    vi.mocked(setFlag).mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
+    vi.mocked(setFlagOverride).mockResolvedValue({ ok: true });
+
+    await callRoute('papercusp-the-hive', false);
+    expect(setFlagOverride).toHaveBeenLastCalledWith('papercusp-the-hive', false);
+
+    vi.mocked(getFlag).mockResolvedValue(true);
+    await callRoute('papercusp-the-hive', null);
+    expect(setFlagOverride).toHaveBeenLastCalledWith('papercusp-the-hive', null);
+  });
+
+  it('a failed clear is reported as a failure, and does not publish', async () => {
+    vi.mocked(setFlagOverride).mockResolvedValue({ ok: false, reason: 'pg down' });
+
+    const { status, body } = await callRoute('papercusp-the-hive', null);
+
+    expect(status).toBe(502);
+    expect(body).toMatchObject({ ok: false, applied: false });
+    expect(body.error).toContain('could not clear the pg-override');
+  });
+
+  it('an unknown key is still rejected before any store write', async () => {
+    const { status } = await callRoute('papercusp-totally-made-up-flag', null);
+    expect(status).toBe(400);
+    expect(setFlagOverride).not.toHaveBeenCalled();
   });
 });

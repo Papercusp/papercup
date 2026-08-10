@@ -34,7 +34,23 @@ import './_register-backend';
 // fresher process). assertKnownFlagKey still rejects a genuinely-unknown key, per-item,
 // through the existing bulk error contract.
 const FlagKeySchema = z.string().min(1).describe('a Papercusp flag key (libs/flags/src/types.ts)');
-const FlagFlip = z.object({ key: FlagKeySchema, enabled: z.boolean() });
+/**
+ * `enabled: null` = CLEAR the runtime pg-override for this key, so whatever governs
+ * underneath (PostHog, else the derived FLAG_DEFAULTS) takes over again.
+ *
+ * WHY THIS EXISTS (the gap it closes): the override store has ALWAYS implemented
+ * clear-by-null — `FlagOverrideStore.set(key, enabled: boolean | null)` is documented
+ * "`null` clears it" (libs/flags/src/server.ts:48) and flag-override-store.ts does
+ * `if (enabled === null) delete current[key]`. But BOTH agent-facing edges — this tool
+ * and POST /api/flags/set — declared `z.boolean()`, so no caller could ever express it.
+ * A documented capability that no surface can reach is unreachable in practice, and it
+ * blocked plan git-sync-attribution-graduation-2026-08-10 P-002, whose whole remaining
+ * step is "clear the now-redundant pg-override so the graduated default governs".
+ *
+ * ⚠ null is NOT `false`. `false` PINS the flag off with an override row; `null` REMOVES
+ * the row and lets the default decide — which for a graduated flag means it stays ON.
+ */
+const FlagFlip = z.object({ key: FlagKeySchema, enabled: z.boolean().nullable() });
 
 /** Throws with guidance when `key` isn't a live flag (EI-1168) — mirrors flags:get.ts. */
 function assertKnownFlagKey(key: string): asserts key is FlagKey {
@@ -70,20 +86,69 @@ export default defineTool({
   args: z
     .object({
       key: FlagKeySchema.optional().describe('a single flag key (n=1 shorthand; pair with `enabled`)'),
-      enabled: z.boolean().optional().describe('the new value for the single `key` (n=1 shorthand)'),
-      items: z.array(FlagFlip).min(1).max(100).optional().describe('flag flips to apply (1–100), each { key, enabled }'),
+      enabled: z
+        .boolean()
+        .nullable()
+        .optional()
+        .describe(
+          'the new value for the single `key` (n=1 shorthand). `null` CLEARS the runtime ' +
+            'pg-override instead of setting a value, so the code default (or PostHog) governs ' +
+            'again — NOT the same as `false`, which pins the flag off with an override row.',
+        ),
+      items: z
+        .array(FlagFlip)
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('flag flips to apply (1–100), each { key, enabled } — `enabled: null` clears that key\'s override'),
       reason: z.string().min(8, 'Provide a short reason (>=8 chars) for the audit log.'),
     })
     .refine((a) => Boolean(a.items?.length) || (Boolean(a.key) && a.enabled !== undefined), {
       message: 'pass `{ key, enabled }` (one) or `items:[{ key, enabled }]` (many)',
     }),
   async handler(args, ctx) {
-    const flips = args.items?.length ? args.items : [{ key: args.key!, enabled: args.enabled! }];
+    // NOT `args.enabled!` — that assertion strips `null` from the type, which would make
+    // the single-key form LOOK like it can't clear even though the refine above admits
+    // null (it only rejects `undefined`). The runtime value is unchanged either way; the
+    // point is that the type keeps saying so.
+    const flips: { key: string; enabled: boolean | null }[] = args.items?.length
+      ? args.items
+      : [{ key: args.key!, enabled: args.enabled as boolean | null }];
     const actor = ctx?.principal?.slug ?? 'agent';
     const env = await runBulk(
       flips,
       async ({ key, enabled }) => {
         assertKnownFlagKey(key);
+        // `null` = CLEAR the override (see FlagFlip above). Handled BEFORE the PostHog
+        // path on purpose: clearing a local override must never rewrite the PostHog
+        // value, which governs other deployments.
+        if (enabled === null) {
+          const cleared = await setFlagOverride(key, null);
+          if (!cleared.ok) {
+            return {
+              ok: false as const,
+              key,
+              error: `could not clear the pg-override: ${cleared.reason}`,
+            };
+          }
+          publishFlagChange(key);
+          // Report what now GOVERNS, read back in-process — the caller's real question is
+          // "what is this flag after the clear?", and for a graduated flag the answer
+          // should still be `true` (proving the derived default, not the override, governs).
+          const resolved = await getFlag(key, 'system');
+          const { recordFlagAudit } = await import('../../flag-audit');
+          await recordFlagAudit(key, resolved, actor, {
+            reason: args.reason,
+            backend: 'pg-override',
+          });
+          return {
+            ok: true as const,
+            key,
+            enabled: resolved,
+            cleared: true as const,
+            backend: 'pg-override-cleared' as const,
+          };
+        }
         const result = await setFlag(key, enabled);
         if (result.ok) {
           // The flip lives in PostHog now — drop any PG override so it can't
