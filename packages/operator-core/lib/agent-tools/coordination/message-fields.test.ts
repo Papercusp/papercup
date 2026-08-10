@@ -16,6 +16,7 @@ import {
   assertEnvelopeSectionSplit,
   EnvelopeFieldOnSectionError,
   messageSectionSchema,
+  PREMISES_SHAPE_MESSAGE,
   SECTION_ONLY_FIELDS,
   stampMessageFields,
   toSections,
@@ -579,6 +580,59 @@ describe('structured section fields refuse a wrong shape by TEACHING it (EI-2002
       }).success,
     ).toBe(true);
   });
+
+  /**
+   * `premises` is the THIRD field of this family and was the last to get a taught refusal
+   * (EI-20088434414057337, measured 2026-08-10 — five independent filings of the same
+   * round-trip loop). Its wrong-shape set is NOT the same as its siblings': premises entries
+   * are BARE REF STRINGS, so `['WI-1']` is CORRECT here and wrong for the other two. The
+   * confusable neighbour is `forYouBecause`, which IS an object on the very same section —
+   * which is why `[{ ref: 'WI-1' }]` is the shape agents actually send.
+   */
+  const premisesWrongShapes: Array<[string, unknown]> = [
+    ['a bare string', 'WI-1234#completion'],
+    ['an array of ref OBJECTS (the forYouBecause generalization)', [{ ref: 'WI-1234' }]],
+    ['an array of the wrong object', [{ text: 'WI-1234' }]],
+  ];
+
+  describe.each(premisesWrongShapes)('premises given %s', (_label, input) => {
+    it('refuses it', () => {
+      expect(messageSectionSchema.safeParse({ text: 'a', premises: input }).success).toBe(false);
+    });
+
+    it('names the member shape in the FIRST error', () => {
+      const r = messageSectionSchema.safeParse({ text: 'a', premises: input });
+      const messages = r.success ? '' : r.error.issues.map((i) => i.message).join(' | ');
+      expect(messages).toContain(PREMISES_SHAPE_MESSAGE);
+    });
+  });
+
+  it('accepts premises as an array of ref strings', () => {
+    expect(
+      messageSectionSchema.safeParse({
+        text: 'a',
+        premises: ['WI-1234#completion', 'my-plan#D-007'],
+      }).success,
+    ).toBe(true);
+  });
+
+  /**
+   * REGRESSION PIN. `shapeTaughtArray` does not carry `.optional()`, so a field converted to it
+   * becomes REQUIRED unless the call site chains `.optional()` — and the symptom is a bare
+   * "Invalid input" on a plain `{ text }` section, i.e. EVERY message the fleet sends, failing
+   * for a reason that names neither the field nor the cause. Caught in review of the very change
+   * that added the taught refusal above; this pins it so the next conversion cannot repeat it.
+   */
+  it.each(['premises', 'youMayNotKnow', 'couldNotDetermine'] as const)(
+    'leaves %s OPTIONAL — a section carrying only `text` is valid',
+    (field) => {
+      const r = messageSectionSchema.safeParse({ text: 'a' });
+      expect(r.success).toBe(true);
+      // …and the field is genuinely absent rather than defaulted to an empty array, which would
+      // make "the sender declared nothing" indistinguishable from "the sender declared none".
+      if (r.success) expect(r.data[field]).toBeUndefined();
+    },
+  );
 
   /**
    * THE RULING THIS PINS (owner 2026-07-28, interactive, for `body`; applied here):

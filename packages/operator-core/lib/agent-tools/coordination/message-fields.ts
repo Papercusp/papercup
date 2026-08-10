@@ -532,7 +532,7 @@ const couldNotDetermineEntrySchema = z.object({
  * field an agent tends to reach for. Its two siblings were given taught refusals; this one was
  * not, so it stayed the entry point to the same round-trip loop.
  */
-const PREMISES_SHAPE_MESSAGE =
+export const PREMISES_SHAPE_MESSAGE =
   '`premises` must be an ARRAY of REF STRINGS — not a string, and not an array of objects. ' +
   'Write: premises: ["WI-1234#completion", "my-plan#D-007"]. Note the difference from the ' +
   "section's `forYouBecause`, which IS an object — that asymmetry is the usual cause of this " +
@@ -541,14 +541,19 @@ const PREMISES_SHAPE_MESSAGE =
   '`/internal/docs/...`.' +
   SHAPE_REFUSAL_TAIL;
 
-const premisesArg = shapeTaughtArray('premises', z.string().min(1), PREMISES_SHAPE_MESSAGE).describe(
-  'PER-SECTION. What this section RESTS ON — claims someone ASSERTED (D-041). An ARRAY OF REF ' +
-    'STRINGS (not objects — `forYouBecause` is the object one). Cite refs: ' +
-    '`fact:owner:<id>:<key>@v<N>` · `<plan-slug>#D-NNN` · `WI-NNNN#completion` (the completion ' +
-    'CLAIM, not the item) · `msg:<msg_id>` · `owner-turn:<ref>` · `/internal/docs/...`. Any ref ' +
-    'may be cited; the ref KIND decides whether it can go stale (a doc is declarable, never ' +
-    'invalidatable). Distinct from `basedOn`, which is what you READ and is auto-derived.',
-);
+const premisesArg = shapeTaughtArray('premises', z.string().min(1), PREMISES_SHAPE_MESSAGE)
+  // ⚠ `.optional()` is REQUIRED and is not part of shapeTaughtArray — omitting it makes the
+  // field MANDATORY on every section, which fails a plain `{ text }` with a bare
+  // "Invalid input". Its two siblings chain it for the same reason.
+  .optional()
+  .describe(
+    'PER-SECTION. What this section RESTS ON — claims someone ASSERTED (D-041). An ARRAY OF REF ' +
+      'STRINGS (not objects — `forYouBecause` is the object one). Cite refs: ' +
+      '`fact:owner:<id>:<key>@v<N>` · `<plan-slug>#D-NNN` · `WI-NNNN#completion` (the completion ' +
+      'CLAIM, not the item) · `msg:<msg_id>` · `owner-turn:<ref>` · `/internal/docs/...`. Any ref ' +
+      'may be cited; the ref KIND decides whether it can go stale (a doc is declarable, never ' +
+      'invalidatable). Distinct from `basedOn`, which is what you READ and is auto-derived.',
+  );
 
 const youMayNotKnowArg = shapeTaughtArray(
   'youMayNotKnow',
