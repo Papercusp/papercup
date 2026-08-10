@@ -32,7 +32,19 @@ import { usesModuleScopeFlagSubscribe } from '../../../scripts/check-no-module-s
 import { isRawAgentSpawnBypass } from '../../../scripts/check-no-raw-agent-spawn.mjs';
 // @ts-expect-error -- .mjs guard script, no type declarations
 import { usesRawSetInterval } from '../../../scripts/check-no-raw-setinterval.mjs';
+// @ts-expect-error -- .mjs guard script, no type declarations
+import { findOffendersInText } from '../../../scripts/check-no-retired-imports.mjs';
+// @ts-expect-error -- .mjs guard script, no type declarations
+import { findSelfReferentialExports } from '../../../scripts/check-no-self-referential-export.mjs';
+// No @ts-expect-error: enrolled in tsconfig.declarations.json, so this import is genuinely typed
+// and a directive here would be TS2578 "unused".
+import { isUnenrolledDetachedSpawn } from '../../../scripts/check-no-unenrolled-detached-spawn.mjs';
+// @ts-expect-error -- .mjs guard script, no type declarations
+import { scanSource } from '../../../scripts/check-no-wire-compression.mjs';
+// Enrolled in tsconfig.declarations.json — typed, no directive (see above).
+import { countReexportChains } from '../../../scripts/check-typeless-reexport-trap.mjs';
 import {
+  firstLiveMatch,
   probeStringLiteralBlindness,
   stripCommentsAndStrings,
   stripCommentsOnly,
@@ -148,6 +160,44 @@ describe('stripCommentsOnly is regex-aware too (the phantom that reached the cen
   });
 });
 
+describe('firstLiveMatch — the mask used as an ORACLE, for patterns that span code and string', () => {
+  const live = (raw: string, re: RegExp) => firstLiveMatch(raw, stripCommentsAndStrings(raw, 'a.ts'), re);
+  const IMPORT_RE = /(?:\bfrom\b|\bimport\b)\s*\(?\s*['"`][^'"`]*_retired\//;
+
+  it('keeps a real import, whose SPECIFIER is legitimately a string literal', () => {
+    expect(live(`import x from '_retired/y';\n`, IMPORT_RE)).not.toBeNull();
+  });
+
+  it('rejects the same text quoted inside a template literal', () => {
+    expect(live('const doc = `\nimport x from \'_retired/y\';\n`;\n', IMPORT_RE)).toBeNull();
+  });
+
+  // THE REASON THIS IS A HELPER AND NOT AN INLINE `isLiveCodeAt` CHECK. A single exec returns the
+  // LEFTMOST match; testing only that one rejects the whole line when a phantom happens to precede
+  // a real hit, turning a false-positive fix into a silent false NEGATIVE.
+  it('scans PAST a phantom to a real match later on the same line', () => {
+    const raw = `const doc = 'import x from "_retired/y"'; import z from '_retired/y';\n`;
+    expect(live(raw, IMPORT_RE)).not.toBeNull();
+  });
+
+  // A pattern opening with `^\s*` puts a SPACE at m.index, and a blanked character is also a
+  // space — so anchoring on m.index reports a masked match as live and lets the phantom through.
+  it('anchors on the first NON-WHITESPACE character, not on m.index', () => {
+    const re = /^\s*export\s+\*\s+from\s+['"][^'"]+['"]/m;
+    expect(live(`export * from './x';\n`, re)).not.toBeNull();
+    expect(live('const doc = `\n  export * from \'./x\';\n`;\n', re)).toBeNull();
+  });
+
+  it('does not mutate the caller\'s regex or leak lastIndex between calls', () => {
+    const shared = /\bgzip\b/g;
+    const raw = 'gzip(); gzip();\n';
+    const masked = stripCommentsAndStrings(raw, 'a.ts');
+    expect(firstLiveMatch(raw, masked, shared)).not.toBeNull();
+    expect(shared.lastIndex).toBe(0);
+    expect(firstLiveMatch(raw, masked, shared)).not.toBeNull();
+  });
+});
+
 describe('the probe itself is falsifiable (control + calibration)', () => {
   // CONTROL: the exact pre-fix implementation. If the probe cannot catch THIS, it cannot catch
   // anything, and every "ok" below would be vacuous.
@@ -182,10 +232,38 @@ describe('migrated guards do not mint phantom offenders from tokens quoted in pr
       usesModuleScopeFlagSubscribe,
       'onFlagChange (cb) at module scope is banned',
     ],
+    // Added WI-37717. These five were "INCONCLUSIVE" under the previous probe — a mirror corpus
+    // that planted the token in a /tmp tree and watched whether the guard fired. That probe could
+    // never distinguish "read the file and correctly ignored it" from "never enumerated the file
+    // at all", so a guard that mints phantoms and a guard that is clean produced the SAME result.
+    // Handing the detector the prose form DIRECTLY removes that ambiguity: it cannot fail to read
+    // an argument. All five were confirmed phantom-minting and then fixed.
+    ['check-no-self-referential-export', (src: string) => findSelfReferentialExports('a.ts', src), 'export const foo = foo;'],
+    ['check-typeless-reexport-trap', (src: string) => countReexportChains(src, 'a.ts'), `export * from '@x/trap';`],
+    ['check-no-retired-imports', (src: string) => findOffendersInText('a.ts', src), `fetch('/plugins/orchestrator/spawn')`],
+    [
+      'check-no-unenrolled-detached-spawn',
+      (src: string) => isUnenrolledDetachedSpawn('packages/x/a.ts', src),
+      'spawn(cmd, args, { detached: true })',
+    ],
+    ['check-no-wire-compression', (src: string) => scanSource(src, 'a.ts'), 'createGzip() on the wire is banned'],
   ];
 
   for (const [name, detector, token] of cases) {
     it(`${name}: its own detection token, quoted in prose, is not a call site`, () => {
+      // POSITIVE CONTROL FIRST — and it is not ceremony. A detector that never fires AT ALL
+      // passes the phantom probe perfectly, so without this line a broken or mis-tokened entry
+      // reads as the strongest possible pass. That is not hypothetical: while classifying these
+      // guards, `check-explicit-presence` returned a clean verdict and the only reason it was not
+      // recorded as clean is that this control showed its token never fired as bare code either.
+      // A suspiciously tidy sweep of green is the tell — assert the teeth before the restraint.
+      const bare = detector(`${token}\n`);
+      expect(
+        Array.isArray(bare) ? bare.length > 0 : Boolean(bare),
+        `${name}: VACUOUS CASE — the token does not fire as bare code, so "no phantom" says ` +
+          `nothing about string-literal blindness. Fix the token, do not delete the assertion.`,
+      ).toBe(true);
+
       const verdict = probeStringLiteralBlindness(detector, token);
       expect(verdict.ok, `${name}: ${verdict.detail}`).toBe(true);
     });
@@ -353,17 +431,12 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     'check-no-identity-literals.mjs',
     'check-no-nul-in-source.mjs',
     'check-no-restart-imports.mjs',
-    'check-no-retired-imports.mjs',
-    'check-no-self-referential-export.mjs',
-    'check-no-unenrolled-detached-spawn.mjs',
-    'check-no-wire-compression.mjs',
     'check-okf-conformance.mjs',
     'check-scope-defaults.mjs',
     'check-shell-syntax.mjs',
     'check-smart-quotes.mjs',
     'check-sql-guidance-justified.mjs',
     'check-systemd-startlimit-placement.mjs',
-    'check-typeless-reexport-trap.mjs',
     'check-vacuous-negative-assertions.mjs',
     'check-workspace-default-sql.mjs',
     'lint-tsc-workspaces.mjs',

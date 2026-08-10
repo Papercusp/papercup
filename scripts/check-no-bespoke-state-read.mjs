@@ -111,6 +111,7 @@
  *
  *   node scripts/check-no-bespoke-state-read.mjs
  */
+import { isLiveCodeAt, stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -307,12 +308,36 @@ const HEAD_WINDOW = 6000;
  * That makes marker ownership unambiguous in multi-tool files — the marker belongs
  * to the literal that contains it — which is why the marker must be written INSIDE
  * the object literal rather than in the doc comment above it.
+ *
+ * @param {string} text
+ * @param {string} [fileName]  BRACKETS ARE THE CONTRACT — they are what makes this optional to
+ *        TypeScript. Six existing call sites in no-bespoke-state-read-guard.test.ts pass a single
+ *        argument, and without the brackets every one of them fails with TS2554.
+ * @returns {Array<{name:string, capability:string|null, lens:string|null, exemption:string|null}>}
  */
-export function parseToolDefs(text) {
+export function parseToolDefs(text, fileName) {
   const out = [];
   const re = /defineTool\s*\(\s*\{/g;
+  // MATCH ON RAW, VALIDATE THE ANCHOR AGAINST THE MASK. `defineTool(` written in a doc comment
+  // or quoted inside a template literal is PROSE, not a tool — but the fields this parser reads
+  // (`name:`, `capability:`) are themselves STRING VALUES, so masking strings before matching
+  // would delete the evidence and the guard would find nothing at all. Asking instead whether
+  // the `defineTool` token itself is live program text satisfies both halves.
+  //
+  // MEASURED before the fix (WI-37717): a `defineTool({ name: 'dev:status', capability:
+  // 'intel:read' })` appearing ONLY in a line comment, a block comment, or a template literal
+  // each produced a full `undeclared-state-read` VIOLATION — not merely a stray parse. This
+  // guard is CI-wired, so that is the fleet-gate-reddening phantom class this whole family of
+  // fixes exists to stop, recurring in a guard that the guard-of-guards could not even see.
+  //
+  // The mask is computed LAZILY on the first match: blanking is MONOTONIC (it can only remove a
+  // match, never create one), so a file with no `defineTool(` never pays for a TS parse — and
+  // this guard reads ~1500 .ts files per run.
+  let masked = null;
   let m;
   while ((m = re.exec(text))) {
+    masked ??= stripCommentsAndStrings(text, fileName);
+    if (!isLiveCodeAt(text, masked, m.index)) continue;
     const next = text.indexOf('defineTool', m.index + 1);
     const end = next === -1 ? Math.min(text.length, m.index + HEAD_WINDOW) : Math.min(next, m.index + HEAD_WINDOW);
     const region = text.slice(m.index, end);
@@ -660,7 +685,7 @@ export function findOffenders() {
     } catch {
       continue;
     }
-    for (const row of parseToolDefs(text)) {
+    for (const row of parseToolDefs(text, f)) {
       if (!isStateReadCandidate(row)) continue;
       seen.add(row.name);
       if (row.lens) lenses.push({ file: f, name: row.name, cell: row.lens });
