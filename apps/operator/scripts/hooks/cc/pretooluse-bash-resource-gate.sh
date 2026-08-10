@@ -2546,26 +2546,106 @@ def _has_inplace_flag(seg, kind):
 _CD_RE = re.compile(r'(?:\A|[;\n]|&&|\|\|)\s*cd\s+(\S+)')
 
 
+def _cd_arg_unresolvable(target):
+    # A QUOTED cd argument containing a space (`cd "/tmp/some dir"`) was
+    # already collapsed to a single space by quote-stripping upstream, so the
+    # `\S+` in _CD_RE can land on leftover operator debris instead (`&&`, `;`)
+    # rather than the real target — treat that as unresolvable rather than
+    # fold operator text into a replayed cwd as if it were a directory. Same
+    # for any expansion: this guard resolves LITERAL paths only, everywhere.
+    #
+    # ONE predicate, deliberately shared by the replay below and by
+    # `_unfollowed_cd_before` (EI-20106159536811878). The replay decides
+    # POLICY (where the write is judged to land); the note decides the
+    # MESSAGE (why the guard could not follow you). Were those two to drift
+    # apart, the agent would be told a story that does not match the
+    # decision — which is the precise failure that produced six separate
+    # reports of this one defect.
+    return (not target) or bool(re.fullmatch(r'[&|;<>]+', target)) or any(
+        ch in target for ch in ('$', '`', '~', '*', '?', '[')
+    )
+
+
 def _effective_cwd_before(pos, base_cwd, clean, has_paren):
     if has_paren:
         return base_cwd
     _cwd = base_cwd
     for _m in _CD_RE.finditer(clean[:pos]):
         _target = _m.group(1)
-        # A QUOTED cd argument containing a space (`cd "/tmp/some dir"`) was
-        # already collapsed to a single space by quote-stripping upstream, so
-        # `\S+` here can land on leftover operator debris instead (`&&`, `;`)
-        # rather than the real target — bail rather than fold operator text
-        # into the replayed cwd as if it were a directory.
-        if not _target or re.fullmatch(r'[&|;<>]+', _target) or any(
-            ch in _target for ch in ('$', '`', '~', '*', '?', '[')
-        ):
+        if _cd_arg_unresolvable(_target):
             return base_cwd  # can't tell where cwd ended up — don't guess
         try:
             _cwd = _target if os.path.isabs(_target) else os.path.realpath(os.path.join(_cwd, _target))
         except Exception:
             return base_cwd
     return _cwd
+
+
+def _unfollowed_cd_before(pos, clean, has_paren):
+    # WHY the replay above gave up, for the MESSAGE only — never for the
+    # decision. 'subshell' when a paren suppressed the whole replay,
+    # 'expansion' when a cd argument was not a literal path. None when there
+    # was no `cd` before `pos` at all, or every one of them was followed —
+    # in which case the resolved path is trustworthy and needs no excuse.
+    for _m in _CD_RE.finditer(clean[:pos]):
+        if has_paren:
+            return 'subshell'
+        if _cd_arg_unresolvable(_m.group(1)):
+            return 'expansion'
+    return None
+
+
+def _relative_target_cd_note(raw_target, pos, clean, has_paren):
+    # EI-20106159536811878 (+ WI-7219 and four more reports of this one
+    # defect): the guard resolves a RELATIVE target against the SESSION cwd
+    # whenever it cannot follow a `cd`, then reports it as "resolves INSIDE
+    # the shared staging tree" — true of the string it computed, false about
+    # where the write would actually land. Every reporter read that message
+    # and concluded the guard was broken rather than that their path needed
+    # to be absolute, because nothing in the text mentions cwd, `cd`, or
+    # relativity. It fires hardest on the workflow CLAUDE.md prescribes
+    # ("never mutate the shared tree to prove a guard falsifiable"), whose
+    # probes must mirror the real layout — so repo-shaped relative paths
+    # under a /tmp cwd are the NORMAL shape of the careful thing, not an odd
+    # one.
+    #
+    # The remedy is deliberately in the MESSAGE, not the policy. When the cd
+    # argument is an expansion (`cd "$T"`) NO static scan can know where it
+    # went, so refusing is correct and permanent; what was missing is saying
+    # WHY, and that an absolute target passes.
+    #
+    # The cd argument is NOT quoted back: `cd "$T"` reaches us as the
+    # operator debris `||` (quote-stripping blanked the whole span), so
+    # naming it would print a confidently wrong token — this file's oldest
+    # and most expensive failure mode.
+    if os.path.isabs(raw_target):
+        return ''
+    _why = _unfollowed_cd_before(pos, clean, has_paren)
+    if not _why:
+        return ''
+    return (
+        'THIS IS MOST LIKELY THE WHOLE PROBLEM: `%s` is a RELATIVE path and this command '
+        'contains a `cd` the guard could not follow (%s), so it was resolved against your '
+        'SESSION cwd — which is in the tree — and NOT against the directory you actually '
+        'changed to. If this write is genuinely out-of-tree scratch, re-issue it with an '
+        'ABSOLUTE target (`"$T/%s"`, where `$T` is the directory you cd-ed to, rather than '
+        'the bare `%s`) and it passes unchanged. '
+        % (
+            raw_target,
+            # Both branches are worded to claim only what the guard actually
+            # established. It did NOT determine that your `cd` sits inside a
+            # subshell — only that SOME paren appears somewhere in the
+            # command, which switches the replay off wholesale; saying more
+            # would be the same overclaiming this note exists to correct.
+            'its argument is not a literal path it can resolve — an expansion like `$T`, '
+            'or a quoted span the normalizer has already blanked'
+            if _why == 'expansion'
+            else 'this command contains `(`/`)` somewhere, and a subshell directory change '
+                 'does not outlive its closing paren, so the replay is switched off wholesale',
+            raw_target,
+            raw_target,
+        )
+    )
 
 
 def _shell_write_guard():
@@ -2702,13 +2782,14 @@ def _shell_write_guard():
                 'stray got one tick from being committed on 2026-07-25). Use the Edit or '
                 'Write tool instead — they claim the lock and validate the worktree for '
                 'you (for a copy: Read the source, then Write the destination). '
+                '%s'
                 'Genuinely a scratch/log file? Write it outside the tree '
                 '(~/.papercusp/scratch or /tmp). NOTHING in this Bash call ran — the whole '
                 'command was rejected before execution (EI-18760311552821358), including '
                 'any earlier statement in a `&&`/`;`-chained compound command (e.g. a '
                 'leading heredoc write) — re-issue the whole command after fixing the '
                 'target, do not assume an earlier part of it already ran.'
-                % (_construct, _raw)
+                % (_construct, _raw, _relative_target_cd_note(_raw, _at, _clean, _has_paren))
             )
         # EI-19966359020779598 — `_resolve_write_target` bailed on `_raw`
         # because it carries an expansion marker ($/`/~/*/?/[), the same
@@ -3380,6 +3461,20 @@ def _interpreter_write_guard():
         return  # no interpreter invocation at all — nothing to check
     _interp_m = _INTERPRETER_RE.search(_clean)
     _interp = _interp_m.group(1)
+    # WI-7219: this guard resolved every relative path against the SESSION
+    # cwd and ignored an in-command `cd` outright — so `cd /tmp/x && python -c
+    # "open('out.txt','w')"` was denied over a write that lands in /tmp. The
+    # sibling redirect guard has replayed `cd` since its own version of this
+    # bug; reuse that replay rather than grow a second one, because it is the
+    # same question and its conservatism is already argued at length above
+    # (bails on a subshell, on any non-literal argument, and counts only a
+    # statement-initial `cd`). A `cd` it CAN follow moves the write out of the
+    # tree in fact and not merely in the string, so allowing it is correct —
+    # and a `cd` it cannot follow still falls back to the session cwd, where
+    # `_relative_target_cd_note` now explains the refusal instead of leaving
+    # the agent to conclude the guard is broken.
+    _has_paren = '(' in _clean or ')' in _clean
+    _eff_cwd = _effective_cwd_before(_interp_m.start(), _cwd, _clean, _has_paren)
     _has_heredoc = bool(_HEREDOC_START_RE.search(command))
     _has_inline_flag = bool(_INLINE_CODE_FLAG_RE.search(_clean))
     if not (_has_heredoc or _has_inline_flag):
@@ -3409,7 +3504,7 @@ def _interpreter_write_guard():
         if not _body_indicates_file_write(_body):
             continue  # a read, a stdout/stderr print, or no recognized file
             # I/O at all — nothing to gate (EI-18692070370140239)
-        _hit = _payload_literal_tree_path(_body, _canon, _cwd)
+        _hit = _payload_literal_tree_path(_body, _canon, _eff_cwd)
         if _hit:
             # The scanned text here is the interpreter PAYLOAD, not the shell
             # command — showing it is what tells a confused reader which of the
@@ -3428,8 +3523,14 @@ def _interpreter_write_guard():
                 'side door as a raw `cat >>`/`tee`/`sed -i` (EI-18664655909328670). Use the '
                 'Edit or Write tool instead — they claim the lock and validate the worktree '
                 'for you (for a copy: Read the source, then Write the destination). '
+                '%s'
                 'Genuinely a scratch/log file? Write it outside the tree '
-                '(~/.papercusp/scratch or /tmp).' % (_interp, _hit)
+                '(~/.papercusp/scratch or /tmp).'
+                % (
+                    _interp,
+                    _hit,
+                    _relative_target_cd_note(_hit, _interp_m.start(), _clean, _has_paren),
+                )
             )
         elif _has_computed_write_path(_body):
             _saw_computed_write = True

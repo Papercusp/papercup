@@ -2746,6 +2746,118 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
  * script). Also covers the `perl -i`/`ruby -i` in-place-flag half, added as
  * a new leg on the existing shell-write guard's target extraction.
  */
+/**
+ * RELATIVE target + a `cd` the guard cannot follow (EI-20106159536811878, WI-7219,
+ * EI-18800669297694465, EI-19372138838008750, EI-18700825865251498, EI-18898365995336025).
+ *
+ * ONE defect, reported six times over six weeks and fixed none of those times.
+ * The guard resolves a relative target against the SESSION cwd whenever it cannot
+ * follow a `cd`, then reports it as "resolves INSIDE the shared staging tree" —
+ * a true statement about the string it computed and a false one about where the
+ * write lands. Every reporter concluded the guard was broken rather than that
+ * their path needed to be absolute, because the text never mentions cwd, `cd`,
+ * or relativity.
+ *
+ * Two halves, and they fail differently, so they are tested separately:
+ *  - what CANNOT be known statically (`cd "$T"`) must still refuse, but must say
+ *    WHY and name the one-line fix. That is a MESSAGE contract.
+ *  - what CAN be known (`cd /literal/path`) must be followed rather than refused.
+ *    That is a BEHAVIOR contract, and it is WI-7219 proper: the redirect guard has
+ *    replayed `cd` for weeks while the interpreter guard beside it never did.
+ */
+describe('relative target after an unfollowable `cd` (EI-20106159536811878 / WI-7219)', () => {
+  // The verbatim repro from the filing: the out-of-tree falsifiability probe
+  // CLAUDE.md prescribes. Its paths are repo-SHAPED on purpose — the probe has to
+  // mirror the real layout for the guard under test to behave realistically — so
+  // this is the normal shape of the careful thing, not an exotic one.
+  const FILED_REPRO = [
+    'T=$(mktemp -d /tmp/strand-falsify-XXXXXX) || exit 1',
+    'cd "$T" || exit 1',
+    'mkdir -p packages/operator-core/lib',
+    "printf 'export interface A { id: string }\\n' > packages/operator-core/lib/a.ts",
+  ].join('\n');
+
+  it('still DENIES the filed repro — the policy is right and is not being weakened', () => {
+    const reason = denyReason(runGate(bashCmd(FILED_REPRO, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('EI-18664655909328670');
+  });
+
+  it('names relativity, the unfollowed `cd`, and the absolute-path fix', () => {
+    const reason = denyReason(runGate(bashCmd(FILED_REPRO, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('RELATIVE');
+    expect(reason).toContain('could not follow');
+    expect(reason).toContain('ABSOLUTE target');
+    // The remedy has to be actionable against THIS target, not generic advice.
+    expect(reason).toContain('packages/operator-core/lib/a.ts');
+  });
+
+  /**
+   * The note must never quote the `cd` argument back. `cd "$T"` reaches the guard
+   * as the operator debris `||` — quote-stripping blanked the whole span — so
+   * printing "the cd argument" would print a confidently wrong token, which is
+   * this file's oldest and most expensive failure mode.
+   */
+  it('does not quote the cd argument back (it is operator debris by this point)', () => {
+    const reason = denyReason(runGate(bashCmd(FILED_REPRO, { cwd: CANON }), CANON_ENV));
+    expect(reason).not.toMatch(/could not follow \(`?\|\|/);
+    expect(reason).not.toContain('`||`');
+  });
+
+  it('stays silent about cwd when there is no `cd` at all — no spurious excuse', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo hi > apps/operator/generated.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('EI-18664655909328670');
+    expect(reason).not.toContain('THIS IS MOST LIKELY THE WHOLE PROBLEM');
+  });
+
+  it('stays silent for an ABSOLUTE in-tree target — relativity is not the story there', () => {
+    const reason = denyReason(
+      runGate(bashCmd(`cd "$T" && echo hi > ${CANON}/apps/operator/generated.ts`, { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('EI-18664655909328670');
+    expect(reason).not.toContain('THIS IS MOST LIKELY THE WHOLE PROBLEM');
+  });
+
+  // WI-7219 proper — the BEHAVIOR half. A literal `cd` out of the tree means the
+  // write lands outside it in fact, not merely in the string, so allowing it is
+  // correct. The redirect guard already did this; the interpreter guard did not.
+  it('follows a LITERAL cd out of the tree before an INTERPRETER write (WI-7219)', () => {
+    expectAllow(
+      runGate(
+        bashCmd(`cd /tmp/pc-scratch-probe && python3 -c "open('out.txt','w').write('x')"`, {
+          cwd: CANON,
+        }),
+        CANON_ENV,
+      ),
+    );
+  });
+
+  it('still denies an interpreter write into the tree when NO cd moved us out', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd(`python3 -c "open('apps/operator/generated.ts','w').write('x')"`, { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('EI-18691482279179647');
+  });
+
+  it('explains itself on the INTERPRETER path too, not just the redirect path', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd(`cd "$T" && python3 -c "open('apps/operator/generated.ts','w').write('x')"`, {
+          cwd: CANON,
+        }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toContain('RELATIVE');
+    expect(reason).toContain('ABSOLUTE target');
+  });
+});
+
 describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
   const expectInterpDeny = (out: { stdout: string; status: number | null }) => {
     const reason = denyReason(out);
