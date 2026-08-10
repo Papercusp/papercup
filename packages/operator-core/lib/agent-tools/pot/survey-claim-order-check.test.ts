@@ -35,6 +35,17 @@ vi.mock('../../scheduler/get-next', () => ({
   readIssueClaimability: h.readIssueClaimability,
 }));
 
+// TIER ENABLED for this suite (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017):
+// pot:survey now opens with the retirement gate, so without this the file would
+// assert the REFUSAL instead of the claim-order-check behaviour it is about. The
+// gate itself is covered by ../mug-kettle-tool-gate.test.ts, which pins both sides
+// for pot:survey. importOriginal is spread so no sibling export of pot/started is
+// stranded (lint:vimock-export-strands).
+vi.mock('../../pot/started', async (orig) => ({
+  ...(await orig<typeof import('../../pot/started')>()),
+  mugKettleSystemEnabled: async () => true,
+}));
+
 import tool from './survey';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

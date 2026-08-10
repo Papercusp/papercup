@@ -27,6 +27,17 @@ vi.mock('../../pot/wake', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
 
+// TIER ENABLED for this suite (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017):
+// pot:survey now opens with the retirement gate, so without this the file would
+// assert the REFUSAL instead of the workspace-scope behaviour it is about. The gate
+// itself is covered by ../mug-kettle-tool-gate.test.ts, which pins both sides for
+// pot:survey. importOriginal is spread so no sibling export of pot/started is
+// stranded (lint:vimock-export-strands).
+vi.mock('../../pot/started', async (orig) => ({
+  ...(await orig<typeof import('../../pot/started')>()),
+  mugKettleSystemEnabled: async () => true,
+}));
+
 import tool from './survey';
 
 // The handler returns a {data} envelope (context-trimming-tiers P-024) —

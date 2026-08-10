@@ -25,6 +25,18 @@ vi.mock('../../pot/urgent-wake', () => ({ requestUrgentPotWake: (...a: unknown[]
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: (...a: [string?, string?]) => resolvePotHomeSlug(...a) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: (...a: unknown[]) => notifySyncInvalidate(...(a as [])) }));
+// TIER ENABLED for this suite (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017):
+// pot:set-steering now opens with the retirement gate, so without this every write
+// test below would assert the REFUSAL instead of the handler orchestration this file
+// is about (the store mock is never reached, so they read as "Number of calls: 0").
+// The gate itself is covered by ../mug-kettle-tool-gate.test.ts, which pins BOTH
+// sides for pot:set-steering — that separation is deliberate: this suite tests the
+// tool, exactly one file tests the gate. importOriginal is spread so no sibling
+// export of pot/started is stranded (lint:vimock-export-strands).
+vi.mock('../../pot/started', async (orig) => ({
+  ...(await orig<typeof import('../../pot/started')>()),
+  mugKettleSystemEnabled: async () => true,
+}));
 
 import setSteeringTool from './set_steering';
 import getSteeringTool from './get_steering';
