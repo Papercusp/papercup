@@ -1085,4 +1085,83 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     // A pass carries no blocked-path detail — that would imply a refusal that never happened.
     expect(stamped).not.toHaveProperty('preLaunchBlockedPaths');
   });
+
+  // ─── EI-20031402866608444: `reason` is ACCEPTED and recorded ───────────────────────────────
+  // It was undeclared, and the published schema is additionalProperties:false, so passing it was
+  // an invalid_input that launched NOTHING: 19 of 22 rejections in 14 days (~11% of all calls to
+  // this verb), 6 distinct agents on 2026-08-09 alone, every case a retry-without-it seconds
+  // later, mid-incident, on the fleet's only manual verdict lever.
+  //
+  // ⚠ MEASURED, not assumed: this args schema is STRICT — an undeclared key is REJECTED here, at
+  // safeParse, not merely stripped. (I first wrote the control below the other way round, on the
+  // usual zod default of silently dropping unknown keys, and it failed: `success` came back
+  // false. So the invalid_input the 19 rejections hit originates at THIS schema, not only at the
+  // published additionalProperties:false contract.) That is what makes the assertions below real
+  // guards rather than vacuous ones — had unknown keys been stripped instead, a bare
+  // `.success === true` would pass just as happily against a schema that never declared `reason`,
+  // so these still assert the parsed OUTPUT as well.
+
+  const REASON = 'gate RED 3x / ~2h, main frozen, no run in flight';
+
+  it('EI-20031402866608444: a `reason` SURVIVES the args schema (it used to be rejected outright)', async () => {
+    const { default: tool } = await import('./checkpoint-run');
+    const parsed = tool.args.safeParse({ reason: REASON });
+    if (!parsed.success) throw new Error('reason was REJECTED by the args schema — the original defect');
+    expect((parsed.data as { reason?: string }).reason).toBe(REASON);
+  });
+
+  it('EI-20031402866608444: CONTROL — an UNDECLARED arg is still REJECTED, reproducing the original defect', async () => {
+    const { default: tool } = await import('./checkpoint-run');
+    // This is the defect itself, held in place as a control: an arg this schema does not declare
+    // fails to parse, which is precisely what `reason` used to do. It proves (a) the schema is
+    // still strict — accepting `reason` did not quietly open the tool to anything — and (b) the
+    // test above is falsifiable, since deleting the `reason` field would make it fail exactly
+    // like this.
+    expect(tool.args.safeParse({ definitelyNotAnArg: 'x' }).success).toBe(false);
+  });
+
+  it('EI-20031402866608444: never rejects a reason for terseness or length (softText, not hardText)', async () => {
+    const { default: tool } = await import('./checkpoint-run');
+    // This verb's whole defect was REJECTING callers; a length/min rule would rebuild it in
+    // miniature. hardText(LIMITS.SHORT_TITLE, { min: 8 }) — the sibling release:deploy shape —
+    // would fail BOTH of these.
+    const terse = tool.args.safeParse({ reason: 'red' });
+    expect(terse.success && (terse.data as { reason?: string }).reason).toBe('red');
+    const huge = tool.args.safeParse({ reason: 'x'.repeat(5000) });
+    expect(huge.success && (huge.data as { reason?: string }).reason).toHaveLength(5000);
+  });
+
+  it('EI-20031402866608444: stamps the reason as fireReason WITHOUT clobbering the exclusion keys', async () => {
+    mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => REFUSAL) });
+    const { default: tool } = await import('./checkpoint-run');
+    const { ctx, metadata } = MAKE_CTX_META();
+    await tool.handler({ paths: [MINE], reason: REASON }, ctx);
+
+    // ONE call, carrying BOTH. The seam is overwrite-not-merge (dispatch-stack.ts:550, "last
+    // write wins"), so stamping the reason from a SECOND ctx.metadata() call would wipe every
+    // preLaunchExclusion key WI-37618 added. This is the guard on that.
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata.mock.calls[0][0]).toMatchObject({
+      fireReason: REASON,
+      preLaunchExclusion: 'refused',
+      preLaunchCandidate: 'aaaaaaaaaaaa',
+      preLaunchBlockedPaths: [{ path: MINE, eligibleInSec: 120 }],
+    });
+  });
+
+  it('EI-20031402866608444: omits fireReason entirely when no reason was given, and clamps a huge one', async () => {
+    mockLaunch({ assessPreLaunchExclusion: vi.fn(async () => REFUSAL) });
+    const { default: tool } = await import('./checkpoint-run');
+
+    const bare = MAKE_CTX_META();
+    await tool.handler({ paths: [MINE] }, bare.ctx);
+    // Absent rather than null/'' — so `metadata_json ? 'fireReason'` cleanly separates the calls
+    // that actually justified themselves from the ones that did not.
+    expect(bare.metadata.mock.calls[0][0]).not.toHaveProperty('fireReason');
+
+    const big = MAKE_CTX_META();
+    await tool.handler({ paths: [MINE], reason: 'y'.repeat(5000) }, big.ctx);
+    // Accepted at the schema, bounded at the stamp — the softText/clampText contract.
+    expect((big.metadata.mock.calls[0][0] as { fireReason: string }).fireReason).toHaveLength(1000);
+  });
 });

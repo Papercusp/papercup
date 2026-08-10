@@ -45,7 +45,11 @@
  * silent green is unreachable from either direction.
  */
 import { describe, expect, it } from 'vitest';
-import { assertRelevance, evaluateRelevance } from '@papercusp/search-core';
+import {
+  assertRelevance,
+  evaluateRelevance,
+  type RelevanceEvalResult,
+} from '@papercusp/search-core';
 // The ENGINE's own hit type, deliberately not a local mirror of it: a
 // hand-rolled shape drifts silently, and `hitProvenance` reads fields
 // (`rankers`/`rankerScores`) a partial mirror makes optional — which is exactly
@@ -285,6 +289,43 @@ try {
   skipReason = `live operator store unreachable: ${(err as Error).message}`;
 }
 
+/**
+ * Report the GRADED metrics `evaluateRelevance` already computes and this file
+ * threw away.
+ *
+ * Both evals below pass a real graded `grade()` (0..3), so every call has always
+ * returned `ndcgAtK` / `precisionAtK` / `accessoryAtK` alongside the recall this
+ * file asserts — and until 2026-08-10 every one of those numbers was discarded at
+ * the call site. That matters because recall is a SET metric: it can only see a
+ * relevant session crossing into the top k, never a change in WHERE the ones
+ * already there rank. nDCG can see exactly that, and it was being computed and
+ * dropped on every run.
+ *
+ * ⚠ REPORTED, DELIBERATELY NOT ASSERTED. A floor set before its baseline is known
+ * would red the shared gate on a number nobody has measured yet. Read these logs
+ * over a few runs first, then ratchet a `minNdcgAtK` into the `assertRelevance`
+ * calls below — that is the intended next step, not an oversight.
+ *
+ * ⚠ And nDCG is NOT a retro-explanation for the null results already on record.
+ * D-061 measured Report 1 at recall 0.000 with ALL 8 pinned sessions missed: every
+ * top-k grade was 0, so nDCG@k was 0 too and could have discriminated nothing.
+ * Since D-069 moved Report 1 to 2/8 the page finally holds relevant rows, which is
+ * what makes ordering measurable from here ON — not retroactively.
+ *
+ * Context: plan semantic-search-fingerprint-coverage-2026-08-03, D-072 (which
+ * retracted D-071's claim that this repo had no graded metric — it always did).
+ */
+function reportGradedMetrics(report: string, out: RelevanceEvalResult): void {
+  // console.LOG, not warn — see the note on the stage-isolation report below.
+  console.log(
+    `[P-015] ${report} — graded metrics @${out.k}: ` +
+      `nDCG ${out.ndcgAtK.toFixed(4)} · precision ${out.precisionAtK.toFixed(4)} · ` +
+      `accessory ${out.accessoryAtK.toFixed(4)}` +
+      (out.recallAtK === null ? '' : ` · recall ${out.recallAtK.toFixed(4)}`) +
+      `\n         grades in rank order: [${out.grades.join(',')}]`,
+  );
+}
+
 describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (live corpus)', () => {
   it(
     'Report 1: "theory" surfaces the theory-of-mind sessions (RECALL — shrink-only floor)',
@@ -301,6 +342,8 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
 
       // A vacuous run is a failure, never a pass — see the header.
       expect(out.coverage).toBe('complete');
+
+      reportGradedMetrics('Report 1 "theory"', out);
 
       const verdict = assertRelevance(out, { minRecallAtK: theoryRecallFloor(tomSessions.length) });
       expect(
@@ -460,6 +503,8 @@ describe.skipIf(skipReason !== null)('P-015 — owner-reported query relevance (
         k: HIT_LIMIT,
       });
       expect(out.coverage).toBe('complete');
+
+      reportGradedMetrics('Report 2 "knowledge pack"', out);
 
       const verdict = assertRelevance(out, {
         maxAccessoryAtK: KNOWLEDGE_PACK_ACCESSORY_CEILING,

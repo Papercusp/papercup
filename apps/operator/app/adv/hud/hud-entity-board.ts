@@ -156,6 +156,14 @@ export interface HudEntityCard {
    * slug, and its own handler reads that directly).
    */
   open?: HudAskTarget;
+  /**
+   * SUBDIRECTIVES steering this goal's agent, rendered INSIDE this card
+   * (P-017, D-006 Q4 option A). Goals board only; omitted everywhere else.
+   *
+   * They live on the parent's card rather than in a lane because a child is not
+   * an agent and so "has no business sitting in a lane of its own" (D-006).
+   */
+  subGoals?: HudSubGoal[];
 }
 
 export interface HudEntityBoard {
@@ -240,6 +248,41 @@ export interface HudGoalInput {
   spendUsd?: number | null;
   budgetCents?: number | null;
   updatedAt?: string | null;
+  /**
+   * The parent goal, when this row is a SUBDIRECTIVE rather than a goal in its
+   * own right (goals-tab-improvement-2026-08-09 P-017 / D-006).
+   *
+   * On the wire as `GoalSummaryRow.parentId` since goal-mode-2026-08-07 and read
+   * by nothing until now. It is narrowed in here rather than imported for the
+   * reason the type's own docblock gives.
+   */
+  parentId?: string | null;
+}
+
+/**
+ * A SUBDIRECTIVE, as rendered inside its parent's card.
+ *
+ * Deliberately NOT a `HudEntityCard`, and the omissions are the point (D-006):
+ *
+ *   - no `column`, because a child carries no independent lane state — it is not
+ *     an agent, so there is nothing for a lane to describe;
+ *   - no `badges`, and specifically NO SPEND. D-006 retired the parent/child
+ *     half of the D-002 summing hazard by observing that one goal is one agent
+ *     is one bill, so a child has no separable spend to show. Rendering a child
+ *     figure would invent a number, and rendering a parent figure that INCLUDED
+ *     children would be the summing D-002 forbids. Neither is representable
+ *     here, which is stronger than a test asserting nobody wrote one;
+ *   - no `open` target, because a child owns no session to open.
+ */
+export interface HudSubGoal {
+  id: string;
+  /** Short handle, same slice rule as a card's `ref`. */
+  ref: string;
+  title: string;
+  /** Lower-cased goal status — rendered as a word, never as a lane. */
+  status: string;
+  /** True for `achieved`/`killed`: a finished directive is struck through, not hidden. */
+  terminal: boolean;
 }
 
 /** The work-item wire row (workItems.byHarness), narrowed the same way. */
@@ -384,13 +427,23 @@ export function planCountsSummary(counts: Record<string, number> | null | undefi
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
-function matchesQuery(card: { ref: string; title: string; context: string | null }, q: string): boolean {
+function matchesQuery(
+  card: { ref: string; title: string; context: string | null; subGoals?: HudSubGoal[] },
+  q: string,
+): boolean {
   if (!q) return true;
   const needle = q.toLowerCase();
   return (
     card.ref.toLowerCase().includes(needle) ||
     card.title.toLowerCase().includes(needle) ||
-    (card.context ?? '').toLowerCase().includes(needle)
+    (card.context ?? '').toLowerCase().includes(needle) ||
+    // A subdirective has no card of its own (D-006), so the PARENT card is the
+    // only thing a search can return it in. Without this the filter would hide
+    // a child that matches — a silent loss, and the one outcome this board's
+    // "+N more" / true-counts discipline exists to rule out.
+    (card.subGoals ?? []).some(
+      (s) => s.title.toLowerCase().includes(needle) || s.ref.toLowerCase().includes(needle),
+    )
   );
 }
 
