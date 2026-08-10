@@ -18,6 +18,8 @@ import {
   pgReadQuery,
   extractPgErrorInfo,
   buildClaimabilityAdvisory,
+  buildCorpusNamespaceAdvisory,
+  buildNativeToolAttributionAdvisory,
   buildSilentNullPathAdvisory,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -158,8 +160,35 @@ export default defineTool({
       } catch {
         claimabilityAdvisory = null;
       }
+      // EI-20103748074297088 — two more ways a read returns a well-formed ZERO that reads as a
+      // real answer. Kept as their own builders, like the three above, because each is a
+      // DIFFERENT failure: the tenant advisory warns the rows may be from the wrong tenant;
+      // these warn there will be no rows AT ALL, from a query that looks perfectly scoped.
+      // They also compose — the tool_invocations zero sends you to the transcript store, where
+      // the tenant-predicate habit produces a second zero that looks like corroboration — so
+      // both can legitimately fire for one investigation.
+      let corpusNamespaceAdvisory: string | null = null;
+      try {
+        corpusNamespaceAdvisory = buildCorpusNamespaceAdvisory(sql);
+      } catch {
+        corpusNamespaceAdvisory = null;
+      }
+      let nativeToolAdvisory: string | null = null;
+      try {
+        nativeToolAdvisory = buildNativeToolAttributionAdvisory(sql);
+      } catch {
+        nativeToolAdvisory = null;
+      }
       const advisory =
-        [claimabilityAdvisory, nullPathAdvisory, tenantAdvisory].filter(Boolean).join(' ') || null;
+        [
+          claimabilityAdvisory,
+          nullPathAdvisory,
+          nativeToolAdvisory,
+          corpusNamespaceAdvisory,
+          tenantAdvisory,
+        ]
+          .filter(Boolean)
+          .join(' ') || null;
       return {
         content: [
           {
