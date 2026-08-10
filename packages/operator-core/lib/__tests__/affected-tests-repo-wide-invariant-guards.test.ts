@@ -66,6 +66,9 @@ import {
 // WI-37605 — same reason as the import above: the router MIRRORS this list rather than importing
 // it, so importing the ORIGINAL here is what keeps the mirror honest.
 import { GC_TAG_SOURCE_ROOTS } from '../../../../scripts/check-green-checkpoint-tag.mjs';
+// WI-37820 — same mirror-honesty reason: the router hardcodes this number rather than importing
+// it, so importing the ORIGINAL here is what stops the two from drifting apart.
+import { EXIT_NOT_CHECKED } from '../../../../scripts/lib/not-checked.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
@@ -737,7 +740,7 @@ describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () =
  * workspace in). A source-shape assertion here would duplicate it in a weaker form.
  */
 describe('affected-tests: the host-suite skip is DECLARED and verified, never assumed', () => {
-  type Guard = { script: string; hostSuiteRatchet: string | null };
+  type Guard = { script: string; hostSuiteRatchet: string | null; notCheckedIsNonGating: boolean };
 
   // The registry SOURCE is overridable so this block's falsifiability can be proven against a
   // mutated COPY outside the tree (scripts/mutation-probe.sh tier 2). The shared checkout is
@@ -758,7 +761,8 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
     .map((chunk) => {
       const script = /script: '([^']+)'/.exec(chunk)?.[1];
       const ratchet = /hostSuiteRatchet: '([^']+)'/.exec(chunk)?.[1] ?? null;
-      return script ? { script, hostSuiteRatchet: ratchet } : null;
+      const nonGating = /notCheckedIsNonGating: true/.test(chunk);
+      return script ? { script, hostSuiteRatchet: ratchet, notCheckedIsNonGating: nonGating } : null;
     })
     .filter((g): g is Guard => g !== null);
 
@@ -772,6 +776,62 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
     );
     expect(guards.length).toBeGreaterThanOrEqual(10);
     expect(guards.every((g) => g.script.startsWith('lint:'))).toBe(true);
+  });
+
+  /**
+   * WI-37820 — "I could not look" must never gate, and the registry is where that is declared.
+   *
+   * The strand-guard family answers THREE things: 0 checked-and-clean, 1 checked-and-found,
+   * 2 could-not-look (EXIT_NOT_CHECKED). The router gates on `status !== 0`, so registering
+   * one of these guards without `notCheckedIsNonGating` turns its third answer into a red.
+   * And it reds EVERY time rather than intermittently: a gate checkout is clean by
+   * construction, so a guard whose subject is the working diff examines zero files on every
+   * candidate.
+   *
+   * MEASURED 2026-08-10: `lint:vimock-export-strands` was registered under the comment "it
+   * always exits 0, so it can never red the gate". WI-37806 then made it exit 2 when it
+   * examined nothing — correct in itself, and a fleet-wide gate red the moment the gate's
+   * checkout picked it up. Nothing connected the two changes, because the guard's exit
+   * contract lived in the guard and its consequences lived here.
+   */
+  it('every registered guard that CAN exit "not checked" declares it non-gating', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    let checked = 0;
+    for (const g of guards) {
+      const cmd = pkg.scripts?.[g.script];
+      if (!cmd) continue;
+      // The guard's own source is the authority on whether exit 2 is reachable — asking the
+      // file rather than maintaining a second list of "the strand guards" here, which would
+      // be one more thing to forget to update.
+      const file = /scripts\/[\w.-]+\.mjs/.exec(cmd)?.[0];
+      if (!file) continue;
+      let src: string;
+      try {
+        src = readFileSync(resolve(REPO_ROOT, file), 'utf8');
+      } catch {
+        continue;
+      }
+      if (!/from '\.\/lib\/not-checked\.mjs'/.test(src)) continue;
+      checked++;
+      expect(
+        g.notCheckedIsNonGating,
+        `${g.script} runs ${file}, which imports not-checked.mjs and so can exit ${EXIT_NOT_CHECKED} ` +
+          `("examined nothing"). Registered without notCheckedIsNonGating, that answer reds the gate ` +
+          `on every candidate, since a gate checkout's working diff is empty by construction.`,
+      ).toBe(true);
+    }
+    // Without this the loop is vacuous the moment the import pattern changes — the same
+    // zero-cases-green-suite failure the CALIBRATION test above exists to prevent.
+    expect(checked, 'no registered guard was recognised as strand-family — parse is stale').toBeGreaterThan(0);
+  });
+
+  it('the router\'s mirrored EXIT_NOT_CHECKED equals the real one', () => {
+    const src = readFileSync(REGISTRY_FILE, 'utf8');
+    const mirrored = /const EXIT_NOT_CHECKED = (\d+);/.exec(src)?.[1];
+    expect(mirrored, 'affected-tests.mjs no longer declares EXIT_NOT_CHECKED').toBeDefined();
+    expect(Number(mirrored)).toBe(EXIT_NOT_CHECKED);
   });
 
   it('every declared hostSuiteRatchet names a file that EXISTS', () => {

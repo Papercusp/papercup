@@ -868,8 +868,16 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // actually walks the test corpus, which only happens when an export was added).
     // Cheaper than lint:chunk-safe and lint:okf-conformance, both accepted here at ~1.0s.
     script: 'lint:vimock-export-strands',
-    // ADVISORY — it always exits 0, so it can never red the gate; being registered here is
-    // what makes it SPEAK, printing the trigger into the run of whoever added the export.
+    // ADVISORY — being registered here is what makes it SPEAK, printing the trigger into the
+    // run of whoever added the export.
+    //
+    // ⚠ This comment used to read "it always exits 0, so it can never red the gate" — the
+    // invariant that made registering it safe. WI-37806 broke it (correctly: a run that
+    // examined nothing must not report success) without updating this entry, which ARMED a
+    // fleet-wide gate red that had not fired yet only because the gate's checkout still ran
+    // the older copy. A guard's exit contract is part of its REGISTRATION, not a private
+    // detail — change one and this entry has to move with it.
+    notCheckedIsNonGating: true,
     // TS-family only: nothing else can declare a runtime export for a factory to omit.
     appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
   },
@@ -1296,7 +1304,7 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   if (guard.hostSuiteRatchet && tasks.some((t) => t.ws.name === ws.name && t.script === 'test')) continue;
   if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
   outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
-  tasks.push({ ws, script: guard.script });
+  tasks.push({ ws, script: guard.script, notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating) });
 }
 
 if (!tasks.length) {
@@ -1600,7 +1608,18 @@ for (const t of tasks) {
     }
   }
   if (r.status !== 0) {
-    if (isQuarantined) {
+    if (t.notCheckedIsNonGating && r.status === EXIT_NOT_CHECKED) {
+      // "I could not look" is not "I found a violation" — see EXIT_NOT_CHECKED above. Reported
+      // LOUDLY rather than swallowed: the guard really did verify nothing, and a reader who
+      // takes this run as coverage of the strand class would be wrong. It just is not the
+      // failing task's fault, and it cannot be fixed by anyone downstream of it.
+      errSync(
+        `\n  ⚠ ${t.ws.name} :: ${t.script} examined NOTHING (exit ${EXIT_NOT_CHECKED}) — not gating.\n` +
+          `    This guard infers its subject from the working diff, which is empty in a clean\n` +
+          `    checkout, so it has no opinion here. It speaks in a LOCAL run, where the edit\n` +
+          `    that triggers it is still uncommitted.`,
+      );
+    } else if (isQuarantined) {
       quarantinedFailed++;
       errSync(`  (quarantined failure — not gating)`);
     } else {
