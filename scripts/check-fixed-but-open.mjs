@@ -42,11 +42,10 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { connectScriptPg } from './lib/pg-url.mjs';
 
-const require = createRequire(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Id shape. 3+ digits deliberately: WI-1/WI-2 are overwhelmingly fixture placeholders. */
@@ -298,25 +297,7 @@ export function tierFor(rec) {
 }
 
 async function openWorkItems(harness) {
-  let url =
-    process.env.HARNESS_ADMIN_DATABASE_URL || process.env.DATABASE_URL || process.env.PAPERCUSP_PG_URL;
-  if (!url) {
-    try {
-      const disc = require('@papercusp/embedded-pg-discovery');
-      url = disc.resolvePgUrl?.() ?? disc.getHarnessAdminUrl?.();
-    } catch {
-      /* fall through to the explicit error below */
-    }
-  }
-  if (!url) {
-    throw new Error(
-      'No database URL. Set HARNESS_ADMIN_DATABASE_URL (or DATABASE_URL). Never hardcode localhost:5432.',
-    );
-  }
-
-  const { Client } = require('pg');
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = await connectScriptPg();
   try {
     // Observations dominate the table (~72% of rows) and are reflection notes, not work — they are
     // not "fixed-but-open" candidates in any useful sense.

@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { connectScriptPg } from './lib/pg-url.mjs';
 import { extractParts } from './gen-claude-md-manifest.mjs';
 // Imported, not re-spelled: the loader must refuse to ingest the projector's own output,
 // and a copy of the phrase here could drift out of agreement with the banner it matches.
@@ -269,32 +270,7 @@ export function reingestVerdict({
 }
 
 async function connect() {
-  let discoveryError = null;
-  const url =
-    process.env.HARNESS_ADMIN_DATABASE_URL || process.env.DATABASE_URL || process.env.PAPERCUSP_PG_URL ||
-    (() => {
-      try {
-        const disc = require('@papercusp/embedded-pg-discovery');
-        return disc.resolvePgUrl?.() ?? disc.getHarnessAdminUrl?.();
-      } catch (err) {
-        // Measured 2026-08-10: from a bare `node scripts/…` process this THROWS
-        // `Cannot read properties of undefined (reading 'envVars')` — it expects an
-        // operator context this script does not have. Swallowing it silently makes a
-        // real crash look like "discovery returned nothing", so it is reported.
-        discoveryError = err;
-        return null;
-      }
-    })();
-  if (!url) {
-    throw new Error(
-      'No database URL. Set HARNESS_ADMIN_DATABASE_URL (or DATABASE_URL) — never hardcode localhost:5432.' +
-        (discoveryError ? `\n  embedded-pg-discovery also failed: ${discoveryError.message.split('\n')[0]}` : ''),
-    );
-  }
-  const { Client } = require('pg');
-  const client = new Client({ connectionString: url });
-  await client.connect();
-  return client;
+  return connectScriptPg();
 }
 
 async function writeRows(client, rows, docId, text, { force = false, acceptTombstones = null } = {}) {

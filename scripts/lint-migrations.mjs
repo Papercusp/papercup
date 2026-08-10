@@ -50,6 +50,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR = join(ROOT, 'libs/papercusp/libs/db/sql');
@@ -503,20 +504,8 @@ export function unreservedNumbers(fileNums, reservedNums, enforcedFrom = ENFORCE
 }
 
 async function fetchReservedNums() {
-  // env → embedded-pg discovery file → native :5432 dev fallback (the same
-  // order as operator-core's getHarnessAdminUrl).
-  let url = process.env.HARNESS_ADMIN_DATABASE_URL || process.env.DATABASE_URL || process.env.PAPERCUSP_PG_URL;
-  if (!url) {
-    try {
-      const os = await import('node:os');
-      const raw = readFileSync(`${os.homedir()}/.papercusp/embedded-pg.json`, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed?.host && parsed?.port && parsed.user && parsed.password) {
-        url = `postgresql://${parsed.user}:${parsed.password}@${parsed.host}:${parsed.port}/papercusp`;
-      }
-    } catch { /* no discovery file */ }
-  }
-  if (!url) url = 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+  // env → .env.local → embedded-pg discovery file → native :5432 dev fallback.
+  const url = resolveScriptPgUrl().url;
 
   const postgres = (await import('postgres')).default;
   const sql = postgres(url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });

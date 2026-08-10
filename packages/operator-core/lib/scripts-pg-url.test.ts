@@ -1,0 +1,322 @@
+/**
+ * scripts/lib/pg-url.mjs — the ONE Postgres-URL resolver for `scripts/*` CLIs, plus the
+ * guard that keeps it the only one.
+ *
+ * ## The defect this exists to prevent (EI-20081449067583201)
+ *
+ * Four scripts had each hand-rolled the same resolution chain, and every copy was BROKEN
+ * from a fresh shell: they called the GENERIC `@papercusp/embedded-pg-discovery` resolver
+ * with NO ARGUMENT. That function takes a required config and returns `{ url, source }`,
+ * so it threw `Cannot read properties of undefined (reading 'envVars')` — inside the
+ * callee, where the call site's `?.` guards (which only defend against a MISSING export)
+ * could not see it. Each script then died with `No database URL. Set
+ * HARNESS_ADMIN_DATABASE_URL (or DATABASE_URL)`, naming a variable this repo does not set,
+ * while the correctly-configured `getHarnessAdminUrl()` sat one import away and could not
+ * have failed at all (its last resort is a fallback URL, not an error).
+ *
+ * Six MORE scripts carried a second copy — a local `resolvePgUrl()` that read
+ * `~/.papercusp/embedded-pg.json` with NO pid/port liveness gate. That is the WI-6733 /
+ * WI-7180 stale-discovery-file class, already fixed once in the generic lib and recorded
+ * as recurring four times (EI-19295674294851629): a dead writer's file wins forever and
+ * every consumer ECONNREFUSEs a port nothing serves. The copies never got the fix, which
+ * is the whole argument against copies.
+ *
+ * So the guard below is not tidiness. Each copy is a place where an already-fixed bug
+ * comes back.
+ */
+import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+// @ts-ignore — pure JS helper, typed only by JSDoc
+import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strings.mjs';
+// @ts-ignore — pure JS helper, typed only by JSDoc
+import {
+  applyEnvLocal,
+  describePgUrlResolution,
+  parseEnvFile,
+  resolveScriptPgUrl,
+  PG_ISOLATION_ENV_VARS,
+  PG_URL_ENV_VARS,
+} from '../../../scripts/lib/pg-url.mjs';
+
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const SCRIPTS_DIR = join(REPO_ROOT, 'scripts');
+const HELPER = 'lib/pg-url.mjs';
+
+describe('parseEnvFile', () => {
+  it('reads the shapes `set -a; . ./.env.local` reads', () => {
+    const parsed = parseEnvFile(
+      [
+        '# a comment',
+        '',
+        'DATABASE_URL=postgresql://u:p@127.0.0.1:5432/papercusp',
+        'export PAPERCUSP_PG_URL="postgresql://q@h:1/d"',
+        "QUOTED='single'",
+        'not a var line',
+      ].join('\n'),
+    );
+    expect(parsed.get('DATABASE_URL')).toBe('postgresql://u:p@127.0.0.1:5432/papercusp');
+    expect(parsed.get('PAPERCUSP_PG_URL')).toBe('postgresql://q@h:1/d');
+    expect(parsed.get('QUOTED')).toBe('single');
+    expect(parsed.has('not a var line')).toBe(false);
+  });
+
+  it('keeps `=` inside a value (a DSN password may contain one)', () => {
+    expect(parseEnvFile('DATABASE_URL=postgres://u:a=b@h/d').get('DATABASE_URL')).toBe(
+      'postgres://u:a=b@h/d',
+    );
+  });
+
+  it('does NOT expand $VAR — a value needing a shell belongs in the real environment', () => {
+    expect(parseEnvFile('DATABASE_URL=$OTHER').get('DATABASE_URL')).toBe('$OTHER');
+  });
+});
+
+describe('applyEnvLocal', () => {
+  const withEnvLocal = (body: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'pg-url-test-'));
+    writeFileSync(join(dir, '.env.local'), body);
+    return dir;
+  };
+
+  it('supplies a DB url the real environment lacks', () => {
+    const env: Record<string, string | undefined> = {};
+    const root = withEnvLocal('DATABASE_URL=postgres://from-file/db\n');
+    const r = applyEnvLocal({ root, env });
+    expect(r.applied).toEqual(['DATABASE_URL']);
+    expect(env.DATABASE_URL).toBe('postgres://from-file/db');
+  });
+
+  it('never overwrites a value the caller set explicitly', () => {
+    const env: Record<string, string | undefined> = { DATABASE_URL: 'postgres://explicit/db' };
+    const root = withEnvLocal('DATABASE_URL=postgres://from-file/db\n');
+    const r = applyEnvLocal({ root, env });
+    expect(r.applied).toEqual([]);
+    expect(r.present).toEqual(['DATABASE_URL']);
+    expect(env.DATABASE_URL).toBe('postgres://explicit/db');
+  });
+
+  it('applies ONLY the DB-url names — a script env is not the operator env', () => {
+    const env: Record<string, string | undefined> = {};
+    const root = withEnvLocal('DATABASE_URL=postgres://from-file/db\nANTHROPIC_API_KEY=sk-secret\n');
+    applyEnvLocal({ root, env });
+    expect(Object.keys(env)).toEqual(['DATABASE_URL']);
+  });
+
+  /**
+   * THE ISOLATION RAIL. `scripts/with-test-pg.mjs` runs its child with PAPERCUSP_PG_PORT +
+   * PAPERCUSP_SKIP_PG_DISCOVERY and deliberately NO url env var, so the code under test
+   * resolves to the throwaway PG. Reading `.env.local` there would hand a test suite the
+   * LIVE DEV DSN and let it write to the real database.
+   */
+  for (const lever of PG_ISOLATION_ENV_VARS as string[]) {
+    it(`refuses to read .env.local when ${lever} says this process owns a dedicated PG`, () => {
+      const env: Record<string, string | undefined> = { [lever]: '19532' };
+      const root = withEnvLocal('DATABASE_URL=postgres://live-dev-database/papercusp\n');
+      const r = applyEnvLocal({ root, env });
+      expect(r.skipped).toBe(lever);
+      expect(r.applied).toEqual([]);
+      expect(env.DATABASE_URL).toBeUndefined();
+    });
+  }
+
+  it('is a no-op, not a throw, when there is no .env.local', () => {
+    const env: Record<string, string | undefined> = {};
+    const r = applyEnvLocal({ root: mkdtempSync(join(tmpdir(), 'pg-url-empty-')), env });
+    expect(r.exists).toBe(false);
+    expect(r.applied).toEqual([]);
+  });
+});
+
+describe('resolveScriptPgUrl', () => {
+  it('resolves PAPERCUSP_PG_PORT to that port instead of falling through to 5432', () => {
+    // The divergence from getHarnessAdminUrl() documented on the helper: its native
+    // fallback hardcodes 5432, so falling through would send an isolated run at the
+    // ambient dev database. connection.ts's adminUrl() builds this identical DSN.
+    const r = resolveScriptPgUrl({
+      root: mkdtempSync(join(tmpdir(), 'pg-url-iso-')),
+      env: { PAPERCUSP_PG_PORT: '19532' },
+    });
+    expect(r.source).toBe('isolated-pg-port');
+    expect(r.url).toBe('postgresql://harness_admin:harness_admin_pwd@localhost:19532/papercusp');
+  });
+
+  it('lets an explicit admin DSN outrank the isolated port', () => {
+    const r = resolveScriptPgUrl({
+      root: mkdtempSync(join(tmpdir(), 'pg-url-iso2-')),
+      env: { HARNESS_ADMIN_DATABASE_URL: 'postgres://explicit/db', PAPERCUSP_PG_PORT: '19532' },
+    });
+    expect(r.source).not.toBe('isolated-pg-port');
+  });
+});
+
+describe('describePgUrlResolution', () => {
+  const resolution = {
+    url: 'postgresql://harness_admin:hunter2@127.0.0.1:5432/papercusp',
+    source: 'env',
+    envLocal: { exists: true, applied: ['DATABASE_URL'], skipped: null },
+  };
+
+  it('names the source and the host, so ECONNREFUSED is actionable', () => {
+    const line = describePgUrlResolution(resolution);
+    expect(line).toContain('source=env');
+    expect(line).toContain('127.0.0.1:5432/papercusp');
+    expect(line).toContain('DATABASE_URL');
+  });
+
+  it('NEVER prints the credentials — this string lands in error output and logs', () => {
+    expect(describePgUrlResolution(resolution)).not.toContain('hunter2');
+  });
+
+  it('says so out loud when the isolation rail suppressed .env.local', () => {
+    expect(
+      describePgUrlResolution({
+        ...resolution,
+        envLocal: { exists: true, applied: [], skipped: 'PAPERCUSP_PG_PORT' },
+      }),
+    ).toContain('PAPERCUSP_PG_PORT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The guard: no script may hand-roll DB-url resolution again
+// ---------------------------------------------------------------------------
+
+/** Every .mjs/.mts/.ts under scripts/, repo-relative to SCRIPTS_DIR. */
+function scriptFiles(dir = SCRIPTS_DIR, prefix = ''): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    if (entry === 'node_modules' || entry.startsWith('.')) continue;
+    const abs = join(dir, entry);
+    const rel = prefix ? `${prefix}/${entry}` : entry;
+    if (statSync(abs).isDirectory()) out.push(...scriptFiles(abs, rel));
+    else if (/\.(mjs|mts|ts)$/.test(entry)) out.push(rel);
+  }
+  return out.sort();
+}
+
+/**
+ * Comments are STRIPPED but string literals are KEPT, deliberately: the package specifier
+ * `'@papercusp/embedded-pg-discovery'` IS a string literal, so `stripCommentsAndStrings`
+ * would blind this guard to the exact call that caused the bug. Comments must go, because
+ * this file's own prose (and each converted script's) quotes the pattern it detects.
+ */
+function maskedSourceOf(rel: string): string {
+  return stripCommentsOnly(readFileSync(join(SCRIPTS_DIR, rel), 'utf8'), rel) as string;
+}
+
+const HAND_ROLLED: Array<{ id: string; re: RegExp }> = [
+  // The admin-DSN env chain. DATABASE_URL alone is deliberately NOT a trigger: it has
+  // legitimate non-resolution uses (passing a child's env through), and every copy of the
+  // broken block reached for HARNESS_ADMIN_DATABASE_URL first anyway.
+  { id: 'env-chain', re: /process\.env\.(HARNESS_ADMIN_DATABASE_URL|PAPERCUSP_PG_URL)/ },
+  // The GENERIC resolver: it requires a config and returns an object, so a script reaching
+  // for it directly is re-doing the configuration operator-core already did.
+  { id: 'generic-resolver', re: /@papercusp\/embedded-pg-discovery/ },
+  // A private re-implementation — this is the one that keeps missing the liveness gates.
+  { id: 'local-resolver', re: /function resolvePgUrl/ },
+];
+
+/** Which hand-rolled forms a (comment-masked) source contains. */
+function classify(masked: string): string[] {
+  return HAND_ROLLED.filter(({ re }) => re.test(masked)).map(({ id }) => id);
+}
+
+function handRolledFiles(): string[] {
+  return scriptFiles().filter((rel) => rel !== HELPER && classify(maskedSourceOf(rel)).length > 0);
+}
+
+/**
+ * A guard that has never failed is a guard nobody has tested — and the safe way to prove
+ * THIS one fires is on synthetic sources, never by mutating a tracked file (git-sync
+ * sweeps the whole tree every few minutes and would commit the mutant).
+ */
+describe('the guard is falsifiable', () => {
+  const cases: Array<[string, string, string[]]> = [
+    [
+      'the exact block that shipped broken',
+      `const url = process.env.HARNESS_ADMIN_DATABASE_URL || process.env.DATABASE_URL ||
+        (() => { const d = require('@papercusp/embedded-pg-discovery'); return d.resolvePgUrl?.(); })();`,
+      ['env-chain', 'generic-resolver'],
+    ],
+    [
+      'a private re-implementation with no liveness gate',
+      "function resolvePgUrl() { return 'postgresql://harness_admin@localhost:5432/papercusp'; }",
+      ['local-resolver'],
+    ],
+    [
+      'the compliant form',
+      "import { connectScriptPg } from './lib/pg-url.mjs';\nconst client = await connectScriptPg();",
+      [],
+    ],
+  ];
+
+  for (const [name, source, expected] of cases) {
+    it(`detects: ${name}`, () => {
+      expect(classify(stripCommentsOnly(source, 'synthetic.mjs') as string)).toEqual(expected);
+    });
+  }
+
+  it('does not fire on a COMMENT that quotes the pattern (every converted script has one)', () => {
+    const source = [
+      '/** Was: process.env.HARNESS_ADMIN_DATABASE_URL + @papercusp/embedded-pg-discovery. */',
+      "// function resolvePgUrl() — deleted, see scripts/lib/pg-url.mjs",
+      "import { resolveScriptPgUrl } from './lib/pg-url.mjs';",
+    ].join('\n');
+    expect(classify(stripCommentsOnly(source, 'synthetic.mjs') as string)).toEqual([]);
+  });
+});
+
+describe('DB-url resolution in scripts/ is SHRINK-ONLY (baseline: empty)', () => {
+  /**
+   * BASELINE IS EMPTY AND MUST STAY EMPTY. All ten pre-existing copies were converted when
+   * this guard landed (2026-08-10), so any file this reports is genuinely new. Fix it by
+   * importing from `scripts/lib/pg-url.mjs` — `connectScriptPg()` for a `pg` Client,
+   * `resolveScriptPgUrl().url` for a postgres.js / other connection string.
+   */
+  const BASELINE = new Set<string>([]);
+
+  it('no script hand-rolls its own Postgres-URL resolution', () => {
+    const offenders = handRolledFiles().filter((f) => !BASELINE.has(f));
+    expect(
+      offenders,
+      'These scripts resolve a Postgres URL themselves instead of importing ' +
+        'scripts/lib/pg-url.mjs. Every previous copy was broken from a fresh shell, or ' +
+        'silently carried the stale-discovery-file bug the shared path already fixes ' +
+        '(EI-20081449067583201, WI-6733).',
+    ).toEqual([]);
+  });
+
+  it('the baseline stays honest (no entries for already-converted files)', () => {
+    const measured = handRolledFiles();
+    expect([...BASELINE].filter((f) => !measured.includes(f))).toEqual([]);
+  });
+
+  /**
+   * The guard above can be satisfied by DELETING every consumer, so assert the positive
+   * too: the shared helper is really the path scripts take. A drop here means a conversion
+   * was reverted rather than that the class was fixed.
+   */
+  it('the converted scripts still import the shared helper', () => {
+    const importers = scriptFiles().filter(
+      (rel) => rel !== HELPER && /lib\/pg-url\.mjs/.test(maskedSourceOf(rel)),
+    );
+    expect(importers.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it('the helper exports the env-var order operator-core actually checks', () => {
+    // A drifted order here would resolve a different database than the operator does.
+    expect(PG_URL_ENV_VARS).toEqual([
+      'HARNESS_ADMIN_DATABASE_URL',
+      'DATABASE_URL',
+      'PAPERCUSP_PG_URL',
+    ]);
+    const wrapper = readFileSync(
+      join(REPO_ROOT, 'packages/operator-core/lib/embedded-pg-discovery.ts'),
+      'utf8',
+    );
+    for (const name of PG_URL_ENV_VARS as string[]) expect(wrapper).toContain(name);
+  });
+});

@@ -25,22 +25,44 @@
  * resort is the native-PG fallback — so the "No database URL" error those scripts raised
  * was not reachable through the correct path in the first place.
  *
- * ## Resolution order — steps 2-4 are DELEGATED, never re-implemented here
+ * ## Resolution order — steps 4-6 are DELEGATED, never re-implemented here
  *
- *   1. repo-root `.env.local`, for any of {@link PG_URL_ENV_VARS} not already set in the
- *      real environment (real env always wins).
- *   2. those same env vars, first non-empty wins                       ─┐
- *   3. the discovery file (`$PAPERCUSP_HOME/embedded-pg.json`), pid- +  │ getHarnessAdmin
+ *   1. `HARNESS_ADMIN_DATABASE_URL` — an explicit admin DSN always wins.
+ *   2. `PAPERCUSP_PG_PORT` — THIS PROCESS OWNS A DEDICATED PG (see the isolation note
+ *      below). Resolves to that port and stops; the ambient dev DSN is exactly what must
+ *      NOT be used here.
+ *   3. repo-root `.env.local`, for any of {@link PG_URL_ENV_VARS} not already set in the
+ *      real environment (real env always wins; skipped entirely under 2).
+ *   4. those same env vars, first non-empty wins                       ─┐
+ *   5. the discovery file (`$PAPERCUSP_HOME/embedded-pg.json`), pid- +  │ getHarnessAdmin
  *      listening-port-gated                                             │ UrlWithSource()
- *   4. the native-PG fallback                                          ─┘
+ *   6. the native-PG fallback                                          ─┘
  *
- * Step 1 is the only thing this module adds, and it is not a convenience: the operator
- * service itself is launched as `set -a; [ -f .env.local ] && . ./.env.local; set +a`
+ * ## Why `.env.local` (step 3)
+ *
+ * The operator service is launched as `set -a; [ -f .env.local ] && . ./.env.local; set +a`
  * (`~/.config/systemd/user/papercup-dev-api.service`), so `.env.local` IS the operator's
  * DATABASE_URL. A script that ignores it can silently read or write a DIFFERENT database
- * than the operator whose state it exists to maintain. Only the DB-url names are applied
- * — a script's environment is not the operator's environment, and we only need the two to
- * agree about WHICH DATABASE.
+ * than the operator whose state it exists to maintain. Only the DB-url names are applied —
+ * a script's environment is not the operator's environment, and the two only need to agree
+ * about WHICH DATABASE.
+ *
+ * ## Why `PAPERCUSP_PG_PORT` outranks it (step 2) — the isolation rail
+ *
+ * `scripts/with-test-pg.mjs` boots a throwaway PG and runs its child with
+ * `PAPERCUSP_PG_PORT=<port>` + `PAPERCUSP_SKIP_PG_DISCOVERY=1` and DELIBERATELY no
+ * `HARNESS_ADMIN_DATABASE_URL` ("a test harness must not perturb the tests it runs"). A
+ * naive `.env.local` read would hand that child the LIVE DEV DSN and let a test suite
+ * write to the real database. So an isolation lever suppresses step 3 outright, and
+ * `PAPERCUSP_PG_PORT` resolves positively rather than falling through to a hardcoded 5432.
+ *
+ * ⚠ That last part is a deliberate DIVERGENCE from `getHarnessAdminUrl()`, whose native
+ * fallback hardcodes `:5432` and does not honor `PAPERCUSP_PG_PORT` (measured 2026-08-10,
+ * reading both it and the generic resolver end to end — despite
+ * `harness-invoke-once.ts`'s comment asserting that it does). `connection.ts`'s `adminUrl()`
+ * DOES honor it, with the identical `harness_admin` DSN built below. Collapsing the two
+ * resolvers is tracked separately (EI-19384906720464601); until then a script must not be
+ * the one place that ignores the lever.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -53,7 +75,18 @@ import { getHarnessAdminUrlWithSource } from '../../packages/operator-core/lib/e
 /** Env var names carrying a Postgres URL, in the order operator-core checks them. */
 export const PG_URL_ENV_VARS = ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'];
 
+/**
+ * Env vars that mean "this process owns a dedicated/hermetic PG" — either suppresses the
+ * `.env.local` step, because the whole point of both is that the ambient dev database is
+ * NOT the one to talk to.
+ */
+export const PG_ISOLATION_ENV_VARS = ['PAPERCUSP_PG_PORT', 'PAPERCUSP_SKIP_PG_DISCOVERY'];
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** Byte-identical to connection.ts's adminUrl() native fallback, port included. */
+const isolatedAdminUrl = (port) =>
+  `postgresql://harness_admin:harness_admin_pwd@localhost:${Number(port) || 5432}/papercusp`;
 
 /**
  * Parse a dotenv-style file into a Map. Deliberately minimal — it handles exactly what
@@ -90,17 +123,21 @@ export function parseEnvFile(text) {
  * (which lets the file clobber an inherited value): here an explicit
  * `DATABASE_URL=… node scripts/x.mjs` must win, or a caller could not override the file at all.
  *
+ * Refuses outright when an isolation lever is set — see {@link PG_ISOLATION_ENV_VARS}.
+ *
  * @param {{ root?: string, env?: Record<string, string | undefined> }} [opts]
- * @returns {{ file: string, exists: boolean, present: string[], applied: string[] }}
+ * @returns {{ file: string, exists: boolean, present: string[], applied: string[], skipped: string | null }}
  */
 export function applyEnvLocal({ root = REPO_ROOT, env = process.env } = {}) {
   const file = join(root, '.env.local');
-  if (!existsSync(file)) return { file, exists: false, present: [], applied: [] };
+  const isolatedBy = PG_ISOLATION_ENV_VARS.find((n) => env[n]);
+  if (isolatedBy) return { file, exists: existsSync(file), present: [], applied: [], skipped: isolatedBy };
+  if (!existsSync(file)) return { file, exists: false, present: [], applied: [], skipped: null };
   let parsed;
   try {
     parsed = parseEnvFile(readFileSync(file, 'utf8'));
   } catch {
-    return { file, exists: true, present: [], applied: [] };
+    return { file, exists: true, present: [], applied: [], skipped: 'unreadable' };
   }
   const present = [];
   const applied = [];
@@ -112,7 +149,7 @@ export function applyEnvLocal({ root = REPO_ROOT, env = process.env } = {}) {
     env[name] = value;
     applied.push(name);
   }
-  return { file, exists: true, present, applied };
+  return { file, exists: true, present, applied, skipped: null };
 }
 
 /**
@@ -121,11 +158,21 @@ export function applyEnvLocal({ root = REPO_ROOT, env = process.env } = {}) {
  * connection error naming a real host — not as an "unset variable" error naming a
  * variable this repo does not set.
  *
+ * ⚠ `env` governs steps 1-3 only. The delegated legs (4-6) read `process.env` directly,
+ * because that is what `getHarnessAdminUrlWithSource()` reads — so passing a synthetic
+ * `env` object exercises the isolation/`.env.local` decisions, not the whole chain. Unit
+ * tests should drive {@link applyEnvLocal} (pure) rather than faking the delegation.
+ *
  * @param {{ root?: string, env?: Record<string, string | undefined> }} [opts]
  * @returns {{ url: string, source: string, envLocal: ReturnType<typeof applyEnvLocal> }}
  */
 export function resolveScriptPgUrl({ root = REPO_ROOT, env = process.env } = {}) {
   const envLocal = applyEnvLocal({ root, env });
+  // Step 1/2: an explicit admin DSN wins; failing that, a dedicated PG's port is the whole
+  // answer — resolving past it is what would reach the ambient dev database instead.
+  if (!env.HARNESS_ADMIN_DATABASE_URL && env.PAPERCUSP_PG_PORT) {
+    return { url: isolatedAdminUrl(env.PAPERCUSP_PG_PORT), source: 'isolated-pg-port', envLocal };
+  }
   const { url, source } = getHarnessAdminUrlWithSource();
   return { url, source, envLocal };
 }
@@ -135,7 +182,7 @@ export function resolveScriptPgUrl({ root = REPO_ROOT, env = process.env } = {})
  * Attach it to a connection failure: "ECONNREFUSED" is unactionable until you know which
  * of the four sources produced the address that refused.
  *
- * @param {{ url: string, source: string, envLocal: { exists: boolean, applied: string[] } }} r
+ * @param {{ url: string, source: string, envLocal: { exists: boolean, applied: string[], skipped: string | null } }} r
  * @returns {string}
  */
 export function describePgUrlResolution(r) {
@@ -146,11 +193,13 @@ export function describePgUrlResolution(r) {
   } catch {
     where = '<unparseable url>';
   }
-  const envLocalNote = r.envLocal.exists
-    ? r.envLocal.applied.length
-      ? `.env.local supplied ${r.envLocal.applied.join(', ')}`
-      : '.env.local present but did not supply the url'
-    : 'no .env.local at the repo root';
+  const envLocalNote = r.envLocal.skipped
+    ? `.env.local NOT read — ${r.envLocal.skipped} (isolated PG)`
+    : r.envLocal.exists
+      ? r.envLocal.applied.length
+        ? `.env.local supplied ${r.envLocal.applied.join(', ')}`
+        : '.env.local present but did not supply the url'
+      : 'no .env.local at the repo root';
   return `pg url source=${r.source} → ${where} (${envLocalNote}; env checked: ${PG_URL_ENV_VARS.join(' > ')})`;
 }
 

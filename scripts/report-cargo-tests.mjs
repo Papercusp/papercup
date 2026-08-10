@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -160,11 +161,7 @@ async function tryGetPg() {
   try {
     const mod = await import('postgres');
     const pg = mod.default ?? mod;
-    const url =
-      process.env.HARNESS_ADMIN_DATABASE_URL ??
-      process.env.DATABASE_URL ??
-      'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-    return pg(url, { max: 2, connect_timeout: 2, onnotice: () => {} });
+    return pg(resolveScriptPgUrl().url, { max: 2, connect_timeout: 2, onnotice: () => {} });
   } catch {
     return null;
   }
