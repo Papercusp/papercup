@@ -278,7 +278,7 @@ export function planCanarySlaCheck(
 }
 
 /**
- * RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-051 / D-044).
+ * RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-051 / D-045).
  *
  * Both canary actions measure exactly ONE thing: does the AUTONOMOUS CUP LOOP
  * carry queued work end-to-end? That is not incidental framing — it is encoded

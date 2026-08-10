@@ -1,6 +1,6 @@
 /**
  * The retired-tier gate on both canary actions
- * (retire-mug-kettle-su-only-2026-08-09 P-051 / D-044).
+ * (retire-mug-kettle-su-only-2026-08-09 P-051 / D-045).
  *
  * WHAT THIS PINS, and why it is not merely a restatement of the code: the two
  * canary detectors measure whether the AUTONOMOUS CUP LOOP carries queued work

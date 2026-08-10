@@ -66,7 +66,7 @@ const potGitGcTick = async (ctx: SystemActionCtx) => {
 };
 
 /**
- * CANONICAL NAME (retire-mug-kettle-su-only-2026-08-09 P-051 / D-044). This is
+ * CANONICAL NAME (retire-mug-kettle-su-only-2026-08-09 P-051 / D-045). This is
  * POT SUBSTRATE — it gc's the p2p git store behind a Pot's git plane and
  * consults no retirement flag — so the settlement was RENAME, not retire.
  */
