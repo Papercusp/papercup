@@ -36,6 +36,7 @@ import {
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  git,
   revParse,
   refExists,
   isAncestor,
@@ -48,6 +49,10 @@ import {
   type RangeChangeSet,
 } from './git-ops';
 import { quietCutSecFromEnv } from '@papercusp/operator-core/lib/release/quiet-cut';
+// EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
+// it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
+// column parse. See `failingFilesUncommitted` below.
+import { uncommittedPaths, type GitRead } from '@papercusp/operator-core/lib/candidate-contains';
 import { toolingRoot, type ReleaseConfig } from './release-config';
 import { runPerfGate, perfGatePolicyFromFlags } from './perf-gate';
 import { runDesktopPerfGate, desktopPerfGatePolicyFromFlags } from './desktop-perf-gate';
@@ -1247,6 +1252,25 @@ export interface GateLineage {
    * empty intersection is VACUOUS (nothing was compared), not evidence of anything.
    */
   failingPathsConsidered?: number;
+  /**
+   * Of the failing test files, which ones have UNCOMMITTED working-tree changes in the
+   * integration root — i.e. the fix may ALREADY EXIST ON DISK and simply not be committed
+   * yet (EI-20063423357086565).
+   *
+   * Every other discriminator on this interface compares COMMITS (`candidate..tip`), so all
+   * of them are structurally blind to this case: an on-disk fix is in no commit, so it can
+   * never appear in a range diff. That blindness is worst exactly where this record is most
+   * confident — `commitsBehind === 0` returns early and the formatter says "nothing newer to
+   * blame, this is a real red", which is precisely the incident shape: git-sync stalled ~31min
+   * while a complete fix sat in the working tree, the gate re-judged the same tip twice more,
+   * and each red read as "my fix didn't work" rather than "my fix was never committed".
+   * ~1h of frozen `main` and 3 consecutive reds.
+   *
+   * DIAGNOSTIC ONLY, like every other field here — it never gates and never feeds
+   * `classifyRedAgainstTip`. Undefined/empty means "no failing file is dirty", which on this
+   * shared tree is the ordinary case; it is NOT a claim that the tree is clean overall.
+   */
+  failingFilesDirtyUncommitted?: string[];
 }
 
 /**
@@ -1310,8 +1334,23 @@ export function pathShapedFailing(failing: string[]): string[] {
  *  git reads so the exact wording is unit-testable without a repo. */
 export function formatGateLineageLine(lineage: GateLineage): string {
   const { candidate, tip, commitsBehind, failingFilesChangedInRange: changed } = lineage;
+  // EI-20063423357086565: an UNCOMMITTED on-disk fix is invisible to every commit-based
+  // discriminator below, so it is appended to whichever verdict we reach rather than being
+  // one more branch of them. It is deliberately the LAST thing in the line: it reframes any
+  // conclusion above it, including the most confident one.
+  const dirty = lineage.failingFilesDirtyUncommitted ?? [];
+  const dirtyNote =
+    dirty.length > 0
+      ? ` ⚠ ALREADY-ON-DISK, NOT COMMITTED: ${dirty.length} of the failing file(s) have uncommitted working-tree changes — ${dirty.join(', ')}. No commit-based check above can see them (the candidate is cut from committed history, so it PROVABLY cannot contain them). The fix may already be written and merely un-swept: confirm with dev:pipeline_position { path } before re-diagnosing, and if git-sync is lagging fire git-sync:run rather than re-fixing code that is already correct.`
+      : '';
   if (commitsBehind === 0) {
-    return `📍 lineage: candidate ${candidate.slice(0, 8)} IS the current tip ${tip.slice(0, 8)} — nothing newer to blame, this is a real red`;
+    // With a dirty failing file, "nothing newer to blame" is true of COMMITS and false of the
+    // tree — so the real-red presumption is withheld rather than stated and then contradicted.
+    const verdict =
+      dirty.length > 0
+        ? 'nothing newer to blame IN COMMITTED HISTORY — but this is NOT a confirmed real red'
+        : 'nothing newer to blame, this is a real red';
+    return `📍 lineage: candidate ${candidate.slice(0, 8)} IS the current tip ${tip.slice(0, 8)} — ${verdict}${dirtyNote}`;
   }
   const unexpanded = lineage.submodulesUnexpanded ?? [];
   // "presumptively a real red" is a CLAIM ABOUT THE WHOLE RANGE, so it may only be made
@@ -1344,7 +1383,35 @@ export function formatGateLineageLine(lineage: GateLineage): string {
     changed.length > 0 && unexpanded.length > 0
       ? ` [also unreadable: ${unexpanded.join(', ')}]`
       : '';
-  return `📍 lineage: candidate ${candidate.slice(0, 8)} is ${commitsBehind} commit(s) behind tip ${tip.slice(0, 8)} — ${discriminator}${caveat}`;
+  return `📍 lineage: candidate ${candidate.slice(0, 8)} is ${commitsBehind} commit(s) behind tip ${tip.slice(0, 8)} — ${discriminator}${caveat}${dirtyNote}`;
+}
+
+/**
+ * Which of the failing test files are dirty in the integration root's WORKING TREE
+ * (EI-20063423357086565).
+ *
+ * Reuses two existing primitives on purpose, because both encode a bug this would otherwise
+ * reintroduce:
+ *  - `uncommittedPaths` includes UNTRACKED files and avoids `git status --porcelain`, whose
+ *    two-column prefix is destroyed by the stdout-trimming every runner in this tree does.
+ *  - `matchFailingFilesToChanged` bridges vitest's WORKSPACE-relative vocabulary and git's
+ *    REPO-relative one. An exact-equality intersection between them is empty by construction
+ *    for every file inside a workspace — the defect that silently disabled the sibling
+ *    changed-in-range signal on every real gate run (EI-19324432490048782).
+ *
+ * Fail-soft: any git error resolves to `[]`, matching the rest of the lineage path — a
+ * diagnostic read must never block or alter the red path.
+ */
+export async function failingFilesUncommitted(repo: string, failingTests: string[]): Promise<string[]> {
+  // Nothing path-shaped ⇒ nothing to intersect. Skips the git reads entirely, and keeps the
+  // empty result honestly vacuous rather than looking like a measured "no dirty files".
+  if (pathShapedFailing(failingTests).length === 0) return [];
+  try {
+    const read: GitRead = (args) => git(repo, args).then((o) => o, () => null);
+    return matchFailingFilesToChanged(failingTests, await uncommittedPaths(read));
+  } catch {
+    return [];
+  }
 }
 
 /** Compute the lineage for a NOT-GREEN verdict. Fail-soft end to end (a lineage
@@ -1359,8 +1426,15 @@ export async function computeGateLineage(
 ): Promise<GateLineage | null> {
   try {
     const tip = await revParse(repo, branch);
+    // EI-20063423357086565 — computed BEFORE the early return, and included in it. The
+    // candidate-IS-tip branch is the single most important place for this signal, not an
+    // afterthought: that is the branch whose verdict is "this is a real red", and an
+    // uncommitted on-disk fix is the one thing that can falsify it while leaving every
+    // commit-based check below untouched.
+    const dirtyFailing = await failingFilesUncommitted(repo, failingTests);
+    const dirtyField = dirtyFailing.length > 0 ? { failingFilesDirtyUncommitted: dirtyFailing } : {};
     if (tip === candidate) {
-      return { candidate, tip, commitsBehind: 0, failingFilesChangedInRange: [] };
+      return { candidate, tip, commitsBehind: 0, failingFilesChangedInRange: [], ...dirtyField };
     }
     // Only PATH-shaped failures can be intersected with a diff; a run whose failures
     // are all bare workspace names has nothing to compare, so skip the (expensive)
@@ -1387,6 +1461,7 @@ export async function computeGateLineage(
       failingFilesChangedInRange: matchFailingFilesToChanged(failingTests, changed.files),
       submodulesUnexpanded: changed.unexpandedSubmodules,
       failingPathsConsidered: considered.length,
+      ...dirtyField,
       // Left UNDEFINED when the diff was skipped, so the formatter reports UNDETERMINED
       // rather than inferring "the range was empty" from a measurement never taken.
       rangeFilesChanged: considered.length > 0 ? changed.files.length : undefined,
