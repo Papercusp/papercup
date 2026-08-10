@@ -48,9 +48,11 @@
  * making the guard look thoroughly covered, which is worse than no test at all.
  *
  * `lint:mock-cast-escape` is the proof: `check-mock-cast-escape.test.ts` imports
- * `decide` / `findMockCastEscapesInText` / `maskStringsAndComments` and asserts
- * against string literals. Every one of those tests passed, continuously, across the
- * entire window in which the guard's real-tree count drifted +45 past its baseline.
+ * `decide` / `findMockCastEscapesInText` (and, until the 2026-08-10 AST rewrite,
+ * `maskStringsAndComments`) and asserts against string literals. Every one of those
+ * tests passed, continuously, across the entire window in which the guard's real-tree
+ * count drifted +45 past its baseline — and across a later window in which the
+ * detector was silently blind to 13 real escapes (EI-20059456952698638).
  * A green logic test and a rotting guard are perfectly compatible states.
  *
  * The discriminator is therefore whether the test EXECUTES the guard against real

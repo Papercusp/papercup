@@ -47,15 +47,19 @@
  *
  * ── WHY AN AST AND NOT A REGEX (learned the hard way) ───────────────────────
  * The first cut of this guard reused `maskStringsAndComments` from
- * check-mock-cast-escape.mjs. That helper has no regex-literal handling, so a regex
+ * check-mock-cast-escape.mjs. That helper had no regex-literal handling, so a regex
  * containing a quote (`/^["'`]([^"'`]+)["'`]$/`, real, at mug-kettle-surface-census
- * .mjs:336) opens a phantom string that blanks the rest of the file — which both
+ * .mjs:336) opened a phantom string that blanked the rest of the file — which both
  * HIDES real code and desynchronises re-entry so that COMMENT PROSE gets scanned as
  * live code. It reported this very file's explanatory comment as an offender. Filed
- * separately as EI-20059456952698638 (73 files exposed; it blinds the wired
- * lint:mock-cast-escape too). Parsing with the TypeScript compiler removes the whole
- * class: strings, templates, comments and regexes are all correct by construction,
- * and a doc-comment example can never be mistaken for code.
+ * separately as EI-20059456952698638 and FIXED on 2026-08-10: check-mock-cast-escape
+ * .mjs is now an AST walk too and the shared-masker helper is gone, so this paragraph
+ * is history, not a live hazard. (That fix also measured the damage: the masker had a
+ * second, independent blind spot — an anchored `$` that could not see a cast followed
+ * by a trailing comma — and the two together hid 13 real escapes in this repo's test
+ * corpus.) Parsing with the TypeScript compiler removes the whole class: strings,
+ * templates, comments and regexes are all correct by construction, and a doc-comment
+ * example can never be mistaken for code.
  *
  * ── WHAT IS FLAGGED (deliberately narrow) ───────────────────────────────────
  * A write is an offender only when its payload is NOT PROVABLY BOUNDED — the program
