@@ -45,7 +45,11 @@ interface ParsedResult {
 /** Sequential stand-in for ctx.tx — each tagged-template call returns the next queued result set. */
 function makeTx(results: unknown[][]) {
   let i = 0;
-  const tx = vi.fn(async () => {
+  // The params are DECLARED (rather than `async ()`) purely so `tx.mock.calls`
+  // types as unknown[][] instead of the empty tuple []. Without them `c[0]` in
+  // sqlTexts below is TS2493 ("tuple of length 0 has no element at index 0") —
+  // invisible to vitest, which does not typecheck, and caught only by lint:tsc.
+  const tx = vi.fn(async (..._args: unknown[]) => {
     const r = results[i] ?? [];
     i += 1;
     return r;
