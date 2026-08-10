@@ -1,91 +1,231 @@
 /**
- * affected-tests-result-line.test.ts — EI-18796017307093897 regression guard.
+ * affected-tests-result-line.test.ts — EI-18796017307093897 regression guard,
+ * rebuilt as a BEHAVIOR test in EI-20103084274785576.
  *
- * Observed live 2026-07-27: a `npm run test:affected` background job reported
- * "completed, exit code 0" while the SAME run's own log said "1
- * non-quarantined task(s) failed" — a wrapper/notification layer relaying the
- * exit code disagreed with what `scripts/affected-tests.mjs` itself decided.
- * `scripts/affected-tests.mjs`'s own control flow cannot produce that
- * divergence (the failure message and `process.exit(1)` are inseparable —
- * see the last test below), so the fix is to give every caller a way to
- * verify the TRUE verdict independent of exit-code plumbing elsewhere: one
- * canonical, greppable `AFFECTED_TESTS_RESULT status=... failed=...` line,
- * mirroring `scripts/test-files.mjs`'s `TEST_FILE_RESULT` line, whose
- * `status` is derived from the exact same counters that decide the exit
- * code.
+ * WHAT IS GUARDED (unchanged): `scripts/affected-tests.mjs` must emit one
+ * canonical, greppable `AFFECTED_TESTS_RESULT status=... failed=...` line on
+ * EVERY exit path, so a caller can verify the TRUE verdict independently of
+ * exit-code plumbing elsewhere. Observed live 2026-07-27: a background job
+ * reported "completed, exit code 0" while the SAME run's log said "1
+ * non-quarantined task(s) failed".
  *
- * These tests exercise the REAL source (a full run needs a real repo tree +
- * real vitest children, which is what `scripts/test-files.mjs` itself is for
- * — this stays a source-shape guard, matching the sibling
- * vitest-summary-exit-code-mismatch.test.ts convention).
+ * WHY THIS FILE WAS REWRITTEN (EI-20103084274785576) — it used to assert
+ * against the SOURCE TEXT of affected-tests.mjs, and that cost the fleet's
+ * green gate twice:
+ *
+ *   1. a trailing '.' added to "…none declare a 'test' script."
+ *   2. a clarifying tail added to "No affected workspaces …"
+ *
+ * Neither edit could affect a single caller grepping the marker. The defect is
+ * structural, not clerical: a source-text regex cannot separate the CONTRACT
+ * (the machine-readable marker line) from the DECORATION (the human prose above
+ * it), so every copy edit is a coin flip against a gate that reds for everyone.
+ * Fixing the two instances left two MORE exact-prose pins in this same file
+ * ('\nAll affected tests passed.' and 'non-quarantined task(s) failed:') armed
+ * for a third and fourth recurrence.
+ *
+ * A source-text assertion has a second, worse blind spot: it cannot see
+ * REACHABILITY. It passes just as happily when the code it pins has become
+ * unreachable — which is exactly the bug EI-19454727576364875 turned out to be
+ * (an early `process.exit(0)` above the repo-wide guard loop, green the whole
+ * time). Executing the real script closes both holes at once: prose is free to
+ * change, and a path that stops being reachable fails loudly.
+ *
+ * The early-exit paths are cheap to drive for real — they exit(0) before
+ * spawning any test child (all three below run in <0.5s combined), so this is
+ * a behavior test with no fixture tree and no vitest recursion.
+ *
+ * Source-shape assertions survive ONLY where executing the path is genuinely
+ * expensive (a real failing run needs real vitest children). Those that remain
+ * pin CODE tokens (`resultLine('failed')`, `process.exit(1)`) and never prose.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
+/**
+ * Test-only seam: point this at a MUTATED copy of the script (in a scratch root
+ * built from symlinks) to re-prove these assertions can actually fail. That is
+ * the only supported way to falsify them — mutating the real script in place
+ * races git-sync, which sweeps the whole tree every few minutes and would commit
+ * the mutant even if nothing else went wrong. Unset in every normal run.
+ */
+const AFFECTED_TESTS = process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT
+  ? resolve(process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT)
+  : resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
 const source = readFileSync(AFFECTED_TESTS, 'utf8');
 
+/** Every field a caller is entitled to find on the marker line, on every path. */
+const REQUIRED_MARKER_FIELDS = ['status', 'tasks', 'failed', 'quarantinedFailed', 'timedOutTasks'] as const;
+
+function runAffected(args: string[]): { stdout: string; stderr: string; status: number | null } {
+  const r = spawnSync(process.execPath, [AFFECTED_TESTS, ...args], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+    // Inherit nothing that could flip behaviour (AFFECTED_RETRY_FAILED et al).
+    env: { ...process.env, AFFECTED_RETRY_FAILED: '' },
+  });
+  return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+}
+
+/** The marker lines a caller's `grep AFFECTED_TESTS_RESULT` would find. */
+function markerLines(out: string): string[] {
+  return out.split('\n').filter((l) => l.startsWith('AFFECTED_TESTS_RESULT '));
+}
+
+function parseMarker(line: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const tok of line.slice('AFFECTED_TESTS_RESULT '.length).trim().split(/\s+/)) {
+    const eq = tok.indexOf('=');
+    if (eq > 0) fields[tok.slice(0, eq)] = tok.slice(eq + 1);
+  }
+  return fields;
+}
+
+/**
+ * Every workspace the script would run SOMETHING in for `paths` — read from its
+ * own --dry task list rather than hardcoded, so excluding all of them reliably
+ * empties the task list even as the repo's workspaces and repo-wide invariant
+ * guards move around. Hardcoding "@papercusp/operator-core hosts every guard"
+ * would just re-introduce a staleness trap one level up from the prose pins
+ * this rewrite exists to remove.
+ */
+function workspacesInPlay(paths: string): string[] {
+  const { stdout } = runAffected(['--changed-paths', paths, '--dry']);
+  const names = new Set<string>();
+  for (const line of stdout.split('\n')) {
+    const m = /^\s+-\s+(\S+)\s+::\s+\S+$/.exec(line);
+    if (m) names.add(m[1]);
+  }
+  return [...names];
+}
+
 describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (EI-18796017307093897)', () => {
-  it('defines resultLine() from the same failed/quarantinedFailed/tasks counters that decide the exit code', () => {
-    expect(source).toMatch(
-      /const resultLine = \(status\) =>\s*\n\s*`AFFECTED_TESTS_RESULT status=\$\{status\} tasks=\$\{tasks\.length\} failed=\$\{failed\} quarantinedFailed=\$\{quarantinedFailed\} timedOutTasks=\$\{timedOutTasks\}`;/,
-    );
+  describe('behaviour: every early-exit(0) path really EMITS a greppable marker', () => {
+    // "no affected workspaces" and "no workspace declares a test script" are both
+    // genuine PASS verdicts (nothing to run is not a failure) — a caller grepping
+    // for the marker must still find one, not silence. Asserted by RUNNING the
+    // script, so the prose above each marker is free to change forever.
+    const cases: { name: string; args: () => string[]; reason: string; tasks: string }[] = [
+      {
+        name: 'no-affected-workspaces (a path that routes nowhere, no guard attached)',
+        args: () => {
+          const unrouted = 'some/unrouted/path.txt';
+          return ['--changed-paths', unrouted, '--exclude', workspacesInPlay(unrouted).join(',')];
+        },
+        reason: 'no-affected-workspaces',
+        tasks: '0',
+      },
+      {
+        name: 'no-test-script (workspaces selected, but none contributes a task)',
+        args: () => {
+          const paths = 'papercusp-desktop/package.json';
+          return ['--changed-paths', paths, '--exclude', workspacesInPlay(paths).join(',')];
+        },
+        reason: 'no-test-script',
+        tasks: '0',
+      },
+    ];
+
+    for (const c of cases) {
+      it(`emits status=passed reason=${c.reason} and exits 0 — ${c.name}`, () => {
+        const { stdout, status } = runAffected(c.args());
+        const markers = markerLines(stdout);
+        // A bare `expect(markers).toHaveLength(1)` on a stale fixture reads as
+        // "the contract broke"; attach the output so the real cause is visible.
+        expect(markers, `expected exactly one marker line, got:\n${stdout}`).toHaveLength(1);
+        const fields = parseMarker(markers[0]);
+        // If `reason` drifted, the probe inputs may simply have gone stale rather
+        // than the contract having broken — say so in the failure.
+        expect(
+          fields.reason,
+          `reached a different early-exit path than intended — either the marker contract changed, or this probe's --changed-paths/--exclude inputs went stale. Output:\n${stdout}`,
+        ).toBe(c.reason);
+        expect(fields.status).toBe('passed');
+        expect(fields.tasks).toBe(c.tasks);
+        expect(fields.failed).toBe('0');
+        expect(status).toBe(0);
+      });
+    }
+
+    it('emits status=dry-run with the real task count on the --dry early exit', () => {
+      const { stdout, status } = runAffected(['--changed-paths', 'scripts/affected-tests.mjs', '--dry']);
+      const markers = markerLines(stdout);
+      expect(markers, `expected exactly one marker line, got:\n${stdout}`).toHaveLength(1);
+      const fields = parseMarker(markers[0]);
+      expect(fields.status).toBe('dry-run');
+      expect(fields.failed).toBe('0');
+      // A dry run of a path that selects real work must report a NON-zero task
+      // count — `tasks=0` here would mean the selection silently collapsed, the
+      // exact false-green EI-19454727576364875 was.
+      expect(Number(fields.tasks)).toBeGreaterThan(0);
+      expect(status).toBe(0);
+    });
+
+    it('carries the full field set a caller parses, on every early-exit path', () => {
+      const unrouted = 'some/unrouted/path.txt';
+      const invocations: string[][] = [
+        ['--changed-paths', unrouted, '--exclude', workspacesInPlay(unrouted).join(',')],
+        ['--changed-paths', 'scripts/affected-tests.mjs', '--dry'],
+      ];
+      for (const args of invocations) {
+        const { stdout } = runAffected(args);
+        const [marker] = markerLines(stdout);
+        expect(marker, `no marker line for: ${args.join(' ')}\n${stdout}`).toBeTruthy();
+        const fields = parseMarker(marker);
+        for (const f of REQUIRED_MARKER_FIELDS) {
+          expect(Object.keys(fields), `missing '${f}' in: ${marker}`).toContain(f);
+        }
+      }
+    });
   });
 
-  it('prints status=failed immediately before the process.exit(1) that follows a real failure', () => {
-    // Anchor on the whole `if (failed) { ... }` block so a future edit that
-    // separates the print from the exit (the exact class of bug this guards
-    // against) fails this test even if it doesn't literally reorder lines.
-    const failedBlock = source.match(/if \(failed\) \{[\s\S]*?\n\}/)?.[0];
-    expect(failedBlock).toBeTruthy();
-    expect(failedBlock).toMatch(/errSync\(resultLine\('failed'\)\);/);
-    expect(failedBlock).toMatch(/process\.exit\(1\);/);
-    // The result line must come BEFORE the exit call, in source order —
-    // never printed by a path that a wrapper could observe as already-exited.
-    expect(failedBlock!.indexOf("errSync(resultLine('failed'));")).toBeLessThan(failedBlock!.indexOf('process.exit(1);'));
-  });
+  describe('source shape: the paths too expensive to execute here', () => {
+    it('defines resultLine() from the same failed/quarantinedFailed/tasks counters that decide the exit code', () => {
+      expect(source).toMatch(
+        /const resultLine = \(status\) =>\s*\n\s*`AFFECTED_TESTS_RESULT status=\$\{status\} tasks=\$\{tasks\.length\} failed=\$\{failed\} quarantinedFailed=\$\{quarantinedFailed\} timedOutTasks=\$\{timedOutTasks\}`;/,
+      );
+    });
 
-  it('prints status=passed on the clean-run success path', () => {
-    expect(source).toMatch(/outSync\('\\nAll affected tests passed\.'\);\s*\n\s*outSync\(resultLine\('passed'\)\);/);
-  });
+    it('prints status=failed immediately before the process.exit(1) that follows a real failure', () => {
+      // Anchor on the whole `if (failed) { ... }` block so a future edit that
+      // separates the print from the exit (the exact class of bug this guards
+      // against) fails this test even if it doesn't literally reorder lines.
+      const failedBlock = source.match(/if \(failed\) \{[\s\S]*?\n\}/)?.[0];
+      expect(failedBlock).toBeTruthy();
+      expect(failedBlock).toMatch(/errSync\(resultLine\('failed'\)\);/);
+      expect(failedBlock).toMatch(/process\.exit\(1\);/);
+      // The result line must come BEFORE the exit call, in source order —
+      // never printed by a path that a wrapper could observe as already-exited.
+      expect(failedBlock!.indexOf("errSync(resultLine('failed'));")).toBeLessThan(
+        failedBlock!.indexOf('process.exit(1);'),
+      );
+    });
 
-  it('also emits an AFFECTED_TESTS_RESULT line on every early-exit(0) path (no affected / no test script / dry-run)', () => {
-    // "no affected workspaces" and "no workspace declares a test script" are
-    // both genuine PASS verdicts (nothing to run is not a failure) — a caller
-    // grepping for the marker line must still find one, not silence.
-    // Prose deliberately loose (`[^']*`) for the reason spelled out below — this
-    // assertion is the one that had NOT been loosened, and on 2026-08-10 it reded the
-    // gate exactly as predicted: the message grew "(and no repo-wide invariant guard
-    // matched the changed paths)" and a copy edit that cannot affect a single caller
-    // grepping the marker took the fleet's gate red. Same lesson, second assertion.
-    expect(source).toMatch(
-      /outSync\('No affected workspaces[^']*'\);\s*\n\s*outSync\('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces'\);/,
-    );
-    // The message TAIL is deliberately loose (`[^`]*`): what this guards is that
-    // the marker line is emitted on this early-exit path, not the prose of the
-    // human-readable line above it. Pinning the prose exactly is what broke here —
-    // a trailing '.' added to "…none declare a 'test' script." reds the fleet's
-    // green gate on a copy edit that cannot affect any caller grepping the marker.
-    expect(source).toMatch(
-      /none declare a 'test' script[^`]*`\);\s*\n\s*outSync\('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script'\);/,
-    );
-    expect(source).toMatch(
-      /if \(dry\) \{\s*\n\s*outSync\(`AFFECTED_TESTS_RESULT status=dry-run tasks=\$\{tasks\.length\} failed=0 quarantinedFailed=0 timedOutTasks=0`\);/,
-    );
-  });
+    it('emits resultLine(\'passed\') on the clean-run success path', () => {
+      // CODE token only. This used to also pin the prose '\nAll affected tests
+      // passed.' — a latent third instance of the copy-edit-reds-the-gate bug
+      // that EI-20103084274785576 removed. What a caller greps is the marker.
+      expect(source).toMatch(/outSync\(resultLine\('passed'\)\);/);
+    });
 
-  it('the failure message and process.exit(1) remain inseparable (why the divergence cannot originate here)', () => {
-    // Regression guard for the underlying claim in the EI-18796017307093897
-    // comment: there is exactly one `if (failed) { ... }` block, and it
-    // always ends in process.exit(1) — no code path can print the "N
-    // non-quarantined task(s) failed" message and then fall through to a
-    // zero exit.
-    const failedBlockMatches = source.match(/if \(failed\) \{[\s\S]*?\n\}/g);
-    expect(failedBlockMatches).toHaveLength(1);
-    expect(failedBlockMatches![0]).toMatch(/non-quarantined task\(s\) failed:/);
-    expect(failedBlockMatches![0].trim().endsWith('process.exit(1);\n}'.trim())).toBe(true);
+    it('the failure announcement and process.exit(1) remain inseparable (why the divergence cannot originate here)', () => {
+      // Regression guard for the underlying claim in the EI-18796017307093897
+      // comment: there is exactly one `if (failed) { ... }` block, and it always
+      // ends in process.exit(1) — no code path can announce a failure and then
+      // fall through to a zero exit.
+      //
+      // Pins CODE, not the wording: this assertion used to require the literal
+      // "non-quarantined task(s) failed:", which is the same prose-pin defect
+      // that reded the gate twice elsewhere in this file.
+      const failedBlockMatches = source.match(/if \(failed\) \{[\s\S]*?\n\}/g);
+      expect(failedBlockMatches).toHaveLength(1);
+      expect(failedBlockMatches![0]).toMatch(/errSync\(/);
+      expect(failedBlockMatches![0].trim().endsWith('process.exit(1);\n}'.trim())).toBe(true);
+    });
   });
 });
