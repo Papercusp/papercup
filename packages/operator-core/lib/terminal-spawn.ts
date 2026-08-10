@@ -25,7 +25,7 @@
  * Linux-only — callers gate on `process.platform === 'linux'` and return 501
  * before reaching here on other platforms (mirrors console-launch.ts).
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { standardToolDirs } from './tool-path';
@@ -41,6 +41,9 @@ import {
   pickLinuxTerminal,
   resolveLinuxDesktopEnv,
   resolveTerminalPreference,
+  watchEarlyExit,
+  classifyEarlyExit,
+  EARLY_EXIT_PROBE_MS,
   type DesktopEnvProbes,
 } from './console-spawn';
 
@@ -209,16 +212,30 @@ export interface SpawnInTerminalOpts {
   cwd?: string;
   /**
    * Silent-launch-failure detector (EI-18696184925888288): after the OS spawn
-   * call returns, wait this many ms then re-check whether the spawned process
-   * is still alive. A terminal client can hand off to a long-lived singleton
-   * server and exit almost immediately even when NO window ever actually
-   * opened (repro'd live: `gnome-terminal --wait` against a headless/offscreen
-   * Xvfb display exits right away instead of blocking on the command it was
-   * asked to run) — before this check, that produced a confident-looking
-   * `{ok:true, terminal, pid}` with no signal that nothing was actually
-   * launched. 0 disables the check. Default 400ms.
+   * call returns, WATCH the child for this many ms and classify an early
+   * death. A terminal client can hand off to a long-lived singleton server and
+   * exit almost immediately even when NO window ever actually opened (repro'd
+   * live: `gnome-terminal --wait` against a headless/offscreen Xvfb display
+   * exits right away instead of blocking on the command it was asked to run) —
+   * before this check, that produced a confident-looking `{ok:true, terminal,
+   * pid}` with no signal that nothing was actually launched.
+   *
+   * ⚠ WI-37743 — this used to be a FIXED 400ms sleep followed by a single
+   * `kill(pid, 0)` poll, and that shape was both too early and actively
+   * self-defeating. Measured client death on the HUD "+ New session" path is
+   * ~870ms, so the poll fired ~470ms BEFORE the failure, saw a live client,
+   * and took the `likelyOpened` branch — which DRAINS the stderr pipe. The one
+   * piece of evidence a silent launch failure leaves behind was thrown away by
+   * the very check that existed to detect it, and the owner got "the terminal
+   * closed" with no cause. Watching for the exit resolves the moment it
+   * happens (so only the SUCCESS path pays the full window) and keeps the
+   * stderr.
+   *
+   * 0 disables the check. Defaults to console-spawn's {@link
+   * EARLY_EXIT_PROBE_MS} so both spawn paths judge "died at boot" on the same
+   * window with the same classifier.
    */
-  livenessCheckDelayMs?: number;
+  earlyExitProbeMs?: number;
   /**
    * Test-only DI seam: injectable probes for the desktop-session detection
    * {@link findTerminal} now performs (EI-19408594551235977). Omit in
@@ -241,24 +258,52 @@ export type SpawnInTerminalResult =
        * a bare "the terminal closed".
        */
       stderr?: string;
+      /**
+       * HOW we concluded the window never opened, in the classifier's own words
+       * — `gnome-terminal died exit code 1 within 1200ms`, `… exited 0 instantly
+       * under --wait (no window survived)`, or a spawn-level ENOENT.
+       *
+       * Deliberately distinct from `stderr` (WI-37743): stderr is what the
+       * EMULATOR said, this is what WE observed — and a silent failure prints
+       * nothing at all, which used to leave the caller holding a bare
+       * `likelyOpened:false` with no way to tell "died instantly" from "exited
+       * cleanly under --wait" from "the binary never ran". Set only alongside
+       * `likelyOpened:false`.
+       */
+      failureReason?: string;
     }
   | { ok: false; code: 'no_terminal' | 'spawn_failed'; error: string };
-
-export const DEFAULT_LIVENESS_CHECK_DELAY_MS = 400;
 
 /** Max chars of emulator stderr kept — enough for a startup complaint, not a log. */
 export const STDERR_CAPTURE_LIMIT = 1000;
 
-/** Whether `pid` is still alive right now — a best-effort `kill(pid, 0)` probe
- *  (throws ESRCH-class errors for a dead/foreign-namespace pid, never actually
- *  sends a signal). Exported for reuse/testing. */
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * Max ms a DEAD child's stderr pipe gets to hand over what it already holds.
+ *
+ * `'exit'` can fire before the last `'data'` events land, and on the failure
+ * path that text is the only evidence of the cause — so give it a bounded
+ * grace instead of racing it. Paid ONLY when the launch already failed, so it
+ * adds nothing to a healthy launch.
+ */
+export const STDERR_FLUSH_GRACE_MS = 200;
+
+/** Wait (bounded) for a dead child's stderr to end, so a late-flushed
+ *  diagnostic line is not lost to the exit/data race described above. */
+function flushStderr(child: ChildProcess, ms: number): Promise<void> {
+  const stderr = child.stderr;
+  if (!stderr || stderr.readableEnded) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      stderr.removeListener('end', done);
+      stderr.removeListener('close', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    timer.unref?.();
+    stderr.once('end', done);
+    stderr.once('close', done);
+  });
 }
 
 /**
@@ -267,10 +312,11 @@ export function isProcessAlive(pid: number): boolean {
  * scope for whatever the one-liner exec's. The child is `unref`'d so it
  * outlives the request.
  *
- * After a successful spawn, briefly re-checks the child's liveness (see
- * `livenessCheckDelayMs` above) and reports it as `likelyOpened` — callers
- * should surface a warning rather than a flat success when it comes back
- * false, since the spawn syscall not throwing is NOT proof a window opened.
+ * After a successful spawn, WATCHES the child for an early death (see
+ * `earlyExitProbeMs` above) and reports the verdict as `likelyOpened`, with
+ * `failureReason` + `stderr` naming the cause — callers should surface a
+ * warning rather than a flat success when it comes back false, since the spawn
+ * syscall not throwing is NOT proof a window opened.
  */
 export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnInTerminalResult> {
   const term = findTerminal(opts.env ?? process.env, opts.desktopEnvProbes);
@@ -319,10 +365,31 @@ export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnI
       }
     });
     let likelyOpened = true;
-    const delayMs = opts.livenessCheckDelayMs ?? DEFAULT_LIVENESS_CHECK_DELAY_MS;
-    if (pid != null && delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      likelyOpened = isProcessAlive(pid);
+    let failureReason: string | null = null;
+    const probeMs = opts.earlyExitProbeMs ?? EARLY_EXIT_PROBE_MS;
+    if (probeMs > 0) {
+      // NOTE the missing `pid != null` guard, which the old sleep-then-poll
+      // shape needed and this one must NOT have: when the emulator binary does
+      // not exist, Node reports it via an async `'error'` event and `child.pid`
+      // is undefined, so the old guard SKIPPED the check entirely and reported
+      // `likelyOpened:true` for a process that never started. watchEarlyExit
+      // listens for that event, so the least ambiguous failure there is now
+      // reaches the caller instead of being the one case that fails open.
+      const early = await watchEarlyExit(child, probeMs);
+      if (early?.error) {
+        // classifyEarlyExit reasons about exit codes and cannot express "the
+        // binary never ran" — answer it here rather than smuggling it in as a
+        // synthetic exit code (same split console-spawn makes).
+        likelyOpened = false;
+        failureReason = `spawn ${term.bin} failed: ${early.error.message} (the emulator binary never ran)`;
+      } else if (early) {
+        const verdict = classifyEarlyExit(term.args, early.code, early.signal);
+        likelyOpened = !verdict.failed;
+        if (verdict.failed) failureReason = `${term.bin} died ${verdict.why} within ${probeMs}ms`;
+      }
+      // Only on the failure path, and only for as long as it takes the pipe to
+      // deliver what it already has — see STDERR_FLUSH_GRACE_MS.
+      if (!likelyOpened) await flushStderr(child, STDERR_FLUSH_GRACE_MS);
     }
     if (likelyOpened) {
       // The window is up and may live for hours. Stop accumulating, but do NOT
@@ -343,6 +410,7 @@ export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnI
       pid,
       likelyOpened,
       ...(!likelyOpened && tail ? { stderr: tail } : {}),
+      ...(!likelyOpened && failureReason ? { failureReason } : {}),
     };
   } catch (e: any) {
     return { ok: false, code: 'spawn_failed', error: `spawn ${term.bin} failed: ${e?.message}` };

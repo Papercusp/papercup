@@ -543,6 +543,66 @@ export async function markAdvSessionLaunched(id: number): Promise<boolean> {
   }
 }
 
+/**
+ * ADOPT the launcher's starting row as this session's own (WI-37743).
+ *
+ * A programmatic spawner that PRE-PINS the owner id (`psu --owner-id=…`) writes a
+ * `display='terminal'` starting row for the board to render during the boot window
+ * (WI-6376) — and that row is bound to the very owner id the booting psu is about
+ * to claim. It is this session's row, written moments early by its own launcher;
+ * it is NOT a second session. So bootstrap COMPLETES it instead of inserting a
+ * duplicate beside it.
+ *
+ * Two bugs die here:
+ *  - the terminal launch itself. bootstrap's pre-pinned-owner freshness guard
+ *    refuses an id that already has an un-ended row, so the launcher's own row
+ *    made psu exit 1 — and since the one-liner is `exec psu`, that exit closed the
+ *    window and surfaced as "its terminal closed before the session came online".
+ *  - the ORPHAN. The headless path won that race the other way (its spawn helper
+ *    returns slowly enough that psu registered first), leaving a registered row
+ *    PLUS a starting row that never got a session_id — which `isFailedTerminalLaunch`
+ *    later reads as a failed launch for a session that ran perfectly.
+ *
+ * Guarded to `session_id IS NULL AND ended_at IS NULL` so it can only ever complete
+ * a genuine not-yet-online precursor: a row already carrying a session, or one the
+ * reconciler has stamped, is left untouched and the caller falls back to inserting.
+ * Returns true when this call did the adopting.
+ */
+export async function adoptStartingTerminalLaunch(opts: {
+  id: number;
+  sessionId: string | null;
+  planSlug?: string | null;
+  label?: string | null;
+  cwd?: string | null;
+  mode?: string | null;
+  launchArgv?: string[] | null;
+}): Promise<boolean> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET session_id = ${opts.sessionId},
+             plan_slug  = COALESCE(${opts.planSlug ?? null}, plan_slug),
+             label      = COALESCE(${opts.label ?? null}, label),
+             cwd        = COALESCE(${opts.cwd ?? null}, cwd),
+             mode       = COALESCE(${opts.mode ?? null}, mode),
+             launch_argv = COALESCE(
+               ${opts.launchArgv ? JSON.stringify(opts.launchArgv) : null}::text::jsonb,
+               launch_argv
+             )
+       WHERE id = ${opts.id}
+         AND display = ${DISPLAY_TERMINAL_LAUNCH}
+         AND session_id IS NULL
+         AND ended_at IS NULL
+       RETURNING id
+    `;
+    return rows.length > 0;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'adoptStartingTerminalLaunch');
+    return false;
+  }
+}
+
 export async function setAdvSessionPid(id: number, pid: number | null): Promise<void> {
   try {
     const { sql } = getOrgPg();

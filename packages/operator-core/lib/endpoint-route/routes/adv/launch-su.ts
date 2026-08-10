@@ -312,7 +312,11 @@ const launchSu = defineTool({
       });
     }
 
-    const oneliner = `exec ${psuArgs.map(shellEscape).join(' ')}`;
+    const psuCommand = psuArgs.map(shellEscape).join(' ');
+    // HEADLESS keeps the bare `exec`: there is no window to hold open, and the
+    // keep-open wrapper's trailing `exec "$SHELL" -l` would leave an immortal
+    // login shell behind instead of letting the child exit.
+    const oneliner = `exec ${psuCommand}`;
 
     // WI-6505 — the two spawn shapes, normalized to ONE result so everything
     // below (the early-exit warning, the adv_sessions row, the response) stays a
@@ -325,7 +329,14 @@ const launchSu = defineTool({
     // service, so an operator restart cannot reap it (EI-9748). A bare detached
     // spawn here would skip both.
     let spawned:
-      | { ok: true; terminal: string; pid: number | undefined; likelyOpened: boolean; stderr?: string }
+      | {
+          ok: true;
+          terminal: string;
+          pid: number | undefined;
+          likelyOpened: boolean;
+          stderr?: string;
+          failureReason?: string;
+        }
       | { ok: false; error: string };
     if (body.headless) {
       try {
@@ -384,9 +395,22 @@ const launchSu = defineTool({
       // branch already uses (it prefers PAPERCUSP_HONO_PORT and strips the
       // suffix). Mirrors psu-launcher's rule for PAPERCUSP_TTY: a launch's
       // operator identity is ALWAYS RE-DERIVED, NEVER INHERITED.
-      const { resolveSpawnHostOperatorBaseUrl } = await import('../../../mcp-base-url');
+      const [{ resolveSpawnHostOperatorBaseUrl }, { keepWindowOpenOnFailure }] = await Promise.all([
+        import('../../../mcp-base-url'),
+        import('../../../console-spawn'),
+      ]);
       const r = await spawnInTerminal({
-        oneliner,
+        // WI-37743: NOT the bare `exec ${psuCommand}` this used to send. `exec`
+        // replaces the shell, so ANY psu boot refusal — the 409 this very bug
+        // was, a bad operator URL, a missing token — closed the window the same
+        // instant it printed the reason. The window flashed, the adv_sessions
+        // row sat at `session_id NULL` forever, and the owner was told only
+        // "Starting up — waiting for this session to come online…". The
+        // diagnosis then cost a session of process archaeology (WI-37743) to
+        // recover a message that had been printed to a window all along.
+        // console-spawn's windows have never had this problem; this is the same
+        // helper they use.
+        oneliner: keepWindowOpenOnFailure(psuCommand),
         env: { ...process.env, PAPERCUSP_OPERATOR_URL: resolveSpawnHostOperatorBaseUrl() },
       });
       spawned = r.ok ? r : { ok: false, error: r.error };
@@ -406,9 +430,15 @@ const launchSu = defineTool({
     // only evidence of the cause, and without it the owner is told only that
     // "the terminal closed" — which reads as a transient hiccup and sends them
     // to retry a launch that will fail identically every single time.
+    // WI-37743: lead with `failureReason` — what WE observed — before the
+    // emulator's stderr, because a silent failure prints NOTHING and the old
+    // message then degraded to a generic "exited almost immediately" that reads
+    // like a transient hiccup and sends the owner to retry a launch that will
+    // fail identically every time.
     const warning = spawned.likelyOpened
       ? undefined
-      : (spawned.stderr ? `${spawned.terminal}: ${spawned.stderr} — ` : '') +
+      : (spawned.failureReason ? `${spawned.failureReason} — ` : '') +
+        (spawned.stderr ? `${spawned.terminal}: ${spawned.stderr} — ` : '') +
         'the spawned terminal process exited almost immediately — it may not have opened a window ' +
         '(a headless/offscreen display, or the terminal emulator failed silently). Check /adv/sessions ' +
         'for the new session; if it never appears, the launch did not actually happen.';

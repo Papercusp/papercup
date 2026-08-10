@@ -353,13 +353,48 @@ export function buildConsoleOneliner(
   // receipt path when one was supplied, so a poller outside the terminal can
   // observe the failure — the printf itself is unchanged (the window still
   // shows it), this just ALSO persists it to disk.
-  const receiptTee = bootReceiptPath ? ` | tee -a ${shellEscape(bootReceiptPath)}` : '';
+  return `${prelude} ; ${keepWindowOpenOnFailure(greeting, { receiptPath: bootReceiptPath })}`;
+}
+
+/**
+ * Wrap a command so that when it FAILS the window stays open showing why,
+ * instead of closing the instant the command dies.
+ *
+ * The shape — `(eval '<cmd>'); <banner> ; exec "$SHELL" -l` — is load-bearing
+ * in three separate ways, which is exactly why this is a shared helper and not
+ * a string every caller retypes:
+ *
+ *  - `;` (never `&&`) on BOTH sides of the command, so a non-zero exit still
+ *    reaches the banner and the trailing `exec`. An `&& exec` closes the window
+ *    on precisely the failure the user needed to read.
+ *  - the command travels as a shellEscape'd LITERAL that a subshell `eval`s at
+ *    runtime, never spliced in as bare syntax — so a command containing quotes
+ *    cannot produce an unparseable one-liner, and a MALFORMED one errors
+ *    visibly inside the open window instead of aborting at parse time.
+ *  - the final `exec "$SHELL" -l` is what actually holds the window open.
+ *
+ * WI-37743: `/adv/sessions/launch-su` (the HUD "+ New session" button) did NOT
+ * use this — it emitted a bare `exec <psu …>`, so psu replaced the shell and
+ * ANY boot refusal (a 409 from the freshness guard, a bad operator URL, a
+ * missing token) closed the window in under a second with the message still on
+ * screen for ~0 frames. The owner saw a terminal flash and a session stuck on
+ * "Starting up", and the actual cause was unrecoverable from outside. Matches
+ * the Rust/Tauri spawner too (native_console.rs build_launcher_oneliner).
+ */
+export function keepWindowOpenOnFailure(
+  command: string,
+  opts?: { receiptPath?: string | null },
+): string {
+  // EI-19330040718883562: also persist the failure line to a receipt file when
+  // one was supplied, so a poller OUTSIDE the terminal can observe it. The
+  // printf itself is unchanged — the window still shows it.
+  const receiptTee = opts?.receiptPath ? ` | tee -a ${shellEscape(opts.receiptPath)}` : '';
   const banner =
     `__papercusp_greeting_rc=$?; ` +
     `if [ "$__papercusp_greeting_rc" -ne 0 ]; then ` +
     `printf '\\n[papercusp] initial terminal command exited with status %s; terminal left open for inspection.\\n' "$__papercusp_greeting_rc"${receiptTee}; ` +
     `fi`;
-  return `${prelude} ; (eval ${shellEscape(greeting)}); ${banner} ; exec "\${SHELL:-/bin/bash}" -l`;
+  return `(eval ${shellEscape(command)}); ${banner} ; exec "\${SHELL:-/bin/bash}" -l`;
 }
 
 // ─── Desktop-env resolution + spawn verification (WI-1886) ───────────
@@ -795,8 +830,14 @@ export function classifyEarlyExit(
  * not exist — so it must never reach the fail-open branch. It is surfaced as a
  * distinct `error` field rather than a synthetic exit code so callers can say
  * what actually happened instead of inventing an exit status.
+ *
+ * EXPORTED for terminal-spawn (WI-37743), which used to hand-roll a weaker
+ * version of this — a fixed sleep followed by one `kill(pid, 0)` poll. Two
+ * spawn paths judging "died at boot" by two different rules is how the HUD
+ * path ended up probing ~470ms before the death it existed to catch. One
+ * watcher, one classifier, one probe window.
  */
-function watchEarlyExit(
+export function watchEarlyExit(
   child: ChildProcess,
   probeMs: number,
 ): Promise<{ code: number | null; signal: string | null; error?: Error } | null> {

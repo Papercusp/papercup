@@ -27,7 +27,9 @@ import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../work
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import {
+  DISPLAY_TERMINAL_LAUNCH,
   NATIVE_SESSION_ID_RE,
+  adoptStartingTerminalLaunch,
   markAdvSessionEnded,
   reactivateAdvSession,
   reanchorAdvSessionNativeId,
@@ -1518,6 +1520,9 @@ const post = defineTool({
     // and ids already live on an un-ended session are refused loudly — a
     // silent fallback to minting would re-create exactly the split-identity
     // bug the flag exists to fix.
+    // WI-37743: the id of our own launcher's starting row, when it wrote one —
+    // this session's row, to COMPLETE below rather than duplicate.
+    let adoptableStartingRowId: number | null = null;
     const requestedSid = body.owner_id?.trim() || null;
     if (requestedSid != null) {
       if (!/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(requestedSid)) {
@@ -1527,17 +1532,41 @@ const post = defineTool({
         );
       }
       const { sql } = getOrgPg();
-      const live = await sql<Array<{ id: string }>>`
-        SELECT id::text FROM harness_shared.adv_sessions
+      const live = await sql<Array<{ id: string; display: string | null; has_session: boolean }>>`
+        SELECT id::text, display, (session_id IS NOT NULL) AS has_session
+          FROM harness_shared.adv_sessions
          WHERE coord_owner_id = ${requestedSid} AND ended_at IS NULL
-         LIMIT 1
+         ORDER BY id DESC
       `;
-      if (live.length > 0) {
+      // WI-37743: "fresh" must mean "not already RUNNING as someone else", not
+      // "has no row at all". The spawner that pre-pinned this id also writes a
+      // `display='terminal'` STARTING row for it (WI-6376) so the board can render
+      // the session during its boot window — so by the time psu gets here, its own
+      // launcher has usually already created a live row bound to this id. Treating
+      // that as a conflict refused every HUD "+ New session" launch: psu exited 1,
+      // and because the terminal one-liner is `exec psu`, that exit closed the
+      // window, which surfaced as "its terminal closed before the session came
+      // online" (owner-reported 2026-08-10).
+      //
+      // A precursor is recognised NARROWLY — the launcher's own starting shape,
+      // still un-ended and NOT yet carrying a session id. Anything else (a real
+      // running session, or a starting row that already registered) is the
+      // split-identity case WI-5002/EI-13277 added this guard for, and is still
+      // refused loudly.
+      const precursors = live.filter(
+        (r) => r.display === DISPLAY_TERMINAL_LAUNCH && !r.has_session,
+      );
+      const conflicts = live.filter((r) => !precursors.includes(r));
+      if (conflicts.length > 0) {
         return jsonRes(
-          { status: 'error', error: `owner_id ${requestedSid} is already bound to live adv session ${live[0].id} — pre-pinned owners must be fresh` },
+          { status: 'error', error: `owner_id ${requestedSid} is already bound to live adv session ${conflicts[0].id} — pre-pinned owners must be fresh` },
           409,
         );
       }
+      // Newest wins: a retried launch can leave an older precursor behind, and the
+      // one this psu belongs to is the most recent. Older ones are left alone —
+      // the dead-launch reconciler already stamps them.
+      adoptableStartingRowId = precursors.length > 0 ? Number(precursors[0].id) : null;
     }
     const sid = requestedSid ?? `su-${randomUUID()}`;
 
@@ -1681,7 +1710,24 @@ const post = defineTool({
     // (`session-<adv id>`). Only a port delays its pending target row until all
     // fallible artifact/budget checks finish, keying interim files by port id.
     let sessionId: number | null = null;
-    if (!sessionPortContext) {
+    if (!sessionPortContext && adoptableStartingRowId != null) {
+      // WI-37743: COMPLETE our launcher's starting row instead of inserting a
+      // second one beside it. Best-effort by design — if the row was stamped
+      // ended (or already adopted) between the guard above and here, the adopt
+      // no-ops and we fall through to the ordinary insert, so a lost race
+      // degrades to the pre-fix behaviour rather than to a session with no row.
+      const adopted = await adoptStartingTerminalLaunch({
+        id: adoptableStartingRowId,
+        sessionId: nativeSessionId,
+        planSlug,
+        label: body.label?.trim() || null,
+        cwd,
+        mode: agent === 'omp' ? 'omp' : 'console',
+        launchArgv,
+      });
+      if (adopted) sessionId = adoptableStartingRowId;
+    }
+    if (!sessionPortContext && sessionId == null) {
       sessionId = await recordAdvSession({
         planSlug,
         agent,

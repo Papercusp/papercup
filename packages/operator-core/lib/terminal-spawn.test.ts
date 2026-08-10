@@ -14,24 +14,59 @@ vi.mock('node:fs', async () => {
   return { ...actual, existsSync: (...a: unknown[]) => existsSyncMock(...(a as [string])) };
 });
 
-const spawnMock = vi.fn((_bin: string, _args: string[], _opts: unknown) => ({
-  pid: 55555,
-  unref: vi.fn(),
-}));
+/**
+ * The child shape `spawnInTerminal` actually consumes: a pid, `unref`, an
+ * optional stderr stream, and — since WI-37743 — the 'exit'/'error' events the
+ * shared early-exit watcher listens for.
+ *
+ * Declared as the spawn mock's RETURN TYPE rather than cast in at each call
+ * site: `as never` would switch off the one check `vi.fn` typing gives us, so
+ * the day this shape gains a field the fixtures would go stale invisibly and
+ * fail at runtime in some other file (lint:mock-cast-escape). Typing it once
+ * here removed all three casts this file used to carry.
+ */
+type FakeChildStderr = EventEmitter & { resume: () => void; destroy: () => void; unref: () => void };
+type FakeChild = EventEmitter & {
+  pid: number | undefined;
+  unref: () => void;
+  stderr?: FakeChildStderr;
+};
+
+/** A spawn() stand-in that is a REAL emitter, so the code under test observes
+ *  'exit'/'error' the way it does in production. The old plain-object mock
+ *  could not emit anything — which is precisely why a fixed sleep was the only
+ *  probe shape that was testable, and why the too-early probe survived. */
+function makeChild(opts: { pid?: number | undefined; withStderr?: boolean } = {}): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  child.pid = 'pid' in opts ? opts.pid : 55555;
+  child.unref = vi.fn();
+  if (opts.withStderr) {
+    const stderr = new EventEmitter() as FakeChildStderr;
+    stderr.resume = vi.fn();
+    stderr.destroy = vi.fn();
+    stderr.unref = vi.fn();
+    child.stderr = stderr;
+  }
+  return child;
+}
+
+const spawnMock = vi.fn((_bin: string, _args: string[], _opts: unknown): FakeChild => makeChild());
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
   return { ...actual, spawn: (...a: Parameters<typeof spawnMock>) => spawnMock(...a) };
 });
 
 import type { DesktopEnvProbes } from './console-spawn';
+import { EventEmitter } from 'node:events';
 import {
   findTerminal,
-  isProcessAlive,
   scrubTerminalContextEnv,
   shellEscape,
   spawnInTerminal,
+  STDERR_FLUSH_GRACE_MS,
   TERMINAL_CONTEXT_ENV_KEYS,
 } from './terminal-spawn';
+import { EARLY_EXIT_PROBE_MS } from './console-spawn';
 
 // Deterministic no-desktop-session probes: no /proc scan, no `who` shell-out —
 // resolveLinuxDesktopEnv falls through to "no DISPLAY / no X socket" (unresolved)
@@ -196,37 +231,23 @@ describe('scrubTerminalContextEnv', () => {
   });
 });
 
-describe('isProcessAlive', () => {
-  const killSpy = vi.spyOn(process, 'kill');
-
-  afterEach(() => {
-    killSpy.mockReset();
-  });
-
-  it('true when kill(pid, 0) does not throw', () => {
-    killSpy.mockReturnValue(true);
-    expect(isProcessAlive(123)).toBe(true);
-    expect(killSpy).toHaveBeenCalledWith(123, 0);
-  });
-
-  it('false when kill(pid, 0) throws (dead / no-such-process)', () => {
-    killSpy.mockImplementation(() => {
-      throw new Error('ESRCH');
-    });
-    expect(isProcessAlive(123)).toBe(false);
-  });
-});
-
-// EI-18696184925888288: the shell-write... err, silent-launch-failure guard.
-// `spawnInTerminal` must not just check the OS spawn call didn't throw — it
-// re-checks the child's liveness a short beat later, since a terminal client
+// EI-18696184925888288: the silent-launch-failure guard. `spawnInTerminal` must
+// not just check that the OS spawn call didn't throw — a terminal client
 // (gnome-terminal against a headless/offscreen display) can exit almost
 // immediately even though no window ever actually opened.
-describe('spawnInTerminal liveness check', () => {
+//
+// WI-37743 rewrote HOW: the old shape slept a fixed 400ms and then polled
+// `kill(pid, 0)` ONCE. Measured client death on the HUD launch path is ~870ms,
+// so the poll fired ~470ms early, saw a live client, and took the healthy
+// branch — which DRAINS the stderr pipe, destroying the only evidence of the
+// cause. These tests now drive real 'exit'/'error' events, which is what the
+// shared watchEarlyExit + classifyEarlyExit pair (console-spawn's, reused)
+// observes.
+describe('spawnInTerminal early-exit probe', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     spawnMock.mockClear();
-    spawnMock.mockReturnValue({ pid: 55555, unref: vi.fn() });
+    spawnMock.mockReturnValue(makeChild());
     existsSyncMock.mockReturnValue(false);
     // Make gnome-terminal resolvable so findTerminal() succeeds.
     existsSyncMock.mockImplementation((p: string) => String(p).endsWith('/gnome-terminal'));
@@ -237,11 +258,10 @@ describe('spawnInTerminal liveness check', () => {
     vi.restoreAllMocks();
   });
 
-  it('reports likelyOpened:true when the pid is still alive after the delay', async () => {
-    vi.spyOn(process, 'kill').mockReturnValue(true);
+  it('reports likelyOpened:true when the child outlives the probe window', async () => {
     const resultPromise = spawnInTerminal({
       oneliner: 'exec true',
-      livenessCheckDelayMs: 400,
+      earlyExitProbeMs: 400,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
     await vi.advanceTimersByTimeAsync(400);
@@ -249,40 +269,84 @@ describe('spawnInTerminal liveness check', () => {
     expect(result).toEqual({ ok: true, terminal: 'gnome-terminal', pid: 55555, likelyOpened: true });
   });
 
-  it('reports likelyOpened:false when the process already exited by the time we check', async () => {
-    vi.spyOn(process, 'kill').mockImplementation(() => {
-      throw new Error('ESRCH');
-    });
+  it('reports likelyOpened:false, with a named reason, when the child dies inside the window', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValue(child);
     const resultPromise = spawnInTerminal({
       oneliner: 'exec true',
-      livenessCheckDelayMs: 400,
+      earlyExitProbeMs: 400,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
-    await vi.advanceTimersByTimeAsync(400);
+    child.emit('exit', 1, null);
+    const result = await resultPromise;
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.likelyOpened).toBe(false);
+      // The point of the field: WHY, not just that it failed.
+      expect(result.failureReason).toContain('exit code 1');
+    }
+  });
+
+  // THE REGRESSION THIS FIX EXISTS FOR (WI-37743). The old probe slept a fixed
+  // 400ms and polled once; the real client death is ~870ms, so it read a live
+  // client as healthy. Here the child dies at 870ms — inside the 1200ms shared
+  // window, outside the old 400ms one — and MUST be caught.
+  it('catches a death at ~870ms that the old fixed 400ms probe reported as healthy', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValue(child);
+    const resultPromise = spawnInTerminal({
+      oneliner: 'exec true',
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
+    await vi.advanceTimersByTimeAsync(400); // the old probe fired here and said "alive"
+    await vi.advanceTimersByTimeAsync(470); // ~870ms: the client actually dies
+    child.emit('exit', 1, null);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.likelyOpened).toBe(false);
+    expect(EARLY_EXIT_PROBE_MS).toBeGreaterThan(870);
   });
 
-  it('livenessCheckDelayMs:0 skips the check entirely (likelyOpened:true, no wait)', async () => {
-    const killSpy = vi.spyOn(process, 'kill');
+  // A spawn 'error' means the binary never ran — the LEAST ambiguous failure
+  // there is. The old shape skipped its check entirely when `child.pid` was
+  // undefined, so this was the one case that failed OPEN.
+  it('reports a spawn error (binary never ran) instead of failing open', async () => {
+    const child = makeChild({ pid: undefined });
+    spawnMock.mockReturnValue(child);
+    const resultPromise = spawnInTerminal({
+      oneliner: 'exec true',
+      earlyExitProbeMs: 400,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
+    child.emit('error', Object.assign(new Error('spawn gnome-terminal ENOENT'), { code: 'ENOENT' }));
+    const result = await resultPromise;
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.likelyOpened).toBe(false);
+      expect(result.failureReason).toContain('ENOENT');
+      expect(result.failureReason).toContain('never ran');
+    }
+  });
+
+  it('earlyExitProbeMs:0 skips the probe entirely (likelyOpened:true, no wait)', async () => {
     const result = await spawnInTerminal({
       oneliner: 'exec true',
-      livenessCheckDelayMs: 0,
+      earlyExitProbeMs: 0,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.likelyOpened).toBe(true);
-    expect(killSpy).not.toHaveBeenCalled();
+    if (result.ok) {
+      expect(result.likelyOpened).toBe(true);
+      expect(result.failureReason).toBeUndefined();
+    }
   });
 
   // The fix itself: whatever the caller hands us, the child must not receive the
   // terminal identity of the tab the OPERATOR was started in.
   it('scrubs inherited terminal-context vars from the spawned env', async () => {
-    vi.spyOn(process, 'kill').mockReturnValue(true);
     const p = spawnInTerminal({
       oneliner: 'exec true',
-      livenessCheckDelayMs: 0,
+      earlyExitProbeMs: 0,
       desktopEnvProbes: NO_DESKTOP_PROBES,
       env: {
         PATH: '/usr/bin',
@@ -305,29 +369,19 @@ describe('spawnInTerminal liveness check', () => {
   // the only evidence there is — capture it and hand it back so the caller can
   // say WHY instead of "the terminal closed".
   it('returns the emulator’s stderr when it died without opening a window', async () => {
-    const listeners: Record<string, Array<(d: unknown) => void>> = {};
-    const stderr = {
-      on: (ev: string, fn: (d: unknown) => void) => {
-        (listeners[ev] ??= []).push(fn);
-      },
-      removeAllListeners: vi.fn(),
-      resume: vi.fn(),
-      destroy: vi.fn(),
-      unref: vi.fn(),
-    };
-    spawnMock.mockReturnValue({ pid: 55555, unref: vi.fn(), stderr } as never);
-    vi.spyOn(process, 'kill').mockImplementation(() => {
-      throw new Error('ESRCH');
-    });
+    const child = makeChild({ withStderr: true });
+    spawnMock.mockReturnValue(child);
     const resultPromise = spawnInTerminal({
       oneliner: 'exec true',
-      livenessCheckDelayMs: 400,
+      earlyExitProbeMs: 400,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
-    for (const fn of listeners.data ?? []) {
-      fn('# Error creating terminal: Failed to get screen from object path /org/gnome/Terminal/screen/dead\n');
-    }
-    await vi.advanceTimersByTimeAsync(400);
+    child.stderr?.emit(
+      'data',
+      '# Error creating terminal: Failed to get screen from object path /org/gnome/Terminal/screen/dead\n',
+    );
+    child.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(STDERR_FLUSH_GRACE_MS);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -335,40 +389,77 @@ describe('spawnInTerminal liveness check', () => {
       expect(result.stderr).toContain('Failed to get screen from object path');
     }
     // Dead child ⇒ safe to close the pipe.
-    expect(stderr.destroy).toHaveBeenCalled();
+    expect(child.stderr?.destroy).toHaveBeenCalled();
+  });
+
+  // WI-37743: 'exit' can fire before the last 'data' event lands, and on the
+  // failure path that text is the ONLY evidence of the cause — so a late flush
+  // must still be captured rather than raced away.
+  it('still captures stderr that arrives AFTER the exit event', async () => {
+    const child = makeChild({ withStderr: true });
+    spawnMock.mockReturnValue(child);
+    const resultPromise = spawnInTerminal({
+      oneliner: 'exec true',
+      earlyExitProbeMs: 400,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
+    child.emit('exit', 1, null);
+    child.stderr?.emit('data', 'Cannot open display: :99\n');
+    child.stderr?.emit('end');
+    const result = await resultPromise;
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.stderr).toContain('Cannot open display');
   });
 
   it('never destroys a LIVE child’s stderr (EPIPE would kill the new window)', async () => {
-    const stderr = {
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-      resume: vi.fn(),
-      destroy: vi.fn(),
-      unref: vi.fn(),
-    };
-    spawnMock.mockReturnValue({ pid: 55555, unref: vi.fn(), stderr } as never);
-    vi.spyOn(process, 'kill').mockReturnValue(true);
+    const child = makeChild({ withStderr: true });
+    spawnMock.mockReturnValue(child);
     const resultPromise = spawnInTerminal({
       oneliner: 'exec true',
-      livenessCheckDelayMs: 400,
+      earlyExitProbeMs: 400,
       desktopEnvProbes: NO_DESKTOP_PROBES,
     });
     await vi.advanceTimersByTimeAsync(400);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.stderr).toBeUndefined();
-    expect(stderr.destroy).not.toHaveBeenCalled();
-    expect(stderr.resume).toHaveBeenCalled();
+    expect(child.stderr?.destroy).not.toHaveBeenCalled();
+    expect(child.stderr?.resume).toHaveBeenCalled();
   });
 
-  it('defaults to a 400ms check when livenessCheckDelayMs is omitted', async () => {
-    vi.spyOn(process, 'kill').mockImplementation(() => {
-      throw new Error('ESRCH');
+  // A clean exit 0 is only a failure under `--wait` semantics — the classifier's
+  // rule, shared with console-spawn, not re-decided here.
+  it('does NOT flag a clean exit 0 as failed when the emulator has no --wait', async () => {
+    existsSyncMock.mockImplementation((p: string) => String(p).endsWith('/konsole'));
+    const child = makeChild();
+    spawnMock.mockReturnValue(child);
+    const resultPromise = spawnInTerminal({
+      oneliner: 'exec true',
+      earlyExitProbeMs: 400,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+      env: { PATH: '/usr/bin', TERMINAL: 'konsole' },
     });
-    const resultPromise = spawnInTerminal({ oneliner: 'exec true', desktopEnvProbes: NO_DESKTOP_PROBES });
-    await vi.advanceTimersByTimeAsync(400);
+    child.emit('exit', 0, null);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.likelyOpened).toBe(false);
+    if (result.ok) {
+      expect(result.likelyOpened).toBe(true);
+      expect(result.failureReason).toBeUndefined();
+    }
+  });
+
+  it('defaults to the shared EARLY_EXIT_PROBE_MS window when none is given', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValue(child);
+    const resultPromise = spawnInTerminal({ oneliner: 'exec true', desktopEnvProbes: NO_DESKTOP_PROBES });
+    // One tick short of the shared window: still watching, nothing concluded.
+    await vi.advanceTimersByTimeAsync(EARLY_EXIT_PROBE_MS - 1);
+    child.emit('exit', 1, null);
+    const result = await resultPromise;
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.likelyOpened).toBe(false);
+      expect(result.failureReason).toContain(String(EARLY_EXIT_PROBE_MS));
+    }
   });
 });
