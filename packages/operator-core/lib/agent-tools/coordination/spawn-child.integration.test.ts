@@ -64,6 +64,19 @@ vi.mock('../../harness-core', async () => {
   };
 });
 
+// P-071/D-062: `startPlan` is gated on the Mug/Kettle tier flag, which is OFF in
+// the delivered end state — so the op_status write this suite was written to
+// observe no longer happens by default. Hold the axis LIVE for the frontier
+// cases below (they assert the DISPATCHER mechanics op_status feeds, which are
+// unchanged), and flip it off in the one case that asserts the refusal. The
+// gate's own wiring to the real flag is covered by
+// `spawn-child-op-status-gate.test.ts` (unit, no Docker).
+const MUG_KETTLE = vi.hoisted(() => ({ on: true }));
+vi.mock('../../pot/started', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  mugKettleSystemEnabled: async () => MUG_KETTLE.on,
+}));
+
 const { executeSpawnChild, buildDefaultSpawnChildDeps, childSeedSlug } = await import('./spawn-child');
 const { notifyParentOnDone } = await import('../../dbos/notify-parent-done');
 type Deps = import('./spawn-child').SpawnChildDeps;

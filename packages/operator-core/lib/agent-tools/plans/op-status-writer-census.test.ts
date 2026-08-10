@@ -78,10 +78,6 @@ const ALLOW: ReadonlyMap<string, string> = new Map([
     'scout/ready-plan-autostart.ts',
     'DORMANT, and gating it correctly needs a design this item does not carry. The sweep returns early unless `listStartedPots()` is non-empty, and the only door that sets that bit (pot:start) is already gated — every hive_started row is false as of 2026-08-10. Skipping just its UPDATE would also remove the "already started" latch that stops the 30s sweep re-promoting the same plan forever, so it needs its own latch. Tracked as a follow-up item on the plan.',
   ],
-  [
-    'agent-tools/coordination/spawn-child.ts',
-    'PROMOTE-TIME BRANCH, reachable only via `plans:promote { apply:true }` on a wave declaring spawn_child — it starts a freshly scaffolded CHILD harness\'s seed plan, so it cannot strand an existing plan\'s lane. Its caller treats a falsy start as "features stay ineligible" and warns, so gating it needs the warning re-worded rather than a one-line refusal. Tracked as a follow-up item on the plan.',
-  ],
 ]);
 
 const isTest = (f: string) => /\.(test|integration\.test)\.tsx?$/.test(f);
@@ -172,6 +168,16 @@ describe('op_status writer census — the live tree', () => {
     // the census above silently weaker.
     expect(start, 'plans:start no longer contains a recognisable op_status write').toBeDefined();
     expect(start?.gated).toBe(true);
+  });
+
+  it('spawn-child — the promote-time writer — is gated (P-071, ALLOW entry deleted)', () => {
+    const spawn = enteringWriters().find((w) => w.rel === 'agent-tools/coordination/spawn-child.ts');
+    // Same shape as the plans:start assertion above, and for the same reason: if
+    // the write is removed or reshaped this goes undefined, which would ALSO make
+    // the census silently weaker. P-071 gated it and deleted its ALLOW entry, so
+    // an ungated re-appearance must fail here rather than inherit an exemption.
+    expect(spawn, 'spawn-child no longer contains a recognisable op_status write').toBeDefined();
+    expect(spawn?.gated).toBe(true);
   });
 
   it('has no STALE allowances — an entry whose file stopped writing is removed', () => {

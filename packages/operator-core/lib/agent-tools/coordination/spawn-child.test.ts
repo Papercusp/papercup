@@ -18,6 +18,7 @@ import {
   synthesizeScaffoldSpec,
   buildChildImportPayload,
   executeSpawnChild,
+  describeSpawnStart,
   type SpawnChildDeps,
   type SpawnChildOpts,
 } from './spawn-child';
@@ -245,9 +246,9 @@ function stubDeps(overrides: Partial<SpawnChildDeps> = {}) {
       calls.push('writeAssertions');
       return { written: assertions.length, errors: [] };
     }),
-    startPlan: vi.fn(async () => {
+    startPlan: vi.fn(async (): Promise<'started' | 'plan_not_found' | 'axis_retired'> => {
       calls.push('startPlan');
-      return true;
+      return 'started';
     }),
     ...overrides,
   };
@@ -384,10 +385,57 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
   });
 
   it('an unmatched startPlan row is a warning, not a throw', async () => {
-    const { deps } = stubDeps({ startPlan: vi.fn(async () => false) });
+    const { deps } = stubDeps({ startPlan: vi.fn(async () => 'plan_not_found' as const) });
     const r = await executeSpawnChild(opts(), deps);
     expect(r.started).toBe(false);
+    expect(r.start).toBe('plan_not_found');
     expect(r.warnings.some((w) => w.includes('plans:start'))).toBe(true);
+  });
+
+  // P-071/D-062. The two falsy start outcomes must NOT read alike: this module's
+  // warnings mean "re-promote to retry", which is wrong (and was the misleading
+  // warning P-071 names) for a refusal no re-promote can change.
+  it('a RETIRED axis is a distinct outcome with NO warning — the spawn still succeeded', async () => {
+    const { deps } = stubDeps({ startPlan: vi.fn(async () => 'axis_retired' as const) });
+    const r = await executeSpawnChild(opts(), deps);
+    expect(r.started).toBe(false);
+    expect(r.start).toBe('axis_retired');
+    expect(r.warnings).toEqual([]);
+    // Everything BEFORE the start step still ran — the child is fully seeded.
+    expect(r.feature_ids).toHaveLength(3);
+    expect(r.assertions_written).toBe(3);
+  });
+
+  it('a start step that never ran is `skipped`, distinct from a refusal', async () => {
+    const { deps } = stubDeps({
+      importFeatures: vi.fn(async () => {
+        throw new Error('features_import_failed:404');
+      }),
+    });
+    const r = await executeSpawnChild(opts(), deps);
+    expect(r.start).toBe('skipped');
+    expect(deps.startPlan).not.toHaveBeenCalled();
+  });
+
+  it('a throwing startPlan is `failed` + a warning', async () => {
+    const { deps } = stubDeps({
+      startPlan: vi.fn(async () => {
+        throw new Error('pg down');
+      }),
+    });
+    const r = await executeSpawnChild(opts(), deps);
+    expect(r.start).toBe('failed');
+    expect(r.started).toBe(false);
+    expect(r.warnings.some((w) => w.includes('pg down'))).toBe(true);
+  });
+
+  it('describeSpawnStart distinguishes the retirement from every failure', () => {
+    expect(describeSpawnStart('started')).toBe(', started');
+    expect(describeSpawnStart('axis_retired')).toContain('operational axis is retired');
+    expect(describeSpawnStart('axis_retired')).not.toMatch(/NOT started/);
+    expect(describeSpawnStart('plan_not_found')).toContain('NOT started');
+    expect(describeSpawnStart('failed')).toContain('NOT started');
+    expect(describeSpawnStart('skipped')).toBe('');
   });
 
   it('assertion-store errors degrade to warnings (claims already rode the import)', async () => {

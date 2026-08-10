@@ -22,7 +22,13 @@
  *      (`F-<CHILD>-SEED-NNN`) so a retried promote upserts instead of
  *      duplicating (D-004 idempotency).
  *   4. **Start** the seed plan (`op_status='started'` — same write as
- *      plans:start).
+ *      plans:start). ⚠ RETIRED (P-071/D-062): the operational axis retires with
+ *      the Mug/Kettle tier, so this step is gated by `mugKettleSystemEnabled()`
+ *      and normally reports `start: 'axis_retired'` without writing. That is a
+ *      SUCCESS, not a partial failure — an un-started plan's items are no longer
+ *      RESERVED away from scheduler self-selection (work-items.ts:3828), so the
+ *      child's features become claimable by su agents instead of waiting on a
+ *      dispatcher that no longer runs.
  *
  * Failure model (D-004): idempotent + best-effort. Every step failure lands in
  * `warnings[]` — this module NEVER throws — and aborts the remaining steps for
@@ -36,6 +42,7 @@
 
 import { dispatchAction } from '../../execute-action';
 import { resolveProject } from '../../harness-core';
+import { mugKettleSystemEnabled } from '../../pot/started';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { withPlanLock } from '../plans/with-plan-lock';
 import { resolvePlanScope } from '../plans/source';
@@ -251,7 +258,44 @@ export interface SpawnChildResult {
   feature_ids: string[];
   assertions_written: number;
   started: boolean;
+  /**
+   * P-071/D-062 — WHY `started` is what it is, so a false reading is never
+   * ambiguous. `axis_retired` is the normal outcome now (the op_status axis
+   * retired with the Mug/Kettle tier) and is NOT a partial failure: unlike
+   * `plan_not_found`/`failed` it produces no warning and re-promoting cannot
+   * change it. `skipped` means step 5 never ran (an earlier step aborted).
+   */
+  start: SpawnStartOutcome;
   warnings: string[];
+}
+
+/** Outcome of step 5 (start the seed plan). See `SpawnChildResult.start`. */
+export type SpawnStartOutcome =
+  | 'started'
+  | 'plan_not_found'
+  | 'axis_retired'
+  | 'failed'
+  | 'skipped';
+
+/**
+ * Human-facing clause for a promote report / plan_event detail — the reason
+ * `start` exists. It reads as a trailing clause: `child (plan p, 3 feature(s)<here>)`.
+ * `axis_retired` says what happened AND that nothing is owed, because the
+ * report's other falsy states all mean "re-promote to retry".
+ */
+export function describeSpawnStart(start: SpawnStartOutcome): string {
+  switch (start) {
+    case 'started':
+      return ', started';
+    case 'axis_retired':
+      return ', not started — the plan operational axis is retired (features are claimable as-is)';
+    case 'plan_not_found':
+      return ', NOT started — no seed-plan row matched';
+    case 'failed':
+      return ', NOT started — the start call failed';
+    case 'skipped':
+      return '';
+  }
 }
 
 export interface SpawnChildDeps {
@@ -280,8 +324,15 @@ export interface SpawnChildDeps {
     seedSlug: string,
     assertions: PlanAssertion[],
   ): Promise<{ written: number; errors: string[] }>;
-  /** plans:start equivalent — op_status='started' on the seed plan row. */
-  startPlan(childSlug: string, seedSlug: string): Promise<boolean>;
+  /**
+   * plans:start equivalent — op_status='started' on the seed plan row.
+   *
+   * P-071/D-062: returns an OUTCOME, not a boolean, because the three falsy
+   * cases mean different things to the caller — `plan_not_found` is a real
+   * partial failure worth a re-promote, `axis_retired` is the expected steady
+   * state and must NOT be reported as one.
+   */
+  startPlan(childSlug: string, seedSlug: string): Promise<Exclude<SpawnStartOutcome, 'failed' | 'skipped'>>;
 }
 
 /**
@@ -304,6 +355,7 @@ export async function executeSpawnChild(
     feature_ids: [],
     assertions_written: 0,
     started: false,
+    start: 'skipped',
     warnings: [],
   };
   const warn = (m: string) => result.warnings.push(`spawn_child ${opts.child.slug}: ${m}`);
@@ -403,13 +455,25 @@ export async function executeSpawnChild(
     }
   }
 
-  // ── 5. Start the seed plan (the dispatcher eligibility gate) ─────────────
+  // ── 5. Start the seed plan (the RETIRED dispatcher eligibility gate) ─────
+  // P-071/D-062: `startPlan` is gated on mugKettleSystemEnabled and normally
+  // refuses. Each falsy case gets its OWN outcome because they need opposite
+  // reactions from the reader: `plan_not_found` means the seed row is missing
+  // and a re-promote can fix it; `axis_retired` means nothing is wrong and a
+  // re-promote would change nothing. Collapsing both into `started:false` is
+  // what made the old warning below misleading.
   try {
-    result.started = await deps.startPlan(opts.child.slug, seedSlug);
-    if (!result.started) {
+    const outcome = await deps.startPlan(opts.child.slug, seedSlug);
+    result.start = outcome;
+    result.started = outcome === 'started';
+    if (outcome === 'plan_not_found') {
       warn('plans:start matched no seed-plan row — features stay ineligible until the plan is started; re-promote to retry');
     }
+    // 'axis_retired' is deliberately WARNING-FREE: the features are claimable
+    // (an un-started plan does not reserve its items away from the scheduler),
+    // and this module's warnings are read as "re-promote to retry".
   } catch (e) {
+    result.start = 'failed';
     warn(`plans:start failed: ${e instanceof Error ? e.message : String(e)} — start the seed plan manually or re-promote`);
   }
 
@@ -494,6 +558,15 @@ export function buildDefaultSpawnChildDeps(io: {
     },
 
     async startPlan(childSlug, seedSlug) {
+      // P-071 / D-062: the op_status axis retires with the Mug/Kettle tier, so
+      // this write is gated exactly as plans:start is (start.ts) — fail-CLOSED
+      // via mugKettleSystemEnabled, because a false `true` would put a brand-new
+      // child's seed plan back on the axis and RESERVE its freshly imported
+      // features away from scheduler self-selection (work-items.ts:3828) for a
+      // dispatcher that is not running. Refusing BEFORE resolvePlanScope keeps
+      // the retired path free of the DB round-trip entirely.
+      if (!(await mugKettleSystemEnabled())) return 'axis_retired';
+
       // Same write as plans:start (start.ts): op_status='started' on the seed
       // plan's harness_plans row, in the CHILD's resolved workspace (the scope
       // withPlanLock inserted the row under).
@@ -511,7 +584,7 @@ export function buildDefaultSpawnChildDeps(io: {
           RETURNING op_status
         `;
       });
-      return rows.length > 0;
+      return rows.length > 0 ? 'started' : 'plan_not_found';
     },
   };
 }

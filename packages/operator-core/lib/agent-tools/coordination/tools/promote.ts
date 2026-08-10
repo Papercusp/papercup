@@ -41,6 +41,7 @@ import {
   executeSpawnChild,
   buildDefaultSpawnChildDeps,
   childSeedSlug,
+  describeSpawnStart,
   type SpawnChildResult,
 } from '../spawn-child';
 import {
@@ -1330,6 +1331,10 @@ export default defineTool({
       seed_plan_slug: c.seed_plan_slug,
       feature_ids: c.feature_ids,
       started: c.started,
+      // P-071/D-062: `started:false` alone cannot be read — 'axis_retired' (the
+      // normal outcome now) and 'plan_not_found' (a real partial failure) are
+      // both falsy and want opposite reactions.
+      start: c.start,
     }));
     await emitPlanEventForCaller(ctx, {
       planSlug: args.slug,
@@ -1345,7 +1350,7 @@ export default defineTool({
       detail:
         `applied promote to ${harnessSlug ?? '(spawned children only)'}: ${parentFeatures.length} feature(s) → ids [${importRes.ids.join(', ')}], ${markedItems.length} item(s) marked done` +
         (spawnedChildren.length > 0
-          ? `; spawned ${spawnedChildren.length} child(ren): ${spawnedChildren.map((c) => `${c.child_slug} (plan ${c.seed_plan_slug}, ${c.feature_ids.length} feature(s)${c.started ? ', started' : ''})`).join(', ')}`
+          ? `; spawned ${spawnedChildren.length} child(ren): ${spawnedChildren.map((c) => `${c.child_slug} (plan ${c.seed_plan_slug}, ${c.feature_ids.length} feature(s)${describeSpawnStart(c.start)})`).join(', ')}`
           : ''),
     });
 
