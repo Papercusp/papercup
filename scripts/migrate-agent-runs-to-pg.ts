@@ -19,7 +19,6 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import postgres from 'postgres';
-// @ts-ignore — pure JS helper, typed only by JSDoc
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 interface ProjectEntry {

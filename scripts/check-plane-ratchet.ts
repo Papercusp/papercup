@@ -21,7 +21,6 @@ import {
   type RatchetRow,
 } from '../packages/operator-core/lib/agent-plane-ratchet';
 import type { PlaneZeroReason } from '../packages/operator-core/lib/agent-plane-measurement';
-// @ts-ignore — pure JS helper, typed only by JSDoc
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 /**

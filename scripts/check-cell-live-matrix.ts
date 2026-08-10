@@ -34,7 +34,6 @@ import {
 } from '../packages/operator-core/lib/cell-live-matrix';
 import { BUILTIN_CELLS } from '../packages/operator-core/lib/cell-registrations';
 import type { CellSpec } from '../packages/operator-core/lib/cell-registry';
-// @ts-ignore — pure JS helper, typed only by JSDoc
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 const TERMINAL_STATUSES = new Set(['done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated']);
