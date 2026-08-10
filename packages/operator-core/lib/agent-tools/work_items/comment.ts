@@ -90,6 +90,55 @@ const COMPLETION_STATE_HINT =
   'This reads like a completion, but the item is still non-terminal — if the work is actually done, ' +
   'also call work_items:set_state (or work_items:complete) so scheduler:get_next stops handing it back out.';
 
+/**
+ * EI-20027532687512023: the MIRROR IMAGE of EI-8837 above, and the more
+ * expensive direction. There, a completion lived in prose instead of the
+ * terminal-state field, so a finished item got handed back out. Here a
+ * RETRACTION lives in prose instead of the terminal-state field — and a
+ * retracted item does not merely get re-served, it keeps its ORIGINAL SEVERITY
+ * while doing so.
+ *
+ * Measured live 2026-08-10: EI-20026000903745625 was filed `critical` at
+ * 01:04:42Z; its filer posted a loud, correctly-placed retraction on the item's
+ * OWN thread at 01:12:46Z ("this item's central premise is WRONG. Do not act on
+ * it as written") — via `work_items:comment`, exactly the durable surface the
+ * repo guide prescribes. `scheduler:get_next` handed that item to an agent as
+ * the harness's #1 critical at 01:24Z, twelve minutes later, with nothing
+ * indicating its thread contained a retraction. The item was 20 minutes old, so
+ * this is NOT the "aged items go stale" class and an age-based re-validation
+ * heuristic would not catch it.
+ *
+ * There is NO missing mechanism to build here (measured: `work_items:set_state
+ * { state:'dropped' }` is terminal, so it removes the row from BOTH
+ * `work_items:claimable` and `scheduler:get_next` with zero new code — verified
+ * by that same item's absence from all 1,422 claimable rows once dropped). The
+ * gap is purely one of ROUTING: every terminal verb is framed around work being
+ * finished or obsolete, never around "my own analysis was wrong", so a filer who
+ * has just disproven their own finding has nothing pointing them at the verb
+ * that would take it out of the queue.
+ *
+ * ADVISORY BY CONSTRUCTION, never a gate — which is what makes a text predicate
+ * the right tool despite being form-blind. A false negative costs exactly what
+ * exists today (no nudge); a false positive costs one suggested line the author
+ * is free to ignore. The same regex driving a claim-path EXCLUSION would be
+ * unacceptable for precisely that form-blindness, so it never does: the
+ * exclusion stays keyed to the terminal state the author sets deliberately.
+ */
+const RETRACTION_LIKE_RE =
+  /\b(retracting\s+this|i\s+retract\b|retraction\s+by\s+the\s+filer|(?:central|core)\s+premise\s+is\s+(?:wrong|false|invalid)|premise\s+(?:is|was)\s+(?:wrong|false|invalid|disproven)|do\s+not\s+act\s+on\s+(?:it|this)\s+as\s+written|(?:finding|analysis|diagnosis|conclusion|claim)\s+(?:is|was)\s+(?:wrong|false|incorrect|disproven|disproved)|superseding\s+this\s+(?:item|finding))/i;
+
+/** A soft, non-blocking reminder attached when a retraction-shaped post lands on
+ *  a still-open item. Deliberately conditional ("if this retracts the item's
+ *  premise") because retracting ONE clause of a still-valid item is legitimate
+ *  and common — the nudge must not read as an instruction to drop every item
+ *  whose thread contains a correction. */
+const RETRACTION_STATE_HINT =
+  'This reads like a retraction, but the item is still non-terminal — a retraction in a comment does ' +
+  'NOT retract anything the queue can see, so scheduler:get_next keeps serving this item AT ITS ORIGINAL ' +
+  'SEVERITY and the next claimer sees the badge, not your correction. If this retracts the item\'s premise, ' +
+  'call work_items:set_state { state:\'dropped\' } (terminal — removes it from work_items:claimable AND ' +
+  'scheduler:get_next); use terminal_reason to record that it was retracted rather than completed.';
+
 export default defineTool({
   name: 'work_items:comment',
   profile: 'engineer',
