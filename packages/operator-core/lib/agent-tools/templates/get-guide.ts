@@ -15,6 +15,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveTemplateListing, fetchTemplateGuide } from '../../cupboard/templates';
 import { resolveLocalTemplate, readLocalGuide } from '../../cupboard/template-store';
+import { resolveGenericLibsRoot } from '../../cupboard/generic-libs-root';
 
 const ok = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
@@ -26,7 +27,7 @@ const fail = (status: number, error: string) => ({
 export default defineTool({
   name: 'templates:get-guide',
   description:
-    "Read a Cupboard app-template's build knowledge: its GUIDE.md (the composition prompt in MUST/SHOULD/FREE tiers) + COMPONENT_CATALOG + template.yaml (checks + pinned components), fetched from the public mirror. Pass `template` as the ref (e.g. \"papercusp-webapp\") or the listing id. Returns { ok, template:{id,ref,title,category?,scope?}, branch, guide, componentCatalog?, manifest?, guideTruncated }. This is the build-time knowledge a building agent follows — read it before templates:new-app, or to answer 'how do I build from <template>'.",
+    "Read a Cupboard app-template's build knowledge: its GUIDE.md (the composition prompt in MUST/SHOULD/FREE tiers) + COMPONENT_CATALOG + template.yaml (checks + pinned components), fetched from the public mirror. Pass `template` as the ref (e.g. \"papercusp-webapp\") or the listing id. Returns { ok, template:{id,ref,title,category?,scope?}, branch, guide, componentCatalog?, manifest?, guideTruncated, supplyChain }. `supplyChain` is THIS install's resolved libs/generic root — use its path for `file:` deps; the GUIDE's own example path is dev-checkout-relative and does not exist on an install. This is the build-time knowledge a building agent follows — read it before templates:new-app, or to answer 'how do I build from <template>'.",
   guidance: {
     when: 'You have a template ref (from templates:list, or the user named one like "papercusp-webapp") and need to read HOW to build from it — the GUIDE.md is the composition prompt.',
     notWhen:
@@ -45,12 +46,21 @@ export default defineTool({
       .describe('Template listing ref (e.g. "papercusp-webapp") or listing id (uuid).'),
   }),
   async handler(args) {
+    // The GUIDE is written ONCE, but "where are the component packages" is a
+    // per-INSTALL answer, so the GUIDE cannot carry it — it documents the worked
+    // example `file:../papercusp/libs/generic/<pkg>`, which is a dev-checkout path
+    // that does not exist on an install (P-005/WI-37791). Report the resolved root
+    // alongside the guide so the reader has the real path, or an explicit statement
+    // that this install has none, instead of a plausible-looking dead link.
+    const supplyChain = resolveGenericLibsRoot();
+
     // v1: first-party templates ship bundled — read the GUIDE from the local store.
     const local = resolveLocalTemplate(args.template);
     if (local) {
       const guide = readLocalGuide(local);
       if ('error' in guide) return fail(guide.status, guide.error);
       return ok({
+        supplyChain,
         template: {
           id: local.id,
           ref: local.ref,
@@ -80,6 +90,7 @@ export default defineTool({
     if ('error' in guide) return fail(guide.status, guide.error);
 
     return ok({
+      supplyChain,
       template: {
         id: listing.id,
         ref: listing.ref,
