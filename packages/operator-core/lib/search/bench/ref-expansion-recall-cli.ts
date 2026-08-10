@@ -342,24 +342,50 @@ async function main(): Promise<void> {
   const reportArm = (label: string, caveat: string, queryVecs: Float64Array[]): void => {
     const v1Recall = new Map<number, number[]>(cutoffs.map((c) => [c, [] as number[]]));
     const v2Recall = new Map<number, number[]>(cutoffs.map((c) => [c, [] as number[]]));
+    const v1Ndcg = new Map<number, number[]>(cutoffs.map((c) => [c, [] as number[]]));
+    const v2Ndcg = new Map<number, number[]>(cutoffs.map((c) => [c, [] as number[]]));
     let wins = 0;
     let losses = 0;
     let ties = 0;
+    // Of the queries where recall@k TIED, how often did ORDERING still move?
+    // This is precisely the population a recall-only reading reports as "no
+    // effect", so it is the number that justifies carrying nDCG at all.
+    let tiedNdcgBetter = 0;
+    let tiedNdcgWorse = 0;
 
     candidateQueries.forEach((q, i) => {
       const qVec = queryVecs[i]!;
       const ranked1 = rank(qVec, v1Vecs, q.ref);
       const ranked2 = rank(qVec, v2Vecs, q.ref);
+
+      // KNOWN-ITEM retrieval: a pooled row either resolves a ref to the queried
+      // item or it does not, so the 0..3 scale collapses to 3-or-0. That is a
+      // real binary judgement derived from the sampled edges — NOT a placeholder
+      // for graded labels nobody supplied. With one relevant row, nDCG@k reduces
+      // to 1/log2(rank+1): 1.000 at rank 1, 0.387 at rank 5, 0.289 at rank 10,
+      // where recall@10 reads a flat 1.000 for all three.
+      const relevant = new Set(q.relevantIds);
+      const grade = (id: string): number => (relevant.has(id) ? 3 : 0);
+      const groundTruth = { ids: q.relevantIds, idOf: (id: string) => id };
+
       for (const c of cutoffs) {
-        const r1 = recallAtK(ranked1, q.relevantIds, c);
-        const r2 = recallAtK(ranked2, q.relevantIds, c);
+        const e1 = evaluateRelevance({ ranked: ranked1, grade, k: c, groundTruth });
+        const e2 = evaluateRelevance({ ranked: ranked2, grade, k: c, groundTruth });
+        const r1 = e1.recallAtK;
+        const r2 = e2.recallAtK;
         if (r1 === null || r2 === null) continue; // no referent — never scored as 0
         v1Recall.get(c)!.push(r1);
         v2Recall.get(c)!.push(r2);
+        v1Ndcg.get(c)!.push(e1.ndcgAtK);
+        v2Ndcg.get(c)!.push(e2.ndcgAtK);
         if (c !== k) continue;
         if (r2 > r1) wins++;
         else if (r2 < r1) losses++;
-        else ties++;
+        else {
+          ties++;
+          if (e2.ndcgAtK > e1.ndcgAtK) tiedNdcgBetter++;
+          else if (e2.ndcgAtK < e1.ndcgAtK) tiedNdcgWorse++;
+        }
       }
     });
 
@@ -375,7 +401,21 @@ async function main(): Promise<void> {
           `   ${m1 > 0 ? `${(m2 / m1).toFixed(2)}x` : 'n/a (v1 0)'}`,
       );
     }
+    for (const c of cutoffs) {
+      const n1 = mean(v1Ndcg.get(c)!);
+      const n2 = mean(v2Ndcg.get(c)!);
+      const d = n2 - n1;
+      console.log(
+        `  nDCG@${String(c).padEnd(2)}   v1 ${n1.toFixed(4).padStart(6)}  ->  v2 ${n2.toFixed(4).padStart(6)}` +
+          `   delta ${((d >= 0 ? '+' : '') + d.toFixed(4)).padStart(8)}` +
+          `   ${n1 > 0 ? `${(n2 / n1).toFixed(2)}x` : 'n/a (v1 0)'}`,
+      );
+    }
     console.log(`  per-query @${k}: v2 better ${wins}   worse ${losses}   tied ${ties}`);
+    console.log(
+      `  of those ${ties} recall-TIED queries, nDCG@${k} moved: better ${tiedNdcgBetter}` +
+        `   worse ${tiedNdcgWorse}   unchanged ${ties - tiedNdcgBetter - tiedNdcgWorse}`,
+    );
   };
 
   console.log('');
