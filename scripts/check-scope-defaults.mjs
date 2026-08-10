@@ -83,15 +83,19 @@ function isTestFile(file) {
   );
 }
 
-// A match inside a // line-comment or a /* */ / * doc-comment line is prose, not code.
-function isCommentMatch(content, idx) {
-  const before = content.slice(0, idx);
-  const trimmed = content.trimStart();
-  if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return true;
-  // A `//` earlier on the line (not inside a string) starts a trailing comment.
-  const slashIdx = before.indexOf('//');
-  return slashIdx >= 0 && slashIdx < idx;
-}
+// WI-37717: comment-masking moved from a hand-rolled per-line heuristic to the shared,
+// string-aware stripper. The old version claimed to find a `//` "not inside a string" but
+// performed no string check — so ANY `//` earlier on the line (a URL in a string literal,
+// `'https://…'`, `log('see http://docs/x')`) was read as the start of a trailing comment and
+// the whole line was SUPPRESSED. That ran in the FALSE-NEGATIVE direction: a real scope
+// default silently vanished from the report, which is exactly the "a detector that dies must
+// not look quiet" failure this script's own ENOBUFS note warns about. Measured before the
+// change: `const u = 'https://x.com'; const ws = scope ?? 'default';` reported NOTHING.
+//
+// Masking the whole FILE (not the line) also fixes block comments properly: the old ` * `
+// prefix test was a guess about being inside /* */, and stripCommentsOnly actually tracks it.
+// Strings stay UNMASKED deliberately — the scanned expression `?? 'default'` IS a string
+// literal, so stripCommentsAndStrings would blind this guard completely.
 
 let raw = '';
 try {
@@ -157,6 +161,20 @@ function fileLines(file) {
     }
   }
   return fileLinesCache.get(file);
+}
+
+// Same file, comment-masked (strings preserved — see the note above). stripCommentsOnly
+// blanks in place and keeps newlines, so indices stay aligned with fileLines().
+const maskedLinesCache = new Map();
+function maskedLines(file) {
+  if (!maskedLinesCache.has(file)) {
+    try {
+      maskedLinesCache.set(file, stripCommentsOnly(readFileSync(join(ROOT, file), 'utf8')).split('\n'));
+    } catch {
+      maskedLinesCache.set(file, []);
+    }
+  }
+  return maskedLinesCache.get(file);
 }
 
 const hits = [];
