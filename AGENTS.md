@@ -581,24 +581,39 @@ very much alive (measured: it printed `gone` while `pgrep -cf` returned **13**).
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
 
-✅ **"Is this process actually DOING WORK right now?" — two-sample `/proc` delta,
-never a single-shot reading.** Every single-shot CPU probe answers a *different*
-question than the one you are asking, and each fails toward a false "idle":
-`ps -o %cpu` is a **process-lifetime average** (measured: 208% on a VM whose
-instantaneous load was 200% — right here only by coincidence, and badly wrong
-for anything whose load has changed), and any first-iteration sampler has no
-prior sample to difference against. CPU usage *is* a delta; ask for one:
+✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
+process's CGROUP, never a single-shot reading and never a hand-walked tree.** Every
+single-shot CPU probe answers a *different* question than the one you are asking, and each
+fails toward a false "idle": `ps -o %cpu` is a **process-lifetime average** (measured: 208%
+on a VM whose instantaneous load was 200% — right here only by coincidence, and badly wrong
+for anything whose load has changed), and any first-iteration sampler has no prior sample to
+difference against. CPU usage *is* a delta; ask for one:
 
 ```bash
-ROOT=<pid>        # CLK_TCK=100 => 100 ticks = 1 core-second
-# Sum fields 14-17 = utime+stime+CUTIME+CSTIME over the LIVE TREE. Dropping the c* pair makes a
-# fork-and-reap tree (vitest, npm test) read NEGATIVE or near-zero -- a confident false "idle".
-kids(){ local a=$1 f=$1 n; for _ in 1 2 3 4 5 6; do n=; for p in $f; do n="$n $(pgrep -P $p 2>/dev/null)"; done; [ -z "${n// /}" ] && break; a="$a $n"; f=$n; done; echo $a; }
-t(){ local s=0 v; for p in $(kids $ROOT); do v=$(awk '{i=index($0,") ");split(substr($0,i+2),f," ");print f[12]+f[13]+f[14]+f[15]}' /proc/$p/stat 2>/dev/null); s=$((s+${v:-0})); done; echo $s; }
-A=$(t); S=$(date +%s.%N); sleep 5; B=$(t); E=$(date +%s.%N)
-echo "scale=2;($B-$A)/100/($E-$S)" | bc   # cores -- divide by MEASURED elapsed, never the sleep
-# per-thread: same arithmetic over /proc/$ROOT/task/*/stat   (tid == pid => the MAIN thread)
+# THE INSTRUMENT IS THE CGROUP, NOT A HAND-WALKED TREE. It accounts for EVERY descendant
+# at ANY depth (nothing can hide below a walk bound), and usage_usec is a MONOTONIC
+# counter -- so the delta is a true rate even as children spawn and exit between samples.
+CG=$(sed 's|^0::||' /proc/<pid>/cgroup); F=/sys/fs/cgroup${CG}/cpu.stat
+A=$(awk '/^usage_usec/{print $2}' $F); S=$(date +%s.%N); sleep 10
+B=$(awk '/^usage_usec/{print $2}' $F); E=$(date +%s.%N)
+echo "scale=2;($B-$A)/1000000/($E-$S)" | bc   # cores -- divide by MEASURED elapsed, never the sleep
+wc -l < /sys/fs/cgroup${CG}/cgroup.procs      # how many processes that covers
+# per-thread: two-sample fields 14-15 over /proc/<pid>/task/*/stat (tid == pid => MAIN thread)
 ```
+
+Every `capability:bash` / `managedSpawn` job runs in its own systemd scope, so this is the
+normal case here — and it is the same no-escape property the task manager relies on.
+
+⚠ **A hand-rolled `/proc` walk reports a confident FALSE IDLE two independent ways, and
+both were measured on runs burning a full core.** (1) A **depth-bounded** walk: this repo's
+own test entrypoint is EIGHT levels deep (`bash → npm → sh -c → pc-heavy.sh →
+affected-tests.mjs → npm → sh -c → node vitest → esbuild`), so a 6-generation walk stops at
+a shell wrapper holding 0 ticks and the sum is dominated by processes that are legitimately
+idle. (2) **One pid's** `utime+stime+cutime+cstime`: the `c*` pair is credited only when a
+child is `wait()`ed on, and *vitest* reaps its own workers while the root reaps nothing
+until the run ends — so a live worker contributes exactly zero. Reach for the `/proc` tree
+sum ONLY for a process in no managed scope; if you must, print the members and confirm the
+deepest one is the real worker rather than a `sh -c` wrapper.
 
 ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
 service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real

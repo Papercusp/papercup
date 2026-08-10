@@ -1721,24 +1721,42 @@ NAME, so argv cannot fool it at all), or `kill -0 <pid>`
 > in zero matches"* and exits 1, rather than silently returning nothing. Match
 > the truncated comm instead (`pgrep -x qemu-system-x86`), or use `-f`.
 
-✅ **"Is this process actually DOING WORK right now?" — two-sample `/proc` delta,
-never a single-shot reading.** Every single-shot CPU probe answers a *different*
-question than the one you are asking, and each fails toward a false "idle":
-`ps -o %cpu` is a **process-lifetime average** (measured: 208% on a VM whose
-instantaneous load was 200% — right here only by coincidence, and badly wrong
-for anything whose load has changed), and any first-iteration sampler has no
-prior sample to difference against. CPU usage *is* a delta; ask for one:
+✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
+process's CGROUP, never a single-shot reading and never a hand-walked tree.** Every
+single-shot CPU probe answers a *different* question than the one you are asking, and each
+fails toward a false "idle": `ps -o %cpu` is a **process-lifetime average** (measured: 208%
+on a VM whose instantaneous load was 200% — right here only by coincidence, and badly wrong
+for anything whose load has changed), and any first-iteration sampler has no prior sample to
+difference against. CPU usage *is* a delta; ask for one:
 
 ```bash
-ROOT=<pid>        # CLK_TCK=100 => 100 ticks = 1 core-second
-# Sum fields 14-17 = utime+stime+CUTIME+CSTIME over the LIVE TREE. Dropping the c* pair makes a
-# fork-and-reap tree (vitest, npm test) read NEGATIVE or near-zero -- a confident false "idle".
-kids(){ local a=$1 f=$1 n; for _ in 1 2 3 4 5 6; do n=; for p in $f; do n="$n $(pgrep -P $p 2>/dev/null)"; done; [ -z "${n// /}" ] && break; a="$a $n"; f=$n; done; echo $a; }
-t(){ local s=0 v; for p in $(kids $ROOT); do v=$(awk '{i=index($0,") ");split(substr($0,i+2),f," ");print f[12]+f[13]+f[14]+f[15]}' /proc/$p/stat 2>/dev/null); s=$((s+${v:-0})); done; echo $s; }
-A=$(t); S=$(date +%s.%N); sleep 5; B=$(t); E=$(date +%s.%N)
-echo "scale=2;($B-$A)/100/($E-$S)" | bc   # cores -- divide by MEASURED elapsed, never the sleep
-# per-thread: same arithmetic over /proc/$ROOT/task/*/stat   (tid == pid => the MAIN thread)
-```Measured 2026-08-10 (EI-20067988429441680). On a reap-heavy tree steadily burning ~2.7 cores, summing only fields 14+15 gave **89, -89, 74, -73, 0, 81** ticks/3s while the corrected sum gave 668-887: the live set is MEMBERSHIP-VARYING, so its difference is not a rate — vitest forks a worker per file and reaps it, and ticks counted in sample A are simply absent from B. ⚠ Fixing this by reading the ROOT's `cutime` alone is WORSE, not better: `cutime` only credits children the parent has `wait()`ed on, and in the real chain (`npm` -> `sh` -> `vitest` -> workers) *vitest* reaps the workers while the root reaps nothing until the run ends — measured **0, 0, 0, 0, 0, 0** for the whole run, a silent false idle instead of a noisy one. Sum the LIVE TREE. Calibrated against known loads: 0.99 / 2.99 / 0.99 cores for 1 / 3 / 1 burners (the corrected form reads ~6% low under churn — a reaped child's ticks land only at `wait()`, so it lags, but it is monotonic and never negative). And divide by MEASURED elapsed, never the sleep constant: the tree walk forks `pgrep`/`awk` dozens of times, so a nominal `sleep 3` took 4.1-5.3s on this box and the nominal divisor inflated every reading by 35-75%.
+# THE INSTRUMENT IS THE CGROUP, NOT A HAND-WALKED TREE. It accounts for EVERY descendant
+# at ANY depth (nothing can hide below a walk bound), and usage_usec is a MONOTONIC
+# counter -- so the delta is a true rate even as children spawn and exit between samples.
+CG=$(sed 's|^0::||' /proc/<pid>/cgroup); F=/sys/fs/cgroup${CG}/cpu.stat
+A=$(awk '/^usage_usec/{print $2}' $F); S=$(date +%s.%N); sleep 10
+B=$(awk '/^usage_usec/{print $2}' $F); E=$(date +%s.%N)
+echo "scale=2;($B-$A)/1000000/($E-$S)" | bc   # cores -- divide by MEASURED elapsed, never the sleep
+wc -l < /sys/fs/cgroup${CG}/cgroup.procs      # how many processes that covers
+# per-thread: two-sample fields 14-15 over /proc/<pid>/task/*/stat (tid == pid => MAIN thread)
+```
+
+Every `capability:bash` / `managedSpawn` job runs in its own systemd scope, so this is the
+normal case here — and it is the same no-escape property the task manager relies on.
+
+⚠ **A hand-rolled `/proc` walk reports a confident FALSE IDLE two independent ways, and
+both were measured on runs burning a full core.** (1) A **depth-bounded** walk: this repo's
+own test entrypoint is EIGHT levels deep (`bash → npm → sh -c → pc-heavy.sh →
+affected-tests.mjs → npm → sh -c → node vitest → esbuild`), so a 6-generation walk stops at
+a shell wrapper holding 0 ticks and the sum is dominated by processes that are legitimately
+idle. (2) **One pid's** `utime+stime+cutime+cstime`: the `c*` pair is credited only when a
+child is `wait()`ed on, and *vitest* reaps its own workers while the root reaps nothing
+until the run ends — so a live worker contributes exactly zero. Reach for the `/proc` tree
+sum ONLY for a process in no managed scope; if you must, print the members and confirm the
+deepest one is the real worker rather than a `sh -c` wrapper.Measured 2026-08-10 (EI-20067988429441680). On a reap-heavy tree steadily burning ~2.7 cores, summing only fields 14+15 gave **89, -89, 74, -73, 0, 81** ticks/3s while the corrected sum gave 668-887: the live set is MEMBERSHIP-VARYING, so its difference is not a rate — vitest forks a worker per file and reaps it, and ticks counted in sample A are simply absent from B. ⚠ Fixing this by reading the ROOT's `cutime` alone is WORSE, not better: `cutime` only credits children the parent has `wait()`ed on, and in the real chain (`npm` -> `sh` -> `vitest` -> workers) *vitest* reaps the workers while the root reaps nothing until the run ends — measured **0, 0, 0, 0, 0, 0** for the whole run, a silent false idle instead of a noisy one. Sum the LIVE TREE. Calibrated against known loads: 0.99 / 2.99 / 0.99 cores for 1 / 3 / 1 burners (the corrected form reads ~6% low under churn — a reaped child's ticks land only at `wait()`, so it lags, but it is monotonic and never negative). And divide by MEASURED elapsed, never the sleep constant: the tree walk forks `pgrep`/`awk` dozens of times, so a nominal `sleep 3` took 4.1-5.3s on this box and the nominal divisor inflated every reading by 35-75%.
+
+
+Re-measured 2026-08-10 (EI-20078374975070099): the "sum the LIVE TREE" fix above is itself defeated by the walker's DEPTH BOUND, so the corrected `/proc` form still reports a false idle on this repo's own primary test command. On `npm run test:affected` (capability:bash job `9e03bcf7-26a`, pid 419967) burning a steady 1.0 core, the documented 6-generation walk returned **`cores_busy=0`, `tree_pids=8`**, with `sh -c vitest run` as its DEEPEST member holding 0 ticks — the real `node .../vitest run` and its `esbuild --service` child sit at depth 7+ and were never enumerated, so the sum was taken entirely over processes that are legitimately idle. The single-pid `c*` reading returned **`delta_ticks=0`** over 10s, independently reproducing the silent false idle documented above. At that same moment the cgroup read `delta_usec=10069464` over 10.07s → **`cores=1.00`** with `procs_in_cgroup=13`, correctly including the depth-7 worker. The full chain is `bash -o pipefail -c` → `npm run test:affected` → `sh -c PC_HEAVY_COALESCE=0` → `bash scripts/pc-heavy.sh` → `node scripts/affected-tests.mjs` → `npm run test` → `sh -c vitest run` → `node vitest` → `esbuild`: pc-heavy queuing plus npm's `sh -c` indirection structurally add four levels before any real work starts, so a 6-deep walk can never measure it. The cgroup form additionally has no reap lag (the corrected tree sum reads ~6% low under churn per the calibration above) and makes no membership assumption at all, which is why it replaces rather than supplements the walk.
 
 ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
 service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
