@@ -643,7 +643,7 @@ export async function judgeRedundancyGroupLocal(
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${opts.harness}
        AND work_item_id = ${opts.workItemId} AND replica_index = ANY(${judgedIndices}::int[])`;
 
-  // Adopt the winner: settle the item to `passed` (fires work-item:done). The winner's row
+  // Adopt the winner: settle the item to `done` (fires work-item:done). The winner's row
   // (status='winner', result=…) is the durable record of which replica was adopted.
   // Completion-integrity gate (WI-1403, contract C-1): a genuine, evidence-backed
   // completion — the judge scored N replicas and picked one — so it carries a real

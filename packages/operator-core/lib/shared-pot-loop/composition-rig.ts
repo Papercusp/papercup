@@ -590,13 +590,6 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       ADD COLUMN IF NOT EXISTS verifier_last_error text,
       ADD COLUMN IF NOT EXISTS worked_by_history jsonb,
       ADD COLUMN IF NOT EXISTS working_users bigint[];
-    -- lane is GENERATED ALWAYS from payload (migration 721). It must be added
-    -- AFTER payload exists (it does, above) and reproduced as a generated
-    -- column, not plain text: a plain column would read NULL and silently
-    -- change the meaning of every "lane IS DISTINCT FROM 'observation'" floor
-    -- rather than erroring -- a false GREEN, which is worse than the 42703.
-    ALTER TABLE harness_shared.harness_features_consolidated
-      ADD COLUMN IF NOT EXISTS lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED;
     ALTER TABLE harness_shared.harness_plans
       ADD COLUMN IF NOT EXISTS archived boolean,
       ADD COLUMN IF NOT EXISTS author_pubkey text,
@@ -664,6 +657,29 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       SELECT * FROM harness_shared.work_items
       WHERE item_kind NOT IN ('bug', 'change', 'task')
       WITH CASCADED CHECK OPTION;
+  `);
+
+  // Completeness columns that live ONLY on the base table, added AFTER the rename
+  // and AFTER the compat view is built — deliberately, so the rig mirrors
+  // production exactly (EI-20099366410545026). In the real schema these three are
+  // on work_items but ABSENT from the harness_features_consolidated view, because
+  // that view is a `SELECT *` snapshot taken before they were added and a view's
+  // column list does not track its base table. Adding them ABOVE (pre-rename)
+  // would put them in the rig's view too, which then fails
+  // composition-rig-schema-drift.integration.test.ts — that guard asserts every
+  // rig column EXISTS on the real view, and lane/condition_key/embedding_recipe
+  // do not. Verified against live information_schema: 15 of the 18 completeness
+  // columns are on the view, these 3 are not.
+  //
+  // `lane` must be reproduced as its real GENERATED column (migration 721), not
+  // plain text: a plain column would sit NULL and silently change the meaning of
+  // every "lane IS DISTINCT FROM 'observation'" claim floor instead of erroring —
+  // a false GREEN, which is worse than the 42703 this whole block removes.
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.work_items
+      ADD COLUMN IF NOT EXISTS condition_key text,
+      ADD COLUMN IF NOT EXISTS embedding_recipe smallint,
+      ADD COLUMN IF NOT EXISTS lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED;
   `);
 
   // WI-2923: install migration 314's SUPERSEDING clock + stamp function, NOT the

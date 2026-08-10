@@ -166,7 +166,15 @@ describe('P-007 — redundancy E2E across two swarm identities (authority-homed 
       const settledOnB = await b.sql<Array<{ status: string }>>`
         SELECT status FROM harness_shared.harness_features_consolidated
          WHERE harness_slug = ${HARNESS} AND feature_id = 'F-401'`;
-      expect(settledOnB[0]?.status).toBe('passed');
+      // 'done', not 'passed' (EI-20099366410545026). adoptWinner calls
+      // setWorkItemState(id, 'done') and has since 2026-06-08 — this assertion passed
+      // only because the feature family used to ALIAS 'done' -> 'passed'.
+      // work-item-status-full-unify (2026-07-19) made 'done' canonical for both
+      // families (FEATURE_TERMINAL_STATES keeps 'passed' only as a transitional
+      // legacy spelling, to be narrowed to ['done','dropped'] after cleanup), so the
+      // stored value is now the string the caller actually wrote. Assert the unified
+      // token; do NOT "fix" this by aliasing 'done' back to 'passed'.
+      expect(settledOnB[0]?.status).toBe('done');
 
       // ── Crash-survival: a holder dies un-recorded → its slot lapses and is
       //    STOLEN; the recovered swarm takes the other slot; judging proceeds. ──
