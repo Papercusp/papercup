@@ -146,7 +146,7 @@ describe("shapeCoordPresence (P-022)", () => {
       expandedTotal: 1,
     };
 
-    it("survives every tier — an opt-in block the caller explicitly asked for is never dropped", () => {
+    it("survives every tier — the appended coupling block is never dropped by shaping", () => {
       for (const tier of ["trimmed", "standard"] as const) {
         const out = shapeCoordPresence(coupled, tier) as {
           expanded: Record<string, unknown>[];

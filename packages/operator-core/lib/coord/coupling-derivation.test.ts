@@ -80,9 +80,17 @@ describe('deriveCouplingsFromRoster', () => {
     expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting fleet:x:gate' }]);
   });
 
-  it('emits EVERY signal a peer trips, in a fixed order', () => {
-    // The reason the derived channel carries reasons at all (D-078 (a)): the
-    // interesting answer is that a peer is coupled three ways, not one.
+  it('emits ONLY the surviving signal on a row that trips every retired one', () => {
+    // ⚠ A COMBINED D-054 + D-093 RECURRENCE GUARD, and the reason it is one test:
+    // this peer trips a shared fleet AND overlapping currentFiles AND a shared
+    // await, so a single expectation catches EITHER cut edge coming back.
+    //
+    // It used to assert "emits EVERY signal a peer trips, in a fixed order",
+    // pairing shared-file with awaits. Two retirements later the roster emits at
+    // most ONE relation per peer, so there is no longer an order to fix — asserting
+    // one would be asserting a property the code cannot have. Multi-signal
+    // ACCUMULATION is still covered, on the path that actually produces it: the
+    // union contract test below folds roster + lock-hold edges into one peer.
     const derived = deriveCouplingsFromRoster('su-me', [
       row({
         ownerId: 'su-me',
@@ -97,13 +105,10 @@ describe('deriveCouplingsFromRoster', () => {
         awaitingEventKey: 'gate:1',
       }),
     ]);
-    // The shared `alpha` fleet is left in the fixture ON PURPOSE: it contributes
-    // NOTHING (D-054), so this doubles as a second guard that the cut edge stays
-    // cut even on a row that trips every other signal.
-    expect(derived.map((d) => d.because)).toEqual([
-      'both working in x.ts',
-      'both awaiting gate:1',
-    ]);
+    // The shared `alpha` fleet and the overlapping `x.ts` are left in the fixture
+    // ON PURPOSE: each contributes NOTHING (D-054, D-093), so the exact-equality
+    // assertion below fails the moment either cut edge is restored.
+    expect(derived.map((d) => d.because)).toEqual(['both awaiting gate:1']);
   });
 
   it('never couples the caller to itself', () => {

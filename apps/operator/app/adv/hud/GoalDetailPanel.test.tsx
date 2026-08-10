@@ -50,7 +50,11 @@ vi.mock('nuqs', async () => {
     parseAsBoolean: parser<boolean>(),
     parseAsString: parser<string>(),
     useQueryState(_key: string, p?: { defaultValue?: unknown }) {
-      const [value, setValue] = React.useState(p?.defaultValue ?? null);
+      /* Explicit <unknown>: inferring from `p?.defaultValue ?? null` widens the
+         state to `{} | null`, and the setter below then rejects the `unknown`
+         it is handed (TS2345). Invisible to vitest, which does not typecheck —
+         it reds `lint:tsc:operator` instead. */
+      const [value, setValue] = React.useState<unknown>(p?.defaultValue ?? null);
       const set = React.useCallback((next: unknown) => {
         setValue(typeof next === 'function' ? (next as (prev: unknown) => unknown)(value) : next);
         return Promise.resolve(new URLSearchParams());
