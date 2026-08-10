@@ -1236,13 +1236,23 @@ export class CompositionRig {
       // marker federates / the double-completion scanner stays quiet on declared
       // redundancy — both go red if this column is dropped from the INSERT (it
       // was, once, on a "column doesn't exist" misdiagnosis — it does exist).
+      // STATUS: 'open', NOT 'todo' (EI-20099366410545026). work-item-status-full-unify
+      // (2026-07-19) retired the feature-family 'todo' token in favour of a single
+      // claimable token shared with the issue family, and claimFloorsWhereSql defaults
+      // to `states = ['open']` -- so a row seeded at 'todo' passes every other floor and
+      // is then silently invisible to claimNextWorkItem, which returns null rather than
+      // erroring. That is why P-001/P-012 asserted `expected undefined to be 'F-004'`
+      // with a perfectly healthy rig. These suites last passed 2026-07-18 -- the DAY
+      // BEFORE that cutover -- and the schema drift fixed above then piled 42703s on top,
+      // masking this for three weeks. work-items.ts:3503 states the invariant this
+      // fixture was violating: "no writer produces 'todo' and no row sits at it".
       await cell.sql`
         INSERT INTO harness_shared.work_items
           (workspace_id, harness_slug, feature_id, title, summary, status, attempts,
            item_kind, needs_human_review, ts, created_ts, updated_ts, redundancy)
         VALUES
           (${this.workspaceId}, ${this.harnessSlug}, ${it.id},
-           ${it.title ?? `Item ${it.id}`}, ${'seeded by the composition rig'}, 'todo', 0,
+           ${it.title ?? `Item ${it.id}`}, ${'seeded by the composition rig'}, 'open', 0,
            ${it.kind ?? 'feature'}, FALSE, ${t}, ${t}, ${t}, ${it.redundancy ?? null})
         ON CONFLICT (harness_slug, feature_id) DO NOTHING`;
     }
