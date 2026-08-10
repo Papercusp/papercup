@@ -321,7 +321,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:gitnexus-reindex': { spend: 'none', why: 'Shells out to `gitnexus analyze` to refresh the code graph — subprocess CPU/FS only' },
   'system:knowledge-pack-delivery': { spend: 'none', why: 'Copies pack items into pools — no authoring' },
   'system:knowledge-pack-hygiene': { spend: 'none', why: 'Rule-based stale/contradiction sweep over pack rows' },
-  'system:hive-git-gc': { spend: 'none', why: 'Garbage-collects hive git objects' },
+  'system:pot-git-gc': { spend: 'none', why: 'Garbage-collects pot git objects' },
   'system:corpus-term-df': {
     spend: 'none',
     why: 'Recomputes corpus term document-frequency by tokenizing sampled turns locally — no model call',
