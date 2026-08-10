@@ -77,7 +77,7 @@ function countdownLabel(ms: number | null): string {
 
 /**
  * Fire an overwatch loop-control tool through the gated/audited run-tool bridge
- * (mirrors hive-control.ts `runHiveControl`, the Queen-tab path). The tool persists
+ * (mirrors pot-control.ts `runHiveControl`, the Queen-tab path). The tool persists
  * `overwatch_started` and fires `notifySyncInvalidate('overwatch.controlState')`.
  * Throws on failure so the caller can surface it inline.
  *

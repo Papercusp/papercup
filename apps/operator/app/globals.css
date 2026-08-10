@@ -104,19 +104,19 @@
   /* Legacy harness dashboard tables still consume JS color constants. These
    * vars let the Swarm/honeycomb skin retune those inline styles without
    * changing the classic Linear-indigo fallbacks in app/harness/theme.ts. */
-  --hive-harness-bg: var(--bg-deepest);
-  --hive-harness-surface: var(--bg);
-  --hive-harness-surface-raised: var(--bg-raised);
-  --hive-harness-surface-hover: var(--bg-3);
-  --hive-harness-border: var(--border);
-  --hive-harness-border-strong: var(--border-strong);
-  --hive-harness-border-subtle: color-mix(in srgb, var(--border), transparent 34%);
-  --hive-harness-text: var(--fg);
-  --hive-harness-text-muted: var(--fg-mute);
-  --hive-harness-text-dim: var(--fg-dim);
-  --hive-harness-text-faint: color-mix(in srgb, var(--fg-mute), transparent 46%);
-  --hive-harness-accent: var(--accent);
-  --hive-harness-accent-hover: var(--accent-strong);
+  --pot-harness-bg: var(--bg-deepest);
+  --pot-harness-surface: var(--bg);
+  --pot-harness-surface-raised: var(--bg-raised);
+  --pot-harness-surface-hover: var(--bg-3);
+  --pot-harness-border: var(--border);
+  --pot-harness-border-strong: var(--border-strong);
+  --pot-harness-border-subtle: color-mix(in srgb, var(--border), transparent 34%);
+  --pot-harness-text: var(--fg);
+  --pot-harness-text-muted: var(--fg-mute);
+  --pot-harness-text-dim: var(--fg-dim);
+  --pot-harness-text-faint: color-mix(in srgb, var(--fg-mute), transparent 46%);
+  --pot-harness-accent: var(--accent);
+  --pot-harness-accent-hover: var(--accent-strong);
 }
 
 /* ── Reusable Radix / shared motion primitives ────────────────────────

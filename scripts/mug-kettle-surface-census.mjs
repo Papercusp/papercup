@@ -538,10 +538,17 @@ const D7_TAB_RE = /["'`](mug|kettle|cup|queen|pot-health|potHealth)["'`]/g;
 /**
  * Control surfaces the plan names explicitly (D-009/D-010): the buttons that drive
  * pot/plan start-stop. Named because their filenames carry no tier token at all
- * (`PlanRail`, `AdvNowRunning`, `hive-control`) — a token scan alone would miss them,
+ * (`PlanRail`, `AdvNowRunning`, `pot-control`) — a token scan alone would miss them,
  * which is the false-negative direction.
  */
-const NAMED_CONTROL_SURFACES = /(PotHealthPane|PlanRail|LocalPotsControl|MugTab|KettleTab|AdvNowRunning|hive-control)/;
+// `pot-control` is ANCHORED ($) because this regex substring-matches a basename:
+// unanchored it also swallows `pot-control-policy.ts`, which is a placement-threshold
+// config store in operator-core, not a start-stop button (and would be mislabelled `ui`).
+// Keep this branch anchored, and re-key it whenever the module is renamed — when P-064
+// renamed hive-control-policy.ts -> pot-control-policy.ts while this regex still read
+// `hive-control`, the file silently fell OUT of the census and the next baseline re-seed
+// recorded that loss as normal. (WI-37687)
+const NAMED_CONTROL_SURFACES = /(PotHealthPane|PlanRail|LocalPotsControl|MugTab|KettleTab|AdvNowRunning|pot-control$)/;
 
 for (const abs of allFiles) {
   const r = rel(abs);

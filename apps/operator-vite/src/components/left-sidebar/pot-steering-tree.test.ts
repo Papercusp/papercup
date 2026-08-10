@@ -1,5 +1,5 @@
 /**
- * hive-steering-tree.test — the pure model behind the Queen steering nested
+ * pot-steering-tree.test — the pure model behind the Queen steering nested
  * picker (steering-nested-hive-plan-tree-2026-06-17, P-001 / P-004). Pins:
  *   - indexPlansByHive — plan→hive nesting + unassigned bucket
  *   - detectIllegalEligiblePlans / normalizeSteering — the dead-entry heal (D-2)
@@ -23,7 +23,7 @@ import {
   type HiveOptionInput,
   type SteeringSelection,
   type TreePlanInput,
-} from './hive-steering-tree';
+} from './pot-steering-tree';
 
 const HIVES: HiveOptionInput[] = [
   { value: 'hive-a', label: 'hive-a' },

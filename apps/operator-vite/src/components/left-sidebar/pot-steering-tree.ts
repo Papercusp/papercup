@@ -1,5 +1,5 @@
 /**
- * hive-steering-tree — the pure model behind the Queen steering NESTED PICKER
+ * pot-steering-tree — the pure model behind the Queen steering NESTED PICKER
  * (steering-nested-hive-plan-tree-2026-06-17, P-001 / D-001).
  *
  * The owner's steering is persisted as two FLAT lists — `eligibleHives` (the
