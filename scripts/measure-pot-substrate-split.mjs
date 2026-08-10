@@ -24,6 +24,32 @@
  */
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { resolve, dirname, join, relative } from 'node:path';
+import { createRequire } from 'node:module';
+
+/**
+ * ⚠ IMPORT/EXPORT SCANNING IS AST-BASED, NOT REGEX (EI-20087329768209149, 2026-08-10).
+ *
+ * This script used to parse imports with
+ *     /(?:import|export)\s+(type\s+)?([\s\S]*?)\s*from\s*['"]([^'"]+)['"]/g
+ * and it was catastrophically wrong on large files: `[\s\S]*?` spans NEWLINES, so a match
+ * starting at one `import` keyword ran forward to the NEXT `from '...'` and consumed every
+ * import statement in between (matches are non-overlapping, so those were never seen again).
+ * MEASURED on lib/agent-tools/index.ts: 686 real import lines, 7 regex matches — and the one
+ * match for '../pot/wake' captured COMMENT PROSE as its clause, so the import was dropped.
+ *
+ * It also dropped inline type modifiers (`import { type Foo }` → " type Foo" fails the
+ * identifier test) and every bare/package specifier (`@papercusp/operator-core/lib/pot/...`).
+ *
+ * All three failed in the UNDER-REPORTING direction, which is the dangerous one: a missed
+ * importer makes a LIVE symbol look unreferenced, so it is classified MOVE and becomes a
+ * stranded call site at runtime. The regex method scored keep=52; the AST method scores
+ * keep=66 with ZERO symbols going the other way. D-047 required a second method before any
+ * move list was executed — that requirement is what caught this.
+ *
+ * The GATE detection below deliberately stays a regex: it is a per-file boolean with no
+ * span-spanning clause, and its self-match protections are load-bearing and hard-won.
+ */
+const ts = createRequire(import.meta.url)('typescript');
 
 const REPO = resolve(import.meta.dirname, '..');
 const POT_DIR = join(REPO, 'packages/operator-core/lib/pot');
@@ -143,9 +169,53 @@ const DECLARED_TIER_IMPORTERS = new Map([
 const isTierImporter = (rel) => gatedTierImporters.has(rel) || DECLARED_TIER_IMPORTERS.has(rel);
 
 // ── resolve an import specifier to an absolute file, extensionless-aware ────
+/**
+ * Workspace package name -> directory, so a BARE specifier resolves.
+ *
+ * This used to `return null` for anything not starting with '.', which made
+ * `@papercusp/operator-core/lib/pot/soak-report` invisible. Two real importers in
+ * apps/operator-vite reach lib/pot exactly that way (LearningTab.tsx,
+ * MugWakeEfficiencyPanel.tsx), and their symbols were being counted as unreferenced.
+ */
+const pkgDirs = new Map();
+for (const root of ['packages', 'libs', 'apps']) {
+  const stack = [join(REPO, root)];
+  while (stack.length) {
+    const d = stack.pop();
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.name === 'node_modules' || e.name.startsWith('dist') || e.name === '.git') continue;
+      if (e.isDirectory()) stack.push(join(d, e.name));
+      else if (e.name === 'package.json') {
+        try {
+          const name = JSON.parse(readFileSync(join(d, 'package.json'), 'utf8')).name;
+          if (name && !pkgDirs.has(name)) pkgDirs.set(name, d);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+}
+
 function resolveSpecifier(fromFile, spec) {
-  if (!spec.startsWith('.')) return null; // bare/package specifier — not a relative lib/pot import
-  const base = resolve(dirname(fromFile), spec);
+  let base;
+  if (spec.startsWith('.')) {
+    base = resolve(dirname(fromFile), spec);
+  } else {
+    let best = null;
+    for (const name of pkgDirs.keys())
+      if ((spec === name || spec.startsWith(name + '/')) && (!best || name.length > best.length))
+        best = name;
+    if (!best) return null;
+    const rest = spec.slice(best.length).replace(/^\//, '');
+    base = rest ? join(pkgDirs.get(best), rest) : pkgDirs.get(best);
+  }
   const candidates = [
     base,
     ...CODE_EXT.map((x) => base + x),
@@ -208,7 +278,8 @@ const dynamicImportersByModule = new Map();
 const externalDynamicImporterFiles = new Set();
 const externalTestDynamicImporterFiles = new Set();
 
-const IMPORT_RE = /(?:import|export)\s+(type\s+)?([\s\S]*?)\s*from\s*['"]([^'"]+)['"]/g;
+// (the former IMPORT_RE regex lived here — removed in favour of the AST walk below;
+//  see the header note on EI-20087329768209149 for why it was unsalvageable)
 
 /**
  * DYNAMIC imports — `await import('../pot/x')` / `require('../pot/x')`.
@@ -233,26 +304,65 @@ for (const f of allFiles) {
   // classification never depends on an unrelated substring happening to appear.
   const relF = relative(REPO, f);
   if (!isTest(f) && relF !== GATE_MODULE_FILE && GATE_IMPORT_RE.test(src)) gatedTierImporters.add(relF);
-  if (!src.includes('pot')) continue; // cheap prefilter
-  for (const m of src.matchAll(IMPORT_RE)) {
-    const clause = m[2];
-    const spec = m[3];
-    const target = resolveSpecifier(f, spec);
-    if (!target || !inPot(target)) continue;
+  if (!src.includes('pot')) continue; // cheap prefilter (a pot specifier always contains 'pot')
 
-    const rel = relative(REPO, f);
-    if (isTest(f)) externalTestImporterFiles.add(rel);
-    else externalImporterFiles.add(rel);
+  // ── STATIC imports/re-exports, by AST (see the header note on EI-20087329768209149) ──
+  const rel = relative(REPO, f);
+  let sf;
+  try {
+    sf = ts.createSourceFile(f, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  } catch {
+    continue;
+  }
+  const credit = (n) => {
+    if (!n) return;
+    if (!importersBySymbol.has(n)) importersBySymbol.set(n, new Set());
+    importersBySymbol.get(n).add(rel);
+  };
+  /** bindings of `import * as X from '<pot module>'` — their `X.foo` uses are credited below */
+  const namespaceBindings = new Set();
 
-    const braced = clause.match(/\{([^}]*)\}/);
-    const names = braced
-      ? braced[1].split(',').map((p) => p.trim().split(/\s+as\s+/)[0].trim())
-      : [clause.trim().split(/\s+as\s+/)[0].trim()];
-    for (const n of names) {
-      if (!n || !/^[A-Za-z0-9_$]+$/.test(n)) continue;
-      if (!importersBySymbol.has(n)) importersBySymbol.set(n, new Set());
-      importersBySymbol.get(n).add(rel);
+  const visit = (node) => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      const target = resolveSpecifier(f, node.moduleSpecifier.text);
+      if (target && inPot(target)) {
+        if (isTest(f)) externalTestImporterFiles.add(rel);
+        else externalImporterFiles.add(rel);
+
+        if (ts.isImportDeclaration(node)) {
+          const c = node.importClause;
+          if (c?.name) credit('default');
+          const b = c?.namedBindings;
+          // `propertyName ?? name` keeps `{ a as b }` attributed to the EXPORTED name `a`,
+          // and an inline `{ type Foo }` is just a flag on the element — never a name here.
+          if (b && ts.isNamedImports(b))
+            for (const el of b.elements) credit((el.propertyName ?? el.name).text);
+          else if (b && ts.isNamespaceImport(b)) namespaceBindings.add(b.name.text);
+        } else if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+          for (const el of node.exportClause.elements) credit((el.propertyName ?? el.name).text);
+        }
+        // `export * from '<pot>'` names no symbol; the file is still recorded as an importer.
+      }
     }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+
+  if (namespaceBindings.size) {
+    const visitUse = (node) => {
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        namespaceBindings.has(node.expression.text)
+      )
+        credit(node.name.text);
+      ts.forEachChild(node, visitUse);
+    };
+    visitUse(sf);
   }
 
   for (const m of src.matchAll(DYNAMIC_RE)) {
