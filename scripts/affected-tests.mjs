@@ -1253,7 +1253,14 @@ if (!tasks.length) {
   process.exit(0);
 }
 
-outSync(`Affected workspaces (${affected.length}): ${affected.map((w) => w.name).join(', ')}`);
+outSync(
+  affected.length
+    ? `Affected workspaces (${affected.length}): ${affected.map((w) => w.name).join(', ')}`
+    : // Reachable since EI-19454727576364875: a change can route to NO workspace and still have
+      // repo-wide invariant guards to run. Spelled out rather than printing an empty list, so a
+      // triager reading the log is not left wondering whether the selection silently failed.
+      'Affected workspaces (0) — repo-wide invariant guards only.',
+);
 outSync(`Running ${tasks.length} task(s):`);
 for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
 // EI-15802: printed EARLY (before any suite runs) and again in the final

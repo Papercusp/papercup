@@ -829,3 +829,62 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
     }
   });
 });
+
+describe('repo-wide guards survive a change that maps to ZERO workspaces (EI-19454727576364875)', () => {
+  /**
+   * The regression: an `if (!affected.length) { … process.exit(0) }` used to sit 46 lines ABOVE
+   * the REPO_WIDE_INVARIANT_GUARDS loop, so the loop was unreachable whenever the changed paths
+   * routed to no workspace. That defeated the mechanism in precisely the case it exists for — a
+   * guard is keyed on `appliesTo(changedFile)` so it keeps running when its host workspace is not
+   * affected, and a root-level edit (package.json, tsconfig.base.json, the lockfile) is both the
+   * likeliest to break something repo-wide and the likeliest to route nowhere.
+   *
+   * Measured before the fix: `--changed-paths package.json` printed
+   * `status=passed tasks=0 reason=no-affected-workspaces` while a guard registered with
+   * `appliesTo: (f) => f === 'package.json'` sat there matching and never ran. It presented as
+   * GREEN, which is the expensive direction — `tasks=0 … status=passed` is indistinguishable from
+   * "nothing needed checking".
+   */
+  const UNROUTED_PATH = 'package.json';
+
+  it('selects zero workspaces for the probe path (else this test proves nothing)', () => {
+    // The vacuity check, first and deliberately. Every assertion below is only meaningful while
+    // the probe path really does route nowhere; if package.json is ever wired to a workspace,
+    // these would keep passing for an entirely different reason and quietly stop guarding.
+    const out = dryTasks(UNROUTED_PATH);
+    expect(
+      out,
+      `${UNROUTED_PATH} now routes to a workspace, so it no longer exercises the zero-workspace ` +
+        'path. Point this probe at a path that still routes nowhere — do not delete the test.',
+    ).toContain('Affected workspaces (0)');
+  });
+
+  it('still attaches and runs repo-wide guards', () => {
+    const out = dryTasks(UNROUTED_PATH);
+
+    expect(
+      out,
+      'A change routing to no workspace exited before the repo-wide invariant guard loop, so ' +
+        'every registered guard was skipped. Do NOT reintroduce an early `!affected.length` exit ' +
+        'above that loop — let the single `!tasks.length` exit below it handle the empty case.',
+    ).toContain('repo-wide invariant guard');
+
+    expect(
+      out,
+      'The run reported reason=no-affected-workspaces even though guards matched the changed ' +
+        'paths — the early-exit regression is back.',
+    ).not.toContain('reason=no-affected-workspaces');
+  });
+
+  it('reports the genuinely-empty case without claiming guards ran', () => {
+    // The other half: when NOTHING matches, the run must still say so honestly rather than
+    // inventing work. Asserted on the reason token, not the prose, so wording can change.
+    const out = dryTasks(UNROUTED_PATH);
+    const tasks = Number(out.match(/AFFECTED_TESTS_RESULT[^\n]*\btasks=(\d+)/)?.[1] ?? '-1');
+    expect(
+      tasks,
+      'Could not read a task count from AFFECTED_TESTS_RESULT — the probe cannot conclude ' +
+        'anything about whether guards attached.',
+    ).toBeGreaterThan(0);
+  });
+});
