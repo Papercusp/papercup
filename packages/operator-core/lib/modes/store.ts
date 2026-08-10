@@ -317,6 +317,84 @@ async function applyImpliedModes(
 }
 
 /**
+ * `set_by` stamped on a row the RECONCILE created, so a backfilled row is
+ * distinguishable from one the agent (or a human) authored. WI-37842 wants a
+ * real provenance column for the harder question (which rows may be RETIRED by
+ * implication); this narrower marker is enough for the question a reader of the
+ * population actually asks — "did the agent do this, or did the system?" — and
+ * needs no migration. Grading depends on the distinction: goal-mode-e2e's
+ * `mode-and-subject-integrity` reads these rows, and a backfilled row credited
+ * to the agent would be evidence of compliance the agent never performed.
+ */
+export const RECONCILE_SET_BY = 'mode-implies-reconcile';
+
+/**
+ * ── THE RECONCILE (WI-37856) ────────────────────────────────────────────────
+ *
+ * The cascade above fires on the WRITE that enters a mode. Nothing revisits a
+ * row written EARLIER — so an agent that entered a mode before that mode
+ * declared an implication keeps a mode set the contract says is impossible,
+ * with nothing failing loudly.
+ *
+ * MEASURED, not hypothesised (2026-08-10): `goal.implies` gained `auto`+`ideate`
+ * at 10:57:46Z. All three agents bound to GOAL before that instant lack
+ * `ideate`; one lacks `auto` too, i.e. it held a GOAL binding in ask-first
+ * posture — the precise failure the "GOAL implies AUTO" clause exists to
+ * prevent. Two of the three had hand-written `auto` themselves after reading the
+ * contract text, which is the tell: the CONTRACT reached the agent while the
+ * MECHANISM did not exist.
+ *
+ * WHY THIS IS NOT A ONE-OFF BACKFILL SCRIPT. `implies` is a registry field
+ * designed to be edited. Every future edit re-opens the identical gap for every
+ * agent already holding that mode, so the durable fix is a reconcile that any
+ * door can call cheaply and repeatedly — not a migration that fixes today's
+ * three rows and leaves the trap armed.
+ *
+ * IT REUSES THE CASCADE, deliberately. Re-implementing the fill here would mean
+ * two places that must agree about "adopt this axis only if it is free", and the
+ * one that runs rarely is the one that would silently drift into displacing a
+ * posture the owner chose. Reusing `applyImpliedModes` means the never-displace
+ * property, the subject-requiring refusal, and the audit row are the SAME code
+ * that the write path proves on every call. Consequences worth stating:
+ *   - IDEMPOTENT. Every fill is INSERT … ON CONFLICT DO NOTHING, so a second run
+ *     writes nothing and reports `already-on`. Safe on a hot path.
+ *   - NEVER DISPLACES. A deliberately-chosen `cold-auto` still satisfies
+ *     "implies auto" and is left exactly as it is.
+ *   - INHERITS `ownerDirected` from the row that implies it: an implication of
+ *     an owner-directed mode is itself owner-directed, and flattening that to
+ *     false would let a peer overwrite a posture the owner effectively set.
+ *
+ * NOT MIRRORED ON EXIT, for the same reason the cascade is not (see above).
+ */
+export async function reconcileImpliedModes(o: {
+  workspaceId: string;
+  ownerId: string;
+  /** Override the provenance marker; defaults to {@link RECONCILE_SET_BY}. */
+  setBy?: string;
+  sql?: Sql;
+}): Promise<ImpliedModeOutcome[]> {
+  const sql = pg(o.sql);
+  /* Snapshot first: the loop below inserts, and iterating a live read while
+     writing to it is how a reconcile becomes order-dependent. */
+  const held = await getModes(o.workspaceId, o.ownerId, sql);
+  const out: ImpliedModeOutcome[] = [];
+  for (const row of held) {
+    if (!resolveImpliedModes(row.mode).length) continue;
+    out.push(
+      ...(await applyImpliedModes(sql, {
+        workspaceId: o.workspaceId,
+        ownerId: o.ownerId,
+        modeId: row.mode,
+        reason: `reconciled: '${row.mode}' was already held when its implications were declared`,
+        setBy: o.setBy ?? RECONCILE_SET_BY,
+        ownerDirected: row.ownerDirected,
+      })),
+    );
+  }
+  return out;
+}
+
+/**
  * Apply one mode transition with the axis + sticky semantics. See module doc.
  * All-or-nothing per call; never throws for semantic refusals (returns
  * stickyConflict / error), only for infrastructure failures.

@@ -1789,6 +1789,41 @@ const post = defineTool({
       );
     }
 
+    /* WI-37856: repair modes this agent should already hold. The implication
+       cascade fires on the WRITE that enters a mode, so an agent that entered a
+       mode BEFORE that mode declared an implication keeps a mode set the
+       contract says is impossible — measured 2026-08-10, when `goal` gained
+       implies:['auto','ideate'] and all three already-bound GOAL agents were
+       left without `ideate` (one without `auto` too, i.e. holding a GOAL
+       binding in ask-first posture).
+       HERE, and unconditionally, on purpose: this is the one door every su
+       session passes through, and it is OUTSIDE the `autoMode` branch above
+       because the agents that need repairing are exactly the ones whose launch
+       flags say nothing about the modes they already hold. `implies` is a
+       registry field designed to be edited, so this is not a one-off backfill —
+       every future edit re-opens the identical gap.
+       Cheap and safe to run every boot: each fill is INSERT … ON CONFLICT DO
+       NOTHING, so the steady state writes nothing, and it can never displace a
+       posture the agent or owner chose. Best-effort, like the sync above — a
+       reconcile failure must never cost a launch. */
+    try {
+      const { reconcileImpliedModes } = await import('../../../modes/store');
+      const repaired = (await reconcileImpliedModes({ workspaceId: workspace, ownerId: sid })).filter(
+        (r) => r.status === 'set' || r.status === 'failed',
+      );
+      if (repaired.length) {
+        process.stderr.write(
+          `[bootstrap-su] implied-mode reconcile for ${sid}: ` +
+            `${repaired.map((r) => `${r.mode}=${r.status}${r.error ? ` (${r.error})` : ''}`).join(', ')}\n`,
+        );
+      }
+    } catch (e: any) {
+      process.stderr.write(
+        `[bootstrap-su] implied-mode reconcile failed (non-fatal — this agent may still be ` +
+          `missing modes its mode implies): ${e?.message ?? String(e)}\n`,
+      );
+    }
+
     // solo-launch-provenance: identity-shaped only — refuse garbage loudly rather
     // than bake it into a system prompt / standing fact.
     const launchedByRaw = body.launched_by?.trim() || null;

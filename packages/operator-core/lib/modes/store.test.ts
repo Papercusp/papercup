@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
-import { setMode, getModes, getModesForOwners } from './store';
+import { setMode, getModes, getModesForOwners, reconcileImpliedModes, RECONCILE_SET_BY } from './store';
 import { MODES, modeById, axisKeyFor, modeIndexMarkdown } from './registry';
 
 interface Row {
@@ -477,5 +477,106 @@ describe('implication cascade (D-003)', () => {
       { mode: 'auto', status: 'failed', error: 'deadlock detected' },
       { mode: 'ideate', status: 'set' },
     ]);
+  });
+});
+
+/**
+ * WI-37856 — the RECONCILE, over the STORED population.
+ *
+ * WHY THIS SUITE EXISTS AND WHY THE EXISTING ONES DID NOT CATCH THE BUG: every
+ * cascade test above drives `setMode`, i.e. the WRITE path. The write path was
+ * never broken. The defect lived in rows written BEFORE the mode declared its
+ * implications — a population no write-path test constructs, which is why 83
+ * green tests coexisted with three live agents whose mode set the contract says
+ * is impossible. A guard that can only see writes cannot see this class, so the
+ * property under test here is deliberately stated over stored ROWS.
+ */
+describe('reconcileImpliedModes (WI-37856) — repairs the stored population, not the write path', () => {
+  let m: ReturnType<typeof mockSql>;
+  beforeEach(() => { m = mockSql(); });
+
+  const axisOf = (id: string) => axisKeyFor(modeById(id)!);
+
+  /**
+   * Seed a row exactly as it existed before its mode declared implications:
+   * straight into the table, no cascade. `setMode` can NO LONGER produce this
+   * shape — which is precisely why the gap outlived a green write-path suite,
+   * and why seeding directly is the honest fixture rather than a shortcut.
+   */
+  const seedPreCascade = (mode: string, o?: { ownerDirected?: boolean; subject?: string | null }) => {
+    m.modes.set(`${WS}|${ME}|${axisOf(mode)}`, {
+      workspace_id: WS, owner_id: ME, axis_key: axisOf(mode), mode,
+      reason: 'written before the implication existed', set_by: ME,
+      owner_directed: o?.ownerDirected ?? false,
+      set_at: '2026-08-10T07:05:19Z', subject: o?.subject ?? null,
+    });
+  };
+
+  it('fills the modes a pre-existing GOAL row never got — and the BEFORE state proves the fixture was really broken', async () => {
+    seedPreCascade('goal', { subject: 'g-cute-bears' });
+
+    // THE FALSIFIER. Without this half, the assertions below would pass just as
+    // happily against a fixture that had been complete all along.
+    const before = (await getModes(WS, ME, m.sql)).map((r) => r.mode).sort();
+    expect(before).toEqual(['goal']);
+
+    const out = await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
+    expect(out).toEqual([{ mode: 'auto', status: 'set' }, { mode: 'ideate', status: 'set' }]);
+
+    const after = (await getModes(WS, ME, m.sql)).map((r) => r.mode).sort();
+    expect(after).toEqual(['auto', 'goal', 'ideate']);
+  });
+
+  it('stamps backfilled rows as system-authored, and leaves the agent-authored row untouched', async () => {
+    seedPreCascade('goal', { subject: 'g-1' });
+    await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
+    const by = Object.fromEntries((await getModes(WS, ME, m.sql)).map((r) => [r.mode, r.setBy]));
+    /* Grading turns on this: goal-mode-e2e's `mode-and-subject-integrity` reads
+       these rows, and a backfilled row credited to the agent would read as
+       compliance the agent never performed. */
+    expect(by.auto).toBe(RECONCILE_SET_BY);
+    expect(by.ideate).toBe(RECONCILE_SET_BY);
+    expect(by.goal).toBe(ME); // untouched — the reconcile only ever ADDS
+  });
+
+  it('inherits owner_directed from the row that implies it, so a peer cannot overwrite what the owner effectively set', async () => {
+    seedPreCascade('goal', { subject: 'g-1', ownerDirected: true });
+    await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows.find((r) => r.mode === 'auto')?.ownerDirected).toBe(true);
+    expect(rows.find((r) => r.mode === 'ideate')?.ownerDirected).toBe(true);
+  });
+
+  it('is idempotent — a second pass writes nothing and audits nothing (safe to call on every bootstrap)', async () => {
+    seedPreCascade('goal', { subject: 'g-1' });
+    await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
+    const auditsAfterFirst = m.changes.length;
+
+    const second = await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
+    expect(second).toEqual([{ mode: 'auto', status: 'already-on' }, { mode: 'ideate', status: 'already-on' }]);
+    expect(m.changes.length).toBe(auditsAfterFirst); // no second audit row
+    expect((await getModes(WS, ME, m.sql)).length).toBe(3);
+  });
+
+  it('never displaces a deliberately-chosen posture — cold-auto already satisfies "implies auto"', async () => {
+    seedPreCascade('goal', { subject: 'g-1' });
+    seedPreCascade('cold-auto');
+
+    const out = await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
+    expect(out).toContainEqual({ mode: 'auto', status: 'axis-held', by: 'cold-auto' });
+
+    const rows = await getModes(WS, ME, m.sql);
+    /* The autonomy axis must still hold cold-auto. Downgrading it to plain
+       `auto` would satisfy the letter of "implies auto" while silently undoing
+       a choice someone made on purpose. */
+    expect(rows.find((r) => r.axisKey === axisOf('cold-auto'))?.mode).toBe('cold-auto');
+    expect(rows.map((r) => r.mode).sort()).toEqual(['cold-auto', 'goal', 'ideate']);
+  });
+
+  it('does nothing for an agent whose modes imply nothing, and nothing for an agent with no modes at all', async () => {
+    expect(await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql })).toEqual([]);
+    seedPreCascade('test'); // an overlay that deliberately implies nothing
+    expect(await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql })).toEqual([]);
+    expect(m.changes.length).toBe(0);
   });
 });
