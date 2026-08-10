@@ -33,6 +33,8 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const errors = [];
 const note = (m) => errors.push(m);
@@ -44,8 +46,12 @@ const GATE = join(ROOT, 'scripts', 'affected-tests.mjs');
 // explains the rule — the guard passes while the code is broken. (Caught by mutation
 // test: deleting the `file === ws.dir` arm still linted clean, because the comment
 // above it says `file === ws.dir`.)
-const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-const gateSrc = stripComments(readFileSync(GATE, 'utf8'));
+//
+// COMMENTS ONLY, deliberately — `--ignore-submodules=all` is a CLI flag that lives in the
+// gate's argv ARRAY, i.e. inside a string literal. Masking strings too would convert this
+// guard's positive into a silent false negative on the exact "gate verified nothing" defect
+// it exists to catch. (The per-CALL-SITE split the shared module's header describes.)
+const gateSrc = stripCommentsOnly(readFileSync(GATE, 'utf8'), GATE);
 
 // ---------------------------------------------------------------- 1 + 2: the gate
 if (gateSrc.includes('--ignore-submodules=all')) {
