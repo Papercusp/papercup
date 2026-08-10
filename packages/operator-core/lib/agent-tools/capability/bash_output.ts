@@ -10,7 +10,8 @@ import { z } from 'zod';
 import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { detectBufferingLastStage, getJob, readJobOutput, scratchDir } from './bash-jobs';
+import { detectBufferingLastStage, getJob, readJobOutput, scratchDir, type BashJob } from './bash-jobs';
+import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
 import { getTaskByBashJobId } from '../../task-manager/store';
 import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
@@ -208,6 +209,66 @@ export function filterOutputLines(chunk: string, filter: string | undefined): { 
   }
 }
 
+/**
+ * EI-20051445912325691 — answer "is this job WORKING or WEDGED?" in the reply, instead of
+ * leaving every caller to hand-roll it. "Is my job done?" is ~12% of all bash calls on this
+ * box, and the hand-rolled answers are wrong in whichever direction is most expensive:
+ * `ps -o %cpu` is a process-LIFETIME average; a tree walk that misses a descendant or a
+ * double-fork returns a false 0 (measured: 0 cores reported for a tree burning 19.89); and
+ * the cgroup recipe applied to a FOREGROUND call reads the OPERATOR's own cgroup instead —
+ * measured 7.33 cores across 34 pids in the same window the job itself burned 0.91, a false
+ * BUSY that can never read zero, so a dead job reads as alive and the caller keeps waiting.
+ *
+ * Computed here, that ambiguity is unrepresentable: it is always a tracked background job's
+ * own scope, resolved from its pid, or it is null with a reason.
+ *
+ * ZERO ADDED LATENCY ON A POLL. The previous sample is kept on the job, so from the second
+ * read onward this reports cores burned SINCE YOUR LAST READ — more useful than an instant
+ * anyway, being the average over exactly the window you were waiting. The FIRST read has no
+ * baseline and says so, rather than pausing the reply to manufacture one.
+ *
+ * Fails soft in every direction: a reason string, never a number, and never a throw — this is
+ * diagnostic garnish on a tool whose actual job is returning output.
+ */
+export function sampleJobCpu(
+  job: BashJob,
+  deps: { readText?: (p: string) => string | null; now?: () => number } = {},
+): { cpu_cores?: number; cpu_basis?: string; cpu_unavailable?: string } {
+  const readText =
+    deps.readText ??
+    ((p: string) => {
+      try {
+        return readFileSync(p, 'utf8');
+      } catch {
+        return null;
+      }
+    });
+  try {
+    if (job.status !== 'running') return { cpu_unavailable: 'job-not-running' };
+    const next = readCgroupCpuSample(job.child?.pid ?? null, { readText, now: deps.now });
+    if (!next) return { cpu_unavailable: 'cgroup-unreadable' };
+    const prev = job.lastCpuSample ?? null;
+    job.lastCpuSample = next;
+    const cores = coresBetween(prev, next);
+    if (cores == null) {
+      return {
+        cpu_unavailable: 'awaiting-second-sample',
+        cpu_basis: `baseline sample taken; a RATE needs two readings at least ${MIN_SAMPLE_GAP_MS}ms apart — read again and this becomes a number`,
+      };
+    }
+    const windowSec = Math.max(1, Math.round((next.atMs - prev!.atMs) / 1000));
+    return {
+      cpu_cores: Math.round(cores * 100) / 100,
+      cpu_basis:
+        `cores burned by this job's OWN cgroup over the ${windowSec}s since your last bash_output read ` +
+        `(1.0 = one core saturated). ~0 while status=running means ALIVE BUT DOING NOTHING — wedged, blocked on I/O, ` +
+        `or still queued behind pc-heavy's slot clamp; it does NOT mean finished.`,
+    };
+  } catch {
+    return { cpu_unavailable: 'cgroup-unreadable' };
+  }
+}
+
 export default defineTool({
   name: 'capability:bash_output',
   description:
@@ -402,6 +463,7 @@ export default defineTool({
     // only narrows what's RETURNED, so non-matching lines aren't re-shown next read.
     const fullChunk = readJobOutput(job, args.peek ?? false);
     const { output, error: filterError } = filterOutputLines(fullChunk, args.filter);
+    const cpu = sampleJobCpu(job);
     return {
       content: [
         {
@@ -414,6 +476,7 @@ export default defineTool({
             running: job.status === 'running',
             total_bytes: job.totalBytes,
             log_path: job.logPath,
+            ...cpu,
             ...(filterError ? { filter_error: filterError } : {}),
             output,
           }),

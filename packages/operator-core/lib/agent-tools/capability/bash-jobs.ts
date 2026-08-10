@@ -33,6 +33,7 @@ import {
   finishSyncEnrolment,
 } from '../../task-manager/enroll-sync';
 import { warmScopeProbe } from '../../task-manager/managed-spawn';
+import type { CgroupCpuSample } from './cgroup-cpu';
 
 // Warm the systemd-scope probe at module load so the FIRST background job can
 // already be confined. Fire-and-forget by design: a job must never wait on, or be
@@ -150,6 +151,18 @@ export interface BashJob {
    */
   taskId?: string;
   scopeUnit?: string | null;
+  /**
+   * EI-20051445912325691 — the previous cgroup CPU sample taken by `bash_output`, so a poll
+   * can report cores burned SINCE THE LAST READ at zero added latency instead of pausing to
+   * take a second sample every time. It lives on the job (whose registry is already a pinned
+   * singleton) rather than in a module-level Map in the tool, which would be exactly the
+   * split-module-state hazard `pinModuleState` exists for.
+   *
+   * A stale entry is harmless: `coresBetween` refuses any window that is too short, and
+   * refuses a NEGATIVE usage delta, which is what a torn-down-and-recreated scope or a reused
+   * pid produces.
+   */
+  lastCpuSample?: CgroupCpuSample | null;
   /** WI-6677: the EFFECTIVE wall-clock this job will be terminated at, after
    *  clamping — so a caller can be told its deadline instead of discovering it
    *  as an unexplained death. Undefined for foreground runs. */
