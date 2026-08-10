@@ -98,14 +98,25 @@ const ME = 'su-me';
 const PEER = 'su-peer';
 
 describe('mode registry', () => {
-  it('covers the six official modes with correct axes (owner correction: ideate/drain are stackable overlays)', () => {
-    expect(MODES.map((m) => m.id).sort()).toEqual(['auto', 'cold-auto', 'drain', 'goal', 'grade', 'ideate']);
+  it('covers the seven official modes with correct axes (owner correction: ideate/drain are stackable overlays)', () => {
+    expect(MODES.map((m) => m.id).sort()).toEqual([
+      'auto',
+      'cold-auto',
+      'drain',
+      'goal',
+      'grade',
+      'ideate',
+      'test',
+    ]);
     expect(modeById('auto')?.axis).toBe('autonomy');
     expect(modeById('cold-auto')?.axis).toBe('autonomy');
     expect(modeById('ideate')?.axis).toBe('overlay');
     expect(modeById('drain')?.axis).toBe('overlay');
     expect(modeById('grade')?.axis).toBe('overlay');
     expect(modeById('goal')?.axis).toBe('overlay');
+    // TEST (goal-mode-hardening-2026-08-10 P-006): an overlay that deliberately
+    // implies nothing — testing is not an autonomy posture.
+    expect(modeById('test')?.axis).toBe('overlay');
   });
 
   it('axis keys: the autonomy family shares a key; each overlay gets its own', () => {
@@ -115,6 +126,7 @@ describe('mode registry', () => {
     expect(axisKeyFor(modeById('drain')!)).toBe('overlay:drain');
     expect(axisKeyFor(modeById('grade')!)).toBe('overlay:grade');
     expect(axisKeyFor(modeById('goal')!)).toBe('overlay:goal');
+    expect(axisKeyFor(modeById('test')!)).toBe('overlay:test');
   });
 
   it('every mode has a one-liner and a non-trivial contract; the index lists them all', () => {

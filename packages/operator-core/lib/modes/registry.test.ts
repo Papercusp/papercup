@@ -17,7 +17,9 @@ import {
   modeImpliesAutonomy,
   autonomousModeIds,
   modeRequiresSubject,
+  subjectRequiringModeIds,
   resolveImpliedModes,
+  modeIndexMarkdown,
 } from './registry';
 
 /**
@@ -287,5 +289,127 @@ describe('GOAL mode', () => {
     expect(c).toContain('TEMPLATES MANDATE'); // 8
     expect(c).toContain('RUBRIC REUSE'); // 9
     expect(c).toMatch(/SHIPPED, NOT GREEN/); // 6 — flags ship ON
+  });
+});
+
+/**
+ * TEST mode (goal-mode-hardening-2026-08-10 P-006).
+ *
+ * Same reasoning as the GOAL block above: the contract IS the deliverable, so
+ * the clauses that cost the most when absent are pinned by content and dropping
+ * one reds this file. Each maps to a failure shape observed on this box rather
+ * than to a testing platitude — see the per-assertion notes.
+ */
+describe('TEST mode', () => {
+  const testMode = modeById('test');
+
+  it('is registered as a stackable overlay', () => {
+    expect(testMode).not.toBeNull();
+    expect(testMode!.axis).toBe('overlay');
+  });
+
+  /**
+   * D-010. TEST declares NO implications, and that is a decision, not an
+   * omission: testing is not an autonomy posture. A future edit that "helpfully"
+   * adds implies:['auto'] would silently make every TEST session autonomous —
+   * including ones an owner is sitting in front of — so it must red here.
+   */
+  it('implies nothing, so entering it never changes the autonomy posture', () => {
+    expect(testMode!.implies).toBeUndefined();
+    expect(resolveImpliedModes('test')).toEqual([]);
+    expect(modeImpliesAutonomy('test')).toBe(false);
+    expect(autonomousModeIds()).not.toContain('test');
+  });
+
+  /**
+   * D-010's other half. `subject` exists because downstream consumers JOIN on it
+   * (work_items.goal_id is stamped FROM it); nothing joins on a test's subject,
+   * so requiring one would gate the door on a value no consumer reads. Scope
+   * belongs in mode:set's own instructions instead.
+   */
+  it('requires no subject — nothing downstream joins on a test subject', () => {
+    expect(testMode!.requiresSubject).toBeUndefined();
+    expect(modeRequiresSubject('test')).toBe(false);
+    expect(subjectRequiringModeIds()).not.toContain('test');
+  });
+
+  it('keeps its index one-liner to a single line (P-008)', () => {
+    expect(testMode!.oneLiner).not.toContain('\n');
+  });
+
+  it('carries INDEPENDENCE — test the contract, not the implementation', () => {
+    const c = testMode!.contract;
+    expect(c).toContain('INDEPENDENCE');
+    // the specific trap: a test derived from the code ratifies the bug
+    expect(c).toMatch(/restates the bug as the expectation/i);
+  });
+
+  /**
+   * RED BEFORE GREEN has a repo-specific hazard attached, and the hazard is the
+   * half that matters: the obvious way to prove falsifiability (mutate the file,
+   * run, restore) races git-sync's whole-tree sweep and has already committed a
+   * mutant. A clause that drifted back to bare "prove it can fail" would leave
+   * the agent reaching for exactly that, so the sweep warning is pinned too.
+   */
+  it('carries RED BEFORE GREEN with the shared-tree mutation hazard attached', () => {
+    const c = testMode!.contract;
+    expect(c).toContain('RED BEFORE GREEN');
+    expect(c).toMatch(/never by\s+mutating the shared tree/i);
+    expect(c).toMatch(/git-sync sweeps/i);
+    // and it must offer the safe alternative, not just forbid the unsafe one
+    expect(c).toMatch(/in memory|scratch copy/i);
+  });
+
+  /**
+   * The most-repeated local failure: a well-formed answer to a question nobody
+   * asked — a suite that selected no files, a mock that dropped the column under
+   * test, a grep whose pattern never appeared. Each reads as a pass.
+   */
+  it('carries ZERO WORK IS NOT A PASS with the population assertion', () => {
+    const c = testMode!.contract;
+    expect(c).toContain('ZERO WORK IS NOT A PASS');
+    expect(c).toMatch(/POPULATION/);
+    expect(c).toMatch(/matched no files|empty set/i);
+  });
+
+  it('carries REPORT, DON’T FIX — a defect is filed, not silently repaired', () => {
+    const c = testMode!.contract;
+    expect(c).toMatch(/REPORT, DON’T FIX|REPORT, DON'T FIX/);
+    expect(c).toMatch(/destroys the evidence/i);
+  });
+
+  it('carries VERDICT WITH EVIDENCE including what could NOT be determined', () => {
+    const c = testMode!.contract;
+    expect(c).toContain('VERDICT WITH EVIDENCE');
+    expect(c).toMatch(/could NOT determine/);
+    expect(c).toMatch(/bounded measurement/i);
+  });
+
+  it('carries LEAVE THE TESTS BEHIND — committed tests, not a transcript', () => {
+    const c = testMode!.contract;
+    expect(c).toContain('LEAVE THE TESTS BEHIND');
+    expect(c).toMatch(/committed tests/i);
+  });
+});
+
+/**
+ * Index completeness (P-008).
+ *
+ * The su playbooks' hand-written mode index had drifted to 5 entries against a
+ * registry of 6, so two real modes were invisible to every agent that only ever
+ * reads the index. modeIndexMarkdown() derives from MODES precisely so that
+ * cannot happen — this is what keeps the derivation honest as MODES grows.
+ */
+describe('modeIndexMarkdown', () => {
+  it('lists EVERY registered mode — no mode can be invisible to the index', () => {
+    const md = modeIndexMarkdown();
+    for (const def of MODES) {
+      expect(md, `${def.id} missing from the index`).toContain(`**${def.id}**`);
+      expect(md, `${def.id} one-liner missing`).toContain(def.oneLiner);
+    }
+    // the population is asserted, not just iterated: an empty MODES would pass
+    // every loop above while listing nothing at all.
+    expect(MODES.length).toBeGreaterThanOrEqual(7);
+    expect(md.split('\n').filter((l) => l.startsWith('- **'))).toHaveLength(MODES.length);
   });
 });
