@@ -22,8 +22,9 @@
  * second, instead of drifting into more `no-file-rows` months later and reading as flakiness.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { attributeFailedTask } from '../../../../scripts/lib/vitest-summary.mjs';
