@@ -141,6 +141,38 @@ export function stripCommentsOnly(text, fileName) {
   return blankRanges(text, collectRanges(text, fileName, { strings: false, regex: false }));
 }
 
+/**
+ * Was the character at `index` LIVE CODE, or was it blanked out as string/comment content?
+ *
+ * THE CASE THIS EXISTS FOR — a pattern that SPANS code and string content, where NEITHER
+ * stripper works and read-on-raw does not apply either. `check-no-retired-imports` matches
+ * /(?:\bfrom\b|\bimport\b)\s*['"`][^'"`]*_retired\//: masking strings deletes the specifier it
+ * needs, and masking only comments leaves a template literal quoting an import standing as a
+ * phantom. `check-no-wire-compression` is the same shape one level worse — its rules disagree
+ * with EACH OTHER: `createGzip(` is pure code (wants strings masked) while
+ * `'content-encoding': 'gzip'` lives ENTIRELY inside string literals (masking deletes it).
+ *
+ * The resolution is to stop choosing a mask and use the mask as an ORACLE instead: exec the
+ * pattern on the RAW text, then ask whether its ANCHOR — the first character of the match, which
+ * for these patterns is always the code-shaped part (`from`, `import`, `new`, or the literal's
+ * own opening quote) — is real program text. Blanked ⇒ the whole match was string or comment
+ * content ⇒ phantom, skip it. Live ⇒ a real hit, and its specifier being a string is EXPECTED.
+ *
+ * Exact by construction: blanking only ever REPLACES a character with a space, so
+ * `raw[i] !== masked[i]` holds if and only if that character was blanked. String DELIMITERS are
+ * kept, so a quote reads as live code (it is program text) while its contents do not — which is
+ * precisely why a rule anchored on the opening quote still fires on real code but not on the
+ * same text nested inside a template literal, where the inner quote is itself blanked.
+ *
+ * @param {string} raw     the original source
+ * @param {string} masked  the SAME source through stripCommentsAndStrings (length-preserving)
+ * @param {number} index   an offset into either — they address identically
+ * @returns {boolean}
+ */
+export function isLiveCodeAt(raw, masked, index) {
+  return raw[index] === masked[index];
+}
+
 /** .ts and .tsx disagree only on `<T>expr` vs JSX, but they disagree HARD — guessing wrong
  *  mis-blanks real code, which is the failure this module exists to prevent. */
 function parseSource(text, fileName) {

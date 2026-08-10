@@ -24,6 +24,7 @@
  *   node scripts/check-no-self-referential-export.mjs
  *   node scripts/check-no-self-referential-export.mjs --self-test
  */
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,11 +42,21 @@ const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.js', '.jsx', '.mjs',
 // pattern never matches.
 const SELF_REF_EXPORT = /^\s*export\s+(?:const|let|var)\s+(\w+)\s*=\s*\1\s*;?\s*$/;
 
+/**
+ * MATCH ON MASKED, REPORT RAW. `SELF_REF_EXPORT` is `^`-anchored per line, and a multi-line
+ * template literal puts arbitrary text at the start of a line — so a doc string or a code
+ * generator emitting `export const foo = foo;` minted a phantom offender (WI-37717). The shape
+ * being detected is pure CODE, with no evidence read out of any string, so masking strings is
+ * unambiguously right here. Reporting still reads the RAW line: the mask is length-preserving,
+ * so line i of both texts is the same line, and an offender's `text` must show real source
+ * rather than the blanked form.
+ */
 export function findSelfReferentialExports(path, text) {
   const hits = [];
   const lines = text.split('\n');
+  const scan = stripCommentsAndStrings(text, path).split('\n');
   for (let i = 0; i < lines.length; i++) {
-    const m = SELF_REF_EXPORT.exec(lines[i]);
+    const m = SELF_REF_EXPORT.exec(scan[i]);
     if (m) hits.push({ path, line: i + 1, identifier: m[1], text: lines[i].trim() });
   }
   return hits;
