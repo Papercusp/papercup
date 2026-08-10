@@ -28,10 +28,26 @@ export function parseGuardedIndexes(schemaSrc: string): Array<{
  * offset arithmetic reports the wrong line — which is worse than no line at all, since it
  * sends the reader to an innocent neighbouring statement.
  *
+ * THE TAG IS MATCHED AGAINST MASKED SOURCE. Measured 2026-08-10: the bare regex fires on the
+ * word `sql` in PROSE whenever a doc comment mentions it in a markdown code span, because the
+ * span's CLOSING backtick supplies the backtick the pattern wants. `gc-plan-runs.ts` says
+ * "`sql` is a seam." in its header, and that one comment minted a 427-char "SQL statement"
+ * consisting of the file's imports and an interface declaration. Across the corpus that was
+ * 61 phantom statements in 33 files (950 -> 889), several of which were 100% phantom.
+ *
+ * The harm is a FALSE POSITIVE the moment swallowed TypeScript happens to contain a comparison
+ * on a guarded key — the phantom body is arbitrary source, not SQL — plus nonsense line
+ * attribution, since offsets inside a phantom point wherever the swallow ended up. It also
+ * inflates the reassuring "N SQL statements scanned" line this lint prints on success.
+ *
+ * Comments only (`stripCommentsOnly`), never `stripCommentsAndStrings`: the corpus IS template
+ * literals, and blanking string content would blank the SQL this lint exists to read.
+ *
  * @param {string} src - TypeScript/JavaScript source text
+ * @param {string} [fileName] - real path, used only to pick a ScriptKind for the mask parse
  * @returns {Array<{ text: string, srcIndex: number[] }>} one entry per sql template literal
  */
-export function extractSqlTemplates(src: string): Array<{
+export function extractSqlTemplates(src: string, fileName?: string): Array<{
     text: string;
     srcIndex: number[];
 }>;
