@@ -64,7 +64,7 @@ vi.mock('../harness/routines/loop', () => ({
 }));
 
 // Imported after the mocks so the module-load install picks them up.
-const { executeGoalStop } = await import('./stop-fanout');
+const { executeGoalStop, executeGoalResume, executeGoalTransition } = await import('./stop-fanout');
 
 const link = (harnessSlug: string, role: 'owner' | 'contributing') => ({
   id: '1',
@@ -80,10 +80,14 @@ const link = (harnessSlug: string, role: 'owner' | 'contributing') => ({
 const run = () =>
   executeGoalStop({ goalId: 'g1', workspaceId: 'ws', status: 'paused', actor: 'su-test' });
 
+const resume = () =>
+  executeGoalResume({ goalId: 'g1', workspaceId: 'ws', status: 'active', actor: 'su-test' });
+
 beforeEach(() => {
   vi.clearAllMocks();
   sqlRows.owners = [];
   sqlRows.unattributed = 0;
+  sqlRows.disarmed = 0;
   projectsForGoal.mockResolvedValue([]);
 });
 
@@ -167,5 +171,103 @@ describe('executeGoalStop', () => {
     expect(report.projectsStopped).toEqual([]);
     expect(pausePotState).not.toHaveBeenCalled();
     expect(report.degraded).toBe(false);
+  });
+});
+
+/**
+ * The resume half (WI-37615, plan D-013).
+ *
+ * The bug these guard: `status:'active'` wrote the label and nothing else, so the card
+ * left the `blocked` lane while placement stayed gated — permanently, because the pause
+ * marks itself `deliberate` so no watchdog undoes it.
+ */
+describe('executeGoalResume', () => {
+  it('re-opens placement on projects the goal OWNS', async () => {
+    projectsForGoal.mockResolvedValue([link('pot-a', 'owner'), link('pot-b', 'owner')]);
+
+    const report = await resume();
+
+    expect(report.projectsResumed).toEqual(['pot-a', 'pot-b']);
+    expect(resumePotState).toHaveBeenCalledTimes(2);
+    // No `sql` first argument — resumePotState needs none (pausePotState takes one only
+    // for clearPotTimeWake). Asserted positionally so a signature drift is caught here.
+    expect(resumePotState).toHaveBeenCalledWith('ws', 'pot-a');
+  });
+
+  it('SPARES a project it merely contributes to, exactly as the stop does', async () => {
+    projectsForGoal.mockResolvedValue([link('mine', 'owner'), link('shared', 'contributing')]);
+
+    const report = await resume();
+
+    expect(report.projectsResumed).toEqual(['mine']);
+    expect(report.projectsSkippedContributing).toEqual(['shared']);
+    expect(resumePotState).toHaveBeenCalledTimes(1);
+    expect(resumePotState).not.toHaveBeenCalledWith('ws', 'shared');
+  });
+
+  /**
+   * THE POLICY ASSERTION. A resume must NOT re-arm the loops the pause disarmed — those
+   * sessions are routinely dead by now — but it must REPORT them, or the caller reads
+   * "active" as "running" and is wrong in the same way the stop's caller would be.
+   */
+  it('does NOT re-arm disarmed loops, and reports them so "active" cannot read as "running"', async () => {
+    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    sqlRows.owners = ['su-1', 'su-2'];
+    sqlRows.disarmed = 2;
+
+    const report = await resume();
+
+    expect(deactivateLoop).not.toHaveBeenCalled();
+    expect(report.loopsLeftDisarmed).toBe(2);
+    expect(report.degraded).toBe(true);
+  });
+
+  it('is NOT degraded when no attributed loop is left disarmed', async () => {
+    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+    sqlRows.owners = ['su-1'];
+    sqlRows.disarmed = 0;
+
+    const report = await resume();
+
+    expect(report.loopsLeftDisarmed).toBe(0);
+    expect(report.degraded).toBe(false);
+  });
+
+  it('never claims to have restored the time wake — the pause deleted its cadence', async () => {
+    projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]);
+
+    expect((await resume()).timeWakeRestored).toBe(false);
+  });
+});
+
+/**
+ * The routing guard, and the direct recurrence guard for WI-37615.
+ *
+ * `executeGoalResume` being correct is worth nothing if `status:'active'` never reaches
+ * it — which is exactly the shape the original bug had (a fan-out that existed for one
+ * arm only). These assert the dispatch, not the arms.
+ */
+describe('executeGoalTransition routing', () => {
+  const transition = (status: 'paused' | 'killed' | 'active') =>
+    executeGoalTransition({ goalId: 'g1', workspaceId: 'ws', status, actor: 'su-test' });
+
+  beforeEach(() => projectsForGoal.mockResolvedValue([link('pot-a', 'owner')]));
+
+  it('routes "active" to the RESUME arm — the WI-37615 no-op', async () => {
+    const report = await transition('active');
+
+    expect(report.status).toBe('active');
+    expect(resumePotState).toHaveBeenCalledWith('ws', 'pot-a');
+    // The load-bearing half: resuming must never gate placement.
+    expect(pausePotState).not.toHaveBeenCalled();
+  });
+
+  it.each(['paused', 'killed'] as const)('routes "%s" to the STOP arm', async (status) => {
+    const report = await transition(status);
+
+    expect(report.status).toBe(status);
+    expect(pausePotState).toHaveBeenCalledWith(expect.anything(), 'ws', 'pot-a');
+    // Positive control for the assertion above: these arms must NOT resume.
+    expect(resumePotState).not.toHaveBeenCalled();
   });
 });
