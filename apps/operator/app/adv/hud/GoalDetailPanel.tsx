@@ -72,6 +72,7 @@ import SubGoalsSection from './SubGoalsSection';
 // P-005: the launch-settings editor. Its own file for the same reason as the
 // section above — it owns a WRITE (goals:update) and the form model behind it.
 import GoalSettingsSection from './GoalSettingsSection';
+import GoalEndsSection from './GoalEndsSection';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
@@ -788,48 +789,32 @@ export default function GoalDetailPanel({
             {/* ── 1. THIS GOAL ENDS WHEN ──────────────────────────────────
                 First, and first for a reason: it is the only section that says
                 when the goal STOPS. Everything below it describes activity,
-                which a goal with no stopping condition will produce forever. */}
-            <section className="hud-goal__section hud-goal__section--ends">
-              <h3 className="hud-goal__h">This goal ends when</h3>
-              <p
-                className={`hud-goal__criterion${criterion.missing ? ' hud-goal__criterion--missing' : ''}`}
-                data-testid="goal-kill-criterion"
-              >
-                {criterion.text}
-              </p>
+                which a goal with no stopping condition will produce forever.
 
-              {/* Bars are OPTIONAL. A free-text criterion with none is the
-                  normal case and renders as prose alone — no empty chart, no
-                  "0 tripwires" placeholder implying something is missing. */}
-              {bars.length > 0 ? (
-                <ul className="hud-goal__bars" data-testid="goal-tripwires">
-                  {bars.map((b) => (
-                    <TripwireRow key={b.key} bar={b} />
-                  ))}
-                </ul>
-              ) : null}
-
-              <div className="hud-goal__ceiling" title={data?.spendNote ?? undefined}>
-                <span className="hud-goal__ceiling-label">{data?.spendLabel ?? 'fleet spend'}</span>
-                <span
-                  className={`hud-goal__ceiling-value${ceiling.over ? ' hud-goal__ceiling-value--over' : ''}`}
-                >
-                  {ceiling.text}
-                </span>
-                {/* The RATE beside the LEVEL (P-003). Absent entirely when the
-                    window was never measured — never a $0/day we cannot back. */}
-                {burn ? (
-                  <Tooltip label={burn.detail}>
-                    <span
-                      className={`hud-goal__ceiling-burn${burn.urgent ? ' hud-goal__ceiling-burn--urgent' : ''}`}
-                      data-burn-urgent={burn.urgent ? 'true' : 'false'}
-                    >
-                      {burn.text}
-                    </span>
-                  </Tooltip>
-                ) : null}
-              </div>
-            </section>
+                Its own component since P-009 made both values EDITABLE here —
+                the alarm now carries the control that resolves it. The display
+                lines stay computed HERE because the vitals band above renders
+                `criterion` and `ceiling` a second time, and the bars arrive as
+                a slot so `TripwireRow` (P-012) stays in this file. */}
+            <GoalEndsSection
+              goalId={goalId ?? null}
+              killCriterion={goal.killCriterion}
+              budgetCents={goal.budgetCents}
+              criterion={criterion}
+              ceiling={ceiling}
+              burn={burn}
+              spendLabel={data?.spendLabel}
+              spendNote={data?.spendNote}
+              tripwires={
+                bars.length > 0 ? (
+                  <ul className="hud-goal__bars" data-testid="goal-tripwires">
+                    {bars.map((b) => (
+                      <TripwireRow key={b.key} bar={b} />
+                    ))}
+                  </ul>
+                ) : null
+              }
+            />
 
             {/* ── 2. WAITING ON YOU ───────────────────────────────────────
                 Above pots and activity because it is the only section the

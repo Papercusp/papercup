@@ -49,6 +49,11 @@ vi.mock('nuqs', async () => {
   return {
     parseAsBoolean: parser<boolean>(),
     parseAsString: parser<string>(),
+    /* P-009's ends editors take a THIRD parser shape: `parseAsStringEnum` is
+       CALLED with its member list and returns the parser, where the two above
+       are parsers already. Mocking it as a bare `parser<string>()` would throw
+       "parseAsStringEnum is not a function" from inside the render path. */
+    parseAsStringEnum: <T,>(_values: readonly T[]) => parser<T>(),
     useQueryState(_key: string, p?: { defaultValue?: unknown }) {
       /* Explicit <unknown>: inferring from `p?.defaultValue ?? null` widens the
          state to `{} | null`, and the setter below then rejects the `unknown`
