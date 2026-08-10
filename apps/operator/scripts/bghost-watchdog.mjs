@@ -122,9 +122,55 @@
  * (no shed ever recorded, or the query itself fails) never explains a freeze — same
  * never-infer-from-a-missing-signal asymmetry as `isFrozen`/`withinBootGrace` above.
  *
+ * PROGRESS-AWARE BOOT GRACE (EI-20029519971967372, 2026-08-10) — the fixed `BOOT_GRACE_MS` above is a
+ * BET on how long a boot takes, and the bet now loses: a cold boot on the current 1.23M-block own log
+ * saturates the worker's main thread for LONGER than the 480s grace. Measured live 01:34-02:00Z: two
+ * kills EXACTLY 8 min apart (01:42:15Z, 01:50:17Z — the grace period, not a coincidence), on a worker at
+ * State=R / RSS 4.43GB / +493 utime ticks per 5s (~99% of one core), sustained 10+ min, emitting no logs
+ * and answering no HTTP. The grace lapsed while boot was still correctly running; the watchdog read real
+ * staleness and killed a healthy, progressing process; the next boot re-entered the same race. That loop
+ * is unbreakable, and it gets WORSE as the log grows — so at current size bg-host was
+ * UNRECOVERABLE-BY-RESTART. (Proof it was the watchdog and not the boot: with the watchdog disabled, the
+ * SAME boot completed and the endpoint went from hanging to answering in <1s.)
+ *
+ * The real gap is that a busy boot and a dead process are INDISTINGUISHABLE to this watchdog: both go
+ * silent on every signal it reads. So we give it a signal that separates them — forward progress —
+ * observed OUT OF PROCESS.
+ *
+ * ⚠ It MUST be out-of-process, and this is the whole design constraint. The obvious fix — "have boot
+ * emit a still-booting liveness beat" — cannot work as an IN-process beat: main-thread saturation is
+ * precisely the condition that silences in-process timers (`await` yields to the microtask queue, not to
+ * the event loop), so a beat emitted from the saturated thread is unavailable exactly when it is needed.
+ * `startBootstrapProgressPoller` (hyperbee/bootstrap-progress-poller.ts) is a 1s setInterval started
+ * LATE in boot and recording in-process, and is unusable here for both of those reasons.
+ *
+ * So `procTreeCpuTicks` reads the answer from /proc, where a saturated process cannot suppress it:
+ *   - TWO-SAMPLE DELTA, never single-shot. A single-shot CPU reading is an artifact — this is the same
+ *     trap as `top -b -n1 -H`, which prints 0.0% for EVERY thread because %CPU is a delta and `-n1` has
+ *     no prior sample to difference against (EI-20017779937060288). Single-shot manufactures a false
+ *     "idle" reading on a process burning two full cores.
+ *   - SUMMED OVER THE WHOLE PROCESS TREE, because MainPID is only a WRAPPER (utime=0, RSS 82MB) and the
+ *     real work happens in a listener CHILD — measuring MainPID alone reports "idle" and is a trap the
+ *     filing documents hitting. Summing the tree means never having to pick the right child.
+ *   - Walked PID-ANCHORED (/proc/<pid>/task/<tid>/children), never by process-name pattern, so it cannot
+ *     self-match a peer agent's diagnostic shell the way `pgrep -f` does.
+ *
+ * BOUNDED, because the sibling failure is the opposite one. `BOOT_GRACE_MAX_MS` caps how long progress
+ * may extend the grace, and past that we restart ANYWAY (loudly, with an alert). That bound is taken
+ * directly from EI-20025430746362695, where the pool-shed suppression had NO upper bound: it excused
+ * staleness climbing 1372 -> 3173s across four consecutive passes and turned a guardrail into a ~53min
+ * fleet-wide outage in silence. An unbounded suppression is not a safer suppression.
+ *
+ * Scoped to the BOOT WINDOW only (`activeForSec` between `BOOT_GRACE_MS` and `BOOT_GRACE_MAX_MS`), so it
+ * can never excuse a steady-state freeze, and UNKNOWN (unreadable /proc, pid reuse, a negative delta)
+ * grants NO suppression — the same never-infer-from-a-missing-signal asymmetry as `isFrozen` /
+ * `withinBootGrace` / `poolShedExplainsFreeze` above. Placed LAST among the suppressions, immediately
+ * before `restart()`, so it costs its sample only when we were otherwise about to kill the process.
+ *
  * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR,DB_URL,LOG,
  *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS,SUSTAINED_HEALTHY_POLLS,
- *   POOL_SHED_GRACE_S}, PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
+ *   POOL_SHED_GRACE_S,BOOT_GRACE_MAX_MS,BOOT_PROGRESS_SAMPLE_MS,BOOT_PROGRESS_MIN_TICKS},
+ *   PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
 import { execFile, execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -160,6 +206,21 @@ const SUSTAINED_HEALTHY_POLLS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SUS
  *  (WI-5456). A shed event lands the INSTANT a tick's probe crosses critical, which can be a beat before
  *  routine fires / the scheduler themselves cross FREEZE_SILENCE_S, so the window needs a little room. */
 const POOL_SHED_GRACE_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POOL_SHED_GRACE_S) || 120;
+/** EI-20029519971967372: the ABSOLUTE cap on how long demonstrated forward progress may extend the boot
+ *  grace. Past this we restart even while progressing — a boot that has not finished in this long is a
+ *  different, worse problem than a slow one, and an UNBOUNDED suppression is exactly what turned the
+ *  pool-shed guardrail into a 53min outage (EI-20025430746362695). Default 45min: the measured
+ *  1.23M-block boot needed >8min and grows with the log, so this leaves real headroom while still
+ *  bounding the damage. */
+const BOOT_GRACE_MAX_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_BOOT_GRACE_MAX_MS) || 45 * 60_000;
+/** EI-20029519971967372: wall time between the two /proc CPU samples. A SINGLE sample is meaningless —
+ *  CPU usage is a delta (the `top -n1` artifact, EI-20017779937060288). 5s matches the recipe that
+ *  measured the real worker at +493 ticks/5s. */
+const BOOT_PROGRESS_SAMPLE_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_BOOT_PROGRESS_SAMPLE_MS) || 5_000;
+/** EI-20029519971967372: minimum utime+stime ticks (USER_HZ=100) the process tree must burn across the
+ *  sample to count as PROGRESSING. 50 ticks / 5s = 0.1 of a core — an order of magnitude below the
+ *  measured 493 (~99% of a core), and far above idle jitter. */
+const BOOT_PROGRESS_MIN_TICKS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_BOOT_PROGRESS_MIN_TICKS) || 50;
 /** Throttled "still monitoring + ticker healthy" line so the durable log proves the watchdog is ACTIVELY
  *  reading freshness (not silently early-returning) — the operability gap that made this whole class
  *  invisible for 44h. First healthy poll logs immediately, then at most every HEARTBEAT_MS. */

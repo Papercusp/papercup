@@ -1,0 +1,136 @@
+/**
+ * POST /api/admin/goals/:verb — the desktop-callable WRITE half of the Goals tab
+ * (goals-tab-improvement-2026-08-09 P-016).
+ *
+ * WHY A PROXY AND NOT A HAND-WRITTEN HANDLER. The goal status write is not a column
+ * update: `goals:update` merges partial fields so reporting spend cannot clear a kill
+ * criterion, and it fires the transition fan-out that actually gates or re-opens
+ * placement on the goal's owned projects (EI-20013729460455061 stop, WI-37615 resume).
+ * Re-implementing any of that here would be a SECOND write path for the one row whose
+ * state decides whether a fleet runs — the exact fork the repo's reuse-first rule names
+ * as the top review smell. So this dispatches the real tool in-process via
+ * `handleHttpToolRequest`, byte-identical to what an agent calling `goals:update` gets,
+ * and the UI inherits every future fix to it for free.
+ *
+ * Ported wholesale from admin/mode.ts, including its AUTH reasoning: the packaged Tauri
+ * webview fetches the operator /api directly with no cookie or bearer, so it resolves
+ * `unverified-loopback`. Gating on VT alone would 403 the one surface the owner asked
+ * for (EI-338), so the trust set is widened and `requireAllowedOriginOr403` is the CSRF
+ * backstop that buys the safety back — a cross-origin browser POST is refused.
+ *
+ * ⚠ The reply is the tool's result VERBATIM, `degraded` / `degradedReasons` included.
+ * That is load-bearing, not incidental: a paused goal can come back reporting loops it
+ * could not attribute and did not stop, and a resumed one can come back reporting
+ * sessions it deliberately did not re-arm. A route that flattened those into `{ok:true}`
+ * would recreate the precise bug this whole seam exists to prevent — a steering surface
+ * reporting a state that is not the state of the system (EI-19995648221353323).
+ */
+
+import { handleHttpToolRequest } from '@papercusp/agent-mcp';
+// Registers the tool surface (and, as a side effect of the barrel, installs the goal
+// transition executor). Same import admin/mode.ts and the agent-tools catch-all use.
+import '../../../agent-tools/index';
+import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
+import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
+import { requireAllowedOriginOr403 } from '../../cors';
+import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
+import { notifySyncInvalidate } from '../../../sync-sse';
+
+const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
+
+/**
+ * `update` only. The Goals tab's controls are status moves and field edits, and
+ * `goals:create` / `goals:propose` deliberately stay OUT: P-022's kickoff is a
+ * CONVERSATIONAL flow the owner finishes in the composer, not a form this route posts.
+ */
+const WRITE_VERBS = new Set(['update']);
+
+function unwrap(toolResult: { status: number; body: unknown }): Response {
+  if (toolResult.status === 200) {
+    const body = toolResult.body as { content?: Array<{ type: string; text?: string }> };
+    const text = body.content?.find((c) => c.type === 'text')?.text;
+    if (text !== undefined) {
+      try {
+        return Response.json(JSON.parse(text));
+      } catch {
+        return new Response(text, { headers: { 'content-type': 'text/plain' } });
+      }
+    }
+    return Response.json({});
+  }
+  return Response.json(toolResult.body, { status: toolResult.status });
+}
+
+function collectHeaders(req: Request): Record<string, string | undefined> {
+  const m: Record<string, string | undefined> = {};
+  req.headers.forEach((v, k) => {
+    m[k.toLowerCase()] = v;
+  });
+  return m;
+}
+
+function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
+  const sp = new URLSearchParams(inbound);
+  sp.set('superuser', '1');
+  if (!sp.has('client')) sp.set('client', ADMIN_UI_CLIENT_ID);
+  return sp;
+}
+
+async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
+  const csrf = requireAllowedOriginOr403(req);
+  if (csrf) return csrf;
+
+  const verb = ctx.params.verb;
+  if (!WRITE_VERBS.has(verb)) {
+    return Response.json(
+      { error: { code: 'unknown_verb', message: `goals write verb '${verb}' not found` } },
+      { status: 404 },
+    );
+  }
+
+  let body: Record<string, unknown> = {};
+  try {
+    const txt = await req.text();
+    if (txt) body = JSON.parse(txt) as Record<string, unknown>;
+  } catch {
+    return Response.json(
+      { error: { code: 'invalid_json', message: 'request body must be JSON' } },
+      { status: 400 },
+    );
+  }
+
+  const url = new URL(req.url);
+  const result = await handleHttpToolRequest(
+    {
+      method: 'POST',
+      pathname: `/api/agent-tools/goals/${verb}`,
+      searchParams: adminSearchParams(url.searchParams),
+      headers: collectHeaders(req),
+      body,
+    },
+    HOST_EXTRAS,
+  );
+
+  // Both goal reads must re-pull, and BOTH are needed: the board reads `goals.list`
+  // while the open detail popup reads `goals.detail`, so invalidating only one leaves
+  // whichever surface the owner is looking at showing the pre-write status until the
+  // next poll — long enough to click again.
+  //
+  // Fire-and-forget AFTER the write has committed, never gated on it: a failed
+  // invalidate must not turn a successful status change into an error reply.
+  if (result.status === 200) {
+    void notifySyncInvalidate('goals.list', {}).catch(() => {});
+    void notifySyncInvalidate('goals.detail', {}).catch(() => {});
+  }
+
+  return unwrap(result);
+}
+
+const writeRoute = defineTool({
+  method: 'POST',
+  path: '/admin/goals/:verb',
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
+  handler: dispatchWrite,
+});
+
+export default [writeRoute];

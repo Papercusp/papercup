@@ -408,6 +408,10 @@ import adminSchedulesInventory from './admin/schedules-inventory';
 // Read-only by construction — the kill/freeze/limit verbs are MCP tools behind
 // processes:kill / processes:control, never a dashboard fetch.
 import adminTaskManager from './admin/task-manager';
+// goals-tab-improvement-2026-08-09 P-016: the desktop-callable goal WRITE, proxying the
+// real `goals:update` tool so the status fan-out (placement gate / re-open) is never
+// re-implemented behind a second write path.
+import adminGoals from './admin/goals';
 import adminDbosPipelineStart from './admin/dbos-pipeline-start';
 import workspaces from './workspaces/index';
 import workspaceById from './workspaces/by-id';
@@ -872,6 +876,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminDbosStatus as AnyRoute),
   ...flatten(adminSchedulesInventory as AnyRoute),
   ...flatten(adminTaskManager as AnyRoute),
+  ...flatten(adminGoals as AnyRoute),
   ...flatten(adminDbosPipelineStart as AnyRoute),
   ...flatten(adminTestingFileStatus as AnyRoute),
   ...flatten(adminTestingRun as AnyRoute),
