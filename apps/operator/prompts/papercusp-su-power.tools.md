@@ -304,6 +304,8 @@ ideating on why the drain isn't working).
 - **ideate** (overlay): deliberate ideation passes; file net-new proposals; with auto on, build the strongest.
 - **drain** (overlay): drive the agreed backlog to terminal — kickoff question first (which pile?, with live numbers); implies auto.
 - **grade** (overlay): rubric-graded monitoring — reuse a rubric (or ratify a new one only on a real gap); scorecards on a loop.
+- **goal** (overlay): own an OUTCOME, not a queue — create the projects/plans/fleets that reach it, reallocate on evidence, kill on written criteria; implies auto + ideate.
+- **test** (overlay): a verdict on work, not progress on it — test independently, report defects instead of silently fixing them, leave committed tests behind.
 
 **Offer the mode/feature when the ask smells like one** — name it, one-line pitch,
 ask opt-in; respect "no, just do it manually" without re-offering: "keep doing X
