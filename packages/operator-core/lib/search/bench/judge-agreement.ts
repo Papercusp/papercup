@@ -52,6 +52,8 @@ import {
   type RunSummary,
 } from '@papercusp/testing-shell/llm';
 
+import { hash32, type GoldQuery, type PoolDoc } from './ref-expansion-gold';
+
 // =============================================================================
 // Frozen judging contract — bump RUBRIC_VERSION when any of it changes
 // =============================================================================
@@ -161,6 +163,60 @@ export interface JudgeAgreementReport {
   judgeCostUsd: number;
   /** Limits that must travel WITH the numbers, never as a footnote elsewhere. */
   caveats: string[];
+}
+
+// =============================================================================
+// Pair construction
+// =============================================================================
+
+/** Documents are truncated so one judged pair stays a bounded prompt. */
+export const DOC_CHARS = 1200;
+
+/**
+ * Build the judged pairs for one query: one gold-relevant document and one
+ * gold-irrelevant one, per arm.
+ *
+ * The negative is picked by a SEEDED hash rather than at random so a re-run
+ * judges the same pairs — an agreement number that moves because the sample
+ * moved is not a measurement of the judge.
+ *
+ * The referenced item itself is EXCLUDED from the negative pool: its presence
+ * there is an artifact of sampling (it does not CITE itself, so gold never
+ * labels it relevant), and it is the one document guaranteed to be topically
+ * identical to the query. Drawing it as a "negative" would manufacture a
+ * disagreement the gold never claimed and charge it to the judge.
+ */
+export function buildPairsForQuery(q: GoldQuery, pool: readonly PoolDoc[]): JudgedPair[] {
+  const relevant = new Set(q.relevantIds);
+  const posDoc = pool.find((d) => relevant.has(d.id));
+  const negCandidates = pool.filter((d) => !relevant.has(d.id) && d.id !== q.ref);
+  if (!posDoc || negCandidates.length === 0) return [];
+  const negDoc = negCandidates[hash32(`neg:${q.ref}`) % negCandidates.length]!;
+
+  const arms: Array<{ arm: QueryArm; query: string }> = [
+    { arm: 'verbatim', query: q.text },
+    { arm: 'degraded', query: q.degraded },
+  ];
+  return arms.flatMap(({ arm, query }) => [
+    {
+      pairId: `${q.ref}:${arm}:pos`,
+      ref: q.ref,
+      arm,
+      query,
+      docId: posDoc.id,
+      docText: posDoc.v1Text.slice(0, DOC_CHARS),
+      goldRelevant: true,
+    },
+    {
+      pairId: `${q.ref}:${arm}:neg`,
+      ref: q.ref,
+      arm,
+      query,
+      docId: negDoc.id,
+      docText: negDoc.v1Text.slice(0, DOC_CHARS),
+      goldRelevant: false,
+    },
+  ]);
 }
 
 // =============================================================================
