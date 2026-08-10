@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 import {
   averageRanks,
   mean,
+  partialSpearman,
   permutationNull,
   permute,
   postRetrievalClarity,
@@ -90,6 +91,52 @@ describe('spearman', () => {
   it('refuses mismatched lengths and samples too small to rank', () => {
     expect(spearman([1, 2, 3], [1, 2])).toBeNull();
     expect(spearman([1, 2], [1, 2])).toBeNull();
+  });
+});
+
+describe('partialSpearman', () => {
+  /**
+   * PERMANENT CONTROL — the confound R5 actually faces, built so its answer is
+   * known independently of the implementation.
+   *
+   * `z` is the driver. Both `x` and `y` are strictly monotone functions of it
+   * and carry NO information beyond it, so every bit of the raw rho(x,y) is
+   * shared variance. The partial must collapse to ~0. If this test ever passes
+   * while returning the raw rho, the statistic is not partialling anything and
+   * the R5 ruling built on it would be exactly backwards.
+   */
+  it('collapses to ~0 when a common driver fully explains the association', () => {
+    const z = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const x = z.map((v) => v * 3);
+    const y = z.map((v) => -v * 7);
+
+    expect(spearman(x, y)).toBeCloseTo(-1, 10);
+    expect(partialSpearman(x, y, z)).toBeCloseTo(0, 10);
+  });
+
+  /** The complement: an association INDEPENDENT of the control must survive it.
+   *  Without this, a statistic that always returned 0 would pass the case above. */
+  it('preserves an association the control does not explain', () => {
+    const x = [1, 2, 3, 4, 5, 6, 7, 8];
+    const y = [1, 2, 3, 4, 5, 6, 7, 8];
+    const z = [5, 5, 5, 5, 6, 6, 6, 6];
+
+    const partial = partialSpearman(x, y, z);
+    expect(partial).not.toBeNull();
+    expect(partial!).toBeGreaterThan(0.9);
+  });
+
+  /** A control that fully determines a series leaves nothing to partial out —
+   *  the denominator vanishes. `null`, never 0, which would read as "measured". */
+  it('returns null rather than 0 when the denominator vanishes', () => {
+    const x = [1, 2, 3, 4, 5];
+    const y = [2, 1, 4, 3, 5];
+    expect(partialSpearman(x, y, [...x])).toBeNull();
+  });
+
+  it('returns null on a constant series or a length mismatch', () => {
+    expect(partialSpearman([1, 2, 3], [4, 5, 6], [7, 7, 7])).toBeNull();
+    expect(partialSpearman([1, 2, 3], [4, 5, 6], [7, 8])).toBeNull();
   });
 });
 

@@ -22,8 +22,10 @@ import {
   goalBurn,
   goalBurnLabel,
   goalColumn,
+  goalSilence,
   partitionGoals,
   goalSpendLabel,
+  toGoalCard,
   GOAL_START_CARD_ID,
   GOAL_START_COLUMN,
   GOAL_TERMINAL_STATUSES,
@@ -1131,5 +1133,116 @@ describe('buildGoalBoard — subdirectives (P-017)', () => {
       { nowMs: NOW },
     );
     expect(allCards(board).map((c) => c.id).sort()).toEqual(['x', 'y']);
+  });
+});
+
+describe('goalSilence — staleness escalation + the abandoned state (goals-tab-improvement-2026-08-09 P-004)', () => {
+  const HOUR = 3600 * 1000;
+  const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+  function goal(over: Partial<HudGoalInput> = {}): HudGoalInput {
+    return { id: 'g1', title: 'Ship a paid app', status: 'active', ...over };
+  }
+  const chip = (g: HudGoalInput) =>
+    toGoalCard(g, NOW).badges.find((b) => b.id === 'g1:silence') ?? null;
+
+  // ── The item's real content: `updatedAt` is the DEFINITION-edit time, so it
+  // cannot answer "is this moving". These two cases are the whole point, and
+  // they fail in OPPOSITE directions — which is why both are pinned.
+  it('does NOT call a busy goal stalled just because nobody has retitled it', () => {
+    // Definition untouched for 30 days, work moving 10 minutes ago. Ageing off
+    // updatedAt brands this maximally stale — the most damaging possible false
+    // alarm, because it fires on the HEALTHIEST goals on the board.
+    const g = goal({ updatedAt: iso(30 * 24 * HOUR), lastActivityAt: iso(10 * 60 * 1000) });
+    expect(goalSilence(g, NOW).state).toBe('moving');
+    expect(chip(g)).toBeNull();
+  });
+
+  it('still calls a dead goal stalled when its definition was just edited', () => {
+    // The inverse: retitling a goal nothing has worked on in a week would, on
+    // the naive implementation, report it as fresh — silence laundered into
+    // activity by an edit that moved no work at all.
+    const g = goal({ updatedAt: iso(30 * 1000), lastActivityAt: iso(7 * 24 * HOUR), openWorkItems: 2 });
+    expect(goalSilence(g, NOW).state).toBe('stalled');
+    expect(chip(g)?.label).toBe('stalled');
+  });
+
+  // ── UNMEASURED is not zero (the P-002 rule, third application).
+  it('says NOTHING when there is no activity reading at all', () => {
+    const g = goal({ updatedAt: iso(90 * 24 * HOUR) });
+    expect(goalSilence(g, NOW)).toEqual({ state: 'unmeasured', silentSec: null });
+    expect(chip(g)).toBeNull();
+    expect(toGoalCard(g, NOW).sinceSec).toBeNull();
+  });
+
+  // ── Silence is only information when the goal CLAIMS to be running.
+  it('never escalates a goal that is silent on purpose', () => {
+    for (const status of ['achieved', 'killed', 'paused', 'blocked']) {
+      const g = goal({ status, lastActivityAt: iso(60 * 24 * HOUR), openWorkItems: 0 });
+      expect(goalSilence(g, NOW).state).toBe('expected');
+      expect(chip(g)).toBeNull();
+    }
+  });
+
+  it('treats a PAUSED goal as deliberately quiet even when it also has asks', () => {
+    // goalColumn reports `needs-you` here, so keying the verdict off the COLUMN
+    // instead of the STATUS would escalate a goal the owner deliberately stopped.
+    const g = goal({ status: 'paused', needsHuman: 3, lastActivityAt: iso(60 * 24 * HOUR) });
+    expect(goalColumn(g)).toBe('needs-you');
+    expect(goalSilence(g, NOW).state).toBe('expected');
+  });
+
+  // ── The escalation itself.
+  it('escalates stalled -> abandoned only when nothing is queued to move it', () => {
+    const silent = iso(5 * 24 * HOUR);
+    expect(goalSilence(goal({ lastActivityAt: silent, openWorkItems: 3 }), NOW).state).toBe('stalled');
+    expect(goalSilence(goal({ lastActivityAt: silent, openWorkItems: 0 }), NOW).state).toBe('abandoned');
+  });
+
+  it('carries a heavier tone for abandoned than for stalled', () => {
+    const stalled = chip(goal({ lastActivityAt: iso(30 * HOUR), openWorkItems: 1 }));
+    const abandoned = chip(goal({ lastActivityAt: iso(5 * 24 * HOUR), openWorkItems: 0 }));
+    expect(stalled?.tone).toBe('warn');
+    expect(abandoned?.tone).toBe('bad');
+    expect(abandoned?.label).toBe('abandoned');
+  });
+
+  it('does not fire at all inside the threshold', () => {
+    expect(goalSilence(goal({ lastActivityAt: iso(23 * HOUR), openWorkItems: 0 }), NOW).state).toBe('moving');
+  });
+
+  it('holds back `abandoned` while the goal is still SPENDING', () => {
+    // Recent spend is an independent sign of life — a long agent turn burns
+    // money before it writes a work item. Without this the board would call a
+    // goal abandoned while an agent was actively working on it.
+    const g = goal({ lastActivityAt: iso(5 * 24 * HOUR), openWorkItems: 0, spendRecentUsd: 12 });
+    expect(goalSilence(g, NOW).state).toBe('stalled');
+  });
+
+  it('does NOT let an ABSENT spend reading count as a sign of life', () => {
+    // The asymmetry that makes the line above safe: `?? 0` is used only to
+    // DOWNGRADE, so no reading must leave the alarm standing.
+    const g = goal({ lastActivityAt: iso(5 * 24 * HOUR), openWorkItems: 0, spendRecentUsd: null });
+    expect(goalSilence(g, NOW).state).toBe('abandoned');
+  });
+
+  it('a MEASURED zero spend does not rescue it either', () => {
+    const g = goal({ lastActivityAt: iso(5 * 24 * HOUR), openWorkItems: 0, spendRecentUsd: 0 });
+    expect(goalSilence(g, NOW).state).toBe('abandoned');
+  });
+
+  // ── Display vs ordering: only ONE of them is allowed to guess.
+  it('ages the card off activity, not off the definition edit', () => {
+    const g = goal({ updatedAt: iso(HOUR), lastActivityAt: iso(3 * HOUR) });
+    expect(toGoalCard(g, NOW).sinceSec).toBe(3 * 3600);
+  });
+
+  it('still orders a never-active goal by when it was defined', () => {
+    // DISPLAY refuses to guess (sinceSec is null above); ORDERING must not, or
+    // the column cannot be laid out at all. They are allowed to differ, and
+    // this pins that they do.
+    const never = goal({ updatedAt: iso(2 * HOUR) });
+    const card = toGoalCard(never, NOW);
+    expect(card.sinceSec).toBeNull();
+    expect(card.sortKey).toBe(toGoalCard(goal({ lastActivityAt: iso(2 * HOUR) }), NOW).sortKey);
   });
 });

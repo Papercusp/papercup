@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — .mjs script, no type declarations
-import {
-  buildRuleEvidence,
-  citationsIn,
-  droppedCitations,
-  sentenceBoundaries,
-  splitRuleEvidence,
-  tellsIn,
-} from '../../../../scripts/split-claude-md-rule-evidence.mjs';
+// @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
+// Keep this import on ONE line, exactly as the sibling manifest test does: the directive
+// suppresses the error TS reports on the module SPECIFIER, so wrapping the clause moves that
+// line and the directive reads as unused (TS2578) while the TS7016 goes unsuppressed.
+import { buildRuleEvidence, citationsIn, droppedCitations, sentenceBoundaries, splitRuleEvidence, tellsIn } from '../../../../scripts/split-claude-md-rule-evidence.mjs';
 
 /**
  * P-015 — (rule, evidence) separation for CLAUDE.md blocks.
@@ -59,7 +55,7 @@ describe('sentenceBoundaries — spans that must never be cut', () => {
   // half, yielding a "rule" that ended mid-clause.
   it('does not cut inside a bold lede containing a question mark', () => {
     const raw = '**Is my change live, and if not what is blocking it?** Read the position tool.';
-    expect(sentenceBoundaries(raw).every((o) => o > raw.indexOf('**', 2))).toBe(true);
+    expect(sentenceBoundaries(raw).every((o: number) => o > raw.indexOf('**', 2))).toBe(true);
   });
 
   it('does not cut on a decimal, an abbreviation, or a dotted path', () => {

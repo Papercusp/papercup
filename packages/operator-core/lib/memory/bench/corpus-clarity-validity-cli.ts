@@ -100,6 +100,7 @@ import { CORPUS_MAX_ITEMS, corpusTerms } from '../corpus-recall';
 import { recallCorpusContext, warmCorpusEmbedder } from '../corpus-recall-io';
 import {
   mean,
+  partialSpearman,
   permutationNull,
   postRetrievalClarity,
   spearman,
@@ -431,6 +432,18 @@ async function main(): Promise<void> {
       withPost.map((r) => r.scs),
       withPost.map((r) => r.postBits),
     ],
+    // The pairing this study omitted for its first two runs, and the one that
+    // decides the ruling. `postRetrievalClarity` is a PLUG-IN KL estimator over
+    // the retrieved set's term distribution, so a SMALLER set is sparser and
+    // therefore peakier and its bits rise for a purely mechanical reason. If
+    // this row is strongly negative, the headline `SCS → post-retrieval clarity`
+    // is not an independent quality signal at all — it is the reach column
+    // (`SCS → admitted`, ρ ≈ −0.69) reflected through the estimator's own bias.
+    [
+      'admitted → post-retrieval clarity ⚠ CONFOUND CHECK',
+      withPost.map((r) => r.admitted),
+      withPost.map((r) => r.postBits),
+    ],
   ];
 
   const DRAWS = 999;
@@ -449,6 +462,41 @@ async function main(): Promise<void> {
         `${nul ? `${nul.lo.toFixed(3)} … ${nul.hi.toFixed(3)}` : '—'} | ${nul ? nul.p.toFixed(3) : '—'} |`,
     );
   }
+  // ── REACH control (the confound the within-surface control does NOT cover). ──
+  // The within-surface control below rules out CLAMP WIDTH. It cannot rule out
+  // REACH, because reach varies inside every surface. Both outcome columns are
+  // measured on the SAME result set and the estimator is size-biased, so the
+  // headline association is satisfiable by a query that merely retrieves less.
+  // Partialling `admitted` out of `SCS → post-clarity` is what separates the
+  // two readings — and a partial that collapses toward 0 is the informative
+  // outcome, not a failure to find one.
+  {
+    const px = withPost.map((r) => r.scs);
+    const py = withPost.map((r) => r.postBits);
+    const pz = withPost.map((r) => r.admitted);
+    const raw = spearman(px, py);
+    const partial = partialSpearman(px, py, pz);
+    console.log(`\n## Reach control — is "post-retrieval clarity" independent of how MUCH was retrieved?\n`);
+    console.log(`| statistic | n | value |`);
+    console.log(`|---|---:|---:|`);
+    console.log(`| ρ(SCS → post-clarity) RAW | ${px.length} | ${raw === null ? '—' : raw.toFixed(3)} |`);
+    console.log(
+      `| ρ(SCS → post-clarity) CONTROLLING FOR admitted | ${px.length} | ` +
+        `${partial === null ? '— (undefined)' : `**${partial.toFixed(3)}**`} |`,
+    );
+    if (raw !== null && partial !== null) {
+      const shrink = Math.abs(raw) > 0 ? 1 - Math.abs(partial) / Math.abs(raw) : 0;
+      console.log(
+        `\nThe partial removes ${(shrink * 100).toFixed(1)}% of the raw association's magnitude. ` +
+          `A partial near 0 means the raw ρ is ACCOUNTED FOR by retrieval reach — the predictor would then be ` +
+          `tracking how MUCH is retrieved, which is mechanically guaranteed (rarer terms match fewer documents) ` +
+          `and establishes NOTHING about quality. Read a surviving partial as the only evidence of validity here, ` +
+          `and note that neither outcome column is a RELEVANCE judgement: nothing in this study labels whether an ` +
+          `admitted line was actually useful.`,
+      );
+    }
+  }
+
   // ── WITHIN-SURFACE control. ──
   // `SCS = avgIdf − log2(n)` and the clamp width sets how many terms the
   // selector has to choose from, so the SURFACE moves both sides of every

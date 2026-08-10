@@ -50,8 +50,22 @@ function makeTx(results: unknown[][]) {
     i += 1;
     return r;
   });
-  return { tx, calledTimes: () => tx.mock.calls.length };
+  return {
+    tx,
+    calledTimes: () => tx.mock.calls.length,
+    /** The SQL text of each call, so an assertion can name the query it cares
+     *  about instead of counting calls. A bare call COUNT is a proxy: it breaks
+     *  whenever the handler gains an unrelated query (it did — EI-20034001963934568
+     *  added the batched turn_origin resolve) while the rule it stands for is
+     *  still perfectly intact. */
+    sqlTexts: () =>
+      tx.mock.calls.map((c) => (Array.isArray(c[0]) ? (c[0] as unknown as string[]).join(' ? ') : String(c[0]))),
+  };
 }
+
+/** The owner-scope aggregate this suite exists to police. */
+const AGGREGATE_PROBE = /COUNT\(DISTINCT session_id\)/;
+const aggregateProbes = (sqls: string[]) => sqls.filter((s) => AGGREGATE_PROBE.test(s)).length;
 
 function callTool(args: Record<string, unknown>, tx: unknown) {
   return (
@@ -62,9 +76,13 @@ function callTool(args: Record<string, unknown>, tx: unknown) {
 }
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {
-  const { tx, calledTimes } = makeTx(results);
+  const { tx, calledTimes, sqlTexts } = makeTx(results);
   const res = await callTool(args, tx);
-  return { parsed: JSON.parse(res.content[0].text) as ParsedResult, txCalls: calledTimes() };
+  return {
+    parsed: JSON.parse(res.content[0].text) as ParsedResult,
+    txCalls: calledTimes(),
+    sqls: sqlTexts(),
+  };
 }
 
 describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475)', () => {
@@ -76,7 +94,7 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
       sessionId: 'sess-current',
       filePath: '/home/x/.papercusp/session-claude/su-self/projects/repo/sess-current.jsonl',
     });
-    const { parsed, txCalls } = await run(
+    const { parsed, sqls } = await run(
       { session: 'self', mode: 'verbatim', query: 'something I said yesterday' },
       [
         [], // main verbatim ILIKE query -> zero rows
@@ -84,7 +102,7 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
       ],
     );
 
-    expect(txCalls).toBe(2);
+    expect(aggregateProbes(sqls)).toBe(1);
     expect(parsed.total_hits).toBe(0);
     expect(parsed.zeroHitCaveat).toBeDefined();
     expect(parsed.zeroHitCaveat).toMatch(/3/);
@@ -97,7 +115,7 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
       sessionId: 'sess-current',
       filePath: '/home/x/.papercusp/session-claude/su-self/projects/repo/sess-current.jsonl',
     });
-    const { parsed, txCalls } = await run(
+    const { parsed, sqls } = await run(
       { session: 'self', mode: 'verbatim', query: 'something never said' },
       [
         [], // main verbatim ILIKE query -> zero rows
@@ -105,7 +123,7 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
       ],
     );
 
-    expect(txCalls).toBe(2);
+    expect(aggregateProbes(sqls)).toBe(1);
     expect(parsed.total_hits).toBe(0);
     expect(parsed.zeroHitCaveat).toBeUndefined();
   });
@@ -116,7 +134,7 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
       sessionId: 'sess-current',
       filePath: '/home/x/.papercusp/session-claude/su-self/projects/repo/sess-current.jsonl',
     });
-    const { parsed, txCalls } = await run(
+    const { parsed, sqls } = await run(
       { session: 'self', mode: 'verbatim', query: 'a phrase that matches', context: 0 },
       [
         [{
@@ -126,7 +144,10 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
       ],
     );
 
-    expect(txCalls).toBe(1); // main query only — no aggregate probe (context:0 skips window hydration too)
+    // The RULE: the owner-scope aggregate is for a 0-hit result only. Asserted by
+    // NAME, not by call count — context:0 skips window hydration, but the handler
+    // still resolves turn_origin for the hit, and that is not this suite's subject.
+    expect(aggregateProbes(sqls)).toBe(0);
     expect(parsed.total_hits).toBe(1);
     expect(parsed.zeroHitCaveat).toBeUndefined();
   });

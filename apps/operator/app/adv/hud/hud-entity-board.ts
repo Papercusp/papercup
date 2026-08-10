@@ -258,7 +258,19 @@ export interface HudGoalInput {
   spendRecentWindowDays?: number | null;
   budgetCents?: number | null;
   createdAt?: string | null;
+  /**
+   * When the goal's DEFINITION last changed — NOT when it last progressed.
+   * Kept for ORDERING only (see toGoalCard); never aged for display, because
+   * only `goals:update` writes it. See GoalSummaryRow.updatedAt for the
+   * measurement behind that claim.
+   */
   updatedAt?: string | null;
+  /**
+   * When work under this goal last moved (P-004). Optional, and its ABSENCE is
+   * meaningful in the same way `spendRecentUsd`'s is: no reading means no
+   * staleness verdict at all, never "stale forever".
+   */
+  lastActivityAt?: string | null;
   /**
    * The parent goal, when this row is a SUBDIRECTIVE rather than a goal in its
    * own right (goals-tab-improvement-2026-08-09 P-017 / D-006).
@@ -810,6 +822,66 @@ export function burnTitle(burn: GoalBurn, goal: HudGoalInput): string {
   );
 }
 
+/**
+ * How long a goal has been silent, and whether that silence MEANS anything
+ * (goals-tab-improvement-2026-08-09 P-004 / D-017).
+ *
+ * The states exist because "how long since this changed" and "should I worry"
+ * are different questions, and the board previously answered only the first —
+ * flatly, so a goal silent nine days looked like one silent nine minutes.
+ *
+ *   - `expected`   — terminal, paused or blocked. Silence is the POINT; saying
+ *                    anything here would manufacture a false alarm.
+ *   - `unmeasured` — no activity reading at all (no work item has ever been
+ *                    stamped to this goal). NOT "silent forever": the P-002
+ *                    unmeasured-is-not-zero rule, applied a third time.
+ *   - `moving`     — measured and inside the threshold.
+ *   - `stalled`    — claims to be running, nothing has moved.
+ *   - `abandoned`  — stalled AND nothing is even queued to move it.
+ */
+export type GoalSilenceState = 'expected' | 'unmeasured' | 'moving' | 'stalled' | 'abandoned';
+
+export interface GoalSilence {
+  state: GoalSilenceState;
+  /** Seconds since work last moved — null whenever there is no reading. */
+  silentSec: number | null;
+}
+
+/** Silent this long on a goal that claims to be running, and we say so. */
+const GOAL_STALE_AFTER_SEC = 24 * 60 * 60;
+/** Silent this long with NOTHING queued, and "stalled" understates it. */
+const GOAL_ABANDONED_AFTER_SEC = 72 * 60 * 60;
+
+export function goalSilence(goal: HudGoalInput, nowMs: number): GoalSilence {
+  const status = (goal.status ?? '').toLowerCase();
+  // A finished goal is supposed to be quiet, and a paused/blocked one is quiet
+  // ON PURPOSE — escalating either would invent exactly the dishonesty Phase A
+  // exists to remove. Keyed on STATUS, not on the column: goalColumn reports
+  // `needs-you` for a paused goal that also has an ask, and that goal is still
+  // deliberately stopped.
+  if (GOAL_TERMINAL_STATUSES.has(status) || status === 'paused' || status === 'blocked') {
+    return { state: 'expected', silentSec: null };
+  }
+
+  // Aged off lastActivityAt, NEVER off updatedAt: only `goals:update` writes
+  // that one, so a busy goal nobody has retitled would read as maximally stale.
+  const silentSec = ageSec(goal.lastActivityAt, nowMs);
+  if (silentSec == null) return { state: 'unmeasured', silentSec: null };
+  if (silentSec < GOAL_STALE_AFTER_SEC) return { state: 'moving', silentSec };
+
+  // Recent spend is an INDEPENDENT sign of life: a goal can be burning money
+  // inside one long agent turn while no work item has moved yet. `?? 0` is the
+  // safe direction HERE (unlike everywhere else in this file) precisely because
+  // it is only ever used to DOWNGRADE the alarm — an absent reading must not be
+  // treated as evidence of life.
+  const spendingNow = (goal.spendRecentUsd ?? 0) > 0;
+  const queued = (goal.openWorkItems ?? 0) > 0;
+  if (!queued && !spendingNow && silentSec >= GOAL_ABANDONED_AFTER_SEC) {
+    return { state: 'abandoned', silentSec };
+  }
+  return { state: 'stalled', silentSec };
+}
+
 /** A goal row rendered as one of its parent's subdirectives (D-006). */
 export function toSubGoal(goal: HudGoalInput): HudSubGoal {
   const status = (goal.status ?? '').toLowerCase();
@@ -885,6 +957,22 @@ export function toGoalCard(
     });
   }
 
+  // SILENCE (P-004). The chip carries the VERDICT, never the duration — the
+  // age already sits in the card header, and repeating it here would spend the
+  // glance surface's scarcest space saying the same thing twice.
+  const silence = goalSilence(goal, nowMs);
+  if (silence.state === 'stalled' || silence.state === 'abandoned') {
+    const abandoned = silence.state === 'abandoned';
+    badges.push({
+      id: `${goal.id}:silence`,
+      label: abandoned ? 'abandoned' : 'stalled',
+      tone: abandoned ? 'bad' : 'warn',
+      title: abandoned
+        ? 'No work item has moved here in days, nothing is open, and nothing is spending — this goal is active in name only'
+        : 'This goal is running, but no work item under it has moved recently',
+    });
+  }
+
   return {
     id: goal.id,
     ref: goal.id.slice(0, 8),
@@ -897,8 +985,14 @@ export function toGoalCard(
     reason: goal.killCriterion?.trim() || 'No kill criterion — nothing can stop this goal',
     context: null,
     badges,
-    sinceSec: ageSec(goal.updatedAt, nowMs),
-    sortKey: sortKeyFor(column, goal.updatedAt),
+    // The age is ACTIVITY, not the definition-edit time it used to show. Null
+    // when nothing has ever moved, which formatAge renders as an em-dash —
+    // honest, where "0s" or the creation date would both be inventions.
+    sinceSec: silence.silentSec,
+    // ORDERING may fall back where DISPLAY must not: a total order is required
+    // to lay the column out at all, so a goal with no activity yet sorts by
+    // when it was defined rather than dropping to the bottom as unknown.
+    sortKey: sortKeyFor(column, goal.lastActivityAt ?? goal.updatedAt),
     ...(subGoals.length > 0 ? { subGoals } : {}),
   };
 }

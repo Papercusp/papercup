@@ -56,7 +56,27 @@ export interface GoalSummaryRow {
   budgetCents: number | null;
   spentCents: number | null;
   createdAt: string | null;
+  /**
+   * When the goal's DEFINITION last changed — NOT when it last made progress.
+   *
+   * MEASURED (goals-tab-improvement-2026-08-09 P-004): the only writer of
+   * `goals.updated_at` in the tree is `goals:update` (packages/agent-mcp/src/
+   * tools/goals/update.ts), which fires on title/body/status/budget/parent/
+   * kill-criterion/tripwires/metadata edits. Work items moving, agents
+   * spending and sessions running do not touch it. Reading this field as
+   * recency-of-activity is wrong in BOTH directions: a furiously-active goal
+   * nobody has retitled looks stale, and a dead goal whose title was just
+   * edited looks fresh. Use `lastActivityAt` for activity.
+   */
   updatedAt: string | null;
+  /**
+   * When work under this goal last moved — the honest activity signal, and the
+   * one the glance surface ages off. `null` means NO work item has ever been
+   * stamped to this goal, which is a real state ("nothing has ever happened
+   * here"), not a zero: it must render as unmeasured rather than as infinite
+   * staleness (the P-002 unmeasured-is-not-zero rule, applied a third time).
+   */
+  lastActivityAt: string | null;
   projectCount: number;
   /** Open work-items stamped to this goal — the "is anything moving" signal. */
   openWorkItems: number;
@@ -130,6 +150,7 @@ interface RawGoal {
   metadata: Record<string, unknown> | null;
   created_at: string | Date | null;
   updated_at: string | Date | null;
+  last_activity_at: string | Date | null;
   project_count: string | null;
   open_work_items: string | null;
   needs_human: string | null;
@@ -162,6 +183,7 @@ function toSummary(r: RawGoal): GoalSummaryRow {
     spentCents,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
+    lastActivityAt: iso(r.last_activity_at),
     projectCount: num(r.project_count),
     openWorkItems: num(r.open_work_items),
     needsHuman: num(r.needs_human),
@@ -220,7 +242,17 @@ export async function resolveGoalsList(args: {
                  AND s.harness_slug IN (
                    SELECT gp.harness_slug FROM harness_shared.goal_projects gp
                     WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
-                      AND gp.removed_at IS NULL)) AS spend_recent_usd
+                      AND gp.removed_at IS NULL)) AS spend_recent_usd,
+             -- ACTIVITY, as distinct from the definition-edit time in
+             -- g.updated_at (P-004). Deliberately spans CLOSED items too: a
+             -- goal whose last act was finishing its work has still been
+             -- active, and filtering to open items would date it from whenever
+             -- the last unfinished thing happened to stall. wi.updated_ts is
+             -- epoch MILLIS (bigint) — the same shape the detail path's
+             -- MAX(wi.updated_ts) aggregation already uses below.
+             (SELECT to_timestamp(MAX(wi.updated_ts) / 1000.0)
+                FROM harness_shared.work_items wi
+               WHERE wi.goal_id = g.id) AS last_activity_at
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId}
          AND (${status}::text IS NULL OR g.status = ${status}::text)

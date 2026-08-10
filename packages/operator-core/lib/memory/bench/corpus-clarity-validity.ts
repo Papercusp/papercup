@@ -71,6 +71,42 @@ export function spearman(a: readonly number[], b: readonly number[]): number | n
 }
 
 /**
+ * FIRST-ORDER PARTIAL Spearman: the association between `a` and `b` once the
+ * variance they SHARE with `c` is removed.
+ *
+ * This exists because R5's two outcome columns are NOT independent. Retrieval
+ * reach (admitted lines) and post-retrieval clarity are measured on the same
+ * result set, and `postRetrievalClarity` is a PLUG-IN KL estimator over that
+ * set's term distribution — a smaller set is sparser and therefore peakier, so
+ * bits rise mechanically as admitted falls. A raw rho(SCS, postBits) is
+ * consequently satisfied by a query that merely retrieves LESS, which is the
+ * exact reading R5 must not accept as "clarity predicts retrieval quality".
+ *
+ * `null` when any input rho is undefined, or when |rho(a,c)| or |rho(b,c)| is 1
+ * (the denominator vanishes: `c` fully determines a series, so nothing is left
+ * to partial out). Never returns 0 for an unmeasurable case — 0 would read as
+ * "measured no association" when nothing was measurable at all.
+ *
+ * ⚠ Removing shared variance is NOT the same as establishing a causal path, and
+ * a partial rho near 0 is the strongest statement here: it says the raw
+ * association is ACCOUNTED FOR by `c`, not that `a` and `b` are unrelated.
+ */
+export function partialSpearman(
+  a: readonly number[],
+  b: readonly number[],
+  c: readonly number[],
+): number | null {
+  if (a.length !== b.length || a.length !== c.length) return null;
+  const rab = spearman(a, b);
+  const rac = spearman(a, c);
+  const rbc = spearman(b, c);
+  if (rab === null || rac === null || rbc === null) return null;
+  const denom = Math.sqrt((1 - rac * rac) * (1 - rbc * rbc));
+  if (!Number.isFinite(denom) || denom === 0) return null;
+  return (rab - rac * rbc) / denom;
+}
+
+/**
  * Deterministic Fisher-Yates over a seeded LCG.
  *
  * ⚠ Deliberately a full shuffle rather than a rotation. A rotation preserves the

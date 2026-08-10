@@ -99,7 +99,13 @@ function gitGrepLines(cwd) {
       ['grep', '-nIE', '(WI|EI)-[0-9]{3,}', '--', '*.ts', '*.tsx', '*.mjs', '*.js', '*.sh', '*.sql'],
       { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    return out.split('\n').filter(Boolean);
+    // SELF-CONTAMINATION: this detector's own test file quotes REAL citation lines verbatim as
+    // fixtures (that is deliberate — inventing example lines is how the classifier drifts from
+    // the tree). But those fixtures then read as genuine citations of the real ids inside them,
+    // so the detector cites itself as evidence about other people's work items. Measured
+    // 2026-08-10: WI-560 surfaced in a 20-item guard-tier sample with one of its two citations
+    // pointing at fixed-but-open-citation-tiering.test.ts. Excluded by path.
+    return out.split('\n').filter(Boolean).filter((l) => !l.includes('fixed-but-open-citation-tiering.test.ts'));
   } catch (err) {
     if (err && err.status === 1) return []; // genuine no-match
     return [];

@@ -25,6 +25,7 @@ import {
   refreshLiveSessionsBeforeRead, type WindowTurn,
 } from './_shared';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
+import { resolveHitTurnOrigins, turnOriginKey, unknownTurnOrigin } from './turn-origin';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
@@ -40,7 +41,7 @@ export default defineTool({
     notWhen:
       'Recall over escalations/brainstorm/decisions/work-items — search:fulltext / search:semantic. Distilled facts — memory:search. Reading a known session sequentially — sessions:read.',
     chaining:
-      'Each hit carries readMore args for sessions:read (a wider window). fleet:<slug> resolves EVER-members from the membership ledger — postmortem-safe.',
+      "Each hit carries readMore args for sessions:read (a wider window). fleet:<slug> resolves EVER-members from the membership ledger — postmortem-safe. VERIFYING AN OWNER DIRECTIVE: read the hit's provenance.turn_origin, not just that a hit came back — a speaker='user' hit is often a replayed loop goal (agent-authored); 'unknown' means undetermined, never fake.",
     seeAlso: ['sessions:read (window read)', 'sessions:list (enumerate sessions)', 'search:semantic (other corpora)'],
   },
   requirePrincipal: false,
@@ -198,9 +199,38 @@ export default defineTool({
       }
     }
 
+    // EI-20034001963934568: resolve each session_turn hit's ORIGIN — is this
+    // turn owner-typed, or the harness replaying an agent's own loop goal into
+    // a `speaker='user'` turn? Without it, the verification the compaction
+    // rules PRESCRIBE ("search your transcript for the directive") passes on
+    // the agent's own words. Re-read from the corpus rather than classifying
+    // `h.excerpt`: a hybrid excerpt is a mid-body snippet and the origin
+    // envelope is head-anchored (see turn-origin.ts, property 1). One batched
+    // round trip for the page; never fail the search over it.
+    let turnOrigins = new Map<string, ReturnType<typeof unknownTurnOrigin>>();
+    let turnOriginsResolved = true;
+    const originKeys = pageHits
+      .filter((h) => h.source === 'session_turn')
+      .map((h) => ({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx }));
+    if (originKeys.length) {
+      try {
+        turnOrigins = await resolveHitTurnOrigins(ctx.tx, workspaceId, originKeys);
+      } catch {
+        turnOriginsResolved = false; // every hit falls through to `unknown`
+      }
+    }
+
     // Hydrate ±context windows only for this page.
     const out = [];
     for (const h of pageHits) {
+      const turnOrigin = h.source === 'session_turn'
+        ? turnOrigins.get(turnOriginKey({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx }))
+          ?? unknownTurnOrigin(
+            turnOriginsResolved
+              ? 'this turn was not found in the corpus on re-read'
+              : 'the origin lookup failed',
+          )
+        : undefined;
       let window: WindowTurn[] | undefined;
       if (h.source === 'session_turn' && context > 0) {
         try {
@@ -212,7 +242,8 @@ export default defineTool({
         provenance: h.source === 'session_turn'
           ? { source_kind: h.sourceKind, session_id: h.sessionId, turn_idx: h.turnIdx,
               ...(h.speaker ? { speaker: h.speaker } : {}), ...(h.owner ? { owner: h.owner } : {}),
-              ...(h.harness_slug ? { harness_slug: h.harness_slug } : {}), ...(h.ts ? { ts: h.ts } : {}) }
+              ...(h.harness_slug ? { harness_slug: h.harness_slug } : {}), ...(h.ts ? { ts: h.ts } : {}),
+              ...(turnOrigin ? { turn_origin: turnOrigin } : {}) }
           : { msg_id: h.sessionId },
         excerpt: h.excerpt,
         ...(h.highlight ? { highlight: h.highlight } : {}),
