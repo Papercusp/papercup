@@ -27,8 +27,58 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
 // (the memory-pools leg is pinned in memory/claim-port.test.ts).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 
-import { createOneWorkItem } from './_create-core';
+import { createOneWorkItem, type CreateOneWorkItemResult } from './_create-core';
+import type { WorkItem } from '../../work-items';
 const createM = vi.mocked(createOneWorkItem);
+
+/**
+ * COMPLETE typed fixtures, so the mocks below are checked against the real
+ * `createOneWorkItem` signature instead of escaping through `as never`
+ * (EI-19282401068515102 / lint:mock-cast-escape). A cast on a mock defeats the one
+ * guarantee `vi.mocked()` exists to give: when the real result type gains a required
+ * field, a cast fixture goes stale INVISIBLY and fails at runtime in some unrelated
+ * peer's green-checkpoint hours later. With these, it is a compile error right here.
+ */
+const aWorkItem = (over: Partial<WorkItem> = {}): WorkItem => ({
+  id: 'WI-1',
+  kind: 'bug',
+  family: 'issue',
+  harness: 'papercup',
+  title: 'a title',
+  summary: '',
+  state: 'open',
+  assignee: null,
+  takenAt: null,
+  lastProgressAt: null,
+  assignedBy: null,
+  createdBy: null,
+  severity: null,
+  parent: null,
+  payload: null,
+  origin: null,
+  auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
+  rank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  priority: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  terminalCompletionEvidence: null,
+  completionAuthority: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  closedAt: null,
+  ...over,
+});
+
+/** The ok:true arm of a core create, keyed off the spec's title like the real thing. */
+type OkCore = Extract<CreateOneWorkItemResult, { ok: true }>;
+const okCore = (title: string, over: Partial<OkCore> = {}): CreateOneWorkItemResult => ({
+  ok: true,
+  workItem: aWorkItem({ id: `WI-${title}`, title }),
+  ...over,
+});
 const tool = (await import('./create')).default;
 const codeSmellsLikeCode = (await import('./create')).codeSmellsLikeCode;
 
@@ -40,7 +90,7 @@ const body = async (args: unknown) => (((await tool.handler(parse(args) as never
 beforeEach(() => {
   vi.clearAllMocks();
   fleetAdmission.decision = { allowed: true, scoped: false };
-  createM.mockImplementation(async (spec: { title: string }) => ({ ok: true, workItem: { id: `WI-${spec.title}`, kind: 'bug', title: spec.title } }) as never);
+  createM.mockImplementation(async (spec) => okCore(spec.title));
 });
 
 describe('codeSmellsLikeCode + the task nudge (WI-2874)', () => {
@@ -116,6 +166,37 @@ describe('work_items:create handler (keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-boom', title: 'boom', workItem: { id: 'WI-boom' } });
     expect(createM).toHaveBeenCalledTimes(1);
+  });
+
+  // EI-20075667133396690. This result row is REBUILT from an allowlist, not spread
+  // from the core's result, so a core outcome field reaches the agent only if this
+  // handler names it. `goalId` was returned by the core since P-002 and, because
+  // nobody named it here, never once surfaced — the field existed and had no reader.
+  // These two pin the wire, which is the half that silently rots: the core-level
+  // tests in _create-core.goal-stamp-silence.test.ts can stay green forever while
+  // the agent sees nothing.
+  it('surfaces goalId from the core to the caller', async () => {
+    createM.mockImplementation(async (spec) => okCore(spec.title, { goalId: 'goal-abc' }));
+    const b = await body({ kind: 'bug', title: 'boom' });
+    expect(b.results[0].goalId).toBe('goal-abc');
+  });
+
+  it('surfaces goalStampError — the item is filed, but its goal attribution was NOT recorded', async () => {
+    createM.mockImplementation(async (spec) =>
+      okCore(spec.title, { goalStampError: 'column "goal_id" does not exist' }),
+    );
+    const b = await body({ kind: 'bug', title: 'boom' });
+    // Still ok:true — the stamp is a decoration and must never fail a creation.
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-boom' });
+    // ...but the caller is told, and told what it COSTS, not just that it threw.
+    expect(b.results[0].goalStampError).toMatch(/goal attribution was NOT recorded/);
+    expect(b.results[0].goalStampError).toMatch(/column "goal_id" does not exist/);
+  });
+
+  it('CONTROL: an ordinary create (no goal) carries neither goal field', async () => {
+    const b = await body({ kind: 'bug', title: 'boom' });
+    expect(b.results[0].goalId).toBeUndefined();
+    expect(b.results[0].goalStampError).toBeUndefined();
   });
 
   it('creates MANY via items:[…] — one self-describing result per item', async () => {
@@ -238,10 +319,10 @@ describe('work_items:create handler (keyed-array)', () => {
   });
 
   it('a mirror-duplicate fails only that item (carries error + existing), batch still runs', async () => {
-    createM.mockImplementation(async (spec: { title: string }) =>
+    createM.mockImplementation(async (spec) =>
       spec.title === 'dup'
-        ? ({ ok: false, error: 'duplicate_mirror', message: 'references WI-9', existing: { id: 'WI-9', state: 'open' } } as never)
-        : ({ ok: true, workItem: { id: `WI-${spec.title}`, title: spec.title } } as never),
+        ? { ok: false, error: 'duplicate_mirror', message: 'references WI-9', existing: { id: 'WI-9', state: 'open' } }
+        : okCore(spec.title),
     );
     const b = await body({ items: [{ kind: 'bug', title: 'ok' }, { kind: 'bug', title: 'dup' }] });
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
