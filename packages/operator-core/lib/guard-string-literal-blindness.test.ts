@@ -383,6 +383,14 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
     // erased the rest of the line, hiding any literal tenant default that followed it.
     // Comments only, NOT the strings variant: its main quarry is the ALTERs inside a
     // `DO $$ … $$` loop, which the strings variant would seal away entirely.
+    // ⚠ PARTIAL, and its removal from this list is NOT a claim that the file is fully migrated:
+    // `stripSqlBodies` in that same file is STILL hand-rolled, deliberately (WI-37800 — its call
+    // sites need opposite masks, and its tag-regex bug is load-bearing today; swapping it was
+    // measured to drop a real detection). Note that removing it here changed nothing mechanically:
+    // classifyMasking() returns 'shared' on its FIRST match, so a file that imports the shared
+    // module is classified clean even while it hand-rolls another stripper elsewhere — this file
+    // would pass whether or not it were listed. That first-match-wins blind spot is filed as
+    // WI-37801; it means a PARTIAL migration silently exempts the remainder of the file forever.
   ]);
 
   const measurePopulation = (): string[] =>

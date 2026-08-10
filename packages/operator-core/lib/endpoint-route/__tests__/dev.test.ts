@@ -289,6 +289,21 @@ describe('dev/sql allowlist — adversarial split / CTE / comment / dollar-quote
     ['mutation after a NESTED block comment', '/* outer /* inner */ */ DELETE FROM t'],
     ['mutation after a tagged dollar body', 'SELECT $tag$ x $tag$; ALTER TABLE t ADD COLUMN c int'],
     ['GRANT after a quoted identifier', 'SELECT * FROM "x"; GRANT ALL ON t TO u'],
+    /*
+     * ⚠ THE MOST IMPORTANT ROW IN THIS TABLE — the only one that tests the DANGEROUS direction.
+     *
+     * Every other row here fails "safe": weaken the mask so it masks too LITTLE and you get a
+     * spurious REJECT, which is annoying but harmless. This row fails the other way. The `--`
+     * sits inside a string literal, so a mask that is not quote-aware treats it as a comment
+     * start and blanks the rest of the line — INCLUDING the real DELETE. The scanner then sees
+     * a clean SELECT and the write EXECUTES.
+     *
+     * Measured, not theorised: under a naive `--`-regex mask this exact statement returns
+     * isDataModifying === false. It is the same string-literal blindness that was silently
+     * costing three migration lints their findings (EI-20073035509369492); at THIS call site
+     * the same bug is a write-smuggling hole rather than a missed lint.
+     */
+    ['mutation hidden behind a `--` INSIDE a string literal', "SELECT 'note -- x'; DELETE FROM harness_shared.work_items"],
   ];
 
   const READS_THAT_MUST_NOT_BE_FLAGGED: [string, string][] = [

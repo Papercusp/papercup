@@ -108,6 +108,31 @@ export const ENFORCED_FROM = 494;
  * comments so only top-level SQL remains for transaction-control detection.
  */
 export function stripSqlBodies(sqlText) {
+  /*
+   * ⚠ DELIBERATELY NOT MIGRATED ONTO THE SHARED MASK — measured, not assumed
+   * (EI-20073035509369492, 2026-08-10). Its three siblings in this repo's SQL-stripper family
+   * WERE consolidated; this one must not be, until its call sites are split. Two findings:
+   *
+   * 1. THE TAG REGEX BELOW IS WRONG, AND THAT BUG IS LOAD-BEARING TODAY. PostgreSQL allows
+   *    digits in a dollar-quote tag after the first character, but `[A-Za-z_]*` does not match
+   *    them — so `DO $mig377$ … $mig377$` is NOT recognised as a dollar quote and its body is
+   *    left LIVE, while `DO $$ … $$` and `$body$ … $body$` are sealed. Whether a DO block's DDL
+   *    is visible to the detectors below therefore depends on whether its tag happens to contain
+   *    a digit. That is arbitrary, and it is why migration 377's in-DO unique-constraint swap is
+   *    currently seen by findUniqueIndexShapeSwap at all.
+   *
+   * 2. THE CALL SITES WANT OPPOSITE MASKS, so no single swap is correct:
+   *      - findRawTxControl NEEDS bodies sealed — a `BEGIN` inside a PL/pgSQL body is not a
+   *        top-level transaction control, and un-sealing it mints false positives.
+   *      - findUniqueIndexShapeSwap NEEDS to SEE inside bodies — a DROP+re-ADD of a unique
+   *        constraint inside a `DO` block is real DDL that really executes, and sealing it is a
+   *        false NEGATIVE on a safety lint.
+   *    Swapping wholesale to `stripSqlCommentsAndStrings` seals every body and was MEASURED to
+   *    drop migration 377's detection (6 firing files -> 5). Consolidating here means choosing a
+   *    mask PER CALL SITE and fixing the tag bug — a behavioural redesign of these detectors,
+   *    not the mechanical substitution the other three sites were. Tracked separately rather
+   *    than smuggled in behind a refactor.
+   */
   const s = String(sqlText);
   let out = '';
   let i = 0;
