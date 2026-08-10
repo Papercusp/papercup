@@ -39,6 +39,7 @@
 import { describe, expect, it } from "vitest";
 import { shapePlansGet } from "./get-shape";
 import { clipSectionBody, clipWithMarker } from "./shape-clip";
+import { findSection, splitSections } from "./get.js";
 
 /** The implementation that shipped the bug: a bare `…`, indistinguishable from prose. */
 const PRE_FIX_CLIP = (s: string, n: number): string =>
@@ -172,5 +173,85 @@ describe("clipWithMarker / clipSectionBody", () => {
     expect(cut.recordsShown).toBe(0);
     expect(cut.recordsTotal).toBe(2);
     expect(cut.body).toContain("TRUNCATED");
+  });
+});
+
+/**
+ * EI-19459526252132133 — the record marker's recovery pointer.
+ *
+ * This module's rule is that a pointer is advertised only if it RESOLVES: "a
+ * pointer that does not resolve is worse than none, because it becomes a lie
+ * the reader trusts." `payloadTier:"full"` was the only honest exit while a
+ * single record was unaddressable — but it is the wrong SIZE of answer, since
+ * re-serving all N records to recover one just overflows the door again.
+ *
+ * plans:get now resolves `heading` to a `### ` record, so the marker names the
+ * first record the reader is missing. The load-bearing test is the last one: it
+ * feeds the emitted pointer back through the REAL resolver, so if the two ever
+ * drift the pointer is caught being a lie rather than being trusted.
+ */
+describe("clipSectionBody — record recovery pointer", () => {
+  const PLAN_SECTION = [
+    "### D-001 — first ruling",
+    "a".repeat(3_000),
+    "",
+    "### D-020 — the load-bearing ruling",
+    "b".repeat(3_000),
+    "",
+    "### D-030 — a later ruling",
+    "c".repeat(3_000),
+  ].join("\n");
+
+  it("names the FIRST OMITTED record, not the last shown one", () => {
+    const cut = clipSectionBody(PLAN_SECTION, 4_000);
+    expect(cut.recordsShown).toBe(1);
+    expect(cut.recordsTotal).toBe(3);
+    // D-001 was shown; D-020 is the first thing the reader is missing.
+    expect(cut.body).toContain('plans:get { heading:"D-020');
+    expect(cut.body).not.toContain('heading:"D-001');
+  });
+
+  it("still fits the budget with the pointer included", () => {
+    // The reserve is sized against a full-length heading placeholder, so a
+    // single pass must never overrun regardless of the real heading's length.
+    for (const n of [300, 1_000, 4_000, 8_000]) {
+      const cut = clipSectionBody(PLAN_SECTION, n);
+      expect(cut.body.length, `cap ${n}`).toBeLessThanOrEqual(n);
+    }
+  });
+
+  it("names the first record when ZERO complete records survive", () => {
+    const huge = `### D-001 — a ruling\n${"x".repeat(50_000)}\n\n### D-002\nsecond\n`;
+    const cut = clipSectionBody(huge, 1_000);
+    expect(cut.recordsShown).toBe(0);
+    expect(cut.body).toContain('plans:get { heading:"D-001');
+  });
+
+  it("keeps a long heading bounded so the marker cannot crowd out content", () => {
+    // The omitted record carries a ~400-char heading; the quote must be capped
+    // (RECOVER_HEADING_MAX) or the marker eats the budget it was reserved from.
+    const longHeading = `### ${"D-020 — ".padEnd(400, "very long ruling title ")}`;
+    const body = `### D-001 — a ruling\n${"a".repeat(1_500)}\n\n${longHeading}\n${"b".repeat(3_000)}\n`;
+    const cut = clipSectionBody(body, 2_500);
+    expect(cut.truncated).toBe(true);
+    expect(cut.recordsShown).toBe(1);
+    expect(cut.body.length).toBeLessThanOrEqual(2_500);
+    expect(cut.body).toContain("TRUNCATED");
+    expect(cut.body).toContain('heading:"D-020');
+  });
+
+  it("THE POINTER RESOLVES: the heading it names round-trips through plans:get's resolver", () => {
+    // The falsifier for this whole change. A marker that quotes a heading the
+    // real lookup cannot find would be exactly the lie this module forbids —
+    // and a clipped heading only works because that lookup matches substrings.
+    const cut = clipSectionBody(PLAN_SECTION, 4_000);
+    const quoted = /heading:"([^"]+)"/.exec(cut.body)?.[1];
+    expect(quoted).toBeTruthy();
+
+    const sections = splitSections(`## Decisions\n${PLAN_SECTION}`);
+    const resolved = findSection(sections, quoted!);
+    expect(resolved?.level).toBe(3);
+    expect(resolved?.heading).toBe("D-020 — the load-bearing ruling");
+    expect(resolved?.body).toContain("b".repeat(100));
   });
 });

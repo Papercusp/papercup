@@ -154,3 +154,100 @@ describe("plans:get { heading } narrowing (EI-19478970139996135)", () => {
     expect(out.section).toEqual({ heading: "Notes", level: 2, body: "notes body" });
   });
 });
+
+/**
+ * EI-19459526252132133 — `heading` resolving a level-3 (`### `) subsection.
+ *
+ * Decisions are `### D-NNN` records under `## Decisions`, and splitSections
+ * indexes levels 1-2 only, so ONE decision was unreachable by any read while
+ * three tools could WRITE one by id. The whole `## Decisions` section was the
+ * smallest readable unit, and on a mature plan that section is exactly what
+ * overflows the result door.
+ *
+ * What these guard is not "the fallback works" but the two properties that let
+ * it be added safely: an existing top-level lookup can NEVER change meaning,
+ * and the section INDEX is untouched (no payload inflation).
+ */
+describe("plans:get heading — level-3 subsection fallback", () => {
+  const PLAN = [
+    "## Now",
+    "doing things",
+    "",
+    "## Decisions",
+    "preamble prose that belongs to no record",
+    "",
+    "### D-001 — first ruling",
+    "the first body",
+    "",
+    "### D-097 — the governing ruling",
+    "the ruling that actually governs the work",
+    "```",
+    "### not a heading — inside a fence",
+    "```",
+    "still D-097",
+    "",
+    "### D-098 — a later ruling",
+    "the last body",
+    "",
+    "## Decisions Appendix",
+    "appendix body",
+  ].join("\n");
+
+  const sections = () => splitSections(PLAN);
+
+  it("resolves a ### record by id, returning only that record", () => {
+    const sec = findSection(sections(), "D-097");
+    expect(sec?.level).toBe(3);
+    expect(sec?.heading).toBe("D-097 — the governing ruling");
+    expect(sec?.body).toContain("the ruling that actually governs");
+    // Bounded by the NEXT record, not by the end of the section.
+    expect(sec?.body).not.toContain("the last body");
+    expect(sec?.body).not.toContain("the first body");
+  });
+
+  it("does not treat a ### line inside a fence as a record boundary", () => {
+    const sec = findSection(sections(), "D-097");
+    expect(sec?.body).toContain("inside a fence");
+    expect(sec?.body).toContain("still D-097");
+  });
+
+  it("a level-2 section still WINS over a level-3 record — an existing call cannot change meaning", () => {
+    // The top-level lookup is tried to exhaustion first, so a call that
+    // resolves to a section today can never start resolving to a subsection.
+    const sec = findSection(sections(), "Decisions");
+    expect(sec?.level).toBe(2);
+    expect(sec?.heading).toBe("Decisions");
+    expect(sec?.body).toContain("### D-001");
+  });
+
+  it("falls back to substring on level-2 before ever reaching level-3", () => {
+    const sec = findSection(sections(), "Appendix");
+    expect(sec?.level).toBe(2);
+    expect(sec?.heading).toBe("Decisions Appendix");
+  });
+
+  it("a PREFIX of a record heading resolves — the property the truncation pointer relies on", () => {
+    // shape-clip quotes a heading clipped to 48 chars; that pointer is only
+    // honest if a clipped heading is still a working `heading` argument.
+    const full = "D-097 — the governing ruling";
+    for (const n of [5, 10, full.length]) {
+      const sec = findSection(sections(), full.slice(0, n));
+      expect(sec?.heading, `prefix of length ${n}`).toBe(full);
+    }
+  });
+
+  it("still returns null for a heading that matches nothing", () => {
+    expect(findSection(sections(), "D-404")).toBeNull();
+  });
+
+  it("leaves the section INDEX at levels 1-2 — the fallback is lookup-only", () => {
+    // The reason this is not folded into splitSections: sectionIndex and
+    // counts.sections stay byte-identical, so no existing payload grows.
+    expect(sections().map((s) => s.heading)).toEqual([
+      "Now",
+      "Decisions",
+      "Decisions Appendix",
+    ]);
+    expect(sections().every((s) => s.level <= 2)).toBe(true);
+  });
+});
