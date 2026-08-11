@@ -986,6 +986,41 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     expect(addAttempts).toBe(3); // the original attempt + 2 retries before it resolved
   });
 
+  it('EI-20201578457434474: live index.lock contention retries with bounded backoff before surfacing an error', async () => {
+    let addAttempts = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
+      if (j.startsWith('add')) {
+        addAttempts++;
+        if (addAttempts < 3) {
+          return {
+            code: 128,
+            stderr: "fatal: Unable to create '/fake/.git/index.lock': File exists.\n\nAnother git process seems to be running",
+          };
+        }
+        return { code: 0 };
+      }
+      // Make the stale-lock probe fail closed in this injected case: the lock is
+      // live contention, not an orphan we are allowed to unlink.
+      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'not a git directory' };
+      if (j.startsWith('commit')) return { code: 0 };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      return { code: 0, stdout: '' };
+    });
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { push: false, pushSubmodules: false },
+    });
+    expect(out.status).toBe('synced');
+    expect(addAttempts).toBe(3); // original attempt + 2 bounded contention retries
+  });
+
   it('EI-18094449017685490: exhausting the transient-ENOENT retry budget still surfaces a real error (never a silent strand)', async () => {
     let addAttempts = 0;
     const run = fakeGit((args) => {

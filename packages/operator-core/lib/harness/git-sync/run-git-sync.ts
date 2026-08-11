@@ -607,6 +607,12 @@ export function isTransientStatFailure(output: string): boolean {
 export const TRANSIENT_STAT_FAILURE_MAX_RETRIES = 3;
 const TRANSIENT_STAT_FAILURE_RETRY_DELAY_MS = 150;
 
+/** A live git writer can hold `.git/index.lock` only briefly while it replaces the
+ * index. Retry that specific contention before surfacing an error, but keep the
+ * budget small so a genuinely wedged writer still reaches the stale-lock guard. */
+export const INDEX_LOCK_CONTENTION_MAX_RETRIES = 3;
+export const INDEX_LOCK_CONTENTION_RETRY_BASE_DELAY_MS = 100;
+
 /** A lock YOUNGER than this is treated as live contention (git rewrites the lock
  *  file as it builds the new index, so an in-flight writer keeps the mtime fresh);
  *  older = the writer is dead and the lock is an orphan. git-sync ticks run ~2min
@@ -1171,6 +1177,35 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       if (addRes.code !== 0 && isIndexLockFailure(`${addRes.stdout}\n${addRes.stderr}`)) {
         const cleared = await clearStaleIndexLock(runGit, repoPath, o.log);
         if (cleared) addRes = await runGit(buildAddArgs(stray), repoPath);
+
+        // LIVE-LOCK CONTENTION SELF-HEAL: another git process may be rebuilding the
+        // index right now. The stale-lock helper deliberately refuses to touch a fresh
+        // lock, but failing the whole tick immediately strands every agent's work for
+        // a predictable, short-lived race. Retry the exact add with bounded exponential
+        // backoff; if the writer remains live after the budget, the existing loud error
+        // path still reports it and the next tick can re-check for an orphan.
+        for (
+          let attempt = 1;
+          addRes.code !== 0 &&
+          isIndexLockFailure(`${addRes.stdout}\n${addRes.stderr}`) &&
+          attempt <= INDEX_LOCK_CONTENTION_MAX_RETRIES;
+          attempt++
+        ) {
+          const delayMs = INDEX_LOCK_CONTENTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+          o.log(
+            `[git-sync] ${repoPath}: 'git add -A' hit live index.lock contention — retrying after ${delayMs}ms (attempt ${attempt}/${INDEX_LOCK_CONTENTION_MAX_RETRIES})`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          addRes = await runGit(buildAddArgs(stray), repoPath);
+        }
+
+        // A lock that was live at the first check may have become orphaned while the
+        // bounded retries ran. Re-use the existing age-checked, unlink-only-when-stale
+        // helper rather than ever deleting a still-fresh writer's lock.
+        if (addRes.code !== 0 && isIndexLockFailure(`${addRes.stdout}\n${addRes.stderr}`)) {
+          const clearedAfterRetry = await clearStaleIndexLock(runGit, repoPath, o.log);
+          if (clearedAfterRetry) addRes = await runGit(buildAddArgs(stray), repoPath);
+        }
       }
       if (addRes.code !== 0) {
         return {
