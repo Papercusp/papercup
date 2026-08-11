@@ -57,6 +57,8 @@ type FakeChild = EventEmitter & {
   killed: boolean;
   stdout: EventEmitter;
   stderr: EventEmitter;
+  unref: ReturnType<typeof vi.fn>;
+  channel: { unref: ReturnType<typeof vi.fn> };
   kill: ReturnType<typeof vi.fn>;
 };
 
@@ -102,6 +104,10 @@ function makeChild(): FakeChild {
   child.killed = false;
   child.stdout = makeReplayableStdout();
   child.stderr = new EventEmitter();
+  child.unref = vi.fn();
+  (child.stdout as EventEmitter & { unref?: ReturnType<typeof vi.fn> }).unref = vi.fn();
+  (child.stderr as EventEmitter & { unref?: ReturnType<typeof vi.fn> }).unref = vi.fn();
+  child.channel = { unref: vi.fn() };
   child.kill = vi.fn((signal?: string) => {
     child.killed = true;
     child.emit('exit', signal === 'SIGKILL' ? 137 : 0);
@@ -165,6 +171,10 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     expect(opts.env?.PAPERCUSP_SPAWNER_IPC_SOCKET).toBe('/tmp/spawner-sidecar.sock');
     expect(isSpawnerSidecarRunning()).toBe(true);
     expect(getSpawnerSidecarProcess()).toBe(child);
+    expect(child.unref).toHaveBeenCalledOnce();
+    expect((child.stdout as EventEmitter & { unref: ReturnType<typeof vi.fn> }).unref).toHaveBeenCalledOnce();
+    expect((child.stderr as EventEmitter & { unref: ReturnType<typeof vi.fn> }).unref).toHaveBeenCalledOnce();
+    expect(child.channel.unref).toHaveBeenCalledOnce();
   });
 
   it('stopSpawnerSidecar SIGTERMs the child, resolves once it exits, and does NOT auto-respawn (P-006: deliberate stop gates the respawn machinery)', async () => {

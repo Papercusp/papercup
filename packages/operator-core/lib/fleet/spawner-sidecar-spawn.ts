@@ -333,6 +333,15 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
         if (line.includes('PAPERCUSP_SPAWNER_READY')) {
           sidecarReady = true;
           clearTimeout(timeout);
+          // A sidecar is long-lived while its host is alive, but it must not
+          // be the last referenced handle keeping a short-lived diagnostic
+          // process alive. Drop the child and its handshake pipes from the
+          // parent's event loop after readiness; the exit hook below still
+          // signals it when the host exits.
+          child.unref?.();
+          (child.stdout as unknown as { unref?: () => void } | null)?.unref?.();
+          (child.stderr as unknown as { unref?: () => void } | null)?.unref?.();
+          (child.channel as unknown as { unref?: () => void } | null)?.unref?.();
           resolve();
 
           // Wake any other waiters
@@ -412,6 +421,7 @@ export async function stopSpawnerSidecar(): Promise<void> {
 export function registerSpawnerSidecarShutdownHooks(): void {
   registerSharedSidecarShutdownHooks({
     label: 'spawner-sidecar-spawn',
+    mode: 'async-with-exit',
     stop: () => stopSpawnerSidecar(),
     // P-006: only tear down the sidecar for an uncaughtException that is
     // ACTUALLY fatal to the host — one hono-host's own guard does NOT already

@@ -52,7 +52,7 @@ import {
 
 /** The events the shared registrar attaches to — snapshotted so this test leaves no
  *  listeners behind on the shared `process` object for sibling suites to trip over. */
-const HOOK_EVENTS = ['SIGTERM', 'SIGINT', 'uncaughtException'] as const;
+const HOOK_EVENTS = ['SIGTERM', 'SIGINT', 'uncaughtException', 'exit'] as const;
 type HookEvent = (typeof HOOK_EVENTS)[number];
 type AnyListener = (...args: unknown[]) => void;
 

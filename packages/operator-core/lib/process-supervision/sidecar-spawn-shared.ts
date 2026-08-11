@@ -264,13 +264,17 @@ export interface SidecarShutdownHooksOpts {
   /**
    * 'async' (default): SIGTERM/SIGINT/uncaughtException each log then `await
    * stop()` — the substrate + spawner shape.
+   * 'async-with-exit': the async signal/exception behavior above, plus an
+   * exit listener that begins `stop()` synchronously before Node tears down
+   * the event loop. This is for children that must not survive a short-lived
+   * host's normal `process.exit()` path.
    * 'sync-with-exit': also listens on Node's 'exit' event, whose handlers
    * MUST run synchronously (an async continuation there is silently dropped
    * once the process has already begun exiting) — no logging, fires
    * `void stop()` fire-and-forget. The gateway supervisor's shape (it must
    * catch the "operator exited without a signal" case too).
    */
-  mode?: 'async' | 'sync-with-exit';
+  mode?: 'async' | 'async-with-exit' | 'sync-with-exit';
   /**
    * 'async' mode ONLY: gate the `uncaughtException` reaction on whether this
    * particular exception is genuinely fatal to the HOST process. Node fires
@@ -305,6 +309,16 @@ export function registerSidecarShutdownHooks(opts: SidecarShutdownHooksOpts): vo
     process.on('SIGTERM', sync);
     process.on('SIGINT', sync);
     return;
+  }
+
+  if (opts.mode === 'async-with-exit') {
+    // `stop()` begins synchronously (it signals the child before its first
+    // await), which is the only useful work an async shutdown can do once the
+    // process has entered Node's `exit` event. The normal signal handlers below
+    // still await the full graceful-stop sequence.
+    process.on('exit', () => {
+      void opts.stop();
+    });
   }
 
   process.on('SIGTERM', async () => {
