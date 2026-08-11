@@ -1317,6 +1317,14 @@ describe('coord:send optimistic-wake guidance after Mug/Kettle retirement', () =
 describe('coord:send structured-body gate (owner directive 2026-07-28 — the string body is refused)', () => {
   const sections = [{ text: 'the substance', forYouBecause: { relation: 'owns' as const, note: 'yours' } }];
 
+  it('publishes the structured couldNotDetermine citation shape in primary coord:send guidance', () => {
+    const primaryGuidance = [tool.description, tool.guidance?.when].filter(Boolean).join('\n');
+    expect(primaryGuidance).toContain('couldNotDetermine');
+    expect(primaryGuidance).toContain('{ what, note? }');
+    expect(primaryGuidance).toContain('[{ what:');
+    expect(primaryGuidance).toMatch(/not a string or array of strings/i);
+  });
+
   it('publishes the exact couldNotDetermine entry shape in the body guidance', () => {
     const schema = z.toJSONSchema(tool.args) as {
       properties?: { body?: { description?: string } };
