@@ -45,26 +45,43 @@ import {
   type AdoptHandoffResult,
   type SignedHandoffToken,
 } from './handoff-token';
-import { STAGING_REF } from './integrator';
+import { integrateMemberHeads, STAGING_REF } from './integrator';
 import { compareEpochSeq, type EpochSeq } from './staging-advance';
-import { defaultRunGit, readNamespaceRef, writeNamespaceRef, type RunGit } from './storage';
+import {
+  defaultRunGit,
+  deviceNamespaceKey,
+  readNamespaceRef,
+  writeNamespaceRef,
+  type RunGit,
+} from './storage';
 
 const ZERO_SHA = '0'.repeat(40);
 
-/** What the integrator leg publishes under this tick, and why. */
-export interface IntegratorGrant {
-  /** The epoch to stamp on this tick's announcement. */
-  epoch: number;
-  /** The per-epoch counter PRIOR to this tick (the tick signs priorSeq + 1). */
-  priorSeq: number;
-  basis: 'standing' | 'token-adoption' | 'crash-takeover';
-  /** Set on token-adoption: how the base seeding went (adopted / kept own). */
-  adoption?: AdoptHandoffResult;
-  /** The device (base64) whose token / accepted advance granted the takeover. */
-  grantedFrom?: string;
-  /** LOUD one-line summary for the tick log (takeovers must be visible). */
-  detail: string;
-}
+/** What the integrator leg may publish under this tick, and why. A failed base
+ *  reconciliation deliberately carries NO epoch: callers must decline the
+ *  tick rather than accidentally publishing a fenced-but-non-descendant line. */
+export type IntegratorGrant =
+  | {
+      ready: true;
+      /** The epoch to stamp on this tick's announcement. */
+      epoch: number;
+      /** The per-epoch counter PRIOR to this tick (the tick signs priorSeq + 1). */
+      priorSeq: number;
+      basis: 'standing' | 'token-adoption' | 'crash-takeover';
+      /** Set on token-adoption: how the base seeding went (adopted / kept own). */
+      adoption?: AdoptHandoffResult;
+      /** The device (base64) whose token / accepted advance granted the takeover. */
+      grantedFrom?: string;
+      /** LOUD one-line summary for the tick log (takeovers must be visible). */
+      detail: string;
+    }
+  | {
+      ready: false;
+      basis: 'blocked-token-adoption' | 'blocked-crash-reconciliation';
+      adoption?: AdoptHandoffResult;
+      grantedFrom?: string;
+      detail: string;
+    };
 
 /** Read + verify every member's handoff token (skips self, unverifiable, and
  *  tokens whose embedded device does not match the namespace they sit in). */
@@ -152,6 +169,7 @@ export async function deriveIntegratorGrant(input: DeriveIntegratorGrantInput): 
   const target = Math.max(mine.epoch, tokenGrant, crashGrant);
   if (target === mine.epoch) {
     return {
+      ready: true,
       epoch: mine.epoch,
       priorSeq: mine.seq,
       basis: 'standing',
@@ -162,15 +180,43 @@ export async function deriveIntegratorGrant(input: DeriveIntegratorGrantInput): 
   // Takeover — prefer the token basis when the token is what granted the max
   // (adoption also seeds the base); otherwise crash-path seeding.
   if (best && tokenGrant === target) {
-    const adoption = await adoptHandoffToken(input.repoPath, input.selfDevicePubkeyBase64, best.token, {
+    let adoption = await adoptHandoffToken(input.repoPath, input.selfDevicePubkeyBase64, best.token, {
       runGit,
     });
+    // FF-only adoption reports divergence when the successor already has
+    // legitimate local staging. Reconcile both clean histories first, then
+    // re-run the adoption proof; a conflict remains a hard stop.
+    if (!adoption.ok && adoption.reason === 'diverged') {
+      const reconciliation = await integrateMemberHeads(
+        input.repoPath,
+        input.selfDevicePubkeyBase64,
+        [{ deviceHex: deviceNamespaceKey(best.device), sha: best.token.staging_sha }],
+        { runGit },
+      );
+      if (reconciliation.skippedConflicts.length === 0) {
+        adoption = await adoptHandoffToken(input.repoPath, input.selfDevicePubkeyBase64, best.token, {
+          runGit,
+        });
+      }
+    }
+    if (!adoption.ok) {
+      return {
+        ready: false,
+        basis: 'blocked-token-adoption',
+        adoption,
+        grantedFrom: best.device,
+        detail:
+          `AUTHORITY TAKEOVER BLOCKED: verified handoff token from ${best.device.slice(0, 12)}… ` +
+          `(epoch ${best.token.epoch}) could not establish a descendant staging base (${adoption.reason})`,
+      };
+    }
     const seeded = adoption.ok
       ? adoption.adopted
         ? `staging seeded at ${adoption.staging.slice(0, 12)}`
         : `own staging kept (at/ahead of token)`
       : `base NOT seeded (${adoption.reason}) — keeping own base, epoch still fenced`;
     return {
+      ready: true,
       epoch: target,
       priorSeq: 0,
       basis: 'token-adoption',
@@ -188,11 +234,30 @@ export async function deriveIntegratorGrant(input: DeriveIntegratorGrantInput): 
   const max = await resolveMaxObservedStaging(input.repoPath, input.memberDevicePubkeysBase64, runGit);
   if (max) {
     const seeded = await seedOwnStagingFF(input.repoPath, input.selfDevicePubkeyBase64, max.sha, runGit);
+    if (seeded === 'diverged' || max.diverged) {
+      const reconciliation = await integrateMemberHeads(
+        input.repoPath,
+        input.selfDevicePubkeyBase64,
+        max.maximal,
+        { runGit },
+      );
+      if (reconciliation.skippedConflicts.length > 0) {
+        return {
+          ready: false,
+          basis: 'blocked-crash-reconciliation',
+          grantedFrom: crashEvidence ? `epoch:${crashEvidence.epoch}` : undefined,
+          detail:
+            `AUTHORITY TAKEOVER BLOCKED: ${reconciliation.skippedConflicts.length} ancestry-maximal ` +
+            `staging head(s) conflict with the successor base`,
+        };
+      }
+    }
     seedDetail =
       `base ${seeded} (max observed staging ${max.sha.slice(0, 12)}` +
-      `${max.diverged ? ', DIVERGED across namespaces — integrating the rest as member heads' : ''})`;
+      `${max.diverged ? ', reconciled divergent namespace maxima' : ''})`;
   }
   return {
+    ready: true,
     epoch: target,
     priorSeq: 0,
     basis: 'crash-takeover',

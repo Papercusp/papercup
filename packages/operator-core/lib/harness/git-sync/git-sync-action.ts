@@ -3222,6 +3222,11 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       priorIntegrator: prior,
       bridgeWatermark: rows[0]?.worktree_bridge?.epochSeq ?? null,
     });
+    if (!grant.ready) {
+      console.warn(`[git-sync] ${slug}: ${grant.detail}`);
+      await decline(grant.basis, grant.detail);
+      return;
+    }
     if (grant.basis !== 'standing') {
       console.info(`[git-sync] ${slug}: ${grant.detail}`);
     }
