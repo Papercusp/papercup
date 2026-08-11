@@ -37,6 +37,7 @@
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 import { parseUnifiedWindow, parseUnified7dWindow } from './gateway';
 import { withOAuthBeta } from './credential-store';
+import { resolveAccountEgress } from './egress-dispatcher';
 
 /** Upstream root. Mirrors gateway.ts DEFAULT_UPSTREAM; env-tunable for a staging/mock upstream. */
 const UPSTREAM = process.env.PAPERCUSP_GATEWAY_UPSTREAM || 'https://api.anthropic.com';
@@ -121,13 +122,9 @@ export function provesUnwall(before: CapacityWindows, now: CapacityWindows, full
   return freed7 || freed5;
 }
 
-/** The egress this account actually routes through: the FIRST pool entry (the gateway's rotation head)
- *  falling back to the singular legacy `egress`. An empty `{}` pool entry means the box-default IP. */
-export function probeEgressFor(a: ClaudeAccount): AccountEgress | undefined {
-  const pool = a.egressPool;
-  if (pool && pool.length > 0) return pool[0];
-  return a.egress;
-}
+/** The egress this account actually routes through — see `resolveAccountEgress`, the canonical
+ *  selector in egress-dispatcher.ts. Re-exported under the historical name used here. */
+export const probeEgressFor: (a: ClaudeAccount) => AccountEgress | undefined = resolveAccountEgress;
 
 /**
  * Probe ONE account's live budget windows. Never throws — a credential/transport failure is captured on

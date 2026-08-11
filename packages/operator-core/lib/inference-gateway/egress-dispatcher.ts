@@ -19,7 +19,7 @@
  * it should adopt this helper so the two never drift (coordinated with the B-HOT-2 dispatcher-close
  * work). Until then, keep the two IN LOCKSTEP by hand — this module is the canonical version.
  */
-import type { AccountEgress } from '../deployment/account-pool';
+import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
 
 type UndiciDispatcher = import('undici').Dispatcher;
 type UndiciModule = typeof import('undici');
@@ -53,6 +53,21 @@ export function egressIsSocks5Proxy(proxyUrl: string | undefined): boolean {
 /** True iff `proxyUrl` is in a scheme this module actually routes through (http(s) or socks5/socks). */
 export function egressIsSupportedProxy(proxyUrl: string | undefined): boolean {
   return egressIsHttpProxy(proxyUrl) || egressIsSocks5Proxy(proxyUrl);
+}
+
+/**
+ * The egress an ACCOUNT actually routes through: the FIRST `egressPool` entry (the gateway's rotation
+ * head), falling back to the singular legacy `egress`. An empty `{}` pool entry means the box-default IP.
+ *
+ * Canonical because selecting the egress is the step BEFORE `buildEgressDispatcher`, and a consumer that
+ * reads `account.egress` directly silently skips the whole pool: for a pool-configured account it sees
+ * `undefined`, reports "no egress", and probes the box-default IP — an answer that looks like a measured
+ * verdict but never touched the configured proxy (EI-18664933641195210).
+ */
+export function resolveAccountEgress(account: ClaudeAccount): AccountEgress | undefined {
+  const pool = account.egressPool;
+  if (pool && pool.length > 0) return pool[0];
+  return account.egress;
 }
 
 /** A stable per-account dispatcher cache key (matches the gateway's `accountId|proxyUrl|localAddress`).
