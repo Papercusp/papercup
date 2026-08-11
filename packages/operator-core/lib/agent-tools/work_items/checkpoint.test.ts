@@ -119,6 +119,10 @@ beforeEach(() => {
 });
 
 describe('work_items:checkpoint (bulk keyed-array)', () => {
+  it('opts out of the ambient workspace transaction because the handler owns its DB scopes', () => {
+    expect((checkpoint as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('keys the checkpoint by the ITEM\'s harness (looked up), disambiguated by the ctx hint', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue('did step 1; next: step 2');

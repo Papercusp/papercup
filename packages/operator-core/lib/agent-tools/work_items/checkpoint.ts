@@ -337,6 +337,10 @@ export default defineTool({
   capability: 'work_items:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  // EI-20193605443762570: this handler owns its DB scopes through its
+  // work-item/checkpoint accessors and never reads ctx.tx. Avoid retaining the
+  // ambient workspace transaction across those awaits under fleet load.
+  skipWorkspaceTx: true,
   args: z
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `checkpoint`)'),

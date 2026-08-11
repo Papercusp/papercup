@@ -18,6 +18,10 @@ export default defineTool({
   },
   capability: 'work_items:read',
   requirePrincipal: false,
+  // EI-20191189382971662: searchWorkItems owns its database scopes and this
+  // handler never reads ctx.tx. Do not hold the ambient workspace transaction
+  // across hybrid-search awaits, or fleet load can starve the org-app pool.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     query: z.string().min(1).max(400),
