@@ -136,6 +136,7 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     const r = await run(editOf('sub/grant.ts', 'tu-grant'));
     expect(r.status).toBe(0);
     expect(r.stdout).toBe(''); // allow = no decision
+    expect(lastRequest?.body.params.arguments.paths).toEqual(['sub/grant.ts']);
     // The lock_id is cached by tool_use_id so PostToolUse can release it.
     const cached = join(cache, 'tu-grant.lock');
     expect(fs.existsSync(cached)).toBe(true);

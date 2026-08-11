@@ -3148,6 +3148,7 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     const lockCalls = () => calls.filter((c) => c.name.startsWith('locks:'));
     expect(lockCalls()).toHaveLength(1);
     expect(lockCalls()[0].name).toBe('locks:acquire');
+    expect((lockCalls()[0].args as { paths: string[] }).paths).toEqual(['a.ts']);
 
     await onToolResult({ type: 'tool_result', toolCallId: 'tc-1' });
     expect(lockCalls()).toHaveLength(2);

@@ -739,9 +739,18 @@ for p in raw_paths:
 if not repo_relative:
     allow()
 
-# Dedupe, keep order.
+# Dedupe, keep order. Do this explicitly rather than using a truthiness-based
+# list-comprehension idiom: set.add() returns the set (truthy), so
+# `not (x in seen or seen.add(x))` drops every first occurrence and emits the
+# invalid `paths: []` request shape.
 seen = set()
-repo_relative = [x for x in repo_relative if not (x in seen or seen.add(x))]
+deduped_repo_relative = []
+for x in repo_relative:
+    if x in seen:
+        continue
+    seen.add(x)
+    deduped_repo_relative.append(x)
+repo_relative = deduped_repo_relative
 
 # ── Acquire (no server-side wait: block immediately so the agent can
 #    replan now rather than hang the edit). ──────────────────────────────

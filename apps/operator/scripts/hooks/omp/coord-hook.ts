@@ -4119,9 +4119,18 @@ export async function onToolCall(
   // Lock keys are worktree-relative, so the same file claimed through
   // two worktrees collapses to one key — dedupe, preserving order.
   const seen = new Set<string>();
-  const paths = targets
-    .map((t) => t.rel)
-    .filter((x) => !(seen.has(x) || seen.add(x)));
+  const paths: string[] = [];
+  for (const target of targets) {
+    if (seen.has(target.rel)) continue;
+    seen.add(target.rel);
+    paths.push(target.rel);
+  }
+
+  // Keep the safety rail from ever emitting the invalid `paths: []` request
+  // shape if a future target-normalization change returns malformed entries.
+  // The normal no-target path returns above; this is a second invariant at the
+  // exact boundary that calls locks:acquire.
+  if (paths.length === 0) return {};
 
   const result = await callMcpTool('locks:acquire', {
     paths,
