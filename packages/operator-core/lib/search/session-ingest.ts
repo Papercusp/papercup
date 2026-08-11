@@ -52,7 +52,10 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
 import { classifyRecordedTurn } from '../turn-provenance/turn-ref';
-import { MACHINE_SURFACE_CATALOGUE_VERSION } from '../turn-provenance/machine-surface-catalogue';
+import {
+  MACHINE_SURFACE_CATALOGUE_VERSION,
+  CLASSIFY_HEAD_CHARS,
+} from '../turn-provenance/machine-surface-catalogue';
 import {
   addResultBytes,
   addToolUse,
@@ -1133,6 +1136,112 @@ async function backfillSessionOwners(
        AND turns.session_id = resolved.session_id
        AND turns.owner IS DISTINCT FROM resolved.owner
   `;
+}
+
+/**
+ * Rows re-classified per sweep. Bounded like every other pass in this file —
+ * the corpus is millions of turns, so the sweep converges across ticks rather
+ * than trying to swallow history in one go.
+ */
+export const PROVENANCE_BACKFILL_BATCH = 5_000;
+
+export interface ProvenanceBackfillResult {
+  scanned: number;
+  updated: number;
+  /** True while rows remain below the current catalogue version — the caller
+   *  can keep sweeping, or simply wait for the next tick. */
+  more: boolean;
+}
+
+/**
+ * Re-derive `turn_origin*` for rows the CURRENT catalogue has not classified.
+ *
+ * TWO POPULATIONS, ONE QUERY (migration 794):
+ *   * version IS NULL — ingested before this feature existed.
+ *   * version < CURRENT — classified by an older catalogue, i.e. possibly
+ *     stamped `owner-typed` only because the pattern that would have caught it
+ *     had not been written yet.
+ *
+ * The second is the one that makes this sweep permanent rather than a one-off
+ * migration chore. `owner-typed` is the RESIDUAL of a versioned deny-list, so
+ * every pattern added to the catalogue silently invalidates some past verdicts;
+ * without a re-derivation lane those rows keep asserting the owner said
+ * something he did not, with a stored column's authority behind it. Bumping
+ * MACHINE_SURFACE_CATALOGUE_VERSION is what makes them findable here.
+ *
+ * Only the HEAD is fetched — the classifier bounds itself to
+ * CLASSIFY_HEAD_CHARS anyway, so pulling whole turn bodies (up to 8k each)
+ * would be pure bandwidth.
+ */
+export async function backfillTurnProvenanceOnce(
+  sql: Sql,
+  limit = PROVENANCE_BACKFILL_BATCH,
+): Promise<ProvenanceBackfillResult> {
+  const rows = await sql<
+    Array<{
+      workspace_id: string;
+      source_kind: string;
+      session_id: string;
+      turn_idx: number;
+      speaker: string;
+      head: string | null;
+    }>
+  >`
+    SELECT workspace_id, source_kind, session_id, turn_idx, speaker,
+           left(text, ${CLASSIFY_HEAD_CHARS}) AS head
+      FROM harness_shared.session_turns
+     WHERE turn_origin_classifier_version IS NULL
+        OR turn_origin_classifier_version < ${MACHINE_SURFACE_CATALOGUE_VERSION}
+     LIMIT ${limit}
+  `;
+  if (!rows.length) return { scanned: 0, updated: 0, more: false };
+
+  const wsIds: string[] = [];
+  const kinds: string[] = [];
+  const sessionIds: string[] = [];
+  const turnIdxs: number[] = [];
+  const origins: (string | null)[] = [];
+  const verdicts: string[] = [];
+
+  for (const r of rows) {
+    // Reuse the ONE stamp path rather than re-deriving the rules here — a
+    // second copy of this logic is how the four divergent classifiers arose.
+    const staged = {
+      speaker: r.speaker,
+      text: r.head ?? '',
+    } as TurnRow;
+    stampTurnProvenance(staged);
+
+    wsIds.push(r.workspace_id);
+    kinds.push(r.source_kind);
+    sessionIds.push(r.session_id);
+    turnIdxs.push(r.turn_idx);
+    origins.push(staged.turn_origin ?? null);
+    verdicts.push(staged.turn_origin_verdict!);
+  }
+
+  const res = await sql`
+    UPDATE harness_shared.session_turns AS turns
+       SET turn_origin = resolved.turn_origin,
+           turn_origin_verdict = resolved.turn_origin_verdict,
+           turn_origin_classifier_version = ${MACHINE_SURFACE_CATALOGUE_VERSION}
+      FROM UNNEST(
+             ${sql.array(wsIds)}::text[], ${sql.array(kinds)}::text[],
+             ${sql.array(sessionIds)}::text[], ${sql.array(turnIdxs)}::int[],
+             ${sql.array(origins as string[])}::text[], ${sql.array(verdicts)}::text[]
+           ) AS resolved(workspace_id, source_kind, session_id, turn_idx,
+                         turn_origin, turn_origin_verdict)
+     WHERE turns.workspace_id = resolved.workspace_id
+       AND turns.source_kind = resolved.source_kind
+       AND turns.session_id = resolved.session_id
+       AND turns.turn_idx = resolved.turn_idx
+  `;
+
+  return {
+    scanned: rows.length,
+    updated: res.count ?? rows.length,
+    more: rows.length === limit,
+  };
 }
 
 interface IngestState {
