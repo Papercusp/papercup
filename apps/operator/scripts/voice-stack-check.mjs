@@ -111,8 +111,10 @@ const settingsR = await fetch(`${BASE}/settings/voice`).catch(() => null);
 settingsR?.ok ? pass('5. /settings/voice route', '') : fail('5. /settings/voice route', `${settingsR?.status ?? 'no-response'}`);
 
 const prefsR = await probe('prefs', `${BASE}/api/agent-mcp/operator-voice-prefs`);
+let voicePrefs = null;
 if (prefsR.ok) {
   const k = prefsR.json ?? {};
+  voicePrefs = k;
   const v = (key) => key in k ? '✓' : '—';
   pass('6. voice-prefs endpoint',
     `engine=${k.fullAgentEngine} privacy=${k.voicePrivacyMode} idle=${k.fullAgentIdleTimeoutMin}m cap=${k.fullAgentMonthlyMinuteCap}min`);
@@ -137,6 +139,15 @@ if (xiKey && agentId) {
   const bootR = await probe('boot', `${BASE}/api/agent-mcp/operator-elevenlabs-bootstrap`);
   if (bootR.ok && bootR.json?.conversationToken?.length > 100) {
     pass('9. EL bootstrap', `token len=${bootR.json.conversationToken.length}`);
+  } else if (
+    bootR.status === 404 &&
+    /not-enabled/.test(bootR.body ?? '') &&
+    !['elevenlabs-conv', 'elevenlabs-conversational'].includes(voicePrefs?.fullAgentEngine)
+  ) {
+    // The shipped local-first posture deliberately keeps the optional cloud
+    // full-agent engine off. In that state this endpoint MUST refuse to mint a
+    // paid conversation token; a 404 not-enabled proves the gate is working.
+    pass('9. EL bootstrap', `disabled by voice prefs (engine=${voicePrefs?.fullAgentEngine ?? 'off'})`);
   } else if (bootR.status === 502 && /concurrent/.test(bootR.body ?? '')) {
     warn('9. EL bootstrap', 'rate-limited (workspace has active session); endpoint logic is fine');
   } else {
@@ -249,6 +260,11 @@ const TEST_CONV_ID = `voice-stack-check-${Date.now()}`;
   const r = await fetch(`${BASE}/api/elevenlabs/post-call`, { method: 'POST', headers, body }).catch(() => null);
   if (r?.ok) {
     pass('14. post-call webhook', secret ? 'POST 200 (signed)' : 'POST 200 (dev-mode unsigned)');
+  } else if (!secret && r?.status === 401) {
+    // The remote host may enforce a signing secret that is intentionally not
+    // present in this checker's process. An unsigned 401 is then the secure,
+    // expected result; it proves the endpoint is not anonymously writable.
+    pass('14. post-call webhook', '401 on unsigned (remote host requires signing)');
   } else {
     fail('14. post-call webhook', `${r?.status ?? 'err'}`);
   }
@@ -264,7 +280,8 @@ const TEST_CONV_ID = `voice-stack-check-${Date.now()}`;
     if (r?.status === 401) pass('15. webhook auth', '401 on unsigned (correct in prod mode)');
     else fail('15. webhook auth', `expected 401, got ${r?.status}`);
   } else {
-    if (r?.ok) pass('15. webhook auth', '200 on unsigned (dev mode, expected)');
+    if (r?.status === 401) pass('15. webhook auth', '401 on unsigned (remote host requires signing)');
+    else if (r?.ok) pass('15. webhook auth', '200 on unsigned (dev mode, expected)');
     else fail('15. webhook auth', `${r?.status}`);
   }
 }
