@@ -155,6 +155,7 @@ const CLASSIFIED = {
   a15204c8f6cc5d8e: 'INV', // mutation-probe invocation
   '1fc7000761ea9ac8': 'INV', // exit-code semantics
   '65289b5b559eff0d': 'INV', // tier-3 sweep pause
+  '4f42386af1aaea88': 'INV', // tier-3 lock invocation
   // 2026-08-10, WI-37636 — a peer anchored three gate-forensics greps on a field only a real
   // machine line carries, so vitest test NAMES stop matching them as impostors. All three code
   // blocks and both new warnings sit inside the L1085-1183 [INS] band and inherit prose from the

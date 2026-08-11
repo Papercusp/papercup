@@ -733,6 +733,37 @@ A mutation probe that mutates the shared tree can be committed by the sweep even
 
 **Pick the lowest tier that fits — the top two never dirty the tree at all:**
 
+| your subject | how to prove falsifiability |
+|---|---|
+| a MODULE / logic you `import` | Keep a deliberately-wrong implementation **permanently in the test file** as a control (plus a calibration case the REAL subject must pass, or the controls also pass when the property itself is broken). Never mutate production code. |
+| a FILE artifact the test reads by path (shell scripts, config, generated output) | Mutate a **COPY** outside the tree and point the test at it — zero window, no lock, no trap. Make the test's subject path overridable (an env var defaulting to the real path); that one line is what makes tier 2 available at all. |
+| genuinely unavoidable in-tree mutation | Last resort. Hold the sweep for the probe's duration AND restore from a trap (see below). |
+
+**`scripts/mutation-probe.sh` implements tiers 2 and 3** so nobody hand-rolls the unsafe
+shape again. Copy-out is the default; it proves the tracked file is byte-identical
+before exiting, and it **refuses a mutation that changed nothing** — a no-op mutation
+makes any guard look weak, which is a false verdict from a probe that never mutated
+anything.
+
+```bash
+scripts/mutation-probe.sh --file scripts/verify-tauri-headless.sh \
+  --mutate 's/^\s*port_lost_to_squatter .*$//' \
+  --test 'PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/verify-tauri-headless-bind-retry.test.ts'
+```
+
+Exit codes: `0` mutant CAUGHT (guard is falsifiable ✓) · `1` mutant SURVIVED (your guard
+is weaker than you think) · `2` misuse / no-op mutation · `3` in-tree restore FAILED, act
+now. Note `0` means *the guard failed on the mutant* — "the probe succeeded" and "the test
+passed" mean OPPOSITE things here.
+
+For tier 3, pause the sweep from your agent session — git-sync's own tick takes this
+same lock and **skips when a peer holds it**:
+
+```
+locks:acquire_resource { resource: 'git-sync:papercusp', mode: 'exclusive',
+                         ttl_sec: 600, reason: 'mutation probe' }
+```
+
 ## Browser checks — use `verdict`
 
 Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright

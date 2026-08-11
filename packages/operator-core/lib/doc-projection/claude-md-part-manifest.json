@@ -11,12 +11,12 @@
  "summary": {
   "byKind": {
    "invariant": {
-    "parts": 106,
-    "chars": 66742
+    "parts": 107,
+    "chars": 66892
    },
    "prose": {
-    "parts": 132,
-    "chars": 90687
+    "parts": 131,
+    "chars": 90537
    },
    "pointer": {
     "parts": 7,
@@ -27,7 +27,7 @@
     "chars": 3734
    }
   },
-  "projectedChars": 73278,
+  "projectedChars": 73428,
   "totalParts": 253,
   "needsReview": 0
  },
@@ -3857,10 +3857,12 @@
   {
    "partKey": "proving-a-guard-is-falsifiab",
    "ordinal": 241,
-   "kind": "prose",
-   "clientScope": [],
+   "kind": "invariant",
+   "clientScope": [
+    "all"
+   ],
    "targetSection": "Proving a guard is falsifiable — never mutate the shared tree to do it",
-   "projectRank": 1000,
+   "projectRank": 100,
    "expiring": false,
    "blockSha": "4f42386af1aaea88",
    "chars": 150,
