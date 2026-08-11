@@ -82,7 +82,7 @@ describe('rubricStalenessSweep — orchestration (injected deps, no PG)', () => 
     ...over,
   });
 
-  it('sweeps ONLY releaseGating rubrics — an un-gated rubric is never paged on', async () => {
+  it('sweeps only WATCHED rubrics — one carrying neither flag is never paged on', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const d = deps();
     const results = await rubricStalenessSweep({}, d);
@@ -98,6 +98,47 @@ describe('rubricStalenessSweep — orchestration (injected deps, no PG)', () => 
     const esc = vi.mocked(d.openEscalation).mock.calls[0]![1] as { summary: string; body?: string };
     expect(esc.summary).toContain('blender-release-readiness');
     expect(esc.body).toContain('improvements:capture'); // the re-grade recipe rides the page
+  });
+
+  /**
+   * P-011. Before this, "watched" and "release-gating" were ONE flag, so an ongoing health
+   * rubric could only be watched by claiming to gate releases — which would both block ships
+   * it has no business blocking and impose the machine-instrument contract a judgement-based
+   * rubric cannot satisfy. So none of them claimed it, and a dead health loop was
+   * indistinguishable from a healthy one: the exact silence this watchdog exists to break.
+   */
+  it('P-011: a stalenessWatched rubric is paged on even though it does NOT gate a release', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const healthRubric = {
+      rubricId: 'su-ideation-health',
+      stalenessWatched: true,
+      status: 'active',
+    } as unknown as Rubric;
+    const d = deps({ listRubrics: vi.fn(async () => [healthRubric, plainRubric]) });
+    const results = await rubricStalenessSweep({}, d);
+    warn.mockRestore();
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ rubricRef: 'su-ideation-health', outcome: 'alerted' });
+    expect(d.openEscalation).toHaveBeenCalledTimes(1);
+    // Explicitly assert it was NOT reclassified as a release gate to earn the watch —
+    // that mislabel is the workaround this flag exists to make unnecessary.
+    expect((healthRubric as { releaseGating?: boolean }).releaseGating).toBeUndefined();
+  });
+
+  it('P-011: the two flags are independent — a rubric carrying BOTH is swept exactly once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const both = {
+      rubricId: 'blender-release-readiness',
+      releaseGating: true,
+      stalenessWatched: true,
+      status: 'active',
+    } as unknown as Rubric;
+    const d = deps({ listRubrics: vi.fn(async () => [both]) });
+    const results = await rubricStalenessSweep({}, d);
+    warn.mockRestore();
+    // A filter written as two passes instead of one predicate would double-page here.
+    expect(results).toHaveLength(1);
+    expect(d.openEscalation).toHaveBeenCalledTimes(1);
   });
 
   it('healthy when the gating rubric has a complete in-window scorecard — no fire, no escalation', async () => {

@@ -103,6 +103,12 @@ export const SU_IDEATION_HEALTH_RUBRIC: ProposeRubricInput = {
     'su-ideate learning substrate built: pass cadence, outcome-read freshness, grade-loop latency, and ' +
     'lens diversity.',
   criteria: [...SU_IDEATION_HEALTH_CRITERIA],
+  // P-011: WATCHED for staleness, but explicitly NOT release-gating. This rubric is the
+  // Blender steward's health surface — "has the loop quietly gone dark?" is precisely the
+  // question a stale scorecard answers wrong by saying nothing, so it must be watched.
+  // It is not a ship gate though (WI-37911), and releaseGating would additionally impose
+  // the machine-instrument contract that a judgement-based health rubric cannot satisfy.
+  stalenessWatched: true,
 };
 
 /** Injectable propose port — tests drive it with no PG; production uses {@link proposeRubric}. */

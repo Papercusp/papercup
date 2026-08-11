@@ -130,8 +130,13 @@ export async function rubricStalenessSweep(
   const installSlug = opts.installSlug ?? 'papercusp';
   const results: RubricStalenessSweepResult[] = [];
   try {
+    // P-011: releaseGating OR stalenessWatched. The two answer different questions —
+    // "does a stale verdict block a ship?" and "is anyone still grading this?" — and
+    // while one flag served both, an ongoing HEALTH rubric could only get watched by
+    // masquerading as a release bar. So none did, and a dead health loop looked exactly
+    // like a healthy one (EI-16072: only 2 of 23 active rubrics were watched at all).
     const rubrics = (await (deps.listRubrics ?? listRubrics)({ status: 'active' })).filter(
-      (r) => r.releaseGating === true,
+      (r) => r.releaseGating === true || r.stalenessWatched === true,
     );
     for (const rubric of rubrics) {
       try {
